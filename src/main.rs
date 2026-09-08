@@ -12,6 +12,7 @@ mod cpu;
 mod crypto;
 mod display;
 mod fmath;
+mod font;
 mod gamepads;
 mod gles;
 mod heap;
@@ -468,6 +469,9 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
             "atenção:   {} chamadas com ponteiro `this` inesperado",
             machine.suspicious_objects().len()
         );
+    }
+    if let Some(fonte) = machine.font_source() {
+        println!("fonte:     {fonte}, do próprio pacote do jogo");
     }
     if !machine.pending_text().is_empty() {
         println!("texto na tela (ainda sem fonte para desenhar):");

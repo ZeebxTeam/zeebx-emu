@@ -57,6 +57,10 @@ Contexto técnico em [docs/](docs/README.md).
 - Helpers implementados: `malloc`/`free`/`realloc` (com `ALLOC_NO_ZMEM`), `memmove`, `memset`,
   `memcmp`, `strlen`, `strcpy`, `strcat`, `strcmp`, `strncmp`, `wstrlen`, `sprintf`,
   `dbgprintf`, `GetAppInstance`, os helpers de tempo, `aee_GetRand`, `GetRAMFree`
+- **`DrawText` desenha de verdade** (`font.rs`), com a fonte que o **próprio jogo empacota** — a
+  do console vinha da firmware, que não temos. Hoje só a Z-Wheel traz uma (`tectoy.ttf`), e é
+  justamente ela que precisa. As métricas (`GetFontMetrics`, `MeasureTextEx`) passaram a sair da
+  fonte em vez de números fixos
 - **`ISHELL_SendEvent`, `IFILE_GetInfoEx` e `GETJULIANDATE`** — os três degraus seguintes da
   Z-Wheel. Ela agora **cria o applet** e roda o `EVT_APP_START`: lê o banco, lê o `tectoy.cfg` e
   para em "Could not create root form(20)", que é a classe `0x01001011` da interface dela
@@ -579,11 +583,13 @@ fazer o jogo abrir, e agora a maior parte do valor está em fazer bem o que já 
    alguém ainda anda dois: a matriz de quem lê o quê está levantada, e os candidatos são os que
    chamam `GetNextButtonEvent` **e** `GetPositionState` todo quadro — Zeebo Sports, zeetris,
    Zeeboids e a série Extreme
-2. **Fonte.** `DrawText` recebe o texto certo e não tem com o que desenhá-lo. Duas origens
-   possíveis, ambas verificáveis: o dump da firmware
-   (`docs/vendor/tripleoxygen/dump/nand/1.1.2/partitions/1.1.2_APPS.bin`), que é a fonte que o
-   console usa de verdade, ou os recursos do simulador do SDK (`bin/BrewRes.dat`,
-   `bin/SimulatorRes.dll`). A primeira é a fiel; a segunda deve ser mais fácil de achar
+2. **Uma fonte para quem não empacota a sua.** O `DrawText` já desenha, mas só quando o jogo
+   traz um `.ttf` — e dos 62, só a Z-Wheel traz. Para o resto (Resident Evil 4, Double Dragon)
+   falta a fonte do console, e há duas origens verificáveis: o dump da firmware
+   (`docs/vendor/tripleoxygen/dump/nand/1.1.2/partitions/1.1.2_APPS.bin`), que é a fiel, ou os
+   recursos do simulador do SDK (`bin/BrewRes.dat`, `bin/SimulatorRes.dll`). Falta também o
+   `fontsize.map`, que a Z-Wheel pede e não está no pacote dela: é ele que diz quantos pixels
+   vale cada tamanho nomeado do BREW, e sem ele há um corpo só
 3. **O Peggle roda e não mostra nada.** Ele já desenha a geometria certa desde os campos do
    `IDIB`, mas fica preso no carregamento e os sprites saem sem textura — redecodifica as mesmas
    nove imagens em volta. O Pac-Mania saiu desta lista: desenha, e agora é o item 7

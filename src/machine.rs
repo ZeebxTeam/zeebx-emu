@@ -523,6 +523,12 @@ const MAX_PREFS: usize = 64 * 1024;
 /// desenha. Ele acompanha a altura declarada em [`FONT_ASCENT`]: uma fonte de tela pequena,
 /// coerente consigo mesma.
 const FONT_ADVANCE: i32 = 7;
+/// Corpo em que o texto é desenhado quando há fonte. O console tinha tamanhos nomeados
+/// (`AEE_FONT_NORMAL` e companhia) e um `fontsize.map` que dizia quantos pixels cada um vale;
+/// esse arquivo não veio no pacote, então por ora há um tamanho só.
+const FONT_SIZE: f32 = 16.0;
+/// `CLR_USER_TEXT`, o item de cor que o `IDISPLAY_SetColor` usa para texto.
+const CLR_USER_TEXT: usize = 1;
 
 const FONT_ASCENT: u32 = 12;
 const FONT_DESCENT: u32 = 4;
@@ -1116,6 +1122,34 @@ fn julian_date(segundos: u32) -> [u16; 7] {
     ]
 }
 
+/// A fonte que o próprio jogo empacotou, se houver uma.
+///
+/// A do console vinha da firmware, que não temos. Vários módulos trazem a sua — a Z-Wheel
+/// empacota a `tectoy.ttf`, que é a fonte com que a loja foi desenhada. Usar a do jogo é mais
+/// fiel do que escolher uma por nós, e quando não há nenhuma o texto continua sem sair, o que
+/// o relatório informa.
+fn font_do_modulo(raiz: &std::path::Path) -> Option<crate::font::Font> {
+    let mut fontes: Vec<_> = std::fs::read_dir(raiz)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entrada| entrada.path())
+        .filter(|caminho| {
+            caminho
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("ttf"))
+        })
+        .collect();
+    // Ordem estável: dois `.ttf` no mesmo diretório não podem dar resultados diferentes entre
+    // execuções por causa da ordem em que o sistema de arquivos os lista.
+    fontes.sort();
+    let caminho = fontes.first()?;
+    let nome = caminho
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    crate::font::Font::load(std::fs::read(caminho).ok()?, nome)
+}
+
 /// Corta `rect` pelo recorte. `None` quando não sobra nada para desenhar.
 fn clip_rect(clip: Option<Rect>, rect: Rect) -> Option<Rect> {
     let clip = clip?;
@@ -1444,6 +1478,8 @@ pub struct Machine<C: CpuBackend> {
     /// Textos que o jogo mandou desenhar. Ainda não temos fonte para rasterizá-los, então
     /// ficam registrados aqui em vez de desaparecerem.
     pending_text: Vec<String>,
+    /// A fonte do próprio jogo, quando ele empacota uma.
+    font: Option<crate::font::Font>,
     /// Quantas vezes cada método foi chamado — o retrato do que o jogo usa.
     calls: BTreeMap<(u32, u32), u64>,
     /// Total de chamadas atendidas, para aplicar o teto.
@@ -1453,6 +1489,7 @@ pub struct Machine<C: CpuBackend> {
 impl<C: CpuBackend> Machine<C> {
     /// `root` é o diretório do módulo — a raiz do sistema de arquivos que o jogo enxerga.
     pub fn new(cpu: C, module: LoadedModule, root: impl Into<std::path::PathBuf>) -> Self {
+        let raiz: std::path::PathBuf = root.into();
         let heap = Heap::new(loader::HEAP_BASE, loader::HEAP_SIZE);
         // Os objetos ficam depois dos ponteiros que o carregador já reservou no começo da
         // região, para não sobrescrevê-los.
@@ -1482,7 +1519,7 @@ impl<C: CpuBackend> Machine<C> {
             assumptions: BTreeSet::new(),
             bad_pointers: BTreeSet::new(),
             graphics: GraphicsState::default(),
-            vfs: Vfs::new(root),
+            vfs: Vfs::new(raiz.clone()),
             open_files: HashMap::new(),
             file_error: SUCCESS,
             decoders: HashMap::new(),
@@ -1559,6 +1596,7 @@ impl<C: CpuBackend> Machine<C> {
             screen: Framebuffer::new(SCREEN_WIDTH as u32, SCREEN_HEIGHT as u32),
             colors: default_colors(),
             pending_text: Vec::new(),
+            font: font_do_modulo(&raiz),
             calls: BTreeMap::new(),
             calls_total: 0,
         }
@@ -3106,12 +3144,23 @@ impl<C: CpuBackend> Machine<C> {
                 }
                 SUCCESS
             }
+            // void IDISPLAY_DrawText(IDisplay *, AEEFont, const AECHAR *pcText, int nChars,
+            //                        int x, int y, const AEERect *prcBackground, uint32 dwFlags)
             "DrawText" => {
                 let text = self.read_aechar(self.cpu.read_reg(Reg::R2))?;
-                // A comparação só roda enquanto há espaço; cheia, a lista custa um teste de
-                // tamanho por chamada.
-                if self.pending_text.len() < MAX_TEXT && !self.pending_text.contains(&text) {
-                    self.pending_text.push(text);
+                let (x, y) = (self.stack_arg(0)? as i32, self.stack_arg(1)? as i32);
+                match self.draw_text(&text, x, y)? {
+                    true => {}
+                    // Sem fonte, o texto continua indo só para o relatório: é o que permite
+                    // saber que o jogo *quer* escrever mesmo quando não há com o quê.
+                    false => {
+                        // A comparação só roda enquanto há espaço; cheia, a lista custa um
+                        // teste de tamanho por chamada.
+                        if self.pending_text.len() < MAX_TEXT && !self.pending_text.contains(&text)
+                        {
+                            self.pending_text.push(text);
+                        }
+                    }
                 }
                 SUCCESS
             }
@@ -3165,18 +3214,46 @@ impl<C: CpuBackend> Machine<C> {
                     false => (chars as usize).min(text.len()),
                 };
                 let max_width = self.stack_arg(0)? as i32;
-                let fits = match max_width < 0 {
-                    true => count,
-                    false => count.min((max_width / FONT_ADVANCE).max(0) as usize),
+                // Com fonte, a largura é medida caractere a caractere até estourar o limite;
+                // sem ela sobra a largura fixa, que é chute honesto mas chute.
+                let (fits, largura) = match &self.font {
+                    Some(fonte) => {
+                        let mut cabem = 0;
+                        let mut largura = 0;
+                        for fim in 1..=count {
+                            let trecho: String = text[..fim]
+                                .iter()
+                                .filter_map(|u| char::from_u32(u32::from(*u)))
+                                .collect();
+                            let candidata = fonte.width(&trecho, FONT_SIZE) as i32;
+                            if max_width >= 0 && candidata > max_width {
+                                break;
+                            }
+                            (cabem, largura) = (fim, candidata);
+                        }
+                        (cabem, largura as u32)
+                    }
+                    None => {
+                        let cabem = match max_width < 0 {
+                            true => count,
+                            false => count.min((max_width / FONT_ADVANCE).max(0) as usize),
+                        };
+                        (cabem, (cabem as i32 * FONT_ADVANCE) as u32)
+                    }
                 };
                 let out = self.stack_arg(1)?;
                 if out != 0 {
                     self.cpu.write_u32(out, fits as u32)?;
                 }
-                (fits as i32 * FONT_ADVANCE) as u32
+                largura
             }
             "GetFontMetrics" => {
-                let (ascent, descent) = (FONT_ASCENT, FONT_DESCENT);
+                // Com fonte de verdade, a medida é dela: um menu que centraliza pela altura da
+                // linha fica torto se a altura for chute.
+                let (ascent, descent) = match &self.font {
+                    Some(fonte) => (fonte.ascent(FONT_SIZE), fonte.descent(FONT_SIZE)),
+                    None => (FONT_ASCENT, FONT_DESCENT),
+                };
                 self.write_at(self.cpu.read_reg(Reg::R2), ascent)?;
                 self.write_at(self.cpu.read_reg(Reg::R3), descent)?;
                 ascent + descent
@@ -5982,6 +6059,60 @@ impl<C: CpuBackend> Machine<C> {
             _ => return Ok(None),
         };
         Ok(Some(result))
+    }
+
+    /// Desenha `text` na superfície corrente. `false` quando não há fonte para desenhá-lo.
+    ///
+    /// A cor é a do `CLR_USER_TEXT`, que é o que o `IDISPLAY_SetColor` ajusta, e o recorte vale
+    /// aqui como em qualquer outro desenho.
+    fn draw_text(&mut self, text: &str, x: i32, y: i32) -> Result<bool, CpuError> {
+        let Some(fonte) = self.font.as_ref() else {
+            return Ok(false);
+        };
+        let glifos = fonte.layout(text, FONT_SIZE);
+        if glifos.is_empty() {
+            return Ok(true);
+        }
+        let cor = self
+            .colors
+            .get(CLR_USER_TEXT)
+            .copied()
+            .unwrap_or(Rgb::BLACK);
+        let nativo = cor.to_rgb565();
+        let recorte = self.clip;
+        let target = self.target()?;
+        let Some(surface) = self.bitmaps.get_mut(&target) else {
+            return Ok(true);
+        };
+        for glifo in glifos {
+            for linha in 0..glifo.height {
+                for coluna in 0..glifo.width {
+                    // Meio-tom não existe numa superfície sem canal alfa: ou a letra cobre o
+                    // pixel, ou não cobre. Metade é o corte que deixa a borda parecida com a
+                    // do console, que também não mistura.
+                    if glifo.coverage[(linha * glifo.width + coluna) as usize] < 128 {
+                        continue;
+                    }
+                    let (px, py) = (x + glifo.x + coluna as i32, y + glifo.y + linha as i32);
+                    if let Some(clip) = recorte {
+                        let dentro = px >= clip.x as i32
+                            && py >= clip.y as i32
+                            && px < clip.x as i32 + clip.width as i32
+                            && py < clip.y as i32 + clip.height as i32;
+                        if !dentro {
+                            continue;
+                        }
+                    }
+                    surface.set_pixel_native(px, py, nativo);
+                }
+            }
+        }
+        Ok(true)
+    }
+
+    /// De onde saiu a fonte que está desenhando o texto, se houver uma.
+    pub fn font_source(&self) -> Option<&str> {
+        self.font.as_ref().map(|f| f.source.as_str())
     }
 
     /// O calendário do guest, em segundos desde 6 de janeiro de 1980 GMT.

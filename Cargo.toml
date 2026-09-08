@@ -30,5 +30,9 @@ resvg = { version = "0.48.1", default-features = false }
 # e JOIN. Reimplementar isso seria reinventar mal. A build é embutida para não depender de
 # biblioteca do sistema, e a toolchain C já é necessária por causa do unicorn.
 rusqlite = { version = "0.37", features = ["bundled"] }
+# Rasterização de glifo para o `IDISPLAY_DrawText`. Já vinha na árvore por causa do `eframe`,
+# então usá-la direto não acrescenta build nenhuma — e escrever um interpretador de TrueType
+# seria reinventar mal.
+ab_glyph = "0.2"
 # Só o JPEG dos ícones de `.mif`. O resto da decodificação de imagem é nossa.
 zune-jpeg = { version = "0.5.15", default-features = false, features = ["std"] }

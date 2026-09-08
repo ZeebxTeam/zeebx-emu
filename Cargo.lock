@@ -4653,6 +4653,7 @@ dependencies = [
 name = "zeebx"
 version = "0.1.0"
 dependencies = [
+ "ab_glyph",
  "cpal",
  "eframe",
  "flate2",

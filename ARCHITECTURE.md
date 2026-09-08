@@ -85,6 +85,7 @@ API do BREW:
 | `objects.rs`, `heap.rs` | Objetos com contagem de referências, e o heap do guest |
 | `cformat.rs` | O `printf` do guest |
 | `crypto.rs` | AES e MD5, para o `ICipher1` e o `IHash` |
+| `font.rs` | O texto do `IDISPLAY_DrawText`, com a fonte que o jogo empacota |
 | `sql.rs` | Os bancos SQLite do `ISQLMgr`, sobre o `rusqlite` |
 
 Saída:
@@ -151,6 +152,10 @@ recursos são escritos aqui. As dependências cobrem o que é do host ou o que s
 O `unicorn-engine` é o núcleo ARM, atrás do `CpuBackend`. O `eframe` com o `egui` é a interface,
 e o `minifb` é a janela do modo `--window`, que é separada dela. O `cpal` só põe som na placa; a
 decodificação é nossa. O `gilrs` dá controles de verdade nos três sistemas.
+
+O `ab_glyph` rasteriza os glifos do `IDISPLAY_DrawText`. Ele já vinha na árvore por causa do
+`eframe`, então usá-lo direto não acrescenta compilação — e escrever um interpretador de TrueType
+seria reinventar mal. A fonte em si nunca é nossa: é a que o jogo empacota.
 
 O `rusqlite`, com a build embutida, atende o `AEECLSID_SQLMGR`. Não é conveniência: o console
 usava SQLite mesmo — o `tt_prefs.db` que a Z-Wheel traz no pacote começa com `SQLite format 3`, e
