@@ -635,6 +635,14 @@ const AEECLSID_DISPLAY1: u32 = 0x0101_27d4;
 /// `AEECLSID_FILEMGR`, do `AEECLSID_FILEMGR.bid` do SDK. No `AEEClassIDs.h` ele aparece só
 /// comentado, o que já me fez errar esse valor uma vez.
 const AEECLSID_FILEMGR: u32 = 0x0100_1003;
+/// A coleção genérica que a interface da Z-Wheel usa.
+///
+/// Não há header. O que identifica a classe é o pool de literais do módulo: a constante aparece
+/// vinte bytes antes de `Could not create root form`, e também no `Tectoy_Start` que instancia o
+/// "app history" e no `Tectoy_LaunchMainMenu` — três lugares sem nada em comum além de guardar
+/// itens.
+const AEECLSID_COLLECTION: u32 = 0x0100_104f;
+
 /// `AEECLSID_SQLMGR` — o gerenciador de bancos do console.
 ///
 /// O valor não veio de header nenhum: veio do log do próprio Z-Wheel, que imprime
@@ -1282,6 +1290,8 @@ pub struct Machine<C: CpuBackend> {
     /// ClassIDs que o jogo pediu e não sabemos criar — a lista do que falta.
     unknown_classes: BTreeSet<u32>,
     /// ClassIDs que o `--sonda` manda atender com um objeto de observação.
+    /// As coleções vivas, cada uma com os itens e onde o cursor está.
+    collections: HashMap<u32, (Vec<u32>, usize)>,
     /// Os bancos SQLite abertos, por objeto `ISQLDatabase`.
     databases: HashMap<u32, crate::sql::Database>,
     probe_classes: BTreeSet<u32>,
@@ -1505,6 +1515,7 @@ impl<C: CpuBackend> Machine<C> {
             heap,
             objects,
             unknown_classes: BTreeSet::new(),
+            collections: HashMap::new(),
             databases: HashMap::new(),
             probe_classes: BTreeSet::new(),
             probe_answers: HashMap::new(),
@@ -2297,6 +2308,10 @@ impl<C: CpuBackend> Machine<C> {
                 }
                 result
             }
+            (Interface::Collection, _) => match self.collection_call(slot)? {
+                Some(result) => result,
+                None => return Ok(None),
+            },
             (Interface::SqlMgr, _) | (Interface::SqlDatabase, _) => {
                 match self.sql_call(iface, slot)? {
                     Some(result) => result,
@@ -5986,6 +6001,69 @@ impl<C: CpuBackend> Machine<C> {
         Ok(())
     }
 
+    /// A coleção genérica da interface da Z-Wheel.
+    ///
+    /// O app a percorre como um cursor: `Reset` uma vez, e depois `GetCurrent`/`AtEnd` até o
+    /// fim. Enquanto o `AtEnd` respondia "ainda não" — que é o que a sonda fazia ao devolver
+    /// sucesso —, ele girava quinze milhões de vezes.
+    ///
+    /// Os slots sem nome ainda não apareceram; se aparecerem, o relatório avisa em vez de
+    /// fingir que foram atendidos. É por isso que eles não têm nome na tabela.
+    fn collection_call(&mut self, slot: u32) -> Result<Option<u32>, CpuError> {
+        let Some(name) = Interface::Collection.method(slot) else {
+            return Ok(None);
+        };
+        let this = self.cpu.read_reg(Reg::R0);
+        let a1 = self.cpu.read_reg(Reg::R1);
+        let result = match name {
+            "AddRef" => self.objects.add_ref(this),
+            "Release" => {
+                let restantes = self.objects.release(this);
+                if restantes == 0 {
+                    self.collections.remove(&this);
+                }
+                restantes
+            }
+            "Reset" => {
+                if let Some((_, cursor)) = self.collections.get_mut(&this) {
+                    *cursor = 0;
+                }
+                SUCCESS
+            }
+            // O fim é verdade quando o cursor passou do último item — e uma coleção que
+            // ninguém preencheu está no fim desde o começo.
+            "AtEnd" => {
+                let (itens, cursor) = self
+                    .collections
+                    .get(&this)
+                    .map(|(itens, cursor)| (itens.len(), *cursor))
+                    .unwrap_or((0, 0));
+                u32::from(cursor >= itens)
+            }
+            // O item corrente sai pelo ponteiro de saída, e o cursor anda. Sem item, `EFAILED`.
+            "GetCurrent" => {
+                let item = self.collections.get_mut(&this).and_then(|(itens, cursor)| {
+                    let item = itens.get(*cursor).copied();
+                    if item.is_some() {
+                        *cursor += 1;
+                    }
+                    item
+                });
+                match item {
+                    Some(item) => {
+                        if a1 != 0 {
+                            self.cpu.write_u32(a1, item)?;
+                        }
+                        SUCCESS
+                    }
+                    None => EFAILED,
+                }
+            }
+            _ => return Ok(None),
+        };
+        Ok(Some(result))
+    }
+
     /// `ISQLMgr` e `ISQLDatabase` — os bancos SQLite do console. Ver [`crate::sql`].
     ///
     /// A ordem dos slots não veio de header: veio da observação com o `--sonda`. O Z-Wheel cria
@@ -8615,6 +8693,7 @@ impl<C: CpuBackend> Machine<C> {
             AEECLSID_GL => Interface::GlLegacy,
             AEECLSID_MEDIAUTIL => Interface::MediaUtil,
             AEECLSID_WEB => Interface::Web,
+            AEECLSID_COLLECTION => Interface::Collection,
             AEECLSID_SQLMGR => Interface::SqlMgr,
             AEECLSID_MD5 => Interface::Hash,
             AEECLSID_CIPHER_FACTORY => Interface::CipherFactory,
@@ -8647,6 +8726,12 @@ impl<C: CpuBackend> Machine<C> {
             return Ok(ENOMEMORY);
         };
         self.cpu.write_u32(obj, loader::vtable_addr(iface))?;
+        // Uma coleção nasce vazia e com o cursor no começo. Sem esse registro ela não existiria
+        // para os métodos, e um `AtEnd` numa coleção desconhecida responderia "acabou" por
+        // acaso — a resposta certa pelo motivo errado.
+        if iface == Interface::Collection {
+            self.collections.insert(obj, (Vec::new(), 0));
+        }
         if out != 0 {
             self.cpu.write_u32(out, obj)?;
         }

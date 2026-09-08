@@ -87,6 +87,8 @@ pub enum Interface {
     SqlMgr = 36,
     /// Um banco aberto pelo [`Interface::SqlMgr`].
     SqlDatabase = 37,
+    /// A coleção genérica da Z-Wheel (`0x0100104f`): guarda itens e é percorrida.
+    Collection = 38,
     /// Objeto de uma classe que ainda não conhecemos, criado a pedido do `--sonda`.
     ///
     /// Não implementa interface nenhuma: existe para **descobrir qual é**. Toda chamada é
@@ -106,7 +108,7 @@ impl Interface {
     /// as duas coisas precisam concordar — daí a lista existir num lugar só, com teste que
     /// confere a correspondência. Quando elas divergiram, um objeto recebeu a vtable de outra
     /// interface e a chamada foi parar no método errado, com sintoma a quilômetros da causa.
-    pub const ALL: [Interface; 38] = [
+    pub const ALL: [Interface; 39] = [
         Self::Shell,
         Self::Module,
         Self::Applet,
@@ -145,6 +147,7 @@ impl Interface {
         Self::Probe,
         Self::SqlMgr,
         Self::SqlDatabase,
+        Self::Collection,
     ];
 
     /// Nome usado nos logs — casa com a nomenclatura do SDK.
@@ -186,6 +189,7 @@ impl Interface {
             Self::GlesImageonExt => "IGLESImageonExt",
             Self::SqlMgr => "ISQLMgr",
             Self::SqlDatabase => "ISQLDatabase",
+            Self::Collection => "IColecao",
             Self::Probe => "ClasseDesconhecida",
             Self::Helpers => "AEEHelpers",
         }
@@ -230,6 +234,7 @@ impl Interface {
             Self::GlesImageonExt => aee_slots::GLES_IMAGEON_EXT,
             Self::SqlMgr => aee_slots::SQL_MGR,
             Self::SqlDatabase => aee_slots::SQL_DATABASE,
+            Self::Collection => aee_slots::COLLECTION,
             // A sonda não tem tabela: `method` responde por ela antes de chegar aqui.
             Self::Probe => &[],
             Self::Helpers => aee_helpers::HELPERS,
@@ -290,6 +295,7 @@ impl Interface {
             35 => Self::Probe,
             36 => Self::SqlMgr,
             37 => Self::SqlDatabase,
+            38 => Self::Collection,
             6 => Self::Helpers,
             _ => return None,
         })

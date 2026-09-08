@@ -779,6 +779,23 @@ pub const SQL_MGR: &[&str] = &["AddRef", "Release", "slot2", "OpenDatabase"];
 /// diziam ser. A primeira instrução que o Z-Wheel manda é `PRAGMA integrity_check`.
 pub const SQL_DATABASE: &[&str] = &["AddRef", "Release", "slot2", "Exec"];
 
+/// Métodos da coleção genérica da Z-Wheel (`0x0102c4e8`… não: `0x0100104f`).
+///
+/// Sem header. Os nomes saíram do uso, observado com o `--sonda`: o app cria a coleção, chama o
+/// slot 5 uma vez e depois alterna o 7 e o 4 até o 4 dizer que acabou — a forma de um cursor.
+/// Os slots sem nome nunca foram chamados; deixá-los sem nome é o que faz uma chamada
+/// inesperada aparecer no relatório em vez de passar por implementada.
+pub const COLLECTION: &[&str] = &[
+    "AddRef",
+    "Release",
+    "slot2",
+    "slot3",
+    "AtEnd",
+    "Reset",
+    "slot6",
+    "GetCurrent",
+];
+
 /// Métodos de `IHash` (`AEECLSID_MD5`). Mesma situação do `IWeb`: sem header no 4.0.2.
 ///
 /// Os quatro depois do `IQI` são o conjunto que a API de resumo do BREW expõe. A ordem é
