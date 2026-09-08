@@ -50,8 +50,8 @@ impl AxisSource {
 
 /// Abaixo de quanto curso o analógico conta como parado.
 ///
-/// Sem isso um manche que não volta exatamente ao centro zeraria o eixo que o direcional
-/// digital acabou de escrever, e o jogo veria o controle oscilando sozinho.
+/// Sem isso um manche que não volta exatamente ao centro deixaria o eixo tremendo perto do
+/// zero, e o jogo veria o controle oscilando sozinho.
 const DEADZONE: f32 = 0.12;
 
 impl Source {

@@ -115,9 +115,18 @@ impl Pad {
 
     /// Aperta ou solta um botão.
     ///
-    /// Os quatro sentidos do direcional mexem também nos eixos `X` e `Y`: o console reporta o
-    /// direcional das duas formas, e cada jogo lê a que prefere — o Quake usa os botões, o
-    /// Crash usa os eixos.
+    /// O direcional **não** mexe nos eixos, e isto já foi diferente. Espelhá-lo nos dois canais
+    /// quebrava todo jogo que lê os dois: o Zeeboids consulta `GetNextButtonEvent` e
+    /// `GetPositionState` toda volta, e andava duas casas por toque.
+    ///
+    /// Tirar o direcional dos botões e deixá-lo só nos eixos, que foi a primeira tentativa,
+    /// piorou — e o motivo é o que fecha a questão. Um eixo tem de voltar ao centro quando se
+    /// solta a direção, e essa volta é uma segunda mudança de eixo: o jogo lê o `MAX -> 0` como
+    /// um passo no sentido contrário e desfaz o que acabou de fazer. Um direcional digital não
+    /// tem como ser um eixo sem esse efeito.
+    ///
+    /// Os eixos continuam existindo e são de quem tem manche de verdade — o `bindings.rs` liga
+    /// o analógico do controle de PC neles, sem passar por aqui.
     pub fn press(&mut self, index: usize, down: bool) {
         let bit = 1 << index;
         if down {
@@ -125,30 +134,9 @@ impl Pad {
         } else {
             self.buttons &= !bit;
         }
-        if DPAD.contains(&index) {
-            self.sync_axes();
-        }
-    }
-
-    /// Refaz os eixos `X` e `Y` a partir dos quatro sentidos do direcional.
-    ///
-    /// Segurar dois sentidos opostos ao mesmo tempo é o mesmo que não segurar nenhum, que é o
-    /// que um direcional físico faz.
-    fn sync_axes(&mut self) {
-        let value = |less: usize, more: usize| match (self.is_down(less), self.is_down(more)) {
-            (true, false) => AXIS_MIN,
-            (false, true) => AXIS_MAX,
-            _ => 0,
-        };
-        let [up, down, left, right] = DPAD;
-        let (x, y) = (value(left, right), value(up, down));
-        (self.axes[0], self.axes[1]) = (x, y);
     }
 
     /// Põe um eixo no valor dado, preso à faixa que o console reporta.
-    ///
-    /// Precisa vir **depois** dos botões: apertar um sentido do direcional refaz `X` e `Y` a
-    /// partir dele, e sobrescreveria um valor analógico posto antes.
     pub fn set_axis(&mut self, index: usize, value: i32) {
         if let Some(axis) = self.axes.get_mut(index) {
             *axis = value.clamp(AXIS_MIN, AXIS_MAX);
@@ -247,22 +235,24 @@ mod tests {
 
     #[test]
     fn o_direcional_mexe_no_botao_e_no_eixo() {
-        let [up, down, left, _right] = DPAD;
+        let [up, down, left, right] = DPAD;
         let mut pad = Pad::default();
 
+        // O direcional é botão, e só. Se ele também escrevesse nos eixos, soltar a direção
+        // mandaria o eixo de volta ao centro e um jogo que lê os dois canais desfaria o passo
+        // que acabou de dar — era o menu do Zeeboids voltando para a opção anterior.
         pad.press(left, true);
         assert!(pad.is_down(left));
-        assert_eq!(pad.axes[0], AXIS_MIN);
-        pad.press(left, false);
-        assert_eq!(pad.axes[0], 0);
-
-        // Sentidos opostos ao mesmo tempo se cancelam, como num direcional de verdade.
+        assert_eq!(pad.axes, [0; 4]);
         pad.press(up, true);
-        assert_eq!(pad.axes[1], AXIS_MIN);
         pad.press(down, true);
-        assert_eq!(pad.axes[1], 0);
-        pad.press(up, false);
-        assert_eq!(pad.axes[1], AXIS_MAX);
+        pad.press(left, false);
+        assert_eq!(pad.axes, [0; 4]);
+
+        // E o manche de verdade continua chegando aos eixos, sem passar pelos botões.
+        pad.set_axis(0, AXIS_MAX);
+        assert_eq!(pad.axes[0], AXIS_MAX);
+        assert!(!pad.is_down(right));
     }
 
     #[test]
@@ -292,11 +282,12 @@ mod tests {
         script.apply(1000 + Script::HOLD_MS, &mut pad);
         assert!(!pad.is_down(start));
 
-        // O direcional mexe no eixo junto, e a duração dada no roteiro vale.
+        // O direcional é botão, e a duração dada no roteiro vale.
+        let right = Pad::button_by_name("right").unwrap();
         script.apply(2000, &mut pad);
-        assert_eq!(pad.axes[0], AXIS_MAX);
+        assert!(pad.is_down(right));
         script.apply(2050, &mut pad);
-        assert_eq!(pad.axes[0], 0);
+        assert!(!pad.is_down(right));
 
         assert!(Script::parse("10:nao-existe").is_err());
         assert!(Script::parse("start").is_err());
