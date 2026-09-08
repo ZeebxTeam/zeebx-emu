@@ -1251,6 +1251,10 @@ pub struct Machine<C: CpuBackend> {
     /// Os bancos SQLite abertos, por objeto `ISQLDatabase`.
     databases: HashMap<u32, crate::sql::Database>,
     probe_classes: BTreeSet<u32>,
+    /// Respostas combinadas para slots de sonda: `(classe, slot) -> valor`.
+    probe_answers: HashMap<(u32, u32), u32>,
+    /// Que horas eram quando a máquina foi criada, em segundos da época do BREW.
+    epoch_seconds: u32,
     /// De qual classe é cada objeto-sonda vivo.
     probe_objects: HashMap<u32, u32>,
     /// O que foi chamado em cada sonda: `(classe, objeto, slot)` e os argumentos da primeira
@@ -1466,6 +1470,12 @@ impl<C: CpuBackend> Machine<C> {
             unknown_classes: BTreeSet::new(),
             databases: HashMap::new(),
             probe_classes: BTreeSet::new(),
+            probe_answers: HashMap::new(),
+            // 6 de janeiro de 1980 é a época do BREW; a do Unix é dez anos e seis dias antes.
+            epoch_seconds: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs().saturating_sub(315_964_800) as u32)
+                .unwrap_or(0),
             probe_objects: HashMap::new(),
             probe_log: Vec::new(),
             suspicious_objects: BTreeSet::new(),
@@ -5974,6 +5984,16 @@ impl<C: CpuBackend> Machine<C> {
         Ok(Some(result))
     }
 
+    /// O calendário do guest, em segundos desde 6 de janeiro de 1980 GMT.
+    ///
+    /// A data vem do relógio do host, capturada **uma vez** na criação da máquina, e daí em
+    /// diante anda com o relógio virtual. É o meio-termo entre as duas coisas que o projeto
+    /// quer: um jogo que pergunta a data recebe uma que existe, e o tempo que ele mede
+    /// continua sendo o virtual, sem depender de quanto o emulador demorou.
+    fn brew_seconds(&self) -> u32 {
+        self.epoch_seconds + self.elapsed_ms() / 1000
+    }
+
     /// Entrega um evento ao applet em execução, e devolve o que ele respondeu.
     ///
     /// Só há um applet aqui, então um `cls` que não seja o dele é evento para alguém que não
@@ -6153,6 +6173,11 @@ impl<C: CpuBackend> Machine<C> {
                 }
                 Ok(restantes)
             }
+            // Uma resposta combinada vem antes de tudo: é com ela que se sai de um laço em que
+            // o jogo espera "acabou" e a sonda insiste em dizer "deu certo".
+            _ if self.probe_answers.contains_key(&(clsid, slot)) => {
+                Ok(self.probe_answers[&(clsid, slot)])
+            }
             _ => {
                 // Um método que devolve objeto escreve o ponteiro num argumento de saída, e
                 // devolver `SUCCESS` sem escrever nada faz o jogo seguir com lixo e morrer no
@@ -6204,6 +6229,12 @@ impl<C: CpuBackend> Machine<C> {
     /// Manda atender estas classes com um objeto-sonda em vez de recusá-las.
     pub fn probe_classes(&mut self, classes: &[u32]) {
         self.probe_classes.extend(classes);
+    }
+
+    /// Combina a resposta de um slot de sonda, para explorar o outro lado de um desvio.
+    pub fn probe_answer(&mut self, clsid: u32, slot: u32, value: u32) {
+        self.probe_classes.insert(clsid);
+        self.probe_answers.insert((clsid, slot), value);
     }
 
     /// O que os jogos chamaram nas sondas, na ordem em que apareceu.
@@ -8236,8 +8267,12 @@ impl<C: CpuBackend> Machine<C> {
                 0 => self.cpu.read_u32(self.module.out_module + 4)?,
                 applet => applet,
             },
+            // `GETUPTIMEMS` é desde que o aparelho ligou; `GETTIMESECONDS` é o **calendário**,
+            // segundos desde 6 de janeiro de 1980. Responder o tempo ligado nos dois era dizer
+            // que hoje é o dia da estreia do console: o Z-Wheel calcula o alarme do "próximo
+            // dia" a partir daí e ficava girando — quinze milhões de voltas em dois métodos.
             "aee_GetTimeMS" | "aee_GetUpTimeMS" => self.elapsed_ms(),
-            "aee_GetSeconds" => self.elapsed_ms() / 1000,
+            "aee_GetSeconds" => self.brew_seconds(),
             // void GETJULIANDATE(uint32 dwSecs, JulianType *pDate)
             //
             // `dwSecs` é o relógio do BREW: segundos desde 6 de janeiro de 1980, GMT. Zero quer
@@ -8246,7 +8281,7 @@ impl<C: CpuBackend> Machine<C> {
             "aee_GetJulianDate" => {
                 // Helper não tem `this`: o primeiro argumento é o `r0`.
                 let segundos = match a0 {
-                    0 => self.elapsed_ms() / 1000,
+                    0 => self.brew_seconds(),
                     dado => dado,
                 };
                 if a1 != 0 {

@@ -102,6 +102,25 @@ fn main() -> ExitCode {
                 .flat_map(|lista| lista.split(','))
                 .filter_map(|n| u32::from_str_radix(n.trim().trim_start_matches("0x"), 16).ok())
                 .collect();
+            // `--sonda-resposta=0xCLSID:SLOT=VALOR` combina o que um slot de sonda responde.
+            // Sem isso não há como sair de um laço em que o jogo espera "acabou" — a sonda diz
+            // sucesso para sempre e ele nunca sai.
+            let probe_answers: Vec<(u32, u32, u32)> = args
+                .iter()
+                .filter_map(|a| a.strip_prefix("--sonda-resposta="))
+                .filter_map(|spec| {
+                    let (classe, resto) = spec.split_once(':')?;
+                    let (slot, valor) = resto.split_once('=')?;
+                    let numero = |t: &str| {
+                        let t = t.trim();
+                        match t.strip_prefix("0x") {
+                            Some(hex) => u32::from_str_radix(hex, 16).ok(),
+                            None => t.parse().ok(),
+                        }
+                    };
+                    Some((numero(classe)?, numero(slot)?, numero(valor)?))
+                })
+                .collect();
             let dump_heap = args.iter().any(|a| a == "--dump-heap");
             let dump_gl = args
                 .iter()
@@ -152,6 +171,7 @@ fn main() -> ExitCode {
                     watch,
                     dump_heap,
                     probe,
+                    probe_answers,
                     window,
                     keys,
                     trace_range,
@@ -257,6 +277,7 @@ struct Options {
     watch: Option<u32>,
     dump_heap: bool,
     probe: Vec<u32>,
+    probe_answers: Vec<(u32, u32, u32)>,
     window: bool,
     keys: input::Script,
     trace_range: Option<(u32, u32)>,
@@ -275,6 +296,7 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
         watch,
         dump_heap,
         probe,
+        probe_answers,
         window,
         keys,
         trace_range,
@@ -328,6 +350,9 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
     // Watchpoint de depuração: registra toda escrita na palavra pedida, com o PC de origem.
     if !probe.is_empty() {
         machine.probe_classes(&probe);
+    }
+    for (classe, slot, valor) in &probe_answers {
+        machine.probe_answer(*classe, *slot, *valor);
     }
     if profile {
         machine.cpu_mut().enable_profile();

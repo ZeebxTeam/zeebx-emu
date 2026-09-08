@@ -73,6 +73,17 @@ Dois métodos alternando quinze milhões de vezes: o app está num laço esperan
 a sonda não sabe dar. Sondar não o fez andar, fez ele girar — e sem o contador isso passaria por
 avanço.
 
+## Combinar a resposta de um slot
+
+`--sonda-resposta=0xCLSID:SLOT=VALOR` faz um slot responder o que se mandar, em vez de sucesso.
+Existe porque responder sucesso a tudo tem um custo simétrico ao benefício: o jogo anda mais,
+mas nunca chega ao fim de um laço em que ele espera ouvir "acabou".
+
+Foi o que separou hipótese de fato na interface da Z-Wheel. O laço de quinze milhões de voltas
+alterna dois métodos da classe `0x0100104f`; com o slot 4 respondendo qualquer coisa diferente
+de zero, o laço **acaba** e o app segue — o que prova que aquele slot é a condição, e não o
+outro. É informação que nenhuma quantidade de observação passiva daria.
+
 ## O que ela não faz
 
 A sonda não diz **o nome** do método, só o número do slot e o formato. Quem dá nome é o uso: uma

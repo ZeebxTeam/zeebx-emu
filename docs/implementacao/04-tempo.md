@@ -12,6 +12,20 @@ entrada, produz a mesma sequência de quadros, esteja o host ocupado ou não.
 
 `clock_us` é a parcela que **adiantamos**, e ela existe por dois motivos.
 
+## Uptime não é calendário
+
+O BREW tem duas perguntas de tempo, e elas não são a mesma:
+
+- `GETUPTIMEMS` — quanto tempo desde que o aparelho ligou.
+- `GETTIMESECONDS` e `GETJULIANDATE` — **que dia é hoje**, em segundos desde 6 de janeiro de
+  1980 GMT (a época do GPS, não a do Unix).
+
+Nós respondíamos o relógio virtual nas duas, o que equivale a dizer que hoje é o dia da estreia
+do console. Um jogo não nota; um aplicativo, sim. Hoje o calendário sai do relógio do host,
+capturado **uma vez** quando a máquina é criada, e daí em diante anda com o relógio virtual — um
+jogo que pergunta a data recebe uma que existe, e o tempo que ele *mede* continua sendo o
+virtual, sem depender de quanto o emulador demorou.
+
 ## Adiantar o tempo ocioso
 
 `skip_idle_time` — quando não há callback, thread, blit nem sinal pendente, o relógio salta para
