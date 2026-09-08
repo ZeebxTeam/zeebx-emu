@@ -97,10 +97,11 @@ Contexto técnico em [docs/](docs/README.md).
   77.208 triângulos de um quadro descartados por área nula, tela preta) e o Heavy Weapon repetia
   o quadro contra bitmaps 0×0 — seis segundos virtuais dele caíram de mais de cinco minutos para
   2,1 segundos. **49 dos 62 rodando**
-- **A tabela de UIDs dos eixos, conferida nos binários dos jogos** — o `X` trazia o UID do
-  `Button_3`, que não aparece em jogo nenhum: quem procurava o eixo horizontal não achava eixo, e
-  quem procurava o `Y` caía no `RZ`. Com os quatro UIDs certos o menu do Zeebo Sports Tênis anda
-  um item por toque e fica, em vez de voltar na soltura
+- **A tabela de UIDs dos eixos, agora conferida no arquivo do console** (`hid_devices.original.cfg`,
+  entrada `VID:0x1EAA:PID:0x0135`). Eu a tinha "consertado" antes por dedução dos binários dos
+  jogos, e estava errado: o `X` do controle do Zeebo vale mesmo `0x0106C40C`, o UID de um botão.
+  A esquisitice é do arquivo da TecToy, não nossa. Fica o método: **fonte primária ganha de
+  inferência**
 - `zeebx run <mod> --trace` — registro de cada chamada na ordem, com argumentos
 - **O Bejeweled Twist inicializa**: cria o applet, cria a classe do jogo e entra na
   inicialização, com 6993 alocações e 640 KB de heap em uso

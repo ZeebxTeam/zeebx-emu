@@ -41,26 +41,35 @@ Quem responde `GetAxesInfo` não devolve valores: devolve, em cada palavra, o **
 ocupa aquela palavra**. É assim que o jogo descobre onde está cada direção, e por isso a tabela
 de UIDs precisa estar certa — um UID errado não dá erro nenhum, o jogo só não acha o eixo.
 
-Os quatro UIDs foram conferidos nos binários dos jogos, procurando cada valor como literal:
+Os quatro UIDs são **transcrição literal** da entrada do controle do Zeebo
+(`VID:0x1EAA:PID:0x0135`) no `hid_devices.original.cfg` do console:
 
-| UID | jogos que o trazem |
-|---|---:|
-| `0x0106c4ce` (`X`) | 26 |
-| `0x0106c4cf` (`Y`) | 40 |
-| `0x0106c4d0` (`Z`) | 28 |
-| `0x0106c4d1` (`RZ`) | 27 |
-| `0x0106c40c` | **0** |
+```text
+AXIS:X:0x0106C40C
+AXIS:Y:0x0106C4D1
+AXIS:Z:0x0106C4CE
+AXIS:RZ:0x0106C4CF
+```
 
-Eles aparecem sempre **em pares dentro do mesmo pool de constantes** — `c4ce`/`c4cf` numa função
-e `c4d0`/`c4d1` noutra —, que é a cara de dois manches. O `0x0106c40c`, que já esteve na tabela
-no lugar do `X`, não aparece em jogo nenhum: é o UID do `Button_3`. Enquanto ele esteve ali, todo
-jogo que procurava o eixo horizontal não achava eixo nenhum, e quem procurava o `Y` caía no `RZ`,
-que é sempre zero sem manche analógico.
+O `X` valendo o UID do `Button_3` é esquisito, e a esquisitice é espelhada: o `BUTTON:3` da
+mesma entrada vale `0x0106C4D0`, que é UID de eixo. Parece uma troca no arquivo da TecToy — mas
+é o arquivo do console, e é o que os jogos viram quando foram feitos.
 
-O efeito visível era o menu do Zeebo Sports Tênis andando um item no aperto e **voltando na
-soltura**. Vale o registro de como a medição foi feita, porque ela vale para qualquer defeito de
-entrada: `--keys` roteia o toque em tempo virtual, `--dump-gl` grava os quadros, e a comparação
-é entre duas execuções idênticas do mesmo roteiro. Sem isso, "a seta não funciona" não vira dado.
+### O conserto que não era
+
+Vale registrar porque é um erro de método, não de código.
+
+Eu "consertei" o `X` uma vez, deduzindo dos binários dos jogos: os quatro valores `c4ce`, `c4cf`,
+`c4d0` e `c4d1` aparecem em dezenas de títulos, sempre em pares dentro do mesmo pool de
+constantes, o que é a cara de dois manches — e `0x0106c40c` não aparece em jogo nenhum. A
+conclusão foi que `X`/`Y` eram `c4ce`/`c4cf`.
+
+A dedução estava certa **para as outras entradas do arquivo**, as dos controles de PC, onde de
+fato `AXIS:X:0x0106c4d0` e `AXIS:Y:0x0106c4d1`. Para o controle do Zeebo, não. Era plausível,
+coerente e errada, e só caiu quando o arquivo apareceu.
+
+A lição: **fonte primária ganha de inferência**. Uma dedução bem construída a partir de evidência
+indireta pode explicar tudo o que se observou e ainda assim descrever outro aparelho.
 
 ### Quem lê o quê
 

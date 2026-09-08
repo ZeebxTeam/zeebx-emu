@@ -58,18 +58,27 @@ pub const BUTTON_NAMES: [&str; BUTTONS] = [
 
 /// UID de cada eixo: `X`, `Y`, `Z` e `RZ`.
 ///
-/// No controle do Zeebo o direcional é reportado como os eixos `X` e `Y` — é o que a linha
-/// `AXIS:X`/`AXIS:Y` do arquivo do console diz, e é o comportamento normal de um direcional
-/// digital em USB HID.
+/// Estes são **literalmente** os do `hid_devices.original.cfg` do console, na entrada do
+/// controle do Zeebo (`VID:0x1EAA:PID:0x0135`):
 ///
-/// A ordem foi conferida **nos binários dos jogos**, não só na transcrição do arquivo: os
-/// quatro valores aparecem como literais em 26 a 40 títulos cada, sempre em pares dentro do
-/// mesmo pool de constantes — `c4ce`/`c4cf` numa função e `c4d0`/`c4d1` noutra, que é a cara de
-/// dois manches. Nenhum jogo traz `0x0106_c40c`, que já esteve aqui no lugar do `X` e é, na
-/// verdade, o UID do `Button_3`. Com ele, todo jogo que procurava o eixo `X` não achava eixo
-/// nenhum — o horizontal ficava morto — e o que procurava o `Y` caía no `RZ`, sempre zero: o
-/// menu do Zeebo Sports Tênis andava um item no aperto e voltava na soltura.
-pub const AXIS_UIDS: [u32; 4] = [0x0106_c4ce, 0x0106_c4cf, 0x0106_c4d0, 0x0106_c4d1];
+/// ```text
+/// AXIS:X:0x0106C40C
+/// AXIS:Y:0x0106C4D1
+/// AXIS:Z:0x0106C4CE
+/// AXIS:RZ:0x0106C4CF
+/// ```
+///
+/// O `X` valendo o UID do `Button_3` é esquisito, e a mesma entrada tem a esquisitice espelhada
+/// — o `BUTTON:3` vale `0x0106C4D0`, que é UID de eixo. Parece uma troca no arquivo da TecToy.
+/// Mas é o arquivo do console, e é o que os jogos viram quando foram feitos: corrigir aqui é
+/// inventar um aparelho que não existiu.
+///
+/// Já tentei "consertar" isto uma vez, deduzindo dos binários dos jogos que `c4ce`/`c4cf` e
+/// `c4d0`/`c4d1` são pares de manche — o que é verdade nas outras entradas do arquivo, as dos
+/// controles de PC. Para o controle do Zeebo, não é. A dedução era plausível, coerente e
+/// errada, e só caiu quando o arquivo apareceu. **Fonte primária ganha de inferência**, e
+/// quando as duas discordam é a inferência que está errada.
+pub const AXIS_UIDS: [u32; 4] = [0x0106_c40c, 0x0106_c4d1, 0x0106_c4ce, 0x0106_c4cf];
 
 /// Nome de cada eixo, na ordem de [`Pad::axes`], para o mapeamento e a tela de configuração.
 pub const AXIS_NAMES: [&str; 4] = ["x", "y", "z", "rz"];
@@ -300,25 +309,15 @@ mod tests {
     }
 
     #[test]
-    fn nenhum_eixo_carrega_o_uid_de_um_botao() {
-        // O `X` já esteve com `0x0106_c40c`, que é o `Button_3`: o jogo procurava o eixo
-        // horizontal, não achava, e a direção ficava morta. Os quatro UIDs de eixo são
-        // consecutivos e nenhum deles é de botão.
+    fn os_eixos_sao_os_do_arquivo_do_console() {
+        // Transcrição literal da entrada `VID:0x1EAA:PID:0x0135` do
+        // `hid_devices.original.cfg`. O teste existe para que ninguém "conserte" a esquisitice
+        // do `X` de novo — eu já fiz isso, deduzindo dos binários dos jogos, e estava errado.
         assert_eq!(
             AXIS_UIDS,
-            [0x0106_c4ce, 0x0106_c4cf, 0x0106_c4d0, 0x0106_c4d1]
+            [0x0106_c40c, 0x0106_c4d1, 0x0106_c4ce, 0x0106_c4cf]
         );
-        for (i, uid) in AXIS_UIDS.iter().enumerate() {
-            assert_eq!(*uid, AXIS_UIDS[0] + i as u32);
-            // O índice 3 fica de fora: é a esquisitice já registrada em `BUTTON_UIDS`, um UID
-            // de eixo que o arquivo do console traz na lista de botões.
-            let botoes = BUTTON_UIDS.iter().enumerate().filter(|(j, _)| *j != 3);
-            assert!(
-                botoes.clone().all(|(_, b)| b != uid),
-                "o eixo {} carrega o UID de um botão: {uid:#010x}",
-                AXIS_NAMES[i]
-            );
-        }
+        assert_eq!(AXIS_NAMES, ["x", "y", "z", "rz"]);
     }
 
     #[test]

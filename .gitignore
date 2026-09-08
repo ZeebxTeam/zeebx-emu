@@ -31,3 +31,6 @@ module.bin
 # Servidores privados vivem em repositórios próprios, ao lado deste.
 zeeboids-server/
 OperaMini-Server/
+
+# Material do console (firmware, configs, pacotes do sistema) fica fora do repositório.
+vendor/
