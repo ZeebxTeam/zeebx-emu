@@ -5557,7 +5557,18 @@ impl<C: CpuBackend> Machine<C> {
             "QueryCipher" => SUCCESS,
             // int AddOpt(IWeb *, WebOpt *apWebOpt) — cabeçalhos, tempo limite e afins. Aceitar
             // não custa nada: quem decide o destino da requisição é o `GetResponse`.
-            "AddOpt" => SUCCESS,
+            //
+            // O `AddOptBuffer` é o slot 6, que no firmware monta um descritor na pilha e chama
+            // esta mesma função. Aceitar os dois é a mesma decisão.
+            "AddOpt" | "AddOptBuffer" => SUCCESS,
+            // Os slots do `IWeb` que a vtable do firmware mostra existir e que ainda não
+            // apareceram em uso. Responder sucesso os deixa aparecer no relatório de chamadas em
+            // vez de derrubar o jogo — que foi como o slot 6 foi encontrado.
+            "slot4" | "slot5" | "slot7" | "slot8" | "slot9" | "slot10" | "slot12"
+                if iface == Interface::Web =>
+            {
+                SUCCESS
+            }
             // int SetParam(ICipher1 *, int nId, const void *pParam, unsigned uParamLen)
             "SetParam" => {
                 let (id, param, len) = (

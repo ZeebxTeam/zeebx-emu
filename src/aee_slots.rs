@@ -757,13 +757,41 @@ pub const GL_LEGACY: &[&str] = &[
     "glViewport",
 ];
 
-/// Métodos de `IWeb`. O `AEEWeb.h` saiu do SDK 4.0.2 — a interface foi aposentada —, então a
-/// ordem veio do que o jogo chama: `IWeb` usa `DECLARE_IBASE`, com só `AddRef` e `Release`
-/// antes dos métodos próprios, e não `INHERIT_IQI`. O Boomerang Sports Dodgeball chama o slot
-/// 3 passando um ponteiro para um vetor na pilha e nada de útil nos outros registradores, que
-/// é a assinatura do `AddOpt(IWeb *, WebOpt *)` — pelo `IQI` esse slot seria o `GetResponse`,
-/// cujo segundo argumento é um ponteiro de saída, e ali vinha um endereço de trampolim.
-pub const WEB: &[&str] = &["AddRef", "Release", "GetResponse", "AddOpt"];
+/// Métodos de `IWeb`, lidos da vtable do firmware em `0x1087fde0`.
+///
+/// O `AEEWeb.h` saiu do SDK 4.0.2 — a interface foi aposentada —, e por muito tempo esta tabela
+/// teve quatro entradas deduzidas do uso. São **treze**, e a dedução errava o principal.
+///
+/// O que o firmware corrige:
+///
+/// - **O slot 2 é o `QueryInterface`**, não o `GetResponse`. A implementação aceita
+///   `0x01000001`, `0x01005004` e `0x01001031` e devolve o próprio objeto. Ou seja, `IWeb`
+///   segue o `IQI` como as outras interfaces, e a hipótese do `DECLARE_IBASE` estava errada.
+/// - **O slot 3 é mesmo o `AddOpt`**: `ldr r0,[r0,#0xc]; blx …`, repassando o ponteiro que
+///   recebe. Era a única das quatro deduções que estava certa, e o Boomerang a apoiava.
+/// - **O slot 6 é um atalho para o `AddOpt`.** Ele monta na pilha o descritor `{id, valor, 0}`
+///   e chama a mesma função do slot 3; antes disso confere um tamanho e devolve `0x1d` se
+///   estourar. É o que o Zeeboids chama ao sincronizar.
+/// - **O slot 11 é o `GetResponse`.** É o único trampolim de varargs da vtable: empilha
+///   `r0`–`r3`, aponta `r3` para o resto dos argumentos e desvia. Um método que recebe a URL
+///   seguida de uma lista de opções variável tem exatamente essa forma.
+///
+/// Os que continuam sem nome não apareceram em uso nem foram desmontados.
+pub const WEB: &[&str] = &[
+    "AddRef",
+    "Release",
+    "QueryInterface",
+    "AddOpt",
+    "slot4",
+    "slot5",
+    "AddOptBuffer",
+    "slot7",
+    "slot8",
+    "slot9",
+    "slot10",
+    "GetResponse",
+    "slot12",
+];
 
 /// Métodos de `ISQLMgr` (`AEECLSID_SQLMGR = 0x0102c4e8`), o gerenciador de bancos do console.
 ///
