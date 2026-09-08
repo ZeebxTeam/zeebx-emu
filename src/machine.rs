@@ -5420,10 +5420,14 @@ impl<C: CpuBackend> Machine<C> {
                 state.state
             }
             // int32 GetTotalTime(IMedia *) — a duração do som, em milissegundos.
-            (Interface::Media, "GetTotalTime") => self
-                .media_sound(this)?
-                .map(|sound| (sound.frames() as u64 * 1000 / u64::from(sound.rate.max(1))) as u32)
-                .unwrap_or(0),
+            //
+            // O som que toca em silêncio responde a duração dele como qualquer outro. Zero aqui
+            // é um divisor esperando acontecer: quem monta uma barra de progresso divide pelo
+            // total, e um total zero derruba o jogo por uma resposta nossa.
+            (Interface::Media, "GetTotalTime") => match self.media_sound(this)? {
+                Some(sound) => (sound.frames() as u64 * 1000 / u64::from(sound.rate.max(1))) as u32,
+                None => (self.media_silent_length(this)?.unwrap_or(0) / 1000) as u32,
+            },
             (Interface::Media, "GetMediaParm") => {
                 for index in [2, 3] {
                     let out = self.arg(index);
