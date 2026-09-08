@@ -310,6 +310,13 @@ impl Session {
     pub fn log(&self) -> Vec<String> {
         let mut linhas = Vec::new();
 
+        // A rede vem primeiro porque é o que se está caçando: quem abre a janela de log depois
+        // de mandar sincronizar quer ver o endereço que o jogo pediu, não rolar até o fim.
+        let urls = self.machine.web_requests();
+        if !urls.is_empty() {
+            linhas.push("— endereços que o jogo pediu pelo IWeb —".to_string());
+            linhas.extend(urls.iter().map(|url| format!("  {url}")));
+        }
         let classes = self.machine.unknown_classes();
         if !classes.is_empty() {
             linhas.push("— classes que o jogo pediu e não temos —".to_string());
