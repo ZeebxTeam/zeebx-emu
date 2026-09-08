@@ -47,7 +47,7 @@
   "debug.clock.value": "{mips} instr/s · relógio {clock}",
   "debug.hint": "Informação sobre a execução, sobreposta ao jogo. Serve para caçar problema.",
   "debug.log": "Janela de log da execução",
-  "debug.log.empty": "O jogo ainda não escreveu nada.",
+  "debug.log.empty": "Nada a registrar: este jogo não escreveu log e o emulador não tem queixa nenhuma sobre ele.",
   "debug.log.export": "Exportar .log",
   "debug.log.failed": "Não deu para salvar: {reason}",
   "debug.log.hint": "Abre em janela própria, com o que o jogo escreveu. Dá para exportar em .log.",

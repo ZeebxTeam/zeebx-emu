@@ -299,22 +299,51 @@ impl Session {
         self.machine.clock_ms()
     }
 
-    /// O log da execução: o que o jogo escreveu por `DBGPRINTF` e por semihosting do ARM.
+    /// O log da execução.
     ///
-    /// As repetições vêm agrupadas, que é como o emulador as guarda — um jogo que loga a mesma
-    /// linha por quadro encheria a janela sem dizer mais nada.
+    /// Junta o que o jogo escreveu com o que o emulador tem a dizer sobre ele. A parte do
+    /// emulador é a que quase sempre existe: a maioria dos jogos não usa `DBGPRINTF`, e uma
+    /// janela vazia não ajuda ninguém a entender o que está acontecendo.
+    ///
+    /// As repetições do log do jogo vêm agrupadas, que é como o emulador as guarda — um jogo
+    /// que escreve a mesma linha por quadro encheria a janela sem dizer mais nada.
     pub fn log(&self) -> Vec<String> {
-        let mut linhas: Vec<String> = self
-            .machine
-            .debug_output()
-            .iter()
-            .map(|(linha, vezes)| match vezes {
-                1 => linha.clone(),
-                n => format!("{linha}   ({n}x)"),
-            })
-            .collect();
+        let mut linhas = Vec::new();
+
+        let classes = self.machine.unknown_classes();
+        if !classes.is_empty() {
+            linhas.push("— classes que o jogo pediu e não temos —".to_string());
+            linhas.extend(classes.iter().map(|id| format!("  {id:#010x}")));
+        }
+        let arquivos = self.machine.missing_files();
+        if !arquivos.is_empty() {
+            linhas.push("— arquivos não encontrados —".to_string());
+            linhas.extend(arquivos.iter().map(|nome| format!("  {nome}")));
+        }
+        let hipoteses = self.machine.assumptions();
+        if !hipoteses.is_empty() {
+            linhas.push("— APIs atendidas por hipótese —".to_string());
+            linhas.extend(hipoteses.iter().map(|nota| format!("  {nota}")));
+        }
+        let ponteiros = self.machine.bad_pointers();
+        if !ponteiros.is_empty() {
+            linhas.push("— ponteiros recusados —".to_string());
+            linhas.extend(ponteiros.iter().map(|nota| format!("  {nota}")));
+        }
+
+        let jogo = self.machine.debug_output();
+        if !jogo.is_empty() {
+            linhas.push("— log do jogo —".to_string());
+            linhas.extend(jogo.iter().map(|(linha, vezes)| match vezes {
+                1 => format!("  {linha}"),
+                n => format!("  {linha}   ({n}x)"),
+            }));
+        }
         let semihosting = self.machine.cpu().semihosting();
-        linhas.extend(semihosting.lines().map(str::to_owned));
+        if !semihosting.trim().is_empty() {
+            linhas.push("— log por semihosting —".to_string());
+            linhas.extend(semihosting.lines().map(|linha| format!("  {linha}")));
+        }
         linhas
     }
 

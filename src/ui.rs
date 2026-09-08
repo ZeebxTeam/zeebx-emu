@@ -101,6 +101,8 @@ pub struct App {
     last_step: std::time::Instant,
     /// O que dizer sobre a última tentativa de exportar o log.
     log_status: Option<String>,
+    /// A janela de log foi fechada nesta execução. Zera ao abrir outro jogo.
+    log_dismissed: bool,
     /// Os controles de verdade ligados no computador.
     gamepads: gamepads::Gamepads,
     /// Qual botão do Zeebo está esperando uma tecla, na tela de controles.
@@ -156,6 +158,7 @@ impl App {
             paused: false,
             last_step: std::time::Instant::now(),
             log_status: None,
+            log_dismissed: false,
             gamepads: gamepads::Gamepads::default(),
             capturing: None,
             // Um desenho que não abre não pode impedir as configurações de abrir.
@@ -196,6 +199,8 @@ impl App {
         self.error = None;
         self.frame = None;
         self.paused = false;
+        self.log_dismissed = false;
+        self.log_status = None;
         match Session::start(&path) {
             Ok(mut session) => {
                 let audio = &self.settings.audio;
@@ -856,10 +861,12 @@ impl App {
         if exportar {
             self.log_status = Some(self.export_log(&linhas));
         }
+        // Fechar a janela dispensa o log **desta** execução, e não a preferência: quando o
+        // jogo termina, o egui pede o fecho das janelas filhas, e gravar isso desligava a
+        // opção sozinha — a janela abria uma vez e nunca mais.
         if close {
-            self.settings.debug.log = false;
+            self.log_dismissed = true;
             self.log_status = None;
-            self.save();
         }
     }
 
@@ -1098,7 +1105,7 @@ impl eframe::App for App {
         if self.session.is_some() {
             self.game_window(ctx);
             // A janela de log acompanha o jogo: só existe enquanto há execução para registrar.
-            if self.settings.debug.log {
+            if self.settings.debug.log && !self.log_dismissed {
                 self.log_window(ctx);
             }
         }

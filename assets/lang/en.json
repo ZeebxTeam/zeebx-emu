@@ -47,7 +47,7 @@
   "debug.clock.value": "{mips} instr/s · clock {clock}",
   "debug.hint": "Information about the run, drawn over the game. Meant for hunting problems.",
   "debug.log": "Run log window",
-  "debug.log.empty": "The game hasn't written anything yet.",
+  "debug.log.empty": "Nothing to report: this game wrote no log and the emulator has no complaints about it.",
   "debug.log.export": "Export .log",
   "debug.log.failed": "Could not save: {reason}",
   "debug.log.hint": "Opens in its own window, with what the game wrote. Can be exported as .log.",
