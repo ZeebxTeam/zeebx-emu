@@ -265,23 +265,16 @@ impl Player {
                 pad.press(index, true);
             }
         }
-        // O console reporta o direcional também como eixos, e alguns jogos leem só de lá.
-        let axis = |negative: usize, positive: usize| -> i32 {
-            match (pad.is_down(negative), pad.is_down(positive)) {
-                (true, false) => input::AXIS_MIN,
-                (false, true) => input::AXIS_MAX,
-                _ => 0,
-            }
-        };
-        let (x, y) = (
-            axis(input::DPAD[2], input::DPAD[3]),
-            axis(input::DPAD[0], input::DPAD[1]),
-        );
-        pad.axes[0] = x;
-        pad.axes[1] = y;
-
-        // O analógico entra por último e só quando está fora do centro: assim ele acrescenta
-        // curso ao que o direcional já escreveu, em vez de apagá-lo quando está em repouso.
+        // O direcional **não** escreve nos eixos. Isto já foi feito aqui, e era uma segunda
+        // cópia do mesmo espelhamento que o `Pad::press` fazia: tirar de lá consertou o caminho
+        // sem janela e deixou a interface intacta, porque é por aqui que ela monta o controle.
+        //
+        // O motivo de não fazer está medido no Zeeboids. O menu dele anda uma casa por toque
+        // quando o direcional é só botão, e volta para a opção anterior quando também é eixo —
+        // soltar a direção manda o eixo de volta ao centro, e essa volta é uma segunda mudança,
+        // que o jogo lê como um passo no sentido contrário.
+        //
+        // O analógico continua entrando, e só quando está fora do centro.
         for (index, name) in input::AXIS_NAMES.iter().enumerate() {
             let Some(source) = self.axes.get(*name) else {
                 continue;
@@ -402,16 +395,22 @@ mod tests {
     }
 
     #[test]
-    fn o_direcional_tambem_sai_pelos_eixos() {
-        // O console reporta o direcional como botões e como eixos, e há jogo que lê só os
-        // eixos — o menu do Quake é um deles.
+    fn o_direcional_nao_sai_pelos_eixos() {
+        // Ele é botão, e só. Enquanto era os dois, um jogo que lê os dois canais andava duas
+        // casas por toque: soltar a direção devolve o eixo ao centro, e essa volta é uma
+        // segunda mudança, que o jogo lê como um passo no sentido contrário.
+        //
+        // Este teste é a segunda metade de um conserto. A primeira tirou o espelhamento do
+        // `Pad::press`, e a interface continuou errada porque a cópia daqui ficou — é por aqui
+        // que ela monta o controle, e o caminho sem janela não passa por aqui.
         let player = Player::default();
+        let direita = Pad::button_by_name("right").unwrap();
         let pad = player.pad(|s| *s == Source::key("ArrowRight"), |_| None);
-        assert_eq!(pad.axes[0], input::AXIS_MAX);
+        assert!(pad.is_down(direita));
+        assert_eq!(pad.axes, [0; 4]);
         let pad = player.pad(|s| *s == Source::key("ArrowUp"), |_| None);
-        assert_eq!(pad.axes[1], input::AXIS_MIN);
-        // Sem nada apertado, o eixo fica no centro.
-        assert_eq!(player.pad(|_| false, |_| None).axes, [0, 0, 0, 0]);
+        assert_eq!(pad.axes, [0; 4]);
+        assert_eq!(player.pad(|_| false, |_| None).axes, [0; 4]);
     }
 
     #[test]
@@ -488,24 +487,25 @@ mod tests {
     }
 
     #[test]
-    fn o_analogico_em_repouso_nao_apaga_o_direcional() {
-        // Um manche que não volta exatamente ao centro zeraria o eixo que o direcional acabou
-        // de escrever, e o jogo veria o controle tremendo sozinho.
+    fn o_analogico_em_repouso_deixa_o_eixo_no_centro() {
+        // A zona morta existe para que um manche que não volta exatamente ao centro não deixe
+        // o eixo tremendo, e o jogo não veja o controle andando sozinho.
         let player = Player::with_gamepad("Meu Controle".into());
         let pad = player.pad(
             |source| *source == Source::key("ArrowRight"),
             |_| Some(0.05),
         );
-        assert_eq!(pad.axes[0], input::AXIS_MAX);
+        assert_eq!(pad.axes[0], 0);
     }
 
     #[test]
-    fn sem_controle_os_eixos_ficam_com_o_direcional() {
-        // O teclado não tem analógico, e o mapeamento de teclado não mapeia eixo nenhum.
+    fn sem_controle_os_eixos_ficam_no_centro() {
+        // O teclado não tem analógico, e o mapeamento de teclado não mapeia eixo nenhum: nem o
+        // valor devolvido pelo analógico chega aos eixos, porque não há origem ligada a eles.
         let player = Player::default();
         assert!(player.axes.is_empty());
         let pad = player.pad(|s| *s == Source::key("ArrowLeft"), |_| Some(1.0));
-        assert_eq!(pad.axes[0], input::AXIS_MIN);
+        assert_eq!(pad.axes, [0; 4]);
     }
 
     #[test]
