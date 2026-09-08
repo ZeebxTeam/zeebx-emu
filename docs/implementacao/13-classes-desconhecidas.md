@@ -131,6 +131,45 @@ A base não precisava de calibração nenhuma: o carregador mapeia o arquivo int
 `MODULE_BASE - MODULE_PREFIX` e preenche o prefixo com zeros, então o byte zero do arquivo é o
 endereço `0x10000`. Estava em `loader.rs` o tempo todo.
 
+## E quando a sonda não é mais o melhor caminho
+
+As classes que os aplicativos do Zeebo pedem são implementadas **dentro do firmware do console**
+— o `1.1.2_APPS.bin`, um ELF ARM de 21 MB. Não são módulos soltos no sistema de arquivos:
+procurados lá, não existem. O `0x01001011` aparece 26 vezes no firmware.
+
+Isso muda o instrumento. A sonda descobre um slot por execução, por hipótese e teste; no firmware
+a tabela de métodos **está escrita**. O `ferramentas/firmware.py` lê os segmentos do ELF, procura
+uma constante e desmonta em ARM ou Thumb.
+
+Duas armadilhas, as duas já pagas:
+
+**O firmware mistura ARM e Thumb**, e boa parte do código de aplicação é Thumb. Desmontar no modo
+errado dá uma sequência de `strb`/`movs` sem sentido — reconhecível.
+
+**Nem todo ponteiro numa tabela é código.** Uma tabela de pares `(ClassID, ponteiro)` parecia um
+registro de classes; os ponteiros eram strings de log do gravador de vídeo, e desmontá-las deu um
+código plausível e falso. O mesmo tipo de erro que a base de mapeamento errada produziu antes: a
+desmontagem quase nunca se recusa a produzir instruções, então "saiu código" não é confirmação de
+nada.
+
+O que **é** confirmação: código que faz sentido como interface. Este saiu do firmware e é um
+`QueryInterface` de manual — aceita o `AEEIID` base e mais dois, recusa o resto com o erro 3:
+
+```
+push  {lr}
+ldr   r3, =0x01000001      ; o IID base
+cmp   r1, r3
+beq   aceita
+ldr   r3, =0x01005002
+cmp   r1, r3
+beq   aceita
+adds  r3, r3, #2           ; 0x01005004
+cmp   r1, r3
+bne   recusa
+aceita:  str r0, [r2]; AddRef; devolve 0
+recusa:  [r2] = 0; devolve 3
+```
+
 ## O que ela não faz
 
 A sonda não diz **o nome** do método, só o número do slot e o formato. Quem dá nome é o uso: uma
