@@ -603,12 +603,20 @@ fazer o jogo abrir, e agora a maior parte do valor está em fazer bem o que já 
    Bejeweled Twist (já tem análise pronta na seção própria abaixo), Prey Evil (salta para um
    ponteiro de função nulo logo depois de chamadas GL) e Zuma's Revenge (`0x0000000c`). Caso a
    caso, com o `--watch` e o `--profile`
-6. **A interface da Z-Wheel**, agora com as classes identificadas pelo pool de literais do
-   binário: `0x01001011` é o formulário raiz, `0x0100104f` é uma coleção genérica (aparece na
-   configuração do formulário, no histórico do app e no `Tectoy_LaunchMainMenu`) e `0x01035156`
-   é a fonte TrueType. A sonda levou até onde o app **usa** os objetos: ele lê um campo do que
-   recebeu e chama o ponteiro que está lá, que é zero. Daí em diante é implementação, não
-   descoberta — e a fonte já existe (`font.rs`), falta a vtable de cada uma
+6. **A interface da Z-Wheel.** A coleção (`0x0100104f`) está implementada e o laço acabou.
+   Faltam `0x01001011` (formulário raiz), `0x01035156` (fonte TrueType), `0x01006c05`,
+   `0x01028e35` e `0x01028e51`. O que o desassemblador mostrou, e que muda o próximo passo:
+
+   - O `0x78b70`, onde ele parece morrer, é o **ramo de erro** — só carrega a mensagem e chama
+     o log. Quem devolve zero é a função em `0x83420`, que é um "esse arquivo existe?": ela cria
+     um `AEECLSID_FILEMGR` e chama o slot 7 (`Test`). O arquivo é
+     `fs:/~0x01070798/zeeboprefs.dat`, que **não vem no pacote** — era criado pelo console na
+     primeira execução. O módulo valida cabeçalho, ClassID e tamanho dele (as strings estão em
+     `Util_GetPrefs`), então dá para reconstruí-lo lendo o parser.
+   - A falha de verdade é antes: em `0x78af8` o app chama `0x4ed34` passando o `IShell` que
+     guarda em `[r4+0x20]`, e lá dentro o `ldr r1, [r0]` lê o endereço zero. Ou seja, **esse
+     campo está nulo** quando não deveria. Descobrir quem o preenche é o próximo degrau, e é
+     leitura de código, não tentativa
 7. **Os quatro que não criam o applet**: Zenonia pede `0x01003109`, que é do subsistema de texto
    dele (o log diz `CWBLText::Create() failed!`); o Opera Mini pede `0x0100102e`, que é de rede
    — o módulo dele traz `socket://zeebo-cust.opera-mini.net:1080/`; o Zeebo App pede

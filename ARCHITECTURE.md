@@ -186,6 +186,11 @@ chamada de API" escondia que o `IIMAGE_Draw` e o `IIMAGE_SetParm` do Pac-Mania s
 do despacho dele. O `--wall=SEGUNDOS` interrompe por tempo real,
 inclusive de dentro de uma fatia, e é o que torna possível perfilar um jogo que nunca termina.
 
+Fora do emulador há o `ferramentas/desmonta.py`, que desmonta um trecho do módulo do jogo
+resolvendo os literais e as strings. Ele responde a pergunta que nenhuma das ferramentas de dentro
+responde — **por que** o jogo desviou —, e a diferença é grande: "o app morre em `0x78b70`" e
+"`0x78b70` é o ramo de erro que só imprime a mensagem" são indistinguíveis sem ele.
+
 O `--sonda=0xCLSID` atende uma classe que não conhecemos com um objeto de observação, em vez de
 recusá-la, e diz no fim que slots o jogo chamou, com que argumentos e com que texto. É como se
 descobre que interface é uma classe sem ter o header — o `ISQLMgr` do console saiu daí inteiro,
