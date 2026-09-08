@@ -57,6 +57,9 @@ Contexto técnico em [docs/](docs/README.md).
 - Helpers implementados: `malloc`/`free`/`realloc` (com `ALLOC_NO_ZMEM`), `memmove`, `memset`,
   `memcmp`, `strlen`, `strcpy`, `strcat`, `strcmp`, `strncmp`, `wstrlen`, `sprintf`,
   `dbgprintf`, `GetAppInstance`, os helpers de tempo, `aee_GetRand`, `GetRAMFree`
+- **`ISHELL_SendEvent`, `IFILE_GetInfoEx` e `GETJULIANDATE`** — os três degraus seguintes da
+  Z-Wheel. Ela agora **cria o applet** e roda o `EVT_APP_START`: lê o banco, lê o `tectoy.cfg` e
+  para em "Could not create root form(20)", que é a classe `0x01001011` da interface dela
 - **`AEECLSID_SQLMGR` sobre SQLite de verdade** (`sql.rs`, com o `rusqlite` embutido) — a
   Z-Wheel abre `tt_prefs.db`, passa no `PRAGMA integrity_check`, lê a versão do banco e segue
   para o `tectoy.cfg`. O dialeto e o formato do arquivo já eram SQLite; o que faltava era a ponte
@@ -544,7 +547,8 @@ Os dezesseis que sobraram:
 - **Zeeboids**: `IHash::slot[4]`, a **única API faltando** em todas as 61 ROMs
 - **Action Hero 3D e Zenonia** não acham o `.mif` ao lado do módulo — problema nosso de layout de
   pacote, não do jogo
-- **Z-Wheel** passou do `AEECLSID_SQLMGR` (`0x0102c4e8`) e agora para no `ISHELL_SendEvent`. A
+- **Z-Wheel** cria o applet e roda o `EVT_APP_START`; para em `Could not create root form(20)`,
+  a classe `0x01001011` — a interface gráfica dela, que no BREW é a família de widgets. A
   vtable do `ISQLMgr` saiu da sonda, não de header nenhum, e o banco é SQLite de verdade. Vale
   saber o que ele é: não é um jogo, é o **aplicativo de loja do console** — catálogo, fila de
   download, pontos e telemetria. O `tectoy.cfg` do pacote traz o servidor em texto puro

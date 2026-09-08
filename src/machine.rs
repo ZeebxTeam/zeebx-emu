@@ -1077,6 +1077,45 @@ fn touches_whole_surface(name: &str) -> bool {
     )
 }
 
+/// Quebra os segundos do relógio do BREW num `JulianType`.
+///
+/// A struct é `{ wYear, wMonth, wDay, wHour, wMinute, wSecond, wWeekDay }`, sete `uint16`, de
+/// `AEEStdLib.h`. O mês e o dia começam em 1; o dia da semana começa em **domingo valendo 0**,
+/// que é a convenção do BREW.
+///
+/// A época é 6 de janeiro de 1980, GMT — a do GPS, não a do Unix. Errar isso desloca tudo em
+/// dez anos e o jogo mostra uma data que não existe.
+fn julian_date(segundos: u32) -> [u16; 7] {
+    const EPOCA_BREW_EM_DIAS_UNIX: i64 = 3657; // 1980-01-06 menos 1970-01-01
+    let dias = segundos as i64 / 86_400;
+    let resto = segundos as i64 % 86_400;
+    // Dia da semana: 6 de janeiro de 1980 foi um domingo, que é o zero do BREW.
+    let semana = (dias % 7) as u16;
+
+    // Contagem civil a partir dos dias desde a época Unix, pelo algoritmo de Howard Hinnant:
+    // desloca o ano para começar em março, o que faz fevereiro e o bissexto caírem no fim.
+    let z = dias + EPOCA_BREW_EM_DIAS_UNIX + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let ano = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let dia = (doy - (153 * mp + 2) / 5 + 1) as u16;
+    let mes = if mp < 10 { mp + 3 } else { mp - 9 } as u16;
+    let ano = (ano + i64::from(mes <= 2)) as u16;
+
+    [
+        ano,
+        mes,
+        dia,
+        (resto / 3600) as u16,
+        (resto % 3600 / 60) as u16,
+        (resto % 60) as u16,
+        semana,
+    ]
+}
+
 /// Corta `rect` pelo recorte. `None` quando não sobra nada para desenhar.
 fn clip_rect(clip: Option<Rect>, rect: Rect) -> Option<Rect> {
     let clip = clip?;
@@ -2042,6 +2081,27 @@ impl<C: CpuBackend> Machine<C> {
             (Interface::Shell, slot) if Interface::Shell.method(slot) == Some("FreeResData") => {
                 self.heap.free(self.cpu.read_reg(Reg::R1));
                 SUCCESS
+            }
+            // Entrega um evento a um applet. O Z-Wheel manda um para **ele mesmo** — a string
+            // dele diz o motivo: "SendEvent to get PrefsDB failed", ou seja, é assim que uma
+            // parte do app pede à outra o ponteiro do banco de preferências.
+            //
+            // A chamada observada tem a forma do `PostEventEx`: `r1` são sinalizadores (zero),
+            // `r2` é o ClassID e `r3` o evento. Como a forma de cinco argumentos do `SendEvent`
+            // põe o ClassID em `r1`, lemos as duas: quem manda é qual dos dois registradores
+            // traz o ClassID do applet que está rodando.
+            (Interface::Shell, slot) if Interface::Shell.method(slot) == Some("SendEvent") => {
+                let (a1, a2, a3) = (
+                    self.cpu.read_reg(Reg::R1),
+                    self.cpu.read_reg(Reg::R2),
+                    self.cpu.read_reg(Reg::R3),
+                );
+                let (cls, evt, w) = match a2 == self.applet_class {
+                    true => (a2, a3, self.stack_arg(0)? as u16),
+                    false => (a1, a2, a3 as u16),
+                };
+                let dw = self.stack_arg(1)?;
+                self.send_applet_event(cls, evt, w, dw)?
             }
             (Interface::Shell, slot) if Interface::Shell.method(slot) == Some("GetHandler") => {
                 let mime = self
@@ -3512,8 +3572,21 @@ impl<C: CpuBackend> Machine<C> {
                     None => EFAILED,
                 }
             }
+            // int GetInfoEx(IFile *, FileInfoEx *pInfo)
+            //
+            // Recusado de propósito. A `FileInfoEx` não está em header nenhum que tenhamos, e
+            // preencher com o formato do `FileInfo` foi pior que não responder: a struct que o
+            // Z-Wheel passa na pilha é menor, e o nome de arquivo transbordou por cima da
+            // variável vizinha — o app leu 0x6f6369d5 como tamanho, que é texto, e pediu 1,8 GB
+            // ao `malloc`. Enquanto não soubermos o formato, dizer "não sei" deixa o app
+            // escolher o caminho alternativo dele em vez de trabalhar com lixo.
+            "GetInfoEx" if iface == Interface::File => {
+                self.assumptions
+                    .insert("um IFILE_GetInfoEx foi recusado: não sabemos o formato do FileInfoEx");
+                EUNSUPPORTED
+            }
             // int GetInfo(IFile *, FileInfo *pInfo)
-            "GetInfo" => match self.open_files.get(&this) {
+            "GetInfo" if iface == Interface::File => match self.open_files.get(&this) {
                 Some(open) => {
                     let (path, meta) = (open.guest_path.clone(), open.file.metadata().ok());
                     match meta {
@@ -5901,6 +5974,40 @@ impl<C: CpuBackend> Machine<C> {
         Ok(Some(result))
     }
 
+    /// Entrega um evento ao applet em execução, e devolve o que ele respondeu.
+    ///
+    /// Só há um applet aqui, então um `cls` que não seja o dele é evento para alguém que não
+    /// existe — e a resposta certa nesse caso é "ninguém tratou", que é o que o BREW responde.
+    ///
+    /// Chamar o guest daqui é reentrância, com o mesmo cuidado do `qsort` e da entrega de
+    /// linhas de SQL: salva os registradores, respeita o teto de aninhamento, devolve tudo.
+    fn send_applet_event(&mut self, cls: u32, evt: u32, w: u16, dw: u32) -> Result<u32, CpuError> {
+        let applet = self.current_applet;
+        if applet == 0 || (cls != 0 && cls != self.applet_class) {
+            return Ok(FALSE);
+        }
+        if self.nesting >= MAX_NESTING {
+            self.assumptions
+                .insert("um evento de applet não foi entregue por aninhamento profundo");
+            return Ok(FALSE);
+        }
+        let vtable = self.cpu.read_u32(applet)?;
+        let handle_event = self.cpu.read_u32(vtable + 2 * 4)?;
+        let saved = SAVED_REGS.map(|reg| self.cpu.read_reg(reg));
+        self.nesting += 1;
+        let outcome = self.call_guest(handle_event, [applet, evt, u32::from(w), dw], QSORT_BUDGET);
+        self.nesting -= 1;
+        for (reg, value) in SAVED_REGS.iter().zip(saved) {
+            self.cpu.write_reg(*reg, value);
+        }
+        Ok(match outcome? {
+            Outcome::Returned { code } => code,
+            // Um tratador que se perde não derruba quem mandou o evento: para ele, ninguém
+            // tratou.
+            _ => FALSE,
+        })
+    }
+
     /// Entrega as linhas ao callback do jogo, uma chamada por linha.
     ///
     /// É a forma do `sqlite3_exec`: `callback(contexto, nColunas, azValores, azNomes)`, com os
@@ -8127,6 +8234,26 @@ impl<C: CpuBackend> Machine<C> {
             },
             "aee_GetTimeMS" | "aee_GetUpTimeMS" => self.elapsed_ms(),
             "aee_GetSeconds" => self.elapsed_ms() / 1000,
+            // void GETJULIANDATE(uint32 dwSecs, JulianType *pDate)
+            //
+            // `dwSecs` é o relógio do BREW: segundos desde 6 de janeiro de 1980, GMT. Zero quer
+            // dizer "agora", e o nosso agora é o relógio virtual — o mesmo que responde ao
+            // `GetSeconds`, para que as duas contas nunca se contradigam.
+            "aee_GetJulianDate" => {
+                // Helper não tem `this`: o primeiro argumento é o `r0`.
+                let segundos = match a0 {
+                    0 => self.elapsed_ms() / 1000,
+                    dado => dado,
+                };
+                if a1 != 0 {
+                    let data = julian_date(segundos);
+                    for (i, campo) in data.iter().enumerate() {
+                        self.cpu
+                            .write_mem(a1 + i as u32 * 2, &campo.to_le_bytes())?;
+                    }
+                }
+                SUCCESS
+            }
             // Gerador simples e determinístico: repetir a mesma sessão tem que dar o mesmo
             // resultado, senão depurar jogo com aleatoriedade vira loteria.
             "aee_GetRand" => {
@@ -8894,6 +9021,25 @@ mod tests {
             [decoder, bitmap_out, 0, 0],
         );
         assert_eq!(machine.cpu.read_u32(bitmap_out).unwrap(), bitmap);
+    }
+
+    #[test]
+    fn a_data_juliana_conta_da_epoca_do_brew() {
+        // Zero é o próprio instante da época: 6 de janeiro de 1980, um domingo.
+        assert_eq!(julian_date(0), [1980, 1, 6, 0, 0, 0, 0]);
+        // Um dia depois, segunda-feira.
+        assert_eq!(julian_date(86_400), [1980, 1, 7, 0, 0, 0, 1]);
+        // A hora do dia sai do resto, e o dia da semana dá a volta em sete.
+        assert_eq!(
+            julian_date(86_400 * 7 + 3600 * 13 + 60 * 24 + 35),
+            [1980, 1, 13, 13, 24, 35, 0]
+        );
+        // Fim de fevereiro num ano bissexto, que é onde uma contagem ingênua erra.
+        assert_eq!(julian_date(86_400 * 54), [1980, 2, 29, 0, 0, 0, 5]);
+        assert_eq!(julian_date(86_400 * 55), [1980, 3, 1, 0, 0, 0, 6]);
+        // E a virada de século: 2000 foi bissexto, o que 1900 não seria.
+        assert_eq!(julian_date(86_400 * 7300), [2000, 1, 1, 0, 0, 0, 6]);
+        assert_eq!(julian_date(86_400 * 7361), [2000, 3, 2, 0, 0, 0, 4]);
     }
 
     #[test]
