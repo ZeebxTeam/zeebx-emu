@@ -20,6 +20,14 @@ import sys
 # tudo o que este arquivo faz.
 BLOCO = 0x20000
 
+# O dump vem em dois arquivos. O `1.1.2.bin` é só a área de dados; o `1.1.2_spare.bin` é a mesma
+# coisa **intercalada** com a área fora de banda, em setores de 512 mais 16. Conferido: os 512
+# primeiros bytes de cada setor do intercalado batem com o arquivo de dados.
+#
+# A OOB, porém, só tem ECC: os seis últimos bytes de cada setor são `0xff`. Não há ali número de
+# arquivo nem de página lógica, então o mapa do EFS2 é interno, e não da NAND.
+SETOR, FORA_DE_BANDA = 512, 16
+
 
 def particoes(data):
     """As partições, lidas da MIBIB. Devolve `nome -> (offset, tamanho)`."""
@@ -57,7 +65,17 @@ def entradas_de_diretorio(data, at, quantas=200):
     com o primeiro campo variando pouco entre arquivos do mesmo diretório. Tem cara de número de
     inode com um grupo, mas isso é leitura de padrão, não certeza.
 
-    Sem decifrá-la não dá para montar o conteúdo, porque o EFS2 **não guarda arquivo contíguo**:
+    **A `ref` é índice numa tabela de páginas.** O EFS2APPS tem regiões que são vetores planos de
+    `u32`, um por página lógica, e `tabela[ref + n]` é a página física do n-ésimo pedaço de 2 KB
+    do arquivo. Confirmado com a `tectoy.ttf`: a lista de páginas dela, obtida casando o conteúdo
+    de uma cópia conhecida, aparece literalmente em `0x4c23104`, e a base que isso implica leva
+    do `ref` dela direto para a página com o cabeçalho TrueType.
+
+    O que falta é achar a **geração corrente** da tabela para cada `ref`. O sistema é
+    log-estruturado e guarda várias versões: a base deduzida da `tectoy.ttf` serve para ela e não
+    para o `tt_prefs.db`, cuja entrada naquela cópia está livre (`0xfffffff4`).
+
+    Sem isso não dá para montar o conteúdo, porque o EFS2 **não guarda arquivo contíguo**:
     conferido contra uma cópia conhecida da `tectoy.ttf`, ele bate exatamente 16.384 bytes e
     depois pula. Os pedaços seguintes aparecem com passos irregulares — `+0x4800`, `+0x5000`,
     `+0x10000` —, então há metadado intercalado e não um passo fixo que se possa deduzir.

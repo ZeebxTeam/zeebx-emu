@@ -146,3 +146,28 @@ console —, mas reordena a fila: antes de reimplementar um toolkit de interface
 O que falta para isso é extrair os arquivos da NAND. Ela usa EFS2, o sistema de arquivos da
 Qualcomm, e os `.mod` não aparecem como blocos contíguos com o cabeçalho `BREW` — só as strings
 de caminho, dentro do firmware. Extrair pede um leitor de EFS2, e é a próxima tarefa desse fio.
+
+## Onde os módulos de extensão realmente estão
+
+A conclusão anterior — "as classes de interface são módulos que dá para carregar" — estava certa
+sobre a natureza e errada sobre a localização. Procurados no sistema de arquivos do dump, os
+`.mod` não estão lá: nenhuma página do `EFS2APPS` tem cabeçalho de módulo BREW, e o nome
+`widgets.mod` aparece uma vez só na imagem inteira, dentro da tabela de strings do firmware.
+
+Eles estão **dentro do `1.1.2_APPS.bin`**, o ELF ARM de 21 MB. Os cinco ClassIDs que a Z-Wheel
+pede estão todos ali:
+
+| Classe | Ocorrências no firmware | O que é |
+|---|---:|---|
+| `0x01001011` | 26 | formulário raiz |
+| `0x0100104f` | 3 | a coleção |
+| `0x01035156` | 3 | a fonte TrueType |
+| `0x01028e51` | 4 | ainda sem nome |
+| `0x0102c4e8` | 3 | o `SQLMGR` |
+
+Isso troca "carregar o módulo do console" por outra coisa, mais trabalhosa e mais confiável:
+**desmontar o firmware para ler as vtables**. O `ferramentas/desmonta.py` já faz isso, e a
+diferença é que ali não há dedução — a tabela de métodos está escrita.
+
+É o caminho que substitui a sonda: em vez de descobrir um slot por execução, ler a vtable inteira
+de uma vez.
