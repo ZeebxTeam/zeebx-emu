@@ -25,5 +25,10 @@ unicorn-engine = "2.1.5"
 # Só leitura de zip: `deflate` cobre o que os empacotadores usam.
 zip = { version = "2", default-features = false, features = ["deflate"] }
 resvg = { version = "0.48.1", default-features = false }
+# O `AEECLSID_SQLMGR` do console é SQLite de verdade: os `.db` que a Z-Wheel traz no pacote
+# começam com "SQLite format 3", e as consultas dela usam `INSERT OR REPLACE`, `COLLATE NOCASE`
+# e JOIN. Reimplementar isso seria reinventar mal. A build é embutida para não depender de
+# biblioteca do sistema, e a toolchain C já é necessária por causa do unicorn.
+rusqlite = { version = "0.37", features = ["bundled"] }
 # Só o JPEG dos ícones de `.mif`. O resto da decodificação de imagem é nossa.
 zune-jpeg = { version = "0.5.15", default-features = false, features = ["std"] }

@@ -32,6 +32,7 @@ mod rasterizer;
 mod resfile;
 mod session;
 mod settings;
+mod sql;
 mod ui;
 mod vfs;
 mod wav;
@@ -93,6 +94,14 @@ fn main() -> ExitCode {
                 .iter()
                 .find_map(|a| a.strip_prefix("--watch="))
                 .and_then(|n| u32::from_str_radix(n.trim_start_matches("0x"), 16).ok());
+            // `--sonda=0xCLSID[,0xCLSID...]` atende classes desconhecidas com um objeto de
+            // observação, em vez de recusá-las, e diz no fim o que o jogo chamou nele.
+            let probe: Vec<u32> = args
+                .iter()
+                .filter_map(|a| a.strip_prefix("--sonda="))
+                .flat_map(|lista| lista.split(','))
+                .filter_map(|n| u32::from_str_radix(n.trim().trim_start_matches("0x"), 16).ok())
+                .collect();
             let dump_heap = args.iter().any(|a| a == "--dump-heap");
             let dump_gl = args
                 .iter()
@@ -142,6 +151,7 @@ fn main() -> ExitCode {
                     seconds,
                     watch,
                     dump_heap,
+                    probe,
                     window,
                     keys,
                     trace_range,
@@ -162,7 +172,7 @@ fn main() -> ExitCode {
                              [--dump-gl=DIR] [--dump-audio=ARQUIVO.wav]
                              [--trace[=trecho]] [--watch=0xADDR] [--dump-heap]
                              [--code=0xINI:0xFIM] [--frames=N]
-                             [--profile] [--wall=SEGUNDOS]"
+                             [--profile] [--wall=SEGUNDOS] [--sonda=0xCLSID,...]"
             );
             ExitCode::FAILURE
         }
@@ -246,6 +256,7 @@ struct Options {
     seconds: Option<u32>,
     watch: Option<u32>,
     dump_heap: bool,
+    probe: Vec<u32>,
     window: bool,
     keys: input::Script,
     trace_range: Option<(u32, u32)>,
@@ -263,6 +274,7 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
         seconds,
         watch,
         dump_heap,
+        probe,
         window,
         keys,
         trace_range,
@@ -314,6 +326,9 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
         machine.cpu_mut().trace_code(begin, end, TRACE_STEPS)?;
     }
     // Watchpoint de depuração: registra toda escrita na palavra pedida, com o PC de origem.
+    if !probe.is_empty() {
+        machine.probe_classes(&probe);
+    }
     if profile {
         machine.cpu_mut().enable_profile();
         machine.enable_api_profile();
@@ -516,6 +531,27 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
             print!(" {clsid:#010x}");
         }
         println!();
+    }
+    let sonda = machine.probe_log();
+    if !sonda.is_empty() {
+        println!("sonda:     o que os jogos chamaram nas classes atendidas por observação");
+        let mut objeto_atual = 0;
+        for (clsid, objeto, slot, args, textos) in sonda {
+            if *objeto != objeto_atual {
+                objeto_atual = *objeto;
+                println!("  classe {clsid:#010x}, objeto {objeto:#x}:");
+            }
+            let mostrar = |i: usize| match &textos[i] {
+                Some(texto) => format!("{texto:?}"),
+                None => format!("{:#x}", args[i]),
+            };
+            println!(
+                "    slot[{slot:>2}] ({}, {}, {})",
+                mostrar(1),
+                mostrar(2),
+                mostrar(3)
+            );
+        }
     }
     let log = machine.call_log();
     if !log.is_empty() {

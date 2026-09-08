@@ -765,6 +765,20 @@ pub const GL_LEGACY: &[&str] = &[
 /// cujo segundo argumento é um ponteiro de saída, e ali vinha um endereço de trampolim.
 pub const WEB: &[&str] = &["AddRef", "Release", "GetResponse", "AddOpt"];
 
+/// Métodos de `ISQLMgr` (`AEECLSID_SQLMGR = 0x0102c4e8`), o gerenciador de bancos do console.
+///
+/// Não há header: a ordem veio da observação com o `--sonda`. O Z-Wheel cria o objeto e chama o
+/// slot 3 com o nome do arquivo e um ponteiro de saída — `"tt_prefs.db"` e o endereço onde ele
+/// espera o banco. Os slots 2 e 4 em diante ainda não apareceram, e por isso não têm nome.
+pub const SQL_MGR: &[&str] = &["AddRef", "Release", "slot2", "OpenDatabase"];
+
+/// Métodos de `ISQLDatabase`, o banco que o [`SQL_MGR`] devolve.
+///
+/// Mesma origem, mesma ressalva. O slot 3 recebe a instrução SQL, um ponteiro de função e um
+/// contexto — a forma do `sqlite3_exec`, que é o que o dialeto e os arquivos do console já
+/// diziam ser. A primeira instrução que o Z-Wheel manda é `PRAGMA integrity_check`.
+pub const SQL_DATABASE: &[&str] = &["AddRef", "Release", "slot2", "Exec"];
+
 /// Métodos de `IHash` (`AEECLSID_MD5`). Mesma situação do `IWeb`: sem header no 4.0.2.
 ///
 /// Os quatro depois do `IQI` são o conjunto que a API de resumo do BREW expõe. A ordem é

@@ -57,6 +57,14 @@ Contexto técnico em [docs/](docs/README.md).
 - Helpers implementados: `malloc`/`free`/`realloc` (com `ALLOC_NO_ZMEM`), `memmove`, `memset`,
   `memcmp`, `strlen`, `strcpy`, `strcat`, `strcmp`, `strncmp`, `wstrlen`, `sprintf`,
   `dbgprintf`, `GetAppInstance`, os helpers de tempo, `aee_GetRand`, `GetRAMFree`
+- **`AEECLSID_SQLMGR` sobre SQLite de verdade** (`sql.rs`, com o `rusqlite` embutido) — a
+  Z-Wheel abre `tt_prefs.db`, passa no `PRAGMA integrity_check`, lê a versão do banco e segue
+  para o `tectoy.cfg`. O dialeto e o formato do arquivo já eram SQLite; o que faltava era a ponte
+- **`--sonda=0xCLSID`**, para descobrir que interface é uma classe sem header: ela responde
+  sucesso, entrega objetos-filho nos ponteiros de saída e lê o texto dos argumentos. O `ISQLMgr`
+  inteiro saiu de uma execução. Ver
+  [13-classes-desconhecidas.md](docs/implementacao/13-classes-desconhecidas.md)
+- **`IDisplay::Clone`**, uma cópia de verdade do objeto de tela
 - **O recorte dentro do `IIMAGE_Draw`** — ele percorria a imagem inteira e conferia pixel a
   pixel. O Pac-Mania desenha a folha de fontes inteira e aperta o recorte para mostrar uma
   letra: 20 mil chamadas liam 3,9 bilhões de pixels para pôr 315 mil na tela, e o que o jogo
@@ -536,10 +544,12 @@ Os dezesseis que sobraram:
 - **Zeeboids**: `IHash::slot[4]`, a **única API faltando** em todas as 61 ROMs
 - **Action Hero 3D e Zenonia** não acham o `.mif` ao lado do módulo — problema nosso de layout de
   pacote, não do jogo
-- **Z-Wheel** segue no `AEECLSID_SQLMGR` (`0x0102c4e8`). O `ISQLMgr` é a API antiga de banco do
-  BREW (o `deprecated_replacements.htm` do SDK a aponta para `dbc_IFactory`), e o SDK 4.0.2 não
-  traz mais o header dela — a vtable teria de sair de engenharia reversa do binário. Do lado do
-  conteúdo, o `doom_insert.sql` do dump mostra o formato: tabelas `GAMEINFO` e `TITLETEXT`
+- **Z-Wheel** passou do `AEECLSID_SQLMGR` (`0x0102c4e8`) e agora para no `ISHELL_SendEvent`. A
+  vtable do `ISQLMgr` saiu da sonda, não de header nenhum, e o banco é SQLite de verdade. Vale
+  saber o que ele é: não é um jogo, é o **aplicativo de loja do console** — catálogo, fila de
+  download, pontos e telemetria. O `tectoy.cfg` do pacote traz o servidor em texto puro
+  (`credit_server_url=https://aquila.tectoy.com.br:8443/WSM/wsm?wsdl`), o que faz dele o alvo
+  natural de um servidor privado: basta apontar a linha para outro lugar
 - **Zeebo App** (`0x01028e51`), **Zeebo Channels** (`0x0100102e`), **Tork and Kral** e
   **Need For Speed Carbon**: param antes de criar o applet, os dois últimos sem classe
   desconhecida e sem causa levantada
@@ -583,10 +593,10 @@ fazer o jogo abrir, e agora a maior parte do valor está em fazer bem o que já 
    Bejeweled Twist (já tem análise pronta na seção própria abaixo), Prey Evil (salta para um
    ponteiro de função nulo logo depois de chamadas GL) e Zuma's Revenge (`0x0000000c`). Caso a
    caso, com o `--watch` e o `--profile`
-6. **Os cinco que não criam o applet**: Zenonia pede `0x01003109`, que é do subsistema de texto
+6. **Os quatro que não criam o applet**: Zenonia pede `0x01003109`, que é do subsistema de texto
    dele (o log diz `CWBLText::Create() failed!`); o Opera Mini pede `0x0100102e`, que é de rede
    — o módulo dele traz `socket://zeebo-cust.opera-mini.net:1080/`; o Zeebo App pede
-   `0x01028e51`; o Z-Wheel segue no `AEECLSID_SQLMGR`; o Need For Speed Carbon não pede classe
+   `0x01028e51`; o Z-Wheel passou do SQL e agora para no `ISHELL_SendEvent`; o Need For Speed Carbon não pede classe
    nenhuma e não tem causa levantada
 7. **A superfície inteira é sincronizada em chamada que não desenha.** Toda chamada de
    `IImage` copia os pixels publicados para o guest e de volta, inclusive o `SetParm`, que não
@@ -619,10 +629,12 @@ fazer o jogo abrir, e agora a maior parte do valor está em fazer bem o que já 
     delas, todos recebem `ECLASSNOTSUPPORT` e seguem pelo caminho alternativo. Vêm do
     `GLES_ext.c` do SDK, ao lado das extensões que já temos. O que falta saber é se alguma muda
     o que aparece na tela, e isso se descobre olhando o desenho
-12. **`AEECLSID_SQLMGR`** e um motor de SQL mínimo atrás dele: um jogo só, o Z-Wheel
-13. **Rede**, para o Opera Mini. Faria ele abrir, não funcionar: o `zeebo-cust.opera-mini.net`
-    saiu do ar com os servidores da TecToy. Envolve dar acesso à rede a um binário de origem
-    externa, então é decisão de projeto antes de ser tarefa
+12. **Rede** — `INetMgr` e `ISocket`. É o que a Z-Wheel usa para falar com o servidor da loja
+    e o que um servidor privado de rankings vai precisar. Envolve dar acesso à rede a um binário
+    de origem externa, então o desvio de host:port fica na configuração, e não no jogo. O Opera
+    Mini depende disso também, mas navegar de verdade exigiria reimplementar o servidor da
+    Opera: ele é um terminal burro, quem interpreta HTML e faz o layout é o proxy, que devolve
+    OBML por um canal cifrado
 
 ## O `resources.dat` do Bejeweled Twist
 

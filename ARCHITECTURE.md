@@ -85,6 +85,7 @@ API do BREW:
 | `objects.rs`, `heap.rs` | Objetos com contagem de referências, e o heap do guest |
 | `cformat.rs` | O `printf` do guest |
 | `crypto.rs` | AES e MD5, para o `ICipher1` e o `IHash` |
+| `sql.rs` | Os bancos SQLite do `ISQLMgr`, sobre o `rusqlite` |
 
 Saída:
 
@@ -151,6 +152,11 @@ O `unicorn-engine` é o núcleo ARM, atrás do `CpuBackend`. O `eframe` com o `e
 e o `minifb` é a janela do modo `--window`, que é separada dela. O `cpal` só põe som na placa; a
 decodificação é nossa. O `gilrs` dá controles de verdade nos três sistemas.
 
+O `rusqlite`, com a build embutida, atende o `AEECLSID_SQLMGR`. Não é conveniência: o console
+usava SQLite mesmo — o `tt_prefs.db` que a Z-Wheel traz no pacote começa com `SQLite format 3`, e
+as instruções que o módulo carrega em texto usam `INSERT OR REPLACE`, `COLLATE NOCASE` e JOIN.
+Escrever um motor para isso seria reinventar mal.
+
 O `flate2` faz o inflate do `IUnzipAStream` do BREW. O `zip` entra só para leitura e só com
 `deflate`, que é o que os empacotadores usam. O `png`, o `zune-jpeg` e o `resvg` cobrem os
 formatos que os `.mif` e os recursos trazem. O `rfd` é só o seletor de pastas, por `xdg-portal`
@@ -174,6 +180,12 @@ cada método de API que o emulador atendeu. O segundo existe porque a média men
 chamada de API" escondia que o `IIMAGE_Draw` e o `IIMAGE_SetParm` do Pac-Mania sozinhos eram 99%
 do despacho dele. O `--wall=SEGUNDOS` interrompe por tempo real,
 inclusive de dentro de uma fatia, e é o que torna possível perfilar um jogo que nunca termina.
+
+O `--sonda=0xCLSID` atende uma classe que não conhecemos com um objeto de observação, em vez de
+recusá-la, e diz no fim que slots o jogo chamou, com que argumentos e com que texto. É como se
+descobre que interface é uma classe sem ter o header — o `ISQLMgr` do console saiu daí inteiro,
+numa execução. O procedimento está em
+[docs/implementacao/13-classes-desconhecidas.md](docs/implementacao/13-classes-desconhecidas.md).
 
 O `--keys=ms:tecla` roteiriza a entrada em tempo virtual, de modo que a mesma sequência acontece
 em toda execução. O `--dump-gl=DIR` grava um `.bmp` por quadro apresentado. O `--seconds` e o

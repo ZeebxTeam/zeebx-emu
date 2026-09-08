@@ -25,6 +25,8 @@ use crate::rasterizer::{self, GlState, Vertex};
 use crate::vfs::Vfs;
 
 /// Teto para leitura de string do guest, contra ponteiro corrompido.
+/// Teto de uma instrução SQL vinda do guest. As maiores do Z-Wheel têm 110 bytes.
+const MAX_SQL: usize = 4096;
 const MAX_STRING: usize = 4096;
 
 /// Teto para as conversões de número (`strtoul`, `atoi`, `strtod`).
@@ -627,6 +629,12 @@ const AEECLSID_DISPLAY1: u32 = 0x0101_27d4;
 /// `AEECLSID_FILEMGR`, do `AEECLSID_FILEMGR.bid` do SDK. No `AEEClassIDs.h` ele aparece só
 /// comentado, o que já me fez errar esse valor uma vez.
 const AEECLSID_FILEMGR: u32 = 0x0100_1003;
+/// `AEECLSID_SQLMGR` — o gerenciador de bancos do console.
+///
+/// O valor não veio de header nenhum: veio do log do próprio Z-Wheel, que imprime
+/// `No SQLMGR: 20` de `tectoy_prefsDB.c` toda vez que o `ISHELL_CreateInstance` desta classe é
+/// recusado — 21.845 vezes seguidas, até estourar a pilha.
+const AEECLSID_SQLMGR: u32 = 0x0102_c4e8;
 /// `AEECLSID_HID` — o gamepad do Zeebo.
 ///
 /// Não está em header nenhum que tenhamos. Foi identificado assim: o valor aparece três vezes
@@ -963,7 +971,15 @@ const MAX_NESTING: u32 = 4;
 
 /// Teto de instruções por comparação do `qsort`. Um comparador é uma função curta; este limite
 /// existe para um comparador quebrado não travar a ordenação inteira.
+/// Uma chamada observada pelo `--sonda`: classe, objeto, slot, argumentos e o texto de cada
+/// argumento que apontava para texto.
+pub type ProbeCall = (u32, u32, u32, [u32; 4], [Option<String>; 4]);
+
 const QSORT_BUDGET: u64 = 10_000_000;
+
+/// Teto de instruções por linha entregue ao callback de uma consulta SQL. Mesma ideia do
+/// [`QSORT_BUDGET`]: o callback é uma função curta que copia campos.
+const SQL_CALLBACK_BUDGET: u64 = 10_000_000;
 
 /// Quantas rodadas de callbacks entregar antes de desistir — um callback pode enfileirar
 /// outro, e sem teto um ciclo prenderia o emulador.
@@ -1192,6 +1208,17 @@ pub struct Machine<C: CpuBackend> {
     objects: ObjectStore,
     /// ClassIDs que o jogo pediu e não sabemos criar — a lista do que falta.
     unknown_classes: BTreeSet<u32>,
+    /// ClassIDs que o `--sonda` manda atender com um objeto de observação.
+    /// Os bancos SQLite abertos, por objeto `ISQLDatabase`.
+    databases: HashMap<u32, crate::sql::Database>,
+    probe_classes: BTreeSet<u32>,
+    /// De qual classe é cada objeto-sonda vivo.
+    probe_objects: HashMap<u32, u32>,
+    /// O que foi chamado em cada sonda: `(classe, objeto, slot)` e os argumentos da primeira
+    /// vez. O objeto entra na chave porque é ele que revela a **família**: o gerenciador
+    /// devolve um banco, o banco devolve uma consulta, e sem distinguir os três a sequência
+    /// vira uma lista de slots sem dono.
+    probe_log: Vec<ProbeCall>,
     /// Chamadas em que o ponteiro `this` não era o objeto esperado.
     suspicious_objects: BTreeSet<(u32, u32)>,
     /// Chamadas em que um ponteiro do guest não apontava para memória mapeada.
@@ -1398,6 +1425,10 @@ impl<C: CpuBackend> Machine<C> {
             heap,
             objects,
             unknown_classes: BTreeSet::new(),
+            databases: HashMap::new(),
+            probe_classes: BTreeSet::new(),
+            probe_objects: HashMap::new(),
+            probe_log: Vec::new(),
             suspicious_objects: BTreeSet::new(),
             assumptions: BTreeSet::new(),
             bad_pointers: BTreeSet::new(),
@@ -2158,6 +2189,13 @@ impl<C: CpuBackend> Machine<C> {
                 }
                 result
             }
+            (Interface::SqlMgr, _) | (Interface::SqlDatabase, _) => {
+                match self.sql_call(iface, slot)? {
+                    Some(result) => result,
+                    None => return Ok(None),
+                }
+            }
+            (Interface::Probe, _) => self.probe_call(slot)?,
             (Interface::Hid, _) | (Interface::HidDevice, _) => match self.hid_call(iface, slot)? {
                 Some(result) => result,
                 None => return Ok(None),
@@ -3080,6 +3118,27 @@ impl<C: CpuBackend> Machine<C> {
             // o recorte para que só a letra apareça — sem ele, a folha toda ia para a tela.
             "SetClipRect" => {
                 self.clip = self.read_rect(self.cpu.read_reg(Reg::R1))?;
+                SUCCESS
+            }
+            // int IDISPLAY_Clone(IDisplay *po, IDisplay **ppNew)
+            //
+            // Uma cópia do objeto de tela, para o app desenhar noutro estado sem mexer no
+            // corrente. A tela é uma só, então o que sai daqui é o mesmo objeto com uma
+            // referência a mais — é o que o BREW faz quando o dispositivo tem uma tela.
+            "Clone" => {
+                let out = self.cpu.read_reg(Reg::R1);
+                if out == 0 {
+                    return Ok(Some(EBADPARM));
+                }
+                // Um objeto novo, não o mesmo com uma referência a mais: o app solta a cópia
+                // quando termina com ela, e devolver o original faria essa soltura derrubar a
+                // tela que ele ainda usa. O estado de desenho é da `Machine`, não do objeto,
+                // então dois objetos apontam para a mesma tela sem se atrapalharem.
+                let clone = self.new_object(Interface::Display)?;
+                if clone == 0 {
+                    return Ok(Some(ENOMEMORY));
+                }
+                self.cpu.write_u32(out, clone)?;
                 SUCCESS
             }
             "Update" | "SetFont" | "SetAnnunciators" | "Backlight" => SUCCESS,
@@ -5767,6 +5826,280 @@ impl<C: CpuBackend> Machine<C> {
         Ok(())
     }
 
+    /// `ISQLMgr` e `ISQLDatabase` — os bancos SQLite do console. Ver [`crate::sql`].
+    ///
+    /// A ordem dos slots não veio de header: veio da observação com o `--sonda`. O Z-Wheel cria
+    /// o gerenciador, chama o slot 3 com `"tt_prefs.db"` e um ponteiro de saída, e no banco que
+    /// recebe chama o slot 3 de novo, agora com `"PRAGMA integrity_check"`. Por isso os dois
+    /// nomes que estão em [`crate::aee_slots::SQL_MGR`] são os únicos com nome.
+    fn sql_call(&mut self, iface: Interface, slot: u32) -> Result<Option<u32>, CpuError> {
+        let Some(name) = iface.method(slot) else {
+            return Ok(None);
+        };
+        let this = self.cpu.read_reg(Reg::R0);
+        let (a1, a2) = (self.cpu.read_reg(Reg::R1), self.cpu.read_reg(Reg::R2));
+        let result = match (iface, name) {
+            (_, "AddRef") => self.objects.add_ref(this),
+            (_, "Release") => {
+                let restantes = self.objects.release(this);
+                if restantes == 0 {
+                    self.databases.remove(&this);
+                }
+                restantes
+            }
+            // int OpenDatabase(ISQLMgr *, const char *pszName, ISQLDatabase **ppDB)
+            (Interface::SqlMgr, "OpenDatabase") => {
+                let nome = self.cpu.read_cstring(a1, MAX_STRING);
+                // O banco fica ao lado do módulo, como qualquer arquivo do jogo, e passa pelo
+                // VFS pelo mesmo motivo dos outros: nada escreve fora do diretório dele.
+                let Some(caminho) = self.vfs.resolve_new(&nome) else {
+                    self.missing_files.insert(nome);
+                    return Ok(Some(EFAILED));
+                };
+                match crate::sql::Database::open(&caminho) {
+                    Ok(db) => {
+                        let object = self.new_object(Interface::SqlDatabase)?;
+                        if object == 0 {
+                            return Ok(Some(ENOMEMORY));
+                        }
+                        self.databases.insert(object, db);
+                        if a2 != 0 {
+                            self.cpu.write_u32(a2, object)?;
+                        }
+                        SUCCESS
+                    }
+                    Err(erro) => {
+                        self.bad_pointers.insert(format!("SQL: {nome}: {erro}"));
+                        EFAILED
+                    }
+                }
+            }
+            // int Exec(ISQLDatabase *, const char *pszSQL, callback, void *pContexto)
+            (Interface::SqlDatabase, "Exec") => {
+                let sql = self.cpu.read_cstring(a1, MAX_SQL);
+                let Some(db) = self.databases.get(&this) else {
+                    return Ok(Some(EBADPARM));
+                };
+                let resultado = db.exec(&sql);
+                match resultado {
+                    Ok(linhas) => {
+                        // `Exec(this, sql, callback, contexto)`: a sonda mostrou o ponteiro de
+                        // função em `r2` — dentro da faixa de código do módulo — e o contexto
+                        // em `r3`, no heap.
+                        let (callback, contexto) = (a2, self.cpu.read_reg(Reg::R3));
+                        self.sql_deliver(&linhas, callback, contexto)?;
+                        SUCCESS
+                    }
+                    Err(erro) => {
+                        self.bad_pointers.insert(format!("SQL recusado: {erro}"));
+                        EFAILED
+                    }
+                }
+            }
+            _ => return Ok(None),
+        };
+        Ok(Some(result))
+    }
+
+    /// Entrega as linhas ao callback do jogo, uma chamada por linha.
+    ///
+    /// É a forma do `sqlite3_exec`: `callback(contexto, nColunas, azValores, azNomes)`, com os
+    /// dois vetores de `char *` na memória do guest. Sem isso a consulta "funciona" e o jogo
+    /// não recebe nada — foi o que fez o Z-Wheel passar no `PRAGMA integrity_check` e ainda
+    /// assim dizer "Invalid database version".
+    ///
+    /// Chamar o guest daqui é reentrância, e por isso segue o mesmo cuidado do `qsort`: salva
+    /// os registradores, respeita o teto de aninhamento e devolve tudo no lugar.
+    fn sql_deliver(
+        &mut self,
+        linhas: &[crate::sql::Row],
+        callback: u32,
+        contexto: u32,
+    ) -> Result<(), CpuError> {
+        if callback == 0 || linhas.is_empty() {
+            return Ok(());
+        }
+        if self.nesting >= MAX_NESTING {
+            self.assumptions
+                .insert("uma consulta SQL foi entregue sem callback por aninhamento profundo");
+            return Ok(());
+        }
+        let saved = SAVED_REGS.map(|reg| self.cpu.read_reg(reg));
+        self.nesting += 1;
+        let mut resultado = Ok(());
+        for linha in linhas {
+            match self.sql_deliver_row(linha, callback, contexto) {
+                Ok(true) => {}
+                // Callback que devolve diferente de zero manda parar, como no SQLite.
+                Ok(false) => break,
+                Err(err) => {
+                    resultado = Err(err);
+                    break;
+                }
+            }
+        }
+        self.nesting -= 1;
+        for (reg, value) in SAVED_REGS.iter().zip(saved) {
+            self.cpu.write_reg(*reg, value);
+        }
+        resultado
+    }
+
+    /// Monta os dois vetores de `char *` de uma linha e chama o callback. `false` pede parada.
+    fn sql_deliver_row(
+        &mut self,
+        linha: &crate::sql::Row,
+        callback: u32,
+        contexto: u32,
+    ) -> Result<bool, CpuError> {
+        let colunas = linha.names.len() as u32;
+        let valores = self.sql_write_strings(linha.values.iter().map(|v| v.as_deref()))?;
+        let nomes = self.sql_write_strings(linha.names.iter().map(|n| Some(n.as_str())))?;
+        let saida = match (valores, nomes) {
+            (Some(valores), Some(nomes)) => {
+                let outcome = self.call_guest(
+                    callback,
+                    [contexto, colunas, valores, nomes],
+                    SQL_CALLBACK_BUDGET,
+                )?;
+                // Só o retorno normal conta; um callback que se perde não interrompe o resto.
+                let seguir = !matches!(outcome, Outcome::Returned { code } if code != 0);
+                self.heap.free(valores);
+                self.heap.free(nomes);
+                seguir
+            }
+            _ => {
+                self.assumptions
+                    .insert("uma linha de consulta SQL não coube na memória do jogo");
+                false
+            }
+        };
+        Ok(saida)
+    }
+
+    /// Grava as strings no heap do guest e devolve o vetor de ponteiros para elas.
+    ///
+    /// O vetor e o texto saem do mesmo bloco: um `free` só devolve tudo, e o callback do
+    /// `sqlite3_exec` não guarda os ponteiros depois de retornar.
+    fn sql_write_strings<'a>(
+        &mut self,
+        textos: impl Iterator<Item = Option<&'a str>> + Clone,
+    ) -> Result<Option<u32>, CpuError> {
+        let contagem = textos.clone().count() as u32;
+        let bytes: usize = textos.clone().map(|t| t.map_or(0, |t| t.len() + 1)).sum();
+        let bloco = self.malloc(contagem * 4 + bytes as u32)?;
+        if bloco == 0 {
+            return Ok(None);
+        }
+        let mut texto_em = bloco + contagem * 4;
+        for (i, texto) in textos.enumerate() {
+            let ponteiro = match texto {
+                // Coluna nula é ponteiro nulo, como o SQLite entrega.
+                None => 0,
+                Some(texto) => {
+                    self.cpu.write_mem(texto_em, texto.as_bytes())?;
+                    self.cpu.write_mem(texto_em + texto.len() as u32, &[0])?;
+                    let onde = texto_em;
+                    texto_em += texto.len() as u32 + 1;
+                    onde
+                }
+            };
+            self.cpu.write_u32(bloco + i as u32 * 4, ponteiro)?;
+        }
+        Ok(Some(bloco))
+    }
+
+    /// Atende uma chamada num objeto-sonda: registra e responde `SUCCESS`.
+    ///
+    /// Responder sucesso a tudo é deliberado. A sonda não tenta acertar o comportamento — ela
+    /// tenta **fazer o jogo andar** para ver o que ele pede em seguida. Um `EFAILED` honesto
+    /// pararia a investigação na primeira chamada.
+    fn probe_call(&mut self, slot: u32) -> Result<u32, CpuError> {
+        let this = self.cpu.read_reg(Reg::R0);
+        let clsid = self.probe_objects.get(&this).copied().unwrap_or(0);
+        // Registra **todos** os slots, o `AddRef` e o `Release` inclusive: saber que o jogo só
+        // criou e soltou o objeto é resposta tão útil quanto saber que ele chamou o slot 7.
+        let args = self.args();
+        if !self
+            .probe_log
+            .iter()
+            .any(|(c, o, s, _, _)| *c == clsid && *o == this && *s == slot)
+        {
+            // O argumento que aponta para texto legível é quase sempre o que interessa — o
+            // nome do banco, a instrução SQL. Lê-lo aqui evita ter que descobrir onde o
+            // módulo foi mapeado para ir buscar no arquivo.
+            let textos = args.map(|arg| self.probe_text(arg));
+            self.probe_log.push((clsid, this, slot, args, textos));
+        }
+        match slot {
+            // `AddRef` e `Release` são os dois primeiros em toda interface do BREW, e a
+            // contagem precisa valer: sem ela o objeto morre ou vaza no meio da observação.
+            0 => Ok(self.objects.add_ref(this)),
+            1 => {
+                let restantes = self.objects.release(this);
+                if restantes == 0 {
+                    self.probe_objects.remove(&this);
+                }
+                Ok(restantes)
+            }
+            _ => {
+                // Um método que devolve objeto escreve o ponteiro num argumento de saída, e
+                // devolver `SUCCESS` sem escrever nada faz o jogo seguir com lixo e morrer no
+                // primeiro uso — foi o que o Z-Wheel fez. Então a sonda **entrega outra sonda**
+                // no que parecer um ponteiro de saída: assim o jogo continua e a observação
+                // alcança a família inteira de objetos, não só o primeiro.
+                for arg in args {
+                    if self.looks_like_out_pointer(arg) {
+                        let filho = self.new_object(Interface::Probe)?;
+                        if filho != 0 {
+                            self.probe_objects.insert(filho, clsid);
+                            self.cpu.write_u32(arg, filho)?;
+                        }
+                        break;
+                    }
+                }
+                Ok(SUCCESS)
+            }
+        }
+    }
+
+    /// O texto em `addr`, quando o que está lá é mesmo texto.
+    ///
+    /// Exige começar com caractere imprimível e ter pelo menos dois deles antes do zero: com
+    /// menos que isso, qualquer inteiro pequeno viraria "string" e o registro só teria ruído.
+    fn probe_text(&self, addr: u32) -> Option<String> {
+        if addr == 0 {
+            return None;
+        }
+        let texto = self.cpu.read_cstring(addr, 120);
+        let legivel = texto.len() >= 2
+            && texto
+                .chars()
+                .all(|c| c == '\n' || c == '\t' || (' '..='~').contains(&c));
+        legivel.then_some(texto)
+    }
+
+    /// Se `addr` tem cara de ponteiro de saída: alinhado, na memória do jogo e valendo zero.
+    ///
+    /// A exigência do zero é o que torna isto seguro de usar: um argumento que já aponta para
+    /// algo não é destino de saída, e escrever nele estragaria dado do jogo.
+    fn looks_like_out_pointer(&self, addr: u32) -> bool {
+        let na_memoria = (loader::HEAP_BASE..loader::HEAP_BASE + loader::HEAP_SIZE as u32)
+            .contains(&addr)
+            || (loader::STACK_BASE..loader::STACK_BASE + loader::STACK_SIZE as u32).contains(&addr);
+        na_memoria && addr.is_multiple_of(4) && self.cpu.read_u32(addr).unwrap_or(1) == 0
+    }
+
+    /// Manda atender estas classes com um objeto-sonda em vez de recusá-las.
+    pub fn probe_classes(&mut self, classes: &[u32]) {
+        self.probe_classes.extend(classes);
+    }
+
+    /// O que os jogos chamaram nas sondas, na ordem em que apareceu.
+    pub fn probe_log(&self) -> &[ProbeCall] {
+        &self.probe_log
+    }
+
     /// Liga a medição de tempo real por método de API. Ver [`Machine::api_profile`].
     pub fn enable_api_profile(&mut self) {
         self.profiling_api = true;
@@ -7985,10 +8318,25 @@ impl<C: CpuBackend> Machine<C> {
             AEECLSID_GL => Interface::GlLegacy,
             AEECLSID_MEDIAUTIL => Interface::MediaUtil,
             AEECLSID_WEB => Interface::Web,
+            AEECLSID_SQLMGR => Interface::SqlMgr,
             AEECLSID_MD5 => Interface::Hash,
             AEECLSID_CIPHER_FACTORY => Interface::CipherFactory,
             AEECLSID_MEDIA | AEECLSID_MEDIAMIDI | AEECLSID_MEDIAMP3 | AEECLSID_MEDIAADPCM
             | AEECLSID_MEDIAPCM => Interface::Media,
+            // A sonda entra antes da recusa: o jogo recebe um objeto que não faz nada e segue,
+            // e o que ele chamar nele vai para o relatório. É como se descobre que interface a
+            // classe é, sem header e sem adivinhação.
+            _ if self.probe_classes.contains(&clsid) => {
+                let object = self.new_object(Interface::Probe)?;
+                if object == 0 {
+                    return Ok(ENOMEMORY);
+                }
+                self.probe_objects.insert(object, clsid);
+                if out != 0 {
+                    self.cpu.write_u32(out, object)?;
+                }
+                return Ok(SUCCESS);
+            }
             _ => {
                 self.unknown_classes.insert(clsid);
                 if out != 0 {

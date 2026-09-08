@@ -83,6 +83,17 @@ pub enum Interface {
     EglSurfaceManip = 33,
     /// Os extras do ATI Imageon sobre o OpenGL ES, de `sdk/inc/AEEGLESImageonEXT.h`.
     GlesImageonExt = 34,
+    /// `AEECLSID_SQLMGR` do console: abre bancos SQLite. Ver [`crate::sql`].
+    SqlMgr = 36,
+    /// Um banco aberto pelo [`Interface::SqlMgr`].
+    SqlDatabase = 37,
+    /// Objeto de uma classe que ainda não conhecemos, criado a pedido do `--sonda`.
+    ///
+    /// Não implementa interface nenhuma: existe para **descobrir qual é**. Toda chamada é
+    /// registrada com o slot e os argumentos, e responde `SUCCESS`, de modo que o jogo siga o
+    /// máximo que conseguir e mostre o que espera do objeto. Foi assim que o `IHID` do console
+    /// foi identificado, na mão; isto é a mesma ideia com ferramenta.
+    Probe = 35,
     /// Tabela de funções da stdlib do BREW (`MALLOC`, `STRLEN`, …), que os módulos dinâmicos
     /// acessam por um ponteiro entregue pelo carregador — não por vtable de objeto.
     Helpers = 6,
@@ -95,7 +106,7 @@ impl Interface {
     /// as duas coisas precisam concordar — daí a lista existir num lugar só, com teste que
     /// confere a correspondência. Quando elas divergiram, um objeto recebeu a vtable de outra
     /// interface e a chamada foi parar no método errado, com sintoma a quilômetros da causa.
-    pub const ALL: [Interface; 35] = [
+    pub const ALL: [Interface; 38] = [
         Self::Shell,
         Self::Module,
         Self::Applet,
@@ -131,6 +142,9 @@ impl Interface {
         Self::ForceFeed,
         Self::EglSurfaceManip,
         Self::GlesImageonExt,
+        Self::Probe,
+        Self::SqlMgr,
+        Self::SqlDatabase,
     ];
 
     /// Nome usado nos logs — casa com a nomenclatura do SDK.
@@ -170,6 +184,9 @@ impl Interface {
             Self::ForceFeed => "IForceFeed",
             Self::EglSurfaceManip => "IEGLSurfaceManip",
             Self::GlesImageonExt => "IGLESImageonExt",
+            Self::SqlMgr => "ISQLMgr",
+            Self::SqlDatabase => "ISQLDatabase",
+            Self::Probe => "ClasseDesconhecida",
             Self::Helpers => "AEEHelpers",
         }
     }
@@ -211,12 +228,21 @@ impl Interface {
             Self::ForceFeed => aee_slots::FORCE_FEED,
             Self::EglSurfaceManip => aee_slots::EGL_SURFACE_MANIP,
             Self::GlesImageonExt => aee_slots::GLES_IMAGEON_EXT,
+            Self::SqlMgr => aee_slots::SQL_MGR,
+            Self::SqlDatabase => aee_slots::SQL_DATABASE,
+            // A sonda não tem tabela: `method` responde por ela antes de chegar aqui.
+            Self::Probe => &[],
             Self::Helpers => aee_helpers::HELPERS,
         }
     }
 
     /// Nome do método num slot, quando conhecido.
     pub fn method(self, slot: u32) -> Option<&'static str> {
+        // A sonda aceita qualquer slot: o que interessa dela é o número, não o nome, e recusar
+        // faria o jogo parar justamente no que queremos observar.
+        if matches!(self, Self::Probe) {
+            return Some("sonda");
+        }
         self.slot_names().get(slot as usize).copied()
     }
 
@@ -261,6 +287,9 @@ impl Interface {
             32 => Self::ForceFeed,
             33 => Self::EglSurfaceManip,
             34 => Self::GlesImageonExt,
+            35 => Self::Probe,
+            36 => Self::SqlMgr,
+            37 => Self::SqlDatabase,
             6 => Self::Helpers,
             _ => return None,
         })
