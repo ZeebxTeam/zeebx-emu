@@ -5407,14 +5407,14 @@ impl<C: CpuBackend> Machine<C> {
                 if out != 0 {
                     self.cpu.write_mem(out, &[0])?;
                 }
-                // Uma voz que acabou volta o objeto para "pronto": é o que o jogo consulta
-                // para saber que o som terminou.
-                let playing = self
-                    .audio
-                    .as_ref()
-                    .is_none_or(|mixer| mixer.is_playing(this));
+                // Um som que acabou volta o objeto para "pronto": é o que o jogo consulta
+                // para saber que o som terminou. Quem diz que acabou é o **relógio virtual**,
+                // não o mixer — pelo mesmo motivo que em `media_play`: o emulador roda mudo
+                // sem deixar de contar o tempo, e há som que toca em silêncio porque não
+                // sabemos decodificá-lo, só cronometrá-lo.
+                let now = self.now_us();
                 let state = self.media.entry(this).or_default();
-                if !playing && state.state == MM_STATE_PLAY {
+                if state.state == MM_STATE_PLAY && now >= state.ends_us {
                     state.state = MM_STATE_READY;
                 }
                 state.state
@@ -5493,9 +5493,42 @@ impl<C: CpuBackend> Machine<C> {
         }
     }
 
+    /// Quanto dura um som que não sabemos decodificar, quando dá para descobrir sem decodificar.
+    ///
+    /// Hoje só o MP3 cai aqui, pelo cabeçalho do primeiro quadro e pela etiqueta do codificador
+    /// — ver [`crate::mp3`].
+    fn media_silent_length(&mut self, this: u32) -> Result<Option<u64>, CpuError> {
+        let Some(state) = self.media.get(&this).copied() else {
+            return Ok(None);
+        };
+        if state.buffer == 0 || state.size == 0 {
+            return Ok(None);
+        }
+        let bytes = self.read_bytes(state.buffer, state.size)?;
+        Ok(crate::mp3::probe(&bytes).map(|mp3| mp3.duration_us()))
+    }
+
     /// `int Play(IMedia *)`.
     fn media_play(&mut self, this: u32) -> Result<u32, CpuError> {
         let Some(sound) = self.media_sound(this)? else {
+            // Um som que não sabemos ler mas sabemos **cronometrar** toca em silêncio pelo
+            // tempo certo. Sem isso o Tekken 2 ficava preso: a música dele é MP3, o `Play`
+            // respondia "esse som já acabou", o jogo consultava o estado, via "pronto" e
+            // mandava tocar de novo — 766 mil vezes em quatro segundos virtuais, o que o
+            // deixava na lista de "lento demais" sem ter trabalho nenhum para fazer.
+            if let Some(length_us) = self.media_silent_length(this)? {
+                self.assumptions
+                    .insert("um som em formato que não decodificamos toca em silêncio, só com a duração certa");
+                let now = self.now_us();
+                let state = self.media.entry(this).or_default();
+                state.state = MM_STATE_PLAY;
+                state.ends_us = match state.repeat {
+                    0 => u64::MAX,
+                    times => now + length_us * u64::from(times),
+                };
+                self.notify_media(this, MM_CMD_PLAY, MM_STATUS_START)?;
+                return Ok(SUCCESS);
+            }
             // Sem som legível não há o que tocar, mas recusar faria o jogo tratar como erro
             // grave; para ele, o som simplesmente acabou na hora.
             if let Some(state) = self.media.get_mut(&this) {

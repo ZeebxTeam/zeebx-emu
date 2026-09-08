@@ -145,6 +145,11 @@ impl Mixer {
     }
 
     /// Se a voz `id` ainda está tocando.
+    ///
+    /// Quem decide o fim de um som para o jogo é o relógio virtual, não o mixer — o emulador
+    /// roda mudo sem deixar de contar o tempo. Isto aqui é a janela dos testes para a vida das
+    /// vozes, e é só para isso que serve.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn is_playing(&self, id: u32) -> bool {
         self.state
             .lock()

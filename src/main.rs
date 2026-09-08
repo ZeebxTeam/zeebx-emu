@@ -24,6 +24,7 @@ mod machine;
 mod mem;
 mod miffile;
 mod modfile;
+mod mp3;
 mod objects;
 mod padview;
 mod paltex;

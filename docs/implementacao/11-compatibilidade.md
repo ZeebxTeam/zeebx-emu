@@ -10,11 +10,11 @@ no fim deste documento e dá para repetir a qualquer momento.
 
 | Estado | Antes | Agora |
 |---|---:|---:|
-| roda | 33 | **49** |
+| roda | 33 | **50** |
 | falha no `EVT_APP_START` | 10 | **0** |
 | não cria o applet | 8 | 5 |
 | para no laço de quadros | 7 | 7 |
-| lento demais | 3 | 1 |
+| lento demais | 3 | **0** |
 
 Doze jogos mudaram de estado de uma vez, e a causa foi uma só: **o sistema de arquivos do console
 não distingue maiúsculas de minúsculas, e o nosso distinguia.** Os dez ports de arcade pedem
@@ -90,7 +90,7 @@ Passou os seis segundos, mas o relatório apontou alguma coisa. O balde é conse
 | Zeebo F.C. Foot Camp |  | arquivo não encontrado |
 | Zeebo Family Pack |  | arquivo não encontrado, ponteiro recusado |
 
-### Não roda (13)
+### Não roda (12)
 
 | Jogo | Onde para |
 |---|---|
@@ -99,7 +99,6 @@ Passou os seis segundos, mas o relatório apontou alguma coisa. O balde é conse
 | Bejeweled Twist | para no laço — acesso inválido a 0x00000024 (pc 0x00032b78) |
 | Need For Speed - Carbon - Domine a Cidade | não chega a criar o applet |
 | Prey Evil | para no laço — salta para o endereço zero (lr 0x000161d8) |
-| Tekken 2 | lento demais — 1,08 milhão de `DrawPixel` por quadro |
 | Toy Raid | para no laço na volta 127 — acesso inválido a 0x00000000 (pc 0x00018d4c) |
 | Turma da Monica em Vamos Brincar Vol. 1 | para no laço na volta 4 — acesso inválido a 0x00000000 (pc 0x0008a5a0) |
 | Z-Wheel | não chega a criar o applet — pede `AEECLSID_SQLMGR` |
@@ -107,6 +106,19 @@ Passou os seis segundos, mas o relatório apontou alguma coisa. O balde é conse
 | Zeebo Channels - Opera Mini | não chega a criar o applet — pede a classe de rede `0x0100102e` |
 | Zenonia | não chega a criar o applet — pede `0x01003109`, do subsistema de texto dele |
 | Zumas Revenge | para no laço na volta 55 — acesso inválido a 0x0000000c (pc 0x00046b94) |
+
+### O jogo que insistia
+
+O **Tekken 2** era o último "lento demais": **766 mil `Play` e 766 mil `GetState` em quatro
+segundos virtuais**, e seis segundos de jogo não terminavam em cinco minutos de máquina. Não era
+carga de trabalho. A música dele é MP3, o `IMEDIA_Play` respondia "esse som já acabou", o jogo
+consultava o estado, via "pronto" e mandava tocar de novo. Para sempre.
+
+Com a duração lida do cabeçalho do MP3 — sem decodificá-lo, ver
+[07-audio.md](07-audio.md) —, o som "toca" em silêncio pelo tempo certo e ele anda: **9,7
+segundos** para os mesmos seis virtuais, com a tela de título desenhada. Ele continua sem passar
+dali, e isso é entrada, não desempenho: o jogo registra o sinal de botão, drena dois toques e
+para de responder.
 
 ### O `IDIB` que ninguém pediu
 

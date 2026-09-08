@@ -57,6 +57,11 @@ Contexto técnico em [docs/](docs/README.md).
 - Helpers implementados: `malloc`/`free`/`realloc` (com `ALLOC_NO_ZMEM`), `memmove`, `memset`,
   `memcmp`, `strlen`, `strcpy`, `strcat`, `strcmp`, `strncmp`, `wstrlen`, `sprintf`,
   `dbgprintf`, `GetAppInstance`, os helpers de tempo, `aee_GetRand`, `GetRAMFree`
+- **A duração de um MP3 sem decodificá-lo** (`mp3.rs`) — a música do Tekken 2 é MP3, o `Play`
+  respondia "esse som já acabou" e o jogo mandava tocar de novo, 766 mil vezes em quatro segundos
+  virtuais. Com a duração vinda do cabeçalho e da etiqueta `Xing`/`Info`, o som toca em silêncio
+  pelo tempo certo do relógio virtual: seis segundos virtuais saíram de mais de cinco minutos
+  para 9,7 segundos, e ele desenha a tela de título
 - **Os campos do `IDIB` em todo bitmap que sai do decodificador** — um `IBitmap` de software do
   BREW *é* um `IDIB`, e o jogo lê o tamanho direto dos campos públicos, sem `QueryInterface`.
   Enquanto saíam zerados, o Peggle montava cada sprite como um quadrado de lado zero (76.618 dos
@@ -535,7 +540,7 @@ Os dezesseis que sobraram:
 
 ## Próximos passos
 
-O placar é de **49 dos 62** rodando. A fila mudou de natureza: por muito tempo o trabalho era
+O placar é de **50 dos 62** rodando. A fila mudou de natureza: por muito tempo o trabalho era
 fazer o jogo abrir, e agora a maior parte do valor está em fazer bem o que já abre.
 
 ### Jogar direito o que já roda
@@ -560,7 +565,7 @@ fazer o jogo abrir, e agora a maior parte do valor está em fazer bem o que já 
    a tela de idioma sai em verde e preto, com as formas no lugar certo. É formato de textura, não
    geometria
 
-### Fazer abrir o que não abre (13)
+### Fazer abrir o que não abre (12)
 
 5. **Os sete que param no laço**: Action Hero 3D (`0x00055568`), Alice, Turma da Mônica,
    Bejeweled Twist (já tem análise pronta na seção própria abaixo), Prey Evil (salta para um
@@ -571,11 +576,11 @@ fazer o jogo abrir, e agora a maior parte do valor está em fazer bem o que já 
    — o módulo dele traz `socket://zeebo-cust.opera-mini.net:1080/`; o Zeebo App pede
    `0x01028e51`; o Z-Wheel segue no `AEECLSID_SQLMGR`; o Need For Speed Carbon não pede classe
    nenhuma e não tem causa levantada
-7. **O Tekken 2**, o único que sobrou de lento: **1,08 milhão de `DrawPixel` por quadro**. Não é
-   o rasterizador nem o núcleo; é o custo de despacho, que é o item 8. Vale a lição do Heavy
-   Weapon, que era o outro da dupla: ele não era lento por carga de trabalho, era um jogo
-   repetindo contra uma resposta errada nossa. Antes de otimizar, conferir se o jogo está
-   trabalhando ou insistindo
+7. **O Tekken 2 não passa da tela de título**, e agora é entrada, não desempenho: ele registra o
+   sinal de botão, drena dois toques com `GetNextButtonEvent` e para de responder. Depois disso,
+   o que sobra nele é despacho — 1,08 milhão de `DrawPixel` mais outro tanto de `RGBToNative`
+   por quadro, duas chamadas de API por pixel, que são quase todo o tempo dos 9,7 segundos que
+   ele leva para rodar seis. Essa parte é o item 8
 
 ### Desempenho
 
