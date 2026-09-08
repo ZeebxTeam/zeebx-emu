@@ -2501,31 +2501,100 @@ impl<C: CpuBackend> Machine<C> {
     /// AEECLSID cls)`.
     ///
     /// Com `nResID` zero o arquivo inteiro é o recurso — é assim que o Quake carrega
-    /// `fs:/~/../id1/splash_title.png`. Com `cls` zero, o BREW deduz a classe pelo conteúdo;
-    /// aqui a única que sabemos produzir é a imagem, e é só o que os jogos pedem.
+    /// `fs:/~/../id1/splash_title.png`. Com `nResID` diferente de zero o que ele nomeia é um
+    /// `.bar`, e a imagem é a entrada daquele número lá dentro.
+    ///
+    /// Ignorar o `nResID` custou caro: o Tekken 2 pede a entrada 5034 do `tekken2.bar` e nós
+    /// tentávamos decodificar os 734 KB do `.bar` inteiro como PNG. Falhava, devolvia nulo, e o
+    /// jogo seguia com uma imagem sem tamanho — que é divisão por zero na hora de montar a
+    /// tela. O relatório dizia o que estava acontecendo o tempo todo, na linha "um recurso
+    /// pedido por LoadResObject não é um PNG que saibamos ler".
+    ///
+    /// Com `cls` zero, o BREW deduz a classe pelo conteúdo; aqui a única que sabemos produzir é
+    /// a imagem, e é só o que os jogos pedem.
     fn shell_load_res_object(&mut self) -> Result<u32, CpuError> {
         let guest_path = self
             .cpu
             .read_cstring(self.cpu.read_reg(Reg::R1), MAX_STRING);
+        let id = self.cpu.read_reg(Reg::R2) as u16;
+        let cls = self.cpu.read_reg(Reg::R3);
         let Some(path) = self.vfs.resolve(&guest_path) else {
             self.missing_files.insert(guest_path);
             return Ok(0);
         };
-        let Ok(bytes) = std::fs::read(&path) else {
-            self.missing_files.insert(guest_path);
-            return Ok(0);
+        let bytes = match id {
+            0 => match std::fs::read(&path) {
+                Ok(bytes) => bytes,
+                Err(_) => {
+                    self.missing_files.insert(guest_path);
+                    return Ok(0);
+                }
+            },
+            _ => {
+                let raw = self
+                    .resources
+                    .open(&path)
+                    .and_then(|res| res.get(crate::resfile::RESTYPE_IMAGE, id))
+                    .map(<[u8]>::to_vec);
+                let Some(raw) = raw else {
+                    self.missing_files
+                        .insert(format!("{guest_path} (recurso {id})"));
+                    return Ok(0);
+                };
+                // O cabeçalho `AEEResBlob` é nosso para pular: quem pediu foi um **objeto** de
+                // imagem, não o bloco bruto que o `LoadResData` entrega.
+                crate::resfile::blob_data(&raw).unwrap_or(&raw).to_vec()
+            }
         };
-        let Some(decoded) = decode_png(&bytes) else {
+        let Some(decoded) = self.decode_resource_image(&bytes) else {
             self.assumptions
-                .insert("um recurso pedido por LoadResObject não é um PNG que saibamos ler");
+                .insert("um recurso pedido por LoadResObject veio num formato que não sabemos ler");
             return Ok(0);
         };
 
+        // A classe pedida decide o que sai daqui. O Tekken 2 pede `AEEIID_IBITMAP` — ele quer
+        // desenhar com `IDISPLAY_BitBlt`, não com `IIMAGE_Draw` —, e devolver um `IImage` fazia
+        // ele chamar um método de `IBitmap` numa vtable de `IImage`: o slot 12, que em `IImage`
+        // não existe.
+        if cls == AEEIID_IBITMAP {
+            return self.bitmap_from_decoded(&decoded);
+        }
         let image = self.new_object(Interface::Image)?;
         if image != 0 {
             self.images.insert(image, decoded);
         }
         Ok(image)
+    }
+
+    /// Decodifica uma imagem de recurso pelo que ela é.
+    ///
+    /// O PNG passa pelo caminho próprio, que traz o canal alfa que os jogos usam para recortar
+    /// o sprite. O resto — BMP e JPEG — vem pelo decodificador dos ícones, que já sabe lê-los e
+    /// entrega tudo opaco, que é o que esses dois formatos são.
+    fn decode_resource_image(&mut self, bytes: &[u8]) -> Option<DecodedImage> {
+        if let Some(decoded) = decode_png(bytes) {
+            return Some(decoded);
+        }
+        let image = crate::icon::decode(bytes).ok()?;
+        let count = image.width * image.height;
+        let mut pixels = Vec::with_capacity(count);
+        for at in (0..count * 4).step_by(4) {
+            pixels.push(
+                Rgb {
+                    r: image.rgba[at],
+                    g: image.rgba[at + 1],
+                    b: image.rgba[at + 2],
+                }
+                .to_rgb565(),
+            );
+        }
+        Some(DecodedImage {
+            width: image.width as u32,
+            height: image.height as u32,
+            pixels,
+            opaque: vec![true; count],
+            frame_width: 0,
+        })
     }
 
     /// Abre o arquivo de recursos que o jogo nomeou.
@@ -3906,6 +3975,23 @@ impl<C: CpuBackend> Machine<C> {
                 .insert("um decodificador recebeu dados que não são um PNG");
             return Ok(0);
         };
+        let addr = self.bitmap_from_decoded(&image)?;
+        if addr == 0 {
+            return Ok(0);
+        }
+        let transparent = self.transparency.contains_key(&addr);
+        if let Some(state) = self.decoders.get_mut(&decoder) {
+            state.bitmap = Some(addr);
+            state.transparent = transparent;
+        }
+        Ok(addr)
+    }
+
+    /// Um `IBitmap` com a imagem já decodificada dentro.
+    ///
+    /// Sai com os campos públicos do `IDIB` preenchidos, porque um `IBitmap` de software do
+    /// BREW é um `IDIB` e o jogo lê esses campos sem pedir a interface.
+    fn bitmap_from_decoded(&mut self, image: &DecodedImage) -> Result<u32, CpuError> {
         let addr = self.new_object(Interface::Bitmap)?;
         if addr == 0 {
             return Ok(0);
@@ -3931,10 +4017,6 @@ impl<C: CpuBackend> Machine<C> {
             self.transparency.insert(addr, TRANSPARENT_KEY);
         }
         self.expose_dib(addr)?;
-        if let Some(state) = self.decoders.get_mut(&decoder) {
-            state.bitmap = Some(addr);
-            state.transparent = transparent;
-        }
         Ok(addr)
     }
 
@@ -4751,6 +4833,12 @@ impl<C: CpuBackend> Machine<C> {
     }
 
     /// Materializa a imagem decodificada como uma superfície `IBitmap`.
+    /// Diferente do [`Machine::bitmap_from_decoded`], este caminho **não** publica o `IDIB`.
+    ///
+    /// Publicar custa caro onde não é preciso: toda superfície publicada entra no laço que
+    /// sincroniza os pixels a cada chamada que os toca, e o Pac-Mania — que desenha pixel a
+    /// pixel pela API — saiu de "roda" para "lento demais" quando os dois caminhos foram
+    /// unificados. Quem pede o DIB pede pelo `QueryInterface`, e aí ele é publicado.
     fn bitmap_from_image(&mut self, image: u32) -> Result<u32, CpuError> {
         let Some(info) = self.images.get(&image).cloned() else {
             return Ok(0);

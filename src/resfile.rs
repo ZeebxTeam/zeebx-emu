@@ -29,6 +29,28 @@ const MAGIC: u16 = 0x0011;
 /// `RESTYPE_STRING`, de `AEEShell.h`.
 pub const RESTYPE_STRING: u16 = 1;
 
+/// `RESTYPE_IMAGE`, de `AEEShell.h`.
+pub const RESTYPE_IMAGE: u16 = 6;
+
+/// O conteúdo de um recurso de imagem, sem o cabeçalho `AEEResBlob` que vem na frente.
+///
+/// O cabeçalho é um `uint16` com o deslocamento até os dados, seguido do tipo MIME terminado em
+/// zero — é o que o `RESBLOB_DATA()` do SDK pula. No `tekken2.bar` a entrada 5034 começa com
+/// `0c 00` e `"image/bmp\0"`, e o `BM` vem no byte 12.
+///
+/// Quem chama o `LoadResData` recebe o bloco inteiro, cabeçalho incluído, porque a documentação
+/// diz que é isso que sai de lá. Quem pede um **objeto** de imagem, não: aí o cabeçalho é nosso
+/// para interpretar.
+pub fn blob_data(raw: &[u8]) -> Option<&[u8]> {
+    let offset = u16::from_le_bytes([*raw.first()?, *raw.get(1)?]) as usize;
+    // O byte anterior aos dados é o zero que termina o tipo MIME. Sem essa conferência, um
+    // recurso que não seja um blob viraria um recorte arbitrário do próprio conteúdo.
+    match raw.get(offset.checked_sub(1)?) == Some(&0) {
+        true => raw.get(offset..),
+        false => None,
+    }
+}
+
 /// Uma faixa de recursos do índice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Range {
@@ -180,6 +202,23 @@ fn u32(data: &[u8], at: usize) -> Result<u32, ResError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn o_cabecalho_do_blob_e_pulado_pelo_deslocamento() {
+        // A entrada 5034 do `tekken2.bar`, do jeito que ela começa no arquivo.
+        let mut raw = vec![0x0c, 0x00];
+        raw.extend(b"image/bmp\0");
+        raw.extend(b"BM\x38\xb4");
+        assert_eq!(blob_data(&raw), Some(&b"BM\x38\xb4"[..]));
+    }
+
+    #[test]
+    fn o_que_nao_e_blob_nao_vira_recorte_arbitrario() {
+        // Um PNG solto: o deslocamento leria lixo, e o zero que termina o MIME não está lá.
+        assert_eq!(blob_data(&[0x89, b'P', b'N', b'G', 1, 2, 3, 4]), None);
+        assert_eq!(blob_data(&[]), None);
+        assert_eq!(blob_data(&[0x0c, 0x00]), None);
+    }
 
     /// Monta um `.bar` com as faixas e seções dadas.
     fn build(ranges: &[(u16, u16, u16, u16)], sections: &[&[u8]]) -> Vec<u8> {

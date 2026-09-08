@@ -13,8 +13,8 @@ no fim deste documento e dá para repetir a qualquer momento.
 | roda | 33 | **50** |
 | falha no `EVT_APP_START` | 10 | **0** |
 | não cria o applet | 8 | 5 |
-| para no laço de quadros | 7 | 7 |
-| lento demais | 3 | **0** |
+| para no laço de quadros | 7 | 6 |
+| lento demais | 3 | 1 |
 
 Doze jogos mudaram de estado de uma vez, e a causa foi uma só: **o sistema de arquivos do console
 não distingue maiúsculas de minúsculas, e o nosso distinguia.** Os dez ports de arcade pedem
@@ -99,13 +99,46 @@ Passou os seis segundos, mas o relatório apontou alguma coisa. O balde é conse
 | Bejeweled Twist | para no laço — acesso inválido a 0x00000024 (pc 0x00032b78) |
 | Need For Speed - Carbon - Domine a Cidade | não chega a criar o applet |
 | Prey Evil | para no laço — salta para o endereço zero (lr 0x000161d8) |
-| Toy Raid | para no laço na volta 127 — acesso inválido a 0x00000000 (pc 0x00018d4c) |
 | Turma da Monica em Vamos Brincar Vol. 1 | para no laço na volta 4 — acesso inválido a 0x00000000 (pc 0x0008a5a0) |
 | Z-Wheel | não chega a criar o applet — pede `AEECLSID_SQLMGR` |
 | Zeebo App | não chega a criar o applet — pede `0x01028e51` |
 | Zeebo Channels - Opera Mini | não chega a criar o applet — pede a classe de rede `0x0100102e` |
 | Zenonia | não chega a criar o applet — pede `0x01003109`, do subsistema de texto dele |
+| Pac-Mania | lento demais — desenha, mas pixel a pixel pela API |
 | Zumas Revenge | para no laço na volta 55 — acesso inválido a 0x0000000c (pc 0x00046b94) |
+
+### O `nResID` que não valia nada
+
+`ISHELL_LoadResObject` recebe o arquivo, o **número do recurso** dentro dele e a **classe** que o
+jogo quer de volta. Ignorávamos as duas últimas: pegávamos o caminho, tentávamos decodificar o
+arquivo inteiro como PNG e devolvíamos nulo quando não era.
+
+O Tekken 2 pede a entrada **5034** do `tekken2.bar`, um BMP de 308 KB. Nós tentávamos ler os 734
+KB do `.bar` inteiro como se fosse a imagem. O jogo seguia com uma imagem sem tamanho, e imagem
+sem tamanho é divisão por zero na hora de montar a tela — era o que enchia o log dele de
+`Arithmetic exception: Divide By Zero` no menu e na seleção de personagem.
+
+O relatório dizia isso o tempo todo, numa linha fácil de ler errado:
+
+```
+hipóteses em uso:
+  um recurso pedido por LoadResObject não é um PNG que saibamos ler
+```
+
+Não era "não é um PNG". Era **não é uma imagem** — era o arquivo de recursos inteiro. É a terceira
+vez neste documento que a resposta estava no relatório antes de alguém entender a pergunta.
+
+Três coisas mudaram: o `nResID` passou a valer, o cabeçalho `AEEResBlob` é pulado (o que o
+`RESBLOB_DATA()` do SDK faz), e a classe pedida passou a valer — o Tekken pede `AEEIID_IBITMAP` e
+recebia um `IImage`, o que o fazia chamar um método de `IBitmap` numa vtable de `IImage`.
+
+Três jogos mudaram de estado:
+
+- **Toy Raid** parava no laço de quadros e agora abre com o menu inteiro desenhado.
+- **Pac-Mania** era "roda e não mostra nada"; agora mostra, e por isso ficou lento — ele pinta
+  1,4 milhão de pixels por quadro, um a um, com duas chamadas de API cada. Trocou tela preta por
+  lentidão, o que é avançar.
+- **Tekken 2** parou de estourar divisão por zero.
 
 ### O jogo que insistia
 
