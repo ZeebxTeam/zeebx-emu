@@ -38,6 +38,40 @@ impl Scaling {
     }
 }
 
+/// O que o painel de depuração mostra durante a execução.
+///
+/// Tudo desligado por padrão: é ferramenta de quem está caçando um problema, e informação
+/// sobre o quadro atrapalha quem só quer jogar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DebugView {
+    /// Liga o painel. Sem ele, nada do que está abaixo aparece.
+    pub overlay: bool,
+    /// Velocidade em relação ao console e quadros por segundo.
+    pub speed: bool,
+    /// Instruções do guest por segundo, e o relógio virtual.
+    pub clock: bool,
+    /// Heap do jogo e objetos vivos.
+    pub memory: bool,
+    /// O gráfico com a história recente.
+    pub timeline: bool,
+    /// A janela separada com o log da execução.
+    pub log: bool,
+}
+
+impl Default for DebugView {
+    fn default() -> Self {
+        Self {
+            overlay: false,
+            speed: true,
+            clock: true,
+            memory: true,
+            timeline: true,
+            log: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Graphics {
@@ -87,6 +121,7 @@ pub struct Settings {
     /// Onde procurar os jogos.
     pub roms_dir: Option<PathBuf>,
     pub graphics: Graphics,
+    pub debug: DebugView,
     pub audio: Audio,
     pub controls: crate::bindings::Controls,
 }
@@ -182,6 +217,10 @@ mod tests {
             graphics: Graphics {
                 scaling: Scaling::Fit,
                 ..Graphics::default()
+            },
+            debug: DebugView {
+                overlay: true,
+                ..DebugView::default()
             },
             audio: Audio {
                 volume: 42,

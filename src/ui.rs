@@ -52,15 +52,17 @@ enum Tab {
     Controls,
     Graphics,
     Audio,
+    Debug,
     About,
 }
 
 impl Tab {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 6] = [
         Self::General,
         Self::Controls,
         Self::Graphics,
         Self::Audio,
+        Self::Debug,
         Self::About,
     ];
 
@@ -70,6 +72,7 @@ impl Tab {
             Self::Controls => "settings.tab.controls",
             Self::Graphics => "settings.tab.graphics",
             Self::Audio => "settings.tab.audio",
+            Self::Debug => "settings.tab.debug",
             Self::About => "settings.tab.about",
         }
     }
@@ -96,6 +99,8 @@ pub struct App {
     paused: bool,
     /// Quando o jogo rodou pela última vez, para saber quanto tempo real ele tem a recuperar.
     last_step: std::time::Instant,
+    /// O que dizer sobre a última tentativa de exportar o log.
+    log_status: Option<String>,
     /// Os controles de verdade ligados no computador.
     gamepads: gamepads::Gamepads,
     /// Qual botão do Zeebo está esperando uma tecla, na tela de controles.
@@ -150,6 +155,7 @@ impl App {
             error: None,
             paused: false,
             last_step: std::time::Instant::now(),
+            log_status: None,
             gamepads: gamepads::Gamepads::default(),
             capturing: None,
             // Um desenho que não abre não pode impedir as configurações de abrir.
@@ -298,6 +304,7 @@ impl App {
             Tab::Controls => self.controls_tab(ui),
             Tab::Graphics => self.graphics_tab(ui),
             Tab::Audio => self.audio_tab(ui),
+            Tab::Debug => self.debug_tab(ui),
             Tab::About => self.about_tab(ui),
         };
         if changed {
@@ -650,6 +657,38 @@ impl App {
         true
     }
 
+    fn debug_tab(&mut self, ui: &mut egui::Ui) -> bool {
+        let mut changed = false;
+        let debug = &mut self.settings.debug;
+        ui.weak(self.catalog.get("debug.hint"));
+        ui.add_space(8.0);
+        changed |= ui
+            .checkbox(&mut debug.overlay, self.catalog.get("debug.overlay"))
+            .changed();
+        ui.add_space(8.0);
+        // O que segue só existe dentro do painel; sem ele, marcar não faria efeito nenhum.
+        ui.add_enabled_ui(debug.overlay, |ui| {
+            changed |= ui
+                .checkbox(&mut debug.speed, self.catalog.get("debug.speed"))
+                .changed();
+            changed |= ui
+                .checkbox(&mut debug.clock, self.catalog.get("debug.clock"))
+                .changed();
+            changed |= ui
+                .checkbox(&mut debug.memory, self.catalog.get("debug.memory"))
+                .changed();
+            changed |= ui
+                .checkbox(&mut debug.timeline, self.catalog.get("debug.timeline"))
+                .changed();
+        });
+        ui.add_space(8.0);
+        changed |= ui
+            .checkbox(&mut debug.log, self.catalog.get("debug.log"))
+            .changed();
+        ui.weak(self.catalog.get("debug.log.hint"));
+        changed
+    }
+
     /// A aba "Sobre": versão e para onde ir. Não muda configuração nenhuma, por isso devolve
     /// `false` sempre.
     fn about_tab(&mut self, ui: &mut egui::Ui) -> bool {
@@ -771,6 +810,83 @@ impl App {
         }
     }
 
+    /// A janela de log da execução.
+    ///
+    /// Separada da do jogo de propósito: quem está lendo log quer as duas coisas ao mesmo
+    /// tempo, e um painel dentro da janela do jogo roubaria espaço do quadro.
+    fn log_window(&mut self, ctx: &egui::Context) {
+        let id = egui::ViewportId::from_hash_of("log");
+        let builder = egui::ViewportBuilder::default()
+            .with_title(self.catalog.get("debug.log.title"))
+            .with_inner_size([640.0, 420.0])
+            .with_min_inner_size([360.0, 200.0]);
+        let linhas = match &self.session {
+            Some(session) => session.log(),
+            None => Vec::new(),
+        };
+        let mut close = false;
+        let mut exportar = false;
+        ctx.show_viewport_immediate(id, builder, |ctx, _class| {
+            egui::TopBottomPanel::top("log-barra").show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    exportar = ui.button(self.catalog.get("debug.log.export")).clicked();
+                    if let Some(aviso) = &self.log_status {
+                        ui.weak(aviso);
+                    }
+                });
+            });
+            egui::CentralPanel::default().show(ctx, |ui| {
+                if linhas.is_empty() {
+                    ui.weak(self.catalog.get("debug.log.empty"));
+                    return;
+                }
+                // Preso no fim: log que não acompanha o que acabou de acontecer não serve.
+                egui::ScrollArea::vertical()
+                    .stick_to_bottom(true)
+                    .show(ui, |ui| {
+                        for linha in &linhas {
+                            ui.monospace(linha);
+                        }
+                    });
+            });
+            close = ctx.input(|i| i.viewport().close_requested());
+            // O log muda enquanto o jogo roda, e o egui só acorda com mouse ou teclado.
+            ctx.request_repaint();
+        });
+        if exportar {
+            self.log_status = Some(self.export_log(&linhas));
+        }
+        if close {
+            self.settings.debug.log = false;
+            self.log_status = None;
+            self.save();
+        }
+    }
+
+    /// Grava o log num arquivo escolhido pelo usuário e devolve o que dizer sobre isso.
+    fn export_log(&self, linhas: &[String]) -> String {
+        let sugestao = match self.session.as_ref().map(Session::title) {
+            Some(title) if !title.is_empty() => format!("{title}.log"),
+            _ => "zeebx.log".to_string(),
+        };
+        let Some(destino) = rfd::FileDialog::new()
+            .set_file_name(&sugestao)
+            .add_filter("log", &["log"])
+            .save_file()
+        else {
+            return String::new();
+        };
+        match std::fs::write(&destino, linhas.join("\n") + "\n") {
+            Ok(()) => self.catalog.format(
+                "debug.log.saved",
+                &[("path", &destino.display().to_string())],
+            ),
+            Err(err) => self
+                .catalog
+                .format("debug.log.failed", &[("reason", &err.to_string())]),
+        }
+    }
+
     /// A janela do jogo.
     ///
     /// Ela lê o teclado do **seu próprio** contexto, e não do da janela principal: a entrada do
@@ -855,57 +971,77 @@ impl App {
             self.last_step = now;
             let _ = session.step(slice, limit);
         }
-        let mut stop =
+        // Sem barra superior, o teclado é o único caminho: `Esc` encerra e `P` pausa. Nenhuma
+        // das duas colide com o controle do Zeebo, que usa setas, Z, X, C, V, Q, W, F, G, H,
+        // Backspace e Enter.
+        let stop =
             ctx.input(|i| i.key_pressed(egui::Key::Escape) || i.viewport().close_requested());
+        if ctx.input(|i| i.key_pressed(egui::Key::P)) {
+            self.paused = !self.paused;
+        }
 
         let smooth = self.settings.graphics.smooth;
         upload(ctx, &mut self.frame, session.screen(), smooth);
-        // O que a barra mostra sai da sessão agora, antes de desenhar: o empréstimo do jogo
-        // não pode atravessar os fechos da interface, que precisam do `self` inteiro.
-        let (frames, speed) = (session.frames(), session.speed_percent());
-        let title = match session.title().is_empty() {
-            true => self.catalog.get("library.unknown_title").to_string(),
-            false => session.title().to_string(),
-        };
-
-        // Um jogo que parou continua na tela, com o último quadro e o motivo à mostra: sumir
-        // sozinho esconderia justamente o que interessa quando algo dá errado.
+        // O que vai na tela sai da sessão agora, antes de desenhar: o empréstimo do jogo não
+        // pode atravessar os fechos da interface, que precisam do `self` inteiro.
+        //
+        // Um jogo que parou continua com o último quadro à mostra, mas o motivo precisa
+        // aparecer em algum lugar: sem a barra superior, ele vira uma faixa sobre o quadro.
         let ended = session.stopped_reason();
 
-        egui::TopBottomPanel::top("jogando").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                stop |= ui.button(self.catalog.get("play.stop")).clicked();
-                let pause = match self.paused {
-                    true => "play.resume",
-                    false => "play.pause",
-                };
-                let running = ended.is_none();
-                if ui
-                    .add_enabled(running, egui::Button::new(self.catalog.get(pause)))
-                    .clicked()
-                {
-                    self.paused = !self.paused;
-                }
-                ui.separator();
-                ui.label(&title);
-                if let Some(reason) = &ended {
-                    ui.colored_label(
-                        ui.visuals().warn_fg_color,
-                        self.catalog.format("play.failed", &[("reason", reason)]),
-                    );
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.weak(
-                        self.catalog
-                            .format("play.speed", &[("percent", &speed.to_string())]),
-                    );
-                    ui.weak(
-                        self.catalog
-                            .format("play.frames", &[("frames", &frames.to_string())]),
-                    );
+        // O painel é uma faixa embaixo, e não uma sobreposição: reservar espaço encolhe o
+        // quadro do jogo em vez de tapá-lo. Precisa ser declarado antes do painel central,
+        // porque no egui quem pede espaço primeiro é quem o recebe.
+        if self.settings.debug.overlay {
+            let debug = self.settings.debug;
+            let sample = session.sample();
+            let (heap, objetos) = session.memory();
+            let clock = session.clock_ms();
+            let historia: Vec<(u32, u32)> = session
+                .history()
+                .map(|amostra| (amostra.speed, amostra.fps))
+                .collect();
+            egui::TopBottomPanel::bottom("painel-debug").show(ctx, |ui| {
+                ui.add_space(2.0);
+                ui.horizontal(|ui| {
+                    if debug.speed {
+                        ui.monospace(self.catalog.format(
+                            "debug.speed.value",
+                            &[
+                                ("percent", &sample.speed.to_string()),
+                                ("fps", &sample.fps.to_string()),
+                            ],
+                        ));
+                        ui.separator();
+                    }
+                    if debug.clock {
+                        ui.monospace(self.catalog.format(
+                            "debug.clock.value",
+                            &[
+                                ("mips", &instrucoes_legiveis(sample.ips)),
+                                ("clock", &format!("{:.1}s", clock as f32 / 1000.0)),
+                            ],
+                        ));
+                        ui.separator();
+                    }
+                    if debug.memory {
+                        ui.monospace(self.catalog.format(
+                            "debug.memory.value",
+                            &[
+                                ("heap", &bytes_legiveis(heap)),
+                                ("objects", &objetos.to_string()),
+                            ],
+                        ));
+                    }
+                    if debug.timeline && !historia.is_empty() {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            desenhar_linha_do_tempo(ui, &historia);
+                        });
+                    }
                 });
+                ui.add_space(2.0);
             });
-        });
+        }
 
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(egui::Color32::BLACK))
@@ -922,6 +1058,20 @@ impl App {
                     ui.add(egui::Image::new(texture).fit_to_exact_size(size));
                 });
             });
+
+        if let Some(reason) = &ended {
+            let texto = self.catalog.format("play.failed", &[("reason", reason)]);
+            egui::TopBottomPanel::bottom("parou")
+                .frame(egui::Frame::NONE.fill(egui::Color32::from_black_alpha(200)))
+                .show(ctx, |ui| {
+                    ui.add_space(4.0);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.colored_label(ui.visuals().warn_fg_color, texto);
+                    });
+                    ui.weak(self.catalog.get("play.stop.hint"));
+                    ui.add_space(4.0);
+                });
+        }
 
         // Enquanto o jogo roda, a interface precisa ser redesenhada sozinha: sem isso o egui
         // só acorda quando o mouse ou o teclado se mexem, e o jogo pararia entre as teclas. O
@@ -947,6 +1097,10 @@ impl eframe::App for App {
         }
         if self.session.is_some() {
             self.game_window(ctx);
+            // A janela de log acompanha o jogo: só existe enquanto há execução para registrar.
+            if self.settings.debug.log {
+                self.log_window(ctx);
+            }
         }
     }
 }
@@ -1237,5 +1391,70 @@ mod tests {
             placement(area, Scaling::Stretch, true),
             placement(area, Scaling::Fit, true)
         );
+    }
+}
+
+/// Instruções por segundo, na escala que couber.
+///
+/// Um jogo em espera ociosa executa pouquíssimo — arredondar tudo para milhões mostraria zero
+/// justamente aí, e zero se lê como defeito e não como "está esperando".
+fn instrucoes_legiveis(por_segundo: u64) -> String {
+    match por_segundo {
+        0..=9_999 => format!("{por_segundo}"),
+        10_000..=9_999_999 => format!("{} K", por_segundo / 1_000),
+        _ => format!("{} M", por_segundo / 1_000_000),
+    }
+}
+
+/// Um tamanho em bytes no jeito que se lê.
+fn bytes_legiveis(bytes: u32) -> String {
+    match bytes {
+        0..=9_999 => format!("{bytes} B"),
+        10_000..=9_999_999 => format!("{} KB", bytes / 1024),
+        _ => format!("{:.1} MB", bytes as f32 / (1024.0 * 1024.0)),
+    }
+}
+
+/// O gráfico do painel: velocidade e quadros por segundo ao longo do último minuto.
+///
+/// É desenhado à mão em vez de com uma biblioteca de gráficos porque o que se quer aqui é
+/// enxergar a forma — onde afundou, onde estabilizou —, e para isso duas linhas numa faixa de
+/// 40 pixels bastam.
+fn desenhar_linha_do_tempo(ui: &mut egui::Ui, historia: &[(u32, u32)]) {
+    const ALTURA: f32 = 40.0;
+    const LARGURA: f32 = 220.0;
+    let (resposta, pintor) = ui.allocate_painter(egui::vec2(LARGURA, ALTURA), egui::Sense::hover());
+    let area = resposta.rect;
+    pintor.rect_filled(area, 2.0, egui::Color32::from_black_alpha(120));
+
+    // A linha dos 100% é a referência que interessa: acima dela o jogo está no ritmo do
+    // console, abaixo está devendo.
+    let cem = area.bottom() - ALTURA * 0.5;
+    pintor.line_segment(
+        [egui::pos2(area.left(), cem), egui::pos2(area.right(), cem)],
+        egui::Stroke::new(1.0_f32, egui::Color32::from_white_alpha(40)),
+    );
+
+    let passo = LARGURA / historia.len().max(2) as f32;
+    // A velocidade vai até 200% no gráfico; o que passar disso encosta no teto.
+    let ponto = |i: usize, valor: u32, teto: f32| {
+        egui::pos2(
+            area.left() + i as f32 * passo,
+            area.bottom() - ALTURA * (valor as f32 / teto).min(1.0),
+        )
+    };
+    for (valores, cor, teto) in [
+        (0, egui::Color32::from_rgb(120, 200, 255), 200.0),
+        (1, egui::Color32::from_rgb(160, 255, 160), 60.0),
+    ] {
+        let linha: Vec<egui::Pos2> = historia
+            .iter()
+            .enumerate()
+            .map(|(i, amostra)| match valores {
+                0 => ponto(i, amostra.0, teto),
+                _ => ponto(i, amostra.1, teto),
+            })
+            .collect();
+        pintor.add(egui::Shape::line(linha, egui::Stroke::new(1.0_f32, cor)));
     }
 }

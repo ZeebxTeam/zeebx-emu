@@ -24,6 +24,9 @@ const INSTRUCTION_BUDGET: u64 = 500_000_000;
 /// para não tremer a cada quadro.
 const SPEED_WINDOW_MS: u64 = 500;
 
+/// Quantas amostras o gráfico guarda. A meio segundo cada, é um minuto de história.
+const HISTORY: usize = 120;
+
 /// Por que um jogo não conseguiu começar.
 #[derive(Debug)]
 pub enum StartError {
@@ -77,10 +80,37 @@ pub struct Session {
     started: Instant,
     clock_base: u64,
     stopped: Option<Outcome>,
-    /// Começo da janela de medição da velocidade: o instante real e o relógio virtual de então.
-    speed_window: (Instant, u64),
-    /// Última leitura fechada da velocidade, em porcentagem.
-    speed: u32,
+    /// Começo da janela de medição: o instante real, o relógio virtual, as instruções e os
+    /// quadros de então. Tudo que o painel de depuração mostra sai da diferença entre duas
+    /// dessas leituras.
+    window: Marca,
+    /// A última amostra fechada.
+    sample: Sample,
+    /// As amostras recentes, para o gráfico. A mais nova no fim.
+    history: std::collections::VecDeque<Sample>,
+}
+
+/// Uma leitura dos contadores num instante.
+#[derive(Debug, Clone, Copy)]
+struct Marca {
+    real: Instant,
+    clock_ms: u64,
+    instructions: u64,
+    frames: u32,
+}
+
+/// O que aconteceu numa janela de medição.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Sample {
+    /// Fração da velocidade do console, em porcentagem.
+    pub speed: u32,
+    /// Quadros apresentados por segundo de tempo real.
+    pub fps: u32,
+    /// Instruções do guest executadas por segundo de tempo real.
+    ///
+    /// Não é em milhões: numa tela de espera o jogo cede a vez e quase não executa, e
+    /// arredondar para milhões mostraria zero justamente quando o número interessa.
+    pub ips: u64,
 }
 
 impl Session {
@@ -132,6 +162,12 @@ impl Session {
         }
 
         let clock_base = u64::from(machine.clock_ms());
+        let window = Marca {
+            real: Instant::now(),
+            clock_ms: clock_base,
+            instructions: machine.instructions(),
+            frames: machine.gl_swaps(),
+        };
         Ok(Self {
             machine,
             audio: None,
@@ -139,8 +175,9 @@ impl Session {
             started: Instant::now(),
             clock_base,
             stopped: None,
-            speed_window: (Instant::now(), clock_base),
-            speed: 100,
+            window,
+            sample: Sample::default(),
+            history: std::collections::VecDeque::new(),
         })
     }
 
@@ -218,20 +255,67 @@ impl Session {
     /// muito depois de a queda ter acontecido, e parece uma piora contínua onde o jogo já está
     /// rodando estável.
     fn sample_speed(&mut self) {
-        let now = Instant::now();
-        let elapsed = (now - self.speed_window.0).as_millis() as u64;
+        let agora = Marca {
+            real: Instant::now(),
+            clock_ms: u64::from(self.machine.clock_ms()),
+            instructions: self.machine.instructions(),
+            frames: self.machine.gl_swaps(),
+        };
+        let elapsed = (agora.real - self.window.real).as_millis() as u64;
         if elapsed < SPEED_WINDOW_MS {
             return;
         }
-        let clock = u64::from(self.machine.clock_ms());
-        let advanced = clock.saturating_sub(self.speed_window.1);
-        self.speed = (advanced * 100 / elapsed).min(999) as u32;
-        self.speed_window = (now, clock);
+        let por_segundo = |quanto: u64| quanto * 1000 / elapsed;
+        self.sample = Sample {
+            speed: (por_segundo(agora.clock_ms.saturating_sub(self.window.clock_ms)) / 10).min(999)
+                as u32,
+            fps: por_segundo(u64::from(agora.frames.saturating_sub(self.window.frames))) as u32,
+            ips: por_segundo(agora.instructions.saturating_sub(self.window.instructions)),
+        };
+        if self.history.len() >= HISTORY {
+            self.history.pop_front();
+        }
+        self.history.push_back(self.sample);
+        self.window = agora;
     }
 
-    /// A que fração da velocidade do console o jogo está rodando, em porcentagem.
-    pub fn speed_percent(&self) -> u32 {
-        self.speed
+    /// A última amostra fechada.
+    pub fn sample(&self) -> Sample {
+        self.sample
+    }
+
+    /// As amostras recentes, da mais antiga para a mais nova.
+    pub fn history(&self) -> impl ExactSizeIterator<Item = &Sample> {
+        self.history.iter()
+    }
+
+    /// Bytes do heap do guest já entregues, e quantos objetos nossos estão vivos.
+    pub fn memory(&self) -> (u32, usize) {
+        (self.machine.heap_used(), self.machine.live_objects())
+    }
+
+    /// O relógio do jogo, em milissegundos.
+    pub fn clock_ms(&self) -> u32 {
+        self.machine.clock_ms()
+    }
+
+    /// O log da execução: o que o jogo escreveu por `DBGPRINTF` e por semihosting do ARM.
+    ///
+    /// As repetições vêm agrupadas, que é como o emulador as guarda — um jogo que loga a mesma
+    /// linha por quadro encheria a janela sem dizer mais nada.
+    pub fn log(&self) -> Vec<String> {
+        let mut linhas: Vec<String> = self
+            .machine
+            .debug_output()
+            .iter()
+            .map(|(linha, vezes)| match vezes {
+                1 => linha.clone(),
+                n => format!("{linha}   ({n}x)"),
+            })
+            .collect();
+        let semihosting = self.machine.cpu().semihosting();
+        linhas.extend(semihosting.lines().map(str::to_owned));
+        linhas
     }
 
     /// Liga ou desliga o som, com o volume em `0..=100`.
@@ -266,11 +350,6 @@ impl Session {
     /// A tela, como está agora.
     pub fn screen(&self) -> &Framebuffer {
         self.machine.screen()
-    }
-
-    /// Quantos quadros o jogo apresentou.
-    pub fn frames(&self) -> u32 {
-        self.machine.gl_swaps()
     }
 
     /// O motivo da parada, se o jogo parou, em texto que sirva para quem está olhando a tela.
