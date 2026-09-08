@@ -12,6 +12,7 @@ Uso:
     python3 ferramentas/nand.py diretorio CAMINHO/part_EFS2APPS.bin 0x1340800
 """
 
+import pathlib
 import struct
 import sys
 
@@ -27,6 +28,10 @@ BLOCO = 0x20000
 # A OOB, porém, só tem ECC: os seis últimos bytes de cada setor são `0xff`. Não há ali número de
 # arquivo nem de página lógica, então o mapa do EFS2 é interno, e não da NAND.
 SETOR, FORA_DE_BANDA = 512, 16
+
+# A página lógica do EFS2. Os arquivos são partidos nela, e o mapa é uma tabela de `u32` com a
+# página física de cada pedaço.
+PAGINA = 0x800
 
 
 def particoes(data):
@@ -97,6 +102,47 @@ def entradas_de_diretorio(data, at, quantas=200):
     return saida
 
 
+def paginas_de(dados, base_tabela, ref, quantas):
+    """As páginas físicas de um arquivo, lidas da tabela de páginas.
+
+    `base_tabela` é o endereço que faz `base + ref*4` cair na entrada da página zero.
+
+    **Isto não é um leitor completo, e o motivo está medido.** Montando a `tectoy.ttf` pela
+    tabela encontrada em `0x4c23104`, as treze primeiras páginas saem **idênticas** à cópia
+    conhecida do pacote — o que confirma o modelo: a `ref` indexa um vetor de `u32` com a página
+    física de cada pedaço de 2 KB, em ordem. Da décima quarta em diante, não.
+
+    A entrada 13 daquela cópia aponta para a página `0x14f5`, e a correta é `0x17a6`. Não é
+    corrupção: é uma **geração antiga** da tabela. O EFS2 é log-estruturado e guarda várias
+    versões de tudo, inclusive das próprias tabelas.
+
+    E a versão corrente não existe em lugar nenhum como bloco contíguo: procurando a lista real
+    de 94 páginas da fonte, o prefixo de 5 aparece uma vez e o de 16 não aparece nenhuma. Ou
+    seja, o mapa corrente é a tabela base **mais um diário de alterações**, e montá-lo pede
+    reproduzir esse diário. É o que falta para o leitor ficar pronto.
+
+    Cuidado com a armadilha de verificação: procurar o conteúdo de uma página no dump devolve a
+    **primeira** ocorrência, e há cópias antigas de tudo. Uma lista de páginas obtida assim
+    parece certa e mistura versões.
+    """
+    saida = []
+    for n in range(quantas):
+        at = base_tabela + (ref + n) * 4
+        if at + 4 > len(dados):
+            break
+        pagina = struct.unpack("<I", dados[at : at + 4])[0]
+        if pagina >= len(dados) // PAGINA:
+            break
+        saida.append(pagina)
+    return saida
+
+
+def monta(dados, paginas, tamanho=None):
+    """Junta as páginas num arquivo."""
+    saida = b"".join(dados[p * PAGINA : (p + 1) * PAGINA] for p in paginas)
+    return saida[:tamanho] if tamanho else saida
+
+
 def main():
     if len(sys.argv) < 3:
         print(__doc__)
@@ -116,6 +162,14 @@ def main():
         with open(saida, "wb") as f:
             f.write(data[off:fim])
         print(f"  {alvo}: {fim - off} bytes em {saida}")
+    elif comando == "montar":
+        # `montar ARQUIVO base ref tamanho` — junta um arquivo a partir da tabela de páginas.
+        base, ref, tam = (int(x, 0) for x in sys.argv[3:6])
+        pgs = paginas_de(data, base, ref, (tam + PAGINA - 1) // PAGINA)
+        saida = monta(data, pgs, tam)
+        destino = sys.argv[6] if len(sys.argv) > 6 else "montado.bin"
+        pathlib.Path(destino).write_bytes(saida)
+        print(f"  {len(pgs)} páginas -> {len(saida)} bytes em {destino}")
     elif comando == "diretorio":
         at = int(sys.argv[3], 0)
         for nome, ref in entradas_de_diretorio(data, at):
