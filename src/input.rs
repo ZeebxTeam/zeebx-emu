@@ -213,9 +213,21 @@ impl Script {
     }
 
     /// Põe no controle o que o roteiro manda neste instante.
+    /// Um botão fica apertado se **algum** passo o quer apertado agora.
+    ///
+    /// Aplicar passo a passo parece igual e não é: um roteiro que usa o mesmo botão duas vezes —
+    /// e todo roteiro que navega um menu usa, porque confirmar é sempre a mesma tecla — teria o
+    /// primeiro aperto desfeito pelo segundo passo, que ainda não chegou e por isso manda
+    /// soltar. O aperto sumia sem deixar rastro, e o roteiro parecia não ter efeito.
     pub fn apply(&self, now_ms: u32, pad: &mut Pad) {
+        let mut apertados = 0u32;
         for &(start, end, index) in &self.steps {
-            pad.press(index, (start..end).contains(&now_ms));
+            if (start..end).contains(&now_ms) {
+                apertados |= 1 << index;
+            }
+        }
+        for &(_, _, index) in &self.steps {
+            pad.press(index, apertados & (1 << index) != 0);
         }
     }
 }
@@ -288,6 +300,18 @@ mod tests {
         assert!(pad.is_down(right));
         script.apply(2050, &mut pad);
         assert!(!pad.is_down(right));
+
+        // O mesmo botão em dois momentos: o primeiro aperto não pode ser desfeito pelo passo
+        // seguinte, que ainda não chegou.
+        let script = Script::parse("1000:b2:200,3000:b2:200").unwrap();
+        let b2 = Pad::button_by_name("b2").unwrap();
+        let mut pad = Pad::default();
+        script.apply(1100, &mut pad);
+        assert!(pad.is_down(b2), "o segundo passo desfez o primeiro aperto");
+        script.apply(2000, &mut pad);
+        assert!(!pad.is_down(b2));
+        script.apply(3100, &mut pad);
+        assert!(pad.is_down(b2));
 
         assert!(Script::parse("10:nao-existe").is_err());
         assert!(Script::parse("start").is_err());
