@@ -24,6 +24,7 @@ função não está aqui.
 | [11-compatibilidade.md](11-compatibilidade.md) | O que roda, o que não roda e o que falta para cada caso |
 | [12-rasterizador-e-paralelismo.md](12-rasterizador-e-paralelismo.md) | Por que dividir o trabalho por draw call não servia, e o que serviu |
 | [13-classes-desconhecidas.md](13-classes-desconhecidas.md) | Como descobrir que interface é uma classe sem header: a sonda |
+| [14-z-wheel-e-o-efs2.md](14-z-wheel-e-o-efs2.md) | Onde a loja do console parou, e o elo que falta no leitor da NAND |
 
 ## Como medir
 
