@@ -343,6 +343,15 @@ Contexto técnico em [docs/](docs/README.md).
   `EVT_APP_START`, porque a fonte não abria e o ponteiro nulo vinha logo depois. Com Raging
   Thunder 2 e Reckless Racing, que caíam no mesmo buraco em outros arquivos, **doze jogos
   passaram a rodar de uma vez**. No Windows e no macOS isso funcionava por acaso
+- **`IHash` e o MD5**, que era a única API faltando em todo o acervo: o Zeeboids passou a rodar
+- **O applet é reconhecido pela forma do registro no `.mif`**, e não pela faixa de ClassID da
+  Qualcomm — o Zenonia usa `0xbf2e2021` e um homebrew usa `0x12345678`
+- **O módulo escolhido num pacote com mais de um é o que declara applet**, o que destravou o
+  Action Hero 3D, cujo pacote traz dois jogos
+- **O semihosting do ARM é atendido** em vez de virar exceção: o Peggle e o Zuma's Revenge, que
+  paravam nele, passaram a rodar, e o log que eles emitem por esse caminho agora aparece
+- **A carga de recurso não é mais recusada por um `pnBufSize` não inicializado**, que era o que
+  deixava o Peggle com sessenta mil bytes de zeros no lugar da imagem
 - **A velocidade mostrada é a de agora**, medida sobre os últimos 500 ms. Era a média desde o
   início da sessão: ao entrar numa tela mais pesada, o número escorregava por minutos rumo ao
   novo valor e parecia uma piora contínua onde o emulador já estava estável
@@ -516,34 +525,69 @@ Os dezesseis que sobraram:
 
 ## Próximos passos
 
-Em ordem de retorno por hora de trabalho.
+O placar é de **48 dos 62** rodando. A fila mudou de natureza: por muito tempo o trabalho era
+fazer o jogo abrir, e agora a maior parte do valor está em fazer bem o que já abre.
 
-1. **Os três lentos** — Alice no País das Maravilhas, Heavy Weapon e Turma da Mônica, abaixo de
-   7% da velocidade. Não saíram do lugar nem com o rasterizador paralelo e o núcleo 36% mais
-   rápido, então é gargalo próprio deles. Ninguém investigou qual; a coluna `chamadas:` do
-   relatório é onde começar
-2. **Fonte.** `DrawText` recebe o texto certo mas não tem com o que desenhá-lo. As duas fontes
-   possíveis, ambas com origem verificável: extrair a fonte do sistema do dump da firmware
-   (`docs/vendor/tripleoxygen/dump/nand/1.1.2/partitions/1.1.2_APPS.bin`), que é a que o console
-   realmente usa, ou dos recursos do simulador do BREW SDK (`bin/BrewRes.dat`,
-   `bin/SimulatorRes.dll`). A primeira é a fiel; a segunda é provavelmente mais fácil de achar
-3. **Os quatro ponteiros nulos no laço** — Peggle, Prey Evil, Toy Raid e Bejeweled Twist. Este
-   último já tem análise pronta na seção própria abaixo
-4. **O `.mif` do Action Hero 3D e do Zenonia** — layout de pacote que a nossa varredura não cobre.
-   São dois jogos por um problema que é só nosso
-5. **Um decodificador para os recursos que o `LoadResObject` recusa** — é o que deixa a tela do
-   Pac-Mania preta. Confirmar primeiro que são `.tga`, como o levantamento anterior indicou
-6. **`IHash`**, a única API faltando em todo o conjunto, para o Zeeboids
-7. **As seis classes de `0x0103d8de` a `0x010426e3`**, pedidas por dezessete jogos. Prioridade
-   **baixa**, e vale explicar a mudança: elas pareciam ser o que travava os ports de arcade, e
-   não eram. Nenhum dos dezessete precisa delas — todos recebem `ECLASSNOTSUPPORT` e seguem pelo
-   caminho alternativo. O log dos jogos diz que vêm do `GLES_ext.c` do SDK, ao lado das extensões
-   `EGLSurfaceManip` e `GLESImageonExt` que já temos. O que falta saber é se alguma delas muda o
-   que aparece na tela — e isso se descobre olhando o desenho, não a lista
-8. **`AEECLSID_SQLMGR` (`0x0102c4e8`)** e um motor de SQL mínimo atrás dele, para o Z-Wheel
+### Jogar direito o que já roda
+
+1. **A entrada.** O direcional alimenta dois canais ao mesmo tempo — os eventos de botão e os
+   eixos `X`/`Y` — e um jogo que lê os dois anda duas vezes por toque. Provado por A/B no menu do
+   Zeebo Sports Tênis: desligando o eixo, um toque anda um item e fica. Não dá para simplesmente
+   desligar, porque o comentário do código registra que o Quake usa os botões e o Crash usa os
+   eixos; falta a matriz de qual jogo depende de qual. **Isso afeta os 48 que rodam**, e por isso
+   está em primeiro
+2. **O UID do eixo X está errado.** `AXIS_UIDS[0]` traz `0x0106_c40c`, que é o UID do `Button_3`;
+   o Y é `0x0106_c4d1`, vizinho do `0x0106_c4d0` que a tabela de botões chama de `LeftThumb_X`.
+   Tem cara de troca na transcrição, e explicaria "esquerda e direita não funcionam" com o
+   vertical funcionando. Não confirmado em jogo
+3. **Fonte.** `DrawText` recebe o texto certo e não tem com o que desenhá-lo. Duas origens
+   possíveis, ambas verificáveis: o dump da firmware
+   (`docs/vendor/tripleoxygen/dump/nand/1.1.2/partitions/1.1.2_APPS.bin`), que é a fonte que o
+   console usa de verdade, ou os recursos do simulador do SDK (`bin/BrewRes.dat`,
+   `bin/SimulatorRes.dll`). A primeira é a fiel; a segunda deve ser mais fácil de achar
+4. **Peggle e Pac-Mania rodam e não mostram nada.** O Peggle apresenta 288 quadros pretos e o
+   log dele, que agora conseguimos ler por semihosting, repete `Arithmetic exception: Divide By
+   Zero` — alguma coisa que devolvemos como zero está virando divisor. O Pac-Mania diz "um
+   recurso pedido por `LoadResObject` não é um PNG que saibamos ler"; o levantamento antigo
+   apontou `.tga`, e não há decodificador de TGA no código
+
+### Fazer abrir o que não abre (14)
+
+5. **Os sete que param no laço**: Action Hero 3D (`0x00055568`), Alice, Turma da Mônica,
+   Bejeweled Twist (já tem análise pronta na seção própria abaixo), Prey Evil (salta para um
+   ponteiro de função nulo logo depois de chamadas GL), Toy Raid e Zuma's Revenge
+   (`0x0000000c`). Caso a caso, com o `--watch` e o `--profile`
+6. **Os cinco que não criam o applet**: Zenonia pede `0x01003109`, que é do subsistema de texto
+   dele (o log diz `CWBLText::Create() failed!`); o Opera Mini pede `0x0100102e`, que é de rede
+   — o módulo dele traz `socket://zeebo-cust.opera-mini.net:1080/`; o Zeebo App pede
+   `0x01028e51`; o Z-Wheel segue no `AEECLSID_SQLMGR`; o Need For Speed Carbon não pede classe
+   nenhuma e não tem causa levantada
+7. **Os dois lentos**, que são o mesmo problema visto de perto: o Heavy Weapon faz **6 milhões
+   de chamadas de API para desenhar um quadro** e o Tekken 2 faz **1,08 milhão de `DrawPixel`**.
+   Não são lentos por causa do rasterizador nem do núcleo; são lentos por causa do custo de
+   despacho, que é o item 8
+
+### Desempenho
+
+8. **O custo por chamada de API**, hoje ~7 µs, porque toda chamada é um `emu_stop` seguido de um
+   `emu_start`. Atendê-las dentro de um hook, sem parar a emulação, é redesenho do trampolim e é
+   a maior melhoria que resta. Vale 2,5 milhões de chamadas em 25 s de Quake e 6 milhões por
+   quadro no Heavy Weapon
 9. **O alocador do guest.** A `free_list` é varrida linearmente e o `free` nunca junta blocos
    vizinhos: ela chega a 830 entradas no Crash e 1125 no Bejeweled, e cada `malloc` percorre
    isso. Não é gargalo hoje, mas é fragmentação que só cresce
+
+### Baixa prioridade, com o porquê
+
+10. **As seis classes de `0x0103d8de` a `0x010426e3`**, pedidas por dezessete jogos. Elas
+    pareciam ser o que travava os ports de arcade e **não eram** — nenhum dos dezessete precisa
+    delas, todos recebem `ECLASSNOTSUPPORT` e seguem pelo caminho alternativo. Vêm do
+    `GLES_ext.c` do SDK, ao lado das extensões que já temos. O que falta saber é se alguma muda
+    o que aparece na tela, e isso se descobre olhando o desenho
+11. **`AEECLSID_SQLMGR`** e um motor de SQL mínimo atrás dele: um jogo só, o Z-Wheel
+12. **Rede**, para o Opera Mini. Faria ele abrir, não funcionar: o `zeebo-cust.opera-mini.net`
+    saiu do ar com os servidores da TecToy. Envolve dar acesso à rede a um binário de origem
+    externa, então é decisão de projeto antes de ser tarefa
 
 ## O `resources.dat` do Bejeweled Twist
 
