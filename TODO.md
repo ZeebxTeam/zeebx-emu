@@ -57,6 +57,12 @@ Contexto técnico em [docs/](docs/README.md).
 - Helpers implementados: `malloc`/`free`/`realloc` (com `ALLOC_NO_ZMEM`), `memmove`, `memset`,
   `memcmp`, `strlen`, `strcpy`, `strcat`, `strcmp`, `strncmp`, `wstrlen`, `sprintf`,
   `dbgprintf`, `GetAppInstance`, os helpers de tempo, `aee_GetRand`, `GetRAMFree`
+- **Os campos do `IDIB` em todo bitmap que sai do decodificador** — um `IBitmap` de software do
+  BREW *é* um `IDIB`, e o jogo lê o tamanho direto dos campos públicos, sem `QueryInterface`.
+  Enquanto saíam zerados, o Peggle montava cada sprite como um quadrado de lado zero (76.618 dos
+  77.208 triângulos de um quadro descartados por área nula, tela preta) e o Heavy Weapon repetia
+  o quadro contra bitmaps 0×0 — seis segundos virtuais dele caíram de mais de cinco minutos para
+  2,1 segundos. **49 dos 62 rodando**
 - **A tabela de UIDs dos eixos, conferida nos binários dos jogos** — o `X` trazia o UID do
   `Button_3`, que não aparece em jogo nenhum: quem procurava o eixo horizontal não achava eixo, e
   quem procurava o `Y` caía no `RZ`. Com os quatro UIDs certos o menu do Zeebo Sports Tênis anda
@@ -529,7 +535,7 @@ Os dezesseis que sobraram:
 
 ## Próximos passos
 
-O placar é de **48 dos 62** rodando. A fila mudou de natureza: por muito tempo o trabalho era
+O placar é de **49 dos 62** rodando. A fila mudou de natureza: por muito tempo o trabalho era
 fazer o jogo abrir, e agora a maior parte do valor está em fazer bem o que já abre.
 
 ### Jogar direito o que já roda
@@ -545,47 +551,51 @@ fazer o jogo abrir, e agora a maior parte do valor está em fazer bem o que já 
    (`docs/vendor/tripleoxygen/dump/nand/1.1.2/partitions/1.1.2_APPS.bin`), que é a fonte que o
    console usa de verdade, ou os recursos do simulador do SDK (`bin/BrewRes.dat`,
    `bin/SimulatorRes.dll`). A primeira é a fiel; a segunda deve ser mais fácil de achar
-3. **Peggle e Pac-Mania rodam e não mostram nada.** O Peggle apresenta 288 quadros pretos e o
-   log dele, que agora conseguimos ler por semihosting, repete `Arithmetic exception: Divide By
-   Zero` — alguma coisa que devolvemos como zero está virando divisor. O Pac-Mania diz "um
-   recurso pedido por `LoadResObject` não é um PNG que saibamos ler"; o levantamento antigo
-   apontou `.tga`, e não há decodificador de TGA no código
+3. **Peggle e Pac-Mania rodam e não mostram nada.** O Peggle já desenha a geometria certa desde
+   os campos do `IDIB`, mas fica preso no carregamento e os sprites saem sem textura — ele
+   redecodifica as mesmas nove imagens em volta. O Pac-Mania diz "um recurso pedido por
+   `LoadResObject` não é um PNG que saibamos ler"; o levantamento antigo apontou `.tga`, e não há
+   decodificador de TGA no código
+4. **O Heavy Weapon desenha com as cores erradas.** Ele parou de ser lento e passou a desenhar:
+   a tela de idioma sai em verde e preto, com as formas no lugar certo. É formato de textura, não
+   geometria
 
-### Fazer abrir o que não abre (14)
+### Fazer abrir o que não abre (13)
 
-4. **Os sete que param no laço**: Action Hero 3D (`0x00055568`), Alice, Turma da Mônica,
+5. **Os sete que param no laço**: Action Hero 3D (`0x00055568`), Alice, Turma da Mônica,
    Bejeweled Twist (já tem análise pronta na seção própria abaixo), Prey Evil (salta para um
    ponteiro de função nulo logo depois de chamadas GL), Toy Raid e Zuma's Revenge
    (`0x0000000c`). Caso a caso, com o `--watch` e o `--profile`
-5. **Os cinco que não criam o applet**: Zenonia pede `0x01003109`, que é do subsistema de texto
+6. **Os cinco que não criam o applet**: Zenonia pede `0x01003109`, que é do subsistema de texto
    dele (o log diz `CWBLText::Create() failed!`); o Opera Mini pede `0x0100102e`, que é de rede
    — o módulo dele traz `socket://zeebo-cust.opera-mini.net:1080/`; o Zeebo App pede
    `0x01028e51`; o Z-Wheel segue no `AEECLSID_SQLMGR`; o Need For Speed Carbon não pede classe
    nenhuma e não tem causa levantada
-6. **Os dois lentos**, que são o mesmo problema visto de perto: o Heavy Weapon faz **6 milhões
-   de chamadas de API para desenhar um quadro** e o Tekken 2 faz **1,08 milhão de `DrawPixel`**.
-   Não são lentos por causa do rasterizador nem do núcleo; são lentos por causa do custo de
-   despacho, que é o item 8
+7. **O Tekken 2**, o único que sobrou de lento: **1,08 milhão de `DrawPixel` por quadro**. Não é
+   o rasterizador nem o núcleo; é o custo de despacho, que é o item 8. Vale a lição do Heavy
+   Weapon, que era o outro da dupla: ele não era lento por carga de trabalho, era um jogo
+   repetindo contra uma resposta errada nossa. Antes de otimizar, conferir se o jogo está
+   trabalhando ou insistindo
 
 ### Desempenho
 
-7. **O custo por chamada de API**, hoje ~7 µs, porque toda chamada é um `emu_stop` seguido de um
+8. **O custo por chamada de API**, hoje ~7 µs, porque toda chamada é um `emu_stop` seguido de um
    `emu_start`. Atendê-las dentro de um hook, sem parar a emulação, é redesenho do trampolim e é
    a maior melhoria que resta. Vale 2,5 milhões de chamadas em 25 s de Quake e 6 milhões por
    quadro no Heavy Weapon
-8. **O alocador do guest.** A `free_list` é varrida linearmente e o `free` nunca junta blocos
+9. **O alocador do guest.** A `free_list` é varrida linearmente e o `free` nunca junta blocos
    vizinhos: ela chega a 830 entradas no Crash e 1125 no Bejeweled, e cada `malloc` percorre
    isso. Não é gargalo hoje, mas é fragmentação que só cresce
 
 ### Baixa prioridade, com o porquê
 
-9. **As seis classes de `0x0103d8de` a `0x010426e3`**, pedidas por dezessete jogos. Elas
+10. **As seis classes de `0x0103d8de` a `0x010426e3`**, pedidas por dezessete jogos. Elas
     pareciam ser o que travava os ports de arcade e **não eram** — nenhum dos dezessete precisa
     delas, todos recebem `ECLASSNOTSUPPORT` e seguem pelo caminho alternativo. Vêm do
     `GLES_ext.c` do SDK, ao lado das extensões que já temos. O que falta saber é se alguma muda
     o que aparece na tela, e isso se descobre olhando o desenho
-10. **`AEECLSID_SQLMGR`** e um motor de SQL mínimo atrás dele: um jogo só, o Z-Wheel
-11. **Rede**, para o Opera Mini. Faria ele abrir, não funcionar: o `zeebo-cust.opera-mini.net`
+11. **`AEECLSID_SQLMGR`** e um motor de SQL mínimo atrás dele: um jogo só, o Z-Wheel
+12. **Rede**, para o Opera Mini. Faria ele abrir, não funcionar: o `zeebo-cust.opera-mini.net`
     saiu do ar com os servidores da TecToy. Envolve dar acesso à rede a um binário de origem
     externa, então é decisão de projeto antes de ser tarefa
 

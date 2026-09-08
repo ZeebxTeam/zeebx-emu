@@ -3930,6 +3930,7 @@ impl<C: CpuBackend> Machine<C> {
         if transparent {
             self.transparency.insert(addr, TRANSPARENT_KEY);
         }
+        self.expose_dib(addr)?;
         if let Some(state) = self.decoders.get_mut(&decoder) {
             state.bitmap = Some(addr);
             state.transparent = transparent;
@@ -6758,7 +6759,31 @@ impl<C: CpuBackend> Machine<C> {
 
         self.dib_buffers.insert(bitmap, buffer);
         self.sync_to_guest(bitmap)?;
+        self.write_dib_header(bitmap)
+    }
 
+    /// Escreve os campos públicos do `IDIB` de um bitmap: tamanho, passo, profundidade e o
+    /// ponteiro para os pixels — este último só quando eles já existem.
+    ///
+    /// Um `IBitmap` de software do BREW **é** um `IDIB`: a struct começa com a vtable de
+    /// `IBitmap` e segue com campos públicos, e o jogo lê esses campos direto, sem pedir nada.
+    /// O Peggle é o caso: ele decodifica o PNG, pergunta o tamanho pelos campos e imprime
+    /// `-size 0/0` no log dele quando não acha. Aí monta cada sprite como um quadrado de lado
+    /// zero — 76.618 dos 77.208 triângulos de um quadro saíam degenerados, e a tela ficava
+    /// preta com o jogo desenhando o tempo todo.
+    ///
+    /// Fora do decodificador, os pixels continuam sendo alocados só no `QueryInterface`, que é
+    /// quando o jogo declara que vai mexer neles: a região de superfícies não recicla, e toda
+    /// superfície publicada entra no laço que sincroniza os pixels a cada chamada que os toca.
+    /// Escrever o cabeçalho sem os pixels seria pior que não escrever nada — o jogo passa a
+    /// confiar no `pBmp` e desreferencia o zero.
+    fn write_dib_header(&mut self, bitmap: u32) -> Result<(), CpuError> {
+        let Some(fb) = self.bitmaps.get(&bitmap) else {
+            return Ok(());
+        };
+        let (cx, cy) = (fb.width(), fb.height());
+        let pitch = cx * 2;
+        let buffer = self.dib_buffers.get(&bitmap).copied().unwrap_or(0);
         let transparent = self.transparency.get(&bitmap).copied().unwrap_or(0) as u32;
         self.cpu.write_u32(bitmap + 4, 0)?; // pPaletteMap
         self.cpu.write_u32(bitmap + 8, buffer)?; // pBmp
@@ -8290,6 +8315,19 @@ mod tests {
             ),
             AEE_RO_TRANSPARENT
         );
+        // O bitmap decodificado já chega com os campos públicos do `IDIB` preenchidos, sem
+        // esperar um `QueryInterface`: no console um `IBitmap` de software **é** um `IDIB`, e o
+        // jogo lê o tamanho direto dos campos. O Peggle é quem cobrou — sem isso ele lia 0×0,
+        // montava cada sprite como um quadrado de lado zero e 99% dos triângulos do quadro
+        // saíam degenerados, com a tela preta e o jogo desenhando o tempo todo.
+        let mut cx = [0u8; 2];
+        machine.cpu.read_mem(bitmap + 20, &mut cx).unwrap();
+        assert_eq!(u16::from_le_bytes(cx), 2);
+        let mut cy = [0u8; 2];
+        machine.cpu.read_mem(bitmap + 22, &mut cy).unwrap();
+        assert_eq!(u16::from_le_bytes(cy), 1);
+        assert!(machine.cpu.read_u32(bitmap + 8).unwrap() >= loader::SURFACE_BASE);
+
         // Pedir de novo devolve o mesmo bitmap, e não uma cópia nova a cada chamada.
         call(
             &mut machine,

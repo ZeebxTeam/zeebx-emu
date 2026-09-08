@@ -1,6 +1,6 @@
 # 11 — Compatibilidade
 
-Levantada rodando **as 61 ROMs** por seis segundos virtuais cada, sem janela. O procedimento está
+Levantada rodando **as 62 ROMs** por seis segundos virtuais cada, sem janela. O procedimento está
 no fim deste documento e dá para repetir a qualquer momento.
 
 > "Roda" quer dizer **não quebrou em seis segundos**. Não quer dizer que a tela esteja certa nem
@@ -10,11 +10,11 @@ no fim deste documento e dá para repetir a qualquer momento.
 
 | Estado | Antes | Agora |
 |---|---:|---:|
-| roda | 33 | **45** |
+| roda | 33 | **49** |
 | falha no `EVT_APP_START` | 10 | **0** |
-| não cria o applet | 8 | 7 |
-| para no laço de quadros | 7 | 6 |
-| lento demais | 3 | 3 |
+| não cria o applet | 8 | 5 |
+| para no laço de quadros | 7 | 7 |
+| lento demais | 3 | 1 |
 
 Doze jogos mudaram de estado de uma vez, e a causa foi uma só: **o sistema de arquivos do console
 não distingue maiúsculas de minúsculas, e o nosso distinguia.** Os dez ports de arcade pedem
@@ -90,26 +90,39 @@ Passou os seis segundos, mas o relatório apontou alguma coisa. O balde é conse
 | Zeebo F.C. Foot Camp |  | arquivo não encontrado |
 | Zeebo Family Pack |  | arquivo não encontrado, ponteiro recusado |
 
-### Não roda (16)
+### Não roda (13)
 
 | Jogo | Onde para |
 |---|---|
-| Action Hero 3D - Wild Dog and IMICRO3D | não chega a criar o applet |
-| Alice no Pais das Maravilhas | lento demais — abaixo de 7% da velocidade |
-| Bejeweled Twist | para no laço de quadros — acesso inválido a 0x00000024 (pc 0x00032b78) |
-| Heavy Weapon | lento demais — abaixo de 7% da velocidade |
+| Action Hero 3D - Wild Dog and IMICRO3D | para no laço — acesso inválido a 0x00000000 (pc 0x00055568) |
+| Alice no Pais das Maravilhas | para no laço na volta 204 — acesso inválido a 0x00000000 (pc 0x000105ac) |
+| Bejeweled Twist | para no laço — acesso inválido a 0x00000024 (pc 0x00032b78) |
 | Need For Speed - Carbon - Domine a Cidade | não chega a criar o applet |
-| Peggle | para no laço de quadros — acesso inválido a 0x00000000 (pc 0x00019ab8) |
-| Prey Evil | para no laço de quadros — acesso inválido a 0x00000000 (pc 0x00000000) |
-| Tork and Kral - A Prehistorik Adventure | não chega a criar o applet |
-| Toy Raid | para no laço de quadros — acesso inválido a 0x00000000 (pc 0x00018d4c) |
-| Turma da Monica em Vamos Brincar Vol. 1 | lento demais — abaixo de 7% da velocidade |
-| Z-Wheel | não chega a criar o applet |
-| Zeebo App | não chega a criar o applet |
-| Zeebo Channels - Opera Mini | não chega a criar o applet |
-| Zeeboids | para no laço de quadros — API não implementada — IHash::slot[4] |
-| Zenonia | não chega a criar o applet |
-| Zumas Revenge | para no laço de quadros — exceção do núcleo ARM em pc 0x00010f94 |
+| Prey Evil | para no laço — salta para o endereço zero (lr 0x000161d8) |
+| Tekken 2 | lento demais — 1,08 milhão de `DrawPixel` por quadro |
+| Toy Raid | para no laço na volta 127 — acesso inválido a 0x00000000 (pc 0x00018d4c) |
+| Turma da Monica em Vamos Brincar Vol. 1 | para no laço na volta 4 — acesso inválido a 0x00000000 (pc 0x0008a5a0) |
+| Z-Wheel | não chega a criar o applet — pede `AEECLSID_SQLMGR` |
+| Zeebo App | não chega a criar o applet — pede `0x01028e51` |
+| Zeebo Channels - Opera Mini | não chega a criar o applet — pede a classe de rede `0x0100102e` |
+| Zenonia | não chega a criar o applet — pede `0x01003109`, do subsistema de texto dele |
+| Zumas Revenge | para no laço na volta 55 — acesso inválido a 0x0000000c (pc 0x00046b94) |
+
+### O `IDIB` que ninguém pediu
+
+Duas entradas saíram desta lista de uma vez, e pelo mesmo motivo. Um `IBitmap` de software do
+BREW **é** um `IDIB`: a struct segue com campos públicos, e o jogo lê o tamanho direto deles,
+sem `QueryInterface`. Nós só preenchíamos esses campos quando a interface era pedida.
+
+O **Peggle** montava cada sprite como um quadrado de lado zero — 76.618 dos 77.208 triângulos de
+um quadro descartados por área nula, tela preta com o jogo desenhando o tempo todo. O log dele
+dizia `-size 0/0`, e a lista de rejeições por motivo do rasterizador confirmou. Hoje ele desenha
+geometria, mas ainda fica preso no carregamento e os sprites saem sem textura.
+
+O **Heavy Weapon** era o "lento demais" de 6 milhões de chamadas de API por quadro. Não era carga
+de trabalho: era o jogo repetindo contra bitmaps que mediam 0×0. Seis segundos virtuais saíram de
+**mais de cinco minutos** (estourando o `timeout`) para **2,1 segundos**, e ele desenha — com as
+cores erradas, o que é o próximo passo dele.
 
 ### As seis classes do grupo de extensões
 

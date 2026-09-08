@@ -6,7 +6,7 @@ O Zeebo era digital-only: os jogos vinham da loja da TecToy, que saiu do ar. Sob
 60 títulos que só rodam em quem ainda tem o aparelho ou por meio de modding no console. 
 Este projeto existe para ajudar a preservar essas pérolas que fizeram parte da nossa história.
 
-Em desenvolvimento. Hoje 48 dos 62 títulos de teste passam do carregamento e desenham.
+Em desenvolvimento. Hoje 49 dos 62 títulos de teste passam do carregamento e desenham.
 
 ## Links úteis
 

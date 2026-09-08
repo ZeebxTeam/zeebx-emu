@@ -15,6 +15,22 @@ O BREW deixa o jogo pedir acesso **direto aos pixels**, via `QueryInterface(AEEC
 partir daí o jogo tem um ponteiro para a memória dos pixels e escreve nela sem passar por nós.
 Os jogos comerciais fazem isso o tempo todo.
 
+Mas o `QueryInterface` é permissão, não pré-requisito. No console um `IBitmap` de software
+**é** um `IDIB`: a struct começa com a vtable de `IBitmap` e segue com campos públicos —
+tamanho, passo, profundidade, ponteiro para os pixels — e nada impede o jogo de lê-los direto.
+O Peggle faz exatamente isso com o bitmap que sai do decodificador de PNG, e por isso todo
+bitmap decodificado já sai com esses campos preenchidos.
+
+Enquanto eles saíam zerados, o jogo lia `-size 0/0` (a frase é do log dele) e montava cada
+sprite como um quadrado de lado zero: **76.618 dos 77.208 triângulos de um quadro** eram
+descartados por área nula, e a tela ficava preta com o jogo desenhando o tempo todo. Foi o
+contador de triângulos rejeitados, por motivo, que apontou isso — nenhuma chamada de API tinha
+falhado.
+
+Só o caminho do decodificador publica os pixels sem ser pedido. Nos outros, o `QueryInterface`
+continua sendo a hora de alocar: a região de superfícies não recicla, e toda superfície
+publicada entra no laço de sincronização abaixo.
+
 Isso obriga a manter dois lados em dia:
 
 ```
