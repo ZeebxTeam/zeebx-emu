@@ -470,6 +470,16 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
             machine.suspicious_objects().len()
         );
     }
+    let urls = machine.web_requests();
+    if !urls.is_empty() {
+        println!(
+            "rede:      o jogo pediu {} endereço(s) pelo IWeb",
+            urls.len()
+        );
+        for url in &urls {
+            println!("  {url}");
+        }
+    }
     if let Some(fonte) = machine.font_source() {
         println!("fonte:     {fonte}, do próprio pacote do jogo");
     }

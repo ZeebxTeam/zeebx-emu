@@ -1290,6 +1290,8 @@ pub struct Machine<C: CpuBackend> {
     /// ClassIDs que o jogo pediu e não sabemos criar — a lista do que falta.
     unknown_classes: BTreeSet<u32>,
     /// ClassIDs que o `--sonda` manda atender com um objeto de observação.
+    /// As URLs que o jogo pediu pelo `IWeb`, para o relatório.
+    web_requests: BTreeSet<String>,
     /// As coleções vivas, cada uma com os itens e onde o cursor está.
     collections: HashMap<u32, (Vec<u32>, usize)>,
     /// Os bancos SQLite abertos, por objeto `ISQLDatabase`.
@@ -1515,6 +1517,7 @@ impl<C: CpuBackend> Machine<C> {
             heap,
             objects,
             unknown_classes: BTreeSet::new(),
+            web_requests: BTreeSet::new(),
             collections: HashMap::new(),
             databases: HashMap::new(),
             probe_classes: BTreeSet::new(),
@@ -5491,6 +5494,36 @@ impl<C: CpuBackend> Machine<C> {
             "GetDigestSize" => 16,
             // int QueryCipher(ICipherFactory *, AEECLSID cipher, AEECLSID mode, int padding,
             //                 unsigned keysize)
+            // void IWEB_GetResponse(IWeb *po, IWeb *po, IWebResp **ppResp, AEECallback *pcb,
+            //                       const char *pszUrl, ...)
+            //
+            // A macro do SDK repete o `po` como primeiro vararg, então o `r1` é o próprio
+            // objeto, o `r2` é o ponteiro de saída da resposta, o `r3` é o callback e a URL vem
+            // da pilha. As opções seguem depois, terminadas por `WEBOPT_END`.
+            //
+            // Por ora isto **observa e recusa**. Observar primeiro é deliberado: o formato dos
+            // varargs não está em header nenhum que tenhamos, e implementar HTTP contra um
+            // palpite de layout daria um cliente que erra o endereço sem dizer. Registrado o
+            // que o jogo pede, o passo seguinte é atender de verdade — e aí dar acesso à rede a
+            // um binário de origem externa é decisão de projeto, com autorização explícita.
+            "GetResponse" => {
+                let (r1, saida) = (self.cpu.read_reg(Reg::R1), self.cpu.read_reg(Reg::R2));
+                let url_ptr = self.stack_arg(0)?;
+                let url = match url_ptr {
+                    0 => String::new(),
+                    p => self.cpu.read_cstring(p, MAX_STRING),
+                };
+                self.web_requests.insert(match url.is_empty() {
+                    true => format!("(sem URL) r1={r1:#x} r2={saida:#x}"),
+                    false => url,
+                });
+                // Ponteiro de saída zerado: o jogo precisa ver que não há resposta, em vez de
+                // seguir com lixo.
+                if saida != 0 {
+                    self.cpu.write_u32(saida, 0)?;
+                }
+                SUCCESS
+            }
             "QueryCipher" => SUCCESS,
             // int AddOpt(IWeb *, WebOpt *apWebOpt) — cabeçalhos, tempo limite e afins. Aceitar
             // não custa nada: quem decide o destino da requisição é o `GetResponse`.
@@ -6186,6 +6219,11 @@ impl<C: CpuBackend> Machine<C> {
             }
         }
         Ok(true)
+    }
+
+    /// As URLs que o jogo tentou buscar pelo `IWeb`.
+    pub fn web_requests(&self) -> Vec<String> {
+        self.web_requests.iter().cloned().collect()
     }
 
     /// De onde saiu a fonte que está desenhando o texto, se houver uma.
