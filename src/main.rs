@@ -470,6 +470,17 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
             machine.suspicious_objects().len()
         );
     }
+    let toques = machine.pad_log();
+    if !toques.is_empty() {
+        println!("toques:    {} entregue(s) ao jogo", toques.len());
+        for (ms, nome, down) in &toques {
+            let acao = match down {
+                true => "aperta",
+                false => "solta ",
+            };
+            println!("  {ms:>7} ms  {acao} {nome}");
+        }
+    }
     let urls = machine.web_requests();
     if !urls.is_empty() {
         println!(

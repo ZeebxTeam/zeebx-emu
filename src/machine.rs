@@ -408,6 +408,10 @@ const AEECLSID_QEGL: u32 = 0x0103_d8ec;
 const AEECLSID_EGL: u32 = 0x0101_4bc4;
 /// `AEECLSID_WEB`, do `BMPIds.csv` do SDK: o cliente HTTP do BREW.
 const AEECLSID_WEB: u32 = 0x0100_5000;
+/// Quantos toques o registro guarda. Suficiente para uma reprodução curta e pequeno o bastante
+/// para caber no relatório sem afogá-lo.
+const PAD_LOG_MAX: usize = 40;
+
 /// `AEECLSID_MD5`: o resumo MD5, exposto como `IHash`.
 const AEECLSID_MD5: u32 = 0x0100_1015;
 /// `AEECLSID_CipherFactory`, de `inc/AEECipherFactory.bid`.
@@ -1351,6 +1355,13 @@ pub struct Machine<C: CpuBackend> {
     pad: Pad,
     /// Apertos e solturas ainda não lidos pelo jogo, na ordem em que aconteceram.
     pad_events: std::collections::VecDeque<(usize, bool)>,
+    /// Os últimos toques entregues, para o relatório.
+    ///
+    /// A fila acima é consumida pelo jogo e some; esta fica. Existe porque um problema de
+    /// entrada é indistinguível de um problema de interpretação sem ver o que chegou: um menu
+    /// que anda duas casas por toque pode ser o jogo contando dois canais, ou o emulador
+    /// mandando dois eventos, e só o registro separa os dois casos.
+    pad_log: std::collections::VecDeque<(u32, usize, bool)>,
     /// O applet corrente, devolvido por `GetAppInstance`.
     current_applet: u32,
     /// Semente do gerador pseudoaleatório — fixa, para que a mesma sessão se repita igual.
@@ -1549,6 +1560,7 @@ impl<C: CpuBackend> Machine<C> {
             pending_signals: Vec::new(),
             pad: Pad::default(),
             pad_events: std::collections::VecDeque::new(),
+            pad_log: std::collections::VecDeque::new(),
             current_applet: 0,
             random_state: 0x1234_5678,
             clock_us: 0,
@@ -4700,6 +4712,13 @@ impl<C: CpuBackend> Machine<C> {
         let moved = pad.axes != self.pad.axes;
         self.pad = pad;
         self.pad_events.extend(changes.iter().copied());
+        let agora = self.elapsed_ms();
+        for &(index, down) in &changes {
+            if self.pad_log.len() == PAD_LOG_MAX {
+                self.pad_log.pop_front();
+            }
+            self.pad_log.push_back((agora, index, down));
+        }
 
         if !changes.is_empty() {
             self.raise_input_signal("RegisterForButtonEvent");
@@ -6222,6 +6241,20 @@ impl<C: CpuBackend> Machine<C> {
     }
 
     /// As URLs que o jogo tentou buscar pelo `IWeb`.
+    /// Os últimos toques entregues ao jogo, como `(instante, nome do botão, apertado)`.
+    pub fn pad_log(&self) -> Vec<(u32, &'static str, bool)> {
+        self.pad_log
+            .iter()
+            .map(|&(ms, index, down)| {
+                (
+                    ms,
+                    input::BUTTON_NAMES.get(index).copied().unwrap_or("?"),
+                    down,
+                )
+            })
+            .collect()
+    }
+
     pub fn web_requests(&self) -> Vec<String> {
         self.web_requests.iter().cloned().collect()
     }

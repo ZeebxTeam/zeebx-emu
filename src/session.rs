@@ -317,6 +317,17 @@ impl Session {
             linhas.push("— endereços que o jogo pediu pelo IWeb —".to_string());
             linhas.extend(urls.iter().map(|url| format!("  {url}")));
         }
+        let toques = self.machine.pad_log();
+        if !toques.is_empty() {
+            linhas.push("— toques entregues ao jogo —".to_string());
+            linhas.extend(toques.iter().map(|&(ms, nome, down)| {
+                let acao = match down {
+                    true => "aperta",
+                    false => "solta ",
+                };
+                format!("  {ms:>7} ms  {acao} {nome}")
+            }));
+        }
         let classes = self.machine.unknown_classes();
         if !classes.is_empty() {
             linhas.push("— classes que o jogo pediu e não temos —".to_string());
