@@ -9,6 +9,7 @@ Isso é melhor do que parece. A sonda do emulador descobre um slot por execuçã
 teste; aqui a tabela de métodos **está escrita**. Ler é mais confiável que deduzir.
 
 Uso:
+    python3 ferramentas/firmware.py classe 0x01001011    # construtor e vtable da classe
     python3 ferramentas/firmware.py refs 0x01001011      # onde a constante aparece
     python3 ferramentas/firmware.py desmonta 0x112f84dc 0x112f8502 thumb
 
@@ -58,6 +59,64 @@ def para_offset(segs, endereco):
     return None
 
 
+def registro(data, clsid):
+    """A entrada da tabela de classes do firmware, se houver.
+
+    As classes que o console implementa estão numa tabela de entradas de dezesseis bytes:
+
+        <u32 construtor> <u32 CLSID> <u32 sinalizadores> <u32 zero>
+
+    O construtor é endereço Thumb, então tem o bit 0 ligado — é o que distingue a entrada de
+    uma citação qualquer do CLSID, e há muitas: a `0x01001011` aparece vinte e seis vezes no
+    `1.1.2_APPS.bin` e só uma delas é o registro.
+    """
+    pat = struct.pack("<I", clsid)
+    for m in re.finditer(re.escape(pat), data):
+        o = m.start()
+        if o < 4 or o + 12 > len(data):
+            continue
+        func, _, flags, zero = struct.unpack("<4I", data[o - 4 : o + 12])
+        if func & 1 and zero == 0 and func > 0x1000_0000:
+            return func & ~1, flags
+    return None, None
+
+
+def vtable_de(data, segs, construtor, quantos=16):
+    """A vtable que um construtor grava no objeto recém-alocado.
+
+    O padrão é sempre o mesmo: aloca, carrega um literal e o grava em `[obj]`. Procuramos o
+    primeiro `ldr rX, [pc, #N]` seguido de `str rX, [r?]` e devolvemos o que o literal aponta.
+
+    A vtable termina onde os ponteiros deixam de ser Thumb — no ARM do console todo método é
+    Thumb, então o primeiro valor com o bit 0 zerado já não é método.
+    """
+    off = para_offset(segs, construtor)
+    if off is None:
+        return None, []
+    md = Cs(CS_ARCH_ARM, CS_MODE_THUMB)
+    alvo = None
+    for i in md.disasm(data[off : off + 0x60], construtor):
+        m = re.search(r"\[pc, #(0x[0-9a-f]+|\d+)\]", i.op_str)
+        if m and i.mnemonic.startswith("ldr"):
+            pos = para_offset(segs, ((i.address + 4) & ~3) + int(m.group(1), 0))
+            if pos is not None:
+                valor = struct.unpack("<I", data[pos : pos + 4])[0]
+                if para_offset(segs, valor) is not None:
+                    alvo = valor
+        elif alvo and i.mnemonic == "str" and i.op_str.endswith("[r4]"):
+            break
+    if alvo is None:
+        return None, []
+    base = para_offset(segs, alvo)
+    slots = []
+    for i in range(quantos):
+        v = struct.unpack("<I", data[base + i * 4 : base + i * 4 + 4])[0]
+        if not v & 1:
+            break
+        slots.append(v & ~1)
+    return alvo, slots
+
+
 def main():
     if len(sys.argv) < 3:
         print(__doc__)
@@ -72,6 +131,20 @@ def main():
             end = para_endereco(segs, m.start())
             if end is not None:
                 print(f"  offset {m.start():#010x}  endereço {end:#010x}")
+    elif sys.argv[1] == "classe":
+        clsid = int(sys.argv[2], 0)
+        construtor, flags = registro(data, clsid)
+        if construtor is None:
+            print(f"  {clsid:#010x} não está na tabela de classes deste firmware")
+            return
+        print(f"  construtor  {construtor:#010x}  (sinalizadores {flags:#x})")
+        alvo, slots = vtable_de(data, segs, construtor)
+        if alvo is None:
+            print("  não achei a vtable no começo do construtor")
+            return
+        print(f"  vtable      {alvo:#010x}  ({len(slots)} métodos)")
+        for i, v in enumerate(slots):
+            print(f"    slot[{i:2}] = {v:#010x}")
     elif sys.argv[1] == "desmonta":
         ini, fim = int(sys.argv[2], 0), int(sys.argv[3], 0)
         off = para_offset(segs, ini)

@@ -779,6 +779,30 @@ pub const SQL_MGR: &[&str] = &["AddRef", "Release", "slot2", "OpenDatabase"];
 /// diziam ser. A primeira instrução que o Z-Wheel manda é `PRAGMA integrity_check`.
 pub const SQL_DATABASE: &[&str] = &["AddRef", "Release", "slot2", "Exec"];
 
+/// Métodos do formulário raiz (`0x01001011`), lidos da vtable do firmware em `0x10a785e4`.
+///
+/// Os três primeiros são o `IQI` de sempre: o slot 0 incrementa o contador em `+4`, o 1 o
+/// devolve e o 2 é o `QueryInterface`. Os outros quatro foram desmontados um a um:
+///
+/// - **slot 3** é um setter e nada mais: `str r1,[r0,#0x10]; str r2,[r0,#0x14]; bx lr`. Guarda
+///   dois valores no objeto e não devolve nada. A Z-Wheel o chama com um objeto e o número
+///   `0xc34`, que é a cara de um par (destinatário, identificador) — daí o nome.
+/// - **slots 5 e 6** delegam: pedem ao objeto interno de `+0xc` a interface `0x01000000` e
+///   chamam nela o slot 27, repassando o argumento. É o gesto de pôr um widget num contêiner.
+/// - **slot 4** faz trabalho próprio, com um argumento.
+///
+/// Os nomes de 3 a 6 descrevem o que o código faz, não um header — não temos header desta
+/// classe. Onde a intenção não está clara, o nome é o número.
+pub const ROOT_FORM: &[&str] = &[
+    "AddRef",
+    "Release",
+    "QueryInterface",
+    "SetHandler",
+    "slot4",
+    "slot5",
+    "SetWidget",
+];
+
 /// Métodos da coleção genérica da Z-Wheel (`0x0102c4e8`… não: `0x0100104f`).
 ///
 /// Sem header. Os nomes saíram do uso, observado com o `--sonda`: o app cria a coleção, chama o

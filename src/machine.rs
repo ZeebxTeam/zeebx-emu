@@ -412,6 +412,10 @@ const AEECLSID_WEB: u32 = 0x0100_5000;
 /// para caber no relatório sem afogá-lo.
 const PAD_LOG_MAX: usize = 40;
 
+/// `0x01001011`, o formulário raiz. Não é do SDK: é do `widgets`/`forms` que o console
+/// carregava, e a definição está compilada dentro do `1.1.2_APPS.bin`.
+const AEECLSID_ROOTFORM: u32 = 0x0100_1011;
+
 /// `AEECLSID_MD5`: o resumo MD5, exposto como `IHash`.
 const AEECLSID_MD5: u32 = 0x0100_1015;
 /// `AEECLSID_CipherFactory`, de `inc/AEECipherFactory.bid`.
@@ -1427,6 +1431,8 @@ pub struct Machine<C: CpuBackend> {
     sounds: HashMap<u32, SoundState>,
     /// Estado de cada `ICipher1` vivo.
     ciphers: HashMap<u32, CipherState>,
+    /// O par que o `SetHandler` do formulário raiz guardou, por objeto.
+    root_forms: HashMap<u32, (u32, u32)>,
     /// Estado de cada `IHash` vivo.
     hashes: HashMap<u32, HashState>,
     resources: crate::resfile::ResCache,
@@ -1588,6 +1594,7 @@ impl<C: CpuBackend> Machine<C> {
             api_time: HashMap::new(),
             profiling_api: false,
             image_notify: HashMap::new(),
+            root_forms: HashMap::new(),
             streams: HashMap::new(),
             sounds: HashMap::new(),
             pending_calls: Vec::new(),
@@ -2323,6 +2330,10 @@ impl<C: CpuBackend> Machine<C> {
                 }
                 result
             }
+            (Interface::RootForm, _) => match self.root_form_call(slot)? {
+                Some(result) => result,
+                None => return Ok(None),
+            },
             (Interface::Collection, _) => match self.collection_call(slot)? {
                 Some(result) => result,
                 None => return Ok(None),
@@ -6061,6 +6072,50 @@ impl<C: CpuBackend> Machine<C> {
     ///
     /// Os slots sem nome ainda não apareceram; se aparecerem, o relatório avisa em vez de
     /// fingir que foram atendidos. É por isso que eles não têm nome na tabela.
+    /// Métodos do formulário raiz (`0x01001011`), com a semântica lida da vtable do firmware.
+    ///
+    /// O que fazemos aqui é menos do que o console faz, e de propósito. No firmware o objeto é
+    /// uma casca sobre outro, de classe `0x0103475a`, e os slots 4, 5 e 6 delegam para ele —
+    /// reproduzir isso pede a outra classe, que ainda não temos. O que dá para fazer sem ela é
+    /// o que o aplicativo precisa para não morrer: o `SetHandler` guarda o par que recebe, e os
+    /// que delegam respondem sucesso.
+    ///
+    /// A aposta é explícita: se o aplicativo só precisava que o formulário existisse e aceitasse
+    /// os widgets, ele passa; se ele depende do que o contêiner interno faria, ele para mais
+    /// adiante — e aí o próximo passo aparece, que é melhor do que parar na criação.
+    fn root_form_call(&mut self, slot: u32) -> Result<Option<u32>, CpuError> {
+        let Some(name) = Interface::RootForm.method(slot) else {
+            return Ok(None);
+        };
+        let this = self.cpu.read_reg(Reg::R0);
+        let result = match name {
+            "AddRef" => self.objects.add_ref(this),
+            "Release" => {
+                let restantes = self.objects.release(this);
+                if restantes == 0 {
+                    self.root_forms.remove(&this);
+                }
+                restantes
+            }
+            "QueryInterface" => {
+                let saida = self.cpu.read_reg(Reg::R2);
+                if saida != 0 {
+                    self.cpu.write_u32(saida, this)?;
+                }
+                self.objects.add_ref(this);
+                SUCCESS
+            }
+            // `str r1,[r0,#0x10]; str r2,[r0,#0x14]; bx lr` — guarda e não devolve nada.
+            "SetHandler" => {
+                let par = (self.cpu.read_reg(Reg::R1), self.cpu.read_reg(Reg::R2));
+                self.root_forms.insert(this, par);
+                SUCCESS
+            }
+            _ => SUCCESS,
+        };
+        Ok(Some(result))
+    }
+
     fn collection_call(&mut self, slot: u32) -> Result<Option<u32>, CpuError> {
         let Some(name) = Interface::Collection.method(slot) else {
             return Ok(None);
@@ -8769,6 +8824,7 @@ impl<C: CpuBackend> Machine<C> {
             AEECLSID_WEB => Interface::Web,
             AEECLSID_COLLECTION => Interface::Collection,
             AEECLSID_SQLMGR => Interface::SqlMgr,
+            AEECLSID_ROOTFORM => Interface::RootForm,
             AEECLSID_MD5 => Interface::Hash,
             AEECLSID_CIPHER_FACTORY => Interface::CipherFactory,
             AEECLSID_MEDIA | AEECLSID_MEDIAMIDI | AEECLSID_MEDIAMP3 | AEECLSID_MEDIAADPCM

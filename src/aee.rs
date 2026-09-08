@@ -89,6 +89,17 @@ pub enum Interface {
     SqlDatabase = 37,
     /// A coleção genérica da Z-Wheel (`0x0100104f`): guarda itens e é percorrida.
     Collection = 38,
+    /// `0x01001011`, o formulário raiz — a classe que a Z-Wheel e o Zeeboids pedem para abrir.
+    ///
+    /// Os sete métodos vêm da vtable do firmware, em `0x10a785e4`, achada pela tabela de
+    /// registro do `1.1.2_APPS.bin`: entradas de dezesseis bytes `{função, CLSID, sinalizadores,
+    /// 0}`, e a da `0x01001011` aponta para o construtor em `0x112e399c`. Ele aloca vinte e
+    /// quatro bytes, grava a vtable em `+0`, o `IShell` em `+8` e cria em `+0xc` um objeto da
+    /// classe `0x0103475a`, que é para quem os métodos delegam.
+    ///
+    /// São sete e não mais: o slot 7 não é endereço Thumb e o 8 é zero. Isso casa com o que a
+    /// sonda viu os aplicativos chamarem — os slots 3 e 6, os dois últimos.
+    RootForm = 39,
     /// Objeto de uma classe que ainda não conhecemos, criado a pedido do `--sonda`.
     ///
     /// Não implementa interface nenhuma: existe para **descobrir qual é**. Toda chamada é
@@ -108,7 +119,7 @@ impl Interface {
     /// as duas coisas precisam concordar — daí a lista existir num lugar só, com teste que
     /// confere a correspondência. Quando elas divergiram, um objeto recebeu a vtable de outra
     /// interface e a chamada foi parar no método errado, com sintoma a quilômetros da causa.
-    pub const ALL: [Interface; 39] = [
+    pub const ALL: [Interface; 40] = [
         Self::Shell,
         Self::Module,
         Self::Applet,
@@ -148,6 +159,7 @@ impl Interface {
         Self::SqlMgr,
         Self::SqlDatabase,
         Self::Collection,
+        Self::RootForm,
     ];
 
     /// Nome usado nos logs — casa com a nomenclatura do SDK.
@@ -190,6 +202,7 @@ impl Interface {
             Self::SqlMgr => "ISQLMgr",
             Self::SqlDatabase => "ISQLDatabase",
             Self::Collection => "IColecao",
+            Self::RootForm => "IFormRaiz",
             Self::Probe => "ClasseDesconhecida",
             Self::Helpers => "AEEHelpers",
         }
@@ -235,6 +248,7 @@ impl Interface {
             Self::SqlMgr => aee_slots::SQL_MGR,
             Self::SqlDatabase => aee_slots::SQL_DATABASE,
             Self::Collection => aee_slots::COLLECTION,
+            Self::RootForm => aee_slots::ROOT_FORM,
             // A sonda não tem tabela: `method` responde por ela antes de chegar aqui.
             Self::Probe => &[],
             Self::Helpers => aee_helpers::HELPERS,
@@ -296,6 +310,7 @@ impl Interface {
             36 => Self::SqlMgr,
             37 => Self::SqlDatabase,
             38 => Self::Collection,
+            39 => Self::RootForm,
             6 => Self::Helpers,
             _ => return None,
         })
