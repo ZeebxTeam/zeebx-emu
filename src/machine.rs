@@ -973,7 +973,7 @@ const MAX_NESTING: u32 = 4;
 /// existe para um comparador quebrado não travar a ordenação inteira.
 /// Uma chamada observada pelo `--sonda`: classe, objeto, slot, argumentos e o texto de cada
 /// argumento que apontava para texto.
-pub type ProbeCall = (u32, u32, u32, [u32; 4], [Option<String>; 4]);
+pub type ProbeCall = (u32, u32, u32, [u32; 4], [Option<String>; 4], u64);
 
 const QSORT_BUDGET: u64 = 10_000_000;
 
@@ -6127,16 +6127,20 @@ impl<C: CpuBackend> Machine<C> {
         // Registra **todos** os slots, o `AddRef` e o `Release` inclusive: saber que o jogo só
         // criou e soltou o objeto é resposta tão útil quanto saber que ele chamou o slot 7.
         let args = self.args();
-        if !self
+        // A contagem é o que separa "o app chamou isto" de "o app está preso nisto": um método
+        // com milhões de chamadas é um laço contra uma resposta nossa, não uso normal.
+        if let Some(entrada) = self
             .probe_log
-            .iter()
-            .any(|(c, o, s, _, _)| *c == clsid && *o == this && *s == slot)
+            .iter_mut()
+            .find(|(c, o, s, _, _, _)| *c == clsid && *o == this && *s == slot)
         {
+            entrada.5 += 1;
+        } else {
             // O argumento que aponta para texto legível é quase sempre o que interessa — o
             // nome do banco, a instrução SQL. Lê-lo aqui evita ter que descobrir onde o
             // módulo foi mapeado para ir buscar no arquivo.
             let textos = args.map(|arg| self.probe_text(arg));
-            self.probe_log.push((clsid, this, slot, args, textos));
+            self.probe_log.push((clsid, this, slot, args, textos, 1));
         }
         match slot {
             // `AddRef` e `Release` são os dois primeiros em toda interface do BREW, e a

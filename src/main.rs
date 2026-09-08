@@ -536,7 +536,7 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
     if !sonda.is_empty() {
         println!("sonda:     o que os jogos chamaram nas classes atendidas por observação");
         let mut objeto_atual = 0;
-        for (clsid, objeto, slot, args, textos) in sonda {
+        for (clsid, objeto, slot, args, textos, vezes) in sonda {
             if *objeto != objeto_atual {
                 objeto_atual = *objeto;
                 println!("  classe {clsid:#010x}, objeto {objeto:#x}:");
@@ -545,8 +545,12 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
                 Some(texto) => format!("{texto:?}"),
                 None => format!("{:#x}", args[i]),
             };
+            let repetido = match vezes {
+                1 => String::new(),
+                n => format!("   ({n}x)"),
+            };
             println!(
-                "    slot[{slot:>2}] ({}, {}, {})",
+                "    slot[{slot:>2}] ({}, {}, {}){repetido}",
                 mostrar(1),
                 mostrar(2),
                 mostrar(3)

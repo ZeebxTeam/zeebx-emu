@@ -54,6 +54,25 @@ recebe uma instrução SQL, um ponteiro para dentro da faixa de código do módu
 um contexto. É a forma do `sqlite3_exec`, e foi o suficiente para implementar
 [o `ISQLMgr`](../../src/sql.rs) sem nenhum header.
 
+## A contagem é metade da informação
+
+Cada linha do registro traz quantas vezes aquele slot foi chamado, e esse número separa duas
+coisas muito diferentes: "o app chamou isto" e "o app está **preso** nisto".
+
+Foi ela que fechou o diagnóstico da interface gráfica da Z-Wheel. Com cinco classes sondadas o
+app passa do "Could not create root form" e cria catorze objetos — parece progresso. A contagem
+mostra o que é de verdade:
+
+```
+classe 0x0100104f, objeto 0x30000510:
+  slot[ 7] (…)   (14590410x)
+  slot[ 4] (…)   (14590409x)
+```
+
+Dois métodos alternando quinze milhões de vezes: o app está num laço esperando uma resposta que
+a sonda não sabe dar. Sondar não o fez andar, fez ele girar — e sem o contador isso passaria por
+avanço.
+
 ## O que ela não faz
 
 A sonda não diz **o nome** do método, só o número do slot e o formato. Quem dá nome é o uso: uma
