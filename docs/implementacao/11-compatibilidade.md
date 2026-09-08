@@ -135,9 +135,10 @@ recebia um `IImage`, o que o fazia chamar um método de `IBitmap` numa vtable de
 Três jogos mudaram de estado:
 
 - **Toy Raid** parava no laço de quadros e agora abre com o menu inteiro desenhado.
-- **Pac-Mania** era "roda e não mostra nada"; agora mostra, e por isso ficou lento — ele pinta
-  1,4 milhão de pixels por quadro, um a um, com duas chamadas de API cada. Trocou tela preta por
-  lentidão, o que é avançar.
+- **Pac-Mania** era "roda e não mostra nada"; agora mostra a tela de escolha de idioma inteira e
+  certa. Ficou lento porque passou a ter o que desenhar, e o perfil de API apontou onde: cinco
+  segundos virtuais dele saíram de 174 para 62 de relógio quando o `IIMAGE_Draw` passou a honrar
+  o recorte, e o que sobra é a sincronização de superfície em chamada que não desenha.
 - **Tekken 2** parou de estourar divisão por zero.
 
 ### O jogo que insistia

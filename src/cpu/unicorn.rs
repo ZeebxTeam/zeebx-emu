@@ -544,6 +544,31 @@ mod speed {
 
     #[test]
     #[ignore]
+    fn acesso_a_registrador() {
+        // Quanto custa ler e escrever registrador pela FFI do unicorn. Uma chamada de API faz
+        // meia dúzia disso, e se cada uma custar microssegundo é ela que manda no despacho.
+        let mut cpu = cpu_with(&[0u8; 8]);
+        let rounds = 200_000;
+        let start = std::time::Instant::now();
+        let mut soma = 0u64;
+        for _ in 0..rounds {
+            soma += cpu.read_reg(Reg::R1) as u64;
+        }
+        let leitura = start.elapsed();
+        let start = std::time::Instant::now();
+        for i in 0..rounds {
+            cpu.write_reg(Reg::R1, i);
+        }
+        let escrita = start.elapsed();
+        println!(
+            "leitura {:.0} ns cada, escrita {:.0} ns cada (soma={soma})",
+            leitura.as_secs_f64() * 1e9 / rounds as f64,
+            escrita.as_secs_f64() * 1e9 / rounds as f64
+        );
+    }
+
+    #[test]
+    #[ignore]
     fn com_e_sem_o_teto_de_instrucoes() {
         // O `uc_emu_start` com contagem instala um hook por instrução. Este teste mede o preço
         // dele: mesmo programa, mesmo caminho, só muda o teto.

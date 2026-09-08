@@ -137,10 +137,12 @@ relógio. São 3,4 bilhões de instruções de guest por 25 segundos virtuais e 
 
 Os dois próximos gargalos, em ordem:
 
-1. **O custo por chamada de API**, hoje de ~7 µs, porque toda chamada é um `emu_stop` seguido de
-   `emu_start` do unicorn. O Quake faz 2,5 milhões delas em 25 segundos virtuais; o Heavy Weapon
-   faz 6 milhões para desenhar **um** quadro. Atender dentro de um hook, sem parar a emulação,
-   é redesenho do trampolim — e é o que sobra de maior.
+1. **O custo por chamada de API**, medido em 1,4 µs de ida e volta, porque toda chamada é um
+   `emu_stop` seguido de um `emu_start` do unicorn. O Quake faz 2,5 milhões delas em 25 segundos
+   virtuais. Atender dentro de um hook, sem parar a emulação, é redesenho do trampolim — e é o
+   que sobra de maior **do mecanismo**. Antes dele vem o que cada método faz por dentro: o
+   perfil de API do `--profile` mede isso, e nas três vezes em que um jogo pareceu preso no
+   despacho a causa estava lá, não no trampolim.
 2. **O núcleo em si.** A 110 MIPS, um jogo que use um quarto da capacidade do ARM11 do console
    já consome 80% do nosso relógio só para executar instrução.
 

@@ -1056,6 +1056,8 @@ fn touches_whole_surface(name: &str) -> bool {
         | "EnableDoubleBuffer" | "Translate"
         | "SetAlgorithmHint" | "GetAlgorithmHint"
         | "SetStrokeStyle" | "GetStrokeStyle"
+        // `IImage`: só `Draw`, `DrawFrame` e `Start` põem pixel na superfície.
+        | "SetParm" | "Notify" | "Stop" | "HandleEvent" | "SetStream"
     )
 }
 
@@ -1277,7 +1279,19 @@ pub struct Machine<C: CpuBackend> {
     /// entrada no guest a cada `SetDestination`.
     probed: HashSet<u32>,
     /// Imagens decodificadas, por objeto `IImage`.
-    images: HashMap<u32, DecodedImage>,
+    /// As imagens carregadas, sob `Rc` porque desenhar é o caminho quente: o Pac-Mania chama
+    /// `IIMAGE_Draw` dezenas de milhares de vezes por quadro.
+    images: HashMap<u32, std::rc::Rc<DecodedImage>>,
+    /// A superfície já materializada de cada imagem, para o `IPARM_GETBITMAP`.
+    image_bitmaps: HashMap<u32, u32>,
+    /// Quanto tempo **real** cada método de API custou, ligado pelo `--profile`.
+    ///
+    /// O perfil do guest diz onde o jogo gasta o tempo dele; este diz onde o emulador gasta o
+    /// nosso. Sem ele, um método que custa meio milissegundo por chamada se esconde atrás de
+    /// uma média: o que aparece é "8 µs por chamada de API", e não "o `IIMAGE_Draw` sozinho é
+    /// dois terços do despacho".
+    api_time: HashMap<(u32, u32), u64>,
+    profiling_api: bool,
     /// Callback de `IIMAGE_Notify`, por objeto.
     image_notify: HashMap<u32, Callback>,
     /// Blocos de memória apresentados como stream.
@@ -1427,6 +1441,9 @@ impl<C: CpuBackend> Machine<C> {
             resources: crate::resfile::ResCache::default(),
             unzips: HashMap::new(),
             images: HashMap::new(),
+            image_bitmaps: HashMap::new(),
+            api_time: HashMap::new(),
+            profiling_api: false,
             image_notify: HashMap::new(),
             streams: HashMap::new(),
             sounds: HashMap::new(),
@@ -1919,6 +1936,7 @@ impl<C: CpuBackend> Machine<C> {
         };
         // Um ponteiro ruim vindo do guest não pode derrubar o emulador: viramos `EBADPARM`,
         // que é o que o BREW responde nesse caso, e registramos para aparecer no relatório.
+        let started = self.profiling_api.then(std::time::Instant::now);
         let result = match self.dispatch_inner(iface, slot) {
             Ok(Some(value)) => value,
             Ok(None) => return Ok(None),
@@ -1928,6 +1946,10 @@ impl<C: CpuBackend> Machine<C> {
                 EBADPARM
             }
         };
+        if let Some(started) = started {
+            *self.api_time.entry((iface as u32, slot)).or_insert(0) +=
+                started.elapsed().as_nanos() as u64;
+        }
         // Anexa o retorno à linha do rastreamento: sem ele não dá para ver qual chamada
         // devolveu o erro que fez o jogo desistir.
         if let Some(line) = entry.and_then(|i| self.trace.get_mut(i)) {
@@ -2120,11 +2142,20 @@ impl<C: CpuBackend> Machine<C> {
                 None => return Ok(None),
             },
             (Interface::Image, _) => {
-                self.sync_surfaces_in()?;
+                // Só os três que desenham pagam a cópia. O Pac-Mania faz 168 mil `SetParm` e
+                // 168 mil `Draw` em cinco segundos virtuais, um par por sprite; cobrar a
+                // superfície inteira de cada `SetParm` — que não põe um pixel na tela — eram 52
+                // segundos de relógio, metade de tudo que o emulador gastava atendendo o jogo.
+                let whole = iface.method(slot).is_none_or(touches_whole_surface);
+                if whole {
+                    self.sync_surfaces_in()?;
+                }
                 let Some(result) = self.image_call(slot)? else {
                     return Ok(None);
                 };
-                self.sync_surfaces_out()?;
+                if whole {
+                    self.sync_surfaces_out()?;
+                }
                 result
             }
             (Interface::Hid, _) | (Interface::HidDevice, _) => match self.hid_call(iface, slot)? {
@@ -2561,7 +2592,7 @@ impl<C: CpuBackend> Machine<C> {
         }
         let image = self.new_object(Interface::Image)?;
         if image != 0 {
-            self.images.insert(image, decoded);
+            self.images.insert(image, std::rc::Rc::new(decoded));
         }
         Ok(image)
     }
@@ -4684,6 +4715,7 @@ impl<C: CpuBackend> Machine<C> {
                 let remaining = self.objects.release(this);
                 if remaining == 0 {
                     self.images.remove(&this);
+                    self.image_bitmaps.remove(&this);
                 }
                 remaining
             }
@@ -4762,7 +4794,7 @@ impl<C: CpuBackend> Machine<C> {
         let bytes = self.read_bytes(source.buffer, source.size)?;
         match decode_png(&bytes) {
             Some(decoded) => {
-                self.images.insert(image, decoded);
+                self.images.insert(image, std::rc::Rc::new(decoded));
             }
             None => {
                 self.assumptions
@@ -4807,13 +4839,14 @@ impl<C: CpuBackend> Machine<C> {
         match parm {
             IPARM_CXFRAME => {
                 if let Some(info) = self.images.get_mut(&image) {
-                    info.frame_width = p1 as u16;
+                    std::rc::Rc::make_mut(info).frame_width = p1 as u16;
                 }
             }
             IPARM_NFRAMES => {
                 if let Some(info) = self.images.get_mut(&image) {
                     let frames = (p1 as u16).max(1);
-                    info.frame_width = (info.width as u16) / frames;
+                    let width = info.width as u16;
+                    std::rc::Rc::make_mut(info).frame_width = width / frames;
                 }
             }
             // p1 = ponteiro para receber o `IBitmap *`, p2 = ponteiro para o código de retorno.
@@ -4840,6 +4873,12 @@ impl<C: CpuBackend> Machine<C> {
     /// pixel pela API — saiu de "roda" para "lento demais" quando os dois caminhos foram
     /// unificados. Quem pede o DIB pede pelo `QueryInterface`, e aí ele é publicado.
     fn bitmap_from_image(&mut self, image: u32) -> Result<u32, CpuError> {
+        // A mesma imagem é pedida de novo a cada quadro — o Pac-Mania faz 34 mil
+        // `IPARM_GETBITMAP` em quatro segundos virtuais. Materializar uma superfície nova a
+        // cada pedido gastava sete segundos e deixava trinta e quatro mil objetos vivos.
+        if let Some(&bitmap) = self.image_bitmaps.get(&image) {
+            return Ok(bitmap);
+        }
         let Some(info) = self.images.get(&image).cloned() else {
             return Ok(0);
         };
@@ -4853,6 +4892,7 @@ impl<C: CpuBackend> Machine<C> {
             surface.set_pixel_native(x as i32, y as i32, *pixel);
         }
         self.bitmaps.insert(addr, surface);
+        self.image_bitmaps.insert(image, addr);
         Ok(addr)
     }
 
@@ -4882,6 +4922,7 @@ impl<C: CpuBackend> Machine<C> {
             });
             return Ok(());
         }
+        let clip = self.clip;
         let Some(surface) = self.bitmaps.get_mut(&target) else {
             return Ok(());
         };
@@ -4889,12 +4930,31 @@ impl<C: CpuBackend> Machine<C> {
             (Some(n), width) if width > 0 => (width as u32, n * width as u32),
             _ => (info.width, 0),
         };
-        for row in 0..info.height {
-            for column in 0..frame_width {
-                let source = (row * info.width + column + offset) as usize;
+        // O recorte não é acabamento aqui: é o que decide o tamanho do trabalho. O Pac-Mania
+        // desenha a **folha de fontes inteira** e conta com o recorte para que só a letra
+        // apareça. Percorrer a imagem toda e conferir pixel a pixel eram 3,9 bilhões de pixels
+        // lidos em quatro segundos virtuais para pôr na tela algumas centenas de milhares — e
+        // ainda punha na tela o que o jogo mandou esconder.
+        let (mut first_column, mut last_column) = (0, frame_width as i32);
+        let (mut first_row, mut last_row) = (0, info.height as i32);
+        if let Some(clip) = clip {
+            first_column = first_column.max(clip.x as i32 - x);
+            last_column = last_column.min(clip.x as i32 + clip.width as i32 - x);
+            first_row = first_row.max(clip.y as i32 - y);
+            last_row = last_row.min(clip.y as i32 + clip.height as i32 - y);
+        }
+        // O mesmo vale para as bordas da superfície: o que cai fora nunca precisou ser lido.
+        first_column = first_column.max(-x).max(0);
+        last_column = last_column.min(surface.width() as i32 - x);
+        first_row = first_row.max(-y).max(0);
+        last_row = last_row.min(surface.height() as i32 - y);
+
+        for row in first_row..last_row {
+            for column in first_column..last_column {
+                let source = (row as u32 * info.width + column as u32 + offset) as usize;
                 if let Some(&pixel) = info.pixels.get(source) {
                     if info.opaque.get(source).copied().unwrap_or(true) {
-                        surface.set_pixel_native(x + column as i32, y + row as i32, pixel);
+                        surface.set_pixel_native(x + column, y + row, pixel);
                     }
                 }
             }
@@ -5578,8 +5638,12 @@ impl<C: CpuBackend> Machine<C> {
                 Ok(Some(sound))
             }
             Err(err) => {
-                // Dizer *qual* formato chegou é o que permite saber o que implementar depois.
-                self.bad_pointers.insert(format!("som recusado: {err}"));
+                // Dizer *qual* formato chegou é o que permite saber o que implementar depois —
+                // e "não é um RIFF/WAVE" não diz. O que diz é a assinatura do próprio bloco:
+                // é assim que se sabe que a trilha do Tekken 2 é MP3 sem abrir o jogo.
+                let formato = detect_mime(&bytes, "").unwrap_or("formato desconhecido");
+                self.bad_pointers
+                    .insert(format!("som recusado ({formato}): {err}"));
                 Ok(None)
             }
         }
@@ -5701,6 +5765,27 @@ impl<C: CpuBackend> Machine<C> {
             self.notify_media(this, MM_CMD_PLAY, MM_STATUS_DONE)?;
         }
         Ok(())
+    }
+
+    /// Liga a medição de tempo real por método de API. Ver [`Machine::api_profile`].
+    pub fn enable_api_profile(&mut self) {
+        self.profiling_api = true;
+    }
+
+    /// Quanto tempo real cada método de API custou, do mais caro para o mais barato.
+    pub fn api_profile(&self) -> Vec<(String, u64)> {
+        let mut linhas: Vec<_> = self
+            .api_time
+            .iter()
+            .map(|(&(iface, slot), &ns)| {
+                let nome = aee::Interface::from_index_public(iface)
+                    .and_then(|i| i.method(slot).map(|m| format!("{}::{m}", i.name())))
+                    .unwrap_or_else(|| format!("interface {iface} slot {slot}"));
+                (nome, ns)
+            })
+            .collect();
+        linhas.sort_unstable_by_key(|linha| std::cmp::Reverse(linha.1));
+        linhas
     }
 
     /// Liga a saída de som. Sem ela o emulador roda igual, mudo.

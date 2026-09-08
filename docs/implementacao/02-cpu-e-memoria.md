@@ -36,12 +36,13 @@ Medida, não estimada — `cargo test --release cpu::unicorn::speed -- --ignored
 | | |
 |---|---|
 | Instruções por segundo | ~200–540 M/s |
-| Custo de entrar no guest | ~0,7 µs |
+| Custo de entrar no guest | ~1,4 µs |
 | Teto de instruções ligado (hook por instrução do unicorn) | ~25% mais lento |
 
 Esses números existem para responder a pergunta "o emulador está lento ou o jogo faz muita
-conta?" sem investigação. **Nas duas vezes em que um jogo pareceu travado, o núcleo não era o
-culpado** — era o nosso lado do despacho.
+conta?" sem investigação. **Nas vezes em que um jogo pareceu travado, o núcleo nunca foi o
+culpado** — foi sempre o nosso lado do despacho, e desde então o `--profile` mede também o tempo
+real de cada método de API, que é onde a resposta costuma estar.
 
 ## O mapa de memória
 

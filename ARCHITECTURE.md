@@ -35,7 +35,9 @@ Não há código ARM de cola, stub compilado nem tabela de saltos dentro do gues
 identificador da chamada. O retorno funciona igual: `lr` recebe um endereço-sentinela também não
 mapeado, e chegar nele significa que o módulo retornou.
 
-O preço disso está medido. Cada chamada é um `emu_stop` seguido de um `emu_start`, cerca de 7 µs.
+O preço disso está medido, e a medida mudou quando ficou mais fina. A volta pelo núcleo — sair
+do `emu_start` e entrar de novo — custa **1,4 µs**, e é o que se paga por chamada de API mesmo
+quando o método não faz nada. O que sobra depende do método, e às vezes é muito mais que isso.
 Num jogo que faz milhões delas por quadro isso vira o gargalo, como está descrito no fim deste
 documento.
 
@@ -166,8 +168,11 @@ O `--trace[=trecho]` mostra cada chamada de API com argumentos e retorno. O `--w
 diz quem escreveu e quem leu um campo, que é como se responde "quem deveria ter preenchido isto?".
 O `--code=INI:FIM` lista as instruções executadas numa faixa.
 
-O `--profile` mostra onde o guest gasta o tempo, contando por bloco de tradução em vez de por
-instrução para não alterar o que está sendo medido. O `--wall=SEGUNDOS` interrompe por tempo real,
+O `--profile` mostra onde o tempo é gasto pelos **dois lados**: no guest, por bloco de tradução
+em vez de por instrução, para não alterar o que está sendo medido; e no host, o tempo real de
+cada método de API que o emulador atendeu. O segundo existe porque a média mente — "8 µs por
+chamada de API" escondia que o `IIMAGE_Draw` e o `IIMAGE_SetParm` do Pac-Mania sozinhos eram 99%
+do despacho dele. O `--wall=SEGUNDOS` interrompe por tempo real,
 inclusive de dentro de uma fatia, e é o que torna possível perfilar um jogo que nunca termina.
 
 O `--keys=ms:tecla` roteiriza a entrada em tempo virtual, de modo que a mesma sequência acontece
@@ -204,10 +209,11 @@ emulação do ARM e despacho de API, 38% em preenchimento de pixels, 14% em geom
 O núcleo faz cerca de 110 milhões de instruções por segundo. Um jogo que use um quarto da
 capacidade do ARM11 do console já consome 80% do nosso relógio só para executar instrução.
 
-O próximo gargalo é o custo por chamada de API, os tais 7 µs, porque toda chamada para e reinicia
-o núcleo. Atendê-las dentro de um hook, sem parar a emulação, é um redesenho do trampolim, e é a
-maior melhoria que resta. Depois dela a conversa passa a ser sobre o núcleo em si, e o
-`CpuBackend` já existe para isso.
+O próximo gargalo é o custo por chamada de API, 1,4 µs de ida e volta pelo núcleo, porque toda
+chamada para e reinicia a emulação. Atendê-las dentro de um hook é um redesenho do trampolim, e é
+a maior melhoria estrutural que resta. Vale, porém, a lição do perfil de API: antes de atacar o
+mecanismo, conferir o que cada método custa por dentro — no Pac-Mania a média de 8 µs por chamada
+não vinha do trampolim, vinha de dois métodos que faziam trabalho demais.
 
 O rasterizador não é gargalo hoje. Ele já divide o quadro em faixas paralelas, e mesmo que fosse
 instantâneo o Quake ficaria em torno de 52% da velocidade do console.

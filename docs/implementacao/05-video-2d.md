@@ -54,6 +54,23 @@ inteira de cada uma dessas chamadas:
 
 Duas mudanças, mesmas 59 milhões de instruções.
 
+### O recorte não é acabamento
+
+`IIMAGE_Draw` percorria a imagem inteira e conferia pixel a pixel, sem olhar o recorte. Isso
+está errado duas vezes.
+
+O Pac-Mania desenha a **folha de fontes inteira** e aperta o recorte para que só a letra apareça
+— é o desenho de texto dele. Sem o recorte no laço, uma letra custava os 193 mil pixels da folha:
+20 mil chamadas de `Draw` liam **3,9 bilhões de pixels** para pôr 315 mil na tela. E, como a
+nossa escrita de pixel não conhece o recorte, o que o jogo mandou esconder ia para a tela junto.
+
+Hoje o recorte entra no cálculo dos limites do laço, antes de ler qualquer pixel. Cinco segundos
+virtuais do Pac-Mania saíram de **174 para 62 segundos** de relógio, e a tela de escolha de idioma
+aparece inteira e certa.
+
+A regra que fica: **num laço de desenho, o recorte decide o tamanho do trabalho, não a aparência
+do resultado.** Aplicá-lo por pixel, no fim, é pagar por tudo que se vai jogar fora.
+
 ### Como está resolvido
 
 `touches_whole_surface(nome)` decide se a chamada paga a cópia.

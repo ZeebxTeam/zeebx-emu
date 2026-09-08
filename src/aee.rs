@@ -220,6 +220,11 @@ impl Interface {
         self.slot_names().get(slot as usize).copied()
     }
 
+    /// O mesmo que `from_index`, para quem só tem o número guardado — o perfil de API.
+    pub fn from_index_public(index: u32) -> Option<Self> {
+        Self::from_index(index)
+    }
+
     fn from_index(index: u32) -> Option<Self> {
         Some(match index {
             0 => Self::Shell,

@@ -57,6 +57,16 @@ Contexto técnico em [docs/](docs/README.md).
 - Helpers implementados: `malloc`/`free`/`realloc` (com `ALLOC_NO_ZMEM`), `memmove`, `memset`,
   `memcmp`, `strlen`, `strcpy`, `strcat`, `strcmp`, `strncmp`, `wstrlen`, `sprintf`,
   `dbgprintf`, `GetAppInstance`, os helpers de tempo, `aee_GetRand`, `GetRAMFree`
+- **O recorte dentro do `IIMAGE_Draw`** — ele percorria a imagem inteira e conferia pixel a
+  pixel. O Pac-Mania desenha a folha de fontes inteira e aperta o recorte para mostrar uma
+  letra: 20 mil chamadas liam 3,9 bilhões de pixels para pôr 315 mil na tela, e o que o jogo
+  mandou esconder ia junto. Cinco segundos virtuais dele saíram de 174 para 62 de relógio
+- **Perfil de API no `--profile`** — o tempo real que o emulador gasta em cada método. A média
+  esconde: "8 µs por chamada" virou "`IIMAGE_Draw` e `IIMAGE_SetParm` são 99% do despacho"
+- **O bitmap de uma imagem é materializado uma vez só** (`IPARM_GETBITMAP`), e as imagens
+  passaram a viver sob `Rc` — desenhar não clona mais os pixels
+- **O relatório diz qual formato de som foi recusado**, não só que não é WAVE. Foi assim que a
+  trilha do Tekken 2 apareceu como MP3 e a do Double Dragon como MIDI, em dez segundos cada
 - **O `nResID` e a classe do `LoadResObject`** — pedíamos o arquivo inteiro em vez do recurso, e
   devolvíamos sempre um `IImage`. O Tekken 2 parou de estourar divisão por zero no menu e na
   seleção de personagem, o Toy Raid saiu de "para no laço" para o menu inteiro desenhado, e o
@@ -578,11 +588,12 @@ fazer o jogo abrir, e agora a maior parte do valor está em fazer bem o que já 
    — o módulo dele traz `socket://zeebo-cust.opera-mini.net:1080/`; o Zeebo App pede
    `0x01028e51`; o Z-Wheel segue no `AEECLSID_SQLMGR`; o Need For Speed Carbon não pede classe
    nenhuma e não tem causa levantada
-7. **Dois jogos travados no custo de despacho**, e agora dá para ver isso na tela. O Pac-Mania
-   pinta **1,4 milhão de pixels por quadro**, um a um, e o menu do Tekken 2 faz o mesmo — cada
-   pixel são duas chamadas de API, `RGBToNative` e `DrawPixel`, e cada chamada para e reinicia o
-   núcleo. No Tekken a luta roda a 30 fps porque ali ele usa `BitBlt`; o menu se arrasta porque
-   não usa. É o item 9 cobrando, e são os dois casos que o justificam
+7. **A superfície inteira é sincronizada em chamada que não desenha.** Toda chamada de
+   `IImage` copia os pixels publicados para o guest e de volta, inclusive o `SetParm`, que não
+   põe nada na tela. No Pac-Mania são 168 mil `SetParm` em cinco segundos virtuais, e o perfil
+   de API mostra que sozinhos eles são **metade** de todo o tempo que o emulador gasta
+   atendendo o jogo. O conserto é o mesmo `touches_whole_surface` que o `IDisplay` e o
+   `IBitmap` já usam, mais sincronizar só o retângulo que o desenho toca
 8. **O Tekken 2 não passa da tela de título com entrada roteirizada**: ele registra o sinal de
    botão, drena os eventos e não age. O binário dele não referencia UID de botão nenhum — só o
    `AEEUID_HID_Joystick_Device` —, então ele identifica botão pelo **id** do `AEEHIDButtonInfo`,
@@ -592,7 +603,8 @@ fazer o jogo abrir, e agora a maior parte do valor está em fazer bem o que já 
 
 ### Desempenho
 
-9. **O custo por chamada de API**, hoje ~7 µs, porque toda chamada é um `emu_stop` seguido de um
+9. **O custo por chamada de API**, medido em 1,4 µs de ida e volta, porque toda chamada é um
+   `emu_stop` seguido de um
    `emu_start`. Atendê-las dentro de um hook, sem parar a emulação, é redesenho do trampolim e é
    a maior melhoria que resta. Vale 2,5 milhões de chamadas em 25 s de Quake e 6 milhões por
    quadro no Heavy Weapon

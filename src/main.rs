@@ -316,6 +316,7 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
     // Watchpoint de depuração: registra toda escrita na palavra pedida, com o PC de origem.
     if profile {
         machine.cpu_mut().enable_profile();
+        machine.enable_api_profile();
     }
     if let Some(segundos) = wall {
         machine
@@ -710,6 +711,21 @@ fn run_frames(
         machine.armed_timers()
     );
     if profile {
+        let api = machine.api_profile();
+        let total_api: u64 = api.iter().map(|(_, ns)| ns).sum();
+        if total_api > 0 {
+            println!(
+                "perfil da API: {} ms no total, do emulador atendendo o jogo",
+                total_api / 1_000_000
+            );
+            for (nome, ns) in api.iter().take(PROFILE_LINES) {
+                println!(
+                    "  {:5.1}%  {:>8} ms  {nome}",
+                    *ns as f64 / total_api as f64 * 100.0,
+                    ns / 1_000_000
+                );
+            }
+        }
         let linhas = machine.cpu().profile();
         let total: u64 = linhas.iter().map(|&(_, n)| n).sum();
         println!("perfil:    {} blocos distintos executados", linhas.len());
