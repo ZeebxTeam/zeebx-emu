@@ -92,3 +92,57 @@ brew install unar && unar -o brew-src docs/vendor/tripleoxygen/doc/503611776Insi
 
 O BREW MP SDK 7.12.5 dentro de `bundle/` continua sem extrair; só vale a pena se quisermos
 comparar APIs entre BREW 4.0.2 e BREW MP.
+
+## O acervo está no ar, e onde ele muda o plano
+
+`tripleoxygen.net/files/devices/zeebo/` continua público. O que foi baixado para `vendor/`, que
+é ignorado pelo git — firmware e material do console não entram no repositório:
+
+| Arquivo | O que é |
+|---|---|
+| `content/hid_devices.original.cfg` | O mapeamento de controles do console, com a entrada do controle do Zeebo |
+| `content/274755_(727)_full.7z` | O pacote completo da Z-Wheel, 606 arquivos |
+| `dump/nand/1.1.2/partitions/1.1.2_APPS.bin` | A partição de aplicações, 21 MB, um ELF ARM |
+| `dump/nand/1.1.2/1.1.2.bin` | A NAND inteira, 128 MB |
+
+Três coisas saíram daí, e a terceira é a que muda o rumo.
+
+### O `hid_devices.original.cfg` desmentiu uma dedução nossa
+
+A entrada `VID:0x1EAA:PID:0x0135` traz `AXIS:X:0x0106C40C`, que é o UID de um botão. A tabela
+original do projeto estava certa e o "conserto" que eu tinha feito, deduzido dos binários dos
+jogos, estava errado. Está contado em [09-entrada.md](implementacao/09-entrada.md).
+
+### O pacote oficial da Z-Wheel é igual ao que já tínhamos
+
+Mesma lista de arquivos, mesmo `tt_prefs.db`. Ou seja, `fontsize.map` e `zeeboprefs.dat` **não
+são do jogo**: são do aparelho. E o `fontsize.map` não aparece em lugar nenhum da NAND — nem no
+firmware, nem na imagem inteira. O jogo procura um arquivo que talvez nunca tenha existido, e o
+"arquivos não encontrados" dele é ruído, não pista.
+
+### As classes de interface são módulos do console
+
+Esta é a descoberta grande. As strings do `1.1.2_APPS.bin` mostram que o BREW do Zeebo carrega
+extensões que são **binários ARM como qualquer jogo**:
+
+```
+fs:/mod/widgets/widgets.mod        fs:/mod/forms/forms.mod
+fs:/mod/framewidget/framewidget.mod fs:/mod/imenu/imenu.mod
+fs:/mod/icontrols/icontrols.mod    fs:/mod/htmlwidget/htmlwidget.mod
+fs:/mod/isql/isql.mod              fs:/mod/ssl/ssl.mod
+fs:/mod/btfe/qcsans_ttf.mod        fs:/shared/fonts/tectoy.ttf
+```
+
+Ou seja: as classes que estamos identificando slot a slot na Z-Wheel — o formulário raiz, a
+coleção, a fonte TrueType — **não são API do BREW que precisamos escrever**. São módulos que o
+console carregava, e que o emulador poderia carregar do mesmo jeito que carrega um jogo. O
+`isql.mod` é a prova pelo avesso: nós reimplementamos aquilo em Rust sem saber que existia um
+módulo pronto.
+
+Isso não torna o trabalho feito inútil — o `sql.rs` funciona e não depende de material do
+console —, mas reordena a fila: antes de reimplementar um toolkit de interface, vale tentar
+**executar o do console**.
+
+O que falta para isso é extrair os arquivos da NAND. Ela usa EFS2, o sistema de arquivos da
+Qualcomm, e os `.mod` não aparecem como blocos contíguos com o cabeçalho `BREW` — só as strings
+de caminho, dentro do firmware. Extrair pede um leitor de EFS2, e é a próxima tarefa desse fio.
