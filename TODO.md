@@ -603,18 +603,24 @@ fazer o jogo abrir, e agora a maior parte do valor está em fazer bem o que já 
    Bejeweled Twist (já tem análise pronta na seção própria abaixo), Prey Evil (salta para um
    ponteiro de função nulo logo depois de chamadas GL) e Zuma's Revenge (`0x0000000c`). Caso a
    caso, com o `--watch` e o `--profile`
-6. **Os quatro que não criam o applet**: Zenonia pede `0x01003109`, que é do subsistema de texto
+6. **A interface da Z-Wheel**, agora com as classes identificadas pelo pool de literais do
+   binário: `0x01001011` é o formulário raiz, `0x0100104f` é uma coleção genérica (aparece na
+   configuração do formulário, no histórico do app e no `Tectoy_LaunchMainMenu`) e `0x01035156`
+   é a fonte TrueType. A sonda levou até onde o app **usa** os objetos: ele lê um campo do que
+   recebeu e chama o ponteiro que está lá, que é zero. Daí em diante é implementação, não
+   descoberta — e a fonte já existe (`font.rs`), falta a vtable de cada uma
+7. **Os quatro que não criam o applet**: Zenonia pede `0x01003109`, que é do subsistema de texto
    dele (o log diz `CWBLText::Create() failed!`); o Opera Mini pede `0x0100102e`, que é de rede
    — o módulo dele traz `socket://zeebo-cust.opera-mini.net:1080/`; o Zeebo App pede
    `0x01028e51`; o Z-Wheel passou do SQL e agora para no `ISHELL_SendEvent`; o Need For Speed Carbon não pede classe
    nenhuma e não tem causa levantada
-7. **A superfície inteira é sincronizada em chamada que não desenha.** Toda chamada de
+8. **A superfície inteira é sincronizada em chamada que não desenha.** Toda chamada de
    `IImage` copia os pixels publicados para o guest e de volta, inclusive o `SetParm`, que não
    põe nada na tela. No Pac-Mania são 168 mil `SetParm` em cinco segundos virtuais, e o perfil
    de API mostra que sozinhos eles são **metade** de todo o tempo que o emulador gasta
    atendendo o jogo. O conserto é o mesmo `touches_whole_surface` que o `IDisplay` e o
    `IBitmap` já usam, mais sincronizar só o retângulo que o desenho toca
-8. **O Tekken 2 não passa da tela de título com entrada roteirizada**: ele registra o sinal de
+9. **O Tekken 2 não passa da tela de título com entrada roteirizada**: ele registra o sinal de
    botão, drena os eventos e não age. O binário dele não referencia UID de botão nenhum — só o
    `AEEUID_HID_Joystick_Device` —, então ele identifica botão pelo **id** do `AEEHIDButtonInfo`,
    e os nossos índices 12 a 17 (o direcional, o `Button_1` e o `Button_3`) são invenção nossa,
@@ -623,23 +629,23 @@ fazer o jogo abrir, e agora a maior parte do valor está em fazer bem o que já 
 
 ### Desempenho
 
-9. **O custo por chamada de API**, medido em 1,4 µs de ida e volta, porque toda chamada é um
+10. **O custo por chamada de API**, medido em 1,4 µs de ida e volta, porque toda chamada é um
    `emu_stop` seguido de um
    `emu_start`. Atendê-las dentro de um hook, sem parar a emulação, é redesenho do trampolim e é
    a maior melhoria que resta. Vale 2,5 milhões de chamadas em 25 s de Quake e 6 milhões por
    quadro no Heavy Weapon
-10. **O alocador do guest.** A `free_list` é varrida linearmente e o `free` nunca junta blocos
+11. **O alocador do guest.** A `free_list` é varrida linearmente e o `free` nunca junta blocos
    vizinhos: ela chega a 830 entradas no Crash e 1125 no Bejeweled, e cada `malloc` percorre
    isso. Não é gargalo hoje, mas é fragmentação que só cresce
 
 ### Baixa prioridade, com o porquê
 
-11. **As seis classes de `0x0103d8de` a `0x010426e3`**, pedidas por dezessete jogos. Elas
+12. **As seis classes de `0x0103d8de` a `0x010426e3`**, pedidas por dezessete jogos. Elas
     pareciam ser o que travava os ports de arcade e **não eram** — nenhum dos dezessete precisa
     delas, todos recebem `ECLASSNOTSUPPORT` e seguem pelo caminho alternativo. Vêm do
     `GLES_ext.c` do SDK, ao lado das extensões que já temos. O que falta saber é se alguma muda
     o que aparece na tela, e isso se descobre olhando o desenho
-12. **Rede** — `INetMgr` e `ISocket`. É o que a Z-Wheel usa para falar com o servidor da loja
+13. **Rede** — `INetMgr` e `ISocket`. É o que a Z-Wheel usa para falar com o servidor da loja
     e o que um servidor privado de rankings vai precisar. Envolve dar acesso à rede a um binário
     de origem externa, então o desvio de host:port fica na configuração, e não no jogo. O Opera
     Mini depende disso também, mas navegar de verdade exigiria reimplementar o servidor da

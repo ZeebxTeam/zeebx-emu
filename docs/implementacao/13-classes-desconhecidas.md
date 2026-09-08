@@ -84,6 +84,36 @@ alterna dois métodos da classe `0x0100104f`; com o slot 4 respondendo qualquer 
 de zero, o laço **acaba** e o app segue — o que prova que aquele slot é a condição, e não o
 outro. É informação que nenhuma quantidade de observação passiva daria.
 
+## O pool de literais também identifica
+
+A sonda diz o **formato** de um método; quem costuma dizer o **propósito** é o binário. Um módulo
+ARM guarda as constantes de cada função num pool ao lado do código dela, e o `dbgprintf` dos
+jogos deixa o nome do arquivo e a mensagem de erro no mesmo lugar. Então a vizinhança de uma
+constante é, na prática, o nome dela.
+
+Para usar isso é preciso calibrar onde o módulo foi mapeado. O jeito barato: pegar um ponteiro
+de string que apareceu num rastro — o `IFILEMGR_OpenFile` da Z-Wheel recebeu `0x7afec` —,
+procurar o conteúdo no arquivo e subtrair. No `tectoy.mod` deu base `0xbc80`, e a partir daí
+qualquer endereço vira posição no arquivo.
+
+Foi assim que as três classes da interface da Z-Wheel foram identificadas sem header nenhum:
+
+| Classe | Onde a constante aparece | O que é |
+|---|---|---|
+| `0x01001011` | o erro que o app imprime ao recusá-la | o formulário raiz |
+| `0x0100104f` | 20 bytes antes de `Could not create root form`, e também em "app history instance" e `Tectoy_LaunchMainMenu` | uma coleção genérica — usada em três lugares que não têm nada em comum além de guardar itens |
+| `0x01035156` | entre `Unable to create instance of TrueType TYPEFACE` e `TrueType Dictionary` | a fonte TrueType |
+
+## Onde a sonda acaba
+
+Ela leva o jogo até o ponto em que ele **usa** o objeto de verdade, e para ali. Na Z-Wheel esse
+ponto é uma instrução `blx r0` com `r0` valendo zero: o app leu um **campo** do objeto que
+recebeu e chamou o que estava lá. Uma sonda é só uma vtable — não tem campos, e não há resposta
+combinada que resolva isso.
+
+É o sinal de que a descoberta terminou e a implementação começa. Saber disso evita o erro de
+continuar sondando quando o que falta já não é informação.
+
 ## O que ela não faz
 
 A sonda não diz **o nome** do método, só o número do slot e o formato. Quem dá nome é o uso: uma
