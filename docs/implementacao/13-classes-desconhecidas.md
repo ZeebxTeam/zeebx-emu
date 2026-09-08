@@ -114,6 +114,23 @@ combinada que resolva isso.
 É o sinal de que a descoberta terminou e a implementação começa. Saber disso evita o erro de
 continuar sondando quando o que falta já não é informação.
 
+## O erro de leitura que custou mais caro
+
+Vale registrar porque não foi erro de emulação, foi de **método**.
+
+A base de mapeamento do módulo eu calibrei procurando uma string no arquivo e subtraindo. Achei a
+ocorrência errada, e desmontei tudo 0x3380 bytes deslocado — o que dá um código plausível: uma
+sequência de instruções válidas, com desvios e chamadas, contando uma história inteiramente
+falsa. Persegui essa história por várias execuções.
+
+O que denunciou foi a discordância entre o desmontado e o `--code` do emulador: o rastro mostrava
+o `lr` virando `0x78af0` numa instrução onde o desmontado não tinha chamada nenhuma. **Quando a
+leitura estática e a execução discordam, quem está errado é a leitura.**
+
+A base não precisava de calibração nenhuma: o carregador mapeia o arquivo inteiro em
+`MODULE_BASE - MODULE_PREFIX` e preenche o prefixo com zeros, então o byte zero do arquivo é o
+endereço `0x10000`. Estava em `loader.rs` o tempo todo.
+
 ## O que ela não faz
 
 A sonda não diz **o nome** do método, só o número do slot e o formato. Quem dá nome é o uso: uma

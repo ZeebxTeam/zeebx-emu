@@ -27,3 +27,7 @@ cmake-build-*/
 heap.bin
 module.bin
 *.bmp
+
+# Servidores privados vivem em repositórios próprios, ao lado deste.
+zeeboids-server/
+OperaMini-Server/

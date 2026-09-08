@@ -17,7 +17,7 @@ Precisa do capstone: `pacman -S python-capstone`.
 import sys, pathlib, struct, re
 from capstone import Cs, CS_ARCH_ARM, CS_MODE_ARM
 
-BASE = 0xbc80
+BASE = 0x10000  # byte zero do arquivo: o carregador mapeia a imagem em MODULE_BASE - MODULE_PREFIX e zera o prefixo
 
 def carrega(padrao='Z-Wheel'):
     root = pathlib.Path.home()/'.config/zeebx/cache'

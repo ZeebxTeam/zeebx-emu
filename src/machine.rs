@@ -6382,11 +6382,6 @@ impl<C: CpuBackend> Machine<C> {
                 }
                 Ok(restantes)
             }
-            // Uma resposta combinada vem antes de tudo: é com ela que se sai de um laço em que
-            // o jogo espera "acabou" e a sonda insiste em dizer "deu certo".
-            _ if self.probe_answers.contains_key(&(clsid, slot)) => {
-                Ok(self.probe_answers[&(clsid, slot)])
-            }
             _ => {
                 // Um método que devolve objeto escreve o ponteiro num argumento de saída, e
                 // devolver `SUCCESS` sem escrever nada faz o jogo seguir com lixo e morrer no
@@ -6403,7 +6398,15 @@ impl<C: CpuBackend> Machine<C> {
                         break;
                     }
                 }
-                Ok(SUCCESS)
+                // A resposta combinada troca só o **valor de retorno**; a entrega do objeto no
+                // ponteiro de saída continua valendo. Juntar as duas coisas já me custou uma
+                // investigação: combinei "responda 1" e o jogo recebeu 1 com o ponteiro de
+                // saída vazio, que é um estado que não existe em lugar nenhum.
+                Ok(self
+                    .probe_answers
+                    .get(&(clsid, slot))
+                    .copied()
+                    .unwrap_or(SUCCESS))
             }
         }
     }

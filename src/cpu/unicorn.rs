@@ -255,19 +255,28 @@ impl UnicornCpu {
     ///
     /// A desmontagem estática mostra todos os caminhos possíveis; isto mostra o que de fato
     /// aconteceu. É a diferença entre ler o mapa e seguir a trilha.
+    ///
+    /// O que fica são as **últimas** `limit` instruções, porque a pergunta quase sempre é "como
+    /// ele chegou aqui", e não "por onde ele começou".
     pub fn trace_code(&mut self, begin: u32, end: u32, limit: usize) -> Result<(), CpuError> {
         let steps = self.steps.clone();
         self.uc
             .add_code_hook(begin as u64, end as u64, move |uc, address, _size| {
+                // `r0` e `lr` juntos: um responde "o que essa chamada devolveu", o outro
+                // "quem chamou" — na entrada de uma função, `lr` é o endereço de retorno do
+                // chamador.
+                let r0 = uc.reg_read(RegisterARM::R0).unwrap_or(0) as u32;
+                let lr = uc.reg_read(RegisterARM::LR).unwrap_or(0) as u32;
                 let mut steps = steps.borrow_mut();
-                if steps.len() < limit {
-                    // `r0` e `lr` juntos: um responde "o que essa chamada devolveu", o outro
-                    // "quem chamou" — na entrada de uma função, `lr` é o endereço de retorno
-                    // do chamador.
-                    let r0 = uc.reg_read(RegisterARM::R0).unwrap_or(0) as u32;
-                    let lr = uc.reg_read(RegisterARM::LR).unwrap_or(0) as u32;
-                    steps.push((address as u32, r0, lr));
+                // Guarda as **últimas** instruções, não as primeiras. Quem olha um rastro de
+                // execução está quase sempre investigando como o jogo chegou onde parou, e o
+                // começo de um laço que roda um milhão de vezes não responde isso. Guardar o
+                // começo já me fez ler "última instrução executada" onde era só "última que
+                // coube", e perseguir a instrução errada por três execuções.
+                if steps.len() == limit {
+                    steps.remove(0);
                 }
+                steps.push((address as u32, r0, lr));
             })
             .map_err(uc_err)?;
         Ok(())
