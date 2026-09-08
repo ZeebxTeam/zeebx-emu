@@ -56,12 +56,20 @@ pub const BUTTON_NAMES: [&str; BUTTONS] = [
     "down", "left", "right", "b1", "b3",
 ];
 
-/// UID de cada eixo, também do arquivo do console: `X`, `Y`, `Z` e `RZ`.
+/// UID de cada eixo: `X`, `Y`, `Z` e `RZ`.
 ///
 /// No controle do Zeebo o direcional é reportado como os eixos `X` e `Y` — é o que a linha
-/// `AXIS:X`/`AXIS:Y` do arquivo diz, e é o comportamento normal de um direcional digital em
-/// USB HID.
-pub const AXIS_UIDS: [u32; 4] = [0x0106_c40c, 0x0106_c4d1, 0x0106_c4ce, 0x0106_c4cf];
+/// `AXIS:X`/`AXIS:Y` do arquivo do console diz, e é o comportamento normal de um direcional
+/// digital em USB HID.
+///
+/// A ordem foi conferida **nos binários dos jogos**, não só na transcrição do arquivo: os
+/// quatro valores aparecem como literais em 26 a 40 títulos cada, sempre em pares dentro do
+/// mesmo pool de constantes — `c4ce`/`c4cf` numa função e `c4d0`/`c4d1` noutra, que é a cara de
+/// dois manches. Nenhum jogo traz `0x0106_c40c`, que já esteve aqui no lugar do `X` e é, na
+/// verdade, o UID do `Button_3`. Com ele, todo jogo que procurava o eixo `X` não achava eixo
+/// nenhum — o horizontal ficava morto — e o que procurava o `Y` caía no `RZ`, sempre zero: o
+/// menu do Zeebo Sports Tênis andava um item no aperto e voltava na soltura.
+pub const AXIS_UIDS: [u32; 4] = [0x0106_c4ce, 0x0106_c4cf, 0x0106_c4d0, 0x0106_c4d1];
 
 /// Nome de cada eixo, na ordem de [`Pad::axes`], para o mapeamento e a tela de configuração.
 pub const AXIS_NAMES: [&str; 4] = ["x", "y", "z", "rz"];
@@ -289,6 +297,28 @@ mod tests {
         let before = pad;
         Script::parse("").unwrap().apply(20, &mut pad);
         assert_eq!(pad, before);
+    }
+
+    #[test]
+    fn nenhum_eixo_carrega_o_uid_de_um_botao() {
+        // O `X` já esteve com `0x0106_c40c`, que é o `Button_3`: o jogo procurava o eixo
+        // horizontal, não achava, e a direção ficava morta. Os quatro UIDs de eixo são
+        // consecutivos e nenhum deles é de botão.
+        assert_eq!(
+            AXIS_UIDS,
+            [0x0106_c4ce, 0x0106_c4cf, 0x0106_c4d0, 0x0106_c4d1]
+        );
+        for (i, uid) in AXIS_UIDS.iter().enumerate() {
+            assert_eq!(*uid, AXIS_UIDS[0] + i as u32);
+            // O índice 3 fica de fora: é a esquisitice já registrada em `BUTTON_UIDS`, um UID
+            // de eixo que o arquivo do console traz na lista de botões.
+            let botoes = BUTTON_UIDS.iter().enumerate().filter(|(j, _)| *j != 3);
+            assert!(
+                botoes.clone().all(|(_, b)| b != uid),
+                "o eixo {} carrega o UID de um botão: {uid:#010x}",
+                AXIS_NAMES[i]
+            );
+        }
     }
 
     #[test]

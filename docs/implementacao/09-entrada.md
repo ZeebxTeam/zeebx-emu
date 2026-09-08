@@ -35,7 +35,47 @@ sinal: o descritor USB do controle está no dump, mas a parte do report que trar
 como `** UNAVAILABLE **`, então adotamos o padrão de HID analógico.
 
 **O direcional é reportado como `X` e `Y`** — é o que o arquivo do console diz. Por isso apertar
-o direcional mexe nos eixos, e não o contrário. O Quake lê os botões; o Crash lê os eixos.
+o direcional mexe nos eixos, e não o contrário.
+
+Quem responde `GetAxesInfo` não devolve valores: devolve, em cada palavra, o **UID do eixo que
+ocupa aquela palavra**. É assim que o jogo descobre onde está cada direção, e por isso a tabela
+de UIDs precisa estar certa — um UID errado não dá erro nenhum, o jogo só não acha o eixo.
+
+Os quatro UIDs foram conferidos nos binários dos jogos, procurando cada valor como literal:
+
+| UID | jogos que o trazem |
+|---|---:|
+| `0x0106c4ce` (`X`) | 26 |
+| `0x0106c4cf` (`Y`) | 40 |
+| `0x0106c4d0` (`Z`) | 28 |
+| `0x0106c4d1` (`RZ`) | 27 |
+| `0x0106c40c` | **0** |
+
+Eles aparecem sempre **em pares dentro do mesmo pool de constantes** — `c4ce`/`c4cf` numa função
+e `c4d0`/`c4d1` noutra —, que é a cara de dois manches. O `0x0106c40c`, que já esteve na tabela
+no lugar do `X`, não aparece em jogo nenhum: é o UID do `Button_3`. Enquanto ele esteve ali, todo
+jogo que procurava o eixo horizontal não achava eixo nenhum, e quem procurava o `Y` caía no `RZ`,
+que é sempre zero sem manche analógico.
+
+O efeito visível era o menu do Zeebo Sports Tênis andando um item no aperto e **voltando na
+soltura**. Vale o registro de como a medição foi feita, porque ela vale para qualquer defeito de
+entrada: `--keys` roteia o toque em tempo virtual, `--dump-gl` grava os quadros, e a comparação
+é entre duas execuções idênticas do mesmo roteiro. Sem isso, "a seta não funciona" não vira dado.
+
+### Quem lê o quê
+
+Contando as chamadas de `IHIDDevice` em dez segundos de cada uma das 62 ROMs:
+
+- **Só o eixo, nunca o evento de botão**: os ports de arcade da Data East (Magical Drop 3,
+  Karnov's Revenge, Wizard Fire, Street Hoop, Spin Master, Caveman Ninja, Dark Seal, Super
+  BurgerTime). Eles chamam `GetPositionState` umas quinhentas vezes e `GetNextButtonEvent`
+  **zero**.
+- **Os dois, todo quadro**: os jogos da Zeebo Sports, o zeetris, o Zeeboids, a série Extreme.
+- **Quase só o botão**: o Quake e o Tork and Kral.
+
+Por isso os dois canais ficam. Desligar qualquer um deles deixa parte da biblioteca sem entrada
+nenhuma — foi medido: com o direcional só nos eixos, o menu do Tênis não anda; só nos botões, ele
+anda e fica.
 
 `Z` e `RZ` não tinham nada os alimentando até o manche direito ser ligado neles. **O sentido
 desses dois é suposição**: o arquivo nomeia os eixos sem dizer o sentido, então seguimos a mesma
