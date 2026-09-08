@@ -29,6 +29,12 @@ const MAX_SEMIHOSTING_STRING: usize = 4096;
 struct HookState {
     /// Endereço de dado que causou a última falha de acesso — diferente do PC.
     last_fault: Option<u32>,
+    /// O PC no instante da falha, lido dentro do hook.
+    ///
+    /// Depois que o `emu_start` volta, o PC já não é confiável: ele pode ter ficado na
+    /// instrução anterior ou avançado. Dentro do hook ele é a instrução que faltou — e é a
+    /// diferença entre "alguma coisa era nula" e "esta instrução leu este ponteiro nulo".
+    last_fault_pc: Option<u32>,
 }
 
 /// Registro de uma escrita observada por um watchpoint.
@@ -85,7 +91,10 @@ impl UnicornCpu {
             0,
             u64::MAX,
             |uc, _type, address, _size, _value| {
-                uc.get_data_mut().last_fault = Some(address as u32);
+                let pc = uc.reg_read(RegisterARM::PC).unwrap_or(0) as u32;
+                let estado = uc.get_data_mut();
+                estado.last_fault = Some(address as u32);
+                estado.last_fault_pc = Some(pc);
                 // `false` mantém a falha: queremos que a execução pare.
                 false
             },
@@ -404,7 +413,9 @@ impl CpuBackend for UnicornCpu {
     }
 
     fn run(&mut self, pc: u32, max_instructions: u64) -> Result<StopReason, CpuError> {
-        self.uc.get_data_mut().last_fault = None;
+        let estado = self.uc.get_data_mut();
+        estado.last_fault = None;
+        estado.last_fault_pc = None;
         self.deadline
             .set(self.instructions.get().saturating_add(max_instructions));
         // `until` fica num endereço inalcançável de propósito: quem termina a execução é
@@ -427,7 +438,7 @@ impl CpuBackend for UnicornCpu {
             Err(uc_error::READ_UNMAPPED) | Err(uc_error::WRITE_UNMAPPED) => {
                 Ok(StopReason::MemoryFault {
                     addr: self.uc.get_data().last_fault.unwrap_or(stopped_at),
-                    pc: stopped_at,
+                    pc: self.uc.get_data().last_fault_pc.unwrap_or(stopped_at),
                 })
             }
             // Instrução inválida é o mesmo tipo de desfecho de uma exceção: diz onde o guest

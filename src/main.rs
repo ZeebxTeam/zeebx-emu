@@ -396,7 +396,7 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
                             print!("start:     EVT_APP_START → ");
                             let started =
                                 machine.start_applet(applet, clsid, INSTRUCTION_BUDGET)?;
-                            describe_outcome(&started);
+                            describe_outcome_com_estado(&started, &machine);
                             if matches!(started, Outcome::Returned { .. }) {
                                 run_frames(
                                     &mut machine,
@@ -594,6 +594,32 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     Ok(())
+}
+
+/// Escreve o desfecho e, quando ele é uma falha de memória, os registradores e a pilha.
+///
+/// Sem os registradores, "acesso inválido a 0x00000000" diz que alguma coisa era nula e não diz
+/// **qual** — e essa é justamente a pergunta. Eles já eram guardados; faltava mostrá-los também
+/// nas falhas de dentro do `EVT_APP_START`, que é onde os aplicativos morrem.
+fn describe_outcome_com_estado<C: cpu::CpuBackend>(
+    outcome: &Outcome,
+    machine: &machine::Machine<C>,
+) {
+    describe_outcome(outcome);
+    if !matches!(outcome, Outcome::Fault { .. } | Outcome::Exception { .. }) {
+        return;
+    }
+    let regs = machine.fault_regs();
+    print!("           ");
+    for (i, valor) in regs.iter().enumerate() {
+        print!("r{i}={valor:#x} ");
+    }
+    println!();
+    let pilha = machine.fault_stack();
+    if !pilha.is_empty() {
+        let itens: Vec<String> = pilha.iter().map(|v| format!("{v:#x}")).collect();
+        println!("           pilha: {}", itens.join(" "));
+    }
 }
 
 fn describe_outcome(outcome: &Outcome) {
