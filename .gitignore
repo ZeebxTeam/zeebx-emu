@@ -1,0 +1,29 @@
+# ROMs / conteúdo de jogos — nunca versionar
+roms/
+
+# Material de terceiros espelhado (docs Qualcomm/Zeebo, SDKs, dumps de firmware, clones)
+docs/vendor/
+
+# Build
+build/
+cmake-build-*/
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+
+# macOS / editores
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Rust
+/target/
+
+# Saídas de depuração do `run` (--dump-heap) e o framebuffer exportado
+heap.bin
+module.bin
+*.bmp

@@ -1,0 +1,302 @@
+//! O controle do Zeebo, independente de onde a entrada vem.
+//!
+//! Os identificadores saem do `hid_devices.original.cfg` do console — a entrada com o VID
+//! `0x1EAA` e o PID `0x0135`, do "New Zeebo Game Controller" — e os nomes dos UIDs, de
+//! `AEEHIDDevice_Joystick.h` do SDK do Zeebo. O jogo identifica cada botão pelo UID, não pelo
+//! índice, então o que precisa estar certo é a tabela.
+
+/// Quantos botões o controle tem.
+pub const BUTTONS: usize = 18;
+
+/// UID de cada botão, na ordem em que o console os enumera.
+///
+/// A lista tem esquisitices — o índice 3 traz o UID de um eixo, e o `Right_Shoulder_Upper`
+/// aparece duas vezes — mas é o que o arquivo do console diz, e é o que os jogos viram quando
+/// foram feitos. Corrigir aqui seria inventar um controle que não existiu.
+pub const BUTTON_UIDS: [u32; BUTTONS] = [
+    0x0106_c40b, // Button_2
+    0x0106_c408, // Right_Shoulder_Upper
+    0x0106_c40d, // Button_4
+    0x0106_c4d0, // LeftThumb_X
+    0x0106_c408, // Right_Shoulder_Upper
+    0x0106_c407, // Left_Shoulder_Lower
+    0x0106_c406, // Left_Shoulder_Upper
+    0x0106_c409, // Right_Shoulder_Lower
+    0x0106_c405, // Right_Thumbstick
+    0x0106_c403, // Back
+    0x0106_c404, // Left_Thumbstick
+    0x0106_c402, // Start
+    // O direcional não está na lista do arquivo do console, que o descreve como os eixos `X` e
+    // `Y`. Mas é como botão que os jogos o leem: com estes quatro UIDs presentes, o menu do
+    // Quake anda; sem eles, o cursor não sai do lugar por mais que o eixo mude. Um direcional
+    // digital em USB HID costuma ser reportado das duas formas, e é o que fazemos.
+    0x0106_c3fe, // DPad_Up
+    0x0106_c400, // DPad_Down
+    0x0106_c3ff, // DPad_Left
+    0x0106_c401, // DPad_Right
+    // O `Button_1` e o `Button_3` também faltam na lista do console, que traz o `Button_2` e o
+    // `Button_4` mas põe um UID de eixo no lugar de um deles. A tela de ajuda do próprio Quake
+    // nomeia os quatro — "aperte 1 para pular", "aperte 3 para ativar mira" —, então eles
+    // existem no controle.
+    0x0106_c40a, // Button_1
+    0x0106_c40c, // Button_3
+];
+
+/// Índices dos quatro sentidos do direcional em [`BUTTON_UIDS`], na ordem cima, baixo,
+/// esquerda, direita.
+pub const DPAD: [usize; 4] = [12, 13, 14, 15];
+
+/// Nome de cada botão, para o mapeamento de teclas e para a linha de comando.
+/// O controle tem **um** gatilho de cada lado, o ZL e o ZR, e é o "superior" de cada par que
+/// eles reportam: no Zeeboids, que desenha `ZL` e `ZR` na tela e gira o personagem com eles, o
+/// `Left_Shoulder_Upper` e o `Right_Shoulder_Upper` giram e os "inferiores" não fazem nada. Os
+/// dois inferiores continuam aqui porque estão no arquivo do console, mas não têm botão.
+pub const BUTTON_NAMES: [&str; BUTTONS] = [
+    "b2", "zr", "b4", "lx", "zrb", "l2", "zl", "r2", "rthumb", "back", "lthumb", "start", "up",
+    "down", "left", "right", "b1", "b3",
+];
+
+/// UID de cada eixo, também do arquivo do console: `X`, `Y`, `Z` e `RZ`.
+///
+/// No controle do Zeebo o direcional é reportado como os eixos `X` e `Y` — é o que a linha
+/// `AXIS:X`/`AXIS:Y` do arquivo diz, e é o comportamento normal de um direcional digital em
+/// USB HID.
+pub const AXIS_UIDS: [u32; 4] = [0x0106_c40c, 0x0106_c4d1, 0x0106_c4ce, 0x0106_c4cf];
+
+/// Nome de cada eixo, na ordem de [`Pad::axes`], para o mapeamento e a tela de configuração.
+pub const AXIS_NAMES: [&str; 4] = ["x", "y", "z", "rz"];
+
+/// Em qual palavra do `AEEHIDPositionInfo` cada eixo cai.
+///
+/// A struct começa com `boolean bRelativeAxes` e segue com `nX`, `nY`, `nZ`, `nRx`, `nRy`,
+/// `nRz` e mais dezoito campos (`inc/AEEIHIDDevice.h` do SDK do Zeebo). O console usa `X`,
+/// `Y`, `Z` e `RZ`, que são as palavras 1, 2, 3 e 6.
+pub const AXIS_SLOTS: [usize; 4] = [1, 2, 3, 6];
+
+/// Quantas palavras tem o `AEEHIDPositionInfo`: `bRelativeAxes` e vinte e quatro eixos.
+pub const POSITION_INFO_WORDS: usize = 25;
+
+/// Faixa de um eixo. O descritor USB do controle está no dump, mas a parte do report que traria
+/// os limites veio como "** UNAVAILABLE **", então adotamos a faixa de 16 bits com sinal, que é
+/// o padrão de HID analógico.
+pub const AXIS_MIN: i32 = i16::MIN as i32;
+pub const AXIS_MAX: i32 = i16::MAX as i32;
+
+/// O estado do controle num instante.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Pad {
+    /// Um bit por botão, no índice em que o console o enumera.
+    pub buttons: u32,
+    /// Os eixos `X`, `Y`, `Z` e `RZ`, nessa ordem.
+    pub axes: [i32; 4],
+}
+
+impl Pad {
+    pub fn is_down(&self, index: usize) -> bool {
+        self.buttons & (1 << index) != 0
+    }
+
+    /// Aperta ou solta um botão.
+    ///
+    /// Os quatro sentidos do direcional mexem também nos eixos `X` e `Y`: o console reporta o
+    /// direcional das duas formas, e cada jogo lê a que prefere — o Quake usa os botões, o
+    /// Crash usa os eixos.
+    pub fn press(&mut self, index: usize, down: bool) {
+        let bit = 1 << index;
+        if down {
+            self.buttons |= bit;
+        } else {
+            self.buttons &= !bit;
+        }
+        if DPAD.contains(&index) {
+            self.sync_axes();
+        }
+    }
+
+    /// Refaz os eixos `X` e `Y` a partir dos quatro sentidos do direcional.
+    ///
+    /// Segurar dois sentidos opostos ao mesmo tempo é o mesmo que não segurar nenhum, que é o
+    /// que um direcional físico faz.
+    fn sync_axes(&mut self) {
+        let value = |less: usize, more: usize| match (self.is_down(less), self.is_down(more)) {
+            (true, false) => AXIS_MIN,
+            (false, true) => AXIS_MAX,
+            _ => 0,
+        };
+        let [up, down, left, right] = DPAD;
+        let (x, y) = (value(left, right), value(up, down));
+        (self.axes[0], self.axes[1]) = (x, y);
+    }
+
+    /// Põe um eixo no valor dado, preso à faixa que o console reporta.
+    ///
+    /// Precisa vir **depois** dos botões: apertar um sentido do direcional refaz `X` e `Y` a
+    /// partir dele, e sobrescreveria um valor analógico posto antes.
+    pub fn set_axis(&mut self, index: usize, value: i32) {
+        if let Some(axis) = self.axes.get_mut(index) {
+            *axis = value.clamp(AXIS_MIN, AXIS_MAX);
+        }
+    }
+
+    /// Os botões que mudaram entre `self` e `next`, com o novo estado de cada um.
+    pub fn changes(&self, next: &Pad) -> Vec<(usize, bool)> {
+        (0..BUTTONS)
+            .filter(|&i| self.is_down(i) != next.is_down(i))
+            .map(|i| (i, next.is_down(i)))
+            .collect()
+    }
+
+    /// O índice do botão de nome `name`.
+    ///
+    /// Aceita `home` como outro nome do `back`. O controle do Zeebo tem um botão **HOME**
+    /// impresso na carcaça, e é ele que o `hid_devices.cfg` do console mapeia no
+    /// `AEEUID_HIDJoystick_Back` — não existe UID de "Home" no `AEEHIDDevice_Joystick.h`. O
+    /// Double Dragon pede "APERTE O BOTÃO HOME" na tela de título, e quem lê isso não tem como
+    /// adivinhar que o botão se chama `back` aqui dentro.
+    pub fn button_by_name(name: &str) -> Option<usize> {
+        let name = match name {
+            "home" => "back",
+            other => other,
+        };
+        BUTTON_NAMES.iter().position(|&n| n == name)
+    }
+}
+
+/// Um roteiro de teclas, para exercitar a entrada sem janela.
+///
+/// Existe para poder testar: sem ele, a única forma de saber se a entrada funciona é apertar a
+/// tecla e olhar, e isso não cabe num teste nem numa execução automática.
+#[derive(Debug, Default, Clone)]
+pub struct Script {
+    /// Cada entrada é `(início, fim, índice do botão)`, em milissegundos de tempo virtual.
+    steps: Vec<(u32, u32, usize)>,
+}
+
+impl Script {
+    /// Quanto tempo cada tecla fica apertada, quando o roteiro não diz. Um toque humano.
+    pub const HOLD_MS: u32 = 120;
+
+    /// Lê um roteiro no formato `ms:tecla[:duração_ms][,...]`.
+    ///
+    /// O tempo é o do relógio virtual do jogo, não o número de voltas do laço: uma volta não
+    /// dura sempre a mesma coisa, e o mesmo roteiro precisa valer entre execuções.
+    ///
+    /// As teclas são os nomes dos botões em [`BUTTON_NAMES`], incluindo `up`, `down`, `left` e
+    /// `right` para o direcional.
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let mut steps = Vec::new();
+        for item in text.split(',').filter(|s| !s.is_empty()) {
+            let mut parts = item.split(':');
+            let at = parts.next().unwrap_or_default();
+            let key = parts
+                .next()
+                .ok_or_else(|| format!("esperava ms:tecla em {item:?}"))?;
+            let at: u32 = at
+                .parse()
+                .map_err(|_| format!("instante inválido em {item:?}"))?;
+            let hold: u32 = match parts.next() {
+                Some(text) => text
+                    .parse()
+                    .map_err(|_| format!("duração inválida em {item:?}"))?,
+                None => Self::HOLD_MS,
+            };
+            let index =
+                Pad::button_by_name(key).ok_or_else(|| format!("tecla desconhecida: {key:?}"))?;
+            steps.push((at, at.saturating_add(hold.max(1)), index));
+        }
+        Ok(Self { steps })
+    }
+
+    /// Põe no controle o que o roteiro manda neste instante.
+    pub fn apply(&self, now_ms: u32, pad: &mut Pad) {
+        for &(start, end, index) in &self.steps {
+            pad.press(index, (start..end).contains(&now_ms));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn o_botao_home_e_o_back_por_outro_nome() {
+        // O controle do Zeebo tem HOME impresso na carcaça, e o `hid_devices.cfg` do console o
+        // mapeia no `Back` — não há UID de "Home" no header do joystick. O Double Dragon pede
+        // "APERTE O BOTÃO HOME", e ninguém adivinharia que ele se chama `back` aqui dentro.
+        assert_eq!(Pad::button_by_name("home"), Pad::button_by_name("back"));
+        assert!(Pad::button_by_name("home").is_some());
+    }
+
+    #[test]
+    fn o_direcional_mexe_no_botao_e_no_eixo() {
+        let [up, down, left, _right] = DPAD;
+        let mut pad = Pad::default();
+
+        pad.press(left, true);
+        assert!(pad.is_down(left));
+        assert_eq!(pad.axes[0], AXIS_MIN);
+        pad.press(left, false);
+        assert_eq!(pad.axes[0], 0);
+
+        // Sentidos opostos ao mesmo tempo se cancelam, como num direcional de verdade.
+        pad.press(up, true);
+        assert_eq!(pad.axes[1], AXIS_MIN);
+        pad.press(down, true);
+        assert_eq!(pad.axes[1], 0);
+        pad.press(up, false);
+        assert_eq!(pad.axes[1], AXIS_MAX);
+    }
+
+    #[test]
+    fn as_mudancas_saem_na_ordem_dos_indices() {
+        let mut before = Pad::default();
+        before.press(0, true);
+        before.press(11, true);
+
+        let mut after = before;
+        after.press(0, false);
+        after.press(5, true);
+
+        assert_eq!(before.changes(&after), vec![(0, false), (5, true)]);
+        // O botão 11 continua pressionado, então não é mudança.
+        assert!(after.is_down(11));
+        assert_eq!(after.changes(&after), vec![]);
+    }
+
+    #[test]
+    fn o_roteiro_aperta_e_solta_botoes_e_direcoes() {
+        let start = Pad::button_by_name("start").unwrap();
+        let script = Script::parse("1000:start,2000:right:50").unwrap();
+        let mut pad = Pad::default();
+
+        script.apply(1000, &mut pad);
+        assert!(pad.is_down(start));
+        script.apply(1000 + Script::HOLD_MS, &mut pad);
+        assert!(!pad.is_down(start));
+
+        // O direcional mexe no eixo junto, e a duração dada no roteiro vale.
+        script.apply(2000, &mut pad);
+        assert_eq!(pad.axes[0], AXIS_MAX);
+        script.apply(2050, &mut pad);
+        assert_eq!(pad.axes[0], 0);
+
+        assert!(Script::parse("10:nao-existe").is_err());
+        assert!(Script::parse("start").is_err());
+        assert!(Script::parse("10:start:xis").is_err());
+
+        // Um roteiro vazio é válido e não mexe em nada.
+        let before = pad;
+        Script::parse("").unwrap().apply(20, &mut pad);
+        assert_eq!(pad, before);
+    }
+
+    #[test]
+    fn cada_botao_tem_nome_e_os_nomes_nao_se_repetem() {
+        assert_eq!(BUTTON_NAMES.len(), BUTTON_UIDS.len());
+        for (i, name) in BUTTON_NAMES.iter().enumerate() {
+            assert_eq!(Pad::button_by_name(name), Some(i));
+        }
+        assert_eq!(Pad::button_by_name("nao-existe"), None);
+    }
+}

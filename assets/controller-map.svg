@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  O mapa das regiões do controle. Ele não aparece: é só o recorte de cada botão sobre a arte
+  de `controller.png`, e por isso o `viewBox` precisa ser exatamente o tamanho daquela imagem.
+
+  Separar o mapa da arte é o que permite trocar o desenho sem mexer em código: quem redesenhar
+  o controle acerta as formas aqui e pronto. O `id` de cada uma é o nome do botão como o
+  emulador o conhece.
+
+  Botão que a arte não desenha simplesmente não tem forma aqui, e não acende — continua
+  configurável pela lista.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1616 973" width="1616" height="973">
+  <g fill="#fff">
+    <!-- Braços do direcional. A cruz tem a barra vertical em 299..447 e a horizontal em
+         429..567; o miolo é o cruzamento das duas e não pertence a direção nenhuma. -->
+    <rect id="up" x="305" y="328" width="136" height="106" rx="28"/>
+    <rect id="down" x="305" y="560" width="136" height="101" rx="28"/>
+    <rect id="left" x="202" y="436" width="102" height="124" rx="28"/>
+    <rect id="right" x="442" y="436" width="102" height="124" rx="28"/>
+
+    <!-- Botões de ação, no losango. -->
+    <circle id="b4" cx="1246" cy="367" r="58"/>
+    <circle id="b2" cx="1373" cy="465" r="57"/>
+    <circle id="b1" cx="1246" cy="565" r="58"/>
+    <circle id="b3" cx="1119" cy="465" r="56"/>
+
+    <!-- Analógicos. -->
+    <circle id="lthumb" cx="619" cy="715" r="126"/>
+    <circle id="rthumb" cx="995" cy="715" r="126"/>
+
+    <!-- O botão central. -->
+    <rect id="back" x="708" y="399" width="199" height="58" rx="29"/>
+  </g>
+
+  <!-- Ombros. A arte não fecha o contorno deles: eles são o alto do corpo até o entalhe, e por
+       isso a região é uma faixa que acompanha a borda por dentro. Um traço grosso segue essa
+       curva melhor que qualquer retângulo. -->
+  <g fill="none" stroke="#fff" stroke-width="44" stroke-linecap="round">
+    <path id="zl" d="M 252 262 Q 350 218 480 222"/>
+    <path id="zr" d="M 1364 262 Q 1266 218 1136 222"/>
+  </g>
+</svg>

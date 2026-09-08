@@ -1,0 +1,29 @@
+[package]
+name = "zeebx"
+version = "0.1.0"
+edition = "2024"
+# GPLv2 porque o unicorn-engine é GPLv2 e vai compilado dentro do binário. Ver LICENSE.
+license = "GPL-2.0-only"
+repository = "https://github.com/ZeebxTeam/zeebx-emu"
+description = "Emulador do Zeebo, o console da TecToy"
+
+[dependencies]
+eframe = { version = "0.33.3", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
+# Saída de áudio do host. A decodificação é nossa: os jogos entregam PCM.
+cpal = "0.15"
+# Controles de verdade, nos três sistemas.
+gilrs = "0.11"
+# Inflate, para o IUnzipAStream do BREW.
+flate2 = "1"
+minifb = "0.28.0"
+png = "0.18.1"
+# Só o seletor de pastas. O `xdg-portal` evita depender do GTK no Linux.
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "async-std"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+unicorn-engine = "2.1.5"
+# Só leitura de zip: `deflate` cobre o que os empacotadores usam.
+zip = { version = "2", default-features = false, features = ["deflate"] }
+resvg = { version = "0.48.1", default-features = false }
+# Só o JPEG dos ícones de `.mif`. O resto da decodificação de imagem é nossa.
+zune-jpeg = { version = "0.5.15", default-features = false, features = ["std"] }

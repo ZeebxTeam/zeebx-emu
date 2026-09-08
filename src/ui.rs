@@ -1,0 +1,1241 @@
+//! A interface do emulador: biblioteca de jogos, configurações e a tela do console.
+//!
+//! O emulador roda **na mesma linha de execução da interface**, um pedaço por quadro
+//! desenhado. É o arranjo simples e é o certo aqui: o núcleo do unicorn não atravessa linhas de
+//! execução, e o [`Session::step`] já devolve o controle sozinho a cada fatia de tempo real,
+//! que é o que mantém a janela viva enquanto o jogo corre.
+
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::time::Duration;
+
+use eframe::egui;
+
+use crate::bindings::Source;
+use crate::display::Framebuffer;
+use crate::gamepads;
+use crate::i18n::Catalog;
+use crate::input::Pad;
+use crate::library::{self, Game};
+use crate::padview::PadArt;
+use crate::session::Session;
+use crate::settings::{self, Scaling, Settings};
+
+/// Teto de tempo real que o jogo pode tomar num quadro da interface.
+///
+/// O orçamento normal **não** é fixo: é o tempo que passou desde o quadro anterior, que é
+/// exatamente o quanto o jogo precisa emular para acompanhar o relógio do mundo. Uma fatia
+/// fixa de 16 ms virava teto de velocidade, e um teto traiçoeiro: com a janela sincronizada
+/// ao monitor, bastava emulação mais desenho passarem de um retraço para o período dobrar
+/// para 33 ms — e o jogo ficava com 16 de cada 33, travado em 50% por mais folga que a
+/// máquina tivesse. Era o que a tela de seleção do Crash mostrava.
+///
+/// O teto existe só para o caso de o host não dar conta: sem ele, um quadro atrasado pede um
+/// orçamento maior, que atrasa mais o seguinte, e a janela para de responder.
+const MAX_SLICE: Duration = Duration::from_millis(100);
+
+/// A tela do Zeebo.
+const SCREEN: [usize; 2] = [640, 480];
+
+/// A imagem de quem não tem imagem nenhuma.
+const PLACEHOLDER: &[u8] = include_bytes!("../assets/zeebx.png");
+
+/// Largura de um cartão da biblioteca, e o lado do quadro em que a imagem cabe.
+const CARD_WIDTH: f32 = 136.0;
+const CARD_ART: f32 = 100.0;
+/// Espaço reservado ao título, embaixo. Duas linhas.
+const CARD_TEXT: f32 = 36.0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tab {
+    General,
+    Controls,
+    Graphics,
+    Audio,
+    About,
+}
+
+impl Tab {
+    const ALL: [Self; 5] = [
+        Self::General,
+        Self::Controls,
+        Self::Graphics,
+        Self::Audio,
+        Self::About,
+    ];
+
+    fn key(self) -> &'static str {
+        match self {
+            Self::General => "settings.tab.general",
+            Self::Controls => "settings.tab.controls",
+            Self::Graphics => "settings.tab.graphics",
+            Self::Audio => "settings.tab.audio",
+            Self::About => "settings.tab.about",
+        }
+    }
+}
+
+/// O repositório do projeto.
+const REPOSITORY: &str = "https://github.com/ZeebxTeam/zeebx-emu";
+/// O convite do servidor de conversa.
+const DISCORD: &str = "https://discord.gg/D96HjsKTPa";
+
+pub struct App {
+    catalog: Catalog,
+    settings: Settings,
+    tab: Tab,
+    games: Vec<Game>,
+    /// Se a janela de configurações está aberta.
+    settings_open: bool,
+    /// O jogo em execução. Enquanto existe, ele tem uma janela só dele.
+    session: Option<Session>,
+    /// A textura em que o quadro do console é enviado para a placa de vídeo.
+    frame: Option<egui::TextureHandle>,
+    /// O que deu errado na última tentativa de abrir um jogo.
+    error: Option<String>,
+    paused: bool,
+    /// Quando o jogo rodou pela última vez, para saber quanto tempo real ele tem a recuperar.
+    last_step: std::time::Instant,
+    /// Os controles de verdade ligados no computador.
+    gamepads: gamepads::Gamepads,
+    /// Qual botão do Zeebo está esperando uma tecla, na tela de controles.
+    capturing: Option<String>,
+    /// O desenho do controle, e as texturas dele. Ficam vazios se o desenho não abrir: a tela
+    /// de controles continua servindo pela lista.
+    art: Option<PadArt>,
+    art_textures: Option<ArtTextures>,
+    /// A imagem de cada jogo já na placa de vídeo. `None` para o jogo cuja imagem não abriu —
+    /// o cartão sai sem ela, e a tentativa não se repete a cada quadro.
+    art_cache: HashMap<PathBuf, Option<egui::TextureHandle>>,
+    /// A imagem que representa quem não tem nenhuma.
+    placeholder: Option<crate::icon::Image>,
+}
+
+/// O desenho do controle já na placa de vídeo.
+struct ArtTextures {
+    base: egui::TextureHandle,
+    /// Uma silhueta por botão, na mesma ordem das peças do desenho.
+    parts: Vec<egui::TextureHandle>,
+}
+
+impl App {
+    pub fn new(context: &eframe::CreationContext<'_>) -> Self {
+        let settings = Settings::load();
+        let mut catalog = Catalog::new(&settings::language_dirs());
+        match &settings.language {
+            Some(code) => {
+                catalog.select(code);
+            }
+            None => {
+                catalog.select_best(&crate::i18n::system_language());
+            }
+        }
+        // O tema escuro é o que se espera de um emulador, e deixa a imagem do jogo no centro
+        // sem uma moldura clara puxando o olho.
+        context.egui_ctx.set_theme(egui::Theme::Dark);
+
+        let games = settings
+            .roms_dir
+            .as_deref()
+            .map(library::scan)
+            .unwrap_or_default();
+        Self {
+            catalog,
+            settings,
+            tab: Tab::General,
+            games,
+            settings_open: false,
+            session: None,
+            frame: None,
+            error: None,
+            paused: false,
+            last_step: std::time::Instant::now(),
+            gamepads: gamepads::Gamepads::default(),
+            capturing: None,
+            // Um desenho que não abre não pode impedir as configurações de abrir.
+            art: PadArt::builtin()
+                .inspect_err(|err| eprintln!("controle: {err}"))
+                .ok(),
+            art_textures: None,
+            art_cache: HashMap::new(),
+            placeholder: crate::icon::decode(PLACEHOLDER)
+                .inspect_err(|err| eprintln!("imagem reserva: {err}"))
+                .ok(),
+        }
+    }
+
+    fn tr(&self, key: &str) -> String {
+        self.catalog.get(key).to_string()
+    }
+
+    fn rescan(&mut self) {
+        // As texturas antigas não servem à lista nova, e guardá-las seguraria a memória de
+        // vídeo de jogos que saíram da pasta.
+        self.art_cache.clear();
+        self.games = self
+            .settings
+            .roms_dir
+            .as_deref()
+            .map(library::scan)
+            .unwrap_or_default();
+    }
+
+    fn save(&self) {
+        if let Err(err) = self.settings.save() {
+            eprintln!("não deu para guardar as configurações: {err}");
+        }
+    }
+
+    fn play(&mut self, path: PathBuf) {
+        self.error = None;
+        self.frame = None;
+        self.paused = false;
+        match Session::start(&path) {
+            Ok(mut session) => {
+                let audio = &self.settings.audio;
+                if let Some(err) = session.set_audio(audio.enabled, audio.volume) {
+                    eprintln!("sem som: {err}");
+                }
+                self.session = Some(session);
+            }
+            Err(err) => {
+                self.error = Some(
+                    self.catalog
+                        .format("play.failed", &[("reason", &err.to_string())]),
+                );
+            }
+        }
+    }
+}
+
+impl App {
+    /// A barra de cima da janela principal.
+    fn nav(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.heading("Zeebx");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button(self.catalog.get("nav.settings")).clicked() {
+                    self.settings_open = true;
+                }
+            });
+        });
+    }
+
+    fn library_screen(&mut self, ui: &mut egui::Ui) {
+        let Some(dir) = self.settings.roms_dir.clone() else {
+            ui.vertical_centered(|ui| {
+                ui.add_space(48.0);
+                ui.label(self.tr("library.no_folder"));
+                if ui.button(self.tr("nav.settings")).clicked() {
+                    self.settings_open = true;
+                }
+            });
+            return;
+        };
+
+        ui.horizontal(|ui| {
+            ui.label(
+                self.catalog
+                    .format("library.count", &[("count", &self.games.len().to_string())]),
+            );
+            if ui.button(self.tr("library.rescan")).clicked() {
+                self.rescan();
+            }
+        });
+        ui.separator();
+
+        if let Some(error) = &self.error {
+            ui.colored_label(ui.visuals().error_fg_color, error);
+            ui.separator();
+        }
+
+        if self.games.is_empty() {
+            ui.label(
+                self.catalog
+                    .format("library.empty", &[("folder", &dir.display().to_string())]),
+            );
+            return;
+        }
+
+        // A escolha sai do laço: mexer em `self` enquanto a lista está emprestada não passa
+        // pelo compilador, e guardar o caminho é mais claro que contorná-lo.
+        let mut chosen = None;
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            // Os cartões se acomodam sozinhos na largura da janela em vez de ocuparem um
+            // número fixo de colunas: a mesma tela serve numa janela estreita e numa larga.
+            ui.horizontal_wrapped(|ui| {
+                let Self {
+                    games,
+                    art_cache,
+                    placeholder,
+                    ..
+                } = self;
+                for game in games.iter() {
+                    let texture = art_cache
+                        .entry(game.path.clone())
+                        .or_insert_with(|| upload_art_of(ui.ctx(), game, placeholder));
+                    if game_card(ui, game, texture.as_ref()).clicked() {
+                        chosen = Some(game.path.clone());
+                    }
+                }
+            });
+        });
+        if let Some(path) = chosen {
+            self.play(path);
+        }
+    }
+
+    fn settings_screen(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            for tab in Tab::ALL {
+                let label = self.catalog.get(tab.key()).to_string();
+                ui.selectable_value(&mut self.tab, tab, label);
+            }
+        });
+        ui.separator();
+        let changed = match self.tab {
+            Tab::General => self.general_tab(ui),
+            Tab::Controls => self.controls_tab(ui),
+            Tab::Graphics => self.graphics_tab(ui),
+            Tab::Audio => self.audio_tab(ui),
+            Tab::About => self.about_tab(ui),
+        };
+        if changed {
+            self.save();
+        }
+    }
+
+    fn general_tab(&mut self, ui: &mut egui::Ui) -> bool {
+        let mut changed = false;
+
+        ui.label(self.tr("settings.roms_folder"));
+        ui.weak(self.tr("settings.roms_folder.hint"));
+        ui.horizontal(|ui| {
+            let shown = self
+                .settings
+                .roms_dir
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default();
+            ui.monospace(shown);
+            if ui.button(self.catalog.get("settings.browse")).clicked() {
+                if let Some(dir) = rfd::FileDialog::new().pick_folder() {
+                    self.settings.roms_dir = Some(dir);
+                    changed = true;
+                }
+            }
+        });
+        if let Some(dir) = &self.settings.roms_dir {
+            if !dir.is_dir() {
+                ui.colored_label(
+                    ui.visuals().warn_fg_color,
+                    self.catalog.get("common.folder_missing"),
+                );
+            }
+        }
+        if changed {
+            self.rescan();
+        }
+
+        ui.add_space(16.0);
+        ui.label(self.tr("settings.language"));
+        ui.weak(self.tr("settings.language.hint"));
+        let current = self
+            .catalog
+            .languages()
+            .iter()
+            .find(|l| l.code == self.catalog.current())
+            .map(|l| l.name.clone())
+            .unwrap_or_default();
+        let mut picked: Option<String> = None;
+        egui::ComboBox::from_id_salt("language")
+            .selected_text(current)
+            .show_ui(ui, |ui| {
+                for language in self.catalog.languages() {
+                    let selected = language.code == self.catalog.current();
+                    if ui.selectable_label(selected, &language.name).clicked() {
+                        picked = Some(language.code.clone());
+                    }
+                }
+            });
+        if let Some(code) = picked {
+            if self.catalog.select(&code) {
+                self.settings.language = Some(code);
+                changed = true;
+            }
+        }
+
+        ui.add_space(16.0);
+        ui.weak(self.catalog.format(
+            "settings.saved_at",
+            &[("path", &settings::settings_path().display().to_string())],
+        ));
+        changed
+    }
+
+    /// O desenho do controle. Devolve o botão clicado.
+    ///
+    /// Ele acende o que está apertado agora, e é por isso que vale mais que a lista: um
+    /// direcional que fica aceso sem ninguém encostar no controle mostra na hora um problema
+    /// que a lista de texto esconderia.
+    fn controller_view(&mut self, ui: &mut egui::Ui) -> Option<String> {
+        let pad = self.pad_now(ui.ctx());
+        let capturing = self.capturing.clone();
+        // Os campos saem separados porque as texturas são criadas a partir do desenho, e pedir
+        // os dois pelo `self` de uma vez seria um empréstimo mutável em cima de um imutável.
+        let Self {
+            art, art_textures, ..
+        } = self;
+        let art = art.as_ref()?;
+        let textures = art_textures.get_or_insert_with(|| upload_art(ui.ctx(), art));
+        draw_controller(ui, art, textures, &pad, capturing.as_deref())
+    }
+
+    fn controls_tab(&mut self, ui: &mut egui::Ui) -> bool {
+        let mut changed = false;
+        ui.weak(self.catalog.get("controls.hint"));
+        ui.add_space(8.0);
+
+        if let Some(button) = self.controller_view(ui) {
+            // Clicar na peça é o mesmo que clicar em "Atribuir" na linha dela.
+            self.capturing = match self.capturing.as_deref() == Some(button.as_str()) {
+                true => None,
+                false => Some(button),
+            };
+        }
+        if self.art.is_some() {
+            ui.vertical_centered(|ui| ui.weak(self.catalog.get("controls.art_hint")));
+            // O botão de um controle não gera evento no egui: sem redesenhar sozinha, a tela
+            // só acenderia quando o mouse passasse por cima.
+            ui.ctx().request_repaint();
+        }
+        ui.add_space(8.0);
+
+        // Escolha do controle. O teclado nunca sai: quem liga um controle continua podendo
+        // usar as teclas, e é o que se espera de um emulador.
+        let devices = self.gamepads.names();
+        ui.horizontal(|ui| {
+            ui.label(self.catalog.get("controls.device"));
+            let current = self
+                .settings
+                .controls
+                .player(0)
+                .and_then(|player| player.device.clone())
+                .unwrap_or_else(|| self.catalog.get("controls.device.none").to_string());
+            let mut chosen: Option<Option<String>> = None;
+            egui::ComboBox::from_id_salt("controle")
+                .selected_text(current)
+                .show_ui(ui, |ui| {
+                    if ui
+                        .selectable_label(false, self.catalog.get("controls.device.none"))
+                        .clicked()
+                    {
+                        chosen = Some(None);
+                    }
+                    for device in &devices {
+                        if ui.selectable_label(false, device).clicked() {
+                            chosen = Some(Some(device.clone()));
+                        }
+                    }
+                });
+            if let Some(device) = chosen {
+                // Escolher um controle traz o mapeamento típico dele junto; ficar sem controle
+                // volta para o teclado puro. Nos dois casos o que estava configurado à mão se
+                // perde, e é por isso que a troca é um clique deliberado numa lista.
+                *self.settings.controls.player_mut(0) = match device {
+                    Some(name) => crate::bindings::Player::with_gamepad(name),
+                    None => crate::bindings::Player::default(),
+                };
+                changed = true;
+            }
+            if ui.button(self.catalog.get("controls.rescan")).clicked() {
+                self.gamepads.poll();
+            }
+        });
+        if devices.is_empty() {
+            ui.weak(self.catalog.get("controls.no_devices"));
+        }
+
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            if ui.button(self.catalog.get("controls.reset")).clicked() {
+                let device = self
+                    .settings
+                    .controls
+                    .player(0)
+                    .and_then(|player| player.device.clone());
+                *self.settings.controls.player_mut(0) = match device {
+                    Some(name) => crate::bindings::Player::with_gamepad(name),
+                    None => crate::bindings::Player::default(),
+                };
+                changed = true;
+            }
+        });
+        ui.separator();
+
+        // A captura sai do laço: mexer no mapeamento enquanto ele está emprestado para desenhar
+        // não passa pelo compilador.
+        let mut assign: Option<String> = None;
+        let mut clear: Option<String> = None;
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            egui::Grid::new("botoes").num_columns(3).show(ui, |ui| {
+                for button in crate::bindings::CONFIGURABLE {
+                    ui.label(self.catalog.get(&format!("button.{button}")));
+
+                    let sources = self
+                        .settings
+                        .controls
+                        .player(0)
+                        .map(|player| player.sources(button))
+                        .unwrap_or(&[]);
+                    let text = match sources.is_empty() {
+                        true => self.catalog.get("controls.unbound").to_string(),
+                        false => sources
+                            .iter()
+                            .map(Source::label)
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    };
+                    ui.label(text);
+
+                    ui.horizontal(|ui| {
+                        let waiting = self.capturing.as_deref() == Some(button);
+                        let label = match waiting {
+                            true => self.catalog.get("controls.assigning"),
+                            false => self.catalog.get("controls.assign"),
+                        };
+                        if ui.selectable_label(waiting, label).clicked() {
+                            assign = Some(button.to_string());
+                        }
+                        if ui.button(self.catalog.get("controls.clear")).clicked() {
+                            clear = Some(button.to_string());
+                        }
+                    });
+                    ui.end_row();
+                }
+            });
+        });
+        if let Some(button) = assign {
+            // Clicar de novo no mesmo botão desiste da captura.
+            self.capturing = match self.capturing.as_deref() == Some(button.as_str()) {
+                true => None,
+                false => Some(button),
+            };
+        }
+        if let Some(button) = clear {
+            self.settings.controls.player_mut(0).clear(&button);
+            changed = true;
+        }
+
+        ui.add_space(12.0);
+        changed |= self.axes_section(ui);
+
+        ui.add_space(12.0);
+        ui.weak(self.catalog.get("controls.players_note"));
+        changed
+    }
+
+    /// De onde vem cada eixo analógico do console.
+    ///
+    /// Fica numa seção própria, e não junto dos botões, porque um eixo não é um botão: ele não
+    /// tem "apertado", tem curso, e por isso a origem é uma só e ganha um sentido.
+    fn axes_section(&mut self, ui: &mut egui::Ui) -> bool {
+        let mut changed = false;
+        ui.label(self.catalog.get("controls.axes"));
+        ui.weak(self.catalog.get("controls.axes.hint"));
+
+        // O valor de cada eixo, ao vivo. Um manche que não chega ao emulador aparece aqui como
+        // um zero teimoso, e é o que separa "não mapeado" de "mapeado no eixo errado".
+        let pad = self.pad_now(ui.ctx());
+        ui.horizontal(|ui| {
+            for (name, value) in crate::input::AXIS_NAMES.iter().zip(pad.axes) {
+                let share = value as f32 / crate::input::AXIS_MAX as f32;
+                ui.monospace(format!("{name}: {share:+.2}"));
+            }
+        });
+
+        let none = self.catalog.get("controls.axis.none").to_string();
+        let invert = self.catalog.get("controls.invert").to_string();
+        let labels: Vec<String> = crate::input::AXIS_NAMES
+            .iter()
+            .map(|axis| self.catalog.get(&format!("axis.{axis}")).to_string())
+            .collect();
+        let player = self.settings.controls.player_mut(0);
+        egui::Grid::new("eixos").num_columns(3).show(ui, |ui| {
+            for (axis, label) in crate::input::AXIS_NAMES.iter().zip(&labels) {
+                ui.label(label);
+
+                let current = player
+                    .axes
+                    .get(*axis)
+                    .map(|source| source.name.clone())
+                    .unwrap_or_else(|| none.clone());
+                let mut chosen: Option<Option<String>> = None;
+                egui::ComboBox::from_id_salt(format!("eixo-{axis}"))
+                    .selected_text(current)
+                    .show_ui(ui, |ui| {
+                        if ui.selectable_label(false, &none).clicked() {
+                            chosen = Some(None);
+                        }
+                        for name in gamepads::axis_names() {
+                            if ui.selectable_label(false, name).clicked() {
+                                chosen = Some(Some(name.to_string()));
+                            }
+                        }
+                    });
+                match chosen {
+                    Some(Some(name)) => {
+                        let inverted = player.axes.get(*axis).is_some_and(|s| s.invert);
+                        player.axes.insert(
+                            axis.to_string(),
+                            crate::bindings::AxisSource {
+                                name,
+                                invert: inverted,
+                            },
+                        );
+                        changed = true;
+                    }
+                    Some(None) => {
+                        player.axes.remove(*axis);
+                        changed = true;
+                    }
+                    None => {}
+                }
+
+                if let Some(source) = player.axes.get_mut(*axis) {
+                    changed |= ui.checkbox(&mut source.invert, &invert).changed();
+                }
+                ui.end_row();
+            }
+        });
+        changed
+    }
+
+    /// Enquanto a tela de controles espera, a próxima tecla ou botão apertado vira a origem.
+    ///
+    /// Devolve se algo foi ligado — o chamador guarda as configurações nesse caso.
+    fn capture(&mut self, ctx: &egui::Context) -> bool {
+        let Some(button) = self.capturing.clone() else {
+            return false;
+        };
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.capturing = None;
+            return false;
+        }
+        // O teclado primeiro: é o que está debaixo da mão de quem está configurando.
+        let key = ctx.input(|i| {
+            i.events.iter().find_map(|event| match event {
+                egui::Event::Key {
+                    key, pressed: true, ..
+                } => Some(*key),
+                _ => None,
+            })
+        });
+        let source = match key {
+            Some(key) => Some(Source::key(key.name())),
+            None => {
+                let device = self
+                    .settings
+                    .controls
+                    .player(0)
+                    .and_then(|player| player.device.clone());
+                self.gamepads.first_active(device.as_deref())
+            }
+        };
+        let Some(source) = source else {
+            return false;
+        };
+        self.settings.controls.player_mut(0).bind(&button, source);
+        self.capturing = None;
+        true
+    }
+
+    /// A aba "Sobre": versão e para onde ir. Não muda configuração nenhuma, por isso devolve
+    /// `false` sempre.
+    fn about_tab(&mut self, ui: &mut egui::Ui) -> bool {
+        ui.heading(self.catalog.get("app.name"));
+        ui.label(
+            self.catalog
+                .format("about.version", &[("version", env!("CARGO_PKG_VERSION"))]),
+        );
+        ui.add_space(4.0);
+        ui.weak(self.catalog.get("about.tagline"));
+
+        ui.add_space(16.0);
+        // O ícone do GitHub vem na fonte do egui; para o Discord não há um, e o balão de fala é
+        // o mais próximo que a fonte de emoji oferece.
+        ui.hyperlink_to(
+            format!(
+                "{} {}",
+                egui::special_emojis::GITHUB,
+                self.catalog.get("about.repository")
+            ),
+            REPOSITORY,
+        );
+        ui.hyperlink_to(format!("💬 {}", self.catalog.get("about.discord")), DISCORD);
+        false
+    }
+
+    fn graphics_tab(&mut self, ui: &mut egui::Ui) -> bool {
+        let mut changed = false;
+        let graphics = &mut self.settings.graphics;
+
+        ui.label(self.catalog.get("graphics.scaling"));
+        for option in Scaling::ALL {
+            let label = self.catalog.get(option.key()).to_string();
+            changed |= ui
+                .radio_value(&mut graphics.scaling, option, label)
+                .changed();
+        }
+        if graphics.scaling == Scaling::Integer {
+            ui.weak(self.catalog.get("graphics.scaling.integer.hint"));
+        }
+
+        ui.add_space(12.0);
+        changed |= ui
+            .checkbox(&mut graphics.smooth, self.catalog.get("graphics.smooth"))
+            .changed();
+        changed |= ui
+            .checkbox(
+                &mut graphics.keep_aspect,
+                self.catalog.get("graphics.keep_aspect"),
+            )
+            .changed();
+        changed |= ui
+            .checkbox(
+                &mut graphics.speed_limit,
+                self.catalog.get("graphics.speed_limit"),
+            )
+            .changed();
+        ui.weak(self.catalog.get("graphics.speed_limit.hint"));
+        changed
+    }
+
+    fn audio_tab(&mut self, ui: &mut egui::Ui) -> bool {
+        let mut changed = false;
+        ui.weak(self.catalog.get("audio.hint"));
+        ui.add_space(12.0);
+        let audio = &mut self.settings.audio;
+        changed |= ui
+            .checkbox(&mut audio.enabled, self.catalog.get("audio.enabled"))
+            .changed();
+        ui.add_enabled_ui(audio.enabled, |ui| {
+            changed |= ui
+                .add(
+                    egui::Slider::new(&mut audio.volume, 0..=100)
+                        .text(self.catalog.get("audio.volume")),
+                )
+                .changed();
+        });
+        // Mexer no volume com o jogo aberto tem que valer na hora, não só na próxima abertura.
+        if changed {
+            let (enabled, volume) = (audio.enabled, audio.volume);
+            if let Some(session) = &mut self.session {
+                session.set_audio(enabled, volume);
+            }
+        }
+        changed
+    }
+
+    /// A janela de configurações.
+    ///
+    /// É uma janela do sistema, não um painel dentro da principal: o `show_viewport_immediate`
+    /// desenha o fecho na mesma linha de execução, que é o que permite mexer no `self` de
+    /// dentro dele. A variante adiada exigiria um fecho compartilhável entre linhas, e nem o
+    /// emulador nem as configurações atravessam essa fronteira.
+    fn settings_window(&mut self, ctx: &egui::Context) {
+        let id = egui::ViewportId::from_hash_of("configuracoes");
+        let builder = egui::ViewportBuilder::default()
+            .with_title(self.catalog.get("settings.title"))
+            .with_inner_size([560.0, 480.0])
+            .with_min_inner_size([420.0, 320.0]);
+        let mut close = false;
+        let mut captured = false;
+        ctx.show_viewport_immediate(id, builder, |ctx, _class| {
+            // A captura é lida no contexto **desta** janela: é nela que a tecla é apertada.
+            captured = self.capture(ctx);
+            egui::CentralPanel::default().show(ctx, |ui| self.settings_screen(ui));
+            close = ctx.input(|i| i.viewport().close_requested());
+            // Esperando uma tecla, a janela precisa se redesenhar sozinha para perceber o
+            // botão de um controle, que não gera evento nenhum no egui.
+            if self.capturing.is_some() {
+                ctx.request_repaint();
+            }
+        });
+        if captured {
+            self.save();
+        }
+        if close {
+            self.settings_open = false;
+            self.capturing = None;
+        }
+    }
+
+    /// A janela do jogo.
+    ///
+    /// Ela lê o teclado do **seu próprio** contexto, e não do da janela principal: a entrada do
+    /// egui vai para a janela em foco, e ler do lugar errado faria o jogo só responder quando a
+    /// biblioteca estivesse na frente.
+    fn game_window(&mut self, ctx: &egui::Context) {
+        let title = match self.session.as_ref().map(Session::title) {
+            Some(title) if !title.is_empty() => title.to_string(),
+            _ => self.catalog.get("library.unknown_title").to_string(),
+        };
+        let id = egui::ViewportId::from_hash_of("jogo");
+        let builder = egui::ViewportBuilder::default()
+            .with_title(format!("{title} — Zeebx"))
+            .with_inner_size([SCREEN[0] as f32, SCREEN[1] as f32 + 32.0])
+            .with_min_inner_size([320.0, 240.0]);
+        let mut close = false;
+        ctx.show_viewport_immediate(id, builder, |ctx, _class| {
+            close = self.playing_screen(ctx);
+        });
+        if close {
+            self.session = None;
+            self.frame = None;
+        }
+    }
+
+    /// O estado do controle agora, montado a partir do mapeamento do jogador.
+    ///
+    /// O teclado e o controle são consultados juntos: quem tem os dois pode usar os dois, e é
+    /// isso que ter mais de uma origem por botão significa.
+    fn pad_now(&mut self, ctx: &egui::Context) -> Pad {
+        self.gamepads.poll();
+        let Some(player) = self.settings.controls.player(0) else {
+            return Pad::default();
+        };
+        let device = player.device.clone();
+        let keys: Vec<Source> = player
+            .buttons
+            .values()
+            .flatten()
+            .filter(|source| source.is_key())
+            .cloned()
+            .collect();
+        // Quais teclas estão apertadas sai numa consulta só: entrar no estado de entrada do
+        // egui uma vez por origem seria uma travada por botão, a cada quadro.
+        let pressed: Vec<Source> = ctx.input(|input| {
+            keys.into_iter()
+                .filter(|source| match source {
+                    Source::Key { name } => {
+                        egui::Key::from_name(name).is_some_and(|key| input.key_down(key))
+                    }
+                    _ => false,
+                })
+                .collect()
+        });
+        let gamepads = &self.gamepads;
+        player.pad(
+            |source| pressed.contains(source) || gamepads.is_active(device.as_deref(), source),
+            |axis| gamepads.value(device.as_deref(), axis),
+        )
+    }
+
+    /// Roda e desenha o jogo na janela dele. Devolve se é hora de fechá-la.
+    fn playing_screen(&mut self, ctx: &egui::Context) -> bool {
+        if self.session.is_none() {
+            return true;
+        }
+        // A entrada é lida antes de pegar a sessão emprestada: montar o estado do controle
+        // precisa do mapeamento e dos controles ligados, que também vivem no `self`.
+        let pad = match self.paused {
+            true => None,
+            false => Some(self.pad_now(ctx)),
+        };
+        let limit = self.settings.graphics.speed_limit;
+        let Some(session) = &mut self.session else {
+            return true;
+        };
+        if let Some(pad) = pad {
+            session.set_pad(pad);
+            // O orçamento é o tempo real que passou desde o quadro anterior.
+            let now = std::time::Instant::now();
+            let slice = (now - self.last_step).min(MAX_SLICE);
+            self.last_step = now;
+            let _ = session.step(slice, limit);
+        }
+        let mut stop =
+            ctx.input(|i| i.key_pressed(egui::Key::Escape) || i.viewport().close_requested());
+
+        let smooth = self.settings.graphics.smooth;
+        upload(ctx, &mut self.frame, session.screen(), smooth);
+        // O que a barra mostra sai da sessão agora, antes de desenhar: o empréstimo do jogo
+        // não pode atravessar os fechos da interface, que precisam do `self` inteiro.
+        let (frames, speed) = (session.frames(), session.speed_percent());
+        let title = match session.title().is_empty() {
+            true => self.catalog.get("library.unknown_title").to_string(),
+            false => session.title().to_string(),
+        };
+
+        // Um jogo que parou continua na tela, com o último quadro e o motivo à mostra: sumir
+        // sozinho esconderia justamente o que interessa quando algo dá errado.
+        let ended = session.stopped_reason();
+
+        egui::TopBottomPanel::top("jogando").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                stop |= ui.button(self.catalog.get("play.stop")).clicked();
+                let pause = match self.paused {
+                    true => "play.resume",
+                    false => "play.pause",
+                };
+                let running = ended.is_none();
+                if ui
+                    .add_enabled(running, egui::Button::new(self.catalog.get(pause)))
+                    .clicked()
+                {
+                    self.paused = !self.paused;
+                }
+                ui.separator();
+                ui.label(&title);
+                if let Some(reason) = &ended {
+                    ui.colored_label(
+                        ui.visuals().warn_fg_color,
+                        self.catalog.format("play.failed", &[("reason", reason)]),
+                    );
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.weak(
+                        self.catalog
+                            .format("play.speed", &[("percent", &speed.to_string())]),
+                    );
+                    ui.weak(
+                        self.catalog
+                            .format("play.frames", &[("frames", &frames.to_string())]),
+                    );
+                });
+            });
+        });
+
+        egui::CentralPanel::default()
+            .frame(egui::Frame::NONE.fill(egui::Color32::BLACK))
+            .show(ctx, |ui| {
+                let Some(texture) = &self.frame else {
+                    return;
+                };
+                let size = placement(
+                    ui.available_size(),
+                    self.settings.graphics.scaling,
+                    self.settings.graphics.keep_aspect,
+                );
+                ui.centered_and_justified(|ui| {
+                    ui.add(egui::Image::new(texture).fit_to_exact_size(size));
+                });
+            });
+
+        // Enquanto o jogo roda, a interface precisa ser redesenhada sozinha: sem isso o egui
+        // só acorda quando o mouse ou o teclado se mexem, e o jogo pararia entre as teclas. O
+        // pedido vai também para a janela principal porque é dentro do quadro dela que esta
+        // aqui é desenhada — pedir só para si mesma deixaria o jogo parado sempre que a
+        // biblioteca estivesse ociosa.
+        if !stop && !self.paused && ended.is_none() {
+            ctx.request_repaint();
+            ctx.request_repaint_of(egui::ViewportId::ROOT);
+        }
+        stop
+    }
+}
+
+impl eframe::App for App {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // A janela principal é só a biblioteca. As configurações e o jogo são janelas do
+        // sistema, cada uma com o seu título e o seu botão de fechar.
+        egui::TopBottomPanel::top("nav").show(ctx, |ui| self.nav(ui));
+        egui::CentralPanel::default().show(ctx, |ui| self.library_screen(ui));
+        if self.settings_open {
+            self.settings_window(ctx);
+        }
+        if self.session.is_some() {
+            self.game_window(ctx);
+        }
+    }
+}
+
+/// A luz de um botão apertado agora. Translúcida de propósito: ela acende o botão, não o
+/// substitui — o traço do desenho continua aparecendo por baixo.
+const LIT: [u8; 4] = [0x2f, 0xd6, 0x8a, 0xb4];
+/// A luz de um botão sob o cursor, mais fraca: ela só diz onde o clique vai cair.
+const HOVER: [u8; 4] = [0x6c, 0x9c, 0xff, 0x50];
+/// A cor do ponto que marca a posição de um analógico.
+const STICK: [u8; 4] = [0x2f, 0x6b, 0xd6, 0xd0];
+/// A cor de um botão esperando uma tecla. Ela pulsa, para não se confundir com "apertado".
+const WAITING: [u8; 3] = [0xff, 0xa0, 0x28];
+
+/// Manda o desenho do controle para a placa de vídeo.
+///
+/// As silhuetas viram texturas brancas com a opacidade da peça: a cor sai do tingimento na hora
+/// de desenhar, e é isso que deixa o realce legível por cima de um desenho de qualquer cor.
+fn upload_art(ctx: &egui::Context, art: &PadArt) -> ArtTextures {
+    let base = ctx.load_texture(
+        "controle",
+        egui::ColorImage::from_rgba_unmultiplied([art.width, art.height], &art.base),
+        egui::TextureOptions::LINEAR,
+    );
+    let parts = art
+        .parts()
+        .iter()
+        .map(|part| {
+            let mut rgba = Vec::with_capacity(part.alpha.len() * 4);
+            for alpha in &part.alpha {
+                rgba.extend_from_slice(&[255, 255, 255, *alpha]);
+            }
+            ctx.load_texture(
+                format!("controle-{}", part.button),
+                egui::ColorImage::from_rgba_unmultiplied([part.width, part.height], &rgba),
+                egui::TextureOptions::LINEAR,
+            )
+        })
+        .collect();
+    ArtTextures { base, parts }
+}
+
+/// A maior altura que o desenho pode tomar. A janela de configurações também precisa caber a
+/// lista de botões.
+const ART_HEIGHT: f32 = 210.0;
+
+/// Manda a imagem de um jogo para a placa de vídeo, caindo na reserva quando ele não tem uma.
+fn upload_art_of(
+    ctx: &egui::Context,
+    game: &Game,
+    placeholder: &Option<crate::icon::Image>,
+) -> Option<egui::TextureHandle> {
+    let image = game.art.as_ref().or(placeholder.as_ref())?;
+    let color = egui::ColorImage::from_rgba_unmultiplied([image.width, image.height], &image.rgba);
+    // Um ícone de 26 pixels aparece ampliado quatro vezes: interpolar viraria um borrão, e o
+    // bloco quadrado é o que o console mostrava. Uma imagem grande já entra reduzida, e aí a
+    // interpolação é que evita o serrilhado.
+    let options = match image.width.max(image.height) < CARD_ART as usize {
+        true => egui::TextureOptions::NEAREST,
+        false => egui::TextureOptions::LINEAR,
+    };
+    Some(ctx.load_texture(format!("capa-{}", game.path.display()), color, options))
+}
+
+/// Um cartão da biblioteca: a imagem do jogo, o título embaixo, e o clique que o abre.
+fn game_card(
+    ui: &mut egui::Ui,
+    game: &Game,
+    texture: Option<&egui::TextureHandle>,
+) -> egui::Response {
+    let size = egui::vec2(CARD_WIDTH, CARD_ART + CARD_TEXT + 24.0);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    let visuals = ui.style().interact(&response);
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 8.0, visuals.weak_bg_fill);
+    painter.rect_stroke(rect, 8.0, visuals.bg_stroke, egui::StrokeKind::Inside);
+
+    let frame = egui::Rect::from_center_size(
+        egui::pos2(rect.center().x, rect.top() + 12.0 + CARD_ART / 2.0),
+        egui::vec2(CARD_ART, CARD_ART),
+    );
+    if let Some(texture) = texture {
+        // A imagem cabe no quadro sem esticar: um ícone de 65×42 deformado até virar quadrado
+        // fica pior que um com sobra dos lados.
+        let source = texture.size_vec2();
+        let scale = (frame.width() / source.x).min(frame.height() / source.y);
+        let placed = egui::Rect::from_center_size(frame.center(), source * scale);
+        painter.image(
+            texture.id(),
+            placed,
+            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            egui::Color32::WHITE,
+        );
+    }
+
+    let galley = painter.layout(
+        game.title.clone(),
+        egui::FontId::proportional(12.0),
+        visuals.text_color(),
+        rect.width() - 16.0,
+    );
+    let text = egui::pos2(
+        rect.center().x - galley.size().x / 2.0,
+        frame.bottom() + 8.0,
+    );
+    painter.galley(text, galley, visuals.text_color());
+
+    // O cartão corta o título comprido, então o nome inteiro fica à espera do ponteiro.
+    match game.clsid {
+        Some(clsid) => response.on_hover_text(format!("{}\n{clsid:#010x}", game.title)),
+        None => response.on_hover_text(&game.title),
+    }
+}
+
+/// A luz, como a interface a entende.
+fn light([r, g, b, a]: [u8; 4]) -> egui::Color32 {
+    egui::Color32::from_rgba_unmultiplied(r, g, b, a)
+}
+
+fn draw_controller(
+    ui: &mut egui::Ui,
+    art: &PadArt,
+    textures: &ArtTextures,
+    pad: &Pad,
+    capturing: Option<&str>,
+) -> Option<String> {
+    let aspect = art.height as f32 / art.width as f32;
+    let mut size = egui::vec2(ui.available_width().min(500.0), 0.0);
+    size.y = size.x * aspect;
+    if size.y > ART_HEIGHT {
+        size = egui::vec2(ART_HEIGHT / aspect, ART_HEIGHT);
+    }
+    // A faixa toma a largura toda e o desenho fica no meio dela: assim ele não gruda na
+    // esquerda quando a janela é alargada.
+    let (outer, response) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), size.y),
+        egui::Sense::click(),
+    );
+    let rect = egui::Rect::from_center_size(outer.center(), size);
+    let painter = ui.painter_at(outer);
+    let whole = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+    painter.image(textures.base.id(), rect, whole, egui::Color32::WHITE);
+
+    let hovered = response.hover_pos().and_then(|pos| {
+        let point = (pos - rect.min) / rect.size();
+        art.hit(point.x, point.y)
+    });
+    if hovered.is_some() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+
+    // O pulso do botão em captura vem do relógio da interface, não de um contador nosso: ele
+    // continua batendo no mesmo ritmo mesmo se a taxa de quadros variar.
+    let time = ui.ctx().input(|input| input.time);
+    let pulse = (time * 6.0).sin() as f32 * 0.5 + 0.5;
+    let waiting = light([
+        WAITING[0],
+        WAITING[1],
+        WAITING[2],
+        (100.0 + 110.0 * pulse) as u8,
+    ]);
+
+    for (part, texture) in art.parts().iter().zip(&textures.parts) {
+        let name = part.button.as_str();
+        let down = Pad::button_by_name(name).is_some_and(|index| pad.is_down(index));
+        let tint = match (capturing == Some(name), down, hovered == Some(name)) {
+            (true, ..) => waiting,
+            (_, true, _) => light(LIT),
+            (_, _, true) => light(HOVER),
+            _ => continue,
+        };
+        let [u0, v0, u1, v1] = part.bounds(art);
+        let place = egui::Rect::from_min_max(
+            rect.lerp_inside(egui::vec2(u0, v0)),
+            rect.lerp_inside(egui::vec2(u1, v1)),
+        );
+        painter.image(texture.id(), place, whole, tint);
+    }
+
+    // O ponto de cada manche, dentro do círculo desenhado. É o que mostra que um analógico
+    // está mesmo chegando ao emulador, e com quanto curso — coisa que acender o botão não diz.
+    for (button, axes) in [("lthumb", [0, 1]), ("rthumb", [2, 3])] {
+        let Some(part) = art.parts().iter().find(|part| part.button == button) else {
+            continue;
+        };
+        let [u0, v0, u1, v1] = part.bounds(art);
+        let circle = egui::Rect::from_min_max(
+            rect.lerp_inside(egui::vec2(u0, v0)),
+            rect.lerp_inside(egui::vec2(u1, v1)),
+        );
+        let offset = egui::vec2(
+            pad.axes[axes[0]] as f32 / crate::input::AXIS_MAX as f32,
+            pad.axes[axes[1]] as f32 / crate::input::AXIS_MAX as f32,
+        );
+        let radius = circle.width().min(circle.height()) / 2.0;
+        let center = circle.center() + offset * radius * 0.6;
+        painter.circle_filled(center, (radius * 0.22).max(2.0), light(STICK));
+    }
+
+    match response.clicked() {
+        true => hovered.map(str::to_string),
+        false => None,
+    }
+}
+
+/// Envia o quadro do console para a textura, criando-a na primeira vez.
+fn upload(
+    ctx: &egui::Context,
+    handle: &mut Option<egui::TextureHandle>,
+    screen: &Framebuffer,
+    smooth: bool,
+) {
+    let mut rgba = Vec::with_capacity(screen.to_argb().len() * 4);
+    for pixel in screen.to_argb() {
+        rgba.extend_from_slice(&[(pixel >> 16) as u8, (pixel >> 8) as u8, pixel as u8, 255]);
+    }
+    let size = [screen.width() as usize, screen.height() as usize];
+    let image = egui::ColorImage::from_rgba_unmultiplied(size, &rgba);
+    // O pixel do console é grande e quadrado; suavizar é escolha de quem olha, não padrão.
+    let options = match smooth {
+        true => egui::TextureOptions::LINEAR,
+        false => egui::TextureOptions::NEAREST,
+    };
+    match handle {
+        Some(handle) => handle.set(image, options),
+        None => *handle = Some(ctx.load_texture("zeebo", image, options)),
+    }
+}
+
+/// O retângulo em que a imagem do console é desenhada dentro de `area`.
+///
+/// Separado da interface porque é a única parte com regra de verdade, e a única que dá para
+/// conferir sem abrir uma janela.
+fn placement(area: egui::Vec2, scaling: Scaling, keep_aspect: bool) -> egui::Vec2 {
+    let native = egui::vec2(SCREEN[0] as f32, SCREEN[1] as f32);
+    if area.x <= 0.0 || area.y <= 0.0 {
+        return native;
+    }
+    match (scaling, keep_aspect) {
+        (Scaling::Stretch, false) => area,
+        (Scaling::Stretch, true) | (Scaling::Fit, _) => {
+            let factor = (area.x / native.x).min(area.y / native.y);
+            native * factor
+        }
+        (Scaling::Integer, _) => {
+            // Nunca some: abaixo de uma vez o tamanho original, encolhe proporcional em vez de
+            // não caber, porque uma janela pequena não pode esconder o jogo.
+            let factor = (area.x / native.x).min(area.y / native.y);
+            match factor >= 1.0 {
+                true => native * factor.floor(),
+                false => native * factor,
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_ampliacao_inteira_so_usa_multiplos_exatos() {
+        // Numa janela de 1500x1100 cabem duas vezes a tela de 640x480, e não duas e pouco.
+        let size = placement(egui::vec2(1500.0, 1100.0), Scaling::Integer, true);
+        assert_eq!(size, egui::vec2(1280.0, 960.0));
+    }
+
+    #[test]
+    fn a_ampliacao_inteira_encolhe_quando_nao_cabe_uma_vez() {
+        // Uma janela menor que a tela não pode esconder o jogo, então ali ela encolhe.
+        let size = placement(egui::vec2(320.0, 240.0), Scaling::Integer, true);
+        assert_eq!(size, egui::vec2(320.0, 240.0));
+    }
+
+    #[test]
+    fn caber_na_janela_mantem_a_proporcao() {
+        // Janela larga demais: sobra borda dos lados, não estica.
+        let size = placement(egui::vec2(1920.0, 480.0), Scaling::Fit, true);
+        assert_eq!(size, egui::vec2(640.0, 480.0));
+    }
+
+    #[test]
+    fn preencher_so_deforma_quando_a_proporcao_e_dispensada() {
+        let area = egui::vec2(1000.0, 500.0);
+        assert_eq!(placement(area, Scaling::Stretch, false), area);
+        // Com a proporção mantida, "preencher" vira "caber".
+        assert_eq!(
+            placement(area, Scaling::Stretch, true),
+            placement(area, Scaling::Fit, true)
+        );
+    }
+}
