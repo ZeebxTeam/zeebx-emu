@@ -375,7 +375,9 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
     }
     machine.set_network(network);
     machine.set_network_to(network_to);
-    machine.set_bridge(bridge);
+    if bridge {
+        machine.set_bridge(true);
+    }
     if profile {
         machine.cpu_mut().enable_profile();
         machine.enable_api_profile();

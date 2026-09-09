@@ -414,6 +414,10 @@ const AEECLSID_WEB: u32 = 0x0100_5000;
 const PLAINTEXT_MAX: usize = 8;
 const PLAINTEXT_BYTES: usize = 512;
 
+/// Teto de campos que aceitamos entregar. A capacidade observada é oito; um valor muito maior
+/// quer dizer que lemos o campo errado, e é melhor não escrever nada.
+const MAX_CAMPOS_DA_RESPOSTA: u32 = 64;
+
 /// Teto de instruções para uma chamada pela ponte. O alocador é uma função curta.
 const PONTE_BUDGET: u64 = 5_000_000;
 /// A linha que acompanha o nome de arquivo no rastreio do alocador. Ele só guarda para os
@@ -1645,7 +1649,9 @@ impl<C: CpuBackend> Machine<C> {
             root_forms: HashMap::new(),
             network: true,
             network_to: None,
-            bridge: false,
+            // A ponte também liga pelo ambiente, para alcançar a interface sem passar por
+            // linha de comando: `ZEEBX_PONTE=1`.
+            bridge: std::env::var_os("ZEEBX_PONTE").is_some(),
             plaintexts: std::collections::VecDeque::new(),
             web_response: Vec::new(),
             streams: HashMap::new(),
@@ -6301,14 +6307,28 @@ impl<C: CpuBackend> Machine<C> {
             .map(str::to_owned)
             .collect();
 
+        // O objeto é um desserializador: contagem em `+8`, vetor em `+4`, capacidade em `+0xc`,
+        // cursor em `+0x28` e o tipo do próximo campo em `+0x2c` (visto no iterador `0xa583c`).
+        // O remetente acabou de chamar o `Reset` dele, então cursor e tipo têm de estar zerados
+        // e a contagem também — se não estiverem, este não é o objeto que pensamos, e mexer
+        // nele seria escrever num lugar qualquer da memória do jogo.
         let resposta = self.cpu.read_u32(objeto + 8)?;
         let (vetor, capacidade) = (
             self.cpu.read_u32(resposta + 4)?,
             self.cpu.read_u32(resposta + 0xc)?,
         );
-        if vetor == 0 || capacidade < campos.len() as u32 {
+        let (contagem, cursor, tipo) = (
+            self.cpu.read_u32(resposta + 8)?,
+            self.cpu.read_u32(resposta + 0x28)?,
+            self.cpu.read_u32(resposta + 0x2c)?,
+        );
+        let parece_o_esperado = vetor != 0
+            && capacidade >= campos.len() as u32
+            && capacidade <= MAX_CAMPOS_DA_RESPOSTA
+            && (contagem, cursor, tipo) == (0, 0, 0);
+        if !parece_o_esperado {
             self.assumptions
-                .insert("a resposta não foi entregue: o vetor do jogo não comporta os campos");
+                .insert("a resposta não foi entregue: o objeto não parecia o desserializador");
             return Ok(());
         }
 

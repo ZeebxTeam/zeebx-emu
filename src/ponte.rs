@@ -34,8 +34,24 @@
 //! como endereço e libera lixo.
 //!
 //! Uma entrega errada não falha na hora: corrompe e quebra adiante, que é o pior tipo de erro
-//! para se ter ligado por omissão. Fica atrás do `--ponte`, e o padrão é o jogo ver "não veio
-//! resposta" — um estado que ele sabe tratar.
+//! para se ter ligado por omissão. Fica atrás do `--ponte` (ou de `ZEEBX_PONTE=1`, que alcança
+//! a interface), e o padrão é o jogo ver "não veio resposta" — um estado que ele sabe tratar.
+//!
+//! # Onde a investigação parou
+//!
+//! A queda foi reproduzida sem janela, o que é a parte boa: `str r0, [r5]` em `0x654ac` com
+//! `r5` valendo `0x1c`, dentro do gerenciador de memória, com a pilha ainda nos quadros da
+//! `ConnectionManager::init` — ou seja, **dentro da chamada que nós fazemos**.
+//!
+//! O que já foi descartado: o alocador é chamado como o jogo o chama (índice de pool 0, que ele
+//! exige menor que 32; o quinto argumento na pilha, que ele lê em `[sp+0x30]`; o ponteiro de
+//! arquivo para rastreio). E o objeto de resposta é mesmo o desserializador — contagem em `+8`,
+//! vetor em `+4`, cursor em `+0x28`, tipo em `+0x2c` —, o que o iterador em `0xa583c` confirma.
+//!
+//! O que sobra como suspeita: **o momento**. Chamamos o alocador de dentro do despacho de uma
+//! API, com o jogo no meio de uma operação do próprio gerenciador. Reentrar ali pode ser o que
+//! ele não admite. Se for isso, a saída é alocar noutro instante — por exemplo, guardando a
+//! resposta e entregando na próxima fronteira de chamada, quando a pilha do jogo estiver limpa.
 
 /// O que se sabe de um módulo específico.
 #[derive(Debug, Clone, Copy)]
