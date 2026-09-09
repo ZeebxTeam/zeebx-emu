@@ -317,15 +317,53 @@ formatos plausíveis, de oito, doze ou dezesseis bytes — nos **128 MB inteiros
 aparecem como literal quatro ou cinco vezes cada, sempre dentro de pool de código ou de tabela de
 strings, nunca como registro.
 
-### A tabela de classes que conhecemos é parcial
+### A tabela de classes era parcial porque a líamos errado — e mesmo inteira não tem as nossas
 
-Isto é importante e vale para todo o trabalho: **"não está na tabela" não quer dizer "não
-existe"**. O `AEECLSID_SQLMGR` e o `AEECLSID_FILEMGR` não estão nela, e o console obviamente os
-implementa. Varrendo o `1.1.2_APPS.bin` por entradas daquele formato saem **105**, em cinquenta e
-cinco corridas curtas — longe das centenas que um sistema BREW tem.
+O `registro()` procurava **entrada isolada**, filtrando por uma lista de sinalizadores. Só que
+sinalizador não é um punhado de valores: no `1.1.2_APPS.bin` aparecem `0x1`, `0x4`, `0x5`, `0x8`,
+`0x20004`, `0x2000004`, `0xffff0000`. Com o filtro saíam 105 entradas.
 
-Há pelo menos mais um registro, com outro formato. Achá-lo é o que pode devolver as vtables que
-faltam — e é uma busca dentro do APPS, não dentro do EFS2.
+O que identifica a tabela é a **corrida**: quatro ou mais entradas seguidas cujo primeiro campo
+cai na faixa dos ClassIDs. Assim saem **84 tabelas, 704 entradas, 425 classes distintas** — a
+maior em `0x10c3a018`, com 62. O `AEECLSID_FILEMGR` está lá, com os **dois** ponteiros da entrada
+preenchidos, o que também esclarece a forma: `<CLSID> <sinalizadores> <a> <b>`, construtor em `b`
+e às vezes um segundo ponteiro em `a`.
+
+E aí vem a parte que resolve a pergunta. Com as 84 tabelas lidas, continuam **ausentes**:
+
+| Classe | O que é |
+|---|---|
+| `0x01028e51`, `0x01028e35`, `0x01028e3c`, … | a família de widgets |
+| `0x0100104f` | a coleção genérica |
+| `0x01035156` | a fonte TrueType |
+| `0x0102c4e8` | `AEECLSID_SQLMGR` |
+| `0x0106c411` | `AEECLSID_HID` — o gamepad |
+| `0x01041207` | `AEECLSID_SignalCBFactory` |
+
+Não é coincidência: **é a camada específica do Zeebo inteira**. O SQLite, o gamepad, os sinais, a
+interface. Nada disso está no `1.1.2_APPS.bin`, e nada disso está em nenhuma das outras partições
+do dump.
+
+Isso explica retroativamente de onde veio cada identificação que temos dessas classes: o
+`AEECLSID_SQLMGR` saiu do log do próprio jogo, o `AEECLSID_HID` saiu do `hid_devices.cfg` e da
+`IHID.dll` do SDK, os widgets saíram do código da Z-Wheel. **Nenhuma veio do firmware, porque
+nenhuma está nele.**
+
+### O que se confirmou de graça: o `ICM`
+
+Com a leitura corrigida, o `AEECLSID_CM` (`0x01011810`) ganhou vtable de verdade — `0x10a5e1f0`,
+com pelo menos trinta e quatro slots. O **slot 28** existe e é `0x10ca927c`, e o que ele faz é:
+
+```
+0x10ca92b6  bl   #0x10ca46d0
+0x10ca92c0  str  r0, [r2, #0xc]      ; o valor vai para o deslocamento 0xc
+0x10ca92ca  blx  #0x10b967f8         ; copia a estrutura para o buffer de quem chamou
+0x10ca92ce  movs r0, #0              ; zero é sucesso
+```
+
+O deslocamento `0xc` que a nossa implementação escreve **está confirmado pelo firmware**. O valor
+cinco continua sendo inferência do lado do jogo, que compara com cinco em `0x77564` — mas agora só
+metade da hipótese é hipótese.
 
 ### E a Z-Wheel do console é outro build
 

@@ -59,45 +59,66 @@ def para_offset(segs, endereco):
     return None
 
 
+def tabelas(data, segs):
+    """Todas as tabelas de classes do firmware, como `{CLSID: [(endereço, flags, a, b)]}`.
+
+    A entrada tem dezesseis bytes e a forma `<u32 CLSID> <u32 sinalizadores> <u32 a> <u32 b>`,
+    com o construtor em `b` — e às vezes um segundo ponteiro em `a`, como no `AEECLSID_FILEMGR`.
+
+    **Procurar entrada isolada não funciona**, e foi o que mascarou o tamanho real do registro.
+    Os sinalizadores não são um punhado de valores: aparecem `0x1`, `0x4`, `0x5`, `0x8`,
+    `0x20004`, `0x2000004`, `0xffff0000`… Filtrando por uma lista deles saíam 105 entradas; o
+    que identifica a tabela é a **corrida**, quatro ou mais entradas seguidas cujo primeiro campo
+    cai na faixa dos ClassIDs. Assim saem 84 tabelas e 704 entradas, com 425 classes distintas.
+
+    A maior fica em `0x10c3a018`, com 62 entradas.
+    """
+    saida = {}
+    o = 0
+    while o + 16 <= len(data):
+        if not e_clsid(struct.unpack_from("<I", data, o)[0]):
+            o += 4
+            continue
+        ini = o
+        while o + 16 <= len(data) and e_clsid(struct.unpack_from("<I", data, o)[0]):
+            o += 16
+        if (o - ini) // 16 < 4:
+            continue
+        for at in range(ini, o, 16):
+            c, flags, a, b = struct.unpack("<4I", data[at : at + 16])
+            saida.setdefault(c, []).append((para_endereco(segs, at), flags, a, b))
+    return saida
+
+
+def e_clsid(x):
+    """A faixa dos ClassIDs do BREW neste console."""
+    return 0x01000000 <= x < 0x01200000
+
+
 def registro(data, segs, clsid):
     """A entrada da tabela de classes do firmware, se houver.
 
-    As classes que o console implementa estão numa tabela de entradas de dezesseis bytes:
+    Devolve `(construtor, sinalizadores)`. O construtor é o campo `b` da entrada, ou o `a` quando
+    o `b` não parece função — o `AEECLSID_FILEMGR` tem os dois preenchidos.
 
-        <u32 CLSID> <u32 sinalizadores> <u32 zero> <u32 construtor>
+    **Esta leitura já esteve deslocada de uma palavra**, tomando o construtor da entrada anterior
+    como se fosse desta. O deslocamento não quebrava nada visivelmente — devolvia um construtor
+    de verdade, numa vtable de verdade, da classe errada. Foi preciso desmontar o construtor para
+    perceber: o que a tabela dava para a `0x01006c05` começava comparando o CLSID recebido com
+    `0x01006c01`, que é justamente a entrada de cima.
 
-    O construtor é endereço Thumb, então tem o bit 0 ligado, **e** precisa cair dentro de um
-    segmento carregável. As duas condições juntas é que distinguem a entrada de uma citação
-    qualquer do CLSID, e há muitas: a `0x01001011` aparece vinte e seis vezes no
-    `1.1.2_APPS.bin` e só uma delas é o registro.
+    Fica a regra que saiu daí: **desmontar o construtor antes de copiar a vtable**. Se ele testa
+    um CLSID, tem de ser o que você pediu.
 
-    Só o bit 0 não basta, e isso deu falso positivo: para a `0x01000000` ele apontava para
-    `0x206c7274`, que é o texto `"trl "` lido como número. Exigir o segmento resolve.
-
-    **Esta leitura já esteve deslocada de uma palavra**, tomando o construtor da entrada
-    anterior como se fosse desta. O deslocamento não quebrava nada visivelmente — devolvia um
-    construtor de verdade, numa vtable de verdade, da classe errada. Foi preciso desmontar o
-    construtor para perceber: o que a tabela dava para a `0x01006c05` começava comparando o
-    CLSID recebido com `0x01006c01`, que é justamente a entrada de cima.
-
-    Fica a regra que saiu daí: **desmontar o construtor antes de copiar a vtable**. Se ele
-    testa um CLSID, tem de ser o que você pediu.
-
-    **"Não está na tabela" não quer dizer "não existe".** Esta tabela é parcial: o
-    `AEECLSID_SQLMGR` (`0x0102c4e8`) e o `AEECLSID_FILEMGR` (`0x01001003`) não estão nela, e o
-    console obviamente os implementa. Varrendo o `1.1.2_APPS.bin` inteiro por entradas com esta
-    forma saem **105**, espalhadas em cinquenta e cinco corridas curtas — longe das centenas que
-    um sistema BREW tem. Ou seja, há pelo menos mais um registro, com outro formato, que ainda
-    não achamos.
+    **E "não está na tabela" não quer dizer "não existe".** Mesmo com as 84 tabelas lidas, a
+    `0x01028e51`, a `0x0100104f`, a `0x01035156` e o `AEECLSID_SQLMGR` continuam ausentes do
+    `1.1.2_APPS.bin` inteiro — e o console as usa. Elas vêm de algo que não está neste material.
     """
-    pat = struct.pack("<I", clsid)
-    for m in re.finditer(re.escape(pat), data):
-        o = m.start()
-        if o + 16 > len(data):
-            continue
-        _, flags, zero, func = struct.unpack("<4I", data[o : o + 16])
-        if func & 1 and zero == 0 and comeca_funcao(data, segs, func & ~1):
-            return func & ~1, flags
+    for endereco, flags, a, b in tabelas(data, segs).get(clsid, []):
+        for candidato in (b, a):
+            if candidato & 1 and comeca_funcao(data, segs, candidato & ~1):
+                return candidato & ~1, flags
+        _ = endereco
     return None, None
 
 
