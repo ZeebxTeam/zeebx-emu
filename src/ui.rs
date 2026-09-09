@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use eframe::egui;
 
+use crate::archive;
 use crate::bindings::Source;
 use crate::display::Framebuffer;
 use crate::gamepads;
@@ -18,6 +19,7 @@ use crate::i18n::Catalog;
 use crate::input::Pad;
 use crate::library::{self, Game};
 use crate::padview::PadArt;
+use crate::ponte;
 use crate::session::Session;
 use crate::settings::{self, Scaling, Settings};
 
@@ -90,6 +92,8 @@ pub struct App {
     games: Vec<Game>,
     /// Se a janela de configurações está aberta.
     settings_open: bool,
+    /// O que dizer depois de mexer na trava diária do Zeeboids, se algo houver a dizer.
+    sync_unlocked: Option<String>,
     /// O jogo em execução. Enquanto existe, ele tem uma janela só dele.
     session: Option<Session>,
     /// A textura em que o quadro do console é enviado para a placa de vídeo.
@@ -152,6 +156,7 @@ impl App {
             tab: Tab::General,
             games,
             settings_open: false,
+            sync_unlocked: None,
             session: None,
             frame: None,
             error: None,
@@ -228,8 +233,29 @@ impl App {
                 if ui.button(self.catalog.get("nav.settings")).clicked() {
                     self.settings_open = true;
                 }
+                // O Zeeboids só deixa sincronizar uma vez por dia, e a trava é dele: guarda a
+                // data no próprio banco e compara com a de hoje. Testar rede com isso custa um
+                // dia por tentativa, então o botão recua a data em um dia.
+                let botao = ui
+                    .button(self.catalog.get("nav.unlock_sync"))
+                    .on_hover_text(self.catalog.get("nav.unlock_sync.hint"));
+                if botao.clicked() {
+                    self.sync_unlocked = match ponte::liberar_sincronizacao(&archive::device_dir())
+                    {
+                        Ok(_) => Some(self.catalog.get("nav.unlock_sync.done").to_string()),
+                        Err(erro) => Some(erro),
+                    };
+                }
             });
         });
+        if let Some(recado) = self.sync_unlocked.clone() {
+            ui.horizontal(|ui| {
+                ui.label(recado);
+                if ui.button(self.catalog.get("nav.unlock_sync.ok")).clicked() {
+                    self.sync_unlocked = None;
+                }
+            });
+        }
     }
 
     fn library_screen(&mut self, ui: &mut egui::Ui) {

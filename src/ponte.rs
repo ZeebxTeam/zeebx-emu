@@ -89,6 +89,36 @@ pub fn para(clsid: u32) -> Option<Ponte> {
     }
 }
 
+/// Recua um dia a data da última sincronização do Zeeboids.
+///
+/// O Zeeboids limita sincronizar e exportar a **uma vez por dia civil** — e a trava é dele, não
+/// do servidor: ele guarda `last_sync` e `last_export` no próprio banco e, em `0x66774`, converte
+/// os dois com `GETJULIANDATE` e compara ano, mês e dia. O servidor nunca é consultado.
+///
+/// Isso torna qualquer teste de rede lento: uma tentativa por dia. Recuar a data em um dia
+/// devolve o botão, e é o mínimo necessário — não mexe em nada além dos dois campos de data, e
+/// não inventa boneco, placar nem número.
+///
+/// O banco fica no sistema de arquivos do aparelho, que é comum a todos os jogos.
+pub fn liberar_sincronizacao(aparelho: &std::path::Path) -> Result<String, String> {
+    const UM_DIA: i64 = 86_400;
+    let caminho = aparelho.join("zeeboiddata").join("zeeboid.db");
+    if !caminho.exists() {
+        return Err(format!("não achei {}", caminho.display()));
+    }
+    let banco = rusqlite::Connection::open(&caminho).map_err(|e| e.to_string())?;
+    let alteradas = banco
+        .execute(
+            "UPDATE zeeboid_app_info SET last_sync = last_sync - ?1, last_export = last_export - ?1",
+            [UM_DIA],
+        )
+        .map_err(|e| e.to_string())?;
+    match alteradas {
+        0 => Err("o banco não tem a linha de controle ainda".to_string()),
+        _ => Ok(caminho.display().to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
