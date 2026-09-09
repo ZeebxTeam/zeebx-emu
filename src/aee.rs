@@ -247,6 +247,20 @@ pub enum Interface {
     /// desenha texto com a `tectoy.ttf` que o próprio pacote traz, então o caminho de
     /// renderização não passa por este objeto.
     Typeface = 49,
+    /// `0x01006c01`, o `LCT_SIMCardCtl` — o controle do cartão SIM do console.
+    ///
+    /// A `tectoymain.c:1668` imprime `Unable to create instance of AEECLSID_LCT_SIMCARDCTL,
+    /// cannot do SIM check` sem ele, e não desiste: numa execução ela imprimiu isso
+    /// **486.101 vezes**. Recusar não era resposta neutra; era um laço.
+    ///
+    /// A vtable é a `0x113cf854`, com quatro métodos, e o construtor `0x11267d04` confere o
+    /// CLSID recebido contra `0x01006c01` — é dela mesma. Foi este construtor, aliás, que
+    /// denunciou a leitura deslocada da tabela de classes do firmware.
+    ///
+    /// O slot 3 guarda um par em `+0xc4` e `+0xc8`: é registro de retorno de chamada, do tipo
+    /// "verifique o cartão e me avise". Guardamos o par e não avisamos ninguém — não há cartão
+    /// para verificar, e inventar a resposta seria dizer ao jogo que há um.
+    SimCardCtl = 50,
     /// Objeto de uma classe que ainda não conhecemos, criado a pedido do `--sonda`.
     ///
     /// Não implementa interface nenhuma: existe para **descobrir qual é**. Toda chamada é
@@ -266,7 +280,7 @@ impl Interface {
     /// as duas coisas precisam concordar — daí a lista existir num lugar só, com teste que
     /// confere a correspondência. Quando elas divergiram, um objeto recebeu a vtable de outra
     /// interface e a chamada foi parar no método errado, com sintoma a quilômetros da causa.
-    pub const ALL: [Interface; 50] = [
+    pub const ALL: [Interface; 51] = [
         Self::Shell,
         Self::Module,
         Self::Applet,
@@ -317,6 +331,7 @@ impl Interface {
         Self::Cm,
         Self::SystemCtl,
         Self::Typeface,
+        Self::SimCardCtl,
     ];
 
     /// Nome usado nos logs — casa com a nomenclatura do SDK.
@@ -370,6 +385,7 @@ impl Interface {
             Self::Cm => "ICM",
             Self::SystemCtl => "ILCTSystemCtl",
             Self::Typeface => "ITypeface",
+            Self::SimCardCtl => "ILCTSimCardCtl",
             Self::Probe => "ClasseDesconhecida",
             Self::Helpers => "AEEHelpers",
         }
@@ -426,6 +442,7 @@ impl Interface {
             Self::Cm => aee_slots::CM,
             Self::SystemCtl => aee_slots::SYSTEM_CTL,
             Self::Typeface => aee_slots::CLASSE_28E3C,
+            Self::SimCardCtl => aee_slots::SIM_CARD_CTL,
             // A sonda não tem tabela: `method` responde por ela antes de chegar aqui.
             Self::Probe => &[],
             Self::Helpers => aee_helpers::HELPERS,
@@ -498,6 +515,7 @@ impl Interface {
             47 => Self::Cm,
             48 => Self::SystemCtl,
             49 => Self::Typeface,
+            50 => Self::SimCardCtl,
             6 => Self::Helpers,
             _ => return None,
         })

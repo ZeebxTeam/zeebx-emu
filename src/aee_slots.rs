@@ -868,7 +868,7 @@ pub const WIDGET: &[&str] = &[
     "AdicionarFilho",
     "DefinirVisivel",
     "DefinirTamanho",
-    "PegarTocador",
+    "PegarPai",
     "slot9",
     "slot10",
     "slot11",
@@ -890,6 +890,11 @@ pub const ZEEBO_MCP: &[&str] = &["AddRef", "Release", "QueryInterface"];
 /// que uma chamada neles apareça no relatório — a vtable do firmware, que os teria, é a que já
 /// se mostrou ser de fachada.
 pub const CONFIG: &[&str] = &["AddRef", "Release", "GetItem", "SetItem"];
+
+/// Métodos do `LCT_SIMCardCtl` (`0x01006c01`), da vtable `0x113cf854` do firmware.
+///
+/// Quatro. Ver [`crate::aee::Interface::SimCardCtl`].
+pub const SIM_CARD_CTL: &[&str] = &["AddRef", "Release", "QueryInterface", "PedirVerificacao"];
 
 /// Métodos do controle de sistema (`0x01006c02`), da vtable `0x10691ea8` do firmware.
 ///

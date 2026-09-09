@@ -177,33 +177,66 @@ saída antes de o código do jogo rodar. Para o shell, o applet passa a existir 
 Não é remendo de Z-Wheel: qualquer jogo que mande evento para si mesmo na construção estava sendo
 ignorado.
 
-## O que falta para o menu, e por que eu parei
+## O que falta para o menu, e o que já foi tentado
 
 A abertura aparece. O menu não, e a razão está lida, não suposta.
 
-A `AnimationVideo_Form` é uma máquina de estados guiada por um **temporizador que ela mesma
-rearma**: a `0x115e8` chama `ISHELL_SetTimer` com o retorno de chamada `0x114ac`, que é o próprio
-tique da animação. A cada tique ela incrementa `[formulário+0x30]`; passando de **trinta**, a
-abertura termina e a `0x1f7b4` decide o que vem — com a tecla de pular (`AVK_0` ou `0xe04a`,
-tratadas em `0x118bc`), o menu principal direto; sem ela, o próximo estágio.
+### A máquina de estados da abertura
 
-O primeiro tique, no console, vem da extensão de interface. Eu fabriquei um, chamando o tratador
-registrado pelo slot 4 com `(0x801, 0x5064, 1)` — que é exatamente a forma que o `0x11828`
-aceita. **Funcionou e estava errado.** A máquina de estados andou até pedir o slot 8, que devolve
-o objeto que *toca* a animação; respondemos "não tenho", ela seguiu por um caminho alternativo e
-acabou chamando `malloc` com um **ponteiro no lugar do tamanho**, em laço infinito.
+A `AnimationVideo_Form` **se sustenta sozinha**: a `0x11528` arma um `ISHELL_SetTimer` de mil
+milissegundos com o retorno de chamada `0x114ac`, que é o próprio tique. O console não fica
+cutucando a animação; ele dá **um** aviso e o resto é do jogo. O aviso é o par `(0x801, 0x5064)`
+no tratador que o slot 4 registrou — a forma que o `0x11828` desvia para o `0x114ac`.
 
-Ponteiro chegando como tamanho é a assinatura de dado que nós não preenchemos — o mesmo sintoma
-do `IFILE_GetInfoEx`. O tique foi desfeito: ele trocava uma tela de abertura estável por um
-travamento, e "o jogo andou" não é prova de que andou pelo caminho certo.
+O estado fica em `[formulário+0x2c]` e o contador em `+0x30`:
 
-Para o menu, então, falta o que o console tem e nós não:
+| estado | o que acontece |
+|---|---|
+| 0 | conta até trinta tiques de um segundo, depois vira estado 3 |
+| 1 | pede o **tocador** pelo slot 8 do widget e manda tocar |
+| 2 | arma temporizador e espera |
+| 3 | agenda um `ISHELL_Resume` — **é por aqui que o menu entra** |
 
-1. **O tocador de animação** (slot 8 do widget) e o que o slot 3 dele significa.
-2. **O widget de rolagem** — a `MainMenu_Form.c` imprime `Unable to create roller widget in
+Medido: quando o aviso é entregue, o estado **já é 1**. Quem o põe em 1 é o retorno de chamada
+da imagem, em `0x4d484`: imagem carregada é imagem pronta para tocar. Ou seja, o caminho do
+console passa pelo tocador, e o estado 0 (contar trinta segundos) é o caminho de quando não há
+imagem.
+
+### As duas tentativas, e por que as duas foram desfeitas
+
+**Aviso repetido.** Entreguei o par a cada cem milissegundos. A máquina saiu do estado de
+contagem, pediu o tocador, seguiu pelo caminho do nulo e acabou num `malloc` com **ponteiro no
+lugar do tamanho**, em laço infinito.
+
+**Aviso único, com o slot 8 devolvendo o pai.** O aviso único é a leitura certa — a máquina se
+rearma sozinha. E devolver o pai tem apoio: o objeto que sai do slot 8 recebe em seguida um
+`slot3(widget, 0, 0)` e é solto, e slot 3 num widget é o acessador, que recusa seletor
+desconhecido sem estragar nada. Com isso a Z-Wheel **começou a montar o menu** — 178 objetos
+vivos, 723 milhões de instruções.
+
+Mas o log conta o resto: `Unable to create instance of AEECLSID_LCT_SIMCARDCTL` **486.101 vezes**,
+`SendEvent to get Tectoy Font failed`, `Couldn't create z-pad instruction form (6)`. Implementar o
+`LCT_SIMCardCtl` — que é classe de firmware, com construtor conferido — tirou aquele erro e trocou
+o laço por um **travamento duro**: giro puro, sem uma única chamada de API, indefinidamente.
+
+As duas foram desfeitas. "O jogo andou" não é prova de que andou pelo caminho certo, e um
+travamento é pior do que uma abertura estável.
+
+### O que falta, com nome e endereço
+
+1. **O tocador de animação**, do slot 8 do widget. Não é um widget: o que sai dali recebe
+   `slot3(widget, 0, 0)`, assinatura que o acessador não tem.
+2. **A fonte.** A `0x7bfc8` chama o **slot 4** da `0x01035156` esperando um objeto de fonte no
+   ponteiro de saída, e em seguida o entrega ao slot 9 de outro objeto. Sem isso, o
+   `SendEvent to get Tectoy Font failed` e os formulários que dependem de texto falham com erro 6.
+3. **O widget de rolagem** — a `MainMenu_Form.c` imprime `Unable to create roller widget in
    MainMenu form`, e é ele que desenha o carrossel.
-3. **A pintura de verdade**, com texto e recorte. O `pinta_widgets` só sabe jogar na tela uma
-   imagem pendurada; o menu é feito de widgets que desenham.
+4. **Pintura de verdade**, com texto e recorte. O `pinta_widgets` só joga na tela uma imagem
+   pendurada.
+
+Os quatro são pedaços da extensão de interface do console. Não é mais um slot por vez: é
+reconstruir um subsistema, e cada objeto que se inventa no meio do caminho leva o jogo para um
+estado que o aparelho nunca alcança.
 
 ## Onde ela para hoje, e por quê
 

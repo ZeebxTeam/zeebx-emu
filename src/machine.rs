@@ -765,6 +765,8 @@ struct Widget {
     anexados: Vec<u32>,
     /// Se o widget deve aparecer. O slot 6 é quem diz.
     visivel: bool,
+    /// Quem o pendurou, do slot 5. Ver o `PegarPai`.
+    pai: u32,
     /// Endereço da estrutura de tratador que o slot 4 registrou: `{função, contexto}`.
     tratador: u32,
 }
@@ -791,6 +793,9 @@ const FAMILIA_DOS_WIDGETS: [u32; 5] = [
 
 /// `0x01035156`, a fonte TrueType do console. Ver [`Interface::Typeface`].
 const AEECLSID_TYPEFACE: u32 = 0x0103_5156;
+
+/// `0x01006c01`, o controle do cartão SIM. Ver [`Interface::SimCardCtl`].
+const AEECLSID_SIMCARDCTL: u32 = 0x0100_6c01;
 
 /// `0x01006c02`, o controle de sistema. Ver [`Interface::SystemCtl`].
 const AEECLSID_SYSTEMCTL: u32 = 0x0100_6c02;
@@ -2625,6 +2630,10 @@ impl<C: CpuBackend> Machine<C> {
                 None => return Ok(None),
             },
             (Interface::Widget, _) => match self.widget_call(slot)? {
+                Some(result) => result,
+                None => return Ok(None),
+            },
+            (Interface::SimCardCtl, _) => match self.sim_card_call(slot)? {
                 Some(result) => result,
                 None => return Ok(None),
             },
@@ -6619,21 +6628,26 @@ impl<C: CpuBackend> Machine<C> {
                 }
                 SUCCESS
             }
-            // `slot8(this, &saída)`, chamado pela `0x11578` a cada quadro da abertura. O que
-            // sai dali recebe em seguida um `slot3(widget, 0, 0)` — e slot 3 num widget é o
-            // acessador, cuja assinatura não é essa. Ou seja: o objeto devolvido **não é um
-            // widget**, e é algo que só a extensão de interface do console tem.
+            // `slot8(this, &saída)`, chamado a cada tique da abertura pela `0x11578`. O que
+            // sai dali recebe em seguida um `slot3(widget, 0, 0)` e é solto — e slot 3 num
+            // widget é o acessador. Um ponteiro de widget no lugar do seletor não é seletor
+            // nenhum, então a leitura que resta é: **o pai é quem recebe o aviso de que o
+            // filho mudou**, e o acessador recusa o que não conhece, que é o que ele já faz.
             //
-            // Respondemos "não tenho", escrevendo zero. Não é desistência: o jogo testa o
-            // ponteiro em `0x1159c` e tem caminho próprio para o nulo — ele passa ao estado 2 e
-            // arma um temporizador. Inventar um objeto aqui seria pior do que dizer a verdade.
-            "PegarTocador" => {
+            // **Leitura sem confirmação.** Enquanto ninguém dá a partida na animação, este
+            // slot não é chamado, então não há execução que sustente ou derrube a hipótese.
+            // Fica escrita para o próximo que passar aqui.
+            //
+            // Devolver com contagem, porque quem recebe solta logo depois.
+            "PegarPai" => {
                 let saida = self.cpu.read_reg(Reg::R1);
-                if saida != 0 {
-                    self.cpu.write_u32(saida, 0)?;
+                let pai = self.widgets.get(&this).map_or(0, |widget| widget.pai);
+                if pai != 0 {
+                    self.objects.add_ref(pai);
                 }
-                self.assumptions
-                    .insert("o widget respondeu que não tem tocador de animação");
+                if saida != 0 {
+                    self.cpu.write_u32(saida, pai)?;
+                }
                 SUCCESS
             }
             // `slot4(this, &tratador)`, visto em `0x11a6c`. O que `r1` aponta é montado logo
@@ -6660,6 +6674,9 @@ impl<C: CpuBackend> Machine<C> {
                 let filho = self.cpu.read_reg(Reg::R1);
                 if let Some(widget) = self.widgets.get_mut(&this) {
                     widget.anexados.push(filho);
+                }
+                if let Some(filho) = self.widgets.get_mut(&filho) {
+                    filho.pai = this;
                 }
                 // Quem guarda, segura. É a convenção do BREW inteiro, e aqui ela não é
                 // teoria: logo depois de pendurar a imagem no widget, a Z-Wheel solta a
@@ -6729,6 +6746,41 @@ impl<C: CpuBackend> Machine<C> {
                 }
             }
             _ => OK,
+        };
+        Ok(Some(result))
+    }
+
+    /// Atende o controle do cartão SIM. Ver [`Interface::SimCardCtl`].
+    fn sim_card_call(&mut self, slot: u32) -> Result<Option<u32>, CpuError> {
+        let Some(name) = Interface::SimCardCtl.method(slot) else {
+            return Ok(None);
+        };
+        if aee::e_marcador(name) {
+            return Ok(None);
+        }
+        let this = self.cpu.read_reg(Reg::R0);
+        let result = match name {
+            "AddRef" => self.objects.add_ref(this),
+            "Release" => self.objects.release(this),
+            "QueryInterface" => {
+                let (iid, saida) = (self.cpu.read_reg(Reg::R1), self.cpu.read_reg(Reg::R2));
+                if iid != AEECLSID_SIMCARDCTL && iid != 0x0100_0001 {
+                    return Ok(Some(ECLASSNOTSUPPORT));
+                }
+                if saida != 0 {
+                    self.cpu.write_u32(saida, this)?;
+                }
+                self.objects.add_ref(this);
+                SUCCESS
+            }
+            // Guarda o par e não avisa ninguém: não há cartão para verificar, e chamar o
+            // retorno seria afirmar que há.
+            "PedirVerificacao" => {
+                self.assumptions
+                    .insert("uma verificação de cartão SIM foi aceita e nunca respondida");
+                SUCCESS
+            }
+            _ => SUCCESS,
         };
         Ok(Some(result))
     }
@@ -10211,6 +10263,7 @@ impl<C: CpuBackend> Machine<C> {
             AEECLSID_28E3C => Interface::Classe28e3c,
             AEECLSID_CM => Interface::Cm,
             AEECLSID_SYSTEMCTL => Interface::SystemCtl,
+            AEECLSID_SIMCARDCTL => Interface::SimCardCtl,
             AEECLSID_TYPEFACE => Interface::Typeface,
             AEECLSID_MD5 => Interface::Hash,
             AEECLSID_CIPHER_FACTORY => Interface::CipherFactory,
