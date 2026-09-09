@@ -59,16 +59,20 @@ def para_offset(segs, endereco):
     return None
 
 
-def registro(data, clsid):
+def registro(data, segs, clsid):
     """A entrada da tabela de classes do firmware, se houver.
 
     As classes que o console implementa estão numa tabela de entradas de dezesseis bytes:
 
         <u32 construtor> <u32 CLSID> <u32 sinalizadores> <u32 zero>
 
-    O construtor é endereço Thumb, então tem o bit 0 ligado — é o que distingue a entrada de
-    uma citação qualquer do CLSID, e há muitas: a `0x01001011` aparece vinte e seis vezes no
+    O construtor é endereço Thumb, então tem o bit 0 ligado, **e** precisa cair dentro de um
+    segmento carregável. As duas condições juntas é que distinguem a entrada de uma citação
+    qualquer do CLSID, e há muitas: a `0x01001011` aparece vinte e seis vezes no
     `1.1.2_APPS.bin` e só uma delas é o registro.
+
+    Só o bit 0 não basta, e isso deu falso positivo: para a `0x01000000` ele apontava para
+    `0x206c7274`, que é o texto `"trl "` lido como número. Exigir o segmento resolve.
     """
     pat = struct.pack("<I", clsid)
     for m in re.finditer(re.escape(pat), data):
@@ -76,9 +80,24 @@ def registro(data, clsid):
         if o < 4 or o + 12 > len(data):
             continue
         func, _, flags, zero = struct.unpack("<4I", data[o - 4 : o + 12])
-        if func & 1 and zero == 0 and func > 0x1000_0000:
+        if func & 1 and zero == 0 and comeca_funcao(data, segs, func & ~1):
             return func & ~1, flags
     return None, None
+
+
+def comeca_funcao(data, segs, endereco):
+    """Se ali começa mesmo uma função: dentro de um segmento e abrindo com `push`.
+
+    Endereço em segmento carregável já elimina quase todo falso positivo, mas não todos — uma
+    palavra de dados pode cair na faixa por acaso. Todo construtor destes que desmontamos abre
+    empilhando registradores, e exigir isso fecha o resto.
+    """
+    off = para_offset(segs, endereco)
+    if off is None:
+        return False
+    md = Cs(CS_ARCH_ARM, CS_MODE_THUMB)
+    primeira = next(md.disasm(data[off : off + 4], endereco), None)
+    return primeira is not None and primeira.mnemonic == "push"
 
 
 def vtable_de(data, segs, construtor, quantos=16):
@@ -103,7 +122,7 @@ def vtable_de(data, segs, construtor, quantos=16):
                 valor = struct.unpack("<I", data[pos : pos + 4])[0]
                 if para_offset(segs, valor) is not None:
                     alvo = valor
-        elif alvo and i.mnemonic == "str" and i.op_str.endswith("[r4]"):
+        elif alvo and i.mnemonic == "str" and re.search(r"\[r\d+\]$", i.op_str):
             break
     if alvo is None:
         return None, []
@@ -133,7 +152,7 @@ def main():
                 print(f"  offset {m.start():#010x}  endereço {end:#010x}")
     elif sys.argv[1] == "classe":
         clsid = int(sys.argv[2], 0)
-        construtor, flags = registro(data, clsid)
+        construtor, flags = registro(data, segs, clsid)
         if construtor is None:
             print(f"  {clsid:#010x} não está na tabela de classes deste firmware")
             return
