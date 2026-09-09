@@ -682,6 +682,17 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
     if !played.is_empty() {
         println!("callbacks: {} entregue(s)", played.len());
     }
+    // A região de objetos tem teto, e um jogo que chega perto dele está vazando referência —
+    // o sintoma disso é uma classe qualquer parando de ser criada, que não se parece com a
+    // causa. A lista só aparece quando há muito objeto vivo.
+    let vivos = machine.live_objects_by_kind();
+    let total: usize = vivos.iter().map(|(_, n)| n).sum();
+    if total >= 256 {
+        println!("objetos vivos por interface ({total} ao todo):");
+        for (nome, quantos) in vivos.iter().take(8) {
+            println!("  {quantos:6}x {nome}");
+        }
+    }
     if !machine.missing_apis().is_empty() {
         println!("APIs que faltaram:");
         for nota in machine.missing_apis() {

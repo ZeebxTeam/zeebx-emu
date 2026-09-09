@@ -17,7 +17,7 @@ const IFACE_SHIFT: u32 = 12;
 const IFACE_STRIDE: u32 = 1 << IFACE_SHIFT;
 
 /// Interfaces que o emulador conhece. O valor numérico entra no endereço do trampolim.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u32)]
 pub enum Interface {
     Shell = 0,

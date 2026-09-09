@@ -1,0 +1,25 @@
+— classes que o jogo pediu e não temos —
+  0x01000000
+— arquivos não encontrados —
+  fontsize.map
+— APIs atendidas por hipótese —
+  o controle de sistema respondeu zero: não há aparelho para consultar
+  um arquivo que o console traz de fábrica foi servido vazio
+  um seletor de widget que não conhecemos foi recusado
+  um widget aceitou toda interface que lhe pediram
+  uma lista foi esvaziada sem chamar o liberador que o jogo registrou
+— log do jogo —
+  *dbgprintf-4* Joystick.c:157
+  1 Joysticks connected
+  *dbgprintf-4* Joystick.c:183
+  No keyboard reported
+  *dbgprintf-4* ..\..\common\tectoy_utils.c:2810
+  MDN Not Supported!
+  *dbgprintf-4* ..\..\common\tectoy_utils.c:2821
+  MDN='000000000000000'
+  *dbgprintf-4* Shop_Action.c:77
+  Unable to create instance of IDOWNLOAD in ShopAction_Init
+  *dbgprintf-4* GameLib_Form.c:1315
+  Unable to init ShopAction in Gamelib_CheckPreLoaded
+  *dbgprintf-4* AnimationVideo_Form.c:240
+  Failure waiting for image load to complete...

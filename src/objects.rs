@@ -104,17 +104,21 @@ impl ObjectStore {
         self.kinds.len()
     }
 
-    /// Quantos objetos cabem ao todo, e quantos já foram usados alguma vez.
+    /// Quantos objetos vivos de cada interface, do mais numeroso para o menos.
     ///
-    /// Serve ao relatório: um jogo que chegue perto do teto está vazando referência, e sem este
-    /// número isso aparece como "uma classe qualquer parou de ser criada".
-    pub fn capacity(&self) -> (usize, usize) {
-        let stride = OBJECT_STRIDE as usize;
-        let total = (self.end as usize).saturating_sub(self.next as usize) / stride
-            + self.kinds.len()
-            + self.livres.len();
-        (self.kinds.len(), total)
+    /// Serve ao relatório. Um jogo que chega ao teto da região está vazando referência, e sem
+    /// esta lista isso aparece como "uma classe qualquer parou de ser criada" — que foi
+    /// exatamente como o vazamento da Z-Wheel se manifestou.
+    pub fn live_by_kind(&self) -> Vec<(Interface, usize)> {
+        let mut contagem: HashMap<Interface, usize> = HashMap::new();
+        for kind in self.kinds.values() {
+            *contagem.entry(*kind).or_default() += 1;
+        }
+        let mut saida: Vec<(Interface, usize)> = contagem.into_iter().collect();
+        saida.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.name().cmp(b.0.name())));
+        saida
     }
+
 }
 
 #[cfg(test)]

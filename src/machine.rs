@@ -6787,6 +6787,10 @@ impl<C: CpuBackend> Machine<C> {
         if let Some(widget) = self.widgets.get_mut(&this) {
             widget.filhos.insert(id, filho);
         }
+        // Duas referências: **uma do mapa do pai** e uma de quem pediu. Sem a do pai o objeto
+        // morria no primeiro `Release` do chamador e a entrada no mapa ficava apontando para um
+        // endereço livre — que, com o alocador reusando endereço, é outro objeto.
+        self.objects.add_ref(filho);
         Ok(filho)
     }
 
@@ -6862,7 +6866,16 @@ impl<C: CpuBackend> Machine<C> {
             "Release" => {
                 let restantes = self.objects.release(this);
                 if restantes == 0 {
-                    self.widgets.remove(&this);
+                    // **Quem guarda, solta.** Os filhos que o acessador cria por conta própria
+                    // e os que o `AdicionarFilho` pendura levaram uma contagem nossa; sumir com
+                    // o widget sem devolvê-la vaza os dois. E vaza rápido: a Z-Wheel em modo de
+                    // atração monta e desmonta a abertura sem parar, e o mil e vinte e quatro
+                    // objetos da região acabavam numa volta só do laço.
+                    if let Some(widget) = self.widgets.remove(&this) {
+                        for filho in widget.filhos.into_values().chain(widget.anexados) {
+                            self.objects.release(filho);
+                        }
+                    }
                 }
                 restantes
             }
@@ -10733,6 +10746,15 @@ impl<C: CpuBackend> Machine<C> {
     /// As APIs que faltaram durante a execução, inclusive dentro de retornos de chamada.
     pub fn missing_apis(&self) -> Vec<String> {
         self.missing_apis.iter().cloned().collect()
+    }
+
+    /// Quantos objetos vivos de cada interface. Ver [`crate::objects::ObjectStore::live_by_kind`].
+    pub fn live_objects_by_kind(&self) -> Vec<(&'static str, usize)> {
+        self.objects
+            .live_by_kind()
+            .into_iter()
+            .map(|(iface, quantos)| (iface.name(), quantos))
+            .collect()
     }
 
     /// ClassIDs pedidos que ainda não sabemos instanciar.

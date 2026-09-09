@@ -80,6 +80,17 @@ impl Vfs {
         self.resolve_inner(guest_path, false).map(match_case)
     }
 
+    /// **Sobre o `preloaded.cfg`, que ainda não é servido.**
+    ///
+    /// Ele lista os jogos que vêm de fábrica no aparelho, e nem o pacote da Z-Wheel nem o
+    /// sistema de arquivos do dump o têm. Servi-lo **vazio** — que seria a resposta verdadeira,
+    /// já que não há jogo de fábrica aqui — muda o caminho da Z-Wheel de verdade: os erros do
+    /// formulário do z-pad somem e ela entra no `GameLib_Form`, que é a lista de jogos.
+    ///
+    /// E aí ela cai, em `0x40870`, gravando um item num widget cujo ponteiro de vtable está
+    /// zerado, com `Failure waiting for image load to complete...` no log. Trocar uma abertura
+    /// estável por uma queda não é avanço, então isto fica registrado e desligado até o caminho
+    /// novo parar de pé.
     /// Como [`Vfs::resolve`], mas sem a busca sem caixa.
     ///
     /// É para quem vai **criar** um nome, não abrir um existente: renomear para `save.dat`
