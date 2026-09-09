@@ -751,6 +751,9 @@ const AEECLSID_DISPLAY1: u32 = 0x0101_27d4;
 /// `AEECLSID_FILEMGR`, do `AEECLSID_FILEMGR.bid` do SDK. No `AEEClassIDs.h` ele aparece só
 /// comentado, o que já me fez errar esse valor uma vez.
 const AEECLSID_FILEMGR: u32 = 0x0100_1003;
+/// `0x01028e35`, a lista genérica da Z-Wheel. Ver [`Interface::Vetor`].
+const AEECLSID_VETOR: u32 = 0x0102_8e35;
+
 /// `0x01001027`, a `IConfig`. Ver [`Interface::Config`].
 const AEECLSID_CONFIG: u32 = 0x0100_1027;
 
@@ -1552,6 +1555,8 @@ pub struct Machine<C: CpuBackend> {
     sounds: HashMap<u32, SoundState>,
     /// Estado de cada `ICipher1` vivo.
     ciphers: HashMap<u32, CipherState>,
+    /// Os itens e o liberador de cada lista viva. Ver [`Interface::Vetor`].
+    vetores: HashMap<u32, (Vec<u32>, u32)>,
     /// Os bytes de cada `ISource` vivo.
     sources: HashMap<u32, Vec<u8>>,
     /// O estado de cada `IPeek` vivo.
@@ -1750,6 +1755,7 @@ impl<C: CpuBackend> Machine<C> {
             api_time: HashMap::new(),
             profiling_api: false,
             image_notify: HashMap::new(),
+            vetores: HashMap::new(),
             sources: HashMap::new(),
             peeks: HashMap::new(),
             widgets: HashMap::new(),
@@ -2515,6 +2521,10 @@ impl<C: CpuBackend> Machine<C> {
                 None => return Ok(None),
             },
             (Interface::Widget, _) => match self.widget_call(slot)? {
+                Some(result) => result,
+                None => return Ok(None),
+            },
+            (Interface::Vetor, _) => match self.vetor_call(slot)? {
                 Some(result) => result,
                 None => return Ok(None),
             },
@@ -6473,6 +6483,88 @@ impl<C: CpuBackend> Machine<C> {
         Ok(Some(result))
     }
 
+    /// Atende a lista genérica da Z-Wheel. Ver [`Interface::Vetor`].
+    fn vetor_call(&mut self, slot: u32) -> Result<Option<u32>, CpuError> {
+        /// O índice que o jogo passa para dizer "no fim".
+        const NO_FIM: u32 = u32::MAX;
+
+        let Some(name) = Interface::Vetor.method(slot) else {
+            return Ok(None);
+        };
+        let this = self.cpu.read_reg(Reg::R0);
+        let result = match name {
+            "AddRef" => self.objects.add_ref(this),
+            "Release" => {
+                let restantes = self.objects.release(this);
+                if restantes == 0 {
+                    self.vetores.remove(&this);
+                }
+                restantes
+            }
+            "Tamanho" => self
+                .vetores
+                .get(&this)
+                .map_or(0, |(itens, _)| itens.len() as u32),
+            "PegarEm" => {
+                let (indice, saida) = (self.cpu.read_reg(Reg::R1), self.cpu.read_reg(Reg::R2));
+                let item = self
+                    .vetores
+                    .get(&this)
+                    .and_then(|(itens, _)| itens.get(indice as usize).copied());
+                match item {
+                    Some(item) => {
+                        if saida != 0 {
+                            self.cpu.write_u32(saida, item)?;
+                        }
+                        SUCCESS
+                    }
+                    // Fora da faixa não escreve nada: deixar a saída como estava é o que
+                    // permite ao chamador distinguir "não tem" de "tem e é nulo".
+                    None => EBADPARM,
+                }
+            }
+            "InserirEm" => {
+                let (indice, item) = (self.cpu.read_reg(Reg::R1), self.cpu.read_reg(Reg::R2));
+                let Some((itens, _)) = self.vetores.get_mut(&this) else {
+                    return Ok(Some(EBADPARM));
+                };
+                let onde = match indice {
+                    NO_FIM => itens.len(),
+                    n => (n as usize).min(itens.len()),
+                };
+                itens.insert(onde, item);
+                SUCCESS
+            }
+            // O liberador é ponteiro de função do módulo, e é para ele que o `Esvaziar` do
+            // console entrega cada item. Aqui ele só é guardado — ver a nota no `Esvaziar`.
+            "DefinirLiberador" => {
+                if let Some((_, liberador)) = self.vetores.get_mut(&this) {
+                    *liberador = self.cpu.read_reg(Reg::R1);
+                }
+                SUCCESS
+            }
+            // Esvaziar **sem** chamar o liberador de cada item é uma dívida consciente: quem
+            // alocou os itens foi o jogo, e chamar código dele no meio de um despacho é o
+            // caminho que já derrubou o Zeeboids uma vez. O custo é memória que não volta ao
+            // heap do jogo enquanto ele roda, e é por isso que a hipótese fica registrada.
+            "Esvaziar" => {
+                if let Some((itens, liberador)) = self.vetores.get_mut(&this)
+                    && !itens.is_empty()
+                    && *liberador != 0
+                {
+                    itens.clear();
+                    self.assumptions
+                        .insert("uma lista foi esvaziada sem chamar o liberador que o jogo registrou");
+                } else if let Some((itens, _)) = self.vetores.get_mut(&this) {
+                    itens.clear();
+                }
+                SUCCESS
+            }
+            _ => SUCCESS,
+        };
+        Ok(Some(result))
+    }
+
     /// Atende o `ISource` e o `IPeek`. Ver [`Interface::Peek`].
     ///
     /// Do `IPeek` só o slot 8 tem corpo, e ele é a razão de tudo isto existir: a Z-Wheel lê o
@@ -9743,6 +9835,7 @@ impl<C: CpuBackend> Machine<C> {
             AEECLSID_WIDGET => Interface::Widget,
             AEECLSID_ZEEBOMCP => Interface::ZeeboMcp,
             AEECLSID_CONFIG => Interface::Config,
+            AEECLSID_VETOR => Interface::Vetor,
             AEECLSID_MD5 => Interface::Hash,
             AEECLSID_CIPHER_FACTORY => Interface::CipherFactory,
             AEECLSID_MEDIA | AEECLSID_MEDIAMIDI | AEECLSID_MEDIAMP3 | AEECLSID_MEDIAADPCM
@@ -9782,6 +9875,11 @@ impl<C: CpuBackend> Machine<C> {
         }
         // Pelo mesmo motivo da coleção: um widget sem registro responderia "não tenho esse
         // filho" por não existir, e não por não ter o filho.
+        // Mesma razão da coleção: sem o registro, um `Tamanho` numa lista desconhecida
+        // responderia zero por ela não existir, e não por estar vazia.
+        if iface == Interface::Vetor {
+            self.vetores.insert(obj, (Vec::new(), 0));
+        }
         if iface == Interface::Widget {
             self.widgets.insert(obj, (HashMap::new(), HashMap::new()));
         }

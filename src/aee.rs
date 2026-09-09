@@ -169,6 +169,23 @@ pub enum Interface {
     /// endereço de um par `{ponteiro, tamanho}` e o número 3, e espera receber a próxima linha.
     /// Os outros ficam sem nome — uma chamada neles precisa aparecer no relatório.
     Peek = 44,
+    /// `0x01028e35`, a lista genérica da Z-Wheel — o que o jogo chama de "vector model".
+    ///
+    /// Não está na tabela de classes do firmware, então os slots saíram do código do jogo, e
+    /// cada um tem duas leituras que concordam: o carregador do `tectoy.cfg` em `0x88338`
+    /// enche a lista, e o laço em `0x7f164` a percorre.
+    ///
+    /// | slot | método | onde se lê |
+    /// |---|---|---|
+    /// | 5 | tamanho | `0x7f170`, e o resultado vira o teto do laço |
+    /// | 6 | pegar em | `0x7f190`, com `(índice, &saída)`; o jogo testa se o texto começa com `#` |
+    /// | 8 | inserir em | `0x884f0`, com índice `-1` — inserir no fim |
+    /// | 10 | esvaziar | `0x80010`, uma vez, logo antes do `Release` |
+    /// | 12 | definir liberador | `0x88458`, recebendo **ponteiro de função do módulo** |
+    ///
+    /// Os slots sem nome nunca foram chamados. Deixá-los sem nome é o que faz uma chamada
+    /// inesperada aparecer no relatório em vez de passar por implementada.
+    Vetor = 45,
     /// Objeto de uma classe que ainda não conhecemos, criado a pedido do `--sonda`.
     ///
     /// Não implementa interface nenhuma: existe para **descobrir qual é**. Toda chamada é
@@ -188,7 +205,7 @@ impl Interface {
     /// as duas coisas precisam concordar — daí a lista existir num lugar só, com teste que
     /// confere a correspondência. Quando elas divergiram, um objeto recebeu a vtable de outra
     /// interface e a chamada foi parar no método errado, com sintoma a quilômetros da causa.
-    pub const ALL: [Interface; 45] = [
+    pub const ALL: [Interface; 46] = [
         Self::Shell,
         Self::Module,
         Self::Applet,
@@ -234,6 +251,7 @@ impl Interface {
         Self::Config,
         Self::Source,
         Self::Peek,
+        Self::Vetor,
     ];
 
     /// Nome usado nos logs — casa com a nomenclatura do SDK.
@@ -282,6 +300,7 @@ impl Interface {
             Self::Config => "IConfig",
             Self::Source => "ISource",
             Self::Peek => "IPeek",
+            Self::Vetor => "IVetor",
             Self::Probe => "ClasseDesconhecida",
             Self::Helpers => "AEEHelpers",
         }
@@ -333,6 +352,7 @@ impl Interface {
             Self::Config => aee_slots::CONFIG,
             Self::Source => aee_slots::SOURCE,
             Self::Peek => aee_slots::PEEK,
+            Self::Vetor => aee_slots::VETOR,
             // A sonda não tem tabela: `method` responde por ela antes de chegar aqui.
             Self::Probe => &[],
             Self::Helpers => aee_helpers::HELPERS,
@@ -400,6 +420,7 @@ impl Interface {
             42 => Self::Config,
             43 => Self::Source,
             44 => Self::Peek,
+            45 => Self::Vetor,
             6 => Self::Helpers,
             _ => return None,
         })

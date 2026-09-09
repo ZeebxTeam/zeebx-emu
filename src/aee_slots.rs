@@ -877,6 +877,26 @@ pub const ZEEBO_MCP: &[&str] = &["AddRef", "Release", "QueryInterface"];
 /// se mostrou ser de fachada.
 pub const CONFIG: &[&str] = &["AddRef", "Release", "GetItem", "SetItem"];
 
+/// Métodos da lista genérica da Z-Wheel (`0x01028e35`).
+///
+/// Ver [`crate::aee::Interface::Vetor`] para onde cada nome foi lido. Os seis sem nome nunca
+/// foram chamados.
+pub const VETOR: &[&str] = &[
+    "AddRef",
+    "Release",
+    "slot2",
+    "slot3",
+    "slot4",
+    "Tamanho",
+    "PegarEm",
+    "slot7",
+    "InserirEm",
+    "slot9",
+    "Esvaziar",
+    "slot11",
+    "DefinirLiberador",
+];
+
 /// Métodos da coleção genérica da Z-Wheel (`0x0102c4e8`… não: `0x0100104f`).
 ///
 /// Sem header. Os nomes saíram do uso, observado com o `--sonda`: o app cria a coleção, chama o
