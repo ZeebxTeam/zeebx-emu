@@ -34,3 +34,7 @@ OperaMini-Server/
 
 # Material do console (firmware, configs, pacotes do sistema) fica fora do repositório.
 vendor/
+
+# Relatórios que o emulador escreve ao lado do executável, um por execução.
+*.log
+*.bmp
