@@ -1477,6 +1477,8 @@ pub struct Machine<C: CpuBackend> {
     bridge: bool,
     /// Uma resposta esperando a fronteira de chamada: `(objeto, âncora, estado)`.
     pending_response: Option<(u32, u32, u32)>,
+    /// As respostas que a ponte chegou a depositar na memória do jogo.
+    delivered: Vec<String>,
     /// Para onde desviar as conexões, quando se quer um servidor que não é o do endereço.
     network_to: Option<String>,
     /// Se o emulador pode falar com a rede.
@@ -1654,10 +1656,14 @@ impl<C: CpuBackend> Machine<C> {
             // `ZEEBX_SERVIDOR=127.0.0.1:8080`. Sem isso, apontar um jogo para um servidor de
             // testes exigiria a porta 80, que pede privilégio.
             network_to: std::env::var("ZEEBX_SERVIDOR").ok(),
-            // A ponte também liga pelo ambiente, para alcançar a interface sem passar por
-            // linha de comando: `ZEEBX_PONTE=1`.
-            bridge: std::env::var_os("ZEEBX_PONTE").is_some(),
+            // A ponte vem ligada. Ela derrubou o jogo enquanto entregava de dentro do despacho,
+            // e por isso ficou desligada por um tempo; com a entrega na fronteira de chamada
+            // isso não acontece mais, e deixá-la desligada só criava um caso em que o jogo
+            // parece quebrado por falta de uma variável de ambiente. O `ZEEBX_SEM_PONTE`
+            // desliga.
+            bridge: std::env::var_os("ZEEBX_SEM_PONTE").is_none(),
             pending_response: None,
+            delivered: Vec::new(),
             plaintexts: std::collections::VecDeque::new(),
             web_response: Vec::new(),
             streams: HashMap::new(),
@@ -6381,6 +6387,10 @@ impl<C: CpuBackend> Machine<C> {
             self.cpu.write_u32(vetor + i as u32 * 4, endereco)?;
         }
         self.cpu.write_u32(resposta + 8, campos.len() as u32)?;
+        // O relatório precisa distinguir "não entreguei" de "entreguei e ele não gostou": sem
+        // isso, um jogo parado depois de uma resposta não diz de que lado está o problema.
+        self.delivered
+            .push(format!("{} campo(s): {texto:?}", campos.len()));
         // A marca de "chegou dado novo". O tratador em `0x85b5c` só interpreta o campo 0 quando
         // ela está ligada, e a apaga logo depois (`strb r6, [r4, #0x18]`) — é uma bandeira de
         // uma via. No console quem a ligava era o despachante, ao depositar a resposta.
@@ -6620,6 +6630,11 @@ impl<C: CpuBackend> Machine<C> {
     /// Desvia as conexões para outra máquina ou porta, sem mexer no que o jogo pediu.
     pub fn set_network_to(&mut self, destino: Option<String>) {
         self.network_to = destino;
+    }
+
+    /// As respostas que a ponte entregou ao jogo.
+    pub fn delivered(&self) -> &[String] {
+        &self.delivered
     }
 
     /// O corpo da última resposta HTTP recebida.

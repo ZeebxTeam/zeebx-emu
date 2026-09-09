@@ -317,6 +317,11 @@ impl Session {
             linhas.push("— endereços que o jogo pediu pelo IWeb —".to_string());
             linhas.extend(urls.iter().map(|url| format!("  {url}")));
         }
+        let entregues = self.machine.delivered();
+        if !entregues.is_empty() {
+            linhas.push("— a ponte entregou a resposta ao jogo —".to_string());
+            linhas.extend(entregues.iter().map(|l| format!("  {l}")));
+        }
         let claros = self.machine.plaintexts();
         if !claros.is_empty() {
             linhas.push("— o que o jogo cifrou, em claro —".to_string());

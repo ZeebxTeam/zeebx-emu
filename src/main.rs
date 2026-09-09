@@ -521,6 +521,13 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
         let texto = String::from_utf8_lossy(resposta);
         println!("  resposta: {} bytes, {texto:?}", resposta.len());
     }
+    let entregues = machine.delivered();
+    if !entregues.is_empty() {
+        println!("entregue:  a ponte depositou a resposta no jogo");
+        for linha in entregues {
+            println!("  {linha}");
+        }
+    }
     let claros = machine.plaintexts();
     if !claros.is_empty() {
         println!("cifrado:   o que o jogo cifrou, em claro");
