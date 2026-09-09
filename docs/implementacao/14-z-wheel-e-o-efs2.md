@@ -513,3 +513,35 @@ z-pad desaparece e o jogo passa a pedir `tectoy_pt.brf`.
 A parede seguinte é outra: `Service status is NOT available!`, no
 `tectoy_ui_internal_utils.c:647`, repetido no mesmo compasso do
 `Unable to create instance of AEECLSID_LCT_SIMCARDCTL`.
+
+## O estado do serviço, e o laço que sobra
+
+O slot 28 do `ICM` não é `GetPhoneInfo`: é o `ICM_GetSSInfo`, e enche um `AEECMSSInfo`
+de 0x340 bytes. Duas partes do jogo leem o mesmo resultado por caminhos diferentes —
+a `0x87c90` quer o modo de operação em `+0xc`, a `0x696a0` quer o estado do serviço em
+`+0` e, quando ele é 2, a intensidade do sinal em `+0x28`, que a `0x69830` traduz em
+barras por faixas de nove. Respondíamos só o primeiro, e o segundo repetia
+`Service status is NOT available!` no compasso do ciclo de atração.
+
+O que ainda não anda é o próprio ciclo. A Z-Wheel se conduz por `ISHELL_Resume`: cada
+volta chama `0x82464`, que faz a verificação de cartão em `0x78544`, recebe `0x27`
+("não deu para verificar"), passa por `0x1f7b4` e se re-agenda. São 1736 voltas dentro
+de **um** quadro, com um punhado de widgets vazando em cada uma.
+
+O que quebraria o laço é o estado `0x28`, e ele exige que o `AEECLSID_LCT_SIMCARDCTL`
+exista: o `0x78580` chama o slot 3 dele e, se a resposta for zero, `0x82470` sai sem se
+re-agendar. Oferecer a classe foi testado de novo aqui, e continua pior: o jogo cria um
+controle por volta e nunca o solta — 65 506 objetos vivos, o pote esgotado, e o z-pad
+passando a falhar com código 3. O slot 3 registra um par de retorno de chamada em
+`+0xc4`/`+0xc8`, e sem alguém respondendo "não há cartão" o objeto nunca é liberado.
+
+Duas ideias foram testadas e desfeitas:
+
+- **Adiar as retomadas** que passassem de uma cota por quadro. O laço de fato caiu de
+  1736 voltas para a cota, e o heap de 4 MB para 907 KB — mas o jogo passou a repetir
+  `ISHELL_Resume` 576 mil vezes no quadro, esperando a retomada que não vinha. Adiar
+  não pausa o jogo; só troca um laço por outro.
+- **Vencer os timers na fronteira de callback**, e não só entre quadros. A motivação é
+  real — um quadro pode durar dois minutos virtuais, e nesse tempo nenhum timer vencia.
+  Mas a reentrância quebra quem não a espera: o Crash Bandicoot passou a morrer num
+  acesso a nulo em `0x435b0`.
