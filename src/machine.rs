@@ -7537,6 +7537,11 @@ impl<C: CpuBackend> Machine<C> {
             // jogos por nada. Mas o silêncio esconde as que **mudam o desenho**: o
             // `TexSubImage2D` estava aqui, e o efeito era textura embaralhada sem uma linha de
             // aviso. Registrar não custa, e dá por onde começar a investigar um desenho errado.
+            // glReadPixels(x, y, width, height, format, type, pixels)
+            //
+            // É como o jogo faz a foto do boneco: desenha e lê o quadro de volta. Enquanto isto
+            // não existia, ele lia o que estivesse no buffer dele — daí a imagem embaralhada.
+            "ReadPixels" => self.gles_read_pixels(&a)?,
             // glColorMask(r, g, b, a) — booleanos, um por canal.
             "ColorMask" => self.gl.set_color_mask(std::array::from_fn(|i| a[i] != 0)),
             outro => {
@@ -7655,6 +7660,41 @@ impl<C: CpuBackend> Machine<C> {
         texture.width = width as usize;
         texture.height = height as usize;
         texture.pixels = decoded;
+        Ok(())
+    }
+
+    /// `glReadPixels`: copia um retângulo do quadro para a memória do jogo.
+    ///
+    /// Atendemos os dois formatos que o OpenGL ES 1.1 obriga: `RGBA` de oito bits por canal e
+    /// `RGB` em 565. Qualquer outro é registrado em vez de escrito, porque preencher com o
+    /// formato errado dá uma imagem plausível e falsa — pior que não escrever.
+    fn gles_read_pixels(&mut self, a: &[u32; 10]) -> Result<(), CpuError> {
+        let (x, y) = (a[0] as i32, a[1] as i32);
+        let (width, height) = (a[2] as usize, a[3] as usize);
+        let (format, kind, destino) = (a[4], a[5], a[6]);
+        if width == 0 || height == 0 || destino == 0 {
+            return Ok(());
+        }
+        let pixels = self.gl.read_rect(x, y, width, height);
+        let bytes: Vec<u8> = match (format, kind) {
+            (gles::GL_RGBA, gles::GL_UNSIGNED_BYTE) => pixels.concat(),
+            (gles::GL_RGB, gles::GL_UNSIGNED_SHORT_5_6_5) => pixels
+                .iter()
+                .flat_map(|p| {
+                    let v = (u16::from(p[0] >> 3) << 11)
+                        | (u16::from(p[1] >> 2) << 5)
+                        | u16::from(p[2] >> 3);
+                    v.to_le_bytes()
+                })
+                .collect(),
+            _ => {
+                self.bad_pointers.insert(format!(
+                    "ReadPixels no formato {format:#x}/{kind:#x}, que não sabemos escrever"
+                ));
+                return Ok(());
+            }
+        };
+        self.cpu.write_mem(destino, &bytes)?;
         Ok(())
     }
 

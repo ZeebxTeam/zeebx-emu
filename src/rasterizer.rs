@@ -405,6 +405,33 @@ impl GlState {
         (width.clamp(1, self.width), height.clamp(1, self.height))
     }
 
+    /// Um retângulo do quadro, em RGBA de 8 bits, na ordem que o OpenGL usa.
+    ///
+    /// A origem do `glReadPixels` é o canto **inferior** esquerdo, e a nossa é o superior — daí
+    /// a inversão de linha. Ler sem inverter dá uma imagem de cabeça para baixo, que é o tipo de
+    /// erro que passa por "quase certo".
+    ///
+    /// Fora da superfície devolve preto opaco, como uma leitura de área não desenhada.
+    pub fn read_rect(&mut self, x: i32, y: i32, width: usize, height: usize) -> Vec<[u8; 4]> {
+        // Quem lê o quadro precisa dele pintado; o desenho é acumulado até alguém pedir.
+        self.flush();
+        let (sw, sh) = self.surface();
+        let mut saida = vec![[0, 0, 0, 255]; width * height];
+        for linha in 0..height {
+            for coluna in 0..width {
+                let fx = x + coluna as i32;
+                let fy = y + linha as i32;
+                if fx < 0 || fy < 0 || fx as usize >= sw || fy as usize >= sh {
+                    continue;
+                }
+                // A linha `fy` contada de baixo é a `sh - 1 - fy` no nosso buffer.
+                let origem = (sh - 1 - fy as usize) * self.width + fx as usize;
+                saida[linha * width + coluna] = self.color[origem];
+            }
+        }
+        saida
+    }
+
     pub fn set_clear_color(&mut self, color: [f32; 4]) {
         self.clear_color = color;
     }
