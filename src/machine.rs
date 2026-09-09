@@ -751,6 +751,29 @@ const AEECLSID_DISPLAY1: u32 = 0x0101_27d4;
 /// `AEECLSID_FILEMGR`, do `AEECLSID_FILEMGR.bid` do SDK. No `AEEClassIDs.h` ele aparece só
 /// comentado, o que já me fez errar esse valor uma vez.
 const AEECLSID_FILEMGR: u32 = 0x0100_1003;
+/// As classes da extensão de interface que respondem ao mesmo acessador do
+/// [`Interface::Widget`].
+///
+/// A primeira, `0x01028e51`, foi lida no código da Z-Wheel. As outras entraram por medição: o
+/// jogo as pede em sequência — a `0x01028e19` e a `0x01028e2a` são o "frame widget" da
+/// `AnimationVideo_Form.c:93`, a `0x01028e47` é o formulário de vídeo em si —, e atendê-las com
+/// este acessador faz cada mensagem de erro sair e a seguinte aparecer.
+///
+/// Elas são vizinhas de numeração e aparecem juntas numa mesma tabela do firmware, em
+/// `0x1035cf24`. Nenhuma está na tabela de classes, então não há vtable para conferir: o que
+/// sustenta a lista é o jogo andar, e é por isso que ela mora aqui, com o porquê escrito, em
+/// vez de virar um `|` no meio do despacho.
+const FAMILIA_DOS_WIDGETS: [u32; 5] = [
+    AEECLSID_WIDGET,
+    0x0102_8e19,
+    0x0102_8e2a,
+    0x0102_8e3f,
+    0x0102_8e47,
+];
+
+/// `0x01035156`, a fonte TrueType do console. Ver [`Interface::Typeface`].
+const AEECLSID_TYPEFACE: u32 = 0x0103_5156;
+
 /// `0x01006c02`, o controle de sistema. Ver [`Interface::SystemCtl`].
 const AEECLSID_SYSTEMCTL: u32 = 0x0100_6c02;
 
@@ -2544,9 +2567,13 @@ impl<C: CpuBackend> Machine<C> {
                 Some(result) => result,
                 None => return Ok(None),
             },
-            // A `0x01028e3c` não tem estado nem método próprio: só a contagem.
-            (Interface::Classe28e3c, 0) => self.objects.add_ref(self.cpu.read_reg(Reg::R0)),
-            (Interface::Classe28e3c, 1) => self.objects.release(self.cpu.read_reg(Reg::R0)),
+            // Nem a `0x01028e3c` nem a fonte têm estado ou método próprio: só a contagem.
+            (Interface::Classe28e3c, 0) | (Interface::Typeface, 0) => {
+                self.objects.add_ref(self.cpu.read_reg(Reg::R0))
+            }
+            (Interface::Classe28e3c, 1) | (Interface::Typeface, 1) => {
+                self.objects.release(self.cpu.read_reg(Reg::R0))
+            }
             (Interface::Vetor, _) => match self.vetor_call(slot)? {
                 Some(result) => result,
                 None => return Ok(None),
@@ -6461,6 +6488,19 @@ impl<C: CpuBackend> Machine<C> {
                 }
                 restantes
             }
+            // Zero é sucesso aqui, ao contrário do acessador logo abaixo. Aceitamos qualquer
+            // interface pedida porque, no nosso modelo, a família inteira de widgets **é** uma
+            // interface só — a hipótese fica registrada, que é onde ela deve estar.
+            "QueryInterface" => {
+                let saida = self.cpu.read_reg(Reg::R2);
+                if saida != 0 {
+                    self.cpu.write_u32(saida, this)?;
+                }
+                self.objects.add_ref(this);
+                self.assumptions
+                    .insert("um widget aceitou toda interface que lhe pediram");
+                SUCCESS
+            }
             "Acessador" => {
                 let (seletor, id, terceiro) = (
                     self.cpu.read_reg(Reg::R1),
@@ -9986,13 +10026,14 @@ impl<C: CpuBackend> Machine<C> {
             AEECLSID_COLLECTION => Interface::Collection,
             AEECLSID_SQLMGR => Interface::SqlMgr,
             AEECLSID_SOURCEUTIL => Interface::SourceUtil,
-            AEECLSID_WIDGET => Interface::Widget,
+            _ if FAMILIA_DOS_WIDGETS.contains(&clsid) => Interface::Widget,
             AEECLSID_ZEEBOMCP => Interface::ZeeboMcp,
             AEECLSID_CONFIG => Interface::Config,
             AEECLSID_VETOR => Interface::Vetor,
             AEECLSID_28E3C => Interface::Classe28e3c,
             AEECLSID_CM => Interface::Cm,
             AEECLSID_SYSTEMCTL => Interface::SystemCtl,
+            AEECLSID_TYPEFACE => Interface::Typeface,
             AEECLSID_MD5 => Interface::Hash,
             AEECLSID_CIPHER_FACTORY => Interface::CipherFactory,
             AEECLSID_MEDIA | AEECLSID_MEDIAMIDI | AEECLSID_MEDIAMP3 | AEECLSID_MEDIAADPCM

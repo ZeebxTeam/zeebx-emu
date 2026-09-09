@@ -859,7 +859,7 @@ pub const PEEK: &[&str] = &[
 /// Só o slot 3 tem nome porque só ele foi visto em uso. Os dois primeiros são o `AddRef` e o
 /// `Release` de toda interface do BREW; o 2 fica sem nome de propósito, para que uma chamada
 /// nele apareça no relatório em vez de passar por implementada.
-pub const WIDGET: &[&str] = &["AddRef", "Release", "slot2", "Acessador"];
+pub const WIDGET: &[&str] = &["AddRef", "Release", "QueryInterface", "Acessador"];
 
 /// Métodos do ZEEBOMCP (`0x01006c05`), da vtable `0x102d47a8` do firmware.
 ///
@@ -928,7 +928,8 @@ pub const CM: &[&str] = &[
 
 /// Métodos da `0x01028e3c`, dos quais conhecemos dois — e são os dois de toda interface.
 ///
-/// Ver [`crate::aee::Interface::Classe28e3c`]: a Z-Wheel cria duas e não chama nada nelas.
+/// Ver [`crate::aee::Interface::Classe28e3c`]: a Z-Wheel cria duas e não chama nada nelas. A
+/// [`crate::aee::Interface::Typeface`] usa a mesma tabela, pelo mesmo motivo.
 pub const CLASSE_28E3C: &[&str] = &["AddRef", "Release"];
 
 /// Métodos da lista genérica da Z-Wheel (`0x01028e35`).

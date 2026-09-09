@@ -125,6 +125,10 @@ pub enum Interface {
     /// fazem `cmp r0,#0; moveq r0,#3`, ou seja, transformam zero em `EBADCLASS`. Responder
     /// `SUCCESS` aqui — que vale zero — é dizer "falhou", e foi exatamente o que fez a
     /// `tectoymain.c:1001` imprimir `Could not create root form(20)` e depois morrer num nulo.
+    ///
+    /// **O retorno invertido vale só para o acessador.** O slot 2 é um `QueryInterface` comum,
+    /// e ali zero é sucesso: em `0x11c58` o jogo faz `movs r5,r0; bne <erro>`. Misturar as duas
+    /// convenções seria fácil, e por isso elas estão escritas lado a lado aqui.
     Widget = 40,
     /// `0x01006c05`, o **ZEEBOMCP** — o objeto único que a Z-Wheel pede a cada partida.
     ///
@@ -231,6 +235,17 @@ pub enum Interface {
     /// `0x81768`, zero é "siga" e diferente de zero desvia. Respondemos zero — o aparelho que
     /// não temos não tem o que reclamar.
     SystemCtl = 48,
+    /// `0x01035156`, a fonte TrueType do console.
+    ///
+    /// O nome sai da mensagem que a `tectoymain.c:1269` imprime quando a criação falha:
+    /// `Unable to create instance of TrueType TYPEFACE`. Ela não está na tabela de classes
+    /// deste firmware.
+    ///
+    /// Como a [`Interface::Classe28e3c`], a Z-Wheel cria e guarda — em `+0x34b8` — e até agora
+    /// não chama método nenhum. Aqui isso é menos surpreendente do que parece: o emulador já
+    /// desenha texto com a `tectoy.ttf` que o próprio pacote traz, então o caminho de
+    /// renderização não passa por este objeto.
+    Typeface = 49,
     /// Objeto de uma classe que ainda não conhecemos, criado a pedido do `--sonda`.
     ///
     /// Não implementa interface nenhuma: existe para **descobrir qual é**. Toda chamada é
@@ -250,7 +265,7 @@ impl Interface {
     /// as duas coisas precisam concordar — daí a lista existir num lugar só, com teste que
     /// confere a correspondência. Quando elas divergiram, um objeto recebeu a vtable de outra
     /// interface e a chamada foi parar no método errado, com sintoma a quilômetros da causa.
-    pub const ALL: [Interface; 49] = [
+    pub const ALL: [Interface; 50] = [
         Self::Shell,
         Self::Module,
         Self::Applet,
@@ -300,6 +315,7 @@ impl Interface {
         Self::Classe28e3c,
         Self::Cm,
         Self::SystemCtl,
+        Self::Typeface,
     ];
 
     /// Nome usado nos logs — casa com a nomenclatura do SDK.
@@ -352,6 +368,7 @@ impl Interface {
             Self::Classe28e3c => "I28e3c",
             Self::Cm => "ICM",
             Self::SystemCtl => "ILCTSystemCtl",
+            Self::Typeface => "ITypeface",
             Self::Probe => "ClasseDesconhecida",
             Self::Helpers => "AEEHelpers",
         }
@@ -407,6 +424,7 @@ impl Interface {
             Self::Classe28e3c => aee_slots::CLASSE_28E3C,
             Self::Cm => aee_slots::CM,
             Self::SystemCtl => aee_slots::SYSTEM_CTL,
+            Self::Typeface => aee_slots::CLASSE_28E3C,
             // A sonda não tem tabela: `method` responde por ela antes de chegar aqui.
             Self::Probe => &[],
             Self::Helpers => aee_helpers::HELPERS,
@@ -478,6 +496,7 @@ impl Interface {
             46 => Self::Classe28e3c,
             47 => Self::Cm,
             48 => Self::SystemCtl,
+            49 => Self::Typeface,
             6 => Self::Helpers,
             _ => return None,
         })
