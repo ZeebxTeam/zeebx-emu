@@ -6913,7 +6913,20 @@ impl<C: CpuBackend> Machine<C> {
     /// Chamar o guest daqui é reentrância, com o mesmo cuidado do `qsort` e da entrega de
     /// linhas de SQL: salva os registradores, respeita o teto de aninhamento, devolve tudo.
     fn send_applet_event(&mut self, cls: u32, evt: u32, w: u16, dw: u32) -> Result<u32, CpuError> {
-        let applet = self.current_applet;
+        // O `current_applet` só é preenchido quando o `EVT_APP_START` é despachado, e há
+        // evento antes disso: a Z-Wheel monta o banco de preferências **durante a
+        // construção** do applet, e para isso manda um evento para a própria classe. Nesse
+        // instante o objeto já existe — o `AEEApplet_New` escreveu o ponteiro de saída antes
+        // de o código do jogo rodar —, então lê-lo de lá é o que o console faz: para o shell,
+        // o applet passa a existir quando é registrado, não quando é iniciado.
+        //
+        // Sem isto o evento voltava "ninguém tratou", e a Z-Wheel imprimia
+        // `SendEvent to get PrefsDB failed` onze vezes seguidas antes de desistir da
+        // configuração inteira.
+        let applet = match self.current_applet {
+            0 => self.cpu.read_u32(self.module.out_module + 4).unwrap_or(0),
+            vivo => vivo,
+        };
         if applet == 0 || (cls != 0 && cls != self.applet_class) {
             return Ok(FALSE);
         }
