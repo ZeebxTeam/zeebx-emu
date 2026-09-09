@@ -3699,6 +3699,7 @@ impl<C: CpuBackend> Machine<C> {
         // A resposta de rede compartilha esta fronteira pelo mesmo motivo dos sinais: entregá-la
         // pede chamar o alocador do jogo, e isso só é seguro fora do despacho.
         self.flush_response()?;
+        self.pinta_widgets()?;
         let pending = std::mem::take(&mut self.pending_signals);
         let mut outcomes = Vec::new();
         for callback in pending {
@@ -3712,6 +3713,35 @@ impl<C: CpuBackend> Machine<C> {
             )?);
         }
         Ok(outcomes)
+    }
+
+    /// Pinta as imagens penduradas nos widgets.
+    ///
+    /// **Isto é um substituto declarado, não uma emulação.** No console quem desenha a
+    /// interface é a extensão de widgets, que não temos: os nossos guardam a árvore — filhos,
+    /// tamanho, tratador — e não rasterizam nada. Sem alguém pintando, a Z-Wheel monta a tela
+    /// inteira e o quadro fica preto, que foi exatamente o que se via.
+    ///
+    /// O que dá para fazer com o que está guardado é isto: toda imagem pendurada num widget vai
+    /// para a tela. Para a abertura da Z-Wheel basta, porque é uma imagem de 640×480 na origem
+    /// — o mesmo tamanho que o jogo manda para o widget no slot 7.
+    ///
+    /// A ordem é a dos endereços dos objetos, que no nosso alocador é a de criação. Não é
+    /// profundidade de verdade; é a única ordem estável que temos, e uma ordem estável ao menos
+    /// faz o resultado ser o mesmo a cada execução.
+    fn pinta_widgets(&mut self) -> Result<(), CpuError> {
+        let mut imagens: Vec<u32> = self
+            .widgets
+            .values()
+            .flat_map(|widget| widget.anexados.iter().copied())
+            .filter(|objeto| self.images.contains_key(objeto))
+            .collect();
+        imagens.sort_unstable();
+        imagens.dedup();
+        for imagem in imagens {
+            self.draw_image(imagem, 0, 0, None)?;
+        }
+        Ok(())
     }
 
     /// Entrega os callbacks enfileirados (som, imagem, o que vier).
@@ -6601,6 +6631,11 @@ impl<C: CpuBackend> Machine<C> {
                 if let Some(widget) = self.widgets.get_mut(&this) {
                     widget.anexados.push(filho);
                 }
+                // Quem guarda, segura. É a convenção do BREW inteiro, e aqui ela não é
+                // teoria: logo depois de pendurar a imagem no widget, a Z-Wheel solta a
+                // referência dela. Sem esta contagem, o objeto morria com a imagem
+                // decodificada dentro — e o que sobrava para pintar era nada.
+                self.objects.add_ref(filho);
                 SUCCESS
             }
             // `slot7(this, &{largura, altura})`, visto em `0x11c90` com `640 × 480` — a tela
