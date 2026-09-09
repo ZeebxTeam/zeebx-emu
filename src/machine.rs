@@ -414,6 +414,10 @@ const AEECLSID_WEB: u32 = 0x0100_5000;
 const PLAINTEXT_MAX: usize = 8;
 const PLAINTEXT_BYTES: usize = 512;
 
+/// O maior modo de leitura que o iterador em `0xa583c` reconhece: ele testa 1, 2 e 3, e o resto
+/// cai no leitor padrão. Serve de conferência de que estamos olhando o campo certo.
+const MAX_TIPO_DE_CAMPO: u32 = 3;
+
 /// Teto de campos que aceitamos entregar. A capacidade observada é oito; um valor muito maior
 /// quer dizer que lemos o campo errado, e é melhor não escrever nada.
 const MAX_CAMPOS_DA_RESPOSTA: u32 = 256;
@@ -6346,9 +6350,12 @@ impl<C: CpuBackend> Machine<C> {
 
         // O objeto é um desserializador: contagem em `+8`, vetor em `+4`, capacidade em `+0xc`,
         // cursor em `+0x28` e o tipo do próximo campo em `+0x2c` (visto no iterador `0xa583c`).
-        // O remetente acabou de chamar o `Reset` dele, então cursor e tipo têm de estar zerados
-        // e a contagem também — se não estiverem, este não é o objeto que pensamos, e mexer
-        // nele seria escrever num lugar qualquer da memória do jogo.
+        //
+        // Contagem e cursor têm de estar zerados: o remetente acabou de chamar o `Reset`, e se
+        // não estiverem este não é o objeto que pensamos. **O tipo, não** — ele é o modo de
+        // leitura do próximo campo, e o consumidor pode tê-lo ajustado antes de a resposta
+        // chegar. Exigir zero dele recusava o `import`, que chega com `tipo=1`. O que ele
+        // precisa é ser um dos modos que o iterador conhece.
         let resposta = self.cpu.read_u32(objeto + 8)?;
         let (vetor, capacidade) = (
             self.cpu.read_u32(resposta + 4)?,
@@ -6362,7 +6369,8 @@ impl<C: CpuBackend> Machine<C> {
         let parece_o_esperado = vetor != 0
             && capacidade > 0
             && campos.len() as u32 <= MAX_CAMPOS_DA_RESPOSTA
-            && (contagem, cursor, tipo) == (0, 0, 0);
+            && (contagem, cursor) == (0, 0)
+            && tipo <= MAX_TIPO_DE_CAMPO;
         if !parece_o_esperado {
             // A recusa vai com os números. Sem eles, "não parecia o desserializador" manda quem
             // lê adivinhar qual condição falhou, e cada palpite custa uma sessão de teste.
