@@ -82,6 +82,13 @@ def registro(data, segs, clsid):
 
     Fica a regra que saiu daí: **desmontar o construtor antes de copiar a vtable**. Se ele
     testa um CLSID, tem de ser o que você pediu.
+
+    **"Não está na tabela" não quer dizer "não existe".** Esta tabela é parcial: o
+    `AEECLSID_SQLMGR` (`0x0102c4e8`) e o `AEECLSID_FILEMGR` (`0x01001003`) não estão nela, e o
+    console obviamente os implementa. Varrendo o `1.1.2_APPS.bin` inteiro por entradas com esta
+    forma saem **105**, espalhadas em cinquenta e cinco corridas curtas — longe das centenas que
+    um sistema BREW tem. Ou seja, há pelo menos mais um registro, com outro formato, que ainda
+    não achamos.
     """
     pat = struct.pack("<I", clsid)
     for m in re.finditer(re.escape(pat), data):

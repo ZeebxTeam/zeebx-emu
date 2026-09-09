@@ -294,7 +294,49 @@ CREATE TABLE DLITEMINFO(item_id INTEGER PRIMARY KEY, price INTEGER, size INTEGER
 CREATE TABLE PREFSINFO(name TEXT PRIMARY KEY, strValue TEXT, dwValue INTEGER, flags INTEGER)
 ```
 
-## A corrente até a vtable, e o elo que falta
+## O EFS2, e por que ele não era o caminho
+
+A ideia era: se as classes de interface não estão na tabela do firmware, elas devem estar em
+módulos de extensão do sistema de arquivos — `widgets.mod`, `forms.mod`, `framewidget.mod`. Para
+lê-los faltava decifrar o EFS2. Ao atacá-lo, três coisas apareceram, e as três mudam o plano.
+
+### O sistema de arquivos está listado, e não tem extensão nenhuma
+
+Os nós de diretório estão em claro no dump — não precisam do mapa de páginas. Varrendo tudo e
+juntando (`nand.py nomes`) sai a lista completa: **317 nomes**, e nenhum é extensão do BREW. Só os
+módulos dos jogos — `tectoy.mod`, `reksio.mod` — e dados: `.qxt`, `.qxm`, `.brf`, `.html`, fontes
+BDF, perfis do modem, logs de erro.
+
+A contagem confirma o modelo log-estruturado: `tectoy.mod` aparece **400 vezes**, uma por
+regravação.
+
+### As classes não estão registradas em lugar nenhum do dump
+
+Procurando `0x01028e51`, `0x0100104f` e `0x01035156` como entrada de registro — em qualquer dos
+formatos plausíveis, de oito, doze ou dezesseis bytes — nos **128 MB inteiros**: zero. Elas
+aparecem como literal quatro ou cinco vezes cada, sempre dentro de pool de código ou de tabela de
+strings, nunca como registro.
+
+### A tabela de classes que conhecemos é parcial
+
+Isto é importante e vale para todo o trabalho: **"não está na tabela" não quer dizer "não
+existe"**. O `AEECLSID_SQLMGR` e o `AEECLSID_FILEMGR` não estão nela, e o console obviamente os
+implementa. Varrendo o `1.1.2_APPS.bin` por entradas daquele formato saem **105**, em cinquenta e
+cinco corridas curtas — longe das centenas que um sistema BREW tem.
+
+Há pelo menos mais um registro, com outro formato. Achá-lo é o que pode devolver as vtables que
+faltam — e é uma busca dentro do APPS, não dentro do EFS2.
+
+### E a Z-Wheel do console é outro build
+
+O `tectoy.mod` instalado no dump tem strings que o nosso não tem: `SpinStage.c`, `StageWidget.c`,
+`spin_ui_utils.c`, `tectoy_maskededit.c`. Comparando a página que contém o `0x01028e51` nos dois,
+elas diferem — o deslocamento dentro da página nem é o mesmo.
+
+Ou seja, o dump é de 2011 e o nosso pacote é de outra geração. Mesmo com o EFS2 lido por inteiro,
+o que sairia dele não é necessariamente o que o nosso pacote espera.
+
+## O que ainda falta do EFS2, se um dia precisarmos
 
 ```
 EFS2  →  MIFs dos módulos estáticos  →  registro de classes  →  vtables

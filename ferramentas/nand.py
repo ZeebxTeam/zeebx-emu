@@ -10,6 +10,7 @@ Uso:
     python3 ferramentas/nand.py particoes CAMINHO/1.1.2.bin
     python3 ferramentas/nand.py extrair   CAMINHO/1.1.2.bin EFS2APPS saida.bin
     python3 ferramentas/nand.py diretorio CAMINHO/part_EFS2APPS.bin 0x1340800
+    python3 ferramentas/nand.py nomes     CAMINHO/part_EFS2APPS.bin
 """
 
 import pathlib
@@ -102,6 +103,36 @@ def entradas_de_diretorio(data, at, quantas=200):
     return saida
 
 
+def todos_os_nomes(data, minimo=4):
+    """Todo nome de arquivo que aparece num nó de diretório, com quantas vezes.
+
+    Não precisa do mapa de páginas: os nós de diretório estão em claro no dump, e cada geração
+    deles é uma cópia. Varrer tudo e juntar dá **a lista completa de nomes** do sistema de
+    arquivos, ainda que sem a árvore e sem o conteúdo.
+
+    Foi assim que se estabeleceu o que o EFS2APPS **não** tem: nenhuma extensão do BREW. Nada de
+    `widgets.mod`, `forms.mod`, `framewidget.mod`, `imenu.mod` ou `icontrols.mod` — só os módulos
+    dos jogos (`tectoy.mod`, `reksio.mod`) e dados. Trezentos e dezessete nomes, e nenhum deles é
+    a extensão de interface que a Z-Wheel usa.
+
+    A contagem serve de sinal: um nome que aparece quatrocentas vezes é um arquivo que foi
+    reescrito quatrocentas vezes, o que é o esperado num sistema log-estruturado.
+    """
+    import collections
+
+    vistos = collections.Counter()
+    at = 0
+    while at < len(data) - 64:
+        entradas = entradas_de_diretorio(data, at, 60)
+        if len(entradas) >= minimo:
+            for nome, _ in entradas:
+                vistos[nome] += 1
+            at += sum(len(nome) + 7 for nome, _ in entradas)
+        else:
+            at += 4
+    return vistos
+
+
 def paginas_de(dados, base_tabela, ref, quantas):
     """As páginas físicas de um arquivo, lidas da tabela de páginas.
 
@@ -170,6 +201,11 @@ def main():
         destino = sys.argv[6] if len(sys.argv) > 6 else "montado.bin"
         pathlib.Path(destino).write_bytes(saida)
         print(f"  {len(pgs)} páginas -> {len(saida)} bytes em {destino}")
+    elif comando == "nomes":
+        vistos = todos_os_nomes(data)
+        print(f"  {len(vistos)} nomes distintos")
+        for nome, vezes in sorted(vistos.items()):
+            print(f"  {vezes:5}x  {nome}")
     elif comando == "diretorio":
         at = int(sys.argv[3], 0)
         for nome, ref in entradas_de_diretorio(data, at):
