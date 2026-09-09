@@ -6549,7 +6549,12 @@ impl<C: CpuBackend> Machine<C> {
             // Zero é sucesso aqui, ao contrário do acessador logo abaixo. Aceitamos qualquer
             // interface pedida porque, no nosso modelo, a família inteira de widgets **é** uma
             // interface só — a hipótese fica registrada, que é onde ela deve estar.
-            "QueryInterface" => {
+            // O slot 12 tem a mesma forma e a mesma convenção do slot 2. É por ele que a
+            // Z-Wheel pega, de dentro do retorno de chamada da imagem em `0x4d4a4`, o objeto
+            // em que vai pendurar o GIF de abertura: `slot12(IID, &saída)` e, em seguida,
+            // `slot5(saída, imagem)`. Recusá-lo abortava o retorno de chamada inteiro, e a
+            // animação nunca começava — sem erro nenhum no log, porque quem abortou fomos nós.
+            "QueryInterface" | "PegarInterface" => {
                 let saida = self.cpu.read_reg(Reg::R2);
                 if saida != 0 {
                     self.cpu.write_u32(saida, this)?;

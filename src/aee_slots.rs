@@ -868,6 +868,11 @@ pub const WIDGET: &[&str] = &[
     "AdicionarFilho",
     "slot6",
     "DefinirTamanho",
+    "slot8",
+    "slot9",
+    "slot10",
+    "slot11",
+    "PegarInterface",
 ];
 
 /// Métodos do ZEEBOMCP (`0x01006c05`), da vtable `0x102d47a8` do firmware.

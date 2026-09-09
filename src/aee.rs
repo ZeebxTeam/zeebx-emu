@@ -128,7 +128,8 @@ pub enum Interface {
     ///
     /// **O retorno invertido vale só para o acessador.** O slot 2 é um `QueryInterface` comum,
     /// e ali zero é sucesso: em `0x11c58` o jogo faz `movs r5,r0; bne <erro>`. Misturar as duas
-    /// convenções seria fácil, e por isso elas estão escritas lado a lado aqui.
+    /// convenções seria fácil, e por isso elas estão escritas lado a lado aqui. O slot 12 segue
+    /// a mesma convenção do 2, e a mesma forma `(IID, &saída)`.
     Widget = 40,
     /// `0x01006c05`, o **ZEEBOMCP** — o objeto único que a Z-Wheel pede a cada partida.
     ///
