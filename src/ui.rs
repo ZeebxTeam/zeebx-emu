@@ -109,6 +109,13 @@ pub struct App {
     log_status: Option<String>,
     /// A janela de log foi fechada nesta execução. Zera ao abrir outro jogo.
     log_dismissed: bool,
+    /// Quando o relatório foi gravado em disco pela última vez.
+    ///
+    /// Ele é gravado sozinho, a cada poucos segundos, num lugar fixo. O botão de exportar abre
+    /// um diálogo, e diálogo é coisa que se esquece de confirmar: passei três idas e vindas
+    /// analisando um relatório velho porque o arquivo nunca tinha sido regravado. Um caminho
+    /// previsível e sempre atual vale mais do que um que o usuário escolhe.
+    log_gravado: Option<std::time::Instant>,
     /// Os controles de verdade ligados no computador.
     gamepads: gamepads::Gamepads,
     /// Qual botão do Zeebo está esperando uma tecla, na tela de controles.
@@ -166,6 +173,7 @@ impl App {
             last_step: std::time::Instant::now(),
             log_status: None,
             log_dismissed: false,
+            log_gravado: None,
             gamepads: gamepads::Gamepads::default(),
             porta_editada: 0,
             capturing: None,
@@ -223,6 +231,7 @@ impl App {
         self.frame = None;
         self.paused = false;
         self.log_dismissed = false;
+        self.log_gravado = None;
         self.log_status = None;
         match Session::start(&path) {
             Ok(mut session) => {
@@ -963,12 +972,16 @@ impl App {
         };
         let mut close = false;
         let mut exportar = false;
+        let caminho = self.caminho_do_relatorio().display().to_string();
         ctx.show_viewport_immediate(id, builder, |ctx, _class| {
             egui::TopBottomPanel::top("log-barra").show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     exportar = ui.button(self.catalog.get("debug.log.export")).clicked();
                     if let Some(aviso) = &self.log_status {
                         ui.weak(aviso);
+                    } else {
+                        // O caminho fixo à vista: quem quer o arquivo não precisa exportar nada.
+                        ui.weak(caminho.clone());
                     }
                 });
             });
@@ -1003,6 +1016,38 @@ impl App {
     }
 
     /// Grava o log num arquivo escolhido pelo usuário e devolve o que dizer sobre isso.
+    /// Onde o relatório desta execução é gravado sozinho.
+    pub fn caminho_do_relatorio(&self) -> PathBuf {
+        let nome = match self.session.as_ref().map(Session::title) {
+            Some(title) if !title.is_empty() => format!("{title}.log"),
+            _ => "zeebx.log".to_string(),
+        };
+        crate::settings::config_dir().join("relatorios").join(nome)
+    }
+
+    /// Grava o relatório em disco, no máximo uma vez a cada [`Self::INTERVALO_DO_RELATORIO`].
+    ///
+    /// Sem isto o único jeito de ver o relatório de um jogo que **não termina** — e a Z-Wheel
+    /// não termina, ela repete a abertura — é abrir a janela de log e exportar à mão.
+    fn grava_relatorio(&mut self) {
+        let agora = std::time::Instant::now();
+        if self
+            .log_gravado
+            .is_some_and(|antes| agora - antes < Self::INTERVALO_DO_RELATORIO)
+        {
+            return;
+        }
+        self.log_gravado = Some(agora);
+        let Some(session) = &self.session else {
+            return;
+        };
+        let destino = self.caminho_do_relatorio();
+        if let Some(pai) = destino.parent() {
+            let _ = std::fs::create_dir_all(pai);
+        }
+        let _ = std::fs::write(&destino, session.log().join("\n") + "\n");
+    }
+
     fn export_log(&self, linhas: &[String]) -> String {
         let sugestao = match self.session.as_ref().map(Session::title) {
             Some(title) if !title.is_empty() => format!("{title}.log"),
@@ -1105,6 +1150,10 @@ impl App {
     }
 
     /// Roda e desenha o jogo na janela dele. Devolve se é hora de fechá-la.
+    /// De quanto em quanto tempo o relatório é regravado. Dois segundos é frequente o bastante
+    /// para acompanhar uma execução e raro o bastante para não pesar.
+    const INTERVALO_DO_RELATORIO: std::time::Duration = std::time::Duration::from_secs(2);
+
     fn playing_screen(&mut self, ctx: &egui::Context) -> bool {
         if self.session.is_none() {
             return true;
@@ -1254,6 +1303,7 @@ impl eframe::App for App {
             self.settings_window(ctx);
         }
         if self.session.is_some() {
+            self.grava_relatorio();
             self.game_window(ctx);
             // A janela de log acompanha o jogo: só existe enquanto há execução para registrar.
             if self.settings.debug.log && !self.log_dismissed {
