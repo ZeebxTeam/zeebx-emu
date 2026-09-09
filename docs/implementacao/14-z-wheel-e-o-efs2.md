@@ -129,26 +129,84 @@ CREATE TABLE DLITEMINFO(item_id INTEGER PRIMARY KEY, price INTEGER, size INTEGER
 CREATE TABLE PREFSINFO(name TEXT PRIMARY KEY, strValue TEXT, dwValue INTEGER, flags INTEGER)
 ```
 
-## O próximo obstáculo: a `0x01028e35`
+## Onde a Z-Wheel está agora
 
-É a última classe entre a Z-Wheel e a tela. Ela aparece nos dois lugares que ainda falham — o
-`PREFSDB_GetRecords`, que a chama de "vector model", e o carregador do `tectoy.cfg` em `0x88338`.
+Sem classe desconhecida nenhuma. Ela monta o `PrefsDB`, abre catorze bancos, lê as setenta linhas
+do `tectoy.cfg`, conecta o joystick pelo `IHID`, registra a leitura de posição, cria os sinais e
+começa a montar a interface.
 
-Atendendo-a com `--sonda`, as duas mensagens somem e o jogo passa a abrir **nove bancos e dez
-consultas**. O que a sonda mostrou dela:
+As classes que entraram, e de onde veio cada nome:
 
-| slot | argumentos | leitura |
+| Classe | O que é | Fonte |
 |---|---|---|
-| 8 | `(0xffffffff, "x8", …)` | inserir no fim — o `-1` é a posição |
-| 12 | `(0x52c64, …)` e `(0x87b2c, …)` | recebe **ponteiro de função do módulo**: registra um retorno de chamada |
-| 5, 10 | — | ainda sem leitura |
+| `0x01001011` | `ISourceUtil` | `AEESource.h` — ver abaixo |
+| `0x01001027` | `IConfig` | assinatura do `ICONFIG_SetItem` do SDK |
+| `0x01006c02` | controle de sistema | `OEM_LCTSystemCtl.c`, nas strings do firmware |
+| `0x01006c05` | ZEEBOMCP | mensagem do próprio jogo |
+| `0x01011810` | `ICM` | `SYS_OPRT_MODE_ONLINE` e a posição do campo |
+| `0x01028e35` | lista genérica | código do jogo, duas leituras que concordam |
+| `0x01028e3c` | criada e guardada | — |
+| `0x01035156` | fonte TrueType | mensagem do próprio jogo |
+| `0x01028e19/2a/3f/47/51` | família de widgets | um acessador só, medido |
 
-**Cuidado com a `0x01001011` daqui.** No `0x88338` ela é usada como **fábrica de leitores**, não
-como formulário: `slot6(arquivo, &saída)` e `slot3(objeto, n+1, &saída)`, cada um produzindo um
-objeto novo. A nossa implementação, herdada do Zeeboids, trata o slot 3 como um `SetHandler` que
-guarda um par e não escreve saída nenhuma — por isso, com a sonda ligada, o jogo morre num nulo
-em `0x88470`. Ou a tabela do Zeeboids está errada, ou as duas classes têm o mesmo número e usos
-diferentes; decidir isso é parte do próximo passo, não de um palpite.
+## A `0x01001011` não era formulário raiz: é a `ISourceUtil`
+
+Dois jogos a usavam de jeitos que pareciam incompatíveis. Com os nomes do `AEESource.h`, os três
+usos encaixam de primeira:
+
+```
+slot 3  PeekSourceFromSource(po, ISource*, nMax, IPeek**)          Z-Wheel, lê o tectoy.cfg
+slot 5  SourceFromMemory(po, pBuf, nSize, pfn, pUser, ISource**)   Zeeboids, embrulha o POST
+slot 6  SourceFromFile(po, IFile*, ISource**)                      Z-Wheel
+```
+
+O `SourceFromMemory` é o que fecha a conta: **seis** parâmetros, com o ponteiro de saída no
+segundo lugar da pilha — exatamente onde o Zeeboids o lia, num trecho que tínhamos batizado de
+"envio". Ele não envia nada; embrulha o corpo do POST para entregar à `IWeb`. É de lá que a ponte
+pega o corpo, e é por isso que ela sempre funcionou.
+
+## O evento que a Z-Wheel manda para si mesma antes de existir
+
+Ela imprimia `SendEvent to get PrefsDB failed` onze vezes e desistia da configuração. O evento é o
+`0x7b0a`, mandado **para a própria classe**, e o tratador nunca era chamado: o `current_applet` só
+é preenchido quando o `EVT_APP_START` é despachado, e este evento acontece antes, durante a
+construção do applet. Nesse instante o objeto já existe — o `AEEApplet_New` escreveu o ponteiro de
+saída antes de o código do jogo rodar. Para o shell, o applet passa a existir quando é
+**registrado**, não quando é iniciado.
+
+Não é remendo de Z-Wheel: qualquer jogo que mande evento para si mesmo na construção estava sendo
+ignorado.
+
+## Onde ela para hoje, e por quê
+
+Numa **recursão infinita** em `0x1177c`, que é o despachante de tratadores: ele lê a função em
+`+0x20` e o contexto em `+0x1c` — a mesma estrutura que o slot 4 do widget registra — e a chama.
+A pilha enche de `0x1179c` repetido.
+
+A suspeita mais provável é nossa, e é específica: o grafo de widgets que devolvemos é
+**auto-referente**. O `QueryInterface` do widget devolve `this` para qualquer IID, e o acessador
+devolve um filho da mesma classe; um jogo que caminhe por essa estrutura procurando um pai ou um
+irmão nunca sai do lugar.
+
+Isso marca o fim do que se resolve descobrindo um slot por vez. Daqui em diante é preciso saber
+**quais** interfaces cada widget realmente implementa — e essa é uma pergunta sobre a extensão de
+interface do console, não sobre a Z-Wheel.
+
+## O modelo de dados da Z-Wheel
+
+É o catálogo que a interface mostra:
+
+```sql
+CREATE TABLE GAMEINFO(game_id INTEGER PRIMARY KEY, class_id INTEGER, playcount INTEGER,
+                      dt_download INTEGER, dt_lastplayed INTEGER, boxart_path TEXT,
+                      flags INTEGER, size INTEGER, unique(game_id, class_id))
+CREATE TABLE TITLETEXT(game_id INTEGER, lang_id INTEGER, titletext TEXT, unique(game_id, lang_id))
+CREATE TABLE ASSETS(owner INTEGER, dslid INTEGER PRIMARY KEY, type INTEGER, version INTEGER,
+                    path TEXT, language INTEGER, title TEXT, startdate INTEGER, enddate INTEGER)
+CREATE TABLE DLITEMINFO(item_id INTEGER PRIMARY KEY, price INTEGER, size INTEGER,
+                        titletext TEXT, boxart_path TEXT, flags INTEGER, upgrade_id INTEGER)
+CREATE TABLE PREFSINFO(name TEXT PRIMARY KEY, strValue TEXT, dwValue INTEGER, flags INTEGER)
+```
 
 ## A corrente até a vtable, e o elo que falta
 

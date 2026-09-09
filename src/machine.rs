@@ -751,6 +751,22 @@ const AEECLSID_DISPLAY1: u32 = 0x0101_27d4;
 /// `AEECLSID_FILEMGR`, do `AEECLSID_FILEMGR.bid` do SDK. No `AEEClassIDs.h` ele aparece só
 /// comentado, o que já me fez errar esse valor uma vez.
 const AEECLSID_FILEMGR: u32 = 0x0100_1003;
+/// O estado de um widget: os filhos, as propriedades e o tamanho.
+///
+/// Guardar os filhos é o que faz o acessador ser coerente consigo mesmo — pedir duas vezes o
+/// filho `0x5000` tem de devolver o mesmo objeto, ou o jogo fica com dois.
+#[derive(Default)]
+struct Widget {
+    filhos: HashMap<u32, u32>,
+    propriedades: HashMap<u32, u32>,
+    /// Largura e altura, do slot 7. A Z-Wheel manda `640 × 480` — a tela inteira.
+    tamanho: (u32, u32),
+    /// Os filhos que entraram pelo slot 5, que não os identifica por número.
+    anexados: Vec<u32>,
+    /// Endereço do tratador de eventos que o slot 4 registrou.
+    tratador: u32,
+}
+
 /// As classes da extensão de interface que respondem ao mesmo acessador do
 /// [`Interface::Widget`].
 ///
@@ -1597,10 +1613,8 @@ pub struct Machine<C: CpuBackend> {
     peeks: HashMap<u32, Peek>,
     /// Os itens de cada `IConfig` vivo, por objeto: número do item -> bytes.
     config_items: HashMap<u32, HashMap<u32, Vec<u8>>>,
-    /// Os filhos e as propriedades de cada widget vivo, por objeto: `id -> filho` e
-    /// `id -> valor`. Guardar é o que faz o acessador ser coerente consigo mesmo — pedir duas
-    /// vezes o filho `0x5000` tem de devolver o mesmo objeto, ou o jogo fica com dois.
-    widgets: HashMap<u32, (HashMap<u32, u32>, HashMap<u32, u32>)>,
+    /// O estado de cada widget vivo. Ver [`Widget`].
+    widgets: HashMap<u32, Widget>,
     /// Chamadas de GL atendidas com sucesso sem fazer nada.
     ignored_gl: BTreeSet<&'static str>,
     /// O que o jogo entregou ao `ICipher1`, em claro, antes de ser cifrado.
@@ -6501,6 +6515,43 @@ impl<C: CpuBackend> Machine<C> {
                     .insert("um widget aceitou toda interface que lhe pediram");
                 SUCCESS
             }
+            // `slot4(this, &tratador)`, visto em `0x11a6c`. O que `r1` aponta é montado logo
+            // acima, em `0x11a60`: o objeto do jogo se põe como contexto em `+0x1c` e o
+            // endereço da função em `+0x20`. É um registro de tratador de eventos.
+            //
+            // Guardamos o endereço e não chamamos ninguém: quem dispararia estes eventos é a
+            // interface que ainda não desenhamos. Quando ela existir, o tratador está aqui.
+            "DefinirTratador" => {
+                let tratador = self.cpu.read_reg(Reg::R1);
+                if let Some(widget) = self.widgets.get_mut(&this) {
+                    widget.tratador = tratador;
+                }
+                SUCCESS
+            }
+            // `slot5(this, filho, 0, &posição, …)`, visto em `0x11cc0`: o jogo pendura um
+            // widget no outro e solta a referência dele em seguida. O retorno é ignorado — a
+            // instrução seguinte já sobrescreve `r0`.
+            //
+            // Aqui o filho é só registrado. Não há árvore de interface para montar enquanto
+            // ninguém desenha por ela, e guardar a ligação é o que permite reconhecer, quando
+            // isso mudar, que ela já existia.
+            "AdicionarFilho" => {
+                let filho = self.cpu.read_reg(Reg::R1);
+                if let Some(widget) = self.widgets.get_mut(&this) {
+                    widget.anexados.push(filho);
+                }
+                SUCCESS
+            }
+            // `slot7(this, &{largura, altura})`, visto em `0x11c90` com `640 × 480` — a tela
+            // inteira. O jogo ignora o retorno: a instrução seguinte já sobrescreve `r0`.
+            "DefinirTamanho" => {
+                let par = self.cpu.read_reg(Reg::R1);
+                let tamanho = (self.cpu.read_u32(par)?, self.cpu.read_u32(par + 4)?);
+                if let Some(widget) = self.widgets.get_mut(&this) {
+                    widget.tamanho = tamanho;
+                }
+                SUCCESS
+            }
             "Acessador" => {
                 let (seletor, id, terceiro) = (
                     self.cpu.read_reg(Reg::R1),
@@ -6512,7 +6563,7 @@ impl<C: CpuBackend> Machine<C> {
                         let existente = self
                             .widgets
                             .get(&this)
-                            .and_then(|(filhos, _)| filhos.get(&id).copied());
+                            .and_then(|widget| widget.filhos.get(&id).copied());
                         let filho = match existente {
                             Some(filho) => {
                                 // Entregar é emprestar: quem recebe vai soltar, e sem esta
@@ -6525,9 +6576,9 @@ impl<C: CpuBackend> Machine<C> {
                                 if filho == 0 {
                                     return Ok(Some(0));
                                 }
-                                self.widgets.insert(filho, (HashMap::new(), HashMap::new()));
-                                if let Some((filhos, _)) = self.widgets.get_mut(&this) {
-                                    filhos.insert(id, filho);
+                                self.widgets.insert(filho, Widget::default());
+                                if let Some(widget) = self.widgets.get_mut(&this) {
+                                    widget.filhos.insert(id, filho);
                                 }
                                 filho
                             }
@@ -6538,8 +6589,8 @@ impl<C: CpuBackend> Machine<C> {
                         OK
                     }
                     GRAVA => {
-                        if let Some((_, propriedades)) = self.widgets.get_mut(&this) {
-                            propriedades.insert(id, terceiro);
+                        if let Some(widget) = self.widgets.get_mut(&this) {
+                            widget.propriedades.insert(id, terceiro);
                         }
                         OK
                     }
@@ -10079,7 +10130,7 @@ impl<C: CpuBackend> Machine<C> {
             self.vetores.insert(obj, (Vec::new(), 0));
         }
         if iface == Interface::Widget {
-            self.widgets.insert(obj, (HashMap::new(), HashMap::new()));
+            self.widgets.insert(obj, Widget::default());
         }
         if out != 0 {
             self.cpu.write_u32(out, obj)?;

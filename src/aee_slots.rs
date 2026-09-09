@@ -859,7 +859,16 @@ pub const PEEK: &[&str] = &[
 /// Só o slot 3 tem nome porque só ele foi visto em uso. Os dois primeiros são o `AddRef` e o
 /// `Release` de toda interface do BREW; o 2 fica sem nome de propósito, para que uma chamada
 /// nele apareça no relatório em vez de passar por implementada.
-pub const WIDGET: &[&str] = &["AddRef", "Release", "QueryInterface", "Acessador"];
+pub const WIDGET: &[&str] = &[
+    "AddRef",
+    "Release",
+    "QueryInterface",
+    "Acessador",
+    "DefinirTratador",
+    "AdicionarFilho",
+    "slot6",
+    "DefinirTamanho",
+];
 
 /// Métodos do ZEEBOMCP (`0x01006c05`), da vtable `0x102d47a8` do firmware.
 ///
