@@ -877,6 +877,20 @@ pub const ZEEBO_MCP: &[&str] = &["AddRef", "Release", "QueryInterface"];
 /// se mostrou ser de fachada.
 pub const CONFIG: &[&str] = &["AddRef", "Release", "GetItem", "SetItem"];
 
+/// Métodos do controle de sistema (`0x01006c02`), da vtable `0x10691ea8` do firmware.
+///
+/// Sete: o oitavo valor da tabela é `0x86`, que não é endereço. Ver
+/// [`crate::aee::Interface::SystemCtl`].
+pub const SYSTEM_CTL: &[&str] = &[
+    "AddRef",
+    "Release",
+    "QueryInterface",
+    "slot3",
+    "slot4",
+    "slot5",
+    "Consultar",
+];
+
 /// Métodos do `ICM` (`0x01011810`), dos quais conhecemos um.
 ///
 /// O slot 28 é o único que a Z-Wheel chama. Ver [`crate::aee::Interface::Cm`].

@@ -64,7 +64,7 @@ def registro(data, segs, clsid):
 
     As classes que o console implementa estão numa tabela de entradas de dezesseis bytes:
 
-        <u32 construtor> <u32 CLSID> <u32 sinalizadores> <u32 zero>
+        <u32 CLSID> <u32 sinalizadores> <u32 zero> <u32 construtor>
 
     O construtor é endereço Thumb, então tem o bit 0 ligado, **e** precisa cair dentro de um
     segmento carregável. As duas condições juntas é que distinguem a entrada de uma citação
@@ -73,13 +73,22 @@ def registro(data, segs, clsid):
 
     Só o bit 0 não basta, e isso deu falso positivo: para a `0x01000000` ele apontava para
     `0x206c7274`, que é o texto `"trl "` lido como número. Exigir o segmento resolve.
+
+    **Esta leitura já esteve deslocada de uma palavra**, tomando o construtor da entrada
+    anterior como se fosse desta. O deslocamento não quebrava nada visivelmente — devolvia um
+    construtor de verdade, numa vtable de verdade, da classe errada. Foi preciso desmontar o
+    construtor para perceber: o que a tabela dava para a `0x01006c05` começava comparando o
+    CLSID recebido com `0x01006c01`, que é justamente a entrada de cima.
+
+    Fica a regra que saiu daí: **desmontar o construtor antes de copiar a vtable**. Se ele
+    testa um CLSID, tem de ser o que você pediu.
     """
     pat = struct.pack("<I", clsid)
     for m in re.finditer(re.escape(pat), data):
         o = m.start()
-        if o < 4 or o + 12 > len(data):
+        if o + 16 > len(data):
             continue
-        func, _, flags, zero = struct.unpack("<4I", data[o - 4 : o + 12])
+        _, flags, zero, func = struct.unpack("<4I", data[o : o + 16])
         if func & 1 and zero == 0 and comeca_funcao(data, segs, func & ~1):
             return func & ~1, flags
     return None, None

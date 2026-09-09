@@ -751,6 +751,9 @@ const AEECLSID_DISPLAY1: u32 = 0x0101_27d4;
 /// `AEECLSID_FILEMGR`, do `AEECLSID_FILEMGR.bid` do SDK. No `AEEClassIDs.h` ele aparece só
 /// comentado, o que já me fez errar esse valor uma vez.
 const AEECLSID_FILEMGR: u32 = 0x0100_1003;
+/// `0x01006c02`, o controle de sistema. Ver [`Interface::SystemCtl`].
+const AEECLSID_SYSTEMCTL: u32 = 0x0100_6c02;
+
 /// `0x01011810`, o `ICM`. Ver [`Interface::Cm`].
 const AEECLSID_CM: u32 = 0x0101_1810;
 
@@ -2530,6 +2533,10 @@ impl<C: CpuBackend> Machine<C> {
                 None => return Ok(None),
             },
             (Interface::Widget, _) => match self.widget_call(slot)? {
+                Some(result) => result,
+                None => return Ok(None),
+            },
+            (Interface::SystemCtl, _) => match self.system_ctl_call(slot)? {
                 Some(result) => result,
                 None => return Ok(None),
             },
@@ -6508,6 +6515,43 @@ impl<C: CpuBackend> Machine<C> {
         Ok(Some(result))
     }
 
+    /// Atende o controle de sistema. Ver [`Interface::SystemCtl`].
+    ///
+    /// O `QueryInterface` do firmware aceita dois IIDs, o `0x01000001` e o da própria classe, e
+    /// é isso que fazemos aqui — aceitar qualquer um seria dizer que este objeto é toda
+    /// interface do sistema.
+    fn system_ctl_call(&mut self, slot: u32) -> Result<Option<u32>, CpuError> {
+        let Some(name) = Interface::SystemCtl.method(slot) else {
+            return Ok(None);
+        };
+        if aee::e_marcador(name) {
+            return Ok(None);
+        }
+        let this = self.cpu.read_reg(Reg::R0);
+        let result = match name {
+            "AddRef" => self.objects.add_ref(this),
+            "Release" => self.objects.release(this),
+            "QueryInterface" => {
+                let (iid, saida) = (self.cpu.read_reg(Reg::R1), self.cpu.read_reg(Reg::R2));
+                if iid != AEECLSID_SYSTEMCTL && iid != 0x0100_0001 {
+                    return Ok(Some(ECLASSNOTSUPPORT));
+                }
+                if saida != 0 {
+                    self.cpu.write_u32(saida, this)?;
+                }
+                self.objects.add_ref(this);
+                SUCCESS
+            }
+            "Consultar" => {
+                self.assumptions
+                    .insert("o controle de sistema respondeu zero: não há aparelho para consultar");
+                SUCCESS
+            }
+            _ => SUCCESS,
+        };
+        Ok(Some(result))
+    }
+
     /// Atende o `ICM`. Ver [`Interface::Cm`].
     fn cm_call(&mut self, slot: u32) -> Result<Option<u32>, CpuError> {
         /// Deslocamento do modo de operação dentro do `AEECMPhInfo`, lido em `0x87cb0`.
@@ -9948,6 +9992,7 @@ impl<C: CpuBackend> Machine<C> {
             AEECLSID_VETOR => Interface::Vetor,
             AEECLSID_28E3C => Interface::Classe28e3c,
             AEECLSID_CM => Interface::Cm,
+            AEECLSID_SYSTEMCTL => Interface::SystemCtl,
             AEECLSID_MD5 => Interface::Hash,
             AEECLSID_CIPHER_FACTORY => Interface::CipherFactory,
             AEECLSID_MEDIA | AEECLSID_MEDIAMIDI | AEECLSID_MEDIAMP3 | AEECLSID_MEDIAADPCM

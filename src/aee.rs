@@ -132,11 +132,15 @@ pub enum Interface {
     /// quando a criação falha. No firmware ele é o singleton de `0x11085cb8`, que aloca oito
     /// bytes — vtable e contagem — e, se já existir, só incrementa a contagem.
     ///
-    /// A tabela de classes do `1.1.2_APPS.bin` engana aqui: a entrada de `0x01006c05` aponta
-    /// para `0x11267d04`, que é o `LCT_SIMCardCtl_New` e **só aceita `0x01006c01`**. A vtable
-    /// de verdade é a `0x102d47a8`, oito métodos, achada ao lado do construtor — no mesmo
-    /// trecho que carrega `fs:/card3` e `fs:/mcp/`. Copiar a vtable da entrada teria dado uma
-    /// tabela de quatro métodos que não é desta classe.
+    /// O construtor é `0x11085cb8` e a vtable é `0x102d47a8`, com oito métodos — no mesmo
+    /// trecho que carrega `fs:/card3` e `fs:/mcp/`, que é o que um MCP faria.
+    ///
+    /// Foi esta classe que revelou um erro na leitura da tabela de classes do firmware. O
+    /// `firmware.py` lia as entradas deslocadas de uma palavra e devolvia, para cada CLSID, o
+    /// construtor da entrada **anterior** — aqui, o `LCT_SIMCardCtl_New`, que começa comparando
+    /// o CLSID recebido com `0x01006c01`. Foi essa comparação que denunciou o deslocamento. A
+    /// ferramenta está corrigida, e a tabela agora aponta para o mesmo construtor que eu tinha
+    /// achado a pé.
     ///
     /// Os três primeiros slots foram lidos: contagem, contagem, e um `QueryInterface` que
     /// compara o IID com `0x01000001` e com `0x01006c05`. Os cinco restantes ficam sem nome de
@@ -150,16 +154,20 @@ pub enum Interface {
     /// `GetItem` correspondente. É isso que está implementado: os itens ficam guardados por
     /// número, e quem grava relê o que gravou.
     ///
-    /// **A vtable do firmware não serviu, e é bom dizer por quê.** A entrada desta classe no
-    /// `1.1.2_APPS.bin` existe (construtor `0x1125fbbc`, vtable `0x1086b554`, doze métodos),
-    /// mas nove desses doze são literalmente `movs r0,#0x14; bx lr` — devolvem `EUNSUPPORTED`
-    /// e nada mais, o `SetItem` inclusive. Copiar aquilo daria um `IConfig` que faz o console
-    /// falhar: a Z-Wheel imprime `Unable to set language to config, error 20` e desiste. A
-    /// leitura mais provável é que aquela entrada seja um registro de fachada da partição de
-    /// aplicativos, e que a `IConfig` de verdade viva no lado do BREW, que não temos.
+    /// **A vtable do firmware não serviu, e a razão mudou depois que eu a entendi.** Eu tinha
+    /// copiado uma tabela de doze métodos em que nove eram `movs r0,#0x14; bx lr` — devolvem
+    /// `EUNSUPPORTED` e nada mais, o `SetItem` inclusive —, e o resultado foi o jogo trocar
+    /// `Unable to create instance of IConfig, error 20` por `Unable to set language to config,
+    /// error 20`: o mesmo vinte, um passo adiante.
     ///
-    /// Por isso só os quatro primeiros slots têm nome. Os oito de cima ficam de fora de
-    /// propósito: sobre eles a única fonte seria a tabela que já se mostrou errada.
+    /// Aquela tabela era de outra classe: o `firmware.py` lia as entradas deslocadas de uma
+    /// palavra. Corrigida a leitura, o que sobra para a `0x01001027` é uma entrada com
+    /// sinalizadores `0xffff0008` e um "construtor" cuja vtable tem um método só, que nem
+    /// endereço é — ou seja, **falso positivo**: esta classe não está registrada neste
+    /// firmware.
+    ///
+    /// Por isso os nomes vêm do SDK, e só os quatro slots que a Z-Wheel exercita. Os oito de
+    /// cima ficam de fora: sobre eles não há fonte nenhuma.
     Config = 42,
     /// Um `ISource` do BREW: bytes com um cursor. Criado pela [`Interface::SourceUtil`].
     Source = 43,
@@ -207,6 +215,22 @@ pub enum Interface {
     /// aqui a resposta é sim. É hipótese, e está registrada como tal no relatório — mas é
     /// hipótese com dois apoios independentes, o valor e a posição.
     Cm = 47,
+    /// `0x01006c02`, o **controle de sistema** do console — o `OEM_LCTSystemCtl.c` do firmware.
+    ///
+    /// A `tectoymain.c:1759` imprime `ERROR: Failed to create system control` sem ele. O que
+    /// ele controla está escrito nas strings ao lado da implementação: `Pipe OFF`,
+    /// `Pipe Half Bright`, `Pipe Slow Pulsing`, `Button ON` — as luzes do aparelho — e um
+    /// `LCT_SystemCtl_SystemControl nSystemMode=%d, nDownloadMode=%d`.
+    ///
+    /// A vtable é a `0x10691ea8`, com sete métodos, e o construtor `0x10e9f93e` confere o
+    /// CLSID recebido contra `0x01006c02` — é dela mesma. Os três primeiros estão
+    /// implementados; os que mexem em luz ficam como marcador até alguém chamá-los.
+    ///
+    /// O slot 6 é a exceção, porque a Z-Wheel o chama num laço. No firmware ele é uma casca de
+    /// três instruções sobre uma chamada de hardware, sem argumento nenhum; do lado do jogo, em
+    /// `0x81768`, zero é "siga" e diferente de zero desvia. Respondemos zero — o aparelho que
+    /// não temos não tem o que reclamar.
+    SystemCtl = 48,
     /// Objeto de uma classe que ainda não conhecemos, criado a pedido do `--sonda`.
     ///
     /// Não implementa interface nenhuma: existe para **descobrir qual é**. Toda chamada é
@@ -226,7 +250,7 @@ impl Interface {
     /// as duas coisas precisam concordar — daí a lista existir num lugar só, com teste que
     /// confere a correspondência. Quando elas divergiram, um objeto recebeu a vtable de outra
     /// interface e a chamada foi parar no método errado, com sintoma a quilômetros da causa.
-    pub const ALL: [Interface; 48] = [
+    pub const ALL: [Interface; 49] = [
         Self::Shell,
         Self::Module,
         Self::Applet,
@@ -275,6 +299,7 @@ impl Interface {
         Self::Vetor,
         Self::Classe28e3c,
         Self::Cm,
+        Self::SystemCtl,
     ];
 
     /// Nome usado nos logs — casa com a nomenclatura do SDK.
@@ -326,6 +351,7 @@ impl Interface {
             Self::Vetor => "IVetor",
             Self::Classe28e3c => "I28e3c",
             Self::Cm => "ICM",
+            Self::SystemCtl => "ILCTSystemCtl",
             Self::Probe => "ClasseDesconhecida",
             Self::Helpers => "AEEHelpers",
         }
@@ -380,6 +406,7 @@ impl Interface {
             Self::Vetor => aee_slots::VETOR,
             Self::Classe28e3c => aee_slots::CLASSE_28E3C,
             Self::Cm => aee_slots::CM,
+            Self::SystemCtl => aee_slots::SYSTEM_CTL,
             // A sonda não tem tabela: `method` responde por ela antes de chegar aqui.
             Self::Probe => &[],
             Self::Helpers => aee_helpers::HELPERS,
@@ -450,6 +477,7 @@ impl Interface {
             45 => Self::Vetor,
             46 => Self::Classe28e3c,
             47 => Self::Cm,
+            48 => Self::SystemCtl,
             6 => Self::Helpers,
             _ => return None,
         })

@@ -69,22 +69,33 @@ O detalhe que decidia tudo é o **retorno**: `cmp r0,#0; moveq r0,#3`. Zero vira
 para a limpeza e desreferencia o segundo filho, que nunca foi preenchido. Era daí que vinha o
 acesso inválido a zero em `0x78b70`.
 
-## Duas vtables de fachada, e como se reconhece uma
+## A tabela de classes estava sendo lida deslocada de uma palavra
 
-A tabela de classes do `1.1.2_APPS.bin` respondeu duas vezes com uma vtable que **não é da
-classe**. As duas custaram tempo, e as duas se reconhecem pelo mesmo teste: **ler o construtor
-antes de copiar a vtable**.
+Esta custou horas, e vale contar direito porque a lição é o contrário da que eu escrevi primeiro.
 
-- `0x01006c05` (ZEEBOMCP): a entrada aponta para `0x11267d04`, que é o `LCT_SIMCardCtl_New` e
-  começa comparando o CLSID recebido com `0x01006c01` — recusa a própria classe sob a qual está
-  registrado. A implementação de verdade é o singleton `0x11085cb8`, com a vtable `0x102d47a8` de
-  oito métodos, no mesmo trecho que carrega `fs:/card3` e `fs:/mcp/`.
-- `0x01001027` (`IConfig`): a entrada existe e o construtor é limpo, mas **nove dos doze métodos
-  são `movs r0,#0x14; bx lr`** — devolvem `EUNSUPPORTED` e nada mais, o `SetItem` inclusive.
-  Copiar aquilo fez o jogo trocar `Unable to create instance of IConfig, error 20` por `Unable to
-  set language to config, error 20`: o mesmo 20, um passo adiante. A leitura mais provável é que
-  seja um registro de fachada da partição de aplicativos, e que a `IConfig` de verdade viva no
-  lado do BREW, que não temos.
+O `firmware.py` lia as entradas da tabela de classes como
+`{construtor, CLSID, sinalizadores, zero}`. A ordem verdadeira é
+`{CLSID, sinalizadores, zero, construtor}` — o construtor vem **depois**. Lendo deslocado, cada
+CLSID recebia o construtor da entrada anterior.
+
+O erro não quebrava nada visivelmente: devolvia um construtor de verdade, apontando para uma
+vtable de verdade, da classe errada. Duas vezes eu concluí que a tabela era "de fachada" quando o
+problema era meu:
+
+- Para a `0x01006c05` ela dava o `LCT_SIMCardCtl_New`, que começa comparando o CLSID recebido com
+  `0x01006c01`. **Foi essa comparação que denunciou o deslocamento**: um construtor que recusa a
+  própria classe é sinal de que ele não é dela.
+- Para a `0x01001027` ela dava uma vtable de doze métodos em que nove eram `movs r0,#0x14`.
+  Copiada, fez o jogo trocar `Unable to create instance of IConfig` por `Unable to set language to
+  config` — o mesmo erro 20, um passo adiante.
+
+Corrigida a leitura, a tabela aponta para o construtor `0x11085cb8` da `0x01006c05`, que é
+exatamente o singleton que eu tinha achado a pé pelo `fs:/mcp/`. E a `0x01001027` deixa de ter
+entrada: o que sobra para ela é um falso positivo, com sinalizadores `0xffff0008` e um
+"construtor" cuja vtable tem um método que nem endereço é.
+
+**A regra que fica**: desmontar o construtor antes de copiar a vtable. Se ele testa um CLSID, tem
+de ser o que você pediu.
 
 ## O evento que chega antes do start
 
