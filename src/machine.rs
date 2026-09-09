@@ -21,6 +21,7 @@ use crate::input::{self, Pad};
 use crate::loader::{self, LoadedModule};
 use crate::objects::ObjectStore;
 use crate::paltex;
+use crate::ponte;
 use crate::rasterizer::{self, GlState, Vertex};
 use crate::rede;
 use crate::vfs::Vfs;
@@ -412,6 +413,12 @@ const AEECLSID_WEB: u32 = 0x0100_5000;
 /// Quantos blocos de texto claro o registro guarda, e quanto de cada um.
 const PLAINTEXT_MAX: usize = 8;
 const PLAINTEXT_BYTES: usize = 512;
+
+/// Teto de instruções para uma chamada pela ponte. O alocador é uma função curta.
+const PONTE_BUDGET: u64 = 5_000_000;
+/// A linha que acompanha o nome de arquivo no rastreio do alocador. Ele só guarda para os
+/// relatórios dele, então qualquer valor serve; um distinto ajuda a reconhecer o que veio daqui.
+const LINHA_DE_ORIGEM: u32 = 0;
 
 /// Os estados da conexão, lidos do `switch` da tela de sync do Zeeboids em `0x95bb8`.
 ///
@@ -6251,8 +6258,72 @@ impl<C: CpuBackend> Machine<C> {
                 (EFAILED, ESTADO_FALHOU)
             }
         };
+        if estado == ESTADO_RECEBENDO {
+            self.deliver_response(objeto)?;
+        }
         self.finish_request(base, estado)?;
         Ok(resultado)
+    }
+
+    /// Entrega a resposta ao objeto que o jogo preparou para recebê-la.
+    ///
+    /// O remetente guarda esse objeto em `+8` do próprio (`str r2, [r4, #8]` em `0x94eb8`), e o
+    /// tratador do estado "recebendo" o lê assim (`0x85b44`): `[+8]` é a contagem de campos e
+    /// zero quer dizer "não veio nada", `[+4]` é o vetor de ponteiros e `[+0xc]` a capacidade.
+    /// É o `ttdArray` do próprio jogo.
+    ///
+    /// As strings **saem do alocador do jogo**, pela [`crate::ponte`], porque é dele que o
+    /// gerenciador de memória espera recebê-las de volta. Sem ponte declarada para o módulo,
+    /// não entregamos nada: melhor o jogo ver "não veio resposta" do que ver memória que ele vai
+    /// recusar. O que trafega não muda em nenhum dos dois casos.
+    fn deliver_response(&mut self, objeto: u32) -> Result<(), CpuError> {
+        let Some(ponte) = ponte::para(self.applet_class) else {
+            return Ok(());
+        };
+        if self.web_response.is_empty() {
+            return Ok(());
+        }
+        let texto = String::from_utf8_lossy(&self.web_response).to_string();
+        let campos: Vec<String> = texto
+            .trim_end_matches(['\r', '\n', '\0'])
+            .split(';')
+            .map(str::to_owned)
+            .collect();
+
+        let resposta = self.cpu.read_u32(objeto + 8)?;
+        let (vetor, capacidade) = (
+            self.cpu.read_u32(resposta + 4)?,
+            self.cpu.read_u32(resposta + 0xc)?,
+        );
+        if vetor == 0 || capacidade < campos.len() as u32 {
+            self.assumptions
+                .insert("a resposta não foi entregue: o vetor do jogo não comporta os campos");
+            return Ok(());
+        }
+
+        for (i, campo) in campos.iter().enumerate() {
+            let bytes = campo.as_bytes();
+            let tamanho = bytes.len() as u32 + 1;
+            let outcome = self.call_guest_with_stack(
+                ponte.alocador,
+                [tamanho, 0, LINHA_DE_ORIGEM, ponte.origem],
+                &[1],
+                PONTE_BUDGET,
+            )?;
+            let Outcome::Returned { code: endereco } = outcome else {
+                self.assumptions
+                    .insert("a resposta não foi entregue: o alocador do jogo não retornou");
+                return Ok(());
+            };
+            if endereco == 0 {
+                return Ok(());
+            }
+            self.cpu.write_mem(endereco, bytes)?;
+            self.cpu.write_mem(endereco + bytes.len() as u32, &[0])?;
+            self.cpu.write_u32(vetor + i as u32 * 4, endereco)?;
+        }
+        self.cpu.write_u32(resposta + 8, campos.len() as u32)?;
+        Ok(())
     }
 
     /// Avisa o jogo que a requisição terminou.

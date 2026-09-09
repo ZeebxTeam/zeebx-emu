@@ -29,6 +29,7 @@ mod mp3;
 mod objects;
 mod padview;
 mod paltex;
+mod ponte;
 mod rasterizer;
 mod rede;
 mod resfile;
