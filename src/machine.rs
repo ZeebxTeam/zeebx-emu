@@ -6378,6 +6378,10 @@ impl<C: CpuBackend> Machine<C> {
             self.cpu.write_u32(vetor + i as u32 * 4, endereco)?;
         }
         self.cpu.write_u32(resposta + 8, campos.len() as u32)?;
+        // A marca de "chegou dado novo". O tratador em `0x85b5c` só interpreta o campo 0 quando
+        // ela está ligada, e a apaga logo depois (`strb r6, [r4, #0x18]`) — é uma bandeira de
+        // uma via. No console quem a ligava era o despachante, ao depositar a resposta.
+        self.cpu.write_mem(resposta + 0x18, &[1])?;
         Ok(())
     }
 
