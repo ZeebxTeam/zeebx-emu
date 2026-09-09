@@ -877,6 +877,11 @@ pub const ZEEBO_MCP: &[&str] = &["AddRef", "Release", "QueryInterface"];
 /// se mostrou ser de fachada.
 pub const CONFIG: &[&str] = &["AddRef", "Release", "GetItem", "SetItem"];
 
+/// Métodos da `0x01028e3c`, dos quais conhecemos dois — e são os dois de toda interface.
+///
+/// Ver [`crate::aee::Interface::Classe28e3c`]: a Z-Wheel cria duas e não chama nada nelas.
+pub const CLASSE_28E3C: &[&str] = &["AddRef", "Release"];
+
 /// Métodos da lista genérica da Z-Wheel (`0x01028e35`).
 ///
 /// Ver [`crate::aee::Interface::Vetor`] para onde cada nome foi lido. Os seis sem nome nunca

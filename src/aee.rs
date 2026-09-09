@@ -186,6 +186,14 @@ pub enum Interface {
     /// Os slots sem nome nunca foram chamados. Deixá-los sem nome é o que faz uma chamada
     /// inesperada aparecer no relatório em vez de passar por implementada.
     Vetor = 45,
+    /// `0x01028e3c`, da mesma família das outras duas extensões da Z-Wheel, e a mais modesta
+    /// delas: a `tectoymain.c` cria **duas** logo no começo e guarda em `+0x354` e `+0x358`, e
+    /// até agora não chama método nenhum em nenhuma das duas.
+    ///
+    /// Por isso só o `AddRef` e o `Release` existem aqui. Não é preguiça: é que qualquer outro
+    /// nome seria invenção, e do jeito que está a primeira chamada de verdade vai aparecer no
+    /// relatório em vez de ser atendida por acaso.
+    Classe28e3c = 46,
     /// Objeto de uma classe que ainda não conhecemos, criado a pedido do `--sonda`.
     ///
     /// Não implementa interface nenhuma: existe para **descobrir qual é**. Toda chamada é
@@ -205,7 +213,7 @@ impl Interface {
     /// as duas coisas precisam concordar — daí a lista existir num lugar só, com teste que
     /// confere a correspondência. Quando elas divergiram, um objeto recebeu a vtable de outra
     /// interface e a chamada foi parar no método errado, com sintoma a quilômetros da causa.
-    pub const ALL: [Interface; 46] = [
+    pub const ALL: [Interface; 47] = [
         Self::Shell,
         Self::Module,
         Self::Applet,
@@ -252,6 +260,7 @@ impl Interface {
         Self::Source,
         Self::Peek,
         Self::Vetor,
+        Self::Classe28e3c,
     ];
 
     /// Nome usado nos logs — casa com a nomenclatura do SDK.
@@ -301,6 +310,7 @@ impl Interface {
             Self::Source => "ISource",
             Self::Peek => "IPeek",
             Self::Vetor => "IVetor",
+            Self::Classe28e3c => "I28e3c",
             Self::Probe => "ClasseDesconhecida",
             Self::Helpers => "AEEHelpers",
         }
@@ -353,6 +363,7 @@ impl Interface {
             Self::Source => aee_slots::SOURCE,
             Self::Peek => aee_slots::PEEK,
             Self::Vetor => aee_slots::VETOR,
+            Self::Classe28e3c => aee_slots::CLASSE_28E3C,
             // A sonda não tem tabela: `method` responde por ela antes de chegar aqui.
             Self::Probe => &[],
             Self::Helpers => aee_helpers::HELPERS,
@@ -421,6 +432,7 @@ impl Interface {
             43 => Self::Source,
             44 => Self::Peek,
             45 => Self::Vetor,
+            46 => Self::Classe28e3c,
             6 => Self::Helpers,
             _ => return None,
         })

@@ -751,6 +751,9 @@ const AEECLSID_DISPLAY1: u32 = 0x0101_27d4;
 /// `AEECLSID_FILEMGR`, do `AEECLSID_FILEMGR.bid` do SDK. No `AEEClassIDs.h` ele aparece só
 /// comentado, o que já me fez errar esse valor uma vez.
 const AEECLSID_FILEMGR: u32 = 0x0100_1003;
+/// `0x01028e3c`, a terceira extensão que a Z-Wheel pede. Ver [`Interface::Classe28e3c`].
+const AEECLSID_28E3C: u32 = 0x0102_8e3c;
+
 /// `0x01028e35`, a lista genérica da Z-Wheel. Ver [`Interface::Vetor`].
 const AEECLSID_VETOR: u32 = 0x0102_8e35;
 
@@ -2524,6 +2527,9 @@ impl<C: CpuBackend> Machine<C> {
                 Some(result) => result,
                 None => return Ok(None),
             },
+            // A `0x01028e3c` não tem estado nem método próprio: só a contagem.
+            (Interface::Classe28e3c, 0) => self.objects.add_ref(self.cpu.read_reg(Reg::R0)),
+            (Interface::Classe28e3c, 1) => self.objects.release(self.cpu.read_reg(Reg::R0)),
             (Interface::Vetor, _) => match self.vetor_call(slot)? {
                 Some(result) => result,
                 None => return Ok(None),
@@ -9836,6 +9842,7 @@ impl<C: CpuBackend> Machine<C> {
             AEECLSID_ZEEBOMCP => Interface::ZeeboMcp,
             AEECLSID_CONFIG => Interface::Config,
             AEECLSID_VETOR => Interface::Vetor,
+            AEECLSID_28E3C => Interface::Classe28e3c,
             AEECLSID_MD5 => Interface::Hash,
             AEECLSID_CIPHER_FACTORY => Interface::CipherFactory,
             AEECLSID_MEDIA | AEECLSID_MEDIAMIDI | AEECLSID_MEDIAMP3 | AEECLSID_MEDIAADPCM
