@@ -1694,6 +1694,8 @@ pub struct Machine<C: CpuBackend> {
     widgets: HashMap<u32, Widget>,
     /// As APIs que faltaram, com quem as chamou. Ver o `None` do despacho.
     missing_apis: BTreeSet<String>,
+    /// Acessos inválidos que aconteceram dentro de retorno de chamada e não pararam o jogo.
+    falhas_engolidas: BTreeSet<String>,
     /// Chamadas de GL atendidas com sucesso sem fazer nada.
     ignored_gl: BTreeSet<&'static str>,
     /// O que o jogo entregou ao `ICipher1`, em claro, antes de ser cifrado.
@@ -1911,6 +1913,7 @@ impl<C: CpuBackend> Machine<C> {
             delivered: Vec::new(),
             plaintexts: std::collections::VecDeque::new(),
             missing_apis: BTreeSet::new(),
+            falhas_engolidas: BTreeSet::new(),
             ignored_gl: BTreeSet::new(),
             web_response: Vec::new(),
             streams: HashMap::new(),
@@ -2395,6 +2398,14 @@ impl<C: CpuBackend> Machine<C> {
                         Reg::R11,
                     ]
                     .map(|reg| self.cpu.read_reg(reg));
+                    // Registrar aqui, e não só onde o desfecho é lido, pelo mesmo motivo das
+                    // APIs que faltam: um acesso inválido **dentro de um retorno de chamada**
+                    // aborta aquela chamada e a execução segue, e quem mandou o evento lê
+                    // apenas "ninguém tratou". Foi assim que o `SendEvent` do
+                    // `0x885d8` da Z-Wheel sumia do relatório enquanto derrubava o formulário
+                    // do z-pad com erro 6.
+                    self.falhas_engolidas
+                        .insert(format!("acesso inválido a {addr:#010x} em pc {pc:#010x}"));
                     return Ok(Outcome::Fault { addr, pc, lr });
                 }
                 StopReason::Exception { pc } => return Ok(Outcome::Exception { pc }),
@@ -10747,6 +10758,11 @@ impl<C: CpuBackend> Machine<C> {
 
     pub fn module(&self) -> &LoadedModule {
         &self.module
+    }
+
+    /// Acessos inválidos que a execução seguiu por cima. Ver [`Machine::execute`].
+    pub fn swallowed_faults(&self) -> Vec<String> {
+        self.falhas_engolidas.iter().cloned().collect()
     }
 
     /// As APIs que faltaram durante a execução, inclusive dentro de retornos de chamada.

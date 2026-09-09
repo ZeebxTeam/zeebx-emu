@@ -30,6 +30,35 @@ use std::path::{Path, PathBuf};
 
 /// Prefixos que o BREW usa e que removemos antes de resolver.
 const PREFIXES: [&str; 4] = ["fs:/~/", "fs:/~", "fs:/", "~/"];
+
+/// Tira o `<classe>/` que pode vir logo depois do `~`.
+///
+/// O BREW escreve o diretório de um módulo como `fs:/~<ClassID>/`, e a Z-Wheel usa essa forma
+/// para os próprios recursos: `fs:/~0x01070798/tectoyli.brf`. Sem tirar o número, o caminho
+/// virava um **subdiretório** com nome `0x01070798` dentro do diretório do módulo — que não
+/// existe. O arquivo estava no pacote e mesmo assim não abria.
+///
+/// Foi o que segurou o formulário de instruções do z-pad da Z-Wheel: ele carrega um recurso do
+/// `tectoyli.brf` por esse caminho, não achava, e devolvia `EUNABLETOLOAD` — o erro 6 que
+/// aparecia milhares de vezes no relatório.
+///
+/// **Aqui só existe um módulo por vez**, então qualquer ClassID leva ao diretório dele. No
+/// console um módulo pode alcançar o diretório de outro por este caminho; quando isso importar,
+/// é aqui que se resolve o número para o diretório certo.
+fn sem_classe(resto: &str) -> String {
+    let Some((primeiro, cauda)) = resto.split_once('/') else {
+        return resto.to_string();
+    };
+    let numero = primeiro
+        .strip_prefix("0x")
+        .or_else(|| primeiro.strip_prefix("0X"))
+        .map(|hex| !hex.is_empty() && hex.chars().all(|c| c.is_ascii_hexdigit()))
+        .unwrap_or_else(|| !primeiro.is_empty() && primeiro.chars().all(|c| c.is_ascii_digit()));
+    match numero {
+        true => cauda.to_string(),
+        false => resto.to_string(),
+    }
+}
 /// Nome da raiz comum, que faz o papel do sistema de arquivos do aparelho.
 const DEVICE_DIR: &str = "aparelho";
 
@@ -111,7 +140,7 @@ impl Vfs {
         let mut path = guest_path.replace('\\', "/");
         for prefix in PREFIXES {
             if let Some(rest) = path.strip_prefix(prefix) {
-                path = rest.to_string();
+                path = sem_classe(rest);
                 break;
             }
         }

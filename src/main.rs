@@ -693,6 +693,12 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
             println!("  {quantos:6}x {nome}");
         }
     }
+    if !machine.swallowed_faults().is_empty() {
+        println!("acessos inválidos que o jogo seguiu por cima:");
+        for nota in machine.swallowed_faults() {
+            println!("  {nota}");
+        }
+    }
     if !machine.missing_apis().is_empty() {
         println!("APIs que faltaram:");
         for nota in machine.missing_apis() {

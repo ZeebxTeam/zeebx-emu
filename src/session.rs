@@ -396,6 +396,11 @@ impl Session {
             linhas.push("— classes que o jogo pediu e não temos —".to_string());
             linhas.extend(classes.iter().map(|id| format!("  {id:#010x}")));
         }
+        let falhas = self.machine.swallowed_faults();
+        if !falhas.is_empty() {
+            linhas.push("— acessos inválidos que o jogo seguiu por cima —".to_string());
+            linhas.extend(falhas.iter().map(|nota| format!("  {nota}")));
+        }
         let apis = self.machine.missing_apis();
         if !apis.is_empty() {
             linhas.push("— APIs que faltaram —".to_string());
