@@ -30,6 +30,7 @@ mod objects;
 mod padview;
 mod paltex;
 mod rasterizer;
+mod rede;
 mod resfile;
 mod session;
 mod settings;
@@ -180,6 +181,7 @@ fn main() -> ExitCode {
                     dump_audio,
                     profile,
                     wall,
+                    network: !args.iter().any(|a| a == "--sem-rede"),
                 },
             ))
         }
@@ -193,7 +195,8 @@ fn main() -> ExitCode {
                              [--dump-gl=DIR] [--dump-audio=ARQUIVO.wav]
                              [--trace[=trecho]] [--watch=0xADDR] [--dump-heap]
                              [--code=0xINI:0xFIM] [--frames=N]
-                             [--profile] [--wall=SEGUNDOS] [--sonda=0xCLSID,...]"
+                             [--profile] [--wall=SEGUNDOS] [--sonda=0xCLSID,...]
+                             [--sem-rede]"
             );
             ExitCode::FAILURE
         }
@@ -286,6 +289,8 @@ struct Options {
     dump_audio: Option<String>,
     profile: bool,
     wall: Option<u64>,
+    /// Se o jogo pode falar com a rede. Ligada por padrão; o `--sem-rede` desliga.
+    network: bool,
 }
 
 fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
@@ -305,6 +310,7 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
         dump_audio,
         profile,
         wall,
+        network,
     } = options;
     // Um jogo em `.zip` é extraído para o cache e rodado de lá, como na interface.
     let extracted;
@@ -355,6 +361,7 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
     for (classe, slot, valor) in &probe_answers {
         machine.probe_answer(*classe, *slot, *valor);
     }
+    machine.set_network(network);
     if profile {
         machine.cpu_mut().enable_profile();
         machine.enable_api_profile();
@@ -489,6 +496,18 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
         );
         for url in &urls {
             println!("  {url}");
+        }
+    }
+    let resposta = machine.web_response();
+    if !resposta.is_empty() {
+        let texto = String::from_utf8_lossy(resposta);
+        println!("  resposta: {} bytes, {texto:?}", resposta.len());
+    }
+    let chaves = machine.cipher_keys();
+    if !chaves.is_empty() {
+        println!("cifra:     o jogo cifrou dados com");
+        for chave in &chaves {
+            println!("  {chave}");
         }
     }
     if let Some(fonte) = machine.font_source() {

@@ -22,6 +22,7 @@ use crate::loader::{self, LoadedModule};
 use crate::objects::ObjectStore;
 use crate::paltex;
 use crate::rasterizer::{self, GlState, Vertex};
+use crate::rede;
 use crate::vfs::Vfs;
 
 /// Teto para leitura de string do guest, contra ponteiro corrompido.
@@ -408,6 +409,16 @@ const AEECLSID_QEGL: u32 = 0x0103_d8ec;
 const AEECLSID_EGL: u32 = 0x0101_4bc4;
 /// `AEECLSID_WEB`, do `BMPIds.csv` do SDK: o cliente HTTP do BREW.
 const AEECLSID_WEB: u32 = 0x0100_5000;
+/// Até onde procurar o trio `{url, corpo, tamanho}` no objeto de quem pediu o envio.
+///
+/// O do Zeeboids está em `+0x244`; mil bytes cobrem folgadamente objetos desse tamanho sem sair
+/// varrendo a memória do jogo.
+const MAX_CAMPOS_DO_OBJETO: u32 = 256;
+
+/// Teto do corpo de uma requisição. O remetente do Zeeboids aloca 2 KB, que é o tamanho que ele
+/// mesmo se dá; este teto é generoso o bastante para não cortar nada real.
+const MAX_CORPO_ENVIADO: u32 = 1 << 16;
+
 /// Quantos toques o registro guarda. Suficiente para uma reprodução curta e pequeno o bastante
 /// para caber no relatório sem afogá-lo.
 const PAD_LOG_MAX: usize = 40;
@@ -1433,6 +1444,14 @@ pub struct Machine<C: CpuBackend> {
     ciphers: HashMap<u32, CipherState>,
     /// O par que o `SetHandler` do formulário raiz guardou, por objeto.
     root_forms: HashMap<u32, (u32, u32)>,
+    /// Se o emulador pode falar com a rede.
+    ///
+    /// Dar rede a um binário de origem externa é decisão de projeto, então ela é explícita e
+    /// aparece no relatório. Fica ligada porque é para isso que a pilha existe, e o `--sem-rede`
+    /// desliga.
+    network: bool,
+    /// O corpo da última resposta recebida.
+    web_response: Vec<u8>,
     /// Estado de cada `IHash` vivo.
     hashes: HashMap<u32, HashState>,
     resources: crate::resfile::ResCache,
@@ -1595,6 +1614,8 @@ impl<C: CpuBackend> Machine<C> {
             profiling_api: false,
             image_notify: HashMap::new(),
             root_forms: HashMap::new(),
+            network: true,
+            web_response: Vec::new(),
             streams: HashMap::new(),
             sounds: HashMap::new(),
             pending_calls: Vec::new(),
@@ -6122,9 +6143,79 @@ impl<C: CpuBackend> Machine<C> {
                 self.root_forms.insert(this, par);
                 SUCCESS
             }
+            // O slot 5 é o envio, e é o que faltava para a conexão acontecer.
+            //
+            // No firmware ele registra o par guardado pelo `SetHandler` e enfileira o trabalho
+            // no objeto interno. Aqui fazemos o trabalho na hora: `r1` e `r2` são o corpo e o
+            // tamanho, e a resposta volta no ponteiro de saída.
+            "slot5" => {
+                let (corpo, tamanho) = (self.cpu.read_reg(Reg::R1), self.cpu.read_reg(Reg::R2));
+                let saida = self.stack_arg(1)?;
+                self.send_request(corpo, tamanho, saida)?
+            }
             _ => SUCCESS,
         };
         Ok(Some(result))
+    }
+
+    /// Manda o corpo que o jogo entregou ao despachante e guarda a resposta.
+    ///
+    /// **Achar a URL é o passo delicado.** Ela não vem nos argumentos: fica no objeto do
+    /// `ConnectionManager` do jogo, que é quem nos chamou. Em vez de fixar um deslocamento — o
+    /// do Zeeboids é `+0x244`, e valeria só para ele —, procuramos no objeto o **trio**
+    /// `{url, corpo, tamanho}` cujas duas últimas palavras são exatamente os argumentos que
+    /// acabamos de receber. Isso se confere sozinho: um trio que case com o ponteiro e o
+    /// tamanho recebidos não é coincidência, e um que não case é descartado.
+    ///
+    /// O `r4` é do chamador — em ARM ele é preservado pela função chamada, então na fronteira da
+    /// chamada ainda guarda o objeto de quem chamou.
+    fn send_request(&mut self, corpo: u32, tamanho: u32, saida: u32) -> Result<u32, CpuError> {
+        let objeto = self.cpu.read_reg(Reg::R4);
+        let mut url = None;
+        for i in 0..MAX_CAMPOS_DO_OBJETO {
+            let base = objeto + i * 4;
+            if self.cpu.read_u32(base + 4) == Ok(corpo)
+                && self.cpu.read_u32(base + 8) == Ok(tamanho)
+                && let Ok(ponteiro) = self.cpu.read_u32(base)
+            {
+                let texto = self.cpu.read_cstring(ponteiro, MAX_STRING);
+                if texto.starts_with("http") {
+                    url = Some(texto);
+                    break;
+                }
+            }
+        }
+        let Some(url) = url else {
+            self.assumptions
+                .insert("um envio foi recusado: não achei a URL no objeto de quem chamou");
+            return Ok(EFAILED);
+        };
+
+        let dados = self.read_bytes(corpo, tamanho.min(MAX_CORPO_ENVIADO))?;
+        if !self.network {
+            self.web_requests
+                .insert(format!("{url} ({tamanho} bytes, rede desligada)"));
+            return Ok(EFAILED);
+        }
+        // A área de saída ainda não tem formato conhecido: o que o console punha ali se descobre
+        // vendo o jogo ler. Guardamos a resposta e deixamos o ponteiro como está, em vez de
+        // escrever um palpite de struct sobre a memória do jogo.
+        let _ = saida;
+        Ok(match rede::post(&url, &dados) {
+            Ok(resposta) => {
+                self.web_requests.insert(format!(
+                    "{url} -> {} ({} bytes de resposta)",
+                    resposta.status,
+                    resposta.corpo.len()
+                ));
+                self.web_response = resposta.corpo;
+                SUCCESS
+            }
+            Err(erro) => {
+                self.web_requests.insert(format!("{url} -> falhou: {erro}"));
+                EFAILED
+            }
+        })
     }
 
     fn collection_call(&mut self, slot: u32) -> Result<Option<u32>, CpuError> {
@@ -6317,6 +6408,32 @@ impl<C: CpuBackend> Machine<C> {
                     input::BUTTON_NAMES.get(index).copied().unwrap_or("?"),
                     down,
                 )
+            })
+            .collect()
+    }
+
+    /// Liga ou desliga o acesso à rede.
+    pub fn set_network(&mut self, ligada: bool) {
+        self.network = ligada;
+    }
+
+    /// O corpo da última resposta HTTP recebida.
+    pub fn web_response(&self) -> &[u8] {
+        &self.web_response
+    }
+
+    /// As chaves de cifra que os jogos configuraram, em hexadecimal.
+    ///
+    /// Existe por um motivo prático: o Zeeboids **cifra o corpo antes de enviar**, então o
+    /// servidor recebe ruído. A chave é do próprio jogo e passa por nós no `ICipher1::SetParam`;
+    /// sem ela, o registro do servidor não diz nada sobre o protocolo.
+    pub fn cipher_keys(&self) -> Vec<String> {
+        let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+        self.ciphers
+            .values()
+            .filter_map(|c| {
+                c.key
+                    .map(|k| format!("chave {} iv {}", hex(&k), hex(&c.iv)))
             })
             .collect()
     }
