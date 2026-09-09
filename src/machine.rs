@@ -957,6 +957,47 @@ struct DecodedImage {
     frame_width: u16,
 }
 
+/// Põe os quadros de um GIF lado a lado, numa imagem só.
+///
+/// É a forma que o resto do emulador já entende: uma imagem com `frame_width` menor que a
+/// largura é uma sequência, e o `IIMAGE_DrawFrame` escolhe a coluna. Dar caminho próprio à
+/// animação de GIF seria repetir o que o `IPARM_CXFRAME` já faz.
+fn tira_de_quadros(gif: &crate::gif::Gif) -> DecodedImage {
+    let (largura, altura) = (gif.largura as usize, gif.altura as usize);
+    let quadros = gif.quadros.len();
+    let total = largura * quadros * altura;
+    let mut pixels = vec![0u16; total];
+    let mut opaque = vec![false; total];
+    for (n, quadro) in gif.quadros.iter().enumerate() {
+        for y in 0..altura {
+            for x in 0..largura {
+                let cor = quadro[y * largura + x];
+                let onde = y * largura * quadros + n * largura + x;
+                pixels[onde] = Rgb {
+                    r: cor[0],
+                    g: cor[1],
+                    b: cor[2],
+                }
+                .to_rgb565();
+                // O alfa do GIF é binário: ou a cor é a transparente da paleta, ou não é.
+                opaque[onde] = cor[3] != 0;
+            }
+        }
+    }
+    DecodedImage {
+        width: (largura * quadros) as u32,
+        height: altura as u32,
+        pixels,
+        opaque,
+        // Um GIF de um quadro só não é sequência: dizer que é faria o `GetInfo` anunciar uma
+        // largura de quadro que o jogo não pediu.
+        frame_width: match quadros > 1 {
+            true => largura as u16,
+            false => 0,
+        },
+    }
+}
+
 /// Descomprime um bloco de deflate.
 ///
 /// A documentação do `IUnzipAStream` fala do "algoritmo deflate, o usado pelo gzip", e as duas
@@ -3060,6 +3101,9 @@ impl<C: CpuBackend> Machine<C> {
     fn decode_resource_image(&mut self, bytes: &[u8]) -> Option<DecodedImage> {
         if let Some(decoded) = decode_png(bytes) {
             return Some(decoded);
+        }
+        if let Some(gif) = crate::gif::decodifica(bytes) {
+            return Some(tira_de_quadros(&gif));
         }
         let image = crate::icon::decode(bytes).ok()?;
         let count = image.width * image.height;

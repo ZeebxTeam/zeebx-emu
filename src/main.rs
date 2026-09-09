@@ -14,6 +14,7 @@ mod display;
 mod fmath;
 mod font;
 mod gamepads;
+mod gif;
 mod gles;
 mod heap;
 mod i18n;
