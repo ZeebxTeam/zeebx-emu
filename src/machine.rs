@@ -2703,13 +2703,13 @@ impl<C: CpuBackend> Machine<C> {
                 Some(result) => result,
                 None => return Ok(None),
             },
-            // Nem a `0x01028e3c` nem a fonte têm estado ou método próprio: só a contagem.
-            (Interface::Classe28e3c, 0) | (Interface::Typeface, 0) => {
-                self.objects.add_ref(self.cpu.read_reg(Reg::R0))
-            }
-            (Interface::Classe28e3c, 1) | (Interface::Typeface, 1) => {
-                self.objects.release(self.cpu.read_reg(Reg::R0))
-            }
+            // A `0x01028e3c` não tem estado nem método próprio: só a contagem.
+            (Interface::Classe28e3c, 0) => self.objects.add_ref(self.cpu.read_reg(Reg::R0)),
+            (Interface::Classe28e3c, 1) => self.objects.release(self.cpu.read_reg(Reg::R0)),
+            (Interface::Typeface, _) => match self.typeface_call(slot)? {
+                Some(result) => result,
+                None => return Ok(None),
+            },
             (Interface::Vetor, _) => match self.vetor_call(slot)? {
                 Some(result) => result,
                 None => return Ok(None),
@@ -7022,6 +7022,51 @@ impl<C: CpuBackend> Machine<C> {
                 }
             }
             _ => OK,
+        };
+        Ok(Some(result))
+    }
+
+    /// Atende a fonte TrueType. Ver [`Interface::Typeface`].
+    ///
+    /// O único método com corpo é o slot 4, que a `0x7bfc8` chama assim:
+    /// `slot4(this, a, b, c, &saída)`, com a saída no **primeiro argumento de pilha** — os
+    /// quatro registradores já estão ocupados. Zero é sucesso, e o que sai é o objeto de fonte,
+    /// que o jogo entrega ao slot 9 de um contêiner e depois usa.
+    ///
+    /// Damos um widget. Não é palpite de conveniência: na extensão de interface do console tudo
+    /// que entra numa árvore de tela é widget, e o que o jogo faz com o objeto em seguida — um
+    /// `AddRef` e um slot 6 — é vocabulário de widget. Se ele pedir algo que um widget não tem,
+    /// o slot aparece no relatório, que é como o resto disto foi descoberto.
+    fn typeface_call(&mut self, slot: u32) -> Result<Option<u32>, CpuError> {
+        let Some(name) = Interface::Typeface.method(slot) else {
+            return Ok(None);
+        };
+        if aee::e_marcador(name) {
+            return Ok(None);
+        }
+        let this = self.cpu.read_reg(Reg::R0);
+        let result = match name {
+            "AddRef" => self.objects.add_ref(this),
+            "Release" => self.objects.release(this),
+            "CriarFonte" => {
+                let saida = self.stack_arg(0)?;
+                let fonte = self.new_object(Interface::Widget)?;
+                if fonte == 0 {
+                    return Ok(Some(ENOMEMORY));
+                }
+                self.widgets.insert(
+                    fonte,
+                    Widget {
+                        visivel: true,
+                        ..Widget::default()
+                    },
+                );
+                if saida != 0 {
+                    self.cpu.write_u32(saida, fonte)?;
+                }
+                SUCCESS
+            }
+            _ => SUCCESS,
         };
         Ok(Some(result))
     }

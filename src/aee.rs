@@ -452,7 +452,7 @@ impl Interface {
             Self::Classe28e3c => aee_slots::CLASSE_28E3C,
             Self::Cm => aee_slots::CM,
             Self::SystemCtl => aee_slots::SYSTEM_CTL,
-            Self::Typeface => aee_slots::CLASSE_28E3C,
+            Self::Typeface => aee_slots::TYPEFACE,
             Self::SimCardCtl => aee_slots::SIM_CARD_CTL,
             // A sonda não tem tabela: `method` responde por ela antes de chegar aqui.
             Self::Probe => &[],

@@ -951,6 +951,12 @@ pub const CM: &[&str] = &[
 /// [`crate::aee::Interface::Typeface`] usa a mesma tabela, pelo mesmo motivo.
 pub const CLASSE_28E3C: &[&str] = &["AddRef", "Release"];
 
+/// Métodos da fonte TrueType (`0x01035156`), dos quais conhecemos um.
+///
+/// O slot 4 é o que a `0x7bfc8` chama para obter uma fonte utilizável a partir do tipo. Ver
+/// [`crate::aee::Interface::Typeface`].
+pub const TYPEFACE: &[&str] = &["AddRef", "Release", "slot2", "slot3", "CriarFonte"];
+
 /// Métodos da lista genérica da Z-Wheel (`0x01028e35`).
 ///
 /// Ver [`crate::aee::Interface::Vetor`] para onde cada nome foi lido. Os seis sem nome nunca
