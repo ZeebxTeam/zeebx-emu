@@ -376,6 +376,34 @@ APPS, código que usa `0x01028e35` e as vizinhas — o console usa essas classes
 implementa em lugar nenhum que se possa achar. Procurar outro dump é apostar que o problema é de
 versão; a evidência aponta para uma camada que simplesmente não é despejada por este método.
 
+### Conferência independente: o `IFileMgr`
+
+O tripleoxygen tem, em `research/brew/`, um `IFILEMGR_VTBL_Z200.txt` e um `vtbl.ods` — trabalho de
+outra pessoa mapeando vtable do mesmo firmware. Vale como conferência de fora, e ela passou em
+duas frentes:
+
+- o endereço da vtable do `IFileMgr` que a nossa leitura corrigida encontra é `0x113e0438`, o
+  mesmo que está no arquivo deles;
+- os **vinte e um** nomes da nossa tabela `FILEMGR` batem, na ordem, com o `INHERIT_IFileMgr` do
+  cabeçalho do SDK que eles transcreveram — do `AddRef` ao `GetFreeSpaceEx`.
+
+Não é confirmação do que falta, mas é confirmação do **método**: ler vtable no firmware, do jeito
+que está no `firmware.py` hoje, dá o mesmo resultado que outra pessoa obteve por outro caminho.
+
+### O SDK do Zeebo não traz os cabeçalhos do BREW
+
+O `ZeeboSDKPackage-1.2.4.zip` (50 MB) tem o instalador do Zeebo, o do OpenGL ES, o Adreno
+Profiler, o driver USB, o guia do desenvolvedor e os exemplos — inclusive o fonte do `conftest`.
+**Nenhum cabeçalho `AEE*.h`**: o SDK do Zeebo se apoia no SDK do BREW da Qualcomm, que é instalado
+à parte e não está lá.
+
+O material de BREW da pasta `doc/` é da era 2 e 3 — os exemplos trazem `AEE.h`, `AEENTP.h`,
+`AEEAddrBookExt.h`, e nada do framework de widgets, que é do BREW 3.1 em diante. O
+`BREWOemAPIReferenceforMSM.pdf` também não menciona `IWidget` nenhuma vez.
+
+Ou seja: o que falta é o **SDK do BREW 4.x da Qualcomm**, com o `AEEWidget.h` e companhia. Não é
+material de Zeebo, é da Qualcomm, e não está neste acervo.
+
 ### O que se confirmou de graça: o `ICM`
 
 Com a leitura corrigida, o `AEECLSID_CM` (`0x01011810`) ganhou vtable de verdade — `0x10a5e1f0`,
