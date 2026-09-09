@@ -450,9 +450,14 @@ const MAX_CAMPOS_DO_OBJETO: u32 = 256;
 /// mesmo se dá; este teto é generoso o bastante para não cortar nada real.
 const MAX_CORPO_ENVIADO: u32 = 1 << 16;
 
-/// Quantos toques o registro guarda. Suficiente para uma reprodução curta e pequeno o bastante
-/// para caber no relatório sem afogá-lo.
-const PAD_LOG_MAX: usize = 40;
+/// Quantos toques o registro guarda.
+///
+/// Quarenta cobriam uma reprodução curta e não cobrem uma longa: navegar até a importação,
+/// digitar um ZID e uma senha passa disso com folga, e o que sobrava era a cauda — inútil para
+/// reproduzir, porque o começo é justamente o que leva o jogo ao estado certo. Com este limite,
+/// um registro vira um roteiro de `--keys` completo, e uma sessão de teste do usuário rende
+/// quantas repetições eu precisar aqui.
+const PAD_LOG_MAX: usize = 400;
 
 /// `0x01001011`, o formulário raiz. Não é do SDK: é do `widgets`/`forms` que o console
 /// carregava, e a definição está compilada dentro do `1.1.2_APPS.bin`.
