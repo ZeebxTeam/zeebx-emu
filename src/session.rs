@@ -72,6 +72,14 @@ pub enum Step {
 
 pub struct Session {
     machine: Machine<UnicornCpu>,
+    /// O applet criado e ainda **não** iniciado, com o ClassID dele.
+    ///
+    /// O `EVT_APP_START` é despachado na primeira volta do laço, não aqui. Rodá-lo dentro do
+    /// `start` fazia o jogo começar antes de existir janela e antes de haver saída de som: a
+    /// Z-Wheel toca o `sounds_loading.wav` na partida, e ele saía com a tela vazia — ou, depois
+    /// que o som passou a ser ligado só com a janela pronta, não saía de jeito nenhum, porque o
+    /// jogo já tinha tocado.
+    partida: Option<(u32, u32)>,
     /// A saída de som. Enquanto ela existe, o som toca; largá-la fecha o fluxo.
     audio: Option<crate::audio::Output>,
     title: String,
@@ -174,13 +182,6 @@ impl Session {
             AppletResult::Stopped(stop) => return Err(StartError::Stopped(stop)),
             AppletResult::NoModule => return Err(StartError::NoApplet),
         };
-        let started = machine
-            .start_applet(applet, clsid, INSTRUCTION_BUDGET)
-            .map_err(|e| StartError::NotLoadable(e.to_string()))?;
-        if !matches!(started, Outcome::Returned { .. }) {
-            return Err(StartError::Stopped(started));
-        }
-
         let clock_base = u64::from(machine.clock_ms());
         let window = Marca {
             real: Instant::now(),
@@ -190,6 +191,7 @@ impl Session {
         };
         Ok(Self {
             machine,
+            partida: Some((applet, clsid)),
             audio: None,
             title: library::title_for(path),
             started: Instant::now(),
@@ -228,6 +230,22 @@ impl Session {
 
     /// Uma volta do laço de eventos. `Some` quando há desfecho, `None` para continuar.
     fn advance_once(&mut self) -> Option<Step> {
+        // A partida do jogo é a primeira coisa desta volta, e não do `start`: assim ela
+        // acontece com a janela já na tela e o som já ligado.
+        if let Some((applet, clsid)) = self.partida.take() {
+            let started = match self.machine.start_applet(applet, clsid, INSTRUCTION_BUDGET) {
+                Ok(started) => started,
+                Err(_) => {
+                    self.stopped = Some(Outcome::Exception { pc: 0 });
+                    return Some(Step::Stopped);
+                }
+            };
+            if !matches!(started, Outcome::Returned { .. } | Outcome::Budget) {
+                self.stopped = Some(started);
+                return Some(Step::Stopped);
+            }
+        }
+
         let outcomes = match self.machine.advance(INSTRUCTION_BUDGET) {
             Ok(outcomes) => outcomes,
             Err(err) => {
