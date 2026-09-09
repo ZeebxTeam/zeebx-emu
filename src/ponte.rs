@@ -52,6 +52,13 @@ pub struct Ponte {
     /// Assinatura observada: `(tamanho, 0, linha, arquivo, 1)` — os dois últimos são rastreio de
     /// origem, que ele guarda para os relatórios dele.
     pub alocador: u32,
+    /// O parser de resposta do jogo: `(objeto, pedaço)`.
+    ///
+    /// Ele anexa o pedaço ao texto que o objeto guarda em `+0x20` e fatia nos `;`, preenchendo o
+    /// vetor de campos com memória dele e ligando as marcas que o consumidor espera. É o que o
+    /// despachante do console chamava, e usá-lo é melhor do que reproduzi-lo: não há formato
+    /// para acertar nem marca para adivinhar.
+    pub parser: u32,
     /// O `free` do mesmo gerenciador, para devolver o que substituímos.
     ///
     /// Ele varre a tabela de pools perguntando a cada um se o ponteiro é dele, e recusa o que
@@ -74,6 +81,7 @@ pub fn para(clsid: u32) -> Option<Ponte> {
     match clsid {
         ZEEBOIDS => Some(Ponte {
             alocador: 0x0006_d440,
+            parser: 0x0008_5d18,
             liberador: 0x0006_d694,
             origem: 0x000a_8648,
         }),

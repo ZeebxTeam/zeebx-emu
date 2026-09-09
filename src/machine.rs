@@ -414,13 +414,8 @@ const AEECLSID_WEB: u32 = 0x0100_5000;
 const PLAINTEXT_MAX: usize = 8;
 const PLAINTEXT_BYTES: usize = 512;
 
-/// O maior modo de leitura que o iterador em `0xa583c` reconhece: ele testa 1, 2 e 3, e o resto
-/// cai no leitor padrão. Serve de conferência de que estamos olhando o campo certo.
-const MAX_TIPO_DE_CAMPO: u32 = 3;
-
-/// Teto de campos que aceitamos entregar. A capacidade observada é oito; um valor muito maior
-/// quer dizer que lemos o campo errado, e é melhor não escrever nada.
-const MAX_CAMPOS_DA_RESPOSTA: u32 = 256;
+/// Onde o objeto de resposta guarda o texto que vai fatiar, visto no parser em `0x85d18`.
+const TEXTO_DA_RESPOSTA: u32 = 0x20;
 
 /// Teto de instruções para uma chamada pela ponte. O alocador é uma função curta.
 const PONTE_BUDGET: u64 = 5_000_000;
@@ -6346,86 +6341,57 @@ impl<C: CpuBackend> Machine<C> {
         if self.web_response.is_empty() {
             return Ok(());
         }
-        let texto = String::from_utf8_lossy(&self.web_response).to_string();
-        let campos: Vec<String> = texto
+        let texto = String::from_utf8_lossy(&self.web_response)
             .trim_end_matches(['\r', '\n', '\0'])
-            .split(';')
-            .map(str::to_owned)
-            .collect();
+            .to_string();
 
-        // O objeto é um desserializador: contagem em `+8`, vetor em `+4`, capacidade em `+0xc`,
-        // cursor em `+0x28` e o tipo do próximo campo em `+0x2c` (visto no iterador `0xa583c`).
+        // Quem fatia é o jogo. O parser dele lê o texto de `+0x20`, anexa o pedaço que recebe e
+        // divide nos `;`, preenchendo o vetor com memória do próprio alocador e ligando as
+        // marcas que o consumidor espera — inclusive a de "li o que precisava", que era o que
+        // faltava. Reproduzir isso à mão foi o erro anterior: entregávamos campos que ele nunca
+        // reconhecia como completos, e o jogo ficava esperando para sempre.
         //
-        // Contagem e cursor têm de estar zerados: o remetente acabou de chamar o `Reset`, e se
-        // não estiverem este não é o objeto que pensamos. **O tipo, não** — ele é o modo de
-        // leitura do próximo campo, e o consumidor pode tê-lo ajustado antes de a resposta
-        // chegar. Exigir zero dele recusava o `import`, que chega com `tipo=1`. O que ele
-        // precisa é ser um dos modos que o iterador conhece.
+        // Então damos só o texto, no lugar onde ele o procura, e mandamos fatiar.
         let resposta = self.cpu.read_u32(objeto + 8)?;
-        let (vetor, capacidade) = (
-            self.cpu.read_u32(resposta + 4)?,
-            self.cpu.read_u32(resposta + 0xc)?,
-        );
-        let (contagem, cursor, tipo) = (
-            self.cpu.read_u32(resposta + 8)?,
-            self.cpu.read_u32(resposta + 0x28)?,
-            self.cpu.read_u32(resposta + 0x2c)?,
-        );
-        let parece_o_esperado = vetor != 0
-            && capacidade > 0
-            && campos.len() as u32 <= MAX_CAMPOS_DA_RESPOSTA
-            && (contagem, cursor) == (0, 0)
-            && tipo <= MAX_TIPO_DE_CAMPO;
-        if !parece_o_esperado {
-            // A recusa vai com os números. Sem eles, "não parecia o desserializador" manda quem
-            // lê adivinhar qual condição falhou, e cada palpite custa uma sessão de teste.
-            self.delivered.push(format!(
-                "recusado: objeto={resposta:#x} vetor={vetor:#x} capacidade={capacidade} \
-                 contagem={contagem} cursor={cursor} tipo={tipo} campos={}",
-                campos.len()
-            ));
+        if resposta == 0 {
+            self.delivered
+                .push("recusado: o objeto de resposta não existe".to_string());
             return Ok(());
         }
-
-        // O vetor do jogo nasce pequeno — capacidade oito — e uma resposta de `import` traz
-        // dezenas de campos. Crescer é o que o próprio `ttdArray` faria: pedir um vetor maior ao
-        // alocador, copiar, e devolver o antigo. Fazemos os três, com as funções dele.
-        let vetor = match capacidade < campos.len() as u32 {
-            false => vetor,
-            true => {
-                let bytes = campos.len() as u32 * 4;
-                let novo = self.alocar_no_jogo(ponte, bytes)?;
-                if novo == 0 {
-                    self.assumptions
-                        .insert("a resposta não foi entregue: não deu para crescer o vetor");
-                    return Ok(());
-                }
-                self.call_guest_with_stack(ponte.liberador, [vetor, 0, 0, 0], &[], PONTE_BUDGET)?;
-                self.cpu.write_u32(resposta + 4, novo)?;
-                self.cpu.write_u32(resposta + 0xc, campos.len() as u32)?;
-                novo
-            }
-        };
-
-        for (i, campo) in campos.iter().enumerate() {
-            let bytes = campo.as_bytes();
-            let endereco = self.alocar_no_jogo(ponte, bytes.len() as u32 + 1)?;
-            if endereco == 0 {
-                return Ok(());
-            }
-            self.cpu.write_mem(endereco, bytes)?;
-            self.cpu.write_mem(endereco + bytes.len() as u32, &[0])?;
-            self.cpu.write_u32(vetor + i as u32 * 4, endereco)?;
+        let bytes = texto.as_bytes();
+        let buffer = self.alocar_no_jogo(ponte, bytes.len() as u32 + 1)?;
+        if buffer == 0 {
+            return Ok(());
         }
-        self.cpu.write_u32(resposta + 8, campos.len() as u32)?;
-        // O relatório precisa distinguir "não entreguei" de "entreguei e ele não gostou": sem
-        // isso, um jogo parado depois de uma resposta não diz de que lado está o problema.
-        self.delivered
-            .push(format!("entregue: {} campo(s): {texto:?}", campos.len()));
+        self.cpu.write_mem(buffer, bytes)?;
+        self.cpu.write_mem(buffer + bytes.len() as u32, &[0])?;
+
+        // O que já estivesse ali é devolvido ao alocador, senão vaza.
+        let anterior = self.cpu.read_u32(resposta + TEXTO_DA_RESPOSTA)?;
+        if anterior != 0 {
+            self.call_guest_with_stack(ponte.liberador, [anterior, 0, 0, 0], &[], PONTE_BUDGET)?;
+        }
+        self.cpu.write_u32(resposta + TEXTO_DA_RESPOSTA, buffer)?;
+
+        // O segundo argumento do parser é o pedaço a anexar. O texto inteiro já está no lugar,
+        // então vai uma string vazia.
+        let vazio = self.alocar_no_jogo(ponte, 1)?;
+        if vazio == 0 {
+            return Ok(());
+        }
+        self.cpu.write_mem(vazio, &[0])?;
+        self.call_guest_with_stack(ponte.parser, [resposta, vazio, 0, 0], &[], PONTE_BUDGET)?;
+
         // A marca de "chegou dado novo". O tratador em `0x85b5c` só interpreta o campo 0 quando
-        // ela está ligada, e a apaga logo depois (`strb r6, [r4, #0x18]`) — é uma bandeira de
-        // uma via. No console quem a ligava era o despachante, ao depositar a resposta.
+        // ela está ligada, e a apaga logo depois — é bandeira de uma via, e no console quem a
+        // ligava era o despachante.
         self.cpu.write_mem(resposta + 0x18, &[1])?;
+
+        let campos = self.cpu.read_u32(resposta + 8).unwrap_or(0);
+        self.delivered.push(format!(
+            "entregue ao parser do jogo: {} bytes, {campos} campo(s) reconhecido(s)",
+            bytes.len()
+        ));
         Ok(())
     }
 
