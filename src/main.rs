@@ -609,6 +609,12 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
     if !played.is_empty() {
         println!("callbacks: {} entregue(s)", played.len());
     }
+    if !machine.missing_apis().is_empty() {
+        println!("APIs que faltaram:");
+        for nota in machine.missing_apis() {
+            println!("  {nota}");
+        }
+    }
     if !machine.missing_files().is_empty() {
         println!("arquivos não encontrados:");
         for name in machine.missing_files() {

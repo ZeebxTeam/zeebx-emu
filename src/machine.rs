@@ -1656,6 +1656,8 @@ pub struct Machine<C: CpuBackend> {
     config_items: HashMap<u32, HashMap<u32, Vec<u8>>>,
     /// O estado de cada widget vivo. Ver [`Widget`].
     widgets: HashMap<u32, Widget>,
+    /// As APIs que faltaram, com quem as chamou. Ver o `None` do despacho.
+    missing_apis: BTreeSet<String>,
     /// Chamadas de GL atendidas com sucesso sem fazer nada.
     ignored_gl: BTreeSet<&'static str>,
     /// O que o jogo entregou ao `ICipher1`, em claro, antes de ser cifrado.
@@ -1865,6 +1867,7 @@ impl<C: CpuBackend> Machine<C> {
             pending_end: None,
             delivered: Vec::new(),
             plaintexts: std::collections::VecDeque::new(),
+            missing_apis: BTreeSet::new(),
             ignored_gl: BTreeSet::new(),
             web_response: Vec::new(),
             streams: HashMap::new(),
@@ -2283,10 +2286,19 @@ impl<C: CpuBackend> Machine<C> {
                         self.run_pending_callbacks(budget)?;
                     }
                     None => {
+                        // Registrar aqui, e não só onde o desfecho é lido, porque nem todo
+                        // desfecho é lido: uma API que falta **dentro de um retorno de
+                        // chamada** aborta aquela chamada e a execução segue, sem deixar
+                        // rastro. Foi assim que o slot 12 do widget passou despercebido — a
+                        // Z-Wheel montava a tela inteira, morria calada no retorno da imagem, e
+                        // o relatório saía limpo.
+                        let caller = self.cpu.read_reg(Reg::Lr);
+                        self.missing_apis
+                            .insert(format!("{} (de {caller:#010x})", aee::describe(addr)));
                         return Ok(Outcome::Unimplemented {
                             addr,
                             args: self.args(),
-                            caller: self.cpu.read_reg(Reg::Lr),
+                            caller,
                         });
                     }
                 },
@@ -10265,6 +10277,11 @@ impl<C: CpuBackend> Machine<C> {
 
     pub fn module(&self) -> &LoadedModule {
         &self.module
+    }
+
+    /// As APIs que faltaram durante a execução, inclusive dentro de retornos de chamada.
+    pub fn missing_apis(&self) -> Vec<String> {
+        self.missing_apis.iter().cloned().collect()
     }
 
     /// ClassIDs pedidos que ainda não sabemos instanciar.

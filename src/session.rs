@@ -352,6 +352,11 @@ impl Session {
             linhas.push("— classes que o jogo pediu e não temos —".to_string());
             linhas.extend(classes.iter().map(|id| format!("  {id:#010x}")));
         }
+        let apis = self.machine.missing_apis();
+        if !apis.is_empty() {
+            linhas.push("— APIs que faltaram —".to_string());
+            linhas.extend(apis.iter().map(|nota| format!("  {nota}")));
+        }
         let arquivos = self.machine.missing_files();
         if !arquivos.is_empty() {
             linhas.push("— arquivos não encontrados —".to_string());
