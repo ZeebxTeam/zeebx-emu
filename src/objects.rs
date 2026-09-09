@@ -18,6 +18,19 @@ const OBJECT_STRIDE: u32 = 64;
 pub struct ObjectStore {
     end: u32,
     next: u32,
+    /// Endereços que já foram soltos e podem ser reusados.
+    ///
+    /// Sem isto a região de objetos é um bloco que só anda para a frente: são 64 KB a 64 bytes
+    /// cada, mil e vinte e quatro objetos, e acabou. Um jogo que crie e solte objetos em laço
+    /// esgota isso em segundos — a Z-Wheel, repetindo a abertura em modo de atração, ficava sem
+    /// e a partir daí **tudo** falhava: `Unable to create vector model`, formulários com erro 3,
+    /// e o jogo girando para sempre porque nada mais podia ser criado.
+    ///
+    /// Reusar é o que um alocador faz. O ponteiro solto que o jogo guardou por engano passa a
+    /// apontar para outro objeto em vez de para lixo — o que é pior de depurar, sim, mas é
+    /// exatamente o que acontece no console, e o contrário é um teto que nenhum jogo longo
+    /// respeita.
+    livres: Vec<u32>,
     /// Interface de cada objeto vivo, indexada pelo ponteiro no guest.
     kinds: HashMap<u32, Interface>,
     /// Contagem de referências, para responder `AddRef`/`Release` com honestidade.
@@ -29,6 +42,7 @@ impl ObjectStore {
         Self {
             end: base + size as u32,
             next: base,
+            livres: Vec::new(),
             kinds: HashMap::new(),
             refs: HashMap::new(),
         }
@@ -36,11 +50,17 @@ impl ObjectStore {
 
     /// Reserva o endereço de um novo objeto. Quem chama grava o ponteiro de vtable.
     pub fn create(&mut self, iface: Interface) -> Option<u32> {
-        let addr = self.next;
-        if addr.checked_add(OBJECT_STRIDE)? > self.end {
-            return None;
-        }
-        self.next = addr + OBJECT_STRIDE;
+        let addr = match self.livres.pop() {
+            Some(reusado) => reusado,
+            None => {
+                let addr = self.next;
+                if addr.checked_add(OBJECT_STRIDE)? > self.end {
+                    return None;
+                }
+                self.next = addr + OBJECT_STRIDE;
+                addr
+            }
+        };
         self.kinds.insert(addr, iface);
         self.refs.insert(addr, 1);
         Some(addr)
@@ -75,12 +95,25 @@ impl ObjectStore {
         if remaining == 0 {
             self.refs.remove(&addr);
             self.kinds.remove(&addr);
+            self.livres.push(addr);
         }
         remaining
     }
 
     pub fn live_count(&self) -> usize {
         self.kinds.len()
+    }
+
+    /// Quantos objetos cabem ao todo, e quantos já foram usados alguma vez.
+    ///
+    /// Serve ao relatório: um jogo que chegue perto do teto está vazando referência, e sem este
+    /// número isso aparece como "uma classe qualquer parou de ser criada".
+    pub fn capacity(&self) -> (usize, usize) {
+        let stride = OBJECT_STRIDE as usize;
+        let total = (self.end as usize).saturating_sub(self.next as usize) / stride
+            + self.kinds.len()
+            + self.livres.len();
+        (self.kinds.len(), total)
     }
 }
 
@@ -110,6 +143,31 @@ mod tests {
             None,
             "objeto some quando a contagem zera"
         );
+    }
+
+    #[test]
+    /// Soltar devolve o endereço ao alocador. Sem isso a região de objetos é um teto de mil e
+    /// vinte e quatro criações para a execução inteira, e um jogo que cria e solta em laço para
+    /// de conseguir criar qualquer coisa.
+    fn o_endereco_solto_volta_a_ser_usado() {
+        let mut loja = ObjectStore::new(0x3000_0000, 0x10000);
+        let primeiro = loja.create(Interface::Widget).expect("cabe");
+        let segundo = loja.create(Interface::Widget).expect("cabe");
+        assert_ne!(primeiro, segundo);
+        assert_eq!(loja.release(primeiro), 0);
+        assert_eq!(loja.create(Interface::Widget), Some(primeiro));
+    }
+
+    #[test]
+    /// O teto existe, mas é o de objetos **vivos**, não o de criações. Criar e soltar num laço
+    /// tem de poder seguir para sempre.
+    fn criar_e_soltar_em_laco_nao_esgota() {
+        let mut loja = ObjectStore::new(0x3000_0000, 0x400);
+        for _ in 0..10_000 {
+            let objeto = loja.create(Interface::Widget).expect("sempre cabe um de cada vez");
+            loja.release(objeto);
+        }
+        assert_eq!(loja.live_count(), 0);
     }
 
     #[test]

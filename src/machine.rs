@@ -6954,8 +6954,16 @@ impl<C: CpuBackend> Machine<C> {
             // `slot7(this, &{largura, altura})`, visto em `0x11c90` com `640 × 480` — a tela
             // inteira. O jogo ignora o retorno: a instrução seguinte já sobrescreve `r0`.
             "DefinirTamanho" => {
+                // O ponteiro nem sempre é ponteiro. Quando a árvore de widgets fica grande, o
+                // jogo chama este slot com `r1` apontando para fora do mapa, e ler dali derruba
+                // o núcleo ARM — apareceu como `READ_UNMAPPED` no relatório da interface.
+                // Ignorar o que não dá para ler é o certo: um tamanho que não veio é um tamanho
+                // que não muda.
                 let par = self.cpu.read_reg(Reg::R1);
-                let tamanho = (self.cpu.read_u32(par)?, self.cpu.read_u32(par + 4)?);
+                let tamanho = match (self.cpu.read_u32(par), self.cpu.read_u32(par + 4)) {
+                    (Ok(largura), Ok(altura)) => (largura, altura),
+                    _ => return Ok(Some(EBADPARM)),
+                };
                 if let Some(widget) = self.widgets.get_mut(&this) {
                     widget.tamanho = tamanho;
                 }
