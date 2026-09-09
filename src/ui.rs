@@ -86,6 +86,8 @@ const REPOSITORY: &str = "https://github.com/ZeebxTeam/zeebx-emu";
 const DISCORD: &str = "https://discord.gg/D96HjsKTPa";
 
 pub struct App {
+    /// Qual porta a tela de controles está editando. Ver [`crate::input::PORTAS`].
+    porta_editada: usize,
     catalog: Catalog,
     settings: Settings,
     tab: Tab,
@@ -165,6 +167,7 @@ impl App {
             log_status: None,
             log_dismissed: false,
             gamepads: gamepads::Gamepads::default(),
+            porta_editada: 0,
             capturing: None,
             // Um desenho que não abre não pode impedir as configurações de abrir.
             art: PadArt::builtin()
@@ -194,6 +197,21 @@ impl App {
             .unwrap_or_default();
     }
 
+    /// O que o console vê em cada porta, a partir do que está configurado.
+    ///
+    /// Uma porta desligada vira `None` e some da enumeração. É o que faz o jogo enxergar um
+    /// controle, dois, ou um teclado — e é o mesmo caminho que responde ao
+    /// `IHID::GetConnectedDevices`.
+    fn portas_configuradas(&self) -> [Option<crate::bindings::Aparelho>; crate::input::PORTAS] {
+        std::array::from_fn(|porta| {
+            self.settings
+                .controls
+                .player(porta)
+                .filter(|jogador| jogador.ligada)
+                .map(|jogador| jogador.aparelho)
+        })
+    }
+
     fn save(&self) {
         if let Err(err) = self.settings.save() {
             eprintln!("não deu para guardar as configurações: {err}");
@@ -212,6 +230,7 @@ impl App {
                 if let Some(err) = session.set_audio(audio.enabled, audio.volume) {
                     eprintln!("sem som: {err}");
                 }
+                session.set_portas(self.portas_configuradas());
                 self.session = Some(session);
             }
             Err(err) => {
@@ -340,6 +359,12 @@ impl App {
         };
         if changed {
             self.save();
+            // Mexer nas portas com um jogo aberto vale na hora. Guardar e só aplicar na próxima
+            // partida seria a configuração parecer que não pegou.
+            let portas = self.portas_configuradas();
+            if let Some(session) = &mut self.session {
+                session.set_portas(portas);
+            }
         }
     }
 
@@ -411,13 +436,74 @@ impl App {
         changed
     }
 
+    /// A escolha da porta, se ela está ligada e o que o console vê nela.
+    ///
+    /// As duas USB do console são portas de verdade aqui: cada uma tem o seu mapeamento e o seu
+    /// aparelho, e o que está ligado é o que o `GetConnectedDevices` enumera.
+    fn port_picker(&mut self, ui: &mut egui::Ui) -> bool {
+        use crate::bindings::Aparelho;
+
+        let mut changed = false;
+        ui.horizontal(|ui| {
+            ui.label(self.catalog.get("controls.port"));
+            for porta in 0..crate::input::PORTAS {
+                let rotulo = self
+                    .catalog
+                    .get("controls.port.n")
+                    .replace("{n}", &(porta + 1).to_string());
+                if ui
+                    .selectable_label(self.porta_editada == porta, rotulo)
+                    .clicked()
+                {
+                    self.porta_editada = porta;
+                    // Deixar a captura aberta ao trocar de porta mapearia a próxima tecla no
+                    // botão da porta anterior.
+                    self.capturing = None;
+                }
+            }
+        });
+
+        let porta = self.porta_editada;
+        let jogador = self.settings.controls.player_mut(porta);
+        ui.horizontal(|ui| {
+            if ui
+                .checkbox(&mut jogador.ligada, self.catalog.get("controls.port.on"))
+                .changed()
+            {
+                changed = true;
+            }
+            ui.add_enabled_ui(jogador.ligada, |ui| {
+                ui.separator();
+                ui.label(self.catalog.get("controls.kind"));
+                for (aparelho, chave) in [
+                    (Aparelho::Controle, "controls.kind.pad"),
+                    (Aparelho::Teclado, "controls.kind.keyboard"),
+                ] {
+                    if ui
+                        .selectable_label(jogador.aparelho == aparelho, self.catalog.get(chave))
+                        .clicked()
+                        && jogador.aparelho != aparelho
+                    {
+                        jogador.aparelho = aparelho;
+                        changed = true;
+                    }
+                }
+            });
+        });
+        if self.settings.controls.player_mut(porta).aparelho == Aparelho::Teclado {
+            ui.weak(self.catalog.get("controls.kind.hint"));
+        }
+        ui.add_space(8.0);
+        changed
+    }
+
     /// O desenho do controle. Devolve o botão clicado.
     ///
     /// Ele acende o que está apertado agora, e é por isso que vale mais que a lista: um
     /// direcional que fica aceso sem ninguém encostar no controle mostra na hora um problema
     /// que a lista de texto esconderia.
     fn controller_view(&mut self, ui: &mut egui::Ui) -> Option<String> {
-        let pad = self.pad_now(ui.ctx());
+        let pad = self.pad_of(ui.ctx(), self.porta_editada);
         let capturing = self.capturing.clone();
         // Os campos saem separados porque as texturas são criadas a partir do desenho, e pedir
         // os dois pelo `self` de uma vez seria um empréstimo mutável em cima de um imutável.
@@ -431,8 +517,21 @@ impl App {
 
     fn controls_tab(&mut self, ui: &mut egui::Ui) -> bool {
         let mut changed = false;
+        changed |= self.port_picker(ui);
         ui.weak(self.catalog.get("controls.hint"));
         ui.add_space(8.0);
+
+        // Uma porta livre não tem o que configurar, e mostrar o desenho do controle nela seria
+        // convidar a mapear um aparelho que o console não vai enumerar.
+        if !self
+            .settings
+            .controls
+            .player(self.porta_editada)
+            .is_some_and(|jogador| jogador.ligada)
+        {
+            ui.weak(self.catalog.get("controls.port.off_hint"));
+            return changed;
+        }
 
         if let Some(button) = self.controller_view(ui) {
             // Clicar na peça é o mesmo que clicar em "Atribuir" na linha dela.
@@ -457,7 +556,7 @@ impl App {
             let current = self
                 .settings
                 .controls
-                .player(0)
+                .player(self.porta_editada)
                 .and_then(|player| player.device.clone())
                 .unwrap_or_else(|| self.catalog.get("controls.device.none").to_string());
             let mut chosen: Option<Option<String>> = None;
@@ -480,10 +579,17 @@ impl App {
                 // Escolher um controle traz o mapeamento típico dele junto; ficar sem controle
                 // volta para o teclado puro. Nos dois casos o que estava configurado à mão se
                 // perde, e é por isso que a troca é um clique deliberado numa lista.
-                *self.settings.controls.player_mut(0) = match device {
+                // Trocar o controle troca **o mapeamento**, não a porta: quem ela é e se está
+                // ligada foi decidido acima, e perder isso aqui seria a configuração se desfazer
+                // sozinha ao escolher um aparelho na lista.
+                let atual = self.settings.controls.player_mut(self.porta_editada);
+                let (ligada, aparelho) = (atual.ligada, atual.aparelho);
+                *atual = match device {
                     Some(name) => crate::bindings::Player::with_gamepad(name),
                     None => crate::bindings::Player::default(),
                 };
+                atual.ligada = ligada;
+                atual.aparelho = aparelho;
                 changed = true;
             }
             if ui.button(self.catalog.get("controls.rescan")).clicked() {
@@ -500,9 +606,9 @@ impl App {
                 let device = self
                     .settings
                     .controls
-                    .player(0)
+                    .player(self.porta_editada)
                     .and_then(|player| player.device.clone());
-                *self.settings.controls.player_mut(0) = match device {
+                *self.settings.controls.player_mut(self.porta_editada) = match device {
                     Some(name) => crate::bindings::Player::with_gamepad(name),
                     None => crate::bindings::Player::default(),
                 };
@@ -523,7 +629,7 @@ impl App {
                     let sources = self
                         .settings
                         .controls
-                        .player(0)
+                        .player(self.porta_editada)
                         .map(|player| player.sources(button))
                         .unwrap_or(&[]);
                     let text = match sources.is_empty() {
@@ -561,7 +667,7 @@ impl App {
             };
         }
         if let Some(button) = clear {
-            self.settings.controls.player_mut(0).clear(&button);
+            self.settings.controls.player_mut(self.porta_editada).clear(&button);
             changed = true;
         }
 
@@ -584,7 +690,7 @@ impl App {
 
         // O valor de cada eixo, ao vivo. Um manche que não chega ao emulador aparece aqui como
         // um zero teimoso, e é o que separa "não mapeado" de "mapeado no eixo errado".
-        let pad = self.pad_now(ui.ctx());
+        let pad = self.pad_of(ui.ctx(), self.porta_editada);
         ui.horizontal(|ui| {
             for (name, value) in crate::input::AXIS_NAMES.iter().zip(pad.axes) {
                 let share = value as f32 / crate::input::AXIS_MAX as f32;
@@ -598,7 +704,7 @@ impl App {
             .iter()
             .map(|axis| self.catalog.get(&format!("axis.{axis}")).to_string())
             .collect();
-        let player = self.settings.controls.player_mut(0);
+        let player = self.settings.controls.player_mut(self.porta_editada);
         egui::Grid::new("eixos").num_columns(3).show(ui, |ui| {
             for (axis, label) in crate::input::AXIS_NAMES.iter().zip(&labels) {
                 ui.label(label);
@@ -675,7 +781,7 @@ impl App {
                 let device = self
                     .settings
                     .controls
-                    .player(0)
+                    .player(self.porta_editada)
                     .and_then(|player| player.device.clone());
                 self.gamepads.first_active(device.as_deref())
             }
@@ -683,7 +789,7 @@ impl App {
         let Some(source) = source else {
             return false;
         };
-        self.settings.controls.player_mut(0).bind(&button, source);
+        self.settings.controls.player_mut(self.porta_editada).bind(&button, source);
         self.capturing = None;
         true
     }
@@ -945,13 +1051,30 @@ impl App {
         }
     }
 
-    /// O estado do controle agora, montado a partir do mapeamento do jogador.
+    /// O estado de cada porta agora, montado a partir do mapeamento dela.
+    ///
+    /// Uma porta desligada não entra: o que sai daqui são os pares `(porta, controle)` das que
+    /// estão ligadas, e é o que a sessão entrega ao jogo.
+    fn pads_now(&mut self, ctx: &egui::Context) -> Vec<(usize, Pad)> {
+        self.gamepads.poll();
+        let portas: Vec<usize> = self
+            .settings
+            .controls
+            .ligadas()
+            .map(|(indice, _)| indice)
+            .collect();
+        portas
+            .into_iter()
+            .map(|porta| (porta, self.pad_of(ctx, porta)))
+            .collect()
+    }
+
+    /// O estado do controle de uma porta, montado a partir do mapeamento dela.
     ///
     /// O teclado e o controle são consultados juntos: quem tem os dois pode usar os dois, e é
     /// isso que ter mais de uma origem por botão significa.
-    fn pad_now(&mut self, ctx: &egui::Context) -> Pad {
-        self.gamepads.poll();
-        let Some(player) = self.settings.controls.player(0) else {
+    fn pad_of(&self, ctx: &egui::Context, porta: usize) -> Pad {
+        let Some(player) = self.settings.controls.player(porta) else {
             return Pad::default();
         };
         let device = player.device.clone();
@@ -988,16 +1111,18 @@ impl App {
         }
         // A entrada é lida antes de pegar a sessão emprestada: montar o estado do controle
         // precisa do mapeamento e dos controles ligados, que também vivem no `self`.
-        let pad = match self.paused {
+        let pads = match self.paused {
             true => None,
-            false => Some(self.pad_now(ctx)),
+            false => Some(self.pads_now(ctx)),
         };
         let limit = self.settings.graphics.speed_limit;
         let Some(session) = &mut self.session else {
             return true;
         };
-        if let Some(pad) = pad {
-            session.set_pad(pad);
+        if let Some(pads) = pads {
+            for (porta, pad) in pads {
+                session.set_port_pad(porta, pad);
+            }
             // O orçamento é o tempo real que passou desde o quadro anterior.
             let now = std::time::Instant::now();
             let slice = (now - self.last_step).min(MAX_SLICE);

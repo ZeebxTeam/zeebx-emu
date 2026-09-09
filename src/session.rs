@@ -414,8 +414,17 @@ impl Session {
         }
     }
 
-    pub fn set_pad(&mut self, pad: Pad) {
-        self.machine.set_pad(pad);
+    /// O controle de uma porta.
+    pub fn set_port_pad(&mut self, porta: usize, pad: Pad) {
+        self.machine.set_port_pad(porta, pad);
+    }
+
+    /// Diz que aparelho o console vê em cada porta.
+    pub fn set_portas(
+        &mut self,
+        portas: [Option<crate::bindings::Aparelho>; crate::input::PORTAS],
+    ) {
+        self.machine.set_portas(portas);
     }
 
     /// A tela, como está agora.

@@ -5,6 +5,12 @@
 //! `AEEHIDDevice_Joystick.h` do SDK do Zeebo. O jogo identifica cada botão pelo UID, não pelo
 //! índice, então o que precisa estar certo é a tabela.
 
+/// Quantas portas de entrada o console tem.
+///
+/// São as duas USB da frente do aparelho. Não é número escolhido: o `GetConnectedDevices` da
+/// Z-Wheel passa **dois** como tamanho do vetor de saída, nas duas vezes em que o chama.
+pub const PORTAS: usize = 2;
+
 /// Quantos botões o controle tem.
 pub const BUTTONS: usize = 18;
 

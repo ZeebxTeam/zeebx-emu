@@ -301,13 +301,27 @@ fn to_rgbval(color: Rgb) -> u32 {
 /// Game Pad".
 const GAMEPAD_VENDOR_ID: u16 = 0x1eaa;
 const GAMEPAD_PRODUCT_ID: u16 = 0x0135;
-/// Identificador do controle na enumeração. Um só, sempre conectado.
-const GAMEPAD_HANDLE: u32 = 1;
+/// Identificador de uma porta na enumeração: `1` e `2`, na ordem das portas.
+///
+/// O `CreateDevice` recebe este número de volta, e é por ele que sabemos de qual porta o
+/// aparelho que o jogo acabou de criar vai ler.
+const fn handle_da_porta(porta: usize) -> u32 {
+    porta as u32 + 1
+}
 const HID_TYPE_GAMEPAD: u32 = 1;
 const HID_STATUS_CONNECTED: u32 = 1;
 /// `AEEUID_HID_Joystick_Device`, de `AEEHIDDevice_Joystick.h`: o tipo de dispositivo que os
 /// jogos pedem em `GetConnectedDevices`.
 const UID_JOYSTICK_DEVICE: u32 = 0x0106_c3fd;
+/// O tipo de teclado, vizinho do joystick por um.
+///
+/// Não veio de header: veio da Z-Wheel. Ela chama o `GetConnectedDevices` **duas** vezes, uma
+/// pedindo `0x0106c3fd` e outra pedindo este; quando a segunda volta vazia, a `Joystick.c:183`
+/// imprime `No keyboard reported`. Ou seja, o console enumera teclado USB, e a mensagem que a
+/// gente via no log era a resposta certa para "não tem nenhum ligado".
+const UID_KEYBOARD_DEVICE: u32 = 0x0106_c3fc;
+/// O tipo que o `GetDeviceInfo` reporta para um teclado.
+const HID_TYPE_KEYBOARD: u32 = 2;
 /// `EBADPARM` do BREW.
 const EBADPARM: u32 = 2;
 /// `AEE_EUNSUPPORTED`, de `AEEStdErr.h`: a API existe, mas não para este item.
@@ -1575,10 +1589,17 @@ pub struct Machine<C: CpuBackend> {
     signals: HashMap<u32, Callback>,
     /// Sinais disparados e ainda não entregues ao guest.
     pending_signals: Vec<Callback>,
-    /// Estado corrente do controle.
-    pad: Pad,
-    /// Apertos e solturas ainda não lidos pelo jogo, na ordem em que aconteceram.
-    pad_events: std::collections::VecDeque<(usize, bool)>,
+    /// Estado corrente de cada porta. Ver [`crate::input::PORTAS`].
+    pads: [Pad; input::PORTAS],
+    /// Apertos e solturas ainda não lidos pelo jogo, por porta, na ordem em que aconteceram.
+    pad_events: [std::collections::VecDeque<(usize, bool)>; input::PORTAS],
+    /// Que aparelho o console vê em cada porta, e se ela está ligada.
+    ///
+    /// É o que o `GetConnectedDevices` responde. Uma porta desligada não é enumerada — e é
+    /// assim que se testa um jogo que se comporta diferente com dois controles.
+    portas: [Option<crate::bindings::Aparelho>; input::PORTAS],
+    /// A porta de cada `IHIDDevice` que o jogo criou, pelo endereço do objeto.
+    portas_de_aparelho: HashMap<u32, usize>,
     /// Os últimos toques entregues, para o relatório.
     ///
     /// A fila acima é consumida pelo jogo e some; esta fica. Existe porque um problema de
@@ -1823,8 +1844,14 @@ impl<C: CpuBackend> Machine<C> {
             input_signals: BTreeMap::new(),
             signals: HashMap::new(),
             pending_signals: Vec::new(),
-            pad: Pad::default(),
-            pad_events: std::collections::VecDeque::new(),
+            pads: [Pad::default(); input::PORTAS],
+            pad_events: std::array::from_fn(|_| std::collections::VecDeque::new()),
+            // Uma porta com controle é o que sempre houve; a interface muda isto ao aplicar os
+            // ajustes, e o modo sem janela nunca mexe.
+            portas: std::array::from_fn(|n| {
+                (n == 0).then_some(crate::bindings::Aparelho::Controle)
+            }),
+            portas_de_aparelho: HashMap::new(),
             pad_log: std::collections::VecDeque::new(),
             current_applet: 0,
             random_state: 0x1234_5678,
@@ -4885,30 +4912,57 @@ impl<C: CpuBackend> Machine<C> {
                 let handles = a2;
                 let capacity = a3;
                 let out_needed = self.stack_arg(0)?;
-                // Só temos joystick; qualquer outro tipo pedido devolve lista vazia.
-                let count = if wanted == UID_JOYSTICK_DEVICE { 1 } else { 0 };
+                // O `nLenReq` é o que o aparelho **tem**, e o vetor recebe o que couber. A
+                // Z-Wheel passa capacidade dois nas duas chamadas, que é o número de USB do
+                // console.
+                let quais = match wanted {
+                    UID_JOYSTICK_DEVICE => self.portas_com(crate::bindings::Aparelho::Controle),
+                    UID_KEYBOARD_DEVICE => self.portas_com(crate::bindings::Aparelho::Teclado),
+                    _ => Vec::new(),
+                };
                 if out_needed != 0 {
-                    self.cpu.write_u32(out_needed, count)?;
+                    self.cpu.write_u32(out_needed, quais.len() as u32)?;
                 }
-                if count > 0 && handles != 0 && capacity >= 1 {
-                    self.cpu.write_u32(handles, GAMEPAD_HANDLE)?;
+                if handles != 0 {
+                    for (i, &porta) in quais.iter().take(capacity as usize).enumerate() {
+                        self.cpu
+                            .write_u32(handles + i as u32 * 4, handle_da_porta(porta))?;
+                    }
                 }
                 SUCCESS
             }
             // CreateDevice(int nDevHandle, IHIDDevice **ppDevice)
+            //
+            // O identificador é o que saiu do `GetConnectedDevices`, e é aqui que ele vira
+            // porta: sem guardar essa ligação, os dois aparelhos leriam o mesmo controle.
             "CreateDevice" => {
                 let device = self.new_object(Interface::HidDevice)?;
+                if device == 0 {
+                    return Ok(Some(ENOMEMORY));
+                }
+                let porta = (a1.saturating_sub(1) as usize).min(input::PORTAS - 1);
+                self.portas_de_aparelho.insert(device, porta);
                 if a2 != 0 {
                     self.cpu.write_u32(a2, device)?;
                 }
-                if device == 0 { ENOMEMORY } else { SUCCESS }
+                SUCCESS
             }
             // GetDeviceInfo(AEEHIDDeviceInfo *pInfo): { int type; uint16 pid; uint16 vid;
             // boolean bluetooth }. Em IHID a struct vem no segundo argumento.
             "GetDeviceInfo" => {
                 let out = if iface == Interface::Hid { a2 } else { a1 };
+                // No `IHID` o identificador da porta vem em `r1`; no `IHIDDevice` é o próprio
+                // objeto que diz de qual porta ele é.
+                let porta = match iface == Interface::Hid {
+                    true => (a1.saturating_sub(1) as usize).min(input::PORTAS - 1),
+                    false => self.porta_do(this),
+                };
+                let tipo = match self.portas[porta] {
+                    Some(crate::bindings::Aparelho::Teclado) => HID_TYPE_KEYBOARD,
+                    _ => HID_TYPE_GAMEPAD,
+                };
                 if out != 0 {
-                    self.cpu.write_u32(out, HID_TYPE_GAMEPAD)?;
+                    self.cpu.write_u32(out, tipo)?;
                     self.cpu
                         .write_mem(out + 4, &GAMEPAD_PRODUCT_ID.to_le_bytes())?;
                     self.cpu
@@ -4936,7 +4990,7 @@ impl<C: CpuBackend> Machine<C> {
                 };
                 // O estado tem de ser o de agora: um jogo que consulta em vez de esperar o
                 // evento só enxerga a tecla por aqui.
-                let state = u32::from(self.pad.is_down(index as usize));
+                let state = u32::from(self.pads[self.porta_do(this)].is_down(index as usize));
                 if a2 != 0 {
                     for (i, value) in [index, state, uid, 0, 1].iter().enumerate() {
                         self.cpu.write_u32(a2 + i as u32 * 4, *value)?;
@@ -4952,7 +5006,7 @@ impl<C: CpuBackend> Machine<C> {
             }
             // A posição corrente de cada eixo.
             "GetPositionState" => {
-                let axes = self.pad.axes;
+                let axes = self.pads[self.porta_do(this)].axes;
                 self.write_position_info(a1, &axes)?;
                 SUCCESS
             }
@@ -4981,7 +5035,7 @@ impl<C: CpuBackend> Machine<C> {
             // A fila é de eventos, não de estado: cada aperto e cada soltura vira uma entrada,
             // e o jogo lê até a fila esvaziar. `EFAILED` é o "não há mais nada".
             "GetNextButtonEvent" => {
-                let Some((index, down)) = self.pad_events.pop_front() else {
+                let Some((index, down)) = self.pad_events[self.porta_do(this)].pop_front() else {
                     if a1 != 0 {
                         self.cpu.write_mem(a1, &[0u8; 20])?;
                     }
@@ -5085,13 +5139,18 @@ impl<C: CpuBackend> Machine<C> {
     /// que ele registrou — sem isso o jogo só veria a tecla na próxima vez que resolvesse
     /// perguntar, e alguns nunca perguntam.
     pub fn set_pad(&mut self, pad: Pad) {
-        if pad == self.pad {
+        self.set_port_pad(0, pad);
+    }
+
+    /// O mesmo, para uma porta escolhida.
+    pub fn set_port_pad(&mut self, porta: usize, pad: Pad) {
+        if porta >= input::PORTAS || pad == self.pads[porta] {
             return;
         }
-        let changes = self.pad.changes(&pad);
-        let moved = pad.axes != self.pad.axes;
-        self.pad = pad;
-        self.pad_events.extend(changes.iter().copied());
+        let changes = self.pads[porta].changes(&pad);
+        let moved = pad.axes != self.pads[porta].axes;
+        self.pads[porta] = pad;
+        self.pad_events[porta].extend(changes.iter().copied());
         let agora = self.elapsed_ms();
         for &(index, down) in &changes {
             if self.pad_log.len() == PAD_LOG_MAX {
@@ -5106,6 +5165,30 @@ impl<C: CpuBackend> Machine<C> {
         if moved {
             self.raise_input_signal("RegisterForPositionChange");
         }
+    }
+
+    /// A porta de um `IHIDDevice`, ou a primeira quando o objeto não foi registrado.
+    ///
+    /// O caminho sem janela e os testes criam aparelho sem passar pelo `CreateDevice` com
+    /// identificador; para eles a porta um é a resposta certa, porque é a única que existe.
+    fn porta_do(&self, aparelho: u32) -> usize {
+        self.portas_de_aparelho
+            .get(&aparelho)
+            .copied()
+            .unwrap_or(0)
+            .min(input::PORTAS - 1)
+    }
+
+    /// Quais portas estão ligadas com o aparelho pedido, na ordem.
+    fn portas_com(&self, aparelho: crate::bindings::Aparelho) -> Vec<usize> {
+        (0..input::PORTAS)
+            .filter(|&n| self.portas[n] == Some(aparelho))
+            .collect()
+    }
+
+    /// Diz que aparelho o console vê em cada porta. `None` desliga a porta.
+    pub fn set_portas(&mut self, portas: [Option<crate::bindings::Aparelho>; input::PORTAS]) {
+        self.portas = portas;
     }
 
     /// Dispara o sinal registrado num dos `RegisterFor*` do `IHIDDevice`.
@@ -12192,6 +12275,109 @@ mod tests {
             machine.bitmaps.get(&screen).unwrap().get_pixel(0, 0),
             0xf800
         );
+    }
+
+    /// Uma máquina vazia, para exercitar uma API sem carregar jogo nenhum.
+    fn maquina_nua() -> Machine<UnicornCpu> {
+        let module = loader::load(&module_calling_malloc()).unwrap();
+        let mut machine = Machine::new(UnicornCpu::new().unwrap(), module, ".");
+        machine.cpu.reset(&machine.module.mem).unwrap();
+        // Sem pilha não há quinto argumento: o `GetConnectedDevices` lê o `nLenReq` de lá.
+        machine
+            .cpu
+            .write_reg(Reg::Sp, loader::STACK_BASE + 0x1000);
+        machine
+    }
+
+    /// Com as duas portas ligadas em controle, a enumeração devolve as duas — e o vetor de
+    /// saída recebe os dois identificadores, na ordem das portas.
+    #[test]
+    fn as_duas_portas_aparecem_na_enumeracao() {
+        use crate::bindings::Aparelho;
+        let mut machine = maquina_nua();
+        machine.set_portas([Some(Aparelho::Controle), Some(Aparelho::Controle)]);
+        let hid = machine.new_object(Interface::Hid).unwrap();
+        let saida = machine.heap.alloc(16).unwrap();
+        let quantos = machine.heap.alloc(4).unwrap();
+        machine.cpu.write_u32(machine.cpu.read_reg(Reg::Sp), quantos).unwrap();
+
+        let r = call(
+            &mut machine,
+            Interface::Hid,
+            slot_of(Interface::Hid, "GetConnectedDevices"),
+            [hid, UID_JOYSTICK_DEVICE, saida, 2],
+        );
+        assert_eq!(r, SUCCESS);
+        assert_eq!(machine.cpu.read_u32(quantos).unwrap(), 2);
+        assert_eq!(machine.cpu.read_u32(saida).unwrap(), 1);
+        assert_eq!(machine.cpu.read_u32(saida + 4).unwrap(), 2);
+    }
+
+    /// Uma porta em teclado sai da lista de joysticks e entra na de teclados. É o que faz a
+    /// Z-Wheel trocar `No keyboard reported` por um teclado encontrado.
+    #[test]
+    fn a_porta_de_teclado_nao_e_joystick() {
+        use crate::bindings::Aparelho;
+        let mut machine = maquina_nua();
+        machine.set_portas([Some(Aparelho::Controle), Some(Aparelho::Teclado)]);
+        let hid = machine.new_object(Interface::Hid).unwrap();
+        let saida = machine.heap.alloc(16).unwrap();
+        let quantos = machine.heap.alloc(4).unwrap();
+        machine.cpu.write_u32(machine.cpu.read_reg(Reg::Sp), quantos).unwrap();
+
+        for (tipo, esperado, primeiro) in [
+            (UID_JOYSTICK_DEVICE, 1u32, 1u32),
+            (UID_KEYBOARD_DEVICE, 1, 2),
+        ] {
+            call(
+                &mut machine,
+                Interface::Hid,
+                slot_of(Interface::Hid, "GetConnectedDevices"),
+                [hid, tipo, saida, 2],
+            );
+            assert_eq!(machine.cpu.read_u32(quantos).unwrap(), esperado);
+            assert_eq!(machine.cpu.read_u32(saida).unwrap(), primeiro);
+        }
+    }
+
+    /// Cada `IHIDDevice` lê a porta de onde veio. Sem isso os dois aparelhos leriam o mesmo
+    /// controle, que é o defeito que o jogador de dois enxergaria primeiro.
+    #[test]
+    fn cada_aparelho_le_a_propria_porta() {
+        use crate::bindings::Aparelho;
+        let mut machine = maquina_nua();
+        machine.set_portas([Some(Aparelho::Controle), Some(Aparelho::Controle)]);
+        let hid = machine.new_object(Interface::Hid).unwrap();
+        let saida = machine.heap.alloc(4).unwrap();
+
+        let mut aparelho = |handle: u32| {
+            call(
+                &mut machine,
+                Interface::Hid,
+                slot_of(Interface::Hid, "CreateDevice"),
+                [hid, handle, saida, 0],
+            );
+            machine.cpu.read_u32(saida).unwrap()
+        };
+        let (um, dois) = (aparelho(1), aparelho(2));
+        assert_ne!(um, dois);
+
+        let mut apertado = Pad::default();
+        apertado.press(input::DPAD[0], true);
+        machine.set_port_pad(1, apertado);
+
+        let info = machine.heap.alloc(20).unwrap();
+        let mut estado = |device: u32| {
+            call(
+                &mut machine,
+                Interface::HidDevice,
+                slot_of(Interface::HidDevice, "GetButtonInfo"),
+                [device, input::DPAD[0] as u32, info, 0],
+            );
+            machine.cpu.read_u32(info + 4).unwrap()
+        };
+        assert_eq!(estado(um), 0, "a porta 1 está parada");
+        assert_eq!(estado(dois), 1, "a porta 2 está com o direcional para cima");
     }
 
     #[test]

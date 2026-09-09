@@ -189,6 +189,19 @@ fn main() -> ExitCode {
                         .find_map(|a| a.strip_prefix("--servidor="))
                         .map(str::to_owned),
                     bridge: args.iter().any(|a| a == "--ponte"),
+                    portas: match args.iter().find_map(|a| a.strip_prefix("--portas=")) {
+                        Some(lista) => match aparelhos(lista) {
+                            Some(portas) => portas,
+                            None => {
+                                eprintln!(
+                                    "erro: --portas espera nomes separados por vírgula, entre \
+                                     'controle', 'teclado' e 'nenhum'"
+                                );
+                                return ExitCode::FAILURE;
+                            }
+                        },
+                        None => PORTAS_PADRAO,
+                    },
                 },
             ))
         }
@@ -203,7 +216,8 @@ fn main() -> ExitCode {
                              [--trace[=trecho]] [--watch=0xADDR] [--dump-heap]
                              [--code=0xINI:0xFIM] [--frames=N]
                              [--profile] [--wall=SEGUNDOS] [--sonda=0xCLSID,...]
-                             [--sem-rede] [--servidor=MAQUINA[:PORTA]] [--ponte]"
+                             [--sem-rede] [--servidor=MAQUINA[:PORTA]] [--ponte]
+                             [--portas=controle|teclado|nenhum,...]"
             );
             ExitCode::FAILURE
         }
@@ -302,6 +316,31 @@ struct Options {
     network_to: Option<String>,
     /// Se a ponte do módulo entrega a resposta ao jogo, com `--ponte`.
     bridge: bool,
+    /// O que o console vê em cada porta, com `--portas=controle,teclado`.
+    portas: [Option<bindings::Aparelho>; input::PORTAS],
+}
+
+/// O padrão sem janela: um controle na primeira porta, a segunda livre. É o que sempre houve.
+const PORTAS_PADRAO: [Option<bindings::Aparelho>; input::PORTAS] =
+    [Some(bindings::Aparelho::Controle), None];
+
+/// Lê `controle,teclado` e afins. `None` quando algum nome não existe.
+///
+/// Existe para que as duas portas sejam **testáveis sem janela**, que é como tudo aqui se
+/// verifica: sem isso, a única forma de saber se um jogo enxerga o segundo controle seria abrir
+/// a interface e olhar.
+fn aparelhos(lista: &str) -> Option<[Option<bindings::Aparelho>; input::PORTAS]> {
+    let mut portas = [None; input::PORTAS];
+    for (n, nome) in lista.split(',').enumerate() {
+        let porta = portas.get_mut(n)?;
+        *porta = match nome.trim() {
+            "controle" | "pad" => Some(bindings::Aparelho::Controle),
+            "teclado" | "keyboard" => Some(bindings::Aparelho::Teclado),
+            "nenhum" | "none" | "" => None,
+            _ => return None,
+        };
+    }
+    Some(portas)
 }
 
 fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
@@ -324,6 +363,7 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
         network,
         network_to,
         bridge,
+        portas,
     } = options;
     // Um jogo em `.zip` é extraído para o cache e rodado de lá, como na interface.
     let extracted;
@@ -374,6 +414,7 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
     for (classe, slot, valor) in &probe_answers {
         machine.probe_answer(*classe, *slot, *valor);
     }
+    machine.set_portas(portas);
     machine.set_network(network);
     if network_to.is_some() {
         machine.set_network_to(network_to);

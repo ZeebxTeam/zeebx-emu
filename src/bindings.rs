@@ -88,10 +88,38 @@ impl Source {
     }
 }
 
+/// O que o console enxerga ligado numa porta.
+///
+/// O Zeebo tem duas USB e aceita as duas coisas: o `IHID::GetConnectedDevices` da Z-Wheel é
+/// chamado duas vezes, uma pedindo `0x0106c3fd` — o joystick — e outra pedindo `0x0106c3fc`.
+/// Quando a segunda volta vazia, ela imprime `No keyboard reported`. Ou seja, **teclado é um
+/// aparelho de verdade** para o console, não um jeito de falar.
+///
+/// Isto é separado de qual controle do host alimenta a porta: teclado do computador movendo um
+/// joystick do console é a combinação que todo jogo entende, e continua sendo o padrão.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Aparelho {
+    /// O controle do Zeebo. É o que todos os jogos usam.
+    Controle,
+    /// Um teclado USB. O console enumera; jogo que o use, ainda não vimos.
+    Teclado,
+}
+
+impl Default for Aparelho {
+    fn default() -> Self {
+        Self::Controle
+    }
+}
+
 /// O mapeamento de um jogador.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Player {
+    /// Se a porta tem alguma coisa ligada. Uma porta desligada não é enumerada, e é assim que
+    /// se testa um jogo que se comporta diferente com dois controles.
+    pub ligada: bool,
+    /// Que aparelho o console vê nesta porta.
+    pub aparelho: Aparelho,
     /// Qual controle do host alimenta este jogador, pelo nome que o sistema dá a ele. `None`
     /// deixa o jogador só no teclado.
     pub device: Option<String>,
@@ -143,6 +171,9 @@ impl Default for Player {
             ],
         );
         Self {
+            // A porta um nasce ligada; as outras, não. Ver [`Controls::default`].
+            ligada: true,
+            aparelho: Aparelho::Controle,
             device: None,
             buttons,
             // O teclado não tem analógico: os eixos ficam com o direcional digital.
@@ -303,10 +334,20 @@ pub struct Controls {
 }
 
 impl Default for Controls {
+    /// Uma porta ligada e as outras livres.
+    ///
+    /// Ligar as duas por omissão seria pior do que parece: quem joga com um controle só veria o
+    /// teclado e o controle disputando a **mesma** porta, ou um jogo de dois enxergando um
+    /// segundo jogador parado.
     fn default() -> Self {
-        Self {
-            players: vec![Player::default()],
+        let mut players = vec![Player::default()];
+        while players.len() < crate::input::PORTAS {
+            players.push(Player {
+                ligada: false,
+                ..Player::default()
+            });
         }
+        Self { players }
     }
 }
 
@@ -323,10 +364,33 @@ impl Controls {
         self.players.get(index)
     }
 
+    /// As portas ligadas, em ordem, como `(índice, jogador)`.
+    pub fn ligadas(&self) -> impl Iterator<Item = (usize, &Player)> {
+        self.players
+            .iter()
+            .enumerate()
+            .take(crate::input::PORTAS)
+            .filter(|(_, jogador)| jogador.ligada)
+    }
+
     /// Ajusta um mapeamento vindo de uma versão anterior do emulador.
+    ///
+    /// Um arquivo salvo antes das portas tem **um** jogador e nenhum campo `ligada`. Quem
+    /// resolve isso é o `serde(default)` da struct, que preenche campo faltante a partir do
+    /// `Player::default()` — e lá `ligada` é verdadeiro. Assim o controle de quem já usava o
+    /// emulador continua ligado, sem precisar de remendo aqui.
+    ///
+    /// O que falta fazer é só completar as portas que o arquivo antigo não tinha, e elas entram
+    /// **desligadas**: ninguém pediu um segundo jogador.
     pub fn adopt(&mut self) {
         for player in &mut self.players {
             player.adopt_axes();
+        }
+        while self.players.len() < crate::input::PORTAS {
+            self.players.push(Player {
+                ligada: false,
+                ..Player::default()
+            });
         }
     }
 }
@@ -574,9 +638,31 @@ mod tests {
     #[test]
     fn o_jogador_que_falta_e_criado_com_o_padrao() {
         let mut controls = Controls::default();
-        assert!(controls.player(1).is_none());
-        controls.player_mut(2);
-        assert_eq!(controls.players.len(), 3);
-        assert_eq!(controls.player(1), Some(&Player::default()));
+        assert_eq!(controls.players.len(), crate::input::PORTAS);
+        controls.player_mut(3);
+        assert_eq!(controls.players.len(), 4);
+        assert_eq!(controls.player(3), Some(&Player::default()));
+    }
+
+    /// As duas portas nascem com o mesmo mapeamento, e só a primeira ligada. Ligar as duas por
+    /// omissão faria um jogo de dois enxergar um segundo jogador que ninguém pediu.
+    #[test]
+    fn so_a_primeira_porta_nasce_ligada() {
+        let controls = Controls::default();
+        let ligadas: Vec<usize> = controls.ligadas().map(|(i, _)| i).collect();
+        assert_eq!(ligadas, vec![0]);
+        assert_eq!(controls.players[1].aparelho, Aparelho::Controle);
+    }
+
+    /// Um arquivo salvo antes das portas não tem o campo `ligada`, e o jogador dele **não pode**
+    /// aparecer desligado: quem já usava o emulador ficaria sem controle nenhum.
+    #[test]
+    fn mapeamento_antigo_continua_ligado() {
+        let antigo = r#"{"players":[{"device":null}]}"#;
+        let mut controls: Controls = serde_json::from_str(antigo).expect("devia ler");
+        controls.adopt();
+        assert!(controls.players[0].ligada);
+        assert_eq!(controls.players.len(), crate::input::PORTAS);
+        assert!(!controls.players[1].ligada);
     }
 }
