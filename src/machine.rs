@@ -7215,10 +7215,22 @@ impl<C: CpuBackend> Machine<C> {
 
     /// Atende o `ICM`. Ver [`Interface::Cm`].
     fn cm_call(&mut self, slot: u32) -> Result<Option<u32>, CpuError> {
-        /// Deslocamento do modo de operação dentro do `AEECMPhInfo`, lido em `0x87cb0`.
+        /// Deslocamento do estado do serviço dentro do `AEECMSSInfo`.
+        const ESTADO_DO_SERVICO: u32 = 0x0;
+        /// Deslocamento do modo de operação, lido em `0x87cb0`.
         const MODO_DE_OPERACAO: u32 = 0xc;
+        /// Deslocamento da intensidade do sinal, lido em `0x696f8` como meia palavra.
+        const INTENSIDADE: u32 = 0x28;
+        /// `AEECM_SRV_STATUS_SRV`. A `0x696e8` aceita 1, 2 ou 3 e recusa o resto com
+        /// `Service status is NOT available!`; 2 é "serviço pleno".
+        const COM_SERVICO: u32 = 2;
         /// `SYS_OPRT_MODE_ONLINE`. É com este número que a `0x77564` compara.
         const NO_AR: u32 = 5;
+        /// A `0x69830` transforma a intensidade em barras por faixas de nove: `0x45..=0x4d`
+        /// são quatro barras, e é onde este número cai.
+        const SINAL: u16 = 0x48;
+        /// O menor buffer que responde às três leituras que conhecemos.
+        const MINIMO: usize = INTENSIDADE as usize + 2;
 
         let Some(name) = Interface::Cm.method(slot) else {
             return Ok(None);
@@ -7230,20 +7242,29 @@ impl<C: CpuBackend> Machine<C> {
         let result = match name {
             "AddRef" => self.objects.add_ref(this),
             "Release" => self.objects.release(this),
-            "GetPhoneInfo" => {
+            // int ICM_GetSSInfo(ICM *, AEECMSSInfo *pInfo, uint32 nSize)
+            //
+            // Uma chamada, dois leitores: a `0x87c90` quer o modo de operação em `+0xc`, e a
+            // `0x696a0` quer o estado do serviço em `+0` e, quando ele é 2, a intensidade do
+            // sinal em `+0x28`. Quem só respondia ao primeiro deixava o segundo repetindo
+            // `Service status is NOT available!` para sempre.
+            "GetSSInfo" => {
                 let (info, tamanho) = (
                     self.cpu.read_reg(Reg::R1),
                     self.cpu.read_reg(Reg::R2) as usize,
                 );
-                if info == 0 || tamanho <= MODO_DE_OPERACAO as usize {
+                if info == 0 || tamanho < MINIMO {
                     return Ok(Some(EBADPARM));
                 }
                 // Zerar o resto é parte da resposta: o jogo passa um buffer que ele mesmo
                 // zerou, mas quem chama esta função não pode contar com isso.
                 self.cpu.write_mem(info, &vec![0u8; tamanho])?;
+                self.cpu.write_u32(info + ESTADO_DO_SERVICO, COM_SERVICO)?;
                 self.cpu.write_u32(info + MODO_DE_OPERACAO, NO_AR)?;
-                self.assumptions
-                    .insert("o ICM respondeu que o rádio está no ar, com o resto da AEECMPhInfo zerado");
+                self.cpu.write_mem(info + INTENSIDADE, &SINAL.to_le_bytes())?;
+                self.assumptions.insert(
+                    "o ICM respondeu rádio no ar e serviço pleno, com o resto da AEECMSSInfo zerado",
+                );
                 SUCCESS
             }
             _ => SUCCESS,

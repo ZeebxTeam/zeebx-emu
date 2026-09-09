@@ -942,7 +942,7 @@ pub const CM: &[&str] = &[
     "slot25",
     "slot26",
     "slot27",
-    "GetPhoneInfo",
+    "GetSSInfo",
 ];
 
 /// Métodos da `0x01028e3c`, dos quais conhecemos dois — e são os dois de toda interface.
