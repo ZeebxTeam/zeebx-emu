@@ -12,19 +12,33 @@
 //! fs:/~/../id1/x       sobe para a raiz de módulos — o Quake guarda os dados dele assim
 //! fs:/~0x01234567/x    diretório de outro módulo, pelo ClassID
 //! fs:/shared/x         área compartilhada entre aplicativos
+//! fs:/zeeboiddata/x    **o sistema de arquivos do aparelho**, comum a todos
 //! ```
+//!
+//! # O `fs:/` é do aparelho, não do jogo
+//!
+//! Esta distinção parece detalhe e não é. No console há **um** sistema de arquivos: o Zeeboids
+//! grava os bonecos em `fs:/zeeboiddata/zeeboid.db` e o Zeebo F.C. abre esse mesmo caminho para
+//! importá-los. Enquanto `fs:/` caía dentro da pasta do módulo, cada jogo via uma pasta só sua
+//! e vazia — e o F.C. concluía, corretamente do ponto de vista dele, que o Zeeboids não estava
+//! instalado.
+//!
+//! Então: caminho relativo e `fs:/~/` vão para a pasta do módulo; `fs:/` vai para uma raiz
+//! comum, que é o que o console tem.
 
 use std::path::{Path, PathBuf};
 
 /// Prefixos que o BREW usa e que removemos antes de resolver.
 const PREFIXES: [&str; 4] = ["fs:/~/", "fs:/~", "fs:/", "~/"];
-/// Nome do diretório usado para a área compartilhada, dentro da raiz do módulo.
-const SHARED_DIR: &str = "shared";
+/// Nome da raiz comum, que faz o papel do sistema de arquivos do aparelho.
+const DEVICE_DIR: &str = "aparelho";
 
 #[derive(Debug)]
 pub struct Vfs {
     /// Diretório do módulo — onde caem os caminhos relativos e o `~`.
     root: PathBuf,
+    /// A raiz comum, que faz o papel do sistema de arquivos do aparelho.
+    device: PathBuf,
     /// Até onde o `..` pode subir. No console é a raiz de módulos: o Quake mantém os dados
     /// dele em `mod/id1/`, ao lado do diretório do próprio módulo, e chega lá por
     /// `fs:/~/../id1/`.
@@ -35,7 +49,22 @@ impl Vfs {
     pub fn new(root: impl Into<PathBuf>) -> Self {
         let root: PathBuf = root.into();
         let boundary = root.parent().map(Path::to_path_buf).unwrap_or(root.clone());
-        Self { root, boundary }
+        // A raiz comum fica ao lado das pastas de módulo, dentro da instalação do jogo. Um nível
+        // acima disso ficaria fora do que cada jogo pode alcançar pelo `..`.
+        let device = boundary.join(DEVICE_DIR);
+        Self {
+            root,
+            boundary,
+            device,
+        }
+    }
+
+    /// Aponta a raiz comum para outro lugar.
+    ///
+    /// Existe para que **todos os jogos** compartilhem o mesmo sistema de arquivos, e não uma
+    /// cópia por instalação: é assim que o Zeebo F.C. encontra os bonecos que o Zeeboids gravou.
+    pub fn set_device_root(&mut self, device: impl Into<PathBuf>) {
+        self.device = device.into();
     }
 
     pub fn root(&self) -> &Path {
@@ -75,18 +104,26 @@ impl Vfs {
                 break;
             }
         }
-        // `fs:/shared/x` vira `shared/x` dentro da raiz do módulo.
-        let path = path
-            .strip_prefix("shared/")
-            .map_or(path.clone(), |rest| format!("{SHARED_DIR}/{rest}"));
-
-        let mut resolved = self.root.clone();
+        // O que sobrou depois de tirar o prefixo diz onde a busca começa. Um caminho que veio
+        // com `fs:/` e **não** era `fs:/~` é do aparelho, não do módulo.
+        let do_aparelho = guest_path.starts_with("fs:/") && !guest_path.starts_with("fs:/~");
+        let mut resolved = match do_aparelho {
+            true => self.device.clone(),
+            false => self.root.clone(),
+        };
+        let base = resolved.clone();
         for part in path.split('/') {
             match part {
                 "" | "." => continue,
                 // Subir é permitido até a raiz de módulos e nem um passo além.
                 ".." => {
-                    if resolved == self.boundary || !resolved.pop() {
+                    // Do aparelho não se sobe: ele já é a raiz. Da pasta do módulo sobe-se até
+                    // a raiz de módulos, que é como o Quake alcança os dados dele.
+                    let limite = match do_aparelho {
+                        true => &base,
+                        false => &self.boundary,
+                    };
+                    if resolved == *limite || !resolved.pop() {
                         return None;
                     }
                 }
@@ -94,7 +131,7 @@ impl Vfs {
                 _ => resolved.push(part),
             }
         }
-        if !allow_root && (resolved == self.root || resolved == self.boundary) {
+        if !allow_root && (resolved == base || resolved == self.boundary) {
             return None;
         }
         Some(resolved)
@@ -167,12 +204,23 @@ mod tests {
     }
 
     #[test]
-    fn remove_os_prefixos_do_brew() {
+    fn o_til_e_do_modulo_e_o_resto_e_do_aparelho() {
         let vfs = vfs();
-        let esperado = Some(PathBuf::from("/jogos/bjt/dados.dat"));
-        assert_eq!(vfs.resolve("fs:/~/dados.dat"), esperado);
-        assert_eq!(vfs.resolve("fs:/dados.dat"), esperado);
-        assert_eq!(vfs.resolve("~/dados.dat"), esperado);
+        // Com `~`, e sem prefixo nenhum, é a pasta do jogo.
+        let do_jogo = Some(PathBuf::from("/jogos/bjt/dados.dat"));
+        assert_eq!(vfs.resolve("fs:/~/dados.dat"), do_jogo);
+        assert_eq!(vfs.resolve("~/dados.dat"), do_jogo);
+
+        // Sem o `~`, é o sistema de arquivos do aparelho — comum a todos os jogos. É o que
+        // permite ao Zeebo F.C. abrir `fs:/zeeboiddata/zeeboid.db`, que o Zeeboids gravou.
+        assert_eq!(
+            vfs.resolve("fs:/dados.dat"),
+            Some(PathBuf::from("/jogos/aparelho/dados.dat"))
+        );
+        assert_eq!(
+            vfs.resolve("fs:/zeeboiddata/zeeboid.db"),
+            Some(PathBuf::from("/jogos/aparelho/zeeboiddata/zeeboid.db"))
+        );
     }
 
     #[test]
@@ -184,11 +232,19 @@ mod tests {
     }
 
     #[test]
-    fn area_compartilhada_fica_dentro_da_raiz() {
+    fn a_area_compartilhada_e_do_aparelho() {
         assert_eq!(
             vfs().resolve("fs:/shared/save.dat"),
-            Some(PathBuf::from("/jogos/bjt/shared/save.dat"))
+            Some(PathBuf::from("/jogos/aparelho/shared/save.dat"))
         );
+    }
+
+    #[test]
+    fn do_aparelho_nao_se_sobe() {
+        // A raiz do aparelho é raiz: `..` a partir dela sairia para a máquina do usuário.
+        let vfs = vfs();
+        assert_eq!(vfs.resolve("fs:/../x"), None);
+        assert_eq!(vfs.resolve("fs:/zeeboiddata/../../x"), None);
     }
 
     #[test]

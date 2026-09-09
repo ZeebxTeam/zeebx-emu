@@ -1643,7 +1643,12 @@ impl<C: CpuBackend> Machine<C> {
             assumptions: BTreeSet::new(),
             bad_pointers: BTreeSet::new(),
             graphics: GraphicsState::default(),
-            vfs: Vfs::new(raiz.clone()),
+            vfs: {
+                let mut vfs = Vfs::new(raiz.clone());
+                // Todos os jogos compartilham o mesmo `fs:/`, como no console.
+                vfs.set_device_root(crate::archive::device_dir());
+                vfs
+            },
             open_files: HashMap::new(),
             file_error: SUCCESS,
             decoders: HashMap::new(),

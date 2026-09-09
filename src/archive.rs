@@ -17,6 +17,16 @@ pub fn cache_dir() -> PathBuf {
     settings::config_dir().join("cache")
 }
 
+/// A raiz do sistema de arquivos do aparelho, comum a todos os jogos.
+///
+/// No console há **um** sistema de arquivos: o Zeeboids grava os bonecos em
+/// `fs:/zeeboiddata/zeeboid.db` e o Zeebo F.C. abre esse mesmo caminho para importá-los. Uma
+/// raiz por instalação faria cada jogo ver uma pasta só sua, e o F.C. concluiria — com razão,
+/// do ponto de vista dele — que o Zeeboids não está instalado.
+pub fn device_dir() -> PathBuf {
+    settings::config_dir().join("aparelho")
+}
+
 /// O caminho interno do `.mod` dentro do zip, se houver um.
 ///
 /// Havendo mais de um, decide nesta ordem:
