@@ -511,6 +511,15 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
         let texto = String::from_utf8_lossy(resposta);
         println!("  resposta: {} bytes, {texto:?}", resposta.len());
     }
+    let claros = machine.plaintexts();
+    if !claros.is_empty() {
+        println!("cifrado:   o que o jogo cifrou, em claro");
+        for bloco in &claros {
+            let hex: String = bloco.iter().map(|b| format!("{b:02x}")).collect();
+            println!("  {} bytes  {hex}", bloco.len());
+            println!("    {:?}", String::from_utf8_lossy(bloco));
+        }
+    }
     let chaves = machine.cipher_keys();
     if !chaves.is_empty() {
         println!("cifra:     o jogo cifrou dados com");

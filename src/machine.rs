@@ -409,6 +409,10 @@ const AEECLSID_QEGL: u32 = 0x0103_d8ec;
 const AEECLSID_EGL: u32 = 0x0101_4bc4;
 /// `AEECLSID_WEB`, do `BMPIds.csv` do SDK: o cliente HTTP do BREW.
 const AEECLSID_WEB: u32 = 0x0100_5000;
+/// Quantos blocos de texto claro o registro guarda, e quanto de cada um.
+const PLAINTEXT_MAX: usize = 8;
+const PLAINTEXT_BYTES: usize = 512;
+
 /// Os estados da conexão, lidos do `switch` da tela de sync do Zeeboids em `0x95bb8`.
 ///
 /// Ela lê o campo toda volta: `0` e `2` mantêm o "Connecting", `9` leva ao "ReceivingData" e
@@ -1456,6 +1460,8 @@ pub struct Machine<C: CpuBackend> {
     ciphers: HashMap<u32, CipherState>,
     /// O par que o `SetHandler` do formulário raiz guardou, por objeto.
     root_forms: HashMap<u32, (u32, u32)>,
+    /// O que o jogo entregou ao `ICipher1`, em claro, antes de ser cifrado.
+    plaintexts: std::collections::VecDeque<Vec<u8>>,
     /// Para onde desviar as conexões, quando se quer um servidor que não é o do endereço.
     network_to: Option<String>,
     /// Se o emulador pode falar com a rede.
@@ -1630,6 +1636,7 @@ impl<C: CpuBackend> Machine<C> {
             root_forms: HashMap::new(),
             network: true,
             network_to: None,
+            plaintexts: std::collections::VecDeque::new(),
             web_response: Vec::new(),
             streams: HashMap::new(),
             sounds: HashMap::new(),
@@ -5710,6 +5717,16 @@ impl<C: CpuBackend> Machine<C> {
                 _ => data.resize(data.len().div_ceil(AES_BLOCK) * AES_BLOCK, 0),
             }
         }
+        // O que o jogo cifra é registrado em claro, e é a coisa mais útil que este método faz
+        // para quem estuda protocolo: o corpo que sai pela rede vai cifrado, e decifrá-lo do
+        // outro lado exige ter a chave e acertar o modo. Aqui ele passa por nós antes disso.
+        if !data.is_empty() {
+            if self.plaintexts.len() == PLAINTEXT_MAX {
+                self.plaintexts.pop_front();
+            }
+            self.plaintexts
+                .push_back(data[..data.len().min(PLAINTEXT_BYTES)].to_vec());
+        }
         // O que não fecha um bloco espera a próxima chamada.
         let whole = data.len() / AES_BLOCK * AES_BLOCK;
         let leftover = data.split_off(whole);
@@ -6470,6 +6487,11 @@ impl<C: CpuBackend> Machine<C> {
     /// O corpo da última resposta HTTP recebida.
     pub fn web_response(&self) -> &[u8] {
         &self.web_response
+    }
+
+    /// O que o jogo cifrou, em claro, na ordem em que entregou.
+    pub fn plaintexts(&self) -> Vec<&[u8]> {
+        self.plaintexts.iter().map(Vec::as_slice).collect()
     }
 
     /// As chaves de cifra que os jogos configuraram, em hexadecimal.

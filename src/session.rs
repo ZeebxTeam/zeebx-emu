@@ -317,6 +317,15 @@ impl Session {
             linhas.push("— endereços que o jogo pediu pelo IWeb —".to_string());
             linhas.extend(urls.iter().map(|url| format!("  {url}")));
         }
+        let claros = self.machine.plaintexts();
+        if !claros.is_empty() {
+            linhas.push("— o que o jogo cifrou, em claro —".to_string());
+            for bloco in &claros {
+                let hex: String = bloco.iter().map(|b| format!("{b:02x}")).collect();
+                linhas.push(format!("  {} bytes  {hex}", bloco.len()));
+                linhas.push(format!("    {:?}", String::from_utf8_lossy(bloco)));
+            }
+        }
         let toques = self.machine.pad_log();
         if !toques.is_empty() {
             linhas.push("— toques entregues ao jogo —".to_string());
