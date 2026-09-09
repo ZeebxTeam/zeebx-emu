@@ -6378,9 +6378,9 @@ impl<C: CpuBackend> Machine<C> {
             ));
             return Ok(());
         };
-        if self.web_response.is_empty() {
-            return Ok(());
-        }
+        // Corpo vazio **é** resposta: o servidor pode não ter nada a devolver. O que não pode é
+        // ficar em silêncio, senão o jogo espera para sempre pelo fim do fluxo que nunca vem.
+        // Então o caminho é o mesmo, com texto vazio.
         let texto = String::from_utf8_lossy(&self.web_response)
             .trim_end_matches(['\r', '\n', '\0'])
             .to_string();
