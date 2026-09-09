@@ -414,6 +414,9 @@ const AEECLSID_WEB: u32 = 0x0100_5000;
 const PLAINTEXT_MAX: usize = 8;
 const PLAINTEXT_BYTES: usize = 512;
 
+/// A marca de "o fluxo acabou", que o `ConnectionManager` liga ao receber um pedaço vazio.
+const FIM_DO_FLUXO: u32 = 0x1a;
+
 /// Onde o objeto de resposta guarda o texto que vai fatiar, visto no parser em `0x85d18`.
 const TEXTO_DA_RESPOSTA: u32 = 0x20;
 
@@ -6386,6 +6389,15 @@ impl<C: CpuBackend> Machine<C> {
         // ela está ligada, e a apaga logo depois — é bandeira de uma via, e no console quem a
         // ligava era o despachante.
         self.cpu.write_mem(resposta + 0x18, &[1])?;
+
+        // E a marca de "acabou o fluxo". O `ConnectionManager` recebe em pedaços: a cada pedaço
+        // chama o parser, e quando chega um de **zero bytes** ele finaliza e liga esta
+        // (`0xa26fc` desvia para `0xa2754`, que chama o setter em `0x85b38` com 1).
+        //
+        // Sem ela o consumidor nunca dá a leitura por completa — `0x85b44` só devolve sucesso
+        // com esta e a de fim de campos ligadas —, e o jogo espera para sempre. Entregamos tudo
+        // de uma vez, então o fim é agora.
+        self.cpu.write_mem(resposta + FIM_DO_FLUXO, &[1])?;
 
         let campos = self.cpu.read_u32(resposta + 8).unwrap_or(0);
         self.delivered.push(format!(
