@@ -714,6 +714,9 @@ const AEECLSID_DISPLAY1: u32 = 0x0101_27d4;
 /// `AEECLSID_FILEMGR`, do `AEECLSID_FILEMGR.bid` do SDK. No `AEEClassIDs.h` ele aparece só
 /// comentado, o que já me fez errar esse valor uma vez.
 const AEECLSID_FILEMGR: u32 = 0x0100_1003;
+/// `0x01006c05`, o ZEEBOMCP. Ver [`Interface::ZeeboMcp`].
+const AEECLSID_ZEEBOMCP: u32 = 0x0100_6c05;
+
 /// `0x01028e51`, o widget da interface da Z-Wheel. Ver [`Interface::Widget`].
 ///
 /// Também não está em header nenhum nem na tabela de classes do firmware que temos. O valor
@@ -2457,6 +2460,10 @@ impl<C: CpuBackend> Machine<C> {
                 }
                 result
             }
+            (Interface::ZeeboMcp, _) => match self.zeebo_mcp_call(slot)? {
+                Some(result) => result,
+                None => return Ok(None),
+            },
             (Interface::Widget, _) => match self.widget_call(slot)? {
                 Some(result) => result,
                 None => return Ok(None),
@@ -6241,6 +6248,36 @@ impl<C: CpuBackend> Machine<C> {
     /// A aposta é explícita: se o aplicativo só precisava que o formulário existisse e aceitasse
     /// os widgets, ele passa; se ele depende do que o contêiner interno faria, ele para mais
     /// adiante — e aí o próximo passo aparece, que é melhor do que parar na criação.
+    /// Atende o ZEEBOMCP. Ver [`Interface::ZeeboMcp`].
+    ///
+    /// Só os três slots lidos no firmware são atendidos; os cinco de baixo caem fora e viram
+    /// relatório, que é o que queremos quando a Z-Wheel finalmente usar um deles.
+    fn zeebo_mcp_call(&mut self, slot: u32) -> Result<Option<u32>, CpuError> {
+        let Some(name) = Interface::ZeeboMcp.method(slot) else {
+            return Ok(None);
+        };
+        let this = self.cpu.read_reg(Reg::R0);
+        let result = match name {
+            "AddRef" => self.objects.add_ref(this),
+            "Release" => self.objects.release(this),
+            // O do firmware aceita dois IIDs: o da própria classe e o `0x01000001`. Aceitar
+            // qualquer um seria dizer que este objeto é toda interface do sistema.
+            "QueryInterface" => {
+                let (iid, saida) = (self.cpu.read_reg(Reg::R1), self.cpu.read_reg(Reg::R2));
+                if iid != AEECLSID_ZEEBOMCP && iid != 0x0100_0001 {
+                    return Ok(Some(ECLASSNOTSUPPORT));
+                }
+                if saida != 0 {
+                    self.cpu.write_u32(saida, this)?;
+                }
+                self.objects.add_ref(this);
+                SUCCESS
+            }
+            _ => SUCCESS,
+        };
+        Ok(Some(result))
+    }
+
     /// Atende o widget da Z-Wheel (`0x01028e51`). Ver [`Interface::Widget`].
     ///
     /// **O retorno é invertido**: diferente de zero é sucesso. Os invólucros do jogo
@@ -9457,6 +9494,7 @@ impl<C: CpuBackend> Machine<C> {
             AEECLSID_SQLMGR => Interface::SqlMgr,
             AEECLSID_ROOTFORM => Interface::RootForm,
             AEECLSID_WIDGET => Interface::Widget,
+            AEECLSID_ZEEBOMCP => Interface::ZeeboMcp,
             AEECLSID_MD5 => Interface::Hash,
             AEECLSID_CIPHER_FACTORY => Interface::CipherFactory,
             AEECLSID_MEDIA | AEECLSID_MEDIAMIDI | AEECLSID_MEDIAMP3 | AEECLSID_MEDIAADPCM

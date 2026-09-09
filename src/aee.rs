@@ -117,6 +117,23 @@ pub enum Interface {
     /// `SUCCESS` aqui — que vale zero — é dizer "falhou", e foi exatamente o que fez a
     /// `tectoymain.c:1001` imprimir `Could not create root form(20)` e depois morrer num nulo.
     Widget = 40,
+    /// `0x01006c05`, o **ZEEBOMCP** — o objeto único que a Z-Wheel pede a cada partida.
+    ///
+    /// O nome sai do próprio jogo: a `Tectoy.c` imprime `Cannot create instance of ZEEBOMCP`
+    /// quando a criação falha. No firmware ele é o singleton de `0x11085cb8`, que aloca oito
+    /// bytes — vtable e contagem — e, se já existir, só incrementa a contagem.
+    ///
+    /// A tabela de classes do `1.1.2_APPS.bin` engana aqui: a entrada de `0x01006c05` aponta
+    /// para `0x11267d04`, que é o `LCT_SIMCardCtl_New` e **só aceita `0x01006c01`**. A vtable
+    /// de verdade é a `0x102d47a8`, oito métodos, achada ao lado do construtor — no mesmo
+    /// trecho que carrega `fs:/card3` e `fs:/mcp/`. Copiar a vtable da entrada teria dado uma
+    /// tabela de quatro métodos que não é desta classe.
+    ///
+    /// Os três primeiros slots foram lidos: contagem, contagem, e um `QueryInterface` que
+    /// compara o IID com `0x01000001` e com `0x01006c05`. Os cinco restantes ficam sem nome de
+    /// propósito — a Z-Wheel, até agora, só cria e solta o objeto, e uma chamada num deles é
+    /// coisa para aparecer no relatório, não para ser atendida por adivinhação.
+    ZeeboMcp = 41,
     /// Objeto de uma classe que ainda não conhecemos, criado a pedido do `--sonda`.
     ///
     /// Não implementa interface nenhuma: existe para **descobrir qual é**. Toda chamada é
@@ -136,7 +153,7 @@ impl Interface {
     /// as duas coisas precisam concordar — daí a lista existir num lugar só, com teste que
     /// confere a correspondência. Quando elas divergiram, um objeto recebeu a vtable de outra
     /// interface e a chamada foi parar no método errado, com sintoma a quilômetros da causa.
-    pub const ALL: [Interface; 41] = [
+    pub const ALL: [Interface; 42] = [
         Self::Shell,
         Self::Module,
         Self::Applet,
@@ -178,6 +195,7 @@ impl Interface {
         Self::Collection,
         Self::RootForm,
         Self::Widget,
+        Self::ZeeboMcp,
     ];
 
     /// Nome usado nos logs — casa com a nomenclatura do SDK.
@@ -222,6 +240,7 @@ impl Interface {
             Self::Collection => "IColecao",
             Self::RootForm => "IFormRaiz",
             Self::Widget => "IWidget",
+            Self::ZeeboMcp => "IZeeboMCP",
             Self::Probe => "ClasseDesconhecida",
             Self::Helpers => "AEEHelpers",
         }
@@ -269,6 +288,7 @@ impl Interface {
             Self::Collection => aee_slots::COLLECTION,
             Self::RootForm => aee_slots::ROOT_FORM,
             Self::Widget => aee_slots::WIDGET,
+            Self::ZeeboMcp => aee_slots::ZEEBO_MCP,
             // A sonda não tem tabela: `method` responde por ela antes de chegar aqui.
             Self::Probe => &[],
             Self::Helpers => aee_helpers::HELPERS,
@@ -332,6 +352,7 @@ impl Interface {
             38 => Self::Collection,
             39 => Self::RootForm,
             40 => Self::Widget,
+            41 => Self::ZeeboMcp,
             6 => Self::Helpers,
             _ => return None,
         })

@@ -838,6 +838,14 @@ pub const ROOT_FORM: &[&str] = &[
 /// nele apareça no relatório em vez de passar por implementada.
 pub const WIDGET: &[&str] = &["AddRef", "Release", "slot2", "Acessador"];
 
+/// Métodos do ZEEBOMCP (`0x01006c05`), da vtable `0x102d47a8` do firmware.
+///
+/// São oito. Só os três primeiros têm nome porque só eles foram lidos: `0x11085c5e` e
+/// `0x11085c70` são a contagem para cima e para baixo, e `0x11085c90` compara o IID recebido
+/// com `0x01000001` e `0x01006c05` — um `QueryInterface`. Os cinco de baixo continuam sem nome
+/// até alguém chamá-los.
+pub const ZEEBO_MCP: &[&str] = &["AddRef", "Release", "QueryInterface"];
+
 /// Métodos da coleção genérica da Z-Wheel (`0x0102c4e8`… não: `0x0100104f`).
 ///
 /// Sem header. Os nomes saíram do uso, observado com o `--sonda`: o app cria a coleção, chama o
