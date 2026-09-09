@@ -1046,12 +1046,12 @@ const CIPHER_PADDING_NONE: u32 = 0;
 const AES_BLOCK: usize = 16;
 
 /// Estado de um objeto `IHash`.
+///
+/// Só o resumo em andamento. O `GetDigest` escreve no buffer que o jogo fornece, então não há
+/// nada para guardar na memória dele — o campo que existia para isso vinha da assinatura errada.
 #[derive(Debug, Default)]
 struct HashState {
     md5: crate::crypto::Md5,
-    /// Onde o resumo fica na memória do guest, para o `GetDigest` ter o que devolver. Só é
-    /// pedido ao heap quando o jogo chega a fechar o resumo.
-    digest: u32,
 }
 
 /// Estado de um `ICipher1`: a configuração que chegou pelo `SetParam` e o que sobrou de um
@@ -5536,28 +5536,31 @@ impl<C: CpuBackend> Machine<C> {
                 self.hashes.entry(this).or_default().md5.update(&bytes);
                 SUCCESS
             }
-            // O resumo fechado. A assinatura do BREW não está no SDK 4.0.2, então atendemos as
-            // duas formas que ela poderia ter: o endereço volta em `r0` e, se o jogo passou um
-            // ponteiro de saída utilizável, os dezesseis bytes também são escritos nele.
+            // void GetDigest(IHash *, byte *pBuf, int *pnLen)
+            //
+            // O chamador zera um buffer de 33 bytes e põe 17 no tamanho — dezesseis bytes de
+            // resumo e o terminador. Escrevemos os dezesseis e devolvemos dezesseis no tamanho,
+            // respeitando o teto que ele pediu.
             "GetDigest" => {
-                let estado = self.hashes.entry(this).or_default();
-                let resumo = estado.md5.clone().finish();
-                if estado.digest == 0 {
-                    estado.digest = self.heap.alloc(resumo.len() as u32).unwrap_or(0);
-                }
-                let destino = self.hashes[&this].digest;
+                let (destino, tamanho) = (self.cpu.read_reg(Reg::R1), self.cpu.read_reg(Reg::R2));
+                let resumo = self.hashes.entry(this).or_default().md5.clone().finish();
+                let cabe = match tamanho {
+                    0 => resumo.len() as u32,
+                    p => self
+                        .cpu
+                        .read_u32(p)
+                        .unwrap_or(0)
+                        .min(resumo.len() as u32 + 1),
+                };
+                let escrever = cabe.min(resumo.len() as u32) as usize;
                 if destino != 0 {
-                    self.cpu.write_mem(destino, &resumo)?;
+                    self.cpu.write_mem(destino, &resumo[..escrever])?;
                 }
-                let saida = self.cpu.read_reg(Reg::R1);
-                if saida != 0 && self.cpu.write_mem(saida, &resumo).is_ok() {
-                    self.assumptions
-                        .insert("IHASH_GetDigest escreveu no ponteiro de saída do jogo");
+                if tamanho != 0 {
+                    self.cpu.write_u32(tamanho, escrever as u32)?;
                 }
-                destino
+                SUCCESS
             }
-            // int IHASH_GetDigestSize(IHash *) — dezesseis bytes, que é o tamanho do MD5.
-            "GetDigestSize" => 16,
             // int QueryCipher(ICipherFactory *, AEECLSID cipher, AEECLSID mode, int padding,
             //                 unsigned keysize)
             // void IWEB_GetResponse(IWeb *po, IWeb *po, IWebResp **ppResp, AEECallback *pcb,

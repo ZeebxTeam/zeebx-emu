@@ -848,20 +848,29 @@ pub const COLLECTION: &[&str] = &[
     "GetCurrent",
 ];
 
-/// Métodos de `IHash` (`AEECLSID_MD5`). Mesma situação do `IWeb`: sem header no 4.0.2.
+/// Métodos de `IHash` (`AEECLSID_MD5` = `0x01001015`), levantados do uso.
 ///
-/// Os quatro depois do `IQI` são o conjunto que a API de resumo do BREW expõe. A ordem é
-/// hipótese — sem o header, o que temos é o uso: o Zeeboids cria o objeto, zera um buffer de 33
-/// bytes (32 dígitos hexadecimais e o terminador) e chama o slot 4.
-pub const HASH: &[&str] = &[
-    "AddRef",
-    "Release",
-    "QueryInterface",
-    "Reset",
-    "Update",
-    "GetDigest",
-    "GetDigestSize",
-];
+/// Esta classe não está na tabela do firmware da partição APPS, então não deu para ler a vtable
+/// como se fez com o `IWeb`. O que decidiu foi o código do Zeeboids em `0x77b50`, onde a
+/// sequência inteira aparece:
+///
+/// ```text
+/// 0x77b70  ldr r1, [r1, #0x10]   ; slot 4, e nenhum argumento é montado antes -> Reset()
+/// ...      monta uma string e guarda tamanho-1 em [sp+0x38]
+/// 0x77ba4  ldr r3, [r1, #8]      ; slot 2, com (buffer, tamanho)  -> Update()
+/// 0x77bb0  mov r0, #0x11         ; 17 = dezesseis bytes e o terminador
+/// 0x77bc4  memset(sp+0x14, 0, 0x21)
+/// 0x77bdc  ldr r3, [r1, #0xc]    ; slot 3, com (buffer, &tamanho) -> GetDigest()
+/// ```
+///
+/// A ordem anterior — `QueryInterface`, `Reset`, `Update`, `GetDigest` — era a do `IQI` mais
+/// uma suposição, e errava tudo do slot 2 em diante: o "QueryInterface" escrevia num campo que
+/// era um tamanho, e o "Update" lia como ponteiro o que não era. Os dois apareciam no relatório
+/// como falha de núcleo, e é assim que o erro foi achado.
+///
+/// **Não há `QueryInterface`**: os dois primeiros slots são o `AddRef` e o `Release` do
+/// `DECLARE_IBASE`, e os métodos próprios começam no 2.
+pub const HASH: &[&str] = &["AddRef", "Release", "Update", "GetDigest", "Reset"];
 
 /// Métodos de `ICipherFactory` (6 slots), de `INHERIT_ICipherFactory` em
 /// `inc/AEEICipherFactory.h`.
