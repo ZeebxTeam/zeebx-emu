@@ -52,6 +52,11 @@ pub struct Ponte {
     /// Assinatura observada: `(tamanho, 0, linha, arquivo, 1)` — os dois últimos são rastreio de
     /// origem, que ele guarda para os relatórios dele.
     pub alocador: u32,
+    /// O `free` do mesmo gerenciador, para devolver o que substituímos.
+    ///
+    /// Ele varre a tabela de pools perguntando a cada um se o ponteiro é dele, e recusa o que
+    /// não saiu de nenhum — é a função que reclamava quando entregávamos memória de fora.
+    pub liberador: u32,
     /// Um ponteiro para nome de arquivo, no próprio módulo, para o campo de rastreio.
     pub origem: u32,
 }
@@ -69,6 +74,7 @@ pub fn para(clsid: u32) -> Option<Ponte> {
     match clsid {
         ZEEBOIDS => Some(Ponte {
             alocador: 0x0006_d440,
+            liberador: 0x0006_d694,
             origem: 0x000a_8648,
         }),
         _ => None,

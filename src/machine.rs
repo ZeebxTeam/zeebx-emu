@@ -416,7 +416,7 @@ const PLAINTEXT_BYTES: usize = 512;
 
 /// Teto de campos que aceitamos entregar. A capacidade observada é oito; um valor muito maior
 /// quer dizer que lemos o campo errado, e é melhor não escrever nada.
-const MAX_CAMPOS_DA_RESPOSTA: u32 = 64;
+const MAX_CAMPOS_DA_RESPOSTA: u32 = 256;
 
 /// Teto de instruções para uma chamada pela ponte. O alocador é uma função curta.
 const PONTE_BUDGET: u64 = 5_000_000;
@@ -6356,8 +6356,8 @@ impl<C: CpuBackend> Machine<C> {
             self.cpu.read_u32(resposta + 0x2c)?,
         );
         let parece_o_esperado = vetor != 0
-            && capacidade >= campos.len() as u32
-            && capacidade <= MAX_CAMPOS_DA_RESPOSTA
+            && capacidade > 0
+            && campos.len() as u32 <= MAX_CAMPOS_DA_RESPOSTA
             && (contagem, cursor, tipo) == (0, 0, 0);
         if !parece_o_esperado {
             self.assumptions
@@ -6365,20 +6365,29 @@ impl<C: CpuBackend> Machine<C> {
             return Ok(());
         }
 
+        // O vetor do jogo nasce pequeno — capacidade oito — e uma resposta de `import` traz
+        // dezenas de campos. Crescer é o que o próprio `ttdArray` faria: pedir um vetor maior ao
+        // alocador, copiar, e devolver o antigo. Fazemos os três, com as funções dele.
+        let vetor = match capacidade < campos.len() as u32 {
+            false => vetor,
+            true => {
+                let bytes = campos.len() as u32 * 4;
+                let novo = self.alocar_no_jogo(ponte, bytes)?;
+                if novo == 0 {
+                    self.assumptions
+                        .insert("a resposta não foi entregue: não deu para crescer o vetor");
+                    return Ok(());
+                }
+                self.call_guest_with_stack(ponte.liberador, [vetor, 0, 0, 0], &[], PONTE_BUDGET)?;
+                self.cpu.write_u32(resposta + 4, novo)?;
+                self.cpu.write_u32(resposta + 0xc, campos.len() as u32)?;
+                novo
+            }
+        };
+
         for (i, campo) in campos.iter().enumerate() {
             let bytes = campo.as_bytes();
-            let tamanho = bytes.len() as u32 + 1;
-            let outcome = self.call_guest_with_stack(
-                ponte.alocador,
-                [tamanho, 0, LINHA_DE_ORIGEM, ponte.origem],
-                &[1],
-                PONTE_BUDGET,
-            )?;
-            let Outcome::Returned { code: endereco } = outcome else {
-                self.assumptions
-                    .insert("a resposta não foi entregue: o alocador do jogo não retornou");
-                return Ok(());
-            };
+            let endereco = self.alocar_no_jogo(ponte, bytes.len() as u32 + 1)?;
             if endereco == 0 {
                 return Ok(());
             }
@@ -6396,6 +6405,27 @@ impl<C: CpuBackend> Machine<C> {
         // uma via. No console quem a ligava era o despachante, ao depositar a resposta.
         self.cpu.write_mem(resposta + 0x18, &[1])?;
         Ok(())
+    }
+
+    /// Pede memória ao alocador do próprio jogo, pela ponte.
+    ///
+    /// A assinatura observada é `(tamanho, pool, linha, arquivo, 1)`, com o pool zero — que ele
+    /// exige menor que 32 — e os dois do meio servindo ao rastreio de origem dele.
+    fn alocar_no_jogo(&mut self, ponte: ponte::Ponte, tamanho: u32) -> Result<u32, CpuError> {
+        let outcome = self.call_guest_with_stack(
+            ponte.alocador,
+            [tamanho, 0, LINHA_DE_ORIGEM, ponte.origem],
+            &[1],
+            PONTE_BUDGET,
+        )?;
+        match outcome {
+            Outcome::Returned { code } => Ok(code),
+            _ => {
+                self.assumptions
+                    .insert("a resposta não foi entregue: o alocador do jogo não retornou");
+                Ok(0)
+            }
+        }
     }
 
     /// Avisa o jogo que a requisição terminou.
