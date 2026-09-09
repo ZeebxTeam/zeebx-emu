@@ -751,6 +751,9 @@ const AEECLSID_DISPLAY1: u32 = 0x0101_27d4;
 /// `AEECLSID_FILEMGR`, do `AEECLSID_FILEMGR.bid` do SDK. No `AEEClassIDs.h` ele aparece só
 /// comentado, o que já me fez errar esse valor uma vez.
 const AEECLSID_FILEMGR: u32 = 0x0100_1003;
+/// `0x01011810`, o `ICM`. Ver [`Interface::Cm`].
+const AEECLSID_CM: u32 = 0x0101_1810;
+
 /// `0x01028e3c`, a terceira extensão que a Z-Wheel pede. Ver [`Interface::Classe28e3c`].
 const AEECLSID_28E3C: u32 = 0x0102_8e3c;
 
@@ -2524,6 +2527,10 @@ impl<C: CpuBackend> Machine<C> {
                 None => return Ok(None),
             },
             (Interface::Widget, _) => match self.widget_call(slot)? {
+                Some(result) => result,
+                None => return Ok(None),
+            },
+            (Interface::Cm, _) => match self.cm_call(slot)? {
                 Some(result) => result,
                 None => return Ok(None),
             },
@@ -6489,6 +6496,41 @@ impl<C: CpuBackend> Machine<C> {
         Ok(Some(result))
     }
 
+    /// Atende o `ICM`. Ver [`Interface::Cm`].
+    fn cm_call(&mut self, slot: u32) -> Result<Option<u32>, CpuError> {
+        /// Deslocamento do modo de operação dentro do `AEECMPhInfo`, lido em `0x87cb0`.
+        const MODO_DE_OPERACAO: u32 = 0xc;
+        /// `SYS_OPRT_MODE_ONLINE`. É com este número que a `0x77564` compara.
+        const NO_AR: u32 = 5;
+
+        let Some(name) = Interface::Cm.method(slot) else {
+            return Ok(None);
+        };
+        let this = self.cpu.read_reg(Reg::R0);
+        let result = match name {
+            "AddRef" => self.objects.add_ref(this),
+            "Release" => self.objects.release(this),
+            "GetPhoneInfo" => {
+                let (info, tamanho) = (
+                    self.cpu.read_reg(Reg::R1),
+                    self.cpu.read_reg(Reg::R2) as usize,
+                );
+                if info == 0 || tamanho <= MODO_DE_OPERACAO as usize {
+                    return Ok(Some(EBADPARM));
+                }
+                // Zerar o resto é parte da resposta: o jogo passa um buffer que ele mesmo
+                // zerou, mas quem chama esta função não pode contar com isso.
+                self.cpu.write_mem(info, &vec![0u8; tamanho])?;
+                self.cpu.write_u32(info + MODO_DE_OPERACAO, NO_AR)?;
+                self.assumptions
+                    .insert("o ICM respondeu que o rádio está no ar, com o resto da AEECMPhInfo zerado");
+                SUCCESS
+            }
+            _ => SUCCESS,
+        };
+        Ok(Some(result))
+    }
+
     /// Atende a lista genérica da Z-Wheel. Ver [`Interface::Vetor`].
     fn vetor_call(&mut self, slot: u32) -> Result<Option<u32>, CpuError> {
         /// O índice que o jogo passa para dizer "no fim".
@@ -6539,6 +6581,21 @@ impl<C: CpuBackend> Machine<C> {
                     n => (n as usize).min(itens.len()),
                 };
                 itens.insert(onde, item);
+                SUCCESS
+            }
+            // O par `RemoverEm(0)` + `PegarEm(0)` em `0x7d788` é um laço que drena a lista: o
+            // jogo tira o primeiro, pega o novo primeiro e repete até não haver mais. Sem o
+            // `RemoverEm` de verdade ele nunca acaba — foram sete milhões de voltas até o
+            // orçamento de instruções estourar.
+            "RemoverEm" => {
+                let indice = self.cpu.read_reg(Reg::R1) as usize;
+                let Some((itens, _)) = self.vetores.get_mut(&this) else {
+                    return Ok(Some(EBADPARM));
+                };
+                if indice >= itens.len() {
+                    return Ok(Some(EBADPARM));
+                }
+                itens.remove(indice);
                 SUCCESS
             }
             // O liberador é ponteiro de função do módulo, e é para ele que o `Esvaziar` do
@@ -9843,6 +9900,7 @@ impl<C: CpuBackend> Machine<C> {
             AEECLSID_CONFIG => Interface::Config,
             AEECLSID_VETOR => Interface::Vetor,
             AEECLSID_28E3C => Interface::Classe28e3c,
+            AEECLSID_CM => Interface::Cm,
             AEECLSID_MD5 => Interface::Hash,
             AEECLSID_CIPHER_FACTORY => Interface::CipherFactory,
             AEECLSID_MEDIA | AEECLSID_MEDIAMIDI | AEECLSID_MEDIAMP3 | AEECLSID_MEDIAADPCM

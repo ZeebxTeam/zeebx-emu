@@ -180,6 +180,7 @@ pub enum Interface {
     /// | 5 | tamanho | `0x7f170`, e o resultado vira o teto do laço |
     /// | 6 | pegar em | `0x7f190`, com `(índice, &saída)`; o jogo testa se o texto começa com `#` |
     /// | 8 | inserir em | `0x884f0`, com índice `-1` — inserir no fim |
+    /// | 9 | remover em | `0x7d788`, com índice `0`, no laço que esvazia a lista item a item |
     /// | 10 | esvaziar | `0x80010`, uma vez, logo antes do `Release` |
     /// | 12 | definir liberador | `0x88458`, recebendo **ponteiro de função do módulo** |
     ///
@@ -194,6 +195,18 @@ pub enum Interface {
     /// nome seria invenção, e do jeito que está a primeira chamada de verdade vai aparecer no
     /// relatório em vez de ser atendida por acaso.
     Classe28e3c = 46,
+    /// `0x01011810`, o que a Z-Wheel chama de **ICM** — o gerenciador de chamadas do BREW.
+    ///
+    /// A `tectoymain.c:1037` desiste da inicialização se não conseguir criá-lo. O que ela quer
+    /// dele é uma coisa só, e o código diz qual: `0x87c40` zera um buffer de `0x340` bytes,
+    /// chama o **slot 28** com `(buffer, 0x340)` e devolve a palavra em `+0xc`. Em `0x77564` o
+    /// chamador compara essa palavra com **5**.
+    ///
+    /// Cinco é o `SYS_OPRT_MODE_ONLINE` do modo de operação do rádio da Qualcomm, e o campo
+    /// bate com o `oprt_mode` do `AEECMPhInfo`. Ou seja: a pergunta é "o rádio está no ar?", e
+    /// aqui a resposta é sim. É hipótese, e está registrada como tal no relatório — mas é
+    /// hipótese com dois apoios independentes, o valor e a posição.
+    Cm = 47,
     /// Objeto de uma classe que ainda não conhecemos, criado a pedido do `--sonda`.
     ///
     /// Não implementa interface nenhuma: existe para **descobrir qual é**. Toda chamada é
@@ -213,7 +226,7 @@ impl Interface {
     /// as duas coisas precisam concordar — daí a lista existir num lugar só, com teste que
     /// confere a correspondência. Quando elas divergiram, um objeto recebeu a vtable de outra
     /// interface e a chamada foi parar no método errado, com sintoma a quilômetros da causa.
-    pub const ALL: [Interface; 47] = [
+    pub const ALL: [Interface; 48] = [
         Self::Shell,
         Self::Module,
         Self::Applet,
@@ -261,6 +274,7 @@ impl Interface {
         Self::Peek,
         Self::Vetor,
         Self::Classe28e3c,
+        Self::Cm,
     ];
 
     /// Nome usado nos logs — casa com a nomenclatura do SDK.
@@ -311,6 +325,7 @@ impl Interface {
             Self::Peek => "IPeek",
             Self::Vetor => "IVetor",
             Self::Classe28e3c => "I28e3c",
+            Self::Cm => "ICM",
             Self::Probe => "ClasseDesconhecida",
             Self::Helpers => "AEEHelpers",
         }
@@ -364,6 +379,7 @@ impl Interface {
             Self::Peek => aee_slots::PEEK,
             Self::Vetor => aee_slots::VETOR,
             Self::Classe28e3c => aee_slots::CLASSE_28E3C,
+            Self::Cm => aee_slots::CM,
             // A sonda não tem tabela: `method` responde por ela antes de chegar aqui.
             Self::Probe => &[],
             Self::Helpers => aee_helpers::HELPERS,
@@ -433,6 +449,7 @@ impl Interface {
             44 => Self::Peek,
             45 => Self::Vetor,
             46 => Self::Classe28e3c,
+            47 => Self::Cm,
             6 => Self::Helpers,
             _ => return None,
         })

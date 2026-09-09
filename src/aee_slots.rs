@@ -877,6 +877,41 @@ pub const ZEEBO_MCP: &[&str] = &["AddRef", "Release", "QueryInterface"];
 /// se mostrou ser de fachada.
 pub const CONFIG: &[&str] = &["AddRef", "Release", "GetItem", "SetItem"];
 
+/// Métodos do `ICM` (`0x01011810`), dos quais conhecemos um.
+///
+/// O slot 28 é o único que a Z-Wheel chama. Ver [`crate::aee::Interface::Cm`].
+pub const CM: &[&str] = &[
+    "AddRef",
+    "Release",
+    "slot2",
+    "slot3",
+    "slot4",
+    "slot5",
+    "slot6",
+    "slot7",
+    "slot8",
+    "slot9",
+    "slot10",
+    "slot11",
+    "slot12",
+    "slot13",
+    "slot14",
+    "slot15",
+    "slot16",
+    "slot17",
+    "slot18",
+    "slot19",
+    "slot20",
+    "slot21",
+    "slot22",
+    "slot23",
+    "slot24",
+    "slot25",
+    "slot26",
+    "slot27",
+    "GetPhoneInfo",
+];
+
 /// Métodos da `0x01028e3c`, dos quais conhecemos dois — e são os dois de toda interface.
 ///
 /// Ver [`crate::aee::Interface::Classe28e3c`]: a Z-Wheel cria duas e não chama nada nelas.
@@ -896,7 +931,7 @@ pub const VETOR: &[&str] = &[
     "PegarEm",
     "slot7",
     "InserirEm",
-    "slot9",
+    "RemoverEm",
     "Esvaziar",
     "slot11",
     "DefinirLiberador",
