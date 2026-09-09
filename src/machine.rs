@@ -1512,6 +1512,8 @@ pub struct Machine<C: CpuBackend> {
     bridge: bool,
     /// Uma resposta esperando a fronteira de chamada: `(objeto, âncora, estado)`.
     pending_response: Option<(u32, u32, u32)>,
+    /// O objeto que ainda precisa saber que o fluxo acabou, na fronteira seguinte.
+    pending_end: Option<u32>,
     /// As respostas que a ponte chegou a depositar na memória do jogo.
     delivered: Vec<String>,
     /// Para onde desviar as conexões, quando se quer um servidor que não é o do endereço.
@@ -1698,6 +1700,7 @@ impl<C: CpuBackend> Machine<C> {
             // desliga.
             bridge: std::env::var_os("ZEEBX_SEM_PONTE").is_none(),
             pending_response: None,
+            pending_end: None,
             delivered: Vec::new(),
             plaintexts: std::collections::VecDeque::new(),
             ignored_gl: BTreeSet::new(),
@@ -6334,6 +6337,11 @@ impl<C: CpuBackend> Machine<C> {
     /// volta do laço e, ao vê-lo em "recebendo", lê a contagem — se avisássemos antes de
     /// entregar, ele leria zero e concluiria que não veio nada.
     fn flush_response(&mut self) -> Result<(), CpuError> {
+        // O fim do fluxo anunciado na fronteira seguinte à entrega, para dar ao jogo uma volta
+        // inteira em que ele consome os campos.
+        if let Some(resposta) = self.pending_end.take() {
+            self.cpu.write_mem(resposta + FIM_DO_FLUXO, &[1])?;
+        }
         let Some((objeto, base, estado)) = self.pending_response.take() else {
             return Ok(());
         };
@@ -6419,14 +6427,16 @@ impl<C: CpuBackend> Machine<C> {
         // ligava era o despachante.
         self.cpu.write_mem(resposta + 0x18, &[1])?;
 
-        // E a marca de "acabou o fluxo". O `ConnectionManager` recebe em pedaços: a cada pedaço
-        // chama o parser, e quando chega um de **zero bytes** ele finaliza e liga esta
-        // (`0xa26fc` desvia para `0xa2754`, que chama o setter em `0x85b38` com 1).
+        // A marca de "acabou o fluxo" fica para a **próxima** fronteira, e essa espera é o ponto.
         //
-        // Sem ela o consumidor nunca dá a leitura por completa — `0x85b44` só devolve sucesso
-        // com esta e a de fim de campos ligadas —, e o jogo espera para sempre. Entregamos tudo
-        // de uma vez, então o fim é agora.
-        self.cpu.write_mem(resposta + FIM_DO_FLUXO, &[1])?;
+        // O `ConnectionManager` recebe em pedaços: a cada um chama o parser, e só quando chega
+        // um de zero bytes ele liga a marca. Entre um pedaço e outro o jogo consulta a resposta
+        // e **consome os campos**. Ligá-la junto com a entrega pulava esse consumo — o tratador
+        // em `0x85c9c` desvia direto para o fim quando a marca já está lá, devolve sucesso e o
+        // boneco fica sem os números.
+        //
+        // Entregamos tudo de uma vez, então imitamos o intervalo: o texto agora, o fim depois.
+        self.pending_end = Some(resposta);
 
         let campos = self.cpu.read_u32(resposta + 8).unwrap_or(0);
         self.delivered.push(format!(
