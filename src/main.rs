@@ -182,6 +182,10 @@ fn main() -> ExitCode {
                     profile,
                     wall,
                     network: !args.iter().any(|a| a == "--sem-rede"),
+                    network_to: args
+                        .iter()
+                        .find_map(|a| a.strip_prefix("--servidor="))
+                        .map(str::to_owned),
                 },
             ))
         }
@@ -196,7 +200,7 @@ fn main() -> ExitCode {
                              [--trace[=trecho]] [--watch=0xADDR] [--dump-heap]
                              [--code=0xINI:0xFIM] [--frames=N]
                              [--profile] [--wall=SEGUNDOS] [--sonda=0xCLSID,...]
-                             [--sem-rede]"
+                             [--sem-rede] [--servidor=MAQUINA[:PORTA]]"
             );
             ExitCode::FAILURE
         }
@@ -291,6 +295,8 @@ struct Options {
     wall: Option<u64>,
     /// Se o jogo pode falar com a rede. Ligada por padrão; o `--sem-rede` desliga.
     network: bool,
+    /// Para onde desviar as conexões, com `--servidor=MAQUINA[:PORTA]`.
+    network_to: Option<String>,
 }
 
 fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
@@ -311,6 +317,7 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
         profile,
         wall,
         network,
+        network_to,
     } = options;
     // Um jogo em `.zip` é extraído para o cache e rodado de lá, como na interface.
     let extracted;
@@ -362,6 +369,7 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
         machine.probe_answer(*classe, *slot, *valor);
     }
     machine.set_network(network);
+    machine.set_network_to(network_to);
     if profile {
         machine.cpu_mut().enable_profile();
         machine.enable_api_profile();

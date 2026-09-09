@@ -409,6 +409,18 @@ const AEECLSID_QEGL: u32 = 0x0103_d8ec;
 const AEECLSID_EGL: u32 = 0x0101_4bc4;
 /// `AEECLSID_WEB`, do `BMPIds.csv` do SDK: o cliente HTTP do BREW.
 const AEECLSID_WEB: u32 = 0x0100_5000;
+/// Os estados da conexão, lidos do `switch` da tela de sync do Zeeboids em `0x95bb8`.
+///
+/// Ela lê o campo toda volta: `0` e `2` mantêm o "Connecting", `9` leva ao "ReceivingData" e
+/// `11` ao ramo de falha, ao lado da string `Connection_Failed`.
+const ESTADO_TRABALHANDO: u32 = 0;
+const ESTADO_TRABALHANDO_2: u32 = 2;
+const ESTADO_RECEBENDO: u32 = 9;
+const ESTADO_FALHOU: u32 = 11;
+
+/// Onde fica o estado, em relação à URL: doze bytes antes dela, no mesmo objeto.
+const OFFSET_ESTADO_ANTES_DA_URL: u32 = 0xc;
+
 /// Até onde procurar o trio `{url, corpo, tamanho}` no objeto de quem pediu o envio.
 ///
 /// O do Zeeboids está em `+0x244`; mil bytes cobrem folgadamente objetos desse tamanho sem sair
@@ -1444,6 +1456,8 @@ pub struct Machine<C: CpuBackend> {
     ciphers: HashMap<u32, CipherState>,
     /// O par que o `SetHandler` do formulário raiz guardou, por objeto.
     root_forms: HashMap<u32, (u32, u32)>,
+    /// Para onde desviar as conexões, quando se quer um servidor que não é o do endereço.
+    network_to: Option<String>,
     /// Se o emulador pode falar com a rede.
     ///
     /// Dar rede a um binário de origem externa é decisão de projeto, então ela é explícita e
@@ -1615,6 +1629,7 @@ impl<C: CpuBackend> Machine<C> {
             image_notify: HashMap::new(),
             root_forms: HashMap::new(),
             network: true,
+            network_to: None,
             web_response: Vec::new(),
             streams: HashMap::new(),
             sounds: HashMap::new(),
@@ -6171,7 +6186,7 @@ impl<C: CpuBackend> Machine<C> {
     /// chamada ainda guarda o objeto de quem chamou.
     fn send_request(&mut self, corpo: u32, tamanho: u32, saida: u32) -> Result<u32, CpuError> {
         let objeto = self.cpu.read_reg(Reg::R4);
-        let mut url = None;
+        let mut achado = None;
         for i in 0..MAX_CAMPOS_DO_OBJETO {
             let base = objeto + i * 4;
             if self.cpu.read_u32(base + 4) == Ok(corpo)
@@ -6180,12 +6195,12 @@ impl<C: CpuBackend> Machine<C> {
             {
                 let texto = self.cpu.read_cstring(ponteiro, MAX_STRING);
                 if texto.starts_with("http") {
-                    url = Some(texto);
+                    achado = Some((texto, base));
                     break;
                 }
             }
         }
-        let Some(url) = url else {
+        let Some((url, base)) = achado else {
             self.assumptions
                 .insert("um envio foi recusado: não achei a URL no objeto de quem chamou");
             return Ok(EFAILED);
@@ -6201,7 +6216,7 @@ impl<C: CpuBackend> Machine<C> {
         // vendo o jogo ler. Guardamos a resposta e deixamos o ponteiro como está, em vez de
         // escrever um palpite de struct sobre a memória do jogo.
         let _ = saida;
-        Ok(match rede::post(&url, &dados) {
+        let (resultado, estado) = match rede::post(&url, &dados, self.network_to.as_deref()) {
             Ok(resposta) => {
                 self.web_requests.insert(format!(
                     "{url} -> {} ({} bytes de resposta)",
@@ -6209,13 +6224,40 @@ impl<C: CpuBackend> Machine<C> {
                     resposta.corpo.len()
                 ));
                 self.web_response = resposta.corpo;
-                SUCCESS
+                (SUCCESS, ESTADO_RECEBENDO)
             }
             Err(erro) => {
                 self.web_requests.insert(format!("{url} -> falhou: {erro}"));
-                EFAILED
+                (EFAILED, ESTADO_FALHOU)
             }
-        })
+        };
+        self.finish_request(base, estado)?;
+        Ok(resultado)
+    }
+
+    /// Avisa o jogo que a requisição terminou.
+    ///
+    /// Ele não espera evento nenhum: a tela de sync **consulta um campo de estado** do objeto de
+    /// quem pediu, e enquanto ele valer 0 ou 2 continua mostrando "Connecting". Com 9 ela vai
+    /// para "ReceivingData" e lê a resposta; com 11 vai para o ramo de falha.
+    ///
+    /// O campo fica doze bytes antes da URL, no mesmo objeto — então ele é achado pela mesma
+    /// âncora que já se conferiu, e não por um deslocamento solto.
+    ///
+    /// **A trava está aqui**: só escrevemos se o campo tiver agora um dos valores que o próprio
+    /// código do jogo trata como "em andamento". Se tiver qualquer outra coisa, a âncora não é o
+    /// que pensamos e não mexemos na memória dele. Escrever um palpite sobre a memória do guest
+    /// é o tipo de erro que se paga caro e tarde.
+    fn finish_request(&mut self, base: u32, estado: u32) -> Result<(), CpuError> {
+        let campo = base - OFFSET_ESTADO_ANTES_DA_URL;
+        match self.cpu.read_u32(campo) {
+            Ok(ESTADO_TRABALHANDO | ESTADO_TRABALHANDO_2) => self.cpu.write_u32(campo, estado),
+            _ => {
+                self.assumptions
+                    .insert("o estado da conexão não foi avisado: o campo não parecia o esperado");
+                Ok(())
+            }
+        }
     }
 
     fn collection_call(&mut self, slot: u32) -> Result<Option<u32>, CpuError> {
@@ -6415,6 +6457,11 @@ impl<C: CpuBackend> Machine<C> {
     /// Liga ou desliga o acesso à rede.
     pub fn set_network(&mut self, ligada: bool) {
         self.network = ligada;
+    }
+
+    /// Desvia as conexões para outra máquina ou porta, sem mexer no que o jogo pediu.
+    pub fn set_network_to(&mut self, destino: Option<String>) {
+        self.network_to = destino;
     }
 
     /// O corpo da última resposta HTTP recebida.

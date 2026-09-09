@@ -60,9 +60,18 @@ pub fn separa(url: &str) -> Result<(String, u16, String), String> {
 ///
 /// O `Content-Type` é `application/octet-stream` porque é o que o jogo declara — as três strings
 /// que descrevem a requisição no módulo do Zeeboids são `POST`, `X-Method: POST` e esse tipo.
-pub fn post(url: &str, corpo: &[u8]) -> Result<Resposta, String> {
+///
+/// O `desvio` troca **para onde** a conexão vai, sem tocar no que o jogo pediu: o `Host` e o
+/// caminho continuam os da URL original. É assim que se aponta um jogo para um servidor privado
+/// — mudando a configuração do emulador, e não remendando o binário do jogo em memória. Serve
+/// também para testar sem privilégio, já que a porta 80 pede root.
+pub fn post(url: &str, corpo: &[u8], desvio: Option<&str>) -> Result<Resposta, String> {
     let (maquina, porta, caminho) = separa(url)?;
-    let alvo = format!("{maquina}:{porta}");
+    let alvo = match desvio {
+        Some(d) if d.contains(':') => d.to_string(),
+        Some(d) => format!("{d}:{porta}"),
+        None => format!("{maquina}:{porta}"),
+    };
     let endereco = std::net::ToSocketAddrs::to_socket_addrs(&alvo)
         .map_err(|e| format!("não resolvi {alvo}: {e}"))?
         .next()
@@ -148,6 +157,16 @@ mod tests {
         assert!(separa("socket://zeebo-cust.opera-mini.net:1080/").is_err());
         assert!(separa("http://:80/x").is_err());
         assert!(separa("http://exemplo:porta/x").is_err());
+    }
+
+    #[test]
+    fn o_desvio_nao_muda_o_que_o_jogo_pediu() {
+        // O desvio é só o destino da conexão. Se ele mudasse o `Host` ou o caminho, o servidor
+        // do outro lado receberia uma requisição diferente da que o jogo fez — e o registro
+        // dele deixaria de descrever o jogo.
+        let (maquina, _, caminho) = separa("http://www.zeeboids.com/a/b.php").unwrap();
+        assert_eq!(maquina, "www.zeeboids.com");
+        assert_eq!(caminho, "/a/b.php");
     }
 
     #[test]
