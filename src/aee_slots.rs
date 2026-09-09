@@ -846,6 +846,14 @@ pub const WIDGET: &[&str] = &["AddRef", "Release", "slot2", "Acessador"];
 /// até alguém chamá-los.
 pub const ZEEBO_MCP: &[&str] = &["AddRef", "Release", "QueryInterface"];
 
+/// Métodos da `IConfig` (`0x01001027`). Ver [`crate::aee::Interface::Config`].
+///
+/// Quatro, não doze: os nomes de 2 e 3 vêm do `ICONFIG_GetItem`/`ICONFIG_SetItem` do SDK, e a
+/// forma da chamada da Z-Wheel confere com a assinatura. Os oito de cima ficam sem nome para
+/// que uma chamada neles apareça no relatório — a vtable do firmware, que os teria, é a que já
+/// se mostrou ser de fachada.
+pub const CONFIG: &[&str] = &["AddRef", "Release", "GetItem", "SetItem"];
+
 /// Métodos da coleção genérica da Z-Wheel (`0x0102c4e8`… não: `0x0100104f`).
 ///
 /// Sem header. Os nomes saíram do uso, observado com o `--sonda`: o app cria a coleção, chama o

@@ -134,6 +134,24 @@ pub enum Interface {
     /// propósito — a Z-Wheel, até agora, só cria e solta o objeto, e uma chamada num deles é
     /// coisa para aparecer no relatório, não para ser atendida por adivinhação.
     ZeeboMcp = 41,
+    /// `0x01001027`, a `IConfig` do BREW — os itens de configuração do aparelho.
+    ///
+    /// A `Tectoy_SetLanguagePref` da Z-Wheel chama o **slot 3** com `(0x3f, ponteiro, 4)`, que
+    /// é a forma do `ICONFIG_SetItem(pMe, nItem, pBuff, nSize)` do SDK; o slot 2 é o
+    /// `GetItem` correspondente. É isso que está implementado: os itens ficam guardados por
+    /// número, e quem grava relê o que gravou.
+    ///
+    /// **A vtable do firmware não serviu, e é bom dizer por quê.** A entrada desta classe no
+    /// `1.1.2_APPS.bin` existe (construtor `0x1125fbbc`, vtable `0x1086b554`, doze métodos),
+    /// mas nove desses doze são literalmente `movs r0,#0x14; bx lr` — devolvem `EUNSUPPORTED`
+    /// e nada mais, o `SetItem` inclusive. Copiar aquilo daria um `IConfig` que faz o console
+    /// falhar: a Z-Wheel imprime `Unable to set language to config, error 20` e desiste. A
+    /// leitura mais provável é que aquela entrada seja um registro de fachada da partição de
+    /// aplicativos, e que a `IConfig` de verdade viva no lado do BREW, que não temos.
+    ///
+    /// Por isso só os quatro primeiros slots têm nome. Os oito de cima ficam de fora de
+    /// propósito: sobre eles a única fonte seria a tabela que já se mostrou errada.
+    Config = 42,
     /// Objeto de uma classe que ainda não conhecemos, criado a pedido do `--sonda`.
     ///
     /// Não implementa interface nenhuma: existe para **descobrir qual é**. Toda chamada é
@@ -153,7 +171,7 @@ impl Interface {
     /// as duas coisas precisam concordar — daí a lista existir num lugar só, com teste que
     /// confere a correspondência. Quando elas divergiram, um objeto recebeu a vtable de outra
     /// interface e a chamada foi parar no método errado, com sintoma a quilômetros da causa.
-    pub const ALL: [Interface; 42] = [
+    pub const ALL: [Interface; 43] = [
         Self::Shell,
         Self::Module,
         Self::Applet,
@@ -196,6 +214,7 @@ impl Interface {
         Self::RootForm,
         Self::Widget,
         Self::ZeeboMcp,
+        Self::Config,
     ];
 
     /// Nome usado nos logs — casa com a nomenclatura do SDK.
@@ -241,6 +260,7 @@ impl Interface {
             Self::RootForm => "IFormRaiz",
             Self::Widget => "IWidget",
             Self::ZeeboMcp => "IZeeboMCP",
+            Self::Config => "IConfig",
             Self::Probe => "ClasseDesconhecida",
             Self::Helpers => "AEEHelpers",
         }
@@ -289,6 +309,7 @@ impl Interface {
             Self::RootForm => aee_slots::ROOT_FORM,
             Self::Widget => aee_slots::WIDGET,
             Self::ZeeboMcp => aee_slots::ZEEBO_MCP,
+            Self::Config => aee_slots::CONFIG,
             // A sonda não tem tabela: `method` responde por ela antes de chegar aqui.
             Self::Probe => &[],
             Self::Helpers => aee_helpers::HELPERS,
@@ -353,6 +374,7 @@ impl Interface {
             39 => Self::RootForm,
             40 => Self::Widget,
             41 => Self::ZeeboMcp,
+            42 => Self::Config,
             6 => Self::Helpers,
             _ => return None,
         })

@@ -714,6 +714,9 @@ const AEECLSID_DISPLAY1: u32 = 0x0101_27d4;
 /// `AEECLSID_FILEMGR`, do `AEECLSID_FILEMGR.bid` do SDK. No `AEEClassIDs.h` ele aparece só
 /// comentado, o que já me fez errar esse valor uma vez.
 const AEECLSID_FILEMGR: u32 = 0x0100_1003;
+/// `0x01001027`, a `IConfig`. Ver [`Interface::Config`].
+const AEECLSID_CONFIG: u32 = 0x0100_1027;
+
 /// `0x01006c05`, o ZEEBOMCP. Ver [`Interface::ZeeboMcp`].
 const AEECLSID_ZEEBOMCP: u32 = 0x0100_6c05;
 
@@ -1514,6 +1517,8 @@ pub struct Machine<C: CpuBackend> {
     ciphers: HashMap<u32, CipherState>,
     /// O par que o `SetHandler` do formulário raiz guardou, por objeto.
     root_forms: HashMap<u32, (u32, u32)>,
+    /// Os itens de cada `IConfig` vivo, por objeto: número do item -> bytes.
+    config_items: HashMap<u32, HashMap<u32, Vec<u8>>>,
     /// Os filhos e as propriedades de cada widget vivo, por objeto: `id -> filho` e
     /// `id -> valor`. Guardar é o que faz o acessador ser coerente consigo mesmo — pedir duas
     /// vezes o filho `0x5000` tem de devolver o mesmo objeto, ou o jogo fica com dois.
@@ -1708,6 +1713,7 @@ impl<C: CpuBackend> Machine<C> {
             image_notify: HashMap::new(),
             root_forms: HashMap::new(),
             widgets: HashMap::new(),
+            config_items: HashMap::new(),
             network: true,
             // Pelo mesmo motivo, o desvio de servidor também vem do ambiente:
             // `ZEEBX_SERVIDOR=127.0.0.1:8080`. Sem isso, apontar um jogo para um servidor de
@@ -2460,6 +2466,10 @@ impl<C: CpuBackend> Machine<C> {
                 }
                 result
             }
+            (Interface::Config, _) => match self.config_call(slot)? {
+                Some(result) => result,
+                None => return Ok(None),
+            },
             (Interface::ZeeboMcp, _) => match self.zeebo_mcp_call(slot)? {
                 Some(result) => result,
                 None => return Ok(None),
@@ -6248,6 +6258,65 @@ impl<C: CpuBackend> Machine<C> {
     /// A aposta é explícita: se o aplicativo só precisava que o formulário existisse e aceitasse
     /// os widgets, ele passa; se ele depende do que o contêiner interno faria, ele para mais
     /// adiante — e aí o próximo passo aparece, que é melhor do que parar na criação.
+    /// Atende a `IConfig`. Ver [`Interface::Config`].
+    ///
+    /// `int ICONFIG_GetItem(IConfig *pMe, ConfigItem nItem, void *pBuff, int nSize)` e o
+    /// `SetItem` de mesma forma. Os itens vivem enquanto o emulador roda, como as preferências
+    /// do `ISHELL_GetPrefs`: gravá-los em disco seria inventar um formato que o console tinha e
+    /// nós não conhecemos. O que precisa valer é que quem grava releia o que gravou.
+    fn config_call(&mut self, slot: u32) -> Result<Option<u32>, CpuError> {
+        let Some(name) = Interface::Config.method(slot) else {
+            return Ok(None);
+        };
+        let this = self.cpu.read_reg(Reg::R0);
+        let result = match name {
+            "AddRef" => self.objects.add_ref(this),
+            "Release" => {
+                let restantes = self.objects.release(this);
+                if restantes == 0 {
+                    self.config_items.remove(&this);
+                }
+                restantes
+            }
+            "GetItem" => {
+                let (item, buffer, tamanho) = (
+                    self.cpu.read_reg(Reg::R1),
+                    self.cpu.read_reg(Reg::R2),
+                    self.cpu.read_reg(Reg::R3) as usize,
+                );
+                match self.config_items.get(&this).and_then(|itens| itens.get(&item)) {
+                    // Devolver menos do que foi pedido seria deixar o resto do buffer com o
+                    // que já estava lá, e o jogo leria lixo achando que leu configuração.
+                    Some(dados) if dados.len() >= tamanho => {
+                        let recorte = dados[..tamanho].to_vec();
+                        self.cpu.write_mem(buffer, &recorte)?;
+                        SUCCESS
+                    }
+                    _ => EFAILED,
+                }
+            }
+            "SetItem" => {
+                let (item, buffer, tamanho) = (
+                    self.cpu.read_reg(Reg::R1),
+                    self.cpu.read_reg(Reg::R2),
+                    self.cpu.read_reg(Reg::R3) as usize,
+                );
+                if tamanho == 0 || tamanho > MAX_STRING {
+                    return Ok(Some(EFAILED));
+                }
+                let mut dados = vec![0u8; tamanho];
+                self.cpu.read_mem(buffer, &mut dados)?;
+                self.config_items
+                    .entry(this)
+                    .or_default()
+                    .insert(item, dados);
+                SUCCESS
+            }
+            _ => SUCCESS,
+        };
+        Ok(Some(result))
+    }
+
     /// Atende o ZEEBOMCP. Ver [`Interface::ZeeboMcp`].
     ///
     /// Só os três slots lidos no firmware são atendidos; os cinco de baixo caem fora e viram
@@ -9508,6 +9577,7 @@ impl<C: CpuBackend> Machine<C> {
             AEECLSID_ROOTFORM => Interface::RootForm,
             AEECLSID_WIDGET => Interface::Widget,
             AEECLSID_ZEEBOMCP => Interface::ZeeboMcp,
+            AEECLSID_CONFIG => Interface::Config,
             AEECLSID_MD5 => Interface::Hash,
             AEECLSID_CIPHER_FACTORY => Interface::CipherFactory,
             AEECLSID_MEDIA | AEECLSID_MEDIAMIDI | AEECLSID_MEDIAMP3 | AEECLSID_MEDIAADPCM
