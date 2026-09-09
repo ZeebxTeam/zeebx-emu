@@ -132,10 +132,6 @@ impl Session {
         Self::start_inner(path, Some(portas))
     }
 
-    pub fn start(path: &Path) -> Result<Self, StartError> {
-        Self::start_inner(path, None)
-    }
-
     fn start_inner(
         path: &Path,
         portas: Option<[Option<crate::bindings::Aparelho>; crate::input::PORTAS]>,
@@ -495,7 +491,7 @@ mod tests {
 
     #[test]
     fn um_arquivo_que_nao_existe_diz_que_nao_deu_para_ler() {
-        let err = Session::start(&std::env::temp_dir().join("zeebx-nao-existe.mod"));
+        let err = Session::start_inner(&std::env::temp_dir().join("zeebx-nao-existe.mod"), None);
         assert!(matches!(err, Err(StartError::Unreadable(_))));
     }
 
@@ -506,7 +502,7 @@ mod tests {
         // legível, porque é ele que a interface mostra.
         let path = std::env::temp_dir().join("zeebx-teste-lixo.mod");
         std::fs::write(&path, b"isto nao e um modulo").unwrap();
-        let Err(err) = Session::start(&path) else {
+        let Err(err) = Session::start_inner(&path, None) else {
             panic!("um arquivo de lixo não podia virar uma sessão");
         };
         assert!(!err.to_string().is_empty());
