@@ -414,6 +414,32 @@ const AEECLSID_WEB: u32 = 0x0100_5000;
 const PLAINTEXT_MAX: usize = 8;
 const PLAINTEXT_BYTES: usize = 512;
 
+/// As chamadas de GL que não fazemos **de propósito**, e que por isso não entram no relatório.
+///
+/// São estado que o nosso rasterizador não usa — profundidade, névoa, luz, stencil. Listá-las
+/// junto das que faltam esconderia as que importam no meio do ruído.
+const ATENDIDAS_EM_SILENCIO: &[&str] = &[
+    "DepthFunc",
+    "DepthRangef",
+    "DepthRangex",
+    "Fogf",
+    "Fogfv",
+    "Fogx",
+    "Fogxv",
+    "Hint",
+    "LineWidth",
+    "LineWidthx",
+    "PolygonOffset",
+    "PolygonOffsetx",
+    "SampleCoverage",
+    "SampleCoveragex",
+    "StencilFunc",
+    "StencilMask",
+    "StencilOp",
+    "Flush",
+    "Finish",
+];
+
 /// A marca de "o fluxo acabou", que o `ConnectionManager` liga ao receber um pedaço vazio.
 const FIM_DO_FLUXO: u32 = 0x1a;
 
@@ -1478,6 +1504,8 @@ pub struct Machine<C: CpuBackend> {
     ciphers: HashMap<u32, CipherState>,
     /// O par que o `SetHandler` do formulário raiz guardou, por objeto.
     root_forms: HashMap<u32, (u32, u32)>,
+    /// Chamadas de GL atendidas com sucesso sem fazer nada.
+    ignored_gl: BTreeSet<&'static str>,
     /// O que o jogo entregou ao `ICipher1`, em claro, antes de ser cifrado.
     plaintexts: std::collections::VecDeque<Vec<u8>>,
     /// Se a ponte do módulo pode entregar a resposta ao jogo. Ver [`crate::ponte`].
@@ -1672,6 +1700,7 @@ impl<C: CpuBackend> Machine<C> {
             pending_response: None,
             delivered: Vec::new(),
             plaintexts: std::collections::VecDeque::new(),
+            ignored_gl: BTreeSet::new(),
             web_response: Vec::new(),
             streams: HashMap::new(),
             sounds: HashMap::new(),
@@ -6662,6 +6691,11 @@ impl<C: CpuBackend> Machine<C> {
         self.network_to = destino;
     }
 
+    /// As chamadas de GL que atendemos sem fazer nada.
+    pub fn ignored_gl(&self) -> Vec<&'static str> {
+        self.ignored_gl.iter().copied().collect()
+    }
+
     /// As respostas que a ponte entregou ao jogo.
     pub fn delivered(&self) -> &[String] {
         &self.delivered
@@ -7421,6 +7455,7 @@ impl<C: CpuBackend> Machine<C> {
             "ClientActiveTexture" => self.gl.set_client_active_texture(a[0]),
             "BindTexture" => self.gl.bind_texture(a[1]),
             "TexImage2D" => self.gles_tex_image(&a)?,
+            "TexSubImage2D" => self.gles_tex_sub_image(&a)?,
             "CompressedTexImage2D" => self.gles_compressed_tex_image(&a)?,
 
             // --- Vetores e desenho ------------------------------------------------------
@@ -7497,7 +7532,18 @@ impl<C: CpuBackend> Machine<C> {
             // Os outros `Get*v` escrevem no ponteiro do segundo argumento; zerar é melhor que
             // deixar lixo, e nenhum jogo depende deles ainda.
             name if name.starts_with("Get") => self.write_at(a[1], 0)?,
-            _ => {}
+            // O resto é atendido com sucesso e não faz nada. Isso é deliberado para o estado que
+            // o nosso rasterizador não usa — profundidade, névoa, luz —, e recusar derrubaria
+            // jogos por nada. Mas o silêncio esconde as que **mudam o desenho**: o
+            // `TexSubImage2D` estava aqui, e o efeito era textura embaralhada sem uma linha de
+            // aviso. Registrar não custa, e dá por onde começar a investigar um desenho errado.
+            // glColorMask(r, g, b, a) — booleanos, um por canal.
+            "ColorMask" => self.gl.set_color_mask(std::array::from_fn(|i| a[i] != 0)),
+            outro => {
+                if !ATENDIDAS_EM_SILENCIO.contains(&outro) {
+                    self.ignored_gl.insert(full);
+                }
+            }
         }
         match answer {
             Some((_, value)) if legacy => Ok(Some(value)),
@@ -7609,6 +7655,46 @@ impl<C: CpuBackend> Machine<C> {
         texture.width = width as usize;
         texture.height = height as usize;
         texture.pixels = decoded;
+        Ok(())
+    }
+
+    /// `glTexSubImage2D`: troca um retângulo de dentro de uma textura que já existe.
+    ///
+    /// É como se monta imagem em pedaços — um retrato dentro de um atlas, um número que muda —,
+    /// e enquanto isto não existia a chamada era atendida em silêncio: a textura ficava com o
+    /// conteúdo antigo e o desenho saía embaralhado.
+    ///
+    /// Se o retângulo não couber na textura, não escrevemos nada. Recortar seria inventar um
+    /// resultado que o OpenGL não define.
+    fn gles_tex_sub_image(&mut self, a: &[u32; 10]) -> Result<(), CpuError> {
+        let (level, x, y, width, height) = (a[1], a[2], a[3], a[4], a[5]);
+        let (format, kind, pixels) = (a[6], a[7], a[8]);
+        if level != 0 || width == 0 || height == 0 || pixels == 0 {
+            return Ok(());
+        }
+        let texels = (width * height) as usize;
+        let bytes = self.read_bytes(pixels, width * height * bytes_per_texel(format, kind))?;
+        let novos = decode_texels(&bytes, format, kind, texels);
+
+        let name = self.gl.bound_texture();
+        // Trocar o conteúdo de uma textura que a fila ainda vai ler mudaria o passado.
+        self.gl.flush();
+        let Some(texture) = self.gl.textures.get_mut(&name) else {
+            return Ok(());
+        };
+        let (tw, th) = (texture.width as u32, texture.height as u32);
+        if x + width > tw || y + height > th {
+            self.bad_pointers.insert(format!(
+                "TexSubImage2D de {width}x{height} em ({x},{y}) não cabe numa textura {tw}x{th}"
+            ));
+            return Ok(());
+        }
+        for linha in 0..height {
+            let destino = ((y + linha) * tw + x) as usize;
+            let origem = (linha * width) as usize;
+            texture.pixels[destino..destino + width as usize]
+                .copy_from_slice(&novos[origem..origem + width as usize]);
+        }
         Ok(())
     }
 

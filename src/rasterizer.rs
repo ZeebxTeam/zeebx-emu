@@ -253,6 +253,8 @@ pub struct GlState {
     client_unit: u32,
     depth_test: bool,
     depth_mask: bool,
+    /// Quais canais de cor podem ser escritos, do `glColorMask`.
+    color_mask: [bool; 4],
     depth_func: u32,
     blend: bool,
     blend_src: u32,
@@ -299,6 +301,7 @@ impl GlState {
             client_unit: 0,
             depth_test: false,
             depth_mask: true,
+            color_mask: [true; 4],
             depth_func: gles::GL_LESS,
             blend: false,
             blend_src: gles::GL_ONE,
@@ -459,6 +462,15 @@ impl GlState {
 
     pub fn set_depth_mask(&mut self, on: bool) {
         self.depth_mask = on;
+    }
+
+    /// `glColorMask`: quais canais de cor o desenho pode escrever.
+    ///
+    /// Ignorar isto não é neutro. Um jogo que desenha uma passada só para o alfa — mascarando
+    /// vermelho, verde e azul — teria a cor pintada por cima do que já estava lá, e o resultado
+    /// é imagem embaralhada sem nenhum erro aparente.
+    pub fn set_color_mask(&mut self, mask: [bool; 4]) {
+        self.color_mask = mask;
     }
 
     pub fn set_alpha_func(&mut self, func: u32, reference: f32) {
@@ -842,6 +854,7 @@ impl GlState {
             texture_env: self.texture_env,
             depth_test: self.depth_test,
             depth_mask: self.depth_mask,
+            color_mask: self.color_mask,
             depth_func: self.depth_func,
             blend: self.blend,
             blend_src: self.blend_src,
@@ -998,6 +1011,7 @@ struct Job {
     texture_env: u32,
     depth_test: bool,
     depth_mask: bool,
+    color_mask: [bool; 4],
     depth_func: u32,
     blend: bool,
     blend_src: u32,
@@ -1016,6 +1030,7 @@ impl Job {
             texture_env: self.texture_env,
             depth_test: self.depth_test,
             depth_mask: self.depth_mask,
+            color_mask: self.color_mask,
             depth_func: self.depth_func,
             blend: self.blend,
             blend_src: self.blend_src,
@@ -1071,6 +1086,7 @@ struct Uniforms<'a> {
     texture_env: u32,
     depth_test: bool,
     depth_mask: bool,
+    color_mask: [bool; 4],
     depth_func: u32,
     blend: bool,
     blend_src: u32,
@@ -1156,7 +1172,17 @@ fn fill_band(tri: &Prepared, uniforms: &Uniforms, band: &mut Band) {
                 source
             };
 
-            band.color[index] = pack(mixed);
+            // O `glColorMask` decide canal a canal. Escrever o que ele proibiu apagaria o que
+            // uma passada anterior deixou ali, que é justamente o ponto de mascarar.
+            let anterior = band.color[index];
+            let novo = pack(mixed);
+            band.color[index] = std::array::from_fn(|i| {
+                if uniforms.color_mask[i] {
+                    novo[i]
+                } else {
+                    anterior[i]
+                }
+            });
             if uniforms.depth_test && uniforms.depth_mask {
                 band.depth[index] = z;
             }

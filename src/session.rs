@@ -317,6 +317,11 @@ impl Session {
             linhas.push("— endereços que o jogo pediu pelo IWeb —".to_string());
             linhas.extend(urls.iter().map(|url| format!("  {url}")));
         }
+        let ignoradas = self.machine.ignored_gl();
+        if !ignoradas.is_empty() {
+            linhas.push("— GL atendido sem fazer nada —".to_string());
+            linhas.push(format!("  {}", ignoradas.join(" ")));
+        }
         let entregues = self.machine.delivered();
         if !entregues.is_empty() {
             linhas.push("— a ponte, e o que ela fez com a resposta —".to_string());

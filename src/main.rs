@@ -521,6 +521,11 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
         let texto = String::from_utf8_lossy(resposta);
         println!("  resposta: {} bytes, {texto:?}", resposta.len());
     }
+    let ignoradas = machine.ignored_gl();
+    if !ignoradas.is_empty() {
+        println!("gl:        atendidas sem fazer nada ({})", ignoradas.len());
+        println!("  {}", ignoradas.join(" "));
+    }
     let entregues = machine.delivered();
     if !entregues.is_empty() {
         println!("ponte:     o que ela fez com a resposta");
