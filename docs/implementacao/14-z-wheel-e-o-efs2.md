@@ -177,6 +177,34 @@ saída antes de o código do jogo rodar. Para o shell, o applet passa a existir 
 Não é remendo de Z-Wheel: qualquer jogo que mande evento para si mesmo na construção estava sendo
 ignorado.
 
+## O que falta para o menu, e por que eu parei
+
+A abertura aparece. O menu não, e a razão está lida, não suposta.
+
+A `AnimationVideo_Form` é uma máquina de estados guiada por um **temporizador que ela mesma
+rearma**: a `0x115e8` chama `ISHELL_SetTimer` com o retorno de chamada `0x114ac`, que é o próprio
+tique da animação. A cada tique ela incrementa `[formulário+0x30]`; passando de **trinta**, a
+abertura termina e a `0x1f7b4` decide o que vem — com a tecla de pular (`AVK_0` ou `0xe04a`,
+tratadas em `0x118bc`), o menu principal direto; sem ela, o próximo estágio.
+
+O primeiro tique, no console, vem da extensão de interface. Eu fabriquei um, chamando o tratador
+registrado pelo slot 4 com `(0x801, 0x5064, 1)` — que é exatamente a forma que o `0x11828`
+aceita. **Funcionou e estava errado.** A máquina de estados andou até pedir o slot 8, que devolve
+o objeto que *toca* a animação; respondemos "não tenho", ela seguiu por um caminho alternativo e
+acabou chamando `malloc` com um **ponteiro no lugar do tamanho**, em laço infinito.
+
+Ponteiro chegando como tamanho é a assinatura de dado que nós não preenchemos — o mesmo sintoma
+do `IFILE_GetInfoEx`. O tique foi desfeito: ele trocava uma tela de abertura estável por um
+travamento, e "o jogo andou" não é prova de que andou pelo caminho certo.
+
+Para o menu, então, falta o que o console tem e nós não:
+
+1. **O tocador de animação** (slot 8 do widget) e o que o slot 3 dele significa.
+2. **O widget de rolagem** — a `MainMenu_Form.c` imprime `Unable to create roller widget in
+   MainMenu form`, e é ele que desenha o carrossel.
+3. **A pintura de verdade**, com texto e recorte. O `pinta_widgets` só sabe jogar na tela uma
+   imagem pendurada; o menu é feito de widgets que desenham.
+
 ## Onde ela para hoje, e por quê
 
 Numa **recursão infinita** em `0x1177c`, que é o despachante de tratadores: ele lê a função em

@@ -763,7 +763,9 @@ struct Widget {
     tamanho: (u32, u32),
     /// Os filhos que entraram pelo slot 5, que não os identifica por número.
     anexados: Vec<u32>,
-    /// Endereço do tratador de eventos que o slot 4 registrou.
+    /// Se o widget deve aparecer. O slot 6 é quem diz.
+    visivel: bool,
+    /// Endereço da estrutura de tratador que o slot 4 registrou: `{função, contexto}`.
     tratador: u32,
 }
 
@@ -3733,6 +3735,7 @@ impl<C: CpuBackend> Machine<C> {
         let mut imagens: Vec<u32> = self
             .widgets
             .values()
+            .filter(|widget| widget.visivel)
             .flat_map(|widget| widget.anexados.iter().copied())
             .filter(|objeto| self.images.contains_key(objeto))
             .collect();
@@ -6606,6 +6609,33 @@ impl<C: CpuBackend> Machine<C> {
                     .insert("um widget aceitou toda interface que lhe pediram");
                 SUCCESS
             }
+            // `slot6(this, visível)`, a última coisa que a `0x11750` faz antes de sair da
+            // abertura: ela esconde o formulário da animação e vai direto para a transição.
+            // O retorno é ignorado.
+            "DefinirVisivel" => {
+                let visivel = self.cpu.read_reg(Reg::R1) != 0;
+                if let Some(widget) = self.widgets.get_mut(&this) {
+                    widget.visivel = visivel;
+                }
+                SUCCESS
+            }
+            // `slot8(this, &saída)`, chamado pela `0x11578` a cada quadro da abertura. O que
+            // sai dali recebe em seguida um `slot3(widget, 0, 0)` — e slot 3 num widget é o
+            // acessador, cuja assinatura não é essa. Ou seja: o objeto devolvido **não é um
+            // widget**, e é algo que só a extensão de interface do console tem.
+            //
+            // Respondemos "não tenho", escrevendo zero. Não é desistência: o jogo testa o
+            // ponteiro em `0x1159c` e tem caminho próprio para o nulo — ele passa ao estado 2 e
+            // arma um temporizador. Inventar um objeto aqui seria pior do que dizer a verdade.
+            "PegarTocador" => {
+                let saida = self.cpu.read_reg(Reg::R1);
+                if saida != 0 {
+                    self.cpu.write_u32(saida, 0)?;
+                }
+                self.assumptions
+                    .insert("o widget respondeu que não tem tocador de animação");
+                SUCCESS
+            }
             // `slot4(this, &tratador)`, visto em `0x11a6c`. O que `r1` aponta é montado logo
             // acima, em `0x11a60`: o objeto do jogo se põe como contexto em `+0x1c` e o
             // endereço da função em `+0x20`. É um registro de tratador de eventos.
@@ -6672,7 +6702,8 @@ impl<C: CpuBackend> Machine<C> {
                                 if filho == 0 {
                                     return Ok(Some(0));
                                 }
-                                self.widgets.insert(filho, Widget::default());
+                                self.widgets
+                                    .insert(filho, Widget { visivel: true, ..Widget::default() });
                                 if let Some(widget) = self.widgets.get_mut(&this) {
                                     widget.filhos.insert(id, filho);
                                 }
@@ -10226,7 +10257,8 @@ impl<C: CpuBackend> Machine<C> {
             self.vetores.insert(obj, (Vec::new(), 0));
         }
         if iface == Interface::Widget {
-            self.widgets.insert(obj, Widget::default());
+            // Um widget nasce visível: o jogo só chama o slot 6 para **esconder**.
+            self.widgets.insert(obj, Widget { visivel: true, ..Widget::default() });
         }
         if out != 0 {
             self.cpu.write_u32(out, obj)?;
