@@ -48,10 +48,13 @@
 //! arquivo para rastreio). E o objeto de resposta é mesmo o desserializador — contagem em `+8`,
 //! vetor em `+4`, cursor em `+0x28`, tipo em `+0x2c` —, o que o iterador em `0xa583c` confirma.
 //!
-//! O que sobra como suspeita: **o momento**. Chamamos o alocador de dentro do despacho de uma
-//! API, com o jogo no meio de uma operação do próprio gerenciador. Reentrar ali pode ser o que
-//! ele não admite. Se for isso, a saída é alocar noutro instante — por exemplo, guardando a
-//! resposta e entregando na próxima fronteira de chamada, quando a pilha do jogo estiver limpa.
+//! Era **o momento**, e está resolvido: a resposta espera numa fila e é depositada na fronteira de
+//! chamada, a mesma que os sinais usam, quando o guest não está dentro de nada. Chamar o
+//! alocador de dentro do despacho reentrava num gerenciador que estava no meio de uma operação.
+//!
+//! Com isso a entrega funciona: os campos são escritos, as guardas passam e o jogo não quebra.
+//! O que decide o resto é o **conteúdo** da resposta, que é o que as variantes do servidor
+//! existem para medir.
 
 /// O que se sabe de um módulo específico.
 #[derive(Debug, Clone, Copy)]

@@ -1475,6 +1475,8 @@ pub struct Machine<C: CpuBackend> {
     plaintexts: std::collections::VecDeque<Vec<u8>>,
     /// Se a ponte do módulo pode entregar a resposta ao jogo. Ver [`crate::ponte`].
     bridge: bool,
+    /// Uma resposta esperando a fronteira de chamada: `(objeto, âncora, estado)`.
+    pending_response: Option<(u32, u32, u32)>,
     /// Para onde desviar as conexões, quando se quer um servidor que não é o do endereço.
     network_to: Option<String>,
     /// Se o emulador pode falar com a rede.
@@ -1652,6 +1654,7 @@ impl<C: CpuBackend> Machine<C> {
             // A ponte também liga pelo ambiente, para alcançar a interface sem passar por
             // linha de comando: `ZEEBX_PONTE=1`.
             bridge: std::env::var_os("ZEEBX_PONTE").is_some(),
+            pending_response: None,
             plaintexts: std::collections::VecDeque::new(),
             web_response: Vec::new(),
             streams: HashMap::new(),
@@ -3431,6 +3434,9 @@ impl<C: CpuBackend> Machine<C> {
     /// Precisa rodar fora do despacho de uma chamada, quando o guest não está no meio de
     /// outra — daí a fila.
     pub fn deliver_signals(&mut self, budget: u64) -> Result<Vec<Outcome>, CpuError> {
+        // A resposta de rede compartilha esta fronteira pelo mesmo motivo dos sinais: entregá-la
+        // pede chamar o alocador do jogo, e isso só é seguro fora do despacho.
+        self.flush_response()?;
         let pending = std::mem::take(&mut self.pending_signals);
         let mut outcomes = Vec::new();
         for callback in pending {
@@ -6267,11 +6273,29 @@ impl<C: CpuBackend> Machine<C> {
                 (EFAILED, ESTADO_FALHOU)
             }
         };
+        // Nada é entregue aqui. Estamos no meio do despacho de uma chamada, com o jogo dentro
+        // da `ConnectionManager::init`, e foi assim que a ponte derrubou o jogo: chamar o
+        // alocador dele nesse instante reentra num gerenciador que está no meio de uma operação.
+        //
+        // O emulador já tem a fronteira certa para isso — a mesma dos sinais, que roda fora do
+        // despacho, quando o guest não está dentro de nada. A resposta espera na fila até lá.
+        self.pending_response = Some((objeto, base, estado));
+        Ok(resultado)
+    }
+
+    /// Deposita a resposta e avisa o estado, fora do despacho.
+    ///
+    /// A ordem importa: os campos primeiro, o estado depois. O jogo consulta o estado a cada
+    /// volta do laço e, ao vê-lo em "recebendo", lê a contagem — se avisássemos antes de
+    /// entregar, ele leria zero e concluiria que não veio nada.
+    fn flush_response(&mut self) -> Result<(), CpuError> {
+        let Some((objeto, base, estado)) = self.pending_response.take() else {
+            return Ok(());
+        };
         if estado == ESTADO_RECEBENDO {
             self.deliver_response(objeto)?;
         }
-        self.finish_request(base, estado)?;
-        Ok(resultado)
+        self.finish_request(base, estado)
     }
 
     /// Entrega a resposta ao objeto que o jogo preparou para recebê-la.
