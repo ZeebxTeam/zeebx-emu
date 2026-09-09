@@ -42,8 +42,20 @@ pub const HEAP_SIZE: usize = 64 * 1024 * 1024;
 pub const STACK_BASE: u32 = 0x2000_0000;
 pub const STACK_SIZE: usize = 1024 * 1024;
 /// Objetos que o emulador expõe ao guest — cada um começa com o ponteiro de vtable.
+///
+/// Quatro megabytes dão 65.536 objetos, e o número não é capricho: com 64 KB eram **mil e vinte
+/// e quatro**, e a Z-Wheel os esgotava numa execução. Depois disso tudo falha ao mesmo tempo —
+/// `Couldn't open DB: 3`, `Unable to create vector model`, formulários com erro 3 — e nenhum
+/// desses sintomas se parece com a causa.
+///
+/// Mil e vinte e quatro era limite **nosso**, não do console: lá os objetos saem do heap do
+/// BREW, que tem dezenas de megabytes. A região é zerada e só ocupa o que for tocado, então a
+/// folga não custa memória de verdade.
+///
+/// Isso **não** dispensa consertar quem vaza. Mas um teto de mil objetos transforma qualquer
+/// vazamento pequeno numa falha em cascata, e falha em cascata esconde a causa.
 pub const OBJECT_BASE: u32 = 0x3000_0000;
-pub const OBJECT_SIZE: usize = 64 * 1024;
+pub const OBJECT_SIZE: usize = 4 * 1024 * 1024;
 /// Memória dos pixels das superfícies.
 ///
 /// Precisa ficar no espaço do guest porque o `IDIB` entrega ao jogo o ponteiro do buffer para
