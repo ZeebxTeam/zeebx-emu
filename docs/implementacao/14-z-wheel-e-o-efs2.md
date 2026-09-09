@@ -349,6 +349,33 @@ Isso explica retroativamente de onde veio cada identificação que temos dessas 
 `IHID.dll` do SDK, os widgets saíram do código da Z-Wheel. **Nenhuma veio do firmware, porque
 nenhuma está nele.**
 
+### O que isso provavelmente é: o framework de widgets do BREW 4.0
+
+Juntando o que foi medido slot a slot, aparece um desenho que não é do Zeebo — é do BREW:
+
+| o que medimos | o que é no BREW |
+|---|---|
+| slot 3 com `(0x800 ou 0x801, id, valor)` | `IWIDGET_HandleEvent(evt, wParam, dwParam)`, com os eventos de ler e gravar propriedade |
+| retorno invertido, zero é erro | `HandleEvent` devolve **booleano**: tratei ou não tratei |
+| evento `0x100` com códigos `0xe030`, `0xe04a` | evento de tecla, com os `AVK_` do BREW |
+| slot 4 com `{função, contexto}` | `IWIDGET_SetHandler` |
+| slot 7 com `{largura, altura}`, slot 5 lendo de volta | `IWIDGET_SetExtent` / `GetExtent` |
+| a lista com tamanho, pegar-em, inserir-em, remover-em | `IVectorModel` |
+
+Cada uma dessas leituras foi feita isolada, e todas caem no mesmo lugar. Isso é o que dá força à
+hipótese: ela **explica de uma vez** o que vinha sendo explicado peça por peça — inclusive o
+retorno invertido, que era a esquisitice mais difícil de justificar.
+
+**O que falta para sair de "provável" não é firmware, é documentação**: os cabeçalhos
+`AEEWidget.h`, `AEEContainer.h`, `AEEForm.h` e `AEEModel.h` do SDK do BREW 4.0 dariam a ordem
+exata dos slots, em vez de a deduzirmos um por execução. Foi assim que a `ISourceUtil` saiu de
+"formulário raiz" para o nome certo, com o `AEESource.h`.
+
+E vale dizer o que **não** ajudaria: outro dump de NAND. O dump que temos já tem, no próprio
+APPS, código que usa `0x01028e35` e as vizinhas — o console usa essas classes e não as
+implementa em lugar nenhum que se possa achar. Procurar outro dump é apostar que o problema é de
+versão; a evidência aponta para uma camada que simplesmente não é despejada por este método.
+
 ### O que se confirmou de graça: o `ICM`
 
 Com a leitura corrigida, o `AEECLSID_CM` (`0x01011810`) ganhou vtable de verdade — `0x10a5e1f0`,
