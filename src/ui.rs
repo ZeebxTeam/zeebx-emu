@@ -109,8 +109,6 @@ pub struct App {
     log_status: Option<String>,
     /// A janela de log foi fechada nesta execução. Zera ao abrir outro jogo.
     log_dismissed: bool,
-    /// Se o som ainda precisa ser ligado. Ver [`App::play`].
-    audio_pendente: bool,
     /// Quando o relatório foi gravado em disco pela última vez.
     ///
     /// Ele é gravado sozinho, a cada poucos segundos, num lugar fixo. O botão de exportar abre
@@ -176,7 +174,6 @@ impl App {
             log_status: None,
             log_dismissed: false,
             log_gravado: None,
-            audio_pendente: false,
             gamepads: gamepads::Gamepads::default(),
             porta_editada: 0,
             capturing: None,
@@ -237,12 +234,14 @@ impl App {
         self.log_gravado = None;
         self.log_status = None;
         match Session::start_with(&path, self.portas_configuradas()) {
-            Ok(session) => {
-                // O som **não** é ligado aqui. O `start` já roda o `EVT_APP_START`, e um jogo
-                // que toca na partida — a Z-Wheel toca o `sounds_loading.wav` — sairia pelos
-                // alto-falantes antes de a janela existir, que é o que o usuário via: som
-                // primeiro, imagem depois. Ligar no primeiro quadro põe as duas coisas juntas.
-                self.audio_pendente = true;
+            Ok(mut session) => {
+                // Ligar o som aqui é seguro **porque o jogo ainda não começou**: o `start` só
+                // prepara, e o `EVT_APP_START` sai na primeira volta do laço. Antes disso o
+                // jogo já tocava dentro do `start`, e o som saía com a tela vazia.
+                let audio = &self.settings.audio;
+                if let Some(err) = session.set_audio(audio.enabled, audio.volume) {
+                    eprintln!("sem som: {err}");
+                }
                 self.session = Some(session);
             }
             Err(err) => {
@@ -1308,16 +1307,6 @@ impl eframe::App for App {
         if self.session.is_some() {
             self.grava_relatorio();
             self.game_window(ctx);
-            // Depois de a janela existir, e não antes.
-            if self.audio_pendente {
-                self.audio_pendente = false;
-                let audio = self.settings.audio.clone();
-                if let Some(session) = &mut self.session
-                    && let Some(err) = session.set_audio(audio.enabled, audio.volume)
-                {
-                    eprintln!("sem som: {err}");
-                }
-            }
             // A janela de log acompanha o jogo: só existe enquanto há execução para registrar.
             if self.settings.debug.log && !self.log_dismissed {
                 self.log_window(ctx);
