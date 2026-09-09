@@ -1650,7 +1650,10 @@ impl<C: CpuBackend> Machine<C> {
             image_notify: HashMap::new(),
             root_forms: HashMap::new(),
             network: true,
-            network_to: None,
+            // Pelo mesmo motivo, o desvio de servidor também vem do ambiente:
+            // `ZEEBX_SERVIDOR=127.0.0.1:8080`. Sem isso, apontar um jogo para um servidor de
+            // testes exigiria a porta 80, que pede privilégio.
+            network_to: std::env::var("ZEEBX_SERVIDOR").ok(),
             // A ponte também liga pelo ambiente, para alcançar a interface sem passar por
             // linha de comando: `ZEEBX_PONTE=1`.
             bridge: std::env::var_os("ZEEBX_PONTE").is_some(),

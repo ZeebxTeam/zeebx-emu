@@ -374,7 +374,9 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
         machine.probe_answer(*classe, *slot, *valor);
     }
     machine.set_network(network);
-    machine.set_network_to(network_to);
+    if network_to.is_some() {
+        machine.set_network_to(network_to);
+    }
     if bridge {
         machine.set_bridge(true);
     }
