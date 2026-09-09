@@ -820,15 +820,38 @@ pub const SQL_DATABASE: &[&str] = &["AddRef", "Release", "slot2", "Exec"];
 /// - **slot 4** faz trabalho próprio, com um argumento.
 ///
 /// Os nomes de 3 a 6 descrevem o que o código faz, não um header — não temos header desta
-/// classe. Onde a intenção não está clara, o nome é o número.
-pub const ROOT_FORM: &[&str] = &[
+/// Métodos da `ISourceUtil` (`0x01001011`), na ordem do `AEESource.h`.
+///
+/// A vtable do firmware em `0x10a785e4` tem sete, e são estes sete. Ver
+/// [`crate::aee::Interface::SourceUtil`] para como a identificação foi feita.
+pub const SOURCE_UTIL: &[&str] = &[
     "AddRef",
     "Release",
     "QueryInterface",
-    "SetHandler",
+    "PeekSourceFromSource",
+    "SourceFromAStream",
+    "SourceFromMemory",
+    "SourceFromFile",
+];
+
+/// Métodos do `ISource`. Os três primeiros são de toda interface; o `Read` e o `Readable` vêm
+/// do `AEESource.h`.
+pub const SOURCE: &[&str] = &["AddRef", "Release", "QueryInterface", "Read", "Readable"];
+
+/// Métodos do `IPeek`, dos quais conhecemos um.
+///
+/// O slot 8 é o que a Z-Wheel chama para ler o `tectoy.cfg`. Os de baixo ficam sem nome de
+/// propósito: preencher a tabela com nomes plausíveis esconderia a próxima descoberta.
+pub const PEEK: &[&str] = &[
+    "AddRef",
+    "Release",
+    "QueryInterface",
+    "slot3",
     "slot4",
     "slot5",
-    "SetWidget",
+    "slot6",
+    "slot7",
+    "LerLinha",
 ];
 
 /// Métodos do widget da Z-Wheel (`0x01028e51`).

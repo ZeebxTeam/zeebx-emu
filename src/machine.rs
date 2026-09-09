@@ -483,9 +483,46 @@ const MAX_CORPO_ENVIADO: u32 = 1 << 16;
 /// quantas repetições eu precisar aqui.
 const PAD_LOG_MAX: usize = 400;
 
-/// `0x01001011`, o formulário raiz. Não é do SDK: é do `widgets`/`forms` que o console
-/// carregava, e a definição está compilada dentro do `1.1.2_APPS.bin`.
-const AEECLSID_ROOTFORM: u32 = 0x0100_1011;
+/// O estado de um `IPeek`: os bytes da fonte, onde a leitura está e onde a linha é montada.
+struct Peek {
+    bytes: Vec<u8>,
+    posicao: usize,
+    /// Endereço, na memória do guest, do buffer de uma linha. Ver [`Machine::source_call`].
+    buffer: u32,
+}
+
+impl Peek {
+    /// A próxima linha, sem o `\n` e sem o `\r` que o acompanha nos arquivos do console.
+    ///
+    /// Devolve `None` quando acabou. Uma linha vazia é uma linha: quem separa "linha vazia" de
+    /// "fim do arquivo" é o `Option`, não o tamanho — o `tectoy.cfg` tem linhas em branco entre
+    /// as seções, e confundir as duas coisas pararia a leitura na primeira delas.
+    fn proxima_linha(&mut self) -> Option<Vec<u8>> {
+        if self.posicao >= self.bytes.len() {
+            return None;
+        }
+        let resto = &self.bytes[self.posicao..];
+        let fim = resto.iter().position(|&b| b == b'\n');
+        let linha = match fim {
+            Some(n) => {
+                self.posicao += n + 1;
+                &resto[..n]
+            }
+            None => {
+                self.posicao = self.bytes.len();
+                resto
+            }
+        };
+        Some(match linha.last() {
+            Some(b'\r') => linha[..linha.len() - 1].to_vec(),
+            _ => linha.to_vec(),
+        })
+    }
+}
+
+/// `AEECLSID_SOURCEUTIL`, a fábrica de `ISource`. Ver [`Interface::SourceUtil`] para como o
+/// número foi identificado — durante muito tempo ele esteve aqui com o nome errado.
+const AEECLSID_SOURCEUTIL: u32 = 0x0100_1011;
 
 /// `AEECLSID_MD5`: o resumo MD5, exposto como `IHash`.
 const AEECLSID_MD5: u32 = 0x0100_1015;
@@ -1515,8 +1552,10 @@ pub struct Machine<C: CpuBackend> {
     sounds: HashMap<u32, SoundState>,
     /// Estado de cada `ICipher1` vivo.
     ciphers: HashMap<u32, CipherState>,
-    /// O par que o `SetHandler` do formulário raiz guardou, por objeto.
-    root_forms: HashMap<u32, (u32, u32)>,
+    /// Os bytes de cada `ISource` vivo.
+    sources: HashMap<u32, Vec<u8>>,
+    /// O estado de cada `IPeek` vivo.
+    peeks: HashMap<u32, Peek>,
     /// Os itens de cada `IConfig` vivo, por objeto: número do item -> bytes.
     config_items: HashMap<u32, HashMap<u32, Vec<u8>>>,
     /// Os filhos e as propriedades de cada widget vivo, por objeto: `id -> filho` e
@@ -1711,7 +1750,8 @@ impl<C: CpuBackend> Machine<C> {
             api_time: HashMap::new(),
             profiling_api: false,
             image_notify: HashMap::new(),
-            root_forms: HashMap::new(),
+            sources: HashMap::new(),
+            peeks: HashMap::new(),
             widgets: HashMap::new(),
             config_items: HashMap::new(),
             network: true,
@@ -2478,7 +2518,13 @@ impl<C: CpuBackend> Machine<C> {
                 Some(result) => result,
                 None => return Ok(None),
             },
-            (Interface::RootForm, _) => match self.root_form_call(slot)? {
+            (Interface::Source, _) | (Interface::Peek, _) => {
+                match self.source_call(iface, slot)? {
+                    Some(result) => result,
+                    None => return Ok(None),
+                }
+            }
+            (Interface::SourceUtil, _) => match self.source_util_call(slot)? {
                 Some(result) => result,
                 None => return Ok(None),
             },
@@ -6247,17 +6293,6 @@ impl<C: CpuBackend> Machine<C> {
     ///
     /// Os slots sem nome ainda não apareceram; se aparecerem, o relatório avisa em vez de
     /// fingir que foram atendidos. É por isso que eles não têm nome na tabela.
-    /// Métodos do formulário raiz (`0x01001011`), com a semântica lida da vtable do firmware.
-    ///
-    /// O que fazemos aqui é menos do que o console faz, e de propósito. No firmware o objeto é
-    /// uma casca sobre outro, de classe `0x0103475a`, e os slots 4, 5 e 6 delegam para ele —
-    /// reproduzir isso pede a outra classe, que ainda não temos. O que dá para fazer sem ela é
-    /// o que o aplicativo precisa para não morrer: o `SetHandler` guarda o par que recebe, e os
-    /// que delegam respondem sucesso.
-    ///
-    /// A aposta é explícita: se o aplicativo só precisava que o formulário existisse e aceitasse
-    /// os widgets, ele passa; se ele depende do que o contêiner interno faria, ele para mais
-    /// adiante — e aí o próximo passo aparece, que é melhor do que parar na criação.
     /// Atende a `IConfig`. Ver [`Interface::Config`].
     ///
     /// `int ICONFIG_GetItem(IConfig *pMe, ConfigItem nItem, void *pBuff, int nSize)` e o
@@ -6438,8 +6473,24 @@ impl<C: CpuBackend> Machine<C> {
         Ok(Some(result))
     }
 
-    fn root_form_call(&mut self, slot: u32) -> Result<Option<u32>, CpuError> {
-        let Some(name) = Interface::RootForm.method(slot) else {
+    /// Atende o `ISource` e o `IPeek`. Ver [`Interface::Peek`].
+    ///
+    /// Do `IPeek` só o slot 8 tem corpo, e ele é a razão de tudo isto existir: a Z-Wheel lê o
+    /// `tectoy.cfg` linha a linha por ele. A chamada é `slot8(this, &par, 3)`, com `par` sendo
+    /// `{ponteiro, tamanho}` — o jogo lê os dois e **copia** o texto antes de pedir a próxima
+    /// linha, o que é o que permite reaproveitar um buffer só.
+    ///
+    /// **O valor de retorno é uma hipótese, e ela está medida.** O laço em `0x884fc` continua
+    /// enquanto `-retorno >= 2` e para em `-3`; devolver zero o encerraria na primeira linha,
+    /// inclusive numa linha vazia. Então: `1` enquanto houver linha, `-3` no fim. Que o console
+    /// devolva o mesmo `1` não se sabe — o que se sabe é a condição do laço.
+    fn source_call(&mut self, iface: Interface, slot: u32) -> Result<Option<u32>, CpuError> {
+        /// "Acabaram as linhas": o único valor que o laço da `0x88338` aceita como fim.
+        const FIM: u32 = (-3i32) as u32;
+        /// "Veio linha". Ver a nota sobre o retorno, acima.
+        const VEIO: u32 = 1;
+
+        let Some(name) = iface.method(slot) else {
             return Ok(None);
         };
         let this = self.cpu.read_reg(Reg::R0);
@@ -6448,7 +6499,8 @@ impl<C: CpuBackend> Machine<C> {
             "Release" => {
                 let restantes = self.objects.release(this);
                 if restantes == 0 {
-                    self.root_forms.remove(&this);
+                    self.sources.remove(&this);
+                    self.peeks.remove(&this);
                 }
                 restantes
             }
@@ -6460,18 +6512,131 @@ impl<C: CpuBackend> Machine<C> {
                 self.objects.add_ref(this);
                 SUCCESS
             }
-            // `str r1,[r0,#0x10]; str r2,[r0,#0x14]; bx lr` — guarda e não devolve nada.
-            "SetHandler" => {
-                let par = (self.cpu.read_reg(Reg::R1), self.cpu.read_reg(Reg::R2));
-                self.root_forms.insert(this, par);
+            // `int32 ISOURCE_Read(ISource *po, char *pcBuf, int32 cbBuf)`.
+            "Read" => {
+                let (destino, cabe) = (
+                    self.cpu.read_reg(Reg::R1),
+                    self.cpu.read_reg(Reg::R2) as usize,
+                );
+                let Some(bytes) = self.sources.get(&this) else {
+                    return Ok(Some(EBADPARM));
+                };
+                let pedaco = bytes[..bytes.len().min(cabe)].to_vec();
+                self.cpu.write_mem(destino, &pedaco)?;
+                self.sources.insert(this, bytes[pedaco.len()..].to_vec());
+                pedaco.len() as u32
+            }
+            "LerLinha" => {
+                let par = self.cpu.read_reg(Reg::R1);
+                let Some(leitor) = self.peeks.get_mut(&this) else {
+                    return Ok(Some(EBADPARM));
+                };
+                let Some(linha) = leitor.proxima_linha() else {
+                    return Ok(Some(FIM));
+                };
+                let (buffer, tamanho) = (leitor.buffer, linha.len() as u32);
+                self.cpu.write_mem(buffer, &linha)?;
+                self.cpu.write_mem(buffer + tamanho, &[0])?;
+                if par != 0 {
+                    self.cpu.write_u32(par, buffer)?;
+                    self.cpu.write_u32(par + 4, tamanho)?;
+                }
+                VEIO
+            }
+            _ => SUCCESS,
+        };
+        Ok(Some(result))
+    }
+
+    /// Atende a `ISourceUtil`. Ver [`Interface::SourceUtil`].
+    fn source_util_call(&mut self, slot: u32) -> Result<Option<u32>, CpuError> {
+        let Some(name) = Interface::SourceUtil.method(slot) else {
+            return Ok(None);
+        };
+        let this = self.cpu.read_reg(Reg::R0);
+        let result = match name {
+            "AddRef" => self.objects.add_ref(this),
+            "Release" => {
+                self.objects.release(this)
+            }
+            "QueryInterface" => {
+                let saida = self.cpu.read_reg(Reg::R2);
+                if saida != 0 {
+                    self.cpu.write_u32(saida, this)?;
+                }
+                self.objects.add_ref(this);
                 SUCCESS
             }
-            // O slot 5 é o envio, e é o que faltava para a conexão acontecer.
+            // `int PeekSourceFromSource(ISourceUtil *po, ISource *ps, int nMax, IPeek **ppo)`.
+            //
+            // O `nMax` é o teto do que o leitor pode manter em memória; a Z-Wheel passa o
+            // tamanho do arquivo mais um, ou seja, o arquivo inteiro. Como já temos os bytes
+            // todos, ele não muda nada aqui — mas é o que diz que o jogo espera ler tudo.
+            "PeekSourceFromSource" => {
+                let (fonte, saida) = (self.cpu.read_reg(Reg::R1), self.cpu.read_reg(Reg::R3));
+                let Some(bytes) = self.sources.get(&fonte).cloned() else {
+                    return Ok(Some(EBADPARM));
+                };
+                let leitor = self.new_object(Interface::Peek)?;
+                if leitor == 0 {
+                    return Ok(Some(ENOMEMORY));
+                }
+                // O buffer de uma linha vive junto do leitor: o jogo recebe um ponteiro para
+                // ele e **copia** o conteúdo antes de pedir a próxima, então um buffer só,
+                // reaproveitado, basta. Reservar do tamanho da fonte garante que a maior linha
+                // possível caiba.
+                let buffer = self.heap.alloc(bytes.len() as u32 + 1).unwrap_or(0);
+                if buffer == 0 {
+                    return Ok(Some(ENOMEMORY));
+                }
+                self.peeks.insert(leitor, Peek { bytes, posicao: 0, buffer });
+                if saida != 0 {
+                    self.cpu.write_u32(saida, leitor)?;
+                }
+                SUCCESS
+            }
+            // `int SourceFromFile(ISourceUtil *po, IFile *pf, ISource **ppo)`.
+            //
+            // Lemos o arquivo inteiro pelo caminho, e não pelo descritor aberto, para não mexer
+            // na posição do `IFile` do jogo — ele continua sendo dele.
+            "SourceFromFile" => {
+                let (arquivo, saida) = (self.cpu.read_reg(Reg::R1), self.cpu.read_reg(Reg::R2));
+                let Some(caminho) = self
+                    .open_files
+                    .get(&arquivo)
+                    .map(|aberto| aberto.guest_path.clone())
+                else {
+                    return Ok(Some(EBADPARM));
+                };
+                let Some(bytes) = self
+                    .vfs
+                    .resolve(&caminho)
+                    .and_then(|real| std::fs::read(real).ok())
+                else {
+                    return Ok(Some(EFAILED));
+                };
+                let fonte = self.new_object(Interface::Source)?;
+                if fonte == 0 {
+                    return Ok(Some(ENOMEMORY));
+                }
+                self.sources.insert(fonte, bytes);
+                if saida != 0 {
+                    self.cpu.write_u32(saida, fonte)?;
+                }
+                SUCCESS
+            }
+            // `int SourceFromMemory(ISourceUtil *po, const void *pBuf, int nSize,
+            //                       PFNNOTIFY pfn, void *pUser, ISource **ppo)`.
+            //
+            // É aqui que a ponte do Zeeboids entra, e vale explicar por quê. O método não
+            // envia nada: ele embrulha um pedaço de memória num `ISource` para que a `IWeb`
+            // possa lê-lo. Só que o pedaço de memória, no Zeeboids, **é o corpo do POST** — e
+            // este é o único ponto em que ele existe inteiro e ainda em claro.
             //
             // No firmware ele registra o par guardado pelo `SetHandler` e enfileira o trabalho
             // no objeto interno. Aqui fazemos o trabalho na hora: `r1` e `r2` são o corpo e o
             // tamanho, e a resposta volta no ponteiro de saída.
-            "slot5" => {
+            "SourceFromMemory" => {
                 let (corpo, tamanho) = (self.cpu.read_reg(Reg::R1), self.cpu.read_reg(Reg::R2));
                 let saida = self.stack_arg(1)?;
                 self.send_request(corpo, tamanho, saida)?
@@ -9574,7 +9739,7 @@ impl<C: CpuBackend> Machine<C> {
             AEECLSID_WEB => Interface::Web,
             AEECLSID_COLLECTION => Interface::Collection,
             AEECLSID_SQLMGR => Interface::SqlMgr,
-            AEECLSID_ROOTFORM => Interface::RootForm,
+            AEECLSID_SOURCEUTIL => Interface::SourceUtil,
             AEECLSID_WIDGET => Interface::Widget,
             AEECLSID_ZEEBOMCP => Interface::ZeeboMcp,
             AEECLSID_CONFIG => Interface::Config,

@@ -89,17 +89,26 @@ pub enum Interface {
     SqlDatabase = 37,
     /// A coleção genérica da Z-Wheel (`0x0100104f`): guarda itens e é percorrida.
     Collection = 38,
-    /// `0x01001011`, o formulário raiz — a classe que a Z-Wheel e o Zeeboids pedem para abrir.
+    /// `0x01001011` = **`AEECLSID_SOURCEUTIL`**, a fábrica de `ISource` do BREW.
     ///
-    /// Os sete métodos vêm da vtable do firmware, em `0x10a785e4`, achada pela tabela de
-    /// registro do `1.1.2_APPS.bin`: entradas de dezesseis bytes `{função, CLSID, sinalizadores,
-    /// 0}`, e a da `0x01001011` aponta para o construtor em `0x112e399c`. Ele aloca vinte e
-    /// quatro bytes, grava a vtable em `+0`, o `IShell` em `+8` e cria em `+0xc` um objeto da
-    /// classe `0x0103475a`, que é para quem os métodos delegam.
+    /// Ela se chamava `RootForm` aqui, e o nome estava errado: veio da mensagem
+    /// `Could not create root form` da Z-Wheel, que na verdade é sobre a [`Interface::Widget`].
+    /// A identificação certa saiu de dois jogos que a usam de maneiras que pareciam
+    /// incompatíveis — e não são, quando os slots têm os nomes do `AEESource.h`:
     ///
-    /// São sete e não mais: o slot 7 não é endereço Thumb e o 8 é zero. Isso casa com o que a
-    /// sonda viu os aplicativos chamarem — os slots 3 e 6, os dois últimos.
-    RootForm = 39,
+    /// | slot | método | quem usa |
+    /// |---|---|---|
+    /// | 3 | `PeekSourceFromSource(po, ISource*, nMax, IPeek**)` | Z-Wheel, para ler o `tectoy.cfg` linha a linha |
+    /// | 5 | `SourceFromMemory(po, pBuf, nSize, pfn, pUser, ISource**)` | Zeeboids, para embrulhar o corpo do POST |
+    /// | 6 | `SourceFromFile(po, IFile*, ISource**)` | Z-Wheel, sobre o arquivo recém-aberto |
+    ///
+    /// O `SourceFromMemory` é o que fecha a conta: são **seis** parâmetros, e o ponteiro de
+    /// saída é o segundo da pilha — exatamente onde o código do Zeeboids o lia, num trecho que
+    /// tínhamos batizado de "envio". Ele não envia nada: embrulha o corpo para entregar à
+    /// `IWeb`. É de lá que a ponte do Zeeboids pega o corpo, e é por isso que ela funciona.
+    ///
+    /// São sete métodos, e a vtable do firmware em `0x10a785e4` também tem sete.
+    SourceUtil = 39,
     /// `0x01028e51`, o widget da interface da Z-Wheel — inclusive o formulário raiz.
     ///
     /// A classe não está na tabela do `1.1.2_APPS.bin`, então não há vtable de firmware para
@@ -152,6 +161,14 @@ pub enum Interface {
     /// Por isso só os quatro primeiros slots têm nome. Os oito de cima ficam de fora de
     /// propósito: sobre eles a única fonte seria a tabela que já se mostrou errada.
     Config = 42,
+    /// Um `ISource` do BREW: bytes com um cursor. Criado pela [`Interface::SourceUtil`].
+    Source = 43,
+    /// Um `IPeek` do BREW: a leitura por linhas sobre um [`Interface::Source`].
+    ///
+    /// Do `IPeek` só conhecemos o **slot 8**, porque é o único que a Z-Wheel chama: ela passa o
+    /// endereço de um par `{ponteiro, tamanho}` e o número 3, e espera receber a próxima linha.
+    /// Os outros ficam sem nome — uma chamada neles precisa aparecer no relatório.
+    Peek = 44,
     /// Objeto de uma classe que ainda não conhecemos, criado a pedido do `--sonda`.
     ///
     /// Não implementa interface nenhuma: existe para **descobrir qual é**. Toda chamada é
@@ -171,7 +188,7 @@ impl Interface {
     /// as duas coisas precisam concordar — daí a lista existir num lugar só, com teste que
     /// confere a correspondência. Quando elas divergiram, um objeto recebeu a vtable de outra
     /// interface e a chamada foi parar no método errado, com sintoma a quilômetros da causa.
-    pub const ALL: [Interface; 43] = [
+    pub const ALL: [Interface; 45] = [
         Self::Shell,
         Self::Module,
         Self::Applet,
@@ -211,10 +228,12 @@ impl Interface {
         Self::SqlMgr,
         Self::SqlDatabase,
         Self::Collection,
-        Self::RootForm,
+        Self::SourceUtil,
         Self::Widget,
         Self::ZeeboMcp,
         Self::Config,
+        Self::Source,
+        Self::Peek,
     ];
 
     /// Nome usado nos logs — casa com a nomenclatura do SDK.
@@ -257,10 +276,12 @@ impl Interface {
             Self::SqlMgr => "ISQLMgr",
             Self::SqlDatabase => "ISQLDatabase",
             Self::Collection => "IColecao",
-            Self::RootForm => "IFormRaiz",
+            Self::SourceUtil => "ISourceUtil",
             Self::Widget => "IWidget",
             Self::ZeeboMcp => "IZeeboMCP",
             Self::Config => "IConfig",
+            Self::Source => "ISource",
+            Self::Peek => "IPeek",
             Self::Probe => "ClasseDesconhecida",
             Self::Helpers => "AEEHelpers",
         }
@@ -306,10 +327,12 @@ impl Interface {
             Self::SqlMgr => aee_slots::SQL_MGR,
             Self::SqlDatabase => aee_slots::SQL_DATABASE,
             Self::Collection => aee_slots::COLLECTION,
-            Self::RootForm => aee_slots::ROOT_FORM,
+            Self::SourceUtil => aee_slots::SOURCE_UTIL,
             Self::Widget => aee_slots::WIDGET,
             Self::ZeeboMcp => aee_slots::ZEEBO_MCP,
             Self::Config => aee_slots::CONFIG,
+            Self::Source => aee_slots::SOURCE,
+            Self::Peek => aee_slots::PEEK,
             // A sonda não tem tabela: `method` responde por ela antes de chegar aqui.
             Self::Probe => &[],
             Self::Helpers => aee_helpers::HELPERS,
@@ -371,10 +394,12 @@ impl Interface {
             36 => Self::SqlMgr,
             37 => Self::SqlDatabase,
             38 => Self::Collection,
-            39 => Self::RootForm,
+            39 => Self::SourceUtil,
             40 => Self::Widget,
             41 => Self::ZeeboMcp,
             42 => Self::Config,
+            43 => Self::Source,
+            44 => Self::Peek,
             6 => Self::Helpers,
             _ => return None,
         })
