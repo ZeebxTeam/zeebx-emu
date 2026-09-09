@@ -473,3 +473,43 @@ entrada no mesmo arquivo é de fato `c4d0`/`c4d1`.
 
 Fica em `vendor/`, ignorado pelo git — firmware e conteúdo do console não entram no repositório.
 Origem: `tripleoxygen.net/files/devices/zeebo/`.
+
+## O "objeto 10" do evento 0x7b0a
+
+O `0x885a4` pede ao próprio applet, por `SendEvent(cls=0x01070798, evt=0x7b0a,
+wParam=0xa, dwParam=&saída)`, um objeto que ele guarda em `[app+0x34e4]`. Sem esse
+objeto o `0x89518` sai cedo, o `0x8f700` recebe zero e o jogo escreve
+`Couldn't create z-pad instruction form (6)` — para sempre, milhares de vezes por
+minuto.
+
+O tratador está em `0x7bd4c`, que separa por `wParam`: `1 → 0x7bdac`,
+`2 → 0x7bebc`, `4 → 0x7c134` (PrefsDB) e `0xa` caindo em `0x7bdc0`. O ramo do 10 lê
+a preferência **`Lang`** e entra num laço:
+
+```asm
+0x7bdf4  ldr r5,[r5,#0x4e4]   ; cabeça da lista de idiomas
+0x7bdf8  ldr r0,[sp,#8]       ; o valor de Lang
+0x7bea4  cmp r5,#0            ; fim da lista -> desiste
+0x7bea8  bne 0x7be00
+0x7be00  ldr r1,[r5]          ; etiqueta do idioma da vez
+0x7be04  cmp r1,r0
+0x7be08  bne 0x7bea0          ; não é este, próximo
+```
+
+`[r5]` não é um índice: são **quatro caracteres** lidos como uma palavra. O rastro
+mostra `0x20206e65`, `0x20207365` e `0x20207470` — `"en  "`, `"es  "` e `"pt  "`.
+A preferência `Lang` guarda a etiqueta no mesmo formato empacotado.
+
+O `tt_prefs.db` do pacote nasce com `Lang = 0`, junto de `TermsAccepted = 0` e
+`IsRegistered = 0`: é um perfil que nunca passou pela primeira configuração — a tela
+que oferece `language_english.bmp`, `language_portugese.bmp`, `language_spanish.bmp`
+e `language_mexico.bmp`. Zero não casa com etiqueta nenhuma, e é por isso que o laço
+sempre termina em nada.
+
+Enquanto não alcançamos essa tela, o `escolhe_idioma` grava `"pt  "` na primeira vez
+que o banco é aberto sem escolha, e o relatório anota a hipótese. Com isso o erro do
+z-pad desaparece e o jogo passa a pedir `tectoy_pt.brf`.
+
+A parede seguinte é outra: `Service status is NOT available!`, no
+`tectoy_ui_internal_utils.c:647`, repetido no mesmo compasso do
+`Unable to create instance of AEECLSID_LCT_SIMCARDCTL`.
