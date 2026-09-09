@@ -1469,6 +1469,8 @@ pub struct Machine<C: CpuBackend> {
     root_forms: HashMap<u32, (u32, u32)>,
     /// O que o jogo entregou ao `ICipher1`, em claro, antes de ser cifrado.
     plaintexts: std::collections::VecDeque<Vec<u8>>,
+    /// Se a ponte do módulo pode entregar a resposta ao jogo. Ver [`crate::ponte`].
+    bridge: bool,
     /// Para onde desviar as conexões, quando se quer um servidor que não é o do endereço.
     network_to: Option<String>,
     /// Se o emulador pode falar com a rede.
@@ -1643,6 +1645,7 @@ impl<C: CpuBackend> Machine<C> {
             root_forms: HashMap::new(),
             network: true,
             network_to: None,
+            bridge: false,
             plaintexts: std::collections::VecDeque::new(),
             web_response: Vec::new(),
             streams: HashMap::new(),
@@ -6277,6 +6280,14 @@ impl<C: CpuBackend> Machine<C> {
     /// não entregamos nada: melhor o jogo ver "não veio resposta" do que ver memória que ele vai
     /// recusar. O que trafega não muda em nenhum dos dois casos.
     fn deliver_response(&mut self, objeto: u32) -> Result<(), CpuError> {
+        // A ponte é opcional e vem desligada. Ela mexe na memória do jogo, e uma entrega errada
+        // não falha na hora: ela corrompe e quebra adiante, como aconteceu — o vetor guarda
+        // objetos `ttdString`, com o comprimento em `[0]` e o texto em `[4]`, e entregar texto
+        // cru fez o destrutor liberar lixo. Enquanto isso não estiver certo, o padrão é não
+        // entregar: o jogo vê "não veio resposta", que é um estado que ele sabe tratar.
+        if !self.bridge {
+            return Ok(());
+        }
         let Some(ponte) = ponte::para(self.applet_class) else {
             return Ok(());
         };
@@ -6548,6 +6559,11 @@ impl<C: CpuBackend> Machine<C> {
     /// Liga ou desliga o acesso à rede.
     pub fn set_network(&mut self, ligada: bool) {
         self.network = ligada;
+    }
+
+    /// Liga a ponte do módulo, que entrega a resposta ao jogo. Desligada por padrão.
+    pub fn set_bridge(&mut self, ligada: bool) {
+        self.bridge = ligada;
     }
 
     /// Desvia as conexões para outra máquina ou porta, sem mexer no que o jogo pediu.

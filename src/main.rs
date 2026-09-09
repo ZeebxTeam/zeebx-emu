@@ -187,6 +187,7 @@ fn main() -> ExitCode {
                         .iter()
                         .find_map(|a| a.strip_prefix("--servidor="))
                         .map(str::to_owned),
+                    bridge: args.iter().any(|a| a == "--ponte"),
                 },
             ))
         }
@@ -201,7 +202,7 @@ fn main() -> ExitCode {
                              [--trace[=trecho]] [--watch=0xADDR] [--dump-heap]
                              [--code=0xINI:0xFIM] [--frames=N]
                              [--profile] [--wall=SEGUNDOS] [--sonda=0xCLSID,...]
-                             [--sem-rede] [--servidor=MAQUINA[:PORTA]]"
+                             [--sem-rede] [--servidor=MAQUINA[:PORTA]] [--ponte]"
             );
             ExitCode::FAILURE
         }
@@ -298,6 +299,8 @@ struct Options {
     network: bool,
     /// Para onde desviar as conexões, com `--servidor=MAQUINA[:PORTA]`.
     network_to: Option<String>,
+    /// Se a ponte do módulo entrega a resposta ao jogo, com `--ponte`.
+    bridge: bool,
 }
 
 fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
@@ -319,6 +322,7 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
         wall,
         network,
         network_to,
+        bridge,
     } = options;
     // Um jogo em `.zip` é extraído para o cache e rodado de lá, como na interface.
     let extracted;
@@ -371,6 +375,7 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
     }
     machine.set_network(network);
     machine.set_network_to(network_to);
+    machine.set_bridge(bridge);
     if profile {
         machine.cpu_mut().enable_profile();
         machine.enable_api_profile();

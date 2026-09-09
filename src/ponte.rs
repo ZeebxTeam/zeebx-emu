@@ -25,6 +25,18 @@
 //! erraríamos no console. O formato se decide pelo que o jogo faz, e a prova final é o aparelho
 //! de verdade.
 
+//! # Estado: incompleta, e por isso desligada
+//!
+//! Ela derrubou o jogo num teste de exportação: acesso inválido a `0xe4`, vindo do gerenciador
+//! de memória. A causa aparente é que o vetor guarda **objetos `ttdString`**, e não `char *` —
+//! o construtor em `0xa85e0` grava o comprimento em `[obj]` antes de alocar o texto, então o
+//! objeto é `{ comprimento, ponteiro }`. Entregando texto cru, o destrutor lê `[ponteiro+4]`
+//! como endereço e libera lixo.
+//!
+//! Uma entrega errada não falha na hora: corrompe e quebra adiante, que é o pior tipo de erro
+//! para se ter ligado por omissão. Fica atrás do `--ponte`, e o padrão é o jogo ver "não veio
+//! resposta" — um estado que ele sabe tratar.
+
 /// O que se sabe de um módulo específico.
 #[derive(Debug, Clone, Copy)]
 pub struct Ponte {
