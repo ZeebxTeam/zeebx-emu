@@ -944,9 +944,11 @@ fn run_frames(
         machine.deliver_signals(INSTRUCTION_BUDGET)?;
         machine.deliver_callbacks(INSTRUCTION_BUDGET)?;
 
+        // O teto de instruções de um trecho é pedido de vez, não desfecho ruim. Ver a mesma
+        // decisão em `session.rs`.
         if let Some(bad) = outcomes
             .iter()
-            .find(|outcome| !matches!(outcome, Outcome::Returned { .. }))
+            .find(|outcome| !matches!(outcome, Outcome::Returned { .. } | Outcome::Budget))
         {
             stopped = Some((round, bad.clone()));
             break;

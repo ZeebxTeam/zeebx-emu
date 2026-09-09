@@ -1245,7 +1245,7 @@ const CALLBACK_ROUNDS: usize = 64;
 
 /// Quantos orçamentos de fatia um trecho de execução pode gastar antes de devolver a vez ao
 /// laço de quadros. Ver [`Machine::execute`].
-const TETO_DE_TRECHO: u64 = 32;
+const TETO_DE_TRECHO: u64 = 4;
 
 /// Ids de parâmetro do `ICipher1`, de `inc/AEEICipher1.h`.
 const CIPHER_PARAM_DIRECTION: u32 = 0;
@@ -2320,11 +2320,16 @@ impl<C: CpuBackend> Machine<C> {
         // abertura, e cada repetição é uma chamada de API. O jogo estava certo; quem não
         // devolvia a vez éramos nós.
         //
-        // O teto é **folgado de propósito**. Apertá-lo até o orçamento de uma fatia quebra jogo
-        // que trabalha muito num quadro só: o Zeeboids passou a parar no meio, com dois
-        // segundos e meio de jogo em vez de dez. Um quadro pesado dele custa quatrocentos mil
-        // instruções; o teto aqui é trinta e duas vezes o orçamento, longe do uso normal e
-        // ainda assim finito.
+        // O teto tem folga medida. Igual ao orçamento de uma fatia ele quebra jogo que trabalha
+        // muito num quadro só — o Zeeboids parava no meio, com dois segundos e meio em vez de
+        // dez. Com quatro vezes, o Zeeboids roda idêntico (mil quatrocentos e cinquenta milhões
+        // de instruções em 12.978 voltas, os mesmos números de antes) e a Z-Wheel devolve a vez
+        // sete vezes mais cedo, que é a diferença entre a interface responder e congelar.
+        //
+        // E estourar o teto **não é fim de jogo**: é pedido de vez. Quem chama trata o
+        // `Outcome::Budget` como volta normal — tratá-lo como desfecho ruim parava a Z-Wheel na
+        // primeira volta, porque ela repete a abertura enquanto ninguém toca e cada repetição
+        // gasta orçamento.
         let comeco = self.cpu.instructions();
         let teto = budget.saturating_mul(TETO_DE_TRECHO);
         loop {

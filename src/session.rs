@@ -222,9 +222,13 @@ impl Session {
             self.stopped = Some(Outcome::Exception { pc: 0 });
             return Some(Step::Stopped);
         }
+        // O teto de instruções de um trecho **não** é fim de jogo: é o pedido de vez que o
+        // laço de quadros faz para poder entregar a entrada e conferir o relógio. Tratá-lo como
+        // desfecho ruim parava a Z-Wheel na primeira volta — ela repete a abertura enquanto
+        // ninguém toca, e cada repetição gasta orçamento.
         if let Some(bad) = outcomes
             .iter()
-            .find(|outcome| !matches!(outcome, Outcome::Returned { .. }))
+            .find(|outcome| !matches!(outcome, Outcome::Returned { .. } | Outcome::Budget))
         {
             self.stopped = Some(bad.clone());
             return Some(Step::Stopped);
