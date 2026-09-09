@@ -1614,7 +1614,7 @@ pub struct Machine<C: CpuBackend> {
     /// entrada é indistinguível de um problema de interpretação sem ver o que chegou: um menu
     /// que anda duas casas por toque pode ser o jogo contando dois canais, ou o emulador
     /// mandando dois eventos, e só o registro separa os dois casos.
-    pad_log: std::collections::VecDeque<(u32, usize, bool)>,
+    pad_log: std::collections::VecDeque<(u32, usize, usize, bool)>,
     /// O applet corrente, devolvido por `GetAppInstance`.
     current_applet: u32,
     /// Semente do gerador pseudoaleatório — fixa, para que a mesma sessão se repita igual.
@@ -5251,7 +5251,7 @@ impl<C: CpuBackend> Machine<C> {
             if self.pad_log.len() == PAD_LOG_MAX {
                 self.pad_log.pop_front();
             }
-            self.pad_log.push_back((agora, index, down));
+            self.pad_log.push_back((agora, porta, index, down));
         }
 
         if !changes.is_empty() {
@@ -7919,12 +7919,13 @@ impl<C: CpuBackend> Machine<C> {
 
     /// As URLs que o jogo tentou buscar pelo `IWeb`.
     /// Os últimos toques entregues ao jogo, como `(instante, nome do botão, apertado)`.
-    pub fn pad_log(&self) -> Vec<(u32, &'static str, bool)> {
+    pub fn pad_log(&self) -> Vec<(u32, usize, &'static str, bool)> {
         self.pad_log
             .iter()
-            .map(|&(ms, index, down)| {
+            .map(|&(ms, porta, index, down)| {
                 (
                     ms,
+                    porta,
                     input::BUTTON_NAMES.get(index).copied().unwrap_or("?"),
                     down,
                 )

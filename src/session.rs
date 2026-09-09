@@ -118,7 +118,28 @@ impl Session {
     ///
     /// Um `.zip` é extraído para o cache antes: o jogo grava (o Peteca tem um `.sav`), e
     /// escrever de volta num pacote não é coisa que se queira fazer.
+    /// Como [`Session::start`], mas com o aparelho já configurado antes de o jogo começar.
+    ///
+    /// **A ordem importa.** O `start` roda o `AEEMod_Load`, cria o applet e despacha o
+    /// `EVT_APP_START` — tudo antes de devolver. Um jogo que enumera o `IHID` na partida, como a
+    /// Z-Wheel, já perguntou o que está ligado antes de qualquer ajuste feito depois: com as
+    /// portas aplicadas só na volta, ela via um controle e nenhum teclado, por mais que a
+    /// configuração dissesse o contrário.
+    pub fn start_with(
+        path: &Path,
+        portas: [Option<crate::bindings::Aparelho>; crate::input::PORTAS],
+    ) -> Result<Self, StartError> {
+        Self::start_inner(path, Some(portas))
+    }
+
     pub fn start(path: &Path) -> Result<Self, StartError> {
+        Self::start_inner(path, None)
+    }
+
+    fn start_inner(
+        path: &Path,
+        portas: Option<[Option<crate::bindings::Aparelho>; crate::input::PORTAS]>,
+    ) -> Result<Self, StartError> {
         let extracted;
         let path = match path.extension().and_then(|e| e.to_str()) {
             Some("zip") => {
@@ -136,6 +157,9 @@ impl Session {
         let root = path.parent().map(Path::to_path_buf).unwrap_or_default();
         let cpu = UnicornCpu::new().map_err(|e| StartError::NotLoadable(e.to_string()))?;
         let mut machine = Machine::new(cpu, module, root);
+        if let Some(portas) = portas {
+            machine.set_portas(portas);
+        }
 
         let outcome = machine
             .run(INSTRUCTION_BUDGET)
@@ -343,12 +367,14 @@ impl Session {
         let toques = self.machine.pad_log();
         if !toques.is_empty() {
             linhas.push("— toques entregues ao jogo —".to_string());
-            linhas.extend(toques.iter().map(|&(ms, nome, down)| {
+            // A porta entra no registro porque, com duas ligadas nas mesmas teclas, o mesmo
+            // toque aparece duas vezes — e sem dizer de onde veio, isso parece defeito.
+            linhas.extend(toques.iter().map(|&(ms, porta, nome, down)| {
                 let acao = match down {
                     true => "aperta",
                     false => "solta ",
                 };
-                format!("  {ms:>7} ms  {acao} {nome}")
+                format!("  {ms:>7} ms  porta {}  {acao} {nome}", porta + 1)
             }));
         }
         let classes = self.machine.unknown_classes();

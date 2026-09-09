@@ -233,13 +233,12 @@ impl App {
         self.log_dismissed = false;
         self.log_gravado = None;
         self.log_status = None;
-        match Session::start(&path) {
+        match Session::start_with(&path, self.portas_configuradas()) {
             Ok(mut session) => {
                 let audio = &self.settings.audio;
                 if let Some(err) = session.set_audio(audio.enabled, audio.volume) {
                     eprintln!("sem som: {err}");
                 }
-                session.set_portas(self.portas_configuradas());
                 self.session = Some(session);
             }
             Err(err) => {

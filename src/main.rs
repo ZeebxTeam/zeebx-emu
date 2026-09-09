@@ -572,12 +572,12 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
     let toques = machine.pad_log();
     if !toques.is_empty() {
         println!("toques:    {} entregue(s) ao jogo", toques.len());
-        for (ms, nome, down) in &toques {
+        for (ms, porta, nome, down) in &toques {
             let acao = match down {
                 true => "aperta",
                 false => "solta ",
             };
-            println!("  {ms:>7} ms  {acao} {nome}");
+            println!("  {ms:>7} ms  porta {}  {acao} {nome}", porta + 1);
         }
     }
     let urls = machine.web_requests();
