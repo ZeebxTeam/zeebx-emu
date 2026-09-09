@@ -100,6 +100,23 @@ pub enum Interface {
     /// São sete e não mais: o slot 7 não é endereço Thumb e o 8 é zero. Isso casa com o que a
     /// sonda viu os aplicativos chamarem — os slots 3 e 6, os dois últimos.
     RootForm = 39,
+    /// `0x01028e51`, o widget da interface da Z-Wheel — inclusive o formulário raiz.
+    ///
+    /// A classe não está na tabela do `1.1.2_APPS.bin`, então não há vtable de firmware para
+    /// copiar. O que se sabe dela veio do código do jogo, e é pouco e claro: o único método
+    /// usado é o **slot 3**, um acessador genérico `slot3(this, seletor, id, valor)`. O jogo o
+    /// chama por dois invólucros, e os dois dizem qual é o seletor:
+    ///
+    /// - `0x3f72c(obj, id, saida)` chama `slot3(obj, 0x800, id, saida)` — **pega o filho** de
+    ///   número `id` e escreve o ponteiro em `saida`.
+    /// - `0x403c8(obj, valor)` chama `slot3(obj, 0x801, 0x130, valor)` — **grava** a
+    ///   propriedade `0x130`.
+    ///
+    /// O retorno é ao contrário do BREW: **diferente de zero é sucesso**. Os dois invólucros
+    /// fazem `cmp r0,#0; moveq r0,#3`, ou seja, transformam zero em `EBADCLASS`. Responder
+    /// `SUCCESS` aqui — que vale zero — é dizer "falhou", e foi exatamente o que fez a
+    /// `tectoymain.c:1001` imprimir `Could not create root form(20)` e depois morrer num nulo.
+    Widget = 40,
     /// Objeto de uma classe que ainda não conhecemos, criado a pedido do `--sonda`.
     ///
     /// Não implementa interface nenhuma: existe para **descobrir qual é**. Toda chamada é
@@ -119,7 +136,7 @@ impl Interface {
     /// as duas coisas precisam concordar — daí a lista existir num lugar só, com teste que
     /// confere a correspondência. Quando elas divergiram, um objeto recebeu a vtable de outra
     /// interface e a chamada foi parar no método errado, com sintoma a quilômetros da causa.
-    pub const ALL: [Interface; 40] = [
+    pub const ALL: [Interface; 41] = [
         Self::Shell,
         Self::Module,
         Self::Applet,
@@ -160,6 +177,7 @@ impl Interface {
         Self::SqlDatabase,
         Self::Collection,
         Self::RootForm,
+        Self::Widget,
     ];
 
     /// Nome usado nos logs — casa com a nomenclatura do SDK.
@@ -203,6 +221,7 @@ impl Interface {
             Self::SqlDatabase => "ISQLDatabase",
             Self::Collection => "IColecao",
             Self::RootForm => "IFormRaiz",
+            Self::Widget => "IWidget",
             Self::Probe => "ClasseDesconhecida",
             Self::Helpers => "AEEHelpers",
         }
@@ -249,6 +268,7 @@ impl Interface {
             Self::SqlDatabase => aee_slots::SQL_DATABASE,
             Self::Collection => aee_slots::COLLECTION,
             Self::RootForm => aee_slots::ROOT_FORM,
+            Self::Widget => aee_slots::WIDGET,
             // A sonda não tem tabela: `method` responde por ela antes de chegar aqui.
             Self::Probe => &[],
             Self::Helpers => aee_helpers::HELPERS,
@@ -311,6 +331,7 @@ impl Interface {
             37 => Self::SqlDatabase,
             38 => Self::Collection,
             39 => Self::RootForm,
+            40 => Self::Widget,
             6 => Self::Helpers,
             _ => return None,
         })

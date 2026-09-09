@@ -714,6 +714,13 @@ const AEECLSID_DISPLAY1: u32 = 0x0101_27d4;
 /// `AEECLSID_FILEMGR`, do `AEECLSID_FILEMGR.bid` do SDK. No `AEEClassIDs.h` ele aparece só
 /// comentado, o que já me fez errar esse valor uma vez.
 const AEECLSID_FILEMGR: u32 = 0x0100_1003;
+/// `0x01028e51`, o widget da interface da Z-Wheel. Ver [`Interface::Widget`].
+///
+/// Também não está em header nenhum nem na tabela de classes do firmware que temos. O valor
+/// veio do próprio módulo: é o literal em `0x7c69c`, carregado pela `tectoymain.c:1001` e
+/// entregue ao `ISHELL_CreateInstance` cujo fracasso imprime `Could not create root form`.
+const AEECLSID_WIDGET: u32 = 0x0102_8e51;
+
 /// A coleção genérica que a interface da Z-Wheel usa.
 ///
 /// Não há header. O que identifica a classe é o pool de literais do módulo: a constante aparece
@@ -1504,6 +1511,10 @@ pub struct Machine<C: CpuBackend> {
     ciphers: HashMap<u32, CipherState>,
     /// O par que o `SetHandler` do formulário raiz guardou, por objeto.
     root_forms: HashMap<u32, (u32, u32)>,
+    /// Os filhos e as propriedades de cada widget vivo, por objeto: `id -> filho` e
+    /// `id -> valor`. Guardar é o que faz o acessador ser coerente consigo mesmo — pedir duas
+    /// vezes o filho `0x5000` tem de devolver o mesmo objeto, ou o jogo fica com dois.
+    widgets: HashMap<u32, (HashMap<u32, u32>, HashMap<u32, u32>)>,
     /// Chamadas de GL atendidas com sucesso sem fazer nada.
     ignored_gl: BTreeSet<&'static str>,
     /// O que o jogo entregou ao `ICipher1`, em claro, antes de ser cifrado.
@@ -1693,6 +1704,7 @@ impl<C: CpuBackend> Machine<C> {
             profiling_api: false,
             image_notify: HashMap::new(),
             root_forms: HashMap::new(),
+            widgets: HashMap::new(),
             network: true,
             // Pelo mesmo motivo, o desvio de servidor também vem do ambiente:
             // `ZEEBX_SERVIDOR=127.0.0.1:8080`. Sem isso, apontar um jogo para um servidor de
@@ -2445,6 +2457,10 @@ impl<C: CpuBackend> Machine<C> {
                 }
                 result
             }
+            (Interface::Widget, _) => match self.widget_call(slot)? {
+                Some(result) => result,
+                None => return Ok(None),
+            },
             (Interface::RootForm, _) => match self.root_form_call(slot)? {
                 Some(result) => result,
                 None => return Ok(None),
@@ -6225,6 +6241,97 @@ impl<C: CpuBackend> Machine<C> {
     /// A aposta é explícita: se o aplicativo só precisava que o formulário existisse e aceitasse
     /// os widgets, ele passa; se ele depende do que o contêiner interno faria, ele para mais
     /// adiante — e aí o próximo passo aparece, que é melhor do que parar na criação.
+    /// Atende o widget da Z-Wheel (`0x01028e51`). Ver [`Interface::Widget`].
+    ///
+    /// **O retorno é invertido**: diferente de zero é sucesso. Os invólucros do jogo
+    /// (`0x3f72c` e `0x403c8`) fazem `cmp r0,#0; moveq r0,#3`, transformando zero em erro. Isso
+    /// vale só para o acessador; o `AddRef` e o `Release` continuam devolvendo a contagem, como
+    /// em todo o BREW.
+    ///
+    /// O acessador tem dois seletores, e ambos foram lidos no código do jogo:
+    ///
+    /// - `0x800` **pega o filho** de número `id` e escreve o ponteiro no terceiro argumento. O
+    ///   filho é criado na primeira vez e guardado: a `0x78acc` pede o `0x5000`, configura, e
+    ///   depois pede o `0x5002`, e ela solta os dois no fim — se cada pedido criasse um objeto
+    ///   novo, o jogo soltaria objetos que não são os que usou.
+    /// - `0x801` **grava** a propriedade `id`. O que os números querem dizer ainda não sabemos;
+    ///   guardá-los custa nada e é o que permitirá reconhecê-los quando a tela aparecer.
+    ///
+    /// Um seletor que não seja esses dois é recusado com zero em vez de aceito em silêncio: um
+    /// terceiro seletor é coisa que precisamos ver, não esconder.
+    fn widget_call(&mut self, slot: u32) -> Result<Option<u32>, CpuError> {
+        const PEGA_FILHO: u32 = 0x800;
+        const GRAVA: u32 = 0x801;
+        /// Sucesso para esta classe. Não é o `SUCCESS` do BREW — ver acima.
+        const OK: u32 = 1;
+
+        let Some(name) = Interface::Widget.method(slot) else {
+            return Ok(None);
+        };
+        let this = self.cpu.read_reg(Reg::R0);
+        let result = match name {
+            "AddRef" => self.objects.add_ref(this),
+            "Release" => {
+                let restantes = self.objects.release(this);
+                if restantes == 0 {
+                    self.widgets.remove(&this);
+                }
+                restantes
+            }
+            "Acessador" => {
+                let (seletor, id, terceiro) = (
+                    self.cpu.read_reg(Reg::R1),
+                    self.cpu.read_reg(Reg::R2),
+                    self.cpu.read_reg(Reg::R3),
+                );
+                match seletor {
+                    PEGA_FILHO => {
+                        let existente = self
+                            .widgets
+                            .get(&this)
+                            .and_then(|(filhos, _)| filhos.get(&id).copied());
+                        let filho = match existente {
+                            Some(filho) => {
+                                // Entregar é emprestar: quem recebe vai soltar, e sem esta
+                                // contagem o segundo pedido devolveria um objeto já morto.
+                                self.objects.add_ref(filho);
+                                filho
+                            }
+                            None => {
+                                let filho = self.new_object(Interface::Widget)?;
+                                if filho == 0 {
+                                    return Ok(Some(0));
+                                }
+                                self.widgets.insert(filho, (HashMap::new(), HashMap::new()));
+                                if let Some((filhos, _)) = self.widgets.get_mut(&this) {
+                                    filhos.insert(id, filho);
+                                }
+                                filho
+                            }
+                        };
+                        if terceiro != 0 {
+                            self.cpu.write_u32(terceiro, filho)?;
+                        }
+                        OK
+                    }
+                    GRAVA => {
+                        if let Some((_, propriedades)) = self.widgets.get_mut(&this) {
+                            propriedades.insert(id, terceiro);
+                        }
+                        OK
+                    }
+                    _ => {
+                        self.assumptions
+                            .insert("um seletor de widget que não conhecemos foi recusado");
+                        0
+                    }
+                }
+            }
+            _ => OK,
+        };
+        Ok(Some(result))
+    }
+
     fn root_form_call(&mut self, slot: u32) -> Result<Option<u32>, CpuError> {
         let Some(name) = Interface::RootForm.method(slot) else {
             return Ok(None);
@@ -9349,6 +9456,7 @@ impl<C: CpuBackend> Machine<C> {
             AEECLSID_COLLECTION => Interface::Collection,
             AEECLSID_SQLMGR => Interface::SqlMgr,
             AEECLSID_ROOTFORM => Interface::RootForm,
+            AEECLSID_WIDGET => Interface::Widget,
             AEECLSID_MD5 => Interface::Hash,
             AEECLSID_CIPHER_FACTORY => Interface::CipherFactory,
             AEECLSID_MEDIA | AEECLSID_MEDIAMIDI | AEECLSID_MEDIAMP3 | AEECLSID_MEDIAADPCM
@@ -9385,6 +9493,11 @@ impl<C: CpuBackend> Machine<C> {
         // acaso — a resposta certa pelo motivo errado.
         if iface == Interface::Collection {
             self.collections.insert(obj, (Vec::new(), 0));
+        }
+        // Pelo mesmo motivo da coleção: um widget sem registro responderia "não tenho esse
+        // filho" por não existir, e não por não ter o filho.
+        if iface == Interface::Widget {
+            self.widgets.insert(obj, (HashMap::new(), HashMap::new()));
         }
         if out != 0 {
             self.cpu.write_u32(out, obj)?;

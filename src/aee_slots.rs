@@ -831,6 +831,13 @@ pub const ROOT_FORM: &[&str] = &[
     "SetWidget",
 ];
 
+/// Métodos do widget da Z-Wheel (`0x01028e51`).
+///
+/// Só o slot 3 tem nome porque só ele foi visto em uso. Os dois primeiros são o `AddRef` e o
+/// `Release` de toda interface do BREW; o 2 fica sem nome de propósito, para que uma chamada
+/// nele apareça no relatório em vez de passar por implementada.
+pub const WIDGET: &[&str] = &["AddRef", "Release", "slot2", "Acessador"];
+
 /// Métodos da coleção genérica da Z-Wheel (`0x0102c4e8`… não: `0x0100104f`).
 ///
 /// Sem header. Os nomes saíram do uso, observado com o `--sonda`: o app cria a coleção, chama o
