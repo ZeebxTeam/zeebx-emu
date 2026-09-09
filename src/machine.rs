@@ -3261,6 +3261,39 @@ impl<C: CpuBackend> Machine<C> {
         }
     }
 
+    /// Escolhe um idioma quando o banco de preferências ainda não tem um.
+    ///
+    /// A Z-Wheel guarda em `PREFSINFO.Lang` a **etiqueta** do idioma empacotada em quatro
+    /// bytes — `"pt  "` vira `0x20207470` —, e não um índice. Quem monta a tela do z-pad
+    /// percorre a lista de idiomas do módulo comparando a etiqueta de cada um com esse valor;
+    /// sem achar, devolve zero e o jogo repete `Couldn't create z-pad instruction form (6)`
+    /// para sempre. O pacote nasce com `Lang = 0`, que é "ninguém escolheu ainda": no console
+    /// quem preenche isso é a tela de primeira configuração, que ainda não alcançamos.
+    ///
+    /// Escolher por conta é uma hipótese, e fica anotada como tal. É o português porque é o
+    /// idioma do aparelho que a TecToy vendeu, e porque `tectoy_pt.brf` está no pacote.
+    fn escolhe_idioma(&mut self, db: &crate::sql::Database) {
+        /// `"pt  "` lido como uma palavra de 32 bits, que é a forma como o módulo compara.
+        const PORTUGUES: u32 = u32::from_le_bytes(*b"pt  ");
+        let sem_escolha = db
+            .exec("SELECT dwValue FROM PREFSINFO WHERE PREFSINFO.name = 'Lang'")
+            .ok()
+            .and_then(|linhas| linhas.into_iter().next())
+            .and_then(|linha| linha.values.into_iter().next().flatten())
+            .is_some_and(|valor| valor == "0");
+        if !sem_escolha {
+            return;
+        }
+        let gravou = db.exec(&format!(
+            "UPDATE PREFSINFO SET dwValue = {PORTUGUES} WHERE PREFSINFO.name = 'Lang'"
+        ));
+        if gravou.is_ok() {
+            self.assumptions.insert(
+                "o idioma não estava escolhido no banco e assumimos português",
+            );
+        }
+    }
+
     /// `int ISHELL_LoadResString(IShell *po, const char *pszResFile, int16 nResID,
     /// AECHAR *pBuff, int nSize)`.
     ///
@@ -7836,6 +7869,7 @@ impl<C: CpuBackend> Machine<C> {
                 };
                 match crate::sql::Database::open(&caminho) {
                     Ok(db) => {
+                        self.escolhe_idioma(&db);
                         let object = self.new_object(Interface::SqlDatabase)?;
                         if object == 0 {
                             return Ok(Some(ENOMEMORY));
