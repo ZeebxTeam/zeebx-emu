@@ -11,8 +11,57 @@
 /// Z-Wheel passa **dois** como tamanho do vetor de saída, nas duas vezes em que o chama.
 pub const PORTAS: usize = 2;
 
+/// O evento de tecla do BREW, que é como o console entrega teclado ao aplicativo.
+///
+/// Teclado no BREW **não passa pelo `IHID`**: o `IHID` diz que existe um, e as teclas chegam
+/// como evento ao tratador do aplicativo, com o código virtual no `wParam`. A Z-Wheel confirma:
+/// o tratador do formulário de abertura, em `0x11828`, testa `r1 == 0x100` e compara o `r2` com
+/// `0xe030`, `0xe04a` e outros — que são `AVK_`.
+pub const EVT_KEY: u32 = 0x100;
+
+/// Os códigos virtuais do BREW que o console usa, do `AEEVCodes.h`.
+///
+/// A lista não é chute: são os que aparecem como literal no módulo da Z-Wheel — `0xe015`,
+/// `0xe030` a `0xe035`, `0xe046`, `0xe04a`, `0xe063` — mais os quatro sentidos, que ficam logo
+/// antes do `AVK_SELECT` na numeração do header.
+pub mod avk {
+    pub const UP: u32 = 0xe011;
+    pub const DOWN: u32 = 0xe012;
+    pub const LEFT: u32 = 0xe013;
+    pub const RIGHT: u32 = 0xe014;
+    /// O "OK". É o código que a Z-Wheel guarda em `0xe015`.
+    pub const SELECT: u32 = 0xe015;
+    /// `AVK_0` a `AVK_9` são contíguos.
+    pub const ZERO: u32 = 0xe030;
+    pub const STAR: u32 = 0xe03a;
+    pub const POUND: u32 = 0xe03b;
+    pub const CLR: u32 = 0xe04a;
+
+    /// O código de um dígito, ou `None` se não for dígito.
+    pub fn digito(n: u32) -> Option<u32> {
+        (n <= 9).then_some(ZERO + n)
+    }
+
+    /// O código de uma tecla pelo nome que a configuração usa.
+    pub fn por_nome(nome: &str) -> Option<u32> {
+        Some(match nome {
+            "up" => UP,
+            "down" => DOWN,
+            "left" => LEFT,
+            "right" => RIGHT,
+            "select" | "ok" => SELECT,
+            "star" => STAR,
+            "pound" => POUND,
+            "clr" => CLR,
+            outro => return outro.parse::<u32>().ok().and_then(digito),
+        })
+    }
+}
+
 /// Quantos botões o controle tem.
 pub const BUTTONS: usize = 18;
+
+/// Quantas portas de entrada o console tem.
 
 /// UID de cada botão, na ordem em que o console os enumera.
 ///

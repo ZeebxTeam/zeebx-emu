@@ -189,6 +189,11 @@ fn main() -> ExitCode {
                         .find_map(|a| a.strip_prefix("--servidor="))
                         .map(str::to_owned),
                     bridge: args.iter().any(|a| a == "--ponte"),
+                    teclas: args
+                        .iter()
+                        .find_map(|a| a.strip_prefix("--teclas="))
+                        .map(teclado)
+                        .unwrap_or_default(),
                     portas: match args.iter().find_map(|a| a.strip_prefix("--portas=")) {
                         Some(lista) => match aparelhos(lista) {
                             Some(portas) => portas,
@@ -217,7 +222,7 @@ fn main() -> ExitCode {
                              [--code=0xINI:0xFIM] [--frames=N]
                              [--profile] [--wall=SEGUNDOS] [--sonda=0xCLSID,...]
                              [--sem-rede] [--servidor=MAQUINA[:PORTA]] [--ponte]
-                             [--portas=controle|teclado|nenhum,...]"
+                             [--portas=controle|teclado|nenhum,...] [--teclas=ms:nome,...]"
             );
             ExitCode::FAILURE
         }
@@ -318,6 +323,31 @@ struct Options {
     bridge: bool,
     /// O que o console vê em cada porta, com `--portas=controle,teclado`.
     portas: [Option<bindings::Aparelho>; input::PORTAS],
+    /// Teclas a entregar, com `--teclas=ms:nome[,...]`.
+    teclas: Vec<(u32, u32)>,
+}
+
+/// Lê `1000:select,2000:down` e devolve `(instante em ms, código AVK)`.
+///
+/// Os nomes são os de [`input::avk::por_nome`]: `up`, `down`, `left`, `right`, `select`, `clr`,
+/// `star`, `pound` e os dígitos. O que não for reconhecido é descartado com aviso, porque um
+/// roteiro com uma tecla errada ainda vale pelas outras.
+fn teclado(lista: &str) -> Vec<(u32, u32)> {
+    lista
+        .split(',')
+        .filter(|item| !item.is_empty())
+        .filter_map(|item| {
+            let (quando, nome) = item.split_once(':')?;
+            let quando = quando.parse().ok()?;
+            match input::avk::por_nome(nome.trim()) {
+                Some(avk) => Some((quando, avk)),
+                None => {
+                    eprintln!("aviso: tecla desconhecida {nome:?}");
+                    None
+                }
+            }
+        })
+        .collect()
 }
 
 /// O padrão sem janela: um controle na primeira porta, a segunda livre. É o que sempre houve.
@@ -364,6 +394,7 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
         network_to,
         bridge,
         portas,
+        teclas,
     } = options;
     // Um jogo em `.zip` é extraído para o cache e rodado de lá, como na interface.
     let extracted;
@@ -473,6 +504,7 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
                                     dump_heap,
                                     window,
                                     &keys,
+                                    &teclas,
                                     dump_gl.as_deref(),
                                     dump_audio.as_deref(),
                                     profile,
@@ -785,6 +817,7 @@ fn run_frames(
     dump_heap: bool,
     show: bool,
     keys: &input::Script,
+    teclas: &[(u32, u32)],
     dump_gl: Option<&str>,
     dump_audio: Option<&str>,
     profile: bool,
@@ -813,6 +846,11 @@ fn run_frames(
         false => None,
     };
     let mut drawn = 0;
+    let mut teclas_pendentes: std::collections::VecDeque<(u32, u32)> = {
+        let mut ordenadas = teclas.to_vec();
+        ordenadas.sort_by_key(|&(quando, _)| quando);
+        ordenadas.into()
+    };
     let mut turns = 0;
     let mut stopped = None;
     let mut pad = input::Pad::default();
@@ -866,6 +904,16 @@ fn run_frames(
                 window.show(machine.screen())?;
                 pad = window.pad();
             }
+        }
+        // As teclas do roteiro entram quando o relógio do jogo passa do instante marcado. Cada
+        // uma vai como aperto e soltura seguidos, que é o que um toque é.
+        while teclas_pendentes
+            .front()
+            .is_some_and(|&(quando, _)| machine.clock_ms() >= quando)
+        {
+            let (_, avk) = teclas_pendentes.pop_front().unwrap_or_default();
+            machine.set_key(avk, true);
+            machine.set_key(avk, false);
         }
         if deadline.is_some_and(|limit| machine.clock_ms() >= limit) {
             break;

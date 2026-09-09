@@ -249,9 +249,20 @@ pub enum Interface {
     Typeface = 49,
     /// `0x01006c01`, o `LCT_SIMCardCtl` — o controle do cartão SIM do console.
     ///
-    /// A `tectoymain.c:1668` imprime `Unable to create instance of AEECLSID_LCT_SIMCARDCTL,
-    /// cannot do SIM check` sem ele, e não desiste: numa execução ela imprimiu isso
-    /// **486.101 vezes**. Recusar não era resposta neutra; era um laço.
+    /// **Está implementada e não é oferecida, e o motivo é o jogo.** A `0x78544` cria esta
+    /// classe para pedir a verificação do cartão; quando a criação **falha**, ela põe o estado
+    /// em `0x27` — e `0x27` é justamente o que a `0x82464` encaminha para a transição que abre
+    /// o menu principal. Recusar não é desistir: é o caminho que o próprio jogo define para
+    /// "não dá para verificar cartão aqui", e é o que faz a Z-Wheel seguir.
+    ///
+    /// Oferecê-la trava. O slot 3 registra um retorno de chamada e a verificação é assíncrona;
+    /// aceitar o pedido e nunca responder deixa o jogo no estado `0x28`, esperando para sempre.
+    /// Responder seria inventar o resultado de uma verificação de cartão que não existe.
+    ///
+    /// Chegou a ser oferecida por causa das 486.101 repetições de
+    /// `Unable to create instance of AEECLSID_LCT_SIMCARDCTL` num log. Aquele laço tinha outra
+    /// causa — o acessador do widget devolvendo ponteiro onde o jogo esperava número —, e a
+    /// mensagem repetida era o jogo tomando **o caminho certo** muitas vezes.
     ///
     /// A vtable é a `0x113cf854`, com quatro métodos, e o construtor `0x11267d04` confere o
     /// CLSID recebido contra `0x01006c01` — é dela mesma. Foi este construtor, aliás, que

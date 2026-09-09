@@ -783,6 +783,8 @@ struct Widget {
     pai: u32,
     /// Endereço da estrutura de tratador que o slot 4 registrou: `{função, contexto}`.
     tratador: u32,
+    /// Se o aviso de partida já foi entregue. Ver [`Machine::parte_animacao`].
+    partiu: bool,
 }
 
 /// As classes da extensão de interface que respondem ao mesmo acessador do
@@ -1241,6 +1243,10 @@ const SQL_CALLBACK_BUDGET: u64 = 10_000_000;
 /// outro, e sem teto um ciclo prenderia o emulador.
 const CALLBACK_ROUNDS: usize = 64;
 
+/// Quantos orçamentos de fatia um trecho de execução pode gastar antes de devolver a vez ao
+/// laço de quadros. Ver [`Machine::execute`].
+const TETO_DE_TRECHO: u64 = 32;
+
 /// Ids de parâmetro do `ICipher1`, de `inc/AEEICipher1.h`.
 const CIPHER_PARAM_DIRECTION: u32 = 0;
 const CIPHER_PARAM_KEY: u32 = 1;
@@ -1600,6 +1606,8 @@ pub struct Machine<C: CpuBackend> {
     portas: [Option<crate::bindings::Aparelho>; input::PORTAS],
     /// A porta de cada `IHIDDevice` que o jogo criou, pelo endereço do objeto.
     portas_de_aparelho: HashMap<u32, usize>,
+    /// Teclas apertadas e ainda não entregues, como `(código AVK, apertada)`.
+    teclas: std::collections::VecDeque<(u32, bool)>,
     /// Os últimos toques entregues, para o relatório.
     ///
     /// A fila acima é consumida pelo jogo e some; esta fica. Existe porque um problema de
@@ -1852,6 +1860,7 @@ impl<C: CpuBackend> Machine<C> {
                 (n == 0).then_some(crate::bindings::Aparelho::Controle)
             }),
             portas_de_aparelho: HashMap::new(),
+            teclas: std::collections::VecDeque::new(),
             pad_log: std::collections::VecDeque::new(),
             current_applet: 0,
             random_state: 0x1234_5678,
@@ -2301,8 +2310,30 @@ impl<C: CpuBackend> Machine<C> {
     /// O laço propriamente dito: roda, atende chamadas de API e continua até um desfecho.
     fn execute(&mut self, entry: u32, budget: u64) -> Result<Outcome, CpuError> {
         let mut pc = entry;
+        // **Há um teto para o trecho inteiro, além do de cada fatia.** O orçamento era passado
+        // a cada `cpu.run` e recomeçava do zero depois de toda chamada de API, então um jogo
+        // que chamasse uma API por volta rodava para sempre dentro de **uma** volta do laço de
+        // quadros — e enquanto isso nem a entrada do jogador chegava, nem o teto de tempo real
+        // era conferido, porque as duas coisas moram no laço de fora.
+        //
+        // Foi o que prendeu a Z-Wheel em modo de atração: sem ninguém tocar, ela repete a
+        // abertura, e cada repetição é uma chamada de API. O jogo estava certo; quem não
+        // devolvia a vez éramos nós.
+        //
+        // O teto é **folgado de propósito**. Apertá-lo até o orçamento de uma fatia quebra jogo
+        // que trabalha muito num quadro só: o Zeeboids passou a parar no meio, com dois
+        // segundos e meio de jogo em vez de dez. Um quadro pesado dele custa quatrocentos mil
+        // instruções; o teto aqui é trinta e duas vezes o orçamento, longe do uso normal e
+        // ainda assim finito.
+        let comeco = self.cpu.instructions();
+        let teto = budget.saturating_mul(TETO_DE_TRECHO);
         loop {
-            match self.cpu.run(pc, budget)? {
+            let gasto = self.cpu.instructions().saturating_sub(comeco);
+            let fatia = teto.saturating_sub(gasto).min(budget);
+            if fatia == 0 {
+                return Ok(Outcome::Budget);
+            }
+            match self.cpu.run(pc, fatia)? {
                 StopReason::ApiCall { addr } if self.calls_total >= MAX_CALLS => {
                     let _ = addr;
                     return Ok(Outcome::CallLimit {
@@ -3738,6 +3769,8 @@ impl<C: CpuBackend> Machine<C> {
         // pede chamar o alocador do jogo, e isso só é seguro fora do despacho.
         self.flush_response()?;
         self.pinta_widgets()?;
+        self.parte_animacao()?;
+        self.flush_keys()?;
         let pending = std::mem::take(&mut self.pending_signals);
         let mut outcomes = Vec::new();
         for callback in pending {
@@ -3751,6 +3784,40 @@ impl<C: CpuBackend> Machine<C> {
             )?);
         }
         Ok(outcomes)
+    }
+
+    /// Dá a partida na abertura, **uma vez** por tratador registrado.
+    ///
+    /// Daqui para a frente a `AnimationVideo_Form` anda sozinha, e a corrente inteira está
+    /// lida: a `0x11528` arma um `ISHELL_SetTimer` de mil milissegundos com o retorno de chamada
+    /// `0x114ac`, que é o próprio tique; cada tique olha `[formulário+0x2c]` e avança de estado;
+    /// no estado três a `0x11610` registra um `ISHELL_Resume` para a `0x11750`, que fecha o
+    /// formulário e chama a `0x82464` — e é ela que leva ao menu principal.
+    ///
+    /// O console dá **um** aviso e o resto é do jogo. O aviso é o par `(0x801, 0x5064)` no
+    /// tratador que o slot 4 registrou, que é a forma que o `0x11828` desvia para o `0x114ac`.
+    ///
+    /// Entregar mais de um seria inventar cadência, e isso já custou uma travada.
+    fn parte_animacao(&mut self) -> Result<(), CpuError> {
+        /// O par que a `0x11828` entende como "começou".
+        const PARTIDA: (u32, u32) = (0x801, 0x5064);
+
+        let novos: Vec<(u32, u32)> = self
+            .widgets
+            .iter()
+            .filter(|(_, widget)| widget.tratador != 0 && !widget.partiu)
+            .map(|(&objeto, widget)| (objeto, widget.tratador))
+            .collect();
+        for (objeto, onde) in novos {
+            if let Some(widget) = self.widgets.get_mut(&objeto) {
+                widget.partiu = true;
+            }
+            let (funcao, contexto) = (self.cpu.read_u32(onde)?, self.cpu.read_u32(onde + 4)?);
+            if funcao != 0 {
+                self.call_guest(funcao, [contexto, PARTIDA.0, PARTIDA.1, 1], QSORT_BUDGET)?;
+            }
+        }
+        Ok(())
     }
 
     /// Pinta as imagens penduradas nos widgets.
@@ -4096,18 +4163,41 @@ impl<C: CpuBackend> Machine<C> {
                     None => EFAILED,
                 }
             }
-            // int GetInfoEx(IFile *, FileInfoEx *pInfo)
+            // int GetInfoEx(IFile *, AEEFileInfoEx *pInfo)
             //
-            // Recusado de propósito. A `FileInfoEx` não está em header nenhum que tenhamos, e
-            // preencher com o formato do `FileInfo` foi pior que não responder: a struct que o
-            // Z-Wheel passa na pilha é menor, e o nome de arquivo transbordou por cima da
-            // variável vizinha — o app leu 0x6f6369d5 como tamanho, que é texto, e pediu 1,8 GB
-            // ao `malloc`. Enquanto não soubermos o formato, dizer "não sei" deixa o app
-            // escolher o caminho alternativo dele em vez de trabalhar com lixo.
+            // **O tamanho fica em `+0xc`**, e isto foi lido, não suposto: em `0x89068` a Z-Wheel
+            // chama este método e, na instrução seguinte, lê `sp[0xc]` como o tamanho e o passa
+            // ao `malloc` — **sem conferir o retorno**. Recusar não é resposta neutra aqui: o
+            // que ela lia era pilha por inicializar, e o que sobrava lá era um ponteiro. Daí o
+            // `check_malloc: Malloc failed` que aparecia no log.
+            //
+            // Escrevemos dezesseis bytes e nada mais, e o limite tem motivo. O quadro daquela
+            // função é de `0x2c` e ela guarda um local em `sp[0x28]`; a tentativa anterior
+            // preenchia com o formato do `FileInfo`, **nome de arquivo incluído**, e o nome
+            // passava por cima do vizinho. O app lia `0x6f6369d5` — texto — como tamanho e
+            // pedia 1,8 GB.
+            //
+            // Os três primeiros campos vão zerados porque não sabemos o que são. Zero é uma
+            // resposta que o jogo sabe tratar; lixo não.
             "GetInfoEx" if iface == Interface::File => {
-                self.assumptions
-                    .insert("um IFILE_GetInfoEx foi recusado: não sabemos o formato do FileInfoEx");
-                EUNSUPPORTED
+                /// Onde o tamanho mora na `AEEFileInfoEx`, lido em `0x89078`.
+                const TAMANHO: u32 = 0xc;
+                /// Quanto da struct preenchemos. Ver acima o porquê de não ser mais.
+                const QUANTO: usize = 0x10;
+
+                let tamanho = self
+                    .open_files
+                    .get(&this)
+                    .and_then(|aberto| aberto.file.metadata().ok())
+                    .map(|meta| meta.len() as u32);
+                let Some(tamanho) = tamanho else {
+                    return Ok(Some(EBADPARM));
+                };
+                if a1 != 0 {
+                    self.cpu.write_mem(a1, &[0u8; QUANTO])?;
+                    self.cpu.write_u32(a1 + TAMANHO, tamanho)?;
+                }
+                SUCCESS
             }
             // int GetInfo(IFile *, FileInfo *pInfo)
             "GetInfo" if iface == Interface::File => match self.open_files.get(&this) {
@@ -5184,6 +5274,64 @@ impl<C: CpuBackend> Machine<C> {
         (0..input::PORTAS)
             .filter(|&n| self.portas[n] == Some(aparelho))
             .collect()
+    }
+
+    /// Enfileira uma tecla do teclado, pelo código virtual do BREW.
+    ///
+    /// Não vai direto: teclado chega ao jogo como **evento**, e evento só pode ser entregue na
+    /// fronteira entre duas chamadas de API — chamar o tratador do jogo no meio de um despacho é
+    /// o caminho que já derrubou o Zeeboids. A fila é esvaziada em [`Machine::deliver_signals`].
+    pub fn set_key(&mut self, avk: u32, down: bool) {
+        self.teclas.push_back((avk, down));
+    }
+
+    /// Entrega as teclas enfileiradas.
+    ///
+    /// O evento é o `EVT_KEY` do BREW, com o código virtual no `wParam`. A soltura vai como
+    /// `EVT_KEY + 1`, que é o `EVT_KEY_RELEASE`: um jogo que só olhe o aperto ignora a segunda
+    /// sem prejuízo, e um que conte as duas precisa das duas.
+    ///
+    /// **Quem recebe tecla primeiro é o widget, não o aplicativo.** No BREW é a extensão de
+    /// interface que roteia a entrada para quem está em foco, e o tratador do formulário de
+    /// abertura da Z-Wheel prova: ele testa `evt == 0x100` e compara o `wParam` com códigos
+    /// `AVK_`. Mandar direto ao aplicativo devolve zero — medido.
+    ///
+    /// A ordem é a do BREW: o widget tem a primeira chance e, se ninguém tratou, o evento sobe
+    /// para o aplicativo. Um evento que ninguém trata não faz nada, e é por isso que entregar
+    /// tecla é seguro de um jeito que inventar evento de propriedade não era.
+    fn flush_keys(&mut self) -> Result<(), CpuError> {
+        while let Some((avk, down)) = self.teclas.pop_front() {
+            let evento = match down {
+                true => input::EVT_KEY,
+                false => input::EVT_KEY + 1,
+            };
+            let mut tratado = false;
+            let tratadores: Vec<u32> = self
+                .widgets
+                .values()
+                .map(|widget| widget.tratador)
+                .filter(|&onde| onde != 0)
+                .collect();
+            for onde in tratadores {
+                let (funcao, contexto) = (self.cpu.read_u32(onde)?, self.cpu.read_u32(onde + 4)?);
+                if funcao == 0 {
+                    continue;
+                }
+                let saida = self.call_guest(
+                    funcao,
+                    [contexto, evento, avk, 0],
+                    QSORT_BUDGET,
+                )?;
+                if matches!(saida, Outcome::Returned { code } if code != 0) {
+                    tratado = true;
+                    break;
+                }
+            }
+            if !tratado {
+                let _ = self.send_applet_event(self.applet_class, evento, avk as u16, 0)?;
+            }
+        }
+        Ok(())
     }
 
     /// Diz que aparelho o console vê em cada porta. `None` desliga a porta.
@@ -6833,15 +6981,20 @@ impl<C: CpuBackend> Machine<C> {
                         // que ele gravava em `[formulário+0x24]` pelo item `0x414` era outro.
                         // Ponteiro onde o jogo espera número é o começo de uma sequência de
                         // sintomas que não se parecem com a causa.
-                        // A regra da faixa é **aproximação, e sabe-se onde ela erra**: o item
-                        // `0x414` está abaixo de `0x5000` e mesmo assim guarda um widget — o
-                        // retorno de chamada da imagem o lê para `[formulário+0x24]`, e depois
-                        // alguém chama o slot 6 nele. Só que subir a linha para incluí-lo faria
-                        // o `0x347` voltar a receber ponteiro, que é o erro que isto conserta.
+                        // Os itens do widget são **tipados**, e o corte medido é `0x5000`: de
+                        // lá para cima o item guarda objeto, abaixo guarda número.
                         //
-                        // Ou seja: os itens do widget são tipados e a tabela de tipos é do
-                        // console, não nossa. Enquanto ela não existir, esta linha é o corte que
-                        // acerta o que o jogo exercita hoje.
+                        // Cheguei a pôr o `0x414` como exceção, achando que ele guardava um
+                        // widget: o retorno de chamada da imagem o lê para `[formulário+0x24]`,
+                        // e a `0x11750` faz `[r0+0x24]->slot6(1)`. Eram campos **diferentes** —
+                        // a `0x11750` recebe o **aplicativo**, não o formulário, e o objeto que
+                        // ela solta é outro. O que o `0x414` guarda é número mesmo, e a
+                        // `0x11668` prova: ela subtrai um e compara.
+                        //
+                        // A exceção custou caro enquanto durou. Com um ponteiro ali, a
+                        // comparação da `0x11674` nunca era verdadeira e a abertura girava para
+                        // sempre: doze milhões de idas ao acessador e seis milhões de
+                        // temporizadores numa execução só.
                         let valor = match id >= PRIMEIRO_OBJETO {
                             true => self.filho_do_widget(this, id)?,
                             false => self
@@ -9575,7 +9728,10 @@ impl<C: CpuBackend> Machine<C> {
             // por trás do `CONVERTBMP` do SDK, e os dois jogos que a chamam passam
             // `AEECLSID_WINBMP` com um bitmap do Windows.
             "SetupNativeImage" => self.setup_native_image(a1, a2, self.cpu.read_reg(Reg::R3))?,
-            "malloc" => self.malloc(a0)?,
+            "malloc" => {
+                let r = self.malloc(a0)?;
+                r
+            }
             "free" => {
                 self.heap.free(a0);
                 SUCCESS
@@ -10386,7 +10542,6 @@ impl<C: CpuBackend> Machine<C> {
             AEECLSID_28E3C => Interface::Classe28e3c,
             AEECLSID_CM => Interface::Cm,
             AEECLSID_SYSTEMCTL => Interface::SystemCtl,
-            AEECLSID_SIMCARDCTL => Interface::SimCardCtl,
             AEECLSID_TYPEFACE => Interface::Typeface,
             AEECLSID_MD5 => Interface::Hash,
             AEECLSID_CIPHER_FACTORY => Interface::CipherFactory,
