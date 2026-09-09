@@ -6527,6 +6527,38 @@ impl<C: CpuBackend> Machine<C> {
         Ok(Some(result))
     }
 
+    /// O filho de um widget guardado sob `id`, criado na primeira vez que alguém o pede.
+    ///
+    /// Guardar é o que faz o acessador ser coerente consigo mesmo: a `0x78acc` pede o `0x5000`,
+    /// configura, pede o `0x5002` e solta os dois no fim. Se cada pedido criasse um objeto
+    /// novo, o jogo soltaria objetos que não são os que usou.
+    fn filho_do_widget(&mut self, this: u32, id: u32) -> Result<u32, CpuError> {
+        if let Some(filho) = self
+            .widgets
+            .get(&this)
+            .and_then(|widget| widget.filhos.get(&id).copied())
+        {
+            // Entregar é emprestar: quem recebe vai soltar.
+            self.objects.add_ref(filho);
+            return Ok(filho);
+        }
+        let filho = self.new_object(Interface::Widget)?;
+        if filho == 0 {
+            return Ok(0);
+        }
+        self.widgets.insert(
+            filho,
+            Widget {
+                visivel: true,
+                ..Widget::default()
+            },
+        );
+        if let Some(widget) = self.widgets.get_mut(&this) {
+            widget.filhos.insert(id, filho);
+        }
+        Ok(filho)
+    }
+
     /// Atende o ZEEBOMCP. Ver [`Interface::ZeeboMcp`].
     ///
     /// Só os três slots lidos no firmware são atendidos; os cinco de baixo caem fora e viram
@@ -6579,7 +6611,10 @@ impl<C: CpuBackend> Machine<C> {
     /// Um seletor que não seja esses dois é recusado com zero em vez de aceito em silêncio: um
     /// terceiro seletor é coisa que precisamos ver, não esconder.
     fn widget_call(&mut self, slot: u32) -> Result<Option<u32>, CpuError> {
-        const PEGA_FILHO: u32 = 0x800;
+        /// Lê um item do widget. O que sai depende do número do item — ver abaixo.
+        const LE: u32 = 0x800;
+        /// A partir daqui, o item guarda um objeto; abaixo, um número.
+        const PRIMEIRO_OBJETO: u32 = 0x5000;
         const GRAVA: u32 = 0x801;
         /// Sucesso para esta classe. Não é o `SUCCESS` do BREW — ver acima.
         const OK: u32 = 1;
@@ -6702,33 +6737,38 @@ impl<C: CpuBackend> Machine<C> {
                     self.cpu.read_reg(Reg::R3),
                 );
                 match seletor {
-                    PEGA_FILHO => {
-                        let existente = self
-                            .widgets
-                            .get(&this)
-                            .and_then(|widget| widget.filhos.get(&id).copied());
-                        let filho = match existente {
-                            Some(filho) => {
-                                // Entregar é emprestar: quem recebe vai soltar, e sem esta
-                                // contagem o segundo pedido devolveria um objeto já morto.
-                                self.objects.add_ref(filho);
-                                filho
-                            }
-                            None => {
-                                let filho = self.new_object(Interface::Widget)?;
-                                if filho == 0 {
-                                    return Ok(Some(0));
-                                }
-                                self.widgets
-                                    .insert(filho, Widget { visivel: true, ..Widget::default() });
-                                if let Some(widget) = self.widgets.get_mut(&this) {
-                                    widget.filhos.insert(id, filho);
-                                }
-                                filho
-                            }
+                    LE => {
+                        // **Nem todo `0x800` pede um filho.** O jogo lê e grava pelo mesmo
+                        // seletor coisas de tipos diferentes, e o número do item é que diz
+                        // qual: os do intervalo `0x5000` guardam **objetos** — a `0x88338` lê
+                        // o `0x5000` e o `0x5002` e usa os dois como widgets —, e os de baixo
+                        // são **números**.
+                        //
+                        // Isto não é dedução: o retorno de chamada da imagem lê o item `0x347`,
+                        // soma dois e grava de volta. Enquanto a leitura criava um filho para
+                        // qualquer item, o que ele somava dois era um **ponteiro nosso**, e o
+                        // que ele gravava em `[formulário+0x24]` pelo item `0x414` era outro.
+                        // Ponteiro onde o jogo espera número é o começo de uma sequência de
+                        // sintomas que não se parecem com a causa.
+                        // A regra da faixa é **aproximação, e sabe-se onde ela erra**: o item
+                        // `0x414` está abaixo de `0x5000` e mesmo assim guarda um widget — o
+                        // retorno de chamada da imagem o lê para `[formulário+0x24]`, e depois
+                        // alguém chama o slot 6 nele. Só que subir a linha para incluí-lo faria
+                        // o `0x347` voltar a receber ponteiro, que é o erro que isto conserta.
+                        //
+                        // Ou seja: os itens do widget são tipados e a tabela de tipos é do
+                        // console, não nossa. Enquanto ela não existir, esta linha é o corte que
+                        // acerta o que o jogo exercita hoje.
+                        let valor = match id >= PRIMEIRO_OBJETO {
+                            true => self.filho_do_widget(this, id)?,
+                            false => self
+                                .widgets
+                                .get(&this)
+                                .and_then(|widget| widget.propriedades.get(&id).copied())
+                                .unwrap_or(0),
                         };
                         if terceiro != 0 {
-                            self.cpu.write_u32(terceiro, filho)?;
+                            self.cpu.write_u32(terceiro, valor)?;
                         }
                         OK
                     }

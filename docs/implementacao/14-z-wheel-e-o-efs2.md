@@ -222,6 +222,31 @@ o laço por um **travamento duro**: giro puro, sem uma única chamada de API, in
 As duas foram desfeitas. "O jogo andou" não é prova de que andou pelo caminho certo, e um
 travamento é pior do que uma abertura estável.
 
+### Por que ela fica na tela de boas-vindas
+
+A resposta curta: **a abertura nunca recebe a partida**, e quando eu a dou, o jogo pede o tocador,
+que não temos.
+
+A resposta longa está no retorno de chamada da imagem, em `0x4d484`, e ela corrige uma leitura
+minha. Aquele trecho lê o tamanho natural do widget, compara com `0x280` — seiscentos e quarenta,
+a largura da tela — e, sendo igual ou maior, segue pelo caminho de tela cheia: liga o bit 2 do
+item `0x347`, lê o item `0x414` para `[formulário+0x24]` e **põe o estado em 1**.
+
+Ou seja, estado 1 não é acidente nosso: é o estado certo para uma abertura que ocupa a tela
+inteira. E o estado 1 é justamente o que pede o tocador.
+
+### O acessador do widget é tipado, e nós não temos a tabela de tipos
+
+Isto foi um erro de verdade, encontrado aqui. O seletor `0x800` **não é "pega o filho"**: é "lê o
+item", e o que sai depende do número do item. O retorno de chamada da imagem lê o item `0x347`,
+soma dois e grava de volta — é número. Enquanto a leitura criava um filho para qualquer item, o
+que o jogo somava dois era um **ponteiro nosso**, e o que ele gravava em `[formulário+0x24]` pelo
+item `0x414` era outro.
+
+O corte está em `0x5000`, e sabe-se onde ele erra: o `0x414` está abaixo da linha e mesmo assim
+guarda um widget. Subir a linha faria o `0x347` voltar a receber ponteiro. Os itens são tipados e
+a tabela de tipos é do console.
+
 ### O que falta, com nome e endereço
 
 1. **O tocador de animação**, do slot 8 do widget. Não é um widget: o que sai dali recebe
