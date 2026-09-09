@@ -24,29 +24,17 @@
 //! ajustássemos a resposta até o nosso jeito de entregar aceitá-la, acertaríamos aqui e
 //! erraríamos no console. O formato se decide pelo que o jogo faz, e a prova final é o aparelho
 //! de verdade.
-
-//! # Estado: incompleta, e por isso desligada
 //!
-//! Ela derrubou o jogo num teste de exportação: acesso inválido a `0xe4`, vindo do gerenciador
-//! de memória. A causa aparente é que o vetor guarda **objetos `ttdString`**, e não `char *` —
-//! o construtor em `0xa85e0` grava o comprimento em `[obj]` antes de alocar o texto, então o
-//! objeto é `{ comprimento, ponteiro }`. Entregando texto cru, o destrutor lê `[ponteiro+4]`
-//! como endereço e libera lixo.
+//! # Estado: funciona, e mesmo assim vem desligada
 //!
-//! Uma entrega errada não falha na hora: corrompe e quebra adiante, que é o pior tipo de erro
-//! para se ter ligado por omissão. Fica atrás do `--ponte` (ou de `ZEEBX_PONTE=1`, que alcança
-//! a interface), e o padrão é o jogo ver "não veio resposta" — um estado que ele sabe tratar.
+//! Ela chegou a derrubar o jogo — acesso inválido em `0x654ac`, dentro do gerenciador de
+//! memória. Duas hipóteses caíram no caminho, e vale registrar as duas para ninguém refazê-las:
 //!
-//! # Onde a investigação parou
-//!
-//! A queda foi reproduzida sem janela, o que é a parte boa: `str r0, [r5]` em `0x654ac` com
-//! `r5` valendo `0x1c`, dentro do gerenciador de memória, com a pilha ainda nos quadros da
-//! `ConnectionManager::init` — ou seja, **dentro da chamada que nós fazemos**.
-//!
-//! O que já foi descartado: o alocador é chamado como o jogo o chama (índice de pool 0, que ele
-//! exige menor que 32; o quinto argumento na pilha, que ele lê em `[sp+0x30]`; o ponteiro de
-//! arquivo para rastreio). E o objeto de resposta é mesmo o desserializador — contagem em `+8`,
-//! vetor em `+4`, cursor em `+0x28`, tipo em `+0x2c` —, o que o iterador em `0xa583c` confirma.
+//! - **Não era o formato do elemento.** Cheguei a achar que o vetor guardava objetos
+//!   `ttdString` — `{ comprimento, ponteiro }`, como o construtor em `0xa85e0` monta. Não é: o
+//!   tratador chama `atoi` direto no elemento, então ali são `char *` mesmo.
+//! - **Não era a chamada.** O alocador recebe o índice de pool 0, que ele exige menor que 32; o
+//!   quinto argumento onde ele o lê, em `[sp+0x30]`; e o ponteiro de arquivo do rastreio.
 //!
 //! Era **o momento**, e está resolvido: a resposta espera numa fila e é depositada na fronteira de
 //! chamada, a mesma que os sinais usam, quando o guest não está dentro de nada. Chamar o
