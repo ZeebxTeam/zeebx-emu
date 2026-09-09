@@ -952,6 +952,9 @@ pub const COLLECTION: &[&str] = &[
     "Reset",
     "slot6",
     "GetCurrent",
+    "slot8",
+    "slot9",
+    "Definir",
 ];
 
 /// Métodos de `IHash` (`AEECLSID_MD5` = `0x01001015`), levantados do uso.

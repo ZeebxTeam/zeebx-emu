@@ -1561,6 +1561,8 @@ pub struct Machine<C: CpuBackend> {
     sounds: HashMap<u32, SoundState>,
     /// Estado de cada `ICipher1` vivo.
     ciphers: HashMap<u32, CipherState>,
+    /// O que o `Definir` da coleção genérica recebeu: `(objeto, id) -> bytes`.
+    parametros_de_colecao: HashMap<(u32, u32), Vec<u8>>,
     /// Os itens e o liberador de cada lista viva. Ver [`Interface::Vetor`].
     vetores: HashMap<u32, (Vec<u32>, u32)>,
     /// Os bytes de cada `ISource` vivo.
@@ -1761,6 +1763,7 @@ impl<C: CpuBackend> Machine<C> {
             api_time: HashMap::new(),
             profiling_api: false,
             image_notify: HashMap::new(),
+            parametros_de_colecao: HashMap::new(),
             vetores: HashMap::new(),
             sources: HashMap::new(),
             peeks: HashMap::new(),
@@ -6326,6 +6329,9 @@ impl<C: CpuBackend> Machine<C> {
         let Some(name) = Interface::Config.method(slot) else {
             return Ok(None);
         };
+        if aee::e_marcador(name) {
+            return Ok(None);
+        }
         let this = self.cpu.read_reg(Reg::R0);
         let result = match name {
             "AddRef" => self.objects.add_ref(this),
@@ -6383,6 +6389,9 @@ impl<C: CpuBackend> Machine<C> {
         let Some(name) = Interface::ZeeboMcp.method(slot) else {
             return Ok(None);
         };
+        if aee::e_marcador(name) {
+            return Ok(None);
+        }
         let this = self.cpu.read_reg(Reg::R0);
         let result = match name {
             "AddRef" => self.objects.add_ref(this),
@@ -6432,6 +6441,9 @@ impl<C: CpuBackend> Machine<C> {
         let Some(name) = Interface::Widget.method(slot) else {
             return Ok(None);
         };
+        if aee::e_marcador(name) {
+            return Ok(None);
+        }
         let this = self.cpu.read_reg(Reg::R0);
         let result = match name {
             "AddRef" => self.objects.add_ref(this),
@@ -6506,6 +6518,9 @@ impl<C: CpuBackend> Machine<C> {
         let Some(name) = Interface::Cm.method(slot) else {
             return Ok(None);
         };
+        if aee::e_marcador(name) {
+            return Ok(None);
+        }
         let this = self.cpu.read_reg(Reg::R0);
         let result = match name {
             "AddRef" => self.objects.add_ref(this),
@@ -6539,6 +6554,9 @@ impl<C: CpuBackend> Machine<C> {
         let Some(name) = Interface::Vetor.method(slot) else {
             return Ok(None);
         };
+        if aee::e_marcador(name) {
+            return Ok(None);
+        }
         let this = self.cpu.read_reg(Reg::R0);
         let result = match name {
             "AddRef" => self.objects.add_ref(this),
@@ -6648,6 +6666,9 @@ impl<C: CpuBackend> Machine<C> {
         let Some(name) = iface.method(slot) else {
             return Ok(None);
         };
+        if aee::e_marcador(name) {
+            return Ok(None);
+        }
         let this = self.cpu.read_reg(Reg::R0);
         let result = match name {
             "AddRef" => self.objects.add_ref(this),
@@ -7034,6 +7055,9 @@ impl<C: CpuBackend> Machine<C> {
         let Some(name) = Interface::Collection.method(slot) else {
             return Ok(None);
         };
+        if aee::e_marcador(name) {
+            return Ok(None);
+        }
         let this = self.cpu.read_reg(Reg::R0);
         let a1 = self.cpu.read_reg(Reg::R1);
         let result = match name {
@@ -7042,6 +7066,7 @@ impl<C: CpuBackend> Machine<C> {
                 let restantes = self.objects.release(this);
                 if restantes == 0 {
                     self.collections.remove(&this);
+                    self.parametros_de_colecao.retain(|(obj, _), _| *obj != this);
                 }
                 restantes
             }
@@ -7060,6 +7085,28 @@ impl<C: CpuBackend> Machine<C> {
                     .map(|(itens, cursor)| (itens.len(), *cursor))
                     .unwrap_or((0, 0));
                 u32::from(cursor >= itens)
+            }
+            // `slot10(this, id, ponteiro, tamanho)`, visto em `0x7d0c4` com
+            // `(0, &{0x01070798}, 4)` — o número passado é o ClassID do próprio applet.
+            //
+            // O que ele **significa** não dá para dizer: a função que o chama cria a coleção,
+            // faz esta chamada e solta o objeto em seguida, sem ler nada de volta. Pode ser
+            // "guarde este parâmetro" ou "acrescente este item"; as duas leituras têm o mesmo
+            // efeito observável, que é nenhum. Guardar os bytes cobre as duas e não inventa
+            // comportamento.
+            "Definir" => {
+                let (id, ponteiro, tamanho) = (
+                    a1,
+                    self.cpu.read_reg(Reg::R2),
+                    self.cpu.read_reg(Reg::R3) as usize,
+                );
+                if ponteiro == 0 || tamanho == 0 || tamanho > MAX_STRING {
+                    return Ok(Some(EBADPARM));
+                }
+                let mut dados = vec![0u8; tamanho];
+                self.cpu.read_mem(ponteiro, &mut dados)?;
+                self.parametros_de_colecao.insert((this, id), dados);
+                SUCCESS
             }
             // O item corrente sai pelo ponteiro de saída, e o cursor anda. Sem item, `EFAILED`.
             "GetCurrent" => {

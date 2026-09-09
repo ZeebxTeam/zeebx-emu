@@ -456,6 +456,17 @@ impl Interface {
     }
 }
 
+/// Se o nome de um slot é um marcador de posição — `slot7` e parecidos.
+///
+/// A tabela precisa desses marcadores quando um slot **de cima** é conhecido: sem eles, o slot
+/// 28 do `ICM` não teria como ficar no índice 28. Mas marcador não é implementação, e atendê-lo
+/// com sucesso seria justamente a mentira que estas tabelas existem para evitar. Quem despacha
+/// usa isto para recusar, e aí a chamada aparece no relatório com o número do slot.
+pub fn e_marcador(name: &str) -> bool {
+    name.strip_prefix("slot")
+        .is_some_and(|n| n.parse::<u32>().is_ok())
+}
+
 /// Endereço-trampolim de um método.
 pub fn encode(iface: Interface, slot: u32) -> u32 {
     API_BASE + (iface as u32) * IFACE_STRIDE + slot * 4
