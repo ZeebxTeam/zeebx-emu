@@ -6328,6 +6328,10 @@ impl<C: CpuBackend> Machine<C> {
             return Ok(());
         }
         let Some(ponte) = ponte::para(self.applet_class) else {
+            self.delivered.push(format!(
+                "sem ponte declarada para o módulo {:#010x}",
+                self.applet_class
+            ));
             return Ok(());
         };
         if self.web_response.is_empty() {
@@ -6360,8 +6364,13 @@ impl<C: CpuBackend> Machine<C> {
             && campos.len() as u32 <= MAX_CAMPOS_DA_RESPOSTA
             && (contagem, cursor, tipo) == (0, 0, 0);
         if !parece_o_esperado {
-            self.assumptions
-                .insert("a resposta não foi entregue: o objeto não parecia o desserializador");
+            // A recusa vai com os números. Sem eles, "não parecia o desserializador" manda quem
+            // lê adivinhar qual condição falhou, e cada palpite custa uma sessão de teste.
+            self.delivered.push(format!(
+                "recusado: objeto={resposta:#x} vetor={vetor:#x} capacidade={capacidade} \
+                 contagem={contagem} cursor={cursor} tipo={tipo} campos={}",
+                campos.len()
+            ));
             return Ok(());
         }
 
@@ -6399,7 +6408,7 @@ impl<C: CpuBackend> Machine<C> {
         // O relatório precisa distinguir "não entreguei" de "entreguei e ele não gostou": sem
         // isso, um jogo parado depois de uma resposta não diz de que lado está o problema.
         self.delivered
-            .push(format!("{} campo(s): {texto:?}", campos.len()));
+            .push(format!("entregue: {} campo(s): {texto:?}", campos.len()));
         // A marca de "chegou dado novo". O tratador em `0x85b5c` só interpreta o campo 0 quando
         // ela está ligada, e a apaga logo depois (`strb r6, [r4, #0x18]`) — é uma bandeira de
         // uma via. No console quem a ligava era o despachante, ao depositar a resposta.

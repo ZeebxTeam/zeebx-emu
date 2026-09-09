@@ -523,7 +523,7 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
     }
     let entregues = machine.delivered();
     if !entregues.is_empty() {
-        println!("entregue:  a ponte depositou a resposta no jogo");
+        println!("ponte:     o que ela fez com a resposta");
         for linha in entregues {
             println!("  {linha}");
         }

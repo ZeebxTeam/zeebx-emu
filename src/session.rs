@@ -319,7 +319,7 @@ impl Session {
         }
         let entregues = self.machine.delivered();
         if !entregues.is_empty() {
-            linhas.push("— a ponte entregou a resposta ao jogo —".to_string());
+            linhas.push("— a ponte, e o que ela fez com a resposta —".to_string());
             linhas.extend(entregues.iter().map(|l| format!("  {l}")));
         }
         let claros = self.machine.plaintexts();
