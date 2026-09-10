@@ -3915,6 +3915,13 @@ impl<C: CpuBackend> Machine<C> {
             self.bitmaps.insert(addr, screen);
             self.device_bitmap = addr;
             self.display_target = addr;
+            // **Uma referência nossa, que nunca é solta.** Quem pede o bitmap da tela solta o
+            // que recebeu, como manda a convenção; mas o dono dele é o display, não quem
+            // pediu. Sem esta contagem o endereço voltava para a lista de livres e o
+            // `CreateCompatibleBitmap` seguinte gravava a superfície dele por cima da tela: a
+            // Z-Wheel entrou no Stage, criou uma superfície de 214×34, e era ela que aparecia
+            // na janela no lugar dos 640×480.
+            self.objects.add_ref(addr);
         }
         Ok(addr)
     }
