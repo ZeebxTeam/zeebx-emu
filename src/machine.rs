@@ -8397,7 +8397,7 @@ impl<C: CpuBackend> Machine<C> {
                 // VFS pelo mesmo motivo dos outros: nada escreve fora do diretório dele.
                 let Some(caminho) = self.vfs.resolve_new(&nome) else {
                     if self.serial.is_some() {
-                        self.record_debug(format!("<banco {nome} -> caminho não resolve>"));
+                        self.registra_serial(format!("<banco {nome} -> caminho não resolve>"));
                     }
                     self.missing_files.insert(nome);
                     return Ok(Some(EFAILED));
@@ -8408,7 +8408,7 @@ impl<C: CpuBackend> Machine<C> {
                         Ok(_) => "abriu".to_string(),
                         Err(erro) => format!("falhou: {erro}"),
                     };
-                    self.record_debug(format!("<banco {nome} -> {como}>"));
+                    self.registra_serial(format!("<banco {nome} -> {como}>"));
                 }
                 match aberto {
                     Ok(db) => {
@@ -8441,7 +8441,7 @@ impl<C: CpuBackend> Machine<C> {
                         Ok(linhas) => format!("{} linha(s)", linhas.len()),
                         Err(erro) => format!("erro: {erro}"),
                     };
-                    self.record_debug(format!("<sql {sql} -> {quantas}>"));
+                    self.registra_serial(format!("<sql {sql} -> {quantas}>"));
                 }
                 match resultado {
                     Ok(linhas) => {
@@ -11189,7 +11189,7 @@ impl<C: CpuBackend> Machine<C> {
         if let Some(inflado) = inflate(bytes) {
             linha.push_str(&format!("\n<{que} inflado: {}>", mostrar(&inflado)));
         }
-        self.record_debug(linha);
+        self.registra_serial(linha);
     }
 
     /// Liga a captura de serial: cada linha de log vai para este arquivo, na ordem e com o
@@ -11207,6 +11207,21 @@ impl<C: CpuBackend> Machine<C> {
         let arquivo = std::fs::File::create(caminho)?;
         self.serial = Some(std::io::BufWriter::new(arquivo));
         Ok(())
+    }
+
+    /// Escreve **só** na captura de serial, sem passar pelo relatório.
+    ///
+    /// A instrumentação — classes criadas, bancos abertos, SQL — é ferramenta, não coisa que o
+    /// jogo disse. Mandá-la pelo `record_debug` a punha no "log do jogo" do relatório, onde ela
+    /// se mistura com o que o jogo de fato imprimiu e atrapalha justamente quem está lendo para
+    /// entender o jogo.
+    fn registra_serial(&mut self, message: String) {
+        let agora = self.now_ms();
+        if let Some(serial) = self.serial.as_mut() {
+            use std::io::Write;
+            let _ = writeln!(serial, "[{agora:>9} ms] {message}");
+            let _ = serial.flush();
+        }
     }
 
     /// Guarda uma linha de log, agrupando repetições em vez de encher o relatório.
@@ -11257,7 +11272,7 @@ impl<C: CpuBackend> Machine<C> {
         let clsid = self.cpu.read_reg(Reg::R1);
         let out = self.cpu.read_reg(Reg::R2);
         if self.serial.is_some() {
-            self.record_debug(format!("<classe {clsid:#010x}>"));
+            self.registra_serial(format!("<classe {clsid:#010x}>"));
         }
 
         let iface = match clsid {
