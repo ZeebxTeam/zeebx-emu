@@ -39,6 +39,9 @@ mod session;
 mod settings;
 mod sql;
 mod ui;
+/// Varredura de ROMs por teste — ver [`varredura`]. Só existe em compilação de teste.
+#[cfg(test)]
+mod varredura;
 mod vfs;
 mod wav;
 mod window;
@@ -498,6 +501,7 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
 
     // Com o módulo carregado, o próximo passo é instanciar o applet. O ClassID vem do `.mif`
     // que acompanha o módulo.
+    let mut rodou_quadros = false;
     if let Outcome::Returned { code: 0 } = outcome {
         match library::applet_clsid(std::path::Path::new(path)) {
             Some(clsid) => {
@@ -513,6 +517,7 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
                                 machine.start_applet(applet, clsid, INSTRUCTION_BUDGET)?;
                             describe_outcome_com_estado(&started, &machine);
                             if matches!(started, Outcome::Returned { .. }) {
+                                rodou_quadros = true;
                                 run_frames(
                                     &mut machine,
                                     rounds,
@@ -538,6 +543,11 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
             }
             None => println!("applet:    nenhum .mif encontrado ao lado do módulo"),
         }
+    }
+    // Sem laço de quadros não houve quem imprimisse o perfil, e é o caso em que ele mais serve:
+    // o jogo gastou o orçamento antes de existir.
+    if profile && !rodou_quadros {
+        mostra_perfil(&machine);
     }
 
     if trace_range.is_some() {
@@ -789,6 +799,42 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Onde o tempo foi gasto: primeiro o que o emulador gastou atendendo o jogo, depois os blocos
+/// de código do guest que mais executaram.
+///
+/// Fica em função própria porque **o perfil interessa mesmo quando o jogo não chega a começar**.
+/// O Need For Speed queima os 500 milhões de instruções dentro do `CreateInstance`, e enquanto
+/// esta impressão vivia só no laço de quadros o `--profile` dele saía vazio — justamente no caso
+/// em que a pergunta "onde?" é a única que importa.
+fn mostra_perfil(machine: &Machine<UnicornCpu>) {
+    let api = machine.api_profile();
+    let total_api: u64 = api.iter().map(|(_, ns)| ns).sum();
+    if total_api > 0 {
+        println!(
+            "perfil da API: {} ms no total, do emulador atendendo o jogo",
+            total_api / 1_000_000
+        );
+        for (nome, ns) in api.iter().take(PROFILE_LINES) {
+            println!(
+                "  {:5.1}%  {:>8} ms  {nome}",
+                *ns as f64 / total_api as f64 * 100.0,
+                ns / 1_000_000
+            );
+        }
+    }
+    let linhas = machine.cpu().profile();
+    let total: u64 = linhas.iter().map(|&(_, n)| n).sum();
+    println!("perfil:    {} blocos distintos executados", linhas.len());
+    // Onde o jogo gasta o tempo é sempre um punhado de laços; vinte linhas cobrem com folga, e o
+    // resto é cauda.
+    for &(addr, n) in linhas.iter().take(PROFILE_LINES) {
+        println!(
+            "  {addr:#010x}  {:5.1}%  {n:>12} instrução(ões)",
+            n as f64 / total.max(1) as f64 * 100.0
+        );
+    }
+}
+
 /// Escreve o desfecho e, quando ele é uma falha de memória, os registradores e a pilha.
 ///
 /// Sem os registradores, "acesso inválido a 0x00000000" diz que alguma coisa era nula e não diz
@@ -1017,32 +1063,7 @@ fn run_frames(
         machine.armed_timers()
     );
     if profile {
-        let api = machine.api_profile();
-        let total_api: u64 = api.iter().map(|(_, ns)| ns).sum();
-        if total_api > 0 {
-            println!(
-                "perfil da API: {} ms no total, do emulador atendendo o jogo",
-                total_api / 1_000_000
-            );
-            for (nome, ns) in api.iter().take(PROFILE_LINES) {
-                println!(
-                    "  {:5.1}%  {:>8} ms  {nome}",
-                    *ns as f64 / total_api as f64 * 100.0,
-                    ns / 1_000_000
-                );
-            }
-        }
-        let linhas = machine.cpu().profile();
-        let total: u64 = linhas.iter().map(|&(_, n)| n).sum();
-        println!("perfil:    {} blocos distintos executados", linhas.len());
-        // Onde o jogo gasta o tempo é sempre um punhado de laços; vinte linhas cobrem com
-        // folga, e o resto é cauda.
-        for &(addr, n) in linhas.iter().take(PROFILE_LINES) {
-            println!(
-                "  {addr:#010x}  {:5.1}%  {n:>12} instrução(ões)",
-                n as f64 / total.max(1) as f64 * 100.0
-            );
-        }
+        mostra_perfil(machine);
     }
     println!(
         "           {} milhões de instruções em {turns} volta(s) do laço",

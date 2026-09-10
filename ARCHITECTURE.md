@@ -208,7 +208,8 @@ do ARM.
 
 ## Testes
 
-São 241 funções de teste, todas junto do código que testam.
+São 308 funções de teste, todas junto do código que testam. Os comandos estão em
+[docs/implementacao/17-testes.md](docs/implementacao/17-testes.md).
 
 Uma parte verifica algoritmos contra a especificação: os vetores da RFC 1321 no MD5, os do
 FIPS-197 no AES. Outra verifica os parsers de formato contra os arquivos reais, o `.mod`, o
@@ -219,9 +220,16 @@ gerou. O `%02d` que fazia o Resident Evil 4 procurar `3d_stg02_0.h2z` quando o a
 `3d_stg02_00.h2z`. O ClassID fora da faixa da Qualcomm que impedia o Zenonia de abrir. O
 orçamento de instruções que precisa ser conferido antes de somar o bloco, e não depois.
 
-Além disso existe a varredura de compatibilidade, que roda as 62 ROMs e classifica cada uma. O
-procedimento está em
-[docs/implementacao/11-compatibilidade.md](docs/implementacao/11-compatibilidade.md).
+Além disso existe a varredura de compatibilidade, que roda as ROMs de verdade e classifica cada
+uma. Ela vive no [`src/varredura.rs`](src/varredura.rs) e é **dirigida por ambiente**: sem
+`ZEEBX_ROM` os testes avisam e passam, porque ROM nenhuma está na árvore. Com ele, cada jogo
+avança em tempo virtual e sai um relatório — onde parou, quanto custou, que API e que classe
+faltaram, que arquivo não foi achado, e os registradores de quem quebrou.
+
+O que torna isso teste, e não relatório, é a **linha de base**: o resumo de cada jogo é comparado
+com o que já se sabia dele, e o que mudou aparece como `+`/`-` na falha. Desempenho fica de fora
+da comparação de propósito — número de máquina não é comportamento de emulador. O procedimento
+está em [docs/implementacao/11-compatibilidade.md](docs/implementacao/11-compatibilidade.md).
 
 ## Limites conhecidos
 

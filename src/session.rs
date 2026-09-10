@@ -244,22 +244,36 @@ impl Session {
         }
     }
 
+    /// A partida do jogo: o `EVT_APP_START` entregue ao applet, **uma vez**.
+    ///
+    /// `Some(Step::Stopped)` quando ela quebrou; `None` quando foi bem ou já tinha acontecido.
+    ///
+    /// Fica separada da volta do laço porque as duas apontam para lugares diferentes: quebrar no
+    /// evento inicial é problema do que o applet faz ao nascer, e quebrar na primeira volta é
+    /// problema do laço de quadros dele. A varredura de ROMs classifica por essa diferença, e
+    /// misturá-las fazia um jogo que morre no laço aparecer como morto na partida.
+    fn parte(&mut self) -> Option<Step> {
+        let (applet, clsid) = self.partida.take()?;
+        let started = match self.machine.start_applet(applet, clsid, INSTRUCTION_BUDGET) {
+            Ok(started) => started,
+            Err(_) => {
+                self.stopped = Some(Outcome::Exception { pc: 0 });
+                return Some(Step::Stopped);
+            }
+        };
+        if !matches!(started, Outcome::Returned { .. } | Outcome::Budget) {
+            self.stopped = Some(started);
+            return Some(Step::Stopped);
+        }
+        None
+    }
+
     /// Uma volta do laço de eventos. `Some` quando há desfecho, `None` para continuar.
     fn advance_once(&mut self) -> Option<Step> {
         // A partida do jogo é a primeira coisa desta volta, e não do `start`: assim ela
         // acontece com a janela já na tela e o som já ligado.
-        if let Some((applet, clsid)) = self.partida.take() {
-            let started = match self.machine.start_applet(applet, clsid, INSTRUCTION_BUDGET) {
-                Ok(started) => started,
-                Err(_) => {
-                    self.stopped = Some(Outcome::Exception { pc: 0 });
-                    return Some(Step::Stopped);
-                }
-            };
-            if !matches!(started, Outcome::Returned { .. } | Outcome::Budget) {
-                self.stopped = Some(started);
-                return Some(Step::Stopped);
-            }
+        if let Some(step) = self.parte() {
+            return Some(step);
         }
 
         let outcomes = match self.machine.advance(INSTRUCTION_BUDGET) {
@@ -539,6 +553,27 @@ impl Session {
 
     pub fn title(&self) -> &str {
         &self.title
+    }
+}
+
+/// A execução por dentro, para a varredura de ROMs — ver [`crate::varredura`].
+///
+/// O [`Session::log`] monta texto para a janela; o levantamento precisa das listas cruas e do
+/// desfecho como enum, para classificar e comparar com o que já se sabia do jogo. Só o teste
+/// usa isto, e por isso não faz parte da interface da sessão.
+#[cfg(test)]
+impl Session {
+    pub(crate) fn machine(&self) -> &Machine<UnicornCpu> {
+        &self.machine
+    }
+
+    pub(crate) fn stopped(&self) -> Option<&Outcome> {
+        self.stopped.as_ref()
+    }
+
+    /// A partida, sem a volta do laço que vem junto no [`Session::step`].
+    pub(crate) fn partida(&mut self) -> Option<Step> {
+        self.parte()
     }
 }
 

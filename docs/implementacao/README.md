@@ -27,10 +27,11 @@ função não está aqui.
 | [14-z-wheel-e-o-efs2.md](14-z-wheel-e-o-efs2.md) | Onde a loja do console parou, e o elo que falta no leitor da NAND |
 | [15-o-que-falta-da-nand.md](15-o-que-falta-da-nand.md) | Classe a classe, o que ainda precisa sair do dump |
 | [16-rede-e-a-ponte.md](16-rede-e-a-ponte.md) | HTTP, AES, e a ponte por módulo que o Zeeboids exigiu |
+| [17-testes.md](17-testes.md) | Como conferir o que dizemos que funciona, e a varredura de ROMs por teste |
 
 ## Como medir
 
-Duas ferramentas ficam no repositório justamente para não precisar adivinhar:
+Estas medições ficam no repositório justamente para não precisar adivinhar:
 
 ```bash
 # vazão do núcleo ARM e custo de entrar no guest
@@ -38,7 +39,12 @@ cargo test --release cpu::unicorn::speed -- --ignored --nocapture
 
 # um jogo sem janela, com o resumo de chamadas de API no fim
 cargo run --release -- run caminho/para/jogo.mod --seconds=6 --trace
+
+# a biblioteca inteira, só até o applet existir
+ZEEBX_ROM=roms cargo test --release varredura::tests::a_rom_indicada_abre -- --nocapture
 ```
+
+Os comandos de teste estão todos em [17-testes.md](17-testes.md).
 
 O `--trace` aceita filtro (`--trace=Bitmap`), e o resumo do fim conta **quantas vezes cada método
 foi chamado** — foi ele que apontou os dois gargalos do Pac-Mania e as APIs que faltavam em nove
