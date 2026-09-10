@@ -455,9 +455,6 @@ const ATENDIDAS_EM_SILENCIO: &[&str] = &[
     "PolygonOffsetx",
     "SampleCoverage",
     "SampleCoveragex",
-    "StencilFunc",
-    "StencilMask",
-    "StencilOp",
     "Flush",
     "Finish",
 ];
@@ -9620,6 +9617,14 @@ impl<C: CpuBackend> Machine<C> {
             "Viewport" => self
                 .gl
                 .set_viewport(a[0] as i32, a[1] as i32, a[2] as i32, a[3] as i32),
+            // --- Stencil ------------------------------------------------------------
+            //
+            // O palco da Z-Wheel arma estes duas vezes por quadro: é o reflexo plano, que marca
+            // o chão no stencil e desenha o modelo espelhado só onde a marca ficou.
+            "StencilFunc" => self.gl.set_stencil_func(a[0], a[1] as i32, a[2]),
+            "StencilOp" => self.gl.set_stencil_op(a[0], a[1], a[2]),
+            "StencilMask" => self.gl.set_stencil_mask(a[0]),
+            "ClearStencil" => self.gl.set_clear_stencil(a[0] as i32),
             "Clear" => {
                 if a[0] & gles::GL_COLOR_BUFFER_BIT != 0 {
                     self.gl_clears = self.gl_clears.saturating_add(1);

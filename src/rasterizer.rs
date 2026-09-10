@@ -296,6 +296,12 @@ pub struct GlState {
     pub color: Vec<[u8; 4]>,
     /// Profundidade normalizada em `[0, 1]`.
     pub depth: Vec<f32>,
+    /// O stencil, de oito bits — o tamanho que o `GL_STENCIL_BITS` do console anuncia.
+    ///
+    /// Existe por causa do reflexo do palco da Z-Wheel: ela marca o chão aqui e desenha o
+    /// modelo espelhado só onde a marca ficou. Sem o buffer, o espelhado saía por fora do chão
+    /// e virava um rastro esticado ao lado do modelo.
+    pub stencil: Vec<u8>,
 
     matrix_mode: u32,
     modelview: Vec<Matrix>,
@@ -339,6 +345,15 @@ pub struct GlState {
     cull_mode: u32,
     front_face: u32,
     stencil_test: bool,
+    /// `glStencilFunc(func, ref, mask)`.
+    stencil_func: u32,
+    stencil_ref: i32,
+    stencil_value_mask: u32,
+    /// `glStencilMask` — que bits o desenho pode escrever.
+    stencil_write_mask: u32,
+    /// `glStencilOp(sfail, dpfail, dppass)`.
+    stencil_op: [u32; 3],
+    clear_stencil: u8,
 
     /// `GL_LIGHTING`. Com ele ligado a cor do vértice **deixa de valer**, a menos que o
     /// `GL_COLOR_MATERIAL` diga o contrário: é o que a especificação manda, e o palco da
@@ -369,6 +384,7 @@ impl GlState {
             height,
             color: vec![[0, 0, 0, 255]; width * height],
             depth: vec![1.0; width * height],
+            stencil: vec![0; width * height],
             lighting: false,
             color_material: false,
             lights: std::array::from_fn(|i| match i {
@@ -379,6 +395,12 @@ impl GlState {
             light_model_ambient: [0.2, 0.2, 0.2, 1.0],
             shade_model: gles::GL_SMOOTH,
             stencil_test: false,
+            stencil_func: gles::GL_ALWAYS,
+            stencil_ref: 0,
+            stencil_value_mask: u32::MAX,
+            stencil_write_mask: u32::MAX,
+            stencil_op: [gles::GL_KEEP; 3],
+            clear_stencil: 0,
             matrix_mode: gles::GL_MODELVIEW,
             modelview: vec![IDENTITY],
             projection: vec![IDENTITY],
@@ -729,6 +751,31 @@ impl GlState {
         ]
     }
 
+    /// `glStencilFunc(func, ref, mask)`.
+    ///
+    /// O `ref` é preso à faixa do buffer, como manda a especificação: o console tem oito bits.
+    pub fn set_stencil_func(&mut self, func: u32, referencia: i32, mask: u32) {
+        self.stencil_func = func;
+        self.stencil_ref = referencia.clamp(0, u8::MAX as i32);
+        self.stencil_value_mask = mask;
+    }
+
+    /// `glStencilOp(sfail, dpfail, dppass)` — o que fazer quando o stencil falha, quando ele
+    /// passa e a profundidade falha, e quando os dois passam.
+    pub fn set_stencil_op(&mut self, falha: u32, falha_z: u32, passa: u32) {
+        self.stencil_op = [falha, falha_z, passa];
+    }
+
+    /// `glStencilMask` — que bits do stencil o desenho pode escrever.
+    pub fn set_stencil_mask(&mut self, mask: u32) {
+        self.stencil_write_mask = mask;
+    }
+
+    /// `glClearStencil`.
+    pub fn set_clear_stencil(&mut self, valor: i32) {
+        self.clear_stencil = valor.clamp(0, u8::MAX as i32) as u8;
+    }
+
     pub fn set_blend_func(&mut self, src: u32, dst: u32) {
         (self.blend_src, self.blend_dst) = (src, dst);
     }
@@ -831,6 +878,9 @@ impl GlState {
         }
         if mask & gles::GL_DEPTH_BUFFER_BIT != 0 {
             self.depth.fill(self.clear_depth);
+        }
+        if mask & gles::GL_STENCIL_BUFFER_BIT != 0 {
+            self.stencil.fill(self.clear_stencil);
         }
     }
 
@@ -1152,6 +1202,14 @@ impl GlState {
             blend: self.blend,
             blend_src: self.blend_src,
             blend_dst: self.blend_dst,
+            stencil: Stencil {
+                test: self.stencil_test,
+                func: self.stencil_func,
+                referencia: self.stencil_ref as u8,
+                valor_mask: self.stencil_value_mask as u8,
+                escrita_mask: self.stencil_write_mask as u8,
+                op: self.stencil_op,
+            },
             alpha_test: self.alpha_test,
             alpha_func: self.alpha_func,
             alpha_ref: self.alpha_ref,
@@ -1174,6 +1232,7 @@ impl GlState {
         let Self {
             color,
             depth,
+            stencil,
             textures,
             width,
             height,
@@ -1189,6 +1248,7 @@ impl GlState {
                 top: 0,
                 color,
                 depth,
+                stencil,
             };
             for job in jobs {
                 let uniforms = job.uniforms(textures, width);
@@ -1203,9 +1263,10 @@ impl GlState {
         let rows = height.div_ceil(bands);
         std::thread::scope(|scope| {
             let mut top = 0i32;
-            for (color, depth) in color
+            for ((color, depth), stencil) in color
                 .chunks_mut(rows * width)
                 .zip(depth.chunks_mut(rows * width))
+                .zip(stencil.chunks_mut(rows * width))
             {
                 let band_top = top;
                 top += (color.len() / width) as i32;
@@ -1215,6 +1276,7 @@ impl GlState {
                         top: band_top,
                         color,
                         depth,
+                        stencil,
                     };
                     for job in jobs {
                         let uniforms = job.uniforms(textures, width);
@@ -1330,6 +1392,46 @@ struct Prepared {
 
 /// Uma draw call à espera de virar pixel: a faixa dela na fila de triângulos, mais o estado do
 /// OpenGL que valia quando foi montada.
+/// O estado do stencil de uma draw call, do jeito que o preenchimento precisa dele.
+#[derive(Debug, Clone, Copy)]
+struct Stencil {
+    test: bool,
+    func: u32,
+    referencia: u8,
+    valor_mask: u8,
+    escrita_mask: u8,
+    /// `[falha, falha_z, passa]`.
+    op: [u32; 3],
+}
+
+impl Stencil {
+    /// Aplica uma das três operações a um valor do buffer.
+    ///
+    /// A máscara de escrita decide bit a bit o que muda: é ela que deixa um desenho marcar o
+    /// chão sem mexer nos bits que outro passe usa.
+    fn aplica(&self, qual: usize, atual: u8) -> u8 {
+        let novo = match self.op[qual] {
+            gles::GL_KEEP => return atual,
+            gles::GL_ZERO_OP => 0,
+            gles::GL_REPLACE => self.referencia,
+            gles::GL_INCR => atual.saturating_add(1),
+            gles::GL_DECR => atual.saturating_sub(1),
+            gles::GL_INVERT => !atual,
+            _ => return atual,
+        };
+        (atual & !self.escrita_mask) | (novo & self.escrita_mask)
+    }
+
+    /// O teste em si, entre a referência e o que está no buffer, ambos mascarados.
+    fn passa(&self, atual: u8) -> bool {
+        let (r, v) = (
+            (self.referencia & self.valor_mask) as f32,
+            (atual & self.valor_mask) as f32,
+        );
+        compare(self.func, r, v)
+    }
+}
+
 struct Job {
     first: usize,
     last: usize,
@@ -1346,6 +1448,8 @@ struct Job {
     alpha_test: bool,
     alpha_func: u32,
     alpha_ref: f32,
+    /// O estado do stencil no momento do desenho. Ver [`GlState::stencil_test`].
+    stencil: Stencil,
 }
 
 impl Job {
@@ -1365,6 +1469,7 @@ impl Job {
             alpha_test: self.alpha_test,
             alpha_func: self.alpha_func,
             alpha_ref: self.alpha_ref,
+            stencil: self.stencil,
         }
     }
 }
@@ -1421,6 +1526,8 @@ struct Uniforms<'a> {
     alpha_test: bool,
     alpha_func: u32,
     alpha_ref: f32,
+    /// O estado do stencil no momento do desenho. Ver [`GlState::stencil_test`].
+    stencil: Stencil,
 }
 
 /// Uma faixa horizontal do quadro: o pedaço exclusivo de uma thread.
@@ -1429,6 +1536,7 @@ struct Band<'a> {
     top: i32,
     color: &'a mut [[u8; 4]],
     depth: &'a mut [f32],
+    stencil: &'a mut [u8],
 }
 
 /// Preenche a parte de um triângulo que cai dentro da faixa.
@@ -1458,9 +1566,6 @@ fn fill_band(tri: &Prepared, uniforms: &Uniforms, band: &mut Band) {
                 + bary[1] * tri.screen[1][2]
                 + bary[2] * tri.screen[2][2];
             let index = row + x as usize;
-            if uniforms.depth_test && !compare(uniforms.depth_func, z, band.depth[index]) {
-                continue;
-            }
 
             let inv_w = bary[0] * tri.screen[0][3]
                 + bary[1] * tri.screen[1][3]
@@ -1475,16 +1580,51 @@ fn fill_band(tri: &Prepared, uniforms: &Uniforms, band: &mut Band) {
                     + bary[2] * tri.over_w[2][k])
                     * w
             };
-
-            let mut source = [attribute(0), attribute(1), attribute(2), attribute(3)];
-            if let Some(texture) = uniforms.texture {
-                let texel = texture.sample(attribute(4), attribute(5));
-                source = combine(uniforms.texture_env, source, texel);
+            // Montar a cor custa a amostragem da textura, e é o passo caro do fragmento. Sem
+            // teste de alfa ela pode esperar o descarte por profundidade; **com** teste de
+            // alfa, não pode: no OpenGL o alfa é decidido antes do stencil, e um fragmento
+            // reprovado ali não tem direito de mexer no stencil.
+            let montar = || {
+                let mut source = [attribute(0), attribute(1), attribute(2), attribute(3)];
+                if let Some(texture) = uniforms.texture {
+                    let texel = texture.sample(attribute(4), attribute(5));
+                    source = combine(uniforms.texture_env, source, texel);
+                }
+                source
+            };
+            let mut pronta = None;
+            if uniforms.alpha_test {
+                let source = montar();
+                if !compare(uniforms.alpha_func, source[3], uniforms.alpha_ref) {
+                    continue;
+                }
+                pronta = Some(source);
             }
 
-            if uniforms.alpha_test && !compare(uniforms.alpha_func, source[3], uniforms.alpha_ref) {
+            // **Stencil antes de profundidade, e as três operações aplicadas mesmo quando o
+            // fragmento é descartado.** É esse "mesmo quando descarta" que faz o reflexo
+            // funcionar: a passada que marca o chão costuma escrever no stencil justamente
+            // onde a profundidade reprova.
+            let stencil = &uniforms.stencil;
+            let profundidade_passa =
+                !uniforms.depth_test || compare(uniforms.depth_func, z, band.depth[index]);
+            if stencil.test {
+                let atual = band.stencil[index];
+                if !stencil.passa(atual) {
+                    band.stencil[index] = stencil.aplica(0, atual);
+                    continue;
+                }
+                let qual = usize::from(profundidade_passa) + 1;
+                band.stencil[index] = stencil.aplica(qual, atual);
+            }
+            if !profundidade_passa {
                 continue;
             }
+
+            let source = match pronta {
+                Some(source) => source,
+                None => montar(),
+            };
 
             let mixed = if uniforms.blend {
                 let destination = unpack(band.color[index]);
@@ -1667,6 +1807,85 @@ fn unpack(color: [u8; 4]) -> [f32; 4] {
 
 #[cfg(test)]
 mod tests {
+
+    /// O stencil marca onde o desenho passou, e o desenho seguinte só entra onde a marca está.
+    ///
+    /// É a receita do reflexo do palco da Z-Wheel, reduzida a dois quadrados.
+    #[test]
+    fn a_marca_do_stencil_recorta_o_desenho_seguinte() {
+        let mut estado = GlState::new(4, 4);
+        estado.set_viewport(0, 0, 4, 4);
+        estado.set_capability(gles::GL_STENCIL_TEST, true);
+
+        // Primeiro passe: escreve 1 no stencil na metade de cima, sem pintar.
+        estado.set_color_mask([false; 4]);
+        estado.set_stencil_func(gles::GL_ALWAYS, 1, 0xff);
+        estado.set_stencil_op(gles::GL_KEEP, gles::GL_KEEP, gles::GL_REPLACE);
+        quadrado(&mut estado, -1.0, 0.0, 1.0, 1.0, [1.0; 4]);
+        estado.flush();
+        assert_eq!(estado.stencil[0], 1, "topo marcado");
+        assert_eq!(estado.stencil[12], 0, "fundo intocado");
+
+        // Segundo passe: pinta de vermelho só onde a marca está.
+        estado.set_color_mask([true; 4]);
+        estado.set_stencil_func(gles::GL_EQUAL, 1, 0xff);
+        estado.set_stencil_op(gles::GL_KEEP, gles::GL_KEEP, gles::GL_KEEP);
+        quadrado(&mut estado, -1.0, -1.0, 1.0, 1.0, [1.0, 0.0, 0.0, 1.0]);
+        estado.flush();
+        assert_eq!(estado.color[0][0], 255, "topo pintado");
+        assert_eq!(estado.color[12][0], 0, "fundo poupado pelo stencil");
+    }
+
+    /// A máscara de escrita decide bit a bit o que o desenho pode mudar no stencil.
+    #[test]
+    fn a_mascara_protege_os_bits_de_fora() {
+        let mut estado = GlState::new(2, 2);
+        estado.set_viewport(0, 0, 2, 2);
+        estado.stencil.fill(0b1010_1010);
+        estado.set_capability(gles::GL_STENCIL_TEST, true);
+        estado.set_stencil_func(gles::GL_ALWAYS, 0xff, 0xff);
+        estado.set_stencil_op(gles::GL_KEEP, gles::GL_KEEP, gles::GL_REPLACE);
+        estado.set_stencil_mask(0b0000_1111);
+        quadrado(&mut estado, -1.0, -1.0, 1.0, 1.0, [1.0; 4]);
+        estado.flush();
+        assert_eq!(estado.stencil[0], 0b1010_1111);
+    }
+
+    /// Um desenho reprovado no stencil não pinta, mas **aplica** a operação de falha: é isso
+    /// que deixa um passe contar sem aparecer.
+    #[test]
+    fn a_falha_no_stencil_ainda_mexe_no_buffer() {
+        let mut estado = GlState::new(2, 2);
+        estado.set_viewport(0, 0, 2, 2);
+        estado.set_capability(gles::GL_STENCIL_TEST, true);
+        estado.set_stencil_func(gles::GL_NEVER, 0, 0xff);
+        estado.set_stencil_op(gles::GL_INCR, gles::GL_KEEP, gles::GL_KEEP);
+        quadrado(&mut estado, -1.0, -1.0, 1.0, 1.0, [1.0, 0.0, 0.0, 1.0]);
+        estado.flush();
+        assert_eq!(estado.stencil[0], 1, "a operação de falha valeu");
+        assert_eq!(estado.color[0][0], 0, "e nada foi pintado");
+    }
+
+    /// Um quadrado em coordenadas normalizadas, com a cor dada.
+    fn quadrado(estado: &mut GlState, x0: f32, y0: f32, x1: f32, y1: f32, color: [f32; 4]) {
+        let v = |x: f32, y: f32| Vertex {
+            position: [x, y, 0.0, 1.0],
+            color,
+            uv: [0.0; 2],
+            ..Default::default()
+        };
+        estado.draw(
+            gles::GL_TRIANGLES,
+            &[
+                v(x0, y0),
+                v(x1, y0),
+                v(x1, y1),
+                v(x0, y0),
+                v(x1, y1),
+                v(x0, y1),
+            ],
+        );
+    }
 
     /// Um estado com a luz zero ligada, material e luz brancos, e nada mais.
     fn com_luz() -> GlState {

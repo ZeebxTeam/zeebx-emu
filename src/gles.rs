@@ -287,6 +287,15 @@ pub const GL_TEXTURE_ENV_MODE: u32 = 0x2200;
 pub const GL_MODULATE: u32 = 0x2100;
 pub const GL_DECAL: u32 = 0x2101;
 pub const GL_REPLACE: u32 = 0x1e01;
+
+/// As operações do `glStencilOp`. O `GL_REPLACE` acima é uma delas e já existia, vindo do
+/// `glTexEnv`: o mesmo valor serve aos dois no OpenGL.
+pub const GL_ZERO_OP: u32 = 0;
+pub const GL_KEEP: u32 = 0x1e00;
+pub const GL_INCR: u32 = 0x1e02;
+pub const GL_DECR: u32 = 0x1e03;
+pub const GL_INVERT: u32 = 0x150a;
+pub const GL_STENCIL_BUFFER_BIT: u32 = 0x0400;
 pub const GL_ADD: u32 = 0x0104;
 
 /// Limites e capacidades que `glGetIntegerv` responde, de `gl.h`.
