@@ -3968,21 +3968,37 @@ impl<C: CpuBackend> Machine<C> {
         Ok(())
     }
 
-    /// A raiz da árvore a que um widget pertence.
+    /// Os widgets da árvore do formulário atual, incluindo a raiz.
     ///
-    /// Mesmo teto e mesmo motivo do [`Machine::posicao_na_tela`]: a árvore vem do jogo.
-    fn raiz_de(&self, widget: u32) -> u32 {
-        /// Até onde subir na árvore antes de desistir.
-        const FUNDO: usize = 32;
+    /// Desce da raiz em vez de subir de cada widget. Subir custava uma caminhada por widget
+    /// vivo — e há doze mil deles, porque o jogo remonta o formulário a cada volta e não solta
+    /// o anterior. A árvore do formulário tem uma dúzia de nós, então descer é o barato: com a
+    /// subida, o laço caía de 896 voltas para 57.
+    fn arvore_do_formulario(&self) -> std::collections::HashSet<u32> {
+        /// Teto de nós visitados. A árvore vem do jogo, e um ciclo nela não pode prender o
+        /// desenho.
+        const TETO: usize = 4096;
 
-        let mut atual = widget;
-        for _ in 0..FUNDO {
-            match self.widgets.get(&atual) {
-                Some(no) if no.pai != 0 && no.pai != atual => atual = no.pai,
-                _ => break,
+        let mut dentro = std::collections::HashSet::new();
+        let Some(raiz) = self.formulario_atual() else {
+            return dentro;
+        };
+        let mut fila = vec![raiz];
+        dentro.insert(raiz);
+        while let Some(atual) = fila.pop() {
+            if dentro.len() >= TETO {
+                break;
+            }
+            let Some(no) = self.widgets.get(&atual) else {
+                continue;
+            };
+            for filho in no.filhos.values().chain(no.anexados.iter()) {
+                if self.widgets.contains_key(filho) && dentro.insert(*filho) {
+                    fila.push(*filho);
+                }
             }
         }
-        atual
+        dentro
     }
 
     /// A raiz mais nova de todas — o formulário que o jogo acabou de montar.
@@ -3997,9 +4013,16 @@ impl<C: CpuBackend> Machine<C> {
     /// cima do formulário atual. O console mostra um formulário por vez, e o atual é o último
     /// montado: é o que esta função devolve.
     fn formulario_atual(&self) -> Option<u32> {
+        let com_filhos: std::collections::HashSet<u32> =
+            self.widgets.values().map(|no| no.pai).collect();
         self.widgets
             .iter()
-            .filter(|(endereco, no)| no.pai == 0 || no.pai == **endereco)
+            .filter(|(endereco, no)| {
+                // Raiz é quem não tem pai. **E precisa ter filho**: o jogo cria widgets soltos
+                // que nunca chegam a receber nada, e o mais novo de todos costuma ser um
+                // desses — pintar por ele dava uma tela branca, que foi o que apareceu.
+                (no.pai == 0 || no.pai == **endereco) && com_filhos.contains(endereco)
+            })
             .max_by_key(|(_, no)| no.serial)
             .map(|(&endereco, _)| endereco)
     }
@@ -4087,12 +4110,11 @@ impl<C: CpuBackend> Machine<C> {
                 }
             }
         }
+        let dentro = self.arvore_do_formulario();
         let mut imagens: Vec<(u32, u32)> = self
             .widgets
             .iter()
-            .filter(|(dono, widget)| {
-                widget.visivel && atual.is_some_and(|raiz| self.raiz_de(**dono) == raiz)
-            })
+            .filter(|(dono, widget)| widget.visivel && dentro.contains(*dono))
             .flat_map(|(dono, widget)| widget.anexados.iter().map(|&filho| (filho, *dono)))
             .filter(|(objeto, _)| self.images.contains_key(objeto))
             .collect();
@@ -4124,14 +4146,12 @@ impl<C: CpuBackend> Machine<C> {
     ///
     /// A ordem é a da árvore, como a das imagens: filho por cima de pai.
     fn pinta_textos(&mut self) -> Result<(), CpuError> {
-        let atual = self.formulario_atual();
+        let dentro = self.arvore_do_formulario();
         let mut escritas: Vec<(usize, i32, i32, u32, String)> = self
             .widgets
             .iter()
             .filter(|(dono, widget)| {
-                widget.visivel
-                    && !widget.texto.is_empty()
-                    && atual.is_some_and(|raiz| self.raiz_de(**dono) == raiz)
+                widget.visivel && !widget.texto.is_empty() && dentro.contains(*dono)
             })
             .map(|(&dono, widget)| {
                 let (x, y) = self.posicao_na_tela(dono);
