@@ -8396,10 +8396,21 @@ impl<C: CpuBackend> Machine<C> {
                 // O banco fica ao lado do módulo, como qualquer arquivo do jogo, e passa pelo
                 // VFS pelo mesmo motivo dos outros: nada escreve fora do diretório dele.
                 let Some(caminho) = self.vfs.resolve_new(&nome) else {
+                    if self.serial.is_some() {
+                        self.record_debug(format!("<banco {nome} -> caminho não resolve>"));
+                    }
                     self.missing_files.insert(nome);
                     return Ok(Some(EFAILED));
                 };
-                match crate::sql::Database::open(&caminho) {
+                let aberto = crate::sql::Database::open(&caminho);
+                if self.serial.is_some() {
+                    let como = match &aberto {
+                        Ok(_) => "abriu".to_string(),
+                        Err(erro) => format!("falhou: {erro}"),
+                    };
+                    self.record_debug(format!("<banco {nome} -> {como}>"));
+                }
+                match aberto {
                     Ok(db) => {
                         self.escolhe_idioma(&db);
                         let object = self.new_object(Interface::SqlDatabase)?;
