@@ -4091,14 +4091,19 @@ impl<C: CpuBackend> Machine<C> {
     fn formulario_atual(&self) -> Option<u32> {
         let com_filhos: std::collections::HashSet<u32> =
             self.widgets.values().map(|no| no.pai).collect();
-        self.widgets
-            .iter()
-            .filter(|(endereco, no)| {
+        let raizes = || {
+            self.widgets.iter().filter(|(endereco, no)| {
                 // Raiz é quem não tem pai. **E precisa ter filho**: o jogo cria widgets soltos
                 // que nunca chegam a receber nada, e o mais novo de todos costuma ser um
                 // desses — pintar por ele dava uma tela branca, que foi o que apareceu.
                 (no.pai == 0 || no.pai == **endereco) && com_filhos.contains(endereco)
             })
+        };
+        // Preferir a raiz da classe `0x01028e51` — a que o applet guarda em `[app+0x24]` —
+        // parecia certo e **apaga a tela**: a árvore dela não tem os widgets que desenham. As
+        // duas convivem, e ligar o slot 14 não as juntou. Enquanto não se souber o que as
+        // liga, a raiz é a mais nova com filho, que é a que tem o que pintar.
+        raizes()
             .max_by_key(|(_, no)| no.serial)
             .map(|(&endereco, _)| endereco)
     }
@@ -5740,6 +5745,22 @@ impl<C: CpuBackend> Machine<C> {
             // não sabemos ler. Enquanto não soubermos, fica a ordem do mapa, que é a que
             // estava aqui antes de eu começar a mexer.
             let tratadores = self.tratadores_em_ordem();
+            {
+                let raiz = self.formulario_atual().unwrap_or(0);
+                let dentro = self.arvore_do_formulario();
+                let lista: Vec<String> = self
+                    .widgets
+                    .iter()
+                    .filter(|(_, w)| w.tratador.0 != 0)
+                    .map(|(e, w)| {
+                        format!(
+                            "{:#x}@{e:#x} pai {:#x} classe {:#x} na árvore {}",
+                            w.tratador.0, w.pai, w.classe, dentro.contains(e)
+                        )
+                    })
+                    .collect();
+                self.record_debug(format!("<raiz {raiz:#x}; {}>", lista.join(" | ")));
+            }
             for (funcao, contexto) in tratadores {
                 let saida = self.call_guest(
                     funcao,
@@ -7334,8 +7355,18 @@ impl<C: CpuBackend> Machine<C> {
             // `slot14(this, objeto)`, com o retorno ignorado. Aceitar e não guardar nada é o
             // mínimo que deixa a montagem seguir; o que o objeto é, ainda não sabemos.
             "Anexar" => {
-                self.assumptions
-                    .insert("um objeto foi pendurado num widget pelo slot 14 e não guardamos qual");
+                // Registrar a ligação, e não só aceitar: sem ela a árvore ficava partida em
+                // duas — os widgets que desenham numa metade e o tratador de tecla na outra —,
+                // e qualquer regra sobre "o formulário atual" escolhia a metade errada.
+                let filho = self.cpu.read_reg(Reg::R1);
+                if self.widgets.contains_key(&filho) {
+                    if let Some(widget) = self.widgets.get_mut(&this) {
+                        widget.anexados.push(filho);
+                    }
+                    if let Some(widget) = self.widgets.get_mut(&filho) {
+                        widget.pai = this;
+                    }
+                }
                 SUCCESS
             }
             "DefinirVisivel" => {
@@ -7527,6 +7558,12 @@ impl<C: CpuBackend> Machine<C> {
                         OK
                     }
                     GRAVA => {
+                        if id == 0x216 || id == 0x347 {
+                            let tem = self.widgets.get(&this).map_or(0, |w| w.tratador.0);
+                            self.record_debug(format!(
+                                "<prop {id:#x}={terceiro} no {this:#x}, tratador {tem:#x}>"
+                            ));
+                        }
                         if let Some(widget) = self.widgets.get_mut(&this) {
                             widget.propriedades.insert(id, terceiro);
                         }
