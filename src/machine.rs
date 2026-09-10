@@ -7173,10 +7173,11 @@ impl<C: CpuBackend> Machine<C> {
             }
             // Guarda o par e não avisa ninguém: não há cartão para verificar, e chamar o
             // retorno seria afirmar que há.
+            // Guarda o par e não avisa ninguém: não há cartão para verificar, e chamar o
+            // retorno seria afirmar que há. Hoje não chega aqui — a classe não é oferecida.
             "PedirVerificacao" => {
-                self.objects.release(this);
                 self.assumptions
-                    .insert("a verificação de cartão SIM respondeu que está tudo bem");
+                    .insert("uma verificação de cartão SIM foi aceita e nunca respondida");
                 SUCCESS
             }
             _ => SUCCESS,
@@ -10687,7 +10688,6 @@ impl<C: CpuBackend> Machine<C> {
             AEECLSID_VETOR => Interface::Vetor,
             AEECLSID_28E3C => Interface::Classe28e3c,
             AEECLSID_CM => Interface::Cm,
-            AEECLSID_SIMCARDCTL => Interface::SimCardCtl,
             AEECLSID_SYSTEMCTL => Interface::SystemCtl,
             AEECLSID_TYPEFACE => Interface::Typeface,
             AEECLSID_MD5 => Interface::Hash,

@@ -252,16 +252,26 @@ pub enum Interface {
     /// **Está implementada e não é oferecida, e o motivo é o jogo.** A `0x78544` cria esta
     /// classe para pedir a verificação do cartão; quando a criação **falha**, ela põe o estado
     /// em `0x27` — e `0x27` é justamente o que a `0x82464` encaminha para a transição que abre
-    /// o menu principal.
+    /// o menu principal. Recusar **é** o caminho, e por um motivo que levou três voltas para
+    /// ficar claro.
     ///
-    /// Recusar a classe **não** é o caminho: o `0x78544` trata os três desfechos possíveis
-    /// como estados diferentes, e recusar dá o pior deles.
+    /// O `0x78544` distingue três desfechos, e o `0x82464` faz coisas diferentes com cada um:
     ///
-    /// - `CreateInstance` falha → estado `0x27`, "não deu para verificar". A `0x82464` chama a
-    ///   `0x1f7b4`, volta ao laço e tenta de novo, imprimindo
-    ///   `Unable to create instance of AEECLSID_LCT_SIMCARDCTL` a cada volta.
-    /// - Slot 3 devolve **zero** → estado `0x28`, que segue calado. É o "cartão em ordem".
+    /// - `CreateInstance` falha → estado `0x27`. O `0x82464` chama a `0x1f7b4`, que é a rotina
+    ///   que **avança a interface**: ela chega ao `0x7ed10`, o lançamento do formulário de
+    ///   instruções do z-pad. É o único dos três que leva o jogo adiante.
+    /// - Slot 3 devolve zero → estado `0x28`. O `0x82464` **não faz nada** com ele: compara,
+    ///   desvia para o fim e retorna. A tela fica onde está, calada.
     /// - Slot 3 devolve não-zero → estado `1`, e o jogo mostra `Showing SIM Error dialog`.
+    ///
+    /// O `Unable to create instance of AEECLSID_LCT_SIMCARDCTL` repetido é o jogo tomando o
+    /// caminho certo muitas vezes, não um erro a calar. Oferecer a classe silencia a mensagem
+    /// e, junto com ela, o avanço: foi assim que a tela de boas-vindas ficou parada.
+    ///
+    /// Há ainda o vazamento, se um dia isto for oferecido: o `0x785a8` volta sem `Release` e o
+    /// ponteiro morre na pilha. No console quem solta o objeto é a resposta da verificação
+    /// assíncrona. Sem soltar, o jogo criava um controle por volta do laço e esgotava o pote em
+    /// 65 506 objetos, derrubando junto o formulário do z-pad.
     ///
     /// A vtable é a `0x113cf854`, com quatro métodos, e o construtor `0x11267d04` confere o
     /// CLSID recebido contra `0x01006c01` — é dela mesma. Foi este construtor, aliás, que
@@ -269,10 +279,6 @@ pub enum Interface {
     ///
     /// O slot 3 recebe `(this, texto, applet)` e, no firmware, guarda um par em `+0xc4` e
     /// `+0xc8`: é registro de retorno de chamada, do tipo "verifique o cartão e me avise".
-    /// Quem soltaria o objeto seria essa resposta — o `0x785a8` volta sem `Release`, e o
-    /// ponteiro morre na pilha. Como não temos cartão para verificar nem como avisar, o objeto
-    /// é solto aqui mesmo: sem isso o jogo criava um controle por volta do laço e esgotava o
-    /// pote em 65 506 objetos, derrubando junto o formulário do z-pad.
     SimCardCtl = 50,
     /// Objeto de uma classe que ainda não conhecemos, criado a pedido do `--sonda`.
     ///
