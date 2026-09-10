@@ -796,6 +796,14 @@ struct Widget {
     /// devolve o tratador anterior escrevendo-o de volta nessa mesma estrutura — depois da
     /// chamada ela não descreve mais quem acabou de se registrar.
     tratador: (u32, u32),
+
+    /// O retorno de desenho que o slot 16 registrou: `(função, contexto)`.
+    ///
+    /// Vem de um trio `{função, contexto, liberador}` que o jogo monta na própria estrutura e
+    /// passa por ponteiro; o slot devolve o anterior escrevendo-o de volta nas duas primeiras
+    /// palavras, do mesmo jeito que o slot 4 faz com o tratador. É por isso que a função
+    /// registrada pode chamar "o de baixo" sem guardar nada: ela lê do lugar onde escreveu.
+    desenho: (u32, u32),
     /// Se o aviso de partida já foi entregue. Ver [`Machine::parte_animacao`].
     partiu: bool,
 }
@@ -1807,6 +1815,12 @@ pub struct Machine<C: CpuBackend> {
     egl_error: u32,
     /// Superfícies do EGL vivas, com as dimensões de cada uma.
     egl_surfaces: HashMap<u32, (u32, u32)>,
+    /// Onde os pixels do buffer de cor ficam visíveis para o jogo, e de que tamanho.
+    ///
+    /// Reservado na primeira vez que a `eglGetColorBufferQUALCOMM` é chamada, e reaproveitado
+    /// depois: a região de superfícies não tem como devolver o que já deu, e a Z-Wheel pede o
+    /// buffer uma vez por quadro.
+    egl_color_buffer: (u32, usize),
     /// Próximo identificador livre de superfície ou contexto.
     egl_next_handle: u32,
     /// Quantas vezes o jogo apresentou um quadro com `eglSwapBuffers`.
@@ -2002,6 +2016,7 @@ impl<C: CpuBackend> Machine<C> {
             serial: None,
             egl_error: gles::EGL_SUCCESS,
             egl_surfaces: HashMap::new(),
+            egl_color_buffer: (0, 0),
             egl_next_handle: EGL_HANDLE_BASE,
             egl_swaps: 0,
             gles_next_name: 0,
@@ -3953,6 +3968,7 @@ impl<C: CpuBackend> Machine<C> {
         // pede chamar o alocador do jogo, e isso só é seguro fora do despacho.
         self.flush_response()?;
         self.pinta_widgets()?;
+        self.desenha_widgets()?;
         self.parte_animacao()?;
         self.flush_keys()?;
         let pending = std::mem::take(&mut self.pending_signals);
@@ -3997,6 +4013,41 @@ impl<C: CpuBackend> Machine<C> {
                 widget.partiu = true;
             }
             self.call_guest(funcao, [contexto, PARTIDA.0, PARTIDA.1, 1], QSORT_BUDGET)?;
+        }
+        Ok(())
+    }
+
+    /// Chama o retorno de desenho que o slot 16 registrou, um por widget do formulário atual.
+    ///
+    /// **Quem desenha um `OwnerDrawWidget` é o jogo, e quem manda desenhar é a extensão de
+    /// widgets — nós.** O widget guarda `(função, contexto)`; a chamada é
+    /// `função(contexto, tela, x, y)`, com o canto do widget já em coordenadas de tela.
+    ///
+    /// A forma dos argumentos foi lida na `0x7562c`, o desenho do palco: ela guarda `r2` e `r3`
+    /// e os usa, mais adiante, como o par de coordenadas de um traço. O `r1` ela ignora — é o
+    /// outro `OwnerDrawWidget` da tela, na `0x605e4`, que faz dele um `QueryInterface`. Daí
+    /// passarmos um `IDisplay`: para o palco é indiferente, e para o outro a interface que
+    /// faltar aparece no relatório em vez de sumir.
+    ///
+    /// Uma vez por quadro para cada um, e só os do formulário atual: chamar o desenho de uma
+    /// tela que não está à vista é pedir para pintar por cima do que está.
+    fn desenha_widgets(&mut self) -> Result<(), CpuError> {
+        let mut chamar: Vec<(u32, (u32, u32))> = self
+            .widgets
+            .iter()
+            .filter(|(_, no)| no.desenho.0 != 0 && no.visivel)
+            .map(|(&endereco, no)| (endereco, no.desenho))
+            .collect();
+        if chamar.is_empty() {
+            return Ok(());
+        }
+        // A ordem é a de criação, como no `pinta_widgets`: não é profundidade de verdade, mas é
+        // estável, e desenho instável é pior do que desenho na ordem errada.
+        chamar.sort_by_key(|(endereco, _)| self.widgets[endereco].serial);
+        let tela = self.target()?;
+        for (endereco, (funcao, contexto)) in chamar {
+            let (x, y) = self.posicao_na_tela(endereco);
+            self.call_guest(funcao, [contexto, tela, x as u32, y as u32], QSORT_BUDGET)?;
         }
         Ok(())
     }
@@ -7428,6 +7479,38 @@ impl<C: CpuBackend> Machine<C> {
             // `AECHAR`. Ver a constante para como isso foi medido.
             // `slot14(this, objeto)`, com o retorno ignorado. Aceitar e não guardar nada é o
             // mínimo que deixa a montagem seguir; o que o objeto é, ainda não sabemos.
+            // `Slot16(this, trio)` **registra quem desenha o widget**, e devolve o anterior.
+            //
+            // O `CreateOwnerDrawWidget` em `0x22cd0` monta o trio na própria estrutura antes de
+            // chamar: `[r4+0x14] = 0x5250c`, `[r4+0x18] = r4`, `[r4+0x1c] = 0x52574`, e passa
+            // `r4+0x14` em `r1`. Quem desenha é a `0x5250c`, e ela é um elo de corrente — chama
+            // primeiro `[ctx+0x14]([ctx+0x18], r1, r2, r3)`, que é justamente onde o anterior
+            // precisa ter sido escrito de volta, e depois o desenho próprio do roller, em
+            // `[ctx+0x00]([ctx+0x08], …)`. Sem a devolução ela chamaria a si mesma.
+            //
+            // A terceira palavra do trio é a `0x52574`, o liberador. Não guardamos: nada aqui
+            // destrói um registro de desenho.
+            "Slot16" => {
+                let onde = self.cpu.read_reg(Reg::R1);
+                let novo = match (self.cpu.read_u32(onde), self.cpu.read_u32(onde + 4)) {
+                    (Ok(funcao), Ok(contexto)) => (funcao, contexto),
+                    _ => return Ok(Some(EBADPARM)),
+                };
+                let anterior = self.widgets.get(&this).map_or((0, 0), |w| w.desenho);
+                self.cpu.write_u32(onde, anterior.0)?;
+                self.cpu.write_u32(onde + 4, anterior.1)?;
+                if let Some(widget) = self.widgets.get_mut(&this) {
+                    widget.desenho = novo;
+                }
+                if self.serial.is_some() {
+                    let proprio = (self.cpu.read_u32(novo.1), self.cpu.read_u32(novo.1 + 8));
+                    self.registra_serial(format!(
+                        "<desenho {:#x} ctx {:#x} em {this:#x}; proprio {proprio:x?}>",
+                        novo.0, novo.1
+                    ));
+                }
+                SUCCESS
+            }
             // `Slot16(this)`, chamado uma vez em `0x22d58`, logo depois de o palco existir.
             // Recusá-lo não devolvia a execução ao `0x22d5c`: a montagem do menu parava ali, e
             // o aplicativo ficava no pulso de dez segundos que lê pontos e fila de download sem
@@ -7437,7 +7520,6 @@ impl<C: CpuBackend> Machine<C> {
             //
             // O que ele faz continua sem nome porque não foi lido: só se sabe que recebe o
             // widget e que o jogo não usa o retorno para nada além de seguir.
-            "Slot16" => 0,
             "Anexar" => {
                 // Registrar a ligação, e não só aceitar: sem ela a árvore ficava partida em
                 // duas — os widgets que desenham numa metade e o tratador de tecla na outra —,
@@ -9199,6 +9281,39 @@ impl<C: CpuBackend> Machine<C> {
                 self.present_gl();
                 self.wait_for_vsync();
                 (2, gles::EGL_TRUE)
+            }
+            // `void *eglGetColorBufferQUALCOMM(void)` — **sem argumento nenhum**.
+            //
+            // A chamada é `blx r0` puro, em `0x76cbc`, com o ponteiro lido de `[r4+0x34]`: os
+            // registradores que chegam aqui são sobra, e o único que importa é o que sai. Zero
+            // é falha — o `cmp r0,#0` logo depois desvia para `0x76e30` e o palco desiste.
+            //
+            // O que sai é o endereço cru dos pixels. O jogo já sabe as dimensões: guarda
+            // largura e altura em `[r4+0x18]` e `[r4+0x1c]` e monta com elas o descritor do
+            // traço. Por isso não há saída de tamanho aqui, e por isso o formato tem de ser o
+            // da tela — RGB565, o mesmo que o `present_gl` entrega.
+            //
+            // É esta função que existe porque a Z-Wheel desenha o palco num **pbuffer** e não
+            // numa janela: sem um ponteiro para o resultado, não há como compor o 3D com o 2D.
+            "GetColorBufferQUALCOMM" => {
+                let (largura, altura) = {
+                    let alvo = self.screen();
+                    (alvo.width() as usize, alvo.height() as usize)
+                };
+                let bytes: Vec<u8> = self
+                    .gl
+                    .present(largura, altura)
+                    .iter()
+                    .flat_map(|pixel| pixel.to_le_bytes())
+                    .collect();
+                if self.egl_color_buffer.1 < bytes.len() {
+                    match self.surface_alloc(bytes.len() as u32) {
+                        Some(onde) => self.egl_color_buffer = (onde, bytes.len()),
+                        None => return Ok(Some(0)),
+                    }
+                }
+                self.cpu.write_mem(self.egl_color_buffer.0, &bytes)?;
+                (0, self.egl_color_buffer.0)
             }
             "CopyBuffers" => (3, gles::EGL_TRUE),
             "SurfaceAttrib" => (4, gles::EGL_TRUE),
