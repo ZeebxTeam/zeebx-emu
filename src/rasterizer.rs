@@ -205,14 +205,31 @@ impl Texture {
     /// A largura, a altura e os pixels de um nível de redução.
     fn nivel(&self, n: usize) -> (usize, usize, &[[u8; 4]]) {
         match n.checked_sub(1).and_then(|i| self.mipmaps.get(i)) {
-            Some(nivel) => (nivel.width, nivel.height, &nivel.pixels),
-            None => (self.width, self.height, &self.pixels),
+            // O tamanho declarado e os pixels precisam combinar: um nível comprimido cujo
+            // decodificador não deu conta chega com menos texels do que diz ter, e ler por
+            // índice ali seria estourar o vetor.
+            Some(nivel)
+                if nivel.width > 0 && nivel.pixels.len() >= nivel.width * nivel.height =>
+            {
+                (nivel.width, nivel.height, &nivel.pixels)
+            }
+            _ => (self.width, self.height, &self.pixels),
         }
     }
 
     /// Quantos níveis a cadeia tem, contando o zero.
     fn niveis(&self) -> usize {
-        1 + self.mipmaps.len()
+        // **Só a sequência sem buracos conta.** Um jogo pode mandar os níveis fora de ordem, ou
+        // parar no meio, e a nossa lista fica com uma entrada vazia no lugar que faltou.
+        // Amostrar uma dessas devolvia branco opaco, e a superfície inteira saía chapada — foi
+        // o que aconteceu com parte dos itens da roda quando o mipmap entrou.
+        1 + self
+            .mipmaps
+            .iter()
+            .take_while(|nivel| {
+                nivel.width > 0 && nivel.pixels.len() >= nivel.width * nivel.height
+            })
+            .count()
     }
 
     /// Amostra a textura escolhendo o nível pela redução em tela.
@@ -1682,7 +1699,10 @@ fn fill_band(tri: &Prepared, uniforms: &Uniforms, band: &mut Band) {
                         + seguinte[1] * tri.screen[1][3]
                         + seguinte[2] * tri.screen[2][3];
                     let (u, v) = (attribute(4), attribute(5));
-                    let lod = match inv_w2 == 0.0 {
+                    // **O pixel vizinho precisa estar do mesmo lado do olho.** Quando o sinal
+                    // de `1/w` vira — o triângulo cruza o horizonte —, a diferença explode e o
+                    // nível escolhido vai para o menor da cadeia, que é uma cor chapada.
+                    let lod = match inv_w2 <= 0.0 || inv_w <= 0.0 {
                         true => 0.0,
                         false => {
                             let w2 = 1.0 / inv_w2;
@@ -1922,6 +1942,25 @@ fn unpack(color: [u8; 4]) -> [f32; 4] {
 
 #[cfg(test)]
 mod tests {
+
+    /// Um buraco na cadeia não vira branco: o nível inválido cai no que existe.
+    ///
+    /// Era o que deixava modelos inteiros chapados — um nível vazio devolvia branco opaco e a
+    /// superfície toda saía de uma cor só.
+    #[test]
+    fn nivel_vazio_cai_no_que_existe() {
+        let mut t = Texture {
+            width: 2,
+            height: 1,
+            pixels: vec![[255, 0, 0, 255]; 2],
+            ..Default::default()
+        };
+        t.min_filter = gles::GL_NEAREST_MIPMAP_NEAREST;
+        t.mipmaps = vec![Nivel { width: 0, height: 0, pixels: Vec::new() }];
+        let cor = t.sample_lod(0.5, 0.5, 5.0);
+        assert_eq!(cor[0], 1.0, "vermelho do nível cheio");
+        assert_eq!(cor[1], 0.0, "e não branco: {cor:?}");
+    }
 
     /// Uma textura sem cadeia de redução não é mipmapeada, mesmo que o filtro peça.
     ///

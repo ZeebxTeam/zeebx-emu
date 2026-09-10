@@ -9995,9 +9995,7 @@ impl<C: CpuBackend> Machine<C> {
         // Trocar o conteúdo de uma textura que a fila ainda vai ler mudaria o passado.
         self.gl.flush();
         let texture = self.gl.textures.entry(name).or_default();
-        texture.width = width as usize;
-        texture.height = height as usize;
-        texture.pixels = decoded;
+        guarda_nivel(texture, level, width as usize, height as usize, decoded);
         Ok(())
     }
 
@@ -10073,6 +10071,11 @@ impl<C: CpuBackend> Machine<C> {
             texture.pixels[destino..destino + width as usize]
                 .copy_from_slice(&novos[origem..origem + width as usize]);
         }
+        // **Mexer no nível zero invalida a cadeia.** Os níveis menores continuariam mostrando o
+        // que estava ali antes, e quem amostra dois níveis vê os dois conteúdos ao mesmo tempo:
+        // o painel de promoção da Z-Wheel, que troca o texto por aqui, saía com as letras
+        // fantasmas do texto anterior por cima das novas.
+        texture.mipmaps.clear();
         Ok(())
     }
 
