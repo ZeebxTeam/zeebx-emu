@@ -245,7 +245,14 @@ impl App {
         self.log_dismissed = false;
         self.log_gravado = None;
         self.log_status = None;
-        match Session::start_with(&path, self.portas_configuradas()) {
+        // A serial é ligada junto com o começo, e não depois: o construtor do applet roda
+        // dentro do `start_with`, e o que ele faz ao nascer precisa estar na captura.
+        let serial = self
+            .settings
+            .debug
+            .log
+            .then(|| Self::caminho_da_serial(&library::title_for(&path)));
+        match Session::start_with(&path, self.portas_configuradas(), serial.as_deref()) {
             Ok(mut session) => {
                 // Ligar o som aqui é seguro **porque o jogo ainda não começou**: o `start` só
                 // prepara, e o `EVT_APP_START` sai na primeira volta do laço. Antes disso o
@@ -253,17 +260,6 @@ impl App {
                 let audio = &self.settings.audio;
                 if let Some(err) = session.set_audio(audio.enabled, audio.volume) {
                     eprintln!("sem som: {err}");
-                }
-                // Com o log de depuração ligado, a serial vai junto: é ela que traz a ordem das
-                // coisas e o SQL que o jogo manda, e o relatório não traz nem uma nem outro.
-                if self.settings.debug.log {
-                    let caminho = Self::caminho_da_serial(session.title());
-                    if let Some(dir) = caminho.parent() {
-                        let _ = std::fs::create_dir_all(dir);
-                    }
-                    if let Err(erro) = session.liga_serial(&caminho) {
-                        eprintln!("sem serial: {erro}");
-                    }
                 }
                 self.session = Some(session);
             }

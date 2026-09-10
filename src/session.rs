@@ -136,13 +136,21 @@ impl Session {
     pub fn start_with(
         path: &Path,
         portas: [Option<crate::bindings::Aparelho>; crate::input::PORTAS],
+        serial: Option<&Path>,
     ) -> Result<Self, StartError> {
-        Self::start_inner(path, Some(portas))
+        Self::start_inner(path, Some(portas), serial)
     }
 
+    /// A serial entra **antes de o módulo ser criado**, e não depois de a sessão existir.
+    ///
+    /// O construtor do applet roda dentro do `CreateInstance`, aqui dentro: ligar a captura só
+    /// depois deixava de fora tudo o que ele faz ao nascer — inclusive o `Zeeboids v 1.1.1402`,
+    /// que aparecia no relatório e não na captura. Uma captura com buraco no começo é pior que
+    /// nenhuma, porque não se sabe que há buraco.
     fn start_inner(
         path: &Path,
         portas: Option<[Option<crate::bindings::Aparelho>; crate::input::PORTAS]>,
+        serial: Option<&Path>,
     ) -> Result<Self, StartError> {
         let extracted;
         let path = match path.extension().and_then(|e| e.to_str()) {
@@ -161,6 +169,14 @@ impl Session {
         let root = path.parent().map(Path::to_path_buf).unwrap_or_default();
         let cpu = UnicornCpu::new().map_err(|e| StartError::NotLoadable(e.to_string()))?;
         let mut machine = Machine::new(cpu, module, root);
+        if let Some(caminho) = serial {
+            if let Some(dir) = caminho.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            if let Err(erro) = machine.liga_serial(caminho) {
+                eprintln!("sem serial: {erro}");
+            }
+        }
         if let Some(portas) = portas {
             machine.set_portas(portas);
         }
@@ -442,15 +458,6 @@ impl Session {
     ///
     /// Um host sem placa de áudio não pode impedir o jogo de rodar: o motivo é devolvido para
     /// quem quiser mostrá-lo, e o emulador segue mudo.
-    /// Liga a captura de serial — o fluxo de `DBGPRINTF` e o SQL, na ordem e com o instante.
-    ///
-    /// Ver [`crate::machine::Machine::liga_serial`]. Vem da interface só quando o log de
-    /// depuração está ligado: o arquivo cresce sem parar e traz IMEI e senha, e nenhuma das
-    /// duas coisas deve acontecer por omissão.
-    pub fn liga_serial(&mut self, caminho: &std::path::Path) -> std::io::Result<()> {
-        self.machine.liga_serial(caminho)
-    }
-
     pub fn set_audio(&mut self, enabled: bool, volume: u8) -> Option<String> {
         let level = f32::from(volume.min(100)) / 100.0;
         if !enabled {
@@ -523,7 +530,7 @@ mod tests {
 
     #[test]
     fn um_arquivo_que_nao_existe_diz_que_nao_deu_para_ler() {
-        let err = Session::start_inner(&std::env::temp_dir().join("zeebx-nao-existe.mod"), None);
+        let err = Session::start_inner(&std::env::temp_dir().join("zeebx-nao-existe.mod"), None, None);
         assert!(matches!(err, Err(StartError::Unreadable(_))));
     }
 
@@ -534,7 +541,7 @@ mod tests {
         // legível, porque é ele que a interface mostra.
         let path = std::env::temp_dir().join("zeebx-teste-lixo.mod");
         std::fs::write(&path, b"isto nao e um modulo").unwrap();
-        let Err(err) = Session::start_inner(&path, None) else {
+        let Err(err) = Session::start_inner(&path, None, None) else {
             panic!("um arquivo de lixo não podia virar uma sessão");
         };
         assert!(!err.to_string().is_empty());

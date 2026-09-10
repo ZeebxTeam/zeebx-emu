@@ -11256,6 +11256,9 @@ impl<C: CpuBackend> Machine<C> {
     fn shell_create_instance(&mut self) -> Result<u32, CpuError> {
         let clsid = self.cpu.read_reg(Reg::R1);
         let out = self.cpu.read_reg(Reg::R2);
+        if self.serial.is_some() {
+            self.record_debug(format!("<classe {clsid:#010x}>"));
+        }
 
         let iface = match clsid {
             AEECLSID_DISPLAY | AEECLSID_DISPLAY1 => Interface::Display,
