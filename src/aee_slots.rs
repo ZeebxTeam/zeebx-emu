@@ -669,6 +669,15 @@ pub const EGL_LEGACY: &[&str] = &[
     "eglWaitNative",
     "eglSwapBuffers",
     "eglCopyBuffers",
+    // `EGL_QUALCOMM_get_color_buffer`. Não faz parte da vtable: o jogo chega a ela pelo
+    // `eglGetProcAddress`, e por isso fica no fim — inserir no meio deslocaria os slots reais,
+    // que é o mesmo cuidado das `DrawTex*OES` na tabela do GLES.
+    //
+    // A Z-Wheel desenha o palco num **pbuffer**, não numa janela, e precisa do ponteiro do
+    // buffer de cor para compor com o 2D. Sem esta função ela desiste: o log dela é
+    // `eglGetProcAddress('eglGetColorBufferQUALCOMM') failed.`, seguido de desmontar o contexto
+    // e de `CreateStageWidget failed, proceeding...`.
+    "eglGetColorBufferQUALCOMM",
 ];
 
 /// Métodos de `IGL` (80 slots), de `AEEINTERFACE(IGL)` em `sdk/inc/AEEGL.h` — o OpenGL ES 1.0

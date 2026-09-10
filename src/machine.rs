@@ -846,8 +846,11 @@ const WIDGET_DE_TEXTO: u32 = 0x0102_8e2a;
 /// grava valores da mesma cara pelo ajustador em `0x1035f222`.
 const PROP_COR: u32 = 0x140;
 
-const FAMILIA_DOS_WIDGETS: [u32; 7] = [
+const FAMILIA_DOS_WIDGETS: [u32; 8] = [
     AEECLSID_WIDGET,
+    // A `0x01028e14` é o `OwnerDrawWidget`: o `CreateTectoyRollerWidget` a cria e, recusada,
+    // registra `Failure in call to CreateOwnerDrawWidget` e desiste da roda de jogos inteira.
+    0x0102_8e14,
     0x0102_8e19,
     // A `0x01028e26` também entrou pela sonda: `slot3(0x801, 0x186, 0xff0000ff)` — o acessador,
     // com uma cor — e o mesmo slot 14 das outras.
@@ -9009,7 +9012,9 @@ impl<C: CpuBackend> Machine<C> {
         let legacy = iface == Interface::EglLegacy;
         let name = full.strip_prefix("egl").unwrap_or(full);
         if self.serial.is_some() {
-            self.registra_serial(format!("<egl {full}>"));
+            let args: Vec<String> = (0..6).map(|i| format!("{:#x}", self.arg(i))).collect();
+            let msg = format!("<egl {full} {}>", args.join(" "));
+            self.registra_serial(msg);
         }
         // Os argumentos, já sem o `this` quando ele existe. Ler alguns a mais do que o método
         // usa é inofensivo: `arg` responde zero para o que não conseguir ler.
@@ -9044,13 +9049,24 @@ impl<C: CpuBackend> Machine<C> {
                     // A escala de superfície do console. Os jogos procuram o nome por
                     // substring, com o espaço no fim como delimitador — é assim que a string
                     // aparece no binário deles.
-                    gles::EGL_EXTENSIONS => "EGL_QUALCOMM_surface_scale ",
+                    // Os jogos procuram o nome por substring, com o espaço no fim como
+                    // delimitador — é assim que a string aparece no binário deles. O
+                    // `get_color_buffer` entrou porque a Z-Wheel o procura antes de pedir o
+                    // ponteiro da função: o literal está em `0x43a5c` do `tectoy.mod`.
+                    gles::EGL_EXTENSIONS => {
+                        "EGL_QUALCOMM_surface_scale EGL_QUALCOMM_get_color_buffer "
+                    }
                     _ => {
                         self.egl_error = gles::EGL_BAD_ATTRIBUTE;
                         return Ok(Some(if legacy { 0 } else { SUCCESS }));
                     }
                 };
-                (2, self.intern(text)?)
+                let ponteiro = self.intern(text)?;
+                if self.serial.is_some() {
+                    let lido = self.cpu.read_cstring(ponteiro, 200);
+                    self.registra_serial(format!("<egl string {ponteiro:#x} = {lido:?}>"));
+                }
+                (2, ponteiro)
             }
             // void (*eglGetProcAddress(const char *procname))()
             //
@@ -9065,9 +9081,19 @@ impl<C: CpuBackend> Machine<C> {
                     (0..crate::aee_slots::GLES.len() as u32)
                         .find(|&s| Interface::Gles.method(s) == Some(method))
                 });
-                match slot {
-                    Some(slot) => (1, aee::encode(Interface::Gles, slot)),
-                    None => {
+                // Um nome `egl*` procura na tabela do próprio EGL, com o nome inteiro: é assim
+                // que as extensões da Qualcomm chegam. Antes só os `gl*` eram resolvidos, e um
+                // `eglGetColorBufferQUALCOMM` saía como "não temos" mesmo estando na tabela.
+                let egl = (name.starts_with("egl") && slot.is_none())
+                    .then(|| {
+                        (0..crate::aee_slots::EGL.len() as u32)
+                            .find(|&s| Interface::Egl.method(s) == Some(name.as_str()))
+                    })
+                    .flatten();
+                match (slot, egl) {
+                    (Some(slot), _) => (1, aee::encode(Interface::Gles, slot)),
+                    (_, Some(slot)) => (1, aee::encode(Interface::Egl, slot)),
+                    _ => {
                         self.bad_pointers
                             .insert(format!("o jogo pediu o endereço de {name}, que não temos"));
                         (1, 0)
@@ -9273,7 +9299,18 @@ impl<C: CpuBackend> Machine<C> {
                     // chamar função que não existe — e omitir uma que temos é pior ainda: os
                     // dez portes de arcade do console conferem o `GL_OES_draw_texture` aqui e
                     // desistem da inicialização gráfica sem ele.
-                    gles::GL_EXTENSIONS => "GL_OES_draw_texture GL_ATI_imageon_misc ",
+                    // O `atitc` entrou porque nós o decodificamos de verdade — ver `atc.rs` e
+                    // o `gles_compressed_tex_image`. A Z-Wheel procura por ele antes de montar
+                    // o palco, cujas texturas (`stage_*.qxt`) são ATITC; sem o nome na lista ela
+                    // desiste do palco inteiro.
+                    //
+                    // Os `vertex_buffer_object` e o `point_size_array` que ela também procura
+                    // ficam **de fora**: do primeiro não temos `BindBuffer` nem `BufferData`, e
+                    // do segundo só um `SUCCESS` que não faz nada. Anunciar o que não existe faz
+                    // o jogo chamar função que não está lá.
+                    gles::GL_EXTENSIONS => {
+                        "GL_OES_draw_texture GL_ATI_imageon_misc GL_ATI_texture_compression_atitc "
+                    }
                     _ => "",
                 };
                 let addr = self.intern(text)?;
@@ -10614,11 +10651,16 @@ impl<C: CpuBackend> Machine<C> {
             "strstr" => {
                 let haystack = self.cpu.read_cbytes(a0, MAX_STRING);
                 let needle = self.cpu.read_cbytes(a1, MAX_STRING);
-                haystack
+                let achou = haystack
                     .windows(needle.len().max(1))
                     .position(|w| w == needle)
                     .map(|i| a0 + i as u32)
-                    .unwrap_or(0)
+                    .unwrap_or(0);
+                if self.serial.is_some() {
+                    let n = String::from_utf8_lossy(&needle).into_owned();
+                    self.registra_serial(format!("<strstr {n:?} -> {achou:#x}>"));
+                }
+                achou
             }
             "stricmp" => {
                 let fold = |addr| {
