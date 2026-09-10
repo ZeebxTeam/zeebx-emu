@@ -484,6 +484,16 @@ impl Session {
         self.machine.set_port_pad(porta, pad);
     }
 
+    /// Uma tecla do teclado, apertada ou solta.
+    ///
+    /// O console tem teclado além dos dois controles, e o BREW o entrega como evento ao
+    /// aplicativo, não pelo `IHID` — ver [`crate::input::EVT_KEY`]. A Z-Wheel depende disso: o
+    /// formulário de abertura só sai do lugar com `AVK_0` ou `AVK_CLR`, que botão de controle
+    /// nenhum produz.
+    pub fn set_key(&mut self, avk: u32, apertada: bool) {
+        self.machine.set_key(avk, apertada);
+    }
+
     /// Diz que aparelho o console vê em cada porta.
     pub fn set_portas(
         &mut self,

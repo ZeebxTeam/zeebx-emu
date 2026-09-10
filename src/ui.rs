@@ -16,7 +16,7 @@ use crate::bindings::Source;
 use crate::display::Framebuffer;
 use crate::gamepads;
 use crate::i18n::Catalog;
-use crate::input::Pad;
+use crate::input::{self, Pad};
 use crate::library::{self, Game};
 use crate::padview::PadArt;
 use crate::ponte;
@@ -1320,6 +1320,48 @@ impl App {
         )
     }
 
+    /// As teclas do teclado da máquina que viraram evento neste quadro.
+    ///
+    /// O console tem teclado, e o BREW o entrega ao aplicativo como evento com o código virtual
+    /// no `wParam` — não pelo `IHID`, que só diz que existe um. Sem este caminho a janela só
+    /// sabia mexer nos dois controles, e formulário que espera `AVK_0` ou `AVK_CLR` — como o de
+    /// abertura da Z-Wheel — ficava parado para sempre.
+    ///
+    /// Mandar a mesma tecla como controle **e** como tecla não é conflito: o aparelho de época
+    /// tinha as duas coisas ligadas ao mesmo tempo, e o jogo escolhe a que lhe serve.
+    fn teclas_agora(ctx: &egui::Context) -> Vec<(u32, bool)> {
+        ctx.input(|i| {
+            i.events
+                .iter()
+                .filter_map(|event| match event {
+                    egui::Event::Key { key, pressed, .. } => {
+                        Some((Self::avk_de(*key)?, *pressed))
+                    }
+                    _ => None,
+                })
+                .collect()
+        })
+    }
+
+    /// O código virtual do BREW de uma tecla da janela, quando ela tem um.
+    ///
+    /// `Esc` e `P` ficam de fora de propósito: são as duas da janela, encerrar e pausar.
+    fn avk_de(key: egui::Key) -> Option<u32> {
+        use egui::Key::*;
+        Some(match key {
+            ArrowUp => input::avk::UP,
+            ArrowDown => input::avk::DOWN,
+            ArrowLeft => input::avk::LEFT,
+            ArrowRight => input::avk::RIGHT,
+            Enter | Space => input::avk::SELECT,
+            Backspace | Delete => input::avk::CLR,
+            Num0 | Num1 | Num2 | Num3 | Num4 | Num5 | Num6 | Num7 | Num8 | Num9 => {
+                input::avk::ZERO + (key as u32 - Num0 as u32)
+            }
+            _ => return None,
+        })
+    }
+
     /// Roda e desenha o jogo na janela dele. Devolve se é hora de fechá-la.
     /// De quanto em quanto tempo o relatório é regravado. Dois segundos é frequente o bastante
     /// para acompanhar uma execução e raro o bastante para não pesar.
@@ -1335,6 +1377,10 @@ impl App {
             true => None,
             false => Some(self.pads_now(ctx)),
         };
+        let teclas = match self.paused {
+            true => Vec::new(),
+            false => Self::teclas_agora(ctx),
+        };
         let limit = self.settings.graphics.speed_limit;
         let Some(session) = &mut self.session else {
             return true;
@@ -1342,6 +1388,9 @@ impl App {
         if let Some(pads) = pads {
             for (porta, pad) in pads {
                 session.set_port_pad(porta, pad);
+            }
+            for (avk, apertada) in teclas {
+                session.set_key(avk, apertada);
             }
             // O orçamento é o tempo real que passou desde o quadro anterior.
             let now = std::time::Instant::now();
@@ -1741,6 +1790,19 @@ fn placement(area: egui::Vec2, scaling: Scaling, keep_aspect: bool) -> egui::Vec
 
 #[cfg(test)]
 mod tests {
+
+    /// Os dígitos saem da ordem do `egui::Key`, e do `AVK_0` em diante. As duas listas são
+    /// contíguas hoje; se uma deixar de ser, é aqui que se descobre.
+    #[test]
+    fn digitos_viram_avk() {
+        use eframe::egui::Key;
+        assert_eq!(App::avk_de(Key::Num0), Some(crate::input::avk::ZERO));
+        assert_eq!(App::avk_de(Key::Num7), Some(crate::input::avk::ZERO + 7));
+        assert_eq!(App::avk_de(Key::Num9), Some(crate::input::avk::ZERO + 9));
+        assert_eq!(App::avk_de(Key::Backspace), Some(crate::input::avk::CLR));
+        assert_eq!(App::avk_de(Key::Escape), None);
+        assert_eq!(App::avk_de(Key::P), None);
+    }
     use super::*;
 
     #[test]
