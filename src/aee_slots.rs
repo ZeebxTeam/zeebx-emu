@@ -955,7 +955,7 @@ pub const CM: &[&str] = &[
 /// Ver [`crate::aee::Interface::Classe28e3c`]: a Z-Wheel cria duas, e o slot 3 delas é o que
 /// interrompia o ciclo de atração. A
 /// [`crate::aee::Interface::Typeface`] usa a mesma tabela, pelo mesmo motivo.
-pub const CLASSE_28E3C: &[&str] = &["AddRef", "Release", "slot2", "Consultar"];
+pub const CLASSE_28E3C: &[&str] = &["AddRef", "Release", "slot2", "Consultar", "slot4", "Medir"];
 
 /// Métodos da fonte TrueType (`0x01035156`), dos quais conhecemos um.
 ///

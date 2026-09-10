@@ -2805,6 +2805,21 @@ impl<C: CpuBackend> Machine<C> {
             // O que a estrutura guarda ainda não sabemos. Zerar os 0x18 bytes entre os dois
             // destinos (`r4+8` e `r4+0x20`) e responder sucesso é a resposta mínima que deixa o
             // jogo seguir, e fica anotada como hipótese.
+            // `slot5(this, &saída, 0, 0)`, na `0x86238`: o chamador lê uma **meia palavra** de
+            // volta e a guarda em `[r5+0x10]`. Tem cara de medida — uma altura, uma contagem.
+            //
+            // Respondemos zero e anotamos. Um zero já derrubou o jogo uma vez, no passo de lista
+            // do slot 5 do widget, então este fica sob suspeita: se aparecer divisão por zero ou
+            // laço, é aqui que se olha primeiro.
+            (Interface::Classe28e3c, 5) => {
+                let saida = self.cpu.read_reg(Reg::R1);
+                if saida != 0 {
+                    self.cpu.write_mem(saida, &0u16.to_le_bytes())?;
+                }
+                self.assumptions
+                    .insert("a 0x01028e3c respondeu zero a uma medida, e não sabemos o que ela mede");
+                SUCCESS
+            }
             (Interface::Classe28e3c, 3) => {
                 /// A distância entre os dois destinos na `0x85880`.
                 const QUANTO: usize = 0x18;
