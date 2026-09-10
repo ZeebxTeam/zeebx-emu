@@ -947,9 +947,10 @@ pub const CM: &[&str] = &[
 
 /// Métodos da `0x01028e3c`, dos quais conhecemos dois — e são os dois de toda interface.
 ///
-/// Ver [`crate::aee::Interface::Classe28e3c`]: a Z-Wheel cria duas e não chama nada nelas. A
+/// Ver [`crate::aee::Interface::Classe28e3c`]: a Z-Wheel cria duas, e o slot 3 delas é o que
+/// interrompia o ciclo de atração. A
 /// [`crate::aee::Interface::Typeface`] usa a mesma tabela, pelo mesmo motivo.
-pub const CLASSE_28E3C: &[&str] = &["AddRef", "Release"];
+pub const CLASSE_28E3C: &[&str] = &["AddRef", "Release", "slot2", "Consultar"];
 
 /// Métodos da fonte TrueType (`0x01035156`), dos quais conhecemos um.
 ///

@@ -2771,6 +2771,30 @@ impl<C: CpuBackend> Machine<C> {
             // A `0x01028e3c` não tem estado nem método próprio: só a contagem.
             (Interface::Classe28e3c, 0) => self.objects.add_ref(self.cpu.read_reg(Reg::R0)),
             (Interface::Classe28e3c, 1) => self.objects.release(self.cpu.read_reg(Reg::R0)),
+            // `slot3(this, &saída)`, na `0x8588c` e na `0x858a8`: dois objetos desta classe são
+            // consultados em sequência, cada um enchendo um pedaço da mesma estrutura, e o
+            // chamador sai fora se qualquer um devolver diferente de zero.
+            //
+            // **Este era o fim do ciclo de atração.** Recusar o método abortava o retorno de
+            // chamada inteiro, calado — 1722 vezes, todas no primeiro segundo, e depois o jogo
+            // emudecia. A linha `I28e3c::slot[3]` estava no relatório desde sempre; foi preciso
+            // registrar o desfecho de cada callback para ver que era ela que matava a cadeia.
+            //
+            // O que a estrutura guarda ainda não sabemos. Zerar os 0x18 bytes entre os dois
+            // destinos (`r4+8` e `r4+0x20`) e responder sucesso é a resposta mínima que deixa o
+            // jogo seguir, e fica anotada como hipótese.
+            (Interface::Classe28e3c, 3) => {
+                /// A distância entre os dois destinos na `0x85880`.
+                const QUANTO: usize = 0x18;
+
+                let saida = self.cpu.read_reg(Reg::R1);
+                if saida != 0 {
+                    self.cpu.write_mem(saida, &[0u8; QUANTO])?;
+                }
+                self.assumptions
+                    .insert("a 0x01028e3c respondeu uma consulta zerada, e não sabemos o que ela guarda");
+                SUCCESS
+            }
             (Interface::Typeface, _) => match self.typeface_call(slot)? {
                 Some(result) => result,
                 None => return Ok(None),
