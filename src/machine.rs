@@ -9081,18 +9081,21 @@ impl<C: CpuBackend> Machine<C> {
                     (0..crate::aee_slots::GLES.len() as u32)
                         .find(|&s| Interface::Gles.method(s) == Some(method))
                 });
-                // Um nome `egl*` procura na tabela do próprio EGL, com o nome inteiro: é assim
-                // que as extensões da Qualcomm chegam. Antes só os `gl*` eram resolvidos, e um
-                // `eglGetColorBufferQUALCOMM` saía como "não temos" mesmo estando na tabela.
+                // Um nome `egl*` procura na tabela **antiga**, a `IEGL` de `AEEGL.h`, e não na
+                // `IEGL11` que o jogo usa pela vtable. Não é escolha de gosto: o que o
+                // `eglGetProcAddress` devolve é uma função C, sem `this` no primeiro argumento,
+                // e é exatamente essa a convenção da tabela antiga. Procurar na `IEGL11`, além
+                // de comer o primeiro argumento, nunca acertava nome nenhum — lá eles estão sem
+                // o prefixo `egl`, e aqui se procura com ele.
                 let egl = (name.starts_with("egl") && slot.is_none())
                     .then(|| {
-                        (0..crate::aee_slots::EGL.len() as u32)
-                            .find(|&s| Interface::Egl.method(s) == Some(name.as_str()))
+                        (0..crate::aee_slots::EGL_LEGACY.len() as u32)
+                            .find(|&s| Interface::EglLegacy.method(s) == Some(name.as_str()))
                     })
                     .flatten();
                 match (slot, egl) {
                     (Some(slot), _) => (1, aee::encode(Interface::Gles, slot)),
-                    (_, Some(slot)) => (1, aee::encode(Interface::Egl, slot)),
+                    (_, Some(slot)) => (1, aee::encode(Interface::EglLegacy, slot)),
                     _ => {
                         self.bad_pointers
                             .insert(format!("o jogo pediu o endereço de {name}, que não temos"));
