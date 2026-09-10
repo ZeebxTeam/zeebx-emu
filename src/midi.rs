@@ -658,7 +658,7 @@ fn toca_voz(voz: &Voz, samples: &mut [f32]) {
         Filtro::Nenhum => Vec::new(),
         _ => Vec::with_capacity(trecho.len()),
     };
-    for i in 0..trecho.len() {
+    for (i, destino) in trecho.iter_mut().enumerate() {
         let t = i as f32 / taxa;
         let envoltoria = voz.envoltoria(t, solta);
         if envoltoria <= 0.0 && solta.is_some_and(|s| t > s) {
@@ -679,7 +679,7 @@ fn toca_voz(voz: &Voz, samples: &mut [f32]) {
             }
         };
         match voz.filtro {
-            Filtro::Nenhum => trecho[i] += valor * envoltoria * voz.amplitude,
+            Filtro::Nenhum => *destino += valor * envoltoria * voz.amplitude,
             _ => voz_filtrada.push(valor * envoltoria),
         }
     }
