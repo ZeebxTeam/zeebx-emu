@@ -777,6 +777,11 @@ struct Widget {
     tamanho: (u32, u32),
     /// Onde o pai pendurou este widget, em coordenadas dele. Ver o `AdicionarFilho`.
     posicao: (i32, i32),
+    /// A classe com que foi criado. Cinco classes da família dividem a mesma tabela de slots, e
+    /// o mesmo número quer dizer coisas diferentes em cada uma — ver o slot 6.
+    classe: u32,
+    /// O texto que o slot 6 pôs nele, quando a classe é das que põem texto.
+    texto: String,
     /// Os filhos que entraram pelo slot 5, que não os identifica por número.
     anexados: Vec<u32>,
     /// Se o widget deve aparecer. O slot 6 é quem diz.
@@ -812,6 +817,23 @@ fn id_do_recurso(falta: &str) -> Option<u16> {
 /// `0x1035cf24`. Nenhuma está na tabela de classes, então não há vtable para conferir: o que
 /// sustenta a lista é o jogo andar, e é por isso que ela mora aqui, com o porquê escrito, em
 /// vez de virar um `|` no meio do despacho.
+/// A classe da família em que o slot 6 **põe texto**, em vez de esconder ou mostrar.
+///
+/// Medido dos dois lados. Do lado da Z-Wheel, seguindo o que o `ISHELL_LoadResString` carrega
+/// até onde ele para: o texto vira o primeiro argumento do slot 6, com o comprimento no
+/// segundo, e o objeto que o recebe foi criado com esta classe. Do lado do firmware, o
+/// `0x01028e2a` é a classe mais usada da família — quarenta ocorrências.
+///
+/// Nas outras classes o mesmo slot continua sendo visibilidade, que é como ele foi lido
+/// primeiro. Não é contradição: a tabela de slots é a mesma e a implementação por trás não.
+const WIDGET_DE_TEXTO: u32 = 0x0102_8e2a;
+
+/// A propriedade que guarda a cor do widget, com alfa no byte de baixo.
+///
+/// A Z-Wheel grava `0x444444ff` nela — o cinza do texto da tela de boas-vindas. O firmware
+/// grava valores da mesma cara pelo ajustador em `0x1035f222`.
+const PROP_COR: u32 = 0x140;
+
 const FAMILIA_DOS_WIDGETS: [u32; 5] = [
     AEECLSID_WIDGET,
     0x0102_8e19,
@@ -4018,6 +4040,49 @@ impl<C: CpuBackend> Machine<C> {
             let (x, y) = self.posicao_na_tela(dono);
             self.draw_image(imagem, x, y, None)?;
         }
+        self.pinta_textos()
+    }
+
+    /// Escreve o texto que os widgets guardam, na posição e na cor deles.
+    ///
+    /// Faz parte do mesmo substituto do [`Machine::pinta_widgets`]: o console desenharia isto
+    /// pela extensão de widgets, que não está no dump. O que temos é o texto — que chega pelo
+    /// slot 6 da [`WIDGET_DE_TEXTO`] — e a fonte do próprio pacote do jogo, que já carrega.
+    ///
+    /// A cor sai da propriedade [`PROP_COR`], que vem como `RRGGBBAA`; sem ela, preto. O alfa é
+    /// descartado porque a superfície do console não tem canal para ele — mesma razão do
+    /// meio-tom no [`Machine::escreve`].
+    ///
+    /// A ordem é a da árvore, como a das imagens: filho por cima de pai.
+    fn pinta_textos(&mut self) -> Result<(), CpuError> {
+        let mut escritas: Vec<(usize, i32, i32, u32, String)> = self
+            .widgets
+            .iter()
+            .filter(|(_, widget)| widget.visivel && !widget.texto.is_empty())
+            .map(|(&dono, widget)| {
+                let (x, y) = self.posicao_na_tela(dono);
+                let cor = widget.propriedades.get(&PROP_COR).copied().unwrap_or(0);
+                (self.profundidade(dono), x, y, cor, widget.texto.clone())
+            })
+            .collect();
+        // **O mesmo texto, no mesmo lugar, na mesma cor, é um desenho só.** O formulário do
+        // z-pad é remontado a cada volta do ciclo e cada remontagem deixa a árvore anterior
+        // viva: são milhares de cópias do mesmo rótulo empilhadas na mesma coordenada. Pintar
+        // todas dá exatamente o mesmo quadro e fazia um quadro levar mais de um minuto.
+        escritas.sort_unstable_by(|a, b| (a.1, a.2, &a.4, a.3, a.0).cmp(&(b.1, b.2, &b.4, b.3, b.0)));
+        escritas.dedup_by(|a, b| (a.1, a.2, &a.4, a.3) == (b.1, b.2, &b.4, b.3));
+        // Já sem repetição, a ordem que vale é a da árvore: filho por cima de pai.
+        escritas.sort_unstable_by(|a, b| (a.0, a.2, a.1).cmp(&(b.0, b.2, b.1)));
+        for (_, x, y, rgba, texto) in escritas {
+            // A cor vem como `RRGGBBAA`. O alfa é descartado porque a superfície do console não
+            // tem canal para ele — mesma razão do meio-tom no `escreve`.
+            let cor = Rgb {
+                r: (rgba >> 24) as u8,
+                g: (rgba >> 16) as u8,
+                b: (rgba >> 8) as u8,
+            };
+            self.escreve(&texto, x, y, cor)?;
+        }
         Ok(())
     }
 
@@ -7081,10 +7146,23 @@ impl<C: CpuBackend> Machine<C> {
                     .insert("um widget aceitou toda interface que lhe pediram");
                 SUCCESS
             }
-            // `slot6(this, visível)`, a última coisa que a `0x11750` faz antes de sair da
-            // abertura: ela esconde o formulário da animação e vai direto para a transição.
-            // O retorno é ignorado.
+            // O slot 6 quer dizer duas coisas, conforme a classe.
+            //
+            // Na maioria da família é `slot6(this, visível)` — a última coisa que a `0x11750`
+            // faz antes de sair da abertura: esconde o formulário da animação e vai para a
+            // transição. O retorno é ignorado.
+            //
+            // Na [`WIDGET_DE_TEXTO`] é `slot6(this, texto, tamanho, …)`, com o texto em
+            // `AECHAR`. Ver a constante para como isso foi medido.
             "DefinirVisivel" => {
+                let classe = self.widgets.get(&this).map_or(0, |widget| widget.classe);
+                if classe == WIDGET_DE_TEXTO {
+                    let texto = self.read_aechar(self.cpu.read_reg(Reg::R1))?;
+                    if let Some(widget) = self.widgets.get_mut(&this) {
+                        widget.texto = texto;
+                    }
+                    return Ok(Some(SUCCESS));
+                }
                 let visivel = self.cpu.read_reg(Reg::R1) != 0;
                 if let Some(widget) = self.widgets.get_mut(&this) {
                     widget.visivel = visivel;
@@ -8094,6 +8172,19 @@ impl<C: CpuBackend> Machine<C> {
             .get(CLR_USER_TEXT)
             .copied()
             .unwrap_or(Rgb::BLACK);
+        self.escreve(text, x, y, cor)
+    }
+
+    /// Escreve com a fonte carregada, numa cor dada. É o miolo do [`Machine::draw_text`],
+    /// separado porque o widget traz a cor dele na propriedade e não usa a da paleta.
+    fn escreve(&mut self, text: &str, x: i32, y: i32, cor: Rgb) -> Result<bool, CpuError> {
+        let Some(fonte) = self.font.as_ref() else {
+            return Ok(false);
+        };
+        let glifos = fonte.layout(text, FONT_SIZE);
+        if glifos.is_empty() {
+            return Ok(true);
+        }
         let nativo = cor.to_rgb565();
         let recorte = self.clip;
         let target = self.target()?;
@@ -10870,7 +10961,10 @@ impl<C: CpuBackend> Machine<C> {
         }
         if iface == Interface::Widget {
             // Um widget nasce visível: o jogo só chama o slot 6 para **esconder**.
-            self.widgets.insert(obj, Widget { visivel: true, ..Widget::default() });
+            self.widgets.insert(
+                obj,
+                Widget { visivel: true, classe: clsid, ..Widget::default() },
+            );
         }
         if out != 0 {
             self.cpu.write_u32(out, obj)?;
