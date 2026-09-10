@@ -790,8 +790,12 @@ struct Widget {
     visivel: bool,
     /// Quem o pendurou, do slot 5. Ver o `PegarPai`.
     pai: u32,
-    /// Endereço da estrutura de tratador que o slot 4 registrou: `{função, contexto}`.
-    tratador: u32,
+    /// O tratador que o slot 4 registrou, já lido: `(função, contexto)`.
+    ///
+    /// Guardamos os **valores**, não o endereço da estrutura, porque o `DefinirTratador`
+    /// devolve o tratador anterior escrevendo-o de volta nessa mesma estrutura — depois da
+    /// chamada ela não descreve mais quem acabou de se registrar.
+    tratador: (u32, u32),
     /// Se o aviso de partida já foi entregue. Ver [`Machine::parte_animacao`].
     partiu: bool,
 }
@@ -3941,20 +3945,17 @@ impl<C: CpuBackend> Machine<C> {
         /// O par que a `0x11828` entende como "começou".
         const PARTIDA: (u32, u32) = (0x801, 0x5064);
 
-        let novos: Vec<(u32, u32)> = self
+        let novos: Vec<(u32, (u32, u32))> = self
             .widgets
             .iter()
-            .filter(|(_, widget)| widget.tratador != 0 && !widget.partiu)
+            .filter(|(_, widget)| widget.tratador.0 != 0 && !widget.partiu)
             .map(|(&objeto, widget)| (objeto, widget.tratador))
             .collect();
-        for (objeto, onde) in novos {
+        for (objeto, (funcao, contexto)) in novos {
             if let Some(widget) = self.widgets.get_mut(&objeto) {
                 widget.partiu = true;
             }
-            let (funcao, contexto) = (self.cpu.read_u32(onde)?, self.cpu.read_u32(onde + 4)?);
-            if funcao != 0 {
-                self.call_guest(funcao, [contexto, PARTIDA.0, PARTIDA.1, 1], QSORT_BUDGET)?;
-            }
+            self.call_guest(funcao, [contexto, PARTIDA.0, PARTIDA.1, 1], QSORT_BUDGET)?;
         }
         Ok(())
     }
@@ -5699,17 +5700,13 @@ impl<C: CpuBackend> Machine<C> {
             // tecla. No console quem recebe é o widget **com foco**, e foco é coisa que ainda
             // não sabemos ler. Enquanto não soubermos, fica a ordem do mapa, que é a que
             // estava aqui antes de eu começar a mexer.
-            let tratadores: Vec<u32> = self
+            let tratadores: Vec<(u32, u32)> = self
                 .widgets
                 .values()
                 .map(|widget| widget.tratador)
-                .filter(|&onde| onde != 0)
+                .filter(|&(funcao, _)| funcao != 0)
                 .collect();
-            for onde in tratadores {
-                let (funcao, contexto) = (self.cpu.read_u32(onde)?, self.cpu.read_u32(onde + 4)?);
-                if funcao == 0 {
-                    continue;
-                }
+            for (funcao, contexto) in tratadores {
                 let saida = self.call_guest(
                     funcao,
                     [contexto, evento, avk, 0],
@@ -7350,10 +7347,32 @@ impl<C: CpuBackend> Machine<C> {
             //
             // Guardamos o endereço e não chamamos ninguém: quem dispararia estes eventos é a
             // interface que ainda não desenhamos. Quando ela existir, o tratador está aqui.
+            // `slot4(this, &{função, contexto, liberador})`.
+            //
+            // **Ele devolve o tratador anterior**, escrevendo-o de volta na estrutura que
+            // recebeu. É como o BREW encadeia: quem se registra guarda ali quem estava antes e
+            // desvia para ele o que não tratar. O `ZPad_Keyboard_Instructions_Form.c` faz
+            // exatamente isso — o `0x8f560` lê `[contexto+0x14]` e faz um salto de cauda para
+            // lá quando não trata a tecla.
+            //
+            // Sem escrever nada de volta, a estrutura continuava descrevendo **o próprio**
+            // tratador que acabara de se registrar, e o desvio virava recursão infinita: 250
+            // milhões de instruções num quadro só, o laço caindo de 897 voltas para duas e a
+            // janela congelando. Não havia erro no relatório porque não havia erro — havia um
+            // laço.
+            //
+            // Sem tratador anterior, o que volta é zero, e o `0x8f564` reconhece isso.
             "DefinirTratador" => {
-                let tratador = self.cpu.read_reg(Reg::R1);
+                let onde = self.cpu.read_reg(Reg::R1);
+                let novo = match (self.cpu.read_u32(onde), self.cpu.read_u32(onde + 4)) {
+                    (Ok(funcao), Ok(contexto)) => (funcao, contexto),
+                    _ => return Ok(Some(EBADPARM)),
+                };
+                let anterior = self.widgets.get(&this).map_or((0, 0), |w| w.tratador);
+                self.cpu.write_u32(onde, anterior.0)?;
+                self.cpu.write_u32(onde + 4, anterior.1)?;
                 if let Some(widget) = self.widgets.get_mut(&this) {
-                    widget.tratador = tratador;
+                    widget.tratador = novo;
                 }
                 SUCCESS
             }
