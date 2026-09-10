@@ -3923,6 +3923,27 @@ impl<C: CpuBackend> Machine<C> {
         Ok(())
     }
 
+    /// A que altura da árvore um widget está — a raiz é zero.
+    ///
+    /// É o que dá a ordem de desenho: filho por cima de pai. Mesmo teto e mesmo motivo do
+    /// [`Machine::posicao_na_tela`].
+    fn profundidade(&self, widget: u32) -> usize {
+        /// Até onde subir na árvore antes de desistir.
+        const FUNDO: usize = 32;
+
+        let mut atual = widget;
+        for altura in 0..FUNDO {
+            let Some(no) = self.widgets.get(&atual) else {
+                return altura;
+            };
+            if no.pai == 0 || no.pai == atual {
+                return altura;
+            }
+            atual = no.pai;
+        }
+        FUNDO
+    }
+
     /// Onde um widget cai na tela, somando a posição de cada pai até a raiz.
     ///
     /// O laço tem teto porque a árvore vem do jogo: um `pai` que aponte para trás travaria o
@@ -3969,7 +3990,14 @@ impl<C: CpuBackend> Machine<C> {
             .flat_map(|(dono, widget)| widget.anexados.iter().map(|&filho| (filho, *dono)))
             .filter(|(objeto, _)| self.images.contains_key(objeto))
             .collect();
-        imagens.sort_unstable();
+        // **Filho por cima de pai.** A ordem era a dos endereços dos objetos, que já foi a de
+        // criação e deixou de ser quando o alocador ganhou lista de livres. Com ela, o fundo
+        // de 640×480 da tela de boas-vindas caía por cima do formulário inteiro, e o que
+        // sobrava à vista era o pedaço de um widget que por acaso tinha endereço maior.
+        //
+        // A altura na árvore é a ordem que a interface quer dizer. O endereço fica como
+        // desempate, para que duas execuções desenhem igual.
+        imagens.sort_unstable_by_key(|&(imagem, dono)| (self.profundidade(dono), imagem));
         imagens.dedup_by_key(|(imagem, _)| *imagem);
         for (imagem, dono) in imagens {
             let (x, y) = self.posicao_na_tela(dono);
