@@ -252,25 +252,27 @@ pub enum Interface {
     /// **Está implementada e não é oferecida, e o motivo é o jogo.** A `0x78544` cria esta
     /// classe para pedir a verificação do cartão; quando a criação **falha**, ela põe o estado
     /// em `0x27` — e `0x27` é justamente o que a `0x82464` encaminha para a transição que abre
-    /// o menu principal. Recusar não é desistir: é o caminho que o próprio jogo define para
-    /// "não dá para verificar cartão aqui", e é o que faz a Z-Wheel seguir.
+    /// o menu principal.
     ///
-    /// Oferecê-la trava. O slot 3 registra um retorno de chamada e a verificação é assíncrona;
-    /// aceitar o pedido e nunca responder deixa o jogo no estado `0x28`, esperando para sempre.
-    /// Responder seria inventar o resultado de uma verificação de cartão que não existe.
+    /// Recusar a classe **não** é o caminho: o `0x78544` trata os três desfechos possíveis
+    /// como estados diferentes, e recusar dá o pior deles.
     ///
-    /// Chegou a ser oferecida por causa das 486.101 repetições de
-    /// `Unable to create instance of AEECLSID_LCT_SIMCARDCTL` num log. Aquele laço tinha outra
-    /// causa — o acessador do widget devolvendo ponteiro onde o jogo esperava número —, e a
-    /// mensagem repetida era o jogo tomando **o caminho certo** muitas vezes.
+    /// - `CreateInstance` falha → estado `0x27`, "não deu para verificar". A `0x82464` chama a
+    ///   `0x1f7b4`, volta ao laço e tenta de novo, imprimindo
+    ///   `Unable to create instance of AEECLSID_LCT_SIMCARDCTL` a cada volta.
+    /// - Slot 3 devolve **zero** → estado `0x28`, que segue calado. É o "cartão em ordem".
+    /// - Slot 3 devolve não-zero → estado `1`, e o jogo mostra `Showing SIM Error dialog`.
     ///
     /// A vtable é a `0x113cf854`, com quatro métodos, e o construtor `0x11267d04` confere o
     /// CLSID recebido contra `0x01006c01` — é dela mesma. Foi este construtor, aliás, que
     /// denunciou a leitura deslocada da tabela de classes do firmware.
     ///
-    /// O slot 3 guarda um par em `+0xc4` e `+0xc8`: é registro de retorno de chamada, do tipo
-    /// "verifique o cartão e me avise". Guardamos o par e não avisamos ninguém — não há cartão
-    /// para verificar, e inventar a resposta seria dizer ao jogo que há um.
+    /// O slot 3 recebe `(this, texto, applet)` e, no firmware, guarda um par em `+0xc4` e
+    /// `+0xc8`: é registro de retorno de chamada, do tipo "verifique o cartão e me avise".
+    /// Quem soltaria o objeto seria essa resposta — o `0x785a8` volta sem `Release`, e o
+    /// ponteiro morre na pilha. Como não temos cartão para verificar nem como avisar, o objeto
+    /// é solto aqui mesmo: sem isso o jogo criava um controle por volta do laço e esgotava o
+    /// pote em 65 506 objetos, derrubando junto o formulário do z-pad.
     SimCardCtl = 50,
     /// Objeto de uma classe que ainda não conhecemos, criado a pedido do `--sonda`.
     ///
