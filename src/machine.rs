@@ -1779,6 +1779,8 @@ pub struct Machine<C: CpuBackend> {
     pending_calls: Vec<GuestCall>,
     /// Recursos que **algum** arquivo forneceu. Ver [`Machine::missing_files`].
     recursos_lidos: BTreeSet<u16>,
+    /// Se a árvore de widgets já foi despejada na serial.
+    despejou: bool,
     /// Contador de criação de widgets. Ver [`Machine::formulario_atual`].
     proximo_serial: u64,
     /// O formulário que está pintado na superfície agora. Ver [`Machine::pinta_widgets`].
@@ -1978,6 +1980,7 @@ impl<C: CpuBackend> Machine<C> {
             sounds: HashMap::new(),
             pending_calls: Vec::new(),
             recursos_lidos: BTreeSet::new(),
+            despejou: false,
             proximo_serial: 0,
             formulario_pintado: 0,
             serial: None,
@@ -4005,6 +4008,35 @@ impl<C: CpuBackend> Machine<C> {
         Ok(())
     }
 
+    /// Despeja a árvore de widgets na serial, um por linha, com pai, classe e o que carrega.
+    ///
+    /// Existe para o estudo do modelo de widgets: sem ver a árvore inteira não dá para dizer se
+    /// ela é uma ou várias, e é justamente disso que depende saber para quem uma tecla vai.
+    pub fn despeja_widgets(&mut self) {
+        if self.serial.is_none() {
+            return;
+        }
+        let mut linhas: Vec<(u64, String)> = self
+            .widgets
+            .iter()
+            .map(|(&endereco, w)| {
+                let filhos = w.filhos.len() + w.anexados.len();
+                (
+                    w.serial,
+                    format!(
+                        "<widget {endereco:#x} pai {:#x} classe {:#x} filhos {filhos} \
+                         tratador {:#x} visível {} tamanho {:?} pos {:?} texto {:?}>",
+                        w.pai, w.classe, w.tratador.0, w.visivel, w.tamanho, w.posicao, w.texto
+                    ),
+                )
+            })
+            .collect();
+        linhas.sort_unstable();
+        for (_, linha) in linhas {
+            self.registra_serial(linha);
+        }
+    }
+
     /// Os tratadores que devem ver uma tecla, na ordem em que devem vê-la.
     ///
     /// Primeiro os do formulário atual, descendo da raiz pelos filhos — que é o que um
@@ -5724,6 +5756,12 @@ impl<C: CpuBackend> Machine<C> {
     /// para o aplicativo. Um evento que ninguém trata não faz nada, e é por isso que entregar
     /// tecla é seguro de um jeito que inventar evento de propriedade não era.
     fn flush_keys(&mut self) -> Result<(), CpuError> {
+        // A árvore inteira vai para a serial na primeira tecla: é o retrato do modelo no momento
+        // em que a pergunta "para quem isto vai?" aparece.
+        if !self.teclas.is_empty() && !self.despejou {
+            self.despejou = true;
+            self.despeja_widgets();
+        }
         while let Some((avk, down)) = self.teclas.pop_front() {
             let evento = match down {
                 true => input::EVT_KEY,
@@ -5745,22 +5783,6 @@ impl<C: CpuBackend> Machine<C> {
             // não sabemos ler. Enquanto não soubermos, fica a ordem do mapa, que é a que
             // estava aqui antes de eu começar a mexer.
             let tratadores = self.tratadores_em_ordem();
-            {
-                let raiz = self.formulario_atual().unwrap_or(0);
-                let dentro = self.arvore_do_formulario();
-                let lista: Vec<String> = self
-                    .widgets
-                    .iter()
-                    .filter(|(_, w)| w.tratador.0 != 0)
-                    .map(|(e, w)| {
-                        format!(
-                            "{:#x}@{e:#x} pai {:#x} classe {:#x} na árvore {}",
-                            w.tratador.0, w.pai, w.classe, dentro.contains(e)
-                        )
-                    })
-                    .collect();
-                self.record_debug(format!("<raiz {raiz:#x}; {}>", lista.join(" | ")));
-            }
             for (funcao, contexto) in tratadores {
                 let saida = self.call_guest(
                     funcao,

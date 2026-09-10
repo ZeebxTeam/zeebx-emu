@@ -689,3 +689,70 @@ o RMUI, usando os call sites do firmware como especificação — e há muitos: 
 O primeiro passo concreto, que dá tela: guardar o texto do slot 6 por classe e desenhá-lo no
 `pinta_widgets` com a fonte que já temos, na posição que o `AdicionarFilho` traz e na cor do
 `0x140`.
+
+## O modelo de widgets, retratado
+
+Despejar a árvore inteira no momento em que uma tecla chega respondeu mais do que meses de
+dedução. O que se vê é **três árvores**, não uma:
+
+```
+raiz 0x30000150  classe 0x1028e51  4 filhos      ← o formulário raiz do applet
+  0x30000650     classe 0x1028e47  tratador 0x11828   (formulário da abertura)
+  0x30000710     classe 0x1028e47  tratador 0x8f48c   (formulário do z-pad)
+
+raiz 0x30000790  classe 0x1028e3f  5 filhos      ← o que desenhamos
+  0x300007d0     classe 0x1028e3f  tratador 0x77300  tamanho 640×50   (barra de status)
+    0x30000810   classe 0x1028e2a  pos (148,20)  texto "3G"
+    0x300008d0   classe 0x1028e19  pos (100,21)  (o ícone de sinal)
+    0x30000950   classe 0x1028e2a  pos (365,20)  texto "Meus Z-Credits"
+    0x300009d0   classe 0x1028e2a  pos (375,20)  texto "10"
+  0x30000a10     classe 0x1028e2a  pos (320,90)  texto "Z-Pad"
+  0x30000ad0     classe 0x1028e19  pos (320,100) (a foto do controle)
+  0x30000b90     classe 0x1028e26  tamanho (805309136, -20)
+
+raiz 0x300005d0  classe 0x1028e3f  1 filho
+  0x30000690     classe 0x1028e19  tamanho (66048, 0)
+```
+
+Mais sete widgets soltos de classe zero — os que o acessador cria por conta ao ler um item da
+faixa `0x5000`.
+
+### O que isso diz
+
+**Os formulários e o que eles desenham são objetos separados na nossa árvore.** O `0x30000710`
+é o formulário do z-pad, tem o tratador de tecla e **zero filhos**; a barra de status e a foto do
+controle penduram noutra raiz. No console os dois são o mesmo formulário, e a ligação entre eles
+passa por alguma chamada que ainda lemos como outra coisa. É por isso que nenhuma regra sobre
+"a árvore do formulário atual" acerta: a tecla e o desenho moram em árvores diferentes.
+
+**A família tem papéis, e eles se leem na árvore:**
+
+| classe | papel, pelo que ela carrega |
+|---|---|
+| `0x01028e51` | o formulário raiz do applet — é o que o `[app+0x24]` guarda |
+| `0x01028e47` | um formulário: tem tratador, não tem filho |
+| `0x01028e3f` | um container: tem filhos e tamanho de verdade (640×50) |
+| `0x01028e2a` | um rótulo: carrega texto |
+| `0x01028e19` | porta uma imagem |
+| `0x01028e26` | recebe cor pelo `0x186`, e um **ponteiro** pelo slot 7 |
+| `0x01028e36` | acessador com a propriedade `0x156` |
+
+**E o slot 7 também é ambíguo.** O `0x30000b90`, da classe `0x01028e26`, tem tamanho
+`(805309136, -20)` — e `805309136` é `0x30000bd0`, endereço de objeto. O `0x30000690`, da
+`0x01028e19`, tem `(66048, 0)`. Nas classes de container o slot 7 é mesmo `{largura, altura}`;
+nessas duas é outra coisa.
+
+Isso fecha um padrão que já apareceu quatro vezes: o **slot 4** devolve o tratador anterior, o
+**slot 5** é getter quando o terceiro argumento é 4, o **slot 6** põe texto na `0x01028e2a` e
+visibilidade nas outras, e agora o **slot 7**. Uma tabela de slots para a família inteira é a
+suposição que está errada, e cada erro dela custou uma investigação.
+
+### O que falta, em ordem
+
+1. **Ligar formulário e conteúdo.** Enquanto forem árvores separadas, nem a tecla nem o desenho
+   têm como saber o que é a tela atual.
+2. **Foco.** A tecla chega ao applet, que a encaminha ao formulário, que é nosso — e quem
+   responde é a `0x77300`, um `mov r0,#1; bx lr` do jogo que devolve "tratei" para tudo. No
+   console quem recebe é o widget com foco.
+3. **Desenho pelo toolkit.** Sabemos pintar imagem e texto; fundos, molduras e a disposição que
+   o toolkit calcula não existem aqui. Daí a tela esparsa.
