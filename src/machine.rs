@@ -7558,11 +7558,9 @@ impl<C: CpuBackend> Machine<C> {
                         OK
                     }
                     GRAVA => {
-                        if id == 0x216 || id == 0x347 {
-                            let tem = self.widgets.get(&this).map_or(0, |w| w.tratador.0);
-                            self.record_debug(format!(
-                                "<prop {id:#x}={terceiro} no {this:#x}, tratador {tem:#x}>"
-                            ));
+                        // As propriedades vão para a serial, que é onde a instrumentação mora.
+                        if self.serial.is_some() {
+                            self.registra_serial(format!("<prop {id:#x}={terceiro:#x} em {this:#x}>"));
                         }
                         if let Some(widget) = self.widgets.get_mut(&this) {
                             widget.propriedades.insert(id, terceiro);
