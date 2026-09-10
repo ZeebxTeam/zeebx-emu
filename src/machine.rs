@@ -8086,6 +8086,7 @@ impl<C: CpuBackend> Machine<C> {
         // vendo o jogo ler. Guardamos a resposta e deixamos o ponteiro como está, em vez de
         // escrever um palpite de struct sobre a memória do jogo.
         let _ = saida;
+        self.registra_corpo("pedido", &dados);
         let (resultado, estado) = match rede::post(&url, &dados, self.network_to.as_deref()) {
             Ok(resposta) => {
                 self.web_requests.insert(format!(
@@ -8093,6 +8094,7 @@ impl<C: CpuBackend> Machine<C> {
                     resposta.status,
                     resposta.corpo.len()
                 ));
+                self.registra_corpo("resposta", &resposta.corpo);
                 self.web_response = resposta.corpo;
                 (SUCCESS, ESTADO_RECEBENDO)
             }
@@ -11124,6 +11126,38 @@ impl<C: CpuBackend> Machine<C> {
         }
         self.heap.free(ptr);
         Ok(new_ptr)
+    }
+
+    /// Põe um corpo de rede na captura de serial, em texto quando dá e em hexadecimal quando
+    /// não dá — e, se for `deflate`, também o conteúdo inflado.
+    ///
+    /// Só a URL, o status e o tamanho iam para o relatório, e isso não basta para depurar um
+    /// protocolo: o que estraga um registro é **o conteúdo**, campo a campo. Um Zeeboid chegou
+    /// do servidor com os campos deslocados de uma casa e a senha truncada em dezesseis
+    /// caracteres emendada no IMEI, e sem os bytes não há como dizer se quem errou foi o
+    /// servidor, o transporte ou a leitura do jogo.
+    ///
+    /// Vai só para a serial, que é opcional: o corpo pode trazer IMEI e senha, e isso não entra
+    /// num relatório que se manda por aí sem querer.
+    fn registra_corpo(&mut self, que: &str, bytes: &[u8]) {
+        /// Quanto de um corpo cabe no registro.
+        const TETO: usize = 4096;
+
+        if self.serial.is_none() {
+            return;
+        }
+        let mostrar = |dados: &[u8]| -> String {
+            let corte = &dados[..dados.len().min(TETO)];
+            match corte.iter().all(|&b| b == b'\n' || (0x20..0x7f).contains(&b)) {
+                true => String::from_utf8_lossy(corte).into_owned(),
+                false => corte.iter().map(|b| format!("{b:02x}")).collect(),
+            }
+        };
+        let mut linha = format!("<{que} {} bytes: {}>", bytes.len(), mostrar(bytes));
+        if let Some(inflado) = inflate(bytes) {
+            linha.push_str(&format!("\n<{que} inflado: {}>", mostrar(&inflado)));
+        }
+        self.record_debug(linha);
     }
 
     /// Liga a captura de serial: cada linha de log vai para este arquivo, na ordem e com o
