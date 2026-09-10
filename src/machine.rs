@@ -7428,6 +7428,16 @@ impl<C: CpuBackend> Machine<C> {
             // `AECHAR`. Ver a constante para como isso foi medido.
             // `slot14(this, objeto)`, com o retorno ignorado. Aceitar e não guardar nada é o
             // mínimo que deixa a montagem seguir; o que o objeto é, ainda não sabemos.
+            // `Slot16(this)`, chamado uma vez em `0x22d58`, logo depois de o palco existir.
+            // Recusá-lo não devolvia a execução ao `0x22d5c`: a montagem do menu parava ali, e
+            // o aplicativo ficava no pulso de dez segundos que lê pontos e fila de download sem
+            // desenhar nada. Aceito com zero — o `SUCCESS` do BREW —, o jogo segue: cria a
+            // `0x01028e3c`, gera vinte e cinco texturas e sobe dezenove delas comprimidas em
+            // ATITC, monta o frustum e a matriz. É o palco carregando os próprios cenários.
+            //
+            // O que ele faz continua sem nome porque não foi lido: só se sabe que recebe o
+            // widget e que o jogo não usa o retorno para nada além de seguir.
+            "Slot16" => 0,
             "Anexar" => {
                 // Registrar a ligação, e não só aceitar: sem ela a árvore ficava partida em
                 // duas — os widgets que desenham numa metade e o tratador de tecla na outra —,

@@ -887,6 +887,11 @@ pub const WIDGET: &[&str] = &[
     // montagem do formulário do z-pad pela metade — o `bl` para a `0x8f580` era entrado 669
     // vezes e não voltava nenhuma. Tem cara de pendurar um modelo no widget.
     "Anexar",
+    "slot15",
+    // `slot16(this)`, na `0x22d58`, logo depois de o palco ser criado. Recusá-lo não devolve a
+    // execução ao `0x22d5c`: o formulário do menu para de ser montado ali mesmo, e o aplicativo
+    // fica no pulso de dez segundos que consulta pontos e fila de download sem desenhar nada.
+    "Slot16",
 ];
 
 /// Métodos do ZEEBOMCP (`0x01006c05`), da vtable `0x102d47a8` do firmware.
