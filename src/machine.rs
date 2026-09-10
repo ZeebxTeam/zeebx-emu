@@ -7220,9 +7220,14 @@ impl<C: CpuBackend> Machine<C> {
                         }
                         OK
                     }
-                    _ => {
-                        self.assumptions
-                            .insert("um seletor de widget que não conhecemos foi recusado");
+                    // O terceiro seletor tem número: é o `0x711`, e o firmware o usa por um
+                    // invólucro em `0x1035f23c` irmão do de gravar — `acessador(this, 0x711, 0,
+                    // valor)`, mesma convenção invertida. O que ele quer dizer ainda não
+                    // sabemos, e recusar continua sendo o certo; o que muda é o relatório
+                    // dizer **qual**, em vez de "um seletor".
+                    outro => {
+                        self.missing_apis
+                            .insert(format!("IWidget::Acessador seletor {outro:#x}"));
                         0
                     }
                 }

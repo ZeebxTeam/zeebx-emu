@@ -591,3 +591,41 @@ As propriedades que o jogo grava pelo seletor `0x801`, medidas: `0x130` (0 ou 25
 `0x140` (uma cor, `0x444444ff`), `0x152` (objetos), `0x153` (`0x10`, `0x410`, `0x420`,
 `0x440`), `0x216` (0 ou 1), `0x347` (2) e a faixa `0x5000` (objetos). Nenhuma é
 coordenada.
+
+## De onde vêm os widgets
+
+A pergunta é de onde tirar a implementação, e a resposta tem uma parte boa e uma ruim.
+
+**A ruim: o binário não está no dump.** O APPS traz as strings
+`fs:/mod/widgets/widgets.mod`, `fs:/mif/widgets.mif` e `fs:/mod/htmlwidget/htmlwidget.mod`
+— os caminhos existem, os arquivos não. Procurados na NAND inteira, os 128 MB, a
+cadeia `widgets` aparece treze vezes e todas dentro do APPS, como constante. O
+`part_EFS2APPS.bin` tem dois módulos, `reksio.mod` e `tectoy.mod`, e mais nada.
+
+As classes também não estão na tabela de classes: `0x01028e19`, `0x01028e2a`,
+`0x01028e35`, `0x01028e3f`, `0x01028e47` e `0x01028e51` não aparecem em nenhuma das 84
+tabelas, e nas cinco ocorrências que têm na NaND nenhuma tem a forma de entrada de
+registro. São todas pool de literais — o firmware **pede** essas classes tanto quanto a
+Z-Wheel.
+
+**A boa: o firmware é um usuário enorme delas.** A `0x01028e2a` aparece quarenta vezes,
+a `0x01028e3f` e a `0x01028e47` dezenove, a `0x01028e35` dezesseis. Cada uso é um call
+site com a assinatura escrita, e ler call site é o que temos feito com a Z-Wheel — só
+que aqui há muito mais código, e ele é da própria TecToy. A versão está gravada ali
+perto: `RMUI Ver: V0.1.196`.
+
+Duas confirmações já saíram disso, e as duas batem com o que tínhamos deduzido:
+
+- Em `0x103587be`, o firmware chama `slot7(this, &{600, 40})` — o `DefinirTamanho`, com
+  a forma que já usávamos.
+- O `0x1035f222` é o ajustador de propriedade: `acessador(this, 0x801, id, valor)`, com
+  a convenção de retorno invertida. Uma das chamadas é `(0x153, 0x10)`, exatamente o par
+  que medimos saindo da Z-Wheel.
+
+E saiu uma coisa nova: o irmão dele em `0x1035f23c` usa um **terceiro seletor**, o
+`0x711`, na forma `acessador(this, 0x711, 0, valor)`. Era ele o "seletor de widget que
+não conhecemos" das hipóteses. Continuamos recusando — o que ele quer dizer ainda não
+sabemos —, mas agora o relatório diz o número em vez de dizer "um seletor".
+
+O caminho para implementar, então, não é copiar uma vtable: é ler os call sites do
+firmware, que são muitos e estão todos no `1.1.2_APPS.bin`.
