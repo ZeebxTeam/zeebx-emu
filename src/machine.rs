@@ -432,6 +432,39 @@ const PLAINTEXT_BYTES: usize = 512;
 ///
 /// São estado que o nosso rasterizador não usa — profundidade, névoa, luz, stencil. Listá-las
 /// junto das que faltam esconderia as que importam no meio do ruído.
+/// Guarda um nível de uma textura, criando a cadeia de redução conforme ela chega.
+///
+/// **O nível zero limpa os menores.** Uma imagem nova no nível base torna a cadeia antiga
+/// mentira, e servir um mipmap de outra textura é pior do que não ter nenhum.
+fn guarda_nivel(
+    texture: &mut crate::rasterizer::Texture,
+    level: u32,
+    width: usize,
+    height: usize,
+    pixels: Vec<[u8; 4]>,
+) {
+    if level == 0 {
+        texture.width = width;
+        texture.height = height;
+        texture.pixels = pixels;
+        texture.mipmaps.clear();
+        return;
+    }
+    let indice = level as usize - 1;
+    if texture.mipmaps.len() <= indice {
+        texture.mipmaps.resize_with(indice + 1, || crate::rasterizer::Nivel {
+            width: 0,
+            height: 0,
+            pixels: Vec::new(),
+        });
+    }
+    texture.mipmaps[indice] = crate::rasterizer::Nivel {
+        width,
+        height,
+        pixels,
+    };
+}
+
 /// Uma palavra do jogo como número: ponto fixo 16.16 nas formas `x`, `float` nas formas `f`.
 fn escalar(palavra: u32, fixo: bool) -> f32 {
     match fixo {
@@ -9915,9 +9948,9 @@ impl<C: CpuBackend> Machine<C> {
             // Trocar o conteúdo de uma textura que a fila ainda vai ler mudaria o passado.
             self.gl.flush();
             let texture = self.gl.textures.entry(name).or_default();
-            texture.width = width as usize;
-            texture.height = height as usize;
-            texture.pixels = decoded;
+            // A paletizada traz a cadeia inteira num bloco só, e o `level` dela conta os
+            // mipmaps em vez de nomeá-los; o decodificador devolve o nível base.
+            guarda_nivel(texture, 0, width as usize, height as usize, decoded);
             return Ok(());
         }
         let explicit_alpha = match format {
@@ -9929,9 +9962,7 @@ impl<C: CpuBackend> Machine<C> {
                 return Ok(());
             }
         };
-        // Como no `TexImage2D`, só o nível zero interessa: sem mipmap, carregar os menores por
-        // cima do maior apagaria a textura.
-        if level != 0 || width == 0 || height == 0 || pixels == 0 {
+        if width == 0 || height == 0 || pixels == 0 {
             return Ok(());
         }
         let bytes = self.read_bytes(pixels, size)?;
@@ -9941,19 +9972,14 @@ impl<C: CpuBackend> Machine<C> {
         // Trocar o conteúdo de uma textura que a fila ainda vai ler mudaria o passado.
         self.gl.flush();
         let texture = self.gl.textures.entry(name).or_default();
-        texture.width = width as usize;
-        texture.height = height as usize;
-        texture.pixels = decoded;
+        guarda_nivel(texture, level, width as usize, height as usize, decoded);
         Ok(())
     }
 
     fn gles_tex_image(&mut self, a: &[u32; 10]) -> Result<(), CpuError> {
         let (level, width, height) = (a[1], a[3], a[4]);
         let (format, kind, pixels) = (a[6], a[7], a[8]);
-
-        // Só o nível zero interessa: não fazemos mipmap, e carregar os níveis menores por cima
-        // do maior apagaria a textura.
-        if level != 0 || width == 0 || height == 0 {
+        if width == 0 || height == 0 {
             return Ok(());
         }
         let texels = (width * height) as usize;

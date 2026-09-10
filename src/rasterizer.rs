@@ -133,17 +133,34 @@ impl Default for Vertex {
     }
 }
 
+/// Um nível de redução de uma textura.
+#[derive(Debug, Clone)]
+pub struct Nivel {
+    pub width: usize,
+    pub height: usize,
+    pub pixels: Vec<[u8; 4]>,
+}
+
 /// Uma textura carregada por `TexImage2D`, sempre convertida para RGBA de 8 bits.
 #[derive(Debug, Clone)]
 pub struct Texture {
     pub width: usize,
     pub height: usize,
     pub pixels: Vec<[u8; 4]>,
+    /// Os níveis de redução, do 1 em diante — o zero é `width`/`height`/`pixels` acima.
+    ///
+    /// **Descartá-los era a causa das listras.** Os modelos do palco da Z-Wheel vêm com a
+    /// cadeia inteira, de 128×128 até 1×1, e são vistos de raspão: a lateral do carro ocupa
+    /// poucos pixels de largura e cobre a textura inteira. Amostrando sempre o nível zero, cada
+    /// pixel cai num texel qualquer e o resultado é o traseiro do carro repetido em colunas.
+    pub mipmaps: Vec<Nivel>,
     /// Como tratar coordenadas fora de `[0, 1)` em cada eixo.
     pub wrap: [u32; 2],
-    /// Filtro de ampliação. O de redução também vem por aqui, mas sem mipmap os dois fariam a
-    /// mesma coisa, e é o de ampliação que o jogo enxerga.
+    /// Filtro de ampliação, do `GL_TEXTURE_MAG_FILTER`.
     pub filter: u32,
+    /// Filtro de redução, do `GL_TEXTURE_MIN_FILTER`. É ele que diz se há mipmap e se a
+    /// passagem de um nível para o outro é interpolada.
+    pub min_filter: u32,
     /// `GL_TEXTURE_CROP_RECT_OES`: qual pedaço da textura o `glDrawTex*OES` desenha, em texels.
     /// Largura ou altura negativa espelha o eixo, que é como a extensão vira a imagem.
     pub crop: [i32; 4],
@@ -155,9 +172,12 @@ impl Default for Texture {
             width: 0,
             height: 0,
             pixels: Vec::new(),
-            // Os padrões do OpenGL ES: repetir nos dois eixos e ampliar por interpolação.
+            mipmaps: Vec::new(),
+            // Os padrões do OpenGL ES: repetir nos dois eixos, ampliar por interpolação e
+            // reduzir com mipmap — o padrão do `MIN_FILTER` é `GL_NEAREST_MIPMAP_LINEAR`.
             wrap: [gles::GL_REPEAT; 2],
             filter: gles::GL_LINEAR,
+            min_filter: gles::GL_NEAREST_MIPMAP_LINEAR,
             crop: [0; 4],
         }
     }
@@ -182,40 +202,100 @@ impl Texture {
         index.rem_euclid(size) as usize
     }
 
-    /// A cor de um texel, já normalizada.
-    fn texel(&self, x: i32, y: i32) -> [f32; 4] {
-        let x = Self::wrap(self.wrap[0], x, self.width);
-        let y = Self::wrap(self.wrap[1], y, self.height);
-        let p = self.pixels[y * self.width + x];
-        std::array::from_fn(|i| p[i] as f32 / 255.0)
+    /// A largura, a altura e os pixels de um nível de redução.
+    fn nivel(&self, n: usize) -> (usize, usize, &[[u8; 4]]) {
+        match n.checked_sub(1).and_then(|i| self.mipmaps.get(i)) {
+            Some(nivel) => (nivel.width, nivel.height, &nivel.pixels),
+            None => (self.width, self.height, &self.pixels),
+        }
     }
 
-    /// Amostra a textura na coordenada dada, com o filtro que o jogo pediu.
-    fn sample(&self, u: f32, v: f32) -> [f32; 4] {
+    /// Quantos níveis a cadeia tem, contando o zero.
+    fn niveis(&self) -> usize {
+        1 + self.mipmaps.len()
+    }
+
+    /// Amostra a textura escolhendo o nível pela redução em tela.
+    ///
+    /// O `lod` é `log2` de quantos texels cabem num pixel: zero quando um texel é um pixel,
+    /// maior quando a superfície está longe ou de raspão. É a conta que o OpenGL manda fazer, e
+    /// é ela que decide entre ampliar — com o filtro de ampliação — e reduzir.
+    fn sample_lod(&self, u: f32, v: f32, lod: f32) -> [f32; 4] {
         if self.width == 0 || self.height == 0 {
             return [1.0; 4];
         }
-        // O texel `n` cobre de `n` a `n+1`, e o centro dele está em `n + 0.5`: daí o meio
-        // texel que separa a coordenada contínua da grade de amostras.
-        let (x, y) = (u * self.width as f32 - 0.5, v * self.height as f32 - 0.5);
-        if self.filter == gles::GL_NEAREST {
-            return self.texel(x.round() as i32, y.round() as i32);
+        if lod <= 0.0 {
+            return self.sample_nivel(u, v, 0, self.filter == gles::GL_LINEAR);
+        }
+        // **Textura sem cadeia não é mipmapeada, mesmo que o filtro peça.** No OpenGL ela é
+        // "incompleta" e o resultado é indefinido; na prática o aparelho cai no filtro de base,
+        // e é o que faz sentido aqui. O padrão do `MIN_FILTER` é `GL_NEAREST_MIPMAP_LINEAR`, e
+        // adotá-lo ao pé da letra passava a amostrar por vizinho mais próximo as vinte e uma
+        // texturas do palco que pedem `GL_LINEAR` e não trazem nível nenhum — o carro inteiro
+        // perdia definição.
+        let base_suave = !matches!(
+            self.min_filter,
+            gles::GL_NEAREST | gles::GL_NEAREST_MIPMAP_NEAREST | gles::GL_NEAREST_MIPMAP_LINEAR
+        );
+        if self.niveis() == 1 {
+            return self.sample_nivel(u, v, 0, base_suave);
+        }
+        let (com_mipmap, entre_niveis, suave) = match self.min_filter {
+            gles::GL_NEAREST => (false, false, false),
+            gles::GL_LINEAR => (false, false, true),
+            gles::GL_NEAREST_MIPMAP_NEAREST => (true, false, false),
+            gles::GL_LINEAR_MIPMAP_NEAREST => (true, false, true),
+            gles::GL_NEAREST_MIPMAP_LINEAR => (true, true, false),
+            gles::GL_LINEAR_MIPMAP_LINEAR => (true, true, true),
+            _ => (true, true, true),
+        };
+        if !com_mipmap {
+            return self.sample_nivel(u, v, 0, suave);
+        }
+        let ultimo = (self.niveis() - 1) as f32;
+        let lod = lod.min(ultimo);
+        let baixo = lod.floor();
+        let a = self.sample_nivel(u, v, baixo as usize, suave);
+        if !entre_niveis || baixo >= ultimo {
+            return a;
+        }
+        let b = self.sample_nivel(u, v, baixo as usize + 1, suave);
+        let t = lod - baixo;
+        std::array::from_fn(|c| a[c] + (b[c] - a[c]) * t)
+    }
+
+    /// Amostra um nível, com ou sem interpolação entre texels vizinhos.
+    fn sample_nivel(&self, u: f32, v: f32, nivel: usize, suave: bool) -> [f32; 4] {
+        let (width, height, pixels) = self.nivel(nivel);
+        if width == 0 || height == 0 {
+            return [1.0; 4];
+        }
+        let texel = |x: i32, y: i32| {
+            let x = Self::wrap(self.wrap[0], x, width);
+            let y = Self::wrap(self.wrap[1], y, height);
+            let p = pixels[y * width + x];
+            std::array::from_fn::<f32, 4, _>(|i| p[i] as f32 / 255.0)
+        };
+        let (x, y) = (u * width as f32 - 0.5, v * height as f32 - 0.5);
+        if !suave {
+            return texel(x.round() as i32, y.round() as i32);
         }
         let (x0, y0) = (x.floor(), y.floor());
         let (fx, fy) = (x - x0, y - y0);
         let (x0, y0) = (x0 as i32, y0 as i32);
-        let corners = [
-            self.texel(x0, y0),
-            self.texel(x0 + 1, y0),
-            self.texel(x0, y0 + 1),
-            self.texel(x0 + 1, y0 + 1),
+        let cantos = [
+            texel(x0, y0),
+            texel(x0 + 1, y0),
+            texel(x0, y0 + 1),
+            texel(x0 + 1, y0 + 1),
         ];
         std::array::from_fn(|c| {
-            let top = corners[0][c] + (corners[1][c] - corners[0][c]) * fx;
-            let bottom = corners[2][c] + (corners[3][c] - corners[2][c]) * fx;
-            top + (bottom - top) * fy
+            let cima = cantos[0][c] + (cantos[1][c] - cantos[0][c]) * fx;
+            let baixo = cantos[2][c] + (cantos[3][c] - cantos[2][c]) * fx;
+            cima + (baixo - cima) * fy
         })
     }
+
 }
 
 /// Estado completo do OpenGL ES que o rasterizador mantém.
@@ -843,13 +923,15 @@ impl GlState {
             gles::GL_TEXTURE_WRAP_T => texture.wrap[1] = value,
             // Sem mipmap, o filtro de redução com mipmap se comporta como o de base, e o que
             // importa é distinguir vizinho mais próximo de interpolação.
-            gles::GL_TEXTURE_MAG_FILTER | gles::GL_TEXTURE_MIN_FILTER => {
-                texture.filter = if value == gles::GL_NEAREST {
-                    gles::GL_NEAREST
-                } else {
-                    gles::GL_LINEAR
+            // A ampliação só distingue vizinho de interpolação; a redução guarda o valor
+            // inteiro, porque é dele que sai se há mipmap e como passar de um nível a outro.
+            gles::GL_TEXTURE_MAG_FILTER => {
+                texture.filter = match value {
+                    gles::GL_NEAREST => gles::GL_NEAREST,
+                    _ => gles::GL_LINEAR,
                 };
             }
+            gles::GL_TEXTURE_MIN_FILTER => texture.min_filter = value,
             _ => {}
         }
     }
@@ -1587,7 +1669,40 @@ fn fill_band(tri: &Prepared, uniforms: &Uniforms, band: &mut Band) {
             let montar = || {
                 let mut source = [attribute(0), attribute(1), attribute(2), attribute(3)];
                 if let Some(texture) = uniforms.texture {
-                    let texel = texture.sample(attribute(4), attribute(5));
+                    // **Quanta textura cabe neste pixel.** A derivada é tirada do pixel
+                    // seguinte da mesma linha, que é de graça: o passo baricêntrico já está
+                    // calculado, e `1/w` é linear na tela. Sem esta conta o nível seria sempre
+                    // o zero, que é o que fazia a lateral do carro virar listras.
+                    let seguinte = [
+                        bary[0] + tri.step[0],
+                        bary[1] + tri.step[1],
+                        bary[2] + tri.step[2],
+                    ];
+                    let inv_w2 = seguinte[0] * tri.screen[0][3]
+                        + seguinte[1] * tri.screen[1][3]
+                        + seguinte[2] * tri.screen[2][3];
+                    let (u, v) = (attribute(4), attribute(5));
+                    let lod = match inv_w2 == 0.0 {
+                        true => 0.0,
+                        false => {
+                            let w2 = 1.0 / inv_w2;
+                            let vizinho = |k: usize| {
+                                (seguinte[0] * tri.over_w[0][k]
+                                    + seguinte[1] * tri.over_w[1][k]
+                                    + seguinte[2] * tri.over_w[2][k])
+                                    * w2
+                            };
+                            let du = (vizinho(4) - u) * texture.width as f32;
+                            let dv = (vizinho(5) - v) * texture.height as f32;
+                            let quadrado = du * du + dv * dv;
+                            match quadrado > 1.0 {
+                                // `log2(sqrt(x))` é `log2(x)/2`, e uma raiz a menos por pixel.
+                                true => quadrado.log2() * 0.5,
+                                false => 0.0,
+                            }
+                        }
+                    };
+                    let texel = texture.sample_lod(u, v, lod);
                     source = combine(uniforms.texture_env, source, texel);
                 }
                 source
@@ -1807,6 +1922,49 @@ fn unpack(color: [u8; 4]) -> [f32; 4] {
 
 #[cfg(test)]
 mod tests {
+
+    /// Uma textura sem cadeia de redução não é mipmapeada, mesmo que o filtro peça.
+    ///
+    /// O padrão do `MIN_FILTER` no OpenGL é `GL_NEAREST_MIPMAP_LINEAR`, e adotá-lo ao pé da
+    /// letra passava a amostrar por vizinho mais próximo as vinte e uma texturas do palco da
+    /// Z-Wheel que pedem `GL_LINEAR` e não trazem nível nenhum.
+    #[test]
+    fn sem_cadeia_vale_o_filtro_de_base() {
+        let mut t = Texture {
+            width: 2,
+            height: 1,
+            pixels: vec![[0, 0, 0, 255], [255, 255, 255, 255]],
+            ..Default::default()
+        };
+        t.min_filter = gles::GL_NEAREST_MIPMAP_LINEAR;
+        // No meio dos dois texels, com vizinho mais próximo, a cor é de um deles.
+        let meio = t.sample_lod(0.5, 0.5, 4.0);
+        assert!(meio[0] == 0.0 || meio[0] == 1.0, "{meio:?}");
+        t.min_filter = gles::GL_LINEAR_MIPMAP_LINEAR;
+        let meio = t.sample_lod(0.5, 0.5, 4.0);
+        assert!((meio[0] - 0.5).abs() < 0.01, "interpolado: {meio:?}");
+    }
+
+    /// Com cadeia, o nível sai do `lod`: zero é a imagem cheia, e o último é o menor nível.
+    #[test]
+    fn o_lod_escolhe_o_nivel() {
+        let mut t = Texture {
+            width: 2,
+            height: 1,
+            pixels: vec![[255, 0, 0, 255]; 2],
+            ..Default::default()
+        };
+        t.mipmaps = vec![Nivel {
+            width: 1,
+            height: 1,
+            pixels: vec![[0, 0, 255, 255]],
+        }];
+        t.min_filter = gles::GL_NEAREST_MIPMAP_NEAREST;
+        let perto = t.sample_lod(0.5, 0.5, 0.0);
+        assert_eq!(perto[0], 1.0, "de perto, o nível cheio: {perto:?}");
+        let longe = t.sample_lod(0.5, 0.5, 3.0);
+        assert_eq!(longe[2], 1.0, "de longe, o nível menor: {longe:?}");
+    }
 
     /// O stencil marca onde o desenho passou, e o desenho seguinte só entra onde a marca está.
     ///

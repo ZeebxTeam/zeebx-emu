@@ -194,7 +194,6 @@ pub const GL_EMISSION: u32 = 0x1600;
 pub const GL_SHININESS: u32 = 0x1601;
 pub const GL_AMBIENT_AND_DIFFUSE: u32 = 0x1602;
 
-pub const GL_FLAT: u32 = 0x1d00;
 pub const GL_SMOOTH: u32 = 0x1d01;
 
 /// Quantos componentes um parâmetro de luz ou de material tem.
@@ -286,6 +285,12 @@ pub const GL_CLAMP_TO_EDGE: u32 = 0x812f;
 pub const GL_TEXTURE_ENV_MODE: u32 = 0x2200;
 pub const GL_MODULATE: u32 = 0x2100;
 pub const GL_DECAL: u32 = 0x2101;
+/// Os filtros de redução com mipmap, do `GLES/gl.h`.
+pub const GL_NEAREST_MIPMAP_NEAREST: u32 = 0x2700;
+pub const GL_LINEAR_MIPMAP_NEAREST: u32 = 0x2701;
+pub const GL_NEAREST_MIPMAP_LINEAR: u32 = 0x2702;
+pub const GL_LINEAR_MIPMAP_LINEAR: u32 = 0x2703;
+
 pub const GL_REPLACE: u32 = 0x1e01;
 
 /// As operações do `glStencilOp`. O `GL_REPLACE` acima é uma delas e já existia, vindo do
