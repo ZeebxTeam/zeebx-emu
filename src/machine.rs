@@ -1770,6 +1770,8 @@ pub struct Machine<C: CpuBackend> {
     proximo_serial: u64,
     /// O formulário que está pintado na superfície agora. Ver [`Machine::pinta_widgets`].
     formulario_pintado: u32,
+    /// Captura de serial, quando ligada. Ver [`Machine::liga_serial`].
+    serial: Option<std::io::BufWriter<std::fs::File>>,
     /// Último erro do EGL, devolvido por `eglGetError`.
     egl_error: u32,
     /// Superfícies do EGL vivas, com as dimensões de cada uma.
@@ -1965,6 +1967,7 @@ impl<C: CpuBackend> Machine<C> {
             recursos_lidos: BTreeSet::new(),
             proximo_serial: 0,
             formulario_pintado: 0,
+            serial: None,
             egl_error: gles::EGL_SUCCESS,
             egl_surfaces: HashMap::new(),
             egl_next_handle: EGL_HANDLE_BASE,
@@ -10951,8 +10954,35 @@ impl<C: CpuBackend> Machine<C> {
         Ok(new_ptr)
     }
 
+    /// Liga a captura de serial: cada linha de log vai para este arquivo, na ordem e com o
+    /// instante do relógio virtual.
+    ///
+    /// O Zeebo tem uma UART de depuração, e o que sai por ela é o `DBGPRINTF` — o módulo não
+    /// fala com o hardware, quem roteia é o firmware. Então o fluxo que um cabo de serial
+    /// veria é exatamente este.
+    ///
+    /// Existe separado do relatório porque o relatório **agrupa repetições**, e agrupar perde
+    /// as duas coisas que uma análise precisa: a ordem em que as linhas saíram e o intervalo
+    /// entre elas. `Couldn't create z-pad instruction form (6)   (2153x)` diz que aconteceu
+    /// duas mil vezes; não diz que aconteceu a cada 70 ms, nem o que veio antes da primeira.
+    pub fn liga_serial(&mut self, caminho: &std::path::Path) -> std::io::Result<()> {
+        let arquivo = std::fs::File::create(caminho)?;
+        self.serial = Some(std::io::BufWriter::new(arquivo));
+        Ok(())
+    }
+
     /// Guarda uma linha de log, agrupando repetições em vez de encher o relatório.
+    ///
+    /// Com a serial ligada, a linha também vai crua para o arquivo. Ver [`Machine::liga_serial`].
     fn record_debug(&mut self, message: String) {
+        // O mesmo relógio que o resto do emulador reporta: o `clock_us` sozinho ignora o
+        // tempo que as instruções gastaram, e a serial ficaria atrasada em relação ao rastro.
+        let agora = self.now_ms();
+        if let Some(serial) = self.serial.as_mut() {
+            use std::io::Write;
+            // Falha de escrita não pode derrubar o jogo: a serial é instrumento, não emulação.
+            let _ = writeln!(serial, "[{:>9} ms] {message}", agora);
+        }
         match self
             .debug_output
             .iter_mut()

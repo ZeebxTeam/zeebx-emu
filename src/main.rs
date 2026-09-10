@@ -125,6 +125,13 @@ fn main() -> ExitCode {
                     Some((numero(classe)?, numero(slot)?, numero(valor)?))
                 })
                 .collect();
+            // `--serial=CAMINHO` grava o que sairia pela UART de depuração do console: cada
+            // `DBGPRINTF` em ordem, com o instante do relógio virtual. O relatório agrupa
+            // repetições; isto não agrupa, que é o que serve para analisar uma sequência.
+            let serial = args
+                .iter()
+                .find_map(|a| a.strip_prefix("--serial="))
+                .map(std::path::PathBuf::from);
             let dump_heap = args.iter().any(|a| a == "--dump-heap");
             let dump_gl = args
                 .iter()
@@ -173,6 +180,7 @@ fn main() -> ExitCode {
                     rounds,
                     seconds,
                     watch,
+                    serial,
                     dump_heap,
                     probe,
                     probe_answers,
@@ -218,7 +226,7 @@ fn main() -> ExitCode {
             eprintln!(
                 "     zeebx run <arquivo.mod> [--window] [--seconds=N] [--keys=ms:tecla,...]
                              [--dump-gl=DIR] [--dump-audio=ARQUIVO.wav]
-                             [--trace[=trecho]] [--watch=0xADDR] [--dump-heap]
+                             [--trace[=trecho]] [--watch=0xADDR] [--serial=CAMINHO] [--dump-heap]
                              [--code=0xINI:0xFIM] [--frames=N]
                              [--profile] [--wall=SEGUNDOS] [--sonda=0xCLSID,...]
                              [--sem-rede] [--servidor=MAQUINA[:PORTA]] [--ponte]
@@ -305,6 +313,8 @@ struct Options {
     rounds: u32,
     seconds: Option<u32>,
     watch: Option<u32>,
+    /// Caminho da captura de serial, com `--serial=CAMINHO`.
+    serial: Option<std::path::PathBuf>,
     dump_heap: bool,
     probe: Vec<u32>,
     probe_answers: Vec<(u32, u32, u32)>,
@@ -380,6 +390,7 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
         rounds,
         seconds,
         watch,
+        serial,
         dump_heap,
         probe,
         probe_answers,
@@ -461,6 +472,10 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
         machine
             .cpu_mut()
             .set_wall_limit(std::time::Duration::from_secs(segundos));
+    }
+    if let Some(caminho) = &serial {
+        machine.liga_serial(caminho)?;
+        println!("serial:    {}", caminho.display());
     }
     if let Some(addr) = watch {
         // Faixa generosa de propósito: um `stm`/`strd` dispara o hook com o endereço inicial
