@@ -846,8 +846,15 @@ const WIDGET_DE_TEXTO: u32 = 0x0102_8e2a;
 /// grava valores da mesma cara pelo ajustador em `0x1035f222`.
 const PROP_COR: u32 = 0x140;
 
-const FAMILIA_DOS_WIDGETS: [u32; 8] = [
+const FAMILIA_DOS_WIDGETS: [u32; 9] = [
     AEECLSID_WIDGET,
+    // A `0x01028e05` é a última que o palco pede. Depois de montar o pbuffer — `ChooseConfig`,
+    // `CreatePbufferSurface`, `CreateContext`, `MakeCurrent` — a Z-Wheel cria a `0x01028e14` e
+    // logo esta; recusada, o `CreateStageWidget` desiste e leva a roda de jogos junto. No
+    // firmware ela aparece nos mesmos depósitos de literais que a `0x01028e19` e a
+    // `0x01028e4b`, ao lado do seletor `0x801` e de uma cor, que é como as outras da família
+    // são usadas.
+    0x0102_8e05,
     // A `0x01028e14` é o `OwnerDrawWidget`: o `CreateTectoyRollerWidget` a cria e, recusada,
     // registra `Failure in call to CreateOwnerDrawWidget` e desiste da roda de jogos inteira.
     0x0102_8e14,
