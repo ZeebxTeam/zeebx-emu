@@ -167,6 +167,48 @@ pub const GL_PROJECTION: u32 = 0x1701;
 pub const GL_TEXTURE: u32 = 0x1702;
 
 /// Vetores do cliente.
+/// A iluminação de função fixa, e o que ela lê.
+///
+/// Os nomes e valores são os do `GLES/gl.h` do OpenGL ES 1.1. Só entram aqui os que o
+/// pipeline usa; `GL_LIGHT0` é a base de uma faixa de oito.
+pub const GL_LIGHTING: u32 = 0x0b50;
+pub const GL_LIGHT_MODEL_AMBIENT: u32 = 0x0b53;
+pub const GL_COLOR_MATERIAL: u32 = 0x0b57;
+pub const GL_NORMALIZE: u32 = 0x0ba1;
+pub const GL_RESCALE_NORMAL: u32 = 0x803a;
+pub const GL_LIGHT0: u32 = 0x4000;
+pub const LUZES: usize = 8;
+
+pub const GL_AMBIENT: u32 = 0x1200;
+pub const GL_DIFFUSE: u32 = 0x1201;
+pub const GL_SPECULAR: u32 = 0x1202;
+pub const GL_POSITION: u32 = 0x1203;
+pub const GL_SPOT_DIRECTION: u32 = 0x1204;
+pub const GL_SPOT_EXPONENT: u32 = 0x1205;
+pub const GL_SPOT_CUTOFF: u32 = 0x1206;
+pub const GL_CONSTANT_ATTENUATION: u32 = 0x1207;
+pub const GL_LINEAR_ATTENUATION: u32 = 0x1208;
+pub const GL_QUADRATIC_ATTENUATION: u32 = 0x1209;
+pub const GL_EMISSION: u32 = 0x1600;
+pub const GL_SHININESS: u32 = 0x1601;
+pub const GL_AMBIENT_AND_DIFFUSE: u32 = 0x1602;
+
+pub const GL_FLAT: u32 = 0x1d00;
+pub const GL_SMOOTH: u32 = 0x1d01;
+
+/// Quantos componentes um parâmetro de luz ou de material tem.
+///
+/// Serve para os dois: o `glLightxv` e o `glMaterialxv` leem do ponteiro exatamente isto, e ler
+/// quatro palavras de um parâmetro de uma só passa por cima do que houver depois.
+pub fn componentes(pname: u32) -> usize {
+    match pname {
+        GL_AMBIENT | GL_DIFFUSE | GL_SPECULAR | GL_POSITION | GL_EMISSION
+        | GL_AMBIENT_AND_DIFFUSE | GL_LIGHT_MODEL_AMBIENT => 4,
+        GL_SPOT_DIRECTION => 3,
+        _ => 1,
+    }
+}
+
 pub const GL_VERTEX_ARRAY: u32 = 0x8074;
 pub const GL_NORMAL_ARRAY: u32 = 0x8075;
 pub const GL_COLOR_ARRAY: u32 = 0x8076;

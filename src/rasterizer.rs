@@ -118,6 +118,8 @@ pub struct Vertex {
     pub position: [f32; 4],
     pub color: [f32; 4],
     pub uv: [f32; 2],
+    /// A normal em coordenadas de objeto, para a iluminação. O padrão do OpenGL é `(0, 0, 1)`.
+    pub normal: [f32; 3],
 }
 
 impl Default for Vertex {
@@ -126,6 +128,7 @@ impl Default for Vertex {
             position: [0.0, 0.0, 0.0, 1.0],
             color: [1.0; 4],
             uv: [0.0; 2],
+            normal: [0.0, 0.0, 1.0],
         }
     }
 }
@@ -216,6 +219,76 @@ impl Texture {
 }
 
 /// Estado completo do OpenGL ES que o rasterizador mantém.
+/// Uma das oito luzes do pipeline de função fixa.
+///
+/// Os padrões são os do OpenGL ES 1.1, e **a luz zero é diferente das outras**: ela nasce com
+/// difusa e especular brancas, as demais com pretas. Isso não é curiosidade de tabela — a
+/// Z-Wheel só chama `glLightxv` para a ambiente da `GL_LIGHT0` e deixa o resto no padrão, então
+/// a difusa branca que ilumina o palco inteiro vem daqui e de mais lugar nenhum.
+#[derive(Debug, Clone, Copy)]
+pub struct Light {
+    pub enabled: bool,
+    pub ambient: [f32; 4],
+    pub diffuse: [f32; 4],
+    pub specular: [f32; 4],
+    /// Já em coordenadas de olho: o `glLight` transforma a posição pela modelview do momento
+    /// em que é chamado, e não pela do desenho. O padrão, `(0, 0, 1, 0)`, é direcional.
+    pub position: [f32; 4],
+    pub spot_direction: [f32; 3],
+    pub spot_exponent: f32,
+    pub spot_cutoff: f32,
+    /// Constante, linear e quadrática, nessa ordem.
+    pub attenuation: [f32; 3],
+}
+
+impl Light {
+    /// O padrão das luzes de índice um em diante.
+    fn apagada() -> Self {
+        Self {
+            enabled: false,
+            ambient: [0.0, 0.0, 0.0, 1.0],
+            diffuse: [0.0, 0.0, 0.0, 1.0],
+            specular: [0.0, 0.0, 0.0, 1.0],
+            position: [0.0, 0.0, 1.0, 0.0],
+            spot_direction: [0.0, 0.0, -1.0],
+            spot_exponent: 0.0,
+            spot_cutoff: 180.0,
+            attenuation: [1.0, 0.0, 0.0],
+        }
+    }
+
+    /// O padrão da `GL_LIGHT0`.
+    fn zero() -> Self {
+        Self {
+            diffuse: [1.0; 4],
+            specular: [1.0; 4],
+            ..Self::apagada()
+        }
+    }
+}
+
+/// O material, que no ES 1.x é um só — não há frente e verso separados.
+#[derive(Debug, Clone, Copy)]
+pub struct Material {
+    pub ambient: [f32; 4],
+    pub diffuse: [f32; 4],
+    pub specular: [f32; 4],
+    pub emission: [f32; 4],
+    pub shininess: f32,
+}
+
+impl Default for Material {
+    fn default() -> Self {
+        Self {
+            ambient: [0.2, 0.2, 0.2, 1.0],
+            diffuse: [0.8, 0.8, 0.8, 1.0],
+            specular: [0.0, 0.0, 0.0, 1.0],
+            emission: [0.0, 0.0, 0.0, 1.0],
+            shininess: 0.0,
+        }
+    }
+}
+
 pub struct GlState {
     pub width: usize,
     pub height: usize,
@@ -266,6 +339,17 @@ pub struct GlState {
     cull_mode: u32,
     front_face: u32,
 
+    /// `GL_LIGHTING`. Com ele ligado a cor do vértice **deixa de valer**, a menos que o
+    /// `GL_COLOR_MATERIAL` diga o contrário: é o que a especificação manda, e o palco da
+    /// Z-Wheel depende disso — os modelos dele chegam com cor de vértice branca e é a luz que
+    /// dá o relevo.
+    lighting: bool,
+    color_material: bool,
+    lights: [Light; gles::LUZES],
+    material: Material,
+    light_model_ambient: [f32; 4],
+    shade_model: u32,
+
     /// Lote de triângulos da draw call em curso. Vive na struct só para reaproveitar a
     /// alocação de uma chamada para a outra.
     batch: Batch,
@@ -284,6 +368,15 @@ impl GlState {
             height,
             color: vec![[0, 0, 0, 255]; width * height],
             depth: vec![1.0; width * height],
+            lighting: false,
+            color_material: false,
+            lights: std::array::from_fn(|i| match i {
+                0 => Light::zero(),
+                _ => Light::apagada(),
+            }),
+            material: Material::default(),
+            light_model_ambient: [0.2, 0.2, 0.2, 1.0],
+            shade_model: gles::GL_SMOOTH,
             matrix_mode: gles::GL_MODELVIEW,
             modelview: vec![IDENTITY],
             projection: vec![IDENTITY],
@@ -472,11 +565,159 @@ impl GlState {
             gles::GL_BLEND => self.blend = on,
             gles::GL_ALPHA_TEST => self.alpha_test = on,
             gles::GL_CULL_FACE => self.cull_face = on,
+            gles::GL_LIGHTING => self.lighting = on,
+            gles::GL_COLOR_MATERIAL => self.color_material = on,
+            // As normais são sempre normalizadas aqui, então ligar ou desligar não muda nada.
+            // Não é desleixo: com a normalização desligada e normais que não são unitárias, o
+            // OpenGL dá um resultado definido e errado, e nenhum jogo pede isso de propósito.
+            gles::GL_NORMALIZE | gles::GL_RESCALE_NORMAL => {}
+            capacidade if (gles::GL_LIGHT0..gles::GL_LIGHT0 + gles::LUZES as u32)
+                .contains(&capacidade) =>
+            {
+                self.lights[(capacidade - gles::GL_LIGHT0) as usize].enabled = on;
+            }
             // O recorte por tesoura ainda não existe; ignorá-lo desenha demais, nunca de
             // menos, e é o erro menos visível dos dois.
             gles::GL_SCISSOR_TEST => {}
             _ => {}
         }
+    }
+
+    /// `glLight*` — um parâmetro de uma luz.
+    ///
+    /// A posição é o caso especial: o OpenGL a guarda **em coordenadas de olho**, transformada
+    /// pela modelview do instante da chamada. Guardar as coordenadas de objeto e transformar na
+    /// hora do desenho parece igual e não é — a luz andaria junto com cada modelo.
+    pub fn set_light(&mut self, index: usize, pname: u32, valores: [f32; 4]) {
+        let modelview = *self.modelview.last().expect("pilha nunca fica vazia");
+        let Some(luz) = self.lights.get_mut(index) else {
+            return;
+        };
+        match pname {
+            gles::GL_AMBIENT => luz.ambient = valores,
+            gles::GL_DIFFUSE => luz.diffuse = valores,
+            gles::GL_SPECULAR => luz.specular = valores,
+            gles::GL_POSITION => luz.position = transform(&modelview, valores),
+            gles::GL_SPOT_DIRECTION => {
+                let [x, y, z, _] = transform(&modelview, [valores[0], valores[1], valores[2], 0.0]);
+                luz.spot_direction = [x, y, z];
+            }
+            gles::GL_SPOT_EXPONENT => luz.spot_exponent = valores[0],
+            gles::GL_SPOT_CUTOFF => luz.spot_cutoff = valores[0],
+            gles::GL_CONSTANT_ATTENUATION => luz.attenuation[0] = valores[0],
+            gles::GL_LINEAR_ATTENUATION => luz.attenuation[1] = valores[0],
+            gles::GL_QUADRATIC_ATTENUATION => luz.attenuation[2] = valores[0],
+            _ => {}
+        }
+    }
+
+    /// `glMaterial*`. A face é ignorada: no ES 1.x o material é um só.
+    pub fn set_material(&mut self, pname: u32, valores: [f32; 4]) {
+        match pname {
+            gles::GL_AMBIENT => self.material.ambient = valores,
+            gles::GL_DIFFUSE => self.material.diffuse = valores,
+            gles::GL_AMBIENT_AND_DIFFUSE => {
+                self.material.ambient = valores;
+                self.material.diffuse = valores;
+            }
+            gles::GL_SPECULAR => self.material.specular = valores,
+            gles::GL_EMISSION => self.material.emission = valores,
+            gles::GL_SHININESS => self.material.shininess = valores[0],
+            _ => {}
+        }
+    }
+
+    /// `glLightModel*`. Só a ambiente da cena tem efeito aqui; o `TWO_SIDE` é aceito e ignorado,
+    /// porque o material é um só.
+    pub fn set_light_model(&mut self, pname: u32, valores: [f32; 4]) {
+        if pname == gles::GL_LIGHT_MODEL_AMBIENT {
+            self.light_model_ambient = valores;
+        }
+    }
+
+    pub fn set_shade_model(&mut self, mode: u32) {
+        self.shade_model = mode;
+    }
+
+    /// A cor de um vértice com a iluminação ligada, na equação do OpenGL ES 1.x.
+    ///
+    /// ```text
+    /// cor = emissão
+    ///     + ambiente_do_material * ambiente_da_cena
+    ///     + Σ  atenuação * holofote * ( ambiente_do_material * ambiente_da_luz
+    ///                                 + difusa_do_material  * difusa_da_luz  * max(N·L, 0)
+    ///                                 + especular_do_material * especular_da_luz * max(N·H, 0)^brilho )
+    /// ```
+    ///
+    /// O alfa **não** vem da soma: é o da difusa do material, e sair somando alfa de luz deixa
+    /// tudo opaco. Com `GL_COLOR_MATERIAL`, a cor do vértice toma o lugar da ambiente e da
+    /// difusa do material — é o único caminho pelo qual um vetor de cores continua valendo com
+    /// a luz ligada.
+    fn cor_iluminada(&self, olho: [f32; 4], normal: [f32; 3], cor_do_vertice: [f32; 4]) -> [f32; 4] {
+        let (ambiente, difusa) = match self.color_material {
+            true => (cor_do_vertice, cor_do_vertice),
+            false => (self.material.ambient, self.material.diffuse),
+        };
+        let mut saida = [0.0f32; 3];
+        for canal in 0..3 {
+            saida[canal] = self.material.emission[canal]
+                + ambiente[canal] * self.light_model_ambient[canal];
+        }
+        // A posição do olho é `(0, 0, 0)` em coordenadas de olho, então a direção para o
+        // observador é o próprio ponto, negado e normalizado.
+        let para_o_olho = normaliza([-olho[0], -olho[1], -olho[2]]);
+        for luz in self.lights.iter().filter(|luz| luz.enabled) {
+            let (para_a_luz, distancia) = match luz.position[3] == 0.0 {
+                // Direcional: a posição é uma direção, e não há distância nem atenuação.
+                true => (normaliza([luz.position[0], luz.position[1], luz.position[2]]), None),
+                false => {
+                    let bruto = [
+                        luz.position[0] - olho[0],
+                        luz.position[1] - olho[1],
+                        luz.position[2] - olho[2],
+                    ];
+                    (normaliza(bruto), Some(comprimento(bruto)))
+                }
+            };
+            let atenuacao = match distancia {
+                None => 1.0,
+                Some(d) => {
+                    let [c, l, q] = luz.attenuation;
+                    let divisor = c + l * d + q * d * d;
+                    if divisor <= 0.0 { 1.0 } else { 1.0 / divisor }
+                }
+            };
+            let holofote = holofote(luz, para_a_luz);
+            let peso = atenuacao * holofote;
+            if peso <= 0.0 {
+                continue;
+            }
+            let n_l = ponto(normal, para_a_luz).max(0.0);
+            // O meio-vetor de Blinn, que é o que o ES 1.x usa no lugar da reflexão de Phong.
+            let brilho = match n_l > 0.0 && self.material.shininess > 0.0 {
+                false => 0.0,
+                true => {
+                    let meio = normaliza([
+                        para_a_luz[0] + para_o_olho[0],
+                        para_a_luz[1] + para_o_olho[1],
+                        para_a_luz[2] + para_o_olho[2],
+                    ]);
+                    ponto(normal, meio).max(0.0).powf(self.material.shininess)
+                }
+            };
+            for canal in 0..3 {
+                saida[canal] += peso
+                    * (ambiente[canal] * luz.ambient[canal]
+                        + difusa[canal] * luz.diffuse[canal] * n_l
+                        + self.material.specular[canal] * luz.specular[canal] * brilho);
+            }
+        }
+        [
+            saida[0].clamp(0.0, 1.0),
+            saida[1].clamp(0.0, 1.0),
+            saida[2].clamp(0.0, 1.0),
+            difusa[3].clamp(0.0, 1.0),
+        ]
     }
 
     pub fn set_blend_func(&mut self, src: u32, dst: u32) {
@@ -597,6 +838,12 @@ impl GlState {
         // volta para a faixa `0..1`. Sem ela, o `GL_REPEAT` dava a volta na textura a cada
         // pixel, e a quadra e a arquibancada saíam como confete das cores certas.
         let texture_matrix = *self.texture_matrix.last().expect("pilha nunca fica vazia");
+        // A iluminação acontece em **coordenadas de olho**, que é onde as posições das luzes
+        // foram guardadas: daí precisarmos da modelview separada, e não só do produto com a
+        // projeção. As normais vão por outra matriz — ver [`matriz_de_normais`].
+        let modelview = *self.modelview.last().expect("pilha nunca fica vazia");
+        let normais = matriz_de_normais(&modelview);
+        let iluminando = self.lighting;
         let mut clip = std::mem::take(&mut self.transformed);
         clip.clear();
         clip.extend(vertices.iter().map(|v| {
@@ -604,9 +851,18 @@ impl GlState {
             // que permite projeção na textura, e vale 1 no caso comum.
             let [s, t, _, q] = transform(&texture_matrix, [v.uv[0], v.uv[1], 0.0, 1.0]);
             let scale = if q == 0.0 { 1.0 } else { 1.0 / q };
+            let color = match iluminando {
+                false => v.color,
+                true => {
+                    let olho = transform(&modelview, v.position);
+                    let normal = normaliza(gira_normal(&normais, v.normal));
+                    self.cor_iluminada(olho, normal, v.color)
+                }
+            };
             Vertex {
                 position: transform(&mvp, v.position),
                 uv: [s * scale, t * scale],
+                color,
                 ..*v
             }
         }));
@@ -692,6 +948,7 @@ impl GlState {
         let vertices: Vec<Vertex> = corners
             .iter()
             .map(|&([sx, sy], uv)| Vertex {
+                normal: [0.0, 0.0, 1.0],
                 position: [
                     ((sx - vx as f32) / vw as f32) * 2.0 - 1.0,
                     1.0 - ((sy - vy as f32) / vh as f32) * 2.0,
@@ -1223,6 +1480,72 @@ fn edge(a: [f32; 4], b: [f32; 4], c: [f32; 4]) -> f32 {
 }
 
 /// Interpola `a`→`b` até o plano próximo, onde `z + w` cruza o zero.
+/// Produto escalar de três componentes.
+fn ponto(a: [f32; 3], b: [f32; 3]) -> f32 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+fn comprimento(v: [f32; 3]) -> f32 {
+    ponto(v, v).sqrt()
+}
+
+/// Um vetor de comprimento um, ou o vetor nulo quando não dá para dizer para onde ele aponta.
+fn normaliza(v: [f32; 3]) -> [f32; 3] {
+    let n = comprimento(v);
+    if n <= f32::EPSILON {
+        return [0.0, 0.0, 0.0];
+    }
+    [v[0] / n, v[1] / n, v[2] / n]
+}
+
+/// O fator do cone de um holofote, ou um quando a luz não é holofote.
+fn holofote(luz: &Light, para_a_luz: [f32; 3]) -> f32 {
+    if luz.spot_cutoff >= 180.0 {
+        return 1.0;
+    }
+    // O cosseno é entre a direção do cone e a direção **da luz para o vértice**, que é o
+    // contrário de `para_a_luz`.
+    let cos = ponto(normaliza(luz.spot_direction), [-para_a_luz[0], -para_a_luz[1], -para_a_luz[2]]);
+    if cos < luz.spot_cutoff.to_radians().cos() {
+        return 0.0;
+    }
+    cos.max(0.0).powf(luz.spot_exponent)
+}
+
+/// A matriz que leva uma normal de coordenadas de objeto para coordenadas de olho.
+///
+/// É a **transposta da inversa** da parte 3×3 da modelview, e não a modelview: com escala não
+/// uniforme, a normal transformada como se fosse direção deixa de ser perpendicular à
+/// superfície e a luz escorrega pelo modelo. Quando a inversa não existe — matriz degenerada —,
+/// a parte 3×3 crua é o menos errado que dá para devolver.
+fn matriz_de_normais(m: &Matrix) -> [[f32; 3]; 3] {
+    let a = [
+        [m[0], m[1], m[2]],
+        [m[4], m[5], m[6]],
+        [m[8], m[9], m[10]],
+    ];
+    let det = a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1])
+        - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0])
+        + a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0]);
+    if det.abs() <= f32::EPSILON {
+        return a;
+    }
+    // Inversa pela adjunta, já transposta: a transposta da inversa é a adjunta transposta
+    // dividida pelo determinante, e a adjunta é a transposta da matriz de cofatores — as duas
+    // transposições se cancelam, então o que fica é a matriz de cofatores sobre o determinante.
+    let cofator = |i: usize, j: usize| {
+        let (l1, l2) = ((i + 1) % 3, (i + 2) % 3);
+        let (c1, c2) = ((j + 1) % 3, (j + 2) % 3);
+        a[l1][c1] * a[l2][c2] - a[l1][c2] * a[l2][c1]
+    };
+    std::array::from_fn(|i| std::array::from_fn(|j| cofator(i, j) / det))
+}
+
+/// Aplica a matriz de normais.
+fn gira_normal(m: &[[f32; 3]; 3], v: [f32; 3]) -> [f32; 3] {
+    std::array::from_fn(|i| m[i][0] * v[0] + m[i][1] * v[1] + m[i][2] * v[2])
+}
+
 fn clip_near(a: Vertex, b: Vertex) -> Vertex {
     let (da, db) = (a.position[2] + a.position[3], b.position[2] + b.position[3]);
     let t = da / (da - db);
@@ -1231,6 +1554,9 @@ fn clip_near(a: Vertex, b: Vertex) -> Vertex {
         position: std::array::from_fn(|i| lerp(a.position[i], b.position[i])),
         color: std::array::from_fn(|i| lerp(a.color[i], b.color[i])),
         uv: std::array::from_fn(|i| lerp(a.uv[i], b.uv[i])),
+        // A normal já foi consumida pela iluminação antes do recorte: aqui ela não muda mais
+        // nada, e interpolá-la seria trabalho para ninguém ler.
+        normal: a.normal,
     }
 }
 
@@ -1298,6 +1624,105 @@ fn unpack(color: [u8; 4]) -> [f32; 4] {
 
 #[cfg(test)]
 mod tests {
+
+    /// Um estado com a luz zero ligada, material e luz brancos, e nada mais.
+    fn com_luz() -> GlState {
+        let mut estado = GlState::new(4, 4);
+        estado.set_capability(gles::GL_LIGHTING, true);
+        estado.set_capability(gles::GL_LIGHT0, true);
+        estado.set_material(gles::GL_AMBIENT, [0.0, 0.0, 0.0, 1.0]);
+        estado.set_material(gles::GL_DIFFUSE, [1.0, 1.0, 1.0, 1.0]);
+        estado.set_light_model(gles::GL_LIGHT_MODEL_AMBIENT, [0.0, 0.0, 0.0, 1.0]);
+        estado
+    }
+
+    /// A luz zero nasce com difusa branca e direcional em `(0, 0, 1, 0)`: uma face virada para
+    /// o observador recebe tudo, e uma de lado não recebe nada.
+    #[test]
+    fn a_difusa_segue_o_cosseno_da_normal() {
+        let estado = com_luz();
+        let frente = estado.cor_iluminada([0.0, 0.0, -5.0, 1.0], [0.0, 0.0, 1.0], [1.0; 4]);
+        assert!((frente[0] - 1.0).abs() < 1e-5, "de frente: {frente:?}");
+        let lado = estado.cor_iluminada([0.0, 0.0, -5.0, 1.0], [1.0, 0.0, 0.0], [1.0; 4]);
+        assert!(lado[0].abs() < 1e-5, "de lado: {lado:?}");
+        let costas = estado.cor_iluminada([0.0, 0.0, -5.0, 1.0], [0.0, 0.0, -1.0], [1.0; 4]);
+        assert!(costas[0].abs() < 1e-5, "de costas: {costas:?}");
+    }
+
+    /// O que a Z-Wheel monta: ambiente da cena no padrão, ambiente da luz em 0,5 e material
+    /// ambiente e difuso em 0,949. De frente, isso é `0,949*0,2 + 0,949*0,5 + 0,949*1`, que
+    /// satura; de lado sobram as duas ambientes.
+    #[test]
+    fn a_conta_do_palco_da_z_wheel() {
+        let mut estado = GlState::new(4, 4);
+        estado.set_capability(gles::GL_LIGHTING, true);
+        estado.set_capability(gles::GL_LIGHT0, true);
+        let cinza = [0.949, 0.949, 0.949, 1.0];
+        estado.set_material(gles::GL_AMBIENT, cinza);
+        estado.set_material(gles::GL_DIFFUSE, cinza);
+        estado.set_light(0, gles::GL_AMBIENT, [0.5, 0.5, 0.5, 1.0]);
+        let lado = estado.cor_iluminada([0.0, 0.0, -5.0, 1.0], [1.0, 0.0, 0.0], [1.0; 4]);
+        assert!((lado[0] - 0.949 * 0.7).abs() < 1e-4, "de lado: {lado:?}");
+        let frente = estado.cor_iluminada([0.0, 0.0, -5.0, 1.0], [0.0, 0.0, 1.0], [1.0; 4]);
+        assert!((frente[0] - 1.0).abs() < 1e-5, "de frente: {frente:?}");
+    }
+
+    /// O alfa é o da difusa do material, e não a soma das luzes — somando, tudo fica opaco.
+    #[test]
+    fn o_alfa_vem_do_material() {
+        let mut estado = com_luz();
+        estado.set_material(gles::GL_DIFFUSE, [1.0, 1.0, 1.0, 0.25]);
+        let cor = estado.cor_iluminada([0.0, 0.0, -5.0, 1.0], [0.0, 0.0, 1.0], [1.0; 4]);
+        assert!((cor[3] - 0.25).abs() < 1e-5, "{cor:?}");
+    }
+
+    /// Com `GL_COLOR_MATERIAL`, a cor do vértice toma o lugar do material — é o único jeito de
+    /// um vetor de cores continuar valendo com a luz ligada.
+    #[test]
+    fn a_cor_do_vertice_so_vale_com_color_material() {
+        let mut estado = com_luz();
+        let vermelho = [1.0, 0.0, 0.0, 1.0];
+        let sem = estado.cor_iluminada([0.0, 0.0, -5.0, 1.0], [0.0, 0.0, 1.0], vermelho);
+        assert!((sem[1] - 1.0).abs() < 1e-5, "sem color material: {sem:?}");
+        estado.set_capability(gles::GL_COLOR_MATERIAL, true);
+        let com = estado.cor_iluminada([0.0, 0.0, -5.0, 1.0], [0.0, 0.0, 1.0], vermelho);
+        assert!(com[1].abs() < 1e-5, "com color material: {com:?}");
+    }
+
+    /// A posição da luz é guardada em coordenadas de olho: quem transforma é o `glLight`, com a
+    /// modelview do momento da chamada.
+    #[test]
+    fn a_posicao_da_luz_passa_pela_modelview_da_chamada() {
+        let mut estado = GlState::new(4, 4);
+        estado.set_matrix_mode(gles::GL_MODELVIEW);
+        estado.load_matrix(translation(3.0, 0.0, 0.0));
+        estado.set_light(0, gles::GL_POSITION, [1.0, 0.0, 0.0, 1.0]);
+        assert_eq!(estado.lights[0].position, [4.0, 0.0, 0.0, 1.0]);
+        // Mexer na modelview depois não move a luz.
+        estado.load_matrix(translation(10.0, 0.0, 0.0));
+        assert_eq!(estado.lights[0].position, [4.0, 0.0, 0.0, 1.0]);
+    }
+
+    /// Com escala não uniforme, a normal precisa da transposta da inversa: transformada como
+    /// direção, ela deixa de ser perpendicular à superfície e a luz escorrega pelo modelo.
+    #[test]
+    fn a_normal_sobrevive_a_escala_nao_uniforme() {
+        let m = scaling(1.0, 4.0, 1.0);
+        // Uma superfície inclinada a 45 graus no plano XY: tangente `(1, 1, 0)`, normal
+        // `(1, -1, 0)`. Depois da escala, a tangente vira `(1, 4, 0)`.
+        let normal = normaliza(gira_normal(&matriz_de_normais(&m), [1.0, -1.0, 0.0]));
+        let tangente = normaliza([1.0, 4.0, 0.0]);
+        assert!(ponto(normal, tangente).abs() < 1e-5, "normal {normal:?}");
+    }
+
+    /// Sem `GL_LIGHTING` nada disso acontece: a cor do vértice chega inteira ao rasterizador.
+    #[test]
+    fn sem_luz_a_cor_passa_inteira() {
+        let mut estado = GlState::new(4, 4);
+        assert!(!estado.lighting);
+        estado.set_capability(gles::GL_LIGHTING, true);
+        assert!(estado.lighting);
+    }
     use super::*;
 
     /// O quadro depois de pintado. O desenho é acumulado e só vira pixel no despejo — que no
@@ -1312,6 +1737,7 @@ mod tests {
             position: [x, y, z, 1.0],
             color,
             uv: [0.0; 2],
+            ..Default::default()
         };
         state.draw(
             gles::GL_TRIANGLES,
@@ -1453,6 +1879,7 @@ mod tests {
                 position: [x, y, 0.0, 1.0],
                 color: [1.0; 4],
                 uv: [0.0; 2],
+                ..Default::default()
             };
             // Em coordenadas do OpenGL, com o Y para cima, esta ordem é anti-horária.
             let mut v = [vertex(-1.0, -1.0), vertex(1.0, -1.0), vertex(0.0, 1.0)];
@@ -1493,6 +1920,7 @@ mod tests {
             position: [x, y, z, w],
             color: [1.0; 4],
             uv: [0.0; 2],
+            ..Default::default()
         };
         // Anti-horário em coordenadas do OpenGL; o terceiro vértice está atrás da câmera.
         let tri = [
@@ -1520,6 +1948,7 @@ mod tests {
             position: [x, y, -1.0, 0.001],
             color: [1.0; 4],
             uv: [0.0; 2],
+            ..Default::default()
         };
         let tri = [
             vertex(-0.001, -0.001),
@@ -1560,6 +1989,7 @@ mod tests {
             position: [x, y, 0.0, 1.0],
             color: [1.0; 4],
             uv: [32767.0 * 0.25, 0.0],
+            ..Default::default()
         };
         state.clear(gles::GL_COLOR_BUFFER_BIT);
         state.draw(

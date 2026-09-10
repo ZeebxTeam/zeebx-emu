@@ -432,6 +432,14 @@ const PLAINTEXT_BYTES: usize = 512;
 ///
 /// São estado que o nosso rasterizador não usa — profundidade, névoa, luz, stencil. Listá-las
 /// junto das que faltam esconderia as que importam no meio do ruído.
+/// Uma palavra do jogo como número: ponto fixo 16.16 nas formas `x`, `float` nas formas `f`.
+fn escalar(palavra: u32, fixo: bool) -> f32 {
+    match fixo {
+        true => gles::fixed(palavra),
+        false => f32::from_bits(palavra),
+    }
+}
+
 const ATENDIDAS_EM_SILENCIO: &[&str] = &[
     "DepthFunc",
     "DepthRangef",
@@ -1849,6 +1857,11 @@ pub struct Machine<C: CpuBackend> {
     gl_vertices: ArrayPointer,
     gl_colors: ArrayPointer,
     gl_texcoords: ArrayPointer,
+    /// O vetor de normais do `glNormalPointer`. Sempre três componentes — a função nem recebe
+    /// tamanho.
+    gl_normals: ArrayPointer,
+    /// A normal do `glNormal3x`, usada quando não há vetor. O padrão do OpenGL é `(0, 0, 1)`.
+    gl_normal_atual: [f32; 3],
     /// Strings constantes já copiadas para a memória do guest, indexadas pelo texto.
     interned: HashMap<&'static str, u32>,
     /// Estado de cada `IThread` vivo.
@@ -2031,6 +2044,8 @@ impl<C: CpuBackend> Machine<C> {
             gl_vertices: ArrayPointer::default(),
             gl_colors: ArrayPointer::default(),
             gl_texcoords: ArrayPointer::default(),
+            gl_normals: ArrayPointer::default(),
+            gl_normal_atual: [0.0, 0.0, 1.0],
             interned: HashMap::new(),
             threads: HashMap::new(),
             resume_callbacks: HashMap::new(),
@@ -9683,6 +9698,56 @@ impl<C: CpuBackend> Machine<C> {
             "TexSubImage2D" => self.gles_tex_sub_image(&a)?,
             "CompressedTexImage2D" => self.gles_compressed_tex_image(&a)?,
 
+            // --- Iluminação de função fixa ---------------------------------------------
+            //
+            // O palco da Z-Wheel depende dela: liga `GL_LIGHTING` e `GL_LIGHT0`, põe a ambiente
+            // da luz em 0,5 e o material ambiente e difuso em 0,949, e deixa todo o resto no
+            // padrão — inclusive a difusa branca da luz zero e a posição `(0, 0, 1, 0)`, que é
+            // direcional. Sem nada disso, os modelos saíam com a cor de vértice crua.
+            "Lightxv" | "Lightfv" => {
+                let luz = a[0].wrapping_sub(gles::GL_LIGHT0) as usize;
+                let valores = self.le_parametro(a[1], a[2], name.ends_with("xv"))?;
+                self.gl.set_light(luz, a[1], valores);
+            }
+            "Materialxv" | "Materialfv" => {
+                let valores = self.le_parametro(a[1], a[2], name.ends_with("xv"))?;
+                self.gl.set_material(a[1], valores);
+            }
+            "LightModelxv" | "LightModelfv" => {
+                let valores = self.le_parametro(a[0], a[1], name.ends_with("xv"))?;
+                self.gl.set_light_model(a[0], valores);
+            }
+            // As formas escalares trazem o valor no próprio argumento.
+            "Lightx" | "Lightf" => {
+                let luz = a[0].wrapping_sub(gles::GL_LIGHT0) as usize;
+                let valor = escalar(a[2], name.ends_with('x'));
+                self.gl.set_light(luz, a[1], [valor, 0.0, 0.0, 0.0]);
+            }
+            "Materialx" | "Materialf" => {
+                let valor = escalar(a[2], name.ends_with('x'));
+                self.gl.set_material(a[1], [valor, 0.0, 0.0, 0.0]);
+            }
+            "LightModelx" | "LightModelf" => {
+                let valor = escalar(a[1], name.ends_with('x'));
+                self.gl.set_light_model(a[0], [valor, 0.0, 0.0, 0.0]);
+            }
+            "ShadeModel" => self.gl.set_shade_model(a[0]),
+            "Normal3x" | "Normal3f" => {
+                let fixo = name.ends_with('x');
+                self.gl_normal_atual = std::array::from_fn(|i| escalar(a[i], fixo));
+            }
+            // glNormalPointer(type, stride, pointer) — **sem tamanho**: normal é sempre de três.
+            "NormalPointer" => {
+                let enabled = self.gl_normals.enabled;
+                self.gl_normals = ArrayPointer {
+                    size: 3,
+                    kind: a[0],
+                    stride: a[1],
+                    address: a[2],
+                    enabled,
+                };
+            }
+
             // --- Vetores e desenho ------------------------------------------------------
             "VertexPointer" | "ColorPointer" | "TexCoordPointer" => {
                 let pointer = ArrayPointer {
@@ -9712,12 +9777,11 @@ impl<C: CpuBackend> Machine<C> {
                 match a[0] {
                     gles::GL_VERTEX_ARRAY => self.gl_vertices.enabled = on,
                     gles::GL_COLOR_ARRAY => self.gl_colors.enabled = on,
+                    gles::GL_NORMAL_ARRAY => self.gl_normals.enabled = on,
                     gles::GL_TEXTURE_COORD_ARRAY if self.gl.base_client_unit() => {
                         self.gl_texcoords.enabled = on
                     }
                     gles::GL_TEXTURE_COORD_ARRAY => {}
-                    // As normais só serviriam para iluminação, que o pipeline não faz.
-                    gles::GL_NORMAL_ARRAY => {}
                     _ => {}
                 }
             }
@@ -9983,14 +10047,39 @@ impl<C: CpuBackend> Machine<C> {
             } else {
                 [0.0; 2]
             };
+            let normal = if self.gl_normals.enabled && self.gl_normals.address != 0 {
+                let n = self.read_attribute(self.gl_normals, index, [0.0, 0.0, 1.0, 0.0])?;
+                [n[0], n[1], n[2]]
+            } else {
+                self.gl_normal_atual
+            };
             vertices.push(Vertex {
                 position,
                 color,
                 uv,
+                normal,
             });
         }
         self.gl.draw(mode, &vertices);
         Ok(())
+    }
+
+    /// Lê os componentes de um parâmetro de luz ou material do ponteiro do jogo.
+    ///
+    /// Quantos ler vem do próprio parâmetro — ver [`gles::componentes`] —, e não quatro sempre:
+    /// o `GL_SHININESS` tem um só, e ler quatro passa por cima do que estiver depois dele na
+    /// pilha do jogo.
+    fn le_parametro(
+        &self,
+        pname: u32,
+        ponteiro: u32,
+        fixo: bool,
+    ) -> Result<[f32; 4], CpuError> {
+        let mut valores = [0.0f32; 4];
+        for (i, valor) in valores.iter_mut().enumerate().take(gles::componentes(pname)) {
+            *valor = escalar(self.cpu.read_u32(ponteiro + i as u32 * 4)?, fixo);
+        }
+        Ok(valores)
     }
 
     /// Lê um elemento de um vetor do cliente, completando os componentes que faltam.
