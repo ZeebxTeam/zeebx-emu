@@ -9225,9 +9225,23 @@ impl<C: CpuBackend> Machine<C> {
                 }
             },
             "CreateWindowSurface" | "CreatePixmapSurface" | "CreatePbufferSurface" => {
+                let pbuffer = name == "CreatePbufferSurface";
                 let handle = self.new_egl_handle();
-                self.egl_surfaces.insert(handle, (width, height));
-                (if name == "CreatePbufferSurface" { 3 } else { 4 }, handle)
+                // **O pbuffer tem o tamanho que a lista de atributos disser, não o da tela.**
+                // A Z-Wheel desenha o palco num de 640×330 — a área do widget da roda — e é
+                // esse recorte que o `eglGetColorBufferQUALCOMM` devolve. Enquanto o tamanho
+                // aqui era o da tela, o traço saía deslocado: o cilindro passava da borda e o
+                // painel de baixo era cortado.
+                //
+                // A janela e o pixmap não trazem tamanho na lista; para eles a tela continua
+                // valendo.
+                let atributos = a[if pbuffer { 2 } else { 3 }];
+                let medida = match pbuffer {
+                    true => self.medida_dos_atributos(atributos, (width, height))?,
+                    false => (width, height),
+                };
+                self.egl_surfaces.insert(handle, medida);
+                (if pbuffer { 3 } else { 4 }, handle)
             }
             "DestroySurface" => {
                 self.egl_surfaces.remove(&a[1]);
@@ -9296,9 +9310,12 @@ impl<C: CpuBackend> Machine<C> {
             // É esta função que existe porque a Z-Wheel desenha o palco num **pbuffer** e não
             // numa janela: sem um ponteiro para o resultado, não há como compor o 3D com o 2D.
             "GetColorBufferQUALCOMM" => {
-                let (largura, altura) = {
-                    let alvo = self.screen();
-                    (alvo.width() as usize, alvo.height() as usize)
+                let (largura, altura) = match self.egl_surfaces.get(&self.egl_surface) {
+                    Some(&(l, a)) => (l as usize, a as usize),
+                    None => {
+                        let alvo = self.screen();
+                        (alvo.width() as usize, alvo.height() as usize)
+                    }
                 };
                 let bytes: Vec<u8> = self
                     .gl
@@ -9326,6 +9343,37 @@ impl<C: CpuBackend> Machine<C> {
         }
         self.write_at(a[out], value)?;
         Ok(Some(SUCCESS))
+    }
+
+    /// Lê largura e altura de uma lista de atributos do EGL, com o padrão para o que faltar.
+    ///
+    /// A lista é um vetor de pares `(atributo, valor)` terminado por `EGL_NONE`. O teto de
+    /// pares existe porque a lista vem do jogo: uma sem terminador não pode virar laço eterno.
+    fn medida_dos_atributos(
+        &mut self,
+        lista: u32,
+        padrao: (u32, u32),
+    ) -> Result<(u32, u32), CpuError> {
+        /// Quantos pares ler antes de desistir.
+        const TETO: u32 = 64;
+
+        let (mut largura, mut altura) = padrao;
+        if lista == 0 {
+            return Ok(padrao);
+        }
+        for par in 0..TETO {
+            let atributo = self.cpu.read_u32(lista + par * 8)?;
+            if atributo == gles::EGL_NONE {
+                break;
+            }
+            let valor = self.cpu.read_u32(lista + par * 8 + 4)?;
+            match atributo {
+                gles::EGL_WIDTH => largura = valor,
+                gles::EGL_HEIGHT => altura = valor,
+                _ => {}
+            }
+        }
+        Ok((largura, altura))
     }
 
     /// Escreve uma palavra num ponteiro de saída, ignorando o nulo.
