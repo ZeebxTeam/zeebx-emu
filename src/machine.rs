@@ -4126,43 +4126,34 @@ impl<C: CpuBackend> Machine<C> {
         }
     }
 
-    /// Os tratadores que devem ver uma tecla, na ordem em que devem vê-la.
+    /// Os tratadores que devem ver uma tecla, dizendo de cada um se ele está na tela atual.
     ///
-    /// Primeiro os do formulário atual, descendo da raiz pelos filhos — que é o que um
-    /// container do BREW faz com um evento —, e depois os de fora dele, que é onde mora o
-    /// tratador da abertura. Sem ordem nenhuma, quem respondia era sempre a `0x77300` do jogo,
-    /// um `mov r0,#1; bx lr` que devolve "tratei" para qualquer tecla e está registrada num
-    /// widget que por acaso vinha antes.
-    fn tratadores_em_ordem(&self) -> Vec<(u32, u32)> {
-        /// Teto de nós visitados, pelo mesmo motivo da [`Machine::arvore_do_formulario`].
-        const TETO: usize = 4096;
-
-        let mut ordem = Vec::new();
+    /// Primeiro os do formulário atual, do mais novo para o mais velho, e depois os de fora
+    /// dele — onde mora o tratador da abertura, que devolve "tratei" para qualquer aperto e,
+    /// vindo antes, decidia tudo.
+    fn tratadores_em_ordem(
+        &self,
+        dentro: &std::collections::HashSet<u32>,
+    ) -> Vec<(bool, (u32, u32))> {
+        let mut marcados = Vec::new();
         let mut vistos = std::collections::HashSet::new();
-        let mut fila: Vec<u32> = self.formulario_atual().into_iter().collect();
-        while let Some(atual) = fila.pop() {
-            if vistos.len() >= TETO || !vistos.insert(atual) {
+        for (&endereco, no) in &self.widgets {
+            if no.tratador.0 == 0 || !dentro.contains(&endereco) {
                 continue;
             }
-            let Some(no) = self.widgets.get(&atual) else {
-                continue;
-            };
-            if no.tratador.0 != 0 {
-                ordem.push(no.tratador);
-            }
-            // Empilhado ao contrário para que o primeiro filho saia primeiro.
-            let filhos: Vec<u32> = no.filhos.values().copied().chain(no.anexados.iter().copied()).collect();
-            fila.extend(filhos.into_iter().rev());
+            vistos.insert(endereco);
+            marcados.push((true, no.tratador, no.serial));
         }
-        let mut fora: Vec<(u64, (u32, u32))> = self
+        marcados.sort_by_key(|item| std::cmp::Reverse(item.2));
+        let mut fora: Vec<(bool, (u32, u32), u64)> = self
             .widgets
             .iter()
-            .filter(|(endereco, widget)| widget.tratador.0 != 0 && !vistos.contains(*endereco))
-            .map(|(_, widget)| (widget.serial, widget.tratador))
+            .filter(|(endereco, no)| no.tratador.0 != 0 && !vistos.contains(*endereco))
+            .map(|(_, no)| (false, no.tratador, no.serial))
             .collect();
-        fora.sort_unstable_by(|a, b| b.0.cmp(&a.0));
-        ordem.extend(fora.into_iter().map(|(_, par)| par));
-        ordem
+        fora.sort_by_key(|item| std::cmp::Reverse(item.2));
+        marcados.extend(fora);
+        marcados.into_iter().map(|(d, par, _)| (d, par)).collect()
     }
 
     /// Os widgets da árvore do formulário atual, incluindo a raiz.
@@ -4226,9 +4217,30 @@ impl<C: CpuBackend> Machine<C> {
             .filter(|(endereco, no)| no.classe == WIDGET_FORMULARIO && com_filhos.contains(endereco))
             .max_by_key(|(_, no)| no.serial)
             .map(|(&endereco, _)| endereco);
-        if formulario.is_some() {
-            return formulario;
+        // **Nem todo formulário recebe o conteúdo pelo item `0x5000`.** O do menu principal não
+        // recebe: ele fica com zero filho, e o que ele mostra vira uma raiz solta — o container
+        // de `0x30000c10`, com a barra de status e o palco dentro. A ligação deve chegar pelo
+        // evento `0x7b0a` na raiz do aplicativo, que ainda recusamos.
+        //
+        // Enquanto isso, escolher só entre formulários deixava o do z-pad como atual para
+        // sempre, e ele traz a `0x77300` — um tratador que devolve "tratei" para qualquer
+        // tecla. Com ela na frente, nenhuma tecla chegava ao menu: a roda não girava.
+        //
+        // Então a escolha é entre os dois candidatos, e vence o mais novo.
+        let raiz = self.raiz_mais_nova(&com_filhos);
+        match (formulario, raiz) {
+            (Some(f), Some(r)) => {
+                let idade = |quem: u32| self.widgets.get(&quem).map_or(0, |no| no.serial);
+                return Some(if idade(r) > idade(f) { r } else { f });
+            }
+            (Some(f), None) => return Some(f),
+            (None, _) => {}
         }
+        raiz
+    }
+
+    /// A raiz mais nova que tenha filho, que é o que sustentava a tela antes dos formulários.
+    fn raiz_mais_nova(&self, com_filhos: &std::collections::HashSet<u32>) -> Option<u32> {
         self.widgets
             .iter()
             .filter(|(endereco, no)| {
@@ -5883,16 +5895,37 @@ impl<C: CpuBackend> Machine<C> {
             // tecla. No console quem recebe é o widget **com foco**, e foco é coisa que ainda
             // não sabemos ler. Enquanto não soubermos, fica a ordem do mapa, que é a que
             // estava aqui antes de eu começar a mexer.
-            let tratadores = self.tratadores_em_ordem();
-            for (funcao, contexto) in tratadores {
-                let saida = self.call_guest(
-                    funcao,
-                    [contexto, evento, avk, 0],
-                    QSORT_BUDGET,
-                )?;
+            // **Dentro do formulário atual, todo tratador vê a tecla.** Parar no primeiro que
+            // devolve não-zero parecia o certo — é o que um container do BREW faz —, mas a
+            // `0x77300` é `mov r0,#1; bx lr`: ela diz "tratei" para qualquer coisa que lhe
+            // cheguem, e está registrada na **barra de status**, um container de 640×50 que no
+            // console não recebe tecla nenhuma. Com ela na frente, o palco nunca via um aperto
+            // e a roda não girava.
+            //
+            // Quem recebe no console é o widget **com foco**, e foco continua sendo coisa que
+            // não sabemos ler. Entregar a todos os da tela atual é a aproximação que não
+            // depende de saber: um tratador que não reconhece o evento não faz nada, e o que
+            // reconhece age. Os de fora da tela seguem valendo só quando ninguém de dentro
+            // respondeu, que é o que impede a abertura de responder por cima do menu.
+            let dentro = self.arvore_do_formulario();
+            let (na_tela, fora): (Vec<_>, Vec<_>) = self
+                .tratadores_em_ordem(&dentro)
+                .into_iter()
+                .partition(|(esta_dentro, _)| *esta_dentro);
+            for (_, (funcao, contexto)) in na_tela {
+                let saida = self.call_guest(funcao, [contexto, evento, avk, 0], QSORT_BUDGET)?;
                 if matches!(saida, Outcome::Returned { code } if code != 0) {
                     tratado = true;
-                    break;
+                }
+            }
+            if !tratado {
+                for (_, (funcao, contexto)) in fora {
+                    let saida =
+                        self.call_guest(funcao, [contexto, evento, avk, 0], QSORT_BUDGET)?;
+                    if matches!(saida, Outcome::Returned { code } if code != 0) {
+                        tratado = true;
+                        break;
+                    }
                 }
             }
             if !tratado {

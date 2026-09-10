@@ -25,6 +25,13 @@ pub const EVT_KEY: u32 = 0x100;
 /// `0xe030` a `0xe035`, `0xe046`, `0xe04a`, `0xe063` — mais os quatro sentidos, que ficam logo
 /// antes do `AVK_SELECT` na numeração do header.
 pub mod avk {
+    /// **Os quatro sentidos aqui são inferência, e a Z-Wheel não usa nenhum deles.**
+    ///
+    /// Vieram de supor que ficassem logo antes do `AVK_SELECT` na numeração do header. O módulo
+    /// da Z-Wheel desmente em parte: `0xe011` e `0xe013` não aparecem nele de forma alguma, e
+    /// quem gira a roda de jogos são `0xe033` e `0xe034` — medido, comparando o quadro com e
+    /// sem cada tecla. Ficam porque outro jogo pode usá-las e porque tirar sem medir seria
+    /// trocar uma suposição por outra.
     pub const UP: u32 = 0xe011;
     pub const DOWN: u32 = 0xe012;
     pub const LEFT: u32 = 0xe013;
@@ -53,6 +60,11 @@ pub mod avk {
             "star" => STAR,
             "pound" => POUND,
             "clr" => CLR,
+            // Um código cru, em hexadecimal, para quando se está descobrindo qual é a tecla:
+            // `0xe063` diz o que `right` ainda não sabe dizer.
+            outro if outro.starts_with("0x") => {
+                return u32::from_str_radix(&outro[2..], 16).ok();
+            }
             outro => return outro.parse::<u32>().ok().and_then(digito),
         })
     }
@@ -60,8 +72,6 @@ pub mod avk {
 
 /// Quantos botões o controle tem.
 pub const BUTTONS: usize = 18;
-
-/// Quantas portas de entrada o console tem.
 
 /// UID de cada botão, na ordem em que o console os enumera.
 ///
@@ -289,6 +299,16 @@ impl Script {
 
 #[cfg(test)]
 mod tests {
+
+    /// O código cru serve para descobrir tecla; os nomes continuam valendo.
+    #[test]
+    fn codigo_cru_em_hexadecimal() {
+        assert_eq!(avk::por_nome("0xe034"), Some(0xe034));
+        assert_eq!(avk::por_nome("0xE033"), Some(0xe033));
+        assert_eq!(avk::por_nome("3"), Some(avk::ZERO + 3));
+        assert_eq!(avk::por_nome("clr"), Some(avk::CLR));
+        assert_eq!(avk::por_nome("0xzz"), None);
+    }
     use super::*;
 
     #[test]
