@@ -789,6 +789,17 @@ struct Widget {
     partiu: bool,
 }
 
+/// O número que uma linha de arquivo faltando traz entre parênteses, se ela traz um.
+///
+/// Serve ao [`Machine::missing_files`]: as linhas de recurso têm a forma
+/// `caminho (recurso 5035)`, e as de arquivo mesmo não têm parte nenhuma entre parênteses.
+fn id_do_recurso(falta: &str) -> Option<u16> {
+    falta
+        .rsplit_once("(recurso ")
+        .and_then(|(_, resto)| resto.strip_suffix(')'))
+        .and_then(|numero| numero.parse().ok())
+}
+
 /// As classes da extensão de interface que respondem ao mesmo acessador do
 /// [`Interface::Widget`].
 ///
@@ -1729,6 +1740,8 @@ pub struct Machine<C: CpuBackend> {
     /// Fila única porque todos têm a mesma forma — um endereço de função e até quatro
     /// argumentos — e porque nenhum deles pode rodar no meio do despacho de uma chamada.
     pending_calls: Vec<GuestCall>,
+    /// Recursos que **algum** arquivo forneceu. Ver [`Machine::missing_files`].
+    recursos_lidos: BTreeSet<u16>,
     /// Último erro do EGL, devolvido por `eglGetError`.
     egl_error: u32,
     /// Superfícies do EGL vivas, com as dimensões de cada uma.
@@ -1921,6 +1934,7 @@ impl<C: CpuBackend> Machine<C> {
             streams: HashMap::new(),
             sounds: HashMap::new(),
             pending_calls: Vec::new(),
+            recursos_lidos: BTreeSet::new(),
             egl_error: gles::EGL_SUCCESS,
             egl_surfaces: HashMap::new(),
             egl_next_handle: EGL_HANDLE_BASE,
@@ -3174,6 +3188,7 @@ impl<C: CpuBackend> Machine<C> {
                         .insert(format!("{guest_path} (recurso {id})"));
                     return Ok(0);
                 };
+                self.recursos_lidos.insert(id);
                 // O cabeçalho `AEEResBlob` é nosso para pular: quem pediu foi um **objeto** de
                 // imagem, não o bloco bruto que o `LoadResData` entrega.
                 crate::resfile::blob_data(&raw).unwrap_or(&raw).to_vec()
@@ -4035,8 +4050,21 @@ impl<C: CpuBackend> Machine<C> {
     }
 
     /// Arquivos que o jogo pediu e não foram encontrados.
+    ///
+    /// Um recurso que outro arquivo acabou fornecendo não conta como falta. A Z-Wheel guarda o
+    /// que independe de idioma no `tectoyli.brf` e o resto no `tectoy_<idioma>.brf`, e pede
+    /// primeiro ao do idioma: a imagem 5035 não está lá, o jogo recua para o `li` e a encontra.
+    /// Anotar a primeira tentativa como arquivo faltando faz um recuo normal parecer defeito —
+    /// e fez: fui atrás dessa linha achando que era uma imagem que não tínhamos.
     pub fn missing_files(&self) -> Vec<String> {
-        self.missing_files.iter().cloned().collect()
+        self.missing_files
+            .iter()
+            .filter(|falta| match id_do_recurso(falta) {
+                Some(id) => !self.recursos_lidos.contains(&id),
+                None => true,
+            })
+            .cloned()
+            .collect()
     }
 
     /// Chamadas que receberam ponteiro inválido do guest.
@@ -11909,6 +11937,15 @@ mod tests {
         assert_ne!(created, screen);
         let info = machine.bitmaps.get(&created).unwrap();
         assert_eq!((info.width(), info.height()), (64, 32));
+    }
+
+    /// A Z-Wheel pede a imagem 5035 ao arquivo do idioma, não a encontra, recua para o
+    /// `tectoyli.brf` e a encontra lá. A primeira tentativa não é um arquivo faltando.
+    #[test]
+    fn recurso_achado_em_outro_arquivo_sai_da_lista_de_faltas() {
+        assert_eq!(id_do_recurso("fs:/~0x01070798/tectoy_pt.brf (recurso 5035)"), Some(5035));
+        assert_eq!(id_do_recurso("fontsize.map"), None);
+        assert_eq!(id_do_recurso("um (recurso não)"), None);
     }
 
     #[test]
