@@ -27,8 +27,7 @@ pub struct Game {
     pub title: String,
     /// O `.mod` a carregar, ou o `.zip` que o contém.
     pub path: PathBuf,
-    /// O ClassID do applet, quando há um `.mif` para dizê-lo. Um jogo em `.zip` só revela o
-    /// dele depois de extraído, então aqui ele vem vazio.
+    /// O ClassID do applet, lido do manifesto inclusive dentro de pacotes `.zip`.
     pub clsid: Option<u32>,
     /// Se o caminho é um pacote que precisa ser extraído antes de rodar.
     pub packed: bool,
@@ -60,10 +59,12 @@ fn describe(path: PathBuf) -> Option<Game> {
         });
     }
     let module = archive::find_module(&path)?;
+    let manifest = archive::find_manifest(&path, &module);
     Some(Game {
         title: archive::title_of(&path, &module),
-        clsid: None,
-        art: cover(&path).or_else(|| manifest_art(&archive::find_manifest(&path, &module)?)),
+        clsid: manifest.as_deref().and_then(|data| MifFile::parse(data).ok())
+            .and_then(|mif| mif.main_applet()),
+        art: cover(&path).or_else(|| manifest_art(manifest.as_deref()?)),
         path,
         packed,
     })

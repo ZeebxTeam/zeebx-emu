@@ -1761,6 +1761,9 @@ pub struct Machine<C: CpuBackend> {
     timers: Vec<Timer>,
     /// ClassID do applet que o módulo instanciou, para responder ao `ISHELL_GetClassItemID`.
     applet_class: u32,
+    installed_applets: HashSet<u32>,
+    pending_launch: Option<u32>,
+    wheel_boot_skipped: bool,
     /// Profundidade atual de reentrada no guest.
     nesting: u32,
     /// Superfícies do jogo à espera de serem consultadas sobre onde ficam seus pixels.
@@ -1861,6 +1864,10 @@ pub struct Machine<C: CpuBackend> {
     egl_color_buffer: (u32, usize),
     /// Os bytes já convertidos, reaproveitados de uma chamada para a outra.
     egl_color_bytes: Vec<u8>,
+    /// Dimensões e memória de trabalho do buffer exposto ao guest. Ele é gravável:
+    /// a Z-Wheel copia o fundo para este endereço antes de desenhar o palco.
+    egl_color_dimensions: Option<(usize, usize)>,
+    egl_color_readback: Vec<u8>,
     /// Próximo identificador livre de superfície ou contexto.
     egl_next_handle: u32,
     /// Quantas vezes o jogo apresentou um quadro com `eglSwapBuffers`.
@@ -2015,6 +2022,9 @@ impl<C: CpuBackend> Machine<C> {
             fault_stack: Vec::new(),
             timers: Vec::new(),
             applet_class: 0,
+            installed_applets: HashSet::new(),
+            pending_launch: None,
+            wheel_boot_skipped: false,
             nesting: 0,
             pending_probes: Vec::new(),
             pending_blits: Vec::new(),
@@ -2065,6 +2075,8 @@ impl<C: CpuBackend> Machine<C> {
             egl_surfaces: HashMap::new(),
             egl_color_buffer: (0, 0),
             egl_color_bytes: Vec::new(),
+            egl_color_dimensions: None,
+            egl_color_readback: Vec::new(),
             egl_next_handle: EGL_HANDLE_BASE,
             egl_swaps: 0,
             gl_clears: 0,
@@ -2651,6 +2663,23 @@ impl<C: CpuBackend> Machine<C> {
             },
             (Interface::Shell, 2) => self.shell_create_instance()?,
             (Interface::Shell, 4) => self.shell_get_device_info()?,
+            (Interface::Shell, slot)
+                if matches!(Interface::Shell.method(slot), Some("StartApplet" | "CanStartApplet")) =>
+            {
+                let cls = self.cpu.read_reg(Reg::R1);
+                if self.installed_applets.contains(&cls) {
+                    if Interface::Shell.method(slot) == Some("StartApplet") {
+                        self.pending_launch = Some(cls);
+                    }
+                    SUCCESS
+                } else {
+                    ECLASSNOTSUPPORT
+                }
+            }
+            (Interface::Shell, slot) if Interface::Shell.method(slot) == Some("ActiveApplet") => {
+                self.applet_class
+            }
+
             (Interface::Shell, slot)
                 if Interface::Shell.method(slot) == Some("GetDeviceInfoEx") =>
             {
@@ -4021,6 +4050,7 @@ impl<C: CpuBackend> Machine<C> {
         self.pinta_widgets()?;
         self.desenha_widgets()?;
         self.parte_animacao()?;
+        self.skip_wheel_instructions()?;
         self.flush_keys()?;
         let pending = std::mem::take(&mut self.pending_signals);
         let mut outcomes = Vec::new();
@@ -4035,6 +4065,33 @@ impl<C: CpuBackend> Machine<C> {
             )?);
         }
         Ok(outcomes)
+    }
+
+    /// Compatibilidade com a abertura da Z-Wheel distribuída no pacote 274755.
+    /// Usa o atalho do próprio formulário, sem alterar instruções ou dados da ROM.
+    /// A assinatura evita aplicar os endereços medidos a outra versão do applet.
+    fn skip_wheel_instructions(&mut self) -> Result<(), CpuError> {
+        if self.applet_class != 0x01070798 || self.wheel_boot_skipped {
+            return Ok(());
+        }
+        let Some((function, context)) = self.widgets.values()
+            .map(|widget| widget.tratador).find(|(function, _)| *function == 0x11828)
+        else { return Ok(()); };
+        let mut signature = [0; 16];
+        self.cpu.read_mem(function, &mut signature)?;
+        if signature != [0xf0, 0x41, 0x2d, 0xe9, 0x01, 0x0c, 0x51, 0xe3,
+                         0x03, 0x70, 0xa0, 0xe1, 0x01, 0x60, 0xa0, 0xe1] {
+            return Ok(());
+        }
+        let app = self.cpu.read_u32(context)?;
+        // Durante a transição o formulário ignora entrada; aguarda o próximo tique.
+        if self.cpu.read_u32(app + 0x2138)? & 1 != 0 { return Ok(()); }
+        self.call_guest(function, [context, input::EVT_KEY, input::avk::ZERO, 0], QSORT_BUDGET)?;
+        self.wheel_boot_skipped = self.cpu.read_u32(app + 0x3610)? & 0x10000000 != 0;
+        if self.wheel_boot_skipped {
+            self.assumptions.insert("a abertura conhecida da Z-Wheel recebe automaticamente o atalho de pular instruções");
+        }
+        Ok(())
     }
 
     /// Dá a partida na abertura, **uma vez** por tratador registrado.
@@ -5907,6 +5964,15 @@ impl<C: CpuBackend> Machine<C> {
     /// Não vai direto: teclado chega ao jogo como **evento**, e evento só pode ser entregue na
     /// fronteira entre duas chamadas de API — chamar o tratador do jogo no meio de um despacho é
     /// o caminho que já derrubou o Zeeboids. A fila é esvaziada em [`Machine::deliver_signals`].
+    pub fn set_installed_applets(&mut self, classes: impl IntoIterator<Item = u32>) {
+        self.installed_applets = classes.into_iter().collect();
+    }
+
+    /// O host troca de sessão depois que a chamada do guest terminou.
+    pub fn take_launch_request(&mut self) -> Option<u32> {
+        self.pending_launch.take()
+    }
+
     pub fn set_key(&mut self, avk: u32, down: bool) {
         self.teclas.push_back((avk, down));
     }
@@ -7732,6 +7798,30 @@ impl<C: CpuBackend> Machine<C> {
                 );
                 SUCCESS
             }
+            "AdicionarFilho" if self.widgets.get(&this).is_some_and(|w| {
+                matches!(w.classe, WIDGET_DE_TEXTO | 0x01028e19)
+            }) && !self.widgets.contains_key(&self.cpu.read_reg(Reg::R1))
+                && !self.images.contains_key(&self.cpu.read_reg(Reg::R1)) => {
+                // IWidget::GetExtent(&{cx, cy}) nas interfaces de texto/imagem.
+                // A barra de status usa cx do rótulo para posicionar os créditos:
+                // em 0x857ec lê cx e em 0x85828 soma 375. Deixar a saída zerada
+                // colocava "10" em cima de "Meus Z-Credits".
+                let widget = &self.widgets[&this];
+                let size = if widget.classe == WIDGET_DE_TEXTO {
+                    self.font.as_ref().map(|font| (
+                        font.width(&widget.texto, FONT_SIZE),
+                        font.ascent(FONT_SIZE) + font.descent(FONT_SIZE),
+                    )).unwrap_or((0, 0))
+                } else {
+                    widget.anexados.iter().find_map(|id| self.images.get(id))
+                        .map(|image| (image.width, image.height)).unwrap_or(widget.tamanho)
+                };
+                let out = self.cpu.read_reg(Reg::R1);
+                if out == 0 { return Ok(Some(EBADPARM)); }
+                self.cpu.write_u32(out, size.0)?;
+                self.cpu.write_u32(out + 4, size.1)?;
+                SUCCESS
+            }
             "AdicionarFilho" => {
                 let filho = self.cpu.read_reg(Reg::R1);
                 self.anota_posicao(filho)?;
@@ -9381,6 +9471,7 @@ impl<C: CpuBackend> Machine<C> {
             "WaitNative" => (1, gles::EGL_TRUE),
             // Apresentar o quadro: o buffer de trás vira o da frente.
             "SwapBuffers" => {
+                self.sync_egl_color_from_guest()?;
                 self.egl_swaps += 1;
                 self.present_gl();
                 self.wait_for_vsync();
@@ -9400,6 +9491,7 @@ impl<C: CpuBackend> Machine<C> {
             // É esta função que existe porque a Z-Wheel desenha o palco num **pbuffer** e não
             // numa janela: sem um ponteiro para o resultado, não há como compor o 3D com o 2D.
             "GetColorBufferQUALCOMM" => {
+                self.sync_egl_color_from_guest()?;
                 let (largura, altura) = match self.egl_surfaces.get(&self.egl_surface) {
                     Some(&(l, a)) => (l as usize, a as usize),
                     None => {
@@ -9427,6 +9519,7 @@ impl<C: CpuBackend> Machine<C> {
                 }
                 self.cpu.write_mem(self.egl_color_buffer.0, &bytes)?;
                 self.egl_color_bytes = bytes;
+                self.egl_color_dimensions = Some((largura, altura));
                 (0, self.egl_color_buffer.0)
             }
             "CopyBuffers" => (3, gles::EGL_TRUE),
@@ -9545,6 +9638,9 @@ impl<C: CpuBackend> Machine<C> {
         };
         let legacy = iface == Interface::GlLegacy;
         let name = full.strip_prefix("gl").unwrap_or(full);
+        if name.starts_with("Draw") || matches!(name, "Clear" | "ReadPixels") {
+            self.sync_egl_color_from_guest()?;
+        }
         let base = usize::from(!legacy);
         let a: [u32; 10] = std::array::from_fn(|i| self.arg(base + i));
         let this = self.arg(0);
@@ -9909,6 +10005,24 @@ impl<C: CpuBackend> Machine<C> {
             }
             None => Ok(Some(SUCCESS)),
         }
+    }
+
+    /// Importa somente pixels modificados pelo guest; o restante pode ter sido
+    /// atualizado pelo GL desde a última exposição e não deve ser sobrescrito.
+    fn sync_egl_color_from_guest(&mut self) -> Result<(), CpuError> {
+        let Some((width, height)) = self.egl_color_dimensions else {
+            return Ok(());
+        };
+        self.egl_color_readback.resize(self.egl_color_bytes.len(), 0);
+        self.cpu
+            .read_mem(self.egl_color_buffer.0, &mut self.egl_color_readback)?;
+        if self.egl_color_readback != self.egl_color_bytes {
+            self.gl.import_rgb565_changes(
+                width, height, &self.egl_color_bytes, &self.egl_color_readback,
+            );
+            std::mem::swap(&mut self.egl_color_bytes, &mut self.egl_color_readback);
+        }
+        Ok(())
     }
 
     /// Lê os dezesseis números de uma matriz da memória do guest.
@@ -12760,6 +12874,45 @@ mod tests {
 
     /// As interfaces novas do BREW entregam o resultado por ponteiro de saída, e o
     /// `QueryInterface` do EGL precisa devolver um objeto de GL — não ele mesmo.
+    #[test]
+    fn shell_so_inicia_applet_instalado_e_enfileira_uma_vez() {
+        let module = loader::load(&module_calling_malloc()).unwrap();
+        let mut machine = Machine::new(UnicornCpu::new().unwrap(), module, ".");
+        machine.cpu.reset(&machine.module.mem).unwrap();
+        machine.set_installed_applets([0x123456]);
+        let start = slot_of(Interface::Shell, "StartApplet");
+        let can = slot_of(Interface::Shell, "CanStartApplet");
+        assert_eq!(call(&mut machine, Interface::Shell, can, [0, 0x123456, 0, 0]), SUCCESS);
+        assert_eq!(machine.take_launch_request(), None);
+        assert_eq!(call(&mut machine, Interface::Shell, start, [0, 0x654321, 0, 0]), ECLASSNOTSUPPORT);
+        assert_eq!(machine.take_launch_request(), None);
+        assert_eq!(call(&mut machine, Interface::Shell, start, [0, 0x123456, 0, 0]), SUCCESS);
+        assert_eq!(machine.take_launch_request(), Some(0x123456));
+        assert_eq!(machine.take_launch_request(), None);
+    }
+
+    #[test]
+    fn buffer_qualcomm_importa_o_fundo_antes_do_desenho() {
+        let module = loader::load(&module_calling_malloc()).unwrap();
+        let mut machine = Machine::new(UnicornCpu::new().unwrap(), module, ".");
+        machine.cpu.reset(&machine.module.mem).unwrap();
+        machine.gl = GlState::new(2, 1);
+        machine.egl_surface = 1;
+        machine.egl_surfaces.insert(1, (2, 1));
+        let get = slot_of(Interface::EglLegacy, "eglGetColorBufferQUALCOMM");
+        let buffer = call(&mut machine, Interface::EglLegacy, get, [0; 4]);
+        machine.cpu.write_mem(buffer, &0xf800u16.to_le_bytes()).unwrap();
+        // Até uma chamada sem vértices deve sincronizar o buffer antes de desenhar.
+        let draw = slot_of(Interface::GlLegacy, "glDrawArrays");
+        call(&mut machine, Interface::GlLegacy, draw, [gles::GL_TRIANGLES, 0, 0, 0]);
+        assert_eq!(machine.gl.present(2, 1)[0], 0xf800);
+        // Uma limpeza posterior não pode ser desfeita por uma cópia antiga do guest.
+        let clear = slot_of(Interface::GlLegacy, "glClear");
+        call(&mut machine, Interface::GlLegacy, clear, [gles::GL_COLOR_BUFFER_BIT, 0, 0, 0]);
+        let again = call(&mut machine, Interface::EglLegacy, get, [0; 4]);
+        assert_eq!(machine.cpu.read_u32(again).unwrap(), 0);
+    }
+
     #[test]
     fn egl_responde_por_ponteiro_de_saida_e_separa_o_gl() {
         let image = module_calling_malloc();

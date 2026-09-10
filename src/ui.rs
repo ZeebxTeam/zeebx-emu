@@ -5,7 +5,7 @@
 //! execução, e o [`Session::step`] já devolve o controle sozinho a cada fatia de tempo real,
 //! que é o que mantém a janela viva enquanto o jogo corre.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -118,6 +118,8 @@ pub struct App {
     /// Só o aperto vira tecla do console: manter apertado não repete, que é como um toque se
     /// comporta em menu.
     pad_anterior: [Pad; crate::input::PORTAS],
+    teclado_apertado: HashSet<egui::Key>,
+    teclas_entregues: HashSet<u32>,
     /// O que dizer sobre a última tentativa de exportar o log.
     log_status: Option<String>,
     /// A janela de log foi fechada nesta execução. Zera ao abrir outro jogo.
@@ -189,6 +191,8 @@ impl App {
             paused: false,
             last_step: std::time::Instant::now(),
             pad_anterior: Default::default(),
+            teclado_apertado: HashSet::new(),
+            teclas_entregues: HashSet::new(),
             log_status: None,
             log_dismissed: false,
             log_gravado: None,
@@ -246,6 +250,9 @@ impl App {
 
     fn play(&mut self, path: PathBuf) {
         self.error = None;
+        self.pad_anterior = Default::default();
+        self.teclado_apertado.clear();
+        self.teclas_entregues.clear();
         self.frame = None;
         self.paused = false;
         self.log_dismissed = false;
@@ -260,6 +267,7 @@ impl App {
             .then(|| Self::caminho_da_serial(&library::title_for(&path)));
         match Session::start_with(&path, self.portas_configuradas(), serial.as_deref()) {
             Ok(mut session) => {
+                session.set_installed_applets(self.games.iter().filter_map(|game| game.clsid));
                 // Ligar o som aqui é seguro **porque o jogo ainda não começou**: o `start` só
                 // prepara, e o `EVT_APP_START` sai na primeira volta do laço. Antes disso o
                 // jogo já tocava dentro do `start`, e o som saía com a tela vazia.
@@ -1326,27 +1334,27 @@ impl App {
         )
     }
 
-    /// As teclas do teclado da máquina que viraram evento neste quadro.
-    ///
-    /// O console tem teclado, e o BREW o entrega ao aplicativo como evento com o código virtual
-    /// no `wParam` — não pelo `IHID`, que só diz que existe um. Sem este caminho a janela só
-    /// sabia mexer nos dois controles, e formulário que espera `AVK_0` ou `AVK_CLR` — como o de
-    /// abertura da Z-Wheel — ficava parado para sempre.
-    ///
-    /// Mandar a mesma tecla como controle **e** como tecla não é conflito: o aparelho de época
-    /// tinha as duas coisas ligadas ao mesmo tempo, e o jogo escolhe a que lhe serve.
-    fn teclas_agora(ctx: &egui::Context) -> Vec<(u32, bool)> {
-        ctx.input(|i| {
-            i.events
-                .iter()
-                .filter_map(|event| match event {
-                    egui::Event::Key { key, pressed, .. } => {
-                        Some((Self::avk_de(*key)?, *pressed))
-                    }
-                    _ => None,
-                })
-                .collect()
-        })
+    /// Combina as fontes antes de emitir transições: uma seta física pode estar
+    /// mapeada também no controle, mas continua sendo um único aperto BREW.
+    fn transicoes_de_teclas(
+        anteriores: &mut HashSet<u32>,
+        atuais: HashSet<u32>,
+    ) -> Vec<(u32, bool)> {
+        let mut eventos: Vec<_> = anteriores.difference(&atuais)
+            .map(|&key| (key, false)).collect();
+        eventos.extend(atuais.difference(anteriores).map(|&key| (key, true)));
+        eventos.sort_unstable();
+        *anteriores = atuais;
+        eventos
+    }
+
+    fn avks_ativos(teclado: &HashSet<egui::Key>, pads: &[Pad]) -> HashSet<u32> {
+        let mut keys: HashSet<_> = teclado.iter().filter_map(|key| Self::avk_de(*key)).collect();
+        for pad in pads {
+            keys.extend(Self::teclas_do_controle(&Pad::default(), pad)
+                .into_iter().filter_map(|(key, down)| down.then_some(key)));
+        }
+        keys
     }
 
     /// As teclas que o direcional do controle manda, comparando com o quadro anterior.
@@ -1406,22 +1414,26 @@ impl App {
             true => None,
             false => Some(self.pads_now(ctx)),
         };
-        let mut teclas = match self.paused {
-            true => Vec::new(),
-            false => Self::teclas_agora(ctx),
-        };
-        // **O controle também fala teclado.** No console a roda de jogos anda pelo manche, e o
-        // jogo lê a posição por sinal do `IHID` — nós entregamos, ele lê e não gira: o caminho
-        // dele para com a direção calculada, e por que ainda não sabemos.
-        //
-        // Enquanto não sabemos, o direcional manda as teclas que a roda escuta, que estão
-        // medidas. É atalho declarado, não emulação: no aparelho o controle não vira tecla, e
-        // quando o caminho do `IHID` funcionar isto sai daqui.
+        let mut teclas = Vec::new();
         if let Some(pads) = &pads {
-            for (porta, pad) in pads {
-                teclas.extend(Self::teclas_do_controle(&self.pad_anterior[*porta], pad));
-                self.pad_anterior[*porta] = *pad;
-            }
+            // Guardamos teclas físicas: soltar 4 enquanto a seta continua apertada
+            // não deve soltar o AVK que ambas representam. Repetições do SO não
+            // acrescentam apertos; a repetição de navegação pertence ao guest.
+            ctx.input(|i| {
+                for event in &i.events {
+                    if let egui::Event::Key { key, pressed, repeat: false, .. } = event {
+                        if *pressed { self.teclado_apertado.insert(*key); }
+                        else { self.teclado_apertado.remove(key); }
+                        let atuais = Self::avks_ativos(&self.teclado_apertado, &self.pad_anterior);
+                        teclas.extend(Self::transicoes_de_teclas(&mut self.teclas_entregues, atuais));
+                    }
+                }
+                if !i.focused { self.teclado_apertado.clear(); }
+            });
+            self.pad_anterior = Default::default();
+            for (porta, pad) in pads { self.pad_anterior[*porta] = *pad; }
+            let atuais = Self::avks_ativos(&self.teclado_apertado, &self.pad_anterior);
+            teclas.extend(Self::transicoes_de_teclas(&mut self.teclas_entregues, atuais));
         }
         let limit = self.settings.graphics.speed_limit;
         let Some(session) = &mut self.session else {
@@ -1439,6 +1451,15 @@ impl App {
             let slice = (now - self.last_step).min(MAX_SLICE);
             self.last_step = now;
             let _ = session.step(slice, limit);
+        }
+        if let Some(cls) = session.take_launch_request() {
+            let path = self.games.iter().find(|game| game.clsid == Some(cls))
+                .map(|game| game.path.clone());
+            if let Some(path) = path {
+                self.play(path);
+                self.last_step = std::time::Instant::now();
+                return false;
+            }
         }
         // Sem barra superior, o teclado é o único caminho: `Esc` encerra e `P` pausa. Nenhuma
         // das duas colide com o controle do Zeebo, que usa setas, Z, X, C, V, Q, W, F, G, H,
@@ -1832,6 +1853,24 @@ fn placement(area: egui::Vec2, scaling: Scaling, keep_aspect: bool) -> egui::Vec
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn teclado_e_controle_compartilham_um_aperto() {
+        use std::collections::HashSet;
+        let mut pad = Pad::default();
+        pad.press(Pad::button_by_name("right").unwrap(), true);
+        let keyboard = HashSet::from([egui::Key::ArrowRight, egui::Key::Num4]);
+        let mut delivered = HashSet::new();
+        let active = App::avks_ativos(&keyboard, &[pad]);
+        assert_eq!(App::transicoes_de_teclas(&mut delivered, active.clone()),
+            vec![(crate::input::avk::RODA_SEGUINTE, true)]);
+        assert!(App::transicoes_de_teclas(&mut delivered, active).is_empty());
+        // Soltar o teclado não solta um comando ainda mantido pelo controle.
+        let active = App::avks_ativos(&HashSet::new(), &[pad]);
+        assert!(App::transicoes_de_teclas(&mut delivered, active).is_empty());
+        assert_eq!(App::transicoes_de_teclas(&mut delivered, HashSet::new()),
+            vec![(crate::input::avk::RODA_SEGUINTE, false)]);
+    }
 
     /// Só a transição vira tecla: segurar o direcional não repete.
     #[test]

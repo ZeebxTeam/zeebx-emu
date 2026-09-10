@@ -1407,6 +1407,30 @@ impl GlState {
 
     /// O quadro pronto, em RGB565 e no tamanho `(width, height)` pedido.
     ///
+    /// Aplica escritas diretas no buffer exposto pelo EGL sem restaurar pixels
+    /// antigos sobre desenhos mais recentes. Profundidade e stencil são preservados.
+    pub fn import_rgb565_changes(&mut self, width: usize, height: usize, old: &[u8], new: &[u8]) {
+        self.flush();
+        let (sw, sh) = self.surface();
+        if width == 0 || height == 0 || old.len() != width * height * 2 || new.len() != old.len() {
+            return;
+        }
+        for y in 0..sh.min(self.height) {
+            for x in 0..sw.min(self.width) {
+                let offset = ((y * height / sh) * width + x * width / sw) * 2;
+                if old[offset..offset + 2] == new[offset..offset + 2] {
+                    continue;
+                }
+                let pixel = u16::from_le_bytes([new[offset], new[offset + 1]]);
+                let r = ((pixel >> 11) & 31) as u8;
+                let g = ((pixel >> 5) & 63) as u8;
+                let b = (pixel & 31) as u8;
+                let index = y * self.width + x;
+                self.color[index] = [(r << 3) | (r >> 2), (g << 2) | (g >> 4), (b << 3) | (b >> 2), self.color[index][3]];
+            }
+        }
+    }
+
     /// A superfície em que o jogo desenha costuma ser menor que a tela — o Quake do Zeebo
     /// desenha em 320×400 numa tela de 640×480 —, então a apresentação amplia. É o que a
     /// extensão de escala da Qualcomm faz no console, e sem isso o quadro aparece encolhido
@@ -1704,42 +1728,39 @@ fn fill_band(tri: &Prepared, uniforms: &Uniforms, band: &mut Band) {
             let montar = || {
                 let mut source = [attribute(0), attribute(1), attribute(2), attribute(3)];
                 if let Some(texture) = uniforms.texture {
-                    // **Quanta textura cabe neste pixel.** A derivada é tirada do pixel
-                    // seguinte da mesma linha, que é de graça: o passo baricêntrico já está
-                    // calculado, e `1/w` é linear na tela. Sem esta conta o nível seria sempre
-                    // o zero, que é o que fazia a lateral do carro virar listras.
-                    let seguinte = [
-                        bary[0] + tri.step[0],
-                        bary[1] + tri.step[1],
-                        bary[2] + tri.step[2],
-                    ];
-                    let inv_w2 = seguinte[0] * tri.screen[0][3]
-                        + seguinte[1] * tri.screen[1][3]
-                        + seguinte[2] * tri.screen[2][3];
+                    // A redução pode acontecer em qualquer eixo da tela. Compare os
+                    // vizinhos da direita e de baixo, usando o maior footprint.
                     let (u, v) = (attribute(4), attribute(5));
                     // **O pixel vizinho precisa estar do mesmo lado do olho.** Quando o sinal
                     // de `1/w` vira — o triângulo cruza o horizonte —, a diferença explode e o
                     // nível escolhido vai para o menor da cadeia, que é uma cor chapada.
-                    let lod = match inv_w2 <= 0.0 || inv_w <= 0.0 {
-                        true => 0.0,
-                        false => {
-                            let w2 = 1.0 / inv_w2;
-                            let vizinho = |k: usize| {
-                                (seguinte[0] * tri.over_w[0][k]
-                                    + seguinte[1] * tri.over_w[1][k]
-                                    + seguinte[2] * tri.over_w[2][k])
-                                    * w2
-                            };
-                            let du = (vizinho(4) - u) * texture.width as f32;
-                            let dv = (vizinho(5) - v) * texture.height as f32;
-                            let quadrado = du * du + dv * dv;
-                            match quadrado > 1.0 {
-                                // `log2(sqrt(x))` é `log2(x)/2`, e uma raiz a menos por pixel.
-                                true => quadrado.log2() * 0.5,
-                                false => 0.0,
+                    let reducao = |step: [f32; 3]| {
+                        let seguinte = std::array::from_fn::<_, 3, _>(|i| bary[i] + step[i]);
+                        let inv_w2 = seguinte[0] * tri.screen[0][3]
+                            + seguinte[1] * tri.screen[1][3]
+                            + seguinte[2] * tri.screen[2][3];
+                        match inv_w2 <= 0.0 || inv_w <= 0.0 {
+                            true => 0.0,
+                            false => {
+                                let w2 = 1.0 / inv_w2;
+                                let vizinho = |k: usize| {
+                                    (seguinte[0] * tri.over_w[0][k]
+                                        + seguinte[1] * tri.over_w[1][k]
+                                        + seguinte[2] * tri.over_w[2][k])
+                                        * w2
+                                };
+                                let du = (vizinho(4) - u) * texture.width as f32;
+                                let dv = (vizinho(5) - v) * texture.height as f32;
+                                let quadrado = du * du + dv * dv;
+                                match quadrado > 1.0 {
+                                    // `log2(sqrt(x))` é `log2(x)/2`, e uma raiz a menos por pixel.
+                                    true => quadrado.log2() * 0.5,
+                                    false => 0.0,
+                                }
                             }
                         }
                     };
+                    let lod = reducao(tri.step).max(reducao(tri.step_y));
                     let texel = texture.sample_lod(u, v, lod);
                     source = combine(uniforms.texture_env, source, texel);
                 }
@@ -1960,6 +1981,54 @@ fn unpack(color: [u8; 4]) -> [f32; 4] {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn escrita_no_buffer_egl_preserva_desenhos_e_profundidade() {
+        let mut state = GlState::new(2, 1);
+        let mut exported = Vec::new();
+        state.frame_rgb565(2, 1, &mut exported);
+        state.color[1] = [0, 255, 0, 255];
+        state.depth[0] = 0.25;
+        state.stencil[0] = 7;
+        let mut changed = exported.clone();
+        changed[..2].copy_from_slice(&0xf800u16.to_le_bytes());
+        state.import_rgb565_changes(2, 1, &exported, &changed);
+        assert_eq!(&state.color[0][..3], &[255, 0, 0]);
+        assert_eq!(state.color[1], [0, 255, 0, 255]);
+        assert_eq!(state.depth[0], 0.25);
+        assert_eq!(state.stencil[0], 7);
+    }
+
+    #[test]
+    fn mipmap_considera_reducao_vertical_e_horizontal() {
+        for vertical in [false, true] {
+            let mut state = GlState::new(8, 8);
+            state.bind_texture(1);
+            state.set_capability(gles::GL_TEXTURE_2D, true);
+            state.textures.insert(1, Texture {
+                width: 64,
+                height: 64,
+                pixels: vec![[255, 0, 0, 255]; 64 * 64],
+                mipmaps: (0..6).map(|level| {
+                    let size = 32 >> level;
+                    Nivel { width: size, height: size, pixels: vec![[0, 255, 0, 255]; size * size] }
+                }).collect(),
+                min_filter: gles::GL_NEAREST_MIPMAP_NEAREST,
+                ..Default::default()
+            });
+            let vertex = |x: f32, y: f32| Vertex {
+                position: [x, y, 0.0, 1.0],
+                uv: if vertical { [0.0, (y + 1.0) * 0.5] } else { [(x + 1.0) * 0.5, 0.0] },
+                ..Default::default()
+            };
+            state.draw(gles::GL_TRIANGLE_STRIP, &[
+                vertex(-1.0, -1.0), vertex(1.0, -1.0),
+                vertex(-1.0, 1.0), vertex(1.0, 1.0),
+            ]);
+            state.flush();
+            assert_eq!(state.color[3 * 8 + 4], [0, 255, 0, 255], "vertical={vertical}");
+        }
+    }
 
     /// Um buraco na cadeia não vira branco: o nível inválido cai no que existe.
     ///
