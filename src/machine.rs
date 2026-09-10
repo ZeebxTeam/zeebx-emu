@@ -11220,6 +11220,11 @@ impl<C: CpuBackend> Machine<C> {
             use std::io::Write;
             // Falha de escrita não pode derrubar o jogo: a serial é instrumento, não emulação.
             let _ = writeln!(serial, "[{:>9} ms] {message}", agora);
+            // **Descarrega a cada linha.** Sem isto o arquivo fica vazio enquanto a sessão corre
+            // — o `BufWriter` só escreve quando enche ou quando é destruído —, e uma captura que
+            // só aparece depois de fechar o jogo não serve para acompanhar o que está
+            // acontecendo. É o uso inteiro da ferramenta.
+            let _ = serial.flush();
         }
         match self
             .debug_output
