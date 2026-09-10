@@ -159,12 +159,58 @@ pub fn extract(zip: &Path) -> std::io::Result<PathBuf> {
         entry.read_to_end(&mut bytes)?;
         std::fs::write(&out, bytes)?;
     }
+    escrever_manifesto(zip, &target)?;
     match extracted.is_file() {
         true => Ok(extracted),
         false => Err(std::io::Error::other(
             "o .mod não apareceu depois de extrair o zip",
         )),
     }
+}
+
+/// O nome do arquivo que lista o que veio do pacote.
+pub const MANIFESTO: &str = ".zeebx-pacote";
+
+/// Grava, dentro do cache, a lista do que o zip trouxe.
+///
+/// Existe para o gerenciador de saves poder dizer, **sem adivinhar**, o que é save e o que é
+/// conteúdo do jogo. A primeira tentativa comparava datas — o que é mais novo que o `.mod` seria
+/// save — e ela cai: os arquivos de uma mesma extração diferem por milissegundos, e o
+/// `resources.pakz` de 15 MB do Alice terminava de ser escrito depois do `.mod`. Numa lista com
+/// botão de excluir, errar assim apaga o jogo.
+///
+/// A lista vem do zip, que é a fonte: o que está nele é do pacote, o resto o jogo escreveu.
+pub fn escrever_manifesto(zip: &Path, destino: &Path) -> std::io::Result<()> {
+    let file = std::fs::File::open(zip)?;
+    let mut archive = zip::ZipArchive::new(file).map_err(std::io::Error::other)?;
+    let mut nomes = Vec::new();
+    for i in 0..archive.len() {
+        let entry = archive.by_index(i).map_err(std::io::Error::other)?;
+        if let Some(nome) = entry.enclosed_name() {
+            nomes.push(nome.to_string_lossy().replace('\\', "/"));
+        }
+    }
+    nomes.sort();
+    nomes.dedup();
+    std::fs::write(destino.join(MANIFESTO), nomes.join("\n"))
+}
+
+/// Onde o zip foi extraído, exista ou não.
+pub fn cache_de(zip: &Path) -> std::io::Result<PathBuf> {
+    Ok(cache_dir().join(fingerprint(zip)?))
+}
+
+/// Escreve o manifesto de um pacote já extraído que ainda não tem um.
+///
+/// Os caches feitos antes de o manifesto existir não têm como saber o que era do pacote. Em vez
+/// de deixá-los de fora do gerenciador de saves — ou pior, de adivinhar por data —, o manifesto é
+/// reconstruído do zip, que continua ali.
+pub fn completar_manifesto(zip: &Path) -> std::io::Result<()> {
+    let destino = cache_de(zip)?;
+    if !destino.is_dir() || destino.join(MANIFESTO).is_file() {
+        return Ok(());
+    }
+    escrever_manifesto(zip, &destino)
 }
 
 /// Um nome de pasta que muda quando o arquivo muda.

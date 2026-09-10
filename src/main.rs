@@ -34,6 +34,7 @@ mod ponte;
 mod rasterizer;
 mod rede;
 mod resfile;
+mod saves;
 mod session;
 mod settings;
 mod sql;

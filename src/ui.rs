@@ -94,6 +94,14 @@ pub struct App {
     games: Vec<Game>,
     /// Se a janela de configurações está aberta.
     settings_open: bool,
+    /// Se a janela do gerenciador de saves está aberta.
+    saves_open: bool,
+    /// Os saves listados, relidos a cada abertura e a cada exclusão.
+    saves: Vec<(bool, crate::saves::Save)>,
+    /// O save que espera confirmação para ser apagado.
+    saves_confirmar: Option<usize>,
+    /// O que dizer depois de apagar.
+    saves_recado: Option<String>,
     /// O que dizer depois de mexer na trava diária do Zeeboids, se algo houver a dizer.
     sync_unlocked: Option<String>,
     /// O jogo em execução. Enquanto existe, ele tem uma janela só dele.
@@ -165,6 +173,10 @@ impl App {
             tab: Tab::General,
             games,
             settings_open: false,
+            saves_open: false,
+            saves: Vec::new(),
+            saves_confirmar: None,
+            saves_recado: None,
             sync_unlocked: None,
             session: None,
             frame: None,
@@ -262,6 +274,10 @@ impl App {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button(self.catalog.get("nav.settings")).clicked() {
                     self.settings_open = true;
+                }
+                if ui.button(self.catalog.get("nav.saves")).clicked() {
+                    self.recarrega_saves();
+                    self.saves_open = true;
                 }
                 // O Zeeboids só deixa sincronizar uma vez por dia, e a trava é dele: guarda a
                 // data no próprio banco e compara com a de hoje. Testar rede com isso custa um
@@ -930,6 +946,143 @@ impl App {
     /// desenha o fecho na mesma linha de execução, que é o que permite mexer no `self` de
     /// dentro dele. A variante adiada exigiria um fecho compartilhável entre linhas, e nem o
     /// emulador nem as configurações atravessam essa fronteira.
+    /// Relê a lista de saves. Chamada ao abrir a janela e depois de cada exclusão.
+    ///
+    /// A leitura toca o disco, então não vai no desenho do quadro: a janela redesenha muitas
+    /// vezes por segundo e varrer o cache em cada uma seria varrer à toa.
+    fn recarrega_saves(&mut self) {
+        // Os caches feitos antes de o manifesto existir não sabem o que veio do pacote. Antes de
+        // listar, reconstrói o manifesto de cada um a partir do zip — que continua na pasta de
+        // ROMs. Sem isso o jogo antigo simplesmente não apareceria na lista.
+        if let Some(roms) = self.settings.roms_dir.clone() {
+            for entrada in std::fs::read_dir(roms).into_iter().flatten().flatten() {
+                let caminho = entrada.path();
+                if caminho.extension().is_some_and(|e| e.eq_ignore_ascii_case("zip")) {
+                    let _ = archive::completar_manifesto(&caminho);
+                }
+            }
+        }
+        let jogos = crate::saves::dos_jogos(&archive::cache_dir());
+        let aparelho = crate::saves::do_aparelho(&archive::device_dir());
+        self.saves = jogos
+            .into_iter()
+            .map(|s| (false, s))
+            .chain(aparelho.into_iter().map(|s| (true, s)))
+            .collect();
+        self.saves_confirmar = None;
+    }
+
+    /// Uma linha da lista: o que é, quanto ocupa, e o botão de excluir.
+    fn linha_de_save(&mut self, ui: &mut egui::Ui, indice: usize) {
+        let (_, save) = &self.saves[indice];
+        let (titulo, arquivos, bytes) = (save.titulo.clone(), save.arquivos, save.bytes);
+        ui.horizontal(|ui| {
+            ui.label(&titulo);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button(self.catalog.get("saves.delete")).clicked() {
+                    self.saves_confirmar = Some(indice);
+                }
+                ui.label(self.catalog.format(
+                    "saves.files",
+                    &[
+                        ("count", &arquivos.to_string()),
+                        ("size", &crate::saves::tamanho(bytes)),
+                    ],
+                ));
+            });
+        });
+    }
+
+    /// A janela do gerenciador de saves.
+    ///
+    /// Duas listas, e a separação é a do console: o que o jogo escreveu na pasta dele, e o que
+    /// está no sistema de arquivos do aparelho — que é de todos. Apagar o `zeeboiddata` tira os
+    /// bonecos do Zeeboids **e** o que o Zeebo F.C. lê deles; a dica embaixo do título diz isso,
+    /// porque a lista sozinha não diria.
+    fn saves_window(&mut self, ctx: &egui::Context) {
+        let id = egui::ViewportId::from_hash_of("saves");
+        let builder = egui::ViewportBuilder::default()
+            .with_title(self.catalog.get("saves.title"))
+            .with_inner_size([520.0, 420.0])
+            .with_min_inner_size([380.0, 260.0]);
+        let mut close = false;
+        ctx.show_viewport_immediate(id, builder, |ctx, _class| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                if let Some(recado) = self.saves_recado.clone() {
+                    ui.horizontal(|ui| {
+                        ui.label(recado);
+                        if ui.button(self.catalog.get("saves.confirm.no")).clicked() {
+                            self.saves_recado = None;
+                        }
+                    });
+                    ui.separator();
+                }
+                if self.saves.is_empty() {
+                    ui.label(self.catalog.get("saves.none"));
+                    return;
+                }
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    let jogos: Vec<usize> = (0..self.saves.len())
+                        .filter(|&i| !self.saves[i].0)
+                        .collect();
+                    let aparelho: Vec<usize> = (0..self.saves.len())
+                        .filter(|&i| self.saves[i].0)
+                        .collect();
+                    if !jogos.is_empty() {
+                        ui.heading(self.catalog.get("saves.games"));
+                        for i in jogos {
+                            self.linha_de_save(ui, i);
+                        }
+                        ui.add_space(12.0);
+                    }
+                    if !aparelho.is_empty() {
+                        ui.heading(self.catalog.get("saves.device"));
+                        ui.label(self.catalog.get("saves.device.hint"));
+                        for i in aparelho {
+                            self.linha_de_save(ui, i);
+                        }
+                    }
+                });
+            });
+            // A confirmação é modal de propósito: apagar não tem volta, e um clique errado num
+            // botão de lista é fácil demais.
+            if let Some(indice) = self.saves_confirmar {
+                let titulo = self.saves[indice].1.titulo.clone();
+                egui::Window::new(self.catalog.get("saves.title"))
+                    .collapsible(false)
+                    .resizable(false)
+                    .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                    .show(ctx, |ui| {
+                        ui.label(self.catalog.format("saves.confirm", &[("name", &titulo)]));
+                        ui.horizontal(|ui| {
+                            if ui.button(self.catalog.get("saves.confirm.yes")).clicked() {
+                                let resultado = crate::saves::apagar(&self.saves[indice].1);
+                                self.saves_recado = Some(match resultado {
+                                    Ok(()) => self
+                                        .catalog
+                                        .format("saves.deleted", &[("name", &titulo)]),
+                                    Err(erro) => self.catalog.format(
+                                        "saves.failed",
+                                        &[("name", &titulo), ("reason", &erro.to_string())],
+                                    ),
+                                });
+                                self.recarrega_saves();
+                            }
+                            if ui.button(self.catalog.get("saves.confirm.no")).clicked() {
+                                self.saves_confirmar = None;
+                            }
+                        });
+                    });
+            }
+            close = ctx.input(|i| i.viewport().close_requested());
+        });
+        if close {
+            self.saves_open = false;
+            self.saves_confirmar = None;
+            self.saves_recado = None;
+        }
+    }
+
     fn settings_window(&mut self, ctx: &egui::Context) {
         let id = egui::ViewportId::from_hash_of("configuracoes");
         let builder = egui::ViewportBuilder::default()
@@ -1303,6 +1456,9 @@ impl eframe::App for App {
         egui::CentralPanel::default().show(ctx, |ui| self.library_screen(ui));
         if self.settings_open {
             self.settings_window(ctx);
+        }
+        if self.saves_open {
+            self.saves_window(ctx);
         }
         if self.session.is_some() {
             self.grava_relatorio();
