@@ -4005,6 +4005,45 @@ impl<C: CpuBackend> Machine<C> {
         Ok(())
     }
 
+    /// Os tratadores que devem ver uma tecla, na ordem em que devem vê-la.
+    ///
+    /// Primeiro os do formulário atual, descendo da raiz pelos filhos — que é o que um
+    /// container do BREW faz com um evento —, e depois os de fora dele, que é onde mora o
+    /// tratador da abertura. Sem ordem nenhuma, quem respondia era sempre a `0x77300` do jogo,
+    /// um `mov r0,#1; bx lr` que devolve "tratei" para qualquer tecla e está registrada num
+    /// widget que por acaso vinha antes.
+    fn tratadores_em_ordem(&self) -> Vec<(u32, u32)> {
+        /// Teto de nós visitados, pelo mesmo motivo da [`Machine::arvore_do_formulario`].
+        const TETO: usize = 4096;
+
+        let mut ordem = Vec::new();
+        let mut vistos = std::collections::HashSet::new();
+        let mut fila: Vec<u32> = self.formulario_atual().into_iter().collect();
+        while let Some(atual) = fila.pop() {
+            if vistos.len() >= TETO || !vistos.insert(atual) {
+                continue;
+            }
+            let Some(no) = self.widgets.get(&atual) else {
+                continue;
+            };
+            if no.tratador.0 != 0 {
+                ordem.push(no.tratador);
+            }
+            // Empilhado ao contrário para que o primeiro filho saia primeiro.
+            let filhos: Vec<u32> = no.filhos.values().copied().chain(no.anexados.iter().copied()).collect();
+            fila.extend(filhos.into_iter().rev());
+        }
+        let mut fora: Vec<(u64, (u32, u32))> = self
+            .widgets
+            .iter()
+            .filter(|(endereco, widget)| widget.tratador.0 != 0 && !vistos.contains(*endereco))
+            .map(|(_, widget)| (widget.serial, widget.tratador))
+            .collect();
+        fora.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+        ordem.extend(fora.into_iter().map(|(_, par)| par));
+        ordem
+    }
+
     /// Os widgets da árvore do formulário atual, incluindo a raiz.
     ///
     /// Desce da raiz em vez de subir de cada widget. Subir custava uma caminhada por widget
@@ -5700,12 +5739,7 @@ impl<C: CpuBackend> Machine<C> {
             // tecla. No console quem recebe é o widget **com foco**, e foco é coisa que ainda
             // não sabemos ler. Enquanto não soubermos, fica a ordem do mapa, que é a que
             // estava aqui antes de eu começar a mexer.
-            let tratadores: Vec<(u32, u32)> = self
-                .widgets
-                .values()
-                .map(|widget| widget.tratador)
-                .filter(|&(funcao, _)| funcao != 0)
-                .collect();
+            let tratadores = self.tratadores_em_ordem();
             for (funcao, contexto) in tratadores {
                 let saida = self.call_guest(
                     funcao,
