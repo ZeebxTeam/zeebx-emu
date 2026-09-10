@@ -5649,10 +5649,19 @@ impl<C: CpuBackend> Machine<C> {
                 false => input::EVT_KEY + 1,
             };
             let mut tratado = false;
+            // **Só o formulário atual recebe a tecla.** O tratador do formulário de animação
+            // continua registrado muito depois de a abertura acabar, e ele devolve 1 para
+            // qualquer tecla: com todos os widgets na lista, era ele quem respondia sempre, e
+            // o aperto nunca chegava ao applet. Só a soltura passava, porque ele a recusa.
+            //
+            // Mesma árvore que o desenho usa, pelo mesmo motivo: é o que o console teria à
+            // mostra. Ver [`Machine::arvore_do_formulario`].
+            let dentro = self.arvore_do_formulario();
             let tratadores: Vec<u32> = self
                 .widgets
-                .values()
-                .map(|widget| widget.tratador)
+                .iter()
+                .filter(|(endereco, _)| dentro.contains(*endereco))
+                .map(|(_, widget)| widget.tratador)
                 .filter(|&onde| onde != 0)
                 .collect();
             for onde in tratadores {
