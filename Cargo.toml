@@ -36,3 +36,9 @@ rusqlite = { version = "0.37", features = ["bundled"] }
 ab_glyph = "0.2"
 # Só o JPEG dos ícones de `.mif`. O resto da decodificação de imagem é nossa.
 zune-jpeg = { version = "0.5.15", default-features = false, features = ["std"] }
+# A música de nove jogos é MP3 — Quake, Quake 2, Galaxy on Fire, Rally Master Pro, Powerboat,
+# Action Hero 3D, Need For Speed, zeetris e a Z-Wheel. Um decodificador de Layer III é Huffman,
+# requantização, IMDCT e banco de síntese, e escrever isso sem uma referência para comparar dá
+# som que toca e sai errado. O symphonia é Rust puro (sem build C) e MPL-2.0, que se combina com
+# o GPLv2 daqui. Só o MP3 entra: o resto dos codecs fica fora.
+symphonia = { version = "0.5.5", default-features = false, features = ["mp3"] }

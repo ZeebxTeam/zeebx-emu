@@ -2,11 +2,23 @@
 
 ## O que os jogos entregam
 
-Quase tudo é RIFF/WAVE: efeito e trilha chegam num buffer de memória, e é o que `wav.rs` lê.
+**Efeito é WAVE; música não.** Essa é a divisão, e ela explica um sintoma que durou muito tempo:
+efeito sonoro tocava em todo jogo e trilha não tocava em nenhum. Não era um defeito no
+misturador — eram dois formatos inteiros faltando.
 
-A exceção é o **Tekken 2**, cuja música é um MP3 de 140 KB — MPEG-2, Layer III, 64 kbps, 22.050 Hz,
-mono, com a etiqueta `Info` do codificador. Ele custou caro justamente por ser exceção, e a
-história está mais abaixo.
+Contado nos pacotes dos sessenta e três títulos:
+
+| Formato | Onde aparece |
+|---|---|
+| RIFF/WAVE | efeito sonoro, em 14 jogos — sempre tocou |
+| **MP3** | a música de 9 jogos: Quake, Quake 2, Galaxy on Fire, Rally Master Pro, Powerboat Challenge, Action Hero 3D, Need For Speed, zeetris e a Z-Wheel |
+| **MIDI** | a música dos ports de arcade: Double Dragon, Bad Dudes, Caveman Ninja, Dark Seal, Heavy Barrel, Karnov's Revenge, Magical Drop 3, Spin Master, Street Hoop, Super BurgerTime e Wizard Fire |
+
+O levantamento é de leitura dos pacotes, não de suposição: os ports de arcade trazem **um** `.wav`
+cada — o efeito — e a música deles chega pelo `IMedia` como MIDI, o que o relatório dizia numa
+linha fácil de passar batido, `som recusado (audio/mid)`.
+
+O MP3 já toca (ver abaixo). O MIDI é o assunto do fim desta página.
 
 `wav.rs` lê:
 
@@ -23,7 +35,7 @@ IMediaUtil::CreateMedia(AEEMediaData { clsData, pData, dwSize })
         │
 IMedia::SetMediaParm(MM_PARM_MEDIA_DATA | VOLUME | MUTE | PLAY_REPEAT)
         │
-IMedia::Play  ──►  decodifica o WAVE  ──►  voz no misturador
+IMedia::Play  ──►  decodifica o WAVE ou o MP3  ──►  voz no misturador
 ```
 
 Os identificadores (`MM_PARM_MEDIA_DATA = 1`, `MM_PARM_VOLUME = 4`, `MM_PARM_MUTE = 5`,
@@ -75,21 +87,50 @@ A música é MP3, `wav.rs` recusa, e o `Play` caía no caminho de "sem som legí
 ao jogo que **o som já tinha acabado**. O jogo consultava o estado, via "pronto", e mandava tocar
 de novo. Para sempre.
 
-O conserto não é um decodificador de MP3. É `mp3.rs`, que lê o cabeçalho do primeiro quadro e a
-etiqueta `Xing`/`Info` do codificador e devolve **só a duração** — quando a etiqueta traz a
+O primeiro conserto não foi um decodificador. Foi `mp3.rs`, que lê o cabeçalho do primeiro quadro
+e a etiqueta `Xing`/`Info` do codificador e devolve **só a duração** — quando a etiqueta traz a
 contagem de quadros o número é exato mesmo com taxa variável; sem ela, sobra a conta do tamanho
 pela taxa de bits. Com a duração, o som "toca" em silêncio pelo tempo certo do relógio virtual, o
 `GetState` responde "tocando" enquanto isso, e o jogo segue.
 
-É uma troca declarada, e ela sai no relatório como hipótese em uso: **o Tekken fica mudo, mas
-anda**. Seis segundos virtuais saíram de mais de cinco minutos para **9,7 segundos**, e ele
-desenha a tela de título. O que sobra nele agora é outro assunto: 1,08 milhão de `DrawPixel` por
-quadro, que é custo de despacho de API.
+Era uma troca declarada, e saía no relatório como hipótese em uso: **o Tekken andava, mudo**. Seis
+segundos virtuais saíram de mais de cinco minutos para **9,7 segundos**, e ele desenha a tela de
+título. O que sobra nele agora é outro assunto: 1,08 milhão de `DrawPixel` por quadro, que é custo
+de despacho de API.
+
+## O MP3 que agora toca
+
+A duração resolvia o travamento e não a música, e a música é de nove jogos — não de um. Então
+`mp3.rs` ganhou o `decode`, que devolve o mesmo `Sound` que o RIFF/WAVE produz: o misturador não
+sabe de onde o som veio, e reamostragem, volume e repetição funcionam iguais.
+
+A decodificação em si é do **symphonia**, Rust puro, só o MP3 habilitado. É a mesma decisão do
+SQLite para o `ISQLMgr` e do `ab_glyph` para o `DrawText`, e vale dizer por quê: o Layer III é
+Huffman, requantização, estéreo conjunto, IMDCT e banco de síntese polifásico, e escrever isso
+sem uma referência para comparar a saída dá o pior resultado possível — som que toca, parece bem e
+está errado.
+
+Ordem no `machine.rs`: RIFF/WAVE primeiro, porque é o que quase todo som é e é o mais barato de
+reconhecer; MP3 depois; e só então a recusa, que continua nomeando o formato. O caminho da duração
+ficou como rede de segurança para um MP3 que o decodificador recuse.
+
+A verificação, medida:
+
+- O tom de teste de 440 Hz decodifica com **pico de 0,761 e altura de 440 Hz** — a altura é
+  conferida por cruzamento de zero, porque tom errado passaria por qualquer outra verificação. A
+  saída bate com a do decodificador de referência em sete casas decimais.
+- O **Tekken 2** saiu de silêncio para **71,6% de amostras não nulas** em oito segundos, com pico
+  de 0,698. A hipótese "o Tekken fica mudo" saiu do relatório dele.
+- Decodificar é feito **uma vez por trilha**, não por `Play`: o resultado entra no cache de sons
+  do `machine.rs`. Uma trilha de trinta e seis segundos a 22 kHz mono são seis megabytes de `f32`,
+  e nenhum dos nossos jogos troca de música com frequência que justifique fluxo.
 
 A lição vale além do áudio: **antes de otimizar um jogo lento, conferir se ele está trabalhando
 ou insistindo.** O Heavy Weapon era o mesmo caso, com bitmaps que mediam 0×0.
 
 ## O que falta
 
-**Tocar MP3 de verdade.** Hoje só a duração é honrada. Um decodificador de Layer III é trabalho
-de gente grande, e o único jogo que cobra é o Tekken 2.
+**A música dos ports de arcade.** Onze jogos entregam MIDI, e MIDI não se decodifica: se
+sintetiza. Não há amostra dentro do arquivo — há a partitura, e o instrumento vinha do
+sintetizador do firmware do console, que não temos. Qualquer som que a gente produza aí é uma
+aproximação declarada, e é assim que ela deve aparecer no relatório.

@@ -7276,22 +7276,29 @@ impl<C: CpuBackend> Machine<C> {
             return Ok(Some(sound.clone()));
         }
         let bytes = self.read_bytes(state.buffer, state.size)?;
-        match crate::wav::parse(&bytes) {
-            Ok(sound) => {
-                let sound = std::sync::Arc::new(sound);
-                self.waves.insert(key, sound.clone());
-                Ok(Some(sound))
-            }
-            Err(err) => {
-                // Dizer *qual* formato chegou é o que permite saber o que implementar depois —
-                // e "não é um RIFF/WAVE" não diz. O que diz é a assinatura do próprio bloco:
-                // é assim que se sabe que a trilha do Tekken 2 é MP3 sem abrir o jogo.
-                let formato = detect_mime(&bytes, "").unwrap_or("formato desconhecido");
-                self.bad_pointers
-                    .insert(format!("som recusado ({formato}): {err}"));
-                Ok(None)
-            }
-        }
+        // RIFF/WAVE primeiro porque é o que quase todo som é, e é o mais barato de reconhecer.
+        // MP3 depois: é o formato da **música**, e enquanto ele não existia aqui, efeito tocava
+        // e trilha não tocava em jogo nenhum.
+        let som = match crate::wav::parse(&bytes) {
+            Ok(sound) => Some(sound),
+            Err(err) => match crate::mp3::decode(&bytes) {
+                Some(sound) => Some(sound),
+                None => {
+                    // Dizer *qual* formato chegou é o que permite saber o que implementar
+                    // depois — e "não é um RIFF/WAVE" não diz. O que diz é a assinatura do
+                    // próprio bloco: é assim que se soube que a trilha do Tekken 2 é MP3 sem
+                    // abrir o jogo, e que a dos ports de arcade é MIDI.
+                    let formato = detect_mime(&bytes, "").unwrap_or("formato desconhecido");
+                    self.bad_pointers
+                        .insert(format!("som recusado ({formato}): {err}"));
+                    None
+                }
+            },
+        };
+        let Some(sound) = som else { return Ok(None) };
+        let sound = std::sync::Arc::new(sound);
+        self.waves.insert(key, sound.clone());
+        Ok(Some(sound))
     }
 
     /// Quanto dura um som que não sabemos decodificar, quando dá para descobrir sem decodificar.
