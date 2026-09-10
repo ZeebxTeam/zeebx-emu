@@ -1829,6 +1829,8 @@ pub struct Machine<C: CpuBackend> {
     /// depois: a região de superfícies não tem como devolver o que já deu, e a Z-Wheel pede o
     /// buffer uma vez por quadro.
     egl_color_buffer: (u32, usize),
+    /// Os bytes já convertidos, reaproveitados de uma chamada para a outra.
+    egl_color_bytes: Vec<u8>,
     /// Próximo identificador livre de superfície ou contexto.
     egl_next_handle: u32,
     /// Quantas vezes o jogo apresentou um quadro com `eglSwapBuffers`.
@@ -2030,6 +2032,7 @@ impl<C: CpuBackend> Machine<C> {
             egl_error: gles::EGL_SUCCESS,
             egl_surfaces: HashMap::new(),
             egl_color_buffer: (0, 0),
+            egl_color_bytes: Vec::new(),
             egl_next_handle: EGL_HANDLE_BASE,
             egl_swaps: 0,
             gles_next_name: 0,
@@ -9365,19 +9368,26 @@ impl<C: CpuBackend> Machine<C> {
                         (alvo.width() as usize, alvo.height() as usize)
                     }
                 };
-                let bytes: Vec<u8> = self
-                    .gl
-                    .present(largura, altura)
-                    .iter()
-                    .flat_map(|pixel| pixel.to_le_bytes())
-                    .collect();
+                // O vetor de bytes é o mesmo de uma chamada para a outra: são quatrocentos
+                // kilobytes por leitura, duas leituras por quadro, e alocar isso sessenta vezes
+                // por segundo não paga nada.
+                //
+                // Guardar o quadro convertido para servir a segunda leitura **não** funciona:
+                // medido, zero de mil e duzentas e noventa e oito leituras puderam ser
+                // reaproveitadas, porque o jogo desenha entre uma e outra.
+                let mut bytes = std::mem::take(&mut self.egl_color_bytes);
+                self.gl.frame_rgb565(largura, altura, &mut bytes);
                 if self.egl_color_buffer.1 < bytes.len() {
                     match self.surface_alloc(bytes.len() as u32) {
                         Some(onde) => self.egl_color_buffer = (onde, bytes.len()),
-                        None => return Ok(Some(0)),
+                        None => {
+                            self.egl_color_bytes = bytes;
+                            return Ok(Some(0));
+                        }
                     }
                 }
                 self.cpu.write_mem(self.egl_color_buffer.0, &bytes)?;
+                self.egl_color_bytes = bytes;
                 (0, self.egl_color_buffer.0)
             }
             "CopyBuffers" => (3, gles::EGL_TRUE),

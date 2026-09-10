@@ -1225,6 +1225,40 @@ impl GlState {
     /// desenha em 320×400 numa tela de 640×480 —, então a apresentação amplia. É o que a
     /// extensão de escala da Qualcomm faz no console, e sem isso o quadro aparece encolhido
     /// num canto.
+    /// O quadro em RGB565, escrito num vetor que o chamador reaproveita.
+    ///
+    /// Existe por causa do `eglGetColorBufferQUALCOMM`, que é chamado duas vezes por quadro e
+    /// entrega os pixels ao jogo pela memória dele: montar um `Vec` novo a cada chamada, e
+    /// depois outro para os bytes, era alocar e copiar oitocentos kilobytes sessenta vezes por
+    /// segundo. Aqui o vetor é o mesmo sempre.
+    ///
+    /// **O caminho sem escala é separado de propósito.** Quando o pedido tem o tamanho da
+    /// superfície — que é o caso normal —, as duas divisões por pixel do laço geral somam mais
+    /// de quatrocentas mil divisões inteiras por chamada, e elas custavam mais que a conversão.
+    pub fn frame_rgb565(&mut self, width: usize, height: usize, out: &mut Vec<u8>) {
+        self.flush();
+        let (sw, sh) = self.surface();
+        out.clear();
+        out.reserve(width * height * 2);
+        let converte = |p: [u8; 4]| {
+            ((p[0] as u16 >> 3) << 11) | ((p[1] as u16 >> 2) << 5) | (p[2] as u16 >> 3)
+        };
+        if sw == width && sh == height {
+            for y in 0..height {
+                let linha = &self.color[y * self.width..y * self.width + width];
+                out.extend(linha.iter().flat_map(|&p| converte(p).to_le_bytes()));
+            }
+            return;
+        }
+        for y in 0..height {
+            let sy = y * sh / height;
+            for x in 0..width {
+                let p = self.color[sy * self.width + x * sw / width];
+                out.extend(converte(p).to_le_bytes());
+            }
+        }
+    }
+
     pub fn present(&mut self, width: usize, height: usize) -> Vec<u16> {
         // Entregar o quadro é o ponto em que ele precisa estar pintado — quem pede o resultado
         // não tem por que saber que o desenho é acumulado.
