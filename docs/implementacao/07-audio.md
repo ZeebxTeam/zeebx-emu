@@ -128,9 +128,53 @@ A verificação, medida:
 A lição vale além do áudio: **antes de otimizar um jogo lento, conferir se ele está trabalhando
 ou insistindo.** O Heavy Weapon era o mesmo caso, com bitmaps que mediam 0×0.
 
+## O MIDI, que não se decodifica: se sintetiza
+
+`midi.rs`. Onze jogos entregam a trilha como MIDI, e **MIDI não é som, é partitura**: não há
+amostra dentro do arquivo, há "toque a nota 69 no instrumento 25 com força 100". Quem virava isso
+em som era o sintetizador do firmware do console, com o banco de instrumentos dele — que está na
+parte da NAND que ainda não lemos.
+
+Então o que sai daqui é uma **aproximação declarada**, e ela aparece no relatório como hipótese em
+uso. Dizer isso na cara importa mais que o de costume, porque neste caso o erro é silencioso: uma
+música sintetizada errado *toca*, e soa como se fosse assim mesmo.
+
+Por isso o módulo cobra de si só o que dá para verificar sem ouvir — **a nota certa, na hora
+certa, pelo tempo certo**:
+
+- **A partitura, como a especificação manda.** Formato 0 e 1, várias trilhas juntadas por pulso,
+  status corrente, `Note On` de força zero valendo como `Note Off`, meta e SysEx pulados pelo
+  tamanho declarado. O status corrente não é otimização: uma trilha de notas seguidas é quase toda
+  assim, e ignorá-lo não perde um evento, perde a trilha inteira a partir do primeiro.
+- **Pulso para segundo**, honrando a divisão do cabeçalho e cada `Set Tempo` do ponto dele para
+  frente — recalcular a música toda com o tempo novo põe tudo o que vem depois de um
+  *accelerando* no lugar errado sem nada parecer quebrado. A divisão SMPTE também conta: o byte
+  alto é o número de quadros em complemento de dois, e negar os dezesseis bits juntos dá 24 onde
+  deveria dar 25.
+- **A afinação.** A nota 69 sai em 440 Hz, e o teste mede isso por correlação com o tom certo e
+  com os dois semitons vizinhos — contar cruzamento de zero depende da forma da onda, correlação
+  não. Afinação errada é o defeito que mais facilmente passa por "o sintetizador é assim".
+
+O que é palpite, e é palpite por falta de dado: **o timbre**. A tabela mapeia família do General
+MIDI para forma de onda e envoltória, tentando acertar o *comportamento* — piano decai, órgão
+sustenta, metal ataca devagar —, porque é isso que faz a melodia ser reconhecível mesmo com o
+instrumento errado. Percussão é ruído filtrado, com duas famílias de decaimento separando bombo
+de prato.
+
+Dois cuidados que não são detalhe:
+
+- **Quadrada e dente são somadas por harmônicos** até abaixo de Nyquist, não geradas pela forma
+  crua. Uma quadrada crua a 22 kHz rebate: os harmônicos acima da metade da taxa voltam como
+  frequências que não estão na partitura, e a nota sai acompanhada de um assobio que sobe quando
+  ela desce.
+- **O pico é normalizado em 0,8.** Somar dezenas de vozes passa de 1,0 com facilidade, e o que
+  passa corta — e corte soa exatamente como "o sintetizador é ruim", sem ser.
+
+Medido no Double Dragon: a linha `som recusado (audio/mid)` saiu do relatório, e dez segundos de
+jogo saíram de silêncio para **74,7% de amostras não nulas**, com pico de 0,807.
+
 ## O que falta
 
-**A música dos ports de arcade.** Onze jogos entregam MIDI, e MIDI não se decodifica: se
-sintetiza. Não há amostra dentro do arquivo — há a partitura, e o instrumento vinha do
-sintetizador do firmware do console, que não temos. Qualquer som que a gente produza aí é uma
-aproximação declarada, e é assim que ela deve aparecer no relatório.
+**O banco de instrumentos do console.** Com ele, o MIDI deixa de ser aproximação e passa a soar
+como soava — e o caminho para ele é o mesmo das classes que faltam: o leitor de EFS2 (ver
+[14](14-z-wheel-e-o-efs2.md) e [15](15-o-que-falta-da-nand.md)).

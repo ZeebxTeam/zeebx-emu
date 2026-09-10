@@ -7281,7 +7281,14 @@ impl<C: CpuBackend> Machine<C> {
         // e trilha não tocava em jogo nenhum.
         let som = match crate::wav::parse(&bytes) {
             Ok(sound) => Some(sound),
-            Err(err) => match crate::mp3::decode(&bytes) {
+            Err(err) => match crate::mp3::decode(&bytes)
+                .or_else(|| crate::midi::decode(&bytes).inspect(|_| {
+                    self.assumptions.insert(concat!(
+                        "a música MIDI é sintetizada aqui, com timbre aproximado — ",
+                        "o banco de instrumentos do console está no firmware que ainda não lemos"
+                    ));
+                }))
+            {
                 Some(sound) => Some(sound),
                 None => {
                     // Dizer *qual* formato chegou é o que permite saber o que implementar

@@ -24,6 +24,7 @@ mod library;
 mod loader;
 mod machine;
 mod mem;
+mod midi;
 mod miffile;
 mod modfile;
 mod mp3;
