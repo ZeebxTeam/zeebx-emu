@@ -1918,6 +1918,12 @@ pub struct Machine<C: CpuBackend> {
     current_thread: Option<u32>,
     /// Buffer de pixels no guest de cada superfície exposta como `IDIB`.
     dib_buffers: HashMap<u32, u32>,
+    /// Quantos bytes o buffer publicado de cada `IDIB` tem.
+    ///
+    /// Existe porque o endereço de um objeto **volta a ser usado**: liberado o anterior, o
+    /// próximo bitmap nasce no mesmo lugar, e com outro tamanho. Sem a capacidade não há como
+    /// decidir entre reaproveitar o buffer e reservar outro.
+    dib_capacity: HashMap<u32, u32>,
     /// Próximo endereço livre na região de superfícies.
     surface_next: u32,
     /// Cor tratada como transparente em cada superfície.
@@ -2101,6 +2107,7 @@ impl<C: CpuBackend> Machine<C> {
             stalled: None,
             current_thread: None,
             dib_buffers: HashMap::new(),
+            dib_capacity: HashMap::new(),
             surface_next: loader::SURFACE_BASE,
             transparency: HashMap::new(),
             device_bitmap: 0,
@@ -10777,19 +10784,37 @@ impl<C: CpuBackend> Machine<C> {
     /// Layout, de `inc/AEEIDIB.h`: `pvt`, `pPaletteMap`, `pBmp`, `pRGB`, `ncTransparent`,
     /// `cx`, `cy`, `nPitch`, `cntRGB`, `nDepth`, `nColorScheme` e seis bytes reservados.
     fn expose_dib(&mut self, bitmap: u32) -> Result<(), CpuError> {
-        if self.dib_buffers.contains_key(&bitmap) {
-            return Ok(());
-        }
         let Some(fb) = self.bitmaps.get(&bitmap) else {
             return Ok(());
         };
         let (cx, cy) = (fb.width(), fb.height());
-        let pitch = cx * 2;
-        let Some(buffer) = self.surface_alloc(pitch * cy) else {
-            return Ok(());
-        };
-
-        self.dib_buffers.insert(bitmap, buffer);
+        let precisa = cx * 2 * cy;
+        // **O cabeçalho é reescrito toda vez, e não só na primeira.** O endereço de um objeto
+        // volta a ser usado quando o anterior é liberado, e o bitmap novo tem outro tamanho:
+        // com a checagem por endereço, o `IDIB` de uma imagem nova continuava anunciando o
+        // tamanho da imagem anterior.
+        //
+        // Foi o que quebrou o texto do Tekken 2. Ele decodifica nove imagens em sequência,
+        // liberando cada uma antes da seguinte — todas nasceram no mesmo endereço. O `IDIB`
+        // dizia 200x112 para todas, então o jogo criava uma página de 200x112 para uma folha de
+        // letras de 360x280, copiava só o canto dela e depois pedia cada glifo por coordenada
+        // da folha inteira. O que caía fora virava bloco: o menu inteiro saía com as palavras
+        // como retângulos laranja.
+        //
+        // O buffer é reaproveitado quando cabe. Reservar outro a cada exposição também acerta o
+        // tamanho, mas a região de superfícies **não recicla**: um jogo que decodifique centenas
+        // de imagens a esgotaria.
+        let cabe = self
+            .dib_capacity
+            .get(&bitmap)
+            .is_some_and(|&tinha| tinha >= precisa);
+        if !cabe {
+            let Some(buffer) = self.surface_alloc(precisa) else {
+                return Ok(());
+            };
+            self.dib_buffers.insert(bitmap, buffer);
+            self.dib_capacity.insert(bitmap, precisa);
+        }
         self.sync_to_guest(bitmap)?;
         self.write_dib_header(bitmap)
     }
@@ -12674,6 +12699,93 @@ mod tests {
         let mut flag = [0u8; 1];
         machine.cpu.read_mem(realloc, &mut flag).unwrap();
         assert_eq!(flag[0], 1, "a imagem saiu numa alocação nossa");
+    }
+
+    /// Duas imagens de tamanhos diferentes no **mesmo endereço** de objeto, e o `IDIB` da
+    /// segunda tem de falar da segunda.
+    ///
+    /// É o defeito que apagava o texto do Tekken 2. Ele decodifica nove imagens em sequência,
+    /// liberando cada uma antes da próxima, então todas nascem no mesmo endereço. O `IDIB`
+    /// anunciava o tamanho da primeira para todas: o jogo criava uma página de 200x112 para uma
+    /// folha de letras de 360x280, guardava só o canto dela e depois pedia cada glifo por
+    /// coordenada da folha inteira. O que caía fora da página virava bloco, e o menu saía com
+    /// as palavras como retângulos laranja.
+    #[test]
+    fn o_dib_acompanha_a_troca_de_imagem_no_mesmo_endereco() {
+        let module = loader::load(&module_calling_malloc()).unwrap();
+        let mut machine = Machine::new(UnicornCpu::new().unwrap(), module, ".");
+        machine.cpu.reset(&machine.module.mem).unwrap();
+
+        /// Um BMP de 24 bits, cinza, do tamanho pedido.
+        fn bmp(largura: u32, altura: u32) -> Vec<u8> {
+            let mut out = vec![0u8; 54];
+            out[0..2].copy_from_slice(b"BM");
+            out[10..14].copy_from_slice(&54u32.to_le_bytes());
+            out[14..18].copy_from_slice(&40u32.to_le_bytes());
+            out[18..22].copy_from_slice(&largura.to_le_bytes());
+            out[22..26].copy_from_slice(&altura.to_le_bytes());
+            out[26..28].copy_from_slice(&1u16.to_le_bytes());
+            out[28..30].copy_from_slice(&24u16.to_le_bytes());
+            let passo = (largura * 3).div_ceil(4) * 4;
+            out.extend(std::iter::repeat_n(0x80u8, (passo * altura) as usize));
+            let tamanho = out.len() as u32;
+            out[2..6].copy_from_slice(&tamanho.to_le_bytes());
+            out
+        }
+
+        let buffer = loader::HEAP_BASE;
+        let info = buffer + 0x4000;
+        let realloc = info + 0x100;
+        let saida = realloc + 0x100;
+
+        let converte = |machine: &mut Machine<UnicornCpu>, imagem: &[u8]| -> u32 {
+            machine.cpu.write_mem(buffer, imagem).unwrap();
+            let bitmap = call(
+                machine,
+                Interface::Helpers,
+                slot_of(Interface::Helpers, "SetupNativeImage"),
+                [AEECLSID_WINBMP, buffer, info, realloc],
+            );
+            assert_ne!(bitmap, 0);
+            // O jogo pede o `IDIB` para ler os campos públicos, que é como ele descobre o
+            // tamanho da imagem.
+            call(
+                machine,
+                Interface::Bitmap,
+                slot_of(Interface::Bitmap, "QueryInterface"),
+                [bitmap, AEECLSID_DIB, saida, 0],
+            );
+            bitmap
+        };
+        let tamanho_no_dib = |machine: &Machine<UnicornCpu>, bitmap: u32| -> (u16, u16, i16) {
+            let mut campos = [0u8; 6];
+            machine.cpu.read_mem(bitmap + 20, &mut campos).unwrap();
+            (
+                u16::from_le_bytes([campos[0], campos[1]]),
+                u16::from_le_bytes([campos[2], campos[3]]),
+                i16::from_le_bytes([campos[4], campos[5]]),
+            )
+        };
+
+        let primeiro = converte(&mut machine, &bmp(8, 4));
+        assert_eq!(tamanho_no_dib(&machine, primeiro), (8, 4, 16));
+
+        // O jogo libera a imagem antes de converter a próxima, e o endereço volta a ser usado.
+        while machine.objects.release(primeiro) > 0 {}
+        let segundo = converte(&mut machine, &bmp(20, 10));
+        assert_eq!(segundo, primeiro, "o endereço tinha de ser reciclado");
+        assert_eq!(
+            tamanho_no_dib(&machine, segundo),
+            (20, 10, 40),
+            "o IDIB ficou falando da imagem anterior"
+        );
+
+        // E o buffer publicado tem de caber a imagem nova inteira: com o buffer antigo, os
+        // pixels do fim ficariam de fora e a folha sairia cortada.
+        let pixels = machine.dib_buffers.get(&segundo).copied().unwrap();
+        let mut ultimo = [0u8; 2];
+        machine.cpu.read_mem(pixels + 20 * 10 * 2 - 2, &mut ultimo).unwrap();
+        assert_ne!(u16::from_le_bytes(ultimo), 0, "o último pixel não foi publicado");
     }
 
     #[test]
