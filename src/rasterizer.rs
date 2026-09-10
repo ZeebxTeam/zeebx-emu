@@ -338,6 +338,7 @@ pub struct GlState {
     cull_face: bool,
     cull_mode: u32,
     front_face: u32,
+    stencil_test: bool,
 
     /// `GL_LIGHTING`. Com ele ligado a cor do vértice **deixa de valer**, a menos que o
     /// `GL_COLOR_MATERIAL` diga o contrário: é o que a especificação manda, e o palco da
@@ -377,6 +378,7 @@ impl GlState {
             material: Material::default(),
             light_model_ambient: [0.2, 0.2, 0.2, 1.0],
             shade_model: gles::GL_SMOOTH,
+            stencil_test: false,
             matrix_mode: gles::GL_MODELVIEW,
             modelview: vec![IDENTITY],
             projection: vec![IDENTITY],
@@ -579,6 +581,13 @@ impl GlState {
             // O recorte por tesoura ainda não existe; ignorá-lo desenha demais, nunca de
             // menos, e é o erro menos visível dos dois.
             gles::GL_SCISSOR_TEST => {}
+            // **O stencil ainda não existe, e faz falta medida.** O palco da Z-Wheel arma
+            // `glStencilFunc` e `glStencilOp` duas vezes por quadro, que é a receita do reflexo
+            // plano: marcar o chão no stencil e desenhar o modelo espelhado só onde ele marcou.
+            // Sem o teste, o espelhado sai por fora do chão — desligar os desenhos feitos sob
+            // teste de stencil faz sumir metade dos rastros esticados que aparecem no carro.
+            // Guardar o estado aqui é o primeiro passo, e não faz nada sozinho.
+            gles::GL_STENCIL_TEST => self.stencil_test = on,
             _ => {}
         }
     }

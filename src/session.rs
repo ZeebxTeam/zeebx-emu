@@ -317,7 +317,7 @@ impl Session {
             real: Instant::now(),
             clock_ms: u64::from(self.machine.clock_ms()),
             instructions: self.machine.instructions(),
-            frames: self.machine.gl_swaps(),
+            frames: self.machine.quadros(),
         };
         let elapsed = (agora.real - self.window.real).as_millis() as u64;
         if elapsed < SPEED_WINDOW_MS {

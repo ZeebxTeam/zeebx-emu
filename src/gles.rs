@@ -171,6 +171,7 @@ pub const GL_TEXTURE: u32 = 0x1702;
 ///
 /// Os nomes e valores são os do `GLES/gl.h` do OpenGL ES 1.1. Só entram aqui os que o
 /// pipeline usa; `GL_LIGHT0` é a base de uma faixa de oito.
+pub const GL_STENCIL_TEST: u32 = 0x0b90;
 pub const GL_LIGHTING: u32 = 0x0b50;
 pub const GL_LIGHT_MODEL_AMBIENT: u32 = 0x0b53;
 pub const GL_COLOR_MATERIAL: u32 = 0x0b57;

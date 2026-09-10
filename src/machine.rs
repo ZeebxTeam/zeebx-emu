@@ -1835,6 +1835,8 @@ pub struct Machine<C: CpuBackend> {
     egl_next_handle: u32,
     /// Quantas vezes o jogo apresentou um quadro com `eglSwapBuffers`.
     egl_swaps: u32,
+    /// Quantos `glClear` limparam a cor. Ver [`Machine::gl_swaps`].
+    gl_clears: u32,
     /// Último nome de textura ou buffer entregue pelo OpenGL ES.
     gles_next_name: u32,
     /// O objeto `IGLES11`, criado sob demanda pelo `QueryInterface` do EGL.
@@ -2035,6 +2037,7 @@ impl<C: CpuBackend> Machine<C> {
             egl_color_bytes: Vec::new(),
             egl_next_handle: EGL_HANDLE_BASE,
             egl_swaps: 0,
+            gl_clears: 0,
             gles_next_name: 0,
             gles_object: 0,
             egl_surface: 0,
@@ -9617,7 +9620,12 @@ impl<C: CpuBackend> Machine<C> {
             "Viewport" => self
                 .gl
                 .set_viewport(a[0] as i32, a[1] as i32, a[2] as i32, a[3] as i32),
-            "Clear" => self.gl.clear(a[0]),
+            "Clear" => {
+                if a[0] & gles::GL_COLOR_BUFFER_BIT != 0 {
+                    self.gl_clears = self.gl_clears.saturating_add(1);
+                }
+                self.gl.clear(a[0])
+            }
             "ClearColorx" | "ClearColor" => {
                 let c = std::array::from_fn(|i| number(a[i]));
                 self.gl.set_clear_color(c);
@@ -11929,8 +11937,27 @@ impl<C: CpuBackend> Machine<C> {
     }
 
     /// Quantos quadros o jogo apresentou pelo OpenGL.
+    ///
+    /// Só as trocas de buffer, porque é isso que o laço de quadros usa para saber que há coisa
+    /// nova para mostrar. Para o indicador da janela, ver [`Machine::quadros`].
     pub fn gl_swaps(&self) -> u32 {
         self.egl_swaps
+    }
+
+    /// Quantos quadros o jogo desenhou, para quem quer mostrar uma taxa.
+    ///
+    /// **Nem todo jogo apresenta trocando buffer.** A Z-Wheel desenha o palco num pbuffer e
+    /// pega o resultado pelo `eglGetColorBufferQUALCOMM` para compor com o 2D: ela nunca chama
+    /// `eglSwapBuffers`, e enquanto a taxa contava só trocas o indicador da janela marcava zero
+    /// com o palco girando na tela.
+    ///
+    /// Sem troca, o que delimita um quadro é o `glClear` da cor — o começo do desenho seguinte.
+    /// Contar começos e contar fins dá a mesma taxa, que é o que o indicador mostra.
+    pub fn quadros(&self) -> u32 {
+        match self.egl_swaps {
+            0 => self.gl_clears,
+            trocas => trocas,
+        }
     }
 
     /// O último quadro que o jogo apresentou pelo OpenGL, se houve algum.
