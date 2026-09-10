@@ -873,6 +873,11 @@ pub const WIDGET: &[&str] = &[
     "slot10",
     "slot11",
     "PegarInterface",
+    "slot13",
+    // `slot14(this, objeto)`, na `0x8fba0`, com o retorno ignorado. Recusá-lo abortava a
+    // montagem do formulário do z-pad pela metade — o `bl` para a `0x8f580` era entrado 669
+    // vezes e não voltava nenhuma. Tem cara de pendurar um modelo no widget.
+    "Anexar",
 ];
 
 /// Métodos do ZEEBOMCP (`0x01006c05`), da vtable `0x102d47a8` do firmware.

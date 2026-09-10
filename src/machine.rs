@@ -836,10 +836,19 @@ const WIDGET_DE_TEXTO: u32 = 0x0102_8e2a;
 /// grava valores da mesma cara pelo ajustador em `0x1035f222`.
 const PROP_COR: u32 = 0x140;
 
-const FAMILIA_DOS_WIDGETS: [u32; 5] = [
+const FAMILIA_DOS_WIDGETS: [u32; 7] = [
     AEECLSID_WIDGET,
     0x0102_8e19,
+    // A `0x01028e26` também entrou pela sonda: `slot3(0x801, 0x186, 0xff0000ff)` — o acessador,
+    // com uma cor — e o mesmo slot 14 das outras.
+    0x0102_8e26,
     0x0102_8e2a,
+    // A `0x01028e36` entrou pela sonda, e não por vizinhança de numeração: atendida por
+    // observação, o jogo chamou nela `slot3(0x801, 0x156, …)` — o acessador de widget, com o
+    // seletor de gravar e um id de propriedade da mesma faixa dos outros. Sem ela, o
+    // `ZPad_Keyboard_Instructions_Form.c` falhava com `ECLASSNOTSUPPORT`, que é o 20 do
+    // `Couldn't create z-pad instruction form (20)`.
+    0x0102_8e36,
     0x0102_8e3f,
     0x0102_8e47,
 ];
@@ -5676,6 +5685,20 @@ impl<C: CpuBackend> Machine<C> {
                 false => input::EVT_KEY + 1,
             };
             let mut tratado = false;
+            // **O mais novo primeiro.** Os formulários se empilham e nenhum é destruído aqui,
+            // então a lista tem o tratador da abertura ao lado do da tela atual. O da abertura
+            // devolve 1 para qualquer aperto — ele trata a tecla 0 e a CLR —, e vindo antes
+            // ele decidia tudo: o formulário do z-pad registrava o dele e nunca via uma tecla.
+            //
+            // Ordenar pela ordem de criação é o que um empilhamento de formulários faz: quem
+            // está por cima tem a primeira chance, e o que ele não consumir desce.
+            // A ordem aqui ainda não tem modelo, e três heurísticas já falharam: todos os
+            // widgets, só a árvore do formulário atual, do mais novo para o mais velho e o
+            // contrário. Em todas quem responde é um tratador que é literalmente
+            // `mov r0,#1; bx lr` — a `0x77300` do jogo, que devolve "tratei" para qualquer
+            // tecla. No console quem recebe é o widget **com foco**, e foco é coisa que ainda
+            // não sabemos ler. Enquanto não soubermos, fica a ordem do mapa, que é a que
+            // estava aqui antes de eu começar a mexer.
             let tratadores: Vec<u32> = self
                 .widgets
                 .values()
@@ -7277,6 +7300,13 @@ impl<C: CpuBackend> Machine<C> {
             //
             // Na [`WIDGET_DE_TEXTO`] é `slot6(this, texto, tamanho, …)`, com o texto em
             // `AECHAR`. Ver a constante para como isso foi medido.
+            // `slot14(this, objeto)`, com o retorno ignorado. Aceitar e não guardar nada é o
+            // mínimo que deixa a montagem seguir; o que o objeto é, ainda não sabemos.
+            "Anexar" => {
+                self.assumptions
+                    .insert("um objeto foi pendurado num widget pelo slot 14 e não guardamos qual");
+                SUCCESS
+            }
             "DefinirVisivel" => {
                 let classe = self.widgets.get(&this).map_or(0, |widget| widget.classe);
                 if classe == WIDGET_DE_TEXTO {
