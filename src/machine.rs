@@ -823,6 +823,12 @@ fn id_do_recurso(falta: &str) -> Option<u16> {
 /// `0x1035cf24`. Nenhuma está na tabela de classes, então não há vtable para conferir: o que
 /// sustenta a lista é o jogo andar, e é por isso que ela mora aqui, com o porquê escrito, em
 /// vez de virar um `|` no meio do despacho.
+/// A classe de um **formulário**: tem tratador de evento e pendura o conteúdo no item `0x5000`.
+///
+/// Lida na árvore: a abertura e o formulário do z-pad são dois objetos desta classe, filhos da
+/// raiz do applet (`0x01028e51`), cada um com o seu container pendurado no item `0x5000`.
+const WIDGET_FORMULARIO: u32 = 0x0102_8e47;
+
 /// A classe da família em que o slot 6 **põe texto**, em vez de esconder ou mostrar.
 ///
 /// Medido dos dois lados. Do lado da Z-Wheel, seguindo o que o `ISHELL_LoadResString` carrega
@@ -4123,19 +4129,31 @@ impl<C: CpuBackend> Machine<C> {
     fn formulario_atual(&self) -> Option<u32> {
         let com_filhos: std::collections::HashSet<u32> =
             self.widgets.values().map(|no| no.pai).collect();
-        let raizes = || {
-            self.widgets.iter().filter(|(endereco, no)| {
+        // **O formulário mais novo.** Desde que o item `0x5000` passou a pendurar o conteúdo, a
+        // árvore é uma só: a raiz do applet tem os formulários por filhos, e cada formulário tem
+        // o container do que ele mostra. Pintar a raiz inteira desenha a abertura e o z-pad um
+        // por cima do outro — o que apareceu na tela assim que as árvores se juntaram.
+        //
+        // Quem está à mostra é o último empilhado, e é o que esta função devolve. Sem nenhum
+        // formulário — antes de a interface existir —, vale a raiz mais nova que tenha filho,
+        // que é o que sustentava a tela até aqui.
+        let formulario = self
+            .widgets
+            .iter()
+            .filter(|(endereco, no)| no.classe == WIDGET_FORMULARIO && com_filhos.contains(endereco))
+            .max_by_key(|(_, no)| no.serial)
+            .map(|(&endereco, _)| endereco);
+        if formulario.is_some() {
+            return formulario;
+        }
+        self.widgets
+            .iter()
+            .filter(|(endereco, no)| {
                 // Raiz é quem não tem pai. **E precisa ter filho**: o jogo cria widgets soltos
                 // que nunca chegam a receber nada, e o mais novo de todos costuma ser um
                 // desses — pintar por ele dava uma tela branca, que foi o que apareceu.
                 (no.pai == 0 || no.pai == **endereco) && com_filhos.contains(endereco)
             })
-        };
-        // Preferir a raiz da classe `0x01028e51` — a que o applet guarda em `[app+0x24]` —
-        // parecia certo e **apaga a tela**: a árvore dela não tem os widgets que desenham. As
-        // duas convivem, e ligar o slot 14 não as juntou. Enquanto não se souber o que as
-        // liga, a raiz é a mais nova com filho, que é a que tem o que pintar.
-        raizes()
             .max_by_key(|(_, no)| no.serial)
             .map(|(&endereco, _)| endereco)
     }
@@ -7583,6 +7601,23 @@ impl<C: CpuBackend> Machine<C> {
                         // As propriedades vão para a serial, que é onde a instrumentação mora.
                         if self.serial.is_some() {
                             self.registra_serial(format!("<prop {id:#x}={terceiro:#x} em {this:#x}>"));
+                        }
+                        // **Gravar um objeto num item da faixa `0x5000` é pendurá-lo.** É por
+                        // aqui que o formulário recebe o que ele mostra: a `0x8ed80` grava
+                        // `0x5000` no formulário do z-pad com o container da barra de status e
+                        // da foto do controle, e a abertura faz o mesmo com o dela.
+                        //
+                        // Sem tratar isso como ligação, a árvore ficava partida em três — os
+                        // formulários numa, o que se desenha noutra — e nenhuma regra sobre "a
+                        // tela atual" tinha como acertar, porque a tecla e o desenho moravam em
+                        // árvores diferentes. Guardávamos o número e perdíamos o parentesco.
+                        if id >= PRIMEIRO_OBJETO && self.widgets.contains_key(&terceiro) {
+                            if let Some(widget) = self.widgets.get_mut(&this) {
+                                widget.filhos.insert(id, terceiro);
+                            }
+                            if let Some(filho) = self.widgets.get_mut(&terceiro) {
+                                filho.pai = this;
+                            }
                         }
                         if let Some(widget) = self.widgets.get_mut(&this) {
                             widget.propriedades.insert(id, terceiro);
