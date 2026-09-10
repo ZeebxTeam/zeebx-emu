@@ -151,19 +151,44 @@ impl ResFile {
 
     /// O texto de um recurso de string, em UTF-16 como o BREW entrega.
     ///
-    /// A seção começa com um byte de codificação e segue com o texto. Os `.bar` que temos usam
-    /// ISO-Latin-1, em que cada byte é um ponto de código — a conversão é direta. O texto pode
-    /// trazer vários itens separados por `^`, mas isso é empacotamento do próprio jogo: o que o
-    /// BREW entrega é a seção inteira.
+    /// A seção diz a própria codificação no começo. Duas aparecem nos arquivos que temos:
+    ///
+    /// - **UTF-16**, marcada por um BOM — `FF FE` para menor primeiro, `FE FF` para maior. É a
+    ///   do `tectoy_pt.brf` da Z-Wheel, e o texto vem em unidades de dois bytes.
+    /// - **ISO-Latin-1**, com um byte de codificação na frente e um ponto de código por byte.
+    ///   É a dos `.bar` dos jogos.
+    ///
+    /// Ler tudo como Latin-1 fazia o BOM virar texto e o primeiro byte alto do primeiro
+    /// caractere terminar a cadeia no zero seguinte: `"Meus Z-Credits"` saía como `"þM"`, e era
+    /// isso que a Z-Wheel punha nos widgets do formulário do z-pad.
+    ///
+    /// O texto pode trazer vários itens separados por `^`, mas isso é empacotamento do próprio
+    /// jogo: o que o BREW entrega é a seção inteira.
     pub fn string(&self, id: u16) -> Option<Vec<u16>> {
         let raw = self.get(RESTYPE_STRING, id)?;
-        let (_encoding, text) = raw.split_first()?;
-        Some(
-            text.iter()
-                .take_while(|&&b| b != 0)
-                .map(|&b| u16::from(b))
-                .collect(),
-        )
+        let largo = |pares: &[u8], grande: bool| {
+            pares
+                .chunks_exact(2)
+                .map(|p| match grande {
+                    true => u16::from_be_bytes([p[0], p[1]]),
+                    false => u16::from_le_bytes([p[0], p[1]]),
+                })
+                .take_while(|&u| u != 0)
+                .collect()
+        };
+        match raw {
+            [0xff, 0xfe, resto @ ..] => Some(largo(resto, false)),
+            [0xfe, 0xff, resto @ ..] => Some(largo(resto, true)),
+            _ => {
+                let (_encoding, text) = raw.split_first()?;
+                Some(
+                    text.iter()
+                        .take_while(|&&b| b != 0)
+                        .map(|&b| u16::from(b))
+                        .collect(),
+                )
+            }
+        }
     }
 }
 
@@ -260,6 +285,43 @@ mod tests {
             out.extend_from_slice(section);
         }
         out
+    }
+
+    /// A seção 44 do `tectoy_pt.brf` da Z-Wheel, como ela está no arquivo: BOM e UTF-16LE.
+    #[test]
+    fn a_secao_com_bom_e_lida_como_utf16() {
+        let mut secao = vec![0xff, 0xfe];
+        for u in "Meus Z-Credits".encode_utf16() {
+            secao.extend_from_slice(&u.to_le_bytes());
+        }
+        let bar = build(&[(RESTYPE_STRING, 1049, 0, 0)], &[&secao]);
+        let res = ResFile::parse(bar).unwrap();
+        let lido = String::from_utf16_lossy(&res.string(1049).unwrap());
+        assert_eq!(lido, "Meus Z-Credits");
+    }
+
+    /// O outro sentido do BOM, que nenhum arquivo nosso usa e o formato permite.
+    #[test]
+    fn o_bom_ao_contrario_tambem_e_lido() {
+        let mut secao = vec![0xfe, 0xff];
+        for u in "Idioma".encode_utf16() {
+            secao.extend_from_slice(&u.to_be_bytes());
+        }
+        let bar = build(&[(RESTYPE_STRING, 1045, 0, 0)], &[&secao]);
+        let res = ResFile::parse(bar).unwrap();
+        assert_eq!(String::from_utf16_lossy(&res.string(1045).unwrap()), "Idioma");
+    }
+
+    /// Sem BOM continua sendo Latin-1 com um byte de codificação na frente, que é o que os
+    /// `.bar` dos jogos trazem.
+    #[test]
+    fn sem_bom_continua_latin1() {
+        let mut secao = vec![0x01];
+        secao.extend_from_slice("Ação\0".as_bytes().iter().copied().collect::<Vec<_>>().as_slice());
+        let bar = build(&[(RESTYPE_STRING, 7, 0, 0)], &[&secao]);
+        let res = ResFile::parse(bar).unwrap();
+        let lido = String::from_utf16_lossy(&res.string(7).unwrap());
+        assert!(lido.starts_with('A'), "{lido:?}");
     }
 
     #[test]
