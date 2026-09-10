@@ -7362,6 +7362,8 @@ impl<C: CpuBackend> Machine<C> {
         const GRAVA: u32 = 0x801;
         /// Sucesso para esta classe. Não é o `SUCCESS` do BREW — ver acima.
         const OK: u32 = 1;
+        /// O terceiro seletor, que grava sem número de item. Ver o ramo dele abaixo.
+        const ELEVEN: u32 = 0x711;
 
         let Some(name) = Interface::Widget.method(slot) else {
             return Ok(None);
@@ -7651,6 +7653,18 @@ impl<C: CpuBackend> Machine<C> {
                     // valor)`, mesma convenção invertida. O que ele quer dizer ainda não
                     // sabemos, e recusar continua sendo o certo; o que muda é o relatório
                     // dizer **qual**, em vez de "um seletor".
+                    // **Aceitar, e não recusar.** O que o `0x711` quer dizer continua sem
+                    // resposta, mas a convenção aqui é invertida: recusar é dizer ao jogo que a
+                    // chamada falhou, e isso é uma afirmação mais forte do que "não sei".
+                    // Guardamos o valor num item próprio e seguimos.
+                    ELEVEN => {
+                        if let Some(widget) = self.widgets.get_mut(&this) {
+                            widget.propriedades.insert(ELEVEN, terceiro);
+                        }
+                        self.assumptions
+                            .insert("o seletor 0x711 do widget foi aceito sem saber o que ele faz");
+                        OK
+                    }
                     outro => {
                         let quem = self.cpu.read_reg(Reg::Lr);
                         let classe = self.widgets.get(&this).map_or(0, |w| w.classe);
@@ -8994,6 +9008,9 @@ impl<C: CpuBackend> Machine<C> {
         };
         let legacy = iface == Interface::EglLegacy;
         let name = full.strip_prefix("egl").unwrap_or(full);
+        if self.serial.is_some() {
+            self.registra_serial(format!("<egl {full}>"));
+        }
         // Os argumentos, já sem o `this` quando ele existe. Ler alguns a mais do que o método
         // usa é inofensivo: `arg` responde zero para o que não conseguir ler.
         let base = usize::from(!legacy);
