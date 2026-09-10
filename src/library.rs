@@ -154,7 +154,12 @@ pub fn title_for(mod_path: &Path) -> String {
 /// Procura o `.mif` do título e devolve o ClassID do applet.
 ///
 /// O layout instalado é `<titulo>/mod/<id>/<nome>.mod` com o `.mif` em `<titulo>/mif/<id>.mif`;
-/// os exemplos do SDK deixam o `.mif` ao lado do `.mod`. Cobrimos os dois casos.
+/// os exemplos do SDK deixam o `.mif` ao lado do `.mod`. Cobrimos os dois casos, e mais um: há
+/// pacote que guarda o módulo numa pasta própria e o manifesto **um nível acima** dela.
+///
+/// Um `.mif` que não declara applet não serve de resposta: o pacote do Action Hero 3D traz dois
+/// manifestos, e um deles declara só uma classe. Por isso a busca segue pelos candidatos até
+/// achar um que diga qual applet criar, em vez de parar no primeiro que abre.
 pub fn applet_clsid(mod_path: &Path) -> Option<u32> {
     manifest_paths(mod_path)
         .iter()
@@ -164,16 +169,38 @@ pub fn applet_clsid(mod_path: &Path) -> Option<u32> {
 }
 
 /// Onde o `.mif` de um `.mod` pode estar, na ordem em que vale procurar.
+///
+/// Os dois primeiros candidatos são nomes calculados; os últimos vêm de varrer as pastas, e é o
+/// que cobre pacote com disposição própria — o do Kingdom Hearts guarda o módulo em
+/// `<Título>/<Título>_/swv21brew.mod` e o manifesto em `<Título>/<Título>.mif`, e nenhuma regra
+/// de nome acha isso. Varrer é barato: são duas pastas, e só até o applet ser encontrado.
 fn manifest_paths(mod_path: &Path) -> Vec<PathBuf> {
     let mut candidates = vec![mod_path.with_extension("mif")];
-    if let Some(dir) = mod_path.parent() {
-        if let Some(id) = dir.file_name() {
-            // .../mod/<id>/x.mod  ->  .../mif/<id>.mif
-            if let Some(title_dir) = dir.parent().and_then(|p| p.parent()) {
-                candidates.push(title_dir.join("mif").join(id).with_extension("mif"));
-            }
-        }
+    let dir = mod_path.parent();
+    if let Some(dir) = dir
+        && let Some(id) = dir.file_name()
+        && let Some(title_dir) = dir.parent().and_then(|p| p.parent())
+    {
+        // .../mod/<id>/x.mod  ->  .../mif/<id>.mif
+        candidates.push(title_dir.join("mif").join(id).with_extension("mif"));
     }
+    // A pasta do módulo primeiro, e a de cima depois: o manifesto mais perto do `.mod` é o que
+    // tem mais chance de ser dele, num pacote que traga mais de um jogo.
+    for pasta in [dir, dir.and_then(Path::parent)].into_iter().flatten() {
+        let Ok(entradas) = std::fs::read_dir(pasta) else {
+            continue;
+        };
+        let mut mifs: Vec<PathBuf> = entradas
+            .flatten()
+            .map(|entrada| entrada.path())
+            .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("mif"))
+            .collect();
+        // Ordem estável: sem ela, dois manifestos na mesma pasta dariam respostas diferentes
+        // conforme o sistema de arquivos listasse.
+        mifs.sort();
+        candidates.extend(mifs);
+    }
+    candidates.dedup();
     candidates
 }
 
@@ -191,6 +218,65 @@ mod tests {
             std::fs::write(&path, []).unwrap();
         }
         root
+    }
+
+    /// O manifesto do Kingdom Hearts fica um nível acima da pasta do módulo.
+    ///
+    /// `<Título>/<Título>_/swv21brew.mod` com o `.mif` em `<Título>/<Título>.mif`: nenhuma regra
+    /// de nome acha isso, e o jogo não abria por não sabermos qual applet criar. É a razão de a
+    /// busca varrer as pastas em vez de só calcular nomes.
+    #[test]
+    fn o_manifesto_pode_estar_um_nivel_acima_da_pasta_do_modulo() {
+        let root = tree(
+            "mif-acima",
+            &[
+                "Kingdon Hearts/Kingdon Hearts_/swv21brew.mod",
+                "Kingdon Hearts/Kingdon Hearts.mif",
+            ],
+        );
+        let modulo = root.join("Kingdon Hearts/Kingdon Hearts_/swv21brew.mod");
+        let candidatos = manifest_paths(&modulo);
+        assert!(
+            candidatos.contains(&root.join("Kingdon Hearts/Kingdon Hearts.mif")),
+            "{candidatos:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A pasta do módulo vem antes da de cima, e a ordem não depende do sistema de arquivos.
+    ///
+    /// Num pacote com mais de um jogo, o manifesto mais perto do `.mod` é o que tem mais chance
+    /// de ser dele — e dois `.mif` na mesma pasta precisam ser tentados sempre na mesma ordem,
+    /// ou o mesmo jogo abriria diferente em duas máquinas.
+    #[test]
+    fn o_manifesto_mais_perto_do_modulo_vem_primeiro() {
+        let root = tree(
+            "mif-ordem",
+            &[
+                "jogo/mod/b.mif",
+                "jogo/mod/a.mif",
+                "jogo/mod/x.mod",
+                "jogo/de-cima.mif",
+            ],
+        );
+        let candidatos = manifest_paths(&root.join("jogo/mod/x.mod"));
+        let so_dentro: Vec<&PathBuf> = candidatos
+            .iter()
+            .filter(|p| p.starts_with(root.join("jogo/mod")))
+            .collect();
+        assert_eq!(
+            so_dentro,
+            [
+                &root.join("jogo/mod/x.mif"),
+                &root.join("jogo/mod/a.mif"),
+                &root.join("jogo/mod/b.mif"),
+            ]
+        );
+        let de_cima = candidatos
+            .iter()
+            .position(|p| p == &root.join("jogo/de-cima.mif"));
+        assert_eq!(de_cima, Some(candidatos.len() - 1));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

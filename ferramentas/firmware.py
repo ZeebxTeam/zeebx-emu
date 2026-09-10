@@ -10,6 +10,7 @@ teste; aqui a tabela de métodos **está escrita**. Ler é mais confiável que d
 
 Uso:
     python3 ferramentas/firmware.py classe 0x01001011    # construtor e vtable da classe
+    python3 ferramentas/firmware.py classe 0x0100102e 80 # o mesmo, com outro teto de slots
     python3 ferramentas/firmware.py refs 0x01001011      # onde a constante aparece
     python3 ferramentas/firmware.py desmonta 0x112f84dc 0x112f8502 thumb
 
@@ -137,21 +138,38 @@ def comeca_funcao(data, segs, endereco):
     return primeira is not None and primeira.mnemonic == "push"
 
 
-def vtable_de(data, segs, construtor, quantos=16):
-    """A vtable que um construtor grava no objeto recém-alocado.
+# `ldr pc, [pc, #-4]` em ARM: o salto longo que o linker põe entre segmentos distantes. O
+# endereço de destino é a palavra logo depois da instrução.
+VENEER = 0xE51FF004
 
-    O padrão é sempre o mesmo: aloca, carrega um literal e o grava em `[obj]`. Procuramos o
-    primeiro `ldr rX, [pc, #N]` seguido de `str rX, [r?]` e devolvemos o que o literal aponta.
 
-    A vtable termina onde os ponteiros deixam de ser Thumb — no ARM do console todo método é
-    Thumb, então o primeiro valor com o bit 0 zerado já não é método.
+def sem_veneer(data, segs, endereco):
+    """O destino real de um endereço, atravessando um salto longo se houver um.
+
+    Sem isto, seguir uma chamada leva ao trampolim e o desmontado sai como lixo — foi o que
+    escondeu a vtable da classe de rede que o Opera Mini pede.
     """
-    off = para_offset(segs, construtor)
+    off = para_offset(segs, endereco & ~1)
+    if off is None or off + 8 > len(data):
+        return endereco & ~1
+    instrucao, destino = struct.unpack("<II", data[off : off + 8])
+    if instrucao == VENEER and para_offset(segs, destino & ~1) is not None:
+        return destino & ~1
+    return endereco & ~1
+
+
+def grava_vtable(data, segs, funcao, janela=0x60):
+    """O literal que `funcao` grava em `[obj]`, e as chamadas que ela faz pelo caminho.
+
+    O padrão é sempre o mesmo: carrega um literal e o grava em `[obj]`. Procuramos o primeiro
+    `ldr rX, [pc, #N]` seguido de `str rX, [r?]` e devolvemos o que o literal aponta.
+    """
+    off = para_offset(segs, funcao)
     if off is None:
         return None, []
     md = Cs(CS_ARCH_ARM, CS_MODE_THUMB)
-    alvo = None
-    for i in md.disasm(data[off : off + 0x60], construtor):
+    alvo, chamadas = None, []
+    for i in md.disasm(data[off : off + janela], funcao):
         m = re.search(r"\[pc, #(0x[0-9a-f]+|\d+)\]", i.op_str)
         if m and i.mnemonic.startswith("ldr"):
             pos = para_offset(segs, ((i.address + 4) & ~3) + int(m.group(1), 0))
@@ -160,7 +178,36 @@ def vtable_de(data, segs, construtor, quantos=16):
                 if para_offset(segs, valor) is not None:
                     alvo = valor
         elif alvo and i.mnemonic == "str" and re.search(r"\[r\d+\]$", i.op_str):
-            break
+            return alvo, chamadas
+        elif i.mnemonic in ("bl", "blx") and i.op_str.startswith("#"):
+            chamadas.append(int(i.op_str[1:], 0))
+    return None, chamadas
+
+
+def vtable_de(data, segs, construtor, quantos=64):
+    """A vtable que um construtor grava no objeto recém-alocado.
+
+    **Nem todo construtor grava a vtable ele mesmo.** Os do grupo do Opera Mini alocam o objeto
+    e passam o serviço a uma função de inicialização, alcançada por salto longo — e o construtor
+    inteiro se desmonta sem um único `str` em `[obj]`. Por isso, quando o começo do construtor
+    não entrega o literal, seguimos as chamadas que ele faz, uma vez.
+
+    Não é busca em profundidade de propósito: um nível cobre as classes que conhecemos, e cada
+    nível a mais aumenta a chance de achar a vtable *de outra coisa* — o construtor também chama
+    `malloc` e o `CreateInstance` do objeto de que depende.
+
+    A vtable termina onde os ponteiros deixam de ser Thumb — no ARM do console todo método é
+    Thumb, então o primeiro valor com o bit 0 zerado já não é método.
+    """
+    alvo, chamadas = grava_vtable(data, segs, construtor)
+    if alvo is None:
+        for chamada in chamadas:
+            init = sem_veneer(data, segs, chamada)
+            if not comeca_funcao(data, segs, init):
+                continue
+            alvo, _ = grava_vtable(data, segs, init)
+            if alvo is not None:
+                break
     if alvo is None:
         return None, []
     base = para_offset(segs, alvo)
@@ -189,18 +236,25 @@ def main():
                 print(f"  offset {m.start():#010x}  endereço {end:#010x}")
     elif sys.argv[1] == "classe":
         clsid = int(sys.argv[2], 0)
+        quantos = int(sys.argv[3], 0) if len(sys.argv) > 3 else 64
         construtor, flags = registro(data, segs, clsid)
         if construtor is None:
             print(f"  {clsid:#010x} não está na tabela de classes deste firmware")
             return
         print(f"  construtor  {construtor:#010x}  (sinalizadores {flags:#x})")
-        alvo, slots = vtable_de(data, segs, construtor)
+        alvo, slots = vtable_de(data, segs, construtor, quantos)
         if alvo is None:
-            print("  não achei a vtable no começo do construtor")
+            print("  não achei a vtable no construtor nem no que ele chama")
             return
         print(f"  vtable      {alvo:#010x}  ({len(slots)} métodos)")
         for i, v in enumerate(slots):
             print(f"    slot[{i:2}] = {v:#010x}")
+        # O teto existe para não sair lendo dados como se fossem método, e por muito tempo ele
+        # ficou invisível: uma vtable de 59 slots era relatada como "16 métodos", e o número
+        # entrava na documentação como se fosse o tamanho da interface. Quando a contagem bate
+        # no teto, ela não é resposta — é o teto.
+        if len(slots) == quantos:
+            print(f"  atenção: a contagem parou no teto de {quantos}; pode haver mais")
     elif sys.argv[1] == "desmonta":
         ini, fim = int(sys.argv[2], 0), int(sys.argv[3], 0)
         off = para_offset(segs, ini)

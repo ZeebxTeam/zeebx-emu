@@ -42,13 +42,57 @@ podem ser casamento por acaso. Onde isso aparece abaixo, está marcado.
 
 | Classe | Métodos | O que destrava |
 |---|---:|---|
-| `0x01006c05` | 4 | pedida pela Z-Wheel; construtor `0x11267d04`, vtable `0x113cf854` |
-| `0x0103475a` | 16 | o objeto **interno** da `0x01001011` — é para ele que os slots 4, 5 e 6 delegam. Sinalizadores `0xffff0000`: conferir antes de confiar |
-| `0x01003109` | ? | o subsistema de texto do Zenonia (`CWBLText::Create() failed!`). Construtor `0x1071245e`; a vtable não saiu do começo dele |
-| `0x0100102e` | ? | a classe de rede que o Opera Mini pede. Construtor `0x10b9b778`; mesma situação |
+| `0x01006c05` | 8 | pedida pela Z-Wheel; construtor `0x11267d04`, vtable `0x102d47a8` |
+| `0x0103475a` | 39 | o objeto **interno** da `0x01001011` — é para ele que os slots 4, 5 e 6 delegam. Sinalizadores `0xffff0000`: conferir antes de confiar |
+| `0x01003109` | 40 | o subsistema de texto do Zenonia (`CWBLText::Create() failed!`). Construtor `0x108ee2ec`, vtable `0x10e15c04` |
+| `0x0100102e` | 59 | a classe de rede que o Opera Mini pede. Construtor `0x10b9b778`, vtable `0x10a783e4` |
 
-As duas últimas não é que faltem: o construtor não grava a vtable nas primeiras instruções, e o
-buscador só olha o começo. Desmontar cada uma resolve.
+### O construtor que não grava a vtable
+
+As duas últimas linhas ficaram por muito tempo com `?` em "métodos", e não porque a informação
+faltasse: **o construtor delas não grava a vtable.** Ele aloca o objeto e passa o serviço a uma
+função de inicialização, alcançada por salto longo — `ldr pc, [pc, #-4]`, o trampolim que o
+linker põe entre segmentos distantes. O construtor inteiro se desmonta sem um único `str` em
+`[obj]`, e seguir a chamada à mão levava ao trampolim, cujo desmontado é lixo.
+
+A `0x0100102e` mostra o padrão inteiro:
+
+```
+0x10b9b786  ldr  r1, [pc, #0x44]   ; = 0x01039270   <- cria antes a classe de que depende
+0x10b9b790  blx  r3                                 <- ISHELL_CreateInstance
+0x10b9b798  movs r0, #0x30
+0x10b9b79a  bl   #0x10d6f944                        <- malloc(0x30)
+0x10b9b7b0  blx  #0x10b98744                        <- init, e é aqui que a vtable entra
+0x10b9b7b4  str  r5, [r4]                           <- *out = obj
+```
+
+O `0x10b98744` é o trampolim; atrás dele, em `0x105c7dd4`, está o init de verdade:
+
+```
+0x105c7ddc  ldr  r0, [pc, #0x20]   ; = 0x10a783e4   <- a vtable
+0x105c7dde  str  r0, [r4]
+```
+
+O `firmware.py` faz isso sozinho agora: quando o começo do construtor não entrega o literal, ele
+segue as chamadas — atravessando o trampolim — **um nível**. Um nível cobre estas classes, e cada
+nível a mais aumenta a chance de achar a vtable *de outra coisa*: o construtor também chama
+`malloc` e o `CreateInstance` do objeto de que depende.
+
+Vale registrar de onde vinha o outro número errado: a contagem de métodos parava num **teto de
+16** que ninguém via, e o teto entrava na tabela como se fosse o tamanho da interface. A
+`0x0103475a` tem 39 métodos, não 16. Hoje o teto é 64, ajustável (`classe <clsid> <teto>`), e a
+ferramenta avisa quando a contagem bate nele.
+
+A leitura entrega mais uma coisa de graça: a `0x0100102e` **cria a `0x01039270` antes de
+qualquer outra coisa** e devolve o erro dela se falhar. Isso é pista sobre o que a classe é, e
+não um obstáculo nosso — o firmware não é executado aqui, nós implementamos a classe no host. A
+`0x01039270`, por sua vez, não está na tabela desta partição, o que a põe na mesma lista das
+outras que faltam, abaixo.
+
+E vale ser exato sobre o erro do Opera Mini: o `EFAILED` que ele leva no `CreateInstance` do
+applet vem de **nós** não implementarmos a `0x0100102e` — o `ISHELL_CreateInstance` dele
+recusa, e o construtor do applet desiste. Não é o construtor do firmware falhando; esse a gente
+só leu.
 
 ## O que o firmware **não** tem
 
@@ -58,6 +102,7 @@ buscador só olha o começo. Desmontar cada uma resolve.
 | `0x01028e51` | Z-Wheel e Zeebo App |
 | `0x01035156` | a fonte TrueType da Z-Wheel |
 | `0x01001031` | aparece no `QueryInterface` do `IWeb` |
+| `0x01039270` | a classe de que a `0x0100102e` depende — o Opera Mini, por consequência |
 
 Nenhuma está na tabela da partição APPS, e a explicação provável é a mesma de sempre: extraímos
 só essa partição. O resto do sistema de arquivos está atrás do EFS2, cujo leitor parou na

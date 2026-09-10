@@ -107,6 +107,12 @@ Passou os seis segundos, mas o relatório apontou alguma coisa. O balde é conse
 | Pac-Mania | lento demais — desenha, mas pixel a pixel pela API |
 | Zumas Revenge | para no laço na volta 55 — acesso inválido a 0x0000000c (pc 0x00046b94) |
 
+> **Esta tabela é de uma medição anterior.** A varredura de abertura de hoje mostra que
+> Z-Wheel, Zeebo App, Action Hero 3D, Alice, Prey Evil, Turma da Mônica e Zuma's Revenge **criam
+> o applet** — os quatro últimos já criavam, e os dois primeiros deixaram de estar presos aí. Onde
+> cada um para depois disso é medição de execução, e ainda não foi refeita. As três que continuam
+> sem criar o applet estão detalhadas em [As quatro que não abrem](#as-quatro-que-não-abrem-uma-a-uma).
+
 ### O `nResID` que não valia nada
 
 `ISHELL_LoadResObject` recebe o arquivo, o **número do recurso** dentro dele e a **classe** que o
@@ -189,6 +195,78 @@ Ou seja: são as extensões de OpenGL ES do console, e as duas que os jogos anun
 são justamente as que já implementamos. O que essas seis fazem, e se alguma muda o desenho na
 tela, ainda não foi levantado — mas nenhuma delas impede jogo nenhum de rodar hoje.
 
+## As quatro que não abrem, uma a uma
+
+Levantadas pela varredura de abertura (`a_rom_indicada_abre`, ver [17-testes.md](17-testes.md)):
+**60 das 63 ROMs criam o applet**; três não. A quarta — Kingdom Hearts — foi corrigida no caminho,
+e vale contar o que era.
+
+### Kingdom Hearts: o manifesto que estava no lugar "errado" — corrigido
+
+`nenhum .mif ao lado do módulo diz qual applet criar`. O `.mif` **estava** no pacote:
+
+```
+Kingdon Hearts/Kingdon Hearts.mif          <- o manifesto
+Kingdon Hearts/Kingdon Hearts_/swv21brew.mod   <- o módulo, numa pasta própria
+```
+
+Nós procurávamos o `.mif` em dois lugares calculados por nome: ao lado do `.mod`, e no
+`<Título>/mif/<id>.mif` da disposição do console. Nenhum dos dois é este. Agora a busca também
+**varre** a pasta do módulo e a de cima, o mais perto primeiro, com ordem estável.
+
+Ele abre, e o obstáculo seguinte já apareceu: o jogo pede `0x0100a004` e `0x0102bbfc`, não as
+encontra, desenha `The application has failed and will close (Error 14)` e sai sozinho. O 14 é
+`0x14` — vinte, o `ECLASSNOTSUPPORT` que devolvemos. Nenhuma das duas está na tabela de classes da
+partição APPS.
+
+### Opera Mini: `CreateInstance` recusa com `EFAILED`
+
+O applet não nasce porque o construtor dele pede a `0x0100102e` e nós não a temos. A interface
+dela agora está **lida**, não suposta: 59 métodos, vtable `0x10a783e4` — ver
+[15-o-que-falta-da-nand.md](15-o-que-falta-da-nand.md), inclusive por que ela não saía antes.
+
+### Zenonia: orçamento esgotado dentro do `CreateInstance`
+
+Mesma família de problema, sintoma diferente. Falta a `0x01003109`, o subsistema de texto dele, e
+sem ela o construtor **gira** em vez de desistir: gasta os 500 milhões de instruções sem sair do
+lugar. O log do próprio jogo nomeia o que quebrou:
+
+```
+:AF![B:\WIPI\WBLIB\src\WBLCore.cpp:241]:(-268435448):
+:FALSE && "CWBLText::Create() failed!"(0):
+```
+
+A vtable dela também está lida agora: 40 métodos, em `0x10e15c04`.
+
+### Need For Speed Carbon: não é lentidão, é uma parada de propósito
+
+Este é o mais interessante dos quatro, porque o rótulo estava errado. "Orçamento de instruções
+esgotado" soa como jogo pesado; o perfil diz outra coisa — **97,8% das 500 milhões de instruções
+num único bloco**, o `0x001a3c80`. Aquele endereço é isto:
+
+```
+0x1a3c78  mov  r0, #0x32
+0x1a3c7c  blx  r1              <- helper 39, dbgprintf
+0x1a3c80  b    #0x1a3c80       <- e fica aqui para sempre
+```
+
+Um `b` para si mesmo. O jogo **decidiu** parar, e as duas linhas do log são as que ele imprime
+antes: `source\mediacenter\ZeeboSnd.cpp:327` e `BREAKPOINT!`.
+
+Logo acima está o motivo. Ele varre até setenta entradas de uma tabela de sons chamando
+`strstr(entrada, "snd/skid/skid.wav")`, e o rastreamento mostra as setenta devolvendo zero — a
+agulha é sempre o mesmo ponteiro, `0x1a40ec`, e as entradas preenchidas são todas
+`snd/carbon_fe/*.wav`. Não achando o som, ele assume defeito de programação e trava.
+
+E o arquivo **existe** no pacote, em `mod/nfsresources/snd/skid/skid.wav`. Ou seja: não é sistema
+de arquivos, e não é desempenho. É o registro do banco de sons: o do menu entrou na tabela, o de
+derrapagem não. É por aí que a investigação dele continua.
+
+Vale a lição de método, que é a terceira vez que aparece nesta página: o `--profile` **não
+imprimia nada** quando o jogo morria antes do laço de quadros, que é justamente o caso do Need
+For Speed. Enquanto o perfil só existia no laço, "orçamento esgotado" não tinha como virar
+"parada de propósito na linha tal".
+
 ## A largura do `printf` era um defeito invisível
 
 Vale registrar porque não aparece como quebra nenhuma nesta tabela.
@@ -204,7 +282,58 @@ encontrados" que ninguém tinha lido.
 Foi a mesma lista que entregou o `font.fnz` dos ports de arcade, e nas duas vezes ela estava lá
 desde o começo. A lição: **a lista de arquivos não encontrados do relatório é sinal, não ruído.**
 
-## Como repetir
+## Como repetir, por teste
+
+O mesmo levantamento roda dentro do `cargo test`, no [`src/varredura.rs`](../../src/varredura.rs).
+A diferença que importa não é a comodidade: é que uma regressão passa a aparecer **no commit que
+a causou**, e não na próxima vez que alguém repetir a varredura à mão.
+
+```bash
+# um jogo, com o relatório inteiro na tela
+ZEEBX_ROM="roms/Quake.zip" cargo test --release varredura -- --nocapture
+
+# a varredura inteira, gravando um relatório por jogo e cobrando a linha de base
+ZEEBX_ROM=roms ZEEBX_ROM_SAIDA=saida ZEEBX_ROM_BASE=docs/varredura \
+  cargo test --release varredura -- --nocapture
+```
+
+| Variável | O que faz |
+|---|---|
+| `ZEEBX_ROM` | um `.mod`/`.zip`, uma lista separada por vírgula, ou um diretório |
+| `ZEEBX_ROM_MS` | quanto tempo **virtual** rodar, em ms (padrão 6000, o desta página) |
+| `ZEEBX_ROM_TETO` | teto de tempo **real** por jogo, em segundos (padrão 90) |
+| `ZEEBX_ROM_SAIDA` | diretório onde gravar o relatório completo de cada jogo |
+| `ZEEBX_ROM_BASE` | diretório da linha de base: o que falta é gravado, o que existe é cobrado |
+
+Nenhuma ROM está na árvore, então sem `ZEEBX_ROM` os dois testes avisam e passam — `cargo test`
+não vira uma varredura de sessenta e cinco jogos sem alguém ter pedido.
+
+São dois testes, e a diferença entre eles é o custo:
+
+- **`a_rom_indicada_abre`** é a pergunta barata: carrega o `.mod`, roda o `AEEMod_Load`, lê o
+  `.mif` e chama o `CreateInstance`. Quem não cria applet falha aqui sem gastar os seis segundos
+  virtuais que nunca iria rodar.
+- **`a_rom_indicada_avanca`** entrega o `EVT_APP_START`, roda o laço de quadros e monta o
+  relatório: estado, desempenho, o que faltou e o log do jogo. A partida vem separada da primeira
+  volta, e é o que distingue as duas linhas desta página — "quebrou no `EVT_APP_START`" e
+  "quebrou no laço de quadros" apontam para trechos de código diferentes.
+
+O teste falha por duas razões, e só por essas duas:
+
+1. **O jogo não chegou ao fim do tempo pedido.** Não carrega, não cria o applet, quebra, ou não
+   cumpre o tempo virtual dentro do teto de tempo real. Pendência não é falha: um jogo que roda
+   pedindo seis classes que não temos continua passando, porque é assim que ele se comporta.
+2. **O resumo mudou em relação à linha de base**, quando ela existe. É o que cobra pendência: uma
+   API que deixou de ser atendida, uma classe que passou a ser pedida ou um arquivo que sumiu
+   aparecem como `+`/`-` na saída do teste.
+
+A linha de base guarda o estado e as pendências, e **nada de desempenho** — nem tempo, nem
+instrução, nem quadro. Se guardasse, trocar de máquina acusaria regressão em todos os jogos de
+uma vez, e um teste que acusa sempre não é lido nunca. Por isso o `--release` também não é
+enfeite: em depuração o núcleo roda uma ordem de grandeza mais devagar, e o teto de tempo real
+classificaria jogo bom como "lento demais".
+
+## Como repetir, à mão
 
 ```bash
 for z in roms/*.zip; do
