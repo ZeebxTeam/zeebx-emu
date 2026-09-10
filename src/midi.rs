@@ -54,8 +54,10 @@ enum Evento {
     Toca { canal: u8, nota: u8, forca: u8 },
     Solta { canal: u8, nota: u8 },
     Programa { canal: u8, programa: u8 },
-    /// Volume (7) e expressão (11) do canal. O resto do `Control Change` é ignorado.
+    /// Volume (7) do canal, e expressão (11), que é um segundo fator sobre ele. O resto do
+    /// `Control Change` é ignorado.
     Volume { canal: u8, valor: u8 },
+    Expressao { canal: u8, valor: u8 },
     /// Todas as notas do canal soltas de uma vez — `All Notes Off` e `All Sound Off`.
     SoltaTudo { canal: u8 },
     Tempo { us_por_batida: u32 },
@@ -139,7 +141,11 @@ fn le_trilha(bytes: &[u8]) -> Vec<(u64, Evento)> {
                     break;
                 };
                 match controle {
-                    7 | 11 => eventos.push((pulso, Evento::Volume { canal, valor })),
+                    // Volume e expressão **multiplicam**, não se sobrescrevem: tratar os dois
+                    // como a mesma coisa faz um `crescendo` de expressão apagar o volume do
+                    // canal, e o instrumento volta com o dobro do que devia.
+                    7 => eventos.push((pulso, Evento::Volume { canal, valor })),
+                    11 => eventos.push((pulso, Evento::Expressao { canal, valor })),
                     120 | 123 => eventos.push((pulso, Evento::SoltaTudo { canal })),
                     _ => {}
                 }
@@ -395,20 +401,37 @@ fn timbre(programa: u8) -> Timbre {
     }
 }
 
+/// O que fazer com o ruído da percussão: nada, cortar o agudo, ou cortar o grave.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Filtro {
+    Nenhum,
+    /// Passa-baixa na frequência dada. É o que faz bombo e surdo.
+    Baixa(f32),
+    /// Passa-alta na frequência dada. É o que faz chimbau e prato.
+    Alta(f32),
+}
+
 /// O timbre de uma nota da percussão, pelo número dela.
 ///
-/// Não há altura: o que muda entre um bombo e um prato é quanto tempo o ruído dura e quanto de
-/// grave ele tem. Duas famílias bastam para a música ficar reconhecível.
-fn percussao(nota: u8) -> (Timbre, f32) {
-    let (decaimento, corte, ganho) = match nota {
-        // Bombo e surdo.
-        35 | 36 | 41 | 43 | 45 | 47 | 48 | 50 => (0.18, 90.0, 1.0),
-        // Caixa e palmas.
-        37..=40 => (0.14, 900.0, 0.7),
-        // Pratos de condução e ataque: os mais longos.
-        49 | 51 | 52 | 53 | 55 | 57 | 59 => (0.45, 5_000.0, 0.4),
+/// Não há altura: o que muda entre um bombo e um prato é quanto o ruído dura e **em que faixa
+/// ele mora**.
+///
+/// A faixa é o que estava errado antes, e o sintoma foi ouvido antes de ser explicado: no Double
+/// Dragon o chimbau desaparecia justamente nos trechos de baixo contínuo. A causa é
+/// **mascaramento**: chimbau e prato levavam passa-baixa, ficavam com o grave e sem o brilho, e
+/// passavam a morar na mesma faixa do baixo — dois sons na mesma faixa, e o mais forte come o
+/// mais fraco. Chimbau é agudo: o filtro dele é passa-**alta**, e aí ele senta acima do baixo e
+/// se ouve sem precisar de volume nenhum a mais.
+fn percussao(nota: u8) -> (Timbre, Filtro) {
+    let (decaimento, filtro, ganho) = match nota {
+        // Bombo e surdo: só o grave.
+        35 | 36 | 41 | 43 | 45 | 47 | 48 | 50 => (0.18, Filtro::Baixa(120.0), 1.0),
+        // Caixa e palmas: corpo no meio, com o estalo em cima.
+        37..=40 => (0.14, Filtro::Alta(700.0), 0.8),
+        // Pratos de condução e ataque: os mais longos, e os mais agudos.
+        49 | 51 | 52 | 53 | 55 | 57 | 59 => (0.45, Filtro::Alta(4_000.0), 0.5),
         // Chimbau e o resto: curtos e agudos.
-        _ => (0.07, 4_000.0, 0.5),
+        _ => (0.07, Filtro::Alta(5_000.0), 0.6),
     };
     (
         Timbre {
@@ -419,7 +442,7 @@ fn percussao(nota: u8) -> (Timbre, f32) {
             liberacao: 0.02,
             ganho,
         },
-        corte,
+        filtro,
     )
 }
 
@@ -433,8 +456,8 @@ struct Voz {
     solta: Option<usize>,
     frequencia: f32,
     timbre: Timbre,
-    /// Corte do filtro da percussão, em Hz. Zero para nota com altura.
-    corte: f32,
+    /// O filtro da percussão. Nota com altura não leva filtro.
+    filtro: Filtro,
     amplitude: f32,
 }
 
@@ -493,6 +516,7 @@ pub fn decode(data: &[u8]) -> Option<crate::wav::Sound> {
 
     let mut programa = [0u8; 16];
     let mut volume = [1.0f32; 16];
+    let mut expressao = [1.0f32; 16];
     let mut soando: Vec<Voz> = Vec::new();
     let mut mortas: Vec<Voz> = Vec::new();
 
@@ -506,6 +530,9 @@ pub fn decode(data: &[u8]) -> Option<crate::wav::Sound> {
             Evento::Programa { canal, programa: p } => programa[canal as usize & 15] = p,
             Evento::Volume { canal, valor } => {
                 volume[canal as usize & 15] = f32::from(valor) / 127.0
+            }
+            Evento::Expressao { canal, valor } => {
+                expressao[canal as usize & 15] = f32::from(valor) / 127.0
             }
             Evento::Tempo { .. } => {}
             Evento::SoltaTudo { canal } => {
@@ -529,18 +556,25 @@ pub fn decode(data: &[u8]) -> Option<crate::wav::Sound> {
                 }
             }
             Evento::Toca { canal, nota, forca } => {
+                // Cheio: **solta a voz mais antiga** em vez de recusar a nova. Recusar parece
+                // inofensivo e é uma regra de prioridade disfarçada — e a pior possível: quem
+                // fica é a nota comprida que já está soando, quem perde é a nota curta que
+                // acabou de chegar. Numa música com baixo contínuo, isso engole exatamente a
+                // percussão, que é o que dá o ritmo.
                 if soando.len() >= MAX_VOZES {
-                    continue;
+                    let mut voz = soando.remove(0);
+                    voz.solta = Some(agora);
+                    mortas.push(voz);
                 }
                 let canal_idx = canal as usize & 15;
-                let (timbre, corte, frequencia) = match canal == CANAL_PERCUSSAO {
+                let (timbre, filtro, frequencia) = match canal == CANAL_PERCUSSAO {
                     true => {
-                        let (timbre, corte) = percussao(nota);
-                        (timbre, corte, 0.0)
+                        let (timbre, filtro) = percussao(nota);
+                        (timbre, filtro, 0.0)
                     }
                     false => (
                         timbre(programa[canal_idx]),
-                        0.0,
+                        Filtro::Nenhum,
                         // A afinação do MIDI: a nota 69 é o lá de 440 Hz, e cada semitom é a raiz
                         // duodécima de dois.
                         440.0 * 2.0f32.powf((f32::from(nota) - 69.0) / 12.0),
@@ -553,8 +587,11 @@ pub fn decode(data: &[u8]) -> Option<crate::wav::Sound> {
                     solta: None,
                     frequencia,
                     timbre,
-                    corte,
-                    amplitude: f32::from(forca) / 127.0 * volume[canal_idx] * timbre.ganho,
+                    filtro,
+                    amplitude: f32::from(forca) / 127.0
+                        * volume[canal_idx]
+                        * expressao[canal_idx]
+                        * timbre.ganho,
                 });
             }
         }
@@ -595,29 +632,76 @@ fn toca_voz(voz: &Voz, samples: &mut [f32]) {
         false => 1,
     };
     let mut ruido = 0x1234_5678u32 ^ ((voz.nota as u32) << 16) ^ voz.inicio as u32;
-    // O filtro é o que separa bombo de chimbau na percussão.
-    let mut anterior = 0.0f32;
-    // Filtro RC de um polo: `alpha = fc / (fc + fs/2π)`. Sem filtro, `alpha` é 1 e o ruído passa
-    // inteiro — que é o que se quer para nota com altura, onde ele nem é usado.
-    let alpha = match voz.corte > 0.0 {
-        true => (voz.corte / (voz.corte + taxa / std::f32::consts::TAU)).clamp(0.02, 1.0),
+    // Filtro RC de um polo: `alpha = fc / (fc + fs/2π)`. O passa-alta usa **dois** em cascata,
+    // porque um só cai 6 dB por oitava e deixa grave demais passar — com um polo o chimbau ainda
+    // disputava a faixa do baixo, que é o defeito que se queria consertar.
+    let corte = match voz.filtro {
+        Filtro::Nenhum => 0.0,
+        Filtro::Baixa(hz) | Filtro::Alta(hz) => hz,
+    };
+    let alpha = match corte > 0.0 {
+        true => (corte / (corte + taxa / std::f32::consts::TAU)).clamp(0.01, 1.0),
         false => 1.0,
     };
+    let mut polo = [0.0f32; 2];
     let mut fase = 0.0f32;
     let passo = voz.frequencia / taxa;
     let Some(trecho) = samples.get_mut(voz.inicio..fim) else {
         return;
     };
-    for (i, amostra) in trecho.iter_mut().enumerate() {
+
+    // Voz sem filtro entra direto no buffer. Voz filtrada é montada à parte e depois escalada,
+    // porque filtrar tira energia — um passa-baixa em 120 Hz devolve um vinte avos do ruído — e
+    // sem corrigir isso o número da tabela não quer dizer nada. Percussão é curta, então o
+    // buffer extra é pequeno.
+    let mut voz_filtrada = match voz.filtro {
+        Filtro::Nenhum => Vec::new(),
+        _ => Vec::with_capacity(trecho.len()),
+    };
+    for i in 0..trecho.len() {
         let t = i as f32 / taxa;
         let envoltoria = voz.envoltoria(t, solta);
         if envoltoria <= 0.0 && solta.is_some_and(|s| t > s) {
             break;
         }
         let crua = voz.timbre.forma.amostra(fase, harmonicos.max(1), &mut ruido);
-        anterior += alpha * (crua - anterior);
-        *amostra += anterior * envoltoria * voz.amplitude;
         fase = (fase + passo).fract();
+        polo[0] += alpha * (crua - polo[0]);
+        let valor = match voz.filtro {
+            Filtro::Nenhum => crua,
+            Filtro::Baixa(_) => polo[0],
+            // O que sobra depois de tirar o grave é o agudo, e o segundo polo tira o que sobrou
+            // dele: é o passa-alta complementar, montado do mesmo estado.
+            Filtro::Alta(_) => {
+                let primeiro = crua - polo[0];
+                polo[1] += alpha * (primeiro - polo[1]);
+                primeiro - polo[1]
+            }
+        };
+        match voz.filtro {
+            Filtro::Nenhum => trecho[i] += valor * envoltoria * voz.amplitude,
+            _ => voz_filtrada.push(valor * envoltoria),
+        }
+    }
+    if voz_filtrada.is_empty() {
+        return;
+    }
+    // **Iguala energia, não pico.** Igualar pico foi a primeira tentativa e ela erra por um
+    // motivo que dá para ouvir: um estalo de ruído tem pico alto e energia baixa, enquanto um
+    // baixo sustentado tem os dois parecidos. Com o pico igualado, a percussão fica muitas
+    // vezes mais fraca que uma nota melódica de mesmo ganho — e num arranjo como o do Double
+    // Dragon, com nove canais soando, o chimbau simplesmente não se ouve.
+    //
+    // O alvo é a energia de uma nota melódica de mesma amplitude, que é cerca de 0,7 dela.
+    let energia = (voz_filtrada.iter().map(|s| f64::from(s * s)).sum::<f64>()
+        / voz_filtrada.len() as f64)
+        .sqrt() as f32;
+    if energia <= 0.0 {
+        return;
+    }
+    let fator = voz.amplitude * 0.7 / energia;
+    for (destino, valor) in trecho.iter_mut().zip(&voz_filtrada) {
+        *destino += valor * fator;
     }
 }
 
@@ -891,6 +975,122 @@ mod tests {
         let som = decode(&smf(96, &trilha)).expect("é música");
         let pico = som.samples.iter().fold(0.0f32, |a, s| a.max(s.abs()));
         assert!((0.79..=0.81).contains(&pico), "pico {pico}");
+    }
+
+    /// Energia de uma faixa, por um passa-baixa de um polo — grave quando `alta` é falso, e o
+    /// que sobra dele quando é verdadeiro.
+    fn energia(samples: &[f32], hz: f32, alta: bool) -> f32 {
+        let alpha = hz / (hz + RATE as f32 / std::f32::consts::TAU);
+        let mut baixa = 0.0f32;
+        let mut soma = 0.0f64;
+        for &amostra in samples {
+            baixa += alpha * (amostra - baixa);
+            let faixa = match alta {
+                true => amostra - baixa,
+                false => baixa,
+            };
+            soma += f64::from(faixa * faixa);
+        }
+        (soma / samples.len().max(1) as f64).sqrt() as f32
+    }
+
+    fn percussao_sozinha(nota: u8) -> crate::wav::Sound {
+        let mut trilha = vec![0x00, 0x99, nota, 127];
+        trilha.extend(delta(96));
+        trilha.extend([0x89, nota, 0x40, 0x00, 0xff, 0x2f, 0x00]);
+        decode(&smf(96, &trilha)).expect("percussão é música")
+    }
+
+    /// **O chimbau mora acima do baixo, e o bombo abaixo.**
+    ///
+    /// É o teste do defeito que se ouviu antes de entender: no Double Dragon o chimbau
+    /// desaparecia nos trechos de baixo contínuo. Não era volume, era faixa — chimbau e prato
+    /// levavam passa-baixa, ficavam sem brilho e passavam a disputar a mesma faixa do baixo. Dois
+    /// sons na mesma faixa e o mais forte come o mais fraco, que é mascaramento e não mixagem.
+    #[test]
+    fn o_chimbau_e_agudo_e_o_bombo_e_grave() {
+        let chimbau = percussao_sozinha(42);
+        let bombo = percussao_sozinha(36);
+        // No chimbau, o agudo tem de dominar o grave — e no bombo, o contrário.
+        let (agudo_ch, grave_ch) = (
+            energia(&chimbau.samples, 2_000.0, true),
+            energia(&chimbau.samples, 2_000.0, false),
+        );
+        let brilho_ch = agudo_ch / grave_ch;
+        let (agudo_bo, grave_bo) = (
+            energia(&bombo.samples, 2_000.0, true),
+            energia(&bombo.samples, 2_000.0, false),
+        );
+        let brilho_bo = agudo_bo / grave_bo;
+        // Medido: 2,6 no chimbau e 0,19 no bombo. O que o teste cobra é a separação, com folga —
+        // o divisor de faixa da medição é de um polo e vaza de propósito, para o número não
+        // depender de um filtro melhor que o do sintetizador.
+        assert!(brilho_ch > 2.0, "chimbau sem brilho: {brilho_ch}");
+        assert!(brilho_bo < 0.5, "bombo sem corpo: {brilho_bo}");
+        assert!(
+            brilho_ch > brilho_bo * 8.0,
+            "chimbau e bombo na mesma faixa: {brilho_ch} contra {brilho_bo}"
+        );
+    }
+
+    /// O baixo contínuo não abafa o chimbau: eles ocupam faixas diferentes.
+    ///
+    /// A conta é a que o ouvido faz: quanta energia de agudo existe enquanto o baixo soa. Se o
+    /// chimbau estivesse na faixa do baixo, esse número cairia para o do baixo sozinho.
+    #[test]
+    fn o_baixo_continuo_nao_come_o_chimbau() {
+        // Programa 33 é baixo elétrico. Nota 40 segurada, e um chimbau em cima.
+        let mut trilha = vec![
+            0x00, 0xc0, 33, // baixo no canal 0
+            0x00, 0x90, 40, 127, // e ele segura a nota
+            0x00, 0x99, 42, 100, // chimbau, no canal da percussão
+        ];
+        trilha.extend(delta(96));
+        trilha.extend([0x89, 42, 0x40]);
+        trilha.extend(delta(96));
+        trilha.extend([0x80, 40, 0x40, 0x00, 0xff, 0x2f, 0x00]);
+        let com_chimbau = decode(&smf(96, &trilha)).unwrap();
+
+        // O mesmo trecho, só o baixo.
+        let mut so_baixo = vec![0x00, 0xc0, 33, 0x00, 0x90, 40, 127];
+        so_baixo.extend(delta(192));
+        so_baixo.extend([0x80, 40, 0x40, 0x00, 0xff, 0x2f, 0x00]);
+        let sem_chimbau = decode(&smf(96, &so_baixo)).unwrap();
+
+        // Os primeiros 50 ms, onde o chimbau está soando.
+        let quanto = (0.05 * RATE as f32) as usize;
+        let agudo_com = energia(&com_chimbau.samples[..quanto], 3_000.0, true);
+        let agudo_sem = energia(&sem_chimbau.samples[..quanto], 3_000.0, true);
+        assert!(
+            agudo_com > agudo_sem * 4.0,
+            "o chimbau não apareceu por cima do baixo: {agudo_com} contra {agudo_sem}"
+        );
+    }
+
+    /// Passando do teto de vozes, quem sai é a mais antiga — não a que acabou de chegar.
+    ///
+    /// Descartar a nota nova é uma regra de prioridade disfarçada, e a pior: quem fica é a nota
+    /// comprida que já soa, quem perde é a curta que chegou. Numa música com baixo contínuo isso
+    /// engole a percussão, que é o que dá o ritmo.
+    #[test]
+    fn passando_do_teto_de_vozes_sai_a_mais_antiga() {
+        let mut trilha = Vec::new();
+        // Mais notas do que o teto, todas seguradas, no canal 0.
+        for i in 0..(MAX_VOZES + 8) {
+            trilha.extend([0x00, 0x90, 36 + i as u8, 100]);
+        }
+        // E um chimbau depois de tudo, que é a nota que não pode ser recusada.
+        trilha.extend(delta(96));
+        trilha.extend([0x99, 42, 127]);
+        trilha.extend(delta(96));
+        trilha.extend([0x89, 42, 0x40, 0x00, 0xff, 0x2f, 0x00]);
+        let som = decode(&smf(96, &trilha)).unwrap();
+        // No instante do chimbau (meio segundo) tem de haver agudo, que nenhuma das notas
+        // seguradas produz.
+        let inicio = (0.5 * RATE as f32) as usize;
+        let fim = (inicio + (0.05 * RATE as f32) as usize).min(som.samples.len());
+        let agudo = energia(&som.samples[inicio..fim], 3_000.0, true);
+        assert!(agudo > 0.01, "o chimbau foi recusado pelo teto: {agudo}");
     }
 
     #[test]
