@@ -932,6 +932,11 @@ impl GlState {
         if self.active_unit != 0 {
             return;
         }
+        // **O que já foi enfileirado usa os parâmetros de agora.** A fila guarda o *nome* da
+        // textura e vai buscar filtro e repetição só no despejo; mudá-los aqui sem pintar antes
+        // faz um desenho anterior ser amostrado com a configuração de um posterior. É o mesmo
+        // cuidado que o `TexImage2D` já tomava com os pixels, e que faltava aqui.
+        self.flush();
         let Some(texture) = self.textures.get_mut(&self.bound_texture) else {
             return;
         };
@@ -985,6 +990,7 @@ impl GlState {
 
     /// Desenha uma sequência de vértices no modo pedido.
     pub fn draw(&mut self, mode: u32, vertices: &[Vertex]) {
+
         let mvp = {
             let projection = *self.projection.last().expect("pilha nunca fica vazia");
             let modelview = *self.modelview.last().expect("pilha nunca fica vazia");
@@ -1253,6 +1259,15 @@ impl GlState {
             (screen[2][1] - screen[0][1]) * inv_area,
             (screen[0][1] - screen[1][1]) * inv_area,
         ];
+        // O mesmo para descer uma linha. Só a escolha do nível de mipmap usa este, e usa porque
+        // **a compressão da textura não é sempre horizontal**: numa superfície de raspão ela
+        // pode estar toda na vertical, e medir só para o lado dava nível zero num lugar onde a
+        // textura passa inteira em dois pixels — que era o serrilhado das listras.
+        let step_y = [
+            (screen[2][0] - screen[1][0]) * inv_area,
+            (screen[0][0] - screen[2][0]) * inv_area,
+            (screen[1][0] - screen[0][0]) * inv_area,
+        ];
 
         batch.cost += (max_x - min_x) as usize * (max_y - min_y) as usize;
         batch.triangles.push(Prepared {
@@ -1260,6 +1275,7 @@ impl GlState {
             over_w,
             inv_area,
             step,
+            step_y,
             min_x,
             max_x,
             min_y,
@@ -1483,6 +1499,8 @@ struct Prepared {
     inv_area: f32,
     /// Quanto cada função de aresta anda a cada pixel para a direita.
     step: [f32; 3],
+    /// E a cada linha para baixo. Ver a construção dele.
+    step_y: [f32; 3],
     min_x: i32,
     max_x: i32,
     min_y: i32,

@@ -4080,8 +4080,14 @@ impl<C: CpuBackend> Machine<C> {
     /// passarmos um `IDisplay`: para o palco é indiferente, e para o outro a interface que
     /// faltar aparece no relatório em vez de sumir.
     ///
-    /// Uma vez por quadro para cada um, e só os do formulário atual: chamar o desenho de uma
-    /// tela que não está à vista é pedir para pintar por cima do que está.
+    /// Uma vez por quadro para cada widget visível que registrou desenho — e **não** só os do
+    /// formulário atual, ao contrário do que o `pinta_widgets` faz.
+    ///
+    /// A restrição por árvore chegou a existir aqui e deixava o palco de fora: o formulário do
+    /// menu fica com zero filho, porque não recebe o conteúdo pelo item `0x5000`, e o que ele
+    /// mostra vira uma raiz solta. Desenho registrado é explícito — quem registrou quer ser
+    /// chamado —, então ele não depende de acertarmos qual é a tela atual. Quando a ligação que
+    /// falta chegar pelo evento `0x7b0a`, vale reconsiderar.
     fn desenha_widgets(&mut self) -> Result<(), CpuError> {
         let mut chamar: Vec<(u32, (u32, u32))> = self
             .widgets
