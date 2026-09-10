@@ -782,6 +782,8 @@ struct Widget {
     classe: u32,
     /// O texto que o slot 6 pôs nele, quando a classe é das que põem texto.
     texto: String,
+    /// Ordem de criação. Ver [`Machine::formulario_atual`].
+    serial: u64,
     /// Os filhos que entraram pelo slot 5, que não os identifica por número.
     anexados: Vec<u32>,
     /// Se o widget deve aparecer. O slot 6 é quem diz.
@@ -1764,6 +1766,10 @@ pub struct Machine<C: CpuBackend> {
     pending_calls: Vec<GuestCall>,
     /// Recursos que **algum** arquivo forneceu. Ver [`Machine::missing_files`].
     recursos_lidos: BTreeSet<u16>,
+    /// Contador de criação de widgets. Ver [`Machine::formulario_atual`].
+    proximo_serial: u64,
+    /// O formulário que está pintado na superfície agora. Ver [`Machine::pinta_widgets`].
+    formulario_pintado: u32,
     /// Último erro do EGL, devolvido por `eglGetError`.
     egl_error: u32,
     /// Superfícies do EGL vivas, com as dimensões de cada uma.
@@ -1957,6 +1963,8 @@ impl<C: CpuBackend> Machine<C> {
             sounds: HashMap::new(),
             pending_calls: Vec::new(),
             recursos_lidos: BTreeSet::new(),
+            proximo_serial: 0,
+            formulario_pintado: 0,
             egl_error: gles::EGL_SUCCESS,
             egl_surfaces: HashMap::new(),
             egl_next_handle: EGL_HANDLE_BASE,
@@ -3960,6 +3968,42 @@ impl<C: CpuBackend> Machine<C> {
         Ok(())
     }
 
+    /// A raiz da árvore a que um widget pertence.
+    ///
+    /// Mesmo teto e mesmo motivo do [`Machine::posicao_na_tela`]: a árvore vem do jogo.
+    fn raiz_de(&self, widget: u32) -> u32 {
+        /// Até onde subir na árvore antes de desistir.
+        const FUNDO: usize = 32;
+
+        let mut atual = widget;
+        for _ in 0..FUNDO {
+            match self.widgets.get(&atual) {
+                Some(no) if no.pai != 0 && no.pai != atual => atual = no.pai,
+                _ => break,
+            }
+        }
+        atual
+    }
+
+    /// A raiz mais nova de todas — o formulário que o jogo acabou de montar.
+    ///
+    /// **A Z-Wheel nunca esconde nada.** O slot 6 só é chamado com verdadeiro, e o jogo monta um
+    /// formulário novo a cada volta do ciclo em vez de reaproveitar: são 1722 raízes vivas numa
+    /// execução de quinze segundos, cada uma um formulário do z-pad inteiro. No console a
+    /// anterior seria destruída; aqui ela fica, porque o jogo não a solta e não temos por que
+    /// soltar por conta.
+    ///
+    /// Pintar todas empilha a tela de boas-vindas de 640×480 — que é a raiz mais **velha** — por
+    /// cima do formulário atual. O console mostra um formulário por vez, e o atual é o último
+    /// montado: é o que esta função devolve.
+    fn formulario_atual(&self) -> Option<u32> {
+        self.widgets
+            .iter()
+            .filter(|(endereco, no)| no.pai == 0 || no.pai == **endereco)
+            .max_by_key(|(_, no)| no.serial)
+            .map(|(&endereco, _)| endereco)
+    }
+
     /// A que altura da árvore um widget está — a raiz é zero.
     ///
     /// É o que dá a ordem de desenho: filho por cima de pai. Mesmo teto e mesmo motivo do
@@ -4020,10 +4064,35 @@ impl<C: CpuBackend> Machine<C> {
     /// profundidade de verdade; é a única ordem estável que temos, e uma ordem estável ao menos
     /// faz o resultado ser o mesmo a cada execução.
     fn pinta_widgets(&mut self) -> Result<(), CpuError> {
+        let atual = self.formulario_atual();
+        // **Formulário novo apaga o anterior.** A superfície é persistente: o que foi pintado
+        // num quadro continua lá no seguinte. Sem limpar, a tela de boas-vindas de 640×480
+        // ficava por cima de tudo o que veio depois, mesmo depois de deixarmos de desenhá-la.
+        //
+        // Limpar só na troca, e não a cada quadro, porque quem desenha pelo `IDisplay` — que é
+        // a maioria dos jogos — não tem formulário nenhum e não pode ter a tela apagada por
+        // baixo. Sem widget, `atual` é `None` e nada aqui acontece.
+        if let Some(raiz) = atual {
+            if raiz != self.formulario_pintado {
+                self.formulario_pintado = raiz;
+                let alvo = self.target()?;
+                if let Some(surface) = self.bitmaps.get_mut(&alvo) {
+                    let tela = Rect {
+                        x: 0,
+                        y: 0,
+                        width: surface.width() as i16,
+                        height: surface.height() as i16,
+                    };
+                    surface.fill_rect(tela, Rgb::WHITE);
+                }
+            }
+        }
         let mut imagens: Vec<(u32, u32)> = self
             .widgets
             .iter()
-            .filter(|(_, widget)| widget.visivel)
+            .filter(|(dono, widget)| {
+                widget.visivel && atual.is_some_and(|raiz| self.raiz_de(**dono) == raiz)
+            })
             .flat_map(|(dono, widget)| widget.anexados.iter().map(|&filho| (filho, *dono)))
             .filter(|(objeto, _)| self.images.contains_key(objeto))
             .collect();
@@ -4055,10 +4124,15 @@ impl<C: CpuBackend> Machine<C> {
     ///
     /// A ordem é a da árvore, como a das imagens: filho por cima de pai.
     fn pinta_textos(&mut self) -> Result<(), CpuError> {
+        let atual = self.formulario_atual();
         let mut escritas: Vec<(usize, i32, i32, u32, String)> = self
             .widgets
             .iter()
-            .filter(|(_, widget)| widget.visivel && !widget.texto.is_empty())
+            .filter(|(dono, widget)| {
+                widget.visivel
+                    && !widget.texto.is_empty()
+                    && atual.is_some_and(|raiz| self.raiz_de(**dono) == raiz)
+            })
             .map(|(&dono, widget)| {
                 let (x, y) = self.posicao_na_tela(dono);
                 let cor = widget.propriedades.get(&PROP_COR).copied().unwrap_or(0);
@@ -7026,10 +7100,12 @@ impl<C: CpuBackend> Machine<C> {
         if filho == 0 {
             return Ok(0);
         }
+        self.proximo_serial += 1;
         self.widgets.insert(
             filho,
             Widget {
                 visivel: true,
+                serial: self.proximo_serial,
                 ..Widget::default()
             },
         );
@@ -7304,8 +7380,11 @@ impl<C: CpuBackend> Machine<C> {
                     // sabemos, e recusar continua sendo o certo; o que muda é o relatório
                     // dizer **qual**, em vez de "um seletor".
                     outro => {
-                        self.missing_apis
-                            .insert(format!("IWidget::Acessador seletor {outro:#x}"));
+                        let quem = self.cpu.read_reg(Reg::Lr);
+                        let classe = self.widgets.get(&this).map_or(0, |w| w.classe);
+                        self.missing_apis.insert(format!(
+                            "IWidget::Acessador seletor {outro:#x} (classe {classe:#x}, de {quem:#010x}, {id:#x}, {terceiro:#x})"
+                        ));
                         0
                     }
                 }
@@ -10961,9 +11040,15 @@ impl<C: CpuBackend> Machine<C> {
         }
         if iface == Interface::Widget {
             // Um widget nasce visível: o jogo só chama o slot 6 para **esconder**.
+            self.proximo_serial += 1;
             self.widgets.insert(
                 obj,
-                Widget { visivel: true, classe: clsid, ..Widget::default() },
+                Widget {
+                    visivel: true,
+                    classe: clsid,
+                    serial: self.proximo_serial,
+                    ..Widget::default()
+                },
             );
         }
         if out != 0 {
