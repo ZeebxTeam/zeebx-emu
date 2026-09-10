@@ -442,6 +442,15 @@ impl Session {
     ///
     /// Um host sem placa de áudio não pode impedir o jogo de rodar: o motivo é devolvido para
     /// quem quiser mostrá-lo, e o emulador segue mudo.
+    /// Liga a captura de serial — o fluxo de `DBGPRINTF` e o SQL, na ordem e com o instante.
+    ///
+    /// Ver [`crate::machine::Machine::liga_serial`]. Vem da interface só quando o log de
+    /// depuração está ligado: o arquivo cresce sem parar e traz IMEI e senha, e nenhuma das
+    /// duas coisas deve acontecer por omissão.
+    pub fn liga_serial(&mut self, caminho: &std::path::Path) -> std::io::Result<()> {
+        self.machine.liga_serial(caminho)
+    }
+
     pub fn set_audio(&mut self, enabled: bool, volume: u8) -> Option<String> {
         let level = f32::from(volume.min(100)) / 100.0;
         if !enabled {

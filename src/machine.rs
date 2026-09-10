@@ -8425,6 +8425,13 @@ impl<C: CpuBackend> Machine<C> {
                     return Ok(Some(EBADPARM));
                 };
                 let resultado = db.exec(&sql);
+                if self.serial.is_some() {
+                    let quantas = match &resultado {
+                        Ok(linhas) => format!("{} linha(s)", linhas.len()),
+                        Err(erro) => format!("erro: {erro}"),
+                    };
+                    self.record_debug(format!("<sql {sql} -> {quantas}>"));
+                }
                 match resultado {
                     Ok(linhas) => {
                         // `Exec(this, sql, callback, contexto)`: a sonda mostrou o ponteiro de

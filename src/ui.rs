@@ -254,6 +254,17 @@ impl App {
                 if let Some(err) = session.set_audio(audio.enabled, audio.volume) {
                     eprintln!("sem som: {err}");
                 }
+                // Com o log de depuração ligado, a serial vai junto: é ela que traz a ordem das
+                // coisas e o SQL que o jogo manda, e o relatório não traz nem uma nem outro.
+                if self.settings.debug.log {
+                    let caminho = Self::caminho_da_serial(session.title());
+                    if let Some(dir) = caminho.parent() {
+                        let _ = std::fs::create_dir_all(dir);
+                    }
+                    if let Err(erro) = session.liga_serial(&caminho) {
+                        eprintln!("sem serial: {erro}");
+                    }
+                }
                 self.session = Some(session);
             }
             Err(err) => {
@@ -1172,6 +1183,15 @@ impl App {
 
     /// Grava o log num arquivo escolhido pelo usuário e devolve o que dizer sobre isso.
     /// Onde o relatório desta execução é gravado sozinho.
+    /// Onde a captura de serial daquele jogo é gravada, ao lado do relatório.
+    fn caminho_da_serial(titulo: &str) -> PathBuf {
+        let nome = match titulo.is_empty() {
+            true => "zeebx.serial.log".to_string(),
+            false => format!("{titulo}.serial.log"),
+        };
+        crate::settings::config_dir().join("relatorios").join(nome)
+    }
+
     pub fn caminho_do_relatorio(&self) -> PathBuf {
         let nome = match self.session.as_ref().map(Session::title) {
             Some(title) if !title.is_empty() => format!("{title}.log"),
