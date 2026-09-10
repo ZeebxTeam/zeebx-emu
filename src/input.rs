@@ -49,6 +49,19 @@ pub mod avk {
         (n <= 9).then_some(ZERO + n)
     }
 
+    /// As teclas do console que a Z-Wheel escuta, **medidas** e não deduzidas.
+    ///
+    /// A medida foi comparar o quadro com e sem cada candidata, com o desenho já
+    /// determinístico: `0xe033` e `0xe034` giram a roda de jogos para um lado e para o outro, e
+    /// `0xe064` avança a tela de instruções do z-pad — o mesmo que a tecla `0` faz ali.
+    ///
+    /// Pela numeração dos dígitos, `0xe033` e `0xe034` são o `3` e o `4`. Não sabemos que nome
+    /// o header do BREW lhes dá nem por que a roda usa justamente esses dois; sabemos o que
+    /// eles fazem. Ficam com nome do que fazem, e não do que se imagina que sejam.
+    pub const RODA_ANTERIOR: u32 = 0xe033;
+    pub const RODA_SEGUINTE: u32 = 0xe034;
+    pub const CONFIRMA: u32 = 0xe064;
+
     /// O código de uma tecla pelo nome que a configuração usa.
     pub fn por_nome(nome: &str) -> Option<u32> {
         Some(match nome {
@@ -240,6 +253,12 @@ impl Pad {
 pub struct Script {
     /// Cada entrada é `(início, fim, índice do botão)`, em milissegundos de tempo virtual.
     steps: Vec<(u32, u32, usize)>,
+    /// O mesmo para os eixos: `(início, fim, índice do eixo, valor)`.
+    ///
+    /// Existe porque nem toda entrada do console é botão. A Z-Wheel registra
+    /// `RegisterForPositionChange` e **só** isso: a roda de jogos anda pelo eixo, e um roteiro
+    /// que só sabe apertar botão não tem como medi-la.
+    eixos: Vec<(u32, u32, usize, i32)>,
 }
 
 impl Script {
@@ -255,6 +274,7 @@ impl Script {
     /// `right` para o direcional.
     pub fn parse(text: &str) -> Result<Self, String> {
         let mut steps = Vec::new();
+        let mut eixos = Vec::new();
         for item in text.split(',').filter(|s| !s.is_empty()) {
             let mut parts = item.split(':');
             let at = parts.next().unwrap_or_default();
@@ -270,11 +290,16 @@ impl Script {
                     .map_err(|_| format!("duração inválida em {item:?}"))?,
                 None => Self::HOLD_MS,
             };
+            let fim = at.saturating_add(hold.max(1));
+            if let Some((eixo, valor)) = eixo_por_nome(key) {
+                eixos.push((at, fim, eixo, valor));
+                continue;
+            }
             let index =
                 Pad::button_by_name(key).ok_or_else(|| format!("tecla desconhecida: {key:?}"))?;
-            steps.push((at, at.saturating_add(hold.max(1)), index));
+            steps.push((at, fim, index));
         }
-        Ok(Self { steps })
+        Ok(Self { steps, eixos })
     }
 
     /// Põe no controle o que o roteiro manda neste instante.
@@ -294,7 +319,39 @@ impl Script {
         for &(_, _, index) in &self.steps {
             pad.press(index, apertados & (1 << index) != 0);
         }
+        // O eixo volta ao centro quando nenhum passo o quer deslocado — soltar o analógico é
+        // parte do gesto, e um eixo preso num extremo gira a roda para sempre.
+        for &(_, _, eixo, _) in &self.eixos {
+            let valor = self
+                .eixos
+                .iter()
+                .find(|&&(inicio, fim, qual, _)| qual == eixo && (inicio..fim).contains(&now_ms))
+                .map_or(0, |&(_, _, _, valor)| valor);
+            pad.set_axis(eixo, valor);
+        }
     }
+}
+
+/// Lê `x+`, `x-`, `y+`, `y-`, `z+`, `z-`, `rz+`, `rz-` como `(índice do eixo, valor)`.
+///
+/// Os quatro eixos são os do `hid_devices.cfg` do console, na ordem em que ele os enumera:
+/// `X`, `Y`, `Z` e `RZ`. O sinal diz para que lado, e o valor é o batente — meio caminho não
+/// serve para descobrir se um eixo faz alguma coisa.
+fn eixo_por_nome(nome: &str) -> Option<(usize, i32)> {
+    let (eixo, sinal) = nome.split_at(nome.len().checked_sub(1)?);
+    let valor = match sinal {
+        "+" => AXIS_MAX,
+        "-" => AXIS_MIN,
+        _ => return None,
+    };
+    let eixo = match eixo {
+        "x" => 0,
+        "y" => 1,
+        "z" => 2,
+        "rz" => 3,
+        _ => return None,
+    };
+    Some((eixo, valor))
 }
 
 #[cfg(test)]

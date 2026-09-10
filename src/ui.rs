@@ -113,6 +113,11 @@ pub struct App {
     paused: bool,
     /// Quando o jogo rodou pela última vez, para saber quanto tempo real ele tem a recuperar.
     last_step: std::time::Instant,
+    /// O controle do quadro anterior, por porta, para saber o que acabou de ser apertado.
+    ///
+    /// Só o aperto vira tecla do console: manter apertado não repete, que é como um toque se
+    /// comporta em menu.
+    pad_anterior: [Pad; crate::input::PORTAS],
     /// O que dizer sobre a última tentativa de exportar o log.
     log_status: Option<String>,
     /// A janela de log foi fechada nesta execução. Zera ao abrir outro jogo.
@@ -183,6 +188,7 @@ impl App {
             error: None,
             paused: false,
             last_step: std::time::Instant::now(),
+            pad_anterior: Default::default(),
             log_status: None,
             log_dismissed: false,
             log_gravado: None,
@@ -1343,6 +1349,26 @@ impl App {
         })
     }
 
+    /// As teclas que o direcional do controle manda, comparando com o quadro anterior.
+    fn teclas_do_controle(antes: &Pad, agora: &Pad) -> Vec<(u32, bool)> {
+        const DE_BOTAO: [(&str, u32); 3] = [
+            ("left", input::avk::RODA_ANTERIOR),
+            ("right", input::avk::RODA_SEGUINTE),
+            ("b1", input::avk::CONFIRMA),
+        ];
+
+        let mut teclas = Vec::new();
+        for (nome, avk) in DE_BOTAO {
+            let Some(indice) = Pad::button_by_name(nome) else {
+                continue;
+            };
+            if agora.is_down(indice) != antes.is_down(indice) {
+                teclas.push((avk, agora.is_down(indice)));
+            }
+        }
+        teclas
+    }
+
     /// O código virtual do BREW de uma tecla da janela, quando ela tem um.
     ///
     /// `Esc` e `P` ficam de fora de propósito: são as duas da janela, encerrar e pausar.
@@ -1351,9 +1377,12 @@ impl App {
         Some(match key {
             ArrowUp => input::avk::UP,
             ArrowDown => input::avk::DOWN,
-            ArrowLeft => input::avk::LEFT,
-            ArrowRight => input::avk::RIGHT,
-            Enter | Space => input::avk::SELECT,
+            // Medidas na Z-Wheel: ver [`input::avk::RODA_ANTERIOR`]. Os dígitos continuam
+            // valendo, então `3` e `4` seguem girando a roda como sempre — as setas passam a
+            // fazer o mesmo, que é o que se espera de uma seta.
+            ArrowLeft => input::avk::RODA_ANTERIOR,
+            ArrowRight => input::avk::RODA_SEGUINTE,
+            Enter | Space => input::avk::CONFIRMA,
             Backspace | Delete => input::avk::CLR,
             Num0 | Num1 | Num2 | Num3 | Num4 | Num5 | Num6 | Num7 | Num8 | Num9 => {
                 input::avk::ZERO + (key as u32 - Num0 as u32)
@@ -1377,10 +1406,23 @@ impl App {
             true => None,
             false => Some(self.pads_now(ctx)),
         };
-        let teclas = match self.paused {
+        let mut teclas = match self.paused {
             true => Vec::new(),
             false => Self::teclas_agora(ctx),
         };
+        // **O controle também fala teclado.** No console a roda de jogos anda pelo manche, e o
+        // jogo lê a posição por sinal do `IHID` — nós entregamos, ele lê e não gira: o caminho
+        // dele para com a direção calculada, e por que ainda não sabemos.
+        //
+        // Enquanto não sabemos, o direcional manda as teclas que a roda escuta, que estão
+        // medidas. É atalho declarado, não emulação: no aparelho o controle não vira tecla, e
+        // quando o caminho do `IHID` funcionar isto sai daqui.
+        if let Some(pads) = &pads {
+            for (porta, pad) in pads {
+                teclas.extend(Self::teclas_do_controle(&self.pad_anterior[*porta], pad));
+                self.pad_anterior[*porta] = *pad;
+            }
+        }
         let limit = self.settings.graphics.speed_limit;
         let Some(session) = &mut self.session else {
             return true;
@@ -1790,6 +1832,26 @@ fn placement(area: egui::Vec2, scaling: Scaling, keep_aspect: bool) -> egui::Vec
 
 #[cfg(test)]
 mod tests {
+
+    /// Só a transição vira tecla: segurar o direcional não repete.
+    #[test]
+    fn o_direcional_manda_tecla_uma_vez() {
+        let mut antes = Pad::default();
+        let mut agora = Pad::default();
+        let direita = Pad::button_by_name("right").unwrap();
+        agora.press(direita, true);
+        assert_eq!(
+            App::teclas_do_controle(&antes, &agora),
+            vec![(crate::input::avk::RODA_SEGUINTE, true)]
+        );
+        antes = agora;
+        assert!(App::teclas_do_controle(&antes, &agora).is_empty());
+        agora.press(direita, false);
+        assert_eq!(
+            App::teclas_do_controle(&antes, &agora),
+            vec![(crate::input::avk::RODA_SEGUINTE, false)]
+        );
+    }
 
     /// Os dígitos saem da ordem do `egui::Key`, e do `AVK_0` em diante. As duas listas são
     /// contíguas hoje; se uma deixar de ser, é aqui que se descobre.
