@@ -775,6 +775,8 @@ struct Widget {
     propriedades: HashMap<u32, u32>,
     /// Largura e altura, do slot 7. A Z-Wheel manda `640 × 480` — a tela inteira.
     tamanho: (u32, u32),
+    /// Onde o pai pendurou este widget, em coordenadas dele. Ver o `AdicionarFilho`.
+    posicao: (i32, i32),
     /// Os filhos que entraram pelo slot 5, que não os identifica por número.
     anexados: Vec<u32>,
     /// Se o widget deve aparecer. O slot 6 é quem diz.
@@ -3876,6 +3878,75 @@ impl<C: CpuBackend> Machine<C> {
         Ok(())
     }
 
+    /// Lê a posição que o `AdicionarFilho` traz em `r3` e guarda no filho.
+    ///
+    /// O terceiro argumento aponta para seis palavras — `{x, y, sinalizador, largura, altura,
+    /// objeto}`. O jogo pendura a imagem de abertura com `{0, 0, 1, 640, 480, …}`, a tela
+    /// inteira, e os pedaços do formulário do z-pad com coordenadas de verdade: `{100, 21}`,
+    /// `{148, 20}`, `{365, 20}`. Enquanto isso era ignorado, tudo era pintado na origem e o
+    /// que sobrava na tela era um amontoado no canto.
+    ///
+    /// Largura e altura vêm zeradas quando o widget se mede sozinho, e aí não são gravadas: um
+    /// tamanho zero apagaria o que o slot 7 já disse.
+    ///
+    /// O mesmo slot atende cinco classes da família de widgets, e nem toda chamada tem esta
+    /// forma — algumas passam uma função em `r2` e um objeto em `r3`. Por isso a posição só é
+    /// lida quando `r2` é zero, que é a forma medida, e qualquer leitura que falhe é
+    /// descartada em vez de virar coordenada.
+    fn anota_posicao(&mut self, filho: u32) -> Result<(), CpuError> {
+        /// Deslocamentos dentro da estrutura, em palavras.
+        const X: u32 = 0;
+        const Y: u32 = 4;
+        const LARGURA: u32 = 12;
+        const ALTURA: u32 = 16;
+
+        if self.cpu.read_reg(Reg::R2) != 0 {
+            return Ok(());
+        }
+        let onde = self.cpu.read_reg(Reg::R3);
+        let (Ok(x), Ok(y)) = (self.cpu.read_u32(onde + X), self.cpu.read_u32(onde + Y)) else {
+            return Ok(());
+        };
+        let tamanho = match (
+            self.cpu.read_u32(onde + LARGURA),
+            self.cpu.read_u32(onde + ALTURA),
+        ) {
+            (Ok(largura), Ok(altura)) if largura != 0 && altura != 0 => Some((largura, altura)),
+            _ => None,
+        };
+        if let Some(widget) = self.widgets.get_mut(&filho) {
+            widget.posicao = (x as i32, y as i32);
+            if let Some(tamanho) = tamanho {
+                widget.tamanho = tamanho;
+            }
+        }
+        Ok(())
+    }
+
+    /// Onde um widget cai na tela, somando a posição de cada pai até a raiz.
+    ///
+    /// O laço tem teto porque a árvore vem do jogo: um `pai` que aponte para trás travaria o
+    /// desenho, e um quadro torto é melhor que um emulador preso.
+    fn posicao_na_tela(&self, widget: u32) -> (i32, i32) {
+        /// Até onde subir na árvore antes de desistir.
+        const FUNDO: usize = 32;
+
+        let (mut x, mut y) = (0, 0);
+        let mut atual = widget;
+        for _ in 0..FUNDO {
+            let Some(no) = self.widgets.get(&atual) else {
+                break;
+            };
+            x += no.posicao.0;
+            y += no.posicao.1;
+            if no.pai == 0 || no.pai == atual {
+                break;
+            }
+            atual = no.pai;
+        }
+        (x, y)
+    }
+
     /// Pinta as imagens penduradas nos widgets.
     ///
     /// **Isto é um substituto declarado, não uma emulação.** No console quem desenha a
@@ -3891,17 +3962,18 @@ impl<C: CpuBackend> Machine<C> {
     /// profundidade de verdade; é a única ordem estável que temos, e uma ordem estável ao menos
     /// faz o resultado ser o mesmo a cada execução.
     fn pinta_widgets(&mut self) -> Result<(), CpuError> {
-        let mut imagens: Vec<u32> = self
+        let mut imagens: Vec<(u32, u32)> = self
             .widgets
-            .values()
-            .filter(|widget| widget.visivel)
-            .flat_map(|widget| widget.anexados.iter().copied())
-            .filter(|objeto| self.images.contains_key(objeto))
+            .iter()
+            .filter(|(_, widget)| widget.visivel)
+            .flat_map(|(dono, widget)| widget.anexados.iter().map(|&filho| (filho, *dono)))
+            .filter(|(objeto, _)| self.images.contains_key(objeto))
             .collect();
         imagens.sort_unstable();
-        imagens.dedup();
-        for imagem in imagens {
-            self.draw_image(imagem, 0, 0, None)?;
+        imagens.dedup_by_key(|(imagem, _)| *imagem);
+        for (imagem, dono) in imagens {
+            let (x, y) = self.posicao_na_tela(dono);
+            self.draw_image(imagem, x, y, None)?;
         }
         Ok(())
     }
@@ -7007,6 +7079,7 @@ impl<C: CpuBackend> Machine<C> {
             // isso mudar, que ela já existia.
             "AdicionarFilho" => {
                 let filho = self.cpu.read_reg(Reg::R1);
+                self.anota_posicao(filho)?;
                 if let Some(widget) = self.widgets.get_mut(&this) {
                     widget.anexados.push(filho);
                 }
