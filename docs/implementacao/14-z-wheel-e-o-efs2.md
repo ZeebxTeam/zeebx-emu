@@ -545,3 +545,49 @@ Duas ideias foram testadas e desfeitas:
   real — um quadro pode durar dois minutos virtuais, e nesse tempo nenhum timer vencia.
   Mas a reentrância quebra quem não a espera: o Crash Bandicoot passou a morrer num
   acesso a nulo em `0x435b0`.
+
+## A cadeia da tela de boas-vindas
+
+Levou três voltas para ficar clara, com uma correção minha no meio.
+
+1. O `AnimationVideo_Form` toca o `opening_low.gif`, que tem **um quadro só**: é a
+   própria tela de boas-vindas, 640×480.
+2. Terminado, a máquina de estado em `0x114ac` vai ao estado 3 — o terminal — e a cada
+   volta chama `HandleEvent(0x801)` no widget e se re-agenda por `ISHELL_Resume`.
+3. A retomada entra em `0x11750`, que chama `[app+0x24]->slot6(1)` e cai no `0x82464`:
+   a verificação de cartão SIM.
+4. O desfecho `0x27` leva à `0x1f7b4`, que passa pelo `0x1f85c` e chega ao
+   `0x7ed10(app, 1)` — **o lançamento do formulário de instruções do z-pad**. A
+   mensagem `Unable to launch z-pad intructions form: %d` sai daí.
+
+O ponto que me custou uma reversão: dos três desfechos da verificação, só o `0x27`
+avança. O `0x28` compara, desvia para o fim e retorna — calado porque não faz nada. Ao
+oferecer o `AEECLSID_LCT_SIMCARDCTL` e responder "cartão em ordem", o log ficou limpo e
+a tela ficou parada para sempre. O `Unable to create instance of
+AEECLSID_LCT_SIMCARDCTL` repetido é o jogo tomando o caminho certo muitas vezes.
+
+O estado 0 da mesma máquina é o que espera a imagem carregar — trinta tentativas de
+segundo em segundo, e `waiting for image load to complete...` quando desiste. Nunca é
+alcançado aqui: o GIF carrega de primeira.
+
+### O relógio e a entrada
+
+O `skip_idle_time` saltava direto para o timer mais próximo. Com os 120 000 ms de
+inatividade que a tela de boas-vindas arma, o relógio ia a dois minutos de uma vez e
+disparava o tempo de ocioso antes de qualquer tecla ter chance de chegar: o laço dava
+**seis** voltas em noventa segundos de relógio real, e um roteiro de teclas nunca
+encontrava o instante marcado. O salto agora é de um quadro por vez — 8398 voltas.
+
+### A posição dos widgets
+
+O terceiro argumento do `AdicionarFilho` sempre trouxe a posição, e nós sempre a
+jogamos fora. São seis palavras, `{x, y, sinalizador, largura, altura, objeto}`: a
+imagem de abertura entra com `{0, 0, 1, 640, 480}` e os pedaços do formulário do z-pad
+com `{100, 21}`, `{148, 20}`, `{365, 20}`. O mesmo slot atende cinco classes da família,
+e nem toda chamada tem esta forma — algumas passam uma função em `r2` e um objeto em
+`r3` —, então a posição só é lida quando `r2` é zero.
+
+As propriedades que o jogo grava pelo seletor `0x801`, medidas: `0x130` (0 ou 255),
+`0x140` (uma cor, `0x444444ff`), `0x152` (objetos), `0x153` (`0x10`, `0x410`, `0x420`,
+`0x440`), `0x216` (0 ou 1), `0x347` (2) e a faixa `0x5000` (objetos). Nenhuma é
+coordenada.
