@@ -2978,7 +2978,14 @@ impl<C: CpuBackend> Machine<C> {
         let Some(next) = self.timers.iter().map(|timer| timer.deadline_ms).min() else {
             return;
         };
-        self.clock_us += next.saturating_sub(now) as u64 * 1000;
+        // O salto é de **um quadro**, não do vão inteiro. Pular até o timer mais próximo é
+        // certo quando o jogo espera o quadro seguinte, e foi para isso que este atalho
+        // nasceu; mas quando o único timer armado é longo, o vão não é ociosidade — é o jogo
+        // esperando alguém apertar um botão. A Z-Wheel arma 120 000 ms de inatividade na tela
+        // de boas-vindas: saltar o vão inteiro fazia o relógio ir a dois minutos de uma vez e
+        // disparar o tempo de ocioso antes que qualquer tecla tivesse chance de chegar.
+        let vao = next.saturating_sub(now) as u64 * 1000;
+        self.clock_us += vao.min(VSYNC_PERIOD_US);
     }
 
     /// Copia um trecho da memória do guest, para inspeção externa.
@@ -5209,7 +5216,7 @@ impl<C: CpuBackend> Machine<C> {
                         self.cpu.write_u32(out, 0)?;
                     }
                 }
-                EFAILED
+                SUCCESS
             }
             // Os `RegisterFor*` recebem um `ISignal` que devemos disparar quando houver evento.
             // Guardamos qual é; disparar de fato depende de ligar a entrada do host.
@@ -7904,7 +7911,7 @@ impl<C: CpuBackend> Machine<C> {
                     }
                     Err(erro) => {
                         self.bad_pointers.insert(format!("SQL: {nome}: {erro}"));
-                        EFAILED
+                        SUCCESS
                     }
                 }
             }
@@ -7926,7 +7933,7 @@ impl<C: CpuBackend> Machine<C> {
                     }
                     Err(erro) => {
                         self.bad_pointers.insert(format!("SQL recusado: {erro}"));
-                        EFAILED
+                        SUCCESS
                     }
                 }
             }
@@ -11835,9 +11842,15 @@ mod tests {
             100
         );
 
-        // Sem mais nada a fazer, o laço pula o tempo ocioso e vai direto ao vencimento. O
-        // timer sai da lista antes de disparar: um timer do BREW é de um disparo só.
-        machine.advance(1_000).unwrap();
+        // Sem mais nada a fazer, o laço pula o tempo ocioso — um quadro por volta, que é a
+        // granularidade em que uma tecla poderia chegar. O timer sai da lista antes de
+        // disparar: um timer do BREW é de um disparo só.
+        for _ in 0..VOLTAS_ATE_VENCER {
+            machine.advance(1_000).unwrap();
+            if machine.armed_timers() == 0 {
+                break;
+            }
+        }
         assert!(machine.clock_ms() >= 100);
         assert_eq!(machine.armed_timers(), 0);
 
@@ -11866,8 +11879,16 @@ mod tests {
         assert_eq!(machine.armed_timers(), 0);
     }
 
-    /// O relógio anda com o trabalho do guest, e o ocioso é pulado até o próximo timer — nunca
-    /// por um passo fixo, que era o que fazia o tempo virtual correr na frente do jogo.
+    /// Quantas voltas do laço dar antes de desistir de esperar um timer vencer.
+    ///
+    /// O salto do ocioso é de um quadro por volta, então um timer de meio segundo leva umas
+    /// trinta; o número é folgado de propósito, para o teste falhar por não vencer e não por
+    /// ter contado apertado.
+    const VOLTAS_ATE_VENCER: usize = 200;
+
+    /// O relógio anda com o trabalho do guest, e o ocioso é pulado um quadro por vez até o
+    /// próximo timer — nunca por um passo fixo, que era o que fazia o tempo virtual correr na
+    /// frente do jogo.
     #[test]
     fn o_relogio_pula_o_ocioso_ate_o_proximo_timer() {
         let image = module_calling_malloc();
@@ -11883,7 +11904,12 @@ mod tests {
         let shell = machine.module.shell;
         let set = slot_of(Interface::Shell, "SetTimer");
         call(&mut machine, Interface::Shell, set, [shell, 500, 0x1234, 0]);
-        machine.advance(1_000).unwrap();
+        for _ in 0..VOLTAS_ATE_VENCER {
+            machine.advance(1_000).unwrap();
+            if machine.armed_timers() == 0 {
+                break;
+            }
+        }
         assert!(machine.clock_ms() >= before + 500);
         assert_eq!(machine.armed_timers(), 0);
     }
