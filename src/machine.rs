@@ -8163,7 +8163,21 @@ impl<C: CpuBackend> Machine<C> {
         // Corpo vazio **é** resposta: o servidor pode não ter nada a devolver. O que não pode é
         // ficar em silêncio, senão o jogo espera para sempre pelo fim do fluxo que nunca vem.
         // Então o caminho é o mesmo, com texto vazio.
-        let texto = String::from_utf8_lossy(&self.web_response)
+        // **O corpo do `import` vem comprimido, e só o dele.** No console quem o infla é o
+        // próprio jogo, com um `AEECLSID_UNZIPSTREAM` que ele cria em `0x93454` e lê em blocos
+        // de 499 bytes; a ponte pula o despachante do console, então pula essa etapa junto e
+        // precisa inflar aqui.
+        //
+        // Sem isso, os bytes comprimidos passavam por `from_utf8_lossy`, cada byte inválido
+        // virava um `U+FFFD` de três bytes — 416 bytes de resposta viravam 742 de "texto" — e
+        // o parser do jogo, que fatia nos `;`, achava **um** campo. O boneco chegava, o jogo
+        // dizia sucesso e não gravava nada.
+        //
+        // Tentar inflar o que não está comprimido não estraga nada: o `export` e o
+        // `synchronize` respondem texto puro, e o inflador recusa texto puro.
+        // Copia, e não consome: o mesmo corpo ainda alimenta a leitura normal do `IWeb`.
+        let corpo = inflate(&self.web_response).unwrap_or_else(|| self.web_response.clone());
+        let texto = String::from_utf8_lossy(&corpo)
             .trim_end_matches(['\r', '\n', '\0'])
             .to_string();
 
@@ -12377,6 +12391,22 @@ mod tests {
         assert_ne!(created, screen);
         let info = machine.bitmaps.get(&created).unwrap();
         assert_eq!((info.width(), info.height()), (64, 32));
+    }
+
+    /// O corpo do `import` do Zeeboids vem em `deflate` cru, e o das outras respostas vem em
+    /// texto. A ponte precisa inflar o primeiro sem estragar o segundo.
+    #[test]
+    fn o_inflador_reconhece_o_import_e_deixa_o_texto_em_paz() {
+        use std::io::Write;
+
+        let resposta = b"0;10;32439;202CB962;355800020137588;Ira;1;01/01/1980";
+        let mut zip = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::fast());
+        zip.write_all(resposta).unwrap();
+        let comprimido = zip.finish().unwrap();
+
+        assert_eq!(inflate(&comprimido).as_deref(), Some(&resposta[..]));
+        // Texto puro não é deflate, e tentar inflá-lo tem de falhar em vez de devolver lixo.
+        assert_eq!(inflate(b"0;2;100002;"), None);
     }
 
     /// A Z-Wheel pede a imagem 5035 ao arquivo do idioma, não a encontra, recua para o
