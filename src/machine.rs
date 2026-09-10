@@ -7383,6 +7383,34 @@ impl<C: CpuBackend> Machine<C> {
             // Aqui o filho é só registrado. Não há árvore de interface para montar enquanto
             // ninguém desenha por ela, e guardar a ligação é o que permite reconhecer, quando
             // isso mudar, que ela já existia.
+            // O slot 5 quer dizer duas coisas, e o **terceiro argumento** separa.
+            //
+            // Com `r2 == 0` é `slot5(this, filho, 0, &posição, …)`: pendura um widget no outro.
+            //
+            // Com `r2 == 4` é um **getter**: `slot5(this, &saída, 4)`, e a saída são duas
+            // meias-palavras. A `0x8fa04` faz essa chamada e em seguida soma as duas
+            // (`0x8fa20`), divide por elas em `0x10a18` e multiplica de volta — é o passo de
+            // uma lista, e a conta `(altura - 20) / passo * passo + 10` diz quantos itens
+            // cabem. Tratando tudo como "pendurar filho", nada era escrito e a soma dava zero:
+            // divisão por zero, que o runtime do jogo imprime por semihosting como
+            // `Arithmetic exception: Divide By Zero`.
+            //
+            // O passo que devolvemos é a altura de linha da fonte, que é o que temos. É
+            // hipótese, e está anotada: um passo errado erra o layout, um passo zero derruba.
+            "AdicionarFilho" if self.cpu.read_reg(Reg::R2) == 4 => {
+                /// Duas meias-palavras, somadas pelo chamador.
+                const PASSO: i16 = FONT_SIZE as i16;
+
+                let saida = self.cpu.read_reg(Reg::R1);
+                if saida != 0 {
+                    self.cpu.write_mem(saida, &PASSO.to_le_bytes())?;
+                    self.cpu.write_mem(saida + 2, &0i16.to_le_bytes())?;
+                }
+                self.assumptions.insert(
+                    "o passo de lista que o slot 5 pediu foi respondido com a altura da fonte",
+                );
+                SUCCESS
+            }
             "AdicionarFilho" => {
                 let filho = self.cpu.read_reg(Reg::R1);
                 self.anota_posicao(filho)?;
