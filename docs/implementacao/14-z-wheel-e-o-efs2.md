@@ -629,3 +629,63 @@ sabemos —, mas agora o relatório diz o número em vez de dizer "um seletor".
 
 O caminho para implementar, então, não é copiar uma vtable: é ler os call sites do
 firmware, que são muitos e estão todos no `1.1.2_APPS.bin`.
+
+## O que o firmware diz sobre os widgets
+
+Estudando o `1.1.2_APPS.bin` para decidir como implementar, com um leitor de Thumb que simula
+`movs`/`adds`/`lsls`/`ldr literal` numa janela antes de cada `bl` para recuperar os argumentos.
+
+**O `0x1035f222` é o ajustador de propriedade do RMUI:**
+
+```asm
+0x1035f222  push {r4, lr}
+0x1035f224  ldr  r3, [r0]        ; vtable
+0x1035f226  ldr  r4, [r3, #0xc]  ; slot 3 — o acessador
+0x1035f228  mov  r3, r2          ; valor
+0x1035f22a  mov  r2, r1          ; id
+0x1035f22c  ldr  r1, = 0x801     ; seletor de gravar
+0x1035f22e  blx  r4
+0x1035f230  cmp  r0, #0          ; retorno invertido: != 0 vira 0
+```
+
+Bate método por método com o que tínhamos deduzido do lado da Z-Wheel — o seletor, a ordem dos
+argumentos e a convenção invertida. E o irmão dele em `0x1035f23c` usa um **terceiro seletor, o
+`0x711`**, na forma `acessador(this, 0x711, 0, valor)`: era esse o "seletor que não conhecemos"
+que aparecia nas hipóteses. Continua recusado, mas o relatório agora diz o número.
+
+Noventa e duas chamadas ao ajustador dão o vocabulário de propriedades que o **firmware** usa:
+
+| id | valores vistos |
+|---|---|
+| `0x100` | 0, 1 |
+| `0x110` | `0xff` |
+| `0x130` | 0, `0x6e280fff` |
+| `0x135` | `0xffff`, `0x6e280fff` |
+| `0x140` | 0, `0x220` |
+| `0x153` | 3, `0x10`, `0x220`, `0x900210` |
+| `0x163`, `0x165` | 0, 1, 2 |
+| `0x219` | `0x10`, `0x80`, `0x2400004a` |
+| `0x220` | 1 |
+| `0x315` | `0x01012786`, `0x01012787` — **ClassIDs** |
+
+A Z-Wheel usa `0x130`, `0x140`, `0x152`, `0x153`, `0x216`, `0x347` e a faixa `0x5000`. A
+interseção — `0x130`, `0x140`, `0x153` — confirma que é o mesmo vocabulário. O `0x140` recebe
+`0x444444ff` na Z-Wheel, que é cor com alfa; o `0x315` recebe classe.
+
+Outra confirmação: em `0x103587be` o firmware chama `slot7(this, &{600, 40})`, que é o
+`DefinirTamanho` na forma que já usávamos.
+
+**O texto não é propriedade.** Rastreando o que o `LoadResString` carrega até onde ele para, ele
+vira o `arg1` do **slot 6** dos widgets da classe `0x01028e2a` — `slot6(this, texto, tamanho,
+…)`. Ou seja, o mesmo número de slot quer dizer coisas diferentes em classes diferentes da
+família: onde chamamos `DefinirVisivel`, aquela classe põe texto.
+
+### O caminho para implementar
+
+Não é copiar vtable, porque ela não está no material. É escrever um toolkit que se comporte como
+o RMUI, usando os call sites do firmware como especificação — e há muitos: quarenta usos da
+`0x01028e2a`, dezenove da `0x01028e3f` e da `0x01028e47`, dezesseis da `0x01028e35`.
+
+O primeiro passo concreto, que dá tela: guardar o texto do slot 6 por classe e desenhá-lo no
+`pinta_widgets` com a fonte que já temos, na posição que o `AdicionarFilho` traz e na cor do
+`0x140`.

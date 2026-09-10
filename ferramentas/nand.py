@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
 """Lê a NAND do Zeebo: tabela de partições, extração e o que se sabe do EFS2.
 
-O dump está publicado em `tripleoxygen.net/files/devices/zeebo/dump/nand/1.1.2/`. O que interessa
-dele para o emulador são os módulos de extensão do console — `widgets.mod`, `forms.mod`,
-`isql.mod` — e a fonte do sistema, que fica em `fs:/shared/fonts/tectoy.ttf`. As classes que a
-Z-Wheel pede e que estamos identificando slot a slot vêm desses módulos.
+O dump está publicado em `tripleoxygen.net/files/devices/zeebo/dump/nand/1.1.2/`.
+
+**Os módulos de extensão não estão nele.** O firmware traz os caminhos — `fs:/mod/widgets/
+widgets.mod`, `fs:/mif/widgets.mif`, `fs:/mod/htmlwidget/htmlwidget.mod` — como constantes, e os
+arquivos não existem em partição nenhuma: a cadeia `widgets` aparece treze vezes nos 128 MB e
+todas dentro do `1.1.2_APPS.bin`. O `EFS2APPS` tem dois módulos, `reksio.mod` e `tectoy.mod`.
+
+O que se tira daqui, então, é o sistema de arquivos do console — a fonte em
+`fs:/shared/fonts/tectoy.ttf`, os dois módulos — e a confirmação do que **não** está no material.
+As classes de interface que a Z-Wheel pede se estudam pelos call sites do próprio firmware.
 
 Uso:
     python3 ferramentas/nand.py particoes CAMINHO/1.1.2.bin

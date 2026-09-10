@@ -25,6 +25,8 @@ função não está aqui.
 | [12-rasterizador-e-paralelismo.md](12-rasterizador-e-paralelismo.md) | Por que dividir o trabalho por draw call não servia, e o que serviu |
 | [13-classes-desconhecidas.md](13-classes-desconhecidas.md) | Como descobrir que interface é uma classe sem header: a sonda |
 | [14-z-wheel-e-o-efs2.md](14-z-wheel-e-o-efs2.md) | Onde a loja do console parou, e o elo que falta no leitor da NAND |
+| [15-o-que-falta-da-nand.md](15-o-que-falta-da-nand.md) | Classe a classe, o que ainda precisa sair do dump |
+| [16-rede-e-a-ponte.md](16-rede-e-a-ponte.md) | HTTP, AES, e a ponte por módulo que o Zeeboids exigiu |
 
 ## Como medir
 

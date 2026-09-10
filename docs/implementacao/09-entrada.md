@@ -125,3 +125,73 @@ não pode impedir o emulador de abrir: a falha vira "nenhum controle" e o teclad
 
 Os botões vêm antes dos eixos na captura: quem aperta o direcional de cruz de um controle que
 também o reporta como eixo quer o botão, que é o mais específico.
+
+## As duas portas
+
+O Zeebo tem **duas portas USB**, e o console as enumera: o `GetConnectedDevices` da Z-Wheel
+passa capacidade 2. Antes disso o emulador tinha um controle e pronto — `input::PORTAS` agora
+vale 2, e cada porta é configurada separadamente.
+
+Cada porta pode ter um de três aparelhos:
+
+| Escolha | UID do aparelho | O que o jogo vê |
+|---|---|---|
+| `controle` | `0x0106c3fd` | Um controle do Zeebo, com os 18 botões e os 4 eixos |
+| `teclado` | `0x0106c3fc` | Um teclado USB |
+| `nenhum` | — | A porta não é enumerada |
+
+Os dois UIDs são do `hid_devices.cfg` do console, como o resto da tabela.
+
+Na linha de comando: `--portas=controle,teclado`. Na interface, cada porta tem sua aba de
+mapeamento. Só a primeira porta nasce ligada — um arquivo de configuração escrito antes das
+portas existirem continua valendo com o controle na porta 1, que é o que ele descrevia.
+
+### O teclado é um aparelho, não um atalho
+
+Isto merece a distinção porque as duas coisas existem e são diferentes:
+
+- **O teclado do host simulando o controle** é o mapeamento de sempre, em `bindings.rs`. O jogo
+  vê um controle.
+- **O teclado como aparelho** é uma porta ocupada por um teclado USB. O jogo o enumera, e a
+  Z-Wheel escreve `Keyboard Connected.` no log dela.
+
+Quem quiser as duas coisas pode: controle na porta 1 com mapeamento de teclado, teclado de
+verdade na porta 2.
+
+### A ordem importa
+
+A Z-Wheel enumera os aparelhos HID durante o `EVT_APP_START`. Configurar as portas **depois** de
+começar o jogo faz o console nunca ver o teclado, por mais certa que a configuração esteja — foi
+o que aconteceu, e o sintoma era "o teclado não funciona" sem nada no relatório. Daí o
+`Session::start_with(caminho, portas)`: não há um caminho para começar um jogo e outro para
+configurá-lo.
+
+## Teclas de verdade
+
+Além do controle, o emulador entrega `EVT_KEY` (`0x100`) com os códigos AVK do BREW:
+`AVK_SELECT = 0xE015`, `AVK_0..9 = 0xE030..`, `AVK_CLR = 0xE04A`, e os quatro sentidos.
+
+**Uma tecla vai primeiro aos tratadores de widget e só depois ao applet.** É a ordem do BREW: a
+interface tem a primeira chance, e o que ela não consumir sobe. Entregar direto ao applet faz
+menu nenhum responder.
+
+## Dois roteiros, para testar sem janela
+
+Existem porque sem eles a única forma de saber se a entrada funciona é apertar a tecla e olhar,
+e isso não cabe num teste nem numa execução automática.
+
+- `--keys=ms:botão[:duração]` move o **controle**. `--keys=3000:b1,6000:start`.
+- `--teclas=ms:nome` entrega **teclas** AVK. `--teclas=1000:select,2000:down`.
+
+O instante é o do relógio virtual do jogo, não o número de voltas do laço: uma volta não dura
+sempre o mesmo tanto. Um botão fica apertado se **algum** passo o quer apertado agora — aplicar
+passo a passo parecia igual e não era, porque todo roteiro que navega um menu usa o mesmo botão
+duas vezes, e o segundo passo desfazia o primeiro antes da hora.
+
+O relatório lista os toques entregues, com a porta de cada um:
+
+```text
+toques:    6 entregue(s) ao jogo
+     3001 ms  porta 1  aperta b1
+     3134 ms  porta 1  solta  b1
+```
