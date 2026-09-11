@@ -238,7 +238,11 @@ mod tests {
         }
         let mut linhas = vec!["mod/".to_string(), "mod/274/".to_string()];
         linhas.extend(pacote.iter().map(|n| format!("mod/274/{n}")));
-        std::fs::write(jogo.join(crate::loader::archive::MANIFESTO), linhas.join("\n")).unwrap();
+        std::fs::write(
+            jogo.join(crate::loader::archive::MANIFESTO),
+            linhas.join("\n"),
+        )
+        .unwrap();
         // O save não está no manifesto — é o que o jogo escreveu depois.
         std::fs::create_dir_all(dir.join("zeeboiddata")).unwrap();
         std::fs::File::create(dir.join("zeeboiddata/zeeboid.db"))

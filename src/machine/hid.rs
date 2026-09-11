@@ -45,8 +45,12 @@ impl<C: CpuBackend> Machine<C> {
                 // Z-Wheel passa capacidade dois nas duas chamadas, que é o número de USB do
                 // console.
                 let quais = match wanted {
-                    UID_JOYSTICK_DEVICE => self.portas_com(crate::input::bindings::Aparelho::Controle),
-                    UID_KEYBOARD_DEVICE => self.portas_com(crate::input::bindings::Aparelho::Teclado),
+                    UID_JOYSTICK_DEVICE => {
+                        self.portas_com(crate::input::bindings::Aparelho::Controle)
+                    }
+                    UID_KEYBOARD_DEVICE => {
+                        self.portas_com(crate::input::bindings::Aparelho::Teclado)
+                    }
                     _ => Vec::new(),
                 };
                 if out_needed != 0 {
@@ -405,7 +409,10 @@ impl<C: CpuBackend> Machine<C> {
     }
 
     /// Diz que aparelho o console vê em cada porta. `None` desliga a porta.
-    pub fn set_portas(&mut self, portas: [Option<crate::input::bindings::Aparelho>; input::PORTAS]) {
+    pub fn set_portas(
+        &mut self,
+        portas: [Option<crate::input::bindings::Aparelho>; input::PORTAS],
+    ) {
         self.portas = portas;
     }
 

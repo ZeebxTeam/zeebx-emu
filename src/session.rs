@@ -9,13 +9,13 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use crate::cpu::unicorn::UnicornCpu;
-use crate::video::display::Framebuffer;
 use crate::input::Pad;
-use crate::machine::{AppletResult, Machine, Outcome};
-use crate::loader::archive;
-use crate::ui::library;
 use crate::loader;
+use crate::loader::archive;
 use crate::loader::modfile::ModImage;
+use crate::machine::{AppletResult, Machine, Outcome};
+use crate::ui::library;
+use crate::video::display::Framebuffer;
 
 /// Teto de instruções por fatia entre duas chamadas de API — evita que um laço infinito no
 /// guest trave o emulador.

@@ -17,17 +17,17 @@ use std::time::Duration;
 
 use eframe::egui;
 
-use crate::loader::archive;
 use crate::input::bindings::Source;
-use crate::video::display::Framebuffer;
 use crate::input::gamepads;
-use crate::ui::i18n::Catalog;
-use crate::input::{self, Pad};
-use crate::ui::library::{Game};
 use crate::input::padview::PadArt;
+use crate::input::{self, Pad};
+use crate::loader::archive;
 use crate::ponte;
 use crate::session::Session;
+use crate::ui::i18n::Catalog;
+use crate::ui::library::Game;
 use crate::ui::settings::{Scaling, Settings};
+use crate::video::display::Framebuffer;
 
 /// Teto de tempo real que o jogo pode tomar num quadro da interface.
 ///
@@ -244,7 +244,9 @@ impl App {
     /// Uma porta desligada vira `None` e some da enumeração. É o que faz o jogo enxergar um
     /// controle, dois, ou um teclado — e é o mesmo caminho que responde ao
     /// `IHID::GetConnectedDevices`.
-    fn portas_configuradas(&self) -> [Option<crate::input::bindings::Aparelho>; crate::input::PORTAS] {
+    fn portas_configuradas(
+        &self,
+    ) -> [Option<crate::input::bindings::Aparelho>; crate::input::PORTAS] {
         std::array::from_fn(|porta| {
             self.settings
                 .controls
@@ -1219,7 +1221,9 @@ impl App {
             true => "zeebx.serial.log".to_string(),
             false => format!("{titulo}.serial.log"),
         };
-        crate::ui::settings::config_dir().join("relatorios").join(nome)
+        crate::ui::settings::config_dir()
+            .join("relatorios")
+            .join(nome)
     }
 
     pub fn caminho_do_relatorio(&self) -> PathBuf {
@@ -1227,7 +1231,9 @@ impl App {
             Some(title) if !title.is_empty() => format!("{title}.log"),
             _ => "zeebx.log".to_string(),
         };
-        crate::ui::settings::config_dir().join("relatorios").join(nome)
+        crate::ui::settings::config_dir()
+            .join("relatorios")
+            .join(nome)
     }
 
     /// Grava o relatório em disco, no máximo uma vez a cada [`Self::INTERVALO_DO_RELATORIO`].

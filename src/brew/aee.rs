@@ -8,9 +8,9 @@
 //! escolhida de forma que o próprio endereço codifique qual método foi chamado. O núcleo ARM
 //! aborta o fetch, e [`decode`] devolve a interface e o slot.
 
-use crate::cpu::unicorn::API_BASE;
 use crate::brew::aee_helpers;
 use crate::brew::aee_slots;
+use crate::cpu::unicorn::API_BASE;
 
 /// Quantos bits do endereço identificam a interface.
 const IFACE_SHIFT: u32 = 12;

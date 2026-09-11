@@ -6,8 +6,8 @@
 
 use minifb::{Key, KeyRepeat, Scale, WindowOptions};
 
-use crate::video::display::Framebuffer;
 use crate::input::{self, Pad};
+use crate::video::display::Framebuffer;
 
 pub struct Window {
     inner: minifb::Window,
