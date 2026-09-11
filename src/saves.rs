@@ -35,7 +35,10 @@ impl Save {
         if itens.is_empty() {
             return None;
         }
-        let (arquivos, bytes) = itens.iter().map(pesar).fold((0, 0), |(a, b), (c, d)| (a + c, b + d));
+        let (arquivos, bytes) = itens
+            .iter()
+            .map(pesar)
+            .fold((0, 0), |(a, b), (c, d)| (a + c, b + d));
         Some(Self {
             titulo,
             itens,
@@ -74,7 +77,13 @@ fn pesar(caminho: &PathBuf) -> (usize, u64) {
 /// partir do zip — que é a fonte de verdade sobre o que veio no pacote.
 fn do_pacote(dir: &Path) -> Option<std::collections::HashSet<String>> {
     let texto = std::fs::read_to_string(dir.join(crate::archive::MANIFESTO)).ok()?;
-    Some(texto.lines().filter(|l| !l.is_empty()).map(str::to_string).collect())
+    Some(
+        texto
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+            .collect(),
+    )
 }
 
 /// Desce pela árvore juntando o que não está no manifesto.
@@ -149,7 +158,11 @@ pub fn dos_jogos(cache: &Path) -> Vec<Save> {
 /// pacote e o carimbo de tempo; nenhum dos dois diz nada a quem está olhando a lista.
 fn titulo_de(pasta: &str) -> String {
     let mut partes: Vec<&str> = pasta.split('-').collect();
-    while partes.len() > 1 && partes.last().is_some_and(|p| p.chars().all(|c| c.is_ascii_digit())) {
+    while partes.len() > 1
+        && partes
+            .last()
+            .is_some_and(|p| p.chars().all(|c| c.is_ascii_digit()))
+    {
         partes.pop();
     }
     partes.join("-").replace('-', " ")
@@ -241,7 +254,8 @@ mod tests {
         let raiz = temporario("sem-manifesto");
         cache_com_jogo(&raiz);
         std::fs::remove_file(
-            raiz.join("Zeeboids-6518125-1788761080").join(crate::archive::MANIFESTO),
+            raiz.join("Zeeboids-6518125-1788761080")
+                .join(crate::archive::MANIFESTO),
         )
         .unwrap();
         assert!(dos_jogos(&raiz).is_empty());
@@ -307,7 +321,10 @@ mod tests {
     #[test]
     fn o_titulo_perde_a_numeracao_do_cache() {
         assert_eq!(titulo_de("Zeeboids-6518125-1788761080"), "Zeeboids");
-        assert_eq!(titulo_de("Zeebo-F-C--Foot-Camp-17313250-1788761080"), "Zeebo F C  Foot Camp");
+        assert_eq!(
+            titulo_de("Zeebo-F-C--Foot-Camp-17313250-1788761080"),
+            "Zeebo F C  Foot Camp"
+        );
         // Sem numeração, fica como está.
         assert_eq!(titulo_de("Quake"), "Quake");
     }
@@ -318,10 +335,20 @@ mod tests {
     fn olhar_o_cache_de_verdade() {
         let base = dirs_config();
         for s in dos_jogos(&base.join("cache")) {
-            println!("jogo     {:<28} {} arq  {}", s.titulo, s.arquivos, tamanho(s.bytes));
+            println!(
+                "jogo     {:<28} {} arq  {}",
+                s.titulo,
+                s.arquivos,
+                tamanho(s.bytes)
+            );
         }
         for s in do_aparelho(&base.join("aparelho")) {
-            println!("aparelho {:<28} {} arq  {}", s.titulo, s.arquivos, tamanho(s.bytes));
+            println!(
+                "aparelho {:<28} {} arq  {}",
+                s.titulo,
+                s.arquivos,
+                tamanho(s.bytes)
+            );
         }
     }
 

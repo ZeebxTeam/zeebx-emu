@@ -309,7 +309,10 @@ mod tests {
         }
         let bar = build(&[(RESTYPE_STRING, 1045, 0, 0)], &[&secao]);
         let res = ResFile::parse(bar).unwrap();
-        assert_eq!(String::from_utf16_lossy(&res.string(1045).unwrap()), "Idioma");
+        assert_eq!(
+            String::from_utf16_lossy(&res.string(1045).unwrap()),
+            "Idioma"
+        );
     }
 
     /// Sem BOM continua sendo Latin-1 com um byte de codificação na frente, que é o que os
@@ -317,7 +320,14 @@ mod tests {
     #[test]
     fn sem_bom_continua_latin1() {
         let mut secao = vec![0x01];
-        secao.extend_from_slice("Ação\0".as_bytes().iter().copied().collect::<Vec<_>>().as_slice());
+        secao.extend_from_slice(
+            "Ação\0"
+                .as_bytes()
+                .iter()
+                .copied()
+                .collect::<Vec<_>>()
+                .as_slice(),
+        );
         let bar = build(&[(RESTYPE_STRING, 7, 0, 0)], &[&secao]);
         let res = ResFile::parse(bar).unwrap();
         let lido = String::from_utf16_lossy(&res.string(7).unwrap());

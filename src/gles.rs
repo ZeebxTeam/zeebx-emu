@@ -202,8 +202,13 @@ pub const GL_SMOOTH: u32 = 0x1d01;
 /// quatro palavras de um parâmetro de uma só passa por cima do que houver depois.
 pub fn componentes(pname: u32) -> usize {
     match pname {
-        GL_AMBIENT | GL_DIFFUSE | GL_SPECULAR | GL_POSITION | GL_EMISSION
-        | GL_AMBIENT_AND_DIFFUSE | GL_LIGHT_MODEL_AMBIENT => 4,
+        GL_AMBIENT
+        | GL_DIFFUSE
+        | GL_SPECULAR
+        | GL_POSITION
+        | GL_EMISSION
+        | GL_AMBIENT_AND_DIFFUSE
+        | GL_LIGHT_MODEL_AMBIENT => 4,
         GL_SPOT_DIRECTION => 3,
         _ => 1,
     }

@@ -468,11 +468,13 @@ fn guarda_nivel(
     }
     let indice = level as usize - 1;
     if texture.mipmaps.len() <= indice {
-        texture.mipmaps.resize_with(indice + 1, || crate::rasterizer::Nivel {
-            width: 0,
-            height: 0,
-            pixels: Vec::new(),
-        });
+        texture
+            .mipmaps
+            .resize_with(indice + 1, || crate::rasterizer::Nivel {
+                width: 0,
+                height: 0,
+                pixels: Vec::new(),
+            });
     }
     texture.mipmaps[indice] = crate::rasterizer::Nivel {
         width,
@@ -972,6 +974,8 @@ const AEECLSID_ZEEBOMCP: u32 = 0x0100_6c05;
 /// veio do próprio módulo: é o literal em `0x7c69c`, carregado pela `tectoymain.c:1001` e
 /// entregue ao `ISHELL_CreateInstance` cujo fracasso imprime `Could not create root form`.
 const AEECLSID_WIDGET: u32 = 0x0102_8e51;
+/// `0x01003109`, controle de texto usado pelo Zenonia (`CWBLText`).
+const AEECLSID_CONTROL: u32 = 0x0100_3109;
 
 /// A coleção genérica que a interface da Z-Wheel usa.
 ///
@@ -2702,7 +2706,10 @@ impl<C: CpuBackend> Machine<C> {
             (Interface::Shell, 2) => self.shell_create_instance()?,
             (Interface::Shell, 4) => self.shell_get_device_info()?,
             (Interface::Shell, slot)
-                if matches!(Interface::Shell.method(slot), Some("StartApplet" | "CanStartApplet")) =>
+                if matches!(
+                    Interface::Shell.method(slot),
+                    Some("StartApplet" | "CanStartApplet")
+                ) =>
             {
                 let cls = self.cpu.read_reg(Reg::R1);
                 if self.installed_applets.contains(&cls) {
@@ -2921,6 +2928,10 @@ impl<C: CpuBackend> Machine<C> {
                 Some(result) => result,
                 None => return Ok(None),
             },
+            (Interface::Control, _) => match self.control_call(slot)? {
+                Some(result) => result,
+                None => return Ok(None),
+            },
             (Interface::SimCardCtl, _) => match self.sim_card_call(slot)? {
                 Some(result) => result,
                 None => return Ok(None),
@@ -2959,8 +2970,9 @@ impl<C: CpuBackend> Machine<C> {
                 if saida != 0 {
                     self.cpu.write_mem(saida, &0u16.to_le_bytes())?;
                 }
-                self.assumptions
-                    .insert("a 0x01028e3c respondeu zero a uma medida, e não sabemos o que ela mede");
+                self.assumptions.insert(
+                    "a 0x01028e3c respondeu zero a uma medida, e não sabemos o que ela mede",
+                );
                 SUCCESS
             }
             (Interface::Classe28e3c, 3) => {
@@ -2971,8 +2983,9 @@ impl<C: CpuBackend> Machine<C> {
                 if saida != 0 {
                     self.cpu.write_mem(saida, &[0u8; QUANTO])?;
                 }
-                self.assumptions
-                    .insert("a 0x01028e3c respondeu uma consulta zerada, e não sabemos o que ela guarda");
+                self.assumptions.insert(
+                    "a 0x01028e3c respondeu uma consulta zerada, e não sabemos o que ela guarda",
+                );
                 SUCCESS
             }
             (Interface::Typeface, _) => match self.typeface_call(slot)? {
@@ -3549,9 +3562,8 @@ impl<C: CpuBackend> Machine<C> {
             "UPDATE PREFSINFO SET dwValue = {PORTUGUES} WHERE PREFSINFO.name = 'Lang'"
         ));
         if gravou.is_ok() {
-            self.assumptions.insert(
-                "o idioma não estava escolhido no banco e assumimos português",
-            );
+            self.assumptions
+                .insert("o idioma não estava escolhido no banco e assumimos português");
         }
     }
 
@@ -3838,7 +3850,11 @@ impl<C: CpuBackend> Machine<C> {
                     valor => Rgb::from_rgbval(valor),
                 };
                 let border = cor(self.cpu.read_reg(Reg::R2), CLR_USER_LINE, &self.colors);
-                let fill = cor(self.cpu.read_reg(Reg::R3), CLR_USER_BACKGROUND, &self.colors);
+                let fill = cor(
+                    self.cpu.read_reg(Reg::R3),
+                    CLR_USER_BACKGROUND,
+                    &self.colors,
+                );
                 // **Quem manda no que é desenhado é o `flags`, não a cor.** O Quake pede moldura
                 // sozinha (`IDF_RECT_FRAME`) passando preto no preenchimento: honrar a cor e
                 // ignorar o sinalizador pintava um retângulo preto que ele não pediu.
@@ -4140,19 +4156,34 @@ impl<C: CpuBackend> Machine<C> {
         if self.applet_class != 0x01070798 || self.wheel_boot_skipped {
             return Ok(());
         }
-        let Some((function, context)) = self.widgets.values()
-            .map(|widget| widget.tratador).find(|(function, _)| *function == 0x11828)
-        else { return Ok(()); };
+        let Some((function, context)) = self
+            .widgets
+            .values()
+            .map(|widget| widget.tratador)
+            .find(|(function, _)| *function == 0x11828)
+        else {
+            return Ok(());
+        };
         let mut signature = [0; 16];
         self.cpu.read_mem(function, &mut signature)?;
-        if signature != [0xf0, 0x41, 0x2d, 0xe9, 0x01, 0x0c, 0x51, 0xe3,
-                         0x03, 0x70, 0xa0, 0xe1, 0x01, 0x60, 0xa0, 0xe1] {
+        if signature
+            != [
+                0xf0, 0x41, 0x2d, 0xe9, 0x01, 0x0c, 0x51, 0xe3, 0x03, 0x70, 0xa0, 0xe1, 0x01, 0x60,
+                0xa0, 0xe1,
+            ]
+        {
             return Ok(());
         }
         let app = self.cpu.read_u32(context)?;
         // Durante a transição o formulário ignora entrada; aguarda o próximo tique.
-        if self.cpu.read_u32(app + 0x2138)? & 1 != 0 { return Ok(()); }
-        self.call_guest(function, [context, input::EVT_KEY, input::avk::ZERO, 0], QSORT_BUDGET)?;
+        if self.cpu.read_u32(app + 0x2138)? & 1 != 0 {
+            return Ok(());
+        }
+        self.call_guest(
+            function,
+            [context, input::EVT_KEY, input::avk::ZERO, 0],
+            QSORT_BUDGET,
+        )?;
         self.wheel_boot_skipped = self.cpu.read_u32(app + 0x3610)? & 0x10000000 != 0;
         if self.wheel_boot_skipped {
             self.assumptions.insert("a abertura conhecida da Z-Wheel recebe automaticamente o atalho de pular instruções");
@@ -4212,10 +4243,16 @@ impl<C: CpuBackend> Machine<C> {
     /// chamado —, então ele não depende de acertarmos qual é a tela atual. Quando a ligação que
     /// falta chegar pelo evento `0x7b0a`, vale reconsiderar.
     fn desenha_widgets(&mut self) -> Result<(), CpuError> {
+        // Widgets antigos podem continuar vivos porque alguns jogos remontam o formulário
+        // sem liberar a árvore anterior. Callbacks de desenho desses nós não devem consumir uma
+        // volta inteira: só o formulário atualmente selecionado participa da composição.
+        let dentro = self.arvore_do_formulario();
         let mut chamar: Vec<(u32, (u32, u32))> = self
             .widgets
             .iter()
-            .filter(|(_, no)| no.desenho.0 != 0 && no.visivel)
+            .filter(|(endereco, no)| {
+                no.desenho.0 != 0 && no.visivel && (dentro.is_empty() || dentro.contains(endereco))
+            })
             .map(|(&endereco, no)| (endereco, no.desenho))
             .collect();
         if chamar.is_empty() {
@@ -4394,7 +4431,9 @@ impl<C: CpuBackend> Machine<C> {
         let formulario = self
             .widgets
             .iter()
-            .filter(|(endereco, no)| no.classe == WIDGET_FORMULARIO && com_filhos.contains(endereco))
+            .filter(|(endereco, no)| {
+                no.classe == WIDGET_FORMULARIO && com_filhos.contains(endereco)
+            })
             .max_by_key(|(_, no)| no.serial)
             .map(|(&endereco, _)| endereco);
         // **Nem todo formulário recebe o conteúdo pelo item `0x5000`.** O do menu principal não
@@ -4569,7 +4608,8 @@ impl<C: CpuBackend> Machine<C> {
         // z-pad é remontado a cada volta do ciclo e cada remontagem deixa a árvore anterior
         // viva: são milhares de cópias do mesmo rótulo empilhadas na mesma coordenada. Pintar
         // todas dá exatamente o mesmo quadro e fazia um quadro levar mais de um minuto.
-        escritas.sort_unstable_by(|a, b| (a.1, a.2, &a.4, a.3, a.0).cmp(&(b.1, b.2, &b.4, b.3, b.0)));
+        escritas
+            .sort_unstable_by(|a, b| (a.1, a.2, &a.4, a.3, a.0).cmp(&(b.1, b.2, &b.4, b.3, b.0)));
         escritas.dedup_by(|a, b| (a.1, a.2, &a.4, a.3) == (b.1, b.2, &b.4, b.3));
         // Já sem repetição, a ordem que vale é a da árvore: filho por cima de pai.
         escritas.sort_unstable_by(|a, b| (a.0, a.2, a.1).cmp(&(b.0, b.2, b.1)));
@@ -7347,14 +7387,14 @@ impl<C: CpuBackend> Machine<C> {
         // e trilha não tocava em jogo nenhum.
         let som = match crate::wav::parse(&bytes) {
             Ok(sound) => Some(sound),
-            Err(err) => match crate::mp3::decode(&bytes)
-                .or_else(|| crate::midi::decode(&bytes).inspect(|_| {
+            Err(err) => match crate::mp3::decode(&bytes).or_else(|| {
+                crate::midi::decode(&bytes).inspect(|_| {
                     self.assumptions.insert(concat!(
                         "a música MIDI é sintetizada aqui, com timbre aproximado — ",
                         "o banco de instrumentos do console está no firmware que ainda não lemos"
                     ));
-                }))
-            {
+                })
+            }) {
                 Some(sound) => Some(sound),
                 None => {
                     // Dizer *qual* formato chegou é o que permite saber o que implementar
@@ -7529,7 +7569,11 @@ impl<C: CpuBackend> Machine<C> {
                     self.cpu.read_reg(Reg::R2),
                     self.cpu.read_reg(Reg::R3) as usize,
                 );
-                match self.config_items.get(&this).and_then(|itens| itens.get(&item)) {
+                match self
+                    .config_items
+                    .get(&this)
+                    .and_then(|itens| itens.get(&item))
+                {
                     // Devolver menos do que foi pedido seria deixar o resto do buffer com o
                     // que já estava lá, e o jogo leria lixo achando que leu configuração.
                     Some(dados) if dados.len() >= tamanho => {
@@ -7651,6 +7695,39 @@ impl<C: CpuBackend> Machine<C> {
     ///
     /// Um seletor que não seja esses dois é recusado com zero em vez de aceito em silêncio: um
     /// terceiro seletor é coisa que precisamos ver, não esconder.
+    /// Atende o controle leve usado pelo subsistema de texto do Zenonia. A implementação mantém
+    /// a ABI e as respostas de estado que o jogo consulta, evitando que a criação caia em loop.
+    fn control_call(&mut self, slot: u32) -> Result<Option<u32>, CpuError> {
+        let Some(name) = Interface::Control.method(slot) else {
+            return Ok(None);
+        };
+        let this = self.cpu.read_reg(Reg::R0);
+        let result = match name {
+            "AddRef" => self.objects.add_ref(this),
+            "Release" => self.objects.release(this),
+            "IsActive" => 1,
+            // Eventos, ativação e reset são operações sem estado observável para o emulador.
+            "HandleEvent" | "Redraw" | "SetActive" | "SetProperties" | "Reset" => SUCCESS,
+            "SetRect" => SUCCESS,
+            "GetRect" => {
+                let out = self.cpu.read_reg(Reg::R1);
+                if out != 0 {
+                    self.cpu.write_mem(out, &[0; 16])?;
+                }
+                SUCCESS
+            }
+            "GetProperties" => {
+                let out = self.cpu.read_reg(Reg::R1);
+                if out != 0 {
+                    self.cpu.write_u32(out, 0)?;
+                }
+                SUCCESS
+            }
+            _ => SUCCESS,
+        };
+        Ok(Some(result))
+    }
+
     fn widget_call(&mut self, slot: u32) -> Result<Option<u32>, CpuError> {
         /// Lê um item do widget. O que sai depende do número do item — ver abaixo.
         const LE: u32 = 0x800;
@@ -7763,7 +7840,9 @@ impl<C: CpuBackend> Machine<C> {
                 let filho = self.cpu.read_reg(Reg::R1);
                 if self.widgets.contains_key(&filho) {
                     if let Some(widget) = self.widgets.get_mut(&this) {
-                        widget.anexados.push(filho);
+                        if !widget.anexados.contains(&filho) && filho != this {
+                            widget.anexados.push(filho);
+                        }
                     }
                     if let Some(widget) = self.widgets.get_mut(&filho) {
                         widget.pai = this;
@@ -7878,26 +7957,41 @@ impl<C: CpuBackend> Machine<C> {
                 );
                 SUCCESS
             }
-            "AdicionarFilho" if self.widgets.get(&this).is_some_and(|w| {
-                matches!(w.classe, WIDGET_DE_TEXTO | 0x01028e19)
-            }) && !self.widgets.contains_key(&self.cpu.read_reg(Reg::R1))
-                && !self.images.contains_key(&self.cpu.read_reg(Reg::R1)) => {
+            "AdicionarFilho"
+                if self
+                    .widgets
+                    .get(&this)
+                    .is_some_and(|w| matches!(w.classe, WIDGET_DE_TEXTO | 0x01028e19))
+                    && !self.widgets.contains_key(&self.cpu.read_reg(Reg::R1))
+                    && !self.images.contains_key(&self.cpu.read_reg(Reg::R1)) =>
+            {
                 // IWidget::GetExtent(&{cx, cy}) nas interfaces de texto/imagem.
                 // A barra de status usa cx do rótulo para posicionar os créditos:
                 // em 0x857ec lê cx e em 0x85828 soma 375. Deixar a saída zerada
                 // colocava "10" em cima de "Meus Z-Credits".
                 let widget = &self.widgets[&this];
                 let size = if widget.classe == WIDGET_DE_TEXTO {
-                    self.font.as_ref().map(|font| (
-                        font.width(&widget.texto, FONT_SIZE),
-                        font.ascent(FONT_SIZE) + font.descent(FONT_SIZE),
-                    )).unwrap_or((0, 0))
+                    self.font
+                        .as_ref()
+                        .map(|font| {
+                            (
+                                font.width(&widget.texto, FONT_SIZE),
+                                font.ascent(FONT_SIZE) + font.descent(FONT_SIZE),
+                            )
+                        })
+                        .unwrap_or((0, 0))
                 } else {
-                    widget.anexados.iter().find_map(|id| self.images.get(id))
-                        .map(|image| (image.width, image.height)).unwrap_or(widget.tamanho)
+                    widget
+                        .anexados
+                        .iter()
+                        .find_map(|id| self.images.get(id))
+                        .map(|image| (image.width, image.height))
+                        .unwrap_or(widget.tamanho)
                 };
                 let out = self.cpu.read_reg(Reg::R1);
-                if out == 0 { return Ok(Some(EBADPARM)); }
+                if out == 0 {
+                    return Ok(Some(EBADPARM));
+                }
                 self.cpu.write_u32(out, size.0)?;
                 self.cpu.write_u32(out + 4, size.1)?;
                 SUCCESS
@@ -7905,8 +7999,14 @@ impl<C: CpuBackend> Machine<C> {
             "AdicionarFilho" => {
                 let filho = self.cpu.read_reg(Reg::R1);
                 self.anota_posicao(filho)?;
+                let ja_anexado = self
+                    .widgets
+                    .get(&this)
+                    .is_some_and(|widget| widget.anexados.contains(&filho));
                 if let Some(widget) = self.widgets.get_mut(&this) {
-                    widget.anexados.push(filho);
+                    if filho != this && !ja_anexado {
+                        widget.anexados.push(filho);
+                    }
                 }
                 if let Some(filho) = self.widgets.get_mut(&filho) {
                     filho.pai = this;
@@ -7915,7 +8015,9 @@ impl<C: CpuBackend> Machine<C> {
                 // teoria: logo depois de pendurar a imagem no widget, a Z-Wheel solta a
                 // referência dela. Sem esta contagem, o objeto morria com a imagem
                 // decodificada dentro — e o que sobrava para pintar era nada.
-                self.objects.add_ref(filho);
+                if !ja_anexado && filho != this {
+                    self.objects.add_ref(filho);
+                }
                 SUCCESS
             }
             // `slot7(this, &{largura, altura})`, visto em `0x11c90` com `640 × 480` — a tela
@@ -7986,7 +8088,9 @@ impl<C: CpuBackend> Machine<C> {
                     GRAVA => {
                         // As propriedades vão para a serial, que é onde a instrumentação mora.
                         if self.serial.is_some() {
-                            self.registra_serial(format!("<prop {id:#x}={terceiro:#x} em {this:#x}>"));
+                            self.registra_serial(format!(
+                                "<prop {id:#x}={terceiro:#x} em {this:#x}>"
+                            ));
                         }
                         // **Gravar um objeto num item da faixa `0x5000` é pendurá-lo.** É por
                         // aqui que o formulário recebe o que ele mostra: a `0x8ed80` grava
@@ -8209,7 +8313,8 @@ impl<C: CpuBackend> Machine<C> {
                 self.cpu.write_mem(info, &vec![0u8; tamanho])?;
                 self.cpu.write_u32(info + ESTADO_DO_SERVICO, COM_SERVICO)?;
                 self.cpu.write_u32(info + MODO_DE_OPERACAO, NO_AR)?;
-                self.cpu.write_mem(info + INTENSIDADE, &SINAL.to_le_bytes())?;
+                self.cpu
+                    .write_mem(info + INTENSIDADE, &SINAL.to_le_bytes())?;
                 self.assumptions.insert(
                     "o ICM respondeu rádio no ar e serviço pleno, com o resto da AEECMSSInfo zerado",
                 );
@@ -8308,8 +8413,9 @@ impl<C: CpuBackend> Machine<C> {
                     && *liberador != 0
                 {
                     itens.clear();
-                    self.assumptions
-                        .insert("uma lista foi esvaziada sem chamar o liberador que o jogo registrou");
+                    self.assumptions.insert(
+                        "uma lista foi esvaziada sem chamar o liberador que o jogo registrou",
+                    );
                 } else if let Some((itens, _)) = self.vetores.get_mut(&this) {
                     itens.clear();
                 }
@@ -8406,9 +8512,7 @@ impl<C: CpuBackend> Machine<C> {
         let this = self.cpu.read_reg(Reg::R0);
         let result = match name {
             "AddRef" => self.objects.add_ref(this),
-            "Release" => {
-                self.objects.release(this)
-            }
+            "Release" => self.objects.release(this),
             "QueryInterface" => {
                 let saida = self.cpu.read_reg(Reg::R2);
                 if saida != 0 {
@@ -8439,7 +8543,14 @@ impl<C: CpuBackend> Machine<C> {
                 if buffer == 0 {
                     return Ok(Some(ENOMEMORY));
                 }
-                self.peeks.insert(leitor, Peek { bytes, posicao: 0, buffer });
+                self.peeks.insert(
+                    leitor,
+                    Peek {
+                        bytes,
+                        posicao: 0,
+                        buffer,
+                    },
+                );
                 if saida != 0 {
                     self.cpu.write_u32(saida, leitor)?;
                 }
@@ -8756,7 +8867,8 @@ impl<C: CpuBackend> Machine<C> {
                 let restantes = self.objects.release(this);
                 if restantes == 0 {
                     self.collections.remove(&this);
-                    self.parametros_de_colecao.retain(|(obj, _), _| *obj != this);
+                    self.parametros_de_colecao
+                        .retain(|(obj, _), _| *obj != this);
                 }
                 restantes
             }
@@ -10093,12 +10205,16 @@ impl<C: CpuBackend> Machine<C> {
         let Some((width, height)) = self.egl_color_dimensions else {
             return Ok(());
         };
-        self.egl_color_readback.resize(self.egl_color_bytes.len(), 0);
+        self.egl_color_readback
+            .resize(self.egl_color_bytes.len(), 0);
         self.cpu
             .read_mem(self.egl_color_buffer.0, &mut self.egl_color_readback)?;
         if self.egl_color_readback != self.egl_color_bytes {
             self.gl.import_rgb565_changes(
-                width, height, &self.egl_color_bytes, &self.egl_color_readback,
+                width,
+                height,
+                &self.egl_color_bytes,
+                &self.egl_color_readback,
             );
             std::mem::swap(&mut self.egl_color_bytes, &mut self.egl_color_readback);
         }
@@ -10321,14 +10437,13 @@ impl<C: CpuBackend> Machine<C> {
     /// Quantos ler vem do próprio parâmetro — ver [`gles::componentes`] —, e não quatro sempre:
     /// o `GL_SHININESS` tem um só, e ler quatro passa por cima do que estiver depois dele na
     /// pilha do jogo.
-    fn le_parametro(
-        &self,
-        pname: u32,
-        ponteiro: u32,
-        fixo: bool,
-    ) -> Result<[f32; 4], CpuError> {
+    fn le_parametro(&self, pname: u32, ponteiro: u32, fixo: bool) -> Result<[f32; 4], CpuError> {
         let mut valores = [0.0f32; 4];
-        for (i, valor) in valores.iter_mut().enumerate().take(gles::componentes(pname)) {
+        for (i, valor) in valores
+            .iter_mut()
+            .enumerate()
+            .take(gles::componentes(pname))
+        {
             *valor = escalar(self.cpu.read_u32(ponteiro + i as u32 * 4)?, fixo);
         }
         Ok(valores)
@@ -10873,8 +10988,12 @@ impl<C: CpuBackend> Machine<C> {
             };
             self.dib_buffers.insert(bitmap, buffer);
             self.dib_capacity.insert(bitmap, precisa);
+            // A primeira exposição precisa publicar os pixels atuais. Exposições seguintes
+            // apenas atualizam o cabeçalho: reescrever a superfície inteira em cada
+            // QueryInterface apagava alterações feitas pelo guest e custava dezenas de ms em
+            // jogos que consultam o bitmap a cada quadro.
+            self.sync_to_guest(bitmap)?;
         }
-        self.sync_to_guest(bitmap)?;
         self.write_dib_header(bitmap)
     }
 
@@ -11903,7 +12022,10 @@ impl<C: CpuBackend> Machine<C> {
         }
         let mostrar = |dados: &[u8]| -> String {
             let corte = &dados[..dados.len().min(TETO)];
-            match corte.iter().all(|&b| b == b'\n' || (0x20..0x7f).contains(&b)) {
+            match corte
+                .iter()
+                .all(|&b| b == b'\n' || (0x20..0x7f).contains(&b))
+            {
                 true => String::from_utf8_lossy(corte).into_owned(),
                 false => corte.iter().map(|b| format!("{b:02x}")).collect(),
             }
@@ -12021,6 +12143,7 @@ impl<C: CpuBackend> Machine<C> {
             AEECLSID_SQLMGR => Interface::SqlMgr,
             AEECLSID_SOURCEUTIL => Interface::SourceUtil,
             _ if FAMILIA_DOS_WIDGETS.contains(&clsid) => Interface::Widget,
+            AEECLSID_CONTROL => Interface::Control,
             AEECLSID_ZEEBOMCP => Interface::ZeeboMcp,
             AEECLSID_CONFIG => Interface::Config,
             AEECLSID_VETOR => Interface::Vetor,
@@ -12291,6 +12414,26 @@ impl<C: CpuBackend> Machine<C> {
             .collect()
     }
 
+    #[cfg(debug_assertions)]
+    pub fn retrato_widgets(&self) -> (usize, usize, usize) {
+        let total = self.widgets.len();
+        let maior = self
+            .widgets
+            .values()
+            .map(|w| w.anexados.len())
+            .max()
+            .unwrap_or(0);
+        let repetidos = self
+            .widgets
+            .values()
+            .map(|w| {
+                let unicos: std::collections::HashSet<_> = w.anexados.iter().collect();
+                w.anexados.len() - unicos.len()
+            })
+            .sum();
+        (total, maior, repetidos)
+    }
+
     pub fn heap_used(&self) -> u32 {
         self.heap.used()
     }
@@ -12374,10 +12517,18 @@ mod tests {
                 [texto, agulha, 0, 0],
             )
         };
-        assert_eq!(busca(&mut machine, b" "), texto, "agulha vazia casa no começo");
+        assert_eq!(
+            busca(&mut machine, b" "),
+            texto,
+            "agulha vazia casa no começo"
+        );
         assert_eq!(busca(&mut machine, b"skid.wav "), texto + 9);
         assert_eq!(busca(&mut machine, b"snd/skid/skid.wav "), texto);
-        assert_eq!(busca(&mut machine, b"carbon "), 0, "o que não está não casa");
+        assert_eq!(
+            busca(&mut machine, b"carbon "),
+            0,
+            "o que não está não casa"
+        );
         // Agulha maior que o texto não casa, e não pode estourar.
         assert_eq!(busca(&mut machine, b"snd/skid/skid.wav.extra "), 0);
     }
@@ -12389,18 +12540,27 @@ mod tests {
         machine.cpu.reset(&machine.module.mem).unwrap();
         let display = machine.objects.create(Interface::Display).unwrap();
         let alvo = machine.device_bitmap().unwrap();
-        machine
-            .bitmaps
-            .get_mut(&alvo)
-            .unwrap()
-            .fill_rect(Rect { x: 0, y: 0, width: 640, height: 480 }, Rgb::WHITE);
+        machine.bitmaps.get_mut(&alvo).unwrap().fill_rect(
+            Rect {
+                x: 0,
+                y: 0,
+                width: 640,
+                height: 480,
+            },
+            Rgb::WHITE,
+        );
 
         // Fundo azul, e a limpeza que o jogo faz: sem retângulo, sem cores, só o sinalizador.
         call(
             &mut machine,
             Interface::Display,
             slot_of(Interface::Display, "SetColor"),
-            [display, CLR_USER_BACKGROUND as u32, to_rgbval(Rgb { r: 0, g: 0, b: 255 }), 0],
+            [
+                display,
+                CLR_USER_BACKGROUND as u32,
+                to_rgbval(Rgb { r: 0, g: 0, b: 255 }),
+                0,
+            ],
         );
         machine.cpu.write_reg(Reg::Sp, loader::STACK_BASE + 0x1000);
         machine
@@ -12430,11 +12590,15 @@ mod tests {
         machine.cpu.reset(&machine.module.mem).unwrap();
         let display = machine.objects.create(Interface::Display).unwrap();
         let alvo = machine.device_bitmap().unwrap();
-        machine
-            .bitmaps
-            .get_mut(&alvo)
-            .unwrap()
-            .fill_rect(Rect { x: 0, y: 0, width: 640, height: 480 }, Rgb::WHITE);
+        machine.bitmaps.get_mut(&alvo).unwrap().fill_rect(
+            Rect {
+                x: 0,
+                y: 0,
+                width: 640,
+                height: 480,
+            },
+            Rgb::WHITE,
+        );
 
         let rect = loader::HEAP_BASE;
         for (i, valor) in [10i16, 10, 40, 30].iter().enumerate() {
@@ -12456,7 +12620,11 @@ mod tests {
         );
         let fb = machine.bitmaps.get(&alvo).unwrap();
         let vermelho = Rgb { r: 255, g: 0, b: 0 }.to_rgb565();
-        assert_eq!(fb.get_pixel(10, 10), vermelho, "a moldura não foi desenhada");
+        assert_eq!(
+            fb.get_pixel(10, 10),
+            vermelho,
+            "a moldura não foi desenhada"
+        );
         assert_eq!(
             fb.get_pixel(25, 25),
             Rgb::WHITE.to_rgb565(),
@@ -12988,8 +13156,15 @@ mod tests {
         // pixels do fim ficariam de fora e a folha sairia cortada.
         let pixels = machine.dib_buffers.get(&segundo).copied().unwrap();
         let mut ultimo = [0u8; 2];
-        machine.cpu.read_mem(pixels + 20 * 10 * 2 - 2, &mut ultimo).unwrap();
-        assert_ne!(u16::from_le_bytes(ultimo), 0, "o último pixel não foi publicado");
+        machine
+            .cpu
+            .read_mem(pixels + 20 * 10 * 2 - 2, &mut ultimo)
+            .unwrap();
+        assert_ne!(
+            u16::from_le_bytes(ultimo),
+            0,
+            "o último pixel não foi publicado"
+        );
     }
 
     #[test]
@@ -13212,11 +13387,20 @@ mod tests {
         machine.set_installed_applets([0x123456]);
         let start = slot_of(Interface::Shell, "StartApplet");
         let can = slot_of(Interface::Shell, "CanStartApplet");
-        assert_eq!(call(&mut machine, Interface::Shell, can, [0, 0x123456, 0, 0]), SUCCESS);
+        assert_eq!(
+            call(&mut machine, Interface::Shell, can, [0, 0x123456, 0, 0]),
+            SUCCESS
+        );
         assert_eq!(machine.take_launch_request(), None);
-        assert_eq!(call(&mut machine, Interface::Shell, start, [0, 0x654321, 0, 0]), ECLASSNOTSUPPORT);
+        assert_eq!(
+            call(&mut machine, Interface::Shell, start, [0, 0x654321, 0, 0]),
+            ECLASSNOTSUPPORT
+        );
         assert_eq!(machine.take_launch_request(), None);
-        assert_eq!(call(&mut machine, Interface::Shell, start, [0, 0x123456, 0, 0]), SUCCESS);
+        assert_eq!(
+            call(&mut machine, Interface::Shell, start, [0, 0x123456, 0, 0]),
+            SUCCESS
+        );
         assert_eq!(machine.take_launch_request(), Some(0x123456));
         assert_eq!(machine.take_launch_request(), None);
     }
@@ -13231,14 +13415,27 @@ mod tests {
         machine.egl_surfaces.insert(1, (2, 1));
         let get = slot_of(Interface::EglLegacy, "eglGetColorBufferQUALCOMM");
         let buffer = call(&mut machine, Interface::EglLegacy, get, [0; 4]);
-        machine.cpu.write_mem(buffer, &0xf800u16.to_le_bytes()).unwrap();
+        machine
+            .cpu
+            .write_mem(buffer, &0xf800u16.to_le_bytes())
+            .unwrap();
         // Até uma chamada sem vértices deve sincronizar o buffer antes de desenhar.
         let draw = slot_of(Interface::GlLegacy, "glDrawArrays");
-        call(&mut machine, Interface::GlLegacy, draw, [gles::GL_TRIANGLES, 0, 0, 0]);
+        call(
+            &mut machine,
+            Interface::GlLegacy,
+            draw,
+            [gles::GL_TRIANGLES, 0, 0, 0],
+        );
         assert_eq!(machine.gl.present(2, 1)[0], 0xf800);
         // Uma limpeza posterior não pode ser desfeita por uma cópia antiga do guest.
         let clear = slot_of(Interface::GlLegacy, "glClear");
-        call(&mut machine, Interface::GlLegacy, clear, [gles::GL_COLOR_BUFFER_BIT, 0, 0, 0]);
+        call(
+            &mut machine,
+            Interface::GlLegacy,
+            clear,
+            [gles::GL_COLOR_BUFFER_BIT, 0, 0, 0],
+        );
         let again = call(&mut machine, Interface::EglLegacy, get, [0; 4]);
         assert_eq!(machine.cpu.read_u32(again).unwrap(), 0);
     }
@@ -13455,7 +13652,10 @@ mod tests {
     /// `tectoyli.brf` e a encontra lá. A primeira tentativa não é um arquivo faltando.
     #[test]
     fn recurso_achado_em_outro_arquivo_sai_da_lista_de_faltas() {
-        assert_eq!(id_do_recurso("fs:/~0x01070798/tectoy_pt.brf (recurso 5035)"), Some(5035));
+        assert_eq!(
+            id_do_recurso("fs:/~0x01070798/tectoy_pt.brf (recurso 5035)"),
+            Some(5035)
+        );
         assert_eq!(id_do_recurso("fontsize.map"), None);
         assert_eq!(id_do_recurso("um (recurso não)"), None);
     }
@@ -14268,9 +14468,7 @@ mod tests {
         let mut machine = Machine::new(UnicornCpu::new().unwrap(), module, ".");
         machine.cpu.reset(&machine.module.mem).unwrap();
         // Sem pilha não há quinto argumento: o `GetConnectedDevices` lê o `nLenReq` de lá.
-        machine
-            .cpu
-            .write_reg(Reg::Sp, loader::STACK_BASE + 0x1000);
+        machine.cpu.write_reg(Reg::Sp, loader::STACK_BASE + 0x1000);
         machine
     }
 
@@ -14284,7 +14482,10 @@ mod tests {
         let hid = machine.new_object(Interface::Hid).unwrap();
         let saida = machine.heap.alloc(16).unwrap();
         let quantos = machine.heap.alloc(4).unwrap();
-        machine.cpu.write_u32(machine.cpu.read_reg(Reg::Sp), quantos).unwrap();
+        machine
+            .cpu
+            .write_u32(machine.cpu.read_reg(Reg::Sp), quantos)
+            .unwrap();
 
         let r = call(
             &mut machine,
@@ -14308,7 +14509,10 @@ mod tests {
         let hid = machine.new_object(Interface::Hid).unwrap();
         let saida = machine.heap.alloc(16).unwrap();
         let quantos = machine.heap.alloc(4).unwrap();
-        machine.cpu.write_u32(machine.cpu.read_reg(Reg::Sp), quantos).unwrap();
+        machine
+            .cpu
+            .write_u32(machine.cpu.read_reg(Reg::Sp), quantos)
+            .unwrap();
 
         for (tipo, esperado, primeiro) in [
             (UID_JOYSTICK_DEVICE, 1u32, 1u32),

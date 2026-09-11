@@ -81,7 +81,6 @@ const PROFILE_LINES: usize = 20;
 const SEMIHOSTING_LINES: usize = 40;
 
 fn main() -> ExitCode {
-
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("info") if args.len() == 2 => report(info(&args[1])),
@@ -562,6 +561,13 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
     if dump_heap && !rodou_quadros {
         despeja_memoria(&machine)?;
     }
+    #[cfg(debug_assertions)]
+    {
+        let (total, maior, repetidos) = machine.retrato_widgets();
+        println!(
+            "widgets:   {total} vivos, maior lista de anexos {maior}, anexos repetidos {repetidos}"
+        );
+    }
     if let Some(dir) = &dump_surfaces {
         despeja_superficies(&machine, dir)?;
     }
@@ -823,7 +829,9 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
 /// Como o perfil, isto também serve quando o jogo **não** chega a começar: o Need For Speed monta
 /// a tabela de sons dele antes de o applet existir, e é nessa tabela que está a resposta de por
 /// que ele para.
-fn despeja_memoria(machine: &machine::Machine<UnicornCpu>) -> Result<(), Box<dyn std::error::Error>> {
+fn despeja_memoria(
+    machine: &machine::Machine<UnicornCpu>,
+) -> Result<(), Box<dyn std::error::Error>> {
     std::fs::write(
         "heap.bin",
         machine.dump(loader::HEAP_BASE, loader::HEAP_SIZE)?,

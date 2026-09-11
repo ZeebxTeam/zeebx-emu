@@ -62,7 +62,9 @@ fn describe(path: PathBuf) -> Option<Game> {
     let manifest = archive::find_manifest(&path, &module);
     Some(Game {
         title: archive::title_of(&path, &module),
-        clsid: manifest.as_deref().and_then(|data| MifFile::parse(data).ok())
+        clsid: manifest
+            .as_deref()
+            .and_then(|data| MifFile::parse(data).ok())
             .and_then(|mif| mif.main_applet()),
         art: cover(&path).or_else(|| manifest_art(manifest.as_deref()?)),
         path,

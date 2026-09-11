@@ -118,7 +118,6 @@ impl ObjectStore {
         saida.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.name().cmp(b.0.name())));
         saida
     }
-
 }
 
 #[cfg(test)]
@@ -168,7 +167,9 @@ mod tests {
     fn criar_e_soltar_em_laco_nao_esgota() {
         let mut loja = ObjectStore::new(0x3000_0000, 0x400);
         for _ in 0..10_000 {
-            let objeto = loja.create(Interface::Widget).expect("sempre cabe um de cada vez");
+            let objeto = loja
+                .create(Interface::Widget)
+                .expect("sempre cabe um de cada vez");
             loja.release(objeto);
         }
         assert_eq!(loja.live_count(), 0);

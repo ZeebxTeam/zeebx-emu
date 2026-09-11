@@ -192,7 +192,13 @@ impl Pendencias {
             ),
             arquivos: ordenar(machine.missing_files()),
             ponteiros: ordenar(machine.bad_pointers()),
-            hipoteses: ordenar(machine.assumptions().iter().map(|s| s.to_string()).collect()),
+            hipoteses: ordenar(
+                machine
+                    .assumptions()
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
+            ),
             falhas: ordenar(machine.swallowed_faults()),
             texto: ordenar(machine.pending_text().to_vec()),
             gl_ignorado: ordenar(machine.ignored_gl().iter().map(|s| s.to_string()).collect()),
@@ -248,11 +254,7 @@ impl Relatorio {
     /// onde só houve um computador diferente. Por isso nada de tempo, de contagem de instrução
     /// nem de quadros aqui — só o que é comportamento do emulador diante daquele jogo.
     pub fn resumo(&self) -> String {
-        let mut texto = format!(
-            "{}\nestado: {}\n",
-            self.titulo,
-            self.categoria.rotulo()
-        );
+        let mut texto = format!("{}\nestado: {}\n", self.titulo, self.categoria.rotulo());
         if let Some(motivo) = &self.motivo {
             texto.push_str(&format!("motivo: {motivo}\n"));
         }
@@ -706,7 +708,11 @@ mod tests {
         // O motivo é o que se lê para saber o que fazer, então não pode vir vazio nem ficar de
         // fora do resumo — que é o texto que a linha de base guarda.
         assert!(relatorio.motivo.as_deref().is_some_and(|m| !m.is_empty()));
-        assert!(relatorio.resumo().contains("quebrou antes de criar o applet"));
+        assert!(
+            relatorio
+                .resumo()
+                .contains("quebrou antes de criar o applet")
+        );
         assert!(relatorio.desempenho.is_none());
         let _ = std::fs::remove_file(&caminho);
     }

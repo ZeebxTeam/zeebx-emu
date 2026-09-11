@@ -51,16 +51,36 @@ const TEMPO_PADRAO: u32 = 500_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Evento {
-    Toca { canal: u8, nota: u8, forca: u8 },
-    Solta { canal: u8, nota: u8 },
-    Programa { canal: u8, programa: u8 },
+    Toca {
+        canal: u8,
+        nota: u8,
+        forca: u8,
+    },
+    Solta {
+        canal: u8,
+        nota: u8,
+    },
+    Programa {
+        canal: u8,
+        programa: u8,
+    },
     /// Volume (7) do canal, e expressão (11), que é um segundo fator sobre ele. O resto do
     /// `Control Change` é ignorado.
-    Volume { canal: u8, valor: u8 },
-    Expressao { canal: u8, valor: u8 },
+    Volume {
+        canal: u8,
+        valor: u8,
+    },
+    Expressao {
+        canal: u8,
+        valor: u8,
+    },
     /// Todas as notas do canal soltas de uma vez — `All Notes Off` e `All Sound Off`.
-    SoltaTudo { canal: u8 },
-    Tempo { us_por_batida: u32 },
+    SoltaTudo {
+        canal: u8,
+    },
+    Tempo {
+        us_por_batida: u32,
+    },
 }
 
 /// A partitura lida, em pulsos.
@@ -103,7 +123,9 @@ fn le_trilha(bytes: &[u8]) -> Vec<(u64, Evento)> {
             break;
         };
         pulso += u64::from(delta);
-        let Some(&primeiro) = bytes.get(pos) else { break };
+        let Some(&primeiro) = bytes.get(pos) else {
+            break;
+        };
         // Byte de dados no lugar do status: vale o status anterior, e o byte é o primeiro dado.
         if primeiro & 0x80 != 0 {
             status = primeiro;
@@ -620,7 +642,9 @@ pub fn decode(data: &[u8]) -> Option<crate::wav::Sound> {
 /// Soma uma voz no buffer, do começo dela até a envoltória zerar.
 fn toca_voz(voz: &Voz, samples: &mut [f32]) {
     let taxa = RATE as f32;
-    let solta = voz.solta.map(|s| (s.saturating_sub(voz.inicio)) as f32 / taxa);
+    let solta = voz
+        .solta
+        .map(|s| (s.saturating_sub(voz.inicio)) as f32 / taxa);
     let fim = match voz.solta {
         Some(s) => (s + voz.cauda()).min(samples.len()),
         None => samples.len(),
@@ -664,7 +688,10 @@ fn toca_voz(voz: &Voz, samples: &mut [f32]) {
         if envoltoria <= 0.0 && solta.is_some_and(|s| t > s) {
             break;
         }
-        let crua = voz.timbre.forma.amostra(fase, harmonicos.max(1), &mut ruido);
+        let crua = voz
+            .timbre
+            .forma
+            .amostra(fase, harmonicos.max(1), &mut ruido);
         fase = (fase + passo).fract();
         polo[0] += alpha * (crua - polo[0]);
         let valor = match voz.filtro {
@@ -957,7 +984,11 @@ mod tests {
         ];
         let som = decode(&smf(96, &trilha)).expect("é música");
         // O fim é o último evento mais a sobra da soltura: um segundo e meio cobre tudo.
-        assert!(som.frames() < (1.5 * RATE as f32) as usize, "{}", som.frames());
+        assert!(
+            som.frames() < (1.5 * RATE as f32) as usize,
+            "{}",
+            som.frames()
+        );
         // E o rabo do arquivo é silêncio, não uma nota presa.
         let ultimas = &som.samples[som.samples.len() - 100..];
         assert!(ultimas.iter().all(|s| s.abs() < 1e-6));

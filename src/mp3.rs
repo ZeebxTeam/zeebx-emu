@@ -196,9 +196,8 @@ pub fn decode(data: &[u8]) -> Option<crate::wav::Sound> {
         let spec = *quadro.spec();
         rate = spec.rate;
         channels = spec.channels.count() as u16;
-        let buffer = buffer.get_or_insert_with(|| {
-            SampleBuffer::new(quadro.capacity() as u64, spec)
-        });
+        let buffer =
+            buffer.get_or_insert_with(|| SampleBuffer::new(quadro.capacity() as u64, spec));
         buffer.copy_interleaved_ref(quadro);
         samples.extend_from_slice(buffer.samples());
     }

@@ -131,6 +131,8 @@ pub enum Interface {
     /// convenções seria fácil, e por isso elas estão escritas lado a lado aqui. O slot 12 segue
     /// a mesma convenção do 2, e a mesma forma `(IID, &saída)`.
     Widget = 40,
+    /// Controle básico usado pelo Zenonia (`AEECLSID 0x01003109`).
+    Control = 51,
     /// `0x01006c05`, o **ZEEBOMCP** — o objeto único que a Z-Wheel pede a cada partida.
     ///
     /// O nome sai do próprio jogo: a `Tectoy.c` imprime `Cannot create instance of ZEEBOMCP`
@@ -299,7 +301,7 @@ impl Interface {
     /// as duas coisas precisam concordar — daí a lista existir num lugar só, com teste que
     /// confere a correspondência. Quando elas divergiram, um objeto recebeu a vtable de outra
     /// interface e a chamada foi parar no método errado, com sintoma a quilômetros da causa.
-    pub const ALL: [Interface; 51] = [
+    pub const ALL: [Interface; 52] = [
         Self::Shell,
         Self::Module,
         Self::Applet,
@@ -351,6 +353,7 @@ impl Interface {
         Self::SystemCtl,
         Self::Typeface,
         Self::SimCardCtl,
+        Self::Control,
     ];
 
     /// Nome usado nos logs — casa com a nomenclatura do SDK.
@@ -395,6 +398,7 @@ impl Interface {
             Self::Collection => "IColecao",
             Self::SourceUtil => "ISourceUtil",
             Self::Widget => "IWidget",
+            Self::Control => "IControl",
             Self::ZeeboMcp => "IZeeboMCP",
             Self::Config => "IConfig",
             Self::Source => "ISource",
@@ -452,6 +456,7 @@ impl Interface {
             Self::Collection => aee_slots::COLLECTION,
             Self::SourceUtil => aee_slots::SOURCE_UTIL,
             Self::Widget => aee_slots::WIDGET,
+            Self::Control => aee_slots::CONTROL,
             Self::ZeeboMcp => aee_slots::ZEEBO_MCP,
             Self::Config => aee_slots::CONFIG,
             Self::Source => aee_slots::SOURCE,
@@ -535,6 +540,7 @@ impl Interface {
             48 => Self::SystemCtl,
             49 => Self::Typeface,
             50 => Self::SimCardCtl,
+            51 => Self::Control,
             6 => Self::Helpers,
             _ => return None,
         })

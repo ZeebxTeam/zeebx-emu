@@ -894,6 +894,51 @@ pub const WIDGET: &[&str] = &[
     "Slot16",
 ];
 
+/// Métodos do `IControl` usado pelo subsistema de texto do Zenonia.
+pub const CONTROL: &[&str] = &[
+    "AddRef",
+    "Release",
+    "HandleEvent",
+    "Redraw",
+    "SetActive",
+    "IsActive",
+    "SetRect",
+    "GetRect",
+    "SetProperties",
+    "GetProperties",
+    "Reset",
+    "ControlMethod11",
+    "ControlMethod12",
+    "ControlMethod13",
+    "ControlMethod14",
+    "ControlMethod15",
+    "ControlMethod16",
+    "ControlMethod17",
+    "ControlMethod18",
+    "ControlMethod19",
+    "ControlMethod20",
+    "ControlMethod21",
+    "ControlMethod22",
+    "ControlMethod23",
+    "ControlMethod24",
+    "ControlMethod25",
+    "ControlMethod26",
+    "ControlMethod27",
+    "ControlMethod28",
+    "ControlMethod29",
+    "ControlMethod30",
+    "ControlMethod31",
+    "ControlMethod32",
+    "ControlMethod33",
+    "ControlMethod34",
+    "ControlMethod35",
+    "ControlMethod36",
+    "ControlMethod37",
+    "ControlMethod38",
+    "ControlMethod39",
+    "ControlMethod40",
+];
+
 /// Métodos do ZEEBOMCP (`0x01006c05`), da vtable `0x102d47a8` do firmware.
 ///
 /// São oito. Só os três primeiros têm nome porque só eles foram lidos: `0x11085c5e` e

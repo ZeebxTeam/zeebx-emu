@@ -208,9 +208,7 @@ impl Texture {
             // O tamanho declarado e os pixels precisam combinar: um nível comprimido cujo
             // decodificador não deu conta chega com menos texels do que diz ter, e ler por
             // índice ali seria estourar o vetor.
-            Some(nivel)
-                if nivel.width > 0 && nivel.pixels.len() >= nivel.width * nivel.height =>
-            {
+            Some(nivel) if nivel.width > 0 && nivel.pixels.len() >= nivel.width * nivel.height => {
                 (nivel.width, nivel.height, &nivel.pixels)
             }
             _ => (self.width, self.height, &self.pixels),
@@ -226,9 +224,7 @@ impl Texture {
         1 + self
             .mipmaps
             .iter()
-            .take_while(|nivel| {
-                nivel.width > 0 && nivel.pixels.len() >= nivel.width * nivel.height
-            })
+            .take_while(|nivel| nivel.width > 0 && nivel.pixels.len() >= nivel.width * nivel.height)
             .count()
     }
 
@@ -312,7 +308,6 @@ impl Texture {
             cima + (baixo - cima) * fy
         })
     }
-
 }
 
 /// Estado completo do OpenGL ES que o rasterizador mantém.
@@ -692,8 +687,9 @@ impl GlState {
             // Não é desleixo: com a normalização desligada e normais que não são unitárias, o
             // OpenGL dá um resultado definido e errado, e nenhum jogo pede isso de propósito.
             gles::GL_NORMALIZE | gles::GL_RESCALE_NORMAL => {}
-            capacidade if (gles::GL_LIGHT0..gles::GL_LIGHT0 + gles::LUZES as u32)
-                .contains(&capacidade) =>
+            capacidade
+                if (gles::GL_LIGHT0..gles::GL_LIGHT0 + gles::LUZES as u32)
+                    .contains(&capacidade) =>
             {
                 self.lights[(capacidade - gles::GL_LIGHT0) as usize].enabled = on;
             }
@@ -781,15 +777,20 @@ impl GlState {
     /// tudo opaco. Com `GL_COLOR_MATERIAL`, a cor do vértice toma o lugar da ambiente e da
     /// difusa do material — é o único caminho pelo qual um vetor de cores continua valendo com
     /// a luz ligada.
-    fn cor_iluminada(&self, olho: [f32; 4], normal: [f32; 3], cor_do_vertice: [f32; 4]) -> [f32; 4] {
+    fn cor_iluminada(
+        &self,
+        olho: [f32; 4],
+        normal: [f32; 3],
+        cor_do_vertice: [f32; 4],
+    ) -> [f32; 4] {
         let (ambiente, difusa) = match self.color_material {
             true => (cor_do_vertice, cor_do_vertice),
             false => (self.material.ambient, self.material.diffuse),
         };
         let mut saida = [0.0f32; 3];
         for canal in 0..3 {
-            saida[canal] = self.material.emission[canal]
-                + ambiente[canal] * self.light_model_ambient[canal];
+            saida[canal] =
+                self.material.emission[canal] + ambiente[canal] * self.light_model_ambient[canal];
         }
         // A posição do olho é `(0, 0, 0)` em coordenadas de olho, então a direção para o
         // observador é o próprio ponto, negado e normalizado.
@@ -797,7 +798,10 @@ impl GlState {
         for luz in self.lights.iter().filter(|luz| luz.enabled) {
             let (para_a_luz, distancia) = match luz.position[3] == 0.0 {
                 // Direcional: a posição é uma direção, e não há distância nem atenuação.
-                true => (normaliza([luz.position[0], luz.position[1], luz.position[2]]), None),
+                true => (
+                    normaliza([luz.position[0], luz.position[1], luz.position[2]]),
+                    None,
+                ),
                 false => {
                     let bruto = [
                         luz.position[0] - olho[0],
@@ -936,10 +940,27 @@ impl GlState {
         // textura e vai buscar filtro e repetição só no despejo; mudá-los aqui sem pintar antes
         // faz um desenho anterior ser amostrado com a configuração de um posterior. É o mesmo
         // cuidado que o `TexImage2D` já tomava com os pixels, e que faltava aqui.
-        self.flush();
-        let Some(texture) = self.textures.get_mut(&self.bound_texture) else {
+        let Some(texture) = self.textures.get(&self.bound_texture) else {
             return;
         };
+        // Muitos jogos (especialmente NFS) reaplicam o mesmo estado antes de cada sprite.
+        // Não há nada para preservar quando o valor não mudou; evitar o flush mantém a fila
+        // de triângulos e elimina um custo dominante do quadro.
+        let mudou = match name {
+            gles::GL_TEXTURE_WRAP_S => texture.wrap[0] != value,
+            gles::GL_TEXTURE_WRAP_T => texture.wrap[1] != value,
+            gles::GL_TEXTURE_MAG_FILTER => {
+                let filtro = if value == gles::GL_NEAREST { gles::GL_NEAREST } else { gles::GL_LINEAR };
+                texture.filter != filtro
+            }
+            gles::GL_TEXTURE_MIN_FILTER => texture.min_filter != value,
+            _ => false,
+        };
+        if !mudou {
+            return;
+        }
+        self.flush();
+        let Some(texture) = self.textures.get_mut(&self.bound_texture) else { return; };
         match name {
             gles::GL_TEXTURE_WRAP_S => texture.wrap[0] = value,
             gles::GL_TEXTURE_WRAP_T => texture.wrap[1] = value,
@@ -990,7 +1011,6 @@ impl GlState {
 
     /// Desenha uma sequência de vértices no modo pedido.
     pub fn draw(&mut self, mode: u32, vertices: &[Vertex]) {
-
         let mvp = {
             let projection = *self.projection.last().expect("pilha nunca fica vazia");
             let modelview = *self.modelview.last().expect("pilha nunca fica vazia");
@@ -1426,7 +1446,12 @@ impl GlState {
                 let g = ((pixel >> 5) & 63) as u8;
                 let b = (pixel & 31) as u8;
                 let index = y * self.width + x;
-                self.color[index] = [(r << 3) | (r >> 2), (g << 2) | (g >> 4), (b << 3) | (b >> 2), self.color[index][3]];
+                self.color[index] = [
+                    (r << 3) | (r >> 2),
+                    (g << 2) | (g >> 4),
+                    (b << 3) | (b >> 2),
+                    self.color[index][3],
+                ];
             }
         }
     }
@@ -1862,7 +1887,10 @@ fn holofote(luz: &Light, para_a_luz: [f32; 3]) -> f32 {
     }
     // O cosseno é entre a direção do cone e a direção **da luz para o vértice**, que é o
     // contrário de `para_a_luz`.
-    let cos = ponto(normaliza(luz.spot_direction), [-para_a_luz[0], -para_a_luz[1], -para_a_luz[2]]);
+    let cos = ponto(
+        normaliza(luz.spot_direction),
+        [-para_a_luz[0], -para_a_luz[1], -para_a_luz[2]],
+    );
     if cos < luz.spot_cutoff.to_radians().cos() {
         return 0.0;
     }
@@ -1876,11 +1904,7 @@ fn holofote(luz: &Light, para_a_luz: [f32; 3]) -> f32 {
 /// superfície e a luz escorrega pelo modelo. Quando a inversa não existe — matriz degenerada —,
 /// a parte 3×3 crua é o menos errado que dá para devolver.
 fn matriz_de_normais(m: &Matrix) -> [[f32; 3]; 3] {
-    let a = [
-        [m[0], m[1], m[2]],
-        [m[4], m[5], m[6]],
-        [m[8], m[9], m[10]],
-    ];
+    let a = [[m[0], m[1], m[2]], [m[4], m[5], m[6]], [m[8], m[9], m[10]]];
     let det = a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1])
         - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0])
         + a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0]);
@@ -2005,28 +2029,50 @@ mod tests {
             let mut state = GlState::new(8, 8);
             state.bind_texture(1);
             state.set_capability(gles::GL_TEXTURE_2D, true);
-            state.textures.insert(1, Texture {
-                width: 64,
-                height: 64,
-                pixels: vec![[255, 0, 0, 255]; 64 * 64],
-                mipmaps: (0..6).map(|level| {
-                    let size = 32 >> level;
-                    Nivel { width: size, height: size, pixels: vec![[0, 255, 0, 255]; size * size] }
-                }).collect(),
-                min_filter: gles::GL_NEAREST_MIPMAP_NEAREST,
-                ..Default::default()
-            });
+            state.textures.insert(
+                1,
+                Texture {
+                    width: 64,
+                    height: 64,
+                    pixels: vec![[255, 0, 0, 255]; 64 * 64],
+                    mipmaps: (0..6)
+                        .map(|level| {
+                            let size = 32 >> level;
+                            Nivel {
+                                width: size,
+                                height: size,
+                                pixels: vec![[0, 255, 0, 255]; size * size],
+                            }
+                        })
+                        .collect(),
+                    min_filter: gles::GL_NEAREST_MIPMAP_NEAREST,
+                    ..Default::default()
+                },
+            );
             let vertex = |x: f32, y: f32| Vertex {
                 position: [x, y, 0.0, 1.0],
-                uv: if vertical { [0.0, (y + 1.0) * 0.5] } else { [(x + 1.0) * 0.5, 0.0] },
+                uv: if vertical {
+                    [0.0, (y + 1.0) * 0.5]
+                } else {
+                    [(x + 1.0) * 0.5, 0.0]
+                },
                 ..Default::default()
             };
-            state.draw(gles::GL_TRIANGLE_STRIP, &[
-                vertex(-1.0, -1.0), vertex(1.0, -1.0),
-                vertex(-1.0, 1.0), vertex(1.0, 1.0),
-            ]);
+            state.draw(
+                gles::GL_TRIANGLE_STRIP,
+                &[
+                    vertex(-1.0, -1.0),
+                    vertex(1.0, -1.0),
+                    vertex(-1.0, 1.0),
+                    vertex(1.0, 1.0),
+                ],
+            );
             state.flush();
-            assert_eq!(state.color[3 * 8 + 4], [0, 255, 0, 255], "vertical={vertical}");
+            assert_eq!(
+                state.color[3 * 8 + 4],
+                [0, 255, 0, 255],
+                "vertical={vertical}"
+            );
         }
     }
 
@@ -2043,7 +2089,11 @@ mod tests {
             ..Default::default()
         };
         t.min_filter = gles::GL_NEAREST_MIPMAP_NEAREST;
-        t.mipmaps = vec![Nivel { width: 0, height: 0, pixels: Vec::new() }];
+        t.mipmaps = vec![Nivel {
+            width: 0,
+            height: 0,
+            pixels: Vec::new(),
+        }];
         let cor = t.sample_lod(0.5, 0.5, 5.0);
         assert_eq!(cor[0], 1.0, "vermelho do nível cheio");
         assert_eq!(cor[1], 0.0, "e não branco: {cor:?}");

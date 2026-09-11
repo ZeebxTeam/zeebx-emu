@@ -715,7 +715,10 @@ impl App {
             };
         }
         if let Some(button) = clear {
-            self.settings.controls.player_mut(self.porta_editada).clear(&button);
+            self.settings
+                .controls
+                .player_mut(self.porta_editada)
+                .clear(&button);
             changed = true;
         }
 
@@ -837,7 +840,10 @@ impl App {
         let Some(source) = source else {
             return false;
         };
-        self.settings.controls.player_mut(self.porta_editada).bind(&button, source);
+        self.settings
+            .controls
+            .player_mut(self.porta_editada)
+            .bind(&button, source);
         self.capturing = None;
         true
     }
@@ -978,7 +984,10 @@ impl App {
         if let Some(roms) = self.settings.roms_dir.clone() {
             for entrada in std::fs::read_dir(roms).into_iter().flatten().flatten() {
                 let caminho = entrada.path();
-                if caminho.extension().is_some_and(|e| e.eq_ignore_ascii_case("zip")) {
+                if caminho
+                    .extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("zip"))
+                {
                     let _ = archive::completar_manifesto(&caminho);
                 }
             }
@@ -1046,9 +1055,8 @@ impl App {
                     let jogos: Vec<usize> = (0..self.saves.len())
                         .filter(|&i| !self.saves[i].0)
                         .collect();
-                    let aparelho: Vec<usize> = (0..self.saves.len())
-                        .filter(|&i| self.saves[i].0)
-                        .collect();
+                    let aparelho: Vec<usize> =
+                        (0..self.saves.len()).filter(|&i| self.saves[i].0).collect();
                     if !jogos.is_empty() {
                         ui.heading(self.catalog.get("saves.games"));
                         for i in jogos {
@@ -1079,9 +1087,9 @@ impl App {
                             if ui.button(self.catalog.get("saves.confirm.yes")).clicked() {
                                 let resultado = crate::saves::apagar(&self.saves[indice].1);
                                 self.saves_recado = Some(match resultado {
-                                    Ok(()) => self
-                                        .catalog
-                                        .format("saves.deleted", &[("name", &titulo)]),
+                                    Ok(()) => {
+                                        self.catalog.format("saves.deleted", &[("name", &titulo)])
+                                    }
                                     Err(erro) => self.catalog.format(
                                         "saves.failed",
                                         &[("name", &titulo), ("reason", &erro.to_string())],
@@ -1340,8 +1348,10 @@ impl App {
         anteriores: &mut HashSet<u32>,
         atuais: HashSet<u32>,
     ) -> Vec<(u32, bool)> {
-        let mut eventos: Vec<_> = anteriores.difference(&atuais)
-            .map(|&key| (key, false)).collect();
+        let mut eventos: Vec<_> = anteriores
+            .difference(&atuais)
+            .map(|&key| (key, false))
+            .collect();
         eventos.extend(atuais.difference(anteriores).map(|&key| (key, true)));
         eventos.sort_unstable();
         *anteriores = atuais;
@@ -1349,10 +1359,16 @@ impl App {
     }
 
     fn avks_ativos(teclado: &HashSet<egui::Key>, pads: &[Pad]) -> HashSet<u32> {
-        let mut keys: HashSet<_> = teclado.iter().filter_map(|key| Self::avk_de(*key)).collect();
+        let mut keys: HashSet<_> = teclado
+            .iter()
+            .filter_map(|key| Self::avk_de(*key))
+            .collect();
         for pad in pads {
-            keys.extend(Self::teclas_do_controle(&Pad::default(), pad)
-                .into_iter().filter_map(|(key, down)| down.then_some(key)));
+            keys.extend(
+                Self::teclas_do_controle(&Pad::default(), pad)
+                    .into_iter()
+                    .filter_map(|(key, down)| down.then_some(key)),
+            );
         }
         keys
     }
@@ -1421,19 +1437,38 @@ impl App {
             // acrescentam apertos; a repetição de navegação pertence ao guest.
             ctx.input(|i| {
                 for event in &i.events {
-                    if let egui::Event::Key { key, pressed, repeat: false, .. } = event {
-                        if *pressed { self.teclado_apertado.insert(*key); }
-                        else { self.teclado_apertado.remove(key); }
+                    if let egui::Event::Key {
+                        key,
+                        pressed,
+                        repeat: false,
+                        ..
+                    } = event
+                    {
+                        if *pressed {
+                            self.teclado_apertado.insert(*key);
+                        } else {
+                            self.teclado_apertado.remove(key);
+                        }
                         let atuais = Self::avks_ativos(&self.teclado_apertado, &self.pad_anterior);
-                        teclas.extend(Self::transicoes_de_teclas(&mut self.teclas_entregues, atuais));
+                        teclas.extend(Self::transicoes_de_teclas(
+                            &mut self.teclas_entregues,
+                            atuais,
+                        ));
                     }
                 }
-                if !i.focused { self.teclado_apertado.clear(); }
+                if !i.focused {
+                    self.teclado_apertado.clear();
+                }
             });
             self.pad_anterior = Default::default();
-            for (porta, pad) in pads { self.pad_anterior[*porta] = *pad; }
+            for (porta, pad) in pads {
+                self.pad_anterior[*porta] = *pad;
+            }
             let atuais = Self::avks_ativos(&self.teclado_apertado, &self.pad_anterior);
-            teclas.extend(Self::transicoes_de_teclas(&mut self.teclas_entregues, atuais));
+            teclas.extend(Self::transicoes_de_teclas(
+                &mut self.teclas_entregues,
+                atuais,
+            ));
         }
         let limit = self.settings.graphics.speed_limit;
         let Some(session) = &mut self.session else {
@@ -1453,7 +1488,10 @@ impl App {
             let _ = session.step(slice, limit);
         }
         if let Some(cls) = session.take_launch_request() {
-            let path = self.games.iter().find(|game| game.clsid == Some(cls))
+            let path = self
+                .games
+                .iter()
+                .find(|game| game.clsid == Some(cls))
                 .map(|game| game.path.clone());
             if let Some(path) = path {
                 self.play(path);
@@ -1862,14 +1900,18 @@ mod tests {
         let keyboard = HashSet::from([egui::Key::ArrowRight, egui::Key::Num4]);
         let mut delivered = HashSet::new();
         let active = App::avks_ativos(&keyboard, &[pad]);
-        assert_eq!(App::transicoes_de_teclas(&mut delivered, active.clone()),
-            vec![(crate::input::avk::RODA_SEGUINTE, true)]);
+        assert_eq!(
+            App::transicoes_de_teclas(&mut delivered, active.clone()),
+            vec![(crate::input::avk::RODA_SEGUINTE, true)]
+        );
         assert!(App::transicoes_de_teclas(&mut delivered, active).is_empty());
         // Soltar o teclado não solta um comando ainda mantido pelo controle.
         let active = App::avks_ativos(&HashSet::new(), &[pad]);
         assert!(App::transicoes_de_teclas(&mut delivered, active).is_empty());
-        assert_eq!(App::transicoes_de_teclas(&mut delivered, HashSet::new()),
-            vec![(crate::input::avk::RODA_SEGUINTE, false)]);
+        assert_eq!(
+            App::transicoes_de_teclas(&mut delivered, HashSet::new()),
+            vec![(crate::input::avk::RODA_SEGUINTE, false)]
+        );
     }
 
     /// Só a transição vira tecla: segurar o direcional não repete.

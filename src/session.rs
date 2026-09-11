@@ -583,7 +583,11 @@ mod tests {
 
     #[test]
     fn um_arquivo_que_nao_existe_diz_que_nao_deu_para_ler() {
-        let err = Session::start_inner(&std::env::temp_dir().join("zeebx-nao-existe.mod"), None, None);
+        let err = Session::start_inner(
+            &std::env::temp_dir().join("zeebx-nao-existe.mod"),
+            None,
+            None,
+        );
         assert!(matches!(err, Err(StartError::Unreadable(_))));
     }
 
