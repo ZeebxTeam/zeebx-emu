@@ -9,9 +9,9 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::archive;
+use crate::loader::archive;
 use crate::icon::{self, Image};
-use crate::miffile::MifFile;
+use crate::loader::miffile::MifFile;
 use crate::settings;
 
 /// Extensões aceitas para uma capa deixada ao lado do jogo.

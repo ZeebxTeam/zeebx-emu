@@ -73,10 +73,10 @@ fn pesar(caminho: &PathBuf) -> (usize, u64) {
 /// Alice terminava de ser escrito depois do `.mod`. Numa lista com botão de excluir, errar assim
 /// apaga o jogo.
 ///
-/// Ver [`crate::archive::completar_manifesto`], que reconstrói o manifesto de um cache antigo a
+/// Ver [`crate::loader::archive::completar_manifesto`], que reconstrói o manifesto de um cache antigo a
 /// partir do zip — que é a fonte de verdade sobre o que veio no pacote.
 fn do_pacote(dir: &Path) -> Option<std::collections::HashSet<String>> {
-    let texto = std::fs::read_to_string(dir.join(crate::archive::MANIFESTO)).ok()?;
+    let texto = std::fs::read_to_string(dir.join(crate::loader::archive::MANIFESTO)).ok()?;
     Some(
         texto
             .lines()
@@ -108,7 +108,7 @@ fn junta(
     };
     for entrada in entradas.flatten() {
         let nome = entrada.file_name().to_string_lossy().into_owned();
-        if nome == crate::archive::MANIFESTO {
+        if nome == crate::loader::archive::MANIFESTO {
             continue;
         }
         let caminho = format!("{prefixo}{nome}");
@@ -238,7 +238,7 @@ mod tests {
         }
         let mut linhas = vec!["mod/".to_string(), "mod/274/".to_string()];
         linhas.extend(pacote.iter().map(|n| format!("mod/274/{n}")));
-        std::fs::write(jogo.join(crate::archive::MANIFESTO), linhas.join("\n")).unwrap();
+        std::fs::write(jogo.join(crate::loader::archive::MANIFESTO), linhas.join("\n")).unwrap();
         // O save não está no manifesto — é o que o jogo escreveu depois.
         std::fs::create_dir_all(dir.join("zeeboiddata")).unwrap();
         std::fs::File::create(dir.join("zeeboiddata/zeeboid.db"))
@@ -255,7 +255,7 @@ mod tests {
         cache_com_jogo(&raiz);
         std::fs::remove_file(
             raiz.join("Zeeboids-6518125-1788761080")
-                .join(crate::archive::MANIFESTO),
+                .join(crate::loader::archive::MANIFESTO),
         )
         .unwrap();
         assert!(dos_jogos(&raiz).is_empty());

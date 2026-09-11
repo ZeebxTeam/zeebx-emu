@@ -44,7 +44,7 @@ impl<C: CpuBackend> Machine<C> {
                 // gravável e sobreviver a uma nova extração do ZIP. Para a Z-Wheel abrimos uma
                 // cópia de perfil já sincronizada com as ROMs que a interface encontrou.
                 let caminho = if nome == "tt_game_info" {
-                    let perfil = crate::archive::device_dir().join("z-wheel/tt_game_info");
+                    let perfil = crate::loader::archive::device_dir().join("z-wheel/tt_game_info");
                     let catalogo =
                         crate::library::CatalogIndex::load_from(&crate::library::catalog_path());
                     match crate::brew::sql::sync_z_wheel_library(&caminho, &perfil, &catalogo) {

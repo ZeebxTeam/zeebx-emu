@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use eframe::egui;
 
-use crate::archive;
+use crate::loader::archive;
 use crate::bindings::Source;
 use crate::display::Framebuffer;
 use crate::gamepads;

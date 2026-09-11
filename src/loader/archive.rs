@@ -9,7 +9,7 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use crate::miffile::MifFile;
+use crate::loader::miffile::MifFile;
 use crate::settings;
 
 /// Onde as extrações ficam.

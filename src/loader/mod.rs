@@ -9,10 +9,15 @@
 //! int AEEMod_Load(IShell *ps, void *ph, IModule **pMod);
 //! ```
 
+pub mod archive;
+pub mod miffile;
+pub mod modfile;
+pub mod resfile;
+
 use crate::brew::aee::{self, Interface};
 use crate::cpu::CpuError;
 use crate::cpu::mem::{GuestMemory, MemError};
-use crate::modfile::ModImage;
+use crate::loader::modfile::ModImage;
 
 /// Onde a imagem do módulo é carregada.
 ///

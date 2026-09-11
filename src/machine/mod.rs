@@ -1899,7 +1899,7 @@ pub struct Machine<C: CpuBackend> {
     web_response: Vec<u8>,
     /// Estado de cada `IHash` vivo.
     hashes: HashMap<u32, HashState>,
-    resources: crate::resfile::ResCache,
+    resources: crate::loader::resfile::ResCache,
     unzips: HashMap<u32, UnzipState>,
     /// Callbacks do guest já disparados e ainda não entregues.
     ///
@@ -2052,7 +2052,7 @@ impl<C: CpuBackend> Machine<C> {
             vfs: {
                 let mut vfs = Vfs::new(raiz.clone());
                 // Todos os jogos compartilham o mesmo `fs:/`, como no console.
-                vfs.set_device_root(crate::archive::device_dir());
+                vfs.set_device_root(crate::loader::archive::device_dir());
                 vfs
             },
             open_files: HashMap::new(),
@@ -2101,7 +2101,7 @@ impl<C: CpuBackend> Machine<C> {
             probed: HashSet::new(),
             ciphers: HashMap::new(),
             hashes: HashMap::new(),
-            resources: crate::resfile::ResCache::default(),
+            resources: crate::loader::resfile::ResCache::default(),
             unzips: HashMap::new(),
             images: HashMap::new(),
             image_bitmaps: HashMap::new(),

@@ -152,7 +152,7 @@ impl<C: CpuBackend> Machine<C> {
                 let raw = self
                     .resources
                     .open(&path)
-                    .and_then(|res| res.get(crate::resfile::RESTYPE_IMAGE, id))
+                    .and_then(|res| res.get(crate::loader::resfile::RESTYPE_IMAGE, id))
                     .map(<[u8]>::to_vec);
                 let Some(raw) = raw else {
                     self.missing_files
@@ -162,7 +162,7 @@ impl<C: CpuBackend> Machine<C> {
                 self.recursos_lidos.insert(id);
                 // O cabeçalho `AEEResBlob` é nosso para pular: quem pediu foi um **objeto** de
                 // imagem, não o bloco bruto que o `LoadResData` entrega.
-                crate::resfile::blob_data(&raw).unwrap_or(&raw).to_vec()
+                crate::loader::resfile::blob_data(&raw).unwrap_or(&raw).to_vec()
             }
         };
         let Some(decoded) = self.decode_resource_image(&bytes) else {
@@ -225,7 +225,7 @@ impl<C: CpuBackend> Machine<C> {
     /// recursos deste applet". Como não há convenção de nome que sirva — o Peggle chama o dele
     /// de `resources.bar` e o Pac-Mania de `pacmania.bar` —, o que resta é o único `.bar` que
     /// existe ao lado do módulo. Havendo mais de um, não há como escolher, e ninguém abre.
-    pub(super) fn open_res_file(&mut self, pointer: u32) -> Option<&crate::resfile::ResFile> {
+    pub(super) fn open_res_file(&mut self, pointer: u32) -> Option<&crate::loader::resfile::ResFile> {
         let path = match pointer {
             0 => self.default_res_file()?,
             _ => {
