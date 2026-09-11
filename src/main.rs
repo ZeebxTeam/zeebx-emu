@@ -10,8 +10,6 @@ mod input;
 mod library;
 mod loader;
 mod machine;
-mod midi;
-mod mp3;
 mod padview;
 mod ponte;
 mod rede;
@@ -30,7 +28,6 @@ use crate::brew::aee;
 /// Varredura de ROMs por teste — ver [`varredura`]. Só existe em compilação de teste.
 #[cfg(test)]
 mod varredura;
-mod wav;
 mod window;
 
 use std::process::ExitCode;

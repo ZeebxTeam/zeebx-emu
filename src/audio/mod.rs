@@ -8,11 +8,15 @@
 //! quem o consome. Ela roda em tempo real: nada aqui aloca nem bloqueia dentro do laço de
 //! mistura.
 
+pub mod midi;
+pub mod mp3;
+pub mod wav;
+
 use std::sync::{Arc, Mutex};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
-use crate::wav::Sound;
+use crate::audio::wav::Sound;
 
 /// Uma voz tocando: o som, onde ela está e como sai.
 #[derive(Debug)]
@@ -334,7 +338,7 @@ mod tests {
         mixer.play(1, tone(8000, 8), 1.0, 1);
         let samples = mixer.render(4);
         let wave = to_wav(&samples, 8000);
-        let lido = crate::wav::parse(&wave).unwrap();
+        let lido = crate::audio::wav::parse(&wave).unwrap();
         assert_eq!(lido.rate, 8000);
         assert_eq!(lido.channels, 2);
         assert_eq!(lido.frames(), 4);

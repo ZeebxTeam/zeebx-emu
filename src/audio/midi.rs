@@ -526,9 +526,9 @@ impl Voz {
 
 /// Sintetiza um MIDI. `None` quando não é um MIDI legível.
 ///
-/// Devolve o mesmo [`Sound`](crate::wav::Sound) que o WAVE e o MP3 produzem — o misturador não
+/// Devolve o mesmo [`Sound`](crate::audio::wav::Sound) que o WAVE e o MP3 produzem — o misturador não
 /// precisa saber que aqui não havia som nenhum, só partitura.
-pub fn decode(data: &[u8]) -> Option<crate::wav::Sound> {
+pub fn decode(data: &[u8]) -> Option<crate::audio::wav::Sound> {
     let partitura = le(data)?;
     let eventos = partitura.no_tempo();
     let fim = eventos.last()?.0.min(MAX_SEGUNDOS);
@@ -632,7 +632,7 @@ pub fn decode(data: &[u8]) -> Option<crate::wav::Sound> {
         return None;
     }
     normaliza(&mut samples);
-    Some(crate::wav::Sound {
+    Some(crate::audio::wav::Sound {
         rate: RATE,
         channels: 1,
         samples,
@@ -1025,7 +1025,7 @@ mod tests {
         (soma / samples.len().max(1) as f64).sqrt() as f32
     }
 
-    fn percussao_sozinha(nota: u8) -> crate::wav::Sound {
+    fn percussao_sozinha(nota: u8) -> crate::audio::wav::Sound {
         let mut trilha = vec![0x00, 0x99, nota, 127];
         trilha.extend(delta(96));
         trilha.extend([0x89, nota, 0x40, 0x00, 0xff, 0x2f, 0x00]);

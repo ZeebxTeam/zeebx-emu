@@ -135,7 +135,7 @@ pub fn probe(data: &[u8]) -> Option<Mp3> {
 
 /// Decodifica o MP3 inteiro para amostras. `None` quando não é um MP3 que se possa ler.
 ///
-/// Devolve o mesmo [`Sound`](crate::wav::Sound) que o RIFF/WAVE produz, e por isso o misturador
+/// Devolve o mesmo [`Sound`](crate::audio::wav::Sound) que o RIFF/WAVE produz, e por isso o misturador
 /// não precisa saber de onde o som veio: reamostragem, volume e repetição já funcionam iguais.
 ///
 /// A decodificação é feita **de uma vez**, e não em fluxo. Uma trilha de trinta e seis segundos
@@ -143,7 +143,7 @@ pub fn probe(data: &[u8]) -> Option<Mp3> {
 /// fica no cache de sons do `machine.rs`, decodificado uma vez por trilha e não por `Play`.
 /// Fluxo seria o certo para um jogo que troque de música o tempo todo; nenhum dos nossos faz
 /// isso, e streaming acrescentaria estado e uma linha de execução a mais para nada.
-pub fn decode(data: &[u8]) -> Option<crate::wav::Sound> {
+pub fn decode(data: &[u8]) -> Option<crate::audio::wav::Sound> {
     use symphonia::core::audio::SampleBuffer;
     use symphonia::core::codecs::DecoderOptions;
     use symphonia::core::errors::Error;
@@ -204,7 +204,7 @@ pub fn decode(data: &[u8]) -> Option<crate::wav::Sound> {
     if samples.is_empty() || rate == 0 || channels == 0 {
         return None;
     }
-    Some(crate::wav::Sound {
+    Some(crate::audio::wav::Sound {
         rate,
         channels,
         samples,
@@ -220,7 +220,7 @@ mod tests {
     /// Fixture de verdade em vez de bytes montados à mão: o que se quer provar é que um MP3 real
     /// entra e sai com a altura certa, e cabeçalho sintético nenhum prova isso. Entra só no
     /// binário de teste.
-    const TOM: &[u8] = include_bytes!("../assets/teste/tom-440hz.mp3");
+    const TOM: &[u8] = include_bytes!("../../assets/teste/tom-440hz.mp3");
 
     /// A música sai com a taxa, os canais e **a altura** certos.
     ///

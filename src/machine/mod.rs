@@ -1948,7 +1948,7 @@ pub struct Machine<C: CpuBackend> {
     /// Estado de reprodução de cada `IMedia` vivo.
     media: HashMap<u32, MediaState>,
     /// Sons já lidos, para não reinterpretar um RIFF de megabytes a cada `Play`.
-    waves: HashMap<(u32, u32), std::sync::Arc<crate::wav::Sound>>,
+    waves: HashMap<(u32, u32), std::sync::Arc<crate::audio::wav::Sound>>,
     /// Para onde o som vai, quando há para onde.
     audio: Option<crate::audio::Mixer>,
     /// O último quadro que o jogo apresentou, já no tamanho da tela.

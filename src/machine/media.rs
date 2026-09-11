@@ -190,7 +190,7 @@ impl<C: CpuBackend> Machine<C> {
     pub(super) fn media_sound(
         &mut self,
         this: u32,
-    ) -> Result<Option<std::sync::Arc<crate::wav::Sound>>, CpuError> {
+    ) -> Result<Option<std::sync::Arc<crate::audio::wav::Sound>>, CpuError> {
         let Some(state) = self.media.get(&this).copied() else {
             return Ok(None);
         };
@@ -205,10 +205,10 @@ impl<C: CpuBackend> Machine<C> {
         // RIFF/WAVE primeiro porque é o que quase todo som é, e é o mais barato de reconhecer.
         // MP3 depois: é o formato da **música**, e enquanto ele não existia aqui, efeito tocava
         // e trilha não tocava em jogo nenhum.
-        let som = match crate::wav::parse(&bytes) {
+        let som = match crate::audio::wav::parse(&bytes) {
             Ok(sound) => Some(sound),
-            Err(err) => match crate::mp3::decode(&bytes).or_else(|| {
-                crate::midi::decode(&bytes).inspect(|_| {
+            Err(err) => match crate::audio::mp3::decode(&bytes).or_else(|| {
+                crate::audio::midi::decode(&bytes).inspect(|_| {
                     self.assumptions.insert(concat!(
                         "a música MIDI é sintetizada aqui, com timbre aproximado — ",
                         "o banco de instrumentos do console está no firmware que ainda não lemos"
@@ -237,7 +237,7 @@ impl<C: CpuBackend> Machine<C> {
     /// Quanto dura um som que não sabemos decodificar, quando dá para descobrir sem decodificar.
     ///
     /// Hoje só o MP3 cai aqui, pelo cabeçalho do primeiro quadro e pela etiqueta do codificador
-    /// — ver [`crate::mp3`].
+    /// — ver [`crate::audio::mp3`].
     pub(super) fn media_silent_length(&mut self, this: u32) -> Result<Option<u64>, CpuError> {
         let Some(state) = self.media.get(&this).copied() else {
             return Ok(None);
@@ -246,7 +246,7 @@ impl<C: CpuBackend> Machine<C> {
             return Ok(None);
         }
         let bytes = self.read_bytes(state.buffer, state.size)?;
-        Ok(crate::mp3::probe(&bytes).map(|mp3| mp3.duration_us()))
+        Ok(crate::audio::mp3::probe(&bytes).map(|mp3| mp3.duration_us()))
     }
 
     /// `int Play(IMedia *)`.
