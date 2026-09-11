@@ -356,7 +356,7 @@ impl Relatorio {
         };
         Self {
             arquivo: arquivo.to_path_buf(),
-            titulo: crate::library::title_for(arquivo),
+            titulo: crate::ui::library::title_for(arquivo),
             categoria,
             motivo: Some(erro.to_string()),
             desempenho: None,
@@ -486,7 +486,7 @@ pub fn examina(arquivo: &Path, ms_virtuais: u32, teto: Duration) -> Relatorio {
         // sessão nomeia o jogo pela pasta do cache, cujo nome carrega o tamanho e a data do
         // arquivo. Isso muda de máquina para máquina, e a linha de base — que é gravada com
         // esse nome e traz o título dentro — não pode depender de metadado do host.
-        titulo: crate::library::title_for(arquivo),
+        titulo: crate::ui::library::title_for(arquivo),
         categoria,
         motivo: session.stopped_reason(),
         desempenho: Some(medida),
@@ -612,7 +612,7 @@ mod tests {
     #[test]
     fn a_rom_indicada_abre() {
         com_cada_rom("a_rom_indicada_abre", |rom| {
-            let titulo = crate::library::title_for(rom);
+            let titulo = crate::ui::library::title_for(rom);
             match abre(rom) {
                 Ok(quanto) => Ok(format!("{titulo}: abriu em {:.1} s", quanto.as_secs_f32())),
                 Err(erro) => Err(format!("{titulo}: não abriu — {erro}")),

@@ -13,7 +13,7 @@ use crate::video::display::Framebuffer;
 use crate::input::Pad;
 use crate::machine::{AppletResult, Machine, Outcome};
 use crate::loader::archive;
-use crate::library;
+use crate::ui::library;
 use crate::loader;
 use crate::loader::modfile::ModImage;
 

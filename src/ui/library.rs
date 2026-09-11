@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::loader::archive;
 use crate::video::icon::{self, Image};
 use crate::loader::miffile::MifFile;
-use crate::settings;
+use crate::ui::settings;
 
 /// Extensões aceitas para uma capa deixada ao lado do jogo.
 const COVER_EXTENSIONS: [&str; 4] = ["png", "jpg", "jpeg", "bmp"];

@@ -13,8 +13,8 @@ pub const FALLBACK: &str = "en";
 
 /// Os idiomas que vêm no binário, como `(código, conteúdo do JSON)`.
 const BUILT_IN: [(&str, &str); 2] = [
-    ("en", include_str!("../assets/lang/en.json")),
-    ("pt-BR", include_str!("../assets/lang/pt-BR.json")),
+    ("en", include_str!("../../assets/lang/en.json")),
+    ("pt-BR", include_str!("../../assets/lang/pt-BR.json")),
 ];
 
 /// Um idioma carregado: o código, o nome como ele se chama, e os textos.

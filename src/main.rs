@@ -3,18 +3,17 @@
 mod audio;
 mod brew;
 mod cpu;
-mod i18n;
 mod input;
-mod library;
 mod loader;
 mod machine;
 mod ponte;
 mod rede;
-mod saves;
 mod session;
-mod settings;
 mod ui;
 mod video;
+
+use crate::ui::library;
+use crate::ui::window;
 
 use crate::input::bindings;
 
@@ -27,7 +26,6 @@ use crate::brew::aee;
 /// Varredura de ROMs por teste — ver [`varredura`]. Só existe em compilação de teste.
 #[cfg(test)]
 mod varredura;
-mod window;
 
 use std::process::ExitCode;
 

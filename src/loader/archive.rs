@@ -10,7 +10,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use crate::loader::miffile::MifFile;
-use crate::settings;
+use crate::ui::settings;
 
 /// Onde as extrações ficam.
 pub fn cache_dir() -> PathBuf {

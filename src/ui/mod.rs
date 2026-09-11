@@ -5,6 +5,12 @@
 //! execução, e o [`Session::step`] já devolve o controle sozinho a cada fatia de tempo real,
 //! que é o que mantém a janela viva enquanto o jogo corre.
 
+pub mod i18n;
+pub mod library;
+pub mod saves;
+pub mod settings;
+pub mod window;
+
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -15,13 +21,13 @@ use crate::loader::archive;
 use crate::input::bindings::Source;
 use crate::video::display::Framebuffer;
 use crate::input::gamepads;
-use crate::i18n::Catalog;
+use crate::ui::i18n::Catalog;
 use crate::input::{self, Pad};
-use crate::library::{self, Game};
+use crate::ui::library::{Game};
 use crate::input::padview::PadArt;
 use crate::ponte;
 use crate::session::Session;
-use crate::settings::{self, Scaling, Settings};
+use crate::ui::settings::{Scaling, Settings};
 
 /// Teto de tempo real que o jogo pode tomar num quadro da interface.
 ///
@@ -40,7 +46,7 @@ const MAX_SLICE: Duration = Duration::from_millis(100);
 const SCREEN: [usize; 2] = [640, 480];
 
 /// A imagem de quem não tem imagem nenhuma.
-const PLACEHOLDER: &[u8] = include_bytes!("../assets/zeebx.png");
+const PLACEHOLDER: &[u8] = include_bytes!("../../assets/zeebx.png");
 
 /// Largura de um cartão da biblioteca, e o lado do quadro em que a imagem cabe.
 const CARD_WIDTH: f32 = 136.0;
@@ -97,7 +103,7 @@ pub struct App {
     /// Se a janela do gerenciador de saves está aberta.
     saves_open: bool,
     /// Os saves listados, relidos a cada abertura e a cada exclusão.
-    saves: Vec<(bool, crate::saves::Save)>,
+    saves: Vec<(bool, crate::ui::saves::Save)>,
     /// O save que espera confirmação para ser apagado.
     saves_confirmar: Option<usize>,
     /// O que dizer depois de apagar.
@@ -162,7 +168,7 @@ impl App {
                 catalog.select(code);
             }
             None => {
-                catalog.select_best(&crate::i18n::system_language());
+                catalog.select_best(&crate::ui::i18n::system_language());
             }
         }
         // O tema escuro é o que se espera de um emulador, e deixa a imagem do jogo no centro
@@ -998,8 +1004,8 @@ impl App {
                 }
             }
         }
-        let jogos = crate::saves::dos_jogos(&archive::cache_dir());
-        let aparelho = crate::saves::do_aparelho(&archive::device_dir());
+        let jogos = crate::ui::saves::dos_jogos(&archive::cache_dir());
+        let aparelho = crate::ui::saves::do_aparelho(&archive::device_dir());
         self.saves = jogos
             .into_iter()
             .map(|s| (false, s))
@@ -1022,7 +1028,7 @@ impl App {
                     "saves.files",
                     &[
                         ("count", &arquivos.to_string()),
-                        ("size", &crate::saves::tamanho(bytes)),
+                        ("size", &crate::ui::saves::tamanho(bytes)),
                     ],
                 ));
             });
@@ -1091,7 +1097,7 @@ impl App {
                         ui.label(self.catalog.format("saves.confirm", &[("name", &titulo)]));
                         ui.horizontal(|ui| {
                             if ui.button(self.catalog.get("saves.confirm.yes")).clicked() {
-                                let resultado = crate::saves::apagar(&self.saves[indice].1);
+                                let resultado = crate::ui::saves::apagar(&self.saves[indice].1);
                                 self.saves_recado = Some(match resultado {
                                     Ok(()) => {
                                         self.catalog.format("saves.deleted", &[("name", &titulo)])
@@ -1213,7 +1219,7 @@ impl App {
             true => "zeebx.serial.log".to_string(),
             false => format!("{titulo}.serial.log"),
         };
-        crate::settings::config_dir().join("relatorios").join(nome)
+        crate::ui::settings::config_dir().join("relatorios").join(nome)
     }
 
     pub fn caminho_do_relatorio(&self) -> PathBuf {
@@ -1221,7 +1227,7 @@ impl App {
             Some(title) if !title.is_empty() => format!("{title}.log"),
             _ => "zeebx.log".to_string(),
         };
-        crate::settings::config_dir().join("relatorios").join(nome)
+        crate::ui::settings::config_dir().join("relatorios").join(nome)
     }
 
     /// Grava o relatório em disco, no máximo uma vez a cada [`Self::INTERVALO_DO_RELATORIO`].

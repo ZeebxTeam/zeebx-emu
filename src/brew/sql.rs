@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::params;
 
-use crate::library::CatalogIndex;
+use crate::ui::library::CatalogIndex;
 
 /// Prepara a cópia gravável da biblioteca da Z-Wheel e sincroniza as ROMs locais.
 ///
@@ -58,7 +58,7 @@ pub fn sync_z_wheel_library(
     tx.execute("DELETE FROM ZEEBX_LIBRARY", [])
         .map_err(|err| err.to_string())?;
     for entry in &catalog.titles {
-        if entry.source != crate::library::CatalogSource::Rom {
+        if entry.source != crate::ui::library::CatalogSource::Rom {
             continue;
         }
         // ClassID é estável e cabe no INTEGER do SQLite; usá-lo também como game_id evita um
@@ -150,7 +150,7 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::library::{CatalogEntry, CatalogSource};
+    use crate::ui::library::{CatalogEntry, CatalogSource};
 
     /// O banco de preferências que a Z-Wheel traz no pacote, montado do zero com o mesmo
     /// esquema que o módulo dela carrega em texto.
