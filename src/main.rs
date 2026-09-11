@@ -12,26 +12,21 @@ mod session;
 mod ui;
 mod video;
 
-use crate::ui::library;
-use crate::ui::window;
-
-use crate::input::bindings;
-
-use crate::video::icon;
-
-use crate::loader::archive;
-use crate::loader::modfile;
-
-use crate::brew::aee;
 /// Varredura de ROMs por teste — ver [`varredura`]. Só existe em compilação de teste.
 #[cfg(test)]
 mod varredura;
 
 use std::process::ExitCode;
 
-use cpu::{CpuBackend, unicorn::UnicornCpu};
-use machine::{AppletResult, Machine, Outcome};
-use modfile::{ModImage, Variant};
+use crate::brew::aee;
+use crate::cpu::{CpuBackend, unicorn::UnicornCpu};
+use crate::input::bindings;
+use crate::loader::archive;
+use crate::loader::modfile::{ModImage, Variant};
+use crate::machine::{AppletResult, Machine, Outcome};
+use crate::ui::library;
+use crate::ui::window;
+use crate::video::icon;
 
 /// Teto de instruções por fatia entre duas chamadas de API — evita que um laço infinito no
 /// guest trave o emulador. Precisa ser generoso: a inicialização do Bejeweled Twist passa
