@@ -836,6 +836,10 @@ const AEECLSID_FILEMGR: u32 = 0x0100_1003;
 struct Widget {
     filhos: HashMap<u32, u32>,
     propriedades: HashMap<u32, u32>,
+    /// Modelos associados pelo slot 17. O roller da Z-Wheel prende aqui a fonte sob o id
+    /// `0x8000`; o chamador solta a referência temporária logo depois, portanto o widget é
+    /// quem precisa mantê-la viva enquanto o roller existir.
+    modelos: HashMap<u32, u32>,
     /// Largura e altura, do slot 7. A Z-Wheel manda `640 × 480` — a tela inteira.
     tamanho: (u32, u32),
     /// Onde o pai pendurou este widget, em coordenadas dele. Ver o `AdicionarFilho`.
@@ -7787,7 +7791,12 @@ impl<C: CpuBackend> Machine<C> {
                     // atração monta e desmonta a abertura sem parar, e o mil e vinte e quatro
                     // objetos da região acabavam numa volta só do laço.
                     if let Some(widget) = self.widgets.remove(&this) {
-                        for filho in widget.filhos.into_values().chain(widget.anexados) {
+                        for filho in widget
+                            .filhos
+                            .into_values()
+                            .chain(widget.anexados)
+                            .chain(widget.modelos.into_values())
+                        {
                             self.objects.release(filho);
                         }
                     }
@@ -7865,7 +7874,26 @@ impl<C: CpuBackend> Machine<C> {
                 SUCCESS
             }
             "Slot17" => {
-                // pWidget->Slot17(0x8000, pFont) em tectoy_rollerwidget.c (0x23860, 0x23d0c)
+                // `pWidget->Slot17(0x8000, pFont)` em `tectoy_rollerwidget.c` (0x23860,
+                // 0x23d0c). Não é uma notificação: o módulo solta `pFont` após montar o
+                // roller, então a associação precisa possuir uma referência própria.
+                let (id, modelo) = (self.cpu.read_reg(Reg::R1), self.cpu.read_reg(Reg::R2));
+                if modelo == 0 || self.objects.kind_of(modelo).is_none() {
+                    return Ok(Some(EBADPARM));
+                }
+                let Some(anterior) = self
+                    .widgets
+                    .get_mut(&this)
+                    .map(|widget| widget.modelos.insert(id, modelo))
+                else {
+                    return Ok(Some(EBADPARM));
+                };
+                if anterior != Some(modelo) {
+                    self.objects.add_ref(modelo);
+                    if let Some(anterior) = anterior {
+                        self.objects.release(anterior);
+                    }
+                }
                 SUCCESS
             }
             // `Slot16(this)`, chamado uma vez em `0x22d58`, logo depois de o palco existir.
@@ -13704,6 +13732,51 @@ mod tests {
         assert_eq!(machine.objects.kind_of(bitmap), Some(Interface::Bitmap));
         let surface = &machine.bitmaps[&bitmap];
         assert_eq!((surface.width(), surface.height()), (640, 100));
+    }
+
+    #[test]
+    fn widget_slot17_possui_o_modelo_do_roller() {
+        let module = loader::load(&module_calling_malloc()).unwrap();
+        let mut machine = Machine::new(UnicornCpu::new().unwrap(), module, ".");
+        machine.cpu.reset(&machine.module.mem).unwrap();
+        let roller = machine.new_object(Interface::Widget).unwrap();
+        let fonte = machine.new_object(Interface::Widget).unwrap();
+        machine.widgets.insert(
+            roller,
+            Widget {
+                visivel: true,
+                ..Widget::default()
+            },
+        );
+
+        call(
+            &mut machine,
+            Interface::Widget,
+            17,
+            [roller, 0x8000, fonte, 0],
+        );
+        assert_eq!(machine.widgets[&roller].modelos.get(&0x8000), Some(&fonte));
+
+        // O módulo solta a fonte depois de associá-la; o roller ainda a possui.
+        call(&mut machine, Interface::Widget, 1, [fonte, 0, 0, 0]);
+        assert_eq!(machine.objects.kind_of(fonte), Some(Interface::Widget));
+
+        let outra_fonte = machine.new_object(Interface::Widget).unwrap();
+        call(
+            &mut machine,
+            Interface::Widget,
+            17,
+            [roller, 0x8000, outra_fonte, 0],
+        );
+        assert_eq!(
+            machine.objects.kind_of(fonte),
+            None,
+            "trocar solta o modelo anterior"
+        );
+
+        call(&mut machine, Interface::Widget, 1, [outra_fonte, 0, 0, 0]);
+        call(&mut machine, Interface::Widget, 1, [roller, 0, 0, 0]);
+        assert_eq!(machine.objects.kind_of(outra_fonte), None);
     }
 
     /// O corpo do `import` do Zeeboids vem em `deflate` cru, e o das outras respostas vem em
