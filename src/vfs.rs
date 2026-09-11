@@ -100,6 +100,14 @@ impl Vfs {
         &self.root
     }
 
+    /// Arquivo de estado criado pelo emulador para um aplicativo do console.
+    ///
+    /// Não passa pelo caminho do módulo: é estado do aparelho, portanto sobrevive a uma nova
+    /// extração do ZIP e nunca altera o pacote original.
+    pub fn profile_file(&self, app: &str, name: &str) -> PathBuf {
+        self.device.join(app).join(name)
+    }
+
     /// Traduz um caminho do guest para um caminho do host.
     ///
     /// Devolve `None` para qualquer caminho que escape da raiz — `..`, caminho absoluto do
@@ -109,17 +117,13 @@ impl Vfs {
         self.resolve_inner(guest_path, false).map(match_case)
     }
 
-    /// **Sobre o `preloaded.cfg`, que ainda não é servido.**
+    /// **Sobre o `preloaded.cfg`.**
     ///
     /// Ele lista os jogos que vêm de fábrica no aparelho, e nem o pacote da Z-Wheel nem o
-    /// sistema de arquivos do dump o têm. Servi-lo **vazio** — que seria a resposta verdadeira,
-    /// já que não há jogo de fábrica aqui — muda o caminho da Z-Wheel de verdade: os erros do
-    /// formulário do z-pad somem e ela entra no `GameLib_Form`, que é a lista de jogos.
-    ///
-    /// E aí ela cai, em `0x40870`, gravando um item num widget cujo ponteiro de vtable está
-    /// zerado, com `Failure waiting for image load to complete...` no log. Trocar uma abertura
-    /// estável por uma queda não é avanço, então isto fica registrado e desligado até o caminho
-    /// novo parar de pé.
+    /// sistema de arquivos do dump o têm. O [`Machine`](crate::machine::Machine) o materializa
+    /// no perfil persistente do aparelho quando a Z-Wheel o consulta, em vez de alterar o
+    /// pacote original. A lista pode começar vazia: jogos locais pertencem ao banco da
+    /// biblioteca, não a uma NAND inventada.
     /// Como [`Vfs::resolve`], mas sem a busca sem caixa.
     ///
     /// É para quem vai **criar** um nome, não abrir um existente: renomear para `save.dat`

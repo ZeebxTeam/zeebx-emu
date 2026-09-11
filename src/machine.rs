@@ -4472,8 +4472,8 @@ impl<C: CpuBackend> Machine<C> {
             .map(|(&endereco, _)| endereco);
         // **Nem todo formulário recebe o conteúdo pelo item `0x5000`.** O do menu principal não
         // recebe: ele fica com zero filho, e o que ele mostra vira uma raiz solta — o container
-        // de `0x30000c10`, com a barra de status e o palco dentro. A ligação deve chegar pelo
-        // evento `0x7b0a` na raiz do aplicativo, que ainda recusamos.
+        // de `0x30000c10`, com a barra de status e o palco dentro. O evento `0x7b0a` já é
+        // encaminhado pela raiz; a ligação de pai em si ainda não foi observada.
         //
         // Enquanto isso, escolher só entre formulários deixava o do z-pad como atual para
         // sempre, e ele traz a `0x77300` — um tratador que devolve "tratei" para qualquer
@@ -4974,11 +4974,21 @@ impl<C: CpuBackend> Machine<C> {
             // int GetInfo(IFileMgr *, const char *pszName, FileInfo *pInfo)
             "GetInfo" if iface == Interface::FileMgr => {
                 let guest_path = self.cpu.read_cstring(a1, MAX_STRING);
-                match self
-                    .vfs
-                    .resolve(&guest_path)
-                    .and_then(|p| std::fs::metadata(&p).ok())
-                {
+                // A Z-Wheel pergunta pelo metadado do preload antes de decidir se o abre.
+                // Ele é estado do aparelho, não um arquivo distribuído dentro do pacote.
+                let path = if guest_path.eq_ignore_ascii_case("preloaded.cfg") {
+                    let path = self.vfs.profile_file("z-wheel", "preloaded.cfg");
+                    if !path.exists() {
+                        if let Some(parent) = path.parent() {
+                            let _ = std::fs::create_dir_all(parent);
+                        }
+                        let _ = std::fs::File::create(&path);
+                    }
+                    Some(path)
+                } else {
+                    self.vfs.resolve(&guest_path)
+                };
+                match path.and_then(|p| std::fs::metadata(&p).ok()) {
                     Some(meta) => {
                         self.write_file_info(a2, &guest_path, &meta)?;
                         SUCCESS
@@ -5038,6 +5048,12 @@ impl<C: CpuBackend> Machine<C> {
             },
             "Test" => {
                 let guest_path = self.cpu.read_cstring(a1, MAX_STRING);
+                // O preload é estado virtual do aparelho: o pacote oficial não o traz, mas a
+                // Z-Wheel testa sua existência antes de abri-lo. O `OpenFile` o materializa no
+                // perfil logo em seguida.
+                if guest_path.eq_ignore_ascii_case("preloaded.cfg") {
+                    return Ok(Some(SUCCESS));
+                }
                 match self.vfs.resolve(&guest_path) {
                     Some(path) if path.exists() => SUCCESS,
                     _ => EFAILED,
@@ -5192,7 +5208,22 @@ impl<C: CpuBackend> Machine<C> {
 
     /// Abre um arquivo do jogo, devolvendo o `IFile*` ou zero se não deu.
     fn open_file(&mut self, guest_path: &str, mode: u32) -> Result<u32, CpuError> {
-        let Some(path) = self.vfs.resolve(guest_path) else {
+        let preloaded = guest_path.eq_ignore_ascii_case("preloaded.cfg");
+        let path = if preloaded {
+            let path = self.vfs.profile_file("z-wheel", "preloaded.cfg");
+            if !path.exists() {
+                if let Some(parent) = path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                // Sem NAND, a resposta fiel é uma lista vazia de jogos pré-instalados. O
+                // catálogo de ROMs locais entra pelo banco de perfil, não por este arquivo.
+                let _ = std::fs::File::create(&path);
+            }
+            Some(path)
+        } else {
+            self.vfs.resolve(guest_path)
+        };
+        let Some(path) = path else {
             self.file_error = EFAILED;
             return Ok(0);
         };
@@ -8126,7 +8157,7 @@ impl<C: CpuBackend> Machine<C> {
                     // Um retorno verdadeiro interrompe o despacho em 0x7b420, antes dos
                     // handlers do próprio applet que preenchem as saídas de fonte/recurso.
                     // Sem handler aqui, devolver falso permite que o applet os resolva.
-                    0x101 | 0x7b0a | 0x7b0f => FALSE,
+                    0x101 | 0x7b0a | 0x7b0e | 0x7b0f => FALSE,
                     LE => {
                         // **Nem todo `0x800` pede um filho.** O jogo lê e grava pelo mesmo
                         // seletor coisas de tipos diferentes, e o número do item é que diz
