@@ -7864,6 +7864,10 @@ impl<C: CpuBackend> Machine<C> {
                 }
                 SUCCESS
             }
+            "Slot17" => {
+                // pWidget->Slot17(0x8000, pFont) em tectoy_rollerwidget.c (0x23860, 0x23d0c)
+                SUCCESS
+            }
             // `Slot16(this)`, chamado uma vez em `0x22d58`, logo depois de o palco existir.
             // Recusá-lo não devolvia a execução ao `0x22d5c`: a montagem do menu parava ali, e
             // o aplicativo ficava no pulso de dez segundos que lê pontos e fila de download sem
@@ -9028,6 +9032,11 @@ impl<C: CpuBackend> Machine<C> {
                 match aberto {
                     Ok(db) => {
                         self.escolhe_idioma(&db);
+                        if nome == "tt_dlqueue.db" {
+                            let _ = db.exec("CREATE TABLE IF NOT EXISTS DBINFO(version INTEGER, subversion INTEGER)");
+                            let _ = db.exec("INSERT OR IGNORE INTO DBINFO values (1, 0)");
+                            let _ = db.exec("CREATE TABLE IF NOT EXISTS DLITEMINFO(item_id INTEGER PRIMARY KEY, price INTEGER, size INTEGER, titletext TEXT, boxart_path TEXT, flags INTEGER, upgrade_id INTEGER)");
+                        }
                         let object = self.new_object(Interface::SqlDatabase)?;
                         if object == 0 {
                             return Ok(Some(ENOMEMORY));
