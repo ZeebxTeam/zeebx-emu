@@ -615,6 +615,37 @@ mod speed {
 
     #[test]
     #[ignore]
+    fn leitura_de_memoria_do_guest() {
+        // Cada `read_u32` atravessa a FFI e faz o unicorn procurar a região antes de copiar
+        // quatro bytes. O `read_attribute` do GL fazia uma dessas por componente — este teste
+        // mede a diferença entre pedir componente a componente e pedir o bloco de uma vez.
+        let mut cpu = cpu_with(&[]);
+        let rounds = 200_000u32;
+
+        let start = std::time::Instant::now();
+        let mut soma = 0u64;
+        for i in 0..rounds {
+            soma += cpu.read_u32(0x2000_0000 + (i % 256) * 4).unwrap() as u64;
+        }
+        let avulso = start.elapsed();
+
+        let mut bloco = [0u8; 1024];
+        let start = std::time::Instant::now();
+        for _ in 0..rounds / 256 {
+            cpu.read_mem(0x2000_0000, &mut bloco).unwrap();
+        }
+        let emlote = start.elapsed();
+
+        println!(
+            "read_u32 avulso: {:.0} ns cada | mesmos 4 bytes vindos de um read_mem de 1 KiB: \
+             {:.1} ns cada (soma={soma})",
+            avulso.as_secs_f64() * 1e9 / rounds as f64,
+            emlote.as_secs_f64() * 1e9 / rounds as f64,
+        );
+    }
+
+    #[test]
+    #[ignore]
     fn instrucoes_por_segundo() {
         // Laço apertado: `subs r0,r0,#1` e `bne` de volta. Só CPU, sem tocar memória.
         let code = [

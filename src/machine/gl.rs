@@ -2,6 +2,11 @@
 
 use super::*;
 
+/// Teto do trecho que a leitura em bloco aceita montar de uma vez. Um ponteiro de array
+/// corrompido dá uma extensão absurda, e alocar isso seria trocar uma lentidão por um estouro
+/// de memória. Acima daqui, volta a ler componente a componente — que é lento, mas seguro.
+const TETO_DO_ARRAY: u64 = 8 << 20;
+
 impl<C: CpuBackend> Machine<C> {
     /// Um ajuste de textura vindo da extensão, com os nomes do OpenGL ES.
     pub(super) fn apply_texture_setting(&mut self, name: &str, pname: u32, value: u32) {
@@ -346,21 +351,20 @@ impl<C: CpuBackend> Machine<C> {
             }
             "DrawElements" => {
                 let (mode, count, kind, list) = (a[0], a[1], a[2], a[3]);
-                let mut indices = Vec::with_capacity(count as usize);
-                for i in 0..count {
-                    indices.push(match kind {
-                        gles::GL_UNSIGNED_BYTE => {
-                            let mut byte = [0u8; 1];
-                            self.cpu.read_mem(list + i, &mut byte)?;
-                            byte[0] as u32
+                // A lista inteira num pedido só, pelo mesmo motivo do `read_array`: cada
+                // travessia para o unicorn custa mais que os dois bytes que ela traz.
+                let largura = if kind == gles::GL_UNSIGNED_BYTE { 1 } else { 2 };
+                let bytes = self.read_bytes(list, count * largura)?;
+                let indices: Vec<u32> = bytes
+                    .chunks_exact(largura as usize)
+                    .map(|c| {
+                        if largura == 1 {
+                            c[0] as u32
+                        } else {
+                            u16::from_le_bytes([c[0], c[1]]) as u32
                         }
-                        _ => {
-                            let mut half = [0u8; 2];
-                            self.cpu.read_mem(list + i * 2, &mut half)?;
-                            u16::from_le_bytes(half) as u32
-                        }
-                    });
-                }
+                    })
+                    .collect();
                 self.gles_draw(mode, &indices)?;
             }
 
@@ -588,33 +592,28 @@ impl<C: CpuBackend> Machine<C> {
             return Ok(());
         }
         let base = self.gl.current_color();
-        let mut vertices = Vec::with_capacity(indices.len());
-        for &index in indices {
-            let position = self.read_attribute(self.gl_vertices, index, [0.0, 0.0, 0.0, 1.0])?;
-            let color = if self.gl_colors.enabled && self.gl_colors.address != 0 {
-                self.read_attribute(self.gl_colors, index, [0.0, 0.0, 0.0, 1.0])?
-            } else {
-                base
-            };
-            let uv = if self.gl_texcoords.enabled && self.gl_texcoords.address != 0 {
-                let t = self.read_attribute(self.gl_texcoords, index, [0.0; 4])?;
-                [t[0], t[1]]
-            } else {
-                [0.0; 2]
-            };
-            let normal = if self.gl_normals.enabled && self.gl_normals.address != 0 {
-                let n = self.read_attribute(self.gl_normals, index, [0.0, 0.0, 1.0, 0.0])?;
-                [n[0], n[1], n[2]]
-            } else {
-                self.gl_normal_atual
-            };
-            vertices.push(Vertex {
-                position,
-                color,
-                uv,
-                normal,
-            });
-        }
+        // Um bloco por array, não um por componente: é a mesma memória do guest, pedida de
+        // uma vez. Ver [`Self::read_array`].
+        let posicoes = self.read_array(self.gl_vertices, indices, [0.0, 0.0, 0.0, 1.0])?;
+        let cores = (self.gl_colors.enabled && self.gl_colors.address != 0)
+            .then(|| self.read_array(self.gl_colors, indices, [0.0, 0.0, 0.0, 1.0]))
+            .transpose()?;
+        let uvs = (self.gl_texcoords.enabled && self.gl_texcoords.address != 0)
+            .then(|| self.read_array(self.gl_texcoords, indices, [0.0; 4]))
+            .transpose()?;
+        let normais = (self.gl_normals.enabled && self.gl_normals.address != 0)
+            .then(|| self.read_array(self.gl_normals, indices, [0.0, 0.0, 1.0, 0.0]))
+            .transpose()?;
+        let vertices: Vec<Vertex> = (0..indices.len())
+            .map(|i| Vertex {
+                position: posicoes[i],
+                color: cores.as_ref().map_or(base, |c| c[i]),
+                uv: uvs.as_ref().map_or([0.0; 2], |t| [t[i][0], t[i][1]]),
+                normal: normais
+                    .as_ref()
+                    .map_or(self.gl_normal_atual, |n| [n[i][0], n[i][1], n[i][2]]),
+            })
+            .collect();
         self.gl.draw(mode, &vertices);
         Ok(())
     }
@@ -642,6 +641,84 @@ impl<C: CpuBackend> Machine<C> {
     }
 
     /// Lê um elemento de um vetor do cliente, completando os componentes que faltam.
+    /// Lê de uma vez o trecho do array que os índices cobrem, e decodifica dali.
+    ///
+    /// O caminho por componente atravessa a FFI do unicorn para copiar quatro bytes, e o
+    /// unicorn procura a região antes de copiar: **57 ns**, contra **0,3 ns** quando os mesmos
+    /// quatro bytes vêm de um `read_mem` de um quilobyte. No Quake são 6,6 milhões de vértices
+    /// em 15 segundos virtuais, cada um com posição e coordenada de textura — e isso era
+    /// **3,2 s dos 3,6 s** que as draw calls custavam, contra 400 ms do rasterizador de fato.
+    ///
+    /// Se a leitura em bloco falhar, cai no caminho antigo. O trecho vai do primeiro ao último
+    /// índice, e um array que termine colado no fim da região mapeada pode ter o espaço de
+    /// `stride` do último elemento fora dela — o que valia antes continua valendo.
+    pub(super) fn read_array(
+        &self,
+        pointer: ArrayPointer,
+        indices: &[u32],
+        default: [f32; 4],
+    ) -> Result<Vec<[f32; 4]>, CpuError> {
+        let avulso = |maquina: &Self| -> Result<Vec<[f32; 4]>, CpuError> {
+            indices
+                .iter()
+                .map(|&i| maquina.read_attribute(pointer, i, default))
+                .collect()
+        };
+        let component = component_size(pointer.kind);
+        let largura = pointer.size.min(4) * component;
+        let stride = if pointer.stride == 0 {
+            pointer.size * component
+        } else {
+            pointer.stride
+        };
+        let (Some(&menor), Some(&maior)) = (indices.iter().min(), indices.iter().max()) else {
+            return Ok(Vec::new());
+        };
+        // Em u64 porque `maior * stride` estoura u32 num ponteiro corrompido, e aí o teto
+        // abaixo é justamente quem precisa enxergar o número grande para recusar.
+        let extensao = (maior - menor) as u64 * stride as u64 + largura as u64;
+        let inicio = pointer.address as u64 + menor as u64 * stride as u64;
+        if extensao > TETO_DO_ARRAY || inicio + extensao > u32::MAX as u64 {
+            return avulso(self);
+        }
+        let mut bytes = vec![0u8; extensao as usize];
+        if self.cpu.read_mem(inicio as u32, &mut bytes).is_err() {
+            return avulso(self);
+        }
+        Ok(indices
+            .iter()
+            .map(|&index| {
+                let base = (index - menor) as usize * stride as usize;
+                let mut out = default;
+                for i in 0..pointer.size.min(4) as usize {
+                    let em = base + i * component as usize;
+                    out[i] = match pointer.kind {
+                        gles::GL_FLOAT => f32::from_le_bytes([
+                            bytes[em],
+                            bytes[em + 1],
+                            bytes[em + 2],
+                            bytes[em + 3],
+                        ]),
+                        gles::GL_FIXED => gles::fixed(u32::from_le_bytes([
+                            bytes[em],
+                            bytes[em + 1],
+                            bytes[em + 2],
+                            bytes[em + 3],
+                        ])),
+                        gles::GL_SHORT => i16::from_le_bytes([bytes[em], bytes[em + 1]]) as f32,
+                        gles::GL_UNSIGNED_SHORT => {
+                            u16::from_le_bytes([bytes[em], bytes[em + 1]]) as f32
+                        }
+                        gles::GL_BYTE => bytes[em] as i8 as f32,
+                        // `GL_UNSIGNED_BYTE` só aparece em cor, e ali o valor é normalizado.
+                        _ => bytes[em] as f32 / 255.0,
+                    };
+                }
+                out
+            })
+            .collect())
+    }
+
     pub(super) fn read_attribute(
         &self,
         pointer: ArrayPointer,
