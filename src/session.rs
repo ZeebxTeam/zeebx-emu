@@ -541,7 +541,7 @@ impl Session {
             Outcome::Returned { .. } => "o jogo terminou".to_string(),
             Outcome::Unimplemented { addr, caller, .. } => format!(
                 "o jogo chamou {}, que ainda não existe aqui (de {caller:#010x})",
-                crate::aee::describe(*addr)
+                crate::brew::aee::describe(*addr)
             ),
             Outcome::Fault { addr, pc, .. } => {
                 format!("acesso inválido a {addr:#010x}, em {pc:#010x}")

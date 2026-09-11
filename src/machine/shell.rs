@@ -267,7 +267,7 @@ impl<C: CpuBackend> Machine<C> {
     ///
     /// Escolher por conta é uma hipótese, e fica anotada como tal. É o português porque é o
     /// idioma do aparelho que a TecToy vendeu, e porque `tectoy_pt.brf` está no pacote.
-    pub(super) fn escolhe_idioma(&mut self, db: &crate::sql::Database) {
+    pub(super) fn escolhe_idioma(&mut self, db: &crate::brew::sql::Database) {
         /// `"pt  "` lido como uma palavra de 32 bits, que é a forma como o módulo compara.
         const PORTUGUES: u32 = u32::from_le_bytes(*b"pt  ");
         let sem_escolha = db

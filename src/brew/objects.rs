@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use crate::aee::Interface;
+use crate::brew::aee::Interface;
 
 /// Espaço reservado a cada objeto na região do guest.
 ///

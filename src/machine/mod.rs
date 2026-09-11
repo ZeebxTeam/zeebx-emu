@@ -6,25 +6,25 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-use crate::aee::{self, Interface};
-use crate::aee_helpers;
+use crate::brew::aee::{self, Interface};
+use crate::brew::aee_helpers;
 use crate::atc;
-use crate::cformat::{self, ArgSource};
+use crate::brew::cformat::{self, ArgSource};
 use crate::cpu::unicorn::RETURN_MAGIC;
 use crate::cpu::{CpuBackend, CpuError, Reg, StopReason};
-use crate::crypto;
+use crate::brew::crypto;
 use crate::display::{Framebuffer, Rect, Rgb};
-use crate::fmath;
+use crate::brew::fmath;
 use crate::gles;
-use crate::heap::Heap;
+use crate::brew::heap::Heap;
 use crate::input::{self, Pad};
 use crate::loader::{self, LoadedModule};
-use crate::objects::ObjectStore;
+use crate::brew::objects::ObjectStore;
 use crate::paltex;
 use crate::ponte;
 use crate::rasterizer::{self, GlState, Vertex};
 use crate::rede;
-use crate::vfs::Vfs;
+use crate::brew::vfs::Vfs;
 
 mod bitmap;
 mod cifra;
@@ -1436,7 +1436,7 @@ const AES_BLOCK: usize = 16;
 /// nada para guardar na memória dele — o campo que existia para isso vinha da assinatura errada.
 #[derive(Debug, Default)]
 struct HashState {
-    md5: crate::crypto::Md5,
+    md5: crate::brew::crypto::Md5,
 }
 
 /// Estado de um `ICipher1`: a configuração que chegou pelo `SetParam` e o que sobrou de um
@@ -1719,7 +1719,7 @@ pub struct Machine<C: CpuBackend> {
     /// As coleções vivas, cada uma com os itens e onde o cursor está.
     collections: HashMap<u32, (Vec<u32>, usize)>,
     /// Os bancos SQLite abertos, por objeto `ISQLDatabase`.
-    databases: HashMap<u32, crate::sql::Database>,
+    databases: HashMap<u32, crate::brew::sql::Database>,
     probe_classes: BTreeSet<u32>,
     /// Respostas combinadas para slots de sonda: `(classe, slot) -> valor`.
     probe_answers: HashMap<(u32, u32), u32>,

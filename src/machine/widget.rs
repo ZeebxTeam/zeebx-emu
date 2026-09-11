@@ -682,7 +682,7 @@ impl<C: CpuBackend> Machine<C> {
                 // Leitura em 0x24100..0x24198 do tectoy.mod: (&bitmap, w, h),
                 // seguida de QueryInterface no bitmap devolvido. O widget foi usado
                 // como interface de bitmap pelo QueryInterface permissivo acima.
-                let slot = crate::aee_slots::BITMAP
+                let slot = crate::brew::aee_slots::BITMAP
                     .iter()
                     .position(|name| *name == "CreateCompatibleBitmap")
                     .expect("slot de bitmap");

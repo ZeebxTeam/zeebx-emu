@@ -213,7 +213,7 @@ impl<C: CpuBackend> Machine<C> {
         self.missing_apis.iter().cloned().collect()
     }
 
-    /// Quantos objetos vivos de cada interface. Ver [`crate::objects::ObjectStore::live_by_kind`].
+    /// Quantos objetos vivos de cada interface. Ver [`crate::brew::objects::ObjectStore::live_by_kind`].
     pub fn live_objects_by_kind(&self) -> Vec<(&'static str, usize)> {
         self.objects
             .live_by_kind()

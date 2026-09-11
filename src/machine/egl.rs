@@ -99,7 +99,7 @@ impl<C: CpuBackend> Machine<C> {
                 // A busca cobre a tabela inteira, e não só os slots da vtable real: as funções
                 // de extensão ficam no fim dela e é só por aqui que o jogo chega a elas.
                 let slot = name.strip_prefix("gl").and_then(|method| {
-                    (0..crate::aee_slots::GLES.len() as u32)
+                    (0..crate::brew::aee_slots::GLES.len() as u32)
                         .find(|&s| Interface::Gles.method(s) == Some(method))
                 });
                 // Um nome `egl*` procura na tabela **antiga**, a `IEGL` de `AEEGL.h`, e não na
@@ -110,7 +110,7 @@ impl<C: CpuBackend> Machine<C> {
                 // o prefixo `egl`, e aqui se procura com ele.
                 let egl = (name.starts_with("egl") && slot.is_none())
                     .then(|| {
-                        (0..crate::aee_slots::EGL_LEGACY.len() as u32)
+                        (0..crate::brew::aee_slots::EGL_LEGACY.len() as u32)
                             .find(|&s| Interface::EglLegacy.method(s) == Some(name.as_str()))
                     })
                     .flatten();

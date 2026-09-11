@@ -3,12 +3,12 @@
 use super::*;
 
 impl<C: CpuBackend> Machine<C> {
-    /// `ISQLMgr` e `ISQLDatabase` — os bancos SQLite do console. Ver [`crate::sql`].
+    /// `ISQLMgr` e `ISQLDatabase` — os bancos SQLite do console. Ver [`crate::brew::sql`].
     ///
     /// A ordem dos slots não veio de header: veio da observação com o `--sonda`. O Z-Wheel cria
     /// o gerenciador, chama o slot 3 com `"tt_prefs.db"` e um ponteiro de saída, e no banco que
     /// recebe chama o slot 3 de novo, agora com `"PRAGMA integrity_check"`. Por isso os dois
-    /// nomes que estão em [`crate::aee_slots::SQL_MGR`] são os únicos com nome.
+    /// nomes que estão em [`crate::brew::aee_slots::SQL_MGR`] são os únicos com nome.
     pub(super) fn sql_call(
         &mut self,
         iface: Interface,
@@ -47,7 +47,7 @@ impl<C: CpuBackend> Machine<C> {
                     let perfil = crate::archive::device_dir().join("z-wheel/tt_game_info");
                     let catalogo =
                         crate::library::CatalogIndex::load_from(&crate::library::catalog_path());
-                    match crate::sql::sync_z_wheel_library(&caminho, &perfil, &catalogo) {
+                    match crate::brew::sql::sync_z_wheel_library(&caminho, &perfil, &catalogo) {
                         Ok(caminho) => caminho,
                         Err(erro) => {
                             self.bad_pointers
@@ -58,7 +58,7 @@ impl<C: CpuBackend> Machine<C> {
                 } else {
                     caminho
                 };
-                let aberto = crate::sql::Database::open(&caminho);
+                let aberto = crate::brew::sql::Database::open(&caminho);
                 if self.serial.is_some() {
                     let como = match &aberto {
                         Ok(_) => "abriu".to_string(),
@@ -135,7 +135,7 @@ impl<C: CpuBackend> Machine<C> {
     /// os registradores, respeita o teto de aninhamento e devolve tudo no lugar.
     pub(super) fn sql_deliver(
         &mut self,
-        linhas: &[crate::sql::Row],
+        linhas: &[crate::brew::sql::Row],
         callback: u32,
         contexto: u32,
     ) -> Result<(), CpuError> {
@@ -171,7 +171,7 @@ impl<C: CpuBackend> Machine<C> {
     /// Monta os dois vetores de `char *` de uma linha e chama o callback. `false` pede parada.
     pub(super) fn sql_deliver_row(
         &mut self,
-        linha: &crate::sql::Row,
+        linha: &crate::brew::sql::Row,
         callback: u32,
         contexto: u32,
     ) -> Result<bool, CpuError> {

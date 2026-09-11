@@ -9,8 +9,8 @@
 //! aborta o fetch, e [`decode`] devolve a interface e o slot.
 
 use crate::cpu::unicorn::API_BASE;
-use crate::aee_helpers;
-use crate::aee_slots;
+use crate::brew::aee_helpers;
+use crate::brew::aee_slots;
 
 /// Quantos bits do endereço identificam a interface.
 const IFACE_SHIFT: u32 = 12;
@@ -84,7 +84,7 @@ pub enum Interface {
     EglSurfaceManip = 33,
     /// Os extras do ATI Imageon sobre o OpenGL ES, de `sdk/inc/AEEGLESImageonEXT.h`.
     GlesImageonExt = 34,
-    /// `AEECLSID_SQLMGR` do console: abre bancos SQLite. Ver [`crate::sql`].
+    /// `AEECLSID_SQLMGR` do console: abre bancos SQLite. Ver [`crate::brew::sql`].
     SqlMgr = 36,
     /// Um banco aberto pelo [`Interface::SqlMgr`].
     SqlDatabase = 37,

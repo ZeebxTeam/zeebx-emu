@@ -832,7 +832,7 @@ pub const SQL_DATABASE: &[&str] = &["AddRef", "Release", "slot2", "Exec"];
 /// Métodos da `ISourceUtil` (`0x01001011`), na ordem do `AEESource.h`.
 ///
 /// A vtable do firmware em `0x10a785e4` tem sete, e são estes sete. Ver
-/// [`crate::aee::Interface::SourceUtil`] para como a identificação foi feita.
+/// [`crate::brew::aee::Interface::SourceUtil`] para como a identificação foi feita.
 pub const SOURCE_UTIL: &[&str] = &[
     "AddRef",
     "Release",
@@ -951,7 +951,7 @@ pub const CONTROL: &[&str] = &[
 /// até alguém chamá-los.
 pub const ZEEBO_MCP: &[&str] = &["AddRef", "Release", "QueryInterface"];
 
-/// Métodos da `IConfig` (`0x01001027`). Ver [`crate::aee::Interface::Config`].
+/// Métodos da `IConfig` (`0x01001027`). Ver [`crate::brew::aee::Interface::Config`].
 ///
 /// Quatro, não doze: os nomes de 2 e 3 vêm do `ICONFIG_GetItem`/`ICONFIG_SetItem` do SDK, e a
 /// forma da chamada da Z-Wheel confere com a assinatura. Os oito de cima ficam sem nome para
@@ -961,13 +961,13 @@ pub const CONFIG: &[&str] = &["AddRef", "Release", "GetItem", "SetItem"];
 
 /// Métodos do `LCT_SIMCardCtl` (`0x01006c01`), da vtable `0x113cf854` do firmware.
 ///
-/// Quatro. Ver [`crate::aee::Interface::SimCardCtl`].
+/// Quatro. Ver [`crate::brew::aee::Interface::SimCardCtl`].
 pub const SIM_CARD_CTL: &[&str] = &["AddRef", "Release", "QueryInterface", "PedirVerificacao"];
 
 /// Métodos do controle de sistema (`0x01006c02`), da vtable `0x10691ea8` do firmware.
 ///
 /// Sete: o oitavo valor da tabela é `0x86`, que não é endereço. Ver
-/// [`crate::aee::Interface::SystemCtl`].
+/// [`crate::brew::aee::Interface::SystemCtl`].
 pub const SYSTEM_CTL: &[&str] = &[
     "AddRef",
     "Release",
@@ -980,7 +980,7 @@ pub const SYSTEM_CTL: &[&str] = &[
 
 /// Métodos do `ICM` (`0x01011810`), dos quais conhecemos um.
 ///
-/// O slot 28 é o único que a Z-Wheel chama. Ver [`crate::aee::Interface::Cm`].
+/// O slot 28 é o único que a Z-Wheel chama. Ver [`crate::brew::aee::Interface::Cm`].
 pub const CM: &[&str] = &[
     "AddRef",
     "Release",
@@ -1015,20 +1015,20 @@ pub const CM: &[&str] = &[
 
 /// Métodos da `0x01028e3c`, dos quais conhecemos dois — e são os dois de toda interface.
 ///
-/// Ver [`crate::aee::Interface::Classe28e3c`]: a Z-Wheel cria duas, e o slot 3 delas é o que
+/// Ver [`crate::brew::aee::Interface::Classe28e3c`]: a Z-Wheel cria duas, e o slot 3 delas é o que
 /// interrompia o ciclo de atração. A
-/// [`crate::aee::Interface::Typeface`] usa a mesma tabela, pelo mesmo motivo.
+/// [`crate::brew::aee::Interface::Typeface`] usa a mesma tabela, pelo mesmo motivo.
 pub const CLASSE_28E3C: &[&str] = &["AddRef", "Release", "slot2", "Consultar", "slot4", "Medir"];
 
 /// Métodos da fonte TrueType (`0x01035156`), dos quais conhecemos um.
 ///
 /// O slot 4 é o que a `0x7bfc8` chama para obter uma fonte utilizável a partir do tipo. Ver
-/// [`crate::aee::Interface::Typeface`].
+/// [`crate::brew::aee::Interface::Typeface`].
 pub const TYPEFACE: &[&str] = &["AddRef", "Release", "slot2", "slot3", "CriarFonte"];
 
 /// Métodos da lista genérica da Z-Wheel (`0x01028e35`).
 ///
-/// Ver [`crate::aee::Interface::Vetor`] para onde cada nome foi lido. Os seis sem nome nunca
+/// Ver [`crate::brew::aee::Interface::Vetor`] para onde cada nome foi lido. Os seis sem nome nunca
 /// foram chamados.
 pub const VETOR: &[&str] = &[
     "AddRef",

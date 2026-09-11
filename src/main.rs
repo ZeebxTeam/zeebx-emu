@@ -1,22 +1,16 @@
 //! Zeebx — emulador de Zeebo / Qualcomm BREW.
 
-mod aee;
-mod aee_helpers;
-mod aee_slots;
 mod archive;
 mod atc;
 mod audio;
 mod bindings;
-mod cformat;
+mod brew;
 mod cpu;
-mod crypto;
 mod display;
-mod fmath;
 mod font;
 mod gamepads;
 mod gif;
 mod gles;
-mod heap;
 mod i18n;
 mod icon;
 mod input;
@@ -27,7 +21,6 @@ mod midi;
 mod miffile;
 mod modfile;
 mod mp3;
-mod objects;
 mod padview;
 mod paltex;
 mod ponte;
@@ -37,12 +30,12 @@ mod resfile;
 mod saves;
 mod session;
 mod settings;
-mod sql;
 mod ui;
+
+use crate::brew::aee;
 /// Varredura de ROMs por teste — ver [`varredura`]. Só existe em compilação de teste.
 #[cfg(test)]
 mod varredura;
-mod vfs;
 mod wav;
 mod window;
 

@@ -9,7 +9,7 @@
 //! int AEEMod_Load(IShell *ps, void *ph, IModule **pMod);
 //! ```
 
-use crate::aee::{self, Interface};
+use crate::brew::aee::{self, Interface};
 use crate::cpu::CpuError;
 use crate::cpu::mem::{GuestMemory, MemError};
 use crate::modfile::ModImage;
