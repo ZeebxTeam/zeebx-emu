@@ -414,9 +414,15 @@ impl<C: CpuBackend> Machine<C> {
         address: u32,
         fixed_point: bool,
     ) -> Result<rasterizer::Matrix, CpuError> {
+        // Os dezesseis de uma vez: eram dezesseis travessias para o unicorn a cada
+        // `LoadMatrix`/`MultMatrix`, e a matriz é contígua por definição. Se qualquer parte
+        // dela estiver fora do mapa, a leitura falha — como falhava antes, no primeiro
+        // componente ruim.
+        let mut bytes = [0u8; 64];
+        self.cpu.read_mem(address, &mut bytes)?;
         let mut m = rasterizer::IDENTITY;
-        for (i, slot) in m.iter_mut().enumerate() {
-            let word = self.cpu.read_u32(address + i as u32 * 4)?;
+        for (slot, palavra) in m.iter_mut().zip(bytes.chunks_exact(4)) {
+            let word = u32::from_le_bytes([palavra[0], palavra[1], palavra[2], palavra[3]]);
             *slot = if fixed_point {
                 gles::fixed(word)
             } else {
@@ -630,12 +636,18 @@ impl<C: CpuBackend> Machine<C> {
         fixo: bool,
     ) -> Result<[f32; 4], CpuError> {
         let mut valores = [0.0f32; 4];
-        for (i, valor) in valores
-            .iter_mut()
-            .enumerate()
-            .take(gles::componentes(pname))
-        {
-            *valor = escalar(self.cpu.read_u32(ponteiro + i as u32 * 4)?, fixo);
+        let quantos = gles::componentes(pname).min(4);
+        if quantos == 0 {
+            return Ok(valores);
+        }
+        // Um pedido só para os até quatro componentes, pelo mesmo motivo do `read_array`.
+        let mut bytes = [0u8; 16];
+        self.cpu.read_mem(ponteiro, &mut bytes[..quantos * 4])?;
+        for (valor, palavra) in valores.iter_mut().zip(bytes.chunks_exact(4)).take(quantos) {
+            *valor = escalar(
+                u32::from_le_bytes([palavra[0], palavra[1], palavra[2], palavra[3]]),
+                fixo,
+            );
         }
         Ok(valores)
     }

@@ -134,37 +134,45 @@ impl<C: CpuBackend> Machine<C> {
         if addr == 0 {
             return Ok(Vec::new());
         }
+        /// Quantas unidades por leitura. Mesmo motivo do `read_cbytes`: cada leitura
+        /// atravessa a FFI do unicorn, que procura a região antes de copiar — 57 ns para
+        /// trazer dois bytes. Sessenta e quatro unidades cobrem a string típica de uma vez.
+        const BLOCO: usize = 64;
+
         let mut units = Vec::new();
-        for i in 0..MAX_STRING {
-            let mut bytes = [0u8; 2];
-            if self.cpu.read_mem(addr + i as u32 * 2, &mut bytes).is_err() {
-                break;
+        while units.len() < MAX_STRING {
+            let quer = BLOCO.min(MAX_STRING - units.len());
+            let base = addr + units.len() as u32 * 2;
+            let mut bytes = vec![0u8; quer * 2];
+            if self.cpu.read_mem(base, &mut bytes).is_err() {
+                // O bloco pode cruzar o fim da região mapeada, e aí a leitura inteira falha
+                // mesmo havendo unidades válidas antes. Duas em duas só neste caso.
+                for i in 0..quer {
+                    let mut par = [0u8; 2];
+                    if self.cpu.read_mem(base + i as u32 * 2, &mut par).is_err() {
+                        return Ok(units);
+                    }
+                    match u16::from_le_bytes(par) {
+                        0 => return Ok(units),
+                        unit => units.push(unit),
+                    }
+                }
+                continue;
             }
-            match u16::from_le_bytes(bytes) {
-                0 => break,
-                unit => units.push(unit),
+            for par in bytes.chunks_exact(2) {
+                match u16::from_le_bytes([par[0], par[1]]) {
+                    0 => return Ok(units),
+                    unit => units.push(unit),
+                }
             }
         }
         Ok(units)
     }
 
     pub(super) fn read_aechar(&self, addr: u32) -> Result<String, CpuError> {
-        if addr == 0 {
-            return Ok(String::new());
-        }
-        let mut units = Vec::new();
-        for i in 0..MAX_STRING {
-            let mut bytes = [0u8; 2];
-            if self.cpu.read_mem(addr + i as u32 * 2, &mut bytes).is_err() {
-                break;
-            }
-            let unit = u16::from_le_bytes(bytes);
-            if unit == 0 {
-                break;
-            }
-            units.push(unit);
-        }
-        Ok(String::from_utf16_lossy(&units))
+        // Era o mesmo laço do `read_aechar_units` escrito de novo. A única diferença é o
+        // que se faz com as unidades no fim.
+        Ok(String::from_utf16_lossy(&self.read_aechar_units(addr)?))
     }
 
     /// Helpers da stdlib do BREW, despachados pelo nome do slot — a tabela vem de
@@ -809,10 +817,8 @@ impl<C: CpuBackend> Machine<C> {
                 };
                 if a1 != 0 {
                     let data = julian_date(segundos);
-                    for (i, campo) in data.iter().enumerate() {
-                        self.cpu
-                            .write_mem(a1 + i as u32 * 2, &campo.to_le_bytes())?;
-                    }
+                    let bytes: Vec<u8> = data.iter().flat_map(|c| c.to_le_bytes()).collect();
+                    self.cpu.write_mem(a1, &bytes)?;
                 }
                 SUCCESS
             }
