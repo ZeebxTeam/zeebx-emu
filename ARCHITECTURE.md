@@ -230,11 +230,28 @@ está em [docs/implementacao/11-compatibilidade.md](docs/implementacao/11-compat
 
 ## Limites conhecidos
 
-Os números abaixo são medidos, não estimados, em 25 segundos virtuais de Quake: 49% do tempo em
-emulação do ARM e despacho de API, 38% em preenchimento de pixels, 14% em geometria.
+Os números abaixo são medidos, não estimados, em Quake — o pior caso da árvore, porque ele
+espalha a cena por meio milhão de draw calls de dois triângulos. Em 15 segundos virtuais são
+29 segundos de parede, cerca de **52% da velocidade do console**: ~68% do tempo em emulação do
+ARM e despacho de API, ~28% em preenchimento de pixels, ~4% em geometria.
 
-O núcleo faz cerca de 110 milhões de instruções por segundo. Um jogo que use um quarto da
-capacidade do ARM11 do console já consome 80% do nosso relógio só para executar instrução.
+**Meça sempre sem o `--profile`.** Ele custa 24% — 36 s contra 29 s no mesmo trabalho —, porque
+o perfil de blocos faz uma inserção de tabela por bloco de tradução. O preço cai quase todo na
+fatia do ARM, então com ele ligado a emulação parece maior do que é. As porcentagens acima
+servem para comparar; o relógio, só sem ele.
+
+A geometria já foi 14%, e caiu quando o `read_attribute` deixou de pedir um `read_u32` por
+componente. Cada pedido atravessa a FFI do unicorn, que procura a região antes de copiar quatro
+bytes: **57 ns**, contra **0,3 ns** quando os mesmos bytes vêm de um `read_mem` de um
+quilobyte. Com 6,65 milhões de vértices em 15 segundos, isso era 3,2 s dos 3,6 s que as draw
+calls custavam — o desenho em si era 400 ms. A lição vale para todo dado que o guest entrega em
+array: **pedir o bloco, nunca o elemento**.
+
+O núcleo faz 218 milhões de instruções por segundo num laço apertado que não toca memória
+(`cargo test --release instrucoes_por_segundo -- --ignored --nocapture`), e cerca de **86
+milhões** no Quake de verdade — a diferença é o tráfego de memória pela softmmu e o milhão de
+idas e voltas do `emu_start` por causa das chamadas de API. Um jogo que use um quarto da
+capacidade do ARM11 do console já consome boa parte do nosso relógio só para executar instrução.
 
 O próximo gargalo é o custo por chamada de API, 1,4 µs de ida e volta pelo núcleo, porque toda
 chamada para e reinicia a emulação. Atendê-las dentro de um hook é um redesenho do trampolim, e é
@@ -242,5 +259,6 @@ a maior melhoria estrutural que resta. Vale, porém, a lição do perfil de API:
 mecanismo, conferir o que cada método custa por dentro — no Pac-Mania a média de 8 µs por chamada
 não vinha do trampolim, vinha de dois métodos que faziam trabalho demais.
 
-O rasterizador não é gargalo hoje. Ele já divide o quadro em faixas paralelas, e mesmo que fosse
-instantâneo o Quake ficaria em torno de 52% da velocidade do console.
+O rasterizador não é gargalo hoje. Ele já divide o quadro em faixas paralelas, e são 8,0 s dos
+29 s do Quake — 13,7 ms por quadro apresentado. Mesmo que fosse instantâneo o jogo ficaria em
+torno de 71% da velocidade do console: o que sobra é o ARM.

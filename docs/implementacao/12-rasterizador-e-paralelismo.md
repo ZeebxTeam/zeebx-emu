@@ -128,12 +128,24 @@ Onde o tempo ia, antes (medido desligando cada etapa):
 | geometria (transformar e recortar) | 13,5 s | 14% |
 | emulação do ARM + despacho de API | 48,3 s | 49% |
 
+Duas correções depois desta medida:
+
+- **A geometria caiu de 14% para ~4%.** O `read_attribute` pedia um `read_u32` por componente,
+  e cada pedido atravessa a FFI do unicorn: 57 ns para trazer quatro bytes, contra 0,3 ns
+  quando vêm de um `read_mem` de um quilobyte. Dos 3,6 s que as draw calls custavam em 15
+  segundos virtuais, 3,2 s eram travessia e 400 ms eram desenho. Hoje é um bloco por array por
+  draw call.
+- **A tabela acima foi tirada com o `--profile`, que custa 24%** — e o preço cai quase todo na
+  fatia do ARM, porque o perfil de blocos faz uma inserção de tabela por bloco de tradução. A
+  proporção entre as três fatias serve; o relógio absoluto, não. Meça tempo sem ele.
+
 ## O teto que sobra
 
 Vale ter claro para não esperar do rasterizador o que ele não pode dar: **mesmo de graça**, o
 Quake ficaria em ~52%. Os 48 s de emulação mais despacho para 25 s virtuais já são o dobro do
-relógio. São 3,4 bilhões de instruções de guest por 25 segundos virtuais e o núcleo faz cerca de
-110 milhões por segundo.
+relógio. São 3,4 bilhões de instruções de guest por 25 segundos virtuais, e o núcleo entrega 218 milhões por segundo num laço
+apertado que não toca memória — mas cerca de 86 milhões no jogo de verdade, onde há tráfego de
+memória pela softmmu e uma ida e volta do `emu_start` por chamada de API.
 
 Os dois próximos gargalos, em ordem:
 
@@ -143,8 +155,9 @@ Os dois próximos gargalos, em ordem:
    que sobra de maior **do mecanismo**. Antes dele vem o que cada método faz por dentro: o
    perfil de API do `--profile` mede isso, e nas três vezes em que um jogo pareceu preso no
    despacho a causa estava lá, não no trampolim.
-2. **O núcleo em si.** A 110 MIPS, um jogo que use um quarto da capacidade do ARM11 do console
-   já consome 80% do nosso relógio só para executar instrução.
+2. **O núcleo em si.** Aos ~86 MIPS efetivos, um jogo que use um quarto da capacidade do ARM11
+   do console já consome boa parte do nosso relógio só para executar instrução. É aqui que um
+   backend sobre `dynarmic` entraria — o `CpuBackend` existe para isso.
 
 ## Números de calibração
 
