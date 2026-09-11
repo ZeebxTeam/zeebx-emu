@@ -9,7 +9,8 @@
 //! aborta o fetch, e [`decode`] devolve a interface e o slot.
 
 use crate::cpu::unicorn::API_BASE;
-use crate::{aee_helpers, aee_slots};
+use crate::aee_helpers;
+use crate::aee_slots;
 
 /// Quantos bits do endereço identificam a interface.
 const IFACE_SHIFT: u32 = 12;

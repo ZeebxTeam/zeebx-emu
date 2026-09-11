@@ -12,7 +12,10 @@ use crate::cpu::unicorn::UnicornCpu;
 use crate::display::Framebuffer;
 use crate::input::Pad;
 use crate::machine::{AppletResult, Machine, Outcome};
-use crate::{archive, library, loader, modfile::ModImage};
+use crate::archive;
+use crate::library;
+use crate::loader;
+use crate::modfile::ModImage;
 
 /// Teto de instruções por fatia entre duas chamadas de API — evita que um laço infinito no
 /// guest trave o emulador.
