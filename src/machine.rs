@@ -4243,15 +4243,14 @@ impl<C: CpuBackend> Machine<C> {
     /// chamado —, então ele não depende de acertarmos qual é a tela atual. Quando a ligação que
     /// falta chegar pelo evento `0x7b0a`, vale reconsiderar.
     fn desenha_widgets(&mut self) -> Result<(), CpuError> {
-        // Widgets antigos podem continuar vivos porque alguns jogos remontam o formulário
-        // sem liberar a árvore anterior. Callbacks de desenho desses nós não devem consumir uma
-        // volta inteira: só o formulário atualmente selecionado participa da composição.
-        let dentro = self.arvore_do_formulario();
+        // Callbacks de desenho são a própria indicação de que o widget pertence ao palco. A
+        // Z-Wheel mantém a barra inferior numa raiz separada do formulário atual; filtrá-la pela
+        // árvore do formulário apaga a barra mesmo quando ela está visível.
         let mut chamar: Vec<(u32, (u32, u32))> = self
             .widgets
             .iter()
-            .filter(|(endereco, no)| {
-                no.desenho.0 != 0 && no.visivel && (dentro.is_empty() || dentro.contains(endereco))
+            .filter(|(_, no)| {
+                no.desenho.0 != 0 && no.visivel
             })
             .map(|(&endereco, no)| (endereco, no.desenho))
             .collect();
