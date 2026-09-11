@@ -497,7 +497,7 @@ Contexto técnico em [docs/](docs/README.md).
   sem ele, a folha toda ia para a tela, que era aquele "debug de fontes" na abertura. O corte
   anda com a origem na fonte junto: encolher só o destino mostraria o canto errado da imagem
 
-- **`IFileMgr::EnumInit`/`EnumNext`** (`src/machine.rs`, `Vfs::resolve_dir`): a listagem sai de
+- **`IFileMgr::EnumInit`/`EnumNext`** (`src/machine/file.rs`, `Vfs::resolve_dir`): a listagem sai de
   uma vez no `EnumInit` e a fila fica **dentro do `IFileMgr`**, como o BREW faz — dois
   gerenciadores enumeram diretórios diferentes ao mesmo tempo. O nome devolvido é o caminho
   completo, com o prefixo que o jogo passou: é ele que volta para o `OpenFile` logo em seguida.

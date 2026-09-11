@@ -73,7 +73,8 @@ Execução:
 | `cpu/unicorn.rs` | A implementação sobre o unicorn, configurada como ARM1176 |
 | `mem.rs` | O mapa de memória do guest, em regiões nomeadas |
 | `loader.rs`, `modfile.rs` | Carga do `.mod` e montagem do ambiente |
-| `machine.rs` | O laço, o despacho e quase toda a API do BREW |
+| `machine/mod.rs` | O laço, o despacho e o estado da máquina |
+| `machine/*.rs` | Um submódulo por interface do BREW — ver [`docs/implementacao/01-arquitetura.md`](docs/implementacao/01-arquitetura.md) |
 
 API do BREW:
 

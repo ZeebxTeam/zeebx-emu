@@ -110,7 +110,7 @@ Huffman, requantização, estéreo conjunto, IMDCT e banco de síntese polifási
 sem uma referência para comparar a saída dá o pior resultado possível — som que toca, parece bem e
 está errado.
 
-Ordem no `machine.rs`: RIFF/WAVE primeiro, porque é o que quase todo som é e é o mais barato de
+Ordem no `machine/media.rs`: RIFF/WAVE primeiro, porque é o que quase todo som é e é o mais barato de
 reconhecer; MP3 depois; e só então a recusa, que continua nomeando o formato. O caminho da duração
 ficou como rede de segurança para um MP3 que o decodificador recuse.
 
@@ -122,7 +122,7 @@ A verificação, medida:
 - O **Tekken 2** saiu de silêncio para **71,6% de amostras não nulas** em oito segundos, com pico
   de 0,698. A hipótese "o Tekken fica mudo" saiu do relatório dele.
 - Decodificar é feito **uma vez por trilha**, não por `Play`: o resultado entra no cache de sons
-  do `machine.rs`. Uma trilha de trinta e seis segundos a 22 kHz mono são seis megabytes de `f32`,
+  do `machine/media.rs`. Uma trilha de trinta e seis segundos a 22 kHz mono são seis megabytes de `f32`,
   e nenhum dos nossos jogos troca de música com frequência que justifique fluxo.
 
 A lição vale além do áudio: **antes de otimizar um jogo lento, conferir se ele está trabalhando

@@ -41,7 +41,34 @@ dispensa qualquer código ARM de cola — o detalhe está em [03-despacho-de-api
 | `mem.rs` | O mapa de memória do guest, em regiões nomeadas |
 | `loader.rs` | Monta o ambiente do módulo e chama `AEEMod_Load` |
 | `modfile.rs` | Parser do `.mod` |
-| `machine.rs` | O laço: roda, atende a chamada, continua. É onde vive quase toda a API do BREW |
+| `machine/mod.rs` | O laço: roda, atende a chamada, continua. Guarda o estado da `Machine` e o despacho |
+
+A implementação das APIs fica em um submódulo por assunto, cada um com um bloco
+`impl<C: CpuBackend> Machine<C>` próprio. O submódulo enxerga os campos privados da `Machine`
+por ser descendente de `machine`; o que ele expõe de volta é `pub(super)`, visível no módulo e
+nos irmãos e em nada além disso.
+
+| Arquivo | Papel |
+|---|---|
+| `machine/shell.rs` | `IShell`: recursos, informação do aparelho, arranque do applet |
+| `machine/display.rs` | `IDisplay` e `IGraphics`: o desenho 2D e o texto |
+| `machine/bitmap.rs` | `IBitmap` e o `IDIB`: superfícies, blit e a sincronia com a memória do jogo |
+| `machine/image.rs` | `IImage` e `IImageDecoder` |
+| `machine/widget.rs` | `IWidget`, `IControl`, `IForm` e a pintura da árvore |
+| `machine/egl.rs`, `machine/gl.rs` | EGL e OpenGL ES 1.1, e a ponte para o rasterizador |
+| `machine/media.rs`, `machine/sound.rs` | `IMedia` e `ISound` |
+| `machine/file.rs`, `machine/zip.rs` | `IFileMgr`/`IFile` e o `IUnzipAStream` |
+| `machine/net.rs` | `IWeb` e `ISource` |
+| `machine/hid.rs` | `IHID`, as portas e as teclas |
+| `machine/sql.rs` | `AEECLSID_SQLMGR`, atendido pelo SQLite |
+| `machine/cifra.rs` | `ICipher` e `IHash` |
+| `machine/thread.rs` | `IThread`, `IQueue` e o heap do BREW |
+| `machine/signal.rs` | `ISignal` e a entrega dos callbacks |
+| `machine/time.rs` | O relógio, o vsync e o salto do ocioso |
+| `machine/helper.rs` | A stdlib do BREW no lado da `Machine`: `printf`, `qsort`, conversão |
+| `machine/diversos.rs` | As interfaces de uma chamada só: configuração, SIM, energia, licença |
+| `machine/probe.rs` | A sondagem de classe desconhecida |
+| `machine/diagnostico.rs` | Rastreio, despejo de falha e os contadores que a interface mostra |
 
 ### API do BREW
 
