@@ -103,9 +103,7 @@ impl<C: CpuBackend> Machine<C> {
         let mut chamar: Vec<(u32, (u32, u32))> = self
             .widgets
             .iter()
-            .filter(|(_, no)| {
-                no.desenho.0 != 0 && no.visivel
-            })
+            .filter(|(_, no)| no.desenho.0 != 0 && no.visivel)
             .map(|(&endereco, no)| (endereco, no.desenho))
             .collect();
         if chamar.is_empty() {
@@ -341,7 +339,10 @@ impl<C: CpuBackend> Machine<C> {
     }
 
     /// A raiz mais nova que tenha filho, que é o que sustentava a tela antes dos formulários.
-    pub(super) fn raiz_mais_nova(&self, com_filhos: &std::collections::HashSet<u32>) -> Option<u32> {
+    pub(super) fn raiz_mais_nova(
+        &self,
+        com_filhos: &std::collections::HashSet<u32>,
+    ) -> Option<u32> {
         self.widgets
             .iter()
             .filter(|(endereco, no)| {

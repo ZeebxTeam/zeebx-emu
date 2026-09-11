@@ -16,7 +16,11 @@ impl<C: CpuBackend> Machine<C> {
     ///
     /// A exceção é a **escala**: ali o jogo diz o tamanho da superfície em que desenha, e essa
     /// informação vale mais que a dedução por viewport que fazemos na falta dela.
-    pub(super) fn extension_call(&mut self, iface: Interface, slot: u32) -> Result<Option<u32>, CpuError> {
+    pub(super) fn extension_call(
+        &mut self,
+        iface: Interface,
+        slot: u32,
+    ) -> Result<Option<u32>, CpuError> {
         let Some(name) = iface.method(slot) else {
             return Ok(None);
         };

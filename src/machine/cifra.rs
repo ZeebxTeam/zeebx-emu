@@ -16,7 +16,11 @@ impl<C: CpuBackend> Machine<C> {
     /// primeira criação falha, ele pula as outras duas e usa o ponteiro que nunca foi escrito.
     /// Por isso os objetos precisam existir mesmo com o console offline — recusá-los derrubava
     /// o jogo antes da primeira tela.
-    pub(super) fn crypto_call(&mut self, iface: Interface, slot: u32) -> Result<Option<u32>, CpuError> {
+    pub(super) fn crypto_call(
+        &mut self,
+        iface: Interface,
+        slot: u32,
+    ) -> Result<Option<u32>, CpuError> {
         let Some(name) = iface.method(slot) else {
             return Ok(None);
         };

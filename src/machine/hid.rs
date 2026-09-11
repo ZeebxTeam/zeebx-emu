@@ -8,7 +8,11 @@ impl<C: CpuBackend> Machine<C> {
     /// Apresentamos um controle sempre conectado, com os doze botões e os quatro eixos que o
     /// `hid_devices.cfg` do console descreve. O que o jogador aperta chega por
     /// [`Machine::set_pad`].
-    pub(super) fn hid_call(&mut self, iface: Interface, slot: u32) -> Result<Option<u32>, CpuError> {
+    pub(super) fn hid_call(
+        &mut self,
+        iface: Interface,
+        slot: u32,
+    ) -> Result<Option<u32>, CpuError> {
         let Some(name) = iface.method(slot) else {
             return Ok(None);
         };
@@ -226,7 +230,11 @@ impl<C: CpuBackend> Machine<C> {
     /// possível. O controle do Zeebo usa quatro deles — `X`, `Y`, `Z` e `RZ` —, e os outros
     /// ficam zerados: um eixo que não existe tem faixa zero, e é assim que o jogo sabe
     /// ignorá-lo. Os eixos são absolutos, então `bRelativeAxes` também fica zero.
-    pub(super) fn write_position_info(&mut self, addr: u32, values: &[i32; 4]) -> Result<(), CpuError> {
+    pub(super) fn write_position_info(
+        &mut self,
+        addr: u32,
+        values: &[i32; 4],
+    ) -> Result<(), CpuError> {
         if addr == 0 {
             return Ok(());
         }

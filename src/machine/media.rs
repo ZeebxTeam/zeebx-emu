@@ -15,7 +15,11 @@ impl<C: CpuBackend> Machine<C> {
     /// mas não sai som. O que importa aqui é existir — o Quake cria o tocador de trilha na
     /// inicialização do áudio e, se ela falha, ele segue em frente e depois chama `Play` num
     /// ponteiro nulo, sem conferir.
-    pub(super) fn media_call(&mut self, iface: Interface, slot: u32) -> Result<Option<u32>, CpuError> {
+    pub(super) fn media_call(
+        &mut self,
+        iface: Interface,
+        slot: u32,
+    ) -> Result<Option<u32>, CpuError> {
         let Some(name) = iface.method(slot) else {
             return Ok(None);
         };
@@ -158,7 +162,11 @@ impl<C: CpuBackend> Machine<C> {
     ///
     /// A struct é `{ AEECLSID clsData; void *pData; uint32 dwSize; }`. Só a variante de memória
     /// interessa: os três jogos que tocam som passam `MMD_BUFFER` com um RIFF já carregado.
-    pub(super) fn read_media_data(&mut self, pointer: u32, state: &mut MediaState) -> Result<(), CpuError> {
+    pub(super) fn read_media_data(
+        &mut self,
+        pointer: u32,
+        state: &mut MediaState,
+    ) -> Result<(), CpuError> {
         if pointer == 0 {
             return Ok(());
         }
@@ -293,7 +301,12 @@ impl<C: CpuBackend> Machine<C> {
     ///
     /// O aviso é o que fecha o ciclo de quem toca uma coisa de cada vez: sem ele o jogo fica
     /// esperando para sempre o efeito anterior terminar, e o som para depois do primeiro.
-    pub(super) fn notify_media(&mut self, this: u32, cmd: u32, status: u32) -> Result<(), CpuError> {
+    pub(super) fn notify_media(
+        &mut self,
+        this: u32,
+        cmd: u32,
+        status: u32,
+    ) -> Result<(), CpuError> {
         let Some(state) = self.media.get(&this).copied() else {
             return Ok(());
         };

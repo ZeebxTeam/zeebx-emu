@@ -2903,7 +2903,6 @@ impl<C: CpuBackend> Machine<C> {
     pub fn module(&self) -> &LoadedModule {
         &self.module
     }
-
 }
 
 #[cfg(test)]

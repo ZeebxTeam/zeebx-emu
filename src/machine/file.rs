@@ -27,7 +27,11 @@ impl<C: CpuBackend> Machine<C> {
     }
 
     /// `IFileMgr` e `IFile`, sobre o diretório do módulo.
-    pub(super) fn file_call(&mut self, iface: Interface, slot: u32) -> Result<Option<u32>, CpuError> {
+    pub(super) fn file_call(
+        &mut self,
+        iface: Interface,
+        slot: u32,
+    ) -> Result<Option<u32>, CpuError> {
         let Some(name) = iface.method(slot) else {
             return Ok(None);
         };
@@ -353,7 +357,11 @@ impl<C: CpuBackend> Machine<C> {
     ///
     /// O nome devolvido é o caminho completo, com o mesmo prefixo que o jogo passou: é ele que
     /// volta para o `OpenFile` logo em seguida, e um nome solto não abriria nada.
-    pub(super) fn list_dir(&self, guest_dir: &str, want_dirs: bool) -> std::collections::VecDeque<String> {
+    pub(super) fn list_dir(
+        &self,
+        guest_dir: &str,
+        want_dirs: bool,
+    ) -> std::collections::VecDeque<String> {
         let Some(dir) = self.vfs.resolve_dir(guest_dir) else {
             return Default::default();
         };

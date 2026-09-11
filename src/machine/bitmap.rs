@@ -10,7 +10,11 @@ impl<C: CpuBackend> Machine<C> {
     /// nosso bitmap e lê os pixels pelos campos públicos, que é justamente o que o `IDIB`
     /// existe para oferecer. Conferido na desmontagem: o `BltIn` do Bejeweled Twist faz esse
     /// `QueryInterface` com `0x01001045` e depois lê `cx`, `cy` e `nColorScheme`.
-    pub(super) fn blit_into_foreign(&mut self, blit: PendingBlit, budget: u64) -> Result<(), CpuError> {
+    pub(super) fn blit_into_foreign(
+        &mut self,
+        blit: PendingBlit,
+        budget: u64,
+    ) -> Result<(), CpuError> {
         let Some(info) = self.images.get(&blit.image).cloned() else {
             return Ok(());
         };
@@ -69,7 +73,11 @@ impl<C: CpuBackend> Machine<C> {
     /// que volta traz `pBmp`, `cx`, `cy` e `nPitch` como campos públicos. Com isso a superfície
     /// do jogo entra no mesmo mecanismo de sincronização das nossas — desenhamos no host e o
     /// resultado é copiado para a memória dele.
-    pub(super) fn probe_foreign_surface(&mut self, target: u32, budget: u64) -> Result<(), CpuError> {
+    pub(super) fn probe_foreign_surface(
+        &mut self,
+        target: u32,
+        budget: u64,
+    ) -> Result<(), CpuError> {
         let Ok(vtable) = self.cpu.read_u32(target) else {
             return Ok(());
         };
@@ -564,7 +572,12 @@ impl<C: CpuBackend> Machine<C> {
         clip_rect(self.clip, rect)
     }
 
-    pub(super) fn clip_blit(&self, dst: (i32, i32), size: (i32, i32), src: (i32, i32)) -> Option<Blit> {
+    pub(super) fn clip_blit(
+        &self,
+        dst: (i32, i32),
+        size: (i32, i32),
+        src: (i32, i32),
+    ) -> Option<Blit> {
         clip_blit(self.clip, dst, size, src)
     }
 

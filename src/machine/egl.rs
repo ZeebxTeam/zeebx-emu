@@ -22,7 +22,11 @@ impl<C: CpuBackend> Machine<C> {
     /// Fora isso as duas são a mesma API, na mesma ordem: tirando o prefixo `egl` dos nomes
     /// antigos, os métodos coincidem. Por isso um único tradutor atende as duas, com um
     /// deslocamento nos argumentos e uma decisão no fim sobre onde pôr a resposta.
-    pub(super) fn egl_call(&mut self, iface: Interface, slot: u32) -> Result<Option<u32>, CpuError> {
+    pub(super) fn egl_call(
+        &mut self,
+        iface: Interface,
+        slot: u32,
+    ) -> Result<Option<u32>, CpuError> {
         let Some(full) = iface.method(slot) else {
             return Ok(None);
         };

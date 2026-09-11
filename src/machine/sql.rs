@@ -9,7 +9,11 @@ impl<C: CpuBackend> Machine<C> {
     /// o gerenciador, chama o slot 3 com `"tt_prefs.db"` e um ponteiro de saída, e no banco que
     /// recebe chama o slot 3 de novo, agora com `"PRAGMA integrity_check"`. Por isso os dois
     /// nomes que estão em [`crate::aee_slots::SQL_MGR`] são os únicos com nome.
-    pub(super) fn sql_call(&mut self, iface: Interface, slot: u32) -> Result<Option<u32>, CpuError> {
+    pub(super) fn sql_call(
+        &mut self,
+        iface: Interface,
+        slot: u32,
+    ) -> Result<Option<u32>, CpuError> {
         let Some(name) = iface.method(slot) else {
             return Ok(None);
         };
@@ -41,9 +45,8 @@ impl<C: CpuBackend> Machine<C> {
                 // cópia de perfil já sincronizada com as ROMs que a interface encontrou.
                 let caminho = if nome == "tt_game_info" {
                     let perfil = crate::archive::device_dir().join("z-wheel/tt_game_info");
-                    let catalogo = crate::library::CatalogIndex::load_from(
-                        &crate::library::catalog_path(),
-                    );
+                    let catalogo =
+                        crate::library::CatalogIndex::load_from(&crate::library::catalog_path());
                     match crate::sql::sync_z_wheel_library(&caminho, &perfil, &catalogo) {
                         Ok(caminho) => caminho,
                         Err(erro) => {

@@ -25,7 +25,11 @@ impl<C: CpuBackend> Machine<C> {
     ///
     /// Aqui não se desenha nada: os argumentos viram estado ou vértices, e quem rasteriza é o
     /// [`rasterizer`].
-    pub(super) fn gles_call(&mut self, iface: Interface, slot: u32) -> Result<Option<u32>, CpuError> {
+    pub(super) fn gles_call(
+        &mut self,
+        iface: Interface,
+        slot: u32,
+    ) -> Result<Option<u32>, CpuError> {
         let Some(full) = iface.method(slot) else {
             return Ok(None);
         };
@@ -401,7 +405,11 @@ impl<C: CpuBackend> Machine<C> {
     }
 
     /// Lê os dezesseis números de uma matriz da memória do guest.
-    pub(super) fn read_matrix(&self, address: u32, fixed_point: bool) -> Result<rasterizer::Matrix, CpuError> {
+    pub(super) fn read_matrix(
+        &self,
+        address: u32,
+        fixed_point: bool,
+    ) -> Result<rasterizer::Matrix, CpuError> {
         let mut m = rasterizer::IDENTITY;
         for (i, slot) in m.iter_mut().enumerate() {
             let word = self.cpu.read_u32(address + i as u32 * 4)?;
@@ -616,7 +624,12 @@ impl<C: CpuBackend> Machine<C> {
     /// Quantos ler vem do próprio parâmetro — ver [`gles::componentes`] —, e não quatro sempre:
     /// o `GL_SHININESS` tem um só, e ler quatro passa por cima do que estiver depois dele na
     /// pilha do jogo.
-    pub(super) fn le_parametro(&self, pname: u32, ponteiro: u32, fixo: bool) -> Result<[f32; 4], CpuError> {
+    pub(super) fn le_parametro(
+        &self,
+        pname: u32,
+        ponteiro: u32,
+        fixo: bool,
+    ) -> Result<[f32; 4], CpuError> {
         let mut valores = [0.0f32; 4];
         for (i, valor) in valores
             .iter_mut()

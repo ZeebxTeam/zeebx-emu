@@ -129,7 +129,11 @@ impl<C: CpuBackend> Machine<C> {
     /// chamada do guest seria reentrância, e o BREW também não dispara na hora — ele agenda
     /// para o laço de eventos do app. Os sinais pendentes ficam registrados até termos esse
     /// laço.
-    pub(super) fn signal_call(&mut self, iface: Interface, slot: u32) -> Result<Option<u32>, CpuError> {
+    pub(super) fn signal_call(
+        &mut self,
+        iface: Interface,
+        slot: u32,
+    ) -> Result<Option<u32>, CpuError> {
         let Some(name) = iface.method(slot) else {
             return Ok(None);
         };
@@ -203,7 +207,13 @@ impl<C: CpuBackend> Machine<C> {
     ///
     /// Chamar o guest daqui é reentrância, com o mesmo cuidado do `qsort` e da entrega de
     /// linhas de SQL: salva os registradores, respeita o teto de aninhamento, devolve tudo.
-    pub(super) fn send_applet_event(&mut self, cls: u32, evt: u32, w: u16, dw: u32) -> Result<u32, CpuError> {
+    pub(super) fn send_applet_event(
+        &mut self,
+        cls: u32,
+        evt: u32,
+        w: u16,
+        dw: u32,
+    ) -> Result<u32, CpuError> {
         // O `current_applet` só é preenchido quando o `EVT_APP_START` é despachado, e há
         // evento antes disso: a Z-Wheel monta o banco de preferências **durante a
         // construção** do applet, e para isso manda um evento para a própria classe. Nesse

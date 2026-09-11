@@ -14,7 +14,11 @@ impl<C: CpuBackend> Machine<C> {
     /// enquanto `-retorno >= 2` e para em `-3`; devolver zero o encerraria na primeira linha,
     /// inclusive numa linha vazia. Então: `1` enquanto houver linha, `-3` no fim. Que o console
     /// devolva o mesmo `1` não se sabe — o que se sabe é a condição do laço.
-    pub(super) fn source_call(&mut self, iface: Interface, slot: u32) -> Result<Option<u32>, CpuError> {
+    pub(super) fn source_call(
+        &mut self,
+        iface: Interface,
+        slot: u32,
+    ) -> Result<Option<u32>, CpuError> {
         /// "Acabaram as linhas": o único valor que o laço da `0x88338` aceita como fim.
         const FIM: u32 = (-3i32) as u32;
         /// "Veio linha". Ver a nota sobre o retorno, acima.
@@ -195,7 +199,12 @@ impl<C: CpuBackend> Machine<C> {
     ///
     /// O `r4` é do chamador — em ARM ele é preservado pela função chamada, então na fronteira da
     /// chamada ainda guarda o objeto de quem chamou.
-    pub(super) fn send_request(&mut self, corpo: u32, tamanho: u32, saida: u32) -> Result<u32, CpuError> {
+    pub(super) fn send_request(
+        &mut self,
+        corpo: u32,
+        tamanho: u32,
+        saida: u32,
+    ) -> Result<u32, CpuError> {
         let objeto = self.cpu.read_reg(Reg::R4);
         let mut achado = None;
         for i in 0..MAX_CAMPOS_DO_OBJETO {
@@ -387,7 +396,11 @@ impl<C: CpuBackend> Machine<C> {
     ///
     /// A assinatura observada é `(tamanho, pool, linha, arquivo, 1)`, com o pool zero — que ele
     /// exige menor que 32 — e os dois do meio servindo ao rastreio de origem dele.
-    pub(super) fn alocar_no_jogo(&mut self, ponte: ponte::Ponte, tamanho: u32) -> Result<u32, CpuError> {
+    pub(super) fn alocar_no_jogo(
+        &mut self,
+        ponte: ponte::Ponte,
+        tamanho: u32,
+    ) -> Result<u32, CpuError> {
         let outcome = self.call_guest_with_stack(
             ponte.alocador,
             [tamanho, 0, LINHA_DE_ORIGEM, ponte.origem],

@@ -461,7 +461,11 @@ impl<C: CpuBackend> Machine<C> {
     }
 
     /// Desenha um polígono fechado (ou uma polilinha aberta) com o estado atual.
-    pub(super) fn draw_shape(&mut self, points: &[(i32, i32)], closed: bool) -> Result<(), CpuError> {
+    pub(super) fn draw_shape(
+        &mut self,
+        points: &[(i32, i32)],
+        closed: bool,
+    ) -> Result<(), CpuError> {
         if points.is_empty() {
             return Ok(());
         }
@@ -489,7 +493,10 @@ impl<C: CpuBackend> Machine<C> {
     }
 
     /// Executa uma operação de desenho na superfície corrente.
-    pub(super) fn with_target(&mut self, draw: impl FnOnce(&mut Framebuffer)) -> Result<(), CpuError> {
+    pub(super) fn with_target(
+        &mut self,
+        draw: impl FnOnce(&mut Framebuffer),
+    ) -> Result<(), CpuError> {
         let target = self.target()?;
         if let Some(fb) = self.bitmaps.get_mut(&target) {
             draw(fb);
@@ -542,7 +549,13 @@ impl<C: CpuBackend> Machine<C> {
 
     /// Escreve com a fonte carregada, numa cor dada. É o miolo do [`Machine::draw_text`],
     /// separado porque o widget traz a cor dele na propriedade e não usa a da paleta.
-    pub(super) fn escreve(&mut self, text: &str, x: i32, y: i32, cor: Rgb) -> Result<bool, CpuError> {
+    pub(super) fn escreve(
+        &mut self,
+        text: &str,
+        x: i32,
+        y: i32,
+        cor: Rgb,
+    ) -> Result<bool, CpuError> {
         let Some(fonte) = self.font.as_ref() else {
             return Ok(false);
         };

@@ -13,7 +13,13 @@ impl<C: CpuBackend> Machine<C> {
     /// comparações. Como cada comparação custa uma entrada no guest, o número delas é o que
     /// importa aqui — uma ordenação por inserção seria simples mas quadrática, e um vetor
     /// grande custaria caro.
-    pub(super) fn qsort(&mut self, base: u32, count: u32, size: u32, compare: u32) -> Result<(), CpuError> {
+    pub(super) fn qsort(
+        &mut self,
+        base: u32,
+        count: u32,
+        size: u32,
+        compare: u32,
+    ) -> Result<(), CpuError> {
         if base == 0 || compare == 0 || size == 0 || count < 2 {
             return Ok(());
         }
@@ -95,7 +101,13 @@ impl<C: CpuBackend> Machine<C> {
         }
     }
 
-    pub(super) fn swap_elements(&mut self, base: u32, size: u32, a: usize, b: usize) -> Result<(), CpuError> {
+    pub(super) fn swap_elements(
+        &mut self,
+        base: u32,
+        size: u32,
+        a: usize,
+        b: usize,
+    ) -> Result<(), CpuError> {
         if a == b {
             return Ok(());
         }
@@ -884,7 +896,12 @@ impl<C: CpuBackend> Machine<C> {
     /// Escreve uma string `AECHAR` (UTF-16 little-endian, terminada em zero).
     ///
     /// `max_units` limita quantos `AECHAR` cabem no destino, terminador incluído.
-    pub(super) fn write_aechar(&mut self, addr: u32, text: &str, max_units: usize) -> Result<(), CpuError> {
+    pub(super) fn write_aechar(
+        &mut self,
+        addr: u32,
+        text: &str,
+        max_units: usize,
+    ) -> Result<(), CpuError> {
         if addr == 0 || max_units == 0 {
             return Ok(());
         }
