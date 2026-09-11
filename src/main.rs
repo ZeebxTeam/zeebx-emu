@@ -545,10 +545,13 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
             None => println!("applet:    nenhum .mif encontrado ao lado do módulo"),
         }
     }
-    // Sem laço de quadros não houve quem imprimisse o perfil, e é o caso em que ele mais serve:
-    // o jogo gastou o orçamento antes de existir.
+    // Sem laço de quadros não houve quem imprimisse o perfil nem despejasse a memória, e é o
+    // caso em que os dois mais servem: o jogo gastou o orçamento antes de existir.
     if profile && !rodou_quadros {
         mostra_perfil(&machine);
+    }
+    if dump_heap && !rodou_quadros {
+        despeja_memoria(&machine)?;
     }
 
     if trace_range.is_some() {
@@ -797,6 +800,32 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
             println!("  {count:>4}x {name}");
         }
     }
+    Ok(())
+}
+
+/// Grava o heap e a imagem do módulo como estão na memória.
+///
+/// A imagem do módulo vale a pena junto do heap: em runtime ela já passou pelas relocações que o
+/// stub do `elf2mod` aplica sozinho, e o arquivo em disco ainda não.
+///
+/// Como o perfil, isto também serve quando o jogo **não** chega a começar: o Need For Speed monta
+/// a tabela de sons dele antes de o applet existir, e é nessa tabela que está a resposta de por
+/// que ele para.
+fn despeja_memoria(machine: &machine::Machine<UnicornCpu>) -> Result<(), Box<dyn std::error::Error>> {
+    std::fs::write(
+        "heap.bin",
+        machine.dump(loader::HEAP_BASE, loader::HEAP_SIZE)?,
+    )?;
+    let (base, len) = {
+        let region = &machine.module().mem.regions()[0];
+        (region.base, region.bytes.len())
+    };
+    std::fs::write("module.bin", machine.dump(base, len)?)?;
+    println!(
+        "           heap.bin (base {:#010x}) e module.bin (base {:#010x})",
+        loader::HEAP_BASE,
+        base
+    );
     Ok(())
 }
 
@@ -1089,22 +1118,7 @@ fn run_frames(
             // O que explica um ponteiro nulo é a struct que levou até ele, e ela só existe
             // na memória do guest — daí poder levá-la para fora e analisá-la com calma.
             if dump_heap {
-                std::fs::write(
-                    "heap.bin",
-                    machine.dump(loader::HEAP_BASE, loader::HEAP_SIZE)?,
-                )?;
-                // A imagem do módulo também: em runtime ela já passou pelas relocações que o
-                // stub do `elf2mod` aplica sozinho, e o arquivo em disco ainda não.
-                let (base, len) = {
-                    let region = &machine.module().mem.regions()[0];
-                    (region.base, region.bytes.len())
-                };
-                std::fs::write("module.bin", machine.dump(base, len)?)?;
-                println!(
-                    "           heap.bin (base {:#010x}) e module.bin (base {:#010x})",
-                    loader::HEAP_BASE,
-                    base
-                );
+                despeja_memoria(machine)?;
             }
         }
     }

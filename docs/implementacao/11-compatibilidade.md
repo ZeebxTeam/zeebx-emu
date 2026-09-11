@@ -227,18 +227,24 @@ dela agora está **lida**, não suposta: 59 métodos, vtable `0x10a783e4` — ve
 
 ### Zenonia: orçamento esgotado dentro do `CreateInstance`
 
-Mesma família de problema, sintoma diferente. Falta a `0x01003109`, o subsistema de texto dele, e
-sem ela o construtor **gira** em vez de desistir: gasta os 500 milhões de instruções sem sair do
-lugar. O log do próprio jogo nomeia o que quebrou:
+Mesma família do Need For Speed, e o mesmo desfecho: `b #0x84634`, um salto para si mesmo logo
+depois do `dbgprintf`. Ele também **para de propósito**, e o orçamento acaba em cima disso.
+
+A diferença é a causa: aqui falta mesmo a classe `0x01003109`, o subsistema de texto dele. O
+`ISHELL_CreateInstance` dela devolve `ECLASSNOTSUPPORT` e o log do próprio jogo nomeia o que
+quebrou:
 
 ```
 :AF![B:\WIPI\WBLIB\src\WBLCore.cpp:241]:(-268435448):
 :FALSE && "CWBLText::Create() failed!"(0):
 ```
 
-A vtable dela também está lida agora: 40 métodos, em `0x10e15c04`.
+A vtable dela também está lida agora: 40 métodos, em `0x10e15c04`. E a sonda mostra que ele usa
+**quatro** deles — os slots 4, 6, 8 e 18. Com a classe respondida por observação
+(`--sonda=0x01003109`), o Zenonia cria o applet, recebe o `EVT_APP_START` e roda o laço de
+quadros; a tela ainda sai preta, que é o próximo passo dele.
 
-### Need For Speed Carbon: não é lentidão, é uma parada de propósito
+### Need For Speed Carbon: não era lentidão, era uma parada de propósito — corrigido
 
 Este é o mais interessante dos quatro, porque o rótulo estava errado. "Orçamento de instruções
 esgotado" soa como jogo pesado; o perfil diz outra coisa — **97,8% das 500 milhões de instruções
@@ -258,9 +264,18 @@ Logo acima está o motivo. Ele varre até setenta entradas de uma tabela de sons
 agulha é sempre o mesmo ponteiro, `0x1a40ec`, e as entradas preenchidas são todas
 `snd/carbon_fe/*.wav`. Não achando o som, ele assume defeito de programação e trava.
 
-E o arquivo **existe** no pacote, em `mod/nfsresources/snd/skid/skid.wav`. Ou seja: não é sistema
-de arquivos, e não é desempenho. É o registro do banco de sons: o do menu entrou na tabela, o de
-derrapagem não. É por aí que a investigação dele continua.
+E o arquivo **existe** no pacote, e a tabela **também** tem o `snd/skid/skid.wav`, no índice 53.
+A busca é que não achava — e não por causa do skid.
+
+O jogo registra cinco sons de jogo em sequência, e **o terceiro nome da lista é a string vazia**.
+Em C, `strstr(qualquer_coisa, "")` devolve o próprio texto: toda string contém a string vazia, e a
+busca acha o índice 0 na hora. A nossa devolvia "não achou" — o `needle.len().max(1)` procurava
+uma janela de um byte igual a uma agulha de zero bytes, que nunca casa. Aí ele varria as setenta
+entradas, concluía que o som não existe, e travava de propósito.
+
+Uma linha de semântica do C, e o jogo aparecia no relatório como "lento demais". **Hoje ele cria
+o applet, recebe o `EVT_APP_START` e apresenta 181 quadros de OpenGL em seis segundos virtuais**,
+com a abertura da EA na tela.
 
 Vale a lição de método, que é a terceira vez que aparece nesta página: o `--profile` **não
 imprimia nada** quando o jogo morria antes do laço de quadros, que é justamente o caso do Need

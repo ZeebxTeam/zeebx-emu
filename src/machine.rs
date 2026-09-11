@@ -11215,14 +11215,26 @@ impl<C: CpuBackend> Machine<C> {
                 };
                 found.map(|i| a0 + i as u32).unwrap_or(0)
             }
+            // char *strstr(const char *s, const char *agulha)
+            //
+            // **Agulha vazia casa no começo.** É o que o C manda — toda string contém a string
+            // vazia — e não é curiosidade de especificação: o Need For Speed registra os sons de
+            // jogo procurando o nome de cada um numa tabela, e um dos cinco nomes dele é a
+            // string vazia. Devolvendo "não achou", ele varria as setenta entradas, concluía que
+            // o som não existe, imprimia `ZeeboSnd.cpp:327 BREAKPOINT!` e entrava num salto para
+            // si mesmo — de propósito. O jogo não estava lento: estava parado, e o orçamento de
+            // instruções acabava em cima disso.
             "strstr" => {
                 let haystack = self.cpu.read_cbytes(a0, MAX_STRING);
                 let needle = self.cpu.read_cbytes(a1, MAX_STRING);
-                let achou = haystack
-                    .windows(needle.len().max(1))
-                    .position(|w| w == needle)
-                    .map(|i| a0 + i as u32)
-                    .unwrap_or(0);
+                let achou = match needle.is_empty() {
+                    true => a0,
+                    false => haystack
+                        .windows(needle.len())
+                        .position(|w| w == needle)
+                        .map(|i| a0 + i as u32)
+                        .unwrap_or(0),
+                };
                 if self.serial.is_some() {
                     let n = String::from_utf8_lossy(&needle).into_owned();
                     self.registra_serial(format!("<strstr {n:?} -> {achou:#x}>"));
@@ -12316,6 +12328,40 @@ mod tests {
     /// "não pinte"; e quem decide entre moldura e preenchimento é o `flags`. O Tekken 2 limpa a
     /// tela assim uma vez por quadro — sem isso, o menu dele aparecia por cima do texto da tela
     /// anterior.
+    /// `strstr` com agulha vazia devolve o próprio texto, que é o que o C manda.
+    ///
+    /// Parece detalhe de especificação e não é: o Need For Speed registra os sons de jogo
+    /// procurando o nome de cada um numa tabela de setenta entradas, e **um dos cinco nomes dele
+    /// é a string vazia**. Respondendo "não achou", ele varria a tabela inteira, concluía que o
+    /// som não existe, imprimia `ZeeboSnd.cpp:327 BREAKPOINT!` e entrava num salto para si mesmo.
+    /// O jogo aparecia no relatório como "orçamento de instruções esgotado" — ou seja, como se
+    /// fosse pesado, quando estava parado de propósito.
+    #[test]
+    fn a_agulha_vazia_casa_no_comeco_do_texto() {
+        let module = loader::load(&module_calling_malloc()).unwrap();
+        let mut machine = Machine::new(UnicornCpu::new().unwrap(), module, ".");
+        machine.cpu.reset(&machine.module.mem).unwrap();
+        let texto = loader::HEAP_BASE;
+        let agulha = loader::HEAP_BASE + 0x100;
+        machine.cpu.write_mem(texto, b"snd/skid/skid.wav ").unwrap();
+
+        let busca = |machine: &mut Machine<UnicornCpu>, palavra: &[u8]| -> u32 {
+            machine.cpu.write_mem(agulha, palavra).unwrap();
+            call(
+                machine,
+                Interface::Helpers,
+                slot_of(Interface::Helpers, "strstr"),
+                [texto, agulha, 0, 0],
+            )
+        };
+        assert_eq!(busca(&mut machine, b" "), texto, "agulha vazia casa no começo");
+        assert_eq!(busca(&mut machine, b"skid.wav "), texto + 9);
+        assert_eq!(busca(&mut machine, b"snd/skid/skid.wav "), texto);
+        assert_eq!(busca(&mut machine, b"carbon "), 0, "o que não está não casa");
+        // Agulha maior que o texto não casa, e não pode estourar.
+        assert_eq!(busca(&mut machine, b"snd/skid/skid.wav.extra "), 0);
+    }
+
     #[test]
     fn limpar_a_tela_pinta_tudo_com_a_cor_de_fundo() {
         let module = loader::load(&module_calling_malloc()).unwrap();
