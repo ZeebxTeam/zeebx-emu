@@ -1750,6 +1750,16 @@ fn fill_band(tri: &Prepared, uniforms: &Uniforms, band: &mut Band) {
             // teste de alfa ela pode esperar o descarte por profundidade; **com** teste de
             // alfa, não pode: no OpenGL o alfa é decidido antes do stencil, e um fragmento
             // reprovado ali não tem direito de mexer no stencil.
+            let usa_mipmap = uniforms.texture.is_some_and(|texture| {
+                !texture.mipmaps.is_empty()
+                    && matches!(
+                        texture.min_filter,
+                        gles::GL_NEAREST_MIPMAP_NEAREST
+                            | gles::GL_LINEAR_MIPMAP_NEAREST
+                            | gles::GL_NEAREST_MIPMAP_LINEAR
+                            | gles::GL_LINEAR_MIPMAP_LINEAR
+                    )
+            });
             let montar = || {
                 let mut source = [attribute(0), attribute(1), attribute(2), attribute(3)];
                 if let Some(texture) = uniforms.texture {
@@ -1785,7 +1795,14 @@ fn fill_band(tri: &Prepared, uniforms: &Uniforms, band: &mut Band) {
                             }
                         }
                     };
-                    let lod = reducao(tri.step).max(reducao(tri.step_y));
+                    // Sem cadeia de mipmaps o amostrador sempre cai no nível zero. Evitar as
+                    // duas derivadas e o log2 por fragmento é decisivo para jogos 3D que usam
+                    // texturas comprimidas sem níveis auxiliares, como o Super League.
+                    let lod = if !usa_mipmap {
+                        0.0
+                    } else {
+                        reducao(tri.step).max(reducao(tri.step_y))
+                    };
                     let texel = texture.sample_lod(u, v, lod);
                     source = combine(uniforms.texture_env, source, texel);
                 }
