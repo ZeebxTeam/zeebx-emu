@@ -467,6 +467,13 @@ pub struct GlState {
     /// Quake faz meio milhão de draw calls em vinte e cinco segundos de jogo, e uma alocação
     /// por chamada é meio milhão de idas ao alocador para desenhar dois triângulos de cada vez.
     transformed: Vec<Vertex>,
+    /// Se o buffer de cor mudou desde a última vez que ele foi entregue convertido.
+    ///
+    /// A Z-Wheel desenha num pbuffer e lê o resultado com `eglGetColorBufferQUALCOMM` **duas
+    /// vezes por quadro**: a primeira sempre com a fila vazia — medido, zero jobs e zero
+    /// triângulos em 1.596 quadros. Sem isto, cada uma dessas leituras reconvertia duzentos e
+    /// onze mil pixels de um quadro idêntico ao anterior, 1,46 ms que não produziam nada.
+    sujo: bool,
 }
 
 impl GlState {
@@ -524,6 +531,7 @@ impl GlState {
             batch: Batch::default(),
             pending: Pending::default(),
             transformed: Vec::new(),
+            sujo: true,
         }
     }
 
@@ -950,7 +958,11 @@ impl GlState {
             gles::GL_TEXTURE_WRAP_S => texture.wrap[0] != value,
             gles::GL_TEXTURE_WRAP_T => texture.wrap[1] != value,
             gles::GL_TEXTURE_MAG_FILTER => {
-                let filtro = if value == gles::GL_NEAREST { gles::GL_NEAREST } else { gles::GL_LINEAR };
+                let filtro = if value == gles::GL_NEAREST {
+                    gles::GL_NEAREST
+                } else {
+                    gles::GL_LINEAR
+                };
                 texture.filter != filtro
             }
             gles::GL_TEXTURE_MIN_FILTER => texture.min_filter != value,
@@ -960,7 +972,9 @@ impl GlState {
             return;
         }
         self.flush();
-        let Some(texture) = self.textures.get_mut(&self.bound_texture) else { return; };
+        let Some(texture) = self.textures.get_mut(&self.bound_texture) else {
+            return;
+        };
         match name {
             gles::GL_TEXTURE_WRAP_S => texture.wrap[0] = value,
             gles::GL_TEXTURE_WRAP_T => texture.wrap[1] = value,
@@ -1000,6 +1014,7 @@ impl GlState {
         if mask & gles::GL_COLOR_BUFFER_BIT != 0 {
             let c = pack(self.clear_color);
             self.color.fill(c);
+            self.sujo = true;
         }
         if mask & gles::GL_DEPTH_BUFFER_BIT != 0 {
             self.depth.fill(self.clear_depth);
@@ -1363,6 +1378,7 @@ impl GlState {
         if self.pending.jobs.is_empty() {
             return;
         }
+        self.sujo = true;
         // Separar os campos permite ler as texturas e escrever no quadro ao mesmo tempo.
         let Self {
             color,
@@ -1446,6 +1462,7 @@ impl GlState {
                 let g = ((pixel >> 5) & 63) as u8;
                 let b = (pixel & 31) as u8;
                 let index = y * self.width + x;
+                self.sujo = true;
                 self.color[index] = [
                     (r << 3) | (r >> 2),
                     (g << 2) | (g >> 4),
@@ -1472,26 +1489,34 @@ impl GlState {
     /// de quatrocentas mil divisões inteiras por chamada, e elas custavam mais que a conversão.
     pub fn frame_rgb565(&mut self, width: usize, height: usize, out: &mut Vec<u8>) {
         self.flush();
+        // Quadro igual ao que já está em `out`: não há o que reconverter. Ver [`GlState::sujo`].
+        if !self.sujo && out.len() == width * height * 2 {
+            return;
+        }
         let (sw, sh) = self.surface();
         out.clear();
-        out.reserve(width * height * 2);
+        out.resize(width * height * 2, 0);
         let converte = |p: [u8; 4]| {
             ((p[0] as u16 >> 3) << 11) | ((p[1] as u16 >> 2) << 5) | (p[2] as u16 >> 3)
         };
+        // Escreve numa fatia já dimensionada. Antes era um `extend` por pixel, e no caminho de
+        // escala isso é uma ida ao `Vec` para cada dois bytes.
         if sw == width && sh == height {
-            for y in 0..height {
+            for (y, saida) in out.chunks_exact_mut(width * 2).enumerate() {
                 let linha = &self.color[y * self.width..y * self.width + width];
-                out.extend(linha.iter().flat_map(|&p| converte(p).to_le_bytes()));
+                for (pixel, par) in linha.iter().zip(saida.chunks_exact_mut(2)) {
+                    par.copy_from_slice(&converte(*pixel).to_le_bytes());
+                }
             }
-            return;
-        }
-        for y in 0..height {
-            let sy = y * sh / height;
-            for x in 0..width {
-                let p = self.color[sy * self.width + x * sw / width];
-                out.extend(converte(p).to_le_bytes());
+        } else {
+            for (y, saida) in out.chunks_exact_mut(width * 2).enumerate() {
+                let linha = &self.color[(y * sh / height) * self.width..][..self.width];
+                for (x, par) in saida.chunks_exact_mut(2).enumerate() {
+                    par.copy_from_slice(&converte(linha[x * sw / width]).to_le_bytes());
+                }
             }
         }
+        self.sujo = false;
     }
 
     pub fn present(&mut self, width: usize, height: usize) -> Vec<u16> {
@@ -2652,5 +2677,42 @@ mod tests {
         state.set_clear_color([1.0, 0.0, 0.0, 1.0]);
         state.clear(gles::GL_COLOR_BUFFER_BIT);
         assert_eq!(state.present(2, 2), vec![0xf800; 4]);
+    }
+
+    /// A Z-Wheel lê o buffer de cor duas vezes por quadro, e na primeira a fila está sempre
+    /// vazia: era um quadro inteiro reconvertido sem nada ter mudado. A segunda leitura só
+    /// pode reaproveitar o que já está no vetor se de fato nada tocou o buffer.
+    #[test]
+    fn o_quadro_so_e_reconvertido_quando_alguma_coisa_mudou() {
+        let mut state = GlState::new(64, 64);
+        state.set_clear_color([1.0, 0.0, 0.0, 1.0]);
+        state.clear(gles::GL_COLOR_BUFFER_BIT);
+
+        let mut bytes = Vec::new();
+        state.frame_rgb565(64, 64, &mut bytes);
+        let vermelho = bytes.clone();
+        assert_eq!(bytes.len(), 64 * 64 * 2);
+
+        // Nada mudou: a segunda leitura devolve o mesmo conteúdo, sem reconverter.
+        bytes.fill(0xAB);
+        state.frame_rgb565(64, 64, &mut bytes);
+        assert!(
+            bytes.iter().all(|&b| b == 0xAB),
+            "sem mudança, o vetor de saída não é tocado"
+        );
+
+        // Um `clear` mexe no buffer, então a leitura seguinte tem de reconverter.
+        state.set_clear_color([0.0, 0.0, 1.0, 1.0]);
+        state.clear(gles::GL_COLOR_BUFFER_BIT);
+        state.frame_rgb565(64, 64, &mut bytes);
+        assert_ne!(bytes, vermelho, "depois do clear o quadro é outro");
+        assert!(
+            bytes.iter().any(|&b| b != 0xAB),
+            "e foi de fato reconvertido"
+        );
+
+        // E uma mudança de tamanho não pode cair no atalho.
+        state.frame_rgb565(32, 32, &mut bytes);
+        assert_eq!(bytes.len(), 32 * 32 * 2);
     }
 }
