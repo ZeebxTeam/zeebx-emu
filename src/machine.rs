@@ -7803,6 +7803,7 @@ impl<C: CpuBackend> Machine<C> {
             //
             // A terceira palavra do trio é a `0x52574`, o liberador. Não guardamos: nada aqui
             // destrói um registro de desenho.
+            "Slot13" => SUCCESS,
             "Slot16" => {
                 let onde = self.cpu.read_reg(Reg::R1);
                 let novo = match (self.cpu.read_u32(onde), self.cpu.read_u32(onde + 4)) {
@@ -8045,6 +8046,19 @@ impl<C: CpuBackend> Machine<C> {
                     self.cpu.read_reg(Reg::R3),
                 );
                 match seletor {
+                    // Algumas classes usam o próprio endereço de um filho como seletor para
+                    // consultar/ligar o estado visual. É uma operação sem valor de retorno;
+                    // reconhecer o endereço mantém a árvore avançando e evita tratá-lo como
+                    // um código de propriedade desconhecido.
+                    _ if self.widgets.contains_key(&seletor) => OK,
+                    // Consultas de estado/evento usadas pelo root form. Não há ponteiro de
+                    // saída: o chamador só testa o código e continua a montar os filhos.
+                    // Retornar um objeto aqui corrompe o chamador (fault em 0xf0028008).
+                    0x101 | 0x7b0a | 0x7b0f => {
+                        self.assumptions
+                            .insert("consultas de estado do widget root aceitas sem objeto");
+                        OK
+                    }
                     LE => {
                         // **Nem todo `0x800` pede um filho.** O jogo lê e grava pelo mesmo
                         // seletor coisas de tipos diferentes, e o número do item é que diz
@@ -12150,6 +12164,7 @@ impl<C: CpuBackend> Machine<C> {
             AEECLSID_28E3C => Interface::Classe28e3c,
             AEECLSID_CM => Interface::Cm,
             AEECLSID_SYSTEMCTL => Interface::SystemCtl,
+            AEECLSID_SIMCARDCTL => Interface::SimCardCtl,
             AEECLSID_TYPEFACE => Interface::Typeface,
             AEECLSID_MD5 => Interface::Hash,
             AEECLSID_CIPHER_FACTORY => Interface::CipherFactory,

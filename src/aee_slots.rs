@@ -882,7 +882,8 @@ pub const WIDGET: &[&str] = &[
     "slot10",
     "slot11",
     "PegarInterface",
-    "slot13",
+    // Usado pelo widget raiz durante a montagem da barra inferior.
+    "Slot13",
     // `slot14(this, objeto)`, na `0x8fba0`, com o retorno ignorado. Recusá-lo abortava a
     // montagem do formulário do z-pad pela metade — o `bl` para a `0x8f580` era entrado 669
     // vezes e não voltava nenhuma. Tem cara de pendurar um modelo no widget.
