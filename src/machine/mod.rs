@@ -1779,7 +1779,7 @@ pub struct Machine<C: CpuBackend> {
     ///
     /// É o que o `GetConnectedDevices` responde. Uma porta desligada não é enumerada — e é
     /// assim que se testa um jogo que se comporta diferente com dois controles.
-    portas: [Option<crate::bindings::Aparelho>; input::PORTAS],
+    portas: [Option<crate::input::bindings::Aparelho>; input::PORTAS],
     /// A porta de cada `IHIDDevice` que o jogo criou, pelo endereço do objeto.
     portas_de_aparelho: HashMap<u32, usize>,
     /// Teclas apertadas e ainda não entregues, como `(código AVK, apertada)`.
@@ -2073,7 +2073,7 @@ impl<C: CpuBackend> Machine<C> {
             // Uma porta com controle é o que sempre houve; a interface muda isto ao aplicar os
             // ajustes, e o modo sem janela nunca mexe.
             portas: std::array::from_fn(|n| {
-                (n == 0).then_some(crate::bindings::Aparelho::Controle)
+                (n == 0).then_some(crate::input::bindings::Aparelho::Controle)
             }),
             portas_de_aparelho: HashMap::new(),
             teclas: std::collections::VecDeque::new(),

@@ -12,13 +12,13 @@ use std::time::Duration;
 use eframe::egui;
 
 use crate::loader::archive;
-use crate::bindings::Source;
+use crate::input::bindings::Source;
 use crate::video::display::Framebuffer;
-use crate::gamepads;
+use crate::input::gamepads;
 use crate::i18n::Catalog;
 use crate::input::{self, Pad};
 use crate::library::{self, Game};
-use crate::padview::PadArt;
+use crate::input::padview::PadArt;
 use crate::ponte;
 use crate::session::Session;
 use crate::settings::{self, Scaling, Settings};
@@ -238,7 +238,7 @@ impl App {
     /// Uma porta desligada vira `None` e some da enumeração. É o que faz o jogo enxergar um
     /// controle, dois, ou um teclado — e é o mesmo caminho que responde ao
     /// `IHID::GetConnectedDevices`.
-    fn portas_configuradas(&self) -> [Option<crate::bindings::Aparelho>; crate::input::PORTAS] {
+    fn portas_configuradas(&self) -> [Option<crate::input::bindings::Aparelho>; crate::input::PORTAS] {
         std::array::from_fn(|porta| {
             self.settings
                 .controls
@@ -495,7 +495,7 @@ impl App {
     /// As duas USB do console são portas de verdade aqui: cada uma tem o seu mapeamento e o seu
     /// aparelho, e o que está ligado é o que o `GetConnectedDevices` enumera.
     fn port_picker(&mut self, ui: &mut egui::Ui) -> bool {
-        use crate::bindings::Aparelho;
+        use crate::input::bindings::Aparelho;
 
         let mut changed = false;
         ui.horizontal(|ui| {
@@ -639,8 +639,8 @@ impl App {
                 let atual = self.settings.controls.player_mut(self.porta_editada);
                 let (ligada, aparelho) = (atual.ligada, atual.aparelho);
                 *atual = match device {
-                    Some(name) => crate::bindings::Player::with_gamepad(name),
-                    None => crate::bindings::Player::default(),
+                    Some(name) => crate::input::bindings::Player::with_gamepad(name),
+                    None => crate::input::bindings::Player::default(),
                 };
                 atual.ligada = ligada;
                 atual.aparelho = aparelho;
@@ -663,8 +663,8 @@ impl App {
                     .player(self.porta_editada)
                     .and_then(|player| player.device.clone());
                 *self.settings.controls.player_mut(self.porta_editada) = match device {
-                    Some(name) => crate::bindings::Player::with_gamepad(name),
-                    None => crate::bindings::Player::default(),
+                    Some(name) => crate::input::bindings::Player::with_gamepad(name),
+                    None => crate::input::bindings::Player::default(),
                 };
                 changed = true;
             }
@@ -677,7 +677,7 @@ impl App {
         let mut clear: Option<String> = None;
         egui::ScrollArea::vertical().show(ui, |ui| {
             egui::Grid::new("botoes").num_columns(3).show(ui, |ui| {
-                for button in crate::bindings::CONFIGURABLE {
+                for button in crate::input::bindings::CONFIGURABLE {
                     ui.label(self.catalog.get(&format!("button.{button}")));
 
                     let sources = self
@@ -789,7 +789,7 @@ impl App {
                         let inverted = player.axes.get(*axis).is_some_and(|s| s.invert);
                         player.axes.insert(
                             axis.to_string(),
-                            crate::bindings::AxisSource {
+                            crate::input::bindings::AxisSource {
                                 name,
                                 invert: inverted,
                             },

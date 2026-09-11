@@ -18,9 +18,9 @@ use std::fmt;
 use resvg::{tiny_skia, usvg};
 
 /// A arte do controle, embutida no binário para a tela funcionar sem arquivo nenhum.
-pub const DEFAULT_ART: &[u8] = include_bytes!("../assets/controller.png");
+pub const DEFAULT_ART: &[u8] = include_bytes!("../../assets/controller.png");
 /// O mapa das regiões da arte embutida.
-pub const DEFAULT_MAP: &str = include_str!("../assets/controller-map.svg");
+pub const DEFAULT_MAP: &str = include_str!("../../assets/controller-map.svg");
 
 /// A partir de quanta opacidade a silhueta conta como "aqui tem botão".
 const HIT_ALPHA: u8 = 96;
@@ -113,7 +113,7 @@ impl PadArt {
         );
 
         let mut parts = Vec::new();
-        for button in crate::bindings::CONFIGURABLE {
+        for button in crate::input::bindings::CONFIGURABLE {
             let Some(node) = tree.node_by_id(button) else {
                 continue;
             };

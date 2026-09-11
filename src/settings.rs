@@ -123,7 +123,7 @@ pub struct Settings {
     pub graphics: Graphics,
     pub debug: DebugView,
     pub audio: Audio,
-    pub controls: crate::bindings::Controls,
+    pub controls: crate::input::bindings::Controls,
 }
 
 impl Settings {
@@ -226,7 +226,7 @@ mod tests {
                 volume: 42,
                 ..Audio::default()
             },
-            controls: crate::bindings::Controls::default(),
+            controls: crate::input::bindings::Controls::default(),
         };
         settings.save_to(&path).unwrap();
 
@@ -264,7 +264,7 @@ mod tests {
 
         let loaded = Settings::load_from(&path);
         let player = loaded.controls.player(0).unwrap();
-        assert_eq!(player.axes, crate::bindings::Player::default_axes());
+        assert_eq!(player.axes, crate::input::bindings::Player::default_axes());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -281,7 +281,7 @@ mod tests {
         assert_eq!(loaded.language.as_deref(), Some("pt-BR"));
         assert_eq!(loaded.graphics, Graphics::default());
         assert_eq!(loaded.audio, Audio::default());
-        assert_eq!(loaded.controls, crate::bindings::Controls::default());
+        assert_eq!(loaded.controls, crate::input::bindings::Controls::default());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

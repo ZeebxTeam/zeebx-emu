@@ -1,12 +1,12 @@
 //! Os controles de verdade ligados no computador.
 //!
-//! Este módulo é a ponte entre os nomes que o [`crate::bindings`] guarda e o que a biblioteca
+//! Este módulo é a ponte entre os nomes que o [`crate::input::bindings`] guarda e o que a biblioteca
 //! de controles entende. Os nomes são guardados como texto justamente para o arquivo de
 //! configuração não depender da numeração interna de biblioteca nenhuma.
 
 use gilrs::{Axis, Button, Gilrs};
 
-use crate::bindings::Source;
+use crate::input::bindings::Source;
 
 /// A partir de quanto um eixo analógico conta como acionado. Meio curso é o que separa "o
 /// jogador empurrou" de "o manche não voltou exatamente ao centro".
@@ -190,7 +190,7 @@ mod tests {
     fn o_mapeamento_padrao_de_controle_so_usa_nomes_conhecidos() {
         // Um nome no mapeamento padrão que a biblioteca não conheça vira um botão que nunca
         // funciona, e ninguém descobre até ligar um controle.
-        let player = crate::bindings::Player::with_gamepad("qualquer".into());
+        let player = crate::input::bindings::Player::with_gamepad("qualquer".into());
         for sources in player.buttons.values() {
             for source in sources {
                 match source {

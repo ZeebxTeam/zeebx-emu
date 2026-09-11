@@ -138,7 +138,7 @@ impl Session {
     /// configuração dissesse o contrário.
     pub fn start_with(
         path: &Path,
-        portas: [Option<crate::bindings::Aparelho>; crate::input::PORTAS],
+        portas: [Option<crate::input::bindings::Aparelho>; crate::input::PORTAS],
         serial: Option<&Path>,
     ) -> Result<Self, StartError> {
         Self::start_inner(path, Some(portas), serial)
@@ -152,7 +152,7 @@ impl Session {
     /// nenhuma, porque não se sabe que há buraco.
     fn start_inner(
         path: &Path,
-        portas: Option<[Option<crate::bindings::Aparelho>; crate::input::PORTAS]>,
+        portas: Option<[Option<crate::input::bindings::Aparelho>; crate::input::PORTAS]>,
         serial: Option<&Path>,
     ) -> Result<Self, StartError> {
         let extracted;
@@ -522,7 +522,7 @@ impl Session {
     /// Diz que aparelho o console vê em cada porta.
     pub fn set_portas(
         &mut self,
-        portas: [Option<crate::bindings::Aparelho>; crate::input::PORTAS],
+        portas: [Option<crate::input::bindings::Aparelho>; crate::input::PORTAS],
     ) {
         self.machine.set_portas(portas);
     }

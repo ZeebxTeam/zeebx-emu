@@ -5,6 +5,10 @@
 //! `AEEHIDDevice_Joystick.h` do SDK do Zeebo. O jogo identifica cada botão pelo UID, não pelo
 //! índice, então o que precisa estar certo é a tabela.
 
+pub mod bindings;
+pub mod gamepads;
+pub mod padview;
+
 /// Quantas portas de entrada o console tem.
 ///
 /// São as duas USB da frente do aparelho. Não é número escolhido: o `GetConnectedDevices` da

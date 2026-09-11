@@ -1,16 +1,13 @@
 //! Zeebx — emulador de Zeebo / Qualcomm BREW.
 
 mod audio;
-mod bindings;
 mod brew;
 mod cpu;
-mod gamepads;
 mod i18n;
 mod input;
 mod library;
 mod loader;
 mod machine;
-mod padview;
 mod ponte;
 mod rede;
 mod saves;
@@ -18,6 +15,8 @@ mod session;
 mod settings;
 mod ui;
 mod video;
+
+use crate::input::bindings;
 
 use crate::video::icon;
 
