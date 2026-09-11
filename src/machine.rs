@@ -4402,6 +4402,35 @@ impl<C: CpuBackend> Machine<C> {
                 }
             }
         }
+        // A barra inferior da Z-Wheel não é filha do formulário selecionado. Ela vive no
+        // container visual `0x01028e3f`; incluir somente a instância mais nova evita ressuscitar
+        // todas as árvores antigas que o shell deixa alocadas durante o modo de atração.
+        if let Some((&barra, _)) = self
+            .widgets
+            .iter()
+            .filter(|(endereco, no)| {
+                no.classe == 0x0102_8e3f
+                    && (no.pai == 0 || no.pai == **endereco)
+                    && (no.filhos.len() + no.anexados.len()) > 0
+            })
+            .max_by_key(|(_, no)| no.serial)
+        {
+            let mut fila = vec![barra];
+            dentro.insert(barra);
+            while let Some(atual) = fila.pop() {
+                if dentro.len() >= TETO {
+                    break;
+                }
+                let Some(no) = self.widgets.get(&atual) else {
+                    continue;
+                };
+                for filho in no.filhos.values().chain(no.anexados.iter()) {
+                    if self.widgets.contains_key(filho) && dentro.insert(*filho) {
+                        fila.push(*filho);
+                    }
+                }
+            }
+        }
         dentro
     }
 
