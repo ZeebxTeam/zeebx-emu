@@ -7833,7 +7833,16 @@ impl<C: CpuBackend> Machine<C> {
             //
             // A terceira palavra do trio é a `0x52574`, o liberador. Não guardamos: nada aqui
             // destrói um registro de desenho.
-            "Slot13" => SUCCESS,
+            "Slot13" => {
+                // Leitura em 0x24100..0x24198 do tectoy.mod: (&bitmap, w, h),
+                // seguida de QueryInterface no bitmap devolvido. O widget foi usado
+                // como interface de bitmap pelo QueryInterface permissivo acima.
+                let slot = crate::aee_slots::BITMAP
+                    .iter()
+                    .position(|name| *name == "CreateCompatibleBitmap")
+                    .expect("slot de bitmap");
+                return self.bitmap_call(slot as u32);
+            }
             "Slot16" => {
                 let onde = self.cpu.read_reg(Reg::R1);
                 let novo = match (self.cpu.read_u32(onde), self.cpu.read_u32(onde + 4)) {
@@ -8081,14 +8090,11 @@ impl<C: CpuBackend> Machine<C> {
                     // reconhecer o endereço mantém a árvore avançando e evita tratá-lo como
                     // um código de propriedade desconhecido.
                     _ if self.widgets.contains_key(&seletor) => OK,
-                    // Consultas de estado/evento usadas pelo root form. Não há ponteiro de
-                    // saída: o chamador só testa o código e continua a montar os filhos.
-                    // Retornar um objeto aqui corrompe o chamador (fault em 0xf0028008).
-                    0x101 | 0x7b0a | 0x7b0f => {
-                        self.assumptions
-                            .insert("consultas de estado do widget root aceitas sem objeto");
-                        OK
-                    }
+                    // Eventos oferecidos primeiro ao root pelo applet (0x7b418).
+                    // Um retorno verdadeiro interrompe o despacho em 0x7b420, antes dos
+                    // handlers do próprio applet que preenchem as saídas de fonte/recurso.
+                    // Sem handler aqui, devolver falso permite que o applet os resolva.
+                    0x101 | 0x7b0a | 0x7b0f => FALSE,
                     LE => {
                         // **Nem todo `0x800` pede um filho.** O jogo lê e grava pelo mesmo
                         // seletor coisas de tipos diferentes, e o número do item é que diz
@@ -13674,6 +13680,21 @@ mod tests {
         assert_ne!(created, screen);
         let info = machine.bitmaps.get(&created).unwrap();
         assert_eq!((info.width(), info.height()), (64, 32));
+    }
+
+    #[test]
+    fn widget_slot13_devolve_superficie_utilizavel() {
+        let module = loader::load(&module_calling_malloc()).unwrap();
+        let mut machine = Machine::new(UnicornCpu::new().unwrap(), module, ".");
+        machine.cpu.reset(&machine.module.mem).unwrap();
+        let widget = machine.new_object(Interface::Widget).unwrap();
+        let out = loader::HEAP_BASE;
+        call(&mut machine, Interface::Widget, 13, [widget, out, 640, 100]);
+        let bitmap = machine.cpu.read_u32(out).unwrap();
+        assert_ne!(bitmap, 0);
+        assert_eq!(machine.objects.kind_of(bitmap), Some(Interface::Bitmap));
+        let surface = &machine.bitmaps[&bitmap];
+        assert_eq!((surface.width(), surface.height()), (640, 100));
     }
 
     /// O corpo do `import` do Zeeboids vem em `deflate` cru, e o das outras respostas vem em
