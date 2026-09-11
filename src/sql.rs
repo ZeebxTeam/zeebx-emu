@@ -10,7 +10,78 @@
 //! que ele manda e entregar as linhas de volta na forma que o `sqlite3_exec` usa — uma chamada
 //! ao callback do jogo por linha, com os valores já em texto.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+use rusqlite::params;
+
+use crate::library::CatalogIndex;
+
+/// Prepara a cópia gravável da biblioteca da Z-Wheel e sincroniza as ROMs locais.
+///
+/// O banco que vem no pacote é a fonte do catálogo oficial; nunca o modificamos. A cópia de
+/// perfil contém uma tabela nossa de rastreamento, para que uma nova varredura remova somente
+/// registros que o Zeebx criou, sem apagar títulos vindos da NAND ou do pacote.
+pub fn sync_z_wheel_library(
+    packaged: &Path,
+    profile: &Path,
+    catalog: &CatalogIndex,
+) -> Result<PathBuf, String> {
+    if !profile.exists() {
+        let parent = profile.parent().ok_or("perfil sem diretório")?;
+        std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+        std::fs::copy(packaged, profile).map_err(|err| err.to_string())?;
+    }
+    let mut conn = rusqlite::Connection::open(profile).map_err(|err| err.to_string())?;
+    let tx = conn.transaction().map_err(|err| err.to_string())?;
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS ZEEBX_LIBRARY(class_id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL)",
+    )
+    .map_err(|err| err.to_string())?;
+    let old: Vec<(u32, u32)> = {
+        let mut stmt = tx
+            .prepare("SELECT class_id, game_id FROM ZEEBX_LIBRARY")
+            .map_err(|err| err.to_string())?;
+        stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(|err| err.to_string())?
+            .collect::<Result<_, _>>()
+            .map_err(|err| err.to_string())?
+    };
+    for (class_id, game_id) in old {
+        tx.execute("DELETE FROM TITLETEXT WHERE game_id = ?1", params![game_id])
+            .map_err(|err| err.to_string())?;
+        tx.execute(
+            "DELETE FROM GAMEINFO WHERE game_id = ?1 AND class_id = ?2",
+            params![game_id, class_id],
+        )
+        .map_err(|err| err.to_string())?;
+    }
+    tx.execute("DELETE FROM ZEEBX_LIBRARY", [])
+        .map_err(|err| err.to_string())?;
+    for entry in &catalog.titles {
+        if entry.source != crate::library::CatalogSource::Rom {
+            continue;
+        }
+        // ClassID é estável e cabe no INTEGER do SQLite; usá-lo também como game_id evita um
+        // contador local que mudaria quando a pasta é revarrida.
+        let id = entry.applet_class;
+        tx.execute(
+            "INSERT OR REPLACE INTO GAMEINFO(game_id,class_id,playcount,dt_download,dt_lastplayed,boxart_path,flags,size) VALUES (?1,?2,0,0,0,'',2,0)",
+            params![id, id],
+        ).map_err(|err| err.to_string())?;
+        for lang in [0x2020_6e65u32, 0x2020_7365, 0x2020_7470] {
+            tx.execute(
+                "INSERT OR REPLACE INTO TITLETEXT(game_id,lang_id,titletext) VALUES (?1,?2,?3)",
+                params![id, lang, entry.title],
+            ).map_err(|err| err.to_string())?;
+        }
+        tx.execute(
+            "INSERT INTO ZEEBX_LIBRARY(class_id,game_id) VALUES (?1,?2)",
+            params![id, id],
+        ).map_err(|err| err.to_string())?;
+    }
+    tx.commit().map_err(|err| err.to_string())?;
+    Ok(profile.to_path_buf())
+}
 
 /// Um banco aberto.
 pub struct Database {
@@ -79,6 +150,7 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::library::{CatalogEntry, CatalogSource};
 
     /// O banco de preferências que a Z-Wheel traz no pacote, montado do zero com o mesmo
     /// esquema que o módulo dela carrega em texto.
@@ -155,6 +227,37 @@ mod tests {
         assert!(
             erro.contains("NAO_EXISTE"),
             "o motivo precisa dizer o quê: {erro}"
+        );
+    }
+
+    #[test]
+    fn biblioteca_do_perfil_preserva_o_oficial_e_atualiza_roms() {
+        let dir = std::env::temp_dir().join("zeebx-sql-biblioteca");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let package = dir.join("tt_game_info");
+        let db = Database::open(&package).unwrap();
+        db.exec("CREATE TABLE GAMEINFO(game_id INTEGER PRIMARY KEY, class_id INTEGER, playcount INTEGER, dt_download INTEGER, dt_lastplayed INTEGER, boxart_path TEXT, flags INTEGER, size INTEGER)").unwrap();
+        db.exec("CREATE TABLE TITLETEXT(game_id INTEGER, lang_id INTEGER, titletext TEXT)").unwrap();
+        db.exec("INSERT INTO GAMEINFO values (1, 2, 0, 0, 0, '', 2, 0)").unwrap();
+        let catalog = CatalogIndex {
+            titles: vec![CatalogEntry {
+                applet_class: 0x0100_9999,
+                title: "Homebrew".into(),
+                rom_path: dir.join("homebrew.mod"),
+                source: CatalogSource::Rom,
+            }],
+        };
+        let profile = dir.join("perfil/tt_game_info");
+        sync_z_wheel_library(&package, &profile, &catalog).unwrap();
+        let profile_db = Database::open(&profile).unwrap();
+        assert_eq!(profile_db.exec("SELECT * FROM GAMEINFO").unwrap().len(), 2);
+        assert_eq!(
+            profile_db
+                .exec("SELECT * FROM TITLETEXT WHERE titletext='Homebrew'")
+                .unwrap()
+                .len(),
+            3
         );
     }
 }

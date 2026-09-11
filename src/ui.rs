@@ -174,6 +174,9 @@ impl App {
             .as_deref()
             .map(library::scan)
             .unwrap_or_default();
+        if let Err(err) = library::sync_catalog(&games) {
+            eprintln!("catálogo de jogos: {err}");
+        }
         Self {
             catalog,
             settings,
@@ -225,6 +228,9 @@ impl App {
             .as_deref()
             .map(library::scan)
             .unwrap_or_default();
+        if let Err(err) = library::sync_catalog(&self.games) {
+            eprintln!("catálogo de jogos: {err}");
+        }
     }
 
     /// O que o console vê em cada porta, a partir do que está configurado.

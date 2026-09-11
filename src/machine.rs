@@ -9049,6 +9049,25 @@ impl<C: CpuBackend> Machine<C> {
                     self.missing_files.insert(nome);
                     return Ok(Some(EFAILED));
                 };
+                // O catálogo oficial vem no pacote, mas a biblioteca do usuário precisa ser
+                // gravável e sobreviver a uma nova extração do ZIP. Para a Z-Wheel abrimos uma
+                // cópia de perfil já sincronizada com as ROMs que a interface encontrou.
+                let caminho = if nome == "tt_game_info" {
+                    let perfil = crate::archive::device_dir().join("z-wheel/tt_game_info");
+                    let catalogo = crate::library::CatalogIndex::load_from(
+                        &crate::library::catalog_path(),
+                    );
+                    match crate::sql::sync_z_wheel_library(&caminho, &perfil, &catalogo) {
+                        Ok(caminho) => caminho,
+                        Err(erro) => {
+                            self.bad_pointers
+                                .insert(format!("SQL: não deu para preparar tt_game_info: {erro}"));
+                            return Ok(Some(EFAILED));
+                        }
+                    }
+                } else {
+                    caminho
+                };
                 let aberto = crate::sql::Database::open(&caminho);
                 if self.serial.is_some() {
                     let como = match &aberto {

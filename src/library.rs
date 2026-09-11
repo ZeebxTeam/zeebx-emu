@@ -7,9 +7,12 @@
 
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
+
 use crate::archive;
 use crate::icon::{self, Image};
 use crate::miffile::MifFile;
+use crate::settings;
 
 /// Extensões aceitas para uma capa deixada ao lado do jogo.
 const COVER_EXTENSIONS: [&str; 4] = ["png", "jpg", "jpeg", "bmp"];
@@ -34,6 +37,89 @@ pub struct Game {
     /// A imagem que representa o jogo na biblioteca. Vem de uma capa deixada ao lado do
     /// arquivo, ou, na falta dela, do maior ícone que o `.mif` guarda.
     pub art: Option<Image>,
+}
+
+/// De onde veio a informação de um título no catálogo do console.
+///
+/// A NAND descreve o aparelho como ele saiu de fábrica; ROMs locais completam esse catálogo
+/// com títulos instalados pelo usuário, inclusive homebrews. A origem evita que uma nova
+/// varredura apague registros que extraímos da firmware.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CatalogSource {
+    Nand,
+    Rom,
+}
+
+/// Um título que o console pode apresentar ou iniciar.
+///
+/// O ClassID é a chave: nomes de arquivos e de ZIPs são livres, mas é esse valor do `.mif` que
+/// `ISHELL_StartApplet` recebe e que a Z-Wheel grava nas tabelas dela.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CatalogEntry {
+    pub applet_class: u32,
+    pub title: String,
+    pub rom_path: PathBuf,
+    pub source: CatalogSource,
+}
+
+/// Índice persistente que une o inventário da NAND às ROMs escolhidas pelo usuário.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CatalogIndex {
+    pub titles: Vec<CatalogEntry>,
+}
+
+impl CatalogIndex {
+    /// Incorpora a lista de ROMs atual sem mexer nos títulos que vieram da NAND.
+    pub fn refresh_roms(&mut self, games: &[Game]) {
+        self.titles.retain(|entry| entry.source != CatalogSource::Rom);
+        self.titles.extend(games.iter().filter_map(|game| {
+            Some(CatalogEntry {
+                applet_class: game.clsid?,
+                title: game.title.clone(),
+                rom_path: game.path.clone(),
+                source: CatalogSource::Rom,
+            })
+        }));
+        // Dois pacotes podem anunciar o mesmo applet. Manter o primeiro, em ordem de título e
+        // caminho, torna o resultado repetível e deixa a pessoa resolver a duplicata na pasta.
+        self.titles.sort_by(|a, b| {
+            a.applet_class
+                .cmp(&b.applet_class)
+                .then(a.source.cmp(&b.source))
+                .then(a.rom_path.cmp(&b.rom_path))
+        });
+        self.titles.dedup_by_key(|entry| entry.applet_class);
+    }
+
+    pub fn load_from(path: &Path) -> Self {
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn save_to(&self, path: &Path) -> std::io::Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let text = serde_json::to_string_pretty(self).map_err(std::io::Error::other)?;
+        std::fs::write(path, text)
+    }
+}
+
+/// Caminho estável do catálogo, separado dos ZIPs e de seus caches de extração.
+pub fn catalog_path() -> PathBuf {
+    settings::config_dir().join("catalog.json")
+}
+
+/// Atualiza e persiste os títulos encontrados na pasta configurada.
+pub fn sync_catalog(games: &[Game]) -> std::io::Result<CatalogIndex> {
+    let mut index = CatalogIndex::load_from(&catalog_path());
+    index.refresh_roms(games);
+    index.save_to(&catalog_path())?;
+    Ok(index)
 }
 
 /// Procura jogos em `root`, em ordem de título.
@@ -220,6 +306,34 @@ mod tests {
             std::fs::write(&path, []).unwrap();
         }
         root
+    }
+
+    #[test]
+    fn catalogo_atualiza_roms_sem_apagar_o_que_veio_da_nand() {
+        let mut index = CatalogIndex {
+            titles: vec![CatalogEntry {
+                applet_class: 7,
+                title: "Jogo de fábrica".into(),
+                rom_path: PathBuf::from("/nand/jogo.mod"),
+                source: CatalogSource::Nand,
+            }],
+        };
+        let games = vec![Game {
+            title: "Homebrew".into(),
+            path: PathBuf::from("/roms/homebrew.mod"),
+            clsid: Some(9),
+            packed: false,
+            art: None,
+        }];
+
+        index.refresh_roms(&games);
+        assert_eq!(index.titles.len(), 2);
+        assert!(index.titles.iter().any(|entry| entry.applet_class == 7));
+        assert!(index.titles.iter().any(|entry| entry.applet_class == 9));
+
+        index.refresh_roms(&[]);
+        assert_eq!(index.titles.len(), 1);
+        assert_eq!(index.titles[0].source, CatalogSource::Nand);
     }
 
     /// O manifesto do Kingdom Hearts fica um nível acima da pasta do módulo.
