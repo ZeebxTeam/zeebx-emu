@@ -11,7 +11,7 @@
 
 use crate::aee::{self, Interface};
 use crate::cpu::CpuError;
-use crate::mem::{GuestMemory, MemError};
+use crate::cpu::mem::{GuestMemory, MemError};
 use crate::modfile::ModImage;
 
 /// Onde a imagem do módulo é carregada.

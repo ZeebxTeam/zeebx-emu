@@ -7,7 +7,9 @@
 // Removido assim que o núcleo estiver ligado ao loop principal.
 #![allow(dead_code)]
 
-use crate::mem::GuestMemory;
+pub mod mem;
+
+use crate::cpu::mem::GuestMemory;
 
 /// Registradores que o despacho de API precisa ler e escrever.
 ///

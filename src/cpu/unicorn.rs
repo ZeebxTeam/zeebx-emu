@@ -9,7 +9,7 @@
 use unicorn_engine::{Arch, ArmCpuModel, HookType, Mode, Prot, RegisterARM, Unicorn, uc_error};
 
 use super::{CpuBackend, CpuError, Reg, StopReason};
-use crate::mem::GuestMemory;
+use crate::cpu::mem::GuestMemory;
 
 /// Base da faixa reservada às vtables do BREW. Nunca é mapeada.
 pub const API_BASE: u32 = 0xf000_0000;
