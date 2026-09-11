@@ -893,6 +893,9 @@ pub const WIDGET: &[&str] = &[
     // execução ao `0x22d5c`: o formulário do menu para de ser montado ali mesmo, e o aplicativo
     // fica no pulso de dez segundos que consulta pontos e fila de download sem desenhar nada.
     "Slot16",
+    // `slot17(this, id, modelo)`, na `0x23860` e `0x23d0c` do tectoy.mod: associa o modelo de
+    // fonte (0x8000) ou outro modelo ao widget do roller em `tectoy_rollerwidget.c`.
+    "Slot17",
 ];
 
 /// Métodos do `IControl` usado pelo subsistema de texto do Zenonia.
