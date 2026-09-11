@@ -45,8 +45,24 @@ const AEE_ENC_ISOLATIN1: u16 = 3;
 
 /// Quantos itens de cor o `AEEClrItem` define, mais o índice zero que não é usado.
 const CLR_COUNT: usize = 17;
-/// `RGB_NONE`: pedido de "não pinte esta parte".
+/// `RGB_NONE`: "use a cor corrente", e não "não pinte".
+///
+/// A diferença decide se a tela é limpa: o `IDISPLAY_ClearScreen` do SDK é escrito como
+/// `DrawRect(NULL, RGB_NONE, RGB_NONE, IDF_RECT_FILL)`, ou seja, preencha a superfície inteira
+/// com a cor de fundo corrente. Enquanto `RGB_NONE` valia "não pinte", essa chamada não fazia
+/// nada — e o Tekken 2, que limpa a tela uma vez por quadro, ficava com o texto da tela
+/// anterior por baixo do menu.
 const RGB_NONE: u32 = 0xffff_ffff;
+
+/// `CLR_USER_BACKGROUND`, o item de cor que o preenchimento usa quando vem `RGB_NONE`.
+const CLR_USER_BACKGROUND: usize = 2;
+
+/// `CLR_USER_LINE`, o item de cor da moldura.
+const CLR_USER_LINE: usize = 3;
+
+/// `IDF_RECT_FRAME` e `IDF_RECT_FILL`, de `AEEDisp.h`: o que a chamada quer desenhar.
+const IDF_RECT_FRAME: u32 = 1;
+const IDF_RECT_FILL: u32 = 2;
 /// Valores do enum `AEERasterOp`, de `inc/AEERasterOp.h`: `OR`, `XOR`, `COPY`, `NOT`,
 /// `OLDMASK`, `MERGENOT`, `ANDNOT`, `TRANSPARENT`, `AND`, `BLEND`.
 const AEE_RO_XOR: u32 = 1;
@@ -1520,7 +1536,15 @@ fn font_do_modulo(raiz: &std::path::Path) -> Option<crate::font::Font> {
 
 /// Corta `rect` pelo recorte. `None` quando não sobra nada para desenhar.
 fn clip_rect(clip: Option<Rect>, rect: Rect) -> Option<Rect> {
-    let clip = clip?;
+    // **Sem recorte definido, o recorte é a tela inteira** — e não "nada passa". Era o que
+    // estava escrito aqui, e o efeito é silencioso: todo `IDISPLAY_DrawRect` de um jogo que não
+    // define recorte era descartado. O Tekken 2 limpa a tela uma vez por quadro com um
+    // `ClearScreen`, que é exatamente um `DrawRect`; a limpeza nunca acontecia, e o menu dele
+    // aparecia por cima do texto da tela anterior. O `clip_blit`, logo abaixo, sempre tratou o
+    // mesmo caso do jeito certo.
+    let Some(clip) = clip else {
+        return Some(rect);
+    };
     let (x0, y0) = (rect.x.max(clip.x) as i32, rect.y.max(clip.y) as i32);
     let x1 = (rect.x as i32 + rect.width as i32).min(clip.x as i32 + clip.width as i32);
     let y1 = (rect.y as i32 + rect.height as i32).min(clip.y as i32 + clip.height as i32);
@@ -3787,18 +3811,45 @@ impl<C: CpuBackend> Machine<C> {
             // void IDISPLAY_DrawRect(IDisplay *p, const AEERect *pr, RGBVAL cf, RGBVAL cfill,
             //                        uint32 flags)
             "DrawRect" => {
-                let rect = self
-                    .read_rect(self.cpu.read_reg(Reg::R1))?
-                    .and_then(|rect| self.clip_rect(rect));
-                let border = Rgb::from_rgbval(self.cpu.read_reg(Reg::R2));
-                let fill = self.cpu.read_reg(Reg::R3);
                 let target = self.target()?;
+                // **Ponteiro nulo é a superfície inteira.** É como o `ClearScreen` do SDK é
+                // escrito, e é a única forma de limpar a tela que o BREW oferece.
+                let pedido = match self.read_rect(self.cpu.read_reg(Reg::R1))? {
+                    Some(rect) => Some(rect),
+                    None => self.bitmaps.get(&target).map(|fb| Rect {
+                        x: 0,
+                        y: 0,
+                        width: fb.width().min(i16::MAX as u32) as i16,
+                        height: fb.height().min(i16::MAX as u32) as i16,
+                    }),
+                };
+                let rect = pedido.and_then(|rect| self.clip_rect(rect));
+                // `RGB_NONE` quer dizer "a cor corrente" — a de fundo para o preenchimento e a
+                // de linha para a moldura, ambas do `IDISPLAY_SetColor`.
+                let cor = |valor: u32, item: usize, cores: &[Rgb]| match valor {
+                    RGB_NONE => cores[item],
+                    valor => Rgb::from_rgbval(valor),
+                };
+                let border = cor(self.cpu.read_reg(Reg::R2), CLR_USER_LINE, &self.colors);
+                let fill = cor(self.cpu.read_reg(Reg::R3), CLR_USER_BACKGROUND, &self.colors);
+                // **Quem manda no que é desenhado é o `flags`, não a cor.** O Quake pede moldura
+                // sozinha (`IDF_RECT_FRAME`) passando preto no preenchimento: honrar a cor e
+                // ignorar o sinalizador pintava um retângulo preto que ele não pediu.
+                //
+                // Sinalizador nenhum mantém o comportamento antigo — desenhar os dois. Nenhum
+                // jogo do acervo chama assim, e na dúvida é melhor continuar desenhando do que
+                // apagar uma tela por causa de uma leitura que não deu para conferir.
+                let flags = match self.stack_arg(0)? {
+                    0 => IDF_RECT_FRAME | IDF_RECT_FILL,
+                    flags => flags,
+                };
                 if let (Some(rect), Some(fb)) = (rect, self.bitmaps.get_mut(&target)) {
-                    // `RGB_NONE` marca "não pinte"; qualquer outro valor é cor de fato.
-                    if fill != RGB_NONE {
-                        fb.fill_rect(rect, Rgb::from_rgbval(fill));
+                    if flags & IDF_RECT_FILL != 0 {
+                        fb.fill_rect(rect, fill);
                     }
-                    fb.draw_frame(rect, border);
+                    if flags & IDF_RECT_FRAME != 0 {
+                        fb.draw_frame(rect, border);
+                    }
                 }
                 SUCCESS
             }
@@ -12257,6 +12308,96 @@ mod tests {
         assert_eq!(inside, Some(((105, 52), (5, 5), (3, 4))));
     }
 
+    /// `ClearScreen` é `DrawRect(NULL, RGB_NONE, RGB_NONE, IDF_RECT_FILL)`, e limpa a tela
+    /// inteira com a cor de fundo corrente.
+    ///
+    /// Três leituras tinham de estar certas ao mesmo tempo, e as três estavam erradas: ponteiro
+    /// nulo é a superfície inteira e não "sem retângulo"; `RGB_NONE` é "a cor corrente" e não
+    /// "não pinte"; e quem decide entre moldura e preenchimento é o `flags`. O Tekken 2 limpa a
+    /// tela assim uma vez por quadro — sem isso, o menu dele aparecia por cima do texto da tela
+    /// anterior.
+    #[test]
+    fn limpar_a_tela_pinta_tudo_com_a_cor_de_fundo() {
+        let module = loader::load(&module_calling_malloc()).unwrap();
+        let mut machine = Machine::new(UnicornCpu::new().unwrap(), module, ".");
+        machine.cpu.reset(&machine.module.mem).unwrap();
+        let display = machine.objects.create(Interface::Display).unwrap();
+        let alvo = machine.device_bitmap().unwrap();
+        machine
+            .bitmaps
+            .get_mut(&alvo)
+            .unwrap()
+            .fill_rect(Rect { x: 0, y: 0, width: 640, height: 480 }, Rgb::WHITE);
+
+        // Fundo azul, e a limpeza que o jogo faz: sem retângulo, sem cores, só o sinalizador.
+        call(
+            &mut machine,
+            Interface::Display,
+            slot_of(Interface::Display, "SetColor"),
+            [display, CLR_USER_BACKGROUND as u32, to_rgbval(Rgb { r: 0, g: 0, b: 255 }), 0],
+        );
+        machine.cpu.write_reg(Reg::Sp, loader::STACK_BASE + 0x1000);
+        machine
+            .cpu
+            .write_u32(loader::STACK_BASE + 0x1000, IDF_RECT_FILL)
+            .unwrap();
+        call(
+            &mut machine,
+            Interface::Display,
+            slot_of(Interface::Display, "DrawRect"),
+            [display, 0, RGB_NONE, RGB_NONE],
+        );
+        let fb = machine.bitmaps.get(&alvo).unwrap();
+        let azul = Rgb { r: 0, g: 0, b: 255 }.to_rgb565();
+        assert_eq!(fb.get_pixel(0, 0), azul, "o canto não foi limpo");
+        assert_eq!(fb.get_pixel(639, 479), azul, "o outro canto não foi limpo");
+    }
+
+    /// Só moldura quer dizer **só moldura**: a cor de preenchimento vem junto e não deve pintar.
+    ///
+    /// O Quake chama exatamente assim — `IDF_RECT_FRAME` com preto no preenchimento. Ignorar o
+    /// sinalizador punha um retângulo preto que ele não pediu.
+    #[test]
+    fn so_a_moldura_quando_o_sinalizador_pede_so_a_moldura() {
+        let module = loader::load(&module_calling_malloc()).unwrap();
+        let mut machine = Machine::new(UnicornCpu::new().unwrap(), module, ".");
+        machine.cpu.reset(&machine.module.mem).unwrap();
+        let display = machine.objects.create(Interface::Display).unwrap();
+        let alvo = machine.device_bitmap().unwrap();
+        machine
+            .bitmaps
+            .get_mut(&alvo)
+            .unwrap()
+            .fill_rect(Rect { x: 0, y: 0, width: 640, height: 480 }, Rgb::WHITE);
+
+        let rect = loader::HEAP_BASE;
+        for (i, valor) in [10i16, 10, 40, 30].iter().enumerate() {
+            machine
+                .cpu
+                .write_mem(rect + i as u32 * 2, &valor.to_le_bytes())
+                .unwrap();
+        }
+        machine.cpu.write_reg(Reg::Sp, loader::STACK_BASE + 0x1000);
+        machine
+            .cpu
+            .write_u32(loader::STACK_BASE + 0x1000, IDF_RECT_FRAME)
+            .unwrap();
+        call(
+            &mut machine,
+            Interface::Display,
+            slot_of(Interface::Display, "DrawRect"),
+            [display, rect, to_rgbval(Rgb { r: 255, g: 0, b: 0 }), 0],
+        );
+        let fb = machine.bitmaps.get(&alvo).unwrap();
+        let vermelho = Rgb { r: 255, g: 0, b: 0 }.to_rgb565();
+        assert_eq!(fb.get_pixel(10, 10), vermelho, "a moldura não foi desenhada");
+        assert_eq!(
+            fb.get_pixel(25, 25),
+            Rgb::WHITE.to_rgb565(),
+            "o miolo foi preenchido sem o jogo ter pedido"
+        );
+    }
+
     #[test]
     fn o_retangulo_e_cortado_pelo_recorte() {
         let cut = clip_rect(
@@ -12270,18 +12411,15 @@ mod tests {
         )
         .unwrap();
         assert_eq!((cut.x, cut.y, cut.width, cut.height), (100, 50, 20, 10));
-        assert_eq!(
-            clip_rect(
-                None,
-                Rect {
-                    x: 1,
-                    y: 2,
-                    width: 3,
-                    height: 4
-                }
-            ),
-            None
-        );
+        // Sem recorte, o retângulo passa inteiro. O contrário estava escrito aqui, e apagava
+        // todo `DrawRect` de quem não define recorte — inclusive a limpeza de tela.
+        let solto = Rect {
+            x: 1,
+            y: 2,
+            width: 3,
+            height: 4,
+        };
+        assert_eq!(clip_rect(None, solto), Some(solto));
         assert_eq!(
             clip_rect(
                 Some(CLIP),

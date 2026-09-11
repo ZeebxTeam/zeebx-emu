@@ -31,6 +31,24 @@ Só o caminho do decodificador publica os pixels sem ser pedido. Nos outros, o `
 continua sendo a hora de alocar: a região de superfícies não recicla, e toda superfície
 publicada entra no laço de sincronização abaixo.
 
+### O endereço volta a ser usado, e o cabeçalho tem de acompanhar
+
+Publicar o `IDIB` era feito **uma vez por endereço de objeto** — e endereço de objeto é
+reciclado: liberado o anterior, o próximo bitmap nasce no mesmo lugar, com outro tamanho.
+
+O Tekken 2 decodifica nove imagens em sequência, liberando cada uma antes da seguinte; todas
+nasceram no mesmo endereço. O `IDIB` anunciava para as nove o tamanho da primeira, 200×112. O
+jogo então criava uma página de 200×112 para uma folha de letras de 360×280, guardava só o canto
+dela, e depois pedia cada glifo por coordenada da folha inteira: o que caía fora virava um bloco
+preenchido com a textura. O menu inteiro saía com as palavras como retângulos laranja.
+
+Hoje o cabeçalho é reescrito a cada exposição, com o tamanho e o passo da imagem que está lá. O
+buffer é reaproveitado quando cabe — reservar outro a cada vez também acertaria o tamanho, mas a
+região de superfícies não recicla e um jogo que decodifique centenas de imagens a esgotaria.
+
+A lição é a mesma de outras vezes: **o que um jogo lê de uma struct nossa vale tanto quanto o
+que devolvemos de uma chamada.** Aqui nenhuma chamada falhou, e o relatório saiu limpo.
+
 Isso obriga a manter dois lados em dia:
 
 ```
@@ -103,6 +121,44 @@ Encolher só o retângulo de destino mostraria o canto errado da imagem — é a
 fontes vira letra trocada. Há teste exatamente sobre essa propriedade.
 
 `None` significa "não sobrou nada": o blit não acontece.
+
+### Recorte nenhum é a tela inteira, e não "nada passa"
+
+O `clip_blit` sempre soube disso — sem recorte, o blit passa inteiro. O `clip_rect`, ao lado,
+fazia o contrário: um `let clip = clip?;` na primeira linha, e todo retângulo de quem **não**
+define recorte era descartado.
+
+O efeito é silencioso e grande: `IDISPLAY_DrawRect` nunca desenhou nada em jogo nenhum que não
+chamasse `SetClipRect` antes. Levou tempo para aparecer porque quase todo desenho 2D é blit, e
+blit tomava o caminho certo. E havia um teste afirmando o engano — `clip_rect(None, r) == None`.
+Teste errado protege defeito, e este protegeu.
+
+## Limpar a tela é um `DrawRect`
+
+Não existe `IDISPLAY_ClearScreen` na vtable: no SDK ele é uma macro que chama
+
+```c
+IDISPLAY_DrawRect(p, NULL, RGB_NONE, RGB_NONE, IDF_RECT_FILL)
+```
+
+Três leituras precisam estar certas ao mesmo tempo, e as três estavam erradas aqui:
+
+| O que chega | O que quer dizer | O que fazíamos |
+|---|---|---|
+| `pRect == NULL` | a superfície inteira | nada a desenhar |
+| `RGB_NONE` | **a cor corrente** do `SetColor` | "não pinte" |
+| `flags` | quem manda em moldura e preenchimento | ignorado |
+
+O Tekken 2 limpa a tela assim **uma vez por quadro**: `SetColor(CLR_USER_BACKGROUND, preto)` e
+`ClearScreen`. Enquanto a limpeza não acontecia, o menu dele era desenhado por cima do que já
+estava na tela — o "APERTE ❶ PARA COMEÇAR" da abertura ficava aparecendo por baixo de "MODO
+VERSUS". O `flags` também não é detalhe: o Quake pede moldura sozinha (`IDF_RECT_FRAME`) passando
+preto no preenchimento, e honrar a cor ignorando o sinalizador punha um retângulo preto que ele
+não pediu.
+
+Sinalizador nenhum (`flags == 0`) mantém o comportamento antigo, desenhar os dois. Nenhum jogo do
+acervo chama assim, e na dúvida é melhor continuar desenhando do que apagar uma tela por causa de
+uma leitura que não deu para conferir.
 
 ## Blit
 
