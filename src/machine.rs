@@ -946,6 +946,8 @@ const FAMILIA_DOS_WIDGETS: [u32; 9] = [
 
 /// `0x01035156`, a fonte TrueType do console. Ver [`Interface::Typeface`].
 const AEECLSID_TYPEFACE: u32 = 0x0103_5156;
+/// Classe concreta de fonte usada pelo roller da Z-Wheel.
+const AEECLSID_ROLLER_FONT: u32 = 0x0102_f67c;
 
 /// `0x01006c01`, o controle do cartão SIM. Ver [`Interface::SimCardCtl`].
 const AEECLSID_SIMCARDCTL: u32 = 0x0100_6c01;
@@ -12192,7 +12194,7 @@ impl<C: CpuBackend> Machine<C> {
             AEECLSID_28E3C => Interface::Classe28e3c,
             AEECLSID_CM => Interface::Cm,
             AEECLSID_SYSTEMCTL => Interface::SystemCtl,
-            AEECLSID_TYPEFACE => Interface::Typeface,
+            AEECLSID_TYPEFACE | AEECLSID_ROLLER_FONT => Interface::Typeface,
             AEECLSID_MD5 => Interface::Hash,
             AEECLSID_CIPHER_FACTORY => Interface::CipherFactory,
             AEECLSID_MEDIA | AEECLSID_MEDIAMIDI | AEECLSID_MEDIAMP3 | AEECLSID_MEDIAADPCM
