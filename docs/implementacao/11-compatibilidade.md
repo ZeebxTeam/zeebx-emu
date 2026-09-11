@@ -239,10 +239,42 @@ quebrou:
 :FALSE && "CWBLText::Create() failed!"(0):
 ```
 
-A vtable dela também está lida agora: 40 métodos, em `0x10e15c04`. E a sonda mostra que ele usa
-**quatro** deles — os slots 4, 6, 8 e 18. Com a classe respondida por observação
-(`--sonda=0x01003109`), o Zenonia cria o applet, recebe o `EVT_APP_START` e roda o laço de
-quadros; a tela ainda sai preta, que é o próximo passo dele.
+A vtable dela está lida: 40 métodos, em `0x10e15c04`. E o firmware diz **o que ela é**: o slot 0
+incrementa `[obj+4]` e o 1 decrementa e destrói no zero; o slot 2 compara o primeiro argumento
+com uma faixa de quatro eventos; o slot 5 devolve `[obj+8] & 1`. É a vtable de um **`IControl`**
+— `AddRef`, `Release`, `HandleEvent`, `Redraw`, `SetActive`, `IsActive`, `SetRect`, `GetRect`,
+`SetProperties`, `GetProperties`, `Reset` — e os argumentos que a sonda capturou confirmam:
+`SetRect` com um ponteiro de pilha, `SetProperties` com `0x80010000`, `SetActive` com 1.
+
+Com a classe respondida por observação e o `IsActive` dizendo "sim"
+(`--sonda=0x01003109 --sonda-resposta=0x01003109:5=1`), o Zenonia cria o applet, recebe o
+`EVT_APP_START`, carrega fontes e partículas, toca som e **roda o laço de quadros**.
+
+### E aí ele desenha — mas num lugar que não vai para a tela
+
+O que veio depois vale como registro, porque a causa é geral e a solução não é barata.
+
+O Zenonia cria uma superfície de 320×240 e escreve os pixels **direto na memória**, sem pedir
+`QueryInterface` antes: ele lê o ponteiro `pBmp` dos campos públicos da struct, que no console
+sempre valem — um `IBitmap` de software *é* um `IDIB`. Nós só preenchemos esses campos quando
+alguém pede o DIB, então ele lia tamanho zero e ponteiro nulo, e caía num caminho que não desenha
+nada: tela preta com o jogo rodando, o mesmo sintoma do Peggle.
+
+Publicando os campos no nascimento de toda superfície, ele **desenha a tela de título inteira** —
+logo, personagens, versão 1.0.8. Dá para ver com `--dump-surfaces=DIR`, que grava um BMP por
+superfície viva.
+
+Só que publicar tudo **não é viável hoje**: a sincronização de superfícies copia, a cada chamada
+de desenho, todas as que estão publicadas. Com 49 superfícies no Pac-Mania, seis segundos
+virtuais não terminam em dez minutos de relógio. Medido.
+
+O que falta, então, não é uma classe: é **sincronizar só o que a chamada toca** — ou marcar as
+superfícies sujas por hook de escrita, que o núcleo já sabe fazer (é como o `--watch` funciona).
+Com isso, publicar no nascimento fica barato, e o Zenonia passa a mostrar o que já desenha.
+
+E sobra uma pergunta em aberto mesmo depois disso: ele desenha em 320×240 e **nunca blita** essa
+superfície para a tela, nem escreve na tela. O que apresenta esse quadro no console ainda não
+sabemos.
 
 ### Need For Speed Carbon: não era lentidão, era uma parada de propósito — corrigido
 

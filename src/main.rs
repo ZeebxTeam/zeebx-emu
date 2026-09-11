@@ -139,6 +139,10 @@ fn main() -> ExitCode {
                 .find_map(|a| a.strip_prefix("--serial="))
                 .map(std::path::PathBuf::from);
             let dump_heap = args.iter().any(|a| a == "--dump-heap");
+            let dump_surfaces = args
+                .iter()
+                .find_map(|a| a.strip_prefix("--dump-surfaces="))
+                .map(str::to_owned);
             let dump_gl = args
                 .iter()
                 .find_map(|a| a.strip_prefix("--dump-gl="))
@@ -188,6 +192,7 @@ fn main() -> ExitCode {
                     watch,
                     serial,
                     dump_heap,
+                    dump_surfaces,
                     probe,
                     probe_answers,
                     window,
@@ -233,6 +238,7 @@ fn main() -> ExitCode {
                 "     zeebx run <arquivo.mod> [--window] [--seconds=N] [--keys=ms:tecla,...]
                              [--dump-gl=DIR] [--dump-audio=ARQUIVO.wav]
                              [--trace[=trecho]] [--watch=0xADDR] [--serial=CAMINHO] [--dump-heap]
+                             [--dump-surfaces=DIR]
                              [--code=0xINI:0xFIM] [--frames=N]
                              [--profile] [--wall=SEGUNDOS] [--sonda=0xCLSID,...]
                              [--sem-rede] [--servidor=MAQUINA[:PORTA]] [--ponte]
@@ -322,6 +328,8 @@ struct Options {
     /// Caminho da captura de serial, com `--serial=CAMINHO`.
     serial: Option<std::path::PathBuf>,
     dump_heap: bool,
+    /// Onde gravar um BMP por superfície viva, com `--dump-surfaces=DIR`.
+    dump_surfaces: Option<String>,
     probe: Vec<u32>,
     probe_answers: Vec<(u32, u32, u32)>,
     window: bool,
@@ -398,6 +406,7 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
         watch,
         serial,
         dump_heap,
+        dump_surfaces,
         probe,
         probe_answers,
         window,
@@ -552,6 +561,9 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
     }
     if dump_heap && !rodou_quadros {
         despeja_memoria(&machine)?;
+    }
+    if let Some(dir) = &dump_surfaces {
+        despeja_superficies(&machine, dir)?;
     }
 
     if trace_range.is_some() {
@@ -826,6 +838,24 @@ fn despeja_memoria(machine: &machine::Machine<UnicornCpu>) -> Result<(), Box<dyn
         loader::HEAP_BASE,
         base
     );
+    Ok(())
+}
+
+/// Grava um BMP por superfície viva.
+///
+/// "O jogo desenha e a tela fica preta" tem duas causas possíveis, e só o conteúdo das
+/// superfícies as separa: ou ele desenhou em algo que não vai para a tela, ou não desenhou. Ver
+/// o conteúdo delas resolveu o texto do Tekken 2 em minutos depois de horas de suposição.
+fn despeja_superficies(
+    machine: &machine::Machine<UnicornCpu>,
+    dir: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    std::fs::create_dir_all(dir)?;
+    let superficies = machine.superficies();
+    for (addr, largura, altura, bmp) in &superficies {
+        std::fs::write(format!("{dir}/{addr:08x}-{largura}x{altura}.bmp"), bmp)?;
+    }
+    println!("superfícies: {} em {dir}/", superficies.len());
     Ok(())
 }
 

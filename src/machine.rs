@@ -726,6 +726,13 @@ const AEE_SOUND_STATUS_CB: u32 = 0;
 const AEE_SOUND_VOLUME_CB: u32 = 1;
 /// `AEEIID_DIB_20`, de `inc/AEEIDIB.h`: o IID que o `IDIB` tinha no BREW 2.0.
 const AEEIID_DIB_20: u32 = 0x0100_102c;
+/// O terceiro IID do `IDIB`, vizinho do anterior na mesma faixa do `AEEIDIB.h`.
+///
+/// É o que o Zenonia pede — e só ele, em todo o acervo. O jogo cria a superfície com
+/// `CreateCompatibleBitmap`, pede este IID nela, guarda o ponteiro e passa a escrever os pixels
+/// direto. Recusando, ele guardava nulo, seguia assim mesmo e apresentava 258 quadros de uma
+/// superfície vazia: tela preta com o jogo desenhando o tempo todo.
+const AEEIID_DIB_ANTIGO: u32 = 0x0100_1029;
 /// `IDIB_COLORSCHEME_565`, de `inc/AEEIDIB.h`: 5 bits de vermelho, 6 de verde, 5 de azul.
 const IDIB_COLORSCHEME_565: u8 = 16;
 /// `AEECLSID_DIB` = `AEECLSID_CORE + 69`. É o bitmap com acesso direto aos pixels.
@@ -3883,6 +3890,7 @@ impl<C: CpuBackend> Machine<C> {
             // entrar no guest, e por isso fica para a fronteira da chamada.
             "SetDestination" => {
                 let target = self.cpu.read_reg(Reg::R1);
+
                 if target != 0 && !self.bitmaps.contains_key(&target) && self.probed.insert(target)
                 {
                     self.pending_probes.push(target);
@@ -6154,7 +6162,7 @@ impl<C: CpuBackend> Machine<C> {
                     // Um `IDIB` *é* um `IBitmap` — a struct começa com a vtable de `IBitmap` e
                     // só acrescenta campos públicos. Então o próprio objeto serve, desde que
                     // os campos estejam preenchidos.
-                    AEECLSID_DIB => {
+                    AEECLSID_DIB | AEEIID_DIB_20 | AEEIID_DIB_ANTIGO => {
                         self.expose_dib(this)?;
                         Some(this)
                     }
@@ -12269,6 +12277,18 @@ impl<C: CpuBackend> Machine<C> {
 
     pub fn live_objects(&self) -> usize {
         self.objects.live_count()
+    }
+
+    /// Cada superfície viva como um BMP, para inspeção: endereço, tamanho e bytes.
+    ///
+    /// Existe porque "o jogo desenha e a tela fica preta" tem duas causas possíveis, e só o
+    /// conteúdo das superfícies as separa: ou o jogo desenhou em algo que não vai para a tela,
+    /// ou não desenhou. Descobrir isso por instrumentação temporária custou duas investigações.
+    pub fn superficies(&self) -> Vec<(u32, u32, u32, Vec<u8>)> {
+        self.bitmaps
+            .iter()
+            .map(|(&addr, fb)| (addr, fb.width(), fb.height(), fb.to_bmp()))
+            .collect()
     }
 
     pub fn heap_used(&self) -> u32 {
