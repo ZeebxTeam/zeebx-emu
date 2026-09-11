@@ -4,10 +4,10 @@
 
 | Formato | Módulo | O que é |
 |---|---|---|
-| `.mod` | `modfile.rs` | o executável ARM do módulo |
-| `.mif` | `miffile.rs` | o Module Information File: ClassIDs dos applets e os ícones |
-| `.bar` | `resfile.rs` | recursos — strings e imagens que o jogo carrega por id |
-| `.zip` | `archive.rs` | como os títulos costumam circular |
+| `.mod` | `loader/modfile.rs` | o executável ARM do módulo |
+| `.mif` | `loader/miffile.rs` | o Module Information File: ClassIDs dos applets e os ícones |
+| `.bar` | `loader/resfile.rs` | recursos — strings e imagens que o jogo carrega por id |
+| `.zip` | `loader/archive.rs` | como os títulos costumam circular |
 
 ### `.mif`
 
@@ -38,7 +38,7 @@ ids `id..=id+a` vivem nas seções `b..=b+a`. Tipos: `1` string, `6` imagem (com
 
 ## O sistema de arquivos virtual
 
-`vfs.rs`. O BREW dá a cada módulo um diretório próprio, e é para lá que os caminhos do jogo
+`brew/vfs.rs`. O BREW dá a cada módulo um diretório próprio, e é para lá que os caminhos do jogo
 apontam:
 
 ```
@@ -89,7 +89,7 @@ deflate cru, nessa ordem, porque o que chega não anuncia qual é.
 
 ## Imagens dos jogos
 
-`icon.rs` decodifica PNG (expandindo paleta), **BMP paletado de 1/4/8 bits e direto de 24/32** e
+`video/icon.rs` decodifica PNG (expandindo paleta), **BMP paletado de 1/4/8 bits e direto de 24/32** e
 JPEG. O BMP é escrito à mão porque o que os `.mif` trazem é o subconjunto mais simples do formato,
 e uma dependência inteira custaria mais que as poucas dezenas de linhas.
 

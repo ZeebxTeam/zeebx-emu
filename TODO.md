@@ -57,14 +57,14 @@ Contexto técnico em [docs/](docs/README.md).
 - Helpers implementados: `malloc`/`free`/`realloc` (com `ALLOC_NO_ZMEM`), `memmove`, `memset`,
   `memcmp`, `strlen`, `strcpy`, `strcat`, `strcmp`, `strncmp`, `wstrlen`, `sprintf`,
   `dbgprintf`, `GetAppInstance`, os helpers de tempo, `aee_GetRand`, `GetRAMFree`
-- **`DrawText` desenha de verdade** (`font.rs`), com a fonte que o **próprio jogo empacota** — a
+- **`DrawText` desenha de verdade** (`video/font.rs`), com a fonte que o **próprio jogo empacota** — a
   do console vinha da firmware, que não temos. Hoje só a Z-Wheel traz uma (`tectoy.ttf`), e é
   justamente ela que precisa. As métricas (`GetFontMetrics`, `MeasureTextEx`) passaram a sair da
   fonte em vez de números fixos
 - **`ISHELL_SendEvent`, `IFILE_GetInfoEx` e `GETJULIANDATE`** — os três degraus seguintes da
   Z-Wheel. Ela agora **cria o applet** e roda o `EVT_APP_START`: lê o banco, lê o `tectoy.cfg` e
   para em "Could not create root form(20)", que é a classe `0x01001011` da interface dela
-- **`AEECLSID_SQLMGR` sobre SQLite de verdade** (`sql.rs`, com o `rusqlite` embutido) — a
+- **`AEECLSID_SQLMGR` sobre SQLite de verdade** (`brew/sql.rs`, com o `rusqlite` embutido) — a
   Z-Wheel abre `tt_prefs.db`, passa no `PRAGMA integrity_check`, lê a versão do banco e segue
   para o `tectoy.cfg`. O dialeto e o formato do arquivo já eram SQLite; o que faltava era a ponte
 - **`--sonda=0xCLSID`**, para descobrir que interface é uma classe sem header: ela responde
@@ -86,7 +86,7 @@ Contexto técnico em [docs/](docs/README.md).
   devolvíamos sempre um `IImage`. O Tekken 2 parou de estourar divisão por zero no menu e na
   seleção de personagem, o Toy Raid saiu de "para no laço" para o menu inteiro desenhado, e o
   Pac-Mania trocou tela preta por imagem — ficou lento porque agora tem o que desenhar
-- **A duração de um MP3 sem decodificá-lo** (`mp3.rs`) — a música do Tekken 2 é MP3, o `Play`
+- **A duração de um MP3 sem decodificá-lo** (`audio/mp3.rs`) — a música do Tekken 2 é MP3, o `Play`
   respondia "esse som já acabou" e o jogo mandava tocar de novo, 766 mil vezes em quatro segundos
   virtuais. Com a duração vinda do cabeçalho e da etiqueta `Xing`/`Info`, o som toca em silêncio
   pelo tempo certo do relógio virtual: seis segundos virtuais saíram de mais de cinco minutos
@@ -167,7 +167,7 @@ Contexto técnico em [docs/](docs/README.md).
   nosso com a imagem, o `BltIn` do jogo pede `QueryInterface(AEECLSID_DIB)` nele e lê os pixels
   pelos campos públicos. O ciclo fecha: são 18 blits por execução, todos aceitos
 
-- **Ponto flutuante da stdlib** (`src/fmath.rs`): `f_op`, `f_cmp`, `f_calc`, `f_get`,
+- **Ponto flutuante da stdlib** (`src/brew/fmath.rs`): `f_op`, `f_cmp`, `f_calc`, `f_get`,
   `f_toint`, `f_assignint`/`f_assignstr`, `strtod`, `trunc`/`utrunc`. Os códigos de operação
   saem de `AEEStdLib.h`, onde `FO_*`, `FCALC_*` e `FGET_*` dividem a mesma numeração; o Quake
   monta as tabelas de seno e tangente com 182 chamadas de `f_calc` logo na inicialização
@@ -203,7 +203,7 @@ Contexto técnico em [docs/](docs/README.md).
   e por OpenGL ES pelas interfaces novas do BREW — `this` no primeiro argumento, código de
   erro no retorno e o resultado por ponteiro de saída. A `IEGL`/`IGL` antigas de `AEEGL.h`
   têm outra convenção e não são estas
-- **Rasterizador de software** (`src/rasterizer.rs`): pipeline fixo do OpenGL ES 1.1 — pilhas
+- **Rasterizador de software** (`src/video/rasterizer.rs`): pipeline fixo do OpenGL ES 1.1 — pilhas
   de matriz, recorte contra o plano próximo, divisão pela perspectiva, preenchimento de
   triângulos com interpolação corrigida pela perspectiva, textura, teste de profundidade,
   mistura, teste de alfa e face traseira
@@ -232,7 +232,7 @@ Contexto técnico em [docs/](docs/README.md).
   como `.bmp` no fim. `Esc` ou fechar a janela encerram. Com `--window` o padrão é rodar até
   fecharem — o `--frames` continua valendo como limite de segurança
 
-- **Entrada do teclado** (`src/input.rs`): o controle do Zeebo com os doze botões e os quatro
+- **Entrada do teclado** (`src/input/mod.rs`): o controle do Zeebo com os doze botões e os quatro
   eixos, alimentado pelas teclas do host. Cada aperto e cada soltura entra numa fila que o
   `GetNextButtonEvent` esvazia, e a mudança acorda o jogo pelos `ISignal` que ele registrou —
   sem isso o jogo só veria a tecla na próxima vez que resolvesse perguntar, e alguns nunca
@@ -298,12 +298,12 @@ Contexto técnico em [docs/](docs/README.md).
     `AEECLSID_MD5` (`0x01001015`) e `AEECLSID_CipherFactory` (`0x0102cce1`) em sequência e
     **não confere o retorno**: a primeira recusa fazia o código pular as outras duas criações e
     usar o ponteiro que nunca foi escrito
-  - **`ICipher1` com AES-128 em CBC de verdade** (`src/crypto.rs`), com os vetores do FIPS-197
+  - **`ICipher1` com AES-128 em CBC de verdade** (`src/brew/crypto.rs`), com os vetores do FIPS-197
     e do NIST SP 800-38A como teste
-  - **Texturas ATITC** (`src/atc.rs`): ele não faz **uma única** chamada a `glTexImage2D` —
+  - **Texturas ATITC** (`src/video/atc.rs`): ele não faz **uma única** chamada a `glTexImage2D` —
     todas as 300 e tantas texturas entram por `glCompressedTexImage2D` nos formatos
     `GL_ATC_RGB_AMD` e `GL_ATC_RGBA_EXPLICIT_ALPHA_AMD`, que são os do Adreno 130
-- **Recursos `.bar` lidos** (`src/resfile.rs`), com `LoadResString`, `LoadResData`,
+- **Recursos `.bar` lidos** (`src/loader/resfile.rs`), com `LoadResString`, `LoadResData`,
   `LoadResDataEx` e `FreeResData`. O `.bar` é o **mesmo contêiner do `.mif`**; o que ele tem a
   mais é um índice de entradas de 8 bytes, `(tipo, id, a, b)`, em que os ids `id..=id + a`
   moram nas seções `b..=b + a`. A regra foi confirmada nos dois arquivos reais: em ambos o
@@ -332,7 +332,7 @@ Contexto técnico em [docs/](docs/README.md).
     `--keys`, e a tecla `H` foi para o mapa junto do `Backspace`: o jogo pede "APERTE O BOTÃO
     HOME", e ninguém adivinharia que o botão se chama `back` aqui dentro. Com ele, o jogo passa
     da tela de título para o menu — Batalha 1 Jogador, 2 Jogadores, Ajuda, Opções, Sair
-  - **Texturas paletizadas do OES** (`src/paltex.rs`), do
+  - **Texturas paletizadas do OES** (`src/video/paltex.rs`), do
     `OES_compressed_paletted_texture`. As entradas de 16 bits valem na ordem de bytes do
     aparelho, little-endian: lidas ao contrário, o logo sai com serrilhado de arco-íris no lugar
     do dourado, e foi assim que a ordem se decidiu
@@ -408,7 +408,7 @@ Contexto técnico em [docs/](docs/README.md).
   entregam **RIFF/WAVE de PCM em memória**, mono, de 8 ou 16 bits, em taxas de 11025 a 44100 Hz.
   Nenhum entrega MP3, apesar de o Quake ter oito soltos na pasta: não foi preciso decodificador
   de formato comprimido
-- **`src/wav.rs`** lê o RIFF e **`src/audio.rs`** mistura as vozes e fala com a placa pelo
+- **`src/audio/wav.rs`** lê o RIFF e **`src/audio/mod.rs`** mistura as vozes e fala com a placa pelo
   `cpal`. Cada voz é reamostrada para a taxa da placa, porque o Peteca toca sons de três taxas
   diferentes na mesma sessão
 - Três valores não estão em header nenhum do SDK 4.0.2 e saíram da observação:
@@ -430,14 +430,14 @@ Contexto técnico em [docs/](docs/README.md).
 
 ## Interface
 
-- **Biblioteca de jogos, com varredura da pasta de ROMs** (`src/library.rs`). Ela cobre as
+- **Biblioteca de jogos, com varredura da pasta de ROMs** (`src/ui/library.rs`). Ela cobre as
   duas disposições que aparecem na prática: a do console, `<Título>/mod/<id>/<nome>.mod` com o
   `.mif` num `mif/` irmão, e a dos exemplos do SDK, com os dois lado a lado. O título vem da
   pasta no primeiro caso, porque ali o nome do arquivo é um identificador numérico
-- **Configurações guardadas em disco** (`src/settings.rs`), na pasta que cada sistema reserva
+- **Configurações guardadas em disco** (`src/ui/settings.rs`), na pasta que cada sistema reserva
   para isso. Todo campo tem padrão e a leitura nunca falha: arquivo ausente, truncado ou de uma
   versão mais nova precisa deixar o emulador abrir, não impedi-lo
-- **Idiomas por arquivo JSON** (`src/i18n.rs`). Português e inglês vêm embutidos no binário,
+- **Idiomas por arquivo JSON** (`src/ui/i18n.rs`). Português e inglês vêm embutidos no binário,
   para o emulador funcionar sozinho; qualquer outro entra como arquivo numa pasta `lang/`, sem
   recompilar. Um arquivo com o código de um embutido o substitui, que é como corrigir uma
   tradução sem esperar versão nova. Um teste compara as chaves dos dois idiomas: chave que
@@ -448,19 +448,19 @@ Contexto técnico em [docs/](docs/README.md).
 - A interface é `egui`/`eframe`, e o emulador roda **na mesma linha de execução dela**: o
   núcleo do unicorn não atravessa linhas de execução, e o `Session::step` já devolve o controle
   a cada fatia de tempo real
-- **Aba de controles**, com o mapeamento em `src/bindings.rs` e a leitura dos controles de
-  verdade em `src/gamepads.rs`, pelo `gilrs`. O mapeamento é guardado **por nome** — da tecla,
+- **Aba de controles**, com o mapeamento em `src/input/bindings.rs` e a leitura dos controles de
+  verdade em `src/input/gamepads.rs`, pelo `gilrs`. O mapeamento é guardado **por nome** — da tecla,
   do botão do host, do botão do Zeebo — e não por índice: índices mudam quando uma tabela muda,
   nomes sobrevivem, e é isso que faz um arquivo de configuração escrito hoje continuar valendo
 - O teclado e o controle valem **juntos**: cada botão do Zeebo aceita mais de uma origem, que é
   o mesmo mecanismo que já fazia `Espaço` e `X` serem o mesmo botão
-- **Mapa visual do controle** (`src/padview.rs`): a arte é um PNG (`assets/controller.png`) e as
+- **Mapa visual do controle** (`src/input/padview.rs`): a arte é um PNG (`assets/controller.png`) e as
   regiões, um SVG invisível do mesmo tamanho (`assets/controller-map.svg`) em que o `id` de cada
   forma é o nome de um botão. Separar os dois deixa o desenho ser trocado sem tocar em código.
   Cada forma vira uma silhueta recortada, e dela saem o realce e o teste de clique — que assim
   respeita o formato do botão em vez de uma caixa retangular. `back`, `l2` e `r2` não existem
   nessa arte: não acendem, e seguem configuráveis pela lista
-- **Analógicos** (`AxisSource` em `src/bindings.rs`): o console tem quatro eixos, e o
+- **Analógicos** (`AxisSource` em `src/input/bindings.rs`): o console tem quatro eixos, e o
   direcional é reportado como `X` e `Y` — o manche esquerdo cai neles, o direito em `Z` e `RZ`,
   que antes não tinham nada os alimentando. O valor analógico entra **depois** dos botões e só
   fora da zona morta: assim ele acrescenta curso ao que o direcional escreveu em vez de apagá-lo
@@ -473,7 +473,7 @@ Contexto técnico em [docs/](docs/README.md).
   segundo exige que o emulador alimente dois controles — hoje o `Machine` tem um `set_pad` só
 - **Biblioteca em cartões**, com a imagem de cada jogo. O `.mif` guarda os ícones do título em
   seções que começam com `u16` de comprimento **do próprio cabeçalho** seguido do tipo MIME; os
-  formatos que aparecem nas ROMs reais são PNG, BMP paletado e JPEG, e `src/icon.rs` lê os três
+  formatos que aparecem nas ROMs reais são PNG, BMP paletado e JPEG, e `src/video/icon.rs` lê os três
   (o BMP à mão, porque o que os `.mif` trazem é o subconjunto mais simples do formato)
 - **Não existe capa dentro das ROMs.** O maior ícone dos títulos antigos é 65×42 — é ícone de
   menu, não arte. O Resident Evil 4 é a exceção, com 192×192. Por isso a biblioteca também
@@ -1114,7 +1114,7 @@ revela é o real.
 
 ## Formato do `.mif` (levantado nesta sessão)
 
-Não é público. O que está em `src/miffile.rs` saiu da comparação de 24 arquivos reais. O
+Não é público. O que está em `src/loader/miffile.rs` saiu da comparação de 24 arquivos reais. O
 registro de applet tem 20 bytes e começa com o `AEECLSID`; em todo `.mif` de applet existe
 exatamente uma seção desse tamanho. A regra foi validada contra duas fontes independentes:
 `mediaplayer.mif` devolve `0x01010EF6`, o mesmo ClassID que a engenharia reversa da firmware

@@ -32,7 +32,7 @@ O `Could not create root form(20)` que parava tudo antes **saiu**. O `20` era `E
 classe recusada era a `0x01028e51` — não a `0x01001011`. Ver a seção sobre o retorno invertido.
 
 O que foi conseguido no caminho, e está no emulador: o `AEECLSID_SQLMGR` sobre SQLite de verdade
-([`sql.rs`](../../src/sql.rs)), a coleção genérica `0x0100104f`, o `ISHELL_SendEvent`, o
+([`brew/sql.rs`](../../src/brew/sql.rs)), a coleção genérica `0x0100104f`, o `ISHELL_SendEvent`, o
 `GETJULIANDATE`, o `IDisplay::Clone` e o `DrawText` desenhando com a `tectoy.ttf` que ela mesma
 empacota.
 

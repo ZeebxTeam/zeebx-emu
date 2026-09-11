@@ -36,7 +36,7 @@ seguem como o jogo os montou.
 
 ## A criptografia
 
-`crypto.rs` traz o AES-128 em CBC, que é o que o BREW entrega pelo `AEECLSID_BlockAES128`, e o
+`brew/crypto.rs` traz o AES-128 em CBC, que é o que o BREW entrega pelo `AEECLSID_BlockAES128`, e o
 `IHash` (MD5). Está escrito aqui em vez de vir de uma dependência porque é pequeno, fechado e
 verificável: os testes usam os vetores das próprias especificações — o FIPS-197 para o bloco e o
 NIST SP 800-38A para o encadeamento.

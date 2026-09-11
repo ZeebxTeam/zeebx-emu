@@ -6,7 +6,7 @@ O console tem uma **Adreno 130** (ex-ATI Imageon). Aqui a GPU é a CPU do host. 
 contrato: o jogo entrega vértices em coordenadas de objeto, matrizes, texturas e um punhado de
 estados fixos, e espera um quadro de volta.
 
-`rasterizer.rs` é o pipeline fixo clássico, **sem iluminação**: transforma, recorta contra o
+`video/rasterizer.rs` é o pipeline fixo clássico, **sem iluminação**: transforma, recorta contra o
 plano próximo, divide pela perspectiva, mapeia para a tela e preenche triângulos com interpolação
 corrigida pela perspectiva, teste de profundidade, mistura e teste de alfa.
 
@@ -43,8 +43,8 @@ Peteca viravam ruído — e o primeiro diagnóstico que dei, "falta mipmap", est
 
 | Módulo | Formato | Quem usa |
 |---|---|---|
-| `atc.rs` | ATITC (`GL_AMD_compressed_ATC_texture`) | o formato nativo do Adreno; o Boomerang Sports Dodgeball carrega **tudo** assim, sem uma única `glTexImage2D` |
-| `paltex.rs` | `OES_compressed_paletted_texture` | paleta de 16 ou 256 cores seguida dos índices |
+| `video/atc.rs` | ATITC (`GL_AMD_compressed_ATC_texture`) | o formato nativo do Adreno; o Boomerang Sports Dodgeball carrega **tudo** assim, sem uma única `glTexImage2D` |
+| `video/paltex.rs` | `OES_compressed_paletted_texture` | paleta de 16 ou 256 cores seguida dos índices |
 
 Duas armadilhas registradas em teste:
 

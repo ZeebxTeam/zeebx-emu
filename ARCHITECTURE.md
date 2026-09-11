@@ -65,54 +65,50 @@ ficam o freio de velocidade e a medição.
 
 ### Os módulos
 
+A árvore segue os subsistemas: uma pasta por assunto, e dentro dela um arquivo por peça.
+
 Execução:
 
 | | |
 |---|---|
 | `cpu/mod.rs` | O trait `CpuBackend`: registradores, memória, `run` |
 | `cpu/unicorn.rs` | A implementação sobre o unicorn, configurada como ARM1176 |
-| `mem.rs` | O mapa de memória do guest, em regiões nomeadas |
-| `loader.rs`, `modfile.rs` | Carga do `.mod` e montagem do ambiente |
+| `cpu/mem.rs` | O mapa de memória do guest, em regiões nomeadas |
+| `loader/` | Carga do `.mod` e montagem do ambiente, mais os formatos `.mif`, `.bar` e `.zip` |
 | `machine/mod.rs` | O laço, o despacho e o estado da máquina |
 | `machine/*.rs` | Um submódulo por interface do BREW — ver [`docs/implementacao/01-arquitetura.md`](docs/implementacao/01-arquitetura.md) |
 
-API do BREW:
+API do BREW (`brew/`):
 
 | | |
 |---|---|
-| `aee.rs` | O trampolim: endereço ↔ (interface, slot) |
-| `aee_slots.rs` | O nome de cada método, na ordem da vtable |
-| `aee_helpers.rs` | A stdlib do BREW: `memcpy`, `malloc`, `sprintf` e companhia |
-| `objects.rs`, `heap.rs` | Objetos com contagem de referências, e o heap do guest |
-| `cformat.rs` | O `printf` do guest |
-| `crypto.rs` | AES e MD5, para o `ICipher1` e o `IHash` |
-| `font.rs` | O texto do `IDISPLAY_DrawText`, com a fonte que o jogo empacota |
-| `sql.rs` | Os bancos SQLite do `ISQLMgr`, sobre o `rusqlite` |
+| `brew/aee.rs` | O trampolim: endereço ↔ (interface, slot) |
+| `brew/aee_slots.rs` | O nome de cada método, na ordem da vtable |
+| `brew/aee_helpers.rs` | A stdlib do BREW: `memcpy`, `malloc`, `sprintf` e companhia |
+| `brew/objects.rs`, `brew/heap.rs` | Objetos com contagem de referências, e o heap do guest |
+| `brew/cformat.rs`, `brew/fmath.rs` | O `printf` e o ponto flutuante do guest |
+| `brew/crypto.rs` | AES e MD5, para o `ICipher1` e o `IHash` |
+| `brew/sql.rs` | Os bancos SQLite do `ISQLMgr`, sobre o `rusqlite` |
+| `brew/vfs.rs` | Os caminhos do guest, presos ao diretório do módulo |
 
 Saída:
 
 | | |
 |---|---|
-| `rasterizer.rs` | OpenGL ES 1.1 em software |
-| `gles.rs`, `atc.rs`, `paltex.rs` | Estado do GL e as texturas comprimidas |
-| `display.rs` | Framebuffer e operações 2D |
-| `audio.rs`, `wav.rs` | Mistura e decodificação de som |
-| `input.rs`, `bindings.rs`, `gamepads.rs` | Entrada |
-
-Arquivos e recursos:
-
-| | |
-|---|---|
-| `vfs.rs` | Os caminhos do guest, presos ao diretório do módulo |
-| `archive.rs` | Jogos em `.zip`, extraídos para um cache |
-| `miffile.rs`, `resfile.rs`, `icon.rs` | `.mif`, `.bar` e ícones |
+| `video/rasterizer.rs` | OpenGL ES 1.1 em software |
+| `video/gles.rs`, `video/atc.rs`, `video/paltex.rs` | Estado do GL e as texturas comprimidas |
+| `video/display.rs` | Framebuffer e operações 2D |
+| `video/font.rs` | O texto do `IDISPLAY_DrawText`, com a fonte que o jogo empacota |
+| `video/icon.rs`, `video/gif.rs` | As imagens que vêm dentro dos jogos |
+| `audio/` | Mistura de som, e os formatos WAV, MP3 e MIDI |
+| `input/` | O controle do Zeebo, os gamepads do host e o mapa de botões |
 
 Fora do emulador:
 
 | | |
 |---|---|
 | `session.rs` | Um jogo em execução |
-| `ui.rs`, `i18n.rs`, `settings.rs`, `library.rs`, `padview.rs` | A interface |
+| `ui/` | A interface: tela, biblioteca, preferências, saves e tradução |
 | `main.rs` | Linha de comando e abertura da interface |
 
 ## O laço

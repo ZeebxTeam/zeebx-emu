@@ -20,7 +20,7 @@ linha fácil de passar batido, `som recusado (audio/mid)`.
 
 O MP3 já toca (ver abaixo). O MIDI é o assunto do fim desta página.
 
-`wav.rs` lê:
+`audio/wav.rs` lê:
 
 - PCM de 8 bits (sem sinal, centrado em 128) e de 16 bits (com sinal);
 - **IMA ADPCM** (formato 17), que é o que o Pac-Mania usa.
@@ -52,7 +52,7 @@ cronometrá-lo sem saber decodificá-lo.
 
 ## O misturador
 
-`audio.rs`. Cada `Voice` tem posição, passo, volume, quanto falta e se está pausada. O passo é a
+`audio/mod.rs`. Cada `Voice` tem posição, passo, volume, quanto falta e se está pausada. O passo é a
 razão entre a taxa do som e a da placa: é assim que um WAVE de 8 kHz sai certo numa saída de
 48 kHz. Há teste de cruzamento por zero provando que o reamostrar **preserva a altura** — errar
 isso dá um som que toca, parece bem, e está no tom errado.
@@ -83,11 +83,11 @@ IMedia::GetState → 2
 IMedia::Play     → 0
 ```
 
-A música é MP3, `wav.rs` recusa, e o `Play` caía no caminho de "sem som legível", que respondia
+A música é MP3, `audio/wav.rs` recusa, e o `Play` caía no caminho de "sem som legível", que respondia
 ao jogo que **o som já tinha acabado**. O jogo consultava o estado, via "pronto", e mandava tocar
 de novo. Para sempre.
 
-O primeiro conserto não foi um decodificador. Foi `mp3.rs`, que lê o cabeçalho do primeiro quadro
+O primeiro conserto não foi um decodificador. Foi `audio/mp3.rs`, que lê o cabeçalho do primeiro quadro
 e a etiqueta `Xing`/`Info` do codificador e devolve **só a duração** — quando a etiqueta traz a
 contagem de quadros o número é exato mesmo com taxa variável; sem ela, sobra a conta do tamanho
 pela taxa de bits. Com a duração, o som "toca" em silêncio pelo tempo certo do relógio virtual, o
@@ -101,7 +101,7 @@ de despacho de API.
 ## O MP3 que agora toca
 
 A duração resolvia o travamento e não a música, e a música é de nove jogos — não de um. Então
-`mp3.rs` ganhou o `decode`, que devolve o mesmo `Sound` que o RIFF/WAVE produz: o misturador não
+`audio/mp3.rs` ganhou o `decode`, que devolve o mesmo `Sound` que o RIFF/WAVE produz: o misturador não
 sabe de onde o som veio, e reamostragem, volume e repetição funcionam iguais.
 
 A decodificação em si é do **symphonia**, Rust puro, só o MP3 habilitado. É a mesma decisão do
@@ -130,7 +130,7 @@ ou insistindo.** O Heavy Weapon era o mesmo caso, com bitmaps que mediam 0×0.
 
 ## O MIDI, que não se decodifica: se sintetiza
 
-`midi.rs`. Onze jogos entregam a trilha como MIDI, e **MIDI não é som, é partitura**: não há
+`audio/midi.rs`. Onze jogos entregam a trilha como MIDI, e **MIDI não é som, é partitura**: não há
 amostra dentro do arquivo, há "toque a nota 69 no instrumento 25 com força 100". Quem virava isso
 em som era o sintetizador do firmware do console, com o banco de instrumentos dele — que está na
 parte da NAND que ainda não lemos.

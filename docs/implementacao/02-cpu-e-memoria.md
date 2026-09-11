@@ -79,15 +79,15 @@ religar o núcleo ARM — e o `GetAppInstance` sozinho responde por **mais da me
 de API do Quake, porque os jogos do BREW guardam os globais dentro do applet e cada acesso a um
 global passa por ele.
 
-Para esses, `loader.rs` escreve algumas instruções ARM em `0x3200_0000` e aponta a tabela para
+Para esses, `loader/mod.rs` escreve algumas instruções ARM em `0x3200_0000` e aponta a tabela para
 lá. A chamada nem sai da CPU.
 
 ## Heap e objetos
 
-`heap.rs` é um alocador simples com lista de livres e reuso por tamanho exato. Não compacta:
+`brew/heap.rs` é um alocador simples com lista de livres e reuso por tamanho exato. Não compacta:
 os jogos alocam blocos grandes e poucos, e a fragmentação nunca apareceu como problema.
 
-`objects.rs` entrega endereços dentro da região de objetos, cada um começando com o ponteiro de
+`brew/objects.rs` entrega endereços dentro da região de objetos, cada um começando com o ponteiro de
 vtable — que é o que um objeto COM é. Ele mantém **contagem de referências**, e é ela que decide
 quando o estado associado (um bitmap, um arquivo aberto, uma enumeração) pode ser descartado.
 

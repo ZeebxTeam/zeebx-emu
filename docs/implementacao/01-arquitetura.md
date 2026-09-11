@@ -32,15 +32,17 @@ dispensa qualquer código ARM de cola — o detalhe está em [03-despacho-de-api
 
 ## Os módulos
 
+A árvore segue os subsistemas: uma pasta por assunto, e dentro dela um arquivo por peça.
+
 ### Núcleo de execução
 
 | Arquivo | Papel |
 |---|---|
 | `cpu/mod.rs` | `CpuBackend`, a fronteira com o núcleo ARM: registradores, memória, `run` |
 | `cpu/unicorn.rs` | A implementação sobre o unicorn-engine, configurada como ARM1176 |
-| `mem.rs` | O mapa de memória do guest, em regiões nomeadas |
-| `loader.rs` | Monta o ambiente do módulo e chama `AEEMod_Load` |
-| `modfile.rs` | Parser do `.mod` |
+| `cpu/mem.rs` | O mapa de memória do guest, em regiões nomeadas |
+| `loader/mod.rs` | Monta o ambiente do módulo e chama `AEEMod_Load` |
+| `loader/modfile.rs` | Parser do `.mod` |
 | `machine/mod.rs` | O laço: roda, atende a chamada, continua. Guarda o estado da `Machine` e o despacho |
 
 A implementação das APIs fica em um submódulo por assunto, cada um com um bloco
@@ -74,30 +76,33 @@ nos irmãos e em nada além disso.
 
 | Arquivo | Papel |
 |---|---|
-| `aee.rs` | O trampolim: converte endereço ↔ (interface, slot) |
-| `aee_slots.rs` | O nome de cada método, na ordem em que ocupa a vtable |
-| `aee_helpers.rs` | A tabela da stdlib do BREW (`memcpy`, `malloc`, `sprintf`…) |
-| `objects.rs` | Os objetos que entregamos ao jogo, com contagem de referências |
-| `heap.rs` | O heap que o `malloc` do jogo consome |
+| `brew/aee.rs` | O trampolim: converte endereço ↔ (interface, slot) |
+| `brew/aee_slots.rs` | O nome de cada método, na ordem em que ocupa a vtable |
+| `brew/aee_helpers.rs` | A tabela da stdlib do BREW (`memcpy`, `malloc`, `sprintf`…) |
+| `brew/cformat.rs`, `brew/fmath.rs` | O `printf` e o ponto flutuante que a tabela aponta |
+| `brew/objects.rs` | Os objetos que entregamos ao jogo, com contagem de referências |
+| `brew/heap.rs` | O heap que o `malloc` do jogo consome |
+| `brew/vfs.rs`, `brew/sql.rs`, `brew/crypto.rs` | Os serviços do AEE: arquivos, SQLite e cifra |
 
 ### Saídas
 
 | Arquivo | Papel |
 |---|---|
-| `display.rs` | O framebuffer e as operações 2D |
-| `rasterizer.rs` | O OpenGL ES 1.1 em software |
-| `gles.rs`, `atc.rs`, `paltex.rs` | Estado do GL e os formatos de textura comprimida |
-| `audio.rs`, `wav.rs` | Mistura e decodificação de som |
-| `input.rs`, `bindings.rs`, `gamepads.rs` | Entrada |
+| `video/display.rs` | O framebuffer e as operações 2D |
+| `video/rasterizer.rs` | O OpenGL ES 1.1 em software |
+| `video/gles.rs`, `video/atc.rs`, `video/paltex.rs` | Estado do GL e os formatos de textura comprimida |
+| `video/font.rs`, `video/icon.rs`, `video/gif.rs` | O texto e as imagens que vêm dentro dos jogos |
+| `audio/mod.rs`, `audio/wav.rs`, `audio/mp3.rs`, `audio/midi.rs` | Mistura e decodificação de som |
+| `input/` | Entrada: o controle do console, os gamepads do host e o mapa de botões |
 
 ### Fora do emulador
 
 | Arquivo | Papel |
 |---|---|
 | `session.rs` | Um jogo em execução, do arquivo aos quadros — o que a interface usa |
-| `ui.rs`, `i18n.rs`, `settings.rs`, `library.rs`, `padview.rs` | A interface |
+| `ui/` | A interface: tela, biblioteca, preferências, saves e tradução |
 | `main.rs` | A linha de comando, e o `launch()` que abre a interface quando não há argumentos |
-| `vfs.rs`, `archive.rs`, `miffile.rs`, `resfile.rs`, `icon.rs` | Arquivos e recursos |
+| `loader/archive.rs`, `loader/miffile.rs`, `loader/resfile.rs` | O `.zip`, o `.mif` e o `.bar` |
 
 ## O laço
 

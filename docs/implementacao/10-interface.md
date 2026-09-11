@@ -5,7 +5,7 @@ e as configurações e o jogo abrem em **viewports imediatas** próprias.
 
 ## Biblioteca
 
-`library.rs` varre a pasta de ROMs procurando `.mod` e `.zip` até quatro níveis, com teto de
+`ui/library.rs` varre a pasta de ROMs procurando `.mod` e `.zip` até quatro níveis, com teto de
 2000 jogos para uma pasta escolhida sem querer não travar a interface. A varredura ordena, porque
 `read_dir` não promete ordem e uma lista que muda de posição entre duas aberturas é confusa.
 
@@ -38,7 +38,7 @@ precisa deixar o programa abrir, não impedi-lo.** No pior caso, volta o padrão
 
 ## Idiomas
 
-`i18n.rs`. Dois idiomas embutidos no binário (en, pt-BR) e a possibilidade de acrescentar outros
+`ui/i18n.rs`. Dois idiomas embutidos no binário (en, pt-BR) e a possibilidade de acrescentar outros
 por JSON solto — ao lado do executável, para uma cópia portátil, ou no diretório de configuração,
 para quem quer traduzir sem mexer na instalação. Um arquivo com o código de um embutido o
 substitui, que é como corrigir uma tradução sem esperar versão nova.
@@ -48,7 +48,7 @@ em inglês no meio do português.**
 
 ## O mapa visual do controle
 
-`padview.rs`. São **duas** peças:
+`input/padview.rs`. São **duas** peças:
 
 | | |
 |---|---|

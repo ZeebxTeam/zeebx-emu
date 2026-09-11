@@ -3,18 +3,18 @@
 ## Três camadas
 
 ```
-teclado / controle do host   →   bindings.rs   →   input::Pad   →   IHID / IHIDDevice
+teclado / controle do host   →   input/bindings.rs   →   input::Pad   →   IHID / IHIDDevice
      (quem apertou)            (o que aciona     (o estado do      (como o jogo lê)
                                  o quê)            console)
 ```
 
-Cada camada não sabe da anterior. `bindings.rs` não conhece teclado nem gamepad — ele só diz *o
+Cada camada não sabe da anterior. `input/bindings.rs` não conhece teclado nem gamepad — ele só diz *o
 que* aciona *o quê*; quem sabe se a tecla `Z` está apertada é a interface. É isso que permite
 testá-lo sem hardware nenhum.
 
 ## O controle do console
 
-`input.rs` tem a tabela real: **18 botões e 4 eixos**, com o UID de cada um. Os UIDs vêm do
+`input/mod.rs` tem a tabela real: **18 botões e 4 eixos**, com o UID de cada um. Os UIDs vêm do
 `hid_devices.cfg` do console, e há três acréscimos deliberados, cada um com sua razão:
 
 - **Os quatro sentidos do direcional como botões.** O arquivo do console os traz só como eixos
@@ -92,7 +92,7 @@ convenção do par esquerdo, e a tela de configuração tem uma caixa "Inverter"
 
 ## Mapeamento configurável
 
-`bindings.rs`. O mapeamento é guardado **por nome** — o nome da tecla, o do botão do controle do
+`input/bindings.rs`. O mapeamento é guardado **por nome** — o nome da tecla, o do botão do controle do
 host, o do botão do Zeebo — e não por índice. Índices mudam quando uma tabela muda; nomes
 sobrevivem, e é o que faz um arquivo de configuração escrito hoje continuar valendo depois.
 
@@ -120,7 +120,7 @@ controle configurado ficava com os manches mudos e não teria como adivinhar o m
 
 ## Controles de verdade
 
-`gamepads.rs`, sobre `gilrs`. Um computador sem nenhum controle — ou sem permissão para lê-los —
+`input/gamepads.rs`, sobre `gilrs`. Um computador sem nenhum controle — ou sem permissão para lê-los —
 não pode impedir o emulador de abrir: a falha vira "nenhum controle" e o teclado segue.
 
 Os botões vêm antes dos eixos na captura: quem aperta o direcional de cruz de um controle que
@@ -150,7 +150,7 @@ portas existirem continua valendo com o controle na porta 1, que é o que ele de
 
 Isto merece a distinção porque as duas coisas existem e são diferentes:
 
-- **O teclado do host simulando o controle** é o mapeamento de sempre, em `bindings.rs`. O jogo
+- **O teclado do host simulando o controle** é o mapeamento de sempre, em `input/bindings.rs`. O jogo
   vê um controle.
 - **O teclado como aparelho** é uma porta ocupada por um teclado USB. O jogo o enumera, e a
   Z-Wheel escreve `Keyboard Connected.` no log dela.

@@ -52,7 +52,7 @@ classe 0x0102c4e8, objeto 0x30000090:
 Lê-se de cima para baixo: o gerenciador abre um banco pelo nome e devolve um objeto; o objeto
 recebe uma instrução SQL, um ponteiro para dentro da faixa de código do módulo — um callback — e
 um contexto. É a forma do `sqlite3_exec`, e foi o suficiente para implementar
-[o `ISQLMgr`](../../src/sql.rs) sem nenhum header.
+[o `ISQLMgr`](../../src/brew/sql.rs) sem nenhum header.
 
 ## A contagem é metade da informação
 
@@ -129,7 +129,7 @@ leitura estática e a execução discordam, quem está errado é a leitura.**
 
 A base não precisava de calibração nenhuma: o carregador mapeia o arquivo inteiro em
 `MODULE_BASE - MODULE_PREFIX` e preenche o prefixo com zeros, então o byte zero do arquivo é o
-endereço `0x10000`. Estava em `loader.rs` o tempo todo.
+endereço `0x10000`. Estava em `loader/mod.rs` o tempo todo.
 
 ## E quando a sonda não é mais o melhor caminho
 

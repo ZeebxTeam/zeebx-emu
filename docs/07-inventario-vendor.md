@@ -139,7 +139,7 @@ console carregava, e que o emulador poderia carregar do mesmo jeito que carrega 
 `isql.mod` é a prova pelo avesso: nós reimplementamos aquilo em Rust sem saber que existia um
 módulo pronto.
 
-Isso não torna o trabalho feito inútil — o `sql.rs` funciona e não depende de material do
+Isso não torna o trabalho feito inútil — o `brew/sql.rs` funciona e não depende de material do
 console —, mas reordena a fila: antes de reimplementar um toolkit de interface, vale tentar
 **executar o do console**.
 

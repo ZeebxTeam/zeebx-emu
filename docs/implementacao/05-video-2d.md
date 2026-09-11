@@ -2,7 +2,7 @@
 
 ## A tela
 
-640×480, RGB565 — a saída de vídeo do Zeebo. `display.rs` tem o `Framebuffer` (pixels em `u16`) e
+640×480, RGB565 — a saída de vídeo do Zeebo. `video/display.rs` tem o `Framebuffer` (pixels em `u16`) e
 as operações: `set_pixel_native`, `fill_rect`, `draw_frame`, `draw_line` (Bresenham, só inteiros,
 como o hardware da época) e `blit`.
 

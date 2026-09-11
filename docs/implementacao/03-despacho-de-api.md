@@ -30,11 +30,11 @@ rastreamento e nas mensagens de erro.
 
 ## Os slots
 
-`aee_slots.rs` lista o nome de cada método **na ordem em que ocupa a vtable**. A ordem vem das
+`brew/aee_slots.rs` lista o nome de cada método **na ordem em que ocupa a vtable**. A ordem vem das
 macros `INHERIT_IXxx` dos headers do SDK — é a única fonte que garante o índice certo, e um
 deslocamento de um slot faz o jogo chamar o método errado sem nenhum aviso.
 
-`aee_helpers.rs` faz o mesmo para a stdlib: `struct AEEHelperFuncs`, campo por campo. O índice é
+`brew/aee_helpers.rs` faz o mesmo para a stdlib: `struct AEEHelperFuncs`, campo por campo. O índice é
 o deslocamento em palavras — `malloc` é o slot 26, offset `0x68`, que é o valor que os módulos
 reais pedem.
 
