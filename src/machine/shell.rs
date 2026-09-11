@@ -194,10 +194,10 @@ impl<C: CpuBackend> Machine<C> {
         if let Some(decoded) = decode_png(bytes) {
             return Some(decoded);
         }
-        if let Some(gif) = crate::gif::decodifica(bytes) {
+        if let Some(gif) = crate::video::gif::decodifica(bytes) {
             return Some(tira_de_quadros(&gif));
         }
-        let image = crate::icon::decode(bytes).ok()?;
+        let image = crate::video::icon::decode(bytes).ok()?;
         let count = image.width * image.height;
         let mut pixels = Vec::with_capacity(count);
         for at in (0..count * 4).step_by(4) {

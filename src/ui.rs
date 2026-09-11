@@ -13,7 +13,7 @@ use eframe::egui;
 
 use crate::loader::archive;
 use crate::bindings::Source;
-use crate::display::Framebuffer;
+use crate::video::display::Framebuffer;
 use crate::gamepads;
 use crate::i18n::Catalog;
 use crate::input::{self, Pad};
@@ -143,7 +143,7 @@ pub struct App {
     /// o cartão sai sem ela, e a tentativa não se repete a cada quadro.
     art_cache: HashMap<PathBuf, Option<egui::TextureHandle>>,
     /// A imagem que representa quem não tem nenhuma.
-    placeholder: Option<crate::icon::Image>,
+    placeholder: Option<crate::video::icon::Image>,
 }
 
 /// O desenho do controle já na placa de vídeo.
@@ -208,7 +208,7 @@ impl App {
                 .ok(),
             art_textures: None,
             art_cache: HashMap::new(),
-            placeholder: crate::icon::decode(PLACEHOLDER)
+            placeholder: crate::video::icon::decode(PLACEHOLDER)
                 .inspect_err(|err| eprintln!("imagem reserva: {err}"))
                 .ok(),
         }
@@ -1689,7 +1689,7 @@ const ART_HEIGHT: f32 = 210.0;
 fn upload_art_of(
     ctx: &egui::Context,
     game: &Game,
-    placeholder: &Option<crate::icon::Image>,
+    placeholder: &Option<crate::video::icon::Image>,
 ) -> Option<egui::TextureHandle> {
     let image = game.art.as_ref().or(placeholder.as_ref())?;
     let color = egui::ColorImage::from_rgba_unmultiplied([image.width, image.height], &image.rgba);

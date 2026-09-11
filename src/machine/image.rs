@@ -182,7 +182,7 @@ impl<C: CpuBackend> Machine<C> {
         };
         let mut bytes = vec![0u8; len];
         self.cpu.read_mem(buffer, &mut bytes)?;
-        let Ok(image) = crate::icon::decode(&bytes) else {
+        let Ok(image) = crate::video::icon::decode(&bytes) else {
             self.assumptions
                 .insert("uma imagem nativa veio num formato que não sabemos ler");
             return Ok(0);

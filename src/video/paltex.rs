@@ -9,7 +9,7 @@
 //! negativo diz quantos níveis de mipmap vêm depois dele. Como só usamos o nível base, o que
 //! interessa é sempre o primeiro trecho de índices depois da paleta.
 
-use crate::gles;
+use crate::video::gles;
 
 /// Como cada entrada da paleta é codificada, e quantas entradas ela tem.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

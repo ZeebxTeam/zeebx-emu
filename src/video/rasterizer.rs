@@ -10,7 +10,7 @@
 
 use std::collections::HashMap;
 
-use crate::gles;
+use crate::video::gles;
 
 /// Uma matriz 4×4 na ordem do OpenGL: coluna primeiro, `m[coluna * 4 + linha]`.
 pub type Matrix = [f32; 16];

@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::loader::archive;
-use crate::icon::{self, Image};
+use crate::video::icon::{self, Image};
 use crate::loader::miffile::MifFile;
 use crate::settings;
 

@@ -9,7 +9,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use crate::cpu::unicorn::UnicornCpu;
-use crate::display::Framebuffer;
+use crate::video::display::Framebuffer;
 use crate::input::Pad;
 use crate::machine::{AppletResult, Machine, Outcome};
 use crate::loader::archive;

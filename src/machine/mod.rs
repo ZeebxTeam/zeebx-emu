@@ -8,21 +8,21 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::brew::aee::{self, Interface};
 use crate::brew::aee_helpers;
-use crate::atc;
+use crate::video::atc;
 use crate::brew::cformat::{self, ArgSource};
 use crate::cpu::unicorn::RETURN_MAGIC;
 use crate::cpu::{CpuBackend, CpuError, Reg, StopReason};
 use crate::brew::crypto;
-use crate::display::{Framebuffer, Rect, Rgb};
+use crate::video::display::{Framebuffer, Rect, Rgb};
 use crate::brew::fmath;
-use crate::gles;
+use crate::video::gles;
 use crate::brew::heap::Heap;
 use crate::input::{self, Pad};
 use crate::loader::{self, LoadedModule};
 use crate::brew::objects::ObjectStore;
-use crate::paltex;
+use crate::video::paltex;
 use crate::ponte;
-use crate::rasterizer::{self, GlState, Vertex};
+use crate::video::rasterizer::{self, GlState, Vertex};
 use crate::rede;
 use crate::brew::vfs::Vfs;
 
@@ -476,7 +476,7 @@ const PLAINTEXT_BYTES: usize = 512;
 /// **O nível zero limpa os menores.** Uma imagem nova no nível base torna a cadeia antiga
 /// mentira, e servir um mipmap de outra textura é pior do que não ter nenhum.
 fn guarda_nivel(
-    texture: &mut crate::rasterizer::Texture,
+    texture: &mut crate::video::rasterizer::Texture,
     level: u32,
     width: usize,
     height: usize,
@@ -493,13 +493,13 @@ fn guarda_nivel(
     if texture.mipmaps.len() <= indice {
         texture
             .mipmaps
-            .resize_with(indice + 1, || crate::rasterizer::Nivel {
+            .resize_with(indice + 1, || crate::video::rasterizer::Nivel {
                 width: 0,
                 height: 0,
                 pixels: Vec::new(),
             });
     }
-    texture.mipmaps[indice] = crate::rasterizer::Nivel {
+    texture.mipmaps[indice] = crate::video::rasterizer::Nivel {
         width,
         height,
         pixels,
@@ -1153,7 +1153,7 @@ struct DecodedImage {
 /// É a forma que o resto do emulador já entende: uma imagem com `frame_width` menor que a
 /// largura é uma sequência, e o `IIMAGE_DrawFrame` escolhe a coluna. Dar caminho próprio à
 /// animação de GIF seria repetir o que o `IPARM_CXFRAME` já faz.
-fn tira_de_quadros(gif: &crate::gif::Gif) -> DecodedImage {
+fn tira_de_quadros(gif: &crate::video::gif::Gif) -> DecodedImage {
     let (largura, altura) = (gif.largura as usize, gif.altura as usize);
     let quadros = gif.quadros.len();
     let total = largura * quadros * altura;
@@ -1552,7 +1552,7 @@ fn julian_date(segundos: u32) -> [u16; 7] {
 /// empacota a `tectoy.ttf`, que é a fonte com que a loja foi desenhada. Usar a do jogo é mais
 /// fiel do que escolher uma por nós, e quando não há nenhuma o texto continua sem sair, o que
 /// o relatório informa.
-fn font_do_modulo(raiz: &std::path::Path) -> Option<crate::font::Font> {
+fn font_do_modulo(raiz: &std::path::Path) -> Option<crate::video::font::Font> {
     let mut fontes: Vec<_> = std::fs::read_dir(raiz)
         .ok()?
         .filter_map(Result::ok)
@@ -1571,7 +1571,7 @@ fn font_do_modulo(raiz: &std::path::Path) -> Option<crate::font::Font> {
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    crate::font::Font::load(std::fs::read(caminho).ok()?, nome)
+    crate::video::font::Font::load(std::fs::read(caminho).ok()?, nome)
 }
 
 /// Corta `rect` pelo recorte. `None` quando não sobra nada para desenhar.
@@ -2007,7 +2007,7 @@ pub struct Machine<C: CpuBackend> {
     /// ficam registrados aqui em vez de desaparecerem.
     pending_text: Vec<String>,
     /// A fonte do próprio jogo, quando ele empacota uma.
-    font: Option<crate::font::Font>,
+    font: Option<crate::video::font::Font>,
     /// Quantas vezes cada método foi chamado — o retrato do que o jogo usa.
     calls: BTreeMap<(u32, u32), u64>,
     /// Total de chamadas atendidas, para aplicar o teto.
