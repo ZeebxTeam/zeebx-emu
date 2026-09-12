@@ -467,45 +467,6 @@ const AEECLSID_WEB: u32 = 0x0100_5000;
 const PLAINTEXT_MAX: usize = 8;
 const PLAINTEXT_BYTES: usize = 512;
 
-/// As chamadas de GL que não fazemos **de propósito**, e que por isso não entram no relatório.
-///
-/// São estado que o nosso rasterizador não usa — profundidade, névoa, luz, stencil. Listá-las
-/// junto das que faltam esconderia as que importam no meio do ruído.
-/// Guarda um nível de uma textura, criando a cadeia de redução conforme ela chega.
-///
-/// **O nível zero limpa os menores.** Uma imagem nova no nível base torna a cadeia antiga
-/// mentira, e servir um mipmap de outra textura é pior do que não ter nenhum.
-fn guarda_nivel(
-    texture: &mut crate::video::rasterizer::Texture,
-    level: u32,
-    width: usize,
-    height: usize,
-    pixels: Vec<[u8; 4]>,
-) {
-    if level == 0 {
-        texture.width = width;
-        texture.height = height;
-        texture.pixels = pixels;
-        texture.mipmaps.clear();
-        return;
-    }
-    let indice = level as usize - 1;
-    if texture.mipmaps.len() <= indice {
-        texture
-            .mipmaps
-            .resize_with(indice + 1, || crate::video::rasterizer::Nivel {
-                width: 0,
-                height: 0,
-                pixels: Vec::new(),
-            });
-    }
-    texture.mipmaps[indice] = crate::video::rasterizer::Nivel {
-        width,
-        height,
-        pixels,
-    };
-}
-
 /// Uma palavra do jogo como número: ponto fixo 16.16 nas formas `x`, `float` nas formas `f`.
 fn escalar(palavra: u32, fixo: bool) -> f32 {
     match fixo {

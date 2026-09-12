@@ -107,10 +107,7 @@ impl<C: CpuBackend> Machine<C> {
             "DeleteTextures" => {
                 for i in 0..a[0] {
                     let name = self.cpu.read_u32(a[1] + i * 4)?;
-                    // A fila menciona texturas pelo nome; apagar uma antes de ser lida
-                    // mudaria o que já foi desenhado.
-                    self.gl.flush();
-                    self.gl.textures.remove(&name);
+                    self.gl.delete_texture(name);
                 }
             }
 
@@ -369,7 +366,8 @@ impl<C: CpuBackend> Machine<C> {
             }
 
             "GetIntegerv" | "GetFixedv" | "GetBooleanv" => {
-                let (width, height) = (self.gl.width as i32, self.gl.height as i32);
+                let (largura, altura) = self.gl.frame_size();
+                let (width, height) = (largura as i32, altura as i32);
                 let values = gles::integer(a[0], width, height).unwrap_or(&[0]);
                 for (i, &value) in values.iter().enumerate() {
                     if a[1] != 0 {
@@ -458,12 +456,10 @@ impl<C: CpuBackend> Machine<C> {
                 return Ok(());
             };
             let name = self.gl.bound_texture();
-            // Trocar o conteúdo de uma textura que a fila ainda vai ler mudaria o passado.
-            self.gl.flush();
-            let texture = self.gl.textures.entry(name).or_default();
             // A paletizada traz a cadeia inteira num bloco só, e o `level` dela conta os
             // mipmaps em vez de nomeá-los; o decodificador devolve o nível base.
-            guarda_nivel(texture, 0, width as usize, height as usize, decoded);
+            self.gl
+                .upload_level(name, 0, width as usize, height as usize, decoded);
             return Ok(());
         }
         let explicit_alpha = match format {
@@ -482,10 +478,8 @@ impl<C: CpuBackend> Machine<C> {
         let decoded = atc::decode(&bytes, width as usize, height as usize, explicit_alpha);
 
         let name = self.gl.bound_texture();
-        // Trocar o conteúdo de uma textura que a fila ainda vai ler mudaria o passado.
-        self.gl.flush();
-        let texture = self.gl.textures.entry(name).or_default();
-        guarda_nivel(texture, level, width as usize, height as usize, decoded);
+        self.gl
+            .upload_level(name, level, width as usize, height as usize, decoded);
         Ok(())
     }
 
@@ -505,10 +499,8 @@ impl<C: CpuBackend> Machine<C> {
         // Os parâmetros de repetição e filtro sobrevivem a uma nova imagem: no OpenGL eles são
         // do nome da textura, não do conteúdo, e o jogo costuma defini-los uma vez só.
         let name = self.gl.bound_texture();
-        // Trocar o conteúdo de uma textura que a fila ainda vai ler mudaria o passado.
-        self.gl.flush();
-        let texture = self.gl.textures.entry(name).or_default();
-        guarda_nivel(texture, level, width as usize, height as usize, decoded);
+        self.gl
+            .upload_level(name, level, width as usize, height as usize, decoded);
         Ok(())
     }
 
@@ -566,29 +558,11 @@ impl<C: CpuBackend> Machine<C> {
         let novos = decode_texels(&bytes, format, kind, texels);
 
         let name = self.gl.bound_texture();
-        // Trocar o conteúdo de uma textura que a fila ainda vai ler mudaria o passado.
-        self.gl.flush();
-        let Some(texture) = self.gl.textures.get_mut(&name) else {
-            return Ok(());
-        };
-        let (tw, th) = (texture.width as u32, texture.height as u32);
-        if x + width > tw || y + height > th {
+        if let Err(Some((tw, th))) = self.gl.sub_image(name, x, y, width, height, &novos) {
             self.bad_pointers.insert(format!(
                 "TexSubImage2D de {width}x{height} em ({x},{y}) não cabe numa textura {tw}x{th}"
             ));
-            return Ok(());
         }
-        for linha in 0..height {
-            let destino = ((y + linha) * tw + x) as usize;
-            let origem = (linha * width) as usize;
-            texture.pixels[destino..destino + width as usize]
-                .copy_from_slice(&novos[origem..origem + width as usize]);
-        }
-        // **Mexer no nível zero invalida a cadeia.** Os níveis menores continuariam mostrando o
-        // que estava ali antes, e quem amostra dois níveis vê os dois conteúdos ao mesmo tempo:
-        // o painel de promoção da Z-Wheel, que troca o texto por aqui, saía com as letras
-        // fantasmas do texto anterior por cima das novas.
-        texture.mipmaps.clear();
         Ok(())
     }
 

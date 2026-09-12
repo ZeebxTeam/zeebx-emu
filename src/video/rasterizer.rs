@@ -382,18 +382,18 @@ impl Default for Material {
 }
 
 pub struct GlState {
-    pub width: usize,
-    pub height: usize,
+    width: usize,
+    height: usize,
     /// Cor do quadro, em RGBA de 8 bits — convertida para RGB565 só na apresentação.
-    pub color: Vec<[u8; 4]>,
+    color: Vec<[u8; 4]>,
     /// Profundidade normalizada em `[0, 1]`.
-    pub depth: Vec<f32>,
+    depth: Vec<f32>,
     /// O stencil, de oito bits — o tamanho que o `GL_STENCIL_BITS` do console anuncia.
     ///
     /// Existe por causa do reflexo do palco da Z-Wheel: ela marca o chão aqui e desenha o
     /// modelo espelhado só onde a marca ficou. Sem o buffer, o espelhado saía por fora do chão
     /// e virava um rastro esticado ao lado do modelo.
-    pub stencil: Vec<u8>,
+    stencil: Vec<u8>,
 
     matrix_mode: u32,
     modelview: Vec<Matrix>,
@@ -406,7 +406,7 @@ pub struct GlState {
     clear_depth: f32,
     current_color: [f32; 4],
 
-    pub textures: HashMap<u32, Texture>,
+    textures: HashMap<u32, Texture>,
     bound_texture: u32,
     texture_env: u32,
 
@@ -1005,6 +1005,96 @@ impl GlState {
 
     pub fn bound_texture(&self) -> u32 {
         self.bound_texture
+    }
+
+    /// O tamanho do quadro — a tela, e não a superfície em que o jogo desenha. Ver
+    /// [`GlState::surface`].
+    pub fn frame_size(&self) -> (usize, usize) {
+        (self.width, self.height)
+    }
+
+    /// Apaga uma textura pelo nome.
+    ///
+    /// A fila menciona texturas pelo nome: apagar uma antes de ela ser lida mudaria o que já foi
+    /// desenhado, e por isso a fila é despejada antes.
+    pub fn delete_texture(&mut self, name: u32) {
+        self.flush();
+        self.textures.remove(&name);
+    }
+
+    /// Guarda um nível de textura, criando a textura se ela ainda não existir.
+    ///
+    /// **O nível zero limpa os menores.** Uma imagem nova no nível base torna a cadeia antiga
+    /// mentira, e servir um mipmap de outra textura é pior do que não ter nenhum.
+    ///
+    /// O despejo da fila é daqui, e não de quem chama: trocar o conteúdo de uma textura que a
+    /// fila ainda vai ler mudaria o passado.
+    pub fn upload_level(
+        &mut self,
+        name: u32,
+        level: u32,
+        width: usize,
+        height: usize,
+        pixels: Vec<[u8; 4]>,
+    ) {
+        self.flush();
+        let texture = self.textures.entry(name).or_default();
+        if level == 0 {
+            texture.width = width;
+            texture.height = height;
+            texture.pixels = pixels;
+            texture.mipmaps.clear();
+            return;
+        }
+        let indice = level as usize - 1;
+        if texture.mipmaps.len() <= indice {
+            texture.mipmaps.resize_with(indice + 1, || Nivel {
+                width: 0,
+                height: 0,
+                pixels: Vec::new(),
+            });
+        }
+        texture.mipmaps[indice] = Nivel {
+            width,
+            height,
+            pixels,
+        };
+    }
+
+    /// `glTexSubImage2D` no nível base: troca um retângulo dentro de uma textura que já existe.
+    ///
+    /// Devolve o tamanho da textura quando o retângulo não cabe — recortar seria inventar um
+    /// resultado que o OpenGL não define, e quem chamou precisa do número para o relatório.
+    /// `Err(None)` é textura que não existe, que não é erro nenhum: o jogo pode ter apagado.
+    pub fn sub_image(
+        &mut self,
+        name: u32,
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+        pixels: &[[u8; 4]],
+    ) -> Result<(), Option<(u32, u32)>> {
+        self.flush();
+        let Some(texture) = self.textures.get_mut(&name) else {
+            return Err(None);
+        };
+        let (tw, th) = (texture.width as u32, texture.height as u32);
+        if x + width > tw || y + height > th {
+            return Err(Some((tw, th)));
+        }
+        for linha in 0..height {
+            let destino = ((y + linha) * tw + x) as usize;
+            let origem = (linha * width) as usize;
+            texture.pixels[destino..destino + width as usize]
+                .copy_from_slice(&pixels[origem..origem + width as usize]);
+        }
+        // **Mexer no nível zero invalida a cadeia.** Os níveis menores continuariam mostrando o
+        // que estava ali antes, e quem amostra dois níveis vê os dois conteúdos ao mesmo tempo:
+        // o painel de promoção da Z-Wheel, que troca o texto por aqui, saía com as letras
+        // fantasmas do texto anterior por cima das novas.
+        texture.mipmaps.clear();
+        Ok(())
     }
 
     pub fn clear(&mut self, mask: u32) {
