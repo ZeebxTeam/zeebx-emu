@@ -28,6 +28,7 @@ função não está aqui.
 | [15-o-que-falta-da-nand.md](15-o-que-falta-da-nand.md) | Classe a classe, o que ainda precisa sair do dump |
 | [16-rede-e-a-ponte.md](16-rede-e-a-ponte.md) | HTTP, AES, e a ponte por módulo que o Zeeboids exigiu |
 | [17-testes.md](17-testes.md) | Como conferir o que dizemos que funciona, e a varredura de ROMs por teste |
+| [18-a-roda-da-z-wheel.md](18-a-roda-da-z-wheel.md) | Da tela preta ao desenho na Z-Wheel: os degraus do lado do guest, para qualquer emulador |
 
 ## Como medir
 

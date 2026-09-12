@@ -171,7 +171,22 @@ impl<C: CpuBackend> Machine<C> {
             // `IBitmap` tem `QueryInterface`, então AddRef e Release precisam ser tratados aqui:
             // o braço genérico do despacho só alcança interfaces que não têm tratamento próprio.
             "AddRef" => self.objects.add_ref(this),
-            "Release" => self.objects.release(this),
+            "Release" => {
+                // **O bitmap da tela não morre.** O dono dele é o display, não quem pediu; um
+                // `Release` a mais devolvia o endereço para a lista de livres com a superfície
+                // ainda viva, e o objeto seguinte nascia por cima da tela. A trava vale mesmo
+                // com o `GetDestination` já contando: é o endereço da tela que não pode ser
+                // reciclado, e qualquer caminho novo que o entregue sem contar reabriria isto.
+                if this == self.device_bitmap && self.objects.contagem(this) <= 1 {
+                    if self.serial.is_some() {
+                        self.registra_serial(format!(
+                            "<release a mais no bitmap da tela {this:#x}; segurando>"
+                        ));
+                    }
+                    return Ok(Some(1));
+                }
+                self.objects.release(this)
+            }
             // int QueryInterface(IBitmap *, AEECLSID, void **) — o jogo usa isto para pedir um
             // `IDIB`, que dá acesso direto aos pixels. Ainda não oferecemos essa interface, e
             // `ECLASSNOTSUPPORT` é a resposta correta para isso: o BREW espera que o app tenha

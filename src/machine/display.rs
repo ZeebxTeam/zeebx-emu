@@ -111,7 +111,19 @@ impl<C: CpuBackend> Machine<C> {
                 self.display_target = target;
                 SUCCESS
             }
-            "GetDestination" => self.target()?,
+            // Devolve o `IBitmap *` direto — e **com contagem**, porque quem recebe solta.
+            //
+            // Sem o `AddRef`, cada `GetDestination` que o jogo soltava tirava uma referência
+            // que ninguém tinha posto. Medido na Z-Wheel: o bitmap da tela chegava a zero, o
+            // endereço voltava para a lista de livres **com a superfície ainda viva**, e o
+            // objeto seguinte — o widget do roller — nascia por cima da tela.
+            "GetDestination" => {
+                let alvo = self.target()?;
+                if alvo != 0 {
+                    self.objects.add_ref(alvo);
+                }
+                alvo
+            }
             // void IDISPLAY_BitBlt(IDisplay *p, int xd, int yd, int w, int h,
             //                      const void *pbmSource, int xs, int ys, AEERasterOp rop)
             "BitBlt" => {
@@ -451,7 +463,14 @@ impl<C: CpuBackend> Machine<C> {
                 self.display_target = a1;
                 SUCCESS
             }
-            "GetDestination" => self.target()?,
+            // Com contagem, pela mesma razão do `IDisplay` — ver o `GetDestination` de lá.
+            "GetDestination" => {
+                let alvo = self.target()?;
+                if alvo != 0 {
+                    self.objects.add_ref(alvo);
+                }
+                alvo
+            }
             // Sem efeito para nós: já desenhamos direto na superfície.
             "Update" | "EnableDoubleBuffer" | "SetPaintMode" | "SetClip" | "SetViewport"
             | "SetAlgorithmHint" | "SetStrokeStyle" | "Pan" => SUCCESS,

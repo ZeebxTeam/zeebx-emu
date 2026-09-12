@@ -78,6 +78,11 @@ impl ObjectStore {
         self.kinds.get(&addr).copied()
     }
 
+    /// Quantas referências um objeto tem agora. Zero para quem não existe.
+    pub fn contagem(&self, addr: u32) -> u32 {
+        self.refs.get(&addr).copied().unwrap_or(0)
+    }
+
     /// Incrementa e devolve a nova contagem.
     pub fn add_ref(&mut self, addr: u32) -> u32 {
         let count = self.refs.entry(addr).or_insert(0);
