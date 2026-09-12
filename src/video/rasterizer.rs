@@ -1451,24 +1451,58 @@ impl GlState {
         if width == 0 || height == 0 || old.len() != width * height * 2 || new.len() != old.len() {
             return;
         }
+        /// Um pixel RGB565 do buffer exposto, já em RGB888.
+        fn expande(novo: &[u8], offset: usize) -> [u8; 3] {
+            let pixel = u16::from_le_bytes([novo[offset], novo[offset + 1]]);
+            let r = ((pixel >> 11) & 31) as u8;
+            let g = ((pixel >> 5) & 63) as u8;
+            let b = (pixel & 31) as u8;
+            [
+                (r << 3) | (r >> 2),
+                (g << 2) | (g >> 4),
+                (b << 3) | (b >> 2),
+            ]
+        }
+
+        // **O caminho sem escala é separado de propósito**, pela mesma razão do
+        // [`GlState::frame_rgb565`]: no laço geral são duas divisões inteiras por pixel, e com
+        // 640×330 isso é mais de quatrocentas mil divisões em cada chamada.
+        //
+        // E a linha inteira é comparada de uma vez antes do laço por pixel. O jogo mexe num
+        // retângulo pequeno ou em nada; percorrer pixel a pixel a superfície toda para descobrir
+        // isso custava 3,6 s numa execução de treze segundos da Z-Wheel. Um `!=` entre fatias é
+        // um `memcmp`, e ele sai na primeira diferença.
+        if sw == width && sh == height {
+            let colunas = width.min(self.width);
+            for y in 0..height.min(self.height) {
+                let inicio = y * width * 2;
+                let fim = inicio + colunas * 2;
+                if old[inicio..fim] == new[inicio..fim] {
+                    continue;
+                }
+                for x in 0..colunas {
+                    let offset = inicio + x * 2;
+                    if old[offset..offset + 2] == new[offset..offset + 2] {
+                        continue;
+                    }
+                    let [r, g, b] = expande(new, offset);
+                    let index = y * self.width + x;
+                    self.sujo = true;
+                    self.color[index] = [r, g, b, self.color[index][3]];
+                }
+            }
+            return;
+        }
         for y in 0..sh.min(self.height) {
             for x in 0..sw.min(self.width) {
                 let offset = ((y * height / sh) * width + x * width / sw) * 2;
                 if old[offset..offset + 2] == new[offset..offset + 2] {
                     continue;
                 }
-                let pixel = u16::from_le_bytes([new[offset], new[offset + 1]]);
-                let r = ((pixel >> 11) & 31) as u8;
-                let g = ((pixel >> 5) & 63) as u8;
-                let b = (pixel & 31) as u8;
+                let [r, g, b] = expande(new, offset);
                 let index = y * self.width + x;
                 self.sujo = true;
-                self.color[index] = [
-                    (r << 3) | (r >> 2),
-                    (g << 2) | (g >> 4),
-                    (b << 3) | (b >> 2),
-                    self.color[index][3],
-                ];
+                self.color[index] = [r, g, b, self.color[index][3]];
             }
         }
     }
@@ -2063,6 +2097,21 @@ mod tests {
         assert_eq!(state.color[1], [0, 255, 0, 255]);
         assert_eq!(state.depth[0], 0.25);
         assert_eq!(state.stencil[0], 7);
+    }
+
+    /// O caminho **com escala** tem laço próprio, com as divisões por pixel, e é o do Quake:
+    /// superfície menor que a tela. O teste acima cobre só o caminho sem escala.
+    #[test]
+    fn escrita_no_buffer_egl_encontra_o_pixel_quando_a_superficie_e_menor() {
+        let mut state = GlState::new(2, 1);
+        state.set_viewport(0, 0, 1, 1);
+        assert_eq!(state.surface(), (1, 1));
+        let mut exported = Vec::new();
+        state.frame_rgb565(2, 1, &mut exported);
+        let mut changed = exported.clone();
+        changed[..2].copy_from_slice(&0xf800u16.to_le_bytes());
+        state.import_rgb565_changes(2, 1, &exported, &changed);
+        assert_eq!(&state.color[0][..3], &[255, 0, 0]);
     }
 
     #[test]
