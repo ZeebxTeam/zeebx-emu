@@ -63,6 +63,7 @@ impl<C: CpuBackend> Machine<C> {
         self.objects.release(source);
         self.bitmaps.remove(&source);
         self.dib_buffers.remove(&source);
+        self.dib_herdados.remove(&source);
         self.cpu.unwatch_dirty(source);
         self.transparency.remove(&source);
         Ok(())
@@ -136,6 +137,8 @@ impl<C: CpuBackend> Machine<C> {
 
         self.bitmaps.insert(target, Framebuffer::new(cx, cy));
         self.dib_buffers.insert(target, buffer);
+        // Aqui o buffer é do próprio jogo, e é dele que os pixels vêm.
+        self.dib_herdados.remove(&target);
         self.cpu.watch_dirty(target, buffer, cx * cy * 2)?;
         self.sync_from_guest(target)?;
         Ok(())
@@ -430,6 +433,10 @@ impl<C: CpuBackend> Machine<C> {
             // QueryInterface apagava alterações feitas pelo guest e custava dezenas de ms em
             // jogos que consultam o bitmap a cada quadro.
             self.sync_to_guest(bitmap)?;
+        } else if self.dib_herdados.contains(&bitmap) {
+            // O buffer cabe, mas é do objeto que morreu aqui: para este bitmap, esta **é** a
+            // primeira exposição.
+            self.sync_to_guest(bitmap)?;
         }
         self.write_dib_header(bitmap)
     }
@@ -498,6 +505,7 @@ impl<C: CpuBackend> Machine<C> {
         };
         let bytes = fb.to_rgb565_bytes();
         self.cpu.write_mem(buffer, &bytes)?;
+        self.dib_herdados.remove(&bitmap);
         // A superfície do guest acabou de ficar **idêntica** à nossa — e foi a escrita acima que
         // ligou o sinalizador. Limpar aqui é o que permite pular a importação seguinte: sem
         // isto toda saída sujaria tudo de novo e a vigia não economizaria nada.
@@ -528,6 +536,10 @@ impl<C: CpuBackend> Machine<C> {
             return Ok(());
         };
         let tamanho = (fb.width() * fb.height() * 2) as usize;
+        // Bytes do objeto anterior: o host está à frente, e não há nada do jogo para trazer.
+        if self.dib_herdados.contains(&bitmap) {
+            return Ok(());
+        }
         // **Só lê quando o guest escreveu nesta superfície.** É a mesma economia que o color
         // buffer do pbuffer já tinha, agora por superfície: a Z-Wheel copiava 1,57 GB em treze
         // segundos virtuais só para descobrir que quase nada tinha mudado.

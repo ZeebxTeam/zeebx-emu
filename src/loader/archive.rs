@@ -27,6 +27,33 @@ pub fn device_dir() -> PathBuf {
     settings::config_dir().join("aparelho")
 }
 
+/// A fonte do sistema, no lugar em que o console a guarda: `fs:/shared/fonts/tectoy.ttf`.
+///
+/// O caminho está no firmware. É a fonte com que o `IDisplay` escreve quando o jogo pede uma
+/// fonte do aparelho (`AEE_FONT_NORMAL` e as irmãs) — e a maioria dos jogos não traz fonte
+/// própria, porque no console não precisava.
+///
+/// O arquivo **não** vem com o emulador: é da TecToy. Mas ele vem no pacote da Z-Wheel, que é o
+/// sistema do console, então quando o aparelho ainda não o tem e a Z-Wheel já foi aberta alguma
+/// vez, ele é instalado a partir dela — o mesmo que a Z-Wheel fazia no console.
+pub fn fonte_do_sistema() -> Option<PathBuf> {
+    let destino = device_dir().join("shared").join("fonts").join("tectoy.ttf");
+    if destino.is_file() {
+        return Some(destino);
+    }
+    let origem = std::fs::read_dir(cache_dir())
+        .ok()?
+        .filter_map(Result::ok)
+        .filter_map(|pacote| std::fs::read_dir(pacote.path().join("mod")).ok())
+        .flatten()
+        .filter_map(Result::ok)
+        .map(|modulo| modulo.path().join("tectoy.ttf"))
+        .find(|ttf| ttf.is_file())?;
+    std::fs::create_dir_all(destino.parent()?).ok()?;
+    std::fs::copy(origem, &destino).ok()?;
+    Some(destino)
+}
+
 /// O caminho interno do `.mod` dentro do zip, se houver um.
 ///
 /// Havendo mais de um, decide nesta ordem:

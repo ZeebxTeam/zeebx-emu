@@ -1584,6 +1584,15 @@ fn font_do_modulo(raiz: &std::path::Path) -> Option<crate::video::font::Font> {
     crate::video::font::Font::load(std::fs::read(caminho).ok()?, nome)
 }
 
+/// A fonte do aparelho, para quem não trouxe a sua.
+///
+/// Sem ela, todo `DrawText` de um jogo sem `.ttf` ia só para o relatório: o menu do Kingdom
+/// Hearts desenhava as cinco caixas e nenhuma das palavras dentro delas.
+fn fonte_do_console() -> Option<crate::video::font::Font> {
+    let caminho = crate::loader::archive::fonte_do_sistema()?;
+    crate::video::font::Font::load(std::fs::read(caminho).ok()?, "tectoy.ttf".into())
+}
+
 /// Corta `rect` pelo recorte. `None` quando não sobra nada para desenhar.
 fn clip_rect(clip: Option<Rect>, rect: Rect) -> Option<Rect> {
     // **Sem recorte definido, o recorte é a tela inteira** — e não "nada passa". Era o que
@@ -2038,6 +2047,19 @@ pub struct Machine<C: CpuBackend> {
     /// próximo bitmap nasce no mesmo lugar, e com outro tamanho. Sem a capacidade não há como
     /// decidir entre reaproveitar o buffer e reservar outro.
     dib_capacity: HashMap<u32, u32>,
+    /// Os `IDIB` cujo buffer ainda guarda os pixels **do objeto anterior** naquele endereço.
+    ///
+    /// O buffer é reaproveitado quando um bitmap novo nasce onde outro morreu, mas os bytes que
+    /// estão nele são do morto. Enquanto o endereço estiver aqui, o que vale é a superfície do
+    /// host, e importar o buffer seria trazer a imagem velha por cima da nova. Sai daqui quando
+    /// o host publica os próprios pixels.
+    ///
+    /// No Unicorn isso passava despercebido porque a vigia de escrita dizia "o jogo não mexeu" e
+    /// a importação não acontecia. O Dynarmic não tem vigia e responde sempre "sujo", que só é
+    /// seguro se o buffer nunca estiver atrás do host — e aqui estava: as letras do Tekken 2 e
+    /// do Kingdom Hearts viravam blocos, com a folha de glifos substituída pela imagem
+    /// decodificada antes dela.
+    dib_herdados: HashSet<u32>,
     /// Próximo endereço livre na região de superfícies.
     surface_next: u32,
     /// Cor tratada como transparente em cada superfície.
@@ -2292,6 +2314,7 @@ impl<C: CpuBackend> Machine<C> {
             current_thread: None,
             dib_buffers: HashMap::new(),
             dib_capacity: HashMap::new(),
+            dib_herdados: HashSet::new(),
             surface_next: loader::SURFACE_BASE,
             transparency: HashMap::new(),
             device_bitmap: 0,
@@ -2300,7 +2323,7 @@ impl<C: CpuBackend> Machine<C> {
             screen: Framebuffer::new(SCREEN_WIDTH as u32, SCREEN_HEIGHT as u32),
             colors: default_colors(),
             pending_text: Vec::new(),
-            font: font_do_modulo(&raiz),
+            font: font_do_modulo(&raiz).or_else(fonte_do_console),
             calls: BTreeMap::new(),
             calls_total: 0,
         }
@@ -2988,6 +3011,9 @@ impl<C: CpuBackend> Machine<C> {
         let Some(addr) = self.objects.create(iface) else {
             return Ok(0);
         };
+        if self.dib_buffers.contains_key(&addr) {
+            self.dib_herdados.insert(addr);
+        }
         self.cpu.write_u32(addr, loader::vtable_addr(iface))?;
         Ok(addr)
     }

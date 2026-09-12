@@ -49,6 +49,23 @@ região de superfícies não recicla e um jogo que decodifique centenas de image
 A lição é a mesma de outras vezes: **o que um jogo lê de uma struct nossa vale tanto quanto o
 que devolvemos de uma chamada.** Aqui nenhuma chamada falhou, e o relatório saiu limpo.
 
+**O buffer reaproveitado ainda tem os pixels do morto.** Reescrever só o cabeçalho deixa no
+buffer a imagem do objeto anterior, e o bitmap novo só tem os pixels certos do nosso lado. No
+Unicorn isso não aparecia: a vigia de escrita dizia "o jogo não mexeu aqui", a importação não
+acontecia e a nossa cópia prevalecia. O Dynarmic não tem vigia e responde sempre "sujo" — o que
+só é seguro se o buffer nunca estiver atrás do host. Aqui estava, e a importação trazia a imagem
+anterior por cima da folha de glifos: no motor da janela, as letras do Tekken 2 voltaram a sair
+como blocos, agora escuros.
+
+Por isso um objeto novo num endereço que já tem buffer entra em `dib_herdados`: enquanto estiver
+lá, a importação é pulada e a primeira exposição publica os pixels do host, mesmo cabendo. A
+regra é de ciclo de vida — **o buffer pertence ao objeto**, e bytes de um objeto que morreu não são
+do jogo para serem trazidos de volta.
+
+Um diff das chamadas de API entre os dois motores foi o que separou isto de um erro de CPU: 2,2
+milhões de chamadas iguais (342 linhas diferentes, todas de atraso de timer). Se o jogo pede a
+mesma coisa e o quadro sai diferente, quem difere é o nosso lado.
+
 Isso obriga a manter dois lados em dia:
 
 ```
@@ -170,10 +187,19 @@ destino corrente do display, que o `SetDestination` pode ter trocado.
 
 ## Texto
 
-Não desenhamos texto. `IDISPLAY_DrawText` guarda a string (aparece no relatório), e
-`GetFontMetrics` e `MeasureTextEx` devolvem números coerentes entre si — altura de fonte de tela
-pequena, avanço fixo por caractere.
+`IDISPLAY_DrawText` escreve com uma fonte TrueType, escolhida nesta ordem:
 
-É medida aproximada de propósito: **serve para o jogo posicionar o que ele mesmo desenha**, e um
-número plausível o deixa seguir. Sem nenhum, o Pac-Mania nem monta a tela. Uma fonte de verdade
-continua na lista do que falta.
+1. **A do jogo**, quando o pacote traz um `.ttf` — a Z-Wheel traz a `tectoy.ttf`.
+2. **A do aparelho**, em `fs:/shared/fonts/tectoy.ttf`, que é onde o firmware a procura.
+
+A segunda não vem com o emulador, porque é da TecToy; ela vem no pacote da Z-Wheel, que é o
+sistema do console. Quando o aparelho ainda não a tem e a Z-Wheel já foi aberta alguma vez, ela
+é copiada do cache para lá (`archive::fonte_do_sistema`). Sem fonte nenhuma, o texto continua
+indo só para o relatório.
+
+A maioria dos jogos não traz fonte porque no console não precisava. O Kingdom Hearts pede
+`0x8000`, o `AEE_FONT_NORMAL` do BREW, e sem a fonte do aparelho desenhava as cinco caixas do
+menu e nenhuma das palavras — "New Game", "Load Game" e as outras só apareciam no relatório.
+
+`GetFontMetrics` e `MeasureTextEx` devolvem números coerentes entre si. Sem nenhum, o Pac-Mania
+nem monta a tela.
