@@ -305,6 +305,7 @@ impl App {
             self.portas_configuradas(),
             serial.as_deref(),
             self.settings.graphics.gpu_rasterizer,
+            self.gl.clone(),
         ) {
             Ok(mut session) => {
                 session.set_installed_applets(self.games.iter().filter_map(|game| game.clsid));

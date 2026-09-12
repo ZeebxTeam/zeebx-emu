@@ -2002,9 +2002,12 @@ fn placa_pedida(padrao: bool) -> bool {
 }
 
 /// O rasterizador que a construção adota. Quem tem configuração troca depois, com `usa_placa`.
+///
+/// Aqui não há contexto para emprestar: quem constrói a máquina direto é a linha de comando, que
+/// não tem janela. O caminho com janela troca depois, já com o contexto dela.
 fn rasterizador(largura: usize, altura: usize) -> Box<dyn Rasterizador> {
     match placa_pedida(false) {
-        true => na_placa(largura, altura),
+        true => na_placa(largura, altura, None),
         false => Box::new(GlState::new(largura, altura)),
     }
 }
@@ -2014,8 +2017,12 @@ fn rasterizador(largura: usize, altura: usize) -> Box<dyn Rasterizador> {
 /// A queda **não é tratamento de erro**, é um caminho normal: num terminal sem EGL alcançável não
 /// há placa para usar, e o emulador tem que rodar de todo jeito. O motivo é dito uma vez, porque
 /// um emulador que silenciosamente roda diferente do pedido é pior que um lento.
-fn na_placa(largura: usize, altura: usize) -> Box<dyn Rasterizador> {
-    match crate::video::gpu::GpuState::novo(largura, altura) {
+fn na_placa(
+    largura: usize,
+    altura: usize,
+    contexto: Option<std::sync::Arc<eframe::glow::Context>>,
+) -> Box<dyn Rasterizador> {
+    match crate::video::gpu::GpuState::novo(largura, altura, contexto) {
         Ok(gpu) => Box::new(gpu),
         Err(motivo) => {
             eprintln!("sem rasterizador na placa ({motivo}); seguindo em software");
@@ -2031,10 +2038,15 @@ impl<C: CpuBackend> Machine<C> {
     /// A sessão chama isto logo depois de construir a máquina, com o que a configuração pede.
     /// Trocar depois de o jogo desenhar perderia o estado de GL acumulado — matrizes, texturas,
     /// luz —, então este é o único momento em que a troca é segura.
-    pub fn usa_placa(&mut self, sim: bool) {
+    /// `contexto` é o da janela, quando há uma. Ver [`crate::video::gpu::GpuState::novo`].
+    pub fn usa_placa(
+        &mut self,
+        sim: bool,
+        contexto: Option<std::sync::Arc<eframe::glow::Context>>,
+    ) {
         let (largura, altura) = self.gl.frame_size();
         self.gl = match placa_pedida(sim) {
-            true => na_placa(largura, altura),
+            true => na_placa(largura, altura, contexto),
             false => Box::new(GlState::new(largura, altura)),
         };
     }

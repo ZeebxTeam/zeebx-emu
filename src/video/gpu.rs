@@ -104,7 +104,16 @@ impl Default for Estado {
 pub struct GpuState {
     /// A contabilidade de estado e a etapa de vértice, compartilhadas com o software.
     estado: GlState,
-    ctx: Contexto,
+    /// O contexto que **nós** abrimos, quando não havia nenhum.
+    ///
+    /// Nunca é lido: existe para não ser solto enquanto o backend vive. Soltá-lo destruiria o
+    /// contexto de onde vêm as funções de GL que o `gl` acabou de guardar.
+    _proprio: Option<Contexto>,
+    /// As funções de GL: emprestadas da janela, ou do contexto próprio.
+    gl: std::sync::Arc<glow::Context>,
+    /// Se o contexto é de outro. Nesse caso o estado tem que ser devolvido depois de cada uso —
+    /// ver [`GpuState::devolve_o_contexto`].
+    emprestado: bool,
     fill: Estado,
     /// O destino: uma textura de cor mais profundidade e stencil juntos.
     quadro: Option<Destino>,
@@ -129,19 +138,40 @@ struct Destino {
 }
 
 impl GpuState {
-    /// Abre o contexto e monta o programa, ou diz por que não deu.
-    pub fn novo(largura: usize, altura: usize) -> Result<Self, String> {
-        let ctx = Contexto::novo()?;
+    /// Monta o programa sobre um contexto, ou diz por que não deu.
+    ///
+    /// `emprestado` é o contexto da janela, quando há uma. **Receber em vez de criar não é
+    /// economia, é correção:** o núcleo roda na mesma thread da interface, e um contexto nosso
+    /// tornado corrente ali desliga o do eframe — o egui para de pintar e a janela congela,
+    /// enquanto o áudio, que é outra thread, segue tocando.
+    ///
+    /// Sem janela — o `run` da linha de comando, onde a medição é feita — não há o que emprestar
+    /// e abrimos o pbuffer.
+    pub fn novo(
+        largura: usize,
+        altura: usize,
+        emprestado: Option<std::sync::Arc<glow::Context>>,
+    ) -> Result<Self, String> {
+        let (proprio, gl, emprestado) = match emprestado {
+            Some(gl) => (None, gl, true),
+            None => {
+                let proprio = Contexto::novo()?;
+                let gl = proprio.gl.clone();
+                (Some(proprio), gl, false)
+            }
+        };
         let (programa, vao, vbo, ponte) = unsafe {
-            let programa = compila(&ctx.gl)?;
-            let vao = ctx.gl.create_vertex_array()?;
-            let vbo = ctx.gl.create_buffer()?;
-            let ponte = ctx.gl.create_texture()?;
+            let programa = compila(&gl)?;
+            let vao = gl.create_vertex_array()?;
+            let vbo = gl.create_buffer()?;
+            let ponte = gl.create_texture()?;
             (programa, vao, vbo, ponte)
         };
         Ok(Self {
             estado: GlState::new(largura, altura),
-            ctx,
+            _proprio: proprio,
+            gl,
+            emprestado,
             // **A viewport nasce com a tela inteira**, que é o que o OpenGL especifica como
             // padrão e o que o `GlState::new` faz. Nascer em zero era o que apagava toda a
             // geometria da Z-Wheel: ela nunca chama `glViewport` — zero vezes em treze segundos
@@ -168,10 +198,10 @@ impl GpuState {
         let medida = self.estado.frame_size();
         if self.quadro.as_ref().is_some_and(|d| d.medida == medida) {
             let fbo = self.quadro.as_ref().map(|d| d.fbo);
-            unsafe { self.ctx.gl.bind_framebuffer(glow::FRAMEBUFFER, fbo) };
+            unsafe { self.gl.bind_framebuffer(glow::FRAMEBUFFER, fbo) };
             return;
         }
-        let gl = &self.ctx.gl;
+        let gl = &self.gl;
         unsafe {
             if let Some(antigo) = self.quadro.take() {
                 gl.delete_framebuffer(antigo.fbo);
@@ -251,7 +281,7 @@ impl GpuState {
 
     /// Põe na placa o estado anotado. Chamado uma vez por draw.
     fn aplica(&mut self) {
-        let gl = &self.ctx.gl;
+        let gl = &self.gl;
         let e = &self.fill;
         unsafe {
             let (x, y, w, h) = e.viewport;
@@ -305,7 +335,7 @@ impl GpuState {
                 .flatten()
                 .map(|t| t.objeto)
         });
-        let gl = &self.ctx.gl;
+        let gl = &self.gl;
         unsafe {
             gl.use_program(Some(self.programa));
             gl.bind_vertex_array(Some(self.vao));
@@ -347,6 +377,7 @@ impl GpuState {
             gl.bind_vertex_array(None);
             gl.use_program(None);
         }
+        self.devolve_o_contexto();
         self.sujo = true;
     }
 
@@ -363,7 +394,7 @@ impl GpuState {
         self.pixels.clear();
         self.pixels.resize(largura * altura * 4, 0);
         unsafe {
-            self.ctx.gl.read_pixels(
+            self.gl.read_pixels(
                 0,
                 0,
                 largura as i32,
@@ -373,11 +404,38 @@ impl GpuState {
                 glow::PixelPackData::Slice(Some(&mut self.pixels)),
             );
         }
+        self.devolve_o_contexto();
+    }
+
+    /// Devolve o estado que o egui pressupõe, quando o contexto é de outro.
+    ///
+    /// No caminho com janela o egui pinta na **mesma thread e no mesmo contexto**, logo depois de
+    /// nós, e ele não reconfigura tudo o que usa: deixar o nosso framebuffer ligado, ou o teste
+    /// de profundidade aceso com uma profundidade que não é a dele, faz a interface desaparecer.
+    ///
+    /// Com contexto próprio isto não custa nada porque não roda: ninguém mais o usa.
+    fn devolve_o_contexto(&self) {
+        if !self.emprestado {
+            return;
+        }
+        let gl = &self.gl;
+        unsafe {
+            gl.bind_framebuffer(glow::FRAMEBUFFER, None);
+            gl.bind_texture(glow::TEXTURE_2D, None);
+            gl.disable(glow::DEPTH_TEST);
+            gl.disable(glow::CULL_FACE);
+            gl.disable(glow::STENCIL_TEST);
+            gl.disable(glow::DEPTH_CLAMP);
+            gl.disable(glow::BLEND);
+            gl.depth_mask(true);
+            gl.stencil_mask(u32::MAX);
+            gl.color_mask(true, true, true, true);
+        }
     }
 
     /// Reaplica os parâmetros de uma textura, rebaixando o filtro quando falta a cadeia.
     fn parametros(&self, t: &Textura) {
-        let gl = &self.ctx.gl;
+        let gl = &self.gl;
         unsafe {
             gl.bind_texture(glow::TEXTURE_2D, Some(t.objeto));
             let tem_cadeia = t.maior_nivel > 0;
@@ -409,7 +467,7 @@ impl GpuState {
 
 impl Drop for GpuState {
     fn drop(&mut self) {
-        let gl = &self.ctx.gl;
+        let gl = &self.gl;
         unsafe {
             gl.delete_program(self.programa);
             gl.delete_vertex_array(self.vao);
@@ -663,7 +721,7 @@ impl Rasterizador for GpuState {
         // direto. O `glClear` respeita `glDepthMask`, `glStencilMask` e `glColorMask`, então elas
         // são abertas aqui — senão uma limpeza pedida com máscara fechada simplesmente não
         // aconteceria, e o quadro seguinte desenharia sobre o anterior.
-        let gl = &self.ctx.gl;
+        let gl = &self.gl;
         let mut bits = 0;
         unsafe {
             if mask & gles::GL_COLOR_BUFFER_BIT != 0 {
@@ -689,6 +747,7 @@ impl Rasterizador for GpuState {
                 gl.clear(bits);
             }
         }
+        self.devolve_o_contexto();
         if mask & gles::GL_COLOR_BUFFER_BIT != 0 {
             self.sujo = true;
         }
@@ -814,7 +873,7 @@ impl Rasterizador for GpuState {
     fn delete_texture(&mut self, name: u32) {
         self.estado.delete_texture(name);
         if let Some(t) = self.texturas.remove(&name) {
-            unsafe { self.ctx.gl.delete_texture(t.objeto) };
+            unsafe { self.gl.delete_texture(t.objeto) };
         }
     }
 
@@ -827,7 +886,7 @@ impl Rasterizador for GpuState {
         pixels: Vec<[u8; 4]>,
     ) {
         let bytes: Vec<u8> = pixels.iter().flatten().copied().collect();
-        let gl = &self.ctx.gl;
+        let gl = &self.gl;
         let objeto = match self.texturas.get(&name) {
             Some(t) => t.objeto,
             None => {
@@ -893,7 +952,7 @@ impl Rasterizador for GpuState {
             if let Some(t) = self.texturas.get(&name) {
                 let bytes: Vec<u8> = pixels.iter().flatten().copied().collect();
                 unsafe {
-                    let gl = &self.ctx.gl;
+                    let gl = &self.gl;
                     gl.bind_texture(glow::TEXTURE_2D, Some(t.objeto));
                     gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
                     gl.tex_sub_image_2d(
@@ -998,7 +1057,7 @@ impl Rasterizador for GpuState {
         self.destino();
         let mut bytes = vec![0u8; width * height * 4];
         unsafe {
-            self.ctx.gl.read_pixels(
+            self.gl.read_pixels(
                 x,
                 y,
                 width as i32,
@@ -1008,6 +1067,7 @@ impl Rasterizador for GpuState {
                 glow::PixelPackData::Slice(Some(&mut bytes)),
             );
         }
+        self.devolve_o_contexto();
         bytes
             .chunks_exact(4)
             .map(|p| [p[0], p[1], p[2], p[3]])
@@ -1089,7 +1149,7 @@ impl Rasterizador for GpuState {
         }
         self.destino();
         unsafe {
-            let gl = &self.ctx.gl;
+            let gl = &self.gl;
             gl.bind_texture(glow::TEXTURE_2D, Some(self.ponte));
             gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
             gl.tex_image_2d(
@@ -1146,6 +1206,7 @@ impl Rasterizador for GpuState {
         let ponte = self.ponte;
         self.submete_com(glow::TRIANGLE_FAN, 1.0, Some(ponte));
         self.fill = guarda;
+        self.devolve_o_contexto();
     }
 
     fn present(&mut self, width: usize, height: usize) -> Vec<u16> {
@@ -1167,7 +1228,7 @@ mod tests {
     /// Sem contexto não há o que comparar, e exigir uma placa de quem roda a suíte seria pedir
     /// que ela falhasse em máquina sem EGL. Os testes daqui relatam e passam nesse caso.
     fn par(largura: usize, altura: usize) -> Option<(GpuState, GlState)> {
-        match GpuState::novo(largura, altura) {
+        match GpuState::novo(largura, altura, None) {
             Ok(gpu) => Some((gpu, GlState::new(largura, altura))),
             Err(motivo) => {
                 println!("sem placa nesta máquina: {motivo}");

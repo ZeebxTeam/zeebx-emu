@@ -26,7 +26,10 @@ use std::num::NonZeroU32;
 /// O contexto e o carregador de funções, vivos enquanto o backend existir.
 pub struct Contexto {
     /// As funções de GL já resolvidas. É o que o backend usa.
-    pub gl: glow::Context,
+    ///
+    /// Compartilhável porque o caminho com janela **não** cria contexto: ele recebe o do eframe.
+    /// Ver [`crate::video::gpu::GpuState::novo`].
+    pub gl: std::sync::Arc<glow::Context>,
     /// O contexto corrente. Solto no fim, depois do `gl`.
     _contexto: PossiblyCurrentContext,
     /// A superfície mínima que o EGL exige para tornar o contexto corrente.
@@ -85,7 +88,7 @@ impl Contexto {
             glow::Context::from_loader_function_cstr(|nome| display.get_proc_address(nome).cast())
         };
         Ok(Self {
-            gl,
+            gl: std::sync::Arc::new(gl),
             _contexto: contexto,
             _superficie: superficie,
             _display: display,

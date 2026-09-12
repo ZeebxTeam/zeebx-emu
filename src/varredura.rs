@@ -400,7 +400,7 @@ fn estado_da_falha(session: &Session) -> Option<String> {
 /// tempo virtual cumprido o mais rápido que a máquina der.
 pub fn examina(arquivo: &Path, ms_virtuais: u32, teto: Duration) -> Relatorio {
     let comeco = Instant::now();
-    let mut session = match Session::start_with(arquivo, crate::PORTAS_PADRAO, None, false) {
+    let mut session = match Session::start_with(arquivo, crate::PORTAS_PADRAO, None, false, None) {
         Ok(session) => session,
         Err(erro) => return Relatorio::recusado(arquivo, &erro),
     };
@@ -504,7 +504,7 @@ pub fn examina(arquivo: &Path, ms_virtuais: u32, teto: Duration) -> Relatorio {
 /// caminho até o applet existir: carga do `.mod`, `AEEMod_Load`, `.mif` e `CreateInstance`.
 pub fn abre(arquivo: &Path) -> Result<Duration, String> {
     let comeco = Instant::now();
-    match Session::start_with(arquivo, crate::PORTAS_PADRAO, None, false) {
+    match Session::start_with(arquivo, crate::PORTAS_PADRAO, None, false, None) {
         Ok(_) => Ok(comeco.elapsed()),
         Err(erro) => Err(erro.to_string()),
     }
