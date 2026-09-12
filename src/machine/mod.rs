@@ -718,13 +718,15 @@ const AEE_SOUND_STATUS_CB: u32 = 0;
 const AEE_SOUND_VOLUME_CB: u32 = 1;
 /// `AEEIID_DIB_20`, de `inc/AEEIDIB.h`: o IID que o `IDIB` tinha no BREW 2.0.
 const AEEIID_DIB_20: u32 = 0x0100_102c;
-/// O terceiro IID do `IDIB`, vizinho do anterior na mesma faixa do `AEEIDIB.h`.
+/// `AEEIID_TRANSFORM`, de `AEETransform.h`: escala e rotação de um bitmap sobre outro.
 ///
-/// É o que o Zenonia pede — e só ele, em todo o acervo. O jogo cria a superfície com
-/// `CreateCompatibleBitmap`, pede este IID nela, guarda o ponteiro e passa a escrever os pixels
-/// direto. Recusando, ele guardava nulo, seguia assim mesmo e apresentava 258 quadros de uma
-/// superfície vazia: tela preta com o jogo desenhando o tempo todo.
-const AEEIID_DIB_ANTIGO: u32 = 0x0100_1029;
+/// Esteve aqui como "terceiro IID do `IDIB`", deduzido por ser vizinho do `AEEIID_DIB_20`, e
+/// respondido com o próprio bitmap. O uso desmente: o Zenonia pede este IID ao bitmap **da
+/// tela**, guarda o ponteiro e chama o slot 4 dele com `(x, y, pSrc, xSrc, ySrc, dx, dy,
+/// pMatrix, nComposite)` — a assinatura do `TransformBltComplex`. Respondido como bitmap, o
+/// slot 4 caía no `NativeToRGB`, o quadro nunca chegava à tela e o jogo ficava preto
+/// desenhando o tempo todo num canvas 320x240.
+const AEEIID_TRANSFORM: u32 = 0x0100_1029;
 /// `IDIB_COLORSCHEME_565`, de `inc/AEEIDIB.h`: 5 bits de vermelho, 6 de verde, 5 de azul.
 const IDIB_COLORSCHEME_565: u8 = 16;
 /// `AEECLSID_DIB` = `AEECLSID_CORE + 69`. É o bitmap com acesso direto aos pixels.
@@ -2071,6 +2073,8 @@ pub struct Machine<C: CpuBackend> {
     surface_next: u32,
     /// Cor tratada como transparente em cada superfície.
     transparency: HashMap<u32, u16>,
+    /// O bitmap de destino de cada `ITransform` que o jogo pediu por `QueryInterface`.
+    transformacoes: HashMap<u32, u32>,
     /// A superfície da tela — o "device bitmap" do BREW. Zero enquanto ninguém pediu.
     device_bitmap: u32,
     /// Onde o `IDisplay` desenha. Normalmente é a tela.
@@ -2325,6 +2329,7 @@ impl<C: CpuBackend> Machine<C> {
             dib_publicado: HashMap::new(),
             surface_next: loader::SURFACE_BASE,
             transparency: HashMap::new(),
+            transformacoes: HashMap::new(),
             device_bitmap: 0,
             display_target: 0,
             clip: None,
@@ -2772,7 +2777,10 @@ impl<C: CpuBackend> Machine<C> {
                 Some(result) => result,
                 None => return Ok(None),
             },
-            (Interface::Graphics, _) | (Interface::Display, _) | (Interface::Bitmap, _) => {
+            (Interface::Graphics, _)
+            | (Interface::Display, _)
+            | (Interface::Bitmap, _)
+            | (Interface::Transform, _) => {
                 let whole = iface.method(slot).is_none_or(touches_whole_surface);
                 if whole {
                     self.sync_surfaces_in()?;
@@ -2780,6 +2788,7 @@ impl<C: CpuBackend> Machine<C> {
                 let handled = match iface {
                     Interface::Graphics => self.graphics_call(slot)?,
                     Interface::Display => self.display_call(slot)?,
+                    Interface::Transform => self.transform_call(slot)?,
                     _ => self.bitmap_call(slot)?,
                 };
                 let Some(result) = handled else {

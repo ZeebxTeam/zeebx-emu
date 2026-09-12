@@ -129,6 +129,28 @@ A lista é de **exclusão**, e isso é deliberado: esquecer ali um método que d
 errado, que é difícil de perceber; deixar de fora um que não desenha só custa a cópia, que
 aparece na medição. **Na dúvida, copia.**
 
+### O bitmap compatível já é `IDIB`, e o Zenonia apresenta por `ITransform`
+
+O Zenonia ficava com a tela preta desenhando o tempo todo, e eram dois erros encadeados.
+
+**O canvas nascia sem tamanho.** O jogo cria um canvas 320x240 com `CreateCompatibleBitmap` e lê
+`cx`, `cy` e `pBmp` direto da struct, sem `QueryInterface` — no BREW o bitmap compatível já é
+`IDIB`. O nosso só publicava esses campos quando alguém pedia a interface, então o canvas era
+0x0 para o jogo. Sem `pBmp`, o motor dele caía no caminho lento, pixel a pixel por `SetPixels`
+(197 mil chamadas em trinta segundos). Agora o `CreateCompatibleBitmap` já expõe a DIB.
+
+**O quadro ia para a tela por uma interface que não existia.** Para apresentar, o jogo pede ao
+bitmap da tela o IID `0x01001029` e chama o slot 4 do objeto com `(x, y, pSrc, xSrc, ySrc, dx,
+dy, pMatrix, nComposite)` — o `ITransform::TransformBltComplex`. Esse IID estava tratado como "o
+terceiro IID do `IDIB`", por ser vizinho do `AEEIID_DIB_20`, e era respondido com o próprio
+bitmap: o slot 4 caía no `NativeToRGB`.
+
+A matriz é `{A, B, C, D}` em 8.8 aplicada em volta do centro do retângulo de origem, com `(x, y)`
+no canto que ele teria sem transformação. O Zenonia passa `x = 160`, `y = 120`, canvas 320x240 e
+escala 1,9: o resultado, 608x456, fica centrado na tela 640x480. A amostragem é pelo pixel mais
+próximo, percorrendo o destino para não deixar buracos. O `TransformBltSimple` ainda não existe
+e aparece no relatório se algum jogo o pedir.
+
 ## O recorte
 
 `IDISPLAY_SetClipRect` era aceito e ignorado, e isso escondia um erro grande.

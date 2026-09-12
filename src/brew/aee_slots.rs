@@ -160,6 +160,15 @@ pub const BITMAP: &[&str] = &[
     "GetTransparencyColor",
 ];
 
+/// Métodos de `ITransform` (5 slots), de `AEETransform.h`.
+pub const TRANSFORM: &[&str] = &[
+    "AddRef",
+    "Release",
+    "QueryInterface",
+    "TransformBltSimple",
+    "TransformBltComplex",
+];
+
 /// Métodos de `IHID` (8 slots).
 pub const HID: &[&str] = &[
     "AddRef",

@@ -134,6 +134,11 @@ pub enum Interface {
     Widget = 40,
     /// Controle básico usado pelo Zenonia (`AEECLSID 0x01003109`).
     Control = 51,
+    /// Escala e rotação de um bitmap sobre outro, de `AEETransform.h` (`AEEIID_TRANSFORM`).
+    ///
+    /// É como o Zenonia apresenta o quadro: desenha em 320x240 e pede ao bitmap da tela que
+    /// escale o canvas para ela.
+    Transform = 52,
     /// `0x01006c05`, o **ZEEBOMCP** — o objeto único que a Z-Wheel pede a cada partida.
     ///
     /// O nome sai do próprio jogo: a `Tectoy.c` imprime `Cannot create instance of ZEEBOMCP`
@@ -302,7 +307,7 @@ impl Interface {
     /// as duas coisas precisam concordar — daí a lista existir num lugar só, com teste que
     /// confere a correspondência. Quando elas divergiram, um objeto recebeu a vtable de outra
     /// interface e a chamada foi parar no método errado, com sintoma a quilômetros da causa.
-    pub const ALL: [Interface; 52] = [
+    pub const ALL: [Interface; 53] = [
         Self::Shell,
         Self::Module,
         Self::Applet,
@@ -355,6 +360,7 @@ impl Interface {
         Self::Typeface,
         Self::SimCardCtl,
         Self::Control,
+        Self::Transform,
     ];
 
     /// Nome usado nos logs — casa com a nomenclatura do SDK.
@@ -400,6 +406,7 @@ impl Interface {
             Self::SourceUtil => "ISourceUtil",
             Self::Widget => "IWidget",
             Self::Control => "IControl",
+            Self::Transform => "ITransform",
             Self::ZeeboMcp => "IZeeboMCP",
             Self::Config => "IConfig",
             Self::Source => "ISource",
@@ -458,6 +465,7 @@ impl Interface {
             Self::SourceUtil => aee_slots::SOURCE_UTIL,
             Self::Widget => aee_slots::WIDGET,
             Self::Control => aee_slots::CONTROL,
+            Self::Transform => aee_slots::TRANSFORM,
             Self::ZeeboMcp => aee_slots::ZEEBO_MCP,
             Self::Config => aee_slots::CONFIG,
             Self::Source => aee_slots::SOURCE,
@@ -542,6 +550,7 @@ impl Interface {
             49 => Self::Typeface,
             50 => Self::SimCardCtl,
             51 => Self::Control,
+            52 => Self::Transform,
             6 => Self::Helpers,
             _ => return None,
         })

@@ -167,6 +167,117 @@ impl<C: CpuBackend> Machine<C> {
         Ok(addr)
     }
 
+    /// Métodos de `ITransform`.
+    pub(super) fn transform_call(&mut self, slot: u32) -> Result<Option<u32>, CpuError> {
+        let Some(name) = Interface::Transform.method(slot) else {
+            return Ok(None);
+        };
+        let this = self.cpu.read_reg(Reg::R0);
+        let result = match name {
+            "AddRef" => self.objects.add_ref(this),
+            "Release" => {
+                let restam = self.objects.release(this);
+                if restam == 0 {
+                    self.transformacoes.remove(&this);
+                }
+                restam
+            }
+            // int TransformBltComplex(ITransform *p, int x, int y, IBitmap *pSrc, int xSrc,
+            //                         int ySrc, unsigned dx, unsigned dy,
+            //                         const AEETransformMatrix *pMatrix, uint8 nComposite)
+            //
+            // A matriz é `{ int16 A, B, C, D }` em ponto fixo 8.8, aplicada **em volta do centro**
+            // do retângulo de origem, e `(x, y)` é onde o canto dele cairia sem transformação.
+            // A leitura sai do uso: o Zenonia passa `x = 160`, `y = 120`, um canvas 320x240 e
+            // escala 1,9; o centro do resultado fica em (320, 240), no meio da tela 640x480.
+            "TransformBltComplex" => {
+                let Some(&destino) = self.transformacoes.get(&this) else {
+                    return Ok(Some(EBADPARM));
+                };
+                let (x, y) = (
+                    self.cpu.read_reg(Reg::R1) as i32,
+                    self.cpu.read_reg(Reg::R2) as i32,
+                );
+                let origem = self.cpu.read_reg(Reg::R3);
+                let x_origem = self.stack_arg(0)? as i32;
+                let y_origem = self.stack_arg(1)? as i32;
+                let largura = self.stack_arg(2)? as i32;
+                let altura = self.stack_arg(3)? as i32;
+                let matriz = self.stack_arg(4)?;
+                let mut campos = [0u8; 8];
+                self.cpu.read_mem(matriz, &mut campos)?;
+                let campo = |i: usize| i16::from_le_bytes([campos[i], campos[i + 1]]) as f32 / 256.0;
+                let m = [campo(0), campo(2), campo(4), campo(6)];
+                self.transforma(TransformBlt {
+                    destino,
+                    origem,
+                    x,
+                    y,
+                    x_origem,
+                    y_origem,
+                    largura,
+                    altura,
+                    m,
+                })
+            }
+            _ => return Ok(None),
+        };
+        Ok(Some(result))
+    }
+
+    /// Desenha `origem` em `destino` pela matriz, amostrando o pixel mais próximo.
+    ///
+    /// Percorre o destino, não a origem: com escala maior que um, andar pela origem deixaria
+    /// buracos entre os pixels. Cada pixel do destino volta pela inversa da matriz até a origem.
+    fn transforma(&mut self, t: TransformBlt) -> u32 {
+        let [a, b, c, d] = t.m;
+        let det = a * d - b * c;
+        if det.abs() < f32::EPSILON || t.largura <= 0 || t.altura <= 0 {
+            return EBADPARM;
+        }
+        let inversa = [d / det, -b / det, -c / det, a / det];
+        let Some(fonte) = self.bitmaps.get(&t.origem) else {
+            return EBADPARM;
+        };
+        let (meio_w, meio_h) = (t.largura as f32 / 2.0, t.altura as f32 / 2.0);
+        // Copiar o retângulo de origem primeiro deixa ler e escrever quando os dois são o mesmo
+        // mapa de superfícies — e quando origem e destino são o mesmo bitmap.
+        let mut pixels = Vec::with_capacity((t.largura * t.altura) as usize);
+        for linha in 0..t.altura {
+            for coluna in 0..t.largura {
+                pixels.push(fonte.get_pixel(t.x_origem + coluna, t.y_origem + linha));
+            }
+        }
+        let Some(alvo) = self.bitmaps.get_mut(&t.destino) else {
+            return EBADPARM;
+        };
+        let (centro_x, centro_y) = (t.x as f32 + meio_w, t.y as f32 + meio_h);
+        // A caixa do resultado: os quatro cantos da origem transformados.
+        let cantos = [(-meio_w, -meio_h), (meio_w, -meio_h), (-meio_w, meio_h), (meio_w, meio_h)];
+        let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+        for (u, v) in cantos {
+            let (px, py) = (a * u + b * v + centro_x, c * u + d * v + centro_y);
+            x0 = x0.min(px);
+            y0 = y0.min(py);
+            x1 = x1.max(px);
+            y1 = y1.max(py);
+        }
+        let limite_x = alvo.width() as i32;
+        let limite_y = alvo.height() as i32;
+        for py in (y0.floor() as i32).max(0)..(y1.ceil() as i32).min(limite_y) {
+            for px in (x0.floor() as i32).max(0)..(x1.ceil() as i32).min(limite_x) {
+                let (u, v) = (px as f32 + 0.5 - centro_x, py as f32 + 0.5 - centro_y);
+                let sx = (inversa[0] * u + inversa[1] * v + meio_w).floor() as i32;
+                let sy = (inversa[2] * u + inversa[3] * v + meio_h).floor() as i32;
+                if sx < 0 || sy < 0 || sx >= t.largura || sy >= t.altura {
+                    continue;
+                }
+                alvo.set_pixel_native(px, py, pixels[(sy * t.largura + sx) as usize]);
+            }
+        }
+        SUCCESS
+    }
+
     /// Métodos de `IBitmap`, despachados pelo nome do slot.
     pub(super) fn bitmap_call(&mut self, slot: u32) -> Result<Option<u32>, CpuError> {
         let Some(name) = Interface::Bitmap.method(slot) else {
@@ -205,9 +316,21 @@ impl<C: CpuBackend> Machine<C> {
                     // Um `IDIB` *é* um `IBitmap` — a struct começa com a vtable de `IBitmap` e
                     // só acrescenta campos públicos. Então o próprio objeto serve, desde que
                     // os campos estejam preenchidos.
-                    AEECLSID_DIB | AEEIID_DIB_20 | AEEIID_DIB_ANTIGO => {
+                    AEECLSID_DIB | AEEIID_DIB_20 => {
                         self.expose_dib(this)?;
                         Some(this)
+                    }
+                    // O `ITransform` é outro objeto, que desenha **neste** bitmap.
+                    AEEIID_TRANSFORM => {
+                        let transform = self.new_object(Interface::Transform)?;
+                        if transform == 0 {
+                            return Ok(Some(ENOMEMORY));
+                        }
+                        self.transformacoes.insert(transform, this);
+                        if out != 0 {
+                            self.cpu.write_u32(out, transform)?;
+                        }
+                        return Ok(Some(SUCCESS));
                     }
                     _ => None,
                 };
@@ -397,6 +520,12 @@ impl<C: CpuBackend> Machine<C> {
                     return Ok(Some(ENOMEMORY));
                 }
                 self.bitmaps.insert(addr, Framebuffer::new(width, height));
+                // **O bitmap compatível já nasce `IDIB`, com os campos públicos preenchidos.** O
+                // Zenonia cria o canvas 320x240 assim e lê `cx`, `cy` e `pBmp` direto da struct,
+                // sem `QueryInterface` nenhum. Com os campos zerados o canvas tinha tamanho zero:
+                // o jogo desenhava pixel a pixel por `SetPixels` — 197 mil chamadas em trinta
+                // segundos — e apresentava um retângulo vazio, com a tela preta.
+                self.expose_dib(addr)?;
                 if out != 0 {
                     self.cpu.write_u32(out, addr)?;
                 }
@@ -700,4 +829,18 @@ impl<C: CpuBackend> Machine<C> {
             .map(|(&addr, fb)| (addr, fb.width(), fb.height(), fb.to_bmp()))
             .collect()
     }
+}
+
+/// Os argumentos de um `TransformBltComplex`, já lidos do guest.
+struct TransformBlt {
+    destino: u32,
+    origem: u32,
+    x: i32,
+    y: i32,
+    x_origem: i32,
+    y_origem: i32,
+    largura: i32,
+    altura: i32,
+    /// `A, B, C, D`, já fora do ponto fixo.
+    m: [f32; 4],
 }
