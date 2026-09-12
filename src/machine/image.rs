@@ -455,9 +455,9 @@ impl<C: CpuBackend> Machine<C> {
         y: i32,
         frame: Option<u32>,
     ) -> Result<(), CpuError> {
-        let Some(info) = self.images.get(&image).cloned() else {
+        if !self.images.contains_key(&image) {
             return Ok(());
-        };
+        }
         let target = self.target()?;
         if !self.bitmaps.contains_key(&target) {
             self.pending_blits.push(PendingBlit {
@@ -470,7 +470,21 @@ impl<C: CpuBackend> Machine<C> {
             return Ok(());
         }
         let clip = self.clip;
-        let Some(surface) = self.bitmaps.get_mut(&target) else {
+        // **A imagem não é copiada para ser lida.** Ler o mapa de imagens e escrever no de
+        // superfícies são campos diferentes do `self`, e separá-los aqui é o que deixa o
+        // empréstimo passar sem cópia.
+        //
+        // Com o `.cloned()` que estava nesta linha, cada `IIMAGE_Draw` duplicava a imagem
+        // inteira — pixels e máscara de opacidade — só para ler um retângulo dela. No Pac-Mania
+        // são 21.923 chamadas em cinco segundos virtuais, a 0,6 ms cada: 90% de todo o tempo de
+        // API do jogo estava nessa cópia, e não no laço que o recorte já tinha reduzido.
+        let Self {
+            images, bitmaps, ..
+        } = self;
+        let Some(info) = images.get(&image) else {
+            return Ok(());
+        };
+        let Some(surface) = bitmaps.get_mut(&target) else {
             return Ok(());
         };
         let (frame_width, offset) = match (frame, info.frame_width) {
