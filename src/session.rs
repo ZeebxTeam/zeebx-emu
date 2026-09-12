@@ -140,8 +140,9 @@ impl Session {
         path: &Path,
         portas: [Option<crate::input::bindings::Aparelho>; crate::input::PORTAS],
         serial: Option<&Path>,
+        placa: bool,
     ) -> Result<Self, StartError> {
-        Self::start_inner(path, Some(portas), serial)
+        Self::start_inner(path, Some(portas), serial, placa)
     }
 
     /// A serial entra **antes de o módulo ser criado**, e não depois de a sessão existir.
@@ -154,6 +155,7 @@ impl Session {
         path: &Path,
         portas: Option<[Option<crate::input::bindings::Aparelho>; crate::input::PORTAS]>,
         serial: Option<&Path>,
+        placa: bool,
     ) -> Result<Self, StartError> {
         let extracted;
         let path = match path.extension().and_then(|e| e.to_str()) {
@@ -172,6 +174,8 @@ impl Session {
         let root = path.parent().map(Path::to_path_buf).unwrap_or_default();
         let cpu = UnicornCpu::new().map_err(|e| StartError::NotLoadable(e.to_string()))?;
         let mut machine = Machine::new(cpu, module, root);
+        // Antes de qualquer desenho: ver [`Machine::usa_placa`].
+        machine.usa_placa(placa);
         if let Some(caminho) = serial {
             if let Some(dir) = caminho.parent() {
                 let _ = std::fs::create_dir_all(dir);
@@ -590,6 +594,7 @@ mod tests {
             &std::env::temp_dir().join("zeebx-nao-existe.mod"),
             None,
             None,
+            false,
         );
         assert!(matches!(err, Err(StartError::Unreadable(_))));
     }
@@ -601,7 +606,7 @@ mod tests {
         // legível, porque é ele que a interface mostra.
         let path = std::env::temp_dir().join("zeebx-teste-lixo.mod");
         std::fs::write(&path, b"isto nao e um modulo").unwrap();
-        let Err(err) = Session::start_inner(&path, None, None) else {
+        let Err(err) = Session::start_inner(&path, None, None, false) else {
             panic!("um arquivo de lixo não podia virar uma sessão");
         };
         assert!(!err.to_string().is_empty());

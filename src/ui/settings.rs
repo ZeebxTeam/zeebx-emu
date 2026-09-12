@@ -92,6 +92,20 @@ pub struct Graphics {
     ///
     /// Um driver que recuse os shaders faz o emulador voltar sozinho ao caminho antigo.
     pub gpu_present: bool,
+    /// Preencher o 3D do console na placa, em vez de na CPU.
+    ///
+    /// Isto **muda quem rasteriza**, e não só como o quadro pronto chega à tela. A etapa de
+    /// vértice continua na CPU e é a mesma nos dois — matrizes, matriz de textura e iluminação
+    /// —; o que vai para a placa é o preenchimento, que é onde a medição mostrou o tempo.
+    ///
+    /// Medido, tempo de API: Z-Wheel de 4340 para 2805 ms (-35%) em treze segundos virtuais, e o
+    /// Crash na pista de 3438 para 2793 ms (-19%) em trinta.
+    ///
+    /// O desenho **não** é idêntico ao de software: regra de borda e arredondamento divergem por
+    /// construção. Medido na Z-Wheel, 1% dos pixels difere além de oito níveis e 0,06% além de
+    /// trinta e dois; sete das nove superfícies saem byte a byte iguais, porque não passam pelo
+    /// rasterizador. Sem placa alcançável o emulador segue em software e diz o motivo.
+    pub gpu_rasterizer: bool,
 }
 
 impl Default for Graphics {
@@ -102,6 +116,10 @@ impl Default for Graphics {
             keep_aspect: true,
             speed_limit: true,
             gpu_present: true,
+            // Desligado por padrão: é um rasterizador novo, e a revisão jogo a jogo é de quem
+            // usa. Nos dois títulos medidos ele ganha, mas isso não é licença para trocar o
+            // desenho de todos os outros sem que alguém os tenha olhado.
+            gpu_rasterizer: false,
         }
     }
 }

@@ -10,6 +10,11 @@ description = "Emulador do Zeebo, o console da TecToy"
 [dependencies]
 eframe = { version = "0.33.3", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
 # Saída de áudio do host. A decodificação é nossa: os jogos entregam PCM.
+# Contexto de OpenGL fora de tela para o rasterizador na placa. Já vinha na árvore pelo
+# eframe, então promovê-lo a dependência direta não acrescenta build nenhuma — e é o que
+# permite a GPU funcionar também no `run` sem janela, onde toda a medição é feita.
+glutin = "0.32.3"
+raw-window-handle = "0.6"
 cpal = "0.15"
 # Controles de verdade, nos três sistemas.
 gilrs = "0.11"

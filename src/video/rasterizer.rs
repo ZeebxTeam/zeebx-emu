@@ -1360,7 +1360,16 @@ impl GlState {
     }
 
     /// Desenha uma sequência de vértices no modo pedido.
-    pub fn draw(&mut self, mode: u32, vertices: &[Vertex]) {
+    /// A etapa de vértice: transforma, ilumina e deixa o resultado em `transformed`.
+    ///
+    /// Está separada do preenchimento porque **os dois rasterizadores a compartilham**. Matriz
+    /// de modelo-visão, projeção, matriz de textura e iluminação por vértice são a mesma conta
+    /// nos dois, e tê-la em um lugar só é o que torna a comparação entre eles honesta: se a luz
+    /// estiver errada, estará errada igual nos dois, e a diferença que sobrar é do preenchimento.
+    ///
+    /// No fim disto os vértices estão em **espaço de recorte**, com cor e `uv` finais — que é
+    /// exatamente o que uma placa espera receber num shader de passagem.
+    pub fn etapa_de_vertice(&mut self, vertices: &[Vertex]) {
         let mvp = {
             let projection = *self.projection.last().expect("pilha nunca fica vazia");
             let modelview = *self.modelview.last().expect("pilha nunca fica vazia");
@@ -1400,7 +1409,17 @@ impl GlState {
                 ..*v
             }
         }));
+        self.transformed = clip;
+    }
 
+    /// Os vértices que a etapa de vértice deixou prontos.
+    pub fn transformados(&self) -> &[Vertex] {
+        &self.transformed
+    }
+
+    pub fn draw(&mut self, mode: u32, vertices: &[Vertex]) {
+        self.etapa_de_vertice(vertices);
+        let clip = std::mem::take(&mut self.transformed);
         // Os triângulos são projetados primeiro e preenchidos depois, todos juntos: é o lote
         // inteiro que decide se vale dividir o quadro entre threads, e o estado do OpenGL não
         // muda no meio de uma draw call.

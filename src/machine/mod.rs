@@ -1986,8 +1986,59 @@ pub struct Machine<C: CpuBackend> {
     calls_total: u64,
 }
 
+/// Se o rasterizador na placa foi pedido.
+///
+/// `padrao` é o que a configuração diz. A variável de ambiente tem a palavra final porque é por
+/// ela que a medição escolhe o backend na linha de comando, onde não há tela de configuração.
+///
+/// Valor vazio conta como desligado: um `ZEEBX_GPU=` não deve ligar a placa sem que se tenha
+/// pedido — foi assim que uma bateria de quatro medições saiu inteira na placa quando metade
+/// devia ser em software.
+fn placa_pedida(padrao: bool) -> bool {
+    match std::env::var("ZEEBX_GPU") {
+        Ok(valor) => !valor.is_empty() && valor != "0",
+        Err(_) => padrao,
+    }
+}
+
+/// O rasterizador que a construção adota. Quem tem configuração troca depois, com `usa_placa`.
+fn rasterizador(largura: usize, altura: usize) -> Box<dyn Rasterizador> {
+    match placa_pedida(false) {
+        true => na_placa(largura, altura),
+        false => Box::new(GlState::new(largura, altura)),
+    }
+}
+
+/// A placa quando ela abre, o software quando não.
+///
+/// A queda **não é tratamento de erro**, é um caminho normal: num terminal sem EGL alcançável não
+/// há placa para usar, e o emulador tem que rodar de todo jeito. O motivo é dito uma vez, porque
+/// um emulador que silenciosamente roda diferente do pedido é pior que um lento.
+fn na_placa(largura: usize, altura: usize) -> Box<dyn Rasterizador> {
+    match crate::video::gpu::GpuState::novo(largura, altura) {
+        Ok(gpu) => Box::new(gpu),
+        Err(motivo) => {
+            eprintln!("sem rasterizador na placa ({motivo}); seguindo em software");
+            Box::new(GlState::new(largura, altura))
+        }
+    }
+}
+
 impl<C: CpuBackend> Machine<C> {
     /// `root` é o diretório do módulo — a raiz do sistema de arquivos que o jogo enxerga.
+    /// Troca o rasterizador, **antes de o jogo começar**.
+    ///
+    /// A sessão chama isto logo depois de construir a máquina, com o que a configuração pede.
+    /// Trocar depois de o jogo desenhar perderia o estado de GL acumulado — matrizes, texturas,
+    /// luz —, então este é o único momento em que a troca é segura.
+    pub fn usa_placa(&mut self, sim: bool) {
+        let (largura, altura) = self.gl.frame_size();
+        self.gl = match placa_pedida(sim) {
+            true => na_placa(largura, altura),
+            false => Box::new(GlState::new(largura, altura)),
+        };
+    }
+
     pub fn new(cpu: C, module: LoadedModule, root: impl Into<std::path::PathBuf>) -> Self {
         let raiz: std::path::PathBuf = root.into();
         let heap = Heap::new(loader::HEAP_BASE, loader::HEAP_SIZE);
@@ -2131,7 +2182,7 @@ impl<C: CpuBackend> Machine<C> {
             waves: HashMap::new(),
             audio: None,
             gl_last_frame: Vec::new(),
-            gl: Box::new(GlState::new(SCREEN_WIDTH as usize, SCREEN_HEIGHT as usize)),
+            gl: rasterizador(SCREEN_WIDTH as usize, SCREEN_HEIGHT as usize),
             gl_vertices: ArrayPointer::default(),
             gl_colors: ArrayPointer::default(),
             gl_texcoords: ArrayPointer::default(),

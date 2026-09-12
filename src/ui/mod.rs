@@ -300,7 +300,12 @@ impl App {
             .debug
             .log
             .then(|| Self::caminho_da_serial(&library::title_for(&path)));
-        match Session::start_with(&path, self.portas_configuradas(), serial.as_deref()) {
+        match Session::start_with(
+            &path,
+            self.portas_configuradas(),
+            serial.as_deref(),
+            self.settings.graphics.gpu_rasterizer,
+        ) {
             Ok(mut session) => {
                 session.set_installed_applets(self.games.iter().filter_map(|game| game.clsid));
                 // Ligar o som aqui é seguro **porque o jogo ainda não começou**: o `start` só
@@ -982,6 +987,15 @@ impl App {
             )
             .changed();
         ui.weak(self.catalog.get("graphics.gpu_present.hint"));
+
+        ui.add_space(12.0);
+        changed |= ui
+            .checkbox(
+                &mut graphics.gpu_rasterizer,
+                self.catalog.get("graphics.gpu_rasterizer"),
+            )
+            .changed();
+        ui.weak(self.catalog.get("graphics.gpu_rasterizer.hint"));
         changed
     }
 
