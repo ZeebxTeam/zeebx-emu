@@ -107,6 +107,13 @@ Passou os seis segundos, mas o relatório apontou alguma coisa. O balde é conse
 | Pac-Mania | lento demais — desenha, mas pixel a pixel pela API |
 | Zumas Revenge | para no laço na volta 55 — acesso inválido a 0x0000000c (pc 0x00046b94) |
 
+> **Medições posteriores já derrubaram três linhas desta tabela**, e ficam registradas aqui
+> porque a tabela inteira está defasada: o **Zenonia** roda **413 voltas do laço** em seis
+> segundos virtuais — a classe `0x01003109` dele está implementada como `IControl` e ligada ao
+> `CreateInstance`, sem sonda nenhuma; o **Prey Evil** roda **358 quadros** desde que os objetos
+> de buffer do OpenGL existem (ver [06-video-3d.md](06-video-3d.md)); e o **Bejeweled Twist**
+> segue parando, mas por motivo que não é nosso — ver abaixo.
+
 > **Esta tabela é de uma medição anterior.** A varredura de abertura de hoje mostra que
 > Z-Wheel, Zeebo App, Action Hero 3D, Alice, Prey Evil, Turma da Mônica e Zuma's Revenge **criam
 > o applet** — os quatro últimos já criavam, e os dois primeiros deixaram de estar presos aí. Onde
@@ -328,6 +335,29 @@ encontrados" que ninguém tinha lido.
 
 Foi a mesma lista que entregou o `font.fnz` dos ports de arcade, e nas duas vezes ela estava lá
 desde o começo. A lição: **a lista de arquivos não encontrados do relatório é sinal, não ruído.**
+
+## O Bejeweled Twist para, e não é por nada que a gente deva
+
+Vale registrar um diagnóstico que **não** terminou em correção, porque o valor dele é fechar a
+pergunta: o jogo aparece como "para no laço — acesso inválido a `0x00000024`", e a tentação é
+procurar uma API faltando.
+
+Não há nenhuma. O relatório dele sai com **zero** classes desconhecidas, **zero** arquivos não
+encontrados e nenhuma API por hipótese além da superfície própria dele. O que ele faz nos seis
+segundos está inteiro: dezoito imagens, cada uma pelo mesmo ciclo —
+`GetDeviceBitmap` → `QueryInterface(DIB)` → `MEMASTREAM` → `SetEx` → decodificador → `Notify` →
+`SetStream` → `SetDestination(superfície dele)` → `Draw` → `SetDestination(0)` → `GetInfo`. O
+desenho **chega** na superfície dele: o `BltIn` dela pede `QueryInterface(0x01001045)` no nosso
+bitmap de origem e a chamada aparece no rastro, com retorno zero.
+
+A queda é em `0x32b78`, `ldr r2, [r0, #0x14]`, com `r0 = 0x10` — porque `0x3a7c8` é
+`add r0, r0, #0x10; bx lr`, um acessador, e o que ele recebeu foi zero. O zero vem de
+`[this+0x20]`. O chamador em `0x32d04` só entra nesse caminho **quando `[this+0x28]` é zero**, e
+o watchpoint mostra o construtor em `0x17ef0` zerando `0x20`, `0x24` e `0x28` e nada preenchendo
+depois. É estado interno do jogo, não resposta nossa: os três campos ficaram como nasceram.
+
+Onde isso continua, então, é achando quem deveria chamar o setter — não implementando API. Fica
+dito para a próxima pessoa não refazer a escavação até aqui.
 
 ## Como repetir, por teste
 

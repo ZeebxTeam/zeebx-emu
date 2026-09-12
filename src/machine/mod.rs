@@ -1638,6 +1638,14 @@ struct ArrayPointer {
     stride: u32,
     address: u32,
     enabled: bool,
+    /// Nome do objeto de buffer ligado em `GL_ARRAY_BUFFER` **quando o ponteiro foi dado**, ou
+    /// zero se não havia nenhum.
+    ///
+    /// A especificação é explícita nisto, e a diferença é observável: o que decide de onde o
+    /// vetor vem é a ligação no instante do `glVertexPointer`, não a do `glDrawElements`. Um
+    /// jogo que sobe três malhas liga cada buffer, dá os ponteiros dela e só depois desenha —
+    /// se lêssemos a ligação corrente no desenho, as três sairiam do último buffer.
+    buffer: u32,
 }
 
 /// Adapta os registradores e a pilha do guest ao formatador de `printf`.
@@ -1937,6 +1945,18 @@ pub struct Machine<C: CpuBackend> {
     /// O vetor de normais do `glNormalPointer`. Sempre três componentes — a função nem recebe
     /// tamanho.
     gl_normals: ArrayPointer,
+    /// Conteúdo de cada objeto de buffer vivo, pelo nome que o `glGenBuffers` entregou.
+    ///
+    /// Fica no host, e não na memória do jogo, porque é onde um driver de verdade o guarda: o
+    /// jogo só enxerga o buffer pelo nome, e depois do `glBufferData` ele tem o direito de
+    /// reaproveitar o ponteiro que passou. Guardar cópia nossa é o que faz esse direito valer.
+    gl_buffers: HashMap<u32, Vec<u8>>,
+    /// Nome ligado em `GL_ARRAY_BUFFER`, ou zero para "os ponteiros são da memória do jogo".
+    gl_array_buffer: u32,
+    /// Nome ligado em `GL_ELEMENT_ARRAY_BUFFER`. Aqui a ligação corrente **é** a que vale: o
+    /// `glDrawElements` decide no momento do desenho se o último argumento é ponteiro ou
+    /// deslocamento dentro do buffer.
+    gl_element_buffer: u32,
     /// A normal do `glNormal3x`, usada quando não há vetor. O padrão do OpenGL é `(0, 0, 1)`.
     gl_normal_atual: [f32; 3],
     /// Strings constantes já copiadas para a memória do guest, indexadas pelo texto.
@@ -2199,6 +2219,9 @@ impl<C: CpuBackend> Machine<C> {
             gl_colors: ArrayPointer::default(),
             gl_texcoords: ArrayPointer::default(),
             gl_normals: ArrayPointer::default(),
+            gl_buffers: HashMap::new(),
+            gl_array_buffer: 0,
+            gl_element_buffer: 0,
             gl_normal_atual: [0.0, 0.0, 1.0],
             interned: HashMap::new(),
             threads: HashMap::new(),

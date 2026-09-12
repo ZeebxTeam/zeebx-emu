@@ -82,12 +82,19 @@ impl<C: CpuBackend> Machine<C> {
                     // o palco, cujas texturas (`stage_*.qxt`) são ATITC; sem o nome na lista ela
                     // desiste do palco inteiro.
                     //
-                    // Os `vertex_buffer_object` e o `point_size_array` que ela também procura
-                    // ficam **de fora**: do primeiro não temos `BindBuffer` nem `BufferData`, e
-                    // do segundo só um `SUCCESS` que não faz nada. Anunciar o que não existe faz
-                    // o jogo chamar função que não está lá.
+                    // O `vertex_buffer_object` entrou quando passou a existir: `BindBuffer`,
+                    // `BufferData`, `BufferSubData`, `DeleteBuffers`, `IsBuffer` e
+                    // `GetBufferParameteriv`, com os vetores e a lista de índices lendo de
+                    // dentro do buffer. O nome é o `ARB`, que é o que os jogos procuram — o
+                    // Prey Evil faz `strstr` de `ARB_vertex_buffer_object` na lista e desiste
+                    // de instalar a função de desenho dele sem isso.
+                    //
+                    // O `point_size_array` continua **de fora**: dele só temos um `SUCCESS` que
+                    // não faz nada, e anunciar o que não existe faz o jogo chamar função que
+                    // não está lá.
                     gles::GL_EXTENSIONS => {
-                        "GL_OES_draw_texture GL_ATI_imageon_misc GL_ATI_texture_compression_atitc "
+                        "GL_OES_draw_texture GL_ATI_imageon_misc GL_ATI_texture_compression_atitc \
+                         GL_ARB_vertex_buffer_object "
                     }
                     _ => "",
                 };
@@ -108,6 +115,91 @@ impl<C: CpuBackend> Machine<C> {
                 for i in 0..a[0] {
                     let name = self.cpu.read_u32(a[1] + i * 4)?;
                     self.gl.delete_texture(name);
+                }
+            }
+
+            // --- Objetos de buffer ------------------------------------------------------
+            // O `GL_ARB_vertex_buffer_object`, que no OpenGL ES 1.1 já é núcleo. Não é enfeite
+            // de desempenho: o Prey Evil confere as duas extensões que quer na lista do
+            // `glGetString`, e **só instala a função de desenho dele se achar as duas**. Sem o
+            // `vertex_buffer_object` na lista, ele deixa o ponteiro em `[obj+0x274]` valendo
+            // zero e em seguida o chama sem conferir — o salto para o endereço zero que
+            // aparecia no relatório dele como "para no laço".
+            "BindBuffer" => {
+                let (alvo, nome) = (a[0], a[1]);
+                // Ligar um nome que o `glGenBuffers` nunca entregou é legal no OpenGL: o nome
+                // passa a existir, vazio, na primeira ligação.
+                if nome != 0 {
+                    self.gl_buffers.entry(nome).or_default();
+                }
+                match alvo {
+                    gles::GL_ARRAY_BUFFER => self.gl_array_buffer = nome,
+                    gles::GL_ELEMENT_ARRAY_BUFFER => self.gl_element_buffer = nome,
+                    _ => {}
+                }
+            }
+            "BufferData" | "BufferDataQUALCOMM" | "BufferDataATI" => {
+                let (alvo, tamanho, dados) = (a[0], a[1], a[2]);
+                let Some(nome) = self.buffer_ligado(alvo) else {
+                    return Ok(Some(SUCCESS));
+                };
+                // `data` nulo é pedido legítimo: reserva o tamanho e deixa o conteúdo por
+                // definir. O `glBufferSubData` vem depois preencher.
+                let conteudo = if dados == 0 {
+                    vec![0u8; tamanho as usize]
+                } else {
+                    self.read_bytes(dados, tamanho)?
+                };
+                self.gl_buffers.insert(nome, conteudo);
+            }
+            "BufferSubData" | "BufferSubDataQUALCOMM" => {
+                let (alvo, inicio, tamanho, dados) = (a[0], a[1], a[2], a[3]);
+                let Some(nome) = self.buffer_ligado(alvo) else {
+                    return Ok(Some(SUCCESS));
+                };
+                let novo = self.read_bytes(dados, tamanho)?;
+                if let Some(buffer) = self.gl_buffers.get_mut(&nome) {
+                    let fim = inicio as usize + novo.len();
+                    // Escrever fora do buffer é erro do jogo, e o OpenGL manda ignorar em vez
+                    // de crescer: crescer esconderia o defeito e mudaria o `GL_BUFFER_SIZE`.
+                    if fim <= buffer.len() {
+                        buffer[inicio as usize..fim].copy_from_slice(&novo);
+                    }
+                }
+            }
+            "DeleteBuffers" | "DeleteBuffersQUALCOMM" => {
+                for i in 0..a[0] {
+                    let nome = self.cpu.read_u32(a[1] + i * 4)?;
+                    self.gl_buffers.remove(&nome);
+                    // Apagar um buffer desliga a ligação dele, e é o que a especificação pede:
+                    // o alvo volta para zero, ou seja, para a memória do jogo.
+                    if self.gl_array_buffer == nome {
+                        self.gl_array_buffer = 0;
+                    }
+                    if self.gl_element_buffer == nome {
+                        self.gl_element_buffer = 0;
+                    }
+                }
+            }
+            "IsBuffer" | "IsBufferQUALCOMM" => {
+                let existe = u32::from(self.gl_buffers.contains_key(&a[0]));
+                answer = Some((1, existe));
+            }
+            "GetBufferParameteriv" => {
+                let (alvo, pname, saida) = (a[0], a[1], a[2]);
+                let tamanho = self
+                    .buffer_ligado(alvo)
+                    .and_then(|nome| self.gl_buffers.get(&nome))
+                    .map_or(0, |buffer| buffer.len() as u32);
+                let valor = match pname {
+                    gles::GL_BUFFER_SIZE => tamanho,
+                    // O uso declarado não muda nada aqui, e devolver o que o jogo pediu seria
+                    // inventar: zero é o que o OpenGL define para buffer sem uso declarado.
+                    gles::GL_BUFFER_USAGE => 0,
+                    _ => 0,
+                };
+                if saida != 0 {
+                    self.cpu.write_u32(saida, valor)?;
                 }
             }
 
@@ -302,6 +394,7 @@ impl<C: CpuBackend> Machine<C> {
                     stride: a[1],
                     address: a[2],
                     enabled,
+                    buffer: self.gl_array_buffer,
                 };
             }
 
@@ -313,6 +406,7 @@ impl<C: CpuBackend> Machine<C> {
                     stride: a[2],
                     address: a[3],
                     enabled: true,
+                    buffer: self.gl_array_buffer,
                 };
                 // O vetor de coordenadas pertence à unidade escolhida pelo
                 // `glClientActiveTexture`; as outras unidades não têm onde cair aqui.
@@ -351,7 +445,10 @@ impl<C: CpuBackend> Machine<C> {
                 // A lista inteira num pedido só, pelo mesmo motivo do `read_array`: cada
                 // travessia para o unicorn custa mais que os dois bytes que ela traz.
                 let largura = if kind == gles::GL_UNSIGNED_BYTE { 1 } else { 2 };
-                let bytes = self.read_bytes(list, count * largura)?;
+                // Com um buffer de índices ligado, `list` é deslocamento dentro dele — e aqui
+                // vale a ligação **corrente**, ao contrário dos vetores de vértice.
+                let bytes =
+                    self.bytes_do_vetor(self.gl_element_buffer, list, count * largura)?;
                 let indices: Vec<u32> = bytes
                     .chunks_exact(largura as usize)
                     .map(|c| {
@@ -638,6 +735,37 @@ impl<C: CpuBackend> Machine<C> {
     /// Se a leitura em bloco falhar, cai no caminho antigo. O trecho vai do primeiro ao último
     /// índice, e um array que termine colado no fim da região mapeada pode ter o espaço de
     /// `stride` do último elemento fora dela — o que valia antes continua valendo.
+    /// Que nome está ligado num alvo de buffer. `None` quando é zero — que não é buffer
+    /// nenhum, e sim "os ponteiros são endereços da memória do jogo".
+    fn buffer_ligado(&self, alvo: u32) -> Option<u32> {
+        let nome = match alvo {
+            gles::GL_ARRAY_BUFFER => self.gl_array_buffer,
+            gles::GL_ELEMENT_ARRAY_BUFFER => self.gl_element_buffer,
+            _ => 0,
+        };
+        (nome != 0).then_some(nome)
+    }
+
+    /// Bytes de um vetor, venham do objeto de buffer ou da memória do jogo.
+    ///
+    /// É o único lugar que sabe a diferença, e é de propósito: com um buffer ligado, o
+    /// "ponteiro" que o jogo passou não é endereço nenhum — é deslocamento dentro do buffer.
+    /// Ler a memória do jogo naquele número daria lixo ou falha de acesso, e foi o que o
+    /// `glVertexPointer(…, 0)` de um jogo com buffer ligado faria: ler o endereço zero.
+    fn bytes_do_vetor(
+        &self,
+        buffer: u32,
+        endereco: u32,
+        quantos: u32,
+    ) -> Result<Vec<u8>, CpuError> {
+        if buffer == 0 {
+            return self.read_bytes(endereco, quantos);
+        }
+        let vazio = Vec::new();
+        let conteudo = self.gl_buffers.get(&buffer).unwrap_or(&vazio);
+        Ok(fatia_do_buffer(conteudo, endereco, quantos))
+    }
+
     pub(super) fn read_array(
         &self,
         pointer: ArrayPointer,
@@ -667,10 +795,10 @@ impl<C: CpuBackend> Machine<C> {
         if extensao > TETO_DO_ARRAY || inicio + extensao > u32::MAX as u64 {
             return avulso(self);
         }
-        let mut bytes = vec![0u8; extensao as usize];
-        if self.cpu.read_mem(inicio as u32, &mut bytes).is_err() {
+        let Ok(bytes) = self.bytes_do_vetor(pointer.buffer, inicio as u32, extensao as u32)
+        else {
             return avulso(self);
-        }
+        };
         Ok(indices
             .iter()
             .map(|&index| {
@@ -717,34 +845,30 @@ impl<C: CpuBackend> Machine<C> {
         } else {
             pointer.stride
         };
-        let base = pointer.address + index * stride;
+        let quantos = pointer.size.min(4);
+        // Um pedido só para o elemento inteiro, em vez de um por componente: é o mesmo motivo
+        // do `read_array`, e agora também o que deixa o buffer entrar por um caminho só.
+        let bytes = self.bytes_do_vetor(
+            pointer.buffer,
+            pointer.address + index * stride,
+            quantos * component,
+        )?;
         let mut out = default;
-        for i in 0..pointer.size.min(4) {
-            let address = base + i * component;
-            out[i as usize] = match pointer.kind {
-                gles::GL_FLOAT => f32::from_bits(self.cpu.read_u32(address)?),
-                gles::GL_FIXED => gles::fixed(self.cpu.read_u32(address)?),
-                gles::GL_SHORT => {
-                    let mut half = [0u8; 2];
-                    self.cpu.read_mem(address, &mut half)?;
-                    i16::from_le_bytes(half) as f32
-                }
-                gles::GL_UNSIGNED_SHORT => {
-                    let mut half = [0u8; 2];
-                    self.cpu.read_mem(address, &mut half)?;
-                    u16::from_le_bytes(half) as f32
-                }
-                gles::GL_BYTE => {
-                    let mut byte = [0u8; 1];
-                    self.cpu.read_mem(address, &mut byte)?;
-                    byte[0] as i8 as f32
-                }
+        for i in 0..quantos as usize {
+            let em = i * component as usize;
+            let Some(campo) = bytes.get(em..em + component as usize) else {
+                break;
+            };
+            out[i] = match pointer.kind {
+                gles::GL_FLOAT => f32::from_le_bytes([campo[0], campo[1], campo[2], campo[3]]),
+                gles::GL_FIXED => gles::fixed(u32::from_le_bytes([
+                    campo[0], campo[1], campo[2], campo[3],
+                ])),
+                gles::GL_SHORT => i16::from_le_bytes([campo[0], campo[1]]) as f32,
+                gles::GL_UNSIGNED_SHORT => u16::from_le_bytes([campo[0], campo[1]]) as f32,
+                gles::GL_BYTE => campo[0] as i8 as f32,
                 // `GL_UNSIGNED_BYTE` só aparece em cor, e ali o valor é normalizado.
-                _ => {
-                    let mut byte = [0u8; 1];
-                    self.cpu.read_mem(address, &mut byte)?;
-                    byte[0] as f32 / 255.0
-                }
+                _ => campo[0] as f32 / 255.0,
             };
         }
         Ok(out)
@@ -782,5 +906,60 @@ impl<C: CpuBackend> Machine<C> {
             None => self.screen.load_rgb565_bytes(&bytes),
         }
         self.gl_last_frame = bytes;
+    }
+}
+
+/// A fatia de um objeto de buffer que um vetor pede, ou zeros quando ela não cabe.
+///
+/// Separada da máquina por ser a única regra do caminho de buffer que dá para errar sozinha —
+/// e por dar para cobrar num teste sem levantar um núcleo ARM inteiro.
+///
+/// Fora do buffer **não** é motivo para derrubar o desenho: o OpenGL deixa o resultado
+/// indefinido, e zero é o indefinido mais inofensivo que dá para escolher. Devolver erro aqui
+/// abortaria o `glDrawElements` inteiro por causa de um vértice, e um jogo que suba a malha em
+/// pedaços passa por esse caso sem estar com defeito.
+fn fatia_do_buffer(conteudo: &[u8], endereco: u32, quantos: u32) -> Vec<u8> {
+    let inicio = endereco as usize;
+    let fim = inicio.saturating_add(quantos as usize);
+    match conteudo.get(inicio..fim) {
+        Some(fatia) => fatia.to_vec(),
+        None => vec![0u8; quantos as usize],
+    }
+}
+
+#[cfg(test)]
+mod testes_do_buffer {
+    use super::fatia_do_buffer;
+
+    #[test]
+    fn o_deslocamento_zero_e_o_comeco_do_buffer() {
+        // É o caso que mais aparece: com um buffer ligado, `glVertexPointer(…, 0)` não é
+        // ponteiro nulo — é "do começo do buffer". Ler a memória do jogo no endereço zero era
+        // exatamente o que fazia um jogo com VBO morrer em acesso inválido.
+        let conteudo = [1u8, 2, 3, 4, 5, 6];
+        assert_eq!(fatia_do_buffer(&conteudo, 0, 3), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn o_deslocamento_anda_dentro_do_buffer() {
+        let conteudo = [1u8, 2, 3, 4, 5, 6];
+        assert_eq!(fatia_do_buffer(&conteudo, 4, 2), vec![5, 6]);
+    }
+
+    #[test]
+    fn o_que_passa_do_fim_sai_zerado_em_vez_de_falhar() {
+        let conteudo = [1u8, 2, 3, 4];
+        assert_eq!(fatia_do_buffer(&conteudo, 3, 4), vec![0, 0, 0, 0]);
+        assert_eq!(fatia_do_buffer(&conteudo, 9, 2), vec![0, 0]);
+        // E um buffer que nem foi preenchido responde igual, sem caso especial.
+        assert_eq!(fatia_do_buffer(&[], 0, 3), vec![0, 0, 0]);
+    }
+
+    #[test]
+    fn o_deslocamento_grande_nao_estoura_a_soma() {
+        // `endereco + quantos` em `usize` de 32 bits daria a volta e a fatia passaria pelo
+        // teste de limite. O `saturating_add` é o que impede isso — e o caso existe: um
+        // ponteiro de vetor corrompido chega aqui como deslocamento enorme.
+        assert_eq!(fatia_do_buffer(&[1, 2, 3], u32::MAX, 8), vec![0u8; 8]);
     }
 }

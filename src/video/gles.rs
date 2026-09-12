@@ -402,3 +402,11 @@ pub const GL_PALETTE8_RGBA8_OES: u32 = 0x8b96;
 pub const GL_PALETTE8_R5_G6_B5_OES: u32 = 0x8b97;
 pub const GL_PALETTE8_RGBA4_OES: u32 = 0x8b98;
 pub const GL_PALETTE8_RGB5_A1_OES: u32 = 0x8b99;
+
+/// Alvos e consultas dos objetos de buffer. São do núcleo do OpenGL ES 1.1 e os mesmos números
+/// do `GL_ARB_vertex_buffer_object`, que é o nome pelo qual os jogos do console procuram a
+/// extensão na lista do `glGetString`.
+pub const GL_ARRAY_BUFFER: u32 = 0x8892;
+pub const GL_ELEMENT_ARRAY_BUFFER: u32 = 0x8893;
+pub const GL_BUFFER_SIZE: u32 = 0x8764;
+pub const GL_BUFFER_USAGE: u32 = 0x8765;

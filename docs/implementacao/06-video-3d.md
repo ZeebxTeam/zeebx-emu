@@ -115,6 +115,62 @@ EGL_QUALCOMM_surface_scale   em eglQueryString(EGL_EXTENSIONS)
 No binário deles as três aparecem **com espaço no fim** — o delimitador da busca. Enquanto o
 `eglQueryString` devolvia vazio, o vídeo não inicializava por mais que as interfaces existissem.
 
+### O nome que faltava valia um jogo inteiro
+
+A lista tem uma quarta entrada hoje, `GL_ATI_texture_compression_atitc`, e ganhou uma quinta:
+`GL_ARB_vertex_buffer_object`. Essa última custou um jogo enquanto ficou de fora, e vale contar
+como, porque o sintoma não apontava para o GL em nada.
+
+O **Prey Evil** aparecia no levantamento como "para no laço — salta para o endereço zero
+(lr 0x000161d8)". Aquele endereço é um `blx r1` depois de `ldr r1, [r0, #0x274]`: ele chama um
+ponteiro de função guardado num campo de um objeto dele. O campo é nulo, e quem o deixa nulo é o
+próprio jogo, no `0x1ddc4`:
+
+```
+0x1ddd4  bl   …            <- monta a lista de extensões
+0x1dde4  blx  r2           <- strstr(lista, "GL_OES_draw_texture")     -> achou
+0x1de04  blx  r2           <- strstr(lista, "ARB_vertex_buffer_object") -> 0
+0x1de0c  beq  #0x1de3c     <- e aí ele **não instala** a função
+0x1de1c  str  r0, [r4, #0x274]
+```
+
+Duas buscas, e ele só instala a função de desenho se achar **as duas**. Depois chama o ponteiro
+sem conferir. Ou seja: o jogo não tolera a extensão faltar, ele assume que ela existe — o
+console a tem.
+
+Com os objetos de buffer implementados e o nome na lista, ele sai de "quebra na volta 0" para
+**358 quadros em seis segundos virtuais**, com o controle detectado
+(`gamepadmgr.cpp:319 — 1 Joysticks connected`). Ele ainda não põe geometria na tela; isso é o
+passo seguinte dele, e é outro problema.
+
+O que a lista **não** ganhou é igualmente parte da decisão: o `point_size_array`, que vários
+jogos também procuram, continua de fora porque dele só existe um `SUCCESS` que não faz nada.
+Anunciar o que não existe é o que produz exatamente o defeito acima, de cabeça para baixo.
+
+### Os objetos de buffer
+
+`glGenBuffers`, `glBindBuffer`, `glBufferData`, `glBufferSubData`, `glDeleteBuffers`,
+`glIsBuffer` e `glGetBufferParameteriv`. O conteúdo fica **no host**, num mapa por nome, e não
+na memória do jogo: é onde um driver de verdade o guarda, e depois do `glBufferData` o jogo tem
+o direito de reaproveitar o ponteiro que passou — guardar cópia nossa é o que faz esse direito
+valer.
+
+Duas regras decidem de onde um vetor vem, e elas **não são a mesma**:
+
+- Para os vetores de vértice, cor, normal e coordenada, vale a ligação do `GL_ARRAY_BUFFER` no
+  instante do `glVertexPointer`, não a do desenho. É por isso que o `ArrayPointer` guarda o
+  nome do buffer: um jogo que sobe três malhas liga cada buffer, dá os ponteiros dela e só
+  depois desenha — lendo a ligação corrente no desenho, as três sairiam do último buffer.
+- Para a lista de índices do `glDrawElements`, vale a ligação **corrente** do
+  `GL_ELEMENT_ARRAY_BUFFER`: é ela que decide se o último argumento é ponteiro ou deslocamento.
+
+Com um buffer ligado, o "ponteiro" do vetor não é endereço nenhum — é deslocamento dentro do
+buffer. Confundir os dois tem um sintoma característico e enganoso: `glVertexPointer(…, 0)` vira
+leitura do endereço zero, ou seja, aparece como acesso inválido a `0x00000000` e não como erro
+de GL. Um pedido que passe do fim do buffer sai **zerado** em vez de falhar, porque o OpenGL
+deixa o resultado indefinido ali e derrubar o `glDrawElements` inteiro por causa de um vértice
+seria pior — ver `fatia_do_buffer` e os testes dela.
+
 ## Apresentação
 
 `eglSwapBuffers` é o que marca um quadro. A interface só redesenha quando o contador de trocas
