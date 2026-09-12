@@ -678,6 +678,21 @@ pub const EGL_LEGACY: &[&str] = &[
     // `eglGetProcAddress('eglGetColorBufferQUALCOMM') failed.`, seguido de desmontar o contexto
     // e de `CreateStageWidget failed, proceeding...`.
     "eglGetColorBufferQUALCOMM",
+    // `EGL_QUALCOMM_surface_scale`, pelo mesmo caminho e pela mesma razão: o jogo resolve os
+    // quatro nomes pelo `eglGetProcAddress` e **testa os quatro contra nulo de uma vez**. Na
+    // Z-Wheel isso está em `0x5d7ac`..`0x5d7c8` do `tectoy.mod`: faltando qualquer um, ela zera
+    // o grupo inteiro e segue por outro caminho.
+    //
+    // Os métodos já existem na [`EGL_SURFACE_MANIP`], que é a mesma extensão exposta como
+    // interface; aqui eles aparecem na forma de função C, sem `this` e devolvendo o valor.
+    // Resolvido junto com as quatro de escala e guardado no mesmo bloco (`+0x34`), logo antes
+    // delas. Deixá-lo nulo enquanto as outras existem é pior que nulo em todas: o jogo lê esse
+    // campo **depois** de ver o grupo preenchido.
+    "eglSwapIntervalOES",
+    "eglSurfaceScaleEnableQUALCOMM",
+    "eglSetSurfaceScaleQUALCOMM",
+    "eglGetSurfaceScaleQUALCOMM",
+    "eglGetSurfaceScaleCapsQUALCOMM",
 ];
 
 /// Métodos de `IGL` (80 slots), de `AEEINTERFACE(IGL)` em `sdk/inc/AEEGL.h` — o OpenGL ES 1.0

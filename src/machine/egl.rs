@@ -219,6 +219,84 @@ impl<C: CpuBackend> Machine<C> {
                 self.wait_for_vsync();
                 (2, gles::EGL_TRUE)
             }
+            // As quatro da `EGL_QUALCOMM_surface_scale`, na forma de função C: os argumentos
+            // chegam sem `this` e o resultado é o retorno, não um ponteiro de saída. O
+            // comportamento é o mesmo já implementado na [`Interface::EglSurfaceManip`] — ver
+            // `extension_call` —, e está aqui porque é por ponteiro de função que a Z-Wheel
+            // chega a ele.
+            //
+            // **Anunciar a extensão e não entregar as funções é pior que não anunciar**: o
+            // `eglQueryString` já dizia `EGL_QUALCOMM_surface_scale`, e o jogo, achando os
+            // ponteiros nulos, descartava o grupo.
+            // `EGLBoolean eglSwapIntervalOES(EGLDisplay dpy, EGLint interval)`. O ritmo de quadro
+            // aqui é o do relógio virtual, no `wait_for_vsync`; aceitar e não guardar é o que
+            // deixa o jogo seguir sem prometer um intervalo que não controlamos.
+            "SwapIntervalOES" => (2, gles::EGL_TRUE),
+            "SurfaceScaleEnableQUALCOMM" => (3, gles::EGL_TRUE),
+            // `EGLBoolean eglSetSurfaceScaleQUALCOMM(dpy, surf, const rect *src, const rect *dst)`
+            "SetSurfaceScaleQUALCOMM" => {
+                let origem = a[2];
+                if origem != 0 {
+                    let largura = self.cpu.read_u32(origem + 8)? as i32;
+                    let altura = self.cpu.read_u32(origem + 12)? as i32;
+                    if largura > 0 && altura > 0 {
+                        self.scale_source = Some((largura, altura));
+                        self.gl.set_surface(largura as usize, altura as usize);
+                    }
+                }
+                (4, gles::EGL_TRUE)
+            }
+            // `EGLBoolean eglGetSurfaceScaleQUALCOMM(dpy, surf, EGLBoolean *on, rect *src, *dst)`
+            "GetSurfaceScaleQUALCOMM" => {
+                let (ligado, origem, destino) = (a[2], a[3], a[4]);
+                self.write_at(ligado, u32::from(self.scale_source.is_some()))?;
+                let (largura, altura) = match self.scale_source {
+                    Some(tamanho) => tamanho,
+                    None => {
+                        let (w, h) = self.gl.surface();
+                        (w as i32, h as i32)
+                    }
+                };
+                for (retangulo, tamanho) in [
+                    (origem, (largura, altura)),
+                    (destino, (SCREEN_WIDTH as i32, SCREEN_HEIGHT as i32)),
+                ] {
+                    if retangulo != 0 {
+                        self.cpu.write_u32(retangulo, 0)?;
+                        self.cpu.write_u32(retangulo + 4, 0)?;
+                        self.cpu.write_u32(retangulo + 8, tamanho.0 as u32)?;
+                        self.cpu.write_u32(retangulo + 12, tamanho.1 as u32)?;
+                    }
+                }
+                (5, gles::EGL_TRUE)
+            }
+            // `EGLBoolean eglGetSurfaceScaleCapsQUALCOMM(dpy, surf, AEEEGLSurfaceScaleCaps *)`
+            //
+            // Mesmos valores da interface: ampliar da superfície do jogo até a tela, com os
+            // fatores em ponto fixo 16.16.
+            "GetSurfaceScaleCapsQUALCOMM" => {
+                let caps = a[2];
+                if caps != 0 {
+                    let campos: [u32; 12] = [
+                        1 << 16,
+                        8 << 16,
+                        1 << 16,
+                        8 << 16,
+                        1,
+                        SCREEN_WIDTH as u32,
+                        1,
+                        SCREEN_HEIGHT as u32,
+                        1,
+                        SCREEN_WIDTH as u32,
+                        1,
+                        SCREEN_HEIGHT as u32,
+                    ];
+                    for (indice, valor) in campos.iter().enumerate() {
+                        self.cpu.write_u32(caps + indice as u32 * 4, *valor)?;
+                    }
+                }
+                (3, gles::EGL_TRUE)
+            }
             // `void *eglGetColorBufferQUALCOMM(void)` — **sem argumento nenhum**.
             //
             // A chamada é `blx r0` puro, em `0x76cbc`, com o ponteiro lido de `[r4+0x34]`: os
@@ -252,7 +330,11 @@ impl<C: CpuBackend> Machine<C> {
                 self.gl.frame_rgb565(largura, altura, &mut bytes);
                 if self.egl_color_buffer.1 < bytes.len() {
                     match self.surface_alloc(bytes.len() as u32) {
-                        Some(onde) => self.egl_color_buffer = (onde, bytes.len()),
+                        Some(onde) => {
+                            self.egl_color_buffer = (onde, bytes.len());
+                            // A faixa mudou de lugar: o watchpoint acompanha.
+                            self.cpu.watch_dirty(onde, bytes.len() as u32)?;
+                        }
                         None => {
                             self.egl_color_bytes = bytes;
                             return Ok(Some(0));
@@ -372,6 +454,13 @@ impl<C: CpuBackend> Machine<C> {
         let Some((width, height)) = self.egl_color_dimensions else {
             return Ok(());
         };
+        // **Só lê quando o jogo escreveu.** Esta função é chamada em todo `Draw*`, `Clear` e
+        // `ReadPixels` — 93 mil vezes em treze segundos da Z-Wheel —, e a versão anterior lia
+        // 400 KB do guest e os comparava byte a byte em cada uma delas, só para descobrir que
+        // quase nunca havia mudança. O watchpoint de escrita responde a mesma pergunta de graça.
+        if !self.cpu.take_dirty() {
+            return Ok(());
+        }
         self.egl_color_readback
             .resize(self.egl_color_bytes.len(), 0);
         self.cpu
