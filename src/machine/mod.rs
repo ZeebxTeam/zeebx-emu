@@ -1914,6 +1914,13 @@ pub struct Machine<C: CpuBackend> {
     proximo_serial: u64,
     /// O formulário que está pintado na superfície agora. Ver [`Machine::pinta_widgets`].
     formulario_pintado: u32,
+    /// Quando os widgets foram desenhados pela última vez, no relógio virtual.
+    ///
+    /// Quem desenha um `OwnerDrawWidget` é o jogo, e na Z-Wheel esse retorno é um compositor em
+    /// software — o laço em `0x1fc70`, que sozinho responde por 63% de todas as instruções do
+    /// guest. O console manda redesenhar quando a tela precisa; nós mandávamos a cada volta do
+    /// laço de eventos, que são ~128 por segundo virtual para ~67 quadros apresentados.
+    ultimo_desenho_us: u64,
     /// Captura de serial, quando ligada. Ver [`Machine::liga_serial`].
     serial: Option<std::io::BufWriter<std::fs::File>>,
     /// Último erro do EGL, devolvido por `eglGetError`.
@@ -2140,6 +2147,7 @@ impl<C: CpuBackend> Machine<C> {
             despejou: false,
             proximo_serial: 0,
             formulario_pintado: 0,
+            ultimo_desenho_us: 0,
             serial: None,
             egl_error: gles::EGL_SUCCESS,
             egl_surfaces: HashMap::new(),

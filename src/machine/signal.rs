@@ -75,8 +75,15 @@ impl<C: CpuBackend> Machine<C> {
         // A resposta de rede compartilha esta fronteira pelo mesmo motivo dos sinais: entregá-la
         // pede chamar o alocador do jogo, e isso só é seguro fora do despacho.
         self.flush_response()?;
-        self.pinta_widgets()?;
-        self.desenha_widgets()?;
+        // **A interface é redesenhada por quadro, não por volta do laço.** Ver
+        // [`Machine::ultimo_desenho_us`]: o desenho de um `OwnerDrawWidget` é código do jogo, e
+        // chamá-lo mais vezes do que o aparelho chamaria é trabalho que ninguém pediu.
+        let agora = self.now_us();
+        if agora.saturating_sub(self.ultimo_desenho_us) >= VSYNC_PERIOD_US {
+            self.ultimo_desenho_us = agora;
+            self.pinta_widgets()?;
+            self.desenha_widgets()?;
+        }
         self.parte_animacao()?;
         self.skip_wheel_instructions()?;
         self.flush_keys()?;
