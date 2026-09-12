@@ -410,7 +410,19 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
         _ => path,
     };
     let image = ModImage::parse(std::fs::read(path)?)?;
-    let module = loader::load(&image)?;
+    let extensoes = crate::session::extensoes_de(std::path::Path::new(path));
+    for extensao in &extensoes {
+        println!(
+            "extensão:  fornece {}",
+            extensao
+                .classes
+                .iter()
+                .map(|c| format!("{c:#010x}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+    }
+    let module = loader::load_with(&image, &extensoes)?;
 
     println!("carregado: {path}");
     println!("entry:     {:#010x}", module.entry);

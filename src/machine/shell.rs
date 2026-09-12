@@ -570,7 +570,7 @@ impl<C: CpuBackend> Machine<C> {
             AEECLSID_UNZIPSTREAM => Interface::UnzipStream,
             AEECLSID_LICENSE => Interface::License,
             AEECLSID_MEMASTREAM => Interface::MemAStream,
-            AEECLSID_PNG => Interface::Image,
+            AEECLSID_PNG | AEECLSID_BMP => Interface::Image,
             AEECLSID_PNGDECODER | AEECLSID_PNGDECODER_BREW => Interface::ImageDecoder,
             AEECLSID_THREAD => Interface::Thread,
             AEECLSID_QEGL => Interface::Egl,
@@ -594,6 +594,23 @@ impl<C: CpuBackend> Machine<C> {
             AEECLSID_CIPHER_FACTORY => Interface::CipherFactory,
             AEECLSID_MEDIA | AEECLSID_MEDIAMIDI | AEECLSID_MEDIAMP3 | AEECLSID_MEDIAADPCM
             | AEECLSID_MEDIAPCM => Interface::Media,
+            // O módulo de extensão entra antes da sonda e antes da recusa, porque ele é a
+            // resposta **certa**: a classe existe, implementada em ARM pelo próprio pacote do
+            // jogo, e é assim que o console a atende.
+            _ if self.tem_extensao_para(clsid) => {
+                let objeto = self.cria_pela_extensao(clsid)?;
+                if objeto == 0 {
+                    self.unknown_classes.insert(clsid);
+                    if out != 0 {
+                        self.cpu.write_u32(out, 0)?;
+                    }
+                    return Ok(ECLASSNOTSUPPORT);
+                }
+                if out != 0 {
+                    self.cpu.write_u32(out, objeto)?;
+                }
+                return Ok(SUCCESS);
+            }
             // A sonda entra antes da recusa: o jogo recebe um objeto que não faz nada e segue,
             // e o que ele chamar nele vai para o relatório. É como se descobre que interface a
             // classe é, sem header e sem adivinhação.
@@ -658,6 +675,78 @@ impl<C: CpuBackend> Machine<C> {
     /// Assinatura, de `AEEModGen.c`:
     /// `int AEEMod_CreateInstance(IModule *po, IShell *pIShell, AEECLSID ClsId, void **ppObj)`.
     /// `CreateInstance` é o slot 2 da vtable de `IModule` (depois de `AddRef` e `Release`).
+    /// Se algum módulo de extensão do pacote declara fornecer esta classe.
+    fn tem_extensao_para(&self, clsid: u32) -> bool {
+        self.module
+            .extensions
+            .iter()
+            .any(|ext| ext.classes.contains(&clsid))
+    }
+
+    /// Cria um objeto pedindo-o ao módulo de extensão que o fornece.
+    ///
+    /// São dois passos, e os mesmos que o console dá: `AEEMod_Load` na primeira vez, para a
+    /// extensão entregar o `IModule*` dela, e depois `IModule::CreateInstance` com o ClassID
+    /// pedido. O objeto que volta é implementado em ARM pela extensão — daí em diante o jogo
+    /// conversa direto com ele, e nós não precisamos saber que interface é.
+    ///
+    /// Devolve zero quando não deu, e o chamador transforma isso em `ECLASSNOTSUPPORT`.
+    fn cria_pela_extensao(&mut self, clsid: u32) -> Result<u32, CpuError> {
+        let budget = self.orcamento.max(1);
+        let Some(i) = self
+            .module
+            .extensions
+            .iter()
+            .position(|ext| ext.classes.contains(&clsid))
+        else {
+            return Ok(0);
+        };
+        let (entry, out_module) = (
+            self.module.extensions[i].entry,
+            self.module.extensions[i].out_module,
+        );
+
+        // Primeira vez: carrega o módulo. `Some(0)` marca a tentativa que falhou, para um jogo
+        // que peça a classe a cada quadro não pagar a carga toda vez nem enchê-la de log.
+        if self.ext_modules[i].is_none() {
+            self.cpu.write_u32(out_module, 0)?;
+            let desfecho = self.call_guest_aninhado(
+                entry,
+                [self.module.shell, self.module.helpers, out_module, 0],
+                budget,
+            )?;
+            let ptr = if matches!(desfecho, Outcome::Returned { code: 0 }) {
+                self.cpu.read_u32(out_module).unwrap_or(0)
+            } else {
+                0
+            };
+            if ptr == 0 {
+                self.assumptions
+                    .insert("um módulo de extensão do pacote não carregou");
+            }
+            self.ext_modules[i] = Some(ptr);
+        }
+        let modulo = self.ext_modules[i].unwrap_or(0);
+        if modulo == 0 {
+            return Ok(0);
+        }
+
+        // `IModule::CreateInstance(po, shell, clsid, &saida)` — o slot 2, o mesmo do applet.
+        let vtable = self.cpu.read_u32(modulo)?;
+        let create_instance = self.cpu.read_u32(vtable + 2 * 4)?;
+        let saida = out_module + 4;
+        self.cpu.write_u32(saida, 0)?;
+        let desfecho = self.call_guest_aninhado(
+            create_instance,
+            [modulo, self.module.shell, clsid, saida],
+            budget,
+        )?;
+        if !matches!(desfecho, Outcome::Returned { code: 0 }) {
+            return Ok(0);
+        }
+        self.cpu.read_u32(saida)
+    }
+
     pub fn create_applet(&mut self, clsid: u32, budget: u64) -> Result<AppletResult, CpuError> {
         self.applet_class = clsid;
         let module_ptr = self.cpu.read_u32(self.module.out_module)?;

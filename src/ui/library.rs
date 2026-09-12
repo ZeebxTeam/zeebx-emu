@@ -256,6 +256,76 @@ pub fn applet_clsid(mod_path: &Path) -> Option<u32> {
         .find_map(|mif| mif.main_applet())
 }
 
+/// Os módulos de **extensão** que acompanham um `.mod` no mesmo pacote.
+///
+/// Devolve, para cada um, o caminho e as classes que ele fornece. Um pacote do console pode
+/// trazer mais de um módulo, e quando traz, os que não têm applet existem para exportar classe:
+/// é assim que o Action Hero 3D recebe o `IMICRO3D` e o Kingdom Hearts, o motor 3D da
+/// Superscape. Os dois pedem uma classe que o console não tem em lugar nenhum senão ali.
+///
+/// A busca começa uma pasta **acima** da do módulo e desce dois níveis, que é o que cobre as
+/// duas disposições reais: `mod/<id>/x.mod` ao lado de `mod/<outro>/y.mod`, e
+/// `<Título>/<Título>/x.mod` ao lado de `<Título>/<Título>_/y.mod`.
+pub fn extensoes(mod_path: &Path) -> Vec<(PathBuf, Vec<u32>)> {
+    let Some(raiz) = mod_path.parent().and_then(Path::parent) else {
+        return Vec::new();
+    };
+    let mut modulos = Vec::new();
+    colhe_modulos(raiz, 2, &mut modulos);
+    modulos.sort();
+    modulos
+        .into_iter()
+        .filter(|caminho| caminho != mod_path)
+        .filter_map(|caminho| {
+            let mif = mif_da_pasta(&caminho)?;
+            let data = std::fs::read(mif).ok()?;
+            let classes = MifFile::parse(&data).ok()?.extensao().to_vec();
+            (!classes.is_empty()).then_some((caminho, classes))
+        })
+        .collect()
+}
+
+/// Os `.mod` sob um diretório, até `profundidade` níveis.
+fn colhe_modulos(dir: &Path, profundidade: usize, achados: &mut Vec<PathBuf>) {
+    let Ok(entradas) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entrada in entradas.flatten() {
+        let caminho = entrada.path();
+        if caminho.is_dir() {
+            if profundidade > 0 {
+                colhe_modulos(&caminho, profundidade - 1, achados);
+            }
+        } else if caminho.extension().and_then(|e| e.to_str()) == Some("mod") {
+            achados.push(caminho);
+        }
+    }
+}
+
+/// O `.mif` que casa com um `.mod` pelo **nome da pasta** dele.
+///
+/// É a regra do BREW: um módulo instalado mora em `<nome>/` e o manifesto é `<nome>.mif`, ao
+/// lado. Ela é mais estreita que a busca do [`manifest_paths`] de propósito — aqui pareação
+/// errada não dá "manifesto não encontrado", dá **o módulo do jogo se oferecendo para atender a
+/// classe que ele próprio está pedindo**, porque os dois `.mif` da relação citam o mesmo
+/// ClassID no mesmo formato.
+fn mif_da_pasta(mod_path: &Path) -> Option<PathBuf> {
+    let dir = mod_path.parent()?;
+    let nome = dir.file_name()?;
+    let candidatos = [
+        mod_path.with_extension("mif"),
+        // `<Título>/<nome>/x.mod` -> `<Título>/<nome>.mif`
+        dir.parent()?.join(nome).with_extension("mif"),
+        // `<Título>/mod/<id>/x.mod` -> `<Título>/mif/<id>.mif`, a disposição do console
+        dir.parent()?
+            .parent()?
+            .join("mif")
+            .join(nome)
+            .with_extension("mif"),
+    ];
+    candidatos.into_iter().find(|p| p.is_file())
+}
+
 /// Onde o `.mif` de um `.mod` pode estar, na ordem em que vale procurar.
 ///
 /// Os dois primeiros candidatos são nomes calculados; os últimos vêm de varrer as pastas, e é o

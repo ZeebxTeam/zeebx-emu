@@ -107,12 +107,15 @@ Passou os seis segundos, mas o relatório apontou alguma coisa. O balde é conse
 | Pac-Mania | lento demais — desenha, mas pixel a pixel pela API |
 | Zumas Revenge | para no laço na volta 55 — acesso inválido a 0x0000000c (pc 0x00046b94) |
 
-> **Medições posteriores já derrubaram três linhas desta tabela**, e ficam registradas aqui
+> **Medições posteriores já derrubaram cinco linhas desta tabela**, e ficam registradas aqui
 > porque a tabela inteira está defasada: o **Zenonia** roda **413 voltas do laço** em seis
 > segundos virtuais — a classe `0x01003109` dele está implementada como `IControl` e ligada ao
 > `CreateInstance`, sem sonda nenhuma; o **Prey Evil** roda **358 quadros** desde que os objetos
 > de buffer do OpenGL existem (ver [06-video-3d.md](06-video-3d.md)); e o **Bejeweled Twist**
-> segue parando, mas por motivo que não é nosso — ver abaixo.
+> segue parando, mas por motivo que não é nosso — ver abaixo. E os dois que dependiam de um
+> módulo de extensão do próprio pacote — **Action Hero 3D**, que roda o laço com o relatório
+> limpo, e **Kingdom Hearts**, que faz 405 voltas com a tela desenhada — estão em
+> [03-despacho-de-api.md](03-despacho-de-api.md).
 
 > **Esta tabela é de uma medição anterior.** A varredura de abertura de hoje mostra que
 > Z-Wheel, Zeebo App, Action Hero 3D, Alice, Prey Evil, Turma da Mônica e Zuma's Revenge **criam

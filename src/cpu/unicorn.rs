@@ -95,6 +95,9 @@ pub struct UnicornCpu {
     expired: std::rc::Rc<std::cell::Cell<bool>>,
 }
 
+/// `CPSR` de modo usuário do ARM: modo `0b10000`, sem máscara de interrupção.
+const MODO_USUARIO: u32 = 0x10;
+
 impl UnicornCpu {
     pub fn new() -> Result<Self, CpuError> {
         let mut uc =
@@ -390,6 +393,17 @@ impl CpuBackend for UnicornCpu {
                 self.uc.mem_write(base, &region.bytes).map_err(uc_err)?;
             }
         }
+        // **Modo usuário.** Um applet BREW não é privilegiado, e há código que conta com isso:
+        // o motor 3D da Superscape que o Kingdom Hearts traz como extensão confere o modo e,
+        // se for privilegiado, caminha na tabela de páginas da MMU —
+        // `mrc p15, #0, r1, c2, c0, #0` para pegar o TTBR0 e `ldr r5, [r7, r6, lsl #2]` para
+        // ler a entrada. Aqui não há MMU, o TTBR0 vale zero e ele morria lendo `0x400`.
+        //
+        // O `tst r4, #0xf; beq` logo acima daquele trecho é o próprio módulo dizendo qual é o
+        // modo esperado: com os bits de modo zerados — usuário — ele pula o caminho todo.
+        self.uc
+            .reg_write(RegisterARM::CPSR, MODO_USUARIO as u64)
+            .map_err(uc_err)?;
         Ok(())
     }
 

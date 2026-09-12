@@ -48,6 +48,7 @@ real de cada método de API, que é onde a resposta costuma estar.
 
 | Região | Base | Tamanho | Para quê |
 |---|---|---|---|
+| extensões | `0x0800_0000` | 16 MB cada, até 8 | os módulos de extensão do pacote |
 | módulo | `0x0001_0000` | imagem + 1 MB | o `.mod` carregado, com prefixo de uma página |
 | heap | `0x1000_0000` | 64 MB | o que o `MALLOC` do jogo consome |
 | pilha | `0x2000_0000` | 1 MB | `sp` começa no topo; a pilha do ARM cresce para baixo |
@@ -71,6 +72,33 @@ precisa ser folgado o bastante para o jogo reconhecer o aparelho.
 para ele desenhar direto — é assim que os jogos comerciais escrevem na tela. Guardar os pixels só
 do nosso lado tornaria isso impossível. As consequências disso estão em
 [05-video-2d.md](05-video-2d.md), e não são pequenas.
+
+## O processador roda em modo usuário
+
+Um applet BREW não é privilegiado, e há código que **confere isso e muda de caminho**. Ficava
+como defeito nosso enquanto o `CPSR` não era escrito: o unicorn começa em modo privilegiado, e
+quem consultasse o modo tomava o ramo errado.
+
+O motor 3D da Superscape que o Kingdom Hearts traz como extensão é o caso, e ele diz na cara
+qual é o modo esperado:
+
+```
+0x0803aedc  mrs  r4, apsr
+0x0803aee0  tst  r4, #0xf
+0x0803aee4  beq  #0x803af74        <- modo usuário: pula tudo isso
+0x0803aee8  mrc  p15, #0, r1, c2, c0, #0   <- TTBR0, a base da tabela de páginas
+0x0803aef8  ldr  r5, [r7, r6, lsl #2]     <- e caminha nela
+```
+
+Privilegiado, ele ia caminhar na tabela de páginas da MMU para traduzir um endereço. Aqui não há
+MMU, o `TTBR0` vale zero, e ele morria lendo `0x00000400` — uma falha dentro da extensão, num
+endereço que não dizia nada sobre a causa. Com o `CPSR` em `0x10`, ele pula o trecho inteiro e o
+jogo passa a rodar.
+
+Oito jogos foram conferidos depois da mudança — Quake, Zeeboids, Crash, Peggle, Prey Evil,
+Zuma's Revenge, Bejeweled Twist e Zenonia — e nenhum mudou de comportamento. O semihosting, que
+o Peggle e o Zuma usam para log, continua chegando: o `SVC` é atendido pelo mesmo gancho de
+interrupção, que não depende de modo.
 
 ## Stubs: código nosso, executado pelo jogo
 

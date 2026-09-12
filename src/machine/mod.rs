@@ -395,6 +395,12 @@ const FA_DIR: u32 = 0x02;
 const FALSE: u32 = 0;
 /// `AEECLSID_PNG`, de `sdk/inc/AEEPNG.bid` — o decodificador de PNG, exposto como `IImage`.
 const AEECLSID_PNG: u32 = 0x0100_4004;
+/// `AEECLSID_BMP` = `0x01004001`, a mesma família de um em `0x01004000`.
+///
+/// O Action Hero 3D pede esta, e a identificação não é por palpite: os recursos dele são 67
+/// BMPs num `.res` cujo primeiro nome de entrada é `66.bmp`, e ele alimenta o objeto com um
+/// `IMemAStream` igual ao que o Bejeweled Twist usa com a `0x01004004`. As duas são `IImage`.
+const AEECLSID_BMP: u32 = 0x0100_4001;
 /// `AEECLSID_PNGDecoder` e `AEECLSID_PNGDecoderBREW`, de `inc/AEEPNGDecoder*.bid`. A interface
 /// padrão das duas é `IImageDecoder`.
 const AEECLSID_PNGDECODER: u32 = 0x0102_6e23;
@@ -1185,6 +1191,49 @@ fn inflate(compressed: &[u8]) -> Option<Vec<u8>> {
         .find(|out| !out.is_empty())
 }
 
+/// Decodifica uma imagem para RGB565, qualquer que seja o formato dela.
+///
+/// O `IImage` do BREW não é "o objeto de PNG": é uma interface, e o console tem uma classe por
+/// formato — `AEECLSID_PNG`, `AEECLSID_BMP`, `AEECLSID_JPEG`. Todas alimentadas do mesmo jeito,
+/// com um `IAStream`, e é por isso que olhar a magia dos bytes é melhor que confiar no ClassID:
+/// o jogo pode pedir uma classe e entregar outra coisa, e o formato está escrito no arquivo.
+///
+/// O Action Hero 3D é quem cobrou isto: ele pede a `0x01004001` e os recursos dele são 67 BMPs
+/// dentro de um `.res`. Recusando a classe, ele desreferenciava o nulo logo depois — e com ela
+/// atendida mas o decodificador só de PNG, a imagem sairia vazia.
+fn decodifica_imagem(bytes: &[u8]) -> Option<DecodedImage> {
+    match bytes {
+        [0x89, b'P', b'N', b'G', ..] => decode_png(bytes),
+        // O BMP e o JPEG passam pelo decodificador que já serve os ícones dos títulos. Ele
+        // devolve RGBA, e um BMP não tem canal alfa: todo pixel é opaco, e quem quiser
+        // transparência usa a cor reservada da superfície, como o BREW faz.
+        _ => {
+            let imagem = crate::video::icon::decode(bytes).ok()?;
+            let total = imagem.width * imagem.height;
+            let mut pixels = Vec::with_capacity(total);
+            let mut opaque = Vec::with_capacity(total);
+            for pixel in imagem.rgba.chunks_exact(4).take(total) {
+                pixels.push(
+                    Rgb {
+                        r: pixel[0],
+                        g: pixel[1],
+                        b: pixel[2],
+                    }
+                    .to_rgb565(),
+                );
+                opaque.push(pixel[3] >= 128);
+            }
+            Some(DecodedImage {
+                width: imagem.width as u32,
+                height: imagem.height as u32,
+                pixels,
+                opaque,
+                frame_width: 0,
+            })
+        }
+    }
+}
+
 /// Decodifica um PNG para RGB565, devolvendo `None` se não for um PNG que saibamos ler.
 fn decode_png(bytes: &[u8]) -> Option<DecodedImage> {
     let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
@@ -1795,6 +1844,15 @@ pub struct Machine<C: CpuBackend> {
     /// ClassID do applet que o módulo instanciou, para responder ao `ISHELL_GetClassItemID`.
     applet_class: u32,
     installed_applets: HashSet<u32>,
+    /// Orçamento de instruções do trecho em execução.
+    ///
+    /// Guardado porque o despacho de uma chamada de API não o recebe, e há um caso em que ele
+    /// precisa **reentrar no guest**: a classe fornecida por um módulo de extensão, que só o
+    /// `IModule::CreateInstance` da extensão sabe criar. Ver [`Machine::cria_pela_extensao`].
+    orcamento: u64,
+    /// `IModule*` de cada extensão. `None` = ainda não carregada; `Some(0)` = tentamos e não
+    /// deu, e não se tenta de novo a cada pedido.
+    ext_modules: Vec<Option<u32>>,
     pending_launch: Option<u32>,
     wheel_boot_skipped: bool,
     /// Profundidade atual de reentrada no guest.
@@ -2076,7 +2134,8 @@ impl<C: CpuBackend> Machine<C> {
         let heap = Heap::new(loader::HEAP_BASE, loader::HEAP_SIZE);
         // Os objetos ficam depois dos ponteiros que o carregador já reservou no começo da
         // região, para não sobrescrevê-los.
-        let reserved = module.out_module + 8 - loader::OBJECT_BASE;
+        let reserved = module.objects_reserved();
+        let extensoes = module.extensions.len();
         let mut objects = ObjectStore::new(
             loader::OBJECT_BASE + reserved,
             loader::OBJECT_SIZE - reserved as usize,
@@ -2148,6 +2207,8 @@ impl<C: CpuBackend> Machine<C> {
             timers: Vec::new(),
             applet_class: 0,
             installed_applets: HashSet::new(),
+            orcamento: 0,
+            ext_modules: vec![None; extensoes],
             pending_launch: None,
             wheel_boot_skipped: false,
             nesting: 0,
@@ -2267,6 +2328,49 @@ impl<C: CpuBackend> Machine<C> {
         self.execute(func, budget)
     }
 
+    /// Chama o guest de **dentro** do despacho de uma chamada de API.
+    ///
+    /// O [`Self::call_guest`] normal não serve aqui: ele escreve em `r0..r3` e no `lr`, e quem
+    /// está despachando vai ler o `lr` depois para saber onde retomar o jogo. Perdê-lo faz a
+    /// execução voltar para o lugar errado — em geral para o endereço zero.
+    ///
+    /// Por isso o desvio de regra vem com a regra: **todo o contexto é salvo e devolvido**. A
+    /// pilha não precisa de cuidado, porque a chamada aninhada empilha abaixo do `sp` corrente,
+    /// que é espaço que ninguém está usando — é a mesma garantia que uma interrupção tem.
+    ///
+    /// É o que o console faz: o `ISHELL_CreateInstance` de uma classe de extensão entra no
+    /// módulo da extensão e volta com o objeto, sem que o jogo perceba.
+    fn call_guest_aninhado(
+        &mut self,
+        func: u32,
+        args: [u32; 4],
+        budget: u64,
+    ) -> Result<Outcome, CpuError> {
+        const CONTEXTO: [Reg; 15] = [
+            Reg::R0,
+            Reg::R1,
+            Reg::R2,
+            Reg::R3,
+            Reg::R4,
+            Reg::R5,
+            Reg::R6,
+            Reg::R7,
+            Reg::R8,
+            Reg::R9,
+            Reg::R10,
+            Reg::R11,
+            Reg::R12,
+            Reg::Sp,
+            Reg::Lr,
+        ];
+        let salvo = CONTEXTO.map(|reg| self.cpu.read_reg(reg));
+        let desfecho = self.call_guest(func, args, budget);
+        for (reg, valor) in CONTEXTO.into_iter().zip(salvo) {
+            self.cpu.write_reg(reg, valor);
+        }
+        desfecho
+    }
+
     /// Chama uma função do guest com mais de quatro argumentos.
     ///
     /// A AAPCS põe os quatro primeiros em `r0..r3` e o resto na pilha, em ordem crescente a
@@ -2334,6 +2438,7 @@ impl<C: CpuBackend> Machine<C> {
         // gasta orçamento.
         let comeco = self.cpu.instructions();
         let teto = budget.saturating_mul(TETO_DE_TRECHO);
+        self.orcamento = budget;
         loop {
             let gasto = self.cpu.instructions().saturating_sub(comeco);
             let fatia = teto.saturating_sub(gasto).min(budget);

@@ -327,19 +327,19 @@ impl<C: CpuBackend> Machine<C> {
         Ok(Some(result))
     }
 
-    /// Lê o stream inteiro e decodifica o PNG.
+    /// Lê o stream inteiro e decodifica a imagem, seja qual for o formato dela.
     pub(super) fn decode_image(&mut self, image: u32, stream: u32) -> Result<(), CpuError> {
         let Some(source) = self.streams.get(&stream).copied() else {
             return Ok(());
         };
         let bytes = self.read_bytes(source.buffer, source.size)?;
-        match decode_png(&bytes) {
+        match decodifica_imagem(&bytes) {
             Some(decoded) => {
                 self.images.insert(image, std::rc::Rc::new(decoded));
             }
             None => {
                 self.assumptions
-                    .insert("um PNG do jogo foi recusado pelo decodificador");
+                    .insert("uma imagem do jogo foi recusada pelo decodificador");
             }
         }
         self.notify_image(image)

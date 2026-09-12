@@ -68,6 +68,22 @@ pub const OBJECT_SIZE: usize = 4 * 1024 * 1024;
 pub const SURFACE_BASE: u32 = 0x4000_0000;
 pub const SURFACE_SIZE: usize = 8 * 1024 * 1024;
 
+/// Onde os módulos de **extensão** são mapeados.
+///
+/// Um módulo de extensão é um `.mod` como qualquer outro: mesma imagem linkada em base zero,
+/// mesmo `AEEMod_Load`, mesmas duas palavras de helper logo antes da base. O que muda é quem o
+/// chama — o console o carrega quando um jogo pede uma classe que ele fornece, e não porque o
+/// usuário abriu um título.
+///
+/// Mapeá-los na carga, e não na hora do pedido, é decisão de simplicidade: o núcleo não tem
+/// API de mapear região depois do `reset`, e os módulos são pequenos (90 KB e 164 KB nos dois
+/// pacotes que temos). O que fica para a hora do pedido é **chamar** o `AEEMod_Load`.
+pub const EXT_MODULE_BASE: u32 = 0x0800_0000;
+/// Distância entre duas extensões. Tem de caber a imagem, o prefixo e a `.bss`.
+pub const EXT_MODULE_SPACING: u32 = 0x0100_0000;
+/// Quantas extensões cabem antes de encostar no heap do guest, em `0x10000000`.
+pub const MAX_EXTENSIONS: usize = 8;
+
 /// Tabela de helpers da stdlib do BREW.
 ///
 /// Módulos dinâmicos não linkam contra libc: eles chamam `MALLOC`, `STRLEN` e companhia por
@@ -101,6 +117,22 @@ const SLOTS_PER_VTABLE: u32 = 256;
 /// Interfaces cujos objetos são criados já na carga.
 const BOOT_INTERFACES: [Interface; 2] = [Interface::Shell, Interface::Module];
 
+/// Um módulo de extensão a mapear junto com o principal.
+pub struct ExtensionImage {
+    pub image: ModImage,
+    /// As classes que o `.mif` dele declara fornecer.
+    pub classes: Vec<u32>,
+}
+
+/// Um módulo de extensão já mapeado, à espera do primeiro pedido.
+pub struct LoadedExtension {
+    /// Endereço do `AEEMod_Load` dele.
+    pub entry: u32,
+    /// Onde ele deve gravar o `IModule*` que criar.
+    pub out_module: u32,
+    pub classes: Vec<u32>,
+}
+
 /// Um módulo pronto para executar.
 pub struct LoadedModule {
     pub mem: GuestMemory,
@@ -112,6 +144,19 @@ pub struct LoadedModule {
     pub helpers: u32,
     /// Onde `AEEMod_Load` deve gravar o `IModule*` que criar.
     pub out_module: u32,
+    /// Os módulos de extensão do pacote, já mapeados e ainda não carregados.
+    pub extensions: Vec<LoadedExtension>,
+}
+
+impl LoadedModule {
+    /// Onde a área de objetos pode começar sem pisar nos ponteiros que o carregador reservou.
+    ///
+    /// São as duas palavras do módulo principal — o `IModule*` e a saída do applet — mais duas
+    /// por extensão. Calcular isto aqui, e não no chamador, é o que evita a colisão silenciosa:
+    /// o `ObjectStore` começava logo depois das duas primeiras e passava por cima das outras.
+    pub fn objects_reserved(&self) -> u32 {
+        self.out_module + 8 + 8 * self.extensions.len() as u32 - OBJECT_BASE
+    }
 }
 
 #[derive(Debug)]
@@ -145,6 +190,14 @@ impl From<CpuError> for LoadError {
 
 /// Monta o mapa de memória com o módulo, pilha, heap, vtables e objetos iniciais.
 pub fn load(image: &ModImage) -> Result<LoadedModule, LoadError> {
+    load_with(image, &[])
+}
+
+/// O mesmo, mapeando também os módulos de extensão do pacote.
+pub fn load_with(
+    image: &ModImage,
+    extensoes: &[ExtensionImage],
+) -> Result<LoadedModule, LoadError> {
     let mut mem = GuestMemory::new();
     // A região do módulo é gravável: a imagem carrega a `.data`, que o código altera. Ela
     // começa antes de `MODULE_BASE` para acomodar o prefixo lido pelo stub do elf2mod.
@@ -177,14 +230,51 @@ pub fn load(image: &ModImage) -> Result<LoadedModule, LoadError> {
     mem.write_u32(MODULE_BASE - 8, HELPER_VERSION)?;
     mem.write_u32(MODULE_BASE - 4, helpers)?;
 
+    // Cada extensão ganha uma região própria e duas palavras de saída na área de objetos,
+    // logo depois das do módulo principal.
+    let mut extensions = Vec::new();
+    for (i, extensao) in extensoes.iter().take(MAX_EXTENSIONS).enumerate() {
+        let base = EXT_MODULE_BASE + i as u32 * EXT_MODULE_SPACING;
+        let mut bytes = vec![0u8; MODULE_PREFIX as usize];
+        bytes.extend_from_slice(extensao.image.image());
+        bytes.resize(bytes.len() + MODULE_BSS_SLACK, 0);
+        mem.map(
+            EXT_REGION_NAMES[i],
+            base - MODULE_PREFIX,
+            bytes,
+            true,
+        )?;
+        // As mesmas duas palavras que o `AEEStdLib.h` lê antes da base do módulo. Sem elas a
+        // extensão acha a tabela de helpers em zero e morre na primeira chamada de `MALLOC`.
+        mem.write_u32(base - 8, HELPER_VERSION)?;
+        mem.write_u32(base - 4, helpers)?;
+        // Duas palavras por extensão: o `IModule*` dela e a saída do `CreateInstance`. Elas
+        // começam depois das duas do módulo principal — `out_module` e a do applet.
+        let out_module = OBJECT_BASE + 4 * (BOOT_INTERFACES.len() as u32 + 2) + 8 * i as u32;
+        mem.write_u32(out_module, 0)?;
+        mem.write_u32(out_module + 4, 0)?;
+        extensions.push(LoadedExtension {
+            entry: base + extensao.image.entry(),
+            out_module,
+            classes: extensao.classes.clone(),
+        });
+    }
+
     Ok(LoadedModule {
         mem,
         entry: MODULE_BASE + image.entry(),
         shell,
         helpers,
         out_module,
+        extensions,
     })
 }
+
+/// Nomes das regiões das extensões. O `GuestMemory::map` pede nome, e um nome por índice deixa
+/// o mapa impresso pelo `run` legível — `ext0`, `ext1`, e não oito vezes `ext`.
+const EXT_REGION_NAMES: [&str; MAX_EXTENSIONS] = [
+    "ext0", "ext1", "ext2", "ext3", "ext4", "ext5", "ext6", "ext7",
+];
 
 /// Gera a tabela de helpers: cada entrada é o trampolim do helper correspondente.
 fn build_helper_table() -> Vec<u8> {

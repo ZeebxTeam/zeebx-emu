@@ -33,6 +33,12 @@ use std::fmt;
 const MAGIC: u16 = 0x0011;
 /// Tamanho do registro que descreve um applet.
 const APPLET_RECORD_LEN: u32 = 20;
+/// Tamanho do registro que cita uma classe: `<u32 ClassID> <u32 zero>`.
+///
+/// Ele aparece nos dois lados da mesma relação, com **bytes idênticos**: no `.mif` do jogo, que
+/// declara a classe de que depende, e no `.mif` do módulo que a fornece. Quem distingue não é o
+/// registro, é o arquivo em volta — ver [`MifFile::extensao`].
+const CLASS_RECORD_LEN: u32 = 8;
 /// Palavras do registro de applet que são sempre zero.
 ///
 /// O registro é `ClassID`, um zero, um número, outro zero e um campo que varia. São esses dois
@@ -43,6 +49,9 @@ const APPLET_ZEROS: [usize; 2] = [4, 12];
 pub struct MifFile {
     /// ClassIDs dos applets que o módulo expõe.
     pub applets: Vec<u32>,
+    /// ClassIDs citados nos registros de classe: o que o módulo fornece, quando ele é uma
+    /// extensão, ou o que ele exige, quando é um applet.
+    pub classes: Vec<u32>,
     /// Limites de cada seção, como `(offset, tamanho)`.
     pub sections: Vec<(u32, u32)>,
 }
@@ -107,7 +116,23 @@ impl MifFile {
             .filter(|&id| id != 0)
             .collect();
 
-        Ok(Self { applets, sections })
+        let classes = sections
+            .iter()
+            .filter(|&&(_, len)| len == CLASS_RECORD_LEN)
+            .filter_map(|&(offset, _)| {
+                let clsid = read_u32(data, offset as usize).ok()?;
+                // O registro termina em zero, e há um de 8 bytes **todo** zerado nos arquivos
+                // reais — recusar os dois é o que impede uma lista com um `0x0` dentro.
+                let resto = read_u32(data, offset as usize + 4).ok()?;
+                (clsid != 0 && resto == 0).then_some(clsid)
+            })
+            .collect();
+
+        Ok(Self {
+            applets,
+            classes,
+            sections,
+        })
     }
 
     /// As imagens do módulo — os ícones do título —, na ordem em que aparecem.
@@ -132,6 +157,28 @@ impl MifFile {
     /// ClassID do applet principal — o que o emulador instancia.
     pub fn main_applet(&self) -> Option<u32> {
         self.applets.first().copied()
+    }
+
+    /// As classes que este módulo **fornece**, quando ele é um módulo de extensão.
+    ///
+    /// Um módulo de extensão não tem applet: ele existe só para exportar classes, e o console o
+    /// carrega quando alguém pede uma delas. Dois títulos que temos dependem disso, e em ambos o
+    /// módulo da extensão vem dentro do próprio pacote:
+    ///
+    /// | título | módulo | classe |
+    /// |---|---|---|
+    /// | Action Hero 3D | `mod/12875/imicro3d.mod` | `0x010292c3` |
+    /// | Kingdom Hearts | `Kingdon Hearts/kh.mod` | `0x0102bbfc` |
+    ///
+    /// O registro de classe é o mesmo nos dois `.mif` da relação, então "ter applet" é o que
+    /// separa quem pede de quem fornece. Sem essa distinção, o `.mif` do jogo se ofereceria
+    /// para atender a classe que ele próprio está pedindo.
+    pub fn extensao(&self) -> &[u32] {
+        if self.applets.is_empty() {
+            &self.classes
+        } else {
+            &[]
+        }
     }
 }
 
@@ -196,6 +243,7 @@ mod tests {
         }
         let mif = MifFile {
             applets: Vec::new(),
+            classes: Vec::new(),
             sections,
         };
         assert_eq!(mif.images(&data), vec![b"CONTEUDO".as_slice()]);
@@ -205,6 +253,7 @@ mod tests {
     fn secao_truncada_nao_vira_imagem() {
         let mif = MifFile {
             applets: Vec::new(),
+            classes: Vec::new(),
             sections: vec![(0, 40)],
         };
         assert!(mif.images(&[0u8; 4]).is_empty());
@@ -228,6 +277,60 @@ mod tests {
         // Seção 1: 0x40..0x50 (16 bytes, não é applet). Seção 2: 0x50..0x64 (20 bytes).
         data[0x50..0x54].copy_from_slice(&clsid.to_le_bytes());
         data
+    }
+
+    /// Monta um `.mif` mínimo com três seções de 8 bytes: um registro de classe, um zerado e
+    /// mais um. É a forma dos dois `.mif` de extensão reais, que trazem o registro seguido de
+    /// uma seção de 8 bytes toda zerada.
+    fn mif_de_extensao(clsid: u32, applet: Option<u32>) -> Vec<u8> {
+        let table_offset = 0x20u32;
+        let sections = [0x40u32, 0x48, 0x50, 0x64];
+        let mut data = vec![0u8; 0x64];
+        data[0..2].copy_from_slice(&MAGIC.to_le_bytes());
+        data[0x10..0x14].copy_from_slice(&table_offset.to_le_bytes());
+        data[0x14..0x18].copy_from_slice(&3u32.to_le_bytes());
+        for (i, offset) in sections.iter().enumerate() {
+            let at = table_offset as usize + i * 4;
+            data[at..at + 4].copy_from_slice(&offset.to_le_bytes());
+        }
+        // 0x40..0x48: o registro de classe. 0x48..0x50: os oito bytes zerados.
+        data[0x40..0x44].copy_from_slice(&clsid.to_le_bytes());
+        // 0x50..0x64: vinte bytes, que só viram applet se tiverem a forma de um.
+        if let Some(applet) = applet {
+            data[0x50..0x54].copy_from_slice(&applet.to_le_bytes());
+        } else {
+            // Quebra a forma do registro de applet pondo valor num dos campos que são zero.
+            data[0x54..0x58].copy_from_slice(&1u32.to_le_bytes());
+        }
+        data
+    }
+
+    /// O registro de 8 bytes é o que nomeia a classe de uma extensão. O de oito bytes **zerado**
+    /// que vem depois dele nos arquivos reais não pode entrar na lista: daria um `0x0` que se
+    /// ofereceria para atender qualquer pedido de ClassID zero.
+    #[test]
+    fn o_registro_de_classe_sai_e_o_zerado_nao() {
+        let mif = MifFile::parse(&mif_de_extensao(0x0102_92c3, None)).unwrap();
+        assert_eq!(mif.classes, vec![0x0102_92c3]);
+    }
+
+    /// **A regra que separa quem fornece de quem pede.** Os dois `.mif` da relação trazem o
+    /// mesmo registro, com os mesmos bytes: o do jogo declarando a dependência e o da extensão
+    /// declarando o que fornece. Sem "ter applet" como critério, o manifesto do Action Hero 3D
+    /// se ofereceria para atender a `0x010292c3` que ele próprio está pedindo — e o emulador
+    /// chamaria o `AEEMod_Load` do jogo de novo, de dentro do despacho, para criá-la.
+    #[test]
+    fn so_o_mif_sem_applet_se_oferece_para_fornecer_a_classe() {
+        let extensao = MifFile::parse(&mif_de_extensao(0x0102_92c3, None)).unwrap();
+        assert_eq!(extensao.extensao(), &[0x0102_92c3]);
+
+        let jogo = MifFile::parse(&mif_de_extensao(0x0102_92c3, Some(0x0108_1970))).unwrap();
+        assert_eq!(jogo.applets, vec![0x0108_1970], "este é o do jogo");
+        assert_eq!(jogo.classes, vec![0x0102_92c3], "e ele cita a mesma classe");
+        assert!(
+            jogo.extensao().is_empty(),
+            "mas não se oferece para fornecê-la"
+        );
     }
 
     #[test]

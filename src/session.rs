@@ -169,7 +169,9 @@ impl Session {
         };
         let bytes = std::fs::read(path).map_err(StartError::Unreadable)?;
         let image = ModImage::parse(bytes).map_err(|e| StartError::NotAModule(e.to_string()))?;
-        let module = loader::load(&image).map_err(|e| StartError::NotLoadable(e.to_string()))?;
+        let extensoes = extensoes_de(path);
+        let module = loader::load_with(&image, &extensoes)
+            .map_err(|e| StartError::NotLoadable(e.to_string()))?;
 
         // A raiz do sistema de arquivos do jogo é o diretório onde o `.mod` está: é lá que o
         // console guarda os arquivos do título.
@@ -615,4 +617,20 @@ mod tests {
         assert!(!err.to_string().is_empty());
         let _ = std::fs::remove_file(&path);
     }
+}
+
+/// Lê os módulos de extensão que acompanham um `.mod` e os deixa prontos para o carregador.
+///
+/// Um `.mod` que não abra é ignorado em silêncio: a extensão é um extra do pacote, e recusar o
+/// jogo inteiro porque um módulo secundário está corrompido seria trocar um jogo que roda em
+/// parte por um que não roda.
+pub fn extensoes_de(mod_path: &std::path::Path) -> Vec<loader::ExtensionImage> {
+    crate::ui::library::extensoes(mod_path)
+        .into_iter()
+        .filter_map(|(caminho, classes)| {
+            let bytes = std::fs::read(caminho).ok()?;
+            let image = ModImage::parse(bytes).ok()?;
+            Some(loader::ExtensionImage { image, classes })
+        })
+        .collect()
 }
