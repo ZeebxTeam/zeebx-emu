@@ -161,6 +161,12 @@ pub struct App {
     /// Vive atrás de um `Mutex` porque o `egui_glow` exige um retorno de chamada `Sync`, e é
     /// dentro dele que a textura é atualizada.
     pintor: std::sync::Arc<std::sync::Mutex<Option<gpu::Pintor>>>,
+    /// O pintor de GL não subiu, e daqui para a frente vale a textura do egui.
+    ///
+    /// Quem descobre isso é o retorno de pintura, já dentro do desenho do quadro — e um driver
+    /// que recuse os shaders não pode custar a tela: sem esta marca, o quadro seguinte
+    /// continuaria indo para um pintor que não existe, e a janela ficaria preta.
+    gpu_falhou: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// O desenho do controle já na placa de vídeo.
@@ -230,6 +236,7 @@ impl App {
                 .ok(),
             gl: context.gl.clone(),
             pintor: Default::default(),
+            gpu_falhou: Default::default(),
         }
     }
 
@@ -1547,7 +1554,9 @@ impl App {
         let quadro_bytes = session.screen().to_rgb565_bytes();
         // Com GL não há por que converter o mesmo quadro de novo para textura do egui: seriam
         // duas conversões por repaint, e só uma delas iria para a tela.
-        if self.gl.is_none() {
+        let pela_placa =
+            self.gl.is_some() && !self.gpu_falhou.load(std::sync::atomic::Ordering::Relaxed);
+        if !pela_placa {
             upload(ctx, &mut self.frame, session.screen(), smooth);
         }
         // O que vai na tela sai da sessão agora, antes de desenhar: o empréstimo do jogo não
@@ -1621,8 +1630,9 @@ impl App {
                 );
                 // Com contexto de GL, o quadro vai para a placa em RGB565 e é ela que amplia.
                 // Sem ele, vale a textura do egui — que é o caminho de sempre.
-                if let Some(gl_ctx) = self.gl.clone() {
+                if pela_placa {
                     let pintor = self.pintor.clone();
+                    let falhou = self.gpu_falhou.clone();
                     let suave = self.settings.graphics.smooth;
                     let (largura, altura) = (quadro_largura, quadro_altura);
                     let bytes = quadro_bytes.clone();
@@ -1642,7 +1652,10 @@ impl App {
                                     match gpu::Pintor::novo(painter.gl()) {
                                         Ok(novo) => *guarda = Some(novo),
                                         Err(erro) => {
-                                            eprintln!("pintor de GL: {erro}");
+                                            eprintln!(
+                                                "pintor de GL: {erro} — seguindo pela textura do egui"
+                                            );
+                                            falhou.store(true, std::sync::atomic::Ordering::Relaxed);
                                             return;
                                         }
                                     }
@@ -1660,7 +1673,6 @@ impl App {
                             },
                         )),
                     });
-                    let _ = gl_ctx;
                     return;
                 }
                 let Some(texture) = &self.frame else {
