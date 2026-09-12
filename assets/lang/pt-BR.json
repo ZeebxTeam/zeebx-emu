@@ -76,6 +76,8 @@
   "graphics.smooth": "Suavizar a imagem",
   "graphics.speed_limit": "Segurar na velocidade do console",
   "graphics.speed_limit.hint": "Desligado, o emulador corre o quanto consegue e os jogos ficam acelerados.",
+  "graphics.gpu_present": "Pôr o quadro na tela pela placa de vídeo",
+  "graphics.gpu_present.hint": "O quadro sobe no formato em que já está e quem amplia é a placa. Não muda o desenho do jogo: o 3D continua sendo feito em software.",
   "language.name": "Português (Brasil)",
   "library.count": "{count} jogo(s)",
   "library.empty": "Nenhuma ROM encontrada em {folder}.",

@@ -83,6 +83,15 @@ pub struct Graphics {
     /// Segurar o emulador no ritmo do console. Desligado, ele corre o quanto o host aguenta e
     /// os jogos ficam acelerados.
     pub speed_limit: bool,
+    /// Pôr o quadro na tela pelo GL da janela, em vez de mandá-lo como textura do egui.
+    ///
+    /// Pela placa o quadro sobe em RGB565, que é o formato em que ele já está, e quem amplia é
+    /// ela. O caminho antigo converte para ARGB e depois para RGBA a cada repaint. **Não muda o
+    /// desenho do jogo** — o 3D continua sendo rasterizado em software —, e por isso a diferença
+    /// de desempenho é pequena; existe para ser o lugar em que um backend de GPU entraria.
+    ///
+    /// Um driver que recuse os shaders faz o emulador voltar sozinho ao caminho antigo.
+    pub gpu_present: bool,
 }
 
 impl Default for Graphics {
@@ -92,6 +101,7 @@ impl Default for Graphics {
             smooth: false,
             keep_aspect: true,
             speed_limit: true,
+            gpu_present: true,
         }
     }
 }

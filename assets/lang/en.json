@@ -76,6 +76,8 @@
   "graphics.smooth": "Smooth the image",
   "graphics.speed_limit": "Hold the console's speed",
   "graphics.speed_limit.hint": "Off, the emulator runs as fast as it can and games play too fast.",
+  "graphics.gpu_present": "Put the frame on screen through the graphics card",
+  "graphics.gpu_present.hint": "The frame goes up in the format it is already in, and the card does the scaling. It does not change how the game draws: 3D is still done in software.",
   "language.name": "English",
   "library.count": "{count} game(s)",
   "library.empty": "No ROM found in {folder}.",

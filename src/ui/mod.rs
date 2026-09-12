@@ -972,6 +972,15 @@ impl App {
             )
             .changed();
         ui.weak(self.catalog.get("graphics.speed_limit.hint"));
+
+        ui.add_space(12.0);
+        changed |= ui
+            .checkbox(
+                &mut graphics.gpu_present,
+                self.catalog.get("graphics.gpu_present"),
+            )
+            .changed();
+        ui.weak(self.catalog.get("graphics.gpu_present.hint"));
         changed
     }
 
@@ -1554,8 +1563,9 @@ impl App {
         let quadro_bytes = session.screen().to_rgb565_bytes();
         // Com GL não há por que converter o mesmo quadro de novo para textura do egui: seriam
         // duas conversões por repaint, e só uma delas iria para a tela.
-        let pela_placa =
-            self.gl.is_some() && !self.gpu_falhou.load(std::sync::atomic::Ordering::Relaxed);
+        let pela_placa = self.settings.graphics.gpu_present
+            && self.gl.is_some()
+            && !self.gpu_falhou.load(std::sync::atomic::Ordering::Relaxed);
         if !pela_placa {
             upload(ctx, &mut self.frame, session.screen(), smooth);
         }
