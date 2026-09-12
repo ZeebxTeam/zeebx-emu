@@ -69,6 +69,24 @@ pub trait CpuBackend {
     /// duas execuções iguais deem o mesmo resultado.
     fn instructions(&self) -> u64;
 
+    /// Arma um sinalizador de sujeira numa faixa: o hook o liga quando o guest escreve nela.
+    ///
+    /// Sem isto, descobrir se o jogo mexeu numa superfície exige **ler a faixa inteira e
+    /// comparar byte a byte**. Medido na Z-Wheel: o `sync` do color buffer do pbuffer era
+    /// chamado 93 mil vezes em treze segundos, e a leitura mais a comparação somavam seis
+    /// segundos — mais de um terço de todo o tempo de API.
+    ///
+    /// O padrão responde "sempre sujo", que é exatamente o comportamento anterior: um backend
+    /// que não saiba armar o hook continua correto, só não fica mais rápido.
+    fn watch_dirty(&mut self, _base: u32, _len: u32) -> Result<(), CpuError> {
+        Ok(())
+    }
+
+    /// Lê **e limpa** o sinalizador. `true` quando o guest pode ter escrito desde a última vez.
+    fn take_dirty(&mut self) -> bool {
+        true
+    }
+
     fn read_mem(&self, addr: u32, buf: &mut [u8]) -> Result<(), CpuError>;
 
     fn write_mem(&mut self, addr: u32, data: &[u8]) -> Result<(), CpuError>;
