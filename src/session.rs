@@ -8,7 +8,7 @@
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use crate::cpu::unicorn::UnicornCpu;
+use crate::cpu::dynarmic::DynarmicCpu;
 use crate::input::Pad;
 use crate::loader;
 use crate::loader::archive;
@@ -74,7 +74,10 @@ pub enum Step {
 }
 
 pub struct Session {
-    machine: Machine<UnicornCpu>,
+    /// O mesmo agendador BREW usado pela bancada e pela linha de comando, com o núcleo que
+    /// recompila os blocos ARM do módulo. O Kingdom Hearts desenha a intro no seu próprio
+    /// rasterizador ARM; deixá-lo no Unicorn aqui anulava o ganho medido no `bench`.
+    machine: Machine<DynarmicCpu>,
     /// O applet criado e ainda **não** iniciado, com o ClassID dele.
     ///
     /// O `EVT_APP_START` é despachado na primeira volta do laço, não aqui. Rodá-lo dentro do
@@ -176,7 +179,7 @@ impl Session {
         // A raiz do sistema de arquivos do jogo é o diretório onde o `.mod` está: é lá que o
         // console guarda os arquivos do título.
         let root = path.parent().map(Path::to_path_buf).unwrap_or_default();
-        let cpu = UnicornCpu::new().map_err(|e| StartError::NotLoadable(e.to_string()))?;
+        let cpu = DynarmicCpu::new().map_err(|e| StartError::NotLoadable(e.to_string()))?;
         let mut machine = Machine::new(cpu, module, root);
         // Antes de qualquer desenho: ver [`Machine::usa_placa`].
         machine.usa_placa(placa, contexto);
@@ -574,7 +577,7 @@ impl Session {
 /// usa isto, e por isso não faz parte da interface da sessão.
 #[cfg(test)]
 impl Session {
-    pub(crate) fn machine(&self) -> &Machine<UnicornCpu> {
+    pub(crate) fn machine(&self) -> &Machine<DynarmicCpu> {
         &self.machine
     }
 

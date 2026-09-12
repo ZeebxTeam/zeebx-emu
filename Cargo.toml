@@ -27,6 +27,10 @@ rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "a
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 unicorn-engine = "2.1.5"
+# JIT ARM alternativo ao TCG do Unicorn. Fica opt-in enquanto os dois backends são
+# comparados jogo a jogo; o KH precisa dele porque a extensão 3D roda o próprio
+# rasterizador ARM por milhões de pixels.
+dynarmic = "0.1.3"
 # Só leitura de zip: `deflate` cobre o que os empacotadores usam.
 zip = { version = "2", default-features = false, features = ["deflate"] }
 resvg = { version = "0.48.1", default-features = false }

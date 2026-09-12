@@ -194,6 +194,7 @@ impl std::fmt::Display for CpuError {
 
 impl std::error::Error for CpuError {}
 
+pub mod dynarmic;
 pub mod unicorn;
 
 #[cfg(test)]

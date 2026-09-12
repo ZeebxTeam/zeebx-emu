@@ -19,7 +19,7 @@ mod varredura;
 use std::process::ExitCode;
 
 use crate::brew::aee;
-use crate::cpu::{CpuBackend, unicorn::UnicornCpu};
+use crate::cpu::{CpuBackend, dynarmic::DynarmicCpu, unicorn::UnicornCpu};
 use crate::input::bindings;
 use crate::loader::archive;
 use crate::loader::modfile::{ModImage, Variant};
@@ -203,6 +203,17 @@ fn main() -> ExitCode {
                 },
             ))
         }
+        // O JIT entra primeiro como bancada, não como backend implícito da interface. Assim a
+        // mesma ROM pode ser comparada com o Unicorn sem esconder uma regressão de compatibilidade.
+        Some("bench") if args.len() >= 2 => {
+            let seconds = args
+                .iter()
+                .find_map(|a| a.strip_prefix("--seconds="))
+                .and_then(|n| n.parse::<u32>().ok())
+                .unwrap_or(DEFAULT_SECONDS);
+            let dump = args.iter().find_map(|a| a.strip_prefix("--dump="));
+            report(bench_dynarmic(&args[1], seconds, dump))
+        }
         // Sem argumento nenhum, o que se quer é o emulador, não a ajuda.
         None => launch(),
         _ => {
@@ -218,6 +229,7 @@ fn main() -> ExitCode {
                              [--sem-rede] [--servidor=MAQUINA[:PORTA]] [--ponte]
                              [--portas=controle|teclado|nenhum,...] [--teclas=ms:nome,...]"
             );
+            eprintln!("     zeebx bench <arquivo.mod|zip> [--seconds=N] [--dump=QUADRO.bmp]  (Dynarmic, sem janela)");
             ExitCode::FAILURE
         }
     }
@@ -512,7 +524,12 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
                             let started =
                                 machine.start_applet(applet, clsid, INSTRUCTION_BUDGET)?;
                             describe_outcome_com_estado(&started, &machine);
-                            if matches!(started, Outcome::Returned { .. }) {
+                            // O código de retorno do `HandleEvent` pertence ao applet, não ao
+                            // despachante: Kingdom Hearts devolve 1 no EVT_APP_START e segue
+                            // armando o laço normalmente. A Session já aceita qualquer retorno;
+                            // a linha de comando precisa fazer o mesmo, senão ela nunca chega
+                            // ao trecho que permite perfilar a intro.
+                            if matches!(started, Outcome::Returned { .. } | Outcome::Budget) {
                                 rodou_quadros = true;
                                 run_frames(
                                     &mut machine,
@@ -804,6 +821,78 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
         for (name, count) in log {
             println!("  {count:>4}x {name}");
         }
+    }
+    Ok(())
+}
+
+/// Mede uma ROM inteira no Dynarmic, sem janela e sem trocar o backend normal do emulador.
+///
+/// Esta não é uma segunda implementação do comando `run`: é uma bancada estreita para a
+/// pergunta que motivou o JIT — quantos milissegundos virtuais o ARM recompilado consegue
+/// entregar por segundo de parede? Quando os números e os quadros concordarem com o Unicorn,
+/// o backend poderá subir para a sessão e a interface.
+fn bench_dynarmic(
+    path: &str,
+    seconds: u32,
+    dump: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let extracted;
+    let path = match std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+    {
+        Some("zip") => {
+            extracted = archive::extract(std::path::Path::new(path))?;
+            extracted.as_path()
+        }
+        _ => std::path::Path::new(path),
+    };
+    let image = ModImage::parse(std::fs::read(path)?)?;
+    let extensoes = crate::session::extensoes_de(path);
+    let module = loader::load_with(&image, &extensoes)?;
+    let root = path.parent().map(std::path::Path::to_path_buf).unwrap_or_default();
+    let mut machine = Machine::new(DynarmicCpu::new()?, module, root);
+    let boot = machine.run(INSTRUCTION_BUDGET)?;
+    if !matches!(boot, Outcome::Returned { code: 0 }) {
+        return Err(format!("carga parou em {boot:?}").into());
+    }
+    let clsid = library::applet_clsid(path).ok_or("nenhum .mif encontrou o applet")?;
+    let applet = match machine.create_applet(clsid, INSTRUCTION_BUDGET)? {
+        AppletResult::Called { code: 0, applet } if applet != 0 => applet,
+        other => return Err(format!("CreateInstance parou em {other:?}").into()),
+    };
+    let start = machine.start_applet(applet, clsid, INSTRUCTION_BUDGET)?;
+    if !matches!(start, Outcome::Returned { .. } | Outcome::Budget) {
+        return Err(format!("EVT_APP_START parou em {start:?}").into());
+    }
+
+    let wall = std::time::Instant::now();
+    let base_clock = machine.clock_ms();
+    let base_instructions = machine.instructions();
+    let until = base_clock.saturating_add(seconds.saturating_mul(1000));
+    let mut turns = 0u64;
+    while machine.clock_ms() < until && !machine.is_idle() {
+        let outcomes = machine.advance(INSTRUCTION_BUDGET)?;
+        machine.deliver_signals(INSTRUCTION_BUDGET)?;
+        machine.deliver_callbacks(INSTRUCTION_BUDGET)?;
+        turns += 1;
+        if let Some(bad) = outcomes.iter().find(|outcome| {
+            !matches!(outcome, Outcome::Returned { .. } | Outcome::Budget)
+        }) {
+            return Err(format!("laço parou em {bad:?}").into());
+        }
+    }
+    let elapsed = wall.elapsed();
+    let virtual_ms = machine.clock_ms().saturating_sub(base_clock);
+    let instructions = machine.instructions().saturating_sub(base_instructions);
+    let ratio = virtual_ms as f64 / elapsed.as_secs_f64().max(f64::MIN_POSITIVE) / 10.0;
+    println!("backend:   Dynarmic ARMv6K");
+    println!("tempo:     {virtual_ms} ms virtuais em {:.3} s reais ({ratio:.1}% da velocidade)", elapsed.as_secs_f64());
+    println!("cpu:       {} milhões de instruções ({:.1} MIPS)", instructions / 1_000_000, instructions as f64 / elapsed.as_secs_f64().max(f64::MIN_POSITIVE) / 1_000_000.0);
+    println!("laço:      {turns} voltas, {} timer(s), {} quadro(s) GL", machine.armed_timers(), machine.gl_swaps());
+    if let Some(path) = dump {
+        std::fs::write(path, machine.screen().to_bmp())?;
+        println!("quadro:    {path}");
     }
     Ok(())
 }
