@@ -793,7 +793,7 @@ impl App {
         let pad = self.pad_of(ui.ctx(), self.porta_editada);
         ui.horizontal(|ui| {
             for (name, value) in crate::input::AXIS_NAMES.iter().zip(pad.axes) {
-                let share = value as f32 / crate::input::AXIS_MAX as f32;
+                let share = value as f32 / crate::input::AXIS_CURSO as f32;
                 ui.monospace(format!("{name}: {share:+.2}"));
             }
         });
@@ -1982,8 +1982,8 @@ fn draw_controller(
             rect.lerp_inside(egui::vec2(u1, v1)),
         );
         let offset = egui::vec2(
-            pad.axes[axes[0]] as f32 / crate::input::AXIS_MAX as f32,
-            pad.axes[axes[1]] as f32 / crate::input::AXIS_MAX as f32,
+            pad.axes[axes[0]] as f32 / crate::input::AXIS_CURSO as f32,
+            pad.axes[axes[1]] as f32 / crate::input::AXIS_CURSO as f32,
         );
         let radius = circle.width().min(circle.height()) / 2.0;
         let center = circle.center() + offset * radius * 0.6;

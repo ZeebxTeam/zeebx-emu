@@ -153,27 +153,30 @@ pub const BUTTON_NAMES: [&str; BUTTONS] = [
 
 /// UID de cada eixo: `X`, `Y`, `Z` e `RZ`.
 ///
-/// Estes são **literalmente** os do `hid_devices.original.cfg` do console, na entrada do
+/// Três deles são **literalmente** os do `hid_devices.original.cfg` do console, na entrada do
 /// controle do Zeebo (`VID:0x1EAA:PID:0x0135`):
 ///
 /// ```text
-/// AXIS:X:0x0106C40C
+/// AXIS:X:0x0106C40C      <- este não
 /// AXIS:Y:0x0106C4D1
 /// AXIS:Z:0x0106C4CE
 /// AXIS:RZ:0x0106C4CF
 /// ```
 ///
-/// O `X` valendo o UID do `Button_3` é esquisito, e a mesma entrada tem a esquisitice espelhada
-/// — o `BUTTON:3` vale `0x0106C4D0`, que é UID de eixo. Parece uma troca no arquivo da TecToy.
-/// Mas é o arquivo do console, e é o que os jogos viram quando foram feitos: corrigir aqui é
-/// inventar um aparelho que não existiu.
+/// O arquivo tem uma troca, e ela é visível dos dois lados: o `AXIS:X` recebeu `0x0106C40C`,
+/// que é UID de botão (o `Button_3`), e o `BUTTON:3` da mesma entrada recebeu `0x0106C4D0`,
+/// que é UID de eixo — o `LeftThumb_X` das outras entradas do próprio arquivo.
 ///
-/// Já tentei "consertar" isto uma vez, deduzindo dos binários dos jogos que `c4ce`/`c4cf` e
-/// `c4d0`/`c4d1` são pares de manche — o que é verdade nas outras entradas do arquivo, as dos
-/// controles de PC. Para o controle do Zeebo, não é. A dedução era plausível, coerente e
-/// errada, e só caiu quando o arquivo apareceu. **Fonte primária ganha de inferência**, e
-/// quando as duas discordam é a inferência que está errada.
-pub const AXIS_UIDS: [u32; 4] = [0x0106_c40c, 0x0106_c4d1, 0x0106_c4ce, 0x0106_c4cf];
+/// **Aqui desfazemos a troca, e o que decidiu foi medida, não dedução.** Com `0x0106C40C` no
+/// `X`, o manche não move esquerda e direita em jogo nenhum: o jogo varre a tabela do
+/// `GetAxesInfo` procurando UID de eixo, não acha nenhum para o `X` e nunca guarda o campo
+/// dele — o `Y`, o `Z` e o `RZ` andam, e só o horizontal fica morto. Com `0x0106C4D0` o manche
+/// anda inteiro.
+///
+/// Isto **não** contradiz a lição de que fonte primária ganha de inferência: a pergunta aqui
+/// não é "o que o arquivo diz", é "o que o jogo procura", e quem responde essa é o jogo. O
+/// arquivo continua sendo a fonte de todo o resto da tabela.
+pub const AXIS_UIDS: [u32; 4] = [0x0106_c4d0, 0x0106_c4d1, 0x0106_c4ce, 0x0106_c4cf];
 
 /// Nome de cada eixo, na ordem de [`Pad::axes`], para o mapeamento e a tela de configuração.
 pub const AXIS_NAMES: [&str; 4] = ["x", "y", "z", "rz"];
@@ -188,11 +191,37 @@ pub const AXIS_SLOTS: [usize; 4] = [1, 2, 3, 6];
 /// Quantas palavras tem o `AEEHIDPositionInfo`: `bRelativeAxes` e vinte e quatro eixos.
 pub const POSITION_INFO_WORDS: usize = 25;
 
-/// Faixa de um eixo. O descritor USB do controle está no dump, mas a parte do report que traria
-/// os limites veio como "** UNAVAILABLE **", então adotamos a faixa de 16 bits com sinal, que é
-/// o padrão de HID analógico.
-pub const AXIS_MIN: i32 = i16::MIN as i32;
-pub const AXIS_MAX: i32 = i16::MAX as i32;
+/// Faixa de um eixo **como o console a reporta**: um byte sem sinal, com o repouso no meio.
+///
+/// Isto não é escolha nossa, é medida. O Zeebo F.C. Super League converte cada eixo assim
+/// (`0xfd4c0` no módulo dele, e o mesmo trecho está no Tênis, no Zeeboids e em todo jogo que
+/// usa essa camada do SDK):
+///
+/// ```text
+/// mvn   r0, #0x7f        ; r0 = -128
+/// sxtah r4, r0, r4       ; valor = (int16)eixo - 128
+/// ```
+///
+/// O jogo subtrai **128** do valor cru para achar o centro, então o centro do aparelho é 128 e
+/// a faixa é `0..=255` — o que também é o que reportam os manches USB que o
+/// `hid_devices.original.cfg` lista (Logitech Dual Action, RumblePad2). Enquanto mandávamos
+/// zero, todo jogo dessa camada lia o extremo e andava sozinho para um canto: era o "boneco
+/// andando para cima" com o manche parado.
+///
+/// O Zeeboids escapava por acidente: ele trata "os quatro eixos exatamente no mínimo" como
+/// "não há manche aqui" e zera tudo — uma defesa contra exatamente o que a gente fazia.
+pub const AXIS_MIN: i32 = 0;
+pub const AXIS_MAX: i32 = 255;
+
+/// O repouso, na faixa do console.
+pub const AXIS_CENTRO: i32 = 128;
+
+/// Quanto [`Pad::axes`] anda para cada lado.
+///
+/// Guardamos o eixo **centrado no zero**, que é a forma com que o próprio jogo trabalha depois
+/// da subtração acima; quem traduz para a faixa do aparelho é o `IHIDDevice`, no único lugar em
+/// que o console é quem lê.
+pub const AXIS_CURSO: i32 = 128;
 
 /// O estado do controle num instante.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -228,11 +257,17 @@ impl Pad {
         }
     }
 
-    /// Põe um eixo no valor dado, preso à faixa que o console reporta.
+    /// Põe um eixo no valor dado, preso ao curso do manche. O zero é o repouso.
     pub fn set_axis(&mut self, index: usize, value: i32) {
         if let Some(axis) = self.axes.get_mut(index) {
-            *axis = value.clamp(AXIS_MIN, AXIS_MAX);
+            *axis = value.clamp(-AXIS_CURSO, AXIS_CURSO);
         }
+    }
+
+    /// O eixo na faixa do console: o repouso vira 128, e o curso, `0..=255`.
+    pub fn eixo_do_console(&self, index: usize) -> i32 {
+        let valor = self.axes.get(index).copied().unwrap_or(0);
+        (valor + AXIS_CENTRO).clamp(AXIS_MIN, AXIS_MAX)
     }
 
     /// Os botões que mudaram entre `self` e `next`, com o novo estado de cada um.
@@ -354,8 +389,8 @@ impl Script {
 fn eixo_por_nome(nome: &str) -> Option<(usize, i32)> {
     let (eixo, sinal) = nome.split_at(nome.len().checked_sub(1)?);
     let valor = match sinal {
-        "+" => AXIS_MAX,
-        "-" => AXIS_MIN,
+        "+" => AXIS_CURSO,
+        "-" => -AXIS_CURSO,
         _ => return None,
     };
     let eixo = match eixo {
@@ -449,9 +484,32 @@ mod tests {
         assert_eq!(pad.axes, [0; 4]);
 
         // Quem chega aos eixos é o manche, sem passar pelos botões.
-        pad.set_axis(0, AXIS_MAX);
-        assert_eq!(pad.axes[0], AXIS_MAX);
+        pad.set_axis(0, AXIS_CURSO);
+        assert_eq!(pad.axes[0], AXIS_CURSO);
         assert!(!pad.is_down(right));
+    }
+
+    #[test]
+    fn o_eixo_parado_chega_ao_console_como_o_centro_dele() {
+        // O jogo faz `valor = (int16)eixo - 128` (o `0xfd4c0` do Super League). Mandar zero é
+        // mandar o batente: era o boneco andando sozinho para um canto com o manche parado.
+        let pad = Pad::default();
+        for eixo in 0..AXIS_NAMES.len() {
+            assert_eq!(pad.eixo_do_console(eixo), AXIS_CENTRO, "eixo {eixo}");
+            assert_eq!(pad.eixo_do_console(eixo) - AXIS_CENTRO, 0, "o jogo vê parado");
+        }
+    }
+
+    #[test]
+    fn o_curso_do_manche_cobre_a_faixa_do_console_sem_passar_dela() {
+        let mut pad = Pad::default();
+        pad.set_axis(0, AXIS_CURSO);
+        pad.set_axis(1, -AXIS_CURSO);
+        assert_eq!(pad.eixo_do_console(0), AXIS_MAX);
+        assert_eq!(pad.eixo_do_console(1), AXIS_MIN);
+        // E um valor além do curso não escapa da faixa que dissemos ao jogo no `GetMax`.
+        pad.set_axis(2, AXIS_CURSO * 4);
+        assert_eq!(pad.eixo_do_console(2), AXIS_MAX);
     }
 
     #[test]
@@ -511,15 +569,21 @@ mod tests {
     }
 
     #[test]
-    fn os_eixos_sao_os_do_arquivo_do_console() {
-        // Transcrição literal da entrada `VID:0x1EAA:PID:0x0135` do
-        // `hid_devices.original.cfg`. O teste existe para que ninguém "conserte" a esquisitice
-        // do `X` de novo — eu já fiz isso, deduzindo dos binários dos jogos, e estava errado.
+    fn os_eixos_sao_os_do_arquivo_do_console_menos_a_troca_do_x() {
+        // `Y`, `Z` e `RZ` são transcrição literal da entrada `VID:0x1EAA:PID:0x0135` do
+        // `hid_devices.original.cfg`. O `X` é o `LeftThumb_X`, e não o UID de botão que o
+        // arquivo pôs ali: com o do arquivo, o manche não anda para os lados em jogo nenhum,
+        // porque nenhum jogo procura um UID de botão na tabela de eixos. Medido no aparelho.
         assert_eq!(
             AXIS_UIDS,
-            [0x0106_c40c, 0x0106_c4d1, 0x0106_c4ce, 0x0106_c4cf]
+            [0x0106_c4d0, 0x0106_c4d1, 0x0106_c4ce, 0x0106_c4cf]
         );
         assert_eq!(AXIS_NAMES, ["x", "y", "z", "rz"]);
+        // E o UID de eixo não pode ficar também num botão que dispara: seria o mesmo número
+        // chegando ao jogo como duas coisas. O `lx` do arquivo é um botão que não existe no
+        // aparelho e nunca é apertado — mas o teste registra a sobreposição de propósito.
+        assert_eq!(BUTTON_UIDS[3], AXIS_UIDS[0], "a troca do arquivo é espelhada");
+        assert_eq!(BUTTON_NAMES[3], "lx");
     }
 
     #[test]

@@ -139,7 +139,8 @@ impl<C: CpuBackend> Machine<C> {
             }
             // A posição corrente de cada eixo.
             "GetPositionState" => {
-                let axes = self.pads[self.porta_do(this)].axes;
+                let pad = self.pads[self.porta_do(this)];
+                let axes = [0, 1, 2, 3].map(|i| pad.eixo_do_console(i));
                 self.write_position_info(a1, &axes)?;
                 SUCCESS
             }
@@ -147,7 +148,7 @@ impl<C: CpuBackend> Machine<C> {
             // ocupa aquele campo. É assim que o `AEEHIDThumbsticks.c` do SDK descobre onde
             // está cada direção — e enquanto respondíamos zeros, ele não achava nenhuma.
             "GetAxesInfo" => {
-                self.write_position_info(a1, &input::AXIS_UIDS.map(|uid| uid as i32))?;
+                self.write_axes_info(a1, &input::AXIS_UIDS.map(|uid| uid as i32))?;
                 SUCCESS
             }
             // Os limites valem para **todos** os eixos da struct, não só os quatro que o
@@ -228,12 +229,14 @@ impl<C: CpuBackend> Machine<C> {
         Ok(Some(result))
     }
 
-    /// Preenche um `AEEHIDPositionInfo` com um valor por eixo.
+    /// Preenche um `AEEHIDPositionInfo` com a posição de cada eixo.
     ///
     /// A struct é `boolean bRelativeAxes` seguido de vinte e quatro inteiros, um por eixo
-    /// possível. O controle do Zeebo usa quatro deles — `X`, `Y`, `Z` e `RZ` —, e os outros
-    /// ficam zerados: um eixo que não existe tem faixa zero, e é assim que o jogo sabe
-    /// ignorá-lo. Os eixos são absolutos, então `bRelativeAxes` também fica zero.
+    /// possível. O controle do Zeebo usa quatro deles — `X`, `Y`, `Z` e `RZ`.
+    ///
+    /// **Os outros vinte ficam no centro, não em zero.** Zero é o mínimo da faixa do aparelho,
+    /// e um jogo que leia um eixo que não usamos o encontraria encostado no batente em vez de
+    /// parado. Os eixos são absolutos, então `bRelativeAxes` continua zero.
     pub(super) fn write_position_info(
         &mut self,
         addr: u32,
@@ -242,7 +245,8 @@ impl<C: CpuBackend> Machine<C> {
         if addr == 0 {
             return Ok(());
         }
-        let mut words = [0u32; input::POSITION_INFO_WORDS];
+        let mut words = [input::AXIS_CENTRO as u32; input::POSITION_INFO_WORDS];
+        words[0] = 0;
         for (slot, value) in input::AXIS_SLOTS.iter().zip(values) {
             words[*slot] = *value as u32;
         }
@@ -253,6 +257,27 @@ impl<C: CpuBackend> Machine<C> {
                 bytes.len()
             ))
         })
+    }
+
+    /// Escreve a tabela do `GetAxesInfo`: em cada campo, o UID do eixo que o ocupa.
+    ///
+    /// Aqui os campos que sobram ficam **zerados**, e é o contrário do que faz a posição: zero
+    /// não é um valor de eixo, é "não há eixo neste campo", e é assim que o jogo para de
+    /// procurar.
+    pub(super) fn write_axes_info(
+        &mut self,
+        addr: u32,
+        uids: &[i32; 4],
+    ) -> Result<(), CpuError> {
+        if addr == 0 {
+            return Ok(());
+        }
+        let mut words = [0u32; input::POSITION_INFO_WORDS];
+        for (slot, uid) in input::AXIS_SLOTS.iter().zip(uids) {
+            words[*slot] = *uid as u32;
+        }
+        let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+        self.cpu.write_mem(addr, &bytes)
     }
 
     /// Escreve `value` em todos os campos de eixo do `AEEHIDPositionInfo`.
@@ -299,6 +324,12 @@ impl<C: CpuBackend> Machine<C> {
         if !changes.is_empty() {
             self.raise_input_signal("RegisterForButtonEvent");
         }
+        // **O retorno ao centro também é mudança de posição.** Soltar o manche precisa acordar
+        // o callback como empurrá-lo: quem lê o eixo só de dentro do callback — e é como um
+        // menu orientado a evento se escreve — guarda a última direção e nunca descobre que o
+        // jogador soltou. O sintoma é o manche "preso" no último sentido para sempre. A
+        // navegação dobrada que isto parecia causar era outra coisa, e está resolvida em
+        // [`Machine::raise_input_signal`].
         if moved {
             self.raise_input_signal("RegisterForPositionChange");
         }
@@ -422,7 +453,14 @@ impl<C: CpuBackend> Machine<C> {
             return;
         };
         if let Some(&callback) = self.signals.get(&signal) {
-            self.pending_signals.push(callback);
+            // Um sinal BREW é um aviso de "há trabalho", não um evento contado. O host pode
+            // atualizar mais de uma porta (ou mover o eixo e logo voltar ao centro) antes de o
+            // scheduler entregar o callback. Enfileirar a mesma função duas vezes faz muitos
+            // menus processarem a mesma navegação em sentidos opostos. Coalescer aqui preserva
+            // todas as mudanças no estado consultável pelo jogo e elimina a reentrada espúria.
+            if !self.pending_signals.contains(&callback) {
+                self.pending_signals.push(callback);
+            }
         }
     }
 

@@ -189,6 +189,10 @@ impl From<CpuError> for LoadError {
 }
 
 /// Monta o mapa de memória com o módulo, pilha, heap, vtables e objetos iniciais.
+///
+/// É o caso de quem não tem módulo de extensão nenhum — os testes e quem carrega um `.mod`
+/// solto, sem o pacote em volta.
+#[cfg(test)]
 pub fn load(image: &ModImage) -> Result<LoadedModule, LoadError> {
     load_with(image, &[])
 }

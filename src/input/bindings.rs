@@ -262,6 +262,21 @@ impl Player {
         }
     }
 
+    /// Devolve a inversão vertical a quem a perdeu.
+    ///
+    /// Houve uma versão que salvou os quatro eixos sem inversão nenhuma, e quem a rodou ficou
+    /// com o arquivo assim — o padrão mudar de volta não conserta um mapa já gravado. Como o
+    /// mapa daquela versão é reconhecível (é o padrão de hoje com `y` e `rz` retos), dá para
+    /// desfazê-lo sem tocar em quem mexeu no mapeamento à mão.
+    fn migrate_axis_convention(&mut self) {
+        let mut reto = Self::default_axes();
+        reto.get_mut("y").unwrap().invert = false;
+        reto.get_mut("rz").unwrap().invert = false;
+        if self.axes == reto {
+            self.axes = Self::default_axes();
+        }
+    }
+
     /// As origens de um botão, ou nada se ele não tem nenhuma.
     pub fn sources(&self, button: &str) -> &[Source] {
         self.buttons.get(button).map(Vec::as_slice).unwrap_or(&[])
@@ -312,7 +327,7 @@ impl Player {
             if value.abs() < DEADZONE {
                 continue;
             }
-            pad.set_axis(index, (value * input::AXIS_MAX as f32) as i32);
+            pad.set_axis(index, (value * input::AXIS_CURSO as f32) as i32);
         }
         pad
     }
@@ -377,6 +392,7 @@ impl Controls {
     pub fn adopt(&mut self) {
         for player in &mut self.players {
             player.adopt_axes();
+            player.migrate_axis_convention();
         }
         while self.players.len() < crate::input::PORTAS {
             self.players.push(Player {
@@ -502,14 +518,14 @@ mod tests {
                 _ => None,
             },
         );
-        assert_eq!(pad.axes[0], input::AXIS_MAX / 2);
+        assert_eq!(pad.axes[0], input::AXIS_CURSO / 2);
         assert_eq!(pad.axes[1], 0);
     }
 
     #[test]
-    fn cima_no_analogico_e_negativo_no_console() {
-        // A biblioteca de controles diz que cima é positivo; o console, que é negativo. Errar
-        // este sinal inverte o eixo vertical de todo jogo que o lê.
+    fn cima_no_analogico_e_o_valor_baixo_no_console() {
+        // A biblioteca de controles diz que cima é positivo; o HID, que o eixo `Y` cresce para
+        // baixo. Errar este sinal inverte o eixo vertical de todo jogo que o lê.
         let player = Player::with_gamepad("Meu Controle".into());
         let pad = player.pad(
             |_| false,
@@ -518,7 +534,9 @@ mod tests {
                 _ => None,
             },
         );
-        assert!(pad.axes[1] < 0, "cima deu {}", pad.axes[1]);
+        assert!(pad.axes[1] < 0, "eixo vertical deu {}", pad.axes[1]);
+        // E é o valor baixo que chega ao console, que é o que o jogo lê como "cima".
+        assert!(pad.eixo_do_console(1) < input::AXIS_CENTRO);
     }
 
     #[test]
@@ -533,7 +551,7 @@ mod tests {
                 _ => None,
             },
         );
-        assert_eq!(pad.axes[2], -input::AXIS_MAX);
+        assert_eq!(pad.axes[2], -input::AXIS_CURSO);
         assert_eq!(pad.axes[3], 0);
     }
 

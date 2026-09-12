@@ -30,9 +30,38 @@ testá-lo sem hardware nenhum.
 
 ### Eixos
 
-`X`, `Y`, `Z` e `RZ`, nas palavras 1, 2, 3 e 6 do `AEEHIDPositionInfo`. A faixa é de 16 bits com
-sinal: o descritor USB do controle está no dump, mas a parte do report que traria os limites veio
-como `** UNAVAILABLE **`, então adotamos o padrão de HID analógico.
+`X`, `Y`, `Z` e `RZ`, nas palavras 1, 2, 3 e 6 do `AEEHIDPositionInfo`. A faixa é de **um byte
+sem sinal, `0..=255`, com o repouso em 128**.
+
+Isso não é escolha: está escrito no jogo. O Zeebo F.C. Super League converte cada eixo assim, e
+o mesmo trecho está no Tênis, no Zeeboids e em todo título que usa essa camada do SDK:
+
+```text
+mvn   r0, #0x7f        ; r0 = -128
+sxtah r4, r0, r4       ; valor = (int16)eixo - 128
+```
+
+Ele subtrai 128 para achar o centro, então o centro do aparelho é 128 — e é também o que
+reportam os manches USB que o próprio `hid_devices.original.cfg` lista, o Logitech Dual Action e
+o RumblePad2. O descritor do controle do Zeebo está no dump, mas a parte do report que traria os
+limites veio como `** UNAVAILABLE **`; antes disso valia um palpite de 16 bits com sinal, e o
+palpite estava errado.
+
+**O sintoma de mandar zero era o boneco andando sozinho.** Zero não é o centro, é o batente: com
+o manche parado, todo jogo dessa camada lia `-128` nos quatro eixos e caminhava para um canto. O
+Zeeboids escapava por acidente — ele trata "os quatro eixos exatamente no mínimo" como "não há
+manche aqui" e zera tudo, que é uma defesa contra exatamente o que fazíamos.
+
+Pelo mesmo motivo, as vinte palavras de eixo que o controle **não** usa vão no centro, e não em
+zero: um jogo que leia uma delas encontra um eixo parado, não um encostado no batente. A palavra
+zero da struct continua zerada, porque ela não é eixo — é o `bRelativeAxes`.
+
+Dentro do emulador o eixo é guardado **centrado no zero** (`Pad::axes`, com curso `±128`), que é
+a forma com que o jogo trabalha depois daquela subtração. Quem traduz para a faixa do aparelho é
+o `IHIDDevice`, no único lugar em que o console é quem lê.
+
+O `Y` vai **invertido** em relação à biblioteca de controles: no HID o eixo vertical cresce para
+baixo, e cima é o valor baixo. O par da direita segue a mesma convenção.
 
 **O direcional e o manche são canais distintos.** Embora o descritor enumere `X` e `Y`, o
 direcional digital chega como botões `DPad_*`; o manche esquerdo alimenta `X` e `Y`. Não
@@ -43,19 +72,27 @@ Quem responde `GetAxesInfo` não devolve valores: devolve, em cada palavra, o **
 ocupa aquela palavra**. É assim que o jogo descobre onde está cada direção, e por isso a tabela
 de UIDs precisa estar certa — um UID errado não dá erro nenhum, o jogo só não acha o eixo.
 
-Os quatro UIDs são **transcrição literal** da entrada do controle do Zeebo
+Três dos quatro UIDs são **transcrição literal** da entrada do controle do Zeebo
 (`VID:0x1EAA:PID:0x0135`) no `hid_devices.original.cfg` do console:
 
 ```text
-AXIS:X:0x0106C40C
+AXIS:X:0x0106C40C      <- este não
 AXIS:Y:0x0106C4D1
 AXIS:Z:0x0106C4CE
 AXIS:RZ:0x0106C4CF
 ```
 
-O `X` valendo o UID do `Button_3` é esquisito, e a esquisitice é espelhada: o `BUTTON:3` da
-mesma entrada vale `0x0106C4D0`, que é UID de eixo. Parece uma troca no arquivo da TecToy — mas
-é o arquivo do console, e é o que os jogos viram quando foram feitos.
+O `X` do arquivo vale o UID do `Button_3`, e a troca é espelhada: o `BUTTON:3` da mesma entrada
+vale `0x0106C4D0`, que é o `LeftThumb_X` das outras entradas do próprio arquivo.
+
+**Desfazemos essa troca, e quem decidiu foi medida.** Com `0x0106C40C` no `X`, o manche não move
+esquerda e direita em jogo nenhum — o jogo varre a tabela do `GetAxesInfo` procurando UID de
+eixo, não acha nenhum para o `X` e nunca guarda o campo dele; `Y`, `Z` e `RZ` andam e só o
+horizontal fica morto. Com `0x0106C4D0`, o manche anda inteiro.
+
+Isto não contradiz a lição da seção seguinte. A pergunta ali era "quais são os UIDs do
+aparelho", e a fonte é o arquivo. A pergunta aqui é "o que o jogo procura na tabela", e a única
+fonte possível é o jogo.
 
 ### O conserto que não era
 
@@ -109,13 +146,15 @@ agirem juntos e nenhum deles sozinho. O valor analógico entra **depois** dos bo
 zona morta: assim ele acrescenta curso ao que o direcional escreveu, em vez de apagá-lo quando o
 manche está em repouso.
 
-`Y` vai invertido porque no console cima é o valor negativo e na biblioteca de controles cima é
-positivo. Errar esse sinal inverte o eixo vertical de todo jogo que o lê — tem teste.
+`Y` vai invertido porque no HID o eixo vertical cresce para baixo e na biblioteca de controles
+cima é positivo. Errar esse sinal inverte o eixo vertical de todo jogo que o lê — tem teste.
 
 ## Migração de configuração
 
 `Controls::adopt` ajusta um arquivo escrito por uma versão anterior: dá eixos a quem tem controle
-e ainda não os tinha, e tira o manche de cima dos botões do direcional.
+e ainda não os tinha, tira o manche de cima dos botões do direcional e devolve a inversão
+vertical a quem a perdeu — houve uma versão que salvou os quatro eixos retos, e o padrão voltar
+ao certo não conserta um arquivo já gravado.
 
 Existe porque **o padrão de um campo novo nem sempre é o vazio**. Sem isso, quem já tinha um
 controle configurado ficava com os manches mudos e não teria como adivinhar o motivo.
