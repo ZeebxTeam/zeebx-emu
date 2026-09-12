@@ -94,13 +94,29 @@ impl Pintor {
             // Cada linha tem `largura * 2` bytes: o alinhamento padrão de quatro só valeria com
             // largura par, e um quadro de largura ímpar sairia enviesado.
             gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 2);
-            gl.tex_image_2d(
+            // **A storage é alocada uma vez, e cada quadro só troca o conteúdo.** Chamar
+            // `tex_image_2d` a cada quadro realoca a textura inteira na placa — é o tropeço que
+            // o zeebulator documenta, e era o que estava aqui.
+            if self.medida != (largura, altura) {
+                gl.tex_image_2d(
+                    glow::TEXTURE_2D,
+                    0,
+                    glow::RGB as i32,
+                    largura,
+                    altura,
+                    0,
+                    glow::RGB,
+                    glow::UNSIGNED_SHORT_5_6_5,
+                    glow::PixelUnpackData::Slice(None),
+                );
+            }
+            gl.tex_sub_image_2d(
                 glow::TEXTURE_2D,
                 0,
-                glow::RGB as i32,
+                0,
+                0,
                 largura,
                 altura,
-                0,
                 glow::RGB,
                 glow::UNSIGNED_SHORT_5_6_5,
                 glow::PixelUnpackData::Slice(Some(bytes)),
