@@ -5,6 +5,7 @@
 //! execução, e o [`Session::step`] já devolve o controle sozinho a cada fatia de tempo real,
 //! que é o que mantém a janela viva enquanto o jogo corre.
 
+pub mod gpu;
 pub mod i18n;
 pub mod library;
 pub mod saves;
@@ -150,6 +151,16 @@ pub struct App {
     art_cache: HashMap<PathBuf, Option<egui::TextureHandle>>,
     /// A imagem que representa quem não tem nenhuma.
     placeholder: Option<crate::video::icon::Image>,
+    /// O contexto de GL da janela, quando o `eframe` consegue um.
+    ///
+    /// Guardá-lo é o que permite pintar o quadro do console com GL do host em vez de mandá-lo
+    /// como textura do egui. Sem ele — e o `eframe` admite não ter —, vale o caminho antigo.
+    gl: Option<std::sync::Arc<eframe::glow::Context>>,
+    /// O pintor de GL, montado na primeira vez que a janela do jogo desenha.
+    ///
+    /// Vive atrás de um `Mutex` porque o `egui_glow` exige um retorno de chamada `Sync`, e é
+    /// dentro dele que a textura é atualizada.
+    pintor: std::sync::Arc<std::sync::Mutex<Option<gpu::Pintor>>>,
 }
 
 /// O desenho do controle já na placa de vídeo.
@@ -217,6 +228,8 @@ impl App {
             placeholder: crate::video::icon::decode(PLACEHOLDER)
                 .inspect_err(|err| eprintln!("imagem reserva: {err}"))
                 .ok(),
+            gl: context.gl.clone(),
+            pintor: Default::default(),
         }
     }
 
@@ -1527,7 +1540,16 @@ impl App {
         }
 
         let smooth = self.settings.graphics.smooth;
-        upload(ctx, &mut self.frame, session.screen(), smooth);
+        // O quadro em RGB565, do jeito que a superfície do console o guarda: é o que o pintor
+        // de GL sobe direto para a placa.
+        let quadro_largura = session.screen().width() as i32;
+        let quadro_altura = session.screen().height() as i32;
+        let quadro_bytes = session.screen().to_rgb565_bytes();
+        // Com GL não há por que converter o mesmo quadro de novo para textura do egui: seriam
+        // duas conversões por repaint, e só uma delas iria para a tela.
+        if self.gl.is_none() {
+            upload(ctx, &mut self.frame, session.screen(), smooth);
+        }
         // O que vai na tela sai da sessão agora, antes de desenhar: o empréstimo do jogo não
         // pode atravessar os fechos da interface, que precisam do `self` inteiro.
         //
@@ -1592,14 +1614,58 @@ impl App {
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(egui::Color32::BLACK))
             .show(ctx, |ui| {
-                let Some(texture) = &self.frame else {
-                    return;
-                };
                 let size = placement(
                     ui.available_size(),
                     self.settings.graphics.scaling,
                     self.settings.graphics.keep_aspect,
                 );
+                // Com contexto de GL, o quadro vai para a placa em RGB565 e é ela que amplia.
+                // Sem ele, vale a textura do egui — que é o caminho de sempre.
+                if let Some(gl_ctx) = self.gl.clone() {
+                    let pintor = self.pintor.clone();
+                    let suave = self.settings.graphics.smooth;
+                    let (largura, altura) = (quadro_largura, quadro_altura);
+                    let bytes = quadro_bytes.clone();
+                    let rect = ui.centered_and_justified(|ui| {
+                        ui.allocate_exact_size(size, egui::Sense::hover()).0
+                    });
+                    let rect = rect.inner;
+                    ui.painter().add(egui::PaintCallback {
+                        rect,
+                        callback: std::sync::Arc::new(eframe::egui_glow::CallbackFn::new(
+                            move |info, painter| {
+                                let mut guarda = match pintor.lock() {
+                                    Ok(guarda) => guarda,
+                                    Err(_) => return,
+                                };
+                                if guarda.is_none() {
+                                    match gpu::Pintor::novo(painter.gl()) {
+                                        Ok(novo) => *guarda = Some(novo),
+                                        Err(erro) => {
+                                            eprintln!("pintor de GL: {erro}");
+                                            return;
+                                        }
+                                    }
+                                }
+                                if let Some(pintor) = guarda.as_mut() {
+                                    pintor.desenha(
+                                        painter.gl(),
+                                        &bytes,
+                                        largura,
+                                        altura,
+                                        &info.viewport_in_pixels(),
+                                        suave,
+                                    );
+                                }
+                            },
+                        )),
+                    });
+                    let _ = gl_ctx;
+                    return;
+                }
+                let Some(texture) = &self.frame else {
+                    return;
+                };
                 ui.centered_and_justified(|ui| {
                     ui.add(egui::Image::new(texture).fit_to_exact_size(size));
                 });
@@ -1633,6 +1699,20 @@ impl App {
 }
 
 impl eframe::App for App {
+    /// Devolve à placa o que o pintor criou.
+    ///
+    /// O contexto só existe enquanto a janela existe: soltar depois seria mexer num contexto
+    /// morto, e não soltar deixa programa e textura vivos até o processo acabar. O `eframe`
+    /// chama isto com o contexto ainda de pé, que é a única hora em que dá para fazer certo.
+    fn on_exit(&mut self, gl: Option<&eframe::glow::Context>) {
+        let (Some(gl), Ok(mut guarda)) = (gl, self.pintor.lock()) else {
+            return;
+        };
+        if let Some(pintor) = guarda.take() {
+            pintor.solta(gl);
+        }
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // A janela principal é só a biblioteca. As configurações e o jogo são janelas do
         // sistema, cada uma com o seu título e o seu botão de fechar.
