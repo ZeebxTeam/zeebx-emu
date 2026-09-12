@@ -39,3 +39,4 @@ vendor/
 *.log
 *.bmp
 .nodeterm/project.json
+ref z-wheel2.png

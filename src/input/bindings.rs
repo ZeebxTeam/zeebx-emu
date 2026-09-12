@@ -296,16 +296,13 @@ impl Player {
                 pad.press(index, true);
             }
         }
-        // O direcional **não** escreve nos eixos. Isto já foi feito aqui, e era uma segunda
-        // cópia do mesmo espelhamento que o `Pad::press` fazia: tirar de lá consertou o caminho
-        // sem janela e deixou a interface intacta, porque é por aqui que ela monta o controle.
+        // Quem escreve o eixo do direcional é o [`Pad::press`] acima — este laço é só do
+        // analógico, e ele entra **depois**, de propósito: com o manche fora da zona morta é ele
+        // que vale, e com o manche no centro o valor do direcional sobrevive.
         //
-        // O motivo de não fazer está medido no Zeeboids. O menu dele anda uma casa por toque
-        // quando o direcional é só botão, e volta para a opção anterior quando também é eixo —
-        // soltar a direção manda o eixo de volta ao centro, e essa volta é uma segunda mudança,
-        // que o jogo lê como um passo no sentido contrário.
-        //
-        // O analógico continua entrando, e só quando está fora do centro.
+        // O risco conhecido é o dobro: o Zeeboids consulta os dois canais a cada volta e, com o
+        // direcional nos dois, o passo pode ser desfeito quando a direção é solta. Está medido
+        // na nota do `Pad::press`.
         for (index, name) in input::AXIS_NAMES.iter().enumerate() {
             let Some(source) = self.axes.get(*name) else {
                 continue;
@@ -459,21 +456,17 @@ mod tests {
     }
 
     #[test]
-    fn o_direcional_nao_sai_pelos_eixos() {
-        // Ele é botão, e só. Enquanto era os dois, um jogo que lê os dois canais andava duas
-        // casas por toque: soltar a direção devolve o eixo ao centro, e essa volta é uma
-        // segunda mudança, que o jogo lê como um passo no sentido contrário.
-        //
-        // Este teste é a segunda metade de um conserto. A primeira tirou o espelhamento do
-        // `Pad::press`, e a interface continuou errada porque a cópia daqui ficou — é por aqui
-        // que ela monta o controle, e o caminho sem janela não passa por aqui.
+    fn o_direcional_sai_pelos_dois_canais() {
+        // Botão **e** eixo, que é como o arquivo do console descreve o direcional. Ver a nota do
+        // `Pad::press`: há jogo que só escuta mudança de eixo, e sem isto ele nunca vê a direção.
         let player = Player::default();
         let direita = Pad::button_by_name("right").unwrap();
         let pad = player.pad(|s| *s == Source::key("ArrowRight"), |_| None);
         assert!(pad.is_down(direita));
-        assert_eq!(pad.axes, [0; 4]);
+        assert_eq!(pad.axes[0], input::AXIS_MAX);
         let pad = player.pad(|s| *s == Source::key("ArrowUp"), |_| None);
-        assert_eq!(pad.axes, [0; 4]);
+        assert_eq!(pad.axes[1], input::AXIS_MIN, "cima é o negativo");
+        // Sem direção nenhuma, os quatro eixos ficam no centro.
         assert_eq!(player.pad(|_| false, |_| None).axes, [0; 4]);
     }
 
@@ -554,11 +547,10 @@ mod tests {
     fn o_analogico_em_repouso_deixa_o_eixo_no_centro() {
         // A zona morta existe para que um manche que não volta exatamente ao centro não deixe
         // o eixo tremendo, e o jogo não veja o controle andando sozinho.
+        // Sem tocar no direcional, para que o que se mede aqui seja só a zona morta: o eixo do
+        // direcional agora entra pelo `Pad::press` e mascararia o valor do manche.
         let player = Player::with_gamepad("Meu Controle".into());
-        let pad = player.pad(
-            |source| *source == Source::key("ArrowRight"),
-            |_| Some(0.05),
-        );
+        let pad = player.pad(|_| false, |_| Some(0.05));
         assert_eq!(pad.axes[0], 0);
     }
 
@@ -566,9 +558,11 @@ mod tests {
     fn sem_controle_os_eixos_ficam_no_centro() {
         // O teclado não tem analógico, e o mapeamento de teclado não mapeia eixo nenhum: nem o
         // valor devolvido pelo analógico chega aos eixos, porque não há origem ligada a eles.
+        // O aperto vai num botão que não é direção: o direcional escreveria o eixo dele, e o
+        // que se quer medir é que o valor do analógico não chega a eixo nenhum.
         let player = Player::default();
         assert!(player.axes.is_empty());
-        let pad = player.pad(|s| *s == Source::key("ArrowLeft"), |_| Some(1.0));
+        let pad = player.pad(|s| *s == Source::key("Enter"), |_| Some(1.0));
         assert_eq!(pad.axes, [0; 4]);
     }
 

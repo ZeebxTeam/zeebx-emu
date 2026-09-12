@@ -74,6 +74,10 @@ pub mod avk {
             "left" => LEFT,
             "right" => RIGHT,
             "select" | "ok" => SELECT,
+            // Os dois que giram a roda da Z-Wheel. Terem nome é o que deixa um roteiro de
+            // teste legível: `--teclas=31000:roda-seguinte` diz o que `0xe034` não diz.
+            "roda-anterior" => RODA_ANTERIOR,
+            "roda-seguinte" => RODA_SEGUINTE,
             "star" => STAR,
             "pound" => POUND,
             "clr" => CLR,
@@ -195,26 +199,44 @@ impl Pad {
         self.buttons & (1 << index) != 0
     }
 
-    /// Aperta ou solta um botão.
+    /// Aperta ou solta um botão, e **o direcional move os eixos junto** — como o console reporta.
     ///
-    /// O direcional **não** mexe nos eixos, e isto já foi diferente. Espelhá-lo nos dois canais
-    /// quebrava todo jogo que lê os dois: o Zeeboids consulta `GetNextButtonEvent` e
-    /// `GetPositionState` toda volta, e andava duas casas por toque.
+    /// O `hid_devices.original.cfg` traz o direcional do Zeebo como os eixos `X` e `Y`, e há jogo
+    /// que **só** escuta eixo: a Z-Wheel registra um `RegisterForPositionChange` e nunca consulta
+    /// estado nenhum. Sem mudança de eixo ela não fica sabendo que a direção foi apertada, e era
+    /// por isso que a roda dela só girava por um remendo na interface, que traduzia esquerda e
+    /// direita em `AVK_3` e `AVK_4`. Tecla é difundida a todos os tratadores, então aquele
+    /// remendo girava a roda de cima e a barra de baixo ao mesmo tempo.
     ///
-    /// Tirar o direcional dos botões e deixá-lo só nos eixos, que foi a primeira tentativa,
-    /// piorou — e o motivo é o que fecha a questão. Um eixo tem de voltar ao centro quando se
-    /// solta a direção, e essa volta é uma segunda mudança de eixo: o jogo lê o `MAX -> 0` como
-    /// um passo no sentido contrário e desfaz o que acabou de fazer. Um direcional digital não
-    /// tem como ser um eixo sem esse efeito.
+    /// Os quatro sentidos **seguem** sendo botões também, porque é como o Quake os lê — com os
+    /// UIDs presentes o menu dele anda, e sem eles o cursor não sai do lugar.
     ///
-    /// Os eixos continuam existindo e são de quem tem manche de verdade — o `bindings.rs` liga
-    /// o analógico do controle de PC neles, sem passar por aqui.
+    /// **O risco conhecido é o dobro.** Espelhar nos dois canais já falhou uma vez: o Zeeboids
+    /// consulta `GetNextButtonEvent` e `GetPositionState` a cada volta, e andava duas casas por
+    /// toque. A escolha aqui é a do arquivo do console; quem mexer nisto revalida jogo por jogo.
     pub fn press(&mut self, index: usize, down: bool) {
         let bit = 1 << index;
         if down {
             self.buttons |= bit;
         } else {
             self.buttons &= !bit;
+        }
+        if DPAD.contains(&index) {
+            let [cima, baixo, esquerda, direita] = DPAD;
+            self.axes[0] = self.eixo_do_direcional(esquerda, direita);
+            self.axes[1] = self.eixo_do_direcional(cima, baixo);
+        }
+    }
+
+    /// O valor de um eixo a partir do par de sentidos do direcional.
+    ///
+    /// **Cima é o negativo no console** — a mesma razão pela qual o `bindings.rs` inverte o `Y`
+    /// do manche. Os dois sentidos apertados juntos, ou nenhum, dão o centro.
+    fn eixo_do_direcional(&self, menos: usize, mais: usize) -> i32 {
+        match (self.is_down(menos), self.is_down(mais)) {
+            (true, false) => AXIS_MIN,
+            (false, true) => AXIS_MAX,
+            _ => 0,
         }
     }
 
@@ -360,6 +382,22 @@ fn eixo_por_nome(nome: &str) -> Option<(usize, i32)> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// Os índices de [`DPAD`] são escritos à mão; este teste impede que eles e [`BUTTON_NAMES`]
+    /// se separem sem ninguém notar.
+    #[test]
+    fn os_indices_do_direcional_batem_com_os_nomes() {
+        let [cima, baixo, esquerda, direita] = DPAD;
+        for (indice, nome) in [
+            (cima, "up"),
+            (baixo, "down"),
+            (esquerda, "left"),
+            (direita, "right"),
+        ] {
+            assert_eq!(BUTTON_NAMES[indice], nome, "índice {indice}");
+        }
+    }
 
     /// O código cru serve para descobrir tecla; os nomes continuam valendo.
     #[test]
@@ -370,7 +408,20 @@ mod tests {
         assert_eq!(avk::por_nome("clr"), Some(avk::CLR));
         assert_eq!(avk::por_nome("0xzz"), None);
     }
-    use super::*;
+
+    /// Os dígitos `3` e `4` são o que gira a roda da Z-Wheel.
+    ///
+    /// Fica pinado num teste porque é a única coisa que liga [`avk::RODA_ANTERIOR`] e
+    /// [`avk::RODA_SEGUINTE`] ao caminho que os produz: o direcional saiu da tradução de teclas
+    /// — ele move os eixos, como o console reporta —, e quem manda esses dois códigos agora é o
+    /// teclado, pelos dígitos.
+    #[test]
+    fn os_digitos_tres_e_quatro_sao_os_da_roda() {
+        assert_eq!(avk::por_nome("3"), Some(avk::RODA_ANTERIOR));
+        assert_eq!(avk::por_nome("4"), Some(avk::RODA_SEGUINTE));
+        assert_eq!(avk::por_nome("roda-anterior"), Some(avk::RODA_ANTERIOR));
+        assert_eq!(avk::por_nome("roda-seguinte"), Some(avk::RODA_SEGUINTE));
+    }
 
     #[test]
     fn o_botao_home_e_o_back_por_outro_nome() {
@@ -386,16 +437,21 @@ mod tests {
         let [up, down, left, right] = DPAD;
         let mut pad = Pad::default();
 
-        // O direcional é botão, e só. Se ele também escrevesse nos eixos, soltar a direção
-        // mandaria o eixo de volta ao centro e um jogo que lê os dois canais desfaria o passo
-        // que acabou de dar — era o menu do Zeeboids voltando para a opção anterior.
+        // **Os dois canais**, que é como o `hid_devices.original.cfg` do console descreve o
+        // direcional: os jogos que o leem como botão continuam lendo, e os que só escutam
+        // mudança de eixo — a Z-Wheel registra `RegisterForPositionChange` e nunca consulta
+        // nada — passam a enxergar a direção.
         pad.press(left, true);
-        assert!(pad.is_down(left));
-        assert_eq!(pad.axes, [0; 4]);
-        pad.press(up, true);
-        pad.press(down, true);
+        assert!(pad.is_down(left), "segue sendo botão");
+        assert_eq!(pad.axes[0], AXIS_MIN, "esquerda é o negativo do X");
         pad.press(left, false);
-        assert_eq!(pad.axes, [0; 4]);
+        assert_eq!(pad.axes[0], 0, "soltar devolve o eixo ao centro");
+
+        // Cima é o negativo no console, e os dois sentidos juntos dão o centro.
+        pad.press(up, true);
+        assert_eq!(pad.axes[1], AXIS_MIN);
+        pad.press(down, true);
+        assert_eq!(pad.axes[1], 0);
 
         // E o manche de verdade continua chegando aos eixos, sem passar pelos botões.
         pad.set_axis(0, AXIS_MAX);

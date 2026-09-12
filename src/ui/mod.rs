@@ -1436,13 +1436,14 @@ impl App {
         keys
     }
 
-    /// As teclas que o direcional do controle manda, comparando com o quadro anterior.
+    /// As teclas que o controle manda, comparando com o quadro anterior.
+    ///
+    /// **Esquerda e direita saíram daqui.** Elas traduziam o direcional em `AVK_3` e `AVK_4`, que
+    /// é o que a roda da Z-Wheel escuta — mas tecla vai a todos os tratadores da tela, e o
+    /// resultado era a roda de cima e a barra de baixo girando juntas. O direcional agora move os
+    /// eixos em [`Pad::press`], como o console reporta, e quem decide o que gira é o jogo.
     fn teclas_do_controle(antes: &Pad, agora: &Pad) -> Vec<(u32, bool)> {
-        const DE_BOTAO: [(&str, u32); 3] = [
-            ("left", input::avk::RODA_ANTERIOR),
-            ("right", input::avk::RODA_SEGUINTE),
-            ("b1", input::avk::CONFIRMA),
-        ];
+        const DE_BOTAO: [(&str, u32); 1] = [("b1", input::avk::CONFIRMA)];
 
         let mut teclas = Vec::new();
         for (nome, avk) in DE_BOTAO {
@@ -1464,11 +1465,11 @@ impl App {
         Some(match key {
             ArrowUp => input::avk::UP,
             ArrowDown => input::avk::DOWN,
-            // Medidas na Z-Wheel: ver [`input::avk::RODA_ANTERIOR`]. Os dígitos continuam
-            // valendo, então `3` e `4` seguem girando a roda como sempre — as setas passam a
-            // fazer o mesmo, que é o que se espera de uma seta.
-            ArrowLeft => input::avk::RODA_ANTERIOR,
-            ArrowRight => input::avk::RODA_SEGUINTE,
+            // As quatro setas mandam os quatro sentidos, que é o que um teclado manda no BREW.
+            // Girar a roda da Z-Wheel é dos dígitos `3` e `4` — ver
+            // [`input::avk::RODA_ANTERIOR`] —, e eles continuam mapeados abaixo.
+            ArrowLeft => input::avk::LEFT,
+            ArrowRight => input::avk::RIGHT,
             Enter | Space => input::avk::CONFIRMA,
             Backspace | Delete => input::avk::CLR,
             Num0 | Num1 | Num2 | Num3 | Num4 | Num5 | Num6 | Num7 | Num8 | Num9 => {
@@ -2031,14 +2032,16 @@ mod tests {
     #[test]
     fn teclado_e_controle_compartilham_um_aperto() {
         use std::collections::HashSet;
+        // O `b1` do controle e o `Enter` do teclado mandam o mesmo `CONFIRMA`: é o par que
+        // compartilha um comando depois de o direcional ter saído da tradução.
         let mut pad = Pad::default();
-        pad.press(Pad::button_by_name("right").unwrap(), true);
-        let keyboard = HashSet::from([egui::Key::ArrowRight, egui::Key::Num4]);
+        pad.press(Pad::button_by_name("b1").unwrap(), true);
+        let keyboard = HashSet::from([egui::Key::Enter]);
         let mut delivered = HashSet::new();
         let active = App::avks_ativos(&keyboard, &[pad]);
         assert_eq!(
             App::transicoes_de_teclas(&mut delivered, active.clone()),
-            vec![(crate::input::avk::RODA_SEGUINTE, true)]
+            vec![(crate::input::avk::CONFIRMA, true)]
         );
         assert!(App::transicoes_de_teclas(&mut delivered, active).is_empty());
         // Soltar o teclado não solta um comando ainda mantido pelo controle.
@@ -2046,28 +2049,41 @@ mod tests {
         assert!(App::transicoes_de_teclas(&mut delivered, active).is_empty());
         assert_eq!(
             App::transicoes_de_teclas(&mut delivered, HashSet::new()),
-            vec![(crate::input::avk::RODA_SEGUINTE, false)]
+            vec![(crate::input::avk::CONFIRMA, false)]
         );
     }
 
     /// Só a transição vira tecla: segurar o direcional não repete.
     #[test]
-    fn o_direcional_manda_tecla_uma_vez() {
+    fn o_botao_de_confirmar_manda_tecla_uma_vez() {
         let mut antes = Pad::default();
         let mut agora = Pad::default();
-        let direita = Pad::button_by_name("right").unwrap();
-        agora.press(direita, true);
+        let b1 = Pad::button_by_name("b1").unwrap();
+        agora.press(b1, true);
         assert_eq!(
             App::teclas_do_controle(&antes, &agora),
-            vec![(crate::input::avk::RODA_SEGUINTE, true)]
+            vec![(crate::input::avk::CONFIRMA, true)]
         );
         antes = agora;
         assert!(App::teclas_do_controle(&antes, &agora).is_empty());
-        agora.press(direita, false);
+        agora.press(b1, false);
         assert_eq!(
             App::teclas_do_controle(&antes, &agora),
-            vec![(crate::input::avk::RODA_SEGUINTE, false)]
+            vec![(crate::input::avk::CONFIRMA, false)]
         );
+    }
+
+    /// **O direcional não manda tecla.** Ele move os eixos, em [`Pad::press`], como o console
+    /// reporta. Traduzi-lo em `AVK_3`/`AVK_4` aqui era o que fazia a roda de cima e a barra de
+    /// baixo da Z-Wheel girarem juntas, porque tecla vai a todos os tratadores da tela.
+    #[test]
+    fn o_direcional_nao_manda_tecla() {
+        let antes = Pad::default();
+        let mut agora = Pad::default();
+        for nome in ["left", "right", "up", "down"] {
+            agora.press(Pad::button_by_name(nome).unwrap(), true);
+        }
+        assert!(App::teclas_do_controle(&antes, &agora).is_empty());
     }
 
     /// Os dígitos saem da ordem do `egui::Key`, e do `AVK_0` em diante. As duas listas são
