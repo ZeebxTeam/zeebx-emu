@@ -7,6 +7,7 @@
 //! parada que devolve o controle ao despachante Rust.
 
 use std::cell::{Cell, RefCell};
+use std::collections::BTreeSet;
 use std::mem::size_of;
 use std::rc::Rc;
 
@@ -24,6 +25,9 @@ const MODO_USUARIO: u32 = 0x10;
 /// Limite defensivo da string recebida por `SYS_WRITE0`. É o mesmo contrato do backend
 /// Unicorn: uma string sem terminador não pode prender o host em uma leitura sem fim.
 const MAX_SEMIHOSTING_STRING: u32 = 4096;
+
+/// Granularidade que o Dynarmic usa para indexar código recompilado.
+const PAGE: u32 = 4096;
 
 /// O que uma callback pediu que `run` devolva. O Dynarmic recebe os acessos de memória dentro
 /// do bloco recompilado; guardar o motivo aqui preserva a distinção entre API, retorno e falha.
@@ -43,6 +47,11 @@ enum Parada {
 struct Estado {
     memoria: Rc<RefCell<GuestMemory>>,
     semihosting: Rc<RefCell<String>>,
+    /// Só uma escrita em memória que já foi buscada como código pode invalidar um bloco JIT.
+    /// Isto exclui os milhões de escritas nos buffers RGB565.
+    paginas_executadas: RefCell<BTreeSet<u32>>,
+    /// Invalidações pedidas pelo ARM durante o bloco em execução; são aplicadas após `run`.
+    codigo_sujo: RefCell<BTreeSet<u32>>,
     instrucoes: Cell<u64>,
     limite: Cell<u64>,
     parada: Cell<Parada>,
@@ -75,7 +84,22 @@ impl Estado {
     }
 
     fn escreve(&self, addr: u32, bytes: &[u8]) -> bool {
-        self.memoria.borrow_mut().write(addr, bytes).is_ok()
+        if self.memoria.borrow_mut().write(addr, bytes).is_err() {
+            return false;
+        }
+        self.marca_codigo_sujo(addr, bytes.len() as u32);
+        true
+    }
+
+    fn marca_codigo_sujo(&self, addr: u32, len: u32) {
+        let fim = addr.saturating_add(len.saturating_sub(1));
+        let executadas = self.paginas_executadas.borrow();
+        let mut sujas = self.codigo_sujo.borrow_mut();
+        for pagina in (addr / PAGE)..=(fim / PAGE) {
+            if executadas.contains(&pagina) {
+                sujas.insert(pagina);
+            }
+        }
     }
 }
 
@@ -83,6 +107,7 @@ impl Callbacks for Estado {
     fn memory_read_code(cb: &CallbackImpl<Self>, addr: VAddr) -> Option<u32> {
         let mut bytes = [0; 4];
         if cb.le(addr, &mut bytes) {
+            cb.paginas_executadas.borrow_mut().insert(addr / PAGE);
             Some(u32::from_le_bytes(bytes))
         } else {
             Self::para(cb, Parada::Fetch(addr));
@@ -224,11 +249,22 @@ impl DynarmicCpu {
         }
     }
 
-    /// A interface de diagnóstico chama este método nos dois núcleos. Ainda não há suporte a
-    /// semihosting no JIT; devolver vazio preserva o contrato de "nenhuma linha recebida" sem
-    /// inventar uma mensagem que o guest não emitiu.
+    /// A interface de diagnóstico chama este método nos dois núcleos.
     pub fn semihosting(&self) -> String {
         self.semihosting.borrow().clone()
+    }
+
+    /// A API host também escreve memória do guest, sempre entre duas entradas no JIT. Caso ela
+    /// altere uma página que já foi executada, o próximo bloco deve ser recompilado.
+    fn invalida_codigo_escrito(&mut self, addr: u32, len: u32) {
+        let Ok(jit) = self.jit_mut() else {
+            return;
+        };
+        jit.marca_codigo_sujo(addr, len);
+        let paginas = std::mem::take(&mut *jit.codigo_sujo.borrow_mut());
+        for pagina in paginas {
+            jit.invalidate_cache_range(pagina * PAGE, PAGE as usize);
+        }
     }
 }
 
@@ -253,6 +289,8 @@ impl CpuBackend for DynarmicCpu {
         let estado = Estado {
             memoria: self.memoria.clone(),
             semihosting: self.semihosting.clone(),
+            paginas_executadas: Default::default(),
+            codigo_sujo: Default::default(),
             instrucoes: Cell::new(0),
             limite: Cell::new(0),
             parada: Cell::new(Parada::Nenhuma),
@@ -295,7 +333,9 @@ impl CpuBackend for DynarmicCpu {
         self.memoria
             .borrow_mut()
             .write(addr, data)
-            .map_err(|e| CpuError(e.to_string()))
+            .map_err(|e| CpuError(e.to_string()))?;
+        self.invalida_codigo_escrito(addr, data.len() as u32);
+        Ok(())
     }
 
     fn run(&mut self, pc: u32, max_instructions: u64) -> Result<StopReason, CpuError> {
@@ -309,6 +349,12 @@ impl CpuBackend for DynarmicCpu {
         jit.limite
             .set(jit.instrucoes.get().saturating_add(max_instructions));
         let _ = unsafe { jit.run() };
+        // Não há invalidação para páginas de dados: só código previamente executado chega aqui.
+        // É seguro mexer no cache depois de o JIT devolver o controle, nunca da callback.
+        let paginas = std::mem::take(&mut *jit.codigo_sujo.borrow_mut());
+        for pagina in paginas {
+            jit.invalidate_cache_range(pagina * PAGE, PAGE as usize);
+        }
         match jit.parada.get() {
             Parada::Nenhuma => Ok(StopReason::Budget),
             Parada::Fetch(addr) if addr == RETURN_MAGIC => Ok(StopReason::Returned),
@@ -335,7 +381,9 @@ mod tests {
         let mut mem = GuestMemory::new();
         let mut bytes = code.to_vec();
         bytes.resize(0x1000, 0);
-        mem.map("code", 0, bytes, false).unwrap();
+        // A imagem dos módulos do Zeebo é gravável: extensões podem montar pequenas rotinas ou
+        // tabelas em RAM. Deixar o código do teste gravável permite conferir a invalidação JIT.
+        mem.map("code", 0, bytes, true).unwrap();
         mem.map_zeroed("data", 0x1000, 0x1000).unwrap();
         mem.map_zeroed("stack", 0x2000_0000, 0x1000).unwrap();
         let mut cpu = DynarmicCpu::new().unwrap();
@@ -382,5 +430,22 @@ mod tests {
         assert_eq!(cpu.run(0, 10).unwrap(), StopReason::Returned);
         assert_eq!(cpu.semihosting(), "Z");
         assert_eq!(cpu.read_reg(Reg::R0), 0);
+    }
+
+    #[test]
+    fn codigo_alterado_pelo_host_e_recompilado() {
+        let mut cpu = cpu_with(
+            &[0xe3a0_0001u32.to_le_bytes(), 0xe12f_ff1eu32.to_le_bytes()].concat(),
+        );
+        cpu.write_reg(Reg::Lr, RETURN_MAGIC);
+        assert_eq!(cpu.run(0, 10).unwrap(), StopReason::Returned);
+        assert_eq!(cpu.read_reg(Reg::R0), 1);
+
+        // É o equivalente a uma API BREW atualizar uma tabela/rotina do módulo entre duas
+        // chamadas. Sem `invalidate_cache_range`, o Dynarmic reutilizaria o `mov r0,#1`.
+        cpu.write_mem(0, &0xe3a0_0002u32.to_le_bytes()).unwrap();
+        cpu.write_reg(Reg::Lr, RETURN_MAGIC);
+        assert_eq!(cpu.run(0, 10).unwrap(), StopReason::Returned);
+        assert_eq!(cpu.read_reg(Reg::R0), 2);
     }
 }

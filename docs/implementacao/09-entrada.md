@@ -34,8 +34,10 @@ testá-lo sem hardware nenhum.
 sinal: o descritor USB do controle está no dump, mas a parte do report que traria os limites veio
 como `** UNAVAILABLE **`, então adotamos o padrão de HID analógico.
 
-**O direcional é reportado como `X` e `Y`** — é o que o arquivo do console diz. Por isso apertar
-o direcional mexe nos eixos, e não o contrário.
+**O direcional e o manche são canais distintos.** Embora o descritor enumere `X` e `Y`, o
+direcional digital chega como botões `DPad_*`; o manche esquerdo alimenta `X` e `Y`. Não
+espelhamos um no outro: soltar uma seta enviaria uma falsa variação analógica de retorno ao
+centro, e jogos que usam variação em vez de estado passariam a navegar duas vezes.
 
 Quem responde `GetAxesInfo` não devolve valores: devolve, em cada palavra, o **UID do eixo que
 ocupa aquela palavra**. É assim que o jogo descobre onde está cada direção, e por isso a tabela

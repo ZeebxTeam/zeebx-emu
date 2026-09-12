@@ -212,7 +212,19 @@ fn main() -> ExitCode {
                 .and_then(|n| n.parse::<u32>().ok())
                 .unwrap_or(DEFAULT_SECONDS);
             let dump = args.iter().find_map(|a| a.strip_prefix("--dump="));
-            report(bench_dynarmic(&args[1], seconds, dump))
+            let keys = match args
+                .iter()
+                .find_map(|a| a.strip_prefix("--keys="))
+                .map(input::Script::parse)
+                .transpose()
+            {
+                Ok(keys) => keys.unwrap_or_default(),
+                Err(err) => {
+                    eprintln!("erro: {err}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            report(bench_dynarmic(&args[1], seconds, dump, &keys))
         }
         // Sem argumento nenhum, o que se quer é o emulador, não a ajuda.
         None => launch(),
@@ -229,7 +241,7 @@ fn main() -> ExitCode {
                              [--sem-rede] [--servidor=MAQUINA[:PORTA]] [--ponte]
                              [--portas=controle|teclado|nenhum,...] [--teclas=ms:nome,...]"
             );
-            eprintln!("     zeebx bench <arquivo.mod|zip> [--seconds=N] [--dump=QUADRO.bmp]  (Dynarmic, sem janela)");
+            eprintln!("     zeebx bench <arquivo.mod|zip> [--seconds=N] [--keys=ms:tecla,...] [--dump=QUADRO.bmp]  (Dynarmic, sem janela)");
             ExitCode::FAILURE
         }
     }
@@ -835,6 +847,7 @@ fn bench_dynarmic(
     path: &str,
     seconds: u32,
     dump: Option<&str>,
+    keys: &input::Script,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let extracted;
     let path = match std::path::Path::new(path)
@@ -871,7 +884,10 @@ fn bench_dynarmic(
     let base_instructions = machine.instructions();
     let until = base_clock.saturating_add(seconds.saturating_mul(1000));
     let mut turns = 0u64;
+    let mut pad = input::Pad::default();
     while machine.clock_ms() < until && !machine.is_idle() {
+        keys.apply(machine.clock_ms(), &mut pad);
+        machine.set_pad(pad);
         let outcomes = machine.advance(INSTRUCTION_BUDGET)?;
         machine.deliver_signals(INSTRUCTION_BUDGET)?;
         machine.deliver_callbacks(INSTRUCTION_BUDGET)?;
@@ -890,6 +906,17 @@ fn bench_dynarmic(
     println!("tempo:     {virtual_ms} ms virtuais em {:.3} s reais ({ratio:.1}% da velocidade)", elapsed.as_secs_f64());
     println!("cpu:       {} milhões de instruções ({:.1} MIPS)", instructions / 1_000_000, instructions as f64 / elapsed.as_secs_f64().max(f64::MIN_POSITIVE) / 1_000_000.0);
     println!("laço:      {turns} voltas, {} timer(s), {} quadro(s) GL", machine.armed_timers(), machine.gl_swaps());
+    let media: Vec<_> = machine
+        .call_log()
+        .into_iter()
+        .filter(|(name, _)| name.starts_with("IMedia::"))
+        .collect();
+    if !media.is_empty() {
+        println!("mídia:");
+        for (name, count) in media {
+            println!("  {count:>4}x {name}");
+        }
+    }
     if let Some(path) = dump {
         std::fs::write(path, machine.screen().to_bmp())?;
         println!("quadro:    {path}");
