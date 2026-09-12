@@ -592,6 +592,14 @@ impl App {
     /// direcional que fica aceso sem ninguém encostar no controle mostra na hora um problema
     /// que a lista de texto esconderia.
     fn controller_view(&mut self, ui: &mut egui::Ui) -> Option<String> {
+        // **O gilrs só atualiza o estado quando a fila de eventos é drenada**, e aqui isso não
+        // acontecia: o `poll` estava só no botão de procurar controles. O desenho ficava apagado
+        // por mais que se apertasse, e o jogo — que consulta a cada quadro — era o único lugar
+        // onde acender funcionava.
+        self.gamepads.poll();
+        // E o egui só repinta quando tem evento **dele**. Aperto de controle não é: sem este
+        // pedido, a arte só mudaria quando o mouse se mexesse por cima dela.
+        ui.ctx().request_repaint();
         let pad = self.pad_of(ui.ctx(), self.porta_editada);
         let capturing = self.capturing.clone();
         // Os campos saem separados porque as texturas são criadas a partir do desenho, e pedir
@@ -867,6 +875,10 @@ impl App {
                 _ => None,
             })
         });
+        // Mesma razão do `controller_view`: sem drenar a fila do gilrs um aperto de controle
+        // nunca aparece, e a captura aceitaria só teclado.
+        self.gamepads.poll();
+        ctx.request_repaint();
         let source = match key {
             Some(key) => Some(Source::key(key.name())),
             None => {
@@ -1438,12 +1450,21 @@ impl App {
 
     /// As teclas que o controle manda, comparando com o quadro anterior.
     ///
-    /// **Esquerda e direita saíram daqui.** Elas traduziam o direcional em `AVK_3` e `AVK_4`, que
-    /// é o que a roda da Z-Wheel escuta — mas tecla vai a todos os tratadores da tela, e o
-    /// resultado era a roda de cima e a barra de baixo girando juntas. O direcional agora move os
-    /// eixos em [`Pad::press`], como o console reporta, e quem decide o que gira é o jogo.
+    /// **Esquerda e direita aqui são um remendo, e estão anotadas como tal.**
+    ///
+    /// Elas traduzem o direcional em `AVK_3` e `AVK_4`, que é o que a roda da Z-Wheel escuta.
+    /// Tecla vai a **todos** os tratadores da tela, então a roda de cima e a barra de baixo giram
+    /// juntas — o defeito conhecido. Sem isto, porém, o controle não navega a roda de jeito
+    /// nenhum: o caminho fiel é o retorno de chamada de posição, que já chega ao jogo (medido:
+    /// `GetPositionState` vai de zero a seis chamadas por três apertos) e ainda assim não o faz
+    /// girar. Enquanto esse resto não estiver de pé, um remendo que funciona é melhor que um
+    /// controle morto.
     fn teclas_do_controle(antes: &Pad, agora: &Pad) -> Vec<(u32, bool)> {
-        const DE_BOTAO: [(&str, u32); 1] = [("b1", input::avk::CONFIRMA)];
+        const DE_BOTAO: [(&str, u32); 3] = [
+            ("left", input::avk::RODA_ANTERIOR),
+            ("right", input::avk::RODA_SEGUINTE),
+            ("b1", input::avk::CONFIRMA),
+        ];
 
         let mut teclas = Vec::new();
         for (nome, avk) in DE_BOTAO {
@@ -2073,17 +2094,24 @@ mod tests {
         );
     }
 
-    /// **O direcional não manda tecla.** Ele move os eixos, em [`Pad::press`], como o console
-    /// reporta. Traduzi-lo em `AVK_3`/`AVK_4` aqui era o que fazia a roda de cima e a barra de
-    /// baixo da Z-Wheel girarem juntas, porque tecla vai a todos os tratadores da tela.
+    /// O direcional horizontal manda as teclas da roda; o vertical, nenhuma.
+    ///
+    /// É o remendo descrito em [`App::teclas_do_controle`], e o teste existe para que ele não
+    /// desapareça sem alguém notar — e para registrar que cima e baixo nunca entraram nele.
     #[test]
-    fn o_direcional_nao_manda_tecla() {
+    fn o_direcional_horizontal_manda_as_teclas_da_roda() {
         let antes = Pad::default();
         let mut agora = Pad::default();
-        for nome in ["left", "right", "up", "down"] {
-            agora.press(Pad::button_by_name(nome).unwrap(), true);
+        agora.press(Pad::button_by_name("left").unwrap(), true);
+        assert_eq!(
+            App::teclas_do_controle(&antes, &agora),
+            vec![(crate::input::avk::RODA_ANTERIOR, true)]
+        );
+        let mut vertical = Pad::default();
+        for nome in ["up", "down"] {
+            vertical.press(Pad::button_by_name(nome).unwrap(), true);
         }
-        assert!(App::teclas_do_controle(&antes, &agora).is_empty());
+        assert!(App::teclas_do_controle(&antes, &vertical).is_empty());
     }
 
     /// Os dígitos saem da ordem do `egui::Key`, e do `AVK_0` em diante. As duas listas são
