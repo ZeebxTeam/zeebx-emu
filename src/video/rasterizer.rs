@@ -381,6 +381,259 @@ impl Default for Material {
     }
 }
 
+/// A fronteira entre o emulador e quem rasteriza.
+///
+/// Tudo o que o despacho de GL faz passa por aqui — e **só** por aqui, desde que os campos do
+/// [`GlState`] deixaram de ser públicos. A lista é o contrato que um segundo rasterizador
+/// precisa cumprir; hoje há uma implementação só, a de software, e é ela que dá a garantia de
+/// quadro reproduzível bit a bit que o `ARCHITECTURE.md` descreve.
+///
+/// Os métodos inerentes do [`GlState`] continuam existindo: o trait não muda nenhum ponto de
+/// chamada, ele só escreve o que a fronteira é. Quem for implementar outro backend começa por
+/// esta lista, e o que não estiver nela não é usado pelo emulador.
+// Sem consumidor até existir o segundo rasterizador: os pontos de chamada usam os métodos
+// inerentes do `GlState`, que continuam valendo. Tirar o `allow` é parte de trocar o despacho
+// para ser genérico sobre este trait — e aí o compilador cobra a lista inteira.
+#[allow(dead_code)]
+pub trait Rasterizador {
+    fn set_matrix_mode(&mut self, mode: u32);
+    fn load_identity(&mut self);
+    fn load_matrix(&mut self, m: Matrix);
+    fn mult_matrix(&mut self, m: Matrix);
+    fn push_matrix(&mut self);
+    fn pop_matrix(&mut self);
+
+    fn set_viewport(&mut self, x: i32, y: i32, width: i32, height: i32);
+    fn set_surface(&mut self, width: usize, height: usize);
+    fn surface(&self) -> (usize, usize);
+    fn frame_size(&self) -> (usize, usize);
+
+    fn set_clear_color(&mut self, color: [f32; 4]);
+    fn set_clear_depth(&mut self, depth: f32);
+    fn set_clear_stencil(&mut self, valor: i32);
+    fn set_color(&mut self, color: [f32; 4]);
+    fn current_color(&self) -> [f32; 4];
+    fn clear(&mut self, mask: u32);
+
+    fn set_capability(&mut self, capability: u32, on: bool);
+    fn set_shade_model(&mut self, mode: u32);
+    fn set_light(&mut self, index: usize, pname: u32, valores: [f32; 4]);
+    fn set_material(&mut self, pname: u32, valores: [f32; 4]);
+    fn set_light_model(&mut self, pname: u32, valores: [f32; 4]);
+
+    fn set_blend_func(&mut self, src: u32, dst: u32);
+    fn set_alpha_func(&mut self, func: u32, reference: f32);
+    fn set_depth_func(&mut self, func: u32);
+    fn set_depth_mask(&mut self, on: bool);
+    fn set_color_mask(&mut self, mask: [bool; 4]);
+    fn set_cull_face(&mut self, mode: u32);
+    fn set_front_face(&mut self, face: u32);
+    fn set_stencil_func(&mut self, func: u32, referencia: i32, mask: u32);
+    fn set_stencil_op(&mut self, falha: u32, falha_z: u32, passa: u32);
+    fn set_stencil_mask(&mut self, mask: u32);
+
+    fn set_active_texture(&mut self, unit: u32);
+    fn set_client_active_texture(&mut self, unit: u32);
+    fn base_client_unit(&self) -> bool;
+    fn bind_texture(&mut self, name: u32);
+    fn bound_texture(&self) -> u32;
+    fn set_texture_env(&mut self, mode: u32);
+    fn set_texture_parameter(&mut self, name: u32, value: u32);
+    fn set_texture_crop(&mut self, crop: [i32; 4]);
+    fn delete_texture(&mut self, name: u32);
+    fn upload_level(
+        &mut self,
+        name: u32,
+        level: u32,
+        width: usize,
+        height: usize,
+        pixels: Vec<[u8; 4]>,
+    );
+    fn sub_image(
+        &mut self,
+        name: u32,
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+        pixels: &[[u8; 4]],
+    ) -> Result<(), Option<(u32, u32)>>;
+
+    fn draw(&mut self, mode: u32, vertices: &[Vertex]);
+    fn draw_texture(&mut self, x: f32, y: f32, z: f32, width: f32, height: f32);
+    fn flush(&mut self);
+
+    fn read_rect(&mut self, x: i32, y: i32, width: usize, height: usize) -> Vec<[u8; 4]>;
+    fn frame_rgb565(&mut self, width: usize, height: usize, out: &mut Vec<u8>);
+    fn import_rgb565_changes(&mut self, width: usize, height: usize, old: &[u8], new: &[u8]);
+    fn present(&mut self, width: usize, height: usize) -> Vec<u16>;
+}
+
+impl Rasterizador for GlState {
+    fn set_matrix_mode(&mut self, mode: u32) {
+        GlState::set_matrix_mode(self, mode)
+    }
+    fn load_identity(&mut self) {
+        GlState::load_identity(self)
+    }
+    fn load_matrix(&mut self, m: Matrix) {
+        GlState::load_matrix(self, m)
+    }
+    fn mult_matrix(&mut self, m: Matrix) {
+        GlState::mult_matrix(self, m)
+    }
+    fn push_matrix(&mut self) {
+        GlState::push_matrix(self)
+    }
+    fn pop_matrix(&mut self) {
+        GlState::pop_matrix(self)
+    }
+    fn set_viewport(&mut self, x: i32, y: i32, width: i32, height: i32) {
+        GlState::set_viewport(self, x, y, width, height)
+    }
+    fn set_surface(&mut self, width: usize, height: usize) {
+        GlState::set_surface(self, width, height)
+    }
+    fn surface(&self) -> (usize, usize) {
+        GlState::surface(self)
+    }
+    fn frame_size(&self) -> (usize, usize) {
+        GlState::frame_size(self)
+    }
+    fn set_clear_color(&mut self, color: [f32; 4]) {
+        GlState::set_clear_color(self, color)
+    }
+    fn set_clear_depth(&mut self, depth: f32) {
+        GlState::set_clear_depth(self, depth)
+    }
+    fn set_clear_stencil(&mut self, valor: i32) {
+        GlState::set_clear_stencil(self, valor)
+    }
+    fn set_color(&mut self, color: [f32; 4]) {
+        GlState::set_color(self, color)
+    }
+    fn current_color(&self) -> [f32; 4] {
+        GlState::current_color(self)
+    }
+    fn clear(&mut self, mask: u32) {
+        GlState::clear(self, mask)
+    }
+    fn set_capability(&mut self, capability: u32, on: bool) {
+        GlState::set_capability(self, capability, on)
+    }
+    fn set_shade_model(&mut self, mode: u32) {
+        GlState::set_shade_model(self, mode)
+    }
+    fn set_light(&mut self, index: usize, pname: u32, valores: [f32; 4]) {
+        GlState::set_light(self, index, pname, valores)
+    }
+    fn set_material(&mut self, pname: u32, valores: [f32; 4]) {
+        GlState::set_material(self, pname, valores)
+    }
+    fn set_light_model(&mut self, pname: u32, valores: [f32; 4]) {
+        GlState::set_light_model(self, pname, valores)
+    }
+    fn set_blend_func(&mut self, src: u32, dst: u32) {
+        GlState::set_blend_func(self, src, dst)
+    }
+    fn set_alpha_func(&mut self, func: u32, reference: f32) {
+        GlState::set_alpha_func(self, func, reference)
+    }
+    fn set_depth_func(&mut self, func: u32) {
+        GlState::set_depth_func(self, func)
+    }
+    fn set_depth_mask(&mut self, on: bool) {
+        GlState::set_depth_mask(self, on)
+    }
+    fn set_color_mask(&mut self, mask: [bool; 4]) {
+        GlState::set_color_mask(self, mask)
+    }
+    fn set_cull_face(&mut self, mode: u32) {
+        GlState::set_cull_face(self, mode)
+    }
+    fn set_front_face(&mut self, face: u32) {
+        GlState::set_front_face(self, face)
+    }
+    fn set_stencil_func(&mut self, func: u32, referencia: i32, mask: u32) {
+        GlState::set_stencil_func(self, func, referencia, mask)
+    }
+    fn set_stencil_op(&mut self, falha: u32, falha_z: u32, passa: u32) {
+        GlState::set_stencil_op(self, falha, falha_z, passa)
+    }
+    fn set_stencil_mask(&mut self, mask: u32) {
+        GlState::set_stencil_mask(self, mask)
+    }
+    fn set_active_texture(&mut self, unit: u32) {
+        GlState::set_active_texture(self, unit)
+    }
+    fn set_client_active_texture(&mut self, unit: u32) {
+        GlState::set_client_active_texture(self, unit)
+    }
+    fn base_client_unit(&self) -> bool {
+        GlState::base_client_unit(self)
+    }
+    fn bind_texture(&mut self, name: u32) {
+        GlState::bind_texture(self, name)
+    }
+    fn bound_texture(&self) -> u32 {
+        GlState::bound_texture(self)
+    }
+    fn set_texture_env(&mut self, mode: u32) {
+        GlState::set_texture_env(self, mode)
+    }
+    fn set_texture_parameter(&mut self, name: u32, value: u32) {
+        GlState::set_texture_parameter(self, name, value)
+    }
+    fn set_texture_crop(&mut self, crop: [i32; 4]) {
+        GlState::set_texture_crop(self, crop)
+    }
+    fn delete_texture(&mut self, name: u32) {
+        GlState::delete_texture(self, name)
+    }
+    fn upload_level(
+        &mut self,
+        name: u32,
+        level: u32,
+        width: usize,
+        height: usize,
+        pixels: Vec<[u8; 4]>,
+    ) {
+        GlState::upload_level(self, name, level, width, height, pixels)
+    }
+    fn sub_image(
+        &mut self,
+        name: u32,
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+        pixels: &[[u8; 4]],
+    ) -> Result<(), Option<(u32, u32)>> {
+        GlState::sub_image(self, name, x, y, width, height, pixels)
+    }
+    fn draw(&mut self, mode: u32, vertices: &[Vertex]) {
+        GlState::draw(self, mode, vertices)
+    }
+    fn draw_texture(&mut self, x: f32, y: f32, z: f32, width: f32, height: f32) {
+        GlState::draw_texture(self, x, y, z, width, height)
+    }
+    fn flush(&mut self) {
+        GlState::flush(self)
+    }
+    fn read_rect(&mut self, x: i32, y: i32, width: usize, height: usize) -> Vec<[u8; 4]> {
+        GlState::read_rect(self, x, y, width, height)
+    }
+    fn frame_rgb565(&mut self, width: usize, height: usize, out: &mut Vec<u8>) {
+        GlState::frame_rgb565(self, width, height, out)
+    }
+    fn import_rgb565_changes(&mut self, width: usize, height: usize, old: &[u8], new: &[u8]) {
+        GlState::import_rgb565_changes(self, width, height, old, new)
+    }
+    fn present(&mut self, width: usize, height: usize) -> Vec<u16> {
+        GlState::present(self, width, height)
+    }
+}
+
 pub struct GlState {
     width: usize,
     height: usize,
