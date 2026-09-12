@@ -200,7 +200,7 @@ impl App {
         if let Err(err) = library::sync_catalog(&games) {
             eprintln!("catálogo de jogos: {err}");
         }
-        Self {
+        let app = Self {
             catalog,
             settings,
             tab: Tab::General,
@@ -237,7 +237,8 @@ impl App {
             gl: context.gl.clone(),
             pintor: Default::default(),
             gpu_falhou: Default::default(),
-        }
+        };
+        app
     }
 
     fn tr(&self, key: &str) -> String {
