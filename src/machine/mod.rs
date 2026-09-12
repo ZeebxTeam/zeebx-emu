@@ -24,7 +24,7 @@ use crate::video::atc;
 use crate::video::display::{Framebuffer, Rect, Rgb};
 use crate::video::gles;
 use crate::video::paltex;
-use crate::video::rasterizer::{self, GlState, Vertex};
+use crate::video::rasterizer::{self, GlState, Rasterizador, Vertex};
 
 mod bitmap;
 mod cifra;
@@ -1925,7 +1925,11 @@ pub struct Machine<C: CpuBackend> {
     /// da execução pega o desenho pela metade, quase sempre logo depois do `Clear`.
     gl_last_frame: Vec<u8>,
     /// Estado e buffers do OpenGL ES.
-    gl: GlState,
+    ///
+    /// Despacho dinâmico porque o rasterizador é trocável: a fronteira inteira está no
+    /// [`Rasterizador`], e só este módulo a toca. A indireção por chamada é ruído perto do que
+    /// cada uma faz — a Z-Wheel emite dezenove mil chamadas de GL em treze segundos virtuais.
+    gl: Box<dyn Rasterizador>,
     /// Vetores do cliente: posição, cor e coordenada de textura.
     gl_vertices: ArrayPointer,
     gl_colors: ArrayPointer,
@@ -2127,7 +2131,7 @@ impl<C: CpuBackend> Machine<C> {
             waves: HashMap::new(),
             audio: None,
             gl_last_frame: Vec::new(),
-            gl: GlState::new(SCREEN_WIDTH as usize, SCREEN_HEIGHT as usize),
+            gl: Box::new(GlState::new(SCREEN_WIDTH as usize, SCREEN_HEIGHT as usize)),
             gl_vertices: ArrayPointer::default(),
             gl_colors: ArrayPointer::default(),
             gl_texcoords: ArrayPointer::default(),

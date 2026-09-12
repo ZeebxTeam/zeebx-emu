@@ -391,10 +391,6 @@ impl Default for Material {
 /// Os métodos inerentes do [`GlState`] continuam existindo: o trait não muda nenhum ponto de
 /// chamada, ele só escreve o que a fronteira é. Quem for implementar outro backend começa por
 /// esta lista, e o que não estiver nela não é usado pelo emulador.
-// Sem consumidor até existir o segundo rasterizador: os pontos de chamada usam os métodos
-// inerentes do `GlState`, que continuam valendo. Tirar o `allow` é parte de trocar o despacho
-// para ser genérico sobre este trait — e aí o compilador cobra a lista inteira.
-#[allow(dead_code)]
 pub trait Rasterizador {
     fn set_matrix_mode(&mut self, mode: u32);
     fn load_identity(&mut self);
@@ -461,7 +457,6 @@ pub trait Rasterizador {
 
     fn draw(&mut self, mode: u32, vertices: &[Vertex]);
     fn draw_texture(&mut self, x: f32, y: f32, z: f32, width: f32, height: f32);
-    fn flush(&mut self);
 
     fn read_rect(&mut self, x: i32, y: i32, width: usize, height: usize) -> Vec<[u8; 4]>;
     fn frame_rgb565(&mut self, width: usize, height: usize, out: &mut Vec<u8>);
@@ -616,9 +611,6 @@ impl Rasterizador for GlState {
     }
     fn draw_texture(&mut self, x: f32, y: f32, z: f32, width: f32, height: f32) {
         GlState::draw_texture(self, x, y, z, width, height)
-    }
-    fn flush(&mut self) {
-        GlState::flush(self)
     }
     fn read_rect(&mut self, x: i32, y: i32, width: usize, height: usize) -> Vec<[u8; 4]> {
         GlState::read_rect(self, x, y, width, height)
