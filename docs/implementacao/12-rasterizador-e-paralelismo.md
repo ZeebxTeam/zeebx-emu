@@ -139,6 +139,35 @@ Duas correções depois desta medida:
   fatia do ARM, porque o perfil de blocos faz uma inserção de tabela por bloco de tradução. A
   proporção entre as três fatias serve; o relógio absoluto, não. Meça tempo sem ele.
 
+## Descobrir que nada mudou custava mais que desenhar
+
+O jogo pode escrever direto na superfície que o EGL expõe — é assim que a Z-Wheel compõe o 2D
+sobre o palco 3D. Para não perder essas escritas, o `sync_egl_color_from_guest` lia a superfície
+inteira de volta do guest e a comparava byte a byte com a nossa cópia. Ele é chamado em **todo**
+`Draw*`, `Clear` e `ReadPixels`.
+
+Medido na Z-Wheel, treze segundos virtuais: **93.750 chamadas**, cada uma lendo 400 KB e
+comparando 400 KB — perto de 37 GB de tráfego só para descobrir que quase nunca havia mudança.
+Eram 3.324 ms de leitura e 2.732 ms de comparação, e o custo aparecia onde ninguém procuraria: no
+`glDrawElements`, com 2.883 ms.
+
+O conserto é um **watchpoint de escrita** (`CpuBackend::watch_dirty`/`take_dirty`): o hook do
+unicorn liga um `bool` quando o guest escreve na faixa, e o `sync` sai em O(1) enquanto ele estiver
+limpo. Depois: leitura 105 ms, comparação 39 ms, `glDrawElements` **275 ms** — dez vezes menos —, e
+o total de API caiu de 16.345 ms para algo entre 12.550 e 13.500 ms.
+
+Duas coisas que essa medida ensinou, e que valem além deste caso:
+
+- **A escrita do host não passa pelos hooks do unicorn.** As implementações de API escrevem direto
+  na memória do guest, e é por elas que o 2D chega à superfície. A primeira versão do sinalizador
+  ignorava isso: o custo sumiu e as capas da roda pararam de aparecer, com a diferença confinada à
+  faixa do cilindro. Quem arma um watchpoint precisa marcá-lo também no `write_mem` do próprio
+  emulador — o watchpoint de depuração já fazia isso, e foi de lá que veio a pista.
+- **Uma execução só não mede nada aqui.** Três execuções do mesmo binário deram 13.903, 14.221 e
+  15.845 ms de API: 14% de faixa. Só delta grande conta — e é por isso que a queda do
+  `glDrawElements` serve como prova, enquanto o caminho rápido da importação (que é algoritmicamente
+  melhor e pixel a pixel idêntico) fica sem número: o efeito dele não sai do ruído.
+
 ## O teto que sobra
 
 Vale ter claro para não esperar do rasterizador o que ele não pode dar: **mesmo de graça**, o
