@@ -191,8 +191,22 @@ Os dois próximos gargalos, em ordem:
 ## Números de calibração
 
 Faixas, medido no Alpine Racer numa máquina de 24 núcleos: 4 → 10,89 s, 6 → 8,64 s, 12 → 5,59 s,
-16 → 5,74 s. Fica uma faixa por núcleo com piso de 40 linhas por faixa (`MIN_BAND_ROWS`): mais
-fina que isso, quase todo triângulo cruza fronteira e o preparo por faixa come o ganho.
+16 → 5,74 s. Fica uma faixa por núcleo, com um piso de linhas por faixa (`MIN_BAND_ROWS`).
+
+**O piso era 40 linhas, e essa foi a parte errada da calibração.** Ele não é afinação: é o teto
+real de paralelismo quando a superfície é baixa. O palco da Z-Wheel tem 640x330, e `330 / 40` dá
+oito faixas — numa máquina de 24 núcleos, dois terços dela ficavam paradas durante todo o
+preenchimento. O número saiu de medir só cenas de 480 linhas, onde `480 / 40 = 12` já era perto
+do que a máquina daria, e o defeito ficou invisível justamente por isso.
+
+Baixando para 8 linhas, tempo de `flush` na Z-Wheel em treze segundos virtuais: **2474 ms com 40,
+1938 com 16, 1868 com 8**. E na pista do Crash, em trinta segundos virtuais, o total de API foi de
+**4637 para 3842 e 3622 ms** nos mesmos cortes. O receio de que faixas finas custassem caro em 480
+linhas não se confirmou, e o motivo é aritmético: ali `480 / 16` e `480 / 8` esbarram no número de
+núcleos antes de esbarrar nesta constante, então os dois cortes descrevem a mesma divisão.
+
+Dividir mais fino não muda um pixel — as nove superfícies despejadas da Z-Wheel saem byte a byte
+iguais —, porque cada faixa continua sendo região exclusiva e percorre a fila na ordem original.
 
 O limiar de custo (`PARALLEL_COST`, 64 mil fragmentos) foi calibrado quando a divisão era por
 draw call, e ali era indiferente entre 16 mil e 256 mil. Com o quadro acumulado ele quase nunca

@@ -1925,10 +1925,21 @@ const MAX_MATRIX_STACK: usize = 16;
 /// custa junta uma fração do total.
 const PARALLEL_COST: usize = 64_000;
 
-/// Altura mínima de uma faixa. Mais fina que isto e quase todo triângulo cruza fronteira: o
-/// preparo por faixa passa a pesar mais que o pedaço de trabalho que ela ganha — medindo numa
-/// máquina de 24 núcleos, dividir 480 linhas em mais de doze faixas já não rendia nada.
-const MIN_BAND_ROWS: usize = 40;
+/// Altura mínima de uma faixa, em linhas.
+///
+/// Ela é o **teto real de paralelismo em superfícies baixas**, e não um detalhe de afinação: com
+/// as quarenta linhas de antes, o palco de 640x330 da Z-Wheel dava `330 / 40 = 8` faixas, e numa
+/// máquina de 24 núcleos dois terços dela ficavam parados durante todo o preenchimento.
+///
+/// Medido, tempo de `flush` na Z-Wheel em treze segundos virtuais: 2474 ms com 40 linhas, 1938
+/// com 16, 1868 com 8. E na pista do Crash, em trinta segundos virtuais, o total de API foi de
+/// 4637 para 3842 e 3622 ms nos mesmos cortes — quem temia que faixas finas custassem caro numa
+/// superfície de 480 linhas estava enganado, porque ali o número de faixas esbarra no número de
+/// núcleos antes de esbarrar nesta constante.
+///
+/// O preparo por faixa existe e cresce quando ela afina — é por isso que há um piso —, mas até
+/// oito linhas ele continua menor que o trabalho que a faixa ganha.
+const MIN_BAND_ROWS: usize = 8;
 
 /// Em quantas faixas horizontais dividir um quadro de `height` linhas.
 fn bands(height: usize) -> usize {
@@ -2023,9 +2034,20 @@ struct Job {
 impl Job {
     /// Resolve o nome da textura e monta o estado que o preenchimento lê.
     fn uniforms<'a>(&self, textures: &'a HashMap<u32, Texture>, width: usize) -> Uniforms<'a> {
+        let texture = self.texture.and_then(|name| textures.get(&name));
         Uniforms {
             width,
-            texture: self.texture.and_then(|name| textures.get(&name)),
+            texture,
+            usa_mipmap: texture.is_some_and(|texture| {
+                !texture.mipmaps.is_empty()
+                    && matches!(
+                        texture.min_filter,
+                        gles::GL_NEAREST_MIPMAP_NEAREST
+                            | gles::GL_LINEAR_MIPMAP_NEAREST
+                            | gles::GL_NEAREST_MIPMAP_LINEAR
+                            | gles::GL_LINEAR_MIPMAP_LINEAR
+                    )
+            }),
             texture_env: self.texture_env,
             depth_test: self.depth_test,
             depth_mask: self.depth_mask,
@@ -2083,6 +2105,11 @@ impl Batch {
 struct Uniforms<'a> {
     width: usize,
     texture: Option<&'a Texture>,
+    /// Se a textura do lote tem cadeia de mipmaps **e** o filtro pede nível.
+    ///
+    /// Não depende do fragmento, mas era recalculado dentro do laço — um `matches!` de quatro
+    /// constantes em cada pixel aprovado, centenas de milhares de vezes por quadro.
+    usa_mipmap: bool,
     texture_env: u32,
     depth_test: bool,
     depth_mask: bool,
@@ -2152,16 +2179,6 @@ fn fill_band(tri: &Prepared, uniforms: &Uniforms, band: &mut Band) {
             // teste de alfa ela pode esperar o descarte por profundidade; **com** teste de
             // alfa, não pode: no OpenGL o alfa é decidido antes do stencil, e um fragmento
             // reprovado ali não tem direito de mexer no stencil.
-            let usa_mipmap = uniforms.texture.is_some_and(|texture| {
-                !texture.mipmaps.is_empty()
-                    && matches!(
-                        texture.min_filter,
-                        gles::GL_NEAREST_MIPMAP_NEAREST
-                            | gles::GL_LINEAR_MIPMAP_NEAREST
-                            | gles::GL_NEAREST_MIPMAP_LINEAR
-                            | gles::GL_LINEAR_MIPMAP_LINEAR
-                    )
-            });
             let montar = || {
                 let mut source = [attribute(0), attribute(1), attribute(2), attribute(3)];
                 if let Some(texture) = uniforms.texture {
@@ -2200,7 +2217,7 @@ fn fill_band(tri: &Prepared, uniforms: &Uniforms, band: &mut Band) {
                     // Sem cadeia de mipmaps o amostrador sempre cai no nível zero. Evitar as
                     // duas derivadas e o log2 por fragmento é decisivo para jogos 3D que usam
                     // texturas comprimidas sem níveis auxiliares, como o Super League.
-                    let lod = if !usa_mipmap {
+                    let lod = if !uniforms.usa_mipmap {
                         0.0
                     } else {
                         reducao(tri.step).max(reducao(tri.step_y))
