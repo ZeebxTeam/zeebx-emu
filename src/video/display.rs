@@ -76,7 +76,14 @@ pub struct Framebuffer {
     pixels: Vec<u16>,
     /// Quantos pixels já foram efetivamente escritos — serve para saber se há algo a mostrar.
     touched: u64,
+    /// Um número que nenhuma outra superfície criada nesta execução tem.
+    serie: u64,
+    /// O retângulo `[x0, y0, x1, y1)` que mudou desde a última [`Framebuffer::toma_sujeira`].
+    sujo: Option<[u32; 4]>,
 }
+
+/// De onde sai a [`Framebuffer::versao`] de cada superfície nova.
+static PROXIMA_SERIE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 impl Framebuffer {
     pub fn new(width: u32, height: u32) -> Self {
@@ -85,7 +92,41 @@ impl Framebuffer {
             height,
             pixels: vec![0; (width * height) as usize],
             touched: 0,
+            serie: PROXIMA_SERIE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            sujo: None,
         }
+    }
+
+    /// Um número que nenhuma outra superfície criada nesta execução tem.
+    ///
+    /// Separa esta superfície de outra que tenha tomado o lugar dela no mesmo endereço: a caixa
+    /// suja só descreve o que mudou **nesta**.
+    pub fn serie(&self) -> u64 {
+        self.serie
+    }
+
+    /// Devolve e zera o retângulo `[x0, y0, x1, y1)` escrito desde a última vez.
+    pub fn toma_sujeira(&mut self) -> Option<[u32; 4]> {
+        self.sujo.take()
+    }
+
+    /// Os pixels de `inicio` até `fim` (índices de pixel, fim exclusivo), em bytes RGB565.
+    pub fn rgb565_intervalo(&self, inicio: usize, fim: usize) -> Vec<u8> {
+        self.pixels[inicio..fim]
+            .iter()
+            .flat_map(|p| p.to_le_bytes())
+            .collect()
+    }
+
+    /// Estende a caixa suja para cobrir `[x0, x1) × [y0, y1)`.
+    fn suja(&mut self, x0: u32, y0: u32, x1: u32, y1: u32) {
+        if x0 >= x1 || y0 >= y1 {
+            return;
+        }
+        self.sujo = Some(match self.sujo {
+            None => [x0, y0, x1, y1],
+            Some([a, b, c, d]) => [a.min(x0), b.min(y0), c.max(x1), d.max(y1)],
+        });
     }
 
     pub fn width(&self) -> u32 {
@@ -107,6 +148,7 @@ impl Framebuffer {
         }
         self.pixels[(y as u32 * self.width + x as u32) as usize] = color.to_rgb565();
         self.touched += 1;
+        self.suja(x as u32, y as u32, x as u32 + 1, y as u32 + 1);
     }
 
     /// Preenche um retângulo, recortando o que sair da tela.
@@ -122,6 +164,7 @@ impl Framebuffer {
                 self.touched += 1;
             }
         }
+        self.suja(x0, y0, x1, y1);
     }
 
     /// Desenha a moldura de um retângulo, um pixel de espessura.
@@ -156,6 +199,7 @@ impl Framebuffer {
         }
         self.pixels[(y as u32 * self.width + x as u32) as usize] = value;
         self.touched += 1;
+        self.suja(x as u32, y as u32, x as u32 + 1, y as u32 + 1);
     }
 
     /// Preenche um retângulo com cor já em formato nativo.
@@ -166,11 +210,15 @@ impl Framebuffer {
         let y1 = (rect.y as i32 + rect.height as i32)
             .max(0)
             .min(self.height as i32);
-        for y in rect.y.max(0) as i32..y1 {
-            for x in rect.x.max(0) as i32..x1 {
+        let (x0, y0) = (rect.x.max(0) as i32, rect.y.max(0) as i32);
+        for y in y0..y1 {
+            for x in x0..x1 {
                 self.pixels[(y as u32 * self.width + x as u32) as usize] = value;
                 self.touched += 1;
             }
+        }
+        if x0 < x1 && y0 < y1 {
+            self.suja(x0 as u32, y0 as u32, x1 as u32, y1 as u32);
         }
     }
 

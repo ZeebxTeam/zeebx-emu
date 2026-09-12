@@ -22,6 +22,9 @@ use super::{CpuBackend, CpuError, Reg, StopReason};
 /// nas tabelas da MMU; o applet BREW nunca é código privilegiado.
 const MODO_USUARIO: u32 = 0x10;
 
+/// O bit `T` do `CPSR`: ligado, o núcleo busca instruções Thumb.
+const CPSR_THUMB: u32 = 1 << 5;
+
 /// Limite defensivo da string recebida por `SYS_WRITE0`. É o mesmo contrato do backend
 /// Unicorn: uma string sem terminador não pode prender o host em uma leitura sem fim.
 const MAX_SEMIHOSTING_STRING: u32 = 4096;
@@ -52,6 +55,11 @@ struct Estado {
     paginas_executadas: RefCell<BTreeSet<u32>>,
     /// Invalidações pedidas pelo ARM durante o bloco em execução; são aplicadas após `run`.
     codigo_sujo: RefCell<BTreeSet<u32>>,
+    /// As faixas de [`CpuBackend::watch_dirty`]: `(id, início, fim, sujo)`.
+    vigias: RefCell<Vec<(u32, u32, u32, bool)>>,
+    /// O menor intervalo que contém todas as vigias. Quase toda escrita do guest cai fora dele,
+    /// e aí ela custa duas comparações em vez de uma volta pela lista.
+    envoltorio: Cell<(u32, u32)>,
     instrucoes: Cell<u64>,
     limite: Cell<u64>,
     parada: Cell<Parada>,
@@ -88,7 +96,27 @@ impl Estado {
             return false;
         }
         self.marca_codigo_sujo(addr, bytes.len() as u32);
+        self.marca_vigias(addr, addr.saturating_add(bytes.len() as u32));
         true
+    }
+
+    fn marca_vigias(&self, inicio: u32, fim: u32) {
+        let (menor, maior) = self.envoltorio.get();
+        if fim <= menor || inicio >= maior {
+            return;
+        }
+        for vigia in self.vigias.borrow_mut().iter_mut() {
+            if inicio < vigia.2 && fim > vigia.1 {
+                vigia.3 = true;
+            }
+        }
+    }
+
+    fn recalcula_envoltorio(&self) {
+        let vigias = self.vigias.borrow();
+        let menor = vigias.iter().map(|v| v.1).min().unwrap_or(0);
+        let maior = vigias.iter().map(|v| v.2).max().unwrap_or(0);
+        self.envoltorio.set((menor, maior));
     }
 
     fn marca_codigo_sujo(&self, addr: u32, len: u32) {
@@ -291,6 +319,8 @@ impl CpuBackend for DynarmicCpu {
             semihosting: self.semihosting.clone(),
             paginas_executadas: Default::default(),
             codigo_sujo: Default::default(),
+            vigias: Default::default(),
+            envoltorio: Cell::new((0, 0)),
             instrucoes: Cell::new(0),
             limite: Cell::new(0),
             parada: Cell::new(Parada::Nenhuma),
@@ -321,6 +351,40 @@ impl CpuBackend for DynarmicCpu {
         self.jit().map_or(0, |jit| jit.instrucoes.get())
     }
 
+    /// A vigia de escrita, como a do Unicorn: só escrita **do guest** liga o sinalizador.
+    ///
+    /// Sem ela o contrato padrão responde "sempre sujo", e cada chamada que desenha importava
+    /// todas as superfícies inteiras. No Pac-Mania, 100 mil `IIMAGE_Draw` somavam 22 segundos
+    /// só de leitura de buffers que o jogo não tinha tocado.
+    fn watch_dirty(&mut self, id: u32, base: u32, len: u32) -> Result<(), CpuError> {
+        self.unwatch_dirty(id);
+        let jit = self.jit_mut()?;
+        // Começa sujo: desta faixa ainda não vimos nada.
+        jit.vigias
+            .borrow_mut()
+            .push((id, base, base.saturating_add(len), true));
+        jit.recalcula_envoltorio();
+        Ok(())
+    }
+
+    fn unwatch_dirty(&mut self, id: u32) {
+        if let Ok(jit) = self.jit_mut() {
+            jit.vigias.borrow_mut().retain(|vigia| vigia.0 != id);
+            jit.recalcula_envoltorio();
+        }
+    }
+
+    fn take_dirty(&mut self, id: u32) -> bool {
+        let Ok(jit) = self.jit_mut() else {
+            return true;
+        };
+        let mut vigias = jit.vigias.borrow_mut();
+        match vigias.iter_mut().find(|vigia| vigia.0 == id) {
+            Some(vigia) => std::mem::replace(&mut vigia.3, false),
+            None => true,
+        }
+    }
+
     fn read_mem(&self, addr: u32, buf: &mut [u8]) -> Result<(), CpuError> {
         self.memoria
             .borrow()
@@ -340,7 +404,18 @@ impl CpuBackend for DynarmicCpu {
 
     fn run(&mut self, pc: u32, max_instructions: u64) -> Result<StopReason, CpuError> {
         let jit = self.jit_mut()?;
-        jit.set_pc(pc);
+        // **O bit 0 do endereço é o modo, não parte do endereço.** O despachante retoma no `lr`
+        // do jeito que ele veio, e o `lr` de uma chamada feita de código Thumb traz o bit 0
+        // ligado — é a convenção de interworking do ARM, e o Unicorn a aplica sozinho no
+        // `emu_start`. Aqui ela precisa ser explícita: escrevendo o endereço cru, o Zenonia,
+        // que é todo Thumb, voltava de cada API um byte adiante e o núcleo parava numa
+        // "instrução" montada com metade de duas.
+        let cpsr = jit.get_cpsr();
+        match pc & 1 {
+            1 => jit.set_cpsr(cpsr | CPSR_THUMB),
+            _ => jit.set_cpsr(cpsr & !CPSR_THUMB),
+        }
+        jit.set_pc(pc & !1);
         // `HaltExecution` deixa a razão armada para a volta que acabou de sair. O próximo
         // trecho começa depois de o despachante BREW ter escrito r0/pc, portanto precisa limpar
         // o bit genérico antes de entrar novamente no JIT.
@@ -408,6 +483,51 @@ mod tests {
             cpu.run(0, 10).unwrap(),
             StopReason::ApiCall { addr: API_BASE }
         );
+    }
+
+    #[test]
+    fn endereco_com_bit_zero_entra_em_thumb() {
+        // Em Thumb, `movs r0, #0x37` e depois `b .` — alinhado em 0x100. Chamado com 0x101,
+        // que é como o despachante retoma um chamador Thumb.
+        let mut code = vec![0u8; 0x100];
+        code.extend_from_slice(&[0x37, 0x20, 0xfe, 0xe7]);
+        let mut cpu = cpu_with(&code);
+        assert_eq!(cpu.run(0x101, 1).unwrap(), StopReason::Budget);
+        assert_eq!(cpu.read_reg(Reg::R0), 0x37);
+    }
+
+    #[test]
+    fn endereco_par_volta_para_arm_depois_de_thumb() {
+        // `mov r0, #0x37` em ARM no zero; em 0x100, código Thumb qualquer.
+        let mut code = [0xe3a0_0037u32.to_le_bytes(), 0xeaff_fffeu32.to_le_bytes()].concat();
+        code.resize(0x100, 0);
+        code.extend_from_slice(&[0x00, 0x20, 0xfe, 0xe7]);
+        let mut cpu = cpu_with(&code);
+        cpu.run(0x101, 1).unwrap();
+        assert_eq!(cpu.run(0, 1).unwrap(), StopReason::Budget);
+        assert_eq!(cpu.read_reg(Reg::R0), 0x37);
+    }
+
+    #[test]
+    fn a_vigia_liga_com_escrita_do_guest_e_nao_com_a_do_host() {
+        // `mov r1, #0x1000 ; str r0, [r1] ; b .`
+        let code = [
+            0xe3a0_1a01u32.to_le_bytes(),
+            0xe581_0000u32.to_le_bytes(),
+            0xeaff_fffeu32.to_le_bytes(),
+        ]
+        .concat();
+        let mut cpu = cpu_with(&code);
+        cpu.watch_dirty(7, 0x1000, 4).unwrap();
+        assert!(cpu.take_dirty(7), "nasce sujo");
+        assert!(!cpu.take_dirty(7), "e ler limpa");
+        cpu.write_mem(0x1000, &[1, 2, 3, 4]).unwrap();
+        assert!(!cpu.take_dirty(7), "escrita do host não conta");
+        cpu.run(0, 2).unwrap();
+        assert!(cpu.take_dirty(7), "escrita do guest conta");
+        // Uma faixa desarmada volta ao contrato padrão: na dúvida, sujo.
+        cpu.unwatch_dirty(7);
+        assert!(cpu.take_dirty(7));
     }
 
     #[test]

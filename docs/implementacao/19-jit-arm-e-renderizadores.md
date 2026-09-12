@@ -60,10 +60,28 @@ já foi buscada como código, o bloco precisa ser invalidado antes da próxima e
 rastreia somente páginas executadas e invalida apenas essas páginas; invalidar por qualquer
 escrita seria desastroso, pois um renderizador RGB565 escreve milhões de pixels por quadro.
 
-Os buffers de bitmap/EGL continuam no espaço de memória do guest. O contrato de `watch_dirty` é
-conservador no Dynarmic enquanto não há um hook de sujeira específico: uma sincronização pode
-copiar mais dados, mas nunca deixa de importar um pixel alterado. Esse detalhe favorece correção
-gráfica, e não é o gargalo do renderizador ARM do Kingdom Hearts.
+Os buffers de bitmap/EGL continuam no espaço de memória do guest. O Dynarmic tem a mesma vigia
+de escrita do Unicorn (`watch_dirty`): a callback de escrita do guest liga o sinalizador da faixa,
+escrita do host não liga. Um envoltório com o menor intervalo que contém todas as faixas deixa a
+escrita comum — a imensa maioria — em duas comparações.
+
+Por um tempo a vigia respondeu sempre "sujo", o que parecia só conservador e não era:
+
+- **Custava o jogo inteiro.** Cada chamada que desenha importava todas as superfícies. No
+  Pac-Mania, 100 mil `IIMAGE_Draw` somavam 22 s só lendo buffers intocados; 8 s virtuais não
+  terminavam em um minuto. Com a vigia, levam 6,3 s.
+- **Escondia um erro de correção.** "Sempre sujo" só é seguro se o buffer do guest nunca estiver
+  atrás da cópia do host, e estava: um bitmap novo no endereço de um liberado herdava o buffer
+  com os pixels do morto (ver `dib_herdados` no doc de vídeo 2D). As letras do Tekken 2 saíam
+  como blocos só neste motor.
+
+## Interworking: o bit 0 do endereço
+
+O despachante retoma o guest no `lr`, e o `lr` de uma chamada feita de código Thumb traz o bit 0
+ligado. O Unicorn trata isso no `emu_start`; o Dynarmic não, e o `run` precisa traduzir: bit 0
+ligado liga o `T` do `CPSR` e sai do endereço. Sem isso o Zenonia, que é Thumb, voltava de toda
+API um byte adiante, e o núcleo abortava com `Unhandled instruction 0xF8F9F5F0` — metade de um
+`bl` com metade do seguinte.
 
 ## Validação feita
 

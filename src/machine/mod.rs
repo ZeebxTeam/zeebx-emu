@@ -2060,6 +2060,13 @@ pub struct Machine<C: CpuBackend> {
     /// do Kingdom Hearts viravam blocos, com a folha de glifos substituída pela imagem
     /// decodificada antes dela.
     dib_herdados: HashSet<u32>,
+    /// A [`Framebuffer::serie`] de cada superfície na última vez que o buffer do jogo e a nossa
+    /// cópia ficaram iguais — dali em diante, só a caixa suja dela precisa ir para o jogo.
+    ///
+    /// Sem isto, **toda** chamada que desenha reescrevia todas as superfícies expostas inteiras
+    /// na memória do jogo, mudadas ou não. O Pac-Mania faz 168 mil `IIMAGE_Draw` em cinco
+    /// segundos virtuais: 95% do tempo de API — 30 segundos de relógio — era essa cópia.
+    dib_publicado: HashMap<u32, u64>,
     /// Próximo endereço livre na região de superfícies.
     surface_next: u32,
     /// Cor tratada como transparente em cada superfície.
@@ -2315,6 +2322,7 @@ impl<C: CpuBackend> Machine<C> {
             dib_buffers: HashMap::new(),
             dib_capacity: HashMap::new(),
             dib_herdados: HashSet::new(),
+            dib_publicado: HashMap::new(),
             surface_next: loader::SURFACE_BASE,
             transparency: HashMap::new(),
             device_bitmap: 0,

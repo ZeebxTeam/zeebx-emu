@@ -62,6 +62,15 @@ lá, a importação é pulada e a primeira exposição publica os pixels do host
 regra é de ciclo de vida — **o buffer pertence ao objeto**, e bytes de um objeto que morreu não são
 do jogo para serem trazidos de volta.
 
+### Só o retângulo que mudou volta para o jogo
+
+Publicar a superfície inteira depois de cada desenho era o maior custo do emulador em jogos de
+sprite: o Pac-Mania desenha 160 mil sprites em cinco segundos virtuais, e cada `IIMAGE_Draw`
+reescrevia os 600 KB da superfície — 15 dos 16 segundos de API. O `Framebuffer` agora guarda a
+caixa suja desde a última publicação e um número de série; enquanto a série for a mesma que o
+jogo já recebeu, só a caixa é escrita (146 ms no mesmo trecho). A importação zera a caixa, porque
+depois dela os dois lados são iguais.
+
 Um diff das chamadas de API entre os dois motores foi o que separou isto de um erro de CPU: 2,2
 milhões de chamadas iguais (342 linhas diferentes, todas de atraso de timer). Se o jogo pede a
 mesma coisa e o quadro sai diferente, quem difere é o nosso lado.

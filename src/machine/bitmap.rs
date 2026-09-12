@@ -64,6 +64,7 @@ impl<C: CpuBackend> Machine<C> {
         self.bitmaps.remove(&source);
         self.dib_buffers.remove(&source);
         self.dib_herdados.remove(&source);
+        self.dib_publicado.remove(&source);
         self.cpu.unwatch_dirty(source);
         self.transparency.remove(&source);
         Ok(())
@@ -247,6 +248,34 @@ impl<C: CpuBackend> Machine<C> {
                 // para os dois lugares — e só ele, não a superfície inteira.
                 if let Some(at) = self.dib_pixel(this, x, y) {
                     self.cpu.write_mem(at, &color.to_le_bytes())?;
+                }
+                SUCCESS
+            }
+            // int SetPixels(IBitmap *po, unsigned cnt, AEEPoint *pPoint, NativeColor color,
+            //               AEERasterOp rop)
+            //
+            // O `DrawPixel` em lote: `cnt` pontos `{ int16 x; int16 y }`, todos na mesma cor. O
+            // Zenonia usa isto no meio do jogo, e sem ele parava — nos dois motores, no mesmo
+            // ponto, depois de quase 1.400 voltas.
+            "SetPixels" => {
+                let quantos = self.cpu.read_reg(Reg::R1);
+                let pontos = self.cpu.read_reg(Reg::R2);
+                let color = self.cpu.read_reg(Reg::R3) as u16;
+                if pontos == 0 {
+                    return Ok(Some(EBADPARM));
+                }
+                // Um contador absurdo vindo do guest não pode virar um laço de bilhões.
+                for i in 0..quantos.min(1 << 20) {
+                    let mut ponto = [0u8; 4];
+                    self.cpu.read_mem(pontos + i * 4, &mut ponto)?;
+                    let x = i16::from_le_bytes([ponto[0], ponto[1]]) as i32;
+                    let y = i16::from_le_bytes([ponto[2], ponto[3]]) as i32;
+                    if let Some(fb) = self.bitmaps.get_mut(&this) {
+                        fb.set_pixel_native(x, y, color);
+                    }
+                    if let Some(at) = self.dib_pixel(this, x, y) {
+                        self.cpu.write_mem(at, &color.to_le_bytes())?;
+                    }
                 }
                 SUCCESS
             }
@@ -500,12 +529,36 @@ impl<C: CpuBackend> Machine<C> {
         let Some(&buffer) = self.dib_buffers.get(&bitmap) else {
             return Ok(());
         };
-        let Some(fb) = self.bitmaps.get(&bitmap) else {
+        let herdado = self.dib_herdados.contains(&bitmap);
+        let publicado = self.dib_publicado.get(&bitmap).copied();
+        let Some(fb) = self.bitmaps.get_mut(&bitmap) else {
             return Ok(());
         };
-        let bytes = fb.to_rgb565_bytes();
-        self.cpu.write_mem(buffer, &bytes)?;
+        let serie = fb.serie();
+        let sujeira = fb.toma_sujeira();
+        // **Só o que mudou vai para o jogo.** Esta superfície já foi publicada inteira, e o
+        // buffer só ficou para trás no retângulo que desenhamos desde então. Um sprite muda
+        // alguns milhares de pixels; reescrever os 600 KB dela a cada `IIMAGE_Draw` era 92% do
+        // tempo de API do Pac-Mania, que desenha 160 mil sprites em cinco segundos virtuais.
+        //
+        // A faixa escrita vai do primeiro pixel da caixa ao último, inclusive o que fica entre
+        // as linhas fora dela: ali os dois lados já são iguais, porque a importação roda antes
+        // de todo desenho, e uma escrita contígua sai mais barata que uma por linha.
+        if !herdado && publicado == Some(serie) {
+            let Some([x0, y0, x1, y1]) = sujeira else {
+                return Ok(());
+            };
+            let largura = fb.width() as usize;
+            let inicio = y0 as usize * largura + x0 as usize;
+            let fim = (y1 as usize - 1) * largura + x1 as usize;
+            let bytes = fb.rgb565_intervalo(inicio, fim);
+            self.cpu.write_mem(buffer + inicio as u32 * 2, &bytes)?;
+        } else {
+            let bytes = fb.to_rgb565_bytes();
+            self.cpu.write_mem(buffer, &bytes)?;
+        }
         self.dib_herdados.remove(&bitmap);
+        self.dib_publicado.insert(bitmap, serie);
         // A superfície do guest acabou de ficar **idêntica** à nossa — e foi a escrita acima que
         // ligou o sinalizador. Limpar aqui é o que permite pular a importação seguinte: sem
         // isto toda saída sujaria tudo de novo e a vigia não economizaria nada.
@@ -550,6 +603,10 @@ impl<C: CpuBackend> Machine<C> {
         self.cpu.read_mem(buffer, &mut bytes)?;
         if let Some(fb) = self.bitmaps.get_mut(&bitmap) {
             fb.load_rgb565_bytes(&bytes);
+            // Acabamos de copiar o buffer inteiro por cima da nossa cópia: os dois lados estão
+            // iguais, e nada do que desenhamos antes ainda precisa ir para o jogo.
+            fb.toma_sujeira();
+            self.dib_publicado.insert(bitmap, fb.serie());
         }
         Ok(())
     }
