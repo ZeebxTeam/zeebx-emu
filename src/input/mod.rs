@@ -137,9 +137,18 @@ pub const DPAD: [usize; 4] = [12, 13, 14, 15];
 /// eles reportam: no Zeeboids, que desenha `ZL` e `ZR` na tela e gira o personagem com eles, o
 /// `Left_Shoulder_Upper` e o `Right_Shoulder_Upper` giram e os "inferiores" não fazem nada. Os
 /// dois inferiores continuam aqui porque estão no arquivo do console, mas não têm botão.
+/// **`b1` fica no UID que o arquivo do console rotula `Button_2`, e isto é deliberado.**
+///
+/// Os rótulos `Button_N` da entrada do controle no `hid_devices.original.cfg` estão deslocados —
+/// o mesmo arquivo põe um UID de eixo no `BUTTON:3`, então a inconsistência dele já era
+/// conhecida. Quem resolve o deslocamento é o comportamento dos jogos, medido no aparelho: com
+/// `b1` no `0x0106c40a`, o botão sul chegava aos jogos como **2** e o leste como **1**. Como o
+/// sul é o 1 impresso no Z-Pad, o UID do botão 1 é o `0x0106c40b`.
+///
+/// Os nomes `b3` e `b4` seguem onde estavam: não há medida deles ainda.
 pub const BUTTON_NAMES: [&str; BUTTONS] = [
-    "b2", "zr", "b4", "lx", "zrb", "l2", "zl", "r2", "rthumb", "back", "lthumb", "start", "up",
-    "down", "left", "right", "b1", "b3",
+    "b1", "zr", "b4", "lx", "zrb", "l2", "zl", "r2", "rthumb", "back", "lthumb", "start", "up",
+    "down", "left", "right", "b2", "b3",
 ];
 
 /// UID de cada eixo: `X`, `Y`, `Z` e `RZ`.
@@ -362,6 +371,19 @@ fn eixo_por_nome(nome: &str) -> Option<(usize, i32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// O botão 1 é o sul, e o UID dele é o que o arquivo do console rotula `Button_2`.
+    ///
+    /// Medido no aparelho: com `b1` no `0x0106c40a`, o sul chegava aos jogos como 2 e o leste
+    /// como 1. Ver a nota de [`BUTTON_NAMES`] — este teste existe para que a troca não seja
+    /// desfeita por quem confie no rótulo do arquivo.
+    #[test]
+    fn o_botao_um_usa_o_uid_que_o_arquivo_chama_de_dois() {
+        let um = Pad::button_by_name("b1").expect("b1 existe");
+        let dois = Pad::button_by_name("b2").expect("b2 existe");
+        assert_eq!(BUTTON_UIDS[um], 0x0106_c40b);
+        assert_eq!(BUTTON_UIDS[dois], 0x0106_c40a);
+    }
 
     /// Os índices de [`DPAD`] são escritos à mão; este teste impede que eles e [`BUTTON_NAMES`]
     /// se separem sem ninguém notar.
