@@ -50,23 +50,29 @@ pub struct Write {
     pub lr: u32,
 }
 
+/// Uma faixa de memória vigiada e o sinalizador que diz se ela foi escrita.
+///
+/// O hook do unicorn só vê o que o ARM emulado escreve. As implementações de API escrevem
+/// direto na memória do guest, e é por elas que o 2D chega ao color buffer do pbuffer: por isso
+/// `base` e `end` ficam guardados aqui, para que [`UnicornCpu::write_mem`] também ligue o
+/// sinalizador. Ignorá-las fazia a roda da Z-Wheel parar de receber as capas.
+struct Vigia {
+    /// Quem pediu a vigia: o bitmap, ou a constante do color buffer do pbuffer.
+    id: u32,
+    base: u32,
+    end: u32,
+    sujo: std::rc::Rc<std::cell::Cell<bool>>,
+    hook: unicorn_engine::UcHookId,
+}
+
 pub struct UnicornCpu {
     uc: Unicorn<'static, HookState>,
     /// Escritas capturadas pelo watchpoint, quando há um armado.
     writes: std::rc::Rc<std::cell::RefCell<Vec<Write>>>,
     /// Faixa vigiada, para reconhecer também as escritas feitas pelo host.
     watched: Option<(u32, u32)>,
-    /// Se o guest escreveu na faixa armada por [`CpuBackend::watch_dirty`] desde a última
-    /// leitura. O hook só liga um `bool`; é o que torna barato perguntar "mudou alguma coisa?".
-    sujo: std::rc::Rc<std::cell::Cell<bool>>,
-    /// O hook que liga o sinalizador, para poder trocá-lo quando a faixa muda de lugar.
-    hook_sujo: Option<unicorn_engine::UcHookId>,
-    /// A faixa vigiada pelo sinalizador, para reconhecer também as escritas **do host**.
-    ///
-    /// O hook do unicorn só vê o que o ARM emulado escreve. As implementações de API escrevem
-    /// direto na memória do guest, e é por elas que o 2D chega ao color buffer do pbuffer:
-    /// ignorá-las fazia a roda da Z-Wheel parar de receber as capas.
-    faixa_suja: Option<(u32, u32)>,
+    /// As faixas armadas por [`CpuBackend::watch_dirty`], uma por superfície vigiada.
+    vigias: Vec<Vigia>,
     /// Instruções executadas dentro da faixa rastreada, com o `r0` de cada uma.
     steps: std::rc::Rc<std::cell::RefCell<Vec<(u32, u32, u32)>>>,
     /// Instruções executadas desde o início. Contadas por bloco de tradução, que é ordens de
@@ -202,9 +208,7 @@ impl UnicornCpu {
             uc,
             writes: Default::default(),
             watched: None,
-            sujo: std::rc::Rc::new(std::cell::Cell::new(true)),
-            hook_sujo: None,
-            faixa_suja: None,
+            vigias: Vec::new(),
             steps: Default::default(),
             instructions,
             deadline,
@@ -401,32 +405,45 @@ impl CpuBackend for UnicornCpu {
         self.instructions.get()
     }
 
-    fn watch_dirty(&mut self, base: u32, len: u32) -> Result<(), CpuError> {
-        if let Some(anterior) = self.hook_sujo.take() {
-            let _ = self.uc.remove_hook(anterior);
-        }
+    fn watch_dirty(&mut self, id: u32, base: u32, len: u32) -> Result<(), CpuError> {
+        self.unwatch_dirty(id);
         // Começa sujo: desta faixa ainda não vimos nada.
-        self.sujo.set(true);
-        self.faixa_suja = Some((base, base.saturating_add(len)));
-        let sujo = self.sujo.clone();
-        let id = self
+        let sujo = std::rc::Rc::new(std::cell::Cell::new(true));
+        let ligar = sujo.clone();
+        let hook = self
             .uc
             .add_mem_hook(
                 HookType::MEM_WRITE,
                 base as u64,
                 (base + len) as u64,
                 move |_uc, _type, _address, _size, _value| {
-                    sujo.set(true);
+                    ligar.set(true);
                     true
                 },
             )
             .map_err(uc_err)?;
-        self.hook_sujo = Some(id);
+        self.vigias.push(Vigia {
+            id,
+            base,
+            end: base.saturating_add(len),
+            sujo,
+            hook,
+        });
         Ok(())
     }
 
-    fn take_dirty(&mut self) -> bool {
-        self.sujo.replace(false)
+    fn unwatch_dirty(&mut self, id: u32) {
+        if let Some(pos) = self.vigias.iter().position(|vigia| vigia.id == id) {
+            let vigia = self.vigias.remove(pos);
+            let _ = self.uc.remove_hook(vigia.hook);
+        }
+    }
+
+    fn take_dirty(&mut self, id: u32) -> bool {
+        match self.vigias.iter().find(|vigia| vigia.id == id) {
+            Some(vigia) => vigia.sujo.replace(false),
+            None => true,
+        }
     }
 
     fn read_mem(&self, addr: u32, buf: &mut [u8]) -> Result<(), CpuError> {
@@ -463,9 +480,9 @@ impl CpuBackend for UnicornCpu {
         // A escrita do host não passa pelo hook, e é justamente por aqui que o 2D desenhado
         // pelas nossas APIs entra na superfície vigiada. Sem isto o sinalizador ficava limpo
         // com a memória já mudada, e a importação deixava de acontecer.
-        if let Some((base, end)) = self.faixa_suja {
-            if addr < end && addr.saturating_add(data.len() as u32) > base {
-                self.sujo.set(true);
+        for vigia in &self.vigias {
+            if addr < vigia.end && addr.saturating_add(data.len() as u32) > vigia.base {
+                vigia.sujo.set(true);
             }
         }
         self.uc.mem_write(addr as u64, data).map_err(uc_err)
@@ -669,7 +686,7 @@ mod speed {
         // Cada `read_u32` atravessa a FFI e faz o unicorn procurar a região antes de copiar
         // quatro bytes. O `read_attribute` do GL fazia uma dessas por componente — este teste
         // mede a diferença entre pedir componente a componente e pedir o bloco de uma vez.
-        let mut cpu = cpu_with(&[]);
+        let cpu = cpu_with(&[]);
         let rounds = 200_000u32;
 
         let start = std::time::Instant::now();

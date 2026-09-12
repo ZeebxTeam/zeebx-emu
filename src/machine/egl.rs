@@ -2,6 +2,12 @@
 
 use super::*;
 
+/// A chave da vigia do color buffer do pbuffer, em [`CpuBackend::watch_dirty`].
+///
+/// As outras chaves são endereços de bitmap, que nunca são zero: o color buffer não pertence a
+/// nenhum deles e fica com o valor que sobra.
+const VIGIA_COLOR_BUFFER: u32 = 0;
+
 impl<C: CpuBackend> Machine<C> {
     /// Escreve `EGL_TRUE` no `AEEEGLBoolean *ret` do argumento `slot` e devolve `SUCCESS`.
     pub(super) fn write_egl_true(&mut self, slot: usize) -> Result<u32, CpuError> {
@@ -333,7 +339,8 @@ impl<C: CpuBackend> Machine<C> {
                         Some(onde) => {
                             self.egl_color_buffer = (onde, bytes.len());
                             // A faixa mudou de lugar: o watchpoint acompanha.
-                            self.cpu.watch_dirty(onde, bytes.len() as u32)?;
+                            self.cpu
+                                .watch_dirty(VIGIA_COLOR_BUFFER, onde, bytes.len() as u32)?;
                         }
                         None => {
                             self.egl_color_bytes = bytes;
@@ -458,7 +465,7 @@ impl<C: CpuBackend> Machine<C> {
         // `ReadPixels` — 93 mil vezes em treze segundos da Z-Wheel —, e a versão anterior lia
         // 400 KB do guest e os comparava byte a byte em cada uma delas, só para descobrir que
         // quase nunca havia mudança. O watchpoint de escrita responde a mesma pergunta de graça.
-        if !self.cpu.take_dirty() {
+        if !self.cpu.take_dirty(VIGIA_COLOR_BUFFER) {
             return Ok(());
         }
         self.egl_color_readback

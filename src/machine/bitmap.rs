@@ -63,6 +63,7 @@ impl<C: CpuBackend> Machine<C> {
         self.objects.release(source);
         self.bitmaps.remove(&source);
         self.dib_buffers.remove(&source);
+        self.cpu.unwatch_dirty(source);
         self.transparency.remove(&source);
         Ok(())
     }
@@ -135,6 +136,7 @@ impl<C: CpuBackend> Machine<C> {
 
         self.bitmaps.insert(target, Framebuffer::new(cx, cy));
         self.dib_buffers.insert(target, buffer);
+        self.cpu.watch_dirty(target, buffer, cx * cy * 2)?;
         self.sync_from_guest(target)?;
         Ok(())
     }
@@ -422,6 +424,7 @@ impl<C: CpuBackend> Machine<C> {
             };
             self.dib_buffers.insert(bitmap, buffer);
             self.dib_capacity.insert(bitmap, precisa);
+            self.cpu.watch_dirty(bitmap, buffer, precisa)?;
             // A primeira exposição precisa publicar os pixels atuais. Exposições seguintes
             // apenas atualizam o cabeçalho: reescrever a superfície inteira em cada
             // QueryInterface apagava alterações feitas pelo guest e custava dezenas de ms em
@@ -494,7 +497,12 @@ impl<C: CpuBackend> Machine<C> {
             return Ok(());
         };
         let bytes = fb.to_rgb565_bytes();
-        self.cpu.write_mem(buffer, &bytes)
+        self.cpu.write_mem(buffer, &bytes)?;
+        // A superfície do guest acabou de ficar **idêntica** à nossa — e foi a escrita acima que
+        // ligou o sinalizador. Limpar aqui é o que permite pular a importação seguinte: sem
+        // isto toda saída sujaria tudo de novo e a vigia não economizaria nada.
+        self.cpu.take_dirty(bitmap);
+        Ok(())
     }
 
     /// Traz de volta o que o jogo escreveu direto no buffer.
@@ -519,7 +527,14 @@ impl<C: CpuBackend> Machine<C> {
         let Some(fb) = self.bitmaps.get(&bitmap) else {
             return Ok(());
         };
-        let mut bytes = vec![0u8; (fb.width() * fb.height() * 2) as usize];
+        let tamanho = (fb.width() * fb.height() * 2) as usize;
+        // **Só lê quando o guest escreveu nesta superfície.** É a mesma economia que o color
+        // buffer do pbuffer já tinha, agora por superfície: a Z-Wheel copiava 1,57 GB em treze
+        // segundos virtuais só para descobrir que quase nada tinha mudado.
+        if !self.cpu.take_dirty(bitmap) {
+            return Ok(());
+        }
+        let mut bytes = vec![0u8; tamanho];
         self.cpu.read_mem(buffer, &mut bytes)?;
         if let Some(fb) = self.bitmaps.get_mut(&bitmap) {
             fb.load_rgb565_bytes(&bytes);

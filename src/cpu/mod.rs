@@ -76,14 +76,23 @@ pub trait CpuBackend {
     /// chamado 93 mil vezes em treze segundos, e a leitura mais a comparação somavam seis
     /// segundos — mais de um terço de todo o tempo de API.
     ///
+    /// O `id` identifica a faixa, e existe porque há **várias** ao mesmo tempo: o color buffer
+    /// do pbuffer e uma por superfície do jogo. Armar de novo com o mesmo `id` troca a faixa de
+    /// lugar, que é o que acontece quando um bitmap é reexposto com outro tamanho.
+    ///
     /// O padrão responde "sempre sujo", que é exatamente o comportamento anterior: um backend
     /// que não saiba armar o hook continua correto, só não fica mais rápido.
-    fn watch_dirty(&mut self, _base: u32, _len: u32) -> Result<(), CpuError> {
+    fn watch_dirty(&mut self, _id: u32, _base: u32, _len: u32) -> Result<(), CpuError> {
         Ok(())
     }
 
-    /// Lê **e limpa** o sinalizador. `true` quando o guest pode ter escrito desde a última vez.
-    fn take_dirty(&mut self) -> bool {
+    /// Desarma a faixa de `id`. Sem isto, a superfície de um bitmap já liberado continuaria
+    /// custando um hook em toda escrita do guest naquele endereço.
+    fn unwatch_dirty(&mut self, _id: u32) {}
+
+    /// Lê **e limpa** o sinalizador de `id`. `true` quando o guest pode ter escrito desde a
+    /// última vez, e também quando não há faixa armada com esse `id` — na dúvida, sujo.
+    fn take_dirty(&mut self, _id: u32) -> bool {
         true
     }
 
