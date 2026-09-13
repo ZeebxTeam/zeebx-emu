@@ -502,8 +502,12 @@ Sem janela, `--instalados=0xCLSID:id` registra jogos instalados para testar o la
 
 O que ainda falta nessa tela:
 
-- **Abrir o jogo.** O fluxo agora passa por tudo acima e para no slot 3 do `ILCTSystemCtl`
-  (`0x835e8`), antes do timer de 2 s que chama o `StartApplet`.
+- **Abrir o jogo — resolvido.** O último degrau era o slot 3 do `ILCTSystemCtl` (`0x01006c02`): lê o
+  modo pelo slot 6 e grava pelo 3 (modos 0 a 3, sinalizadores de hardware no firmware). Com ele, a
+  Z-Wheel limpa os formulários, grava o marcador `ttgmrun.tmp`, arma o timer de 2 s para `0x81ebc` e
+  chama `ISHELL_StartApplet` com a classe do jogo escolhido. Medido sem janela: com
+  `--teclas=30500:0xe064,35000:0xe032,37000:0xe064 --instalados=0x010a2337:279369`, o relatório diz
+  `lançar: o shell pediu para abrir 0x010a2337` — o Alien Breaker.
 - **Os nomes perdem a última letra** ("Alic", "Alien Breake").
 - Um quadrado cinza solto no canto superior direito da grade.
 

@@ -2108,6 +2108,8 @@ pub struct Machine<C: CpuBackend> {
     transformacoes: HashMap<u32, u32>,
     /// O estado de cada `IValueModel` (`0x01028e3c`).
     modelos_de_valor: HashMap<u32, ModeloDeValor>,
+    /// O modo gravado no controle de sistema (`0x01006c02`) pelo slot 3.
+    modo_do_sistema: u32,
     /// O bitmap de cada canvas pedido por `QueryInterface`.
     canvases: HashMap<u32, u32>,
     /// A superfície da tela — o "device bitmap" do BREW. Zero enquanto ninguém pediu.
@@ -2370,6 +2372,7 @@ impl<C: CpuBackend> Machine<C> {
             transparency: HashMap::new(),
             transformacoes: HashMap::new(),
             modelos_de_valor: HashMap::new(),
+            modo_do_sistema: 0,
             canvases: HashMap::new(),
             device_bitmap: 0,
             display_target: 0,

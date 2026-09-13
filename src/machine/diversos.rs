@@ -530,9 +530,21 @@ impl<C: CpuBackend> Machine<C> {
                 self.objects.add_ref(this);
                 SUCCESS
             }
+            // `slot6(this)` lê o modo atual por uma função do OEM (`0x10e9ff84` no firmware), e
+            // `slot3(this, modo, ligado)` o grava: o firmware aceita os modos 0 a 3 e acende
+            // sinalizadores de hardware para cada um (`0x10e9fdb6`). A Z-Wheel lê e grava de
+            // volta em `0x83594`, logo antes de lançar um jogo — com o slot 3 recusado, o
+            // lançamento parava ali.
+            //
+            // Não há hardware para ajustar aqui, então o modo só é guardado para ser lido de
+            // volta. Antes de qualquer gravação, a leitura é zero, como sempre foi.
             "Consultar" => {
                 self.assumptions
                     .insert("o controle de sistema respondeu zero: não há aparelho para consultar");
+                self.modo_do_sistema
+            }
+            "DefinirModo" => {
+                self.modo_do_sistema = self.cpu.read_reg(Reg::R1);
                 SUCCESS
             }
             _ => SUCCESS,

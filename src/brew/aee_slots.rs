@@ -1018,7 +1018,7 @@ pub const SYSTEM_CTL: &[&str] = &[
     "AddRef",
     "Release",
     "QueryInterface",
-    "slot3",
+    "DefinirModo",
     "slot4",
     "slot5",
     "Consultar",
