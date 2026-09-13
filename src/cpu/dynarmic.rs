@@ -42,6 +42,39 @@ enum Parada {
     Excecao(u32),
 }
 
+/// As páginas do guest que já foram buscadas como código, um bit por página.
+///
+/// Toda escrita do guest pergunta por aqui, e o renderizador ARM do Kingdom Hearts escreve
+/// milhões de pixels por quadro. Com um `BTreeSet` atrás de um `RefCell`, cada pixel pagava um
+/// empréstimo e uma busca em árvore — e era isso que fazia o 3D, já acelerado pelo JIT, voltar a
+/// perder quadros. Um bit por página, em `Cell`, responde com um deslocamento e uma máscara: são
+/// 2^20 páginas de 4 KB, 16.384 palavras, 131 KB.
+struct PaginasExecutadas {
+    bits: Box<[Cell<u64>]>,
+}
+
+impl PaginasExecutadas {
+    fn new() -> Self {
+        Self {
+            bits: (0..(1usize << 20).div_ceil(64)).map(|_| Cell::new(0)).collect(),
+        }
+    }
+
+    fn marca(&self, pagina: u32) {
+        let (palavra, bit) = ((pagina / 64) as usize, pagina % 64);
+        if let Some(celula) = self.bits.get(palavra) {
+            celula.set(celula.get() | (1 << bit));
+        }
+    }
+
+    fn contem(&self, pagina: u32) -> bool {
+        let (palavra, bit) = ((pagina / 64) as usize, pagina % 64);
+        self.bits
+            .get(palavra)
+            .is_some_and(|celula| celula.get() & (1 << bit) != 0)
+    }
+}
+
 /// Estado compartilhado entre as callbacks C++ e o invólucro Rust.
 ///
 /// O JIT é guardado em `Box` no backend, então seu endereço não muda quando o `DynarmicCpu`
@@ -52,7 +85,7 @@ struct Estado {
     semihosting: Rc<RefCell<String>>,
     /// Só uma escrita em memória que já foi buscada como código pode invalidar um bloco JIT.
     /// Isto exclui os milhões de escritas nos buffers RGB565.
-    paginas_executadas: RefCell<BTreeSet<u32>>,
+    paginas_executadas: PaginasExecutadas,
     /// Invalidações pedidas pelo ARM durante o bloco em execução; são aplicadas após `run`.
     codigo_sujo: RefCell<BTreeSet<u32>>,
     /// As faixas de [`CpuBackend::watch_dirty`]: `(id, início, fim, sujo)`.
@@ -143,11 +176,11 @@ impl Estado {
 
     fn marca_codigo_sujo(&self, addr: u32, len: u32) {
         let fim = addr.saturating_add(len.saturating_sub(1));
-        let executadas = self.paginas_executadas.borrow();
-        let mut sujas = self.codigo_sujo.borrow_mut();
         for pagina in (addr / PAGE)..=(fim / PAGE) {
-            if executadas.contains(&pagina) {
-                sujas.insert(pagina);
+            // O teste de um bit vem antes de qualquer empréstimo: quase toda escrita cai em
+            // página de dados, e só a que cai em código paga a lista de sujas.
+            if self.paginas_executadas.contem(pagina) {
+                self.codigo_sujo.borrow_mut().insert(pagina);
             }
         }
     }
@@ -157,7 +190,7 @@ impl Callbacks for Estado {
     fn memory_read_code(cb: &CallbackImpl<Self>, addr: VAddr) -> Option<u32> {
         let mut bytes = [0; 4];
         if cb.le(addr, &mut bytes) {
-            cb.paginas_executadas.borrow_mut().insert(addr / PAGE);
+            cb.paginas_executadas.marca(addr / PAGE);
             Some(u32::from_le_bytes(bytes))
         } else {
             Self::para(cb, Parada::Fetch(addr));
@@ -339,7 +372,7 @@ impl CpuBackend for DynarmicCpu {
         let estado = Estado {
             memoria: self.memoria.clone(),
             semihosting: self.semihosting.clone(),
-            paginas_executadas: Default::default(),
+            paginas_executadas: PaginasExecutadas::new(),
             codigo_sujo: Default::default(),
             vigias: Default::default(),
             envoltorio: Cell::new((0, 0)),
