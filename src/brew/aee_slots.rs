@@ -160,6 +160,19 @@ pub const BITMAP: &[&str] = &[
     "GetTransparencyColor",
 ];
 
+/// Métodos do canvas `0x0101e443`. Só o slot 7 é chamado; os outros ficam como marcador para
+/// que uma chamada inesperada apareça no relatório.
+pub const CANVAS: &[&str] = &[
+    "AddRef",
+    "Release",
+    "QueryInterface",
+    "slot3",
+    "slot4",
+    "slot5",
+    "slot6",
+    "GetDisplay",
+];
+
 /// Métodos de `ITransform` (5 slots), de `AEETransform.h`.
 pub const TRANSFORM: &[&str] = &[
     "AddRef",
@@ -1062,7 +1075,7 @@ pub const VETOR: &[&str] = &[
     "slot4",
     "Tamanho",
     "PegarEm",
-    "slot7",
+    "SubstituirEm",
     "InserirEm",
     "RemoverEm",
     "Esvaziar",

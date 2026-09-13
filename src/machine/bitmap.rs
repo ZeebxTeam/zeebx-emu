@@ -167,6 +167,56 @@ impl<C: CpuBackend> Machine<C> {
         Ok(addr)
     }
 
+    /// O canvas `0x0101e443`: um bitmap visto como lugar onde um `IDisplay` desenha.
+    ///
+    /// A Z-Wheel pede este canvas ao bitmap em que desenha uma subárvore de widgets (`0x4166c`),
+    /// chama o slot 7 com `&saída` e usa o que sai como `IDisplay` — slots 14, 15 e 19, que são
+    /// `SetDestination`, `GetDestination` e `GetClipRect`. Com o display na mão ela lê o destino,
+    /// cria um bitmap compatível do tamanho do widget e desenha nele. Recusado, a `0x41d68`
+    /// recebia nulo e desreferenciava: era o acesso a `0x00000000` em `0x41dbc` depois de
+    /// confirmar em "Jogar".
+    pub(super) fn canvas_call(&mut self, slot: u32) -> Result<Option<u32>, CpuError> {
+        let Some(name) = Interface::Canvas.method(slot) else {
+            return Ok(None);
+        };
+        if aee::e_marcador(name) {
+            return Ok(None);
+        }
+        let this = self.cpu.read_reg(Reg::R0);
+        let result = match name {
+            "AddRef" => self.objects.add_ref(this),
+            "Release" => {
+                let restam = self.objects.release(this);
+                if restam == 0 {
+                    self.canvases.remove(&this);
+                }
+                restam
+            }
+            "GetDisplay" => {
+                let Some(&bitmap) = self.canvases.get(&this) else {
+                    return Ok(Some(EBADPARM));
+                };
+                let out = self.cpu.read_reg(Reg::R1);
+                let display = self.new_object(Interface::Display)?;
+                if display == 0 {
+                    return Ok(Some(ENOMEMORY));
+                }
+                // O display do canvas desenha no bitmap dele. Os nossos displays compartilham um
+                // destino só, então entregar um é apontar esse destino para o bitmap.
+                self.display_target = bitmap;
+                self.assumptions.insert(
+                    "o canvas 0x0101e443 entregou um IDisplay apontado para o bitmap dele — leitura pelo uso",
+                );
+                if out != 0 {
+                    self.cpu.write_u32(out, display)?;
+                }
+                SUCCESS
+            }
+            _ => return Ok(None),
+        };
+        Ok(Some(result))
+    }
+
     /// Métodos de `ITransform`.
     pub(super) fn transform_call(&mut self, slot: u32) -> Result<Option<u32>, CpuError> {
         let Some(name) = Interface::Transform.method(slot) else {
@@ -319,6 +369,17 @@ impl<C: CpuBackend> Machine<C> {
                     AEECLSID_DIB | AEEIID_DIB_20 => {
                         self.expose_dib(this)?;
                         Some(this)
+                    }
+                    AEEIID_CANVAS => {
+                        let canvas = self.new_object(Interface::Canvas)?;
+                        if canvas == 0 {
+                            return Ok(Some(ENOMEMORY));
+                        }
+                        self.canvases.insert(canvas, this);
+                        if out != 0 {
+                            self.cpu.write_u32(out, canvas)?;
+                        }
+                        return Ok(Some(SUCCESS));
                     }
                     // O `ITransform` é outro objeto, que desenha **neste** bitmap.
                     AEEIID_TRANSFORM => {

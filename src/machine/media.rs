@@ -24,6 +24,74 @@ impl<C: CpuBackend> Machine<C> {
             return Ok(None);
         };
         let this = self.arg(0);
+        let chamada = self.descreve_chamada_de_midia(iface, name)?;
+        let result = self.media_call_inner(iface, name, this)?;
+        if let Some(result) = result {
+            self.anota_midia(this, format!("{chamada} -> {result:#x}"));
+        } else {
+            self.anota_midia(this, format!("{chamada} -> NÃO IMPLEMENTADO"));
+        }
+        Ok(result)
+    }
+
+    /// A chamada em texto, com os argumentos que dizem alguma coisa sobre o som.
+    fn descreve_chamada_de_midia(
+        &mut self,
+        iface: Interface,
+        name: &str,
+    ) -> Result<String, CpuError> {
+        let (a1, a2, a3) = (self.arg(1), self.arg(2), self.arg(3));
+        Ok(match (iface, name) {
+            (Interface::Media, "SetMediaParm") => {
+                let extra = match a1 {
+                    MM_PARM_MEDIA_DATA if a2 != 0 => {
+                        let classe = self.cpu.read_u32(a2)?;
+                        let dados = self.cpu.read_u32(a2 + 4)?;
+                        let tamanho = self.cpu.read_u32(a2 + 8)?;
+                        let mut cabeca = [0u8; 4];
+                        if classe == MMD_BUFFER && dados != 0 {
+                            self.cpu.read_mem(dados, &mut cabeca).ok();
+                        }
+                        format!(
+                            " dados{{classe {classe:#x}, {tamanho} bytes, {:?}}}",
+                            String::from_utf8_lossy(&cabeca)
+                        )
+                    }
+                    _ => String::new(),
+                };
+                format!("SetMediaParm(parm {a1}, {a2:#x}, {a3:#x}){extra}")
+            }
+            (Interface::MediaUtil, _) => format!("IMediaUtil::{name}({a1:#x}, {a2:#x})"),
+            _ => format!("{name}({a1:#x}, {a2:#x})"),
+        })
+    }
+
+    /// Guarda uma linha no [`Machine::media_log`], juntando repetições seguidas.
+    fn anota_midia(&mut self, objeto: u32, linha: String) {
+        let agora = self.elapsed_ms();
+        if let Some(ultima) = self.media_log.back_mut() {
+            if ultima.1 == objeto && ultima.2 == linha {
+                ultima.3 += 1;
+                return;
+            }
+        }
+        if self.media_log.len() == MEDIA_LOG_MAX {
+            self.media_log.pop_front();
+        }
+        self.media_log.push_back((agora, objeto, linha, 1));
+    }
+
+    /// O registro de mídia, para o relatório: `(instante, objeto, chamada, vezes seguidas)`.
+    pub fn media_log(&self) -> Vec<(u32, u32, String, u32)> {
+        self.media_log.iter().cloned().collect()
+    }
+
+    fn media_call_inner(
+        &mut self,
+        iface: Interface,
+        name: &str,
+        this: u32,
+    ) -> Result<Option<u32>, CpuError> {
         let result = match (iface, name) {
             (_, "AddRef") => self.objects.add_ref(this),
             (_, "Release") => {
@@ -152,6 +220,8 @@ impl<C: CpuBackend> Machine<C> {
                 }
                 SUCCESS
             }
+            // O resto do `IMedia` responde sucesso sem fazer nada — e agora aparece no registro
+            // com o nome, que é o que faltava para saber se uma partida muda depende dele.
             (Interface::Media, _) => SUCCESS,
             _ => return Ok(None),
         };

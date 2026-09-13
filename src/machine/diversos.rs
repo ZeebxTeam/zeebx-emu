@@ -522,6 +522,24 @@ impl<C: CpuBackend> Machine<C> {
                     None => EBADPARM,
                 }
             }
+            // O `ReplaceAt` do `IVector`, e é o slot 7 do BREW, entre o `GetAt` e o `InsertAt`.
+            // A Z-Wheel o usa num ordenamento por inserção em `0x38e5c`: desloca cada item
+            // uma posição e grava o novo no lugar certo. Faltava, e a lista de jogos que
+            // "Jogar" abre ficava sem ordenar — e sem sair.
+            "SubstituirEm" => {
+                let (indice, item) = (self.cpu.read_reg(Reg::R1), self.cpu.read_reg(Reg::R2));
+                match self
+                    .vetores
+                    .get_mut(&this)
+                    .and_then(|(itens, _)| itens.get_mut(indice as usize))
+                {
+                    Some(lugar) => {
+                        *lugar = item;
+                        SUCCESS
+                    }
+                    None => EBADPARM,
+                }
+            }
             "InserirEm" => {
                 let (indice, item) = (self.cpu.read_reg(Reg::R1), self.cpu.read_reg(Reg::R2));
                 let Some((itens, _)) = self.vetores.get_mut(&this) else {

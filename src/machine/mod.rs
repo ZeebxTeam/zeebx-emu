@@ -542,6 +542,8 @@ const MAX_CORPO_ENVIADO: u32 = 1 << 16;
 /// um registro vira um roteiro de `--keys` completo, e uma sessão de teste do usuário rende
 /// quantas repetições eu precisar aqui.
 const PAD_LOG_MAX: usize = 400;
+/// Quantas linhas do [`Machine::media_log`] ficam guardadas.
+const MEDIA_LOG_MAX: usize = 600;
 
 /// O estado de um `IPeek`: os bytes da fonte, onde a leitura está e onde a linha é montada.
 struct Peek {
@@ -727,6 +729,8 @@ const AEEIID_DIB_20: u32 = 0x0100_102c;
 /// slot 4 caía no `NativeToRGB`, o quadro nunca chegava à tela e o jogo ficava preto
 /// desenhando o tempo todo num canvas 320x240.
 const AEEIID_TRANSFORM: u32 = 0x0100_1029;
+/// A interface de canvas que a Z-Wheel pede a um bitmap. Ver [`Interface::Canvas`].
+const AEEIID_CANVAS: u32 = 0x0101_e443;
 /// `IDIB_COLORSCHEME_565`, de `inc/AEEIDIB.h`: 5 bits de vermelho, 6 de verde, 5 de azul.
 const IDIB_COLORSCHEME_565: u8 = 16;
 /// `AEECLSID_DIB` = `AEECLSID_CORE + 69`. É o bitmap com acesso direto aos pixels.
@@ -1820,6 +1824,13 @@ pub struct Machine<C: CpuBackend> {
     /// que anda duas casas por toque pode ser o jogo contando dois canais, ou o emulador
     /// mandando dois eventos, e só o registro separa os dois casos.
     pad_log: std::collections::VecDeque<(u32, usize, usize, bool)>,
+    /// O que o jogo fez com o som, na ordem: `(instante, objeto, chamada)`.
+    ///
+    /// Existe pelo mesmo motivo do [`Machine::pad_log`]: "não sai som na partida" não aparece em
+    /// relatório nenhum quando toda chamada responde sucesso. Chamadas iguais seguidas viram
+    /// uma linha com a contagem, senão um `GetState` por quadro empurraria todo o resto para
+    /// fora.
+    media_log: std::collections::VecDeque<(u32, u32, String, u32)>,
     /// O applet corrente, devolvido por `GetAppInstance`.
     current_applet: u32,
     /// Semente do gerador pseudoaleatório — fixa, para que a mesma sessão se repita igual.
@@ -2075,6 +2086,8 @@ pub struct Machine<C: CpuBackend> {
     transparency: HashMap<u32, u16>,
     /// O bitmap de destino de cada `ITransform` que o jogo pediu por `QueryInterface`.
     transformacoes: HashMap<u32, u32>,
+    /// O bitmap de cada canvas pedido por `QueryInterface`.
+    canvases: HashMap<u32, u32>,
     /// A superfície da tela — o "device bitmap" do BREW. Zero enquanto ninguém pediu.
     device_bitmap: u32,
     /// Onde o `IDisplay` desenha. Normalmente é a tela.
@@ -2223,6 +2236,7 @@ impl<C: CpuBackend> Machine<C> {
                 (n == 0).then_some(crate::input::bindings::Aparelho::Controle)
             }),
             portas_de_aparelho: HashMap::new(),
+            media_log: std::collections::VecDeque::new(),
             teclas: std::collections::VecDeque::new(),
             pad_log: std::collections::VecDeque::new(),
             current_applet: 0,
@@ -2330,6 +2344,7 @@ impl<C: CpuBackend> Machine<C> {
             surface_next: loader::SURFACE_BASE,
             transparency: HashMap::new(),
             transformacoes: HashMap::new(),
+            canvases: HashMap::new(),
             device_bitmap: 0,
             display_target: 0,
             clip: None,
@@ -2780,7 +2795,8 @@ impl<C: CpuBackend> Machine<C> {
             (Interface::Graphics, _)
             | (Interface::Display, _)
             | (Interface::Bitmap, _)
-            | (Interface::Transform, _) => {
+            | (Interface::Transform, _)
+            | (Interface::Canvas, _) => {
                 let whole = iface.method(slot).is_none_or(touches_whole_surface);
                 if whole {
                     self.sync_surfaces_in()?;
@@ -2789,6 +2805,7 @@ impl<C: CpuBackend> Machine<C> {
                     Interface::Graphics => self.graphics_call(slot)?,
                     Interface::Display => self.display_call(slot)?,
                     Interface::Transform => self.transform_call(slot)?,
+                    Interface::Canvas => self.canvas_call(slot)?,
                     _ => self.bitmap_call(slot)?,
                 };
                 let Some(result) = handled else {

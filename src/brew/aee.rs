@@ -139,6 +139,10 @@ pub enum Interface {
     /// É como o Zenonia apresenta o quadro: desenha em 320x240 e pede ao bitmap da tela que
     /// escale o canvas para ela.
     Transform = 52,
+    /// O "canvas" de um bitmap: a interface `0x0101e443`, que a Z-Wheel pede ao bitmap onde
+    /// desenha uma subárvore de widgets. O único método usado é o slot 7, que entrega um
+    /// `IDisplay` desenhando naquele bitmap. Nome e número saíram do uso, não de header.
+    Canvas = 53,
     /// `0x01006c05`, o **ZEEBOMCP** — o objeto único que a Z-Wheel pede a cada partida.
     ///
     /// O nome sai do próprio jogo: a `Tectoy.c` imprime `Cannot create instance of ZEEBOMCP`
@@ -200,6 +204,7 @@ pub enum Interface {
     /// |---|---|---|
     /// | 5 | tamanho | `0x7f170`, e o resultado vira o teto do laço |
     /// | 6 | pegar em | `0x7f190`, com `(índice, &saída)`; o jogo testa se o texto começa com `#` |
+    /// | 7 | substituir em | `0x38ec4`, com `(índice, item)`, num ordenamento por inserção |
     /// | 8 | inserir em | `0x884f0`, com índice `-1` — inserir no fim |
     /// | 9 | remover em | `0x7d788`, com índice `0`, no laço que esvazia a lista item a item |
     /// | 10 | esvaziar | `0x80010`, uma vez, logo antes do `Release` |
@@ -307,7 +312,7 @@ impl Interface {
     /// as duas coisas precisam concordar — daí a lista existir num lugar só, com teste que
     /// confere a correspondência. Quando elas divergiram, um objeto recebeu a vtable de outra
     /// interface e a chamada foi parar no método errado, com sintoma a quilômetros da causa.
-    pub const ALL: [Interface; 53] = [
+    pub const ALL: [Interface; 54] = [
         Self::Shell,
         Self::Module,
         Self::Applet,
@@ -361,6 +366,7 @@ impl Interface {
         Self::SimCardCtl,
         Self::Control,
         Self::Transform,
+        Self::Canvas,
     ];
 
     /// Nome usado nos logs — casa com a nomenclatura do SDK.
@@ -407,6 +413,7 @@ impl Interface {
             Self::Widget => "IWidget",
             Self::Control => "IControl",
             Self::Transform => "ITransform",
+            Self::Canvas => "ICanvas",
             Self::ZeeboMcp => "IZeeboMCP",
             Self::Config => "IConfig",
             Self::Source => "ISource",
@@ -466,6 +473,7 @@ impl Interface {
             Self::Widget => aee_slots::WIDGET,
             Self::Control => aee_slots::CONTROL,
             Self::Transform => aee_slots::TRANSFORM,
+            Self::Canvas => aee_slots::CANVAS,
             Self::ZeeboMcp => aee_slots::ZEEBO_MCP,
             Self::Config => aee_slots::CONFIG,
             Self::Source => aee_slots::SOURCE,
@@ -551,6 +559,7 @@ impl Interface {
             50 => Self::SimCardCtl,
             51 => Self::Control,
             52 => Self::Transform,
+            53 => Self::Canvas,
             6 => Self::Helpers,
             _ => return None,
         })

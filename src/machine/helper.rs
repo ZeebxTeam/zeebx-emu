@@ -612,6 +612,38 @@ impl<C: CpuBackend> Machine<C> {
                 self.write_cstring_limited(a0 + existing as u32, &source, room)?;
                 (existing + source.len()) as u32
             }
+            // boolean MAKEPATH(const char *cpszDir, const char *cpszFile, char *pszOut,
+            //                  int *pnOutLen)
+            //
+            // Junta diretório e arquivo com uma barra. Com `pszOut` nulo só diz o tamanho, com o
+            // terminador — e é assim que a Z-Wheel usa, em duas passadas: mede, aloca, monta.
+            // Faltava, e confirmar em "Jogar" parava aqui, no caminho que abre a lista de jogos.
+            "aee_makepath" => {
+                let saida_tamanho = self.cpu.read_reg(Reg::R3);
+                let caminho = junta_caminho(
+                    &self.cpu.read_cstring(a0, MAX_STRING),
+                    &self.cpu.read_cstring(a1, MAX_STRING),
+                );
+                let precisa = caminho.len() as u32 + 1;
+                let cabe = match (a2, saida_tamanho) {
+                    (0, _) => true,
+                    (_, 0) => {
+                        self.write_cstring_limited(a2, &caminho, precisa as usize)?;
+                        true
+                    }
+                    (_, onde) => {
+                        let espaco = self.cpu.read_u32(onde)?;
+                        if espaco >= precisa {
+                            self.write_cstring_limited(a2, &caminho, precisa as usize)?;
+                        }
+                        espaco >= precisa
+                    }
+                };
+                if saida_tamanho != 0 {
+                    self.cpu.write_u32(saida_tamanho, precisa)?;
+                }
+                u32::from(cabe)
+            }
             "OEMStrLen" => self.cpu.read_cbytes(a0, MAX_STRING).len() as u32,
             "OEMStrSize" => self.cpu.read_cbytes(a0, MAX_STRING).len() as u32 + 1,
             "swapl" => a0.swap_bytes(),
@@ -945,5 +977,26 @@ impl<C: CpuBackend> Machine<C> {
                 bytes.len()
             ))
         })
+    }
+}
+
+/// `MAKEPATH`: o diretório, uma barra só, e o arquivo.
+fn junta_caminho(diretorio: &str, arquivo: &str) -> String {
+    match (diretorio.is_empty(), diretorio.ends_with('/')) {
+        (true, _) => arquivo.to_string(),
+        (false, true) => format!("{diretorio}{arquivo}"),
+        (false, false) => format!("{diretorio}/{arquivo}"),
+    }
+}
+
+#[cfg(test)]
+mod testes_do_makepath {
+    use super::junta_caminho;
+
+    #[test]
+    fn junta_com_uma_barra_so() {
+        assert_eq!(junta_caminho("fs:/mod/274755", "tectoy.cfg"), "fs:/mod/274755/tectoy.cfg");
+        assert_eq!(junta_caminho("fs:/mod/", "a.db"), "fs:/mod/a.db");
+        assert_eq!(junta_caminho("", "a.db"), "a.db");
     }
 }

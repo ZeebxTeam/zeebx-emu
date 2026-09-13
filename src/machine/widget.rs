@@ -606,8 +606,14 @@ impl<C: CpuBackend> Machine<C> {
         const GRAVA: u32 = 0x801;
         /// Sucesso para esta classe. Não é o `SUCCESS` do BREW — ver acima.
         const OK: u32 = 1;
-        /// O terceiro seletor, que grava sem número de item. Ver o ramo dele abaixo.
-        const ELEVEN: u32 = 0x711;
+        /// Define o filho em foco de um container. Ver o braço do acessador.
+        const FOCO_DEFINE: u32 = 0x711;
+        /// Lê o filho em foco definido pelo [`FOCO_DEFINE`].
+        const FOCO_LE: u32 = 0x713;
+        /// Marca o estado de foco do próprio widget (`id` = 1). Ver o braço do `0x702`.
+        const MARCA_FOCO: u32 = 0x700;
+        /// Pergunta, num byte, se o widget pode receber foco.
+        const HABILITADO: u32 = 0x702;
 
         let Some(name) = Interface::Widget.method(slot) else {
             return Ok(None);
@@ -1032,21 +1038,73 @@ impl<C: CpuBackend> Machine<C> {
                         }
                         OK
                     }
-                    // O terceiro seletor tem número: é o `0x711`, e o firmware o usa por um
-                    // invólucro em `0x1035f23c` irmão do de gravar — `acessador(this, 0x711, 0,
-                    // valor)`, mesma convenção invertida. O que ele quer dizer ainda não
-                    // sabemos, e recusar continua sendo o certo; o que muda é o relatório
-                    // dizer **qual**, em vez de "um seletor".
-                    // **Aceitar, e não recusar.** O que o `0x711` quer dizer continua sem
-                    // resposta, mas a convenção aqui é invertida: recusar é dizer ao jogo que a
-                    // chamada falhou, e isso é uma afirmação mais forte do que "não sei".
-                    // Guardamos o valor num item próprio e seguimos.
-                    ELEVEN => {
+                    // **`0x711` define o filho em foco de um container, e `0x713` o lê.**
+                    //
+                    // O par saiu do uso, não de header. A Z-Wheel grava pelo `0x711` um widget
+                    // (`0x30000d90`) no container do roller, e é **nesse mesmo container** que ela
+                    // pergunta pelo `0x713` quando o jogador confirma — por um invólucro em
+                    // `0x3fe5c` que passa `&saída`. Em `0x4eb5c` ela compara a resposta com o
+                    // widget do item que acha selecionado (`[[r4+0x24]+0xb0]`) e só executa a
+                    // ação se os dois baterem. Enquanto o `0x713` era recusado, confirmar não
+                    // fazia nada — nem "Jogar", nem "Ajuda".
+                    FOCO_DEFINE => {
                         if let Some(widget) = self.widgets.get_mut(&this) {
-                            widget.propriedades.insert(ELEVEN, terceiro);
+                            widget.propriedades.insert(FOCO_DEFINE, terceiro);
                         }
-                        self.assumptions
-                            .insert("o seletor 0x711 do widget foi aceito sem saber o que ele faz");
+                        OK
+                    }
+                    // `0x702` responde **um byte** — o chamador lê com `ldrb` — e os dois usos o
+                    // tratam como "pode": em `0x394b4` a ação do item só roda se ele for
+                    // verdadeiro, e em `0x399a0` o widget que entra em foco só recebe o `0x700`
+                    // (`acessador(widget, 0x700, 1, 0)`) se ele for verdadeiro. A leitura é
+                    // "habilitado para foco", e todo widget nosso está habilitado; o `0x700`
+                    // fica guardado para quando algo o ler.
+                    HABILITADO => {
+                        if terceiro != 0 {
+                            self.cpu.write_mem(terceiro, &[1])?;
+                        }
+                        self.assumptions.insert(
+                            "o seletor 0x702 do widget respondeu habilitado — a leitura é pelo uso, sem header",
+                        );
+                        OK
+                    }
+                    // Marcar foco num widget é o que dá foco a ele **dentro do pai**. A grade de
+                    // jogos da Z-Wheel nunca grava o `0x711` no container dela: ao escolher um
+                    // item, ela chama `acessador(item, 0x700, 1, 0)` no widget do item (`0x399d0`)
+                    // e depois, ao confirmar, pergunta pelo `0x713` ao **pai** desse item. Sem
+                    // levar o foco ao pai, a pergunta voltava nula e a confirmação não abria o
+                    // jogo — medido: o item `0x30001250` tem pai `0x30000f10`, e é no `0x30000f10`
+                    // que o `0x713` é feito.
+                    MARCA_FOCO => {
+                        let pai = self.widgets.get(&this).map_or(0, |widget| widget.pai);
+                        if let Some(widget) = self.widgets.get_mut(&this) {
+                            widget.propriedades.insert(MARCA_FOCO, id);
+                        }
+                        if pai != 0 && pai != this {
+                            if let Some(container) = self.widgets.get_mut(&pai) {
+                                match id {
+                                    0 => {
+                                        if container.propriedades.get(&FOCO_DEFINE) == Some(&this) {
+                                            container.propriedades.remove(&FOCO_DEFINE);
+                                        }
+                                    }
+                                    _ => {
+                                        container.propriedades.insert(FOCO_DEFINE, this);
+                                    }
+                                }
+                            }
+                        }
+                        OK
+                    }
+                    FOCO_LE => {
+                        let foco = self
+                            .widgets
+                            .get(&this)
+                            .and_then(|widget| widget.propriedades.get(&FOCO_DEFINE).copied())
+                            .unwrap_or(0);
+                        if terceiro != 0 {
+                            self.cpu.write_u32(terceiro, foco)?;
+                        }
                         OK
                     }
                     outro => {

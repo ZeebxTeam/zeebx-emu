@@ -435,7 +435,18 @@ impl Session {
                 format!("  {ms:>7} ms  porta {}  {acao} {nome}", porta + 1)
             }));
         }
-        let classes = self.machine.unknown_classes();
+        let midia = self.machine.media_log();
+        if !midia.is_empty() {
+            linhas.push("— o que o jogo fez com o som —".to_string());
+            linhas.extend(midia.iter().map(|(ms, objeto, chamada, vezes)| {
+                let repete = match vezes {
+                    1 => String::new(),
+                    n => format!("  ({n}x)"),
+                };
+                format!("  {ms:>7} ms  {objeto:#010x}  {chamada}{repete}")
+            }));
+        }
+                let classes = self.machine.unknown_classes();
         if !classes.is_empty() {
             linhas.push("— classes que o jogo pediu e não temos —".to_string());
             linhas.extend(classes.iter().map(|id| format!("  {id:#010x}")));

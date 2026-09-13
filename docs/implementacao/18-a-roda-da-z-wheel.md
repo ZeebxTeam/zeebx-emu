@@ -464,6 +464,31 @@ tamanho que não veio é um tamanho que não muda.
 
 ---
 
+## 7.1 Confirmar: o foco dos containers, e a lista de jogos que abre
+
+Confirmar em "Jogar" não fazia nada. A cadeia que faltava, em ordem de descoberta:
+
+| Degrau | O que é | Como se leu |
+|---|---|---|
+| seletor `0x711` | define o **filho em foco** de um container | grava um widget (`0x30000d90`) no container do roller |
+| seletor `0x713` | **lê** o filho em foco | é feito no mesmo container, com `&saída`; `0x4eb5c` compara com `[[r4+0x24]+0xb0]` e só age se bater |
+| seletor `0x700` | marca foco num widget, e com isso **no pai dele** | a grade nunca grava `0x711`; chama `0x700` no item (`0x399d0`) e pergunta o `0x713` ao pai do item |
+| seletor `0x702` | "habilitado para foco", **um byte** | lido com `ldrb`; a ação e o `0x700` só acontecem se for verdadeiro. **Hipótese** |
+| `aee_makepath` | junta diretório e arquivo | usado em duas passadas: mede, aloca, monta |
+| `IVector` slot 7 | `ReplaceAt(índice, item)` | ordenamento por inserção em `0x38e5c`; é o slot do BREW entre `GetAt` e `InsertAt` |
+| interface `0x0101e443` | canvas de um bitmap; o slot 7 entrega um `IDisplay` que desenha nele | o que sai é usado com `SetDestination`/`GetDestination`/`GetClipRect`; recusada, `0x41d68` desreferenciava nulo em `0x41dbc`. **Leitura pelo uso** |
+
+Com isso, confirmar em "Jogar" abre o anel "Novos / Recentes" e a **grade de jogos da biblioteca
+local**, com as capas.
+
+O que ainda falta nessa tela:
+
+- **Abrir o jogo.** A confirmação dentro da grade chega ao tratador (`0x39264` → `0x4025c`) e fecha o
+  anel, mas nenhum `ISHELL_StartApplet` é chamado. Várias confirmações seguidas alternam estados e
+  deixam o palco por cima da grade.
+- **Os nomes perdem a última letra** ("Alic", "Alien Breake").
+- Um quadrado cinza solto no canto superior direito da grade.
+
 ## 8. O que ainda não funciona
 
 Honestidade sobre o estado: a roda sobe, desenha, compõe na tela e gira — mas boa parte do caminho

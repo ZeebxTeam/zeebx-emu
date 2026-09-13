@@ -645,6 +645,17 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
             println!("  {ms:>7} ms  porta {}  {acao} {nome}", porta + 1);
         }
     }
+    let midia = machine.media_log();
+    if !midia.is_empty() {
+        println!("som:       {} linha(s) do que o jogo fez com a mídia", midia.len());
+        for (ms, objeto, chamada, vezes) in &midia {
+            let repete = match vezes {
+                1 => String::new(),
+                n => format!("  ({n}x)"),
+            };
+            println!("  {ms:>7} ms  {objeto:#010x}  {chamada}{repete}");
+        }
+    }
     let urls = machine.web_requests();
     if !urls.is_empty() {
         println!(
