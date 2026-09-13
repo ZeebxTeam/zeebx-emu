@@ -23,48 +23,32 @@ pub const PORTAS: usize = 2;
 /// `0xe030`, `0xe04a` e outros — que são `AVK_`.
 pub const EVT_KEY: u32 = 0x100;
 
-/// Os códigos virtuais do BREW que o console usa, do `AEEVCodes.h`.
+/// Os códigos virtuais do BREW que o console usa, na numeração do `AEEVCodes.h`.
 ///
-/// A lista não é chute: são os que aparecem como literal no módulo da Z-Wheel — `0xe015`,
-/// `0xe030` a `0xe035`, `0xe046`, `0xe04a`, `0xe063` — mais os quatro sentidos, que ficam logo
-/// antes do `AVK_SELECT` na numeração do header.
+/// A numeração foi conferida no módulo da Z-Wheel, que é quem mais depende dela:
+///
+/// - a função em `0x44914` é a tradução que a própria Z-Wheel faz do analógico em teclas. Ela leva
+///   os quatro sentidos, na ordem cima, baixo, esquerda, direita, em `0xe031` a `0xe034`;
+/// - os tratadores de `0x11888` e `0x158c0` tratam `0xe030` igual a `0xe04a` (voltar) e `0xe035`
+///   igual a `0xe064` (confirmar) — `AVK_CLR` e `AVK_SELECT` ao lado dos botões do controle.
 pub mod avk {
-    /// **Os quatro sentidos aqui são inferência, e a Z-Wheel não usa nenhum deles.**
-    ///
-    /// Vieram de supor que ficassem logo antes do `AVK_SELECT` na numeração do header. O módulo
-    /// da Z-Wheel desmente em parte: `0xe011` e `0xe013` não aparecem nele de forma alguma, e
-    /// quem gira a roda de jogos são `0xe033` e `0xe034` — medido, comparando o quadro com e
-    /// sem cada tecla. Ficam porque outro jogo pode usá-las e porque tirar sem medir seria
-    /// trocar uma suposição por outra.
-    pub const UP: u32 = 0xe011;
-    pub const DOWN: u32 = 0xe012;
-    pub const LEFT: u32 = 0xe013;
-    pub const RIGHT: u32 = 0xe014;
-    /// O "OK". É o código que a Z-Wheel guarda em `0xe015`.
-    pub const SELECT: u32 = 0xe015;
-    /// `AVK_0` a `AVK_9` são contíguos.
-    pub const ZERO: u32 = 0xe030;
-    pub const STAR: u32 = 0xe03a;
-    pub const POUND: u32 = 0xe03b;
-    pub const CLR: u32 = 0xe04a;
+    pub const ZERO: u32 = 0xe021;
+    pub const STAR: u32 = 0xe02b;
+    pub const POUND: u32 = 0xe02c;
+    pub const CLR: u32 = 0xe030;
+    pub const UP: u32 = 0xe031;
+    pub const DOWN: u32 = 0xe032;
+    pub const LEFT: u32 = 0xe033;
+    pub const RIGHT: u32 = 0xe034;
+    pub const SELECT: u32 = 0xe035;
+    /// O botão de confirmar do controle. A Z-Wheel o aceita onde aceita o `SELECT`; a tela de
+    /// instruções do z-pad só avança com ele.
+    pub const CONFIRMA: u32 = 0xe064;
 
     /// O código de um dígito, ou `None` se não for dígito.
     pub fn digito(n: u32) -> Option<u32> {
         (n <= 9).then_some(ZERO + n)
     }
-
-    /// As teclas do console que a Z-Wheel escuta, **medidas** e não deduzidas.
-    ///
-    /// A medida foi comparar o quadro com e sem cada candidata, com o desenho já
-    /// determinístico: `0xe033` e `0xe034` giram a roda de jogos para um lado e para o outro, e
-    /// `0xe064` avança a tela de instruções do z-pad — o mesmo que a tecla `0` faz ali.
-    ///
-    /// Pela numeração dos dígitos, `0xe033` e `0xe034` são o `3` e o `4`. Não sabemos que nome
-    /// o header do BREW lhes dá nem por que a roda usa justamente esses dois; sabemos o que
-    /// eles fazem. Ficam com nome do que fazem, e não do que se imagina que sejam.
-    pub const RODA_ANTERIOR: u32 = 0xe033;
-    pub const RODA_SEGUINTE: u32 = 0xe034;
-    pub const CONFIRMA: u32 = 0xe064;
 
     /// O código de uma tecla pelo nome que a configuração usa.
     pub fn por_nome(nome: &str) -> Option<u32> {
@@ -74,10 +58,7 @@ pub mod avk {
             "left" => LEFT,
             "right" => RIGHT,
             "select" | "ok" => SELECT,
-            // Os dois que giram a roda da Z-Wheel. Terem nome é o que deixa um roteiro de
-            // teste legível: `--teclas=31000:roda-seguinte` diz o que `0xe034` não diz.
-            "roda-anterior" => RODA_ANTERIOR,
-            "roda-seguinte" => RODA_SEGUINTE,
+            "confirma" => CONFIRMA,
             "star" => STAR,
             "pound" => POUND,
             "clr" => CLR,
@@ -445,18 +426,14 @@ mod tests {
         assert_eq!(avk::por_nome("0xzz"), None);
     }
 
-    /// Os dígitos `3` e `4` são o que gira a roda da Z-Wheel.
-    ///
-    /// Fica pinado num teste porque é a única coisa que liga [`avk::RODA_ANTERIOR`] e
-    /// [`avk::RODA_SEGUINTE`] ao caminho que os produz: o direcional saiu da tradução de teclas
-    /// — ele move os eixos, como o console reporta —, e quem manda esses dois códigos agora é o
-    /// teclado, pelos dígitos.
+    /// As setas na numeração do `AEEVCodes.h`, que é a que a Z-Wheel usa em `0x44914`.
     #[test]
-    fn os_digitos_tres_e_quatro_sao_os_da_roda() {
-        assert_eq!(avk::por_nome("3"), Some(avk::RODA_ANTERIOR));
-        assert_eq!(avk::por_nome("4"), Some(avk::RODA_SEGUINTE));
-        assert_eq!(avk::por_nome("roda-anterior"), Some(avk::RODA_ANTERIOR));
-        assert_eq!(avk::por_nome("roda-seguinte"), Some(avk::RODA_SEGUINTE));
+    fn as_setas_seguem_o_header() {
+        assert_eq!(
+            [avk::CLR, avk::UP, avk::DOWN, avk::LEFT, avk::RIGHT, avk::SELECT],
+            [0xe030, 0xe031, 0xe032, 0xe033, 0xe034, 0xe035]
+        );
+        assert_eq!(avk::por_nome("confirma"), Some(0xe064));
     }
 
     #[test]

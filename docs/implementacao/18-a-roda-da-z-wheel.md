@@ -438,10 +438,12 @@ tamanho que não veio é um tamanho que não muda.
 
 ## 7. A roda só gira se a tecla chegar ao tratador certo
 
-- **Os códigos são `0xe033` (anterior) e `0xe034` (seguinte)**, medidos comparando o quadro com e sem
-  cada candidata, com o desenho já determinístico. `0xe064` confirma. Pela numeração dos dígitos,
-  `0xe033`/`0xe034` são o `3` e o `4`; **os `AVK_LEFT`/`AVK_RIGHT` (`0xe013`/`0xe014`) não aparecem
-  no módulo** — se você mapeou as setas para eles, a roda não gira.
+- **Os códigos são os do `AEEVCodes.h`**: `0xe030` `CLR`, `0xe031`/`0xe032` cima/baixo,
+  `0xe033`/`0xe034` esquerda/direita, `0xe035` `SELECT`; `0xe064` é o confirmar do controle. A prova
+  está no módulo: a `0x44914` é a tradução que a própria Z-Wheel faz do analógico em teclas, e leva
+  cima, baixo, esquerda e direita em `0xe031` a `0xe034`; os tratadores de `0x11888` e `0x158c0`
+  tratam `0xe030` igual a `0xe04a` e `0xe035` igual a `0xe064`. O direcional do controle manda as
+  quatro setas.
 - **A tecla chega como `EVT_KEY` ao applet**, não pelo `IHID`. O formulário de abertura, por exemplo,
   só sai do lugar com `AVK_0` ou `AVK_CLR`, que botão nenhum do controle produz.
 - **Ordem de despacho.** Primeiro os tratadores da tela atual, do mais novo para o mais velho, depois
@@ -483,8 +485,9 @@ local**, com as capas.
 
 ### 7.2 Da grade ao lançamento
 
-A grade navega com `0xe031`/`0xe032` (esquerda/direita) e `0xe033`/`0xe034` (cima/baixo), e abre com
-`0xe035` ou `0xe064` — `0xe064` sozinho, sem item escolhido, só foca. O caminho até o jogo, degrau
+Na lista, cima e baixo passam as páginas e levam o foco entre a barra de abas e as capas;
+esquerda e direita trocam a aba ou andam nas capas, conforme o foco. `0xe035` ou `0xe064` abre.
+O caminho até o jogo, degrau
 por degrau:
 
 | Degrau | O que é |
@@ -497,6 +500,10 @@ por degrau:
 | `EnumAppletInit`/`EnumNextApplet` | a Z-Wheel usa o nome do `.mif` (o id do módulo) do jogo escolhido |
 | `ZeeboMCP` slots 3, 5 e 7 | `ModDataCopyFromENAND`, `ModDataRemoveFromMCP`, `UserDataCopyToENAND` — a cópia entre `fs:/card3/mod/` e `fs:/mcp/mod/`, que aqui não existe |
 | `ObjectStore::add_ref` | não ressuscita objeto solto: duplicava o endereço na lista de livres, e o `IGraphics` do aviso de lançamento nasceu em cima de um bitmap |
+| `EVT_WDG_MOVEFOCUS` (`0x711`) com `1` a `4` | `FIRST`, `LAST`, `NEXT`, `PREV`: o foco anda entre os filhos que aceitam foco (`0x702`), e quem sai e quem entra recebe `EVT_WDG_SETFOCUS` (`0x700`). É esse aviso que desenha a seleção. A tecla não vai mais a um ramo sem foco — sem isso a seta andava nas capas e trocava a aba junto |
+| `IDISPLAY_DrawText` | honra `nChars`, o retângulo e os alinhamentos (`0x20` centro, `0x200` meio; conferidos no uso em `0x30434`). A barra de abas é um carrossel de rótulos de 214 px centralizados |
+| `utf8towstr` | o terminador só entra se couber: a Z-Wheel passa o tamanho sem ele (`0x8afc8`), e reservá-lo comia a última letra de todo nome |
+| BMP de 16 bits | as capas de nove jogos são 5-5-5 sem máscara |
 
 Sem janela, `--instalados=0xCLSID:id` registra jogos instalados para testar o lançamento.
 
@@ -506,10 +513,70 @@ O que ainda falta nessa tela:
   modo pelo slot 6 e grava pelo 3 (modos 0 a 3, sinalizadores de hardware no firmware). Com ele, a
   Z-Wheel limpa os formulários, grava o marcador `ttgmrun.tmp`, arma o timer de 2 s para `0x81ebc` e
   chama `ISHELL_StartApplet` com a classe do jogo escolhido. Medido sem janela: com
-  `--teclas=30500:0xe064,35000:0xe032,37000:0xe064 --instalados=0x010a2337:279369`, o relatório diz
-  `lançar: o shell pediu para abrir 0x010a2337` — o Alien Breaker.
-- **Os nomes perdem a última letra** ("Alic", "Alien Breake").
-- Um quadrado cinza solto no canto superior direito da grade.
+  `bench roms/Z-Wheel.zip --seconds=43 --instalados=0x010a2337:279369
+  --teclas=30500:0xe064,33000:0xe032,35000:0xe034,36500:0xe034,38000:0xe064` (abrir a lista, descer
+  às capas, duas vezes à direita, confirmar), o relatório diz `lançar: o shell pediu para abrir
+  0x010a2337` — o Alien Breaker. A bancada grava com `--dump` um quadro meio segundo depois de cada
+  tecla, e aceita `--dump-surfaces`.
+- **Na janela, escolher um jogo fechava a Z-Wheel e nada abria.** Três causas, achadas repetindo
+  sem janela os toques gravados no relatório da janela (`zeebx sessao`, que usa a mesma `Session`, a
+  mesma biblioteca e o mesmo mapeamento do controle):
+  1. **A Z-Wheel lança saindo.** Ao confirmar, grava `ttgmrun.tmp` e `StringLastAppRan`, desmonta
+     as telas e sai no timer de `0x81c38`. O console a reabre, e na partida (`0x81904`) ela vê o
+     marcador e abre o jogo dois segundos depois. A janela agora reabre a Z-Wheel quando ela sai
+     sozinha (`session::Z_WHEEL`). Um marcador deixado por uma execução que caiu é retomado na
+     partida seguinte — é por isso que a Z-Wheel às vezes abria um jogo sozinha.
+  2. **Widgets morriam sem os liberadores.** O trio `{função, contexto, liberador}` perdia a terceira
+     palavra, o `RemoveForm` não soltava a referência da raiz e os filhos eram soltos só pela
+     contagem. O roller da barra de abas seguia vivo com o timer de 40 ms (`0x2fc88`) armado sobre
+     memória que a Z-Wheel já tinha solto, e o tique seguinte saltava para o endereço zero.
+  3. **A região de superfícies não reciclava.** Capas e bitmaps de 440/441×49 por quadro esgotavam
+     os 8 MB aos 27 s de navegação; daí em diante canvas e caixas de mensagem ficavam sem pixels.
+- **O palco 3D saía cinza, e depois com riscos.** Dois defeitos em sequência:
+  1. A Z-Wheel compõe o palco copiando o pbuffer para a tela com o `MEMMOVE` do helper, e a vigia de
+     escrita só enxergava escrita do código ARM. As cópias pedidas ao helper (`memmove`, `memset`)
+     agora marcam a faixa (`CpuBackend::marca_sujo`).
+  2. O pbuffer tem 640×330, mas o rasterizador ficava em 640×480 e a Z-Wheel nunca chama
+     `glViewport`. A exportação e a importação do `eglGetColorBufferQUALCOMM` passavam por escala e
+     não voltavam às mesmas linhas: o fundo que o jogo copia a cada quadro não chegava a um terço
+     delas, e a espada animada deixava rastros pontilhados. No `eglMakeCurrent` de uma superfície
+     de outro tamanho que não o da tela, a superfície e a viewport do GL passam a ser as dela.
+- **A roda da tela inicial tem dois itens nesta ROM, e está certo.** O `tectoy.cfg` traz `EOL=1` e
+  `zeebomenu_hide=1`, que ligam os bits `0x2000` e `0x4000` de `app+0x3614`; a montagem em `0x4f620`
+  tira os itens Zeebo e Configurações e troca o último por "Ajuda". Capturas com mais itens são de
+  versões anteriores ao fim de vida.
+- **Moldura de foco.** O `MOVEFOCUS` com um widget explícito (`0x711`) agora avisa quem sai e quem
+  entra com `EVT_WDG_SETFOCUS`, pelo tratador do jogo. O do roller (`0x6089c`) grava o foco em
+  `[+0xac]`, que é o que o `DrawRollerExt` testa para desenhar a moldura azul.
+- **"Ajuda" abre, com placeholder.** A tela de FAQ precisa do widget de HTML (`0x0102dd32`). A classe
+  entrou na família de widgets, e a montagem só passou quando a propriedade `0x161` do widget
+  passou a devolver um objeto: a `0x31c34` faz nele um `QueryInterface(0x102d691)` sem conferir o
+  zero, e abortava calada. Não há renderizador de HTML: o widget mostra o texto de
+  `aparelho/z-wheel/ajuda.html`, criado com um texto padrão e editável à vontade (tags de bloco
+  viram parágrafo, o resto some).
+- **Formulário coberto não desenha.** Os widgets de desenho próprio eram chamados todos, e o palco
+  do menu caía por cima da ajuda e aparecia atrás da lista de jogos. Quem pertence a um formulário
+  que não é o do topo agora fica de fora; o que não está sob formulário, como a barra de status,
+  segue.
+- **Voltar é o botão 2**, como a ajuda da Z-Wheel diz, e manda `AVK_CLR` — medido na tela de ajuda.
+- **Cor de fundo dos widgets.** A propriedade `0x130` é o fundo, em `RRGGBBAA` como a `0x140` do
+  texto. A Z-Wheel grava alfa zero na maioria dos widgets e `0xd0d0d0ff` no container que cada
+  formulário pendura em `0x5000`: é o cinza claro atrás do palco, da roda e da lista de jogos. Ele
+  passou a ser pintado a cada quadro, antes das imagens, e isso também cobriu o que sobrava de um
+  quadro para o outro — o quadrado cinza onde fica a seta de página da grade e os tracinhos azuis
+  sob a barra de abas.
+- **A moldura da capa só nas laterais está certa.** A imagem de seleção no `tectoyli.brf`
+  (178×267) é isso mesmo: duas colunas azuis com o miolo transparente. A moldura da roda (214×47)
+  também confere.
+- **A tela de "Aguarde" no lançamento.** Ao sair para abrir um jogo, a Z-Wheel troca arquivos no
+  próprio diretório (`0x81db0`): se existe `gamestartrgb.sav`, renomeia `zeebosplash.rgb565.raw`
+  para `.sav` e o `gamestartrgb.sav` para `zeebosplash.rgb565.raw`. Na reabertura desfaz a troca no
+  primeiro milissegundo (`0x822bc`). Quem lê o arquivo nesse intervalo é o console, ao reabri-la, e
+  a imagem (640×480 RGB565) é "Aguarde enquanto o aplicativo é carregado". A Z-Wheel reaberta não
+  desenha nos dois segundos até o `StartApplet`, e o jogo começa com a tela que ela deixou. A sessão
+  agora pinta esse arquivo ao abrir a Z-Wheel, e o jogo aberto por ela herda a última tela
+  (`Session::herda_tela`) — antes, os dois intervalos eram tela preta. No boot o arquivo é o
+  "Bem-Vindo ao Zeebo", e a abertura da Z-Wheel desenha a própria versão por cima.
 
 ## 8. O que ainda não funciona
 
@@ -558,7 +625,7 @@ Para quem trabalha neste repositório.
 | Pbuffer e `GetColorBufferQUALCOMM` | [`machine/egl.rs`](../../src/machine/egl.rs) |
 | Bancos de perfil e `tt_dlqueue.db` | [`machine/sql.rs`](../../src/machine/sql.rs), [`brew/sql.rs`](../../src/brew/sql.rs) |
 | `preloaded.cfg` | [`machine/file.rs`](../../src/machine/file.rs) |
-| Teclas da roda | [`input/mod.rs`](../../src/input/mod.rs), `avk::RODA_*` |
+| Teclas da roda | [`input/mod.rs`](../../src/input/mod.rs), `avk::LEFT`/`RIGHT` (o direcional, em `ui/mod.rs`) |
 | Bitmap do display | [`machine/bitmap.rs`](../../src/machine/bitmap.rs), `device_bitmap` |
 | Evento antes do start | [`machine/signal.rs`](../../src/machine/signal.rs), `send_applet_event` |
 

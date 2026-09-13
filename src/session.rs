@@ -89,6 +89,8 @@ pub struct Session {
     /// A saída de som. Enquanto ela existe, o som toca; largá-la fecha o fluxo.
     audio: Option<crate::audio::Output>,
     title: String,
+    /// O ClassID do applet desta sessão.
+    classe: u32,
     /// Instante e leitura do relógio virtual quando a execução começou, que é o par com que se
     /// mede se o jogo está adiantado.
     started: Instant,
@@ -183,6 +185,12 @@ impl Session {
         let mut machine = Machine::new(cpu, module, root);
         // Antes de qualquer desenho: ver [`Machine::usa_placa`].
         machine.usa_placa(placa, contexto);
+        // A tela com que o console abre a Z-Wheel. Ver [`SPLASH_DA_Z_WHEEL`].
+        if library::applet_clsid(path) == Some(Z_WHEEL) {
+            if let Some(imagem) = path.parent().and_then(|dir| std::fs::read(dir.join(SPLASH_DA_Z_WHEEL)).ok()) {
+                machine.pinta_tela_rgb565(&imagem);
+            }
+        }
         if let Some(caminho) = serial {
             if let Some(dir) = caminho.parent() {
                 let _ = std::fs::create_dir_all(dir);
@@ -224,6 +232,7 @@ impl Session {
             partida: Some((applet, clsid)),
             audio: None,
             title: library::title_for(path),
+            classe: clsid,
             started: Instant::now(),
             clock_base,
             stopped: None,
@@ -579,7 +588,51 @@ impl Session {
     pub fn title(&self) -> &str {
         &self.title
     }
+
+    /// O último quadro do rasterizador GL, quando há um. Serve para separar o que o 3D desenhou
+    /// do que chegou à tela composto.
+    pub fn quadro_gl(&self) -> Option<Framebuffer> {
+        self.machine.gl_frame()
+    }
+
+    /// O ClassID do applet que roda nesta sessão.
+    pub fn classe(&self) -> u32 {
+        self.classe
+    }
+
+    /// Começa com a tela que o applet anterior deixou, antes do primeiro desenho deste.
+    ///
+    /// O framebuffer do aparelho não é apagado na troca de applet. Ao abrir um jogo, a Z-Wheel
+    /// deixa na tela o "Aguarde enquanto o aplicativo é carregado" (ver [`SPLASH_DA_Z_WHEEL`]), e
+    /// é ele que se vê até o jogo desenhar o primeiro quadro.
+    pub fn herda_tela(&mut self, rgb565: &[u8]) {
+        self.machine.pinta_tela_rgb565(rgb565);
+    }
+
+    /// Se o applet saiu por conta própria, e não por falha.
+    pub fn saiu_sozinho(&self) -> bool {
+        matches!(self.stopped, Some(Outcome::Returned { .. }))
+    }
 }
+
+/// O ClassID da Z-Wheel, a tela inicial do console.
+///
+/// **Escolher um jogo nela é fechá-la.** O caminho está no módulo: ao confirmar, ela grava o
+/// marcador `ttgmrun.tmp` e o `StringLastAppRan`, desmonta as telas e, no timer de `0x81c38`,
+/// sai. O console a reabre por ser a tela inicial, e na partida ela vê o marcador (`0x81904`),
+/// apaga-o e abre o jogo gravado dois segundos depois. Quem roda a Z-Wheel precisa reabri-la
+/// quando ela sai sozinha — sem isso o jogo escolhido nunca abria.
+pub const Z_WHEEL: u32 = 0x0107_0798;
+
+/// A imagem RGB565 de 640×480 que o console mostra ao abrir a Z-Wheel, no diretório dela.
+///
+/// No boot é o "Bem-Vindo ao Zeebo". **Para abrir um jogo, a Z-Wheel troca o arquivo antes de
+/// sair**: se existe `gamestartrgb.sav`, ela renomeia este para `zeebosplash.rgb565.sav` e o
+/// `gamestartrgb.sav` para este nome (`0x81db0`), e na reabertura desfaz a troca logo no
+/// primeiro milissegundo (`0x822bc`). Quem lê o arquivo entre as duas é o console, ao
+/// reabri-la — e o que aparece é "Aguarde enquanto o aplicativo é carregado", que fica na tela
+/// nos dois segundos até o jogo abrir, porque a Z-Wheel reaberta não desenha nada nesse tempo.
+pub const SPLASH_DA_Z_WHEEL: &str = "zeebosplash.rgb565.raw";
 
 /// A execução por dentro, para a varredura de ROMs — ver [`crate::varredura`].
 ///

@@ -453,6 +453,15 @@ impl CpuBackend for UnicornCpu {
         }
     }
 
+    fn marca_sujo(&mut self, addr: u32, len: u32) {
+        let fim = addr.saturating_add(len);
+        for vigia in &self.vigias {
+            if addr < vigia.end && fim > vigia.base {
+                vigia.sujo.set(true);
+            }
+        }
+    }
+
     fn take_dirty(&mut self, id: u32) -> bool {
         match self.vigias.iter().find(|vigia| vigia.id == id) {
             Some(vigia) => vigia.sujo.replace(false),

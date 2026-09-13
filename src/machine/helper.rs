@@ -210,6 +210,7 @@ impl<C: CpuBackend> Machine<C> {
             "memset" => {
                 if a2 > 0 {
                     self.cpu.write_mem(a0, &vec![a1 as u8; a2 as usize])?;
+                    self.cpu.marca_sujo(a0, a2);
                 }
                 a0
             }
@@ -462,6 +463,11 @@ impl<C: CpuBackend> Machine<C> {
                 TRUE
             }
             // `boolean utf8towstr(const byte *pszIn, int nLen, AECHAR *pDest, int nSizeBytes)`
+            //
+            // O terminador só entra se couber. A Z-Wheel (`0x8afc8`) aloca `(n+1)*2` bytes e
+            // passa `n*2`: conta com os `n` caracteres inteiros e com o zero da memória recém
+            // alocada. Reservar o terminador dentro de `nSizeBytes` comia a última letra de todo
+            // nome de jogo da lista — "Alic", "Alien Breake".
             "utf8towstr" => {
                 let bytes = if (a1 as i32) < 0 {
                     self.cpu.read_cbytes(a0, MAX_STRING)
@@ -470,7 +476,15 @@ impl<C: CpuBackend> Machine<C> {
                 };
                 let text = String::from_utf8_lossy(&bytes).into_owned();
                 let limit = self.cpu.read_reg(Reg::R3) as usize / 2;
-                self.write_aechar(a2, &text, limit)?;
+                let mut units: Vec<u16> = text.encode_utf16().collect();
+                units.truncate(limit);
+                if units.len() < limit {
+                    units.push(0);
+                }
+                if a2 != 0 {
+                    let bytes: Vec<u8> = units.iter().flat_map(|u| u.to_le_bytes()).collect();
+                    self.cpu.write_mem(a2, &bytes)?;
+                }
                 TRUE
             }
             // `boolean wstrtoutf8(const AECHAR *pszIn, int nLen, byte *pDest, int nSizeBytes)`
@@ -927,6 +941,7 @@ impl<C: CpuBackend> Machine<C> {
         let bytes = self.read_bytes(src, len)?;
         if len > 0 {
             self.cpu.write_mem(dst, &bytes)?;
+            self.cpu.marca_sujo(dst, len);
         }
         Ok(())
     }

@@ -96,6 +96,15 @@ pub trait CpuBackend {
         true
     }
 
+    /// Liga o sinalizador das faixas vigiadas que cruzam `addr..addr+len`.
+    ///
+    /// A vigia só enxerga escrita **do guest**, e isso é o que se quer para as escritas do
+    /// próprio emulador. Mas um `MEMMOVE` que o jogo pede ao helper é escrita do jogo feita pelas
+    /// nossas mãos: a Z-Wheel compõe o palco 3D assim, copiando o pbuffer para os pixels do
+    /// bitmap de destino, e sem este aviso a superfície nunca importava a cópia — o palco ficava
+    /// cinza.
+    fn marca_sujo(&mut self, _addr: u32, _len: u32) {}
+
     fn read_mem(&self, addr: u32, buf: &mut [u8]) -> Result<(), CpuError>;
 
     fn write_mem(&mut self, addr: u32, data: &[u8]) -> Result<(), CpuError>;

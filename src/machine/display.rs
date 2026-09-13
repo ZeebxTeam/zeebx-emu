@@ -143,10 +143,60 @@ impl<C: CpuBackend> Machine<C> {
             }
             // void IDISPLAY_DrawText(IDisplay *, AEEFont, const AECHAR *pcText, int nChars,
             //                        int x, int y, const AEERect *prcBackground, uint32 dwFlags)
+            // int IDISPLAY_DrawText(IDisplay *p, AEEFont nFont, const AECHAR *pcText, int nChars,
+            //                       int x, int y, const AEERect *prcBackground, uint32 dwFlags)
+            //
+            // O retângulo e os sinalizadores mandam na posição: com alinhamento pedido num eixo,
+            // o `x` ou o `y` daquele eixo não conta, e o texto não sai do retângulo. A barra de
+            // abas da Z-Wheel desenha cada rótulo em `(0, 0)` pedindo centro e meio num
+            // retângulo de 214 pixels; ignorar isso encostava tudo à esquerda e jogava o rótulo
+            // anterior para fora da barra.
             "DrawText" => {
-                let text = self.read_aechar(self.cpu.read_reg(Reg::R2))?;
+                let mut units = self.read_aechar_units(self.cpu.read_reg(Reg::R2))?;
+                let chars = self.cpu.read_reg(Reg::R3) as i32;
+                if chars >= 0 {
+                    units.truncate(chars as usize);
+                }
+                let text = String::from_utf16_lossy(&units);
                 let (x, y) = (self.stack_arg(0)? as i32, self.stack_arg(1)? as i32);
-                match self.draw_text(&text, x, y)? {
+                let fundo = self.read_rect(self.stack_arg(2)?)?;
+                let flags = self.stack_arg(3)?;
+                if let (Some(rect), true) = (fundo, flags & IDF_RECT_FILL != 0) {
+                    let cor = self.colors.get(CLR_USER_BACKGROUND).copied().unwrap_or(Rgb::WHITE);
+                    let target = self.target()?;
+                    if let (Some(rect), Some(fb)) = (self.clip_rect(rect), self.bitmaps.get_mut(&target)) {
+                        fb.fill_rect(rect, cor);
+                    }
+                }
+                let medida = self.font.as_ref().map(|fonte| {
+                    (
+                        fonte.width(&text, FONT_SIZE) as i32,
+                        (fonte.ascent(FONT_SIZE) + fonte.descent(FONT_SIZE)) as i32,
+                    )
+                });
+                let (x, y) = match (fundo, medida) {
+                    (Some(rect), Some(medida)) => posicao_do_texto((x, y), rect, flags, medida),
+                    _ => (x, y),
+                };
+                // O texto fica dentro do retângulo: é o recorte que o BREW aplica, e é o que
+                // corta o rótulo vizinho na borda da barra em vez de deixá-lo vazar.
+                let recorte_anterior = self.clip;
+                let visivel = match fundo {
+                    Some(rect) => match self.clip_rect(rect) {
+                        Some(dentro) => {
+                            self.clip = Some(dentro);
+                            true
+                        }
+                        None => false,
+                    },
+                    None => true,
+                };
+                let desenhou = match visivel {
+                    true => self.draw_text(&text, x, y),
+                    false => Ok(true),
+                };
+                self.clip = recorte_anterior;
+                match desenhou? {
                     true => {}
                     // Sem fonte, o texto continua indo só para o relatório: é o que permite
                     // saber que o jogo *quer* escrever mesmo quando não há com o quê.
@@ -621,8 +671,82 @@ impl<C: CpuBackend> Machine<C> {
             .unwrap_or(&self.screen)
     }
 
+    /// Põe na tela uma imagem RGB565 do tamanho dela, antes de o applet desenhar.
+    ///
+    /// É o papel do firmware entre um applet e outro: a tela do aparelho não é apagada quando
+    /// um applet sai e outro entra, e o que estava nela fica até alguém desenhar por cima. Devolve
+    /// `false`, sem tocar em nada, quando a imagem não tem o tamanho da tela.
+    pub fn pinta_tela_rgb565(&mut self, bytes: &[u8]) -> bool {
+        let tela = match self.bitmaps.get_mut(&self.device_bitmap) {
+            Some(tela) => tela,
+            None => &mut self.screen,
+        };
+        if bytes.len() != tela.width() as usize * tela.height() as usize * 2 {
+            return false;
+        }
+        tela.load_rgb565_bytes(bytes);
+        true
+    }
+
     /// Textos que o jogo pediu para desenhar mas que ainda não sabemos rasterizar.
     pub fn pending_text(&self) -> &[String] {
         &self.pending_text
+    }
+}
+
+/// Alinhamentos do `IDISPLAY_DrawText`, de `AEEDisp.h`. Os valores foram conferidos no uso da
+/// Z-Wheel (`0x30434`): o rótulo de uma linha pede `0x8020 | 0x200` — transparente, centro,
+/// meio —, e o de duas linhas troca o `0x200` por `0x400` na primeira e `0x100` na segunda,
+/// que é embaixo e em cima. Batem com o `IDF_RECT_FRAME`/`FILL` de `1` e `2`.
+const IDF_ALIGN_LEFT: u32 = 0x10;
+const IDF_ALIGN_CENTER: u32 = 0x20;
+const IDF_ALIGN_RIGHT: u32 = 0x40;
+const IDF_ALIGN_TOP: u32 = 0x100;
+const IDF_ALIGN_MIDDLE: u32 = 0x200;
+const IDF_ALIGN_BOTTOM: u32 = 0x400;
+
+/// Onde o texto começa, dado o retângulo e os alinhamentos. Um eixo sem alinhamento fica com a
+/// coordenada que o jogo passou.
+fn posicao_do_texto(
+    (x, y): (i32, i32),
+    rect: Rect,
+    flags: u32,
+    (largura, altura): (i32, i32),
+) -> (i32, i32) {
+    let (rx, ry, rw, rh) = (
+        i32::from(rect.x),
+        i32::from(rect.y),
+        i32::from(rect.width),
+        i32::from(rect.height),
+    );
+    let x = match flags {
+        f if f & IDF_ALIGN_CENTER != 0 => rx + (rw - largura) / 2,
+        f if f & IDF_ALIGN_RIGHT != 0 => rx + rw - largura,
+        f if f & IDF_ALIGN_LEFT != 0 => rx,
+        _ => x,
+    };
+    let y = match flags {
+        f if f & IDF_ALIGN_MIDDLE != 0 => ry + (rh - altura) / 2,
+        f if f & IDF_ALIGN_BOTTOM != 0 => ry + rh - altura,
+        f if f & IDF_ALIGN_TOP != 0 => ry,
+        _ => y,
+    };
+    (x, y)
+}
+
+#[cfg(test)]
+mod testes_do_texto {
+    use super::*;
+
+    #[test]
+    fn o_rotulo_da_barra_de_abas_fica_no_centro_do_retangulo() {
+        let rect = Rect { x: 0, y: 0, width: 214, height: 37 };
+        assert_eq!(posicao_do_texto((0, 0), rect, 0x8220, (50, 17)), (82, 10));
+    }
+
+    #[test]
+    fn sem_alinhamento_vale_a_coordenada_passada() {
+        let rect = Rect { x: 0, y: 0, width: 640, height: 480 };
+        assert_eq!(posicao_do_texto((48, 272), rect, 0x8000, (90, 17)), (48, 272));
     }
 }

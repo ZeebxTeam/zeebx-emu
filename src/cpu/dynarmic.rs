@@ -443,6 +443,18 @@ impl CpuBackend for DynarmicCpu {
         }
     }
 
+    fn marca_sujo(&mut self, addr: u32, len: u32) {
+        let Ok(jit) = self.jit_mut() else {
+            return;
+        };
+        let fim = addr.saturating_add(len);
+        for vigia in jit.vigias.borrow_mut().iter_mut() {
+            if addr < vigia.2 && fim > vigia.1 {
+                vigia.3 = true;
+            }
+        }
+    }
+
     fn read_mem(&self, addr: u32, buf: &mut [u8]) -> Result<(), CpuError> {
         self.memoria
             .borrow()

@@ -300,6 +300,13 @@ impl App {
             .debug
             .log
             .then(|| Self::caminho_da_serial(&library::title_for(&path)));
+        // Um jogo aberto pela Z-Wheel começa com a tela que ela deixou: ver
+        // [`Session::herda_tela`]. A própria Z-Wheel, reaberta, abre com a imagem dela.
+        let tela_anterior = self
+            .session
+            .as_ref()
+            .filter(|anterior| anterior.classe() == crate::session::Z_WHEEL)
+            .map(|anterior| anterior.screen().to_rgb565_bytes());
         match Session::start_with(
             &path,
             self.portas_configuradas(),
@@ -308,6 +315,9 @@ impl App {
             self.gl.clone(),
         ) {
             Ok(mut session) => {
+                if let Some(tela) = tela_anterior.filter(|_| session.classe() != crate::session::Z_WHEEL) {
+                    session.herda_tela(&tela);
+                }
                 session.set_installed_applets(self.games.iter().filter_map(|game| {
                     Some((game.clsid?, library::id_do_modulo(&game.path)?))
                 }));
@@ -1452,20 +1462,21 @@ impl App {
 
     /// As teclas que o controle manda, comparando com o quadro anterior.
     ///
-    /// **Esquerda e direita aqui são um remendo, e estão anotadas como tal.**
-    ///
-    /// Elas traduzem o direcional em `AVK_3` e `AVK_4`, que é o que a roda da Z-Wheel escuta.
-    /// Tecla vai a **todos** os tratadores da tela, então a roda de cima e a barra de baixo giram
-    /// juntas — o defeito conhecido. Sem isto, porém, o controle não navega a roda de jeito
-    /// nenhum: o caminho fiel é o retorno de chamada de posição, que já chega ao jogo (medido:
-    /// `GetPositionState` vai de zero a seis chamadas por três apertos) e ainda assim não o faz
-    /// girar. Enquanto esse resto não estiver de pé, um remendo que funciona é melhor que um
-    /// controle morto.
-    fn teclas_do_controle(antes: &Pad, agora: &Pad) -> Vec<(u32, bool)> {
-        const DE_BOTAO: [(&str, u32); 3] = [
-            ("left", input::avk::RODA_ANTERIOR),
-            ("right", input::avk::RODA_SEGUINTE),
+    /// No console o direcional chega aos aplicativos como as quatro setas do BREW, e é com elas
+    /// que a Z-Wheel navega: esquerda e direita giram a roda e trocam a aba da lista, cima e baixo
+    /// passam as páginas. O analógico não entra aqui: a Z-Wheel lê a posição e faz a tradução
+    /// dela sozinha (`0x44914` no módulo).
+    pub(crate) fn teclas_do_controle(antes: &Pad, agora: &Pad) -> Vec<(u32, bool)> {
+        // Os dois botões de face seguem a ajuda da própria Z-Wheel (`assets/zeebo/pt/controls.html`):
+        // "Sim (Botão 1)" escolhe e "Voltar (Botão 2)" cancela. Voltar é o `AVK_CLR`, medido:
+        // na tela de ajuda ele volta ao menu, e o `0xe065` não faz nada.
+        const DE_BOTAO: [(&str, u32); 6] = [
+            ("up", input::avk::UP),
+            ("down", input::avk::DOWN),
+            ("left", input::avk::LEFT),
+            ("right", input::avk::RIGHT),
             ("b1", input::avk::CONFIRMA),
+            ("b2", input::avk::CLR),
         ];
 
         let mut teclas = Vec::new();
@@ -1488,9 +1499,6 @@ impl App {
         Some(match key {
             ArrowUp => input::avk::UP,
             ArrowDown => input::avk::DOWN,
-            // As quatro setas mandam os quatro sentidos, que é o que um teclado manda no BREW.
-            // Girar a roda da Z-Wheel é dos dígitos `3` e `4` — ver
-            // [`input::avk::RODA_ANTERIOR`] —, e eles continuam mapeados abaixo.
             ArrowLeft => input::avk::LEFT,
             ArrowRight => input::avk::RIGHT,
             Enter | Space => input::avk::CONFIRMA,
@@ -1573,6 +1581,20 @@ impl App {
             let slice = (now - self.last_step).min(MAX_SLICE);
             self.last_step = now;
             let _ = session.step(slice, limit);
+        }
+        // A Z-Wheel sai sozinha para abrir o jogo escolhido: reabri-la é o papel do console.
+        // Ver [`crate::session::Z_WHEEL`].
+        if session.classe() == crate::session::Z_WHEEL && session.saiu_sozinho() {
+            let z_wheel = self
+                .games
+                .iter()
+                .find(|game| game.clsid == Some(crate::session::Z_WHEEL))
+                .map(|game| game.path.clone());
+            if let Some(path) = z_wheel {
+                self.play(path);
+                self.last_step = std::time::Instant::now();
+                return false;
+            }
         }
         if let Some(cls) = session.take_launch_request() {
             let path = self
@@ -2096,24 +2118,27 @@ mod tests {
         );
     }
 
-    /// O direcional horizontal manda as teclas da roda; o vertical, nenhuma.
-    ///
-    /// É o remendo descrito em [`App::teclas_do_controle`], e o teste existe para que ele não
-    /// desapareça sem alguém notar — e para registrar que cima e baixo nunca entraram nele.
+    /// O direcional manda as quatro setas do BREW, cada uma no seu sentido.
     #[test]
-    fn o_direcional_horizontal_manda_as_teclas_da_roda() {
+    fn o_direcional_manda_as_quatro_setas() {
+        use crate::input::avk;
         let antes = Pad::default();
-        let mut agora = Pad::default();
-        agora.press(Pad::button_by_name("left").unwrap(), true);
-        assert_eq!(
-            App::teclas_do_controle(&antes, &agora),
-            vec![(crate::input::avk::RODA_ANTERIOR, true)]
-        );
-        let mut vertical = Pad::default();
-        for nome in ["up", "down"] {
-            vertical.press(Pad::button_by_name(nome).unwrap(), true);
+        for (nome, esperado) in [
+            ("up", avk::UP),
+            ("down", avk::DOWN),
+            ("left", avk::LEFT),
+            ("right", avk::RIGHT),
+        ] {
+            let mut agora = Pad::default();
+            agora.press(Pad::button_by_name(nome).unwrap(), true);
+            assert_eq!(App::teclas_do_controle(&antes, &agora), vec![(esperado, true)]);
         }
-        assert!(App::teclas_do_controle(&antes, &vertical).is_empty());
+        let mut voltar = Pad::default();
+        voltar.press(Pad::button_by_name("b2").unwrap(), true);
+        assert_eq!(
+            App::teclas_do_controle(&antes, &voltar),
+            vec![(crate::input::avk::CLR, true)]
+        );
     }
 
     /// Os dígitos saem da ordem do `egui::Key`, e do `AVK_0` em diante. As duas listas são

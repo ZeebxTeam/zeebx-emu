@@ -171,10 +171,21 @@ fn decode_jpeg(data: &[u8]) -> Result<Image, ImageError> {
     })
 }
 
+/// Um canal de pixel empacotado, esticado para oito bits.
+fn canal(pixel: u32, mask: u32) -> u8 {
+    if mask == 0 {
+        return 0;
+    }
+    let valor = (pixel & mask) >> mask.trailing_zeros();
+    let maximo = mask >> mask.trailing_zeros();
+    (valor * 255 / maximo) as u8
+}
+
 /// Decodifica o BMP sem compressão que os `.mif` guardam.
 ///
-/// Cobre 1, 4, 8, 24 e 32 bits por pixel. Formatos comprimidos ficam de fora de propósito: as
-/// ROMs não os usam, e adivinhar o que não se pode testar não ajuda ninguém.
+/// Cobre 1, 4, 8, 16, 24 e 32 bits por pixel. Formatos comprimidos ficam de fora de propósito: as
+/// ROMs não os usam, e adivinhar o que não se pode testar não ajuda ninguém. As máscaras do
+/// `BI_BITFIELDS` não são compressão, e entram: é como um BMP de 16 bits diz que é 5-6-5.
 fn decode_bmp(data: &[u8]) -> Result<Image, ImageError> {
     let u16_at = |at: usize| -> u16 { u16::from_le_bytes([data[at], data[at + 1]]) };
     let u32_at = |at: usize| -> u32 {
@@ -195,7 +206,14 @@ fn decode_bmp(data: &[u8]) -> Result<Image, ImageError> {
         true => width as usize,
         false => return Err(ImageError::Malformed("largura inválida")),
     };
-    if compression != 0 {
+    // Sem máscaras declaradas, 16 bits é 5-5-5: as capas da Z-Wheel vêm assim, e os cinzas delas
+    // só saem neutros lidos desse jeito.
+    let masks = match (compression, depth) {
+        (0, _) => [0x7c00, 0x03e0, 0x001f],
+        (3, 16 | 32) if data.len() >= 66 => [u32_at(54), u32_at(58), u32_at(62)],
+        _ => return Err(ImageError::Malformed("bmp comprimido")),
+    };
+    if compression == 3 && depth == 32 {
         return Err(ImageError::Malformed("bmp comprimido"));
     }
     if width * height > MAX_PIXELS {
@@ -251,6 +269,10 @@ fn decode_bmp(data: &[u8]) -> Result<Image, ImageError> {
                     (color(index as usize), 255)
                 }
                 8 => (color(line[x] as usize), 255),
+                16 => {
+                    let pixel = u32::from(u16::from_le_bytes([line[x * 2], line[x * 2 + 1]]));
+                    (masks.map(|mask| canal(pixel, mask)), 255)
+                }
                 24 => ([line[x * 3 + 2], line[x * 3 + 1], line[x * 3]], 255),
                 32 => (
                     [line[x * 4 + 2], line[x * 4 + 1], line[x * 4]],
@@ -355,6 +377,24 @@ mod tests {
     fn o_formato_sai_da_assinatura_e_nao_do_rotulo() {
         assert!(matches!(decode(b"nada disso"), Err(ImageError::Unknown)));
         assert!(matches!(decode(&[]), Err(ImageError::Unknown)));
+    }
+
+    /// As capas da Z-Wheel são BMP de 16 bits sem máscara: 5-5-5.
+    #[test]
+    fn bmp_de_dezesseis_bits_e_cinco_cinco_cinco() {
+        let mut bmp = vec![0u8; 54];
+        bmp[..2].copy_from_slice(b"BM");
+        bmp[10] = 54;
+        bmp[14] = 40;
+        bmp[18] = 2;
+        bmp[22] = 1;
+        bmp[26] = 1;
+        bmp[28] = 16;
+        // Branco puro e vermelho puro, com o preenchimento da linha até quatro bytes.
+        bmp.extend_from_slice(&[0xff, 0x7f, 0x00, 0x7c]);
+        let image = decode_bmp(&bmp).unwrap();
+        assert_eq!(&image.rgba[..4], &[255, 255, 255, 255]);
+        assert_eq!(&image.rgba[4..], &[255, 0, 0, 255]);
     }
 
     #[test]

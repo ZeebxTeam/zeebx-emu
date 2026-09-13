@@ -352,7 +352,11 @@ impl<C: CpuBackend> Machine<C> {
                     }
                     return Ok(Some(1));
                 }
-                self.objects.release(this)
+                let restantes = self.objects.release(this);
+                if restantes == 0 {
+                    self.solta_dib(this);
+                }
+                restantes
             }
             // int QueryInterface(IBitmap *, AEECLSID, void **) — o jogo usa isto para pedir um
             // `IDIB`, que dá acesso direto aos pixels. Ainda não oferecemos essa interface, e
@@ -641,11 +645,20 @@ impl<C: CpuBackend> Machine<C> {
             .get(&bitmap)
             .is_some_and(|&tinha| tinha >= precisa);
         if !cabe {
-            let Some(buffer) = self.surface_alloc(precisa) else {
+            // O buffer que não cabe mais volta para a região antes de pedir outro.
+            if let (Some(&antigo), Some(&capacidade)) =
+                (self.dib_buffers.get(&bitmap), self.dib_capacity.get(&bitmap))
+            {
+                self.solta_superficie(antigo, capacidade);
+            }
+            let Some((buffer, capacidade)) = self.reserva_superficie(precisa) else {
+                self.dib_buffers.remove(&bitmap);
+                self.dib_capacity.remove(&bitmap);
                 return Ok(());
             };
             self.dib_buffers.insert(bitmap, buffer);
-            self.dib_capacity.insert(bitmap, precisa);
+            self.dib_capacity.insert(bitmap, capacidade);
+            self.dib_publicado.remove(&bitmap);
             self.cpu.watch_dirty(bitmap, buffer, precisa)?;
             // A primeira exposição precisa publicar os pixels atuais. Exposições seguintes
             // apenas atualizam o cabeçalho: reescrever a superfície inteira em cada
@@ -700,6 +713,50 @@ impl<C: CpuBackend> Machine<C> {
             .write_mem(bitmap + 28, &[COLOR_DEPTH as u8, IDIB_COLORSCHEME_565])?;
         self.cpu.write_mem(bitmap + 30, &[0u8; 6])?;
         Ok(())
+    }
+
+    /// Devolve à região o buffer de um bitmap que morreu.
+    ///
+    /// Só os buffers que **nós** reservamos voltam — os que têm capacidade anotada. O de uma
+    /// superfície do jogo (`IDIB` dele) é memória dele.
+    pub(super) fn solta_dib(&mut self, bitmap: u32) {
+        let Some(capacidade) = self.dib_capacity.remove(&bitmap) else {
+            return;
+        };
+        if let Some(buffer) = self.dib_buffers.remove(&bitmap) {
+            self.solta_superficie(buffer, capacidade);
+        }
+        self.dib_herdados.remove(&bitmap);
+        self.dib_publicado.remove(&bitmap);
+        self.cpu.unwatch_dirty(bitmap);
+    }
+
+    /// Guarda um buffer para ser reaproveitado.
+    ///
+    /// **A região de superfícies não reciclava, e a Z-Wheel a esgotava.** A barra de abas cria um
+    /// bitmap por quadro, alternando 440 e 441 de largura, e cada página da lista decodifica
+    /// capas novas; medido, os 8 MB acabavam aos 27 s de navegação. Dali em diante o canvas da
+    /// caixa de mensagem não tinha pixels, a caixa não abria, e confirmar um jogo derrubava a
+    /// Z-Wheel num salto para o endereço zero em vez de lançá-lo.
+    pub(super) fn solta_superficie(&mut self, endereco: u32, capacidade: u32) {
+        if capacidade > 0 && !self.superficies_livres.contains(&(endereco, capacidade)) {
+            self.superficies_livres.push((endereco, capacidade));
+        }
+    }
+
+    /// Reserva um buffer, reaproveitando o menor livre que caiba. Devolve endereço e capacidade.
+    pub(super) fn reserva_superficie(&mut self, bytes: u32) -> Option<(u32, u32)> {
+        let melhor = self
+            .superficies_livres
+            .iter()
+            .enumerate()
+            .filter(|(_, livre)| livre.1 >= bytes)
+            .min_by_key(|(_, livre)| livre.1)
+            .map(|(indice, _)| indice);
+        if let Some(indice) = melhor {
+            return Some(self.superficies_livres.swap_remove(indice));
+        }
+        self.surface_alloc(bytes).map(|endereco| (endereco, bytes.div_ceil(4) * 4))
     }
 
     /// Reserva espaço na região de superfícies.

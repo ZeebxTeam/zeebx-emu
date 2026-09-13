@@ -867,6 +867,9 @@ struct Widget {
     /// palavras, do mesmo jeito que o slot 4 faz com o tratador. É por isso que a função
     /// registrada pode chamar "o de baixo" sem guardar nada: ela lê do lugar onde escreveu.
     desenho: (u32, u32),
+    /// Os liberadores dos dois trios, a terceira palavra de cada: `(do tratador, do desenho)`.
+    /// Ver o `Release` do widget.
+    liberadores: (u32, u32),
     /// Se o aviso de partida já foi entregue. Ver [`Machine::parte_animacao`].
     partiu: bool,
 }
@@ -919,8 +922,19 @@ const WIDGET_DE_TEXTO: u32 = 0x0102_8e2a;
 /// A Z-Wheel grava `0x444444ff` nela — o cinza do texto da tela de boas-vindas. O firmware
 /// grava valores da mesma cara pelo ajustador em `0x1035f222`.
 const PROP_COR: u32 = 0x140;
+/// A cor de fundo de um widget, `RRGGBBAA`, pelo mesmo acessador da [`PROP_COR`].
+const PROP_COR_DE_FUNDO: u32 = 0x130;
 
-const FAMILIA_DOS_WIDGETS: [u32; 9] = [
+/// A classe do widget de HTML, que a tela de ajuda (`FAQ_Form.c`) cria para mostrar as páginas.
+///
+/// Não renderizamos HTML: o widget é atendido como os outros da família e mostra o texto de um
+/// arquivo de marcação que fica **fora** da ROM — ver `Machine::texto_do_html`. Sem a classe,
+/// a tela registrava `Unable to create HTML Widget, ERROR(20)` e confirmar em "Ajuda" não abria
+/// nada.
+const WIDGET_HTML: u32 = 0x0102_dd32;
+
+const FAMILIA_DOS_WIDGETS: [u32; 10] = [
+    WIDGET_HTML,
     AEECLSID_WIDGET,
     // A `0x01028e05` é a última que o palco pede. Depois de montar o pbuffer — `ChooseConfig`,
     // `CreatePbufferSurface`, `CreateContext`, `MakeCurrent` — a Z-Wheel cria a `0x01028e14` e
@@ -1996,6 +2010,8 @@ pub struct Machine<C: CpuBackend> {
     egl_error: u32,
     /// Superfícies do EGL vivas, com as dimensões de cada uma.
     egl_surfaces: HashMap<u32, (u32, u32)>,
+    /// Se a viewport inicial já foi posta no tamanho do pbuffer. Ver o `eglMakeCurrent`.
+    egl_viewport_inicial: bool,
     /// Onde os pixels do buffer de cor ficam visíveis para o jogo, e de que tamanho.
     ///
     /// Reservado na primeira vez que a `eglGetColorBufferQUALCOMM` é chamada, e reaproveitado
@@ -2102,6 +2118,11 @@ pub struct Machine<C: CpuBackend> {
     dib_publicado: HashMap<u32, u64>,
     /// Próximo endereço livre na região de superfícies.
     surface_next: u32,
+    /// Widgets cujo tratador está recebendo um aviso agora. Ver [`Machine::avisa_widget`].
+    widgets_avisando: std::collections::HashSet<u32>,
+    /// Buffers de superfície devolvidos, como `(endereço, capacidade)`. Ver
+    /// [`Machine::solta_superficie`].
+    superficies_livres: Vec<(u32, u32)>,
     /// Cor tratada como transparente em cada superfície.
     transparency: HashMap<u32, u16>,
     /// O bitmap de destino de cada `ITransform` que o jogo pediu por `QueryInterface`.
@@ -2334,6 +2355,7 @@ impl<C: CpuBackend> Machine<C> {
             serial: None,
             egl_error: gles::EGL_SUCCESS,
             egl_surfaces: HashMap::new(),
+            egl_viewport_inicial: false,
             egl_color_buffer: (0, 0),
             egl_color_bytes: Vec::new(),
             egl_color_dimensions: None,
@@ -2369,6 +2391,8 @@ impl<C: CpuBackend> Machine<C> {
             dib_herdados: HashSet::new(),
             dib_publicado: HashMap::new(),
             surface_next: loader::SURFACE_BASE,
+            superficies_livres: Vec::new(),
+            widgets_avisando: std::collections::HashSet::new(),
             transparency: HashMap::new(),
             transformacoes: HashMap::new(),
             modelos_de_valor: HashMap::new(),

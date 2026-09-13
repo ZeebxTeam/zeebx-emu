@@ -206,6 +206,30 @@ impl<C: CpuBackend> Machine<C> {
             "MakeCurrent" => {
                 self.egl_surface = a[1];
                 self.egl_context = a[3];
+                // **A superfície do GL é a do pbuffer ativado.** Sem isto o rasterizador
+                // seguia em 640×480 enquanto a Z-Wheel desenha num pbuffer de 640×330, e as duas
+                // pontas do `eglGetColorBufferQUALCOMM` passavam por escala: a exportação lê a
+                // linha `y·480/330` e a importação escreve a linha `y·330/480`, que não voltam
+                // ao mesmo lugar. O fundo que o jogo copia para o buffer a cada quadro nunca
+                // chegava a um terço das linhas, e o que a espada do personagem pintou ali ficava
+                // para sempre — riscos pontilhados saindo dele. A escala da Qualcomm, quando o
+                // jogo a pede, continua mandando no tamanho.
+                //
+                // A viewport vai junto na primeira ativação, que é o que o OpenGL define: ela
+                // nasce com o tamanho da superfície. A Z-Wheel nunca chama `glViewport` — o
+                // frustum dela já tem a proporção de 640×330 —, e com a viewport de 640×480 o
+                // palco saía esticado. Só vale para superfície de outro tamanho que não o da tela:
+                // numa janela a viewport padrão já é essa, e jogos como o Quake deduzem a
+                // superfície pela viewport que pedem depois.
+                let medida = self.egl_surfaces.get(&a[1]).copied();
+                if let (None, Some((largura, altura))) = (self.scale_source, medida) {
+                    let da_tela = (largura, altura) == (SCREEN_WIDTH as u32, SCREEN_HEIGHT as u32);
+                    if !da_tela && !self.egl_viewport_inicial {
+                        self.egl_viewport_inicial = true;
+                        self.gl.set_surface(largura as usize, altura as usize);
+                        self.gl.set_viewport(0, 0, largura as i32, altura as i32);
+                    }
+                }
                 (4, gles::EGL_TRUE)
             }
             "GetCurrentContext" => (0, self.egl_context),

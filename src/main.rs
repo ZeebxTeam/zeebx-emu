@@ -190,21 +190,7 @@ fn main() -> ExitCode {
                     instalados: args
                         .iter()
                         .find_map(|a| a.strip_prefix("--instalados="))
-                        .map(|lista| {
-                            lista
-                                .split(',')
-                                .filter_map(|item| {
-                                    let (classe, id) = item.split_once(':').unwrap_or((item, ""));
-                                    let classe =
-                                        u32::from_str_radix(classe.trim().trim_start_matches("0x"), 16).ok()?;
-                                    let id = match id.is_empty() {
-                                        true => format!("{classe:x}"),
-                                        false => id.to_string(),
-                                    };
-                                    Some((classe, id))
-                                })
-                                .collect()
-                        })
+                        .map(instalados)
                         .unwrap_or_default(),
                     portas: match args.iter().find_map(|a| a.strip_prefix("--portas=")) {
                         Some(lista) => match aparelhos(lista) {
@@ -243,7 +229,46 @@ fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
-            report(bench_dynarmic(&args[1], seconds, dump, &keys))
+            let teclas = args
+                .iter()
+                .find_map(|a| a.strip_prefix("--teclas="))
+                .map(teclado)
+                .unwrap_or_default();
+            let instalados = args
+                .iter()
+                .find_map(|a| a.strip_prefix("--instalados="))
+                .map(instalados)
+                .unwrap_or_default();
+            let superficies = args.iter().find_map(|a| a.strip_prefix("--dump-surfaces="));
+            report(bench_dynarmic(&args[1], seconds, dump, &keys, &teclas, instalados, superficies))
+        }
+        Some("sessao") if args.len() >= 2 => {
+            let seconds = args
+                .iter()
+                .find_map(|a| a.strip_prefix("--seconds="))
+                .and_then(|n| n.parse::<u32>().ok())
+                .unwrap_or(DEFAULT_SECONDS);
+            let dump = args.iter().find_map(|a| a.strip_prefix("--dump="));
+            let keys = match args
+                .iter()
+                .find_map(|a| a.strip_prefix("--keys="))
+                .map(input::Script::parse)
+                .transpose()
+            {
+                Ok(keys) => keys.unwrap_or_default(),
+                Err(err) => {
+                    eprintln!("erro: {err}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            let fotos: Vec<u32> = args
+                .iter()
+                .find_map(|a| a.strip_prefix("--fotos="))
+                .map(|lista| lista.split(',').filter_map(|t| t.trim().parse().ok()).collect())
+                .unwrap_or_default();
+            let placa = args.iter().any(|a| a == "--placa");
+            let serial = args.iter().find_map(|a| a.strip_prefix("--serial="));
+            report(sessao_sem_janela(&args[1], seconds, dump, &keys, &fotos, placa, serial))
         }
         // Sem argumento nenhum, o que se quer é o emulador, não a ajuda.
         None => launch(),
@@ -260,7 +285,8 @@ fn main() -> ExitCode {
                              [--sem-rede] [--servidor=MAQUINA[:PORTA]] [--ponte]
                              [--portas=controle|teclado|nenhum,...] [--teclas=ms:nome,...]"
             );
-            eprintln!("     zeebx bench <arquivo.mod|zip> [--seconds=N] [--keys=ms:tecla,...] [--dump=QUADRO.bmp]  (Dynarmic, sem janela)");
+            eprintln!("     zeebx sessao <arquivo.zip> [--seconds=N] [--keys=ms:botão,...] [--dump=QUADRO.bmp] [--fotos=ms,...] [--placa] [--serial=CAMINHO]  (a sessão da janela, sem janela)");
+            eprintln!("     zeebx bench <arquivo.mod|zip> [--seconds=N] [--keys=ms:tecla,...] [--dump=QUADRO.bmp] [--teclas=ms:nome,...] [--instalados=0xCLSID[:id],...] [--dump-surfaces=DIR]  (Dynarmic, sem janela)");
             ExitCode::FAILURE
         }
     }
@@ -378,6 +404,22 @@ struct Options {
 /// Os nomes são os de [`input::avk::por_nome`]: `up`, `down`, `left`, `right`, `select`, `clr`,
 /// `star`, `pound` e os dígitos. O que não for reconhecido é descartado com aviso, porque um
 /// roteiro com uma tecla errada ainda vale pelas outras.
+/// Lê `0xCLSID[:id][,...]`. Sem id, o id do módulo é a própria classe em hexadecimal.
+fn instalados(lista: &str) -> Vec<(u32, String)> {
+    lista
+        .split(',')
+        .filter_map(|item| {
+            let (classe, id) = item.split_once(':').unwrap_or((item, ""));
+            let classe = u32::from_str_radix(classe.trim().trim_start_matches("0x"), 16).ok()?;
+            let id = match id.is_empty() {
+                true => format!("{classe:x}"),
+                false => id.to_string(),
+            };
+            Some((classe, id))
+        })
+        .collect()
+}
+
 fn teclado(lista: &str) -> Vec<(u32, u32)> {
     lista
         .split(',')
@@ -888,6 +930,9 @@ fn bench_dynarmic(
     seconds: u32,
     dump: Option<&str>,
     keys: &input::Script,
+    teclas: &[(u32, u32)],
+    instalados: Vec<(u32, String)>,
+    superficies: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let extracted;
     let path = match std::path::Path::new(path)
@@ -905,6 +950,7 @@ fn bench_dynarmic(
     let module = loader::load_with(&image, &extensoes)?;
     let root = path.parent().map(std::path::Path::to_path_buf).unwrap_or_default();
     let mut machine = Machine::new(DynarmicCpu::new()?, module, root);
+    machine.set_installed_applets(instalados);
     let boot = machine.run(INSTRUCTION_BUDGET)?;
     if !matches!(boot, Outcome::Returned { code: 0 }) {
         return Err(format!("carga parou em {boot:?}").into());
@@ -925,7 +971,34 @@ fn bench_dynarmic(
     let until = base_clock.saturating_add(seconds.saturating_mul(1000));
     let mut turns = 0u64;
     let mut pad = input::Pad::default();
+    // Cada tecla vira aperto e soltura quando o relógio passa do instante. Com `--dump`, o quadro
+    // de meio segundo depois de cada uma também é gravado, numerado: é o que mostra a navegação
+    // passo a passo, e não só onde ela terminou.
+    let mut pendentes: std::collections::VecDeque<(u32, u32)> = {
+        let mut ordenadas = teclas.to_vec();
+        ordenadas.sort_by_key(|&(quando, _)| quando);
+        ordenadas.into()
+    };
+    let mut fotos: std::collections::VecDeque<u32> = std::collections::VecDeque::new();
+    let mut numero_da_foto = 0;
     while machine.clock_ms() < until && !machine.is_idle() {
+        while pendentes.front().is_some_and(|&(quando, _)| machine.clock_ms() >= quando) {
+            let (quando, avk) = pendentes.pop_front().unwrap_or_default();
+            machine.set_key(avk, true);
+            machine.set_key(avk, false);
+            fotos.push_back(quando.saturating_add(500));
+        }
+        if let Some(path) = dump {
+            while fotos.front().is_some_and(|&quando| machine.clock_ms() >= quando) {
+                fotos.pop_front();
+                numero_da_foto += 1;
+                let nome = match path.strip_suffix(".bmp") {
+                    Some(base) => format!("{base}.{numero_da_foto}.bmp"),
+                    None => format!("{path}.{numero_da_foto}"),
+                };
+                std::fs::write(nome, machine.screen().to_bmp())?;
+            }
+        }
         keys.apply(machine.clock_ms(), &mut pad);
         machine.set_pad(pad);
         let outcomes = machine.advance(INSTRUCTION_BUDGET)?;
@@ -960,6 +1033,136 @@ fn bench_dynarmic(
     if let Some(path) = dump {
         std::fs::write(path, machine.screen().to_bmp())?;
         println!("quadro:    {path}");
+    }
+    if let Some(dir) = superficies {
+        despeja_superficies(&machine, dir)?;
+    }
+    if let Some(classe) = machine.take_launch_request() {
+        println!("lançar:    o shell pediu para abrir {classe:#010x}");
+    }
+    Ok(())
+}
+
+/// Roda um jogo pelo mesmo caminho da janela, sem abri-la.
+///
+/// A bancada monta a máquina por conta própria, e o que ela mostra pode não ser o que a janela
+/// mostra: a janela instala todos os jogos da biblioteca, passa o controle pela sessão e traduz o
+/// direcional em teclas. Aqui entram as mesmas peças — `Session`, a biblioteca das configurações
+/// e [`ui::App::teclas_do_controle`] —, e o roteiro é de **botões do controle**, como quem joga.
+/// Com `--dump`, sai um quadro meio segundo depois de cada aperto; o relatório vai inteiro para a
+/// saída no fim.
+fn sessao_sem_janela(
+    path: &str,
+    seconds: u32,
+    dump: Option<&str>,
+    keys: &input::Script,
+    instantes: &[u32],
+    placa: bool,
+    serial: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let serial = serial.map(std::path::Path::new);
+    let settings = ui::settings::Settings::load();
+    let games = settings
+        .roms_dir
+        .as_deref()
+        .map(library::scan)
+        .unwrap_or_default();
+    let mut session = session::Session::start_with(
+        std::path::Path::new(path),
+        PORTAS_PADRAO,
+        serial,
+        placa,
+        None,
+    )
+    .map_err(|err| format!("{err:?}"))?;
+    session.set_installed_applets(
+        games
+            .iter()
+            .filter_map(|game| Some((game.clsid?, library::id_do_modulo(&game.path)?))),
+    );
+    let mut fim = seconds.saturating_mul(1000);
+    let mut reaberta = false;
+    let mut pad = input::Pad::default();
+    let mut fotos: std::collections::VecDeque<u32> = instantes.iter().copied().collect();
+    let mut numero = 0;
+    while session.clock_ms() < fim {
+        let antes = pad;
+        if !reaberta {
+            keys.apply(session.clock_ms(), &mut pad);
+        } else {
+            pad = input::Pad::default();
+        }
+        session.set_port_pad(0, pad);
+        for (avk, apertada) in ui::App::teclas_do_controle(&antes, &pad) {
+            session.set_key(avk, apertada);
+        }
+        if (0..input::BUTTONS).any(|b| pad.is_down(b) && !antes.is_down(b)) {
+            fotos.push_back(session.clock_ms().saturating_add(500));
+            fotos.make_contiguous().sort_unstable();
+        }
+        let parou = matches!(
+            session.step(std::time::Duration::from_millis(16), false),
+            session::Step::Stopped
+        );
+        if let Some(path) = dump {
+            while fotos.front().is_some_and(|&t| session.clock_ms() >= t) {
+                fotos.pop_front();
+                numero += 1;
+                let nome = match path.strip_suffix(".bmp") {
+                    Some(base) => format!("{base}.{numero}.bmp"),
+                    None => format!("{path}.{numero}"),
+                };
+                if let Some(gl) = session.quadro_gl() {
+                    std::fs::write(nome.replace(".bmp", ".gl.bmp"), gl.to_bmp())?;
+                }
+                std::fs::write(nome, session.screen().to_bmp())?;
+            }
+        }
+        if let Some(classe) = session.take_launch_request() {
+            let jogo = games.iter().find(|game| game.clsid == Some(classe));
+            println!(
+                "lançar:    {classe:#010x} aos {} ms → {}",
+                session.clock_ms(),
+                jogo.map_or("nenhum jogo da biblioteca com essa classe".to_string(), |g| g
+                    .path
+                    .display()
+                    .to_string())
+            );
+            break;
+        }
+        if parou && session.classe() == session::Z_WHEEL && session.saiu_sozinho() {
+            // O mesmo que a janela faz: ver `session::Z_WHEEL`.
+            println!("reabrir:   a Z-Wheel saiu aos {} ms; reabrindo", session.clock_ms());
+            let deslocamento = session.clock_ms();
+            session = session::Session::start_with(
+                std::path::Path::new(path),
+                PORTAS_PADRAO,
+                None,
+                placa,
+                None,
+            )
+            .map_err(|err| format!("{err:?}"))?;
+            session.set_installed_applets(
+                games
+                    .iter()
+                    .filter_map(|game| Some((game.clsid?, library::id_do_modulo(&game.path)?))),
+            );
+            let _ = deslocamento;
+            reaberta = true;
+            fim = 4000;
+            continue;
+        }
+        if parou {
+            println!("parou:     {:?}", session.stopped_reason());
+            break;
+        }
+    }
+    if let Some(path) = dump {
+        std::fs::write(path, session.screen().to_bmp())?;
+    }
+    println!("tempo:     {} ms virtuais", session.clock_ms());
+    for linha in session.log() {
+        println!("{linha}");
     }
     Ok(())
 }
@@ -997,8 +1200,8 @@ fn despeja_memoria(
 /// "O jogo desenha e a tela fica preta" tem duas causas possíveis, e só o conteúdo das
 /// superfícies as separa: ou ele desenhou em algo que não vai para a tela, ou não desenhou. Ver
 /// o conteúdo delas resolveu o texto do Tekken 2 em minutos depois de horas de suposição.
-fn despeja_superficies(
-    machine: &machine::Machine<UnicornCpu>,
+fn despeja_superficies<C: cpu::CpuBackend>(
+    machine: &machine::Machine<C>,
     dir: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir_all(dir)?;
