@@ -60,6 +60,13 @@ struct Estado {
     /// O menor intervalo que contém todas as vigias. Quase toda escrita do guest cai fora dele,
     /// e aí ela custa duas comparações em vez de uma volta pela lista.
     envoltorio: Cell<(u32, u32)>,
+    /// Uma faixa que já está suja. Escrita dentro dela não precisa de mais nada.
+    ///
+    /// É o caso quase sempre: um renderizador ARM escreve milhões de pixels seguidos no mesmo
+    /// buffer, e depois do primeiro todos caem numa faixa que já está marcada. Sem o atalho,
+    /// cada um desses pegava a lista emprestada e a percorria para marcar o que já estava
+    /// marcado. Zera sempre que alguma faixa pode ter voltado a limpa.
+    atalho: Cell<(u32, u32)>,
     instrucoes: Cell<u64>,
     limite: Cell<u64>,
     parada: Cell<Parada>,
@@ -105,14 +112,29 @@ impl Estado {
         if fim <= menor || inicio >= maior {
             return;
         }
-        for vigia in self.vigias.borrow_mut().iter_mut() {
+        let (a, b) = self.atalho.get();
+        if inicio >= a && fim <= b {
+            return;
+        }
+        let mut vigias = self.vigias.borrow_mut();
+        let mut tocadas = 0;
+        let mut faixa = (0, 0);
+        for vigia in vigias.iter_mut() {
             if inicio < vigia.2 && fim > vigia.1 {
                 vigia.3 = true;
+                tocadas += 1;
+                faixa = (vigia.1, vigia.2);
             }
+        }
+        // O atalho só vale para uma faixa que contém a escrita inteira e é a única tocada:
+        // com duas sobrepostas, pular a segunda deixaria de marcá-la.
+        if tocadas == 1 && inicio >= faixa.0 && fim <= faixa.1 {
+            self.atalho.set(faixa);
         }
     }
 
     fn recalcula_envoltorio(&self) {
+        self.atalho.set((0, 0));
         let vigias = self.vigias.borrow();
         let menor = vigias.iter().map(|v| v.1).min().unwrap_or(0);
         let maior = vigias.iter().map(|v| v.2).max().unwrap_or(0);
@@ -321,6 +343,7 @@ impl CpuBackend for DynarmicCpu {
             codigo_sujo: Default::default(),
             vigias: Default::default(),
             envoltorio: Cell::new((0, 0)),
+            atalho: Cell::new((0, 0)),
             instrucoes: Cell::new(0),
             limite: Cell::new(0),
             parada: Cell::new(Parada::Nenhuma),
@@ -378,6 +401,8 @@ impl CpuBackend for DynarmicCpu {
         let Ok(jit) = self.jit_mut() else {
             return true;
         };
+        // Uma faixa pode voltar a limpa aqui, então o atalho deixa de valer.
+        jit.atalho.set((0, 0));
         let mut vigias = jit.vigias.borrow_mut();
         match vigias.iter_mut().find(|vigia| vigia.0 == id) {
             Some(vigia) => std::mem::replace(&mut vigia.3, false),
