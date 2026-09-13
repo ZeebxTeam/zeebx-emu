@@ -213,13 +213,17 @@ pub enum Interface {
     /// Os slots sem nome nunca foram chamados. Deixá-los sem nome é o que faz uma chamada
     /// inesperada aparecer no relatório em vez de passar por implementada.
     Vetor = 45,
-    /// `0x01028e3c`, da mesma família das outras duas extensões da Z-Wheel, e a mais modesta
-    /// delas: a `tectoymain.c` cria **duas** logo no começo e guarda em `+0x354` e `+0x358`, e
-    /// até agora não chama método nenhum em nenhuma das duas.
+    /// `0x01028e3c`: um **`IValueModel`** — um valor e uma lista de ouvintes avisados quando
+    /// ele muda. É o modelo que liga a grade de jogos à ação de abrir o jogo.
     ///
-    /// Por isso só o `AddRef` e o `Release` existem aqui. Não é preguiça: é que qualquer outro
-    /// nome seria invenção, e do jeito que está a primeira chamada de verdade vai aparecer no
-    /// relatório em vez de ser atendida por acaso.
+    /// | slot | método | onde se lê |
+    /// |---|---|---|
+    /// | 3 | `AddListener(pl)` | `0x8588c`: o jogo põe a função em `pl+8` e o contexto em `pl+0xc` **antes** de chamar — o `ModelListener` de 0x18 bytes do BREW |
+    /// | 5 | `SetValue(pv, nLen, pfnFree)` | `0x20e08` limpa com três zeros |
+    /// | 6 | `GetValue(&nLen)` | o ouvinte `0x37704` confere o evento `0x1000` e pega o item por aqui, com `NULL` |
+    ///
+    /// Este slot 3 foi, por muito tempo, uma "consulta" que zerava 0x18 bytes, e a resposta
+    /// **apagava a função e o contexto de cada ouvinte** que a Z-Wheel registrava.
     Classe28e3c = 46,
     /// `0x01011810`, o que a Z-Wheel chama de **ICM** — o gerenciador de chamadas do BREW.
     ///

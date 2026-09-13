@@ -529,7 +529,7 @@ impl Session {
     /// aplicativo, não pelo `IHID` — ver [`crate::input::EVT_KEY`]. A Z-Wheel depende disso: o
     /// formulário de abertura só sai do lugar com `AVK_0` ou `AVK_CLR`, que botão de controle
     /// nenhum produz.
-    pub fn set_installed_applets(&mut self, classes: impl IntoIterator<Item = u32>) {
+    pub fn set_installed_applets(&mut self, classes: impl IntoIterator<Item = (u32, String)>) {
         self.machine.set_installed_applets(classes);
     }
 

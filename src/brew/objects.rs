@@ -84,7 +84,16 @@ impl ObjectStore {
     }
 
     /// Incrementa e devolve a nova contagem.
+    ///
+    /// **Um endereço já solto não ressuscita.** Ele está na lista de livres; recriar a contagem
+    /// dele sem tirá-lo de lá faria o `Release` seguinte pô-lo na lista **outra vez**, e dois
+    /// objetos vivos nasceriam no mesmo lugar. Foi assim que o `IGraphics` que a Z-Wheel cria
+    /// para desenhar o aviso de lançamento nasceu em cima de um bitmap: o `SetDestination` dele
+    /// caía no `IBitmap`, e o jogo escolhido nunca abria.
     pub fn add_ref(&mut self, addr: u32) -> u32 {
+        if !self.refs.contains_key(&addr) && self.livres.contains(&addr) {
+            return 0;
+        }
         let count = self.refs.entry(addr).or_insert(0);
         *count += 1;
         *count
@@ -100,7 +109,10 @@ impl ObjectStore {
         if remaining == 0 {
             self.refs.remove(&addr);
             self.kinds.remove(&addr);
-            self.livres.push(addr);
+            // Nunca duas vezes o mesmo endereço na lista: seriam dois objetos vivos nele.
+            if !self.livres.contains(&addr) {
+                self.livres.push(addr);
+            }
         }
         remaining
     }
@@ -128,6 +140,20 @@ impl ObjectStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn addref_num_objeto_solto_nao_duplica_o_endereco() {
+        let mut store = ObjectStore::new(0x3000_0000, 0x1000);
+        let a = store.create(Interface::Bitmap).unwrap();
+        assert_eq!(store.release(a), 0);
+        // Alguém ainda tinha o ponteiro e pede uma referência nele: não ressuscita.
+        assert_eq!(store.add_ref(a), 0);
+        assert_eq!(store.release(a), 0);
+        // O endereço volta **uma** vez só: dois objetos novos não podem nascer no mesmo lugar.
+        let b = store.create(Interface::Graphics).unwrap();
+        let c = store.create(Interface::Bitmap).unwrap();
+        assert_ne!(b, c);
+    }
 
     #[test]
     fn objetos_ganham_enderecos_distintos() {

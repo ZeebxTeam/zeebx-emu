@@ -986,7 +986,16 @@ pub const CONTROL: &[&str] = &[
 /// `0x11085c70` são a contagem para cima e para baixo, e `0x11085c90` compara o IID recebido
 /// com `0x01000001` e `0x01006c05` — um `QueryInterface`. Os cinco de baixo continuam sem nome
 /// até alguém chamá-los.
-pub const ZEEBO_MCP: &[&str] = &["AddRef", "Release", "QueryInterface"];
+pub const ZEEBO_MCP: &[&str] = &[
+    "AddRef",
+    "Release",
+    "QueryInterface",
+    "ModDataCopyFromENAND",
+    "slot4",
+    "ModDataRemoveFromMCP",
+    "slot6",
+    "UserDataCopyToENAND",
+];
 
 /// Métodos da `IConfig` (`0x01001027`). Ver [`crate::brew::aee::Interface::Config`].
 ///
@@ -1050,12 +1059,17 @@ pub const CM: &[&str] = &[
     "GetSSInfo",
 ];
 
-/// Métodos da `0x01028e3c`, dos quais conhecemos dois — e são os dois de toda interface.
-///
-/// Ver [`crate::brew::aee::Interface::Classe28e3c`]: a Z-Wheel cria duas, e o slot 3 delas é o que
-/// interrompia o ciclo de atração. A
-/// [`crate::brew::aee::Interface::Typeface`] usa a mesma tabela, pelo mesmo motivo.
-pub const CLASSE_28E3C: &[&str] = &["AddRef", "Release", "slot2", "Consultar", "slot4", "Medir"];
+/// Métodos da `0x01028e3c`, que é um `IValueModel`. Ver
+/// [`crate::brew::aee::Interface::Classe28e3c`].
+pub const CLASSE_28E3C: &[&str] = &[
+    "AddRef",
+    "Release",
+    "QueryInterface",
+    "AddListener",
+    "Notify",
+    "SetValue",
+    "GetValue",
+];
 
 /// Métodos da fonte TrueType (`0x01035156`), dos quais conhecemos um.
 ///

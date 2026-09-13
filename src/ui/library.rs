@@ -215,6 +215,18 @@ fn collect(dir: &Path, depth: usize, found: &mut Vec<PathBuf>) {
 /// No layout do console o nome do arquivo é um identificador numérico sem graça, e quem tem o
 /// nome do jogo é a pasta do título, dois níveis acima. Fora desse layout, o nome do arquivo é
 /// o que há.
+/// O id do módulo de um jogo: a pasta em que o `.mod` mora, `mod/<id>/`. É também o nome do
+/// `.mif` dele. Num pacote, sai do caminho interno, sem extrair.
+pub fn id_do_modulo(path: &Path) -> Option<String> {
+    let interno = match path.extension().and_then(|e| e.to_str()) {
+        Some(ext) if ext.eq_ignore_ascii_case("zip") => {
+            PathBuf::from(crate::loader::archive::find_module(path)?)
+        }
+        _ => path.to_path_buf(),
+    };
+    Some(interno.parent()?.file_name()?.to_str()?.to_string())
+}
+
 pub fn title_for(mod_path: &Path) -> String {
     let stem = mod_path
         .file_stem()

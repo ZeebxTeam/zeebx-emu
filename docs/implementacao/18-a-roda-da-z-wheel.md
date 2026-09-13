@@ -481,11 +481,29 @@ Confirmar em "Jogar" não fazia nada. A cadeia que faltava, em ordem de descober
 Com isso, confirmar em "Jogar" abre o anel "Novos / Recentes" e a **grade de jogos da biblioteca
 local**, com as capas.
 
+### 7.2 Da grade ao lançamento
+
+A grade navega com `0xe031`/`0xe032` (esquerda/direita) e `0xe033`/`0xe034` (cima/baixo), e abre com
+`0xe035` ou `0xe064` — `0xe064` sozinho, sem item escolhido, só foca. O caminho até o jogo, degrau
+por degrau:
+
+| Degrau | O que é |
+|---|---|
+| `0x01028e3c` = `IValueModel` | a grade faz `SetValue(modelo, item)`, e o ouvinte `0x37704` lê o item com `GetValue`. O slot 3 (`AddListener`) era uma "consulta" que zerava 0x18 bytes e **apagava função e contexto de todo ouvinte** |
+| getter `0x713` com `AddRef` | o tratador da grade solta o que recebe; sem a referência, a contagem ia a zero |
+| `IContainer` nos containers | slot 6 `Remove(filho)` e slot 7 `GetWidget(ref, bNext, bWrap)`, separados das leituras "visível" e "tamanho" pelos argumentos. Sem eles, `0x80490` rodava para sempre |
+| `IROOTFORM_RemoveForm(raiz, FORM_LAST)` | slot 6 da raiz com `1`. Tira o formulário do topo **sem** `Release` e sem zerar o `pai` |
+| `CanStartApplet` booleano | respondia `SUCCESS`, que é "não pode" |
+| `EnumAppletInit`/`EnumNextApplet` | a Z-Wheel usa o nome do `.mif` (o id do módulo) do jogo escolhido |
+| `ZeeboMCP` slots 3, 5 e 7 | `ModDataCopyFromENAND`, `ModDataRemoveFromMCP`, `UserDataCopyToENAND` — a cópia entre `fs:/card3/mod/` e `fs:/mcp/mod/`, que aqui não existe |
+| `ObjectStore::add_ref` | não ressuscita objeto solto: duplicava o endereço na lista de livres, e o `IGraphics` do aviso de lançamento nasceu em cima de um bitmap |
+
+Sem janela, `--instalados=0xCLSID:id` registra jogos instalados para testar o lançamento.
+
 O que ainda falta nessa tela:
 
-- **Abrir o jogo.** A confirmação dentro da grade chega ao tratador (`0x39264` → `0x4025c`) e fecha o
-  anel, mas nenhum `ISHELL_StartApplet` é chamado. Várias confirmações seguidas alternam estados e
-  deixam o palco por cima da grade.
+- **Abrir o jogo.** O fluxo agora passa por tudo acima e para no slot 3 do `ILCTSystemCtl`
+  (`0x835e8`), antes do timer de 2 s que chama o `StartApplet`.
 - **Os nomes perdem a última letra** ("Alic", "Alien Breake").
 - Um quadrado cinza solto no canto superior direito da grade.
 

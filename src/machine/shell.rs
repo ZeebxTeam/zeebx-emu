@@ -537,8 +537,10 @@ impl<C: CpuBackend> Machine<C> {
     /// Não vai direto: teclado chega ao jogo como **evento**, e evento só pode ser entregue na
     /// fronteira entre duas chamadas de API — chamar o tratador do jogo no meio de um despacho é
     /// o caminho que já derrubou o Zeeboids. A fila é esvaziada em [`Machine::deliver_signals`].
-    pub fn set_installed_applets(&mut self, classes: impl IntoIterator<Item = u32>) {
-        self.installed_applets = classes.into_iter().collect();
+    /// Os applets instalados, cada um com o id do módulo — o nome do `.mif` sem extensão.
+    pub fn set_installed_applets(&mut self, applets: impl IntoIterator<Item = (u32, String)>) {
+        self.modulos_instalados = applets.into_iter().collect();
+        self.installed_applets = self.modulos_instalados.iter().map(|(c, _)| *c).collect();
     }
 
     /// O host troca de sessão depois que a chamada do guest terminou.

@@ -899,6 +899,9 @@ fn id_do_recurso(falta: &str) -> Option<u16> {
 /// Lida na árvore: a abertura e o formulário do z-pad são dois objetos desta classe, filhos da
 /// raiz do applet (`0x01028e51`), cada um com o seu container pendurado no item `0x5000`.
 const WIDGET_FORMULARIO: u32 = 0x0102_8e47;
+/// O formulário raiz do applet, o `[app+0x24]` da Z-Wheel. Nele o slot 6 é o
+/// `IROOTFORM_RemoveForm`. Ver o braço do `DefinirVisivel`.
+const WIDGET_RAIZ: u32 = 0x0102_8e51;
 
 /// A classe da família em que o slot 6 **põe texto**, em vez de esconder ou mostrar.
 ///
@@ -1095,6 +1098,17 @@ struct OpenFile {
 pub struct Callback {
     pub function: u32,
     pub context: u32,
+}
+
+/// Um `IValueModel`: o valor e quem quer saber quando ele muda.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct ModeloDeValor {
+    valor: u32,
+    tamanho: u32,
+    /// Cada ouvinte é o endereço do `ModelListener` do jogo, com a função e o contexto que
+    /// estavam nele quando foi registrado. Conferir os dois antes de chamar é o que evita chamar
+    /// um ouvinte cuja memória o jogo já liberou e reaproveitou.
+    ouvintes: Vec<(u32, u32, u32)>,
 }
 
 /// Um timer armado por `ISHELL_SetTimer`.
@@ -1866,6 +1880,12 @@ pub struct Machine<C: CpuBackend> {
     /// ClassID do applet que o módulo instanciou, para responder ao `ISHELL_GetClassItemID`.
     applet_class: u32,
     installed_applets: HashSet<u32>,
+    /// O id do módulo de cada applet instalado — o nome do `.mif` dele, sem extensão. É o que
+    /// o `ISHELL_EnumNextApplet` entrega no `pszMIF`.
+    modulos_instalados: Vec<(u32, String)>,
+    /// Onde o `EnumNextApplet` está na lista, e as cadeias de `pszMIF` já postas no guest.
+    enumeracao_de_applets: usize,
+    mif_no_guest: HashMap<u32, u32>,
     /// Orçamento de instruções do trecho em execução.
     ///
     /// Guardado porque o despacho de uma chamada de API não o recebe, e há um caso em que ele
@@ -2086,6 +2106,8 @@ pub struct Machine<C: CpuBackend> {
     transparency: HashMap<u32, u16>,
     /// O bitmap de destino de cada `ITransform` que o jogo pediu por `QueryInterface`.
     transformacoes: HashMap<u32, u32>,
+    /// O estado de cada `IValueModel` (`0x01028e3c`).
+    modelos_de_valor: HashMap<u32, ModeloDeValor>,
     /// O bitmap de cada canvas pedido por `QueryInterface`.
     canvases: HashMap<u32, u32>,
     /// A superfície da tela — o "device bitmap" do BREW. Zero enquanto ninguém pediu.
@@ -2254,6 +2276,9 @@ impl<C: CpuBackend> Machine<C> {
             timers: Vec::new(),
             applet_class: 0,
             installed_applets: HashSet::new(),
+            modulos_instalados: Vec::new(),
+            enumeracao_de_applets: 0,
+            mif_no_guest: HashMap::new(),
             orcamento: 0,
             ext_modules: vec![None; extensoes],
             pending_launch: None,
@@ -2344,6 +2369,7 @@ impl<C: CpuBackend> Machine<C> {
             surface_next: loader::SURFACE_BASE,
             transparency: HashMap::new(),
             transformacoes: HashMap::new(),
+            modelos_de_valor: HashMap::new(),
             canvases: HashMap::new(),
             device_bitmap: 0,
             display_target: 0,
@@ -2666,13 +2692,54 @@ impl<C: CpuBackend> Machine<C> {
                 ) =>
             {
                 let cls = self.cpu.read_reg(Reg::R1);
-                if self.installed_applets.contains(&cls) {
-                    if Interface::Shell.method(slot) == Some("StartApplet") {
+                let instalado = self.installed_applets.contains(&cls);
+                match Interface::Shell.method(slot) {
+                    // `boolean ISHELL_CanStartApplet(IShell *, AEECLSID)`: **verdadeiro é poder**.
+                    // Respondia `SUCCESS`, que é zero — "não pode" para todo jogo instalado. A
+                    // Z-Wheel pergunta isto em `0x7e58c` antes de lançar e, com zero, desiste
+                    // e registra "Failure attempting to launch game".
+                    Some("CanStartApplet") => u32::from(instalado),
+                    _ if instalado => {
                         self.pending_launch = Some(cls);
+                        SUCCESS
                     }
-                    SUCCESS
-                } else {
-                    ECLASSNOTSUPPORT
+                    _ => ECLASSNOTSUPPORT,
+                }
+            }
+            // `int ISHELL_EnumAppletInit(IShell *)` e `boolean ISHELL_EnumNextApplet(IShell *,
+            // AEEAppInfo *)`. A Z-Wheel percorre a lista antes de lançar um jogo (`0x794c8`):
+            // acha a classe escolhida, lê o `pszMIF`, corta até a última barra e tira a
+            // extensão — o que ela quer é o **id do módulo**, com que monta o diretório do jogo.
+            //
+            // O `AEEAppInfo` é `{ AEECLSID cls; char *pszMIF; uint16 wIDBase; uint16 wAppType;
+            // uint32 dwFlags; }`.
+            (Interface::Shell, slot) if Interface::Shell.method(slot) == Some("EnumAppletInit") => {
+                self.enumeracao_de_applets = 0;
+                SUCCESS
+            }
+            (Interface::Shell, slot) if Interface::Shell.method(slot) == Some("EnumNextApplet") => {
+                let saida = self.cpu.read_reg(Reg::R1);
+                match self.modulos_instalados.get(self.enumeracao_de_applets).cloned() {
+                    Some((classe, id)) if saida != 0 => {
+                        self.enumeracao_de_applets += 1;
+                        let mif = match self.mif_no_guest.get(&classe) {
+                            Some(&endereco) => endereco,
+                            None => {
+                                let texto = format!("fs:/mif/{id}.mif");
+                                let endereco = self.heap.alloc(texto.len() as u32 + 1).unwrap_or(0);
+                                if endereco != 0 {
+                                    self.write_cstring_limited(endereco, &texto, texto.len() + 1)?;
+                                    self.mif_no_guest.insert(classe, endereco);
+                                }
+                                endereco
+                            }
+                        };
+                        self.cpu.write_mem(saida, &[0u8; 16])?;
+                        self.cpu.write_u32(saida, classe)?;
+                        self.cpu.write_u32(saida + 4, mif)?;
+                        1
+                    }
+                    _ => 0,
                 }
             }
             (Interface::Shell, slot) if Interface::Shell.method(slot) == Some("ActiveApplet") => {
@@ -2904,50 +2971,10 @@ impl<C: CpuBackend> Machine<C> {
                 Some(result) => result,
                 None => return Ok(None),
             },
-            // A `0x01028e3c` não tem estado nem método próprio: só a contagem.
-            (Interface::Classe28e3c, 0) => self.objects.add_ref(self.cpu.read_reg(Reg::R0)),
-            (Interface::Classe28e3c, 1) => self.objects.release(self.cpu.read_reg(Reg::R0)),
-            // `slot3(this, &saída)`, na `0x8588c` e na `0x858a8`: dois objetos desta classe são
-            // consultados em sequência, cada um enchendo um pedaço da mesma estrutura, e o
-            // chamador sai fora se qualquer um devolver diferente de zero.
-            //
-            // **Este era o fim do ciclo de atração.** Recusar o método abortava o retorno de
-            // chamada inteiro, calado — 1722 vezes, todas no primeiro segundo, e depois o jogo
-            // emudecia. A linha `I28e3c::slot[3]` estava no relatório desde sempre; foi preciso
-            // registrar o desfecho de cada callback para ver que era ela que matava a cadeia.
-            //
-            // O que a estrutura guarda ainda não sabemos. Zerar os 0x18 bytes entre os dois
-            // destinos (`r4+8` e `r4+0x20`) e responder sucesso é a resposta mínima que deixa o
-            // jogo seguir, e fica anotada como hipótese.
-            // `slot5(this, &saída, 0, 0)`, na `0x86238`: o chamador lê uma **meia palavra** de
-            // volta e a guarda em `[r5+0x10]`. Tem cara de medida — uma altura, uma contagem.
-            //
-            // Respondemos zero e anotamos. Um zero já derrubou o jogo uma vez, no passo de lista
-            // do slot 5 do widget, então este fica sob suspeita: se aparecer divisão por zero ou
-            // laço, é aqui que se olha primeiro.
-            (Interface::Classe28e3c, 5) => {
-                let saida = self.cpu.read_reg(Reg::R1);
-                if saida != 0 {
-                    self.cpu.write_mem(saida, &0u16.to_le_bytes())?;
-                }
-                self.assumptions.insert(
-                    "a 0x01028e3c respondeu zero a uma medida, e não sabemos o que ela mede",
-                );
-                SUCCESS
-            }
-            (Interface::Classe28e3c, 3) => {
-                /// A distância entre os dois destinos na `0x85880`.
-                const QUANTO: usize = 0x18;
-
-                let saida = self.cpu.read_reg(Reg::R1);
-                if saida != 0 {
-                    self.cpu.write_mem(saida, &[0u8; QUANTO])?;
-                }
-                self.assumptions.insert(
-                    "a 0x01028e3c respondeu uma consulta zerada, e não sabemos o que ela guarda",
-                );
-                SUCCESS
-            }
+            (Interface::Classe28e3c, _) => match self.modelo_de_valor_call(slot)? {
+                Some(result) => result,
+                None => return Ok(None),
+            },
             (Interface::Typeface, _) => match self.typeface_call(slot)? {
                 Some(result) => result,
                 None => return Ok(None),

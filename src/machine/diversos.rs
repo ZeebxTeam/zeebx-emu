@@ -340,6 +340,19 @@ impl<C: CpuBackend> Machine<C> {
                 self.objects.add_ref(this);
                 SUCCESS
             }
+            // **Os três slots que a Z-Wheel usa para lançar um jogo mexem na cópia de trabalho
+            // do módulo, e aqui ela não existe.** No console o jogo mora no eNAND, em
+            // `fs:/card3/mod/<pasta>`, e roda de uma cópia em `fs:/mcp/mod/<pasta>`. Os nomes e
+            // os caminhos saem do firmware (`0x110860f0`, `0x11086342`, `0x11086466`) e da
+            // mensagem de erro da própria Z-Wheel, `ModDataCopyFromENAND failure, folder='%s'`:
+            //
+            // - slot 3 copia do eNAND para o MCP antes de rodar;
+            // - slot 7 leva o `udata` — os saves — do MCP de volta ao eNAND;
+            // - slot 5 apaga a cópia do MCP.
+            //
+            // Aqui cada jogo roda e grava na própria pasta, então não há o que copiar nem apagar.
+            // Com os três recusados, a Z-Wheel desistia de lançar o jogo escolhido na grade.
+            "ModDataCopyFromENAND" | "UserDataCopyToENAND" | "ModDataRemoveFromMCP" => SUCCESS,
             _ => SUCCESS,
         };
         Ok(Some(result))
@@ -380,6 +393,114 @@ impl<C: CpuBackend> Machine<C> {
             _ => SUCCESS,
         };
         Ok(Some(result))
+    }
+
+    /// Atende o `IValueModel` (`0x01028e3c`). Ver [`Interface::Classe28e3c`].
+    pub(super) fn modelo_de_valor_call(&mut self, slot: u32) -> Result<Option<u32>, CpuError> {
+        /// `EVT_MDL_VALUE`, o evento de "o valor mudou". O número é o que o ouvinte da grade
+        /// confere em `0x37710` antes de pegar o item.
+        const EVT_MDL_VALUE: u32 = 0x1000;
+        /// O tamanho do `ModelEvent`: `{ evCode, pModel, dwParam }`.
+        const MODEL_EVENT: u32 = 12;
+
+        let Some(name) = Interface::Classe28e3c.method(slot) else {
+            return Ok(None);
+        };
+        let this = self.cpu.read_reg(Reg::R0);
+        let (a1, a2) = (self.cpu.read_reg(Reg::R1), self.cpu.read_reg(Reg::R2));
+        let result = match name {
+            "AddRef" => self.objects.add_ref(this),
+            "Release" => {
+                let restam = self.objects.release(this);
+                if restam == 0 {
+                    self.modelos_de_valor.remove(&this);
+                }
+                restam
+            }
+            "QueryInterface" => {
+                if a2 != 0 {
+                    self.cpu.write_u32(a2, this)?;
+                }
+                self.objects.add_ref(this);
+                SUCCESS
+            }
+            // void AddListener(IValueModel *, ModelListener *pl)
+            //
+            // O `ModelListener` é `{ pNext, pPrev, pfnListener, pListenerData, pfnCancel,
+            // pCancelData }`. O jogo preenche a função e o contexto; o resto é do modelo. O
+            // cancelamento fica nulo: quem cancela um ouvinte chama o `pfnCancel` se houver, e
+            // sem ele o ouvinte continua na nossa lista — por isso a conferência na hora de avisar.
+            "AddListener" => {
+                if a1 != 0 {
+                    let funcao = self.cpu.read_u32(a1 + 8)?;
+                    let contexto = self.cpu.read_u32(a1 + 12)?;
+                    for campo in [0, 4, 16, 20] {
+                        self.cpu.write_u32(a1 + campo, 0)?;
+                    }
+                    let modelo = self.modelos_de_valor.entry(this).or_default();
+                    modelo.ouvintes.retain(|&(onde, _, _)| onde != a1);
+                    modelo.ouvintes.push((a1, funcao, contexto));
+                }
+                SUCCESS
+            }
+            // void Notify(IValueModel *, ModelEvent *pev)
+            "Notify" => {
+                if a1 != 0 {
+                    self.cpu.write_u32(a1 + 4, this)?;
+                    self.avisa_ouvintes(this, a1)?;
+                }
+                SUCCESS
+            }
+            // int SetValue(IValueModel *, void *pvValue, int nLen, PFNVALUEFREE pfn)
+            //
+            // O liberador do valor anterior não é chamado: é código do jogo, e chamá-lo no meio
+            // de um despacho é o caminho que já derrubou jogo antes.
+            "SetValue" => {
+                let modelo = self.modelos_de_valor.entry(this).or_default();
+                modelo.valor = a1;
+                modelo.tamanho = a2;
+                if let Some(evento) = self.heap.alloc(MODEL_EVENT) {
+                    self.cpu.write_u32(evento, EVT_MDL_VALUE)?;
+                    self.cpu.write_u32(evento + 4, this)?;
+                    self.cpu.write_u32(evento + 8, 0)?;
+                    self.avisa_ouvintes(this, evento)?;
+                    self.heap.free(evento);
+                }
+                SUCCESS
+            }
+            // void *GetValue(IValueModel *, int *pnLen)
+            "GetValue" => {
+                let modelo = self.modelos_de_valor.get(&this).cloned().unwrap_or_default();
+                if a1 != 0 {
+                    self.cpu.write_u32(a1, modelo.tamanho)?;
+                }
+                modelo.valor
+            }
+            _ => return Ok(None),
+        };
+        Ok(Some(result))
+    }
+
+    /// Chama cada ouvinte do modelo com o evento, conferindo que ele ainda é o que foi registrado.
+    fn avisa_ouvintes(&mut self, modelo: u32, evento: u32) -> Result<(), CpuError> {
+        let ouvintes = self
+            .modelos_de_valor
+            .get(&modelo)
+            .map(|m| m.ouvintes.clone())
+            .unwrap_or_default();
+        for (onde, funcao, contexto) in ouvintes {
+            let vivo = self.cpu.read_u32(onde + 8).ok() == Some(funcao)
+                && self.cpu.read_u32(onde + 12).ok() == Some(contexto);
+            if !vivo || funcao == 0 {
+                if let Some(m) = self.modelos_de_valor.get_mut(&modelo) {
+                    m.ouvintes.retain(|&(o, _, _)| o != onde);
+                }
+                continue;
+            }
+            let orcamento = self.orcamento.max(1);
+            let _ = self.call_guest_aninhado(funcao, [contexto, evento, 0, 0], orcamento)?;
+        }
+        Ok(())
     }
 
     /// Atende o controle de sistema. Ver [`Interface::SystemCtl`].

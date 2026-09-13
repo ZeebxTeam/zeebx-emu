@@ -308,7 +308,9 @@ impl App {
             self.gl.clone(),
         ) {
             Ok(mut session) => {
-                session.set_installed_applets(self.games.iter().filter_map(|game| game.clsid));
+                session.set_installed_applets(self.games.iter().filter_map(|game| {
+                    Some((game.clsid?, library::id_do_modulo(&game.path)?))
+                }));
                 // Ligar o som aqui é seguro **porque o jogo ainda não começou**: o `start` só
                 // prepara, e o `EVT_APP_START` sai na primeira volta do laço. Antes disso o
                 // jogo já tocava dentro do `start`, e o som saía com a tela vazia.

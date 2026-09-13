@@ -187,6 +187,25 @@ fn main() -> ExitCode {
                         .find_map(|a| a.strip_prefix("--teclas="))
                         .map(teclado)
                         .unwrap_or_default(),
+                    instalados: args
+                        .iter()
+                        .find_map(|a| a.strip_prefix("--instalados="))
+                        .map(|lista| {
+                            lista
+                                .split(',')
+                                .filter_map(|item| {
+                                    let (classe, id) = item.split_once(':').unwrap_or((item, ""));
+                                    let classe =
+                                        u32::from_str_radix(classe.trim().trim_start_matches("0x"), 16).ok()?;
+                                    let id = match id.is_empty() {
+                                        true => format!("{classe:x}"),
+                                        false => id.to_string(),
+                                    };
+                                    Some((classe, id))
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default(),
                     portas: match args.iter().find_map(|a| a.strip_prefix("--portas=")) {
                         Some(lista) => match aparelhos(lista) {
                             Some(portas) => portas,
@@ -347,6 +366,11 @@ struct Options {
     portas: [Option<bindings::Aparelho>; input::PORTAS],
     /// Teclas a entregar, com `--teclas=ms:nome[,...]`.
     teclas: Vec<(u32, u32)>,
+    /// Classes que o shell trata como instaladas, com `--instalados=0xCLSID[:id][,...]` — o id é
+    /// a pasta do módulo, que o `EnumNextApplet` entrega. Na janela
+    /// quem diz é a biblioteca; sem ela, é isto que deixa testar o lançamento de um jogo pela
+    /// Z-Wheel.
+    instalados: Vec<(u32, String)>,
 }
 
 /// Lê `1000:select,2000:down` e devolve `(instante em ms, código AVK)`.
@@ -419,6 +443,7 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
         bridge,
         portas,
         teclas,
+        instalados,
     } = options;
     // Um jogo em `.zip` é extraído para o cache e rodado de lá, como na interface.
     let extracted;
@@ -482,6 +507,7 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
         machine.probe_answer(*classe, *slot, *valor);
     }
     machine.set_portas(portas);
+    machine.set_installed_applets(instalados);
     machine.set_network(network);
     if network_to.is_some() {
         machine.set_network_to(network_to);
@@ -644,6 +670,9 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
             };
             println!("  {ms:>7} ms  porta {}  {acao} {nome}", porta + 1);
         }
+    }
+    if let Some(classe) = machine.take_launch_request() {
+        println!("lançar:    o shell pediu para abrir {classe:#010x}");
     }
     let midia = machine.media_log();
     if !midia.is_empty() {

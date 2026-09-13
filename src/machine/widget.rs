@@ -286,6 +286,15 @@ impl<C: CpuBackend> Machine<C> {
         dentro
     }
 
+    /// Se `filho` está pendurado em `container` pelo slot 5.
+    pub(super) fn e_filho_anexado(&self, container: u32, filho: u32) -> bool {
+        filho != 0
+            && self
+                .widgets
+                .get(&container)
+                .is_some_and(|widget| widget.anexados.contains(&filho))
+    }
+
     /// A raiz mais nova de todas — o formulário que o jogo acabou de montar.
     ///
     /// **A Z-Wheel nunca esconde nada.** O slot 6 só é chamado com verdadeiro, e o jogo monta um
@@ -614,6 +623,8 @@ impl<C: CpuBackend> Machine<C> {
         const MARCA_FOCO: u32 = 0x700;
         /// Pergunta, num byte, se o widget pode receber foco.
         const HABILITADO: u32 = 0x702;
+        /// `FORM_LAST`, o ponteiro especial do `IROOTFORM_RemoveForm` que quer dizer "o do topo".
+        const FORM_LAST: u32 = 1;
 
         let Some(name) = Interface::Widget.method(slot) else {
             return Ok(None);
@@ -763,6 +774,76 @@ impl<C: CpuBackend> Machine<C> {
                     }
                 }
                 SUCCESS
+            }
+            // **Nos containers, os slots 6 e 7 são o `IContainer` do BREW**: `Remove(widget)` e
+            // `GetWidget(pwRef, bNext, bWrap)`, com o `Insert` no slot 5 que já é o
+            // `AdicionarFilho`. A família divide a tabela, e as duas leituras se separam pelos
+            // argumentos: `Remove` recebe um filho **deste** container, e `GetWidget` recebe nulo
+            // ou um filho seguido de dois booleanos. Nem um ponteiro de tamanho nem um booleano
+            // de visibilidade é filho do container.
+            //
+            // Sem isto, a `0x80490` — que tira da raiz todos os formulários menos o que vai
+            // abrir, antes de lançar um jogo — pedia o próximo filho, recebia lixo do "tamanho"
+            // e rodava para sempre: dez mil voltas até o orçamento do callback acabar, e o jogo
+            // escolhido na grade nunca abria.
+            // **Na raiz, o slot 6 é o `IROOTFORM_RemoveForm`**, e `1` é o `FORM_LAST` do BREW:
+            // `IROOTFORM_PopForm` é exatamente `RemoveForm(raiz, FORM_LAST)`. A Z-Wheel usa assim
+            // duas vezes — em `0x11770`, para tirar o formulário da animação de abertura, e no
+            // laço de `0x82580`, que tira todos os formulários antes de lançar um jogo. Lido
+            // como "visível", o laço perguntava pelo topo, recebia sempre o mesmo formulário e
+            // girava até o orçamento do callback acabar.
+            "DefinirVisivel"
+                if self.widgets.get(&this).map_or(0, |w| w.classe) == WIDGET_RAIZ
+                    && self.cpu.read_reg(Reg::R1) == FORM_LAST =>
+            {
+                // Sem `Release`: a referência do formulário não é nossa para soltar. Soltá-la
+                // devolvia o endereço à lista de livres com o formulário ainda referenciado, e o
+                // widget seguinte nascia ali — a fileira de ícones da abertura aparecia atrás do
+                // roller. O `pai` também fica: sem ele o formulário viraria uma raiz solta.
+                if let Some(widget) = self.widgets.get_mut(&this) {
+                    widget.anexados.pop();
+                }
+                SUCCESS
+            }
+            "DefinirVisivel" if self.e_filho_anexado(this, self.cpu.read_reg(Reg::R1)) => {
+                let filho = self.cpu.read_reg(Reg::R1);
+                if let Some(widget) = self.widgets.get_mut(&this) {
+                    widget.anexados.retain(|&w| w != filho);
+                }
+                if let Some(filho) = self.widgets.get_mut(&filho) {
+                    if filho.pai == this {
+                        filho.pai = 0;
+                    }
+                }
+                self.objects.release(filho);
+                SUCCESS
+            }
+            "DefinirTamanho"
+                if {
+                    let (referencia, proximo, volta) = (
+                        self.cpu.read_reg(Reg::R1),
+                        self.cpu.read_reg(Reg::R2),
+                        self.cpu.read_reg(Reg::R3),
+                    );
+                    (referencia == 0 || self.e_filho_anexado(this, referencia))
+                        && proximo <= 1
+                        && volta <= 1
+                } =>
+            {
+                let (referencia, proximo, volta) = (
+                    self.cpu.read_reg(Reg::R1),
+                    self.cpu.read_reg(Reg::R2) != 0,
+                    self.cpu.read_reg(Reg::R3) != 0,
+                );
+                let filhos = self
+                    .widgets
+                    .get(&this)
+                    .map(|widget| widget.anexados.clone())
+                    .unwrap_or_default();
+                // A pilha vai do primeiro inserido ao último. Sem referência, "próximo" começa
+                // pelo de baixo e "anterior" pelo de cima. O `GetWidget` não dá referência a
+                // quem recebe: é um ponteiro emprestado.
+                vizinho_na_pilha(&filhos, referencia, proximo, volta)
             }
             "DefinirVisivel" => {
                 let classe = self.widgets.get(&this).map_or(0, |widget| widget.classe);
@@ -1096,12 +1177,21 @@ impl<C: CpuBackend> Machine<C> {
                         }
                         OK
                     }
+                    // Quem lê o foco **solta o que recebeu** — o tratador da grade faz o
+                    // `Release` em `0x39504` —, então a resposta leva uma referência nossa, como
+                    // todo getter de interface do BREW. Sem ela, cada consulta tirava uma
+                    // contagem que ninguém tinha posto. E só sai objeto vivo: um endereço que já
+                    // voltou para a lista de livres é pior que nulo.
                     FOCO_LE => {
                         let foco = self
                             .widgets
                             .get(&this)
                             .and_then(|widget| widget.propriedades.get(&FOCO_DEFINE).copied())
+                            .filter(|&foco| self.widgets.contains_key(&foco))
                             .unwrap_or(0);
+                        if foco != 0 {
+                            self.objects.add_ref(foco);
+                        }
                         if terceiro != 0 {
                             self.cpu.write_u32(terceiro, foco)?;
                         }
@@ -1190,5 +1280,42 @@ impl<C: CpuBackend> Machine<C> {
             })
             .sum();
         (total, maior, repetidos)
+    }
+}
+
+/// O `IContainer_GetWidget`: o vizinho de `referencia` na pilha, ou uma ponta dela.
+///
+/// A pilha vai do primeiro inserido (baixo) ao último (cima). Sem referência, `proximo` começa
+/// por baixo e o contrário por cima. Passando da ponta, `volta` dá a volta; sem ele, zero.
+fn vizinho_na_pilha(filhos: &[u32], referencia: u32, proximo: bool, volta: bool) -> u32 {
+    if filhos.is_empty() {
+        return 0;
+    }
+    let ultimo = filhos.len() - 1;
+    let indice = match (filhos.iter().position(|&w| w == referencia), proximo) {
+        (None, true) => Some(0),
+        (None, false) => Some(ultimo),
+        (Some(i), true) if i < ultimo => Some(i + 1),
+        (Some(_), true) => volta.then_some(0),
+        (Some(0), false) => volta.then_some(ultimo),
+        (Some(i), false) => Some(i - 1),
+    };
+    indice.map_or(0, |i| filhos[i])
+}
+
+#[cfg(test)]
+mod testes_do_container {
+    use super::vizinho_na_pilha;
+
+    #[test]
+    fn percorre_a_pilha_nos_dois_sentidos_e_para_na_ponta() {
+        let pilha = [10, 20, 30];
+        assert_eq!(vizinho_na_pilha(&pilha, 0, false, false), 30, "sem referência, o de cima");
+        assert_eq!(vizinho_na_pilha(&pilha, 0, true, false), 10, "sem referência, o de baixo");
+        assert_eq!(vizinho_na_pilha(&pilha, 30, false, false), 20);
+        assert_eq!(vizinho_na_pilha(&pilha, 10, false, false), 0, "a ponta termina o laço");
+        assert_eq!(vizinho_na_pilha(&pilha, 10, false, true), 30, "com volta, dá a volta");
+        assert_eq!(vizinho_na_pilha(&pilha, 20, true, false), 30);
+        assert_eq!(vizinho_na_pilha(&[], 0, true, true), 0);
     }
 }
