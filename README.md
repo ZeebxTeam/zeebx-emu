@@ -35,7 +35,7 @@ Jogos que utilizam do Boomerang podem ser jogados usando Wii Remote e seus senso
 Jogos 3D são compatíveis com recursos de resolução experimentais, podendo atingir resoluções de até 4k em 16:9.
 
 O estado de cada título, com os endereços de cada parada, está em
-[COMPATIBILIDADE.MD](COMPATIBILIDADE.MD).
+[COMPATIBILIDADE.md](COMPATIBILIDADE.md).
 
 ## Compilando
 
