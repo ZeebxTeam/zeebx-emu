@@ -3,7 +3,9 @@
 //! O RetroArch chama [`retro_run`] a 60 Hz. Cada volta lê o controle, anda o jogo até um quadro
 //! (ou o orçamento de tempo real) e devolve pixels RGB565 640×480 — o framebuffer nativo do
 //! Zeebo — e 735 quadros de áudio a 44100 Hz. O som não passa pelo `cpal`: o mixer silencioso
-//! já existe para gravar, e aqui ele alimenta o callback em lote.
+//! já existe para gravar, e aqui ele alimenta o callback em lote. O `step` leva o limitador de
+//! velocidade ligado: sem ele o relógio virtual adianta o ócio e o jogo corre à frente do
+//! retrace do frontend — o Crash fazia doze segundos de jogo em um e meio de relógio real.
 
 use std::cell::RefCell;
 use std::ffi::{CStr, c_char, c_uint, c_void};
@@ -437,7 +439,9 @@ extern "C" fn retro_run() {
             };
             aplica_entrada(emu, &host);
             if !emu.session.mostra_quadro_intermediario() {
-                let _ = emu.session.step(FATIA, false);
+                // O mesmo `speed_limit` da janela: o relógio virtual não espera o ócio, e sem
+                // este freio o jogo adianta do retrace do RetroArch.
+                let _ = emu.session.step(FATIA, true);
             }
             mostra_quadro(emu, &host);
             mostra_audio(emu, &host);
