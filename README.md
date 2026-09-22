@@ -76,7 +76,8 @@ para que saves e states fiquem em `saves/Zeebx` e `states/Zeebx`.
 
 O core é o crate `frontends/libretro`, compilado sem as dependências da janela (`--no-default-features`
 no motor). Dá para disparar o fluxo `libretro` na aba Actions; os artefatos saem como
-`zeebx_libretro_<alvo>` (underscore), separados dos pacotes do `release.yml`.
+`zeebx_libretro_<alvo>` (underscore), separados dos pacotes do `release.yml`. A mesma tag de
+versão anexa os zips do núcleo (`zeebx_libretro_<alvo>.zip`) ao rascunho da release.
 
 ### Instaladores e releases
 
