@@ -144,10 +144,14 @@ pub struct Sample {
 }
 
 impl Session {
-    /// Carrega o módulo, cria o applet e entrega o `EVT_APP_START`.
+    /// Carrega o módulo, cria o applet e deixa o `EVT_APP_START` para a primeira volta.
     ///
     /// Um `.zip` é extraído para o cache antes: o jogo grava (o Peteca tem um `.sav`), e
     /// escrever de volta num pacote não é coisa que se queira fazer.
+    pub fn start(path: &Path) -> Result<Self, StartError> {
+        Self::start_inner(path, None, None, false, None, Default::default())
+    }
+
     /// Como [`Session::start`], mas com o aparelho já configurado antes de o jogo começar.
     ///
     /// **A ordem importa.** O `start` roda o `AEEMod_Load`, cria o applet e despacha o

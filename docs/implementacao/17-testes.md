@@ -42,8 +42,9 @@ Rust tem duas camadas de teste: as de integração, em `tests/` na raiz, cada ar
 um binário separado que só vê a **API pública** do crate; e as unitárias, junto do código em
 `#[cfg(test)] mod tests`, que podem tocar em campo privado.
 
-Aqui só existe a segunda, e não por descuido: **o crate é só binário**, não tem `src/lib.rs`. Um
-arquivo em `tests/` não conseguiria nem `use zeebx::…`, porque não há biblioteca para importar.
+Aqui só existe a segunda, e não por descuido. O crate agora tem `src/lib.rs` (o binário e o
+núcleo Libretro compartilham a `Session`), mas a API pública continua mínima: um arquivo em
+`tests/` não veria a `Machine` por dentro, e é exatamente isso que estes testes precisam.
 
 Isso combina com o que estes testes precisam fazer. Um teste que confere o recorte de um blit
 precisa montar uma `Machine`, chamar um método por slot e ler a superfície de dentro — nada disso

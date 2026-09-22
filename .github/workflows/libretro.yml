@@ -1,0 +1,81 @@
+# Compila o núcleo Libretro nos três sistemas.
+#
+# Dispara à mão, pela aba Actions. Uma tag de versão também dispara o `release.yml`,
+# que gera o mesmo zip junto com os instaladores.
+
+name: libretro
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  nucleo:
+    name: ${{ matrix.nome }}
+    runs-on: ${{ matrix.sistema }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - nome: linux-x86_64
+            sistema: ubuntu-22.04
+            lib: libzeebx.so
+            nucleo: zeebx_libretro.so
+          - nome: windows-x86_64
+            sistema: windows-latest
+            lib: zeebx.dll
+            nucleo: zeebx_libretro.dll
+          - nome: macos-arm64
+            sistema: macos-latest
+            lib: libzeebx.dylib
+            nucleo: zeebx_libretro.dylib
+          - nome: macos-x86_64
+            sistema: macos-15-intel
+            lib: libzeebx.dylib
+            nucleo: zeebx_libretro.dylib
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: libretro-${{ matrix.nome }}
+
+      - name: Dependências do Linux
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake pkg-config libasound2-dev libudev-dev \
+            libxkbcommon-dev libwayland-dev libgl1-mesa-dev libx11-dev libxcursor-dev \
+            libxrandr-dev libxi-dev
+
+      - name: Dependências do macOS
+        if: runner.os == 'macOS'
+        run: brew install cmake || true
+
+      - name: Compilar o núcleo
+        shell: bash
+        env:
+          NOME: ${{ matrix.nome }}
+          LIB: ${{ matrix.lib }}
+          NUCLEO: ${{ matrix.nucleo }}
+        run: |
+          set -euo pipefail
+          cargo build --release --lib --locked
+          mkdir -p dist
+          cp "target/release/${LIB}" "dist/${NUCLEO}"
+          cp zeebx_libretro.info dist/
+          (
+            cd dist
+            tar -a -cf "../zeebx_libretro-${NOME}.zip" "${NUCLEO}" zeebx_libretro.info
+          )
+          ls -la "zeebx_libretro-${NOME}.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zeebx-libretro-${{ matrix.nome }}
+          path: zeebx_libretro-${{ matrix.nome }}.zip
+          if-no-files-found: error

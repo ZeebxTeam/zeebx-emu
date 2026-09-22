@@ -137,6 +137,11 @@ impl Framebuffer {
         self.height
     }
 
+    /// Os pixels nativos da superfície, RGB565, um `u16` por pixel, linha a linha.
+    pub fn pixels(&self) -> &[u16] {
+        &self.pixels
+    }
+
     /// Se alguma operação de desenho chegou a tocar a tela.
     /// Quantas escritas a superfície já recebeu. Serve para saber se ela mudou desde um instante.
     pub fn escritas(&self) -> u64 {

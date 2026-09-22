@@ -45,11 +45,11 @@ documento.
 
 ```
   interface (egui)  ─┐
-  linha de comando  ─┴─▶  Session  ─▶  Machine  ─▶  CpuBackend  ─▶  unicorn (TCG)
-                                          │
+  linha de comando  ─┼─▶  Session  ─▶  Machine  ─▶  CpuBackend  ─▶  unicorn (TCG)
+  núcleo Libretro   ─┘                      │
                                           ├─▶ rasterizador de software (OpenGL ES 1.1)
                                           ├─▶ framebuffer 2D
-                                          ├─▶ mixer de áudio ─▶ cpal
+                                          ├─▶ mixer de áudio ─▶ cpal (ou o callback do frontend)
                                           ├─▶ VFS ─▶ diretório do módulo
                                           └─▶ heap, objetos, temporizadores
 ```

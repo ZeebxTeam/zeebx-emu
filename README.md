@@ -45,6 +45,38 @@ Rust 1.88 ou mais novo.
 cargo build --release
 ```
 
+### Núcleo Libretro
+
+O mesmo emulador, no laço do RetroArch (e frontends compatíveis). Precisa do caminho do `.mod`
+ou do `.zip` — o núcleo extrai o zip, como a interface.
+
+Linux e macOS:
+
+```bash
+make
+make install
+```
+
+Windows (PowerShell):
+
+```powershell
+.\build-libretro.ps1
+.\build-libretro.ps1 install
+```
+
+| Sistema | Arquivo | Pasta do RetroArch |
+|---|---|---|
+| Linux | `zeebx_libretro.so` | `~/.config/retroarch/cores` |
+| Windows | `zeebx_libretro.dll` | `%APPDATA%\RetroArch\cores` |
+| macOS | `zeebx_libretro.dylib` | `~/Library/Application Support/RetroArch/cores` |
+
+Copie também o `zeebx_libretro.info` para a pasta `info` do frontend. No RetroArch, carregue o
+núcleo e abra o `.mod` ou o `.zip` do jogo.
+
+Uma tag de versão gera os quatro zips — Linux x86_64, Windows x86_64, macOS Apple Silicon e
+macOS Intel — na mesma release dos instaladores. Dá para disparar só o núcleo pela aba Actions,
+no fluxo `libretro`.
+
 ### Instaladores e releases
 
 Os instaladores saem do [cargo-packager](https://github.com/crabnebula-dev/cargo-packager), com a

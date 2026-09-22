@@ -1,0 +1,28 @@
+# Software Information
+display_name = "Zeebo (Zeebx)"
+authors = "ZeebxTeam"
+supported_extensions = "mod|zip"
+corename = "Zeebx"
+license = "GPLv2"
+permissions = ""
+display_version = "0.2.1"
+
+# Hardware Information
+manufacturer = "TecToy"
+categories = "Emulator"
+systemname = "Zeebo"
+systemid = "zeebo"
+
+# Libretro Features
+supports_no_game = "false"
+savestate = "false"
+savestate_features = "none"
+cheats = "false"
+input_descriptors = "false"
+memory_descriptors = "false"
+libretro_saves = "false"
+core_options = "false"
+hw_render = "false"
+required_hw_api = ""
+database = ""
+description = "Emulador do Zeebo (Qualcomm BREW 4.0.2). Carrega um .mod ou um .zip do jogo."

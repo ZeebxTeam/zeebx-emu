@@ -27,15 +27,23 @@ jobs:
           - nome: linux-x86_64
             sistema: ubuntu-22.04
             formatos: deb,appimage
+            lib: libzeebx.so
+            nucleo: zeebx_libretro.so
           - nome: windows-x86_64
             sistema: windows-latest
             formatos: nsis
+            lib: zeebx.dll
+            nucleo: zeebx_libretro.dll
           - nome: macos-arm64
             sistema: macos-latest
             formatos: dmg
+            lib: libzeebx.dylib
+            nucleo: zeebx_libretro.dylib
           - nome: macos-x86_64
             sistema: macos-15-intel
             formatos: dmg
+            lib: libzeebx.dylib
+            nucleo: zeebx_libretro.dylib
     steps:
       - uses: actions/checkout@v4
 
@@ -72,6 +80,23 @@ jobs:
           APPIMAGE_EXTRACT_AND_RUN: "1"
         run: cargo packager --release --formats ${{ matrix.formatos }}
 
+      - name: Núcleo Libretro
+        shell: bash
+        env:
+          NOME: ${{ matrix.nome }}
+          LIB: ${{ matrix.lib }}
+          NUCLEO: ${{ matrix.nucleo }}
+        run: |
+          set -euo pipefail
+          cargo build --release --lib --locked
+          mkdir -p dist
+          cp "target/release/${LIB}" "dist/${NUCLEO}"
+          cp zeebx_libretro.info dist/
+          (
+            cd dist
+            tar -a -cf "../zeebx_libretro-${NOME}.zip" "${NUCLEO}" zeebx_libretro.info
+          )
+
       - uses: actions/upload-artifact@v4
         with:
           name: zeebx-${{ matrix.nome }}
@@ -80,6 +105,7 @@ jobs:
             target/pacotes/*.AppImage
             target/pacotes/*-setup.exe
             target/pacotes/*.dmg
+            zeebx_libretro-${{ matrix.nome }}.zip
           if-no-files-found: error
 
   release:
