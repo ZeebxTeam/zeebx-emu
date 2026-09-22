@@ -66,7 +66,7 @@ Windows (PowerShell):
 
 | Sistema | Arquivo | Pasta do RetroArch |
 |---|---|---|
-| Linux | `zeebx_libretro.so` | `~/.config/retroarch/cores` |
+| Linux (x86_64 e ARM64) | `zeebx_libretro.so` | `~/.config/retroarch/cores` |
 | Windows | `zeebx_libretro.dll` | `%APPDATA%\RetroArch\cores` |
 | macOS | `zeebx_libretro.dylib` | `~/Library/Application Support/RetroArch/cores` |
 

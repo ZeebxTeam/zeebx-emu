@@ -38,6 +38,10 @@ jobs:
             sistema: ubuntu-22.04
             biblioteca: target/release/libzeebx_libretro.so
             pacote: zeebx_libretro.so
+          - nome: linux-arm64
+            sistema: ubuntu-22.04-arm
+            biblioteca: target/release/libzeebx_libretro.so
+            pacote: zeebx_libretro.so
           - nome: windows-x86_64
             sistema: windows-latest
             biblioteca: target/release/zeebx_libretro.dll
