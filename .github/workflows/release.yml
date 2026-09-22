@@ -83,7 +83,6 @@ jobs:
       - name: Núcleo Libretro
         shell: bash
         env:
-          NOME: ${{ matrix.nome }}
           LIB: ${{ matrix.lib }}
           NUCLEO: ${{ matrix.nucleo }}
         run: |
@@ -92,10 +91,6 @@ jobs:
           mkdir -p dist
           cp "target/release/${LIB}" "dist/${NUCLEO}"
           cp zeebx_libretro.info dist/
-          (
-            cd dist
-            tar -a -cf "../zeebx_libretro-${NOME}.zip" "${NUCLEO}" zeebx_libretro.info
-          )
 
       - uses: actions/upload-artifact@v4
         with:
@@ -105,7 +100,12 @@ jobs:
             target/pacotes/*.AppImage
             target/pacotes/*-setup.exe
             target/pacotes/*.dmg
-            zeebx_libretro-${{ matrix.nome }}.zip
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zeebx-libretro-${{ matrix.nome }}
+          path: dist/*
           if-no-files-found: error
 
   release:
@@ -116,8 +116,25 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          path: pacotes
-          merge-multiple: true
+          path: artefatos
+
+      # O upload-artifact já vem num zip; empacotar de novo aqui gerava zip-dentro-de-zip.
+      # Cada pasta `zeebx-libretro-*` tem o núcleo e o `.info` soltos: um zip de verdade, uma vez.
+      - name: Empacotar núcleos Libretro
+        run: |
+          python3 - <<'PY'
+          import zipfile
+          from pathlib import Path
+          raiz = Path("artefatos")
+          for pasta in sorted(raiz.glob("zeebx-libretro-*")):
+              nome = pasta.name.removeprefix("zeebx-libretro-")
+              destino = Path(f"zeebx_libretro-{nome}.zip")
+              with zipfile.ZipFile(destino, "w", zipfile.ZIP_DEFLATED) as z:
+                  for arquivo in sorted(pasta.iterdir()):
+                      if arquivo.is_file():
+                          z.write(arquivo, arquivo.name)
+              print("escreveu", destino)
+          PY
 
       - uses: softprops/action-gh-release@v2
         with:
@@ -125,4 +142,9 @@ jobs:
           tag_name: ${{ github.ref_name }}
           draft: true
           generate_release_notes: true
-          files: pacotes/*
+          files: |
+            artefatos/zeebx-linux-x86_64/*
+            artefatos/zeebx-windows-x86_64/*
+            artefatos/zeebx-macos-arm64/*
+            artefatos/zeebx-macos-x86_64/*
+            zeebx_libretro-*.zip

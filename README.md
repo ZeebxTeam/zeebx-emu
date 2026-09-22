@@ -73,9 +73,10 @@ Windows (PowerShell):
 Copie também o `zeebx_libretro.info` para a pasta `info` do frontend. No RetroArch, carregue o
 núcleo e abra o `.mod` ou o `.zip` do jogo.
 
-Uma tag de versão gera os quatro zips — Linux x86_64, Windows x86_64, macOS Apple Silicon e
-macOS Intel — na mesma release dos instaladores. Dá para disparar só o núcleo pela aba Actions,
-no fluxo `libretro`.
+Uma tag de versão gera quatro zips — Linux x86_64, Windows x86_64, macOS Apple Silicon e
+macOS Intel — na mesma release dos instaladores. Dentro de cada um estão o núcleo com o nome
+que o RetroArch espera (`zeebx_libretro.so` / `.dll` / `.dylib`) e o `.info`. Dá para disparar
+só o núcleo pela aba Actions, no fluxo `libretro`.
 
 ### Instaladores e releases
 

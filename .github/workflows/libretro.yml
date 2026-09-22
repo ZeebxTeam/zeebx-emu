@@ -1,7 +1,7 @@
 # Compila o núcleo Libretro nos três sistemas.
 #
 # Dispara à mão, pela aba Actions. Uma tag de versão também dispara o `release.yml`,
-# que gera o mesmo zip junto com os instaladores.
+# que empacota o núcleo (uma vez) junto com os instaladores.
 
 name: libretro
 
@@ -59,7 +59,6 @@ jobs:
       - name: Compilar o núcleo
         shell: bash
         env:
-          NOME: ${{ matrix.nome }}
           LIB: ${{ matrix.lib }}
           NUCLEO: ${{ matrix.nucleo }}
         run: |
@@ -68,14 +67,9 @@ jobs:
           mkdir -p dist
           cp "target/release/${LIB}" "dist/${NUCLEO}"
           cp zeebx_libretro.info dist/
-          (
-            cd dist
-            tar -a -cf "../zeebx_libretro-${NOME}.zip" "${NUCLEO}" zeebx_libretro.info
-          )
-          ls -la "zeebx_libretro-${NOME}.zip"
 
       - uses: actions/upload-artifact@v4
         with:
           name: zeebx-libretro-${{ matrix.nome }}
-          path: zeebx_libretro-${{ matrix.nome }}.zip
+          path: dist/*
           if-no-files-found: error
