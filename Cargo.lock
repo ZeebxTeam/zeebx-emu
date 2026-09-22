@@ -4995,6 +4995,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "zeebx-libretro"
+version = "0.2.1"
+dependencies = [
+ "zeebx",
+]
+
+[[package]]
 name = "zerocopy"
 version = "0.8.56"
 source = "registry+https://github.com/rust-lang/crates.io-index"

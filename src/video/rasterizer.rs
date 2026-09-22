@@ -742,6 +742,7 @@ pub trait Rasterizador {
 /// Uma textura de cor da placa com o quadro já desenhado, e o pedaço dela que é a imagem.
 #[derive(Debug, Clone, Copy)]
 pub struct QuadroNaPlaca {
+    #[cfg(feature = "desktop")]
     pub textura: eframe::glow::Texture,
     /// A fração da textura que a superfície do jogo ocupa, em `(u, v)`; a linha 0 é o topo.
     pub recorte: [f32; 2],

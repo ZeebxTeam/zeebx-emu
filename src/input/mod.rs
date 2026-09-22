@@ -6,6 +6,7 @@
 //! índice, então o que precisa estar certo é a tabela.
 
 pub mod bindings;
+#[cfg(feature = "desktop")]
 pub mod gamepads;
 pub mod padview;
 pub mod sensores;
@@ -272,6 +273,31 @@ impl Pad {
             .filter(|&i| self.is_down(i) != next.is_down(i))
             .map(|i| (i, next.is_down(i)))
             .collect()
+    }
+
+    /// As teclas AVK que o controle manda, comparando com o quadro anterior.
+    ///
+    /// No console o direcional chega aos aplicativos como as quatro setas do BREW. Os dois
+    /// botões de face seguem a ajuda da Z-Wheel: botão 1 confirma, botão 2 volta (`AVK_CLR`).
+    pub fn teclas_avk(antes: &Pad, agora: &Pad) -> Vec<(u32, bool)> {
+        const DE_BOTAO: [(&str, u32); 6] = [
+            ("up", avk::UP),
+            ("down", avk::DOWN),
+            ("left", avk::LEFT),
+            ("right", avk::RIGHT),
+            ("b1", avk::CONFIRMA),
+            ("b2", avk::CLR),
+        ];
+        let mut teclas = Vec::new();
+        for (nome, codigo) in DE_BOTAO {
+            let Some(indice) = Pad::button_by_name(nome) else {
+                continue;
+            };
+            if agora.is_down(indice) != antes.is_down(indice) {
+                teclas.push((codigo, agora.is_down(indice)));
+            }
+        }
+        teclas
     }
 
     /// O índice do botão de nome `name`.

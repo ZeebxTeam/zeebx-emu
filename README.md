@@ -70,13 +70,13 @@ Windows (PowerShell):
 | Windows | `zeebx_libretro.dll` | `%APPDATA%\RetroArch\cores` |
 | macOS | `zeebx_libretro.dylib` | `~/Library/Application Support/RetroArch/cores` |
 
-Copie também o `zeebx_libretro.info` para a pasta `info` do frontend. No RetroArch, carregue o
-núcleo e abra o `.mod` ou o `.zip` do jogo.
+Copie também o `frontends/libretro/zeebx_libretro.info` para a pasta `info` do frontend. No
+RetroArch, carregue o núcleo e abra o `.mod` ou o `.zip` do jogo. O `display_name` é `Zeebx`,
+para que saves e states fiquem em `saves/Zeebx` e `states/Zeebx`.
 
-Uma tag de versão gera quatro zips — Linux x86_64, Windows x86_64, macOS Apple Silicon e
-macOS Intel — na mesma release dos instaladores. Dentro de cada um estão o núcleo com o nome
-que o RetroArch espera (`zeebx_libretro.so` / `.dll` / `.dylib`) e o `.info`. Dá para disparar
-só o núcleo pela aba Actions, no fluxo `libretro`.
+O core é o crate `frontends/libretro`, compilado sem as dependências da janela (`--no-default-features`
+no motor). Dá para disparar o fluxo `libretro` na aba Actions; os artefatos saem como
+`zeebx_libretro_<alvo>` (underscore), separados dos pacotes do `release.yml`.
 
 ### Instaladores e releases
 

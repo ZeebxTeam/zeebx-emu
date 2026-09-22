@@ -1,19 +1,27 @@
-# Compila o núcleo Libretro nos três sistemas.
+# Compila o core Libretro e confere que ele é carregável, sem bibliotecas de host.
 #
-# Dispara à mão, pela aba Actions. Uma tag de versão também dispara o `release.yml`,
-# que empacota o núcleo (uma vez) junto com os instaladores.
+# O core é o pacote `frontends/libretro`, compilado com `--no-default-features` no motor.
+# Artefatos: `zeebx_libretro_<alvo>` (underscore), para não colidir com os zips do `release.yml`.
 
 name: libretro
 
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - "frontends/libretro/**"
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "build.rs"
+      - ".github/workflows/libretro.yml"
 
 permissions:
   contents: read
 
 jobs:
-  nucleo:
-    name: ${{ matrix.nome }}
+  core:
+    name: core-${{ matrix.nome }}
     runs-on: ${{ matrix.sistema }}
     strategy:
       fail-fast: false
@@ -21,20 +29,20 @@ jobs:
         include:
           - nome: linux-x86_64
             sistema: ubuntu-22.04
-            lib: libzeebx.so
-            nucleo: zeebx_libretro.so
+            biblioteca: target/release/libzeebx_libretro.so
+            pacote: zeebx_libretro.so
           - nome: windows-x86_64
             sistema: windows-latest
-            lib: zeebx.dll
-            nucleo: zeebx_libretro.dll
+            biblioteca: target/release/zeebx_libretro.dll
+            pacote: zeebx_libretro.dll
           - nome: macos-arm64
             sistema: macos-latest
-            lib: libzeebx.dylib
-            nucleo: zeebx_libretro.dylib
+            biblioteca: target/release/libzeebx_libretro.dylib
+            pacote: zeebx_libretro.dylib
           - nome: macos-x86_64
             sistema: macos-15-intel
-            lib: libzeebx.dylib
-            nucleo: zeebx_libretro.dylib
+            biblioteca: target/release/libzeebx_libretro.dylib
+            pacote: zeebx_libretro.dylib
     steps:
       - uses: actions/checkout@v4
 
@@ -48,28 +56,39 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake pkg-config libasound2-dev libudev-dev \
-            libxkbcommon-dev libwayland-dev libgl1-mesa-dev libx11-dev libxcursor-dev \
-            libxrandr-dev libxi-dev
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config python3 libclang-dev
 
       - name: Dependências do macOS
         if: runner.os == 'macOS'
-        run: brew install cmake || true
+        run: brew install cmake ninja pkg-config || true
 
-      - name: Compilar o núcleo
-        shell: bash
-        env:
-          LIB: ${{ matrix.lib }}
-          NUCLEO: ${{ matrix.nucleo }}
+      - name: Compila o core
+        run: cargo build --release --locked -p zeebx-libretro
+
+      - name: A biblioteca carrega e a ABI responde
+        run: python3 ferramentas/verifica_core.py "${{ matrix.biblioteca }}"
+
+      - name: O core não depende de biblioteca de host (Linux)
+        if: runner.os == 'Linux'
         run: |
-          set -euo pipefail
-          cargo build --release --lib --locked
-          mkdir -p dist
-          cp "target/release/${LIB}" "dist/${NUCLEO}"
-          cp zeebx_libretro.info dist/
+          ldd "${{ matrix.biblioteca }}"
+          if ldd "${{ matrix.biblioteca }}" | grep -qiE 'libX11|wayland|EGL|libGL|asound|libudev|gtk'; then
+            echo "o core puxou biblioteca de interface: vídeo, áudio e entrada são do frontend"
+            exit 1
+          fi
+          echo "só libc, libm, libstdc++ e libgcc"
+
+      - name: Monta o pacote do core
+        shell: bash
+        run: |
+          mkdir -p pacote
+          cp "${{ matrix.biblioteca }}" "pacote/${{ matrix.pacote }}"
+          cp frontends/libretro/zeebx_libretro.info pacote/
+          grep -q '^display_name = "Zeebx"' pacote/zeebx_libretro.info
 
       - uses: actions/upload-artifact@v4
         with:
-          name: zeebx-libretro-${{ matrix.nome }}
-          path: dist/*
+          name: zeebx_libretro_${{ matrix.nome }}
+          path: pacote/
           if-no-files-found: error

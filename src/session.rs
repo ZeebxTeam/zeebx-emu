@@ -99,6 +99,7 @@ pub struct Session {
     /// jogo já tinha tocado.
     partida: Option<(u32, u32)>,
     /// A saída de som. Enquanto ela existe, o som toca; largá-la fecha o fluxo.
+    #[cfg(feature = "desktop")]
     audio: Option<crate::audio::Output>,
     title: String,
     /// O ClassID do applet desta sessão.
@@ -149,7 +150,7 @@ impl Session {
     /// Um `.zip` é extraído para o cache antes: o jogo grava (o Peteca tem um `.sav`), e
     /// escrever de volta num pacote não é coisa que se queira fazer.
     pub fn start(path: &Path) -> Result<Self, StartError> {
-        Self::start_inner(path, None, None, false, None, Default::default())
+        Self::start_inner(path, None, None, Default::default())
     }
 
     /// Como [`Session::start`], mas com o aparelho já configurado antes de o jogo começar.
@@ -159,6 +160,7 @@ impl Session {
     /// Z-Wheel, já perguntou o que está ligado antes de qualquer ajuste feito depois: com as
     /// portas aplicadas só na volta, ela via um controle e nenhum teclado, por mais que a
     /// configuração dissesse o contrário.
+    #[cfg(feature = "desktop")]
     pub fn start_with(
         path: &Path,
         portas: [Option<crate::input::bindings::Aparelho>; crate::input::PORTAS],
@@ -167,7 +169,9 @@ impl Session {
         contexto: Option<std::sync::Arc<eframe::glow::Context>>,
         z_wheel: crate::ui::settings::ZWheel,
     ) -> Result<Self, StartError> {
-        Self::start_inner(path, Some(portas), serial, placa, contexto, z_wheel)
+        let mut session = Self::start_inner(path, Some(portas), serial, z_wheel)?;
+        session.machine.usa_placa(placa, contexto);
+        Ok(session)
     }
 
     /// A serial entra **antes de o módulo ser criado**, e não depois de a sessão existir.
@@ -180,8 +184,6 @@ impl Session {
         path: &Path,
         portas: Option<[Option<crate::input::bindings::Aparelho>; crate::input::PORTAS]>,
         serial: Option<&Path>,
-        placa: bool,
-        contexto: Option<std::sync::Arc<eframe::glow::Context>>,
         z_wheel: crate::ui::settings::ZWheel,
     ) -> Result<Self, StartError> {
         let extracted;
@@ -203,8 +205,6 @@ impl Session {
         let root = path.parent().map(Path::to_path_buf).unwrap_or_default();
         let cpu = DynarmicCpu::new().map_err(|e| StartError::NotLoadable(e.to_string()))?;
         let mut machine = Machine::new(cpu, module, root);
-        // Antes de qualquer desenho: ver [`Machine::usa_placa`].
-        machine.usa_placa(placa, contexto);
         machine.configura_z_wheel(z_wheel);
         // A tela com que o console abre a Z-Wheel. Ver [`SPLASH_DA_Z_WHEEL`].
         if library::applet_clsid(path) == Some(Z_WHEEL) {
@@ -251,6 +251,7 @@ impl Session {
         Ok(Self {
             machine,
             partida: Some((applet, clsid)),
+            #[cfg(feature = "desktop")]
             audio: None,
             title: library::title_for(path),
             classe: clsid,
@@ -586,6 +587,7 @@ impl Session {
     ///
     /// Um host sem placa de áudio não pode impedir o jogo de rodar: o motivo é devolvido para
     /// quem quiser mostrá-lo, e o emulador segue mudo.
+    #[cfg(feature = "desktop")]
     pub fn set_audio(&mut self, enabled: bool, volume: u8) -> Option<String> {
         let level = f32::from(volume.min(100)) / 100.0;
         if !enabled {
@@ -829,14 +831,7 @@ mod tests {
 
     #[test]
     fn um_arquivo_que_nao_existe_diz_que_nao_deu_para_ler() {
-        let err = Session::start_inner(
-            &std::env::temp_dir().join("zeebx-nao-existe.mod"),
-            None,
-            None,
-            false,
-            None,
-            Default::default(),
-        );
+        let err = Session::start(&std::env::temp_dir().join("zeebx-nao-existe.mod"));
         assert!(matches!(err, Err(StartError::Unreadable(_))));
     }
 
@@ -847,7 +842,7 @@ mod tests {
         // legível, porque é ele que a interface mostra.
         let path = std::env::temp_dir().join("zeebx-teste-lixo.mod");
         std::fs::write(&path, b"isto nao e um modulo").unwrap();
-        let Err(err) = Session::start_inner(&path, None, None, false, None, Default::default()) else {
+        let Err(err) = Session::start(&path) else {
             panic!("um arquivo de lixo não podia virar uma sessão");
         };
         assert!(!err.to_string().is_empty());

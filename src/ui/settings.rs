@@ -6,7 +6,6 @@
 
 use std::path::{Path, PathBuf};
 
-use eframe::egui;
 use serde::{Deserialize, Serialize};
 
 /// Nome da pasta do emulador dentro do diretório de configuração do sistema.
@@ -63,7 +62,8 @@ impl ModoDaJanela {
     }
 
     /// Aplica o modo a uma janela que ainda vai abrir.
-    pub fn no_construtor(self, janela: egui::ViewportBuilder) -> egui::ViewportBuilder {
+    #[cfg(feature = "desktop")]
+    pub fn no_construtor(self, janela: eframe::egui::ViewportBuilder) -> eframe::egui::ViewportBuilder {
         match self {
             Self::Janela => janela,
             Self::Maximizada => janela.with_maximized(true),
@@ -72,10 +72,11 @@ impl ModoDaJanela {
     }
 
     /// Os comandos que levam uma janela aberta a este modo.
-    pub fn comandos(self) -> [egui::ViewportCommand; 2] {
+    #[cfg(feature = "desktop")]
+    pub fn comandos(self) -> [eframe::egui::ViewportCommand; 2] {
         [
-            egui::ViewportCommand::Fullscreen(self == Self::TelaCheia),
-            egui::ViewportCommand::Maximized(self == Self::Maximizada),
+            eframe::egui::ViewportCommand::Fullscreen(self == Self::TelaCheia),
+            eframe::egui::ViewportCommand::Maximized(self == Self::Maximizada),
         ]
     }
 }

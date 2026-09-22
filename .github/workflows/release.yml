@@ -27,23 +27,15 @@ jobs:
           - nome: linux-x86_64
             sistema: ubuntu-22.04
             formatos: deb,appimage
-            lib: libzeebx.so
-            nucleo: zeebx_libretro.so
           - nome: windows-x86_64
             sistema: windows-latest
             formatos: nsis
-            lib: zeebx.dll
-            nucleo: zeebx_libretro.dll
           - nome: macos-arm64
             sistema: macos-latest
             formatos: dmg
-            lib: libzeebx.dylib
-            nucleo: zeebx_libretro.dylib
           - nome: macos-x86_64
             sistema: macos-15-intel
             formatos: dmg
-            lib: libzeebx.dylib
-            nucleo: zeebx_libretro.dylib
     steps:
       - uses: actions/checkout@v4
 
@@ -80,18 +72,6 @@ jobs:
           APPIMAGE_EXTRACT_AND_RUN: "1"
         run: cargo packager --release --formats ${{ matrix.formatos }}
 
-      - name: Núcleo Libretro
-        shell: bash
-        env:
-          LIB: ${{ matrix.lib }}
-          NUCLEO: ${{ matrix.nucleo }}
-        run: |
-          set -euo pipefail
-          cargo build --release --lib --locked
-          mkdir -p dist
-          cp "target/release/${LIB}" "dist/${NUCLEO}"
-          cp zeebx_libretro.info dist/
-
       - uses: actions/upload-artifact@v4
         with:
           name: zeebx-${{ matrix.nome }}
@@ -102,12 +82,6 @@ jobs:
             target/pacotes/*.dmg
           if-no-files-found: error
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: zeebx-libretro-${{ matrix.nome }}
-          path: dist/*
-          if-no-files-found: error
-
   release:
     needs: pacotes
     # Sai com o que deu certo: um sistema que falhou não segura os outros.
@@ -116,25 +90,8 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          path: artefatos
-
-      # O upload-artifact já vem num zip; empacotar de novo aqui gerava zip-dentro-de-zip.
-      # Cada pasta `zeebx-libretro-*` tem o núcleo e o `.info` soltos: um zip de verdade, uma vez.
-      - name: Empacotar núcleos Libretro
-        run: |
-          python3 - <<'PY'
-          import zipfile
-          from pathlib import Path
-          raiz = Path("artefatos")
-          for pasta in sorted(raiz.glob("zeebx-libretro-*")):
-              nome = pasta.name.removeprefix("zeebx-libretro-")
-              destino = Path(f"zeebx_libretro-{nome}.zip")
-              with zipfile.ZipFile(destino, "w", zipfile.ZIP_DEFLATED) as z:
-                  for arquivo in sorted(pasta.iterdir()):
-                      if arquivo.is_file():
-                          z.write(arquivo, arquivo.name)
-              print("escreveu", destino)
-          PY
+          path: pacotes
+          merge-multiple: true
 
       - uses: softprops/action-gh-release@v2
         with:
@@ -142,9 +99,4 @@ jobs:
           tag_name: ${{ github.ref_name }}
           draft: true
           generate_release_notes: true
-          files: |
-            artefatos/zeebx-linux-x86_64/*
-            artefatos/zeebx-windows-x86_64/*
-            artefatos/zeebx-macos-arm64/*
-            artefatos/zeebx-macos-x86_64/*
-            zeebx_libretro-*.zip
+          files: pacotes/*

@@ -11,10 +11,10 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::audio::Mixer;
-use crate::input::bindings::Aparelho;
-use crate::input::{self, Pad};
-use crate::session::Session;
+use zeebx::audio::Mixer;
+use zeebx::input::bindings::Aparelho;
+use zeebx::input::{self, Pad};
+use zeebx::session::Session;
 
 const LARGURA: u32 = 640;
 const ALTURA: u32 = 480;
@@ -231,7 +231,7 @@ fn aplica_entrada(core: &mut Core, host: &Host) {
         pad.set_axis(2, eixo(RETRO_DEVICE_INDEX_ANALOG_RIGHT, RETRO_DEVICE_ID_ANALOG_X, false));
         pad.set_axis(3, eixo(RETRO_DEVICE_INDEX_ANALOG_RIGHT, RETRO_DEVICE_ID_ANALOG_Y, false));
 
-        for (avk, apertada) in crate::ui::App::teclas_do_controle(&core.pads[porta], &pad) {
+        for (avk, apertada) in Pad::teclas_avk(&core.pads[porta], &pad) {
             core.session.set_key(avk, apertada);
         }
         core.session.set_port_pad(porta, pad);
@@ -261,7 +261,7 @@ fn mostra_quadro(core: &mut Core, host: &Host) {
         PixelFormat::Xrgb8888 => {
             core.xrgb.clear();
             core.xrgb.extend(tela.pixels().iter().map(|&p| {
-                let c = crate::video::display::Rgb::from_rgb565(p);
+                let c = zeebx::video::display::Rgb::from_rgb565(p);
                 (u32::from(c.r) << 16) | (u32::from(c.g) << 8) | u32::from(c.b)
             }));
             unsafe {

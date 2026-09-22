@@ -1,10 +1,10 @@
 # Compila o núcleo Libretro no Windows (MSVC): zeebx_libretro.dll
 $ErrorActionPreference = "Stop"
 
-cargo build --lib --release
+cargo build -p zeebx-libretro --release
 if (-not $?) { exit $LASTEXITCODE }
 
-$origem = Join-Path "target" "release" "zeebx.dll"
+$origem = Join-Path "target" "release" "zeebx_libretro.dll"
 if (-not (Test-Path $origem)) {
     Write-Error "não achei $origem — a compilação do cdylib falhou"
 }
@@ -18,6 +18,6 @@ if ($args -contains "install") {
     $info = Join-Path $prefixo "info"
     New-Item -ItemType Directory -Force -Path $cores, $info | Out-Null
     Copy-Item "zeebx_libretro.dll" $cores -Force
-    Copy-Item "zeebx_libretro.info" $info -Force
+    Copy-Item "frontends/libretro/zeebx_libretro.info" $info -Force
     Write-Host "instalado em $prefixo"
 }

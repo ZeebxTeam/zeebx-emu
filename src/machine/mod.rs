@@ -2447,28 +2447,30 @@ fn placa_pedida(padrao: bool) -> bool {
 /// não tem janela. O caminho com janela troca depois, já com o contexto dela.
 fn rasterizador(largura: usize, altura: usize) -> Box<dyn Rasterizador> {
     match placa_pedida(false) {
+        #[cfg(feature = "desktop")]
         true => na_placa(largura, altura, None),
-        false => Box::new(GlState::new(largura, altura)),
+        _ => Box::new(GlState::new(largura, altura)),
     }
 }
 
 /// A placa quando ela abre, o software quando não.
-///
-/// A queda **não é tratamento de erro**, é um caminho normal: num terminal sem EGL alcançável não
-/// há placa para usar, e o emulador tem que rodar de todo jeito. O motivo é dito uma vez, porque
-/// um emulador que silenciosamente roda diferente do pedido é pior que um lento.
+#[cfg(feature = "desktop")]
 fn na_placa(
     largura: usize,
     altura: usize,
-    contexto: Option<std::sync::Arc<eframe::glow::Context>>,
+    #[cfg(feature = "desktop")] contexto: Option<std::sync::Arc<eframe::glow::Context>>,
 ) -> Box<dyn Rasterizador> {
-    match crate::video::gpu::GpuState::novo(largura, altura, contexto) {
-        Ok(gpu) => Box::new(gpu),
-        Err(motivo) => {
-            eprintln!("sem rasterizador na placa ({motivo}); seguindo em software");
-            Box::new(GlState::new(largura, altura))
+    #[cfg(feature = "desktop")]
+    {
+        match crate::video::gpu::GpuState::novo(largura, altura, contexto) {
+            Ok(gpu) => return Box::new(gpu),
+            Err(motivo) => {
+                eprintln!("sem rasterizador na placa ({motivo}); seguindo em software");
+            }
         }
     }
+    let _ = (largura, altura);
+    Box::new(GlState::new(largura, altura))
 }
 
 impl<C: CpuBackend> Machine<C> {
@@ -2482,12 +2484,13 @@ impl<C: CpuBackend> Machine<C> {
     pub fn usa_placa(
         &mut self,
         sim: bool,
-        contexto: Option<std::sync::Arc<eframe::glow::Context>>,
+        #[cfg(feature = "desktop")] contexto: Option<std::sync::Arc<eframe::glow::Context>>,
     ) {
         let (largura, altura) = self.gl.frame_size();
         self.gl = match placa_pedida(sim) {
+            #[cfg(feature = "desktop")]
             true => na_placa(largura, altura, contexto),
-            false => Box::new(GlState::new(largura, altura)),
+            _ => Box::new(GlState::new(largura, altura)),
         };
     }
 

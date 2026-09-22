@@ -1,4 +1,4 @@
-# Núcleo Libretro do Zeebx, nos três sistemas.
+# Núcleo Libretro do Zeebx.
 #
 #   make
 #   make install
@@ -6,8 +6,6 @@
 # Windows (PowerShell, sem Make):
 #
 #   .\build-libretro.ps1
-#
-# O `install` copia o núcleo e o `.info` para o RetroArch do usuário.
 
 TARGET_NAME := zeebx_libretro
 CARGO ?= cargo
@@ -15,17 +13,17 @@ PROFILE ?= release
 
 ifeq ($(OS),Windows_NT)
   SOEXT := dll
-  LIBNAME := zeebx.dll
+  LIBNAME := zeebx_libretro.dll
   PREFIX ?= $(USERPROFILE)/AppData/Roaming/RetroArch
 else
   UNAME_S := $(shell uname -s)
   ifeq ($(UNAME_S),Darwin)
     SOEXT := dylib
-    LIBNAME := libzeebx.dylib
+    LIBNAME := libzeebx_libretro.dylib
     PREFIX ?= $(HOME)/Library/Application Support/RetroArch
   else
     SOEXT := so
-    LIBNAME := libzeebx.so
+    LIBNAME := libzeebx_libretro.so
     PREFIX ?= $(HOME)/.config/retroarch
   endif
 endif
@@ -44,7 +42,7 @@ endif
 all: $(CORE)
 
 $(CORE):
-	$(CARGO) build --lib $(CARGO_FLAGS)
+	$(CARGO) build -p zeebx-libretro $(CARGO_FLAGS)
 	cp "$(OUTDIR)/$(LIBNAME)" "$(CORE)"
 
 clean:
@@ -54,4 +52,4 @@ clean:
 install: $(CORE)
 	mkdir -p "$(PREFIX)/cores" "$(PREFIX)/info"
 	cp "$(CORE)" "$(PREFIX)/cores/"
-	cp zeebx_libretro.info "$(PREFIX)/info/"
+	cp frontends/libretro/zeebx_libretro.info "$(PREFIX)/info/"

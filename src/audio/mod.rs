@@ -14,6 +14,7 @@ pub mod wav;
 
 use std::sync::{Arc, Mutex};
 
+#[cfg(feature = "desktop")]
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
 use crate::audio::wav::Sound;
@@ -356,11 +357,13 @@ impl Mixer {
 }
 
 /// A saída de áudio. Enquanto ela existe, o som toca; largá-la fecha o fluxo.
+#[cfg(feature = "desktop")]
 pub struct Output {
     _stream: cpal::Stream,
     mixer: Mixer,
 }
 
+#[cfg(feature = "desktop")]
 impl Output {
     /// Abre a placa padrão do sistema.
     ///
@@ -402,6 +405,7 @@ impl Output {
     }
 }
 
+#[cfg(feature = "desktop")]
 impl std::fmt::Debug for Output {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Output").finish_non_exhaustive()

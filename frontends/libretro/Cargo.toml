@@ -1,0 +1,15 @@
+[package]
+name = "zeebx-libretro"
+version = "0.2.1"
+edition = "2024"
+license = "GPL-2.0-only"
+description = "Core Libretro do emulador Zeebx"
+publish = false
+
+[lib]
+name = "zeebx_libretro"
+crate-type = ["cdylib"]
+
+[dependencies]
+# Sem `desktop`: o core não linka janela, placa de som nem controle do host.
+zeebx = { path = "../..", default-features = false }

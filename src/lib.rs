@@ -1,26 +1,25 @@
 //! Zeebx — emulador de Zeebo / Qualcomm BREW.
 
+#[cfg(feature = "desktop")]
 mod app;
-mod audio;
-mod brew;
-mod cpu;
-mod input;
-mod loader;
-mod machine;
-mod ponte;
-mod rede;
-mod session;
-mod ui;
-mod video;
+pub mod audio;
+pub mod brew;
+pub mod cpu;
+pub mod input;
+pub mod loader;
+pub mod machine;
+pub mod ponte;
+pub mod rede;
+pub mod session;
+pub mod ui;
+pub mod video;
 
 /// Varredura de ROMs por teste — ver [`varredura`]. Só existe em compilação de teste.
-#[cfg(test)]
+#[cfg(all(test, feature = "desktop"))]
 mod varredura;
 
-/// O núcleo Libretro: o RetroArch (e frontends compatíveis) carregam o `cdylib`.
-mod libretro;
-
 /// Abre a interface ou atende a linha de comando.
+#[cfg(feature = "desktop")]
 pub fn run() -> std::process::ExitCode {
     app::cli()
 }
