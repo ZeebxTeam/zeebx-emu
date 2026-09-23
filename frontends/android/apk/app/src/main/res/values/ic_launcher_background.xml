@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- O logotipo é branco e vazado: sem um fundo próprio ele some num papel de parede claro. -->
+<resources>
+    <color name="ic_launcher_background">#16161A</color>
+</resources>

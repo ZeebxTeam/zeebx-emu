@@ -28,6 +28,24 @@ impl<C: CpuBackend> Machine<C> {
         let result = match name {
             "AddRef" => self.objects.add_ref(this),
             "Release" => self.objects.release(this),
+            // `IQueryInterface`: um objeto responde por várias interfaces, e quem pergunta qual
+            // delas quer recebe um ponteiro para **aquela** vtable.
+            //
+            // **É por aqui que o Prey Evil pede as extensões OES**, e não por
+            // `ISHELL_CreateInstance`: ele pergunta no objeto do EGL se há `IGLES11Ext`, e recebia
+            // `ECLASSNOTSUPPORT` — daí ele montar matrizes e texturas e nunca desenhar. A resposta
+            // certa é um objeto com a vtable pedida; sem isto, registrar a classe na fábrica não
+            // muda nada.
+            "QueryInterface" if iface == Interface::Egl && self.arg(1) == AEECLSID_GLES11EXT => {
+                let (out, objeto) = (self.arg(2), self.new_object(Interface::Gles11Ext)?);
+                if out != 0 {
+                    self.cpu.write_u32(out, objeto)?;
+                }
+                match objeto {
+                    0 => ECLASSNOTSUPPORT,
+                    _ => SUCCESS,
+                }
+            }
             "QueryInterface" => {
                 let (iid, out) = (self.arg(1), self.arg(2));
                 if out != 0 {
@@ -255,6 +273,160 @@ impl<C: CpuBackend> Machine<C> {
                 self.assumptions
                     .insert("o jogo usou um buffer de vértices da extensão, que não temos");
                 EUNSUPPORTED
+            }
+            // `int QueryMatrixxOES(pMe, AEEGLfixed *mantissa, AEEGLint *exponent, bitfield *ret)`
+            //
+            // A matriz corrente em ponto fixo, como o GLES a representa: um `fixed` por elemento e
+            // o expoente de cada um. **Respondemos a identidade**, e é honesto: o ponto fixo da
+            // nossa matriz vive na etapa de vértice, e converter de volta introduziria erro onde o
+            // jogo espera exatamente o que ele mandou. Nenhum jogo do acervo lê esta matriz para
+            // desenhar — o Prey Evil a pede para saber se a extensão existe.
+            "QueryMatrixxOES" if iface == Interface::Gles10Ext => {
+                let (mantissa, expoente) = (self.arg(1), self.arg(2));
+                for i in 0..16u32 {
+                    let identidade = u32::from(i % 5 == 0) * (1 << 16);
+                    if mantissa != 0 {
+                        self.cpu.write_u32(mantissa + i * 4, identidade)?;
+                    }
+                    if expoente != 0 {
+                        self.cpu.write_u32(expoente + i * 4, 0)?;
+                    }
+                }
+                SUCCESS
+            }
+            // `int GetPowerLevel(pMe, int *ret)`. O console é portátil; o emulador não tem
+            // bateria para consultar, e "cheia" é a resposta que não faz o jogo pedir para
+            // carregar — nem abrir uma tela de aviso que ninguém pediu.
+            "GetPowerLevel" if iface == Interface::EglGetPowerLevel => {
+                let out = self.arg(1);
+                if out != 0 {
+                    self.cpu.write_u32(out, 100)?;
+                }
+                SUCCESS
+            }
+            // `int SwapInterval(pMe, dpy, interval, EGLBoolean *ret)` e o `Get` dele.
+            //
+            // **Aceitar e não guardar é o que o caminho de função já faz**, e é o certo: o ritmo
+            // de quadro aqui é o do relógio virtual, e prometer um intervalo que não controlamos
+            // seria pior que não prometer nada.
+            "SwapInterval" if iface == Interface::EglOesSwapInterval => self.write_egl_true(3)?,
+            "GetSwapInterval" if iface == Interface::EglOesSwapInterval => {
+                let out = self.arg(2);
+                if out != 0 {
+                    self.cpu.write_u32(out, 1)?;
+                }
+                SUCCESS
+            }
+            // `int GetColorBuffer(pMe, void **ret)` — o mesmo buffer de cor que a
+            // `eglGetColorBufferQUALCOMM` entrega por função, pelo mesmo cálculo.
+            "GetColorBuffer" if iface == Interface::EglGetColorBuffer => {
+                let (out, buffer) = (self.arg(1), self.egl_color_da_tela()?);
+                if out != 0 {
+                    self.cpu.write_u32(out, buffer)?;
+                }
+                SUCCESS
+            }
+            // `IGLES11ExtPak`: `TexGen`, blending separado e objetos de framebuffer.
+            //
+            // **O tratamento é o mesmo das outras extensões gráficas** — responder "consegui" ao
+            // que não muda o que o jogo desenha, e dar resposta plausível ao que ele consulta.
+            // Nenhuma dessas famílias altera o traço no nosso rasterizador: a geração de
+            // coordenadas de textura é a única que mexeria, e nenhum jogo do acervo a usa para
+            // desenhar — o Prey Evil a pede para saber que o pacote existe. Os objetos de
+            // framebuffer ganham identificadores de mentira e respondem "completo": o alvo aqui é
+            // um só, e é o certo.
+            "TexGenf" | "TexGeni" | "TexGenx" | "TexGenfv" | "TexGeniv" | "TexGenxv"
+            | "BlendEquation" | "BlendFuncSeparate" | "BlendEquationSeparate"
+            | "BindRenderbufferOES" | "DeleteFramebuffersOES" | "DeleteRenderbuffersOES"
+            | "FramebufferRenderbufferOES" | "FramebufferTexture2DOES" | "GenerateMipmapOES"
+            | "RenderbufferStorageOES"
+                if iface == Interface::Gles11ExtPak =>
+            {
+                self.assumptions.insert(concat!(
+                    "o jogo usou o pacote de extensões OES (IGLES11ExtPak); o alvo de desenho ",
+                    "continua sendo único, e o que ele pediu foi atendido sem mudar o traço"
+                ));
+                SUCCESS
+            }
+            // Os `Gen*OES` devolvem um identificador pelo ponteiro de saída: zero é "acabou", e o
+            // jogo desiste da família inteira. **Devolvemos sempre o mesmo `1`**, e é coerente: o
+            // alvo de desenho aqui é um só, então há um framebuffer e um renderbuffer, e pedir
+            // mais devolve o mesmo. Um contador daria identificadores que não levam a lugar nenhum.
+            "GenFramebuffersOES" | "GenRenderbuffersOES" if iface == Interface::Gles11ExtPak => {
+                let out = self.arg(1);
+                if out != 0 {
+                    self.cpu.write_u32(out, 1)?;
+                }
+                SUCCESS
+            }
+            "IsFramebufferOES" | "IsRenderbufferOES" if iface == Interface::Gles11ExtPak => {
+                self.write_egl_true(1)?
+            }
+            // `GL_FRAMEBUFFER_COMPLETE_OES` é 0x8CD5, e é o que um alvo único sempre é.
+            "CheckFramebufferStatusOES" if iface == Interface::Gles11ExtPak => 0x8cd5,
+            "GetTexGenfv" | "GetTexGeniv" | "GetTexGenxv"
+            | "GetFramebufferAttachmentParameterivOES" | "GetRenderbufferParameterivOES"
+                if iface == Interface::Gles11ExtPak =>
+            {
+                // Zerar o que se consulta é melhor que deixar lixo na memória do jogo, e é o que
+                // o resto do motor faz com os `Get` que não têm o que devolver.
+                self.write_at(self.arg(2), 0)?;
+                SUCCESS
+            }
+            // `IJoystick`: o joystick USB que o gerenciador de joystick da Qualcomm procura.
+            //
+            // `int SetParm(pMe, int16 nParmID, int32 p1, int32 p2)` — calibração e configuração.
+            // Aceitar e não guardar é o certo: o controle que temos é o Z-Pad, e não há parâmetro
+            // dele que o jogo possa mudar por aqui.
+            "SetParm" if iface == Interface::Joystick => SUCCESS,
+            // `int GetParm(pMe, int16 nParmID, int32 *pP1)` — responder zero é melhor que deixar
+            // lixo, que o jogo leria como calibração.
+            "GetParm" if iface == Interface::Joystick => {
+                self.write_at(self.arg(2), 0)?;
+                SUCCESS
+            }
+            // `int Read(pMe, int16 *px, int16 *py)` — **o estado do controle, de verdade**.
+            //
+            // É a mesma leitura que o `IHIDDevice::GetPositionState` entrega, na faixa do console
+            // (repouso em 128): o joystick e o Z-Pad são o mesmo aparelho para quem joga, e é o
+            // que o gerenciador de joystick do jogo espera ler.
+            "Read" if iface == Interface::Joystick => {
+                let (px, py) = (self.arg(1), self.arg(2));
+                let pad = self.pads[0];
+                for (onde, eixo) in [(px, 0), (py, 1)] {
+                    if onde != 0 {
+                        let valor = pad.eixo_do_console(eixo) as i16;
+                        self.cpu.write_mem(onde, &valor.to_le_bytes())?;
+                    }
+                }
+                SUCCESS
+            }
+            // `IGLES11Ext`: as extensões OES do OpenGL ES 1.1.
+            //
+            // **O Prey Evil não desenha sem elas.** O levantamento das 62 ROMs o pegou com a tela
+            // de uma cor só: onze métodos de GL no relatório — `MatrixMode`, `PushMatrix`,
+            // `BindTexture` dezesseis mil vezes — e **nenhum** `Draw` ou `eglSwapBuffers`. Ele
+            // monta o estado e para, porque pede estas extensões por `CreateInstance` e recebia
+            // nulo. Sem a interface, o caminho de desenho dele nunca começa.
+            //
+            // Os `DrawTex*` desenham um retângulo de textura em coordenadas de tela, sem passar
+            // pela matriz de modelo — é o que um jogo faz para compor o quadro numa textura. Aqui
+            // eles ainda respondem "consegui" sem desenhar: é o passo que faz o jogo **chegar** ao
+            // desenho, e o efeito dele é medido pela contagem de cores do relatório. O retângulo
+            // de verdade é o passo seguinte, e a referência para ele é o `gles_draw`.
+            "CurrentPaletteMatrixOES" | "LoadPaletteFromModelViewMatrixOES"
+            | "MatrixIndexPointerOES" | "WeightPointerOES" | "DrawTexsOES" | "DrawTexiOES"
+            | "DrawTexxOES" | "DrawTexsvOES" | "DrawTexivOES" | "DrawTexxvOES" | "DrawTexfOES"
+            | "DrawTexfvOES"
+                if iface == Interface::Gles11Ext =>
+            {
+                // O nome do método já aparece em "chamadas que mais pesaram"; aqui basta nomear a
+                // causa, porque as hipóteses são um conjunto de textos fixos.
+                self.assumptions.insert(concat!(
+                    "o jogo desenhou por uma extensão OES (IGLES11Ext), cujo ",
+                    "retângulo de textura ainda não desenhamos"
+                ));
+                SUCCESS
             }
             _ => return Ok(None),
         };
@@ -614,6 +786,17 @@ impl<C: CpuBackend> Machine<C> {
             }
             "DefinirModo" => {
                 self.modo_do_sistema = self.cpu.read_reg(Reg::R1);
+                SUCCESS
+            }
+            // O slot 5 guarda o modo **pelo mesmo caminho** do slot 3 — o firmware desmontado
+            // mostra que o corpo é o mesmo (`0x10e9fdb6`) — e recebe ainda um terceiro argumento,
+            // a opção. Não há hardware para acender, então o modo é guardado e o slot 6 o devolve,
+            // como no slot 3; a opção fica registrada na hipótese.
+            "DefinirModoComOpcao" => {
+                self.modo_do_sistema = self.cpu.read_reg(Reg::R1);
+                self.assumptions.insert(
+                    "o controle de sistema recebeu modo e opção; só o modo é guardado",
+                );
                 SUCCESS
             }
             _ => SUCCESS,

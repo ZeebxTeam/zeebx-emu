@@ -1,0 +1,85 @@
+Z-Wheel (Brazil) (Es,Pt)
+estado: roda
+tela: 256 cor(es), dominante 0xffff
+classes pedidas:
+  0x01000000  (1x)
+  0x01001001  (1x)
+  0x01001003  (15x)
+  0x01001011  (5x)
+  0x01001027  (1x)
+  0x0100104f  (2x)
+  0x0100550d  (2x)
+  0x01006c02  (1x)
+  0x01006c05  (1x)
+  0x01011810  (1x)
+  0x01028e19  (1x)
+  0x01028e35  (12x)
+  0x01028e3c  (2x)
+  0x01028e3f  (1x)
+  0x01028e47  (1x)
+  0x01028e51  (1x)
+  0x0102c4e8  (4x)
+  0x01035156  (1x)
+  0x01041207  (1x)
+  0x0106c411  (1x)
+chamadas ao sistema de arquivos:
+  Test "fs:/~0x01070798/zeeboprefs.dat"  (0x7d034 0xf000301c 0xf0000008) -> 1
+  Release  (0xf0003004 0xf000301c 0xf0000008) -> 0
+  OpenFile "tectoy.cfg"  (0x7f36c 0x1 0xf0003008) -> 805306640
+  Release  (0xf0003004 0x1 0xf0003008) -> 0
+  GetInfo  (0x200ffe04 0xf0004018 0x0) -> 0
+  Release  (0xf0004004 0x3 0xf002c020) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Z-Wheel--Brazil---Es-Pt--e41589a53f852f335994cd4304ea9a870a9c77da8003c2319c2f651f83447646/mod/274755/fontsize.map (No such file or directory (os error 2))
+  OpenFile "fontsize.map"  (0x80228 0x1 0xf0003008) -> 0
+  GetLastError  (0xf0003024 0x1 0xf0003008) -> 1
+  Release  (0xf0003004 0x1 0xf0003008) -> 0
+  Test "demo.3gp"  (0x7d064 0xf000301c 0xf0000008) -> 1
+  Release  (0xf0003004 0xf000301c 0xf0000008) -> 0
+  Test "ttgmrun.tmp"  (0x788f8 0xf000301c 0xf0000008) -> 1
+  Release  (0xf0003004 0xf000301c 0xf0000008) -> 0
+  EnumInit "fs:/mcp/mod"  (0x7890c 0x1 0xf0003028) -> 0
+  EnumNext  (0x200fff5c 0xf000302c 0x0) -> 0
+  Release  (0xf0003004 0xf000302c 0x0) -> 0
+  Test "fs:/shared/zeebotelem.log"  (0x94470 0xf000301c 0xf0000008) -> 0
+  GetInfo  (0x94470 0x200ffeb4 0xf000300c) -> 0
+  OpenFile "uiconfig.xml"  (0x7a794 0x1 0xf0003008) -> 805307856
+  GetInfoEx  (0x200ffed0 0xf0004024 0xf0003008) -> 0
+  Read  (0x10007328 0x3e5 0xf000400c) -> 997
+  Release  (0xf0004004 0x3e5 0xf000400c) -> 0
+  Release  (0xf0003004 0x3e5 0xf000400c) -> 0
+  OpenFile "downloadspeed.cfg"  (0x44030 0x1 0xf0003008) -> 805307920
+  Release  (0xf0003004 0x1 0xf0003008) -> 0
+  GetInfo  (0x200ffe7c 0xf0004018 0x0) -> 0
+  Release  (0xf0004004 0x3 0xf002c020) -> 0
+  Test "minmemnode.dat"  (0x7d5a0 0xf000301c 0xf0000008) -> 0
+  Release  (0xf0003004 0xf000301c 0xf0000008) -> 0
+  OpenFile "minmemnode.dat"  (0x7d5a0 0x1 0xf0003008) -> 805307856
+  Release  (0xf0003004 0x1 0xf0003008) -> 0
+  GetInfo  (0x200ffea4 0xf0004018 0x0) -> 0
+  Release  (0xf0004004 0x3 0xf002c020) -> 0
+  OpenFile "preloaded.cfg"  (0x3821c 0x1 0xf0003008) -> 805308048
+  Release  (0xf0003004 0x1 0xf0003008) -> 0
+  GetInfo  (0x200ffea4 0xf0004018 0x0) -> 0
+  Release  (0xf0004004 0x3 0xf002c020) -> 0
+  Remove "preloaded.cfg"  (0x3821c 0xf0003010 0xf0000008) -> 1
+  GetLastError  (0xf0003024 0xf0003010 0xf0000008) -> 0
+  Release  (0xf0003004 0xf0003010 0xf0000008) -> 0
+  Test "ttgmrun.tmp"  (0x81b18 0xf000301c 0xf0000008) -> 1
+  Release  (0xf0003004 0xf000301c 0xf0000008) -> 0
+  OpenFile ".\sounds_loading.wav"  (0x1172c 0x1 0xf0003008) -> 805308304
+  GetInfoEx  (0x200fff18 0xf0004024 0xf0003008) -> 0
+  Read  (0x1000bea0 0x9cd94 0xf000400c) -> 642452
+  Release  (0xf0004004 0x9cd94 0xf000400c) -> 0
+  Release  (0xf0003004 0x9cd94 0xf000400c) -> 0
+arquivos não encontrados:
+  fontsize.map
+APIs atendidas por hipótese:
+  a abertura conhecida da Z-Wheel recebe automaticamente o atalho de pular instruções
+  a classe do download é atendida por um objeto que responde sucesso a tudo
+  o controle de sistema respondeu zero: não há aparelho para consultar
+  um widget aceitou toda interface que lhe pediram
+  uma lista foi esvaziada sem chamar o liberador que o jogo registrou
+o que o jogo chamou nas classes de sonda:
+  classe 0x01000000, objeto 0x300005d0: slot[ 2] (0x6b56c, 0x1000b8c8, 0xf0023008)
+  classe 0x01000000, objeto 0x300005d0: slot[ 5] (0xf0023014, 0xf0003010, 0x0)
+  classe 0x01000000, objeto 0x300005d0: slot[ 1] (0xf0023004, 0xf0003010, 0x0)

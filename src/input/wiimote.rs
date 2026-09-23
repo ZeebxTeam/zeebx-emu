@@ -55,6 +55,10 @@ pub const BOTOES: [(&str, u16); 11] = [
 
 /// Quanto o `hid-wiimote` reporta para 1 g. O acelerômetro tem 10 bits e o driver só tira o
 /// centro (`0x200`); a gravidade fica perto de 100 unidades em todos os eixos.
+///
+/// Só o caminho do Linux lê direto do `hid-wiimote`; nos outros sistemas o acelerômetro vem do
+/// gilrs, e a constante ficaria sem uso — o que já rendeu aviso de código morto no macOS.
+#[cfg(target_os = "linux")]
 const UNIDADES_POR_G: f32 = 100.0;
 
 /// O nome de cada botão de [`BOTOES`] no mapeamento, na mesma ordem.

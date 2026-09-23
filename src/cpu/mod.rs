@@ -74,6 +74,25 @@ pub trait CpuBackend {
     /// Serve para retomar um trecho interrompido: quem retoma passa o endereço com o bit 0
     /// ligado, que é como o ARM diz "continue em Thumb". Sem isso, um jogo inteiro em Thumb —
     /// o Zenonia, a série Extreme — voltaria decodificado como ARM.
+    /// O `CPSR`: os sinalizadores da última operação e o modo do processador.
+    ///
+    /// **Sem isto um save state fica errado de um jeito difícil de ver.** A memória volta, o
+    /// programa volta, e as flags ficam as de outra execução: a comparação que o jogo fez antes de
+    /// salvar continua valendo, mas a decisão seguinte pode tomar o outro caminho. Os dois núcleos
+    /// sabem disto — o Unicorn pelo registrador, o Dynarmic pelo `get_cpsr` —, e é por isso que o
+    /// método não tem valor padrão: um backend que não saiba dizer o `CPSR` tem de dizer isso, e
+    /// não devolver zero em silêncio.
+    fn cpsr(&self) -> u32;
+
+    /// Põe o `CPSR`. Ver [`CpuBackend::cpsr`].
+    fn set_cpsr(&mut self, valor: u32);
+
+    /// Põe o contador de instruções, que é o **relógio virtual** do emulador.
+    ///
+    /// Salvar o relógio e não o devolver deixaria o jogo depois do save state com outro tempo: os
+    /// `SetTimer`, o áudio por quadro e o limite de passos do andamento dependem dele.
+    fn set_instructions(&mut self, valor: u64);
+
     fn em_thumb(&self) -> bool {
         false
     }
@@ -117,6 +136,26 @@ pub trait CpuBackend {
     fn read_mem(&self, addr: u32, buf: &mut [u8]) -> Result<(), CpuError>;
 
     fn write_mem(&mut self, addr: u32, data: &[u8]) -> Result<(), CpuError>;
+
+    /// Preenche `len` bytes com `valor`, sem alocar.
+    ///
+    /// Existe por causa de uma medição: o `memset` do guest é chamado em laço de espera, e a
+    /// implementação por `write_mem` **alocava um `Vec` do tamanho pedido em cada chamada**. No
+    /// Zeebo Extreme Rolima isso era 731 ms dos 1.149 ms gastos em chamadas de API — 63% —, para
+    /// 12 mil chamadas de limpeza. Aqui a limpeza vai em blocos de um buffer de pilha.
+    fn fill_mem(&mut self, addr: u32, valor: u8, len: u32) -> Result<(), CpuError> {
+        const BLOCO: usize = 4096;
+        let pilha = [valor; BLOCO];
+        let mut restante = len as usize;
+        let mut onde = addr;
+        while restante > 0 {
+            let passo = restante.min(BLOCO);
+            self.write_mem(onde, &pilha[..passo])?;
+            onde = onde.wrapping_add(passo as u32);
+            restante -= passo;
+        }
+        Ok(())
+    }
 
     fn read_u32(&self, addr: u32) -> Result<u32, CpuError> {
         let mut buf = [0u8; 4];
@@ -213,7 +252,65 @@ impl std::fmt::Display for CpuError {
 impl std::error::Error for CpuError {}
 
 pub mod dynarmic;
+
+/// O backend de CPU do `unicorn` (QEMU/TCG), que **não** existe no Windows ARM64.
+///
+/// O QEMU monta `qemu/util/setjmp-wrapper-win32.asm` com o `ml` do MSVC, e o MASM só existe para x86
+/// e x64: não há montador para ARM64, então o `unicorn-engine-sys` nem compila naquele alvo. A
+/// ausência é declarada aqui, e não num monte de `cfg` espalhados, porque o resto do código só
+/// precisa saber **qual** backend usar.
+#[cfg(all(feature = "unicorn", not(all(target_os = "windows", target_arch = "aarch64"))))]
 pub mod unicorn;
+
+/// O alias que o resto do código usa para pedir "o backend padrão".
+///
+/// Com o `unicorn` disponível, é ele: o QEMU/TCG é o núcleo de referência, com a parada nas vtables
+/// do BREW mais fiel. No Windows ARM64, onde ele não compila, o padrão passa a ser o `dynarmic`, que
+/// recompila os blocos A32 para o código nativo do host e sustenta o mesmo contrato de
+/// [`CpuBackend`] — inclusive a parada nas faixas não mapeadas.
+#[cfg(all(feature = "unicorn", not(all(target_os = "windows", target_arch = "aarch64"))))]
+pub type BackendPadrao = unicorn::UnicornCpu;
+#[cfg(any(
+    not(feature = "unicorn"),
+    all(target_os = "windows", target_arch = "aarch64")
+))]
+pub type BackendPadrao = dynarmic::DynarmicCpu;
+
+// As constantes da faixa de vtables do BREW valem para os dois backends e não podem morar no
+// `unicorn`, que falta no Windows ARM64: o `dynarmic` as usa para parar no mesmo lugar.
+pub use faixas_do_brew::{API_BASE, API_SIZE, RETURN_MAGIC};
+
+/// Registro de uma escrita observada por um watchpoint.
+///
+/// Fica aqui, e não no `unicorn.rs`, porque o `writes()` é do contrato dos dois backends: um
+/// vigia de verdade, o outro responde que não tem como vigiar. Sem isto, o tipo sumiria no alvo
+/// onde o unicorn não compila, e com ele o binário inteiro.
+#[derive(Debug, Clone, Copy)]
+pub struct Write {
+    pub addr: u32,
+    pub value: i64,
+    /// PC de origem, ou zero quando quem escreveu foi o próprio emulador (implementação de
+    /// API), que não passa pelos hooks do unicorn.
+    pub pc: u32,
+    /// `lr` no momento da escrita: quando o PC cai numa função utilitária compartilhada — um
+    /// `operator=`, um `memcpy` —, é o `lr` que diz quem pediu.
+    pub lr: u32,
+}
+
+/// As três constantes da faixa reservada às vtables do BREW.
+///
+/// Ficam num módulo próprio porque são **do contrato**, não de um backend: o `unicorn` as usa para
+/// abortar a execução, o `dynarmic` para parar o bloco, e os dois têm de concordar — é assim que o
+/// despachante Rust descobre qual API o jogo chamou. Antes viviam dentro do `unicorn.rs`, o que
+/// fazia o `dynarmic` depender de um módulo que não existe no Windows ARM64.
+mod faixas_do_brew {
+    /// Base da faixa reservada às vtables do BREW.
+    pub const API_BASE: u32 = 0xf000_0000;
+    /// Tamanho da faixa.
+    pub const API_SIZE: u32 = 0x0100_0000;
+    /// Endereço-sentinela que o `lr` recebe para marcar "voltou da API".
+    pub const RETURN_MAGIC: u32 = 0xfff0_0000;
+}
 
 /// Quanto do log por semihosting fica guardado, em bytes.
 const MAX_SEMIHOSTING: usize = 256 * 1024;

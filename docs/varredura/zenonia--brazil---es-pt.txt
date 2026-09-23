@@ -1,0 +1,64 @@
+Zenonia (Brazil) (Es,Pt)
+estado: roda
+tela: 1077 cor(es), dominante 0x0083
+classes pedidas:
+  0x01001001  (1x)
+  0x01001002  (18x)
+  0x01001003  (1x)
+  0x01002001  (1x)
+  0x01003109  (1x)
+  0x01005511  (2x)
+  0x01041207  (1x)
+  0x0106c411  (1x)
+chamadas ao sistema de arquivos:
+  Test "data/XlsChar.zt1"  (0x200fff18 0xf000301c 0xf0000008) -> 1
+  Test "data/XlsPCAction.zt1"  (0x200fff18 0xf000301c 0xf000613c) -> 1
+  Test "data/XlsSkill.zt1"  (0x200fff18 0xf000301c 0xf000613c) -> 1
+  Test "data/XlsItem.zt1"  (0x200fff18 0xf000301c 0xf000613c) -> 1
+  Test "data/XlsMap.zt1"  (0x200fff18 0xf000301c 0xf000613c) -> 1
+  Test "data/XlsNPC.zt1"  (0x200fff18 0xf000301c 0xf000613c) -> 1
+  Test "data/XlsQUEST.zt1"  (0x200fff18 0xf000301c 0xf000613c) -> 1
+  Test "data/XlsSetItem.zt1"  (0x200fff18 0xf000301c 0xf000613c) -> 1
+  Test "data/XlsBalance.zt1"  (0x200fff18 0xf000301c 0xf000613c) -> 1
+  Test "data/XlsChargeItem.zt1"  (0x200fff18 0xf000301c 0xf000613c) -> 1
+  Test "udata"  (0xa2f58 0xf000301c 0x0) -> 1
+  MkDir "udata"  (0xa2f58 0xf0003014 0x0) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Zenonia--Brazil---Es-Pt--67a86c94af0adf8ab5a832891304b4b4454edd5280db753eddab6d4e1ae7edb4/mod/277455/udata/option.sav (No such file or directory (os error 2))
+  OpenFile "udata\option.sav"  (0xa2ef8 0x1 0xf0003008) -> 0
+  GetLastError  (0xf0003024 0x1 0xf0003008) -> 1
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Zenonia--Brazil---Es-Pt--67a86c94af0adf8ab5a832891304b4b4454edd5280db753eddab6d4e1ae7edb4/mod/277455/udata/option.sav (No such file or directory (os error 2))
+  OpenFile "udata\option.sav"  (0xa2ef8 0x1 0xf0003008) -> 0
+  GetLastError  (0xf0003024 0x1 0xf0003008) -> 1
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Zenonia--Brazil---Es-Pt--67a86c94af0adf8ab5a832891304b4b4454edd5280db753eddab6d4e1ae7edb4/mod/277455/udata/option.sav (No such file or directory (os error 2))
+  OpenFile "udata\option.sav"  (0xa2ef8 0x1 0xf0003008) -> 0
+  GetLastError  (0xf0003024 0x1 0xf0003008) -> 1
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Zenonia--Brazil---Es-Pt--67a86c94af0adf8ab5a832891304b4b4454edd5280db753eddab6d4e1ae7edb4/mod/277455/udata/option.sav (No such file or directory (os error 2))
+  OpenFile "udata\option.sav"  (0xa2ef8 0x1 0xf0003008) -> 0
+  GetLastError  (0xf0003024 0x1 0xf0003008) -> 1
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Zenonia--Brazil---Es-Pt--67a86c94af0adf8ab5a832891304b4b4454edd5280db753eddab6d4e1ae7edb4/mod/277455/udata/option.sav (No such file or directory (os error 2))
+  OpenFile "udata\option.sav"  (0xa2ef8 0x1 0xf0003008) -> 0
+  GetLastError  (0xf0003024 0x1 0xf0003008) -> 1
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Zenonia--Brazil---Es-Pt--67a86c94af0adf8ab5a832891304b4b4454edd5280db753eddab6d4e1ae7edb4/mod/277455/udata/option.sav (No such file or directory (os error 2))
+  OpenFile "udata\option.sav"  (0xa2ef8 0x1 0xf0003008) -> 0
+  GetLastError  (0xf0003024 0x1 0xf0003008) -> 1
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Zenonia--Brazil---Es-Pt--67a86c94af0adf8ab5a832891304b4b4454edd5280db753eddab6d4e1ae7edb4/mod/277455/udata/option.sav (No such file or directory (os error 2))
+  OpenFile "udata\option.sav"  (0xa2ef8 0x1 0xf0003008) -> 0
+  GetLastError  (0xf0003024 0x1 0xf0003008) -> 1
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Zenonia--Brazil---Es-Pt--67a86c94af0adf8ab5a832891304b4b4454edd5280db753eddab6d4e1ae7edb4/mod/277455/udata/option.sav (No such file or directory (os error 2))
+  OpenFile "udata\option.sav"  (0xa2ef8 0x1 0xf0003008) -> 0
+  GetLastError  (0xf0003024 0x1 0xf0003008) -> 1
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Zenonia--Brazil---Es-Pt--67a86c94af0adf8ab5a832891304b4b4454edd5280db753eddab6d4e1ae7edb4/mod/277455/udata/option.sav (No such file or directory (os error 2))
+  OpenFile "udata\option.sav"  (0xa2ef8 0x1 0xf0003008) -> 0
+  GetLastError  (0xf0003024 0x1 0xf0003008) -> 1
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Zenonia--Brazil---Es-Pt--67a86c94af0adf8ab5a832891304b4b4454edd5280db753eddab6d4e1ae7edb4/mod/277455/udata/option.sav (No such file or directory (os error 2))
+  OpenFile "udata\option.sav"  (0xa2ef8 0x1 0xf0003008) -> 0
+  GetLastError  (0xf0003024 0x1 0xf0003008) -> 1
+  Test "udata"  (0xa2f58 0xf000301c 0xffffffff) -> 0
+  Test "udata\option.sav"  (0xa2ef8 0xf000301c 0xffffffff) -> 1
+  GetFreeSpace  (0x0 0xf0003020 0xffffffff) -> 268435456
+  Test "udata\option.sav"  (0xa2ef8 0xf000301c 0x64) -> 1
+  OpenFile "udata\option.sav"  (0xa2ef8 0x4 0xf0003008) -> 805307472
+  Write  (0x1003eb60 0x64 0xf0004014) -> 100
+  Release  (0xf0004004 0x64 0xf0004014) -> 0
+arquivos não encontrados:
+  udata\option.sav

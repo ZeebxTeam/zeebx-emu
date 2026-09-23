@@ -1,17 +1,7 @@
-//! A janela principal: biblioteca, configurações e a tela do console.
+//! Interface desktop do Zeebx.
 
-#[path = "vitrine.rs"]
+use super::{acervo, atualizacao, discord, gpu, library, settings};
 mod vitrine;
-
-use super::acervo;
-use super::atualizacao;
-use super::discord;
-use super::gpu;
-use super::i18n::Catalog;
-use super::library;
-use super::library::Game;
-use super::settings;
-use super::settings::{Scaling, Settings};
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -26,6 +16,9 @@ use crate::input::{self, Pad};
 use crate::loader::archive;
 use crate::ponte;
 use crate::session::Session;
+use crate::ui::i18n::Catalog;
+use crate::ui::library::Game;
+use crate::ui::settings::{Scaling, Settings};
 use crate::video::display::Framebuffer;
 
 /// Teto de tempo real que o jogo pode tomar num quadro da interface.
@@ -262,7 +255,7 @@ pub struct App {
     ///
     /// Guardá-lo é o que permite pintar o quadro do console com GL do host em vez de mandá-lo
     /// como textura do egui. Sem ele — e o `eframe` admite não ter —, vale o caminho antigo.
-    gl: Option<std::sync::Arc<eframe::glow::Context>>,
+    gl: Option<std::sync::Arc<glow::Context>>,
     /// O pintor de GL, montado na primeira vez que a janela do jogo desenha.
     ///
     /// Vive atrás de um `Mutex` porque o `egui_glow` exige um retorno de chamada `Sync`, e é
@@ -2571,22 +2564,12 @@ impl App {
             .collect();
         for pad in pads {
             keys.extend(
-                Self::teclas_do_controle(&Pad::default(), pad)
+                input::teclas_do_controle(&Pad::default(), pad)
                     .into_iter()
                     .filter_map(|(key, down)| down.then_some(key)),
             );
         }
         keys
-    }
-
-    /// As teclas que o controle manda, comparando com o quadro anterior.
-    ///
-    /// No console o direcional chega aos aplicativos como as quatro setas do BREW, e é com elas
-    /// que a Z-Wheel navega: esquerda e direita giram a roda e trocam a aba da lista, cima e baixo
-    /// passam as páginas. O analógico não entra aqui: a Z-Wheel lê a posição e faz a tradução
-    /// dela sozinha (`0x44914` no módulo).
-    pub(crate) fn teclas_do_controle(antes: &Pad, agora: &Pad) -> Vec<(u32, bool)> {
-        crate::input::Pad::teclas_avk(antes, agora)
     }
 
     /// O código virtual do BREW de uma tecla da janela, quando ela tem um.
@@ -2934,7 +2917,7 @@ impl eframe::App for App {
     /// O contexto só existe enquanto a janela existe: soltar depois seria mexer num contexto
     /// morto, e não soltar deixa programa e textura vivos até o processo acabar. O `eframe`
     /// chama isto com o contexto ainda de pé, que é a única hora em que dá para fazer certo.
-    fn on_exit(&mut self, gl: Option<&eframe::glow::Context>) {
+    fn on_exit(&mut self, gl: Option<&glow::Context>) {
         let (Some(gl), Ok(mut guarda)) = (gl, self.pintor.lock()) else {
             return;
         };
@@ -3235,14 +3218,14 @@ mod tests {
         let b1 = Pad::button_by_name("b1").unwrap();
         agora.press(b1, true);
         assert_eq!(
-            App::teclas_do_controle(&antes, &agora),
+            input::teclas_do_controle(&antes, &agora),
             vec![(crate::input::avk::CONFIRMA, true)]
         );
         antes = agora;
-        assert!(App::teclas_do_controle(&antes, &agora).is_empty());
+        assert!(input::teclas_do_controle(&antes, &agora).is_empty());
         agora.press(b1, false);
         assert_eq!(
-            App::teclas_do_controle(&antes, &agora),
+            input::teclas_do_controle(&antes, &agora),
             vec![(crate::input::avk::CONFIRMA, false)]
         );
     }
@@ -3260,12 +3243,12 @@ mod tests {
         ] {
             let mut agora = Pad::default();
             agora.press(Pad::button_by_name(nome).unwrap(), true);
-            assert_eq!(App::teclas_do_controle(&antes, &agora), vec![(esperado, true)]);
+            assert_eq!(input::teclas_do_controle(&antes, &agora), vec![(esperado, true)]);
         }
         let mut voltar = Pad::default();
         voltar.press(Pad::button_by_name("b2").unwrap(), true);
         assert_eq!(
-            App::teclas_do_controle(&antes, &voltar),
+            input::teclas_do_controle(&antes, &voltar),
             vec![(crate::input::avk::CLR, true)]
         );
     }

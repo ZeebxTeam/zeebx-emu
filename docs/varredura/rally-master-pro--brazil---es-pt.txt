@@ -1,0 +1,182 @@
+Rally Master Pro (Brazil) (Es,Pt)
+estado: roda
+tela: 1081 cor(es), dominante 0x3a07
+classes pedidas:
+  0x01001001  (1x)
+  0x01001003  (1x)
+  0x01001014  (24x)
+  0x01005502  (3x)
+  0x0100550a  (50x)
+  0x010127d4  (1x)
+  0x0103d8ec  (1x)
+  0x01041207  (1x)
+  0x0106c411  (1x)
+chamadas ao sistema de arquivos:
+  Read  (0x107c5ef0 0x3 0xf000400c) -> 3
+  Read  (0x200fff98 0x2 0xf000400c) -> 2
+  Read  (0x107c5ef0 0x4 0xf000400c) -> 4
+  Read  (0x200fff98 0x2 0xf000400c) -> 2
+  Read  (0x107c6208 0xb 0xf000400c) -> 11
+  Read  (0x200fff98 0x2 0xf000400c) -> 2
+  Read  (0x107c6208 0xf 0xf000400c) -> 15
+  Read  (0x200fff98 0x2 0xf000400c) -> 2
+  Read  (0x107c5ef0 0x5 0xf000400c) -> 5
+  Read  (0x200fff98 0x2 0xf000400c) -> 2
+  Read  (0x107ca4d8 0x4e 0xf000400c) -> 78
+  Read  (0x200fff98 0x2 0xf000400c) -> 2
+  Read  (0x107ca4d8 0x45 0xf000400c) -> 69
+  Read  (0x200fff98 0x2 0xf000400c) -> 2
+  Read  (0x107ca4d8 0x40 0xf000400c) -> 64
+  Read  (0x200fff98 0x2 0xf000400c) -> 2
+  Read  (0x107c6208 0xb 0xf000400c) -> 11
+  Read  (0x200fff98 0x2 0xf000400c) -> 2
+  Read  (0x107c6208 0xd 0xf000400c) -> 13
+  Read  (0x200fff98 0x2 0xf000400c) -> 2
+  Read  (0x107c9980 0x14 0xf000400c) -> 20
+  Read  (0x200fff98 0x2 0xf000400c) -> 2
+  Read  (0x107ca538 0x5e 0xf000400c) -> 94
+  Read  (0x200fff98 0x2 0xf000400c) -> 2
+  Read  (0x107c5ef0 0x7 0xf000400c) -> 7
+  Read  (0x200fff98 0x2 0xf000400c) -> 2
+  Read  (0x107c9980 0x15 0xf000400c) -> 21
+  Read  (0x200fff98 0x2 0xf000400c) -> 2
+  Read  (0x107ca0a0 0x1f 0xf000400c) -> 31
+  Read  (0x200fff98 0x2 0xf000400c) -> 2
+  Read  (0x107c9980 0x16 0xf000400c) -> 22
+  Read  (0x200fff98 0x2 0xf000400c) -> 2
+  Read  (0x107c6208 0x9 0xf000400c) -> 9
+  Read  (0x200fff98 0x2 0xf000400c) -> 2
+  Read  (0x107c5ef0 0x4 0xf000400c) -> 4
+  Read  (0x200fff98 0x2 0xf000400c) -> 2
+  Read  (0x107c6208 0xa 0xf000400c) -> 10
+  Read  (0x200fff98 0x2 0xf000400c) -> 2
+  Read  (0x107c5ef0 0x6 0xf000400c) -> 6
+  Read  (0x200fff98 0x2 0xf000400c) -> 2
+  Read  (0x107c5ef0 0x7 0xf000400c) -> 7
+  Read  (0x200fff98 0x2 0xf000400c) -> 2
+  Read  (0x107ca598 0x1a 0xf000400c) -> 26
+  Read  (0x200fff98 0x2 0xf000400c) -> 2
+  Read  (0x107cb928 0x48 0xf000400c) -> 72
+  Read  (0x200fff98 0x2 0xf000400c) -> 2
+  Read  (0x107ca4f0 0x15 0xf000400c) -> 21
+  Read  (0x200fff98 0x2 0xf000400c) -> 2
+  Read  (0x107c5ef0 0x6 0xf000400c) -> 6
+  Read  (0x200fff98 0x2 0xf000400c) -> 2
+  Read  (0x107c6208 0xa 0xf000400c) -> 10
+  Read  (0x200fff98 0x2 0xf000400c) -> 2
+  Read  (0x107c6208 0x8 0xf000400c) -> 8
+  Read  (0x200fff98 0x2 0xf000400c) -> 2
+  Read  (0x107c5ef0 0x7 0xf000400c) -> 7
+  Read  (0x200fff98 0x2 0xf000400c) -> 2
+  Read  (0x107c5ef0 0x2 0xf000400c) -> 2
+  Read  (0x200fff98 0x2 0xf000400c) -> 2
+  Read  (0x107c5ef0 0x7 0xf000400c) -> 7
+  Read  (0x200fff98 0x2 0xf000400c) -> 2
+  Read  (0x107ca5c0 0xb 0xf000400c) -> 11
+  Read  (0x200fff98 0x2 0xf000400c) -> 2
+  Read  (0x107ca5c0 0xb 0xf000400c) -> 11
+  Read  (0x200fff98 0x2 0xf000400c) -> 2
+  Read  (0x107cb958 0x2f 0xf000400c) -> 47
+  Release  (0xf0004004 0x30 0x0) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Rally-Master-Pro--Brazil---Es-Pt--fbc5e7fc8ba1fe10e2bf6e43b7fc6f5fc6be3e20eb0d90574313523ae8a9022e/mod/278282/data/textures/tex_2d_splash.aei (No such file or directory (os error 2))
+  OpenFile "/data/textures/tex_2d_splash.aei"  (0x107cb958 0x1 0xf0003008) -> 0
+  OpenFile "/textures.aez"  (0x107cad70 0x1 0xf0003008) -> 805311248
+  Seek  (0x2 0x75b55 0xf000401c) -> 0
+  Release  (0xf0004004 0x80000 0xf001e00c) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Rally-Master-Pro--Brazil---Es-Pt--fbc5e7fc8ba1fe10e2bf6e43b7fc6f5fc6be3e20eb0d90574313523ae8a9022e/mod/278282/data/textures/tex_2d_mainmenu.aei (No such file or directory (os error 2))
+  OpenFile "/data/textures/tex_2d_mainmenu.aei"  (0x107cbfe8 0x1 0xf0003008) -> 0
+  OpenFile "/textures.aez"  (0x107cc010 0x1 0xf0003008) -> 805311248
+  Seek  (0x2 0x9a81 0xf000401c) -> 0
+  Release  (0xf0004004 0x80000 0xf001e00c) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Rally-Master-Pro--Brazil---Es-Pt--fbc5e7fc8ba1fe10e2bf6e43b7fc6f5fc6be3e20eb0d90574313523ae8a9022e/mod/278282/data/textures/tex_2d_shared.aei (No such file or directory (os error 2))
+  OpenFile "/data/textures/tex_2d_shared.aei"  (0x107cc2a0 0x1 0xf0003008) -> 0
+  OpenFile "/textures.aez"  (0x107cc2c8 0x1 0xf0003008) -> 805311248
+  Seek  (0x2 0x4d90d 0xf000401c) -> 0
+  Release  (0xf0004004 0x80000 0xf001e00c) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Rally-Master-Pro--Brazil---Es-Pt--fbc5e7fc8ba1fe10e2bf6e43b7fc6f5fc6be3e20eb0d90574313523ae8a9022e/mod/278282/data/textures/tex_2d_splash.aei (No such file or directory (os error 2))
+  OpenFile "/data/textures/tex_2d_splash.aei"  (0x107cc788 0x1 0xf0003008) -> 0
+  OpenFile "/textures.aez"  (0x107cc858 0x1 0xf0003008) -> 805311248
+  Seek  (0x2 0x75b55 0xf000401c) -> 0
+  Release  (0xf0004004 0x3 0xf001e00c) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Rally-Master-Pro--Brazil---Es-Pt--fbc5e7fc8ba1fe10e2bf6e43b7fc6f5fc6be3e20eb0d90574313523ae8a9022e/mod/278282/data/textures/tex_2d_shared.aei (No such file or directory (os error 2))
+  OpenFile "/data/textures/tex_2d_shared.aei"  (0x107cc868 0x1 0xf0003008) -> 0
+  OpenFile "/textures.aez"  (0x107cc890 0x1 0xf0003008) -> 805311248
+  Seek  (0x2 0x4d90d 0xf000401c) -> 0
+  Release  (0xf0004004 0x640 0xf001e00c) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Rally-Master-Pro--Brazil---Es-Pt--fbc5e7fc8ba1fe10e2bf6e43b7fc6f5fc6be3e20eb0d90574313523ae8a9022e/mod/278282/data/textures/tex_2d_shared.aei (No such file or directory (os error 2))
+  OpenFile "/data/textures/tex_2d_shared.aei"  (0x107d2148 0x1 0xf0003008) -> 0
+  OpenFile "/textures.aez"  (0x107d2170 0x1 0xf0003008) -> 805311248
+  Seek  (0x2 0x4d90d 0xf000401c) -> 0
+  Release  (0xf0004004 0x640 0xf001e00c) -> 0
+arquivos não encontrados:
+  /data/sound/fx/air_leak_loop_01.wav
+  /data/sound/fx/air_leak_loop_02.wav
+  /data/sound/fx/applause.wav
+  /data/sound/fx/beep_simple_01.wav
+  /data/sound/fx/coll_big2.wav
+  /data/sound/fx/coll_small1_l.wav
+  /data/sound/fx/coll_small2_l.wav
+  /data/sound/fx/dirtdrift.wav
+  /data/sound/fx/fx_starts.wav
+  /data/sound/fx/game_show_buzzer_02.wav
+  /data/sound/fx/menuBack.wav
+  /data/sound/fx/menuChoose.wav
+  /data/sound/fx/menuOk.wav
+  /data/sound/fx/motor_accelerate_0.wav
+  /data/sound/fx/motor_accelerate_1.wav
+  /data/sound/fx/motor_accelerate_10.wav
+  /data/sound/fx/motor_accelerate_2.wav
+  /data/sound/fx/motor_accelerate_3.wav
+  /data/sound/fx/motor_accelerate_4.wav
+  /data/sound/fx/motor_accelerate_5.wav
+  /data/sound/fx/motor_accelerate_6.wav
+  /data/sound/fx/motor_accelerate_7.wav
+  /data/sound/fx/motor_accelerate_8.wav
+  /data/sound/fx/motor_accelerate_9.wav
+  /data/sound/fx/motor_brake.wav
+  /data/sound/fx/motor_max_slowdown.wav
+  /data/sound/fx/motor_maxspeed.wav
+  /data/sound/fx/motor_maxspeed_low.wav
+  /data/sound/fx/motor_minspeed.wav
+  /data/sound/fx/motor_reverse.wav
+  /data/sound/fx/motor_slowdown_0.wav
+  /data/sound/fx/motor_slowdown_1.wav
+  /data/sound/fx/motor_slowdown_2.wav
+  /data/sound/fx/motorstart.wav
+  /data/sound/fx/screetch.wav
+  /data/sound/fx/start0.wav
+  /data/sound/fx/start321.wav
+  /data/sound/fx/thunder.wav
+  /data/sound/speaker/speech_checkpoint.wav
+  /data/sound/speaker/speech_constriction.wav
+  /data/sound/speaker/speech_hairpinleft.wav
+  /data/sound/speaker/speech_hairpinright.wav
+  /data/sound/speaker/speech_hardleft.wav
+  /data/sound/speaker/speech_hardright.wav
+  /data/sound/speaker/speech_left.wav
+  /data/sound/speaker/speech_leftlong.wav
+  /data/sound/speaker/speech_overcrest.wav
+  /data/sound/speaker/speech_right.wav
+  /data/sound/speaker/speech_rightlong.wav
+  /data/sound/speaker/speech_straight.wav
+  /data/textures/tex_2d_mainmenu.aei
+  /data/textures/tex_2d_shared.aei
+  /data/textures/tex_2d_splash.aei
+  /data/tracks/t1.w3t
+  /data/tracks/t10.w3t
+  /data/tracks/t11.w3t
+  /data/tracks/t12.w3t
+  /data/tracks/t13.w3t
+  /data/tracks/t14.w3t
+  /data/tracks/t15.w3t
+  /data/tracks/t16.w3t
+  /data/tracks/t17.w3t
+  /data/tracks/t18.w3t
+  /data/tracks/t2.w3t
+  /data/tracks/t3.w3t
+  /data/tracks/t4.w3t
+  /data/tracks/t5.w3t
+  /data/tracks/t6.w3t
+  /data/tracks/t7.w3t
+  /data/tracks/t8.w3t
+  /data/tracks/t9.w3t

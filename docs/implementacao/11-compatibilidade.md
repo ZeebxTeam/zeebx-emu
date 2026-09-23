@@ -8,13 +8,45 @@ no fim deste documento e dá para repetir a qualquer momento.
 
 ## Placar
 
-| Estado | Antes | Agora |
-|---|---:|---:|
-| roda | 33 | **50** |
-| falha no `EVT_APP_START` | 10 | **0** |
-| não cria o applet | 8 | 5 |
-| para no laço de quadros | 7 | 6 |
-| lento demais | 3 | 1 |
+| Estado | Primeiro levantamento | Depois | Agora |
+|---|---:|---:|---:|
+| roda | 33 | 50 | **56** |
+| terminou sozinho | — | — | 2 |
+| não cria o applet | 8 | 5 | 2 |
+| para no laço de quadros | 7 | 6 | 2 |
+| falha no `EVT_APP_START` | 10 | **0** | 0 |
+| lento demais | 3 | 1 | 0 |
+
+### A varredura mente quando o disco enche
+
+A rodada que produziu a coluna "Agora" foi feita com o disco cheio, e **dois jogos apareceram como
+"não carrega"** com `No space left on device` no motivo — o placar acusou os jogos, e o problema era
+a máquina. Repetidos um de cada vez depois de liberar espaço, o **Zenonia** rodou os seis segundos
+inteiros.
+
+O que ficou do susto, no `src/varredura.rs`:
+
+- a categoria `SemEspaco`, separada de `NaoCarrega`: disco cheio chega como erro de leitura, e é o
+  único erro dessa lista que não diz nada sobre o jogo (28 no Unix, 112 no Windows);
+- uma **prova de escrita de 64 MB** antes de começar, porque a varredura das 62 ROMs extrai cada
+  uma para o cache e gasta perto de 1 GB;
+- um aviso impresso no meio do placar quando o disco enche, porque isso invalida até os jogos que
+  passaram: o relatório de um jogo extraído pela metade não vale.
+
+### O que ainda não roda, e por quê
+
+| Jogo | Estado | Causa medida |
+|---|---|---|
+| Bejeweled Twist | quebrou no laço de quadros | acesso inválido a `0x0`, chamado de `0x32c20` |
+| ~~Zuma's Revenge~~ | **roda** | era `0x0102fd92` (`JPEGDecoderBREW`) recusada e o decodificador só tentando PNG; corrigidos, ele roda com 18.268 cores na tela |
+| Kingdom Hearts V CAST | não cria o applet | nenhum `.mif` ao lado do módulo diz qual applet criar |
+| Zeebo Channels (Opera Mini) | não cria o applet | `CreateInstance` recusou com o erro 1 |
+| Zeebo App, Zeebo Clube | terminou sozinho | são aplicativos do sistema: terminam sem timer armado |
+
+> As tabelas por jogo abaixo são do levantamento **anterior** e envelheceram em pelo menos um ponto
+> já medido: o **Double Dragon** passou a rodar — a `IFont` foi implementada (as três classes que
+> ele pedia deixaram de faltar) e o diretório do save passou a ser criado no `OFM_CREATE`, que era
+> o motivo da tela "Memory is insufficient. Please delete some files.".
 
 Doze jogos mudaram de estado de uma vez, e a causa foi uma só: **o sistema de arquivos do console
 não distingue maiúsculas de minúsculas, e o nosso distinguia.** Os dez ports de arcade pedem

@@ -110,6 +110,39 @@ impl Framebuffer {
         self.sujo.take()
     }
 
+    /// A caixa suja **sem** zerar.
+    ///
+    /// Existe para o save state: gravar o que mudou não pode consumir o aviso, senão salvar um
+    /// estado apagaria a única informação que diz ao frontend qual pedaço da tela mudou — e o
+    /// quadro seguinte sairia velho por causa de um `save state` que ninguém pediu para ver.
+    pub fn sujeira(&self) -> Option<[u32; 4]> {
+        self.sujo
+    }
+
+    /// Os pixels crus, na ordem de leitura.
+    pub fn pixels(&self) -> &[u16] {
+        &self.pixels
+    }
+
+    /// Repõe os pixels e o que a superfície já viveu.
+    ///
+    /// É o caminho da volta de um save state: os pixels vêm do arquivo, e `touched` e `serie`
+    /// voltam junto porque é por eles que o frontend sabe o que mudou. Sem a `serie`, esta
+    /// superfície seria confundida com outra que tivesse ocupado o mesmo endereço.
+    pub fn restaura_estado(
+        &mut self,
+        touched: u64,
+        serie: u64,
+        sujo: Option<[u32; 4]>,
+        pixels: Vec<u16>,
+    ) {
+        debug_assert_eq!(pixels.len(), (self.width * self.height) as usize);
+        self.pixels = pixels;
+        self.touched = touched;
+        self.serie = serie;
+        self.sujo = sujo;
+    }
+
     /// Os pixels de `inicio` até `fim` (índices de pixel, fim exclusivo), em bytes RGB565.
     pub fn rgb565_intervalo(&self, inicio: usize, fim: usize) -> Vec<u8> {
         self.pixels[inicio..fim]
@@ -135,11 +168,6 @@ impl Framebuffer {
 
     pub fn height(&self) -> u32 {
         self.height
-    }
-
-    /// Os pixels nativos da superfície, RGB565, um `u16` por pixel, linha a linha.
-    pub fn pixels(&self) -> &[u16] {
-        &self.pixels
     }
 
     /// Se alguma operação de desenho chegou a tocar a tela.
@@ -366,6 +394,31 @@ impl Framebuffer {
     }
 
     /// Os pixels em bytes RGB565, na ordem em que o `IDIB` os expõe ao jogo.
+    /// Escreve o quadro em RGB565 no buffer dado, reaproveitando a alocação dele.
+    ///
+    /// [`Framebuffer::to_rgb565_bytes`] aloca um `Vec` novo a cada quadro; num frontend que
+    /// entrega 60 quadros por segundo isso é lixo a cada 16 ms, e o coletor aparece como engasgo.
+    pub fn write_rgb565_into(&self, out: &mut Vec<u8>) {
+        out.clear();
+        out.reserve(self.pixels.len() * 2);
+        for pixel in &self.pixels {
+            out.extend_from_slice(&pixel.to_le_bytes());
+        }
+    }
+
+    /// Assinatura barata do conteúdo da tela, para reconhecer quadro repetido.
+    ///
+    /// Não é hash criptográfico: é o suficiente para dizer "nada mudou" sem custar uma passada
+    /// cara sobre 600 KB por quadro.
+    pub fn signature(&self) -> u64 {
+        let mut valor: u64 = 0xcbf2_9ce4_8422_2325;
+        for pixel in &self.pixels {
+            valor ^= u64::from(*pixel);
+            valor = valor.wrapping_mul(0x100_0000_01b3);
+        }
+        valor
+    }
+
     pub fn to_rgb565_bytes(&self) -> Vec<u8> {
         self.pixels.iter().flat_map(|p| p.to_le_bytes()).collect()
     }

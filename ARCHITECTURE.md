@@ -44,14 +44,16 @@ documento.
 ## Camadas
 
 ```
-  interface (egui)  ─┐
-  linha de comando  ─┼─▶  Session  ─▶  Machine  ─▶  CpuBackend  ─▶  unicorn (TCG)
-  núcleo Libretro   ─┘                      │
-                                          ├─▶ rasterizador de software (OpenGL ES 1.1)
-                                          ├─▶ framebuffer 2D
-                                          ├─▶ mixer de áudio ─▶ cpal (ou o callback do frontend)
-                                          ├─▶ VFS ─▶ diretório do módulo
-                                          └─▶ heap, objetos, temporizadores
+  interface (egui)        ─┐
+  linha de comando        ─┤
+  frontends/android       ─┼─▶  Session  ─▶  Machine  ─▶  CpuBackend  ─▶  unicorn (TCG)
+  frontends/headless      ─┘
+                                              │
+                                              ├─▶ rasterizador de software (OpenGL ES 1.1)
+                                              ├─▶ framebuffer 2D
+                                              ├─▶ mixer de áudio ─▶ cpal
+                                              ├─▶ VFS ─▶ diretório do módulo
+                                              └─▶ heap, objetos, temporizadores
 ```
 
 O `CpuBackend` isola o núcleo ARM. Hoje a implementação é sobre o unicorn; se a performance
@@ -62,6 +64,12 @@ não sabe que existe janela.
 
 A `Session` é um jogo em execução, do arquivo aos quadros. É o que a interface usa, e é onde
 ficam o freio de velocidade e a medição.
+
+Os frontends são pacotes próprios ao lado do núcleo, cada um com a sua janela e o seu laço de
+eventos: [`frontends/android`](frontends/android/LEIAME.md), sobre a `NativeActivity`, e
+[`frontends/headless`](frontends/headless/LEIAME.md), sem interface nenhuma, para quem já tem um
+frontend seu e quer só a emulação por linha de comando com um `config.ini`. Nenhuma linha de
+emulação sabe em qual deles está rodando.
 
 ### Os módulos
 

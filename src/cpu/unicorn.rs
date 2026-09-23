@@ -11,12 +11,9 @@ use unicorn_engine::{Arch, ArmCpuModel, HookType, Mode, Prot, RegisterARM, Unico
 use super::{CpuBackend, CpuError, Reg, StopReason};
 use crate::cpu::mem::GuestMemory;
 
-/// Base da faixa reservada às vtables do BREW. Nunca é mapeada.
-pub const API_BASE: u32 = 0xf000_0000;
-/// Tamanho da faixa reservada às vtables.
-pub const API_SIZE: u32 = 0x0100_0000;
-/// Endereço-sentinela colocado em `lr`: chegar aqui significa que o módulo retornou.
-pub const RETURN_MAGIC: u32 = 0xfff0_0000;
+/// As três constantes da faixa de vtables: são do contrato entre backend e despachante, e moram em
+/// [`crate::cpu`] desde que o `dynarmic` passou a usá-las sem o unicorn presente.
+pub use crate::cpu::{API_BASE, API_SIZE, RETURN_MAGIC};
 
 /// Alinhamento exigido pelo `mem_map` do unicorn.
 const PAGE: u64 = 0x1000;
@@ -37,18 +34,9 @@ struct HookState {
     last_fault_pc: Option<u32>,
 }
 
-/// Registro de uma escrita observada por um watchpoint.
-#[derive(Debug, Clone, Copy)]
-pub struct Write {
-    pub addr: u32,
-    pub value: i64,
-    /// PC de origem, ou zero quando quem escreveu foi o próprio emulador (implementação de
-    /// API), que não passa pelos hooks do unicorn.
-    pub pc: u32,
-    /// `lr` no momento da escrita: quando o PC cai numa função utilitária compartilhada — um
-    /// `operator=`, um `memcpy` —, é o `lr` que diz quem pediu.
-    pub lr: u32,
-}
+/// O registro de uma escrita vigiada; mora em [`crate::cpu`] porque o `writes()` existe nos dois
+/// backends — num deles para dizer que não há o que devolver.
+pub use crate::cpu::Write;
 
 /// Uma faixa de memória vigiada e o sinalizador que diz se ela foi escrita.
 ///
@@ -420,6 +408,18 @@ impl CpuBackend for UnicornCpu {
 
     fn instructions(&self) -> u64 {
         self.instructions.get()
+    }
+
+    fn set_instructions(&mut self, valor: u64) {
+        self.instructions.set(valor);
+    }
+
+    fn cpsr(&self) -> u32 {
+        self.uc.reg_read(RegisterARM::CPSR).unwrap_or(0) as u32
+    }
+
+    fn set_cpsr(&mut self, valor: u32) {
+        let _ = self.uc.reg_write(RegisterARM::CPSR, valor as u64);
     }
 
     fn em_thumb(&self) -> bool {

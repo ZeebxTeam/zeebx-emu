@@ -1,17 +1,24 @@
 [workspace]
-members = [".", "frontends/libretro"]
+members = [
+    ".",
+    "frontends/classical-standalone",
+    "frontends/libretro",
+    "frontends/android",
+    "frontends/headless",
+]
 resolver = "3"
 
 [package]
 name = "zeebx"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2024"
 # GPLv2 porque o unicorn-engine é GPLv2 e vai compilado dentro do binário. Ver LICENSE.
 authors = ["ZeebxTeam"]
 license = "GPL-2.0-only"
 repository = "https://github.com/ZeebxTeam/zeebx-emu"
-description = "Emulador do Zeebo, o console da TecToy"
+description = "O emulador definitivo de Zeebo!"
 
+# O núcleo também é consumido pelos frontends Android, headless e Libretro.
 [lib]
 name = "zeebx"
 path = "src/lib.rs"
@@ -22,7 +29,14 @@ path = "src/lib.rs"
 [features]
 default = ["desktop"]
 desktop = [
-    "dep:cpal",
+    # A UI desktop usa o rasterizador na placa: o desktop implica `gpu`.
+    "gpu",
+    # A placa de som: o desktop implica `audio`.
+    "audio",
+    # O banco de amostras para o MIDI é Rust puro e sem dependência de host, então entra por
+    # padrão: sem um `.sf2` instalado ele nem é carregado, e sem ele a música é a mesma de antes.
+    "soundfont",
+    "unicorn",
     "dep:discord-rich-presence",
     "dep:eframe",
     "dep:gilrs",
@@ -31,13 +45,38 @@ desktop = [
     "dep:raw-window-handle",
     "dep:rfd",
 ]
+# Criação de contexto OpenGL fora de tela para o rasterizador na placa sem janela.
+# O desenho na placa: o backend de OpenGL do motor. **Não puxa nada de host** — o `glow` é só o
+# vínculo com a API, e quem entrega o contexto é quem chama. É o que o core Libretro precisa: ele
+# recebe o contexto do frontend e não pode criar um próprio.
+gl = []
+# A saída de som pela placa do host, com o `cpal`.
+#
+# **Separada do `desktop` de propósito.** O `cpal` não é interface: no Android ele fala com o
+# Oboe, que é a saída nativa do aparelho, e o frontend de lá precisa dele sem precisar do eframe,
+# do gilrs ou do rfd. O core Libretro continua sem: lá quem toca é o frontend, e a regra da casa
+# é que o core não linka placa de som.
+audio = ["dep:cpal"]
 
-[[bin]]
-name = "zeebx"
-path = "src/main.rs"
-required-features = ["desktop"]
+# Síntese por banco de amostras (SoundFont) para o MIDI, em vez da tabela de timbres.
+#
+# O `rustysynth` é Rust puro e MIT, então entra tanto no core Libretro quanto no standalone sem
+# trazer biblioteca de host nenhuma — que é a regra da casa. O **banco** não é embutido: são 32 MB,
+# e o motor procura um `.sf2` na pasta do aparelho, exatamente como faz com a fonte do sistema. Sem
+# banco, o MIDI volta para a tabela de timbres, que é o que já toca hoje.
+soundfont = ["dep:rustysynth"]
+# Abrir contexto de OpenGL **nosso**, para a janela do desktop e para a linha de comando sem
+# janela. Aqui entra o `glutin`, que linka EGL/GLX — motivo pelo qual o core não usa esta feature:
+# um core não pode depender de biblioteca de interface do host.
+gpu = ["gl", "dep:glutin", "dep:raw-window-handle"]
+# Backend de referência do standalone. O core Libretro não o habilita: usa Dynarmic e não leva
+# o QEMU/unicorn-engine nem libatomic para os handhelds Linux AArch64.
+unicorn = ["dep:unicorn-engine"]
 
+# O binário é a interface desktop: sem a feature ele nem é construído.
 [dependencies]
+# Tipos de interface compartilhados pelo desktop e pelo frontend Android; não abre janela sozinho.
+egui = { version = "0.33.3", default-features = false, features = ["default_fonts"] }
 eframe = { version = "0.33.3", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"], optional = true }
 # Saída de áudio do host. A decodificação é nossa: os jogos entregam PCM.
 # Contexto de OpenGL fora de tela para o rasterizador na placa. Já vinha na árvore pelo
@@ -45,6 +84,9 @@ eframe = { version = "0.33.3", default-features = false, features = ["default_fo
 # permite a GPU funcionar também no `run` sem janela, onde toda a medição é feita.
 glutin = { version = "0.32.3", optional = true }
 raw-window-handle = { version = "0.6", optional = true }
+# Contexto de OpenGL. O `glow` é só o vínculo com a API, sem janela: o motor o usa para desenhar
+# na placa, e um frontend que não cria contexto simplesmente não o instancia.
+glow = "0.16"
 cpal = { version = "0.15", optional = true }
 # Controles de verdade, nos três sistemas.
 gilrs = { version = "0.11", optional = true }
@@ -56,13 +98,14 @@ png = "0.18.1"
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "async-std"], optional = true }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
-unicorn-engine = "2.1.5"
 # JIT ARM alternativo ao TCG do Unicorn. Fica opt-in enquanto os dois backends são
 # comparados jogo a jogo; o KH precisa dele porque a extensão 3D roda o próprio
 # rasterizador ARM por milhões de pixels.
 dynarmic = "0.1.3"
 # Só leitura de zip: `deflate` cobre o que os empacotadores usam.
 zip = { version = "2", default-features = false, features = ["deflate"] }
+# Identidade estável de conteúdo/caches. Tamanho+mtime pode colidir ou mudar numa cópia idêntica.
+blake3 = "1"
 resvg = { version = "0.48.1", default-features = false }
 # O `AEECLSID_SQLMGR` do console é SQLite de verdade: os `.db` que a Z-Wheel traz no pacote
 # começam com "SQLite format 3", e as consultas dela usam `INSERT OR REPLACE`, `COLLATE NOCASE`
@@ -80,49 +123,31 @@ zune-jpeg = { version = "0.5.15", default-features = false, features = ["std"] }
 # requantização, IMDCT e banco de síntese, e escrever isso sem uma referência para comparar dá
 # som que toca e sai errado. O symphonia é Rust puro (sem build C) e MPL-2.0, que se combina com
 # o GPLv2 daqui. Só o MP3 entra: o resto dos codecs fica fora.
-symphonia = { version = "0.5.5", default-features = false, features = ["mp3"] }
+# `mp3` é a música da maioria dos jogos; `ogg`/`vorbis` é a de quem entrega Opus/Vorbis —
+# o Turma da Mônica tem **86 sons** em Ogg, e sem a feature o jogo roda em silêncio absoluto
+# (medido: pico 0,000 no relatório da varredura). É o mesmo decodificador, com duas caixas a mais.
+symphonia = { version = "0.5.5", default-features = false, features = ["mp1", "mp2", "mp3", "ogg", "vorbis"] }
 discord-rich-presence = { version = "1.1", optional = true }
 ureq = "3"
+sevenz-rust2 = "0.23.0"
+# Síntese por banco de amostras, ver a feature `soundfont`. MIT e Rust puro: nada de C, nada de
+# biblioteca de host, e por isso pode entrar no core Libretro.
+rustysynth = { version = "1.3.6", optional = true }
+
+# Tudo o que existe **só onde o unicorn compila**, como as dependências de sistema abaixo.
+#
+# O `unicorn-engine` traz o QEMU em C, e o QEMU do Windows monta `setjmp-wrapper-win32.asm` com o
+# `ml` do MSVC — que só existe para x86 e x64. Não há montador MASM para ARM64, então naquele alvo
+# o `unicorn-engine-sys` nem chega a compilar (o `ml` não é encontrado). Onde ele falta, o motor
+# usa o `dynarmic`, que recompila os blocos A32 e sustenta o mesmo contrato de `CpuBackend`.
+[target.'cfg(not(all(target_os = "windows", target_arch = "aarch64")))'.dependencies]
+unicorn-engine = { version = "2.1.5", optional = true }
 
 # O `ioctl` que lê a escala dos sensores de movimento em `/dev/input`. Já vinha na árvore por
 # várias dependências, então não acrescenta build nenhuma.
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
 
-# O ícone dentro do `.exe` do Windows: é o que o Explorer e a barra de tarefas mostram.
-[build-dependencies]
-winresource = "0.1"
-
-# Os instaladores, gerados pelo `cargo packager --release`: `.deb` e AppImage no Linux, NSIS no
-# Windows, `.dmg` no macOS. O workflow `.github/workflows/release.yml` roda isto nos três sistemas
-# quando uma tag de versão é enviada.
-[package.metadata.packager]
-product-name = "Zeebx"
-identifier = "io.github.zeebxteam.zeebx"
-publisher = "ZeebxTeam"
-homepage = "https://github.com/ZeebxTeam/zeebx-emu"
-category = "Game"
-description = "Emulador do Zeebo, o console da TecToy"
-out-dir = "target/pacotes"
-before-packaging-command = "cargo build --release --locked"
-icons = ["assets/icones/zeebx-512.png", "assets/icones/zeebx.ico", "assets/icones/zeebx.icns"]
-
-[[package.metadata.packager.binaries]]
-path = "zeebx"
-main = true
-
-[package.metadata.packager.deb]
-# O `libasound2t64` é o nome do ALSA a partir do Ubuntu 24.04 e do Debian 13.
-depends = ["libasound2 | libasound2t64", "libudev1", "libgl1", "libxkbcommon0", "libatomic1"]
-section = "games"
-
-[package.metadata.packager.nsis]
-installer-icon = "assets/icones/zeebx.ico"
-installer-mode = "currentUser"
-languages = ["PortugueseBR", "English"]
-
-[package.metadata.packager.macos]
-minimum-system-version = "11.0"
 
 # O `cargo run` sem `--release` rodava o Quake 6,9x mais devagar — 21,7 s contra 3,2 s para o
 # mesmo trabalho (668 M instruções, 378 voltas). Não é surpresa: o rasterizador e o despacho de
@@ -145,3 +170,11 @@ opt-level = 2
 # As dependências não mudam entre uma compilação e outra, então otimizá-las é custo único.
 [profile.dev.package."*"]
 opt-level = 3
+
+# O Android e o rasterizador passam por várias camadas/crates pequenas no caminho quente.
+# ThinLTO deixa o LLVM atravessar essas fronteiras no pacote final sem o custo de build do LTO
+# completo. Uma unidade de código dá ao otimizador a visão mais ampla possível no release; só
+# muda tempo/tamanho de compilação, não o comportamento do emulador.
+[profile.release]
+lto = "thin"
+codegen-units = 1

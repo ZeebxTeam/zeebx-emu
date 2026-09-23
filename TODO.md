@@ -437,11 +437,11 @@ Contexto técnico em [docs/](docs/README.md).
 - **Configurações guardadas em disco** (`src/ui/settings.rs`), na pasta que cada sistema reserva
   para isso. Todo campo tem padrão e a leitura nunca falha: arquivo ausente, truncado ou de uma
   versão mais nova precisa deixar o emulador abrir, não impedi-lo
-- **Idiomas por arquivo JSON** (`src/ui/i18n.rs`). Português e inglês vêm embutidos no binário,
-  para o emulador funcionar sozinho; qualquer outro entra como arquivo numa pasta `lang/`, sem
-  recompilar. Um arquivo com o código de um embutido o substitui, que é como corrigir uma
-  tradução sem esperar versão nova. Um teste compara as chaves dos dois idiomas: chave que
-  existe só num deles é texto que aparece em inglês no meio do português
+- **Idiomas por arquivo JSON** (`src/ui/i18n.rs`). Português, inglês, espanhol e espanhol do México vêm embutidos no
+  binário, para o emulador funcionar sozinho; qualquer outro entra como arquivo numa pasta
+  `lang/`, sem recompilar. Um arquivo com o código de um embutido o substitui, que é como
+  corrigir uma tradução sem esperar versão nova. Um teste compara as chaves dos idiomas
+  embutidos: chave que existe só num deles é texto que aparece em inglês no meio do português
 - **A sessão de jogo saiu da linha de comando** (`src/session.rs`) — carregar o módulo, criar o
   applet, entregar o `EVT_APP_START` e girar o laço de eventos agora é uma coisa só, que a
   linha de comando roda até um limite e a interface toca um pedaço por quadro desenhado

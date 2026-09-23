@@ -8,6 +8,7 @@
 pub mod bindings;
 #[cfg(feature = "desktop")]
 pub mod gamepads;
+#[cfg(feature = "desktop")]
 pub mod padview;
 pub mod sensores;
 pub mod wiimote;
@@ -316,6 +317,57 @@ impl Pad {
     }
 }
 
+/// As teclas que o controle manda, comparando com o quadro anterior.
+///
+/// No console o direcional chega aos aplicativos como as quatro setas do BREW, e é com elas que a
+/// Z-Wheel navega: esquerda e direita giram a roda e trocam a aba da lista, cima e baixo passam as
+/// páginas. O analógico não entra aqui: a Z-Wheel lê a posição e faz a tradução dela sozinha
+/// (`0x44914` no módulo).
+///
+/// Fica fora da UI porque **todo frontend** precisa desta tradução: a janela do desktop e o core
+/// Libretro entregam o mesmo par de quadros e esperam as mesmas teclas.
+/// Converte uma tecla do frontend para o código virtual BREW correspondente.
+///
+/// Fica no motor porque desktop, headless e Android precisam da mesma convenção.
+pub fn avk_de(key: egui::Key) -> Option<u32> {
+    use egui::Key::*;
+    Some(match key {
+        ArrowUp => avk::UP,
+        ArrowDown => avk::DOWN,
+        ArrowLeft => avk::LEFT,
+        ArrowRight => avk::RIGHT,
+        Enter | Space => avk::CONFIRMA,
+        Backspace | Delete => avk::CLR,
+        Num0 | Num1 | Num2 | Num3 | Num4 | Num5 | Num6 | Num7 | Num8 | Num9 =>
+            avk::ZERO + (key as u32 - Num0 as u32),
+        _ => return None,
+    })
+}
+
+pub fn teclas_do_controle(antes: &Pad, agora: &Pad) -> Vec<(u32, bool)> {
+    // Os dois botões de face seguem a ajuda da própria Z-Wheel (`assets/zeebo/pt/controls.html`):
+    // "Sim (Botão 1)" escolhe e "Voltar (Botão 2)" cancela. Voltar é o `AVK_CLR`, medido: na tela
+    // de ajuda ele volta ao menu, e o `0xe065` não faz nada.
+    const DE_BOTAO: [(&str, u32); 6] = [
+        ("up", avk::UP),
+        ("down", avk::DOWN),
+        ("left", avk::LEFT),
+        ("right", avk::RIGHT),
+        ("b1", avk::CONFIRMA),
+        ("b2", avk::CLR),
+    ];
+    let mut teclas = Vec::new();
+    for (nome, codigo) in DE_BOTAO {
+        let Some(indice) = Pad::button_by_name(nome) else {
+            continue;
+        };
+        if agora.is_down(indice) != antes.is_down(indice) {
+            teclas.push((codigo, agora.is_down(indice)));
+        }
+    }
+    teclas
+}
+
 /// Um roteiro de teclas, para exercitar a entrada sem janela.
 ///
 /// Existe para poder testar: sem ele, a única forma de saber se a entrada funciona é apertar a
@@ -471,7 +523,14 @@ mod tests {
     #[test]
     fn as_setas_seguem_o_header() {
         assert_eq!(
-            [avk::CLR, avk::UP, avk::DOWN, avk::LEFT, avk::RIGHT, avk::SELECT],
+            [
+                avk::CLR,
+                avk::UP,
+                avk::DOWN,
+                avk::LEFT,
+                avk::RIGHT,
+                avk::SELECT
+            ],
             [0xe030, 0xe031, 0xe032, 0xe033, 0xe034, 0xe035]
         );
         assert_eq!(avk::por_nome("confirma"), Some(0xe064));
@@ -514,7 +573,11 @@ mod tests {
         let pad = Pad::default();
         for eixo in 0..AXIS_NAMES.len() {
             assert_eq!(pad.eixo_do_console(eixo), AXIS_CENTRO, "eixo {eixo}");
-            assert_eq!(pad.eixo_do_console(eixo) - AXIS_CENTRO, 0, "o jogo vê parado");
+            assert_eq!(
+                pad.eixo_do_console(eixo) - AXIS_CENTRO,
+                0,
+                "o jogo vê parado"
+            );
         }
     }
 
@@ -600,8 +663,14 @@ mod tests {
         // E o UID de eixo não pode ficar também num botão que dispara: seria o mesmo número
         // chegando ao jogo como duas coisas. O `lx` do arquivo é um botão que não existe no
         // aparelho e nunca é apertado — mas o teste registra a sobreposição de propósito.
-        let lx = BUTTON_NAMES.iter().position(|&n| n == "lx").expect("o lx está na lista");
-        assert_eq!(BUTTON_UIDS[lx], AXIS_UIDS[0], "a troca do arquivo é espelhada");
+        let lx = BUTTON_NAMES
+            .iter()
+            .position(|&n| n == "lx")
+            .expect("o lx está na lista");
+        assert_eq!(
+            BUTTON_UIDS[lx], AXIS_UIDS[0],
+            "a troca do arquivo é espelhada"
+        );
         // E ele fica **fora** das dezesseis primeiras posições, que são as que os ports de
         // arcade varrem: um botão que não existe no aparelho não pode comer a vaga de um que
         // existe.

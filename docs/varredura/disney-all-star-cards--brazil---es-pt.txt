@@ -1,0 +1,34 @@
+Disney All Star Cards (Brazil) (Es,Pt)
+estado: roda
+tela: 16 cor(es), dominante 0xffff
+classes pedidas:
+  0x01001001  (1x)
+  0x01001003  (6x)
+  0x0100100c  (18x)
+  0x01001014  (18x)
+  0x01002001  (1x)
+  0x01005000  (1x)
+  0x0100550d  (1x)
+  0x0106c411  (1x)
+chamadas ao sistema de arquivos:
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Disney-All-Star-Cards--Brazil---Es-Pt--18b95fd0f83fe02b77986167056e0d3db9f3a73efa1d36415da99255949d0608/mod/280173/udata/settings0.dat (No such file or directory (os error 2))
+  OpenFile "udata/settings0.dat"  (0x200fff8c 0x2 0xf0003008) -> 0
+  Release  (0xf0003004 0x2 0xf0003008) -> 0
+  Remove "udata/settings0.dat"  (0x200fff80 0xf0003010 0xf0000008) -> 1
+  OpenFile "udata/settings0.dat"  (0x200fff80 0x4 0xf0003008) -> 805306576
+  Write  (0x10000288 0x118 0xf0004014) -> 280
+  Release  (0xf0004004 0x118 0xf0004014) -> 0
+  Release  (0xf0003004 0x118 0xf0004014) -> 0
+  Remove "udata/settings0.dat"  (0x200fff90 0xf0003010 0xf0000008) -> 0
+  OpenFile "udata/settings0.dat"  (0x200fff90 0x4 0xf0003008) -> 805306576
+  Write  (0x10000288 0x118 0xf0004014) -> 280
+  Release  (0xf0004004 0x118 0xf0004014) -> 0
+  Release  (0xf0003004 0x118 0xf0004014) -> 0
+  Test "strings_.bar"  (0x1004f198 0xf000301c 0xf0000008) -> 1
+  Release  (0xf0003004 0xf000301c 0xf0000008) -> 0
+  Test "strings_.b.bar"  (0x1004f198 0xf000301c 0xf0000008) -> 1
+  Release  (0xf0003004 0xf000301c 0xf0000008) -> 0
+  Test "strings_en.bar"  (0x1004f1b0 0xf000301c 0xf0000008) -> 0
+  Release  (0xf0003004 0xf000301c 0xf0000008) -> 0
+arquivos não encontrados:
+  udata/settings0.dat

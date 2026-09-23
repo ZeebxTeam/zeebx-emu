@@ -1,0 +1,73 @@
+# A `master` recebeu uma versão nova: cria a tag e monta a release, sem ninguém digitar nada.
+#
+# O gatilho é o push na `master`, que é o que um PR mesclado produz -- vale para merge, squash e
+# rebase, que o `pull_request: closed` trataria de três jeitos diferentes.
+#
+# **A versão é a do `Cargo.toml` da raiz.** Ela é a fonte: os quatro frontends e o `.info` já a
+# acompanham. Se a tag correspondente existir, não há versão nova e o trabalho termina sem fazer
+# nada -- é o caso de todo push na `master` que não sobe versão, que é a maioria deles.
+#
+# **Por que isto chama o `release.yml` em vez de só empurrar a tag:** uma tag criada com o
+# `GITHUB_TOKEN` não dispara workflow nenhum. O GitHub bloqueia para não haver recursão, e o
+# sintoma seria a tag nascer sozinha, sem pacote nenhum. Chamando, tudo roda na mesma execução e
+# nenhum token de pessoa precisa virar segredo.
+
+name: tag
+
+on:
+  push:
+    branches: [master]
+  # Para refazer a tag de uma versão à mão, se o run tiver falhado no meio.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  versao:
+    name: a versão é nova?
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.versao.outputs.tag }}
+      nova: ${{ steps.versao.outputs.nova }}
+    steps:
+      # As tags vêm junto: sem elas toda versão pareceria nova, e o passo abaixo tentaria criar
+      # uma tag que já existe em todo push.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Lê a versão e decide
+        id: versao
+        shell: bash
+        run: |
+          versao=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          if [ -z "$versao" ]; then
+            echo "não achei a versão no Cargo.toml da raiz"
+            exit 1
+          fi
+          tag="v$versao"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if git rev-parse -q --verify "refs/tags/$tag" > /dev/null; then
+            echo "nova=false" >> "$GITHUB_OUTPUT"
+            echo "A $tag já existe: nada a fazer."
+          else
+            echo "nova=true" >> "$GITHUB_OUTPUT"
+            echo "Versão nova: $tag"
+          fi
+
+      # A tag aponta para o commit que a `master` acabou de receber, que é o que será empacotado.
+      - name: Cria a tag
+        if: steps.versao.outputs.nova == 'true'
+        run: |
+          git tag "${{ steps.versao.outputs.tag }}"
+          git push origin "${{ steps.versao.outputs.tag }}"
+
+  release:
+    needs: versao
+    if: needs.versao.outputs.nova == 'true'
+    uses: ./.github/workflows/release.yml
+    with:
+      versao: ${{ needs.versao.outputs.tag }}
+    permissions:
+      contents: write

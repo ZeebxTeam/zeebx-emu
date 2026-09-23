@@ -399,15 +399,48 @@ impl<C: CpuBackend> Machine<C> {
     /// A documentação manda devolver 0 quando a classe não é de um módulo baixado, que é o
     /// que fazemos para qualquer classe que não seja a do applet carregado.
     pub(super) fn shell_get_class_item_id(&mut self) -> u32 {
-        if self.cpu.read_reg(Reg::R1) != self.applet_class {
-            return 0;
+        let cls = self.cpu.read_reg(Reg::R1);
+        self.item_id_de(cls)
+    }
+
+    /// O item ID de uma classe instalada. Ver [`Machine::shell_get_class_item_id`].
+    ///
+    /// **Esta correção não foi a causa do gesto da Z-Wheel, e é bom que fique dito.** Eu cheguei a
+    /// ela lendo o desmonte do tratador de evento da roda, que chama um método por um deslocamento
+    /// de vtable — e o instrumento mostrou que `GetClassItemID` **nunca é despachado**. O
+    /// deslocamento era de outro objeto. O que fica é o que a API manda: o item ID é do módulo
+    /// instalado, e devolver zero para um applet que existe é resposta errada, com ou sem a
+    /// Z-Wheel.
+    fn item_id_de(&self, cls: u32) -> u32 {
+        // **O item ID vale para qualquer applet instalado, e não só para o carregado.** Era aqui
+        // que a Z-Wheel parava: ela pergunta o id do jogo **escolhido**, que por definição não é a
+        // classe dela, e a resposta era sempre zero. Sem o id, o lançamento nunca acontece — ela
+        // navega, a tela muda, e `StartApplet` jamais é chamado. Medido no rastreio do `IShell`,
+        // com a chamada aparecendo a cada tecla e o valor sempre zero.
+        //
+        // O número sai do nome do `.mif`, que é o número da pasta do módulo — a mesma numeração do
+        // caminho e do `ISHELL_GetClassItemID` do console.
+        if let Some((_, nome)) = self
+            .modulos_instalados
+            .iter()
+            .find(|(classe, _)| *classe == cls)
+        {
+            if let Ok(id) = nome.parse() {
+                return id;
+            }
         }
-        self.vfs
-            .root()
-            .file_name()
-            .and_then(|name| name.to_str())
-            .and_then(|name| name.parse().ok())
-            .unwrap_or(0)
+        // A classe do applet carregado responde pelo próprio diretório, como antes: é o caso do
+        // jogo que roda sozinho e pergunta o id de si mesmo.
+        if cls == self.applet_class {
+            return self
+                .vfs
+                .root()
+                .file_name()
+                .and_then(|name| name.to_str())
+                .and_then(|name| name.parse().ok())
+                .unwrap_or(0);
+        }
+        0
     }
 
     /// `ISHELL_GetDeviceInfo(IShell *po, AEEDeviceInfo *pi)`.
@@ -475,6 +508,18 @@ impl<C: CpuBackend> Machine<C> {
         );
         if size == 0 {
             return Ok(EBADPARM);
+        }
+        // **O item pedido vai para a captura de serial**, e é o que faltava para responder "a
+        // Z-Wheel não monta a loja" com uma medida em vez de um palpite: um `EUNSUPPORTED` sem
+        // registro é indistinguível de nunca ter sido perguntado. O item que interessa aqui é o
+        // `AEE_DEVICEITEM_ADS` (29, do `AEEDeviceItems.h`): o nome do servidor de onde a loja
+        // baixa o catálogo.
+        if self.serial.is_some() {
+            let como = match item {
+                DEVICEITEM_IMEI => "atendido",
+                _ => "não atendido",
+            };
+            self.registra_serial(format!("<aparelho item {item} -> {como}>"));
         }
         let value = match item {
             DEVICEITEM_IMEI => IMEI,
@@ -544,6 +589,17 @@ impl<C: CpuBackend> Machine<C> {
         self.installed_applets = self.modulos_instalados.iter().map(|(c, _)| *c).collect();
     }
 
+    /// Entrega ao applet um evento com `wParam`, como um widget faria ao ser ativado.
+    ///
+    /// **É instrumento de teste, e só isso.** O evento `0x7000` com `w = 0x4ea` é o que o tratador
+    /// da Z-Wheel lê para chamar `IShell::StartApplet` (medido no desmonte, em `0x7b4c0` e
+    /// `0x7b51c`): quem o manda no console é um widget, e no emulador a lista de widgets da roda
+    /// está vazia. Isto permite exercitar **o resto do ciclo** — o pedido de abertura, a troca de
+    /// sessão e a volta — sem depender do widget que falta.
+    pub fn entrega_evento_ao_applet(&mut self, evt: u32, w: u16) -> Result<u32, CpuError> {
+        self.send_applet_event(self.applet_class, evt, w, 0)
+    }
+
     /// O host troca de sessão depois que a chamada do guest terminou.
     pub fn take_launch_request(&mut self) -> Option<u32> {
         self.pending_launch.take()
@@ -558,6 +614,10 @@ impl<C: CpuBackend> Machine<C> {
     pub(super) fn shell_create_instance(&mut self) -> Result<u32, CpuError> {
         let clsid = self.cpu.read_reg(Reg::R1);
         let out = self.cpu.read_reg(Reg::R2);
+        // Toda classe pedida entra no relatório, e não só a que não soubemos atender: sem a lista
+        // completa não há como ver que o jogo pediu uma classe que respondemos com a **interface
+        // errada** — que foi o caso das fontes do sistema.
+        *self.classes_pedidas.entry(clsid).or_insert(0) += 1;
         if self.serial.is_some() {
             self.registra_serial(format!("<classe {clsid:#010x}>"));
         }
@@ -578,9 +638,21 @@ impl<C: CpuBackend> Machine<C> {
             // lugar — e faltando o JPEG na lista, o Zuma's Revenge recebia recusa e seguia com
             // um ponteiro nulo até quebrar.
             AEECLSID_PNG | AEECLSID_BMP | AEECLSID_JPEG | AEECLSID_GIF => Interface::Image,
-            AEECLSID_PNGDECODER | AEECLSID_PNGDECODER_BREW => Interface::ImageDecoder,
+            AEECLSID_PNGDECODER | AEECLSID_PNGDECODER_BREW | AEECLSID_JPEGDECODER_BREW => {
+                Interface::ImageDecoder
+            }
             AEECLSID_THREAD => Interface::Thread,
             AEECLSID_QEGL => Interface::Egl,
+            AEECLSID_GLES11EXT => Interface::Gles11Ext,
+            // As outras cinco extensões gráficas, para quem as pedir por `CreateInstance` em vez
+            // de `QueryInterface` — o Prey Evil usa o segundo caminho, mas a fábrica é a porta
+            // documentada do BREW.
+            AEEIID_GLES10EXT => Interface::Gles10Ext,
+            AEEIID_GLES11EXTPAK => Interface::Gles11ExtPak,
+            AEEIID_EGLGETCOLORBUFFER => Interface::EglGetColorBuffer,
+            AEEIID_EGLGETPOWERLEVEL => Interface::EglGetPowerLevel,
+            AEEIID_EGLOESSWAPINTERVAL => Interface::EglOesSwapInterval,
+            AEECLSID_IJOYSTICK1 | AEECLSID_IJOYSTICK2 => Interface::Joystick,
             AEECLSID_EGL => Interface::EglLegacy,
             AEECLSID_GL => Interface::GlLegacy,
             AEECLSID_MEDIAUTIL => Interface::MediaUtil,
@@ -596,7 +668,37 @@ impl<C: CpuBackend> Machine<C> {
             AEECLSID_28E3C => Interface::Classe28e3c,
             AEECLSID_CM => Interface::Cm,
             AEECLSID_SYSTEMCTL => Interface::SystemCtl,
-            AEECLSID_TYPEFACE | AEECLSID_ROLLER_FONT => Interface::Typeface,
+            // **`0x01006c01` estava de fora**, e a propria Z-Wheel diz o preco: ela registra
+            // `ERROR: Unable to create instance of AEECLSID_LCT_SIMCARDCTL, cannot do SIM check`
+            // (`tectoymain.c:1668`). A interface existe e e atendida desde sempre
+            // ([`Interface::SimCardCtl`]); o que faltava era a fabrica conhecer a classe, como ja
+            // conhecia a vizinha `0x01006c02`. Um `CreateInstance` que devolve nulo vira ponteiro
+            // nulo dentro do applet, e e assim que "falta uma classe" reaparece adiante como
+            // "acesso invalido a 0x0", tres camadas depois.
+            // **`AEECLSID_SIMCARDCTL` fica de FORA, e é medido duas vezes.** O `268d6fb` a pôs
+            // aqui para calar o `tectoymain.c:1668 ERROR: Unable to create instance of
+            // AEECLSID_LCT_SIMCARDCTL, cannot do SIM check`, e o comentário longo da
+            // [`Interface::SimCardCtl`](crate::brew::aee::Interface::SimCardCtl) já dizia que
+            // aquele log **é o jogo tomando o caminho certo**: recusada, a Z-Wheel põe o estado
+            // em `0x27` e o `0x82464` chama a `0x1f7b4`, que avança a interface; oferecida, o
+            // slot 3 (a verificação) responde zero, o estado vira `0x28`, e o `0x82464` **não faz
+            // nada com ele** — a tela fica onde está, calada. Medido no harness sem janela em
+            // 22/09/2026: com a classe oferecida, a roda para depois de 7 s de relógio virtual,
+            // com três widgets na árvore (a raiz e dois objetos vazios), nunca cria o palco
+            // (`0x01028e05`) nem o roller (`0x01028e14`), e sete teclas do roteiro não mudam um
+            // pixel. É o `0x28` que o comentário descreve.
+            // AEECLSID_SIMCARDCTL => Interface::SimCardCtl,
+            // **`IFont`, não `ITypeface`.** O `AEECLSID_ROLLER_FONT` (0x0102f67c) é o
+            // `FONT_STANDARD18B`, uma fonte do sistema — estava mapeado para o `ITypeface`, que é
+            // outra interface, com outros métodos.
+            _ if crate::machine::font::CLASSES_DE_FONTE.contains(&clsid) => {
+                let resultado = self.cria_fonte(clsid, out)?;
+                if resultado != SUCCESS {
+                    self.unknown_classes.insert(clsid);
+                }
+                return Ok(resultado);
+            }
+            AEECLSID_TYPEFACE => Interface::Typeface,
             AEECLSID_MD5 => Interface::Hash,
             AEECLSID_CIPHER_FACTORY => Interface::CipherFactory,
             AEECLSID_MEDIA | AEECLSID_MEDIAMIDI | AEECLSID_MEDIAMP3 | AEECLSID_MEDIAMIDIOUTMSG
@@ -617,6 +719,24 @@ impl<C: CpuBackend> Machine<C> {
                 }
                 if out != 0 {
                     self.cpu.write_u32(out, objeto)?;
+                }
+                return Ok(SUCCESS);
+            }
+            // **`AEECLSID_DOWNLOAD`.** Ver [`AEECLSID_DOWNLOAD`]: a classe do `IDownload`, que
+            // o SDK lista como `AEECLSID_PRIV` (= `QVERSION` = `0x01000000`). Atendida pela
+            // sonda por enquanto — o que a Z-Wheel chama nela sai no relatório com
+            // `ZEEBX_ROM_SONDA`, e é essa medição que diz quais slots valem implementar.
+            AEECLSID_DOWNLOAD => {
+                let object = self.new_object(Interface::Probe)?;
+                if object == 0 {
+                    return Ok(ENOMEMORY);
+                }
+                self.assumptions.insert(
+                    "a classe do download é atendida por um objeto que responde sucesso a tudo",
+                );
+                self.probe_objects.insert(object, clsid);
+                if out != 0 {
+                    self.cpu.write_u32(out, object)?;
                 }
                 return Ok(SUCCESS);
             }
@@ -797,5 +917,37 @@ impl<C: CpuBackend> Machine<C> {
             }),
             other => Ok(AppletResult::Stopped(other)),
         }
+    }
+}
+
+#[cfg(test)]
+mod testes_do_item_id {
+    use super::*;
+
+    /// **O item ID vale para qualquer applet instalado**, e não só para o carregado.
+    ///
+    /// O número é o da pasta do módulo, que é o nome do `.mif`. Devolver zero para um applet que
+    /// existe é resposta errada: a documentação manda zero só para classe que **não** é de módulo
+    /// baixado.
+    #[test]
+    fn o_item_id_sai_para_applet_instalado() {
+        // O menor módulo que o carregador aceita: o alvo aqui é a tabela de applets, não o código.
+        let code = [
+            0xe3a0_0010u32.to_le_bytes(), // mov r0, #16
+            0xe12f_ff1eu32.to_le_bytes(), // bx lr
+        ]
+        .concat();
+        let image = crate::loader::modfile::ModImage::parse(code).unwrap();
+        let module = crate::loader::load(&image).unwrap();
+        let mut machine = Machine::new(crate::cpu::BackendPadrao::new().unwrap(), module, ".");
+        machine.cpu.reset(&machine.module.mem).unwrap();
+        machine.set_installed_applets([
+            (0x0102_8e35u32, "274755".to_string()),
+            (0x0102_8e36, "279888".to_string()),
+        ]);
+        assert_eq!(machine.item_id_de(0x0102_8e35), 274755);
+        assert_eq!(machine.item_id_de(0x0102_8e36), 279888);
+        // Classe que não é de módulo instalado continua devolvendo zero, como a API manda.
+        assert_eq!(machine.item_id_de(0x0100_0001), 0);
     }
 }

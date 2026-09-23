@@ -1,6 +1,6 @@
 //! Textos da interface, em vários idiomas.
 //!
-//! Cada idioma é um JSON de chave para texto. Os dois que acompanham o emulador vêm embutidos
+//! Cada idioma é um JSON de chave para texto. Os que acompanham o emulador vêm embutidos
 //! no binário, para que ele funcione sozinho; qualquer outro entra como arquivo numa pasta
 //! `lang/`, sem recompilar nada. É por isso que a busca é por diretório e não por uma lista
 //! fixa: acrescentar um idioma é copiar um arquivo.
@@ -12,8 +12,10 @@ use std::path::{Path, PathBuf};
 pub const FALLBACK: &str = "en";
 
 /// Os idiomas que vêm no binário, como `(código, conteúdo do JSON)`.
-const BUILT_IN: [(&str, &str); 2] = [
+const BUILT_IN: [(&str, &str); 4] = [
     ("en", include_str!("../../assets/lang/en.json")),
+    ("es", include_str!("../../assets/lang/es.json")),
+    ("es-MX", include_str!("../../assets/lang/es-MX.json")),
     ("pt-BR", include_str!("../../assets/lang/pt-BR.json")),
 ];
 
@@ -209,6 +211,8 @@ mod tests {
             .map(|l| l.code.as_str())
             .collect();
         assert!(codes.contains(&"en"));
+        assert!(codes.contains(&"es"));
+        assert!(codes.contains(&"es-MX"));
         assert!(codes.contains(&"pt-BR"));
         let pt = catalog
             .languages()
@@ -216,10 +220,22 @@ mod tests {
             .find(|l| l.code == "pt-BR")
             .unwrap();
         assert_eq!(pt.name, "Português (Brasil)");
+        let es = catalog
+            .languages()
+            .iter()
+            .find(|l| l.code == "es")
+            .unwrap();
+        assert_eq!(es.name, "Español");
+        let es_mx = catalog
+            .languages()
+            .iter()
+            .find(|l| l.code == "es-MX")
+            .unwrap();
+        assert_eq!(es_mx.name, "Español (México)");
     }
 
     #[test]
-    fn as_duas_traducoes_tem_exatamente_as_mesmas_chaves() {
+    fn as_traducoes_embutidas_tem_exatamente_as_mesmas_chaves() {
         // Uma chave que existe só num idioma é um texto que vai aparecer em inglês no meio do
         // português — o tipo de falha que ninguém percebe até estar na tela.
         let catalog = Catalog::default();
@@ -232,6 +248,8 @@ mod tests {
                 .unwrap_or_default()
         };
         assert_eq!(keys("en"), keys("pt-BR"));
+        assert_eq!(keys("en"), keys("es"));
+        assert_eq!(keys("en"), keys("es-MX"));
     }
 
     #[test]
@@ -248,9 +266,14 @@ mod tests {
         let mut catalog = Catalog::default();
         assert!(catalog.select_best("pt-PT"));
         assert_eq!(catalog.current(), "pt-BR");
+        // Um `es_MX` do sistema cai no mexicano; um `es_AR` no espanhol genérico.
+        assert!(catalog.select_best("es-MX"));
+        assert_eq!(catalog.current(), "es-MX");
+        assert!(catalog.select_best("es-AR"));
+        assert_eq!(catalog.current(), "es");
         // E um idioma que não temos deixa o que estava.
         assert!(!catalog.select_best("ja-JP"));
-        assert_eq!(catalog.current(), "pt-BR");
+        assert_eq!(catalog.current(), "es");
     }
 
     #[test]

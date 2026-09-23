@@ -1,0 +1,16 @@
+Heavy Weapon (Brazil) (Es,Pt)
+estado: roda
+tela: 204 cor(es), dominante 0x0000
+classes pedidas:
+  0x01001001  (1x)
+  0x01001003  (1x)
+  0x010127d4  (1x)
+  0x01030766  (1x)
+  0x0103d8ec  (1x)
+  0x01041207  (1x)
+  0x0106c411  (1x)
+chamadas ao sistema de arquivos:
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Heavy-Weapon--Brazil---Es-Pt--d4b32f5e8f0a785229a1297fc35159a502e330c0322034348bb70b62f7c70a53/mod/278200/udata/heavyweapon (No such file or directory (os error 2))
+  OpenFile "udata/heavyweapon"  (0x35978 0x1 0xf0003008) -> 0
+arquivos não encontrados:
+  udata/heavyweapon

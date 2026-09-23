@@ -623,6 +623,15 @@ impl<C: CpuBackend> Machine<C> {
     /// A cor é a do `CLR_USER_TEXT`, que é o que o `IDISPLAY_SetColor` ajusta, e o recorte vale
     /// aqui como em qualquer outro desenho.
     pub(super) fn draw_text(&mut self, text: &str, x: i32, y: i32) -> Result<bool, CpuError> {
+        // O registro é do que **foi** desenhado, e não do que faltou: um jogo que mostra várias
+        // telas de aviso ao longo da execução precisa que o relatório diga qual delas veio quando.
+        if text.chars().any(|c| !c.is_whitespace()) {
+            if self.textos_desenhados.len() >= MAX_TEXTOS_DESENHADOS {
+                self.textos_desenhados.pop_front();
+            }
+            self.textos_desenhados
+                .push_back((self.clock_ms(), x, y, text.to_string()));
+        }
         let Some(fonte) = self.font.as_ref() else {
             return Ok(false);
         };
@@ -636,6 +645,11 @@ impl<C: CpuBackend> Machine<C> {
             .copied()
             .unwrap_or(Rgb::BLACK);
         self.escreve(text, x, y, cor)
+    }
+
+    /// O texto desenhado, em ordem, com o instante virtual e a posição.
+    pub fn drawn_text(&self) -> impl Iterator<Item = &(u32, i32, i32, String)> {
+        self.textos_desenhados.iter()
     }
 
     /// Escreve com a fonte carregada, numa cor dada. É o miolo do [`Machine::draw_text`],

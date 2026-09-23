@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::params;
 
-use crate::ui::library::CatalogIndex;
+use crate::library::CatalogIndex;
 
 /// Prepara a cópia gravável da biblioteca da Z-Wheel e sincroniza as ROMs locais.
 ///
@@ -58,7 +58,7 @@ pub fn sync_z_wheel_library(
     tx.execute("DELETE FROM ZEEBX_LIBRARY", [])
         .map_err(|err| err.to_string())?;
     for entry in &catalog.titles {
-        if entry.source != crate::ui::library::CatalogSource::Rom {
+        if entry.source != crate::library::CatalogSource::Rom {
             continue;
         }
         // ClassID é estável e cabe no INTEGER do SQLite; usá-lo também como game_id evita um
@@ -86,6 +86,13 @@ pub fn sync_z_wheel_library(
 /// Um banco aberto.
 pub struct Database {
     conn: rusqlite::Connection,
+    /// Onde ele mora no host.
+    ///
+    /// Guardado porque o **conteúdo do banco não está no motor**: ele está no arquivo. É o mesmo
+    /// caso dos arquivos abertos — um save state grava o caminho, e a volta reabre. Sem o caminho
+    /// a volta seria impossível, e a alternativa seria gravar o banco inteiro dentro do save state,
+    /// duplicando o que já está em disco.
+    caminho: std::path::PathBuf,
 }
 
 /// Uma linha de resultado, com os valores e os nomes das colunas já em texto.
@@ -102,8 +109,16 @@ impl Database {
     /// Abre (ou cria) o banco no caminho do host já resolvido pelo VFS.
     pub fn open(path: &Path) -> Result<Self, String> {
         rusqlite::Connection::open(path)
-            .map(|conn| Self { conn })
+            .map(|conn| Self {
+                conn,
+                caminho: path.to_path_buf(),
+            })
             .map_err(|err| err.to_string())
+    }
+
+    /// O caminho do banco no host, para o save state reabrir.
+    pub fn caminho(&self) -> &Path {
+        &self.caminho
     }
 
     /// Executa a instrução e devolve as linhas que ela produziu.
@@ -150,7 +165,7 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::library::{CatalogEntry, CatalogSource};
+    use crate::library::{CatalogEntry, CatalogSource};
 
     /// O banco de preferências que a Z-Wheel traz no pacote, montado do zero com o mesmo
     /// esquema que o módulo dela carrega em texto.
@@ -169,10 +184,8 @@ mod tests {
 
     #[test]
     fn a_consulta_de_versao_do_zwheel_responde() {
-        let dir = std::env::temp_dir().join("zeebx-sql-versao");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let db = prefs(&dir);
+        let dir = crate::scratch::TempDir::new("zeebx-sql-versao");
+        let db = prefs(dir.path());
 
         // É a primeira coisa que a Z-Wheel pergunta depois de abrir o banco.
         let linhas = db.exec("SELECT version, subversion FROM DBINFO").unwrap();
@@ -188,10 +201,8 @@ mod tests {
     fn o_integrity_check_responde_ok() {
         // A instrução que aparece na sonda antes de qualquer outra. Um `PRAGMA` devolve linha
         // como uma consulta qualquer, e é isso que o app confere.
-        let dir = std::env::temp_dir().join("zeebx-sql-integridade");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let db = prefs(&dir);
+        let dir = crate::scratch::TempDir::new("zeebx-sql-integridade");
+        let db = prefs(dir.path());
         let linhas = db.exec("PRAGMA integrity_check").unwrap();
         assert_eq!(linhas.len(), 1);
         assert_eq!(linhas[0].values[0].as_deref(), Some("ok"));
@@ -199,10 +210,8 @@ mod tests {
 
     #[test]
     fn instrucao_sem_resultado_nao_devolve_linha_e_grava() {
-        let dir = std::env::temp_dir().join("zeebx-sql-gravacao");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let db = prefs(&dir);
+        let dir = crate::scratch::TempDir::new("zeebx-sql-gravacao");
+        let db = prefs(dir.path());
         let gravou = db
             .exec("INSERT OR REPLACE INTO PREFSINFO values ('Initialized', '', 1, 2)")
             .unwrap();
@@ -219,10 +228,8 @@ mod tests {
 
     #[test]
     fn instrucao_invalida_vira_erro_com_motivo() {
-        let dir = std::env::temp_dir().join("zeebx-sql-erro");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let db = prefs(&dir);
+        let dir = crate::scratch::TempDir::new("zeebx-sql-erro");
+        let db = prefs(dir.path());
         let erro = db.exec("SELECT * FROM NAO_EXISTE").unwrap_err();
         assert!(
             erro.contains("NAO_EXISTE"),
@@ -232,9 +239,7 @@ mod tests {
 
     #[test]
     fn biblioteca_do_perfil_preserva_o_oficial_e_atualiza_roms() {
-        let dir = std::env::temp_dir().join("zeebx-sql-biblioteca");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::scratch::TempDir::new("zeebx-sql-biblioteca");
         let package = dir.join("tt_game_info");
         let db = Database::open(&package).unwrap();
         db.exec("CREATE TABLE GAMEINFO(game_id INTEGER PRIMARY KEY, class_id INTEGER, playcount INTEGER, dt_download INTEGER, dt_lastplayed INTEGER, boxart_path TEXT, flags INTEGER, size INTEGER)").unwrap();

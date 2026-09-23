@@ -10,12 +10,174 @@
 
 use crate::brew::aee_helpers;
 use crate::brew::aee_slots;
-use crate::cpu::unicorn::API_BASE;
+use crate::cpu::API_BASE;
 
 /// Quantos bits do endereço identificam a interface.
 const IFACE_SHIFT: u32 = 12;
 /// Espaço reservado a cada interface — 1024 slots, muito além do necessário.
 const IFACE_STRIDE: u32 = 1 << IFACE_SHIFT;
+
+/// A interface **como número**, para o save state, e a volta.
+///
+/// O número é o discriminante da enumeração, que já era explícito no código — não é uma tabela
+/// nova que alguém precisa manter em paralelo. A volta é escrita à mão porque Rust não desfaz um
+/// `as u32` sozinho, e o teste abaixo cobra a lista inteira: variante nova sem entrada aqui deixa
+/// o teste vermelho, que é o que se quer de um formato gravado em disco.
+pub fn codigo(iface: Interface) -> u32 {
+    iface as u32
+}
+
+/// A interface de volta pelo número. `None` para número que não é de interface nenhuma.
+pub fn de_codigo(valor: u32) -> Option<Interface> {
+    Some(match valor {
+        0 => Interface::Shell,
+        1 => Interface::Module,
+        2 => Interface::Applet,
+        3 => Interface::FileMgr,
+        4 => Interface::File,
+        5 => Interface::Display,
+        6 => Interface::Helpers,
+        7 => Interface::Bitmap,
+        8 => Interface::Hid,
+        9 => Interface::HidDevice,
+        10 => Interface::Signal,
+        11 => Interface::SignalCtl,
+        12 => Interface::SignalCbFactory,
+        13 => Interface::Graphics,
+        14 => Interface::Sound,
+        15 => Interface::License,
+        16 => Interface::MemAStream,
+        17 => Interface::Image,
+        18 => Interface::Thread,
+        19 => Interface::Egl,
+        20 => Interface::Gles,
+        21 => Interface::MediaUtil,
+        22 => Interface::Media,
+        23 => Interface::EglLegacy,
+        24 => Interface::GlLegacy,
+        25 => Interface::Web,
+        26 => Interface::Hash,
+        27 => Interface::CipherFactory,
+        28 => Interface::Cipher,
+        29 => Interface::Heap,
+        30 => Interface::UnzipStream,
+        31 => Interface::ImageDecoder,
+        32 => Interface::ForceFeed,
+        33 => Interface::EglSurfaceManip,
+        34 => Interface::GlesImageonExt,
+        35 => Interface::Probe,
+        36 => Interface::SqlMgr,
+        37 => Interface::SqlDatabase,
+        38 => Interface::Collection,
+        39 => Interface::SourceUtil,
+        40 => Interface::Widget,
+        41 => Interface::ZeeboMcp,
+        42 => Interface::Config,
+        43 => Interface::Source,
+        44 => Interface::Peek,
+        45 => Interface::Vetor,
+        46 => Interface::Classe28e3c,
+        47 => Interface::Cm,
+        48 => Interface::SystemCtl,
+        49 => Interface::Typeface,
+        50 => Interface::SimCardCtl,
+        51 => Interface::Control,
+        52 => Interface::Transform,
+        53 => Interface::Canvas,
+        54 => Interface::Font,
+        55 => Interface::Gles11Ext,
+        56 => Interface::Gles10Ext,
+        57 => Interface::EglGetPowerLevel,
+        58 => Interface::EglOesSwapInterval,
+        59 => Interface::EglGetColorBuffer,
+        60 => Interface::Gles11ExtPak,
+        61 => Interface::Joystick,
+        _ => return None,
+    })
+}
+
+#[cfg(test)]
+mod testes_da_codificacao {
+    use super::*;
+
+    /// **Toda** variante vai e volta, e cada uma tem número próprio.
+    ///
+    /// A lista é escrita à mão de propósito: se alguém acrescentar uma interface e esquecer a volta,
+    /// a contagem abaixo não bate e o teste falha **antes** de um save state ficar ilegível.
+    #[test]
+    fn toda_interface_tem_numero_e_volta() {
+        let todas: [(u32, &str); 62] = [
+        (0, "Shell"),
+        (1, "Module"),
+        (2, "Applet"),
+        (3, "FileMgr"),
+        (4, "File"),
+        (5, "Display"),
+        (6, "Helpers"),
+        (7, "Bitmap"),
+        (8, "Hid"),
+        (9, "HidDevice"),
+        (10, "Signal"),
+        (11, "SignalCtl"),
+        (12, "SignalCbFactory"),
+        (13, "Graphics"),
+        (14, "Sound"),
+        (15, "License"),
+        (16, "MemAStream"),
+        (17, "Image"),
+        (18, "Thread"),
+        (19, "Egl"),
+        (20, "Gles"),
+        (21, "MediaUtil"),
+        (22, "Media"),
+        (23, "EglLegacy"),
+        (24, "GlLegacy"),
+        (25, "Web"),
+        (26, "Hash"),
+        (27, "CipherFactory"),
+        (28, "Cipher"),
+        (29, "Heap"),
+        (30, "UnzipStream"),
+        (31, "ImageDecoder"),
+        (32, "ForceFeed"),
+        (33, "EglSurfaceManip"),
+        (34, "GlesImageonExt"),
+        (35, "Probe"),
+        (36, "SqlMgr"),
+        (37, "SqlDatabase"),
+        (38, "Collection"),
+        (39, "SourceUtil"),
+        (40, "Widget"),
+        (41, "ZeeboMcp"),
+        (42, "Config"),
+        (43, "Source"),
+        (44, "Peek"),
+        (45, "Vetor"),
+        (46, "Classe28e3c"),
+        (47, "Cm"),
+        (48, "SystemCtl"),
+        (49, "Typeface"),
+        (50, "SimCardCtl"),
+        (51, "Control"),
+        (52, "Transform"),
+        (53, "Canvas"),
+        (54, "Font"),
+        (55, "Gles11Ext"),
+        (56, "Gles10Ext"),
+        (57, "EglGetPowerLevel"),
+        (58, "EglOesSwapInterval"),
+        (59, "EglGetColorBuffer"),
+        (60, "Gles11ExtPak"),
+        (61, "Joystick"),
+        ];
+        for (valor, nome) in todas {
+            let iface = de_codigo(valor).unwrap_or_else(|| panic!("{nome} ({valor}) não voltou"));
+            assert_eq!(codigo(iface), valor, "{nome} não voltou ao mesmo número");
+            assert_eq!(format!("{iface:?}"), nome, "a variante de {valor} não é {nome}");
+        }
+        assert_eq!(de_codigo(9999), None, "número inventado devia devolver nada");
+    }
+}
 
 /// Interfaces que o emulador conhece. O valor numérico entra no endereço do trampolim.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -84,6 +246,27 @@ pub enum Interface {
     EglSurfaceManip = 33,
     /// Os extras do ATI Imageon sobre o OpenGL ES, de `sdk/inc/AEEGLESImageonEXT.h`.
     GlesImageonExt = 34,
+    /// `AEEIID_GLES11EXT`: as extensões OES do OpenGL ES 1.1. Ver [`aee_slots::GLES11_EXT`].
+    ///
+    /// O Prey Evil só desenha se ela existir: sem a interface, ele monta matrizes e texturas e
+    /// para — onze métodos de GL no relatório, nenhum `Draw` e tela preta.
+    Gles11Ext = 55,
+    /// `AEEIID_GLES10EXT`: `QueryMatrixxOES`. Ver [`aee_slots::GLES10_EXT`].
+    Gles10Ext = 56,
+    /// `AEEIID_EGLGETPOWERLEVEL`: o nível de energia do aparelho. Ver
+    /// [`aee_slots::EGL_GET_POWER_LEVEL`].
+    EglGetPowerLevel = 57,
+    /// `AEEIID_EGLOESSWAPINTERVAL`: o ritmo de quadro, por interface. Ver
+    /// [`aee_slots::EGL_OES_SWAP_INTERVAL`].
+    EglOesSwapInterval = 58,
+    /// `AEEIID_EGLGETCOLORBUFFER`: o buffer de cor do EGL, por interface. Ver
+    /// [`aee_slots::EGL_GET_COLOR_BUFFER`].
+    EglGetColorBuffer = 59,
+    /// `AEEIID_GLES11EXTPAK`: `TexGen`, blending separado e objetos de framebuffer. Ver
+    /// [`aee_slots::GLES11_EXT_PAK`].
+    Gles11ExtPak = 60,
+    /// `AEECLSID_IJOYSTICK`: o joystick USB. Ver [`aee_slots::JOYSTICK`].
+    Joystick = 61,
     /// `AEECLSID_SQLMGR` do console: abre bancos SQLite. Ver [`crate::brew::sql`].
     SqlMgr = 36,
     /// Um banco aberto pelo [`Interface::SqlMgr`].
@@ -264,6 +447,10 @@ pub enum Interface {
     /// desenha texto com a `tectoy.ttf` que o próprio pacote traz, então o caminho de
     /// renderização não passa por este objeto.
     Typeface = 49,
+    /// `IFont` — a fonte de bitmap do sistema, criada pelas classes `AEECLSID_FONT_*`.
+    ///
+    /// Ver [`crate::brew::aee_slots::FONT`] e [`crate::machine::font`].
+    Font = 54,
     /// `0x01006c01`, o `LCT_SIMCardCtl` — o controle do cartão SIM do console.
     ///
     /// **Está implementada e não é oferecida, e o motivo é o jogo.** A `0x78544` cria esta
@@ -410,6 +597,13 @@ impl Interface {
             Self::ForceFeed => "IForceFeed",
             Self::EglSurfaceManip => "IEGLSurfaceManip",
             Self::GlesImageonExt => "IGLESImageonExt",
+            Self::Gles11Ext => "IGLES11Ext",
+            Self::Gles10Ext => "IGLES10Ext",
+            Self::EglGetPowerLevel => "IEGLGetPowerLevel",
+            Self::EglOesSwapInterval => "IEGLOESSwapInterval",
+            Self::EglGetColorBuffer => "IEGLGetColorBuffer",
+            Self::Gles11ExtPak => "IGLES11ExtPak",
+            Self::Joystick => "IJoystick",
             Self::SqlMgr => "ISQLMgr",
             Self::SqlDatabase => "ISQLDatabase",
             Self::Collection => "IColecao",
@@ -427,6 +621,7 @@ impl Interface {
             Self::Cm => "ICM",
             Self::SystemCtl => "ILCTSystemCtl",
             Self::Typeface => "ITypeface",
+            Self::Font => "IFont",
             Self::SimCardCtl => "ILCTSimCardCtl",
             Self::Probe => "ClasseDesconhecida",
             Self::Helpers => "AEEHelpers",
@@ -470,6 +665,13 @@ impl Interface {
             Self::ForceFeed => aee_slots::FORCE_FEED,
             Self::EglSurfaceManip => aee_slots::EGL_SURFACE_MANIP,
             Self::GlesImageonExt => aee_slots::GLES_IMAGEON_EXT,
+            Self::Gles11Ext => aee_slots::GLES11_EXT,
+            Self::Gles10Ext => aee_slots::GLES10_EXT,
+            Self::EglGetPowerLevel => aee_slots::EGL_GET_POWER_LEVEL,
+            Self::EglOesSwapInterval => aee_slots::EGL_OES_SWAP_INTERVAL,
+            Self::EglGetColorBuffer => aee_slots::EGL_GET_COLOR_BUFFER,
+            Self::Gles11ExtPak => aee_slots::GLES11_EXT_PAK,
+            Self::Joystick => aee_slots::JOYSTICK,
             Self::SqlMgr => aee_slots::SQL_MGR,
             Self::SqlDatabase => aee_slots::SQL_DATABASE,
             Self::Collection => aee_slots::COLLECTION,
@@ -487,6 +689,7 @@ impl Interface {
             Self::Cm => aee_slots::CM,
             Self::SystemCtl => aee_slots::SYSTEM_CTL,
             Self::Typeface => aee_slots::TYPEFACE,
+            Self::Font => aee_slots::FONT,
             Self::SimCardCtl => aee_slots::SIM_CARD_CTL,
             // A sonda não tem tabela: `method` responde por ela antes de chegar aqui.
             Self::Probe => &[],
@@ -545,6 +748,13 @@ impl Interface {
             32 => Self::ForceFeed,
             33 => Self::EglSurfaceManip,
             34 => Self::GlesImageonExt,
+            55 => Self::Gles11Ext,
+            56 => Self::Gles10Ext,
+            57 => Self::EglGetPowerLevel,
+            58 => Self::EglOesSwapInterval,
+            59 => Self::EglGetColorBuffer,
+            60 => Self::Gles11ExtPak,
+            61 => Self::Joystick,
             35 => Self::Probe,
             36 => Self::SqlMgr,
             37 => Self::SqlDatabase,
@@ -560,6 +770,7 @@ impl Interface {
             47 => Self::Cm,
             48 => Self::SystemCtl,
             49 => Self::Typeface,
+            54 => Self::Font,
             50 => Self::SimCardCtl,
             51 => Self::Control,
             52 => Self::Transform,

@@ -554,6 +554,22 @@ impl<C: CpuBackend> Machine<C> {
             "Scissor" => self
                 .gl
                 .set_scissor(a[0] as i32, a[1] as i32, a[2] as i32, a[3] as i32),
+            // glPixelStorei(pname, param) — por enquanto só o alinhamento de linha na subida de
+            // textura. **É a única chamada de GL que o levantamento das 62 ROMs flagrou como
+            // "atendida sem fazer nada"**: o Double Dragon, o Galaxy on Fire, o Pac-Mania, o
+            // Powerboat Challenge e o Raging Thunder 2 a usam, e ignorá-la desloca as linhas de
+            // uma textura cuja largura em bytes não é múltipla de quatro — a imagem sai
+            // embaralhada em diagonal, e sem uma linha de aviso em lugar nenhum.
+            "PixelStorei" => {
+                if a[0] == gles::GL_UNPACK_ALIGNMENT {
+                    self.unpack_alignment = match a[1] {
+                        // Só estes quatro valores são legais no GL; qualquer outro é erro do jogo,
+                        // e ficar com o que estava é mais seguro que passar a ler torto.
+                        1 | 2 | 4 | 8 => a[1],
+                        _ => self.unpack_alignment,
+                    };
+                }
+            }
             // glColorMask(r, g, b, a) — booleanos, um por canal.
             "ColorMask" => self.gl.set_color_mask(std::array::from_fn(|i| a[i] != 0)),
             outro => {
@@ -659,7 +675,7 @@ impl<C: CpuBackend> Machine<C> {
         let decoded = if pixels == 0 {
             vec![[255; 4]; texels]
         } else {
-            let bytes = self.read_bytes(pixels, width * height * bytes_per_texel(format, kind))?;
+            let bytes = self.le_texels(pixels, width, height, format, kind)?;
             decode_texels(&bytes, format, kind, texels)
         };
         // Os parâmetros de repetição e filtro sobrevivem a uma nova imagem: no OpenGL eles são
@@ -713,6 +729,37 @@ impl<C: CpuBackend> Machine<C> {
     ///
     /// Se o retângulo não couber na textura, não escrevemos nada. Recortar seria inventar um
     /// resultado que o OpenGL não define.
+    /// Lê os texels de uma imagem do guest, respeitando o alinhamento de linha.
+    ///
+    /// `glPixelStorei(GL_UNPACK_ALIGNMENT, n)` diz com quantos bytes cada linha começa alinhada na
+    /// memória do jogo — o padrão do OpenGL é 4. Sem isto, uma textura de largura ímpar em bytes
+    /// chega com as linhas deslocadas duas a duas: a imagem sai embaralhada em diagonal, sem aviso.
+    fn le_texels(
+        &mut self,
+        pixels: u32,
+        width: u32,
+        height: u32,
+        format: u32,
+        kind: u32,
+    ) -> Result<Vec<u8>, CpuError> {
+        let por_texel = bytes_per_texel(format, kind);
+        let apertado = width * por_texel;
+        let passo = arredonda_para(apertado, self.unpack_alignment);
+        if passo == apertado {
+            return self.read_bytes(pixels, apertado * height);
+        }
+        // **Uma leitura só**, do bloco alinhado inteiro, e as linhas são compactadas depois: pedir
+        // linha a linha são `height` travessias até a memória do guest, e cada travessia custa
+        // mais que os bytes que traz.
+        let bloco = self.read_bytes(pixels, passo * height)?;
+        let mut saida = Vec::with_capacity((apertado * height) as usize);
+        for linha in 0..height as usize {
+            let inicio = linha * passo as usize;
+            saida.extend_from_slice(&bloco[inicio..inicio + apertado as usize]);
+        }
+        Ok(saida)
+    }
+
     pub(super) fn gles_tex_sub_image(&mut self, a: &[u32; 10]) -> Result<(), CpuError> {
         let (level, x, y, width, height) = (a[1], a[2], a[3], a[4], a[5]);
         let (format, kind, pixels) = (a[6], a[7], a[8]);
@@ -720,7 +767,7 @@ impl<C: CpuBackend> Machine<C> {
             return Ok(());
         }
         let texels = (width * height) as usize;
-        let bytes = self.read_bytes(pixels, width * height * bytes_per_texel(format, kind))?;
+        let bytes = self.le_texels(pixels, width, height, format, kind)?;
         let novos = decode_texels(&bytes, format, kind, texels);
 
         let name = self.gl.bound_texture();
@@ -1022,6 +1069,15 @@ impl<C: CpuBackend> Machine<C> {
         self.gl.define_escala(escala);
     }
 
+    /// Faz o desenho sair no framebuffer do frontend, quando ele entrega um.
+    ///
+    /// É o que o `libretro` pede de quem usa render em hardware: o core desenha no framebuffer
+    /// que o frontend indica a cada quadro, e é ele que apresenta. Sem framebuffer de fora, o
+    /// motor desenha no próprio e o quadro sai pelo `frame_rgb565`, como sempre.
+    pub fn desenha_no_fbo(&mut self, fbo: Option<u32>) {
+        self.gl.desenha_no_fbo(fbo);
+    }
+
     /// A proporção experimental do 3D. Ver [`Rasterizador::define_proporcao`].
     pub fn define_proporcao(&mut self, aspecto: Option<f32>) {
         self.gl.define_proporcao(aspecto);
@@ -1038,6 +1094,12 @@ impl<C: CpuBackend> Machine<C> {
     /// [`rasterizer::Rasterizador::define_neblina`].
     pub fn define_neblina(&mut self, permitida: bool) {
         self.gl.define_neblina(permitida);
+    }
+
+    /// Devolve ao dono o estado de GL que o rasterizador mexeu. Ver
+    /// [`rasterizer::Rasterizador::devolve_o_contexto`].
+    pub fn devolve_o_contexto(&self) {
+        self.gl.devolve_o_contexto();
     }
 }
 

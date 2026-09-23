@@ -234,6 +234,9 @@ pub const GL_COLOR_ARRAY: u32 = 0x8076;
 pub const GL_TEXTURE_COORD_ARRAY: u32 = 0x8078;
 
 /// Estados de `Enable`/`Disable` que o rasterizador respeita.
+/// `glPixelStorei(GL_UNPACK_ALIGNMENT, n)`: bytes com que cada linha de textura começa alinhada.
+pub const GL_UNPACK_ALIGNMENT: u32 = 0x0cf5;
+
 pub const GL_TEXTURE_2D: u32 = 0x0de1;
 
 /// Primeira unidade de textura. As demais são `GL_TEXTURE0 + n`.

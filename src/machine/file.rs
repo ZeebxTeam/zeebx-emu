@@ -41,6 +41,16 @@ impl<C: CpuBackend> Machine<C> {
             self.cpu.read_reg(Reg::R2),
             self.cpu.read_reg(Reg::R3),
         );
+        // O que o jogo perguntou ao sistema de arquivos, com o retorno: é o instrumento para a
+        // classe de problema em que a tela de erro do jogo não diz qual chamada falhou — o
+        // Double Dragon mostra "Memory is insufficient" quando qualquer verificação de espaço ou
+        // de arquivo não responde o que ele espera.
+        let anotar = |maquina: &mut Self, linha: String| {
+            if maquina.fs_log.len() >= MAX_FS_LOG {
+                maquina.fs_log.pop_front();
+            }
+            maquina.fs_log.push_back(linha);
+        };
         let result = match name {
             "AddRef" => self.objects.add_ref(this),
             "Release" => {
@@ -149,9 +159,18 @@ impl<C: CpuBackend> Machine<C> {
             }
             "Remove" => {
                 let guest_path = self.cpu.read_cstring(a1, MAX_STRING);
-                match self.vfs.resolve(&guest_path) {
-                    Some(path) if std::fs::remove_file(&path).is_ok() => SUCCESS,
-                    _ => EFAILED,
+                // Com overlay, só o que o jogo gravou pode ser apagado: o recurso do pacote é
+                // imutável, e apagá-lo alteraria o conteúdo original.
+                let alvo = match self.vfs.overlay_path(&guest_path) {
+                    Some(caminho) => caminho,
+                    None => match self.vfs.resolve(&guest_path) {
+                        Some(caminho) => caminho,
+                        None => return Ok(Some(EFAILED)),
+                    },
+                };
+                match std::fs::remove_file(&alvo) {
+                    Ok(()) => SUCCESS,
+                    Err(_) => EFAILED,
                 }
             }
             // int IFILEMGR_Rename(IFileMgr *, const char *pszSrc, const char *pszDest)
@@ -162,8 +181,29 @@ impl<C: CpuBackend> Machine<C> {
             "Rename" => {
                 let origem = self.cpu.read_cstring(a1, MAX_STRING);
                 let destino = self.cpu.read_cstring(a2, MAX_STRING);
-                match (self.vfs.resolve(&origem), self.vfs.resolve_new(&destino)) {
-                    (Some(de), Some(para)) if std::fs::rename(&de, &para).is_ok() => SUCCESS,
+                // O destino novo vai para o overlay quando ele existe; a origem pode estar no
+                // pacote, e nesse caso o rename a tira de lá — o que já é o comportamento sem
+                // overlay e continua valendo com ele.
+                let para = self
+                    .vfs
+                    .overlay_path(&destino)
+                    .or_else(|| self.vfs.resolve_new(&destino));
+                match (self.vfs.resolve(&origem), para) {
+                    (Some(de), Some(para)) => {
+                        if let Some(pai) = para.parent() {
+                            let _ = std::fs::create_dir_all(pai);
+                        }
+                        // Origem no pacote: ela é imutável, então o destino nasce no overlay e a
+                        // origem permanece. Origem no overlay: o arquivo é movido de verdade.
+                        let resultado = match self.vfs.is_overlay_path(&de) {
+                            true => std::fs::rename(&de, &para),
+                            false => std::fs::copy(&de, &para).map(|_| ()),
+                        };
+                        match resultado {
+                            Ok(()) => SUCCESS,
+                            Err(_) => EFAILED,
+                        }
+                    }
                     _ => EFAILED,
                 }
             }
@@ -182,11 +222,40 @@ impl<C: CpuBackend> Machine<C> {
                 }
             }
             // uint32 GetFreeSpace(IFileMgr *, uint32 *pdwTotal)
-            "GetFreeSpace" | "GetFreeSpaceEx" => {
+            //
+            // Devolve o **livre** e escreve o **total** no ponteiro, se houver.
+            "GetFreeSpace" => {
                 if a1 != 0 {
                     self.cpu.write_u32(a1, FS_TOTAL_BYTES)?;
                 }
                 FS_FREE_BYTES
+            }
+            // int GetFreeSpaceEx(IFileMgr *, const char *cpszPath, uint32 *pdwTotal,
+            //                    uint32 *pdwFree)
+            //
+            // **Não é o mesmo método.** Tem quatro argumentos, e o primeiro deles **não é um
+            // ponteiro de saída**: é o caminho do sistema de arquivos perguntado. Tratando os dois
+            // igual, o total era escrito por cima da string do jogo e os dois ponteiros de saída
+            // ficavam sem resposta — e o Double Dragon, que pergunta o espaço antes de abrir os
+            // dados, concluía que não havia memória e mostrava "Memory is insufficient. Please
+            // delete some files." em vez do jogo.
+            "GetFreeSpaceEx" => {
+                let caminho = self.cpu.read_cstring(a1, MAX_STRING);
+                let out_total = a2;
+                let out_livre = self.cpu.read_reg(Reg::R3);
+                // Cartão periférico não existe neste aparelho: o Zeebo guarda tudo na NAND, e
+                // `fs:/card0/` é a forma de o jogo perguntar por um. `EUNSUPPORTED` é a resposta
+                // documentada, e é o que faz o jogo usar o sistema principal.
+                if !caminho.is_empty() && !caminho.starts_with("fs:/") {
+                    return Ok(Some(EUNSUPPORTED));
+                }
+                if out_total != 0 {
+                    self.cpu.write_u32(out_total, FS_TOTAL_BYTES)?;
+                }
+                if out_livre != 0 {
+                    self.cpu.write_u32(out_livre, FS_FREE_BYTES)?;
+                }
+                SUCCESS
             }
             // int EnumInit(IFileMgr *, const char *pszDir, boolean bDirs)
             //
@@ -306,6 +375,20 @@ impl<C: CpuBackend> Machine<C> {
             "Cancel" => SUCCESS,
             _ => return Ok(None),
         };
+        // O caminho entra na linha quando a chamada tem um: `Test`, `OpenFile`, `MkDir`, `Remove`,
+        // `Rename` e `EnumInit` são as que decidem onde o jogo escreve.
+        let tem_caminho = matches!(
+            name,
+            "Test" | "OpenFile" | "MkDir" | "Remove" | "Rename" | "EnumInit" | "GetFreeSpaceEx"
+        );
+        let caminho = match tem_caminho && a1 != 0 {
+            true => format!(" \"{}\"", self.cpu.read_cstring(a1, MAX_STRING)),
+            false => String::new(),
+        };
+        anotar(
+            self,
+            format!("{name}{caminho}  ({a1:#x} {a2:#x} {a3:#x}) -> {result}"),
+        );
         Ok(Some(result))
     }
 
@@ -346,19 +429,53 @@ impl<C: CpuBackend> Machine<C> {
             }
             Some(path)
         } else {
-            self.vfs.resolve(guest_path)
+            None
         };
-        let Some(path) = path else {
+        if let Some(cfg) = path {
+            // Arquivo de perfil do emulador: mesma semântica de modo do caminho comum.
+            return self.open_resolved(guest_path, cfg, Self::open_options(mode));
+        }
+        // A partir daqui vale a resolução do VFS, que decide entre conteúdo e overlay e diz se
+        // o arquivo do pacote precisa ser copiado antes de receber escrita.
+        let intent = match (mode & OFM_CREATE != 0, mode & (OFM_READWRITE | OFM_APPEND) != 0) {
+            (true, _) => crate::brew::vfs::OpenIntent::Create,
+            (false, true) if mode & OFM_APPEND != 0 => crate::brew::vfs::OpenIntent::Append,
+            (false, true) => crate::brew::vfs::OpenIntent::ReadWrite,
+            (false, false) => crate::brew::vfs::OpenIntent::Read,
+        };
+        let Some(alvo) = self.vfs.open_target(guest_path, intent) else {
             self.file_error = EFAILED;
             return Ok(0);
         };
-        let mut options = std::fs::OpenOptions::new();
-        if mode & OFM_CREATE != 0 {
-            // No console o diretório do módulo já vem pronto do instalador; aqui ele só existe
-            // se o jogo o criar, e vários jogos abrem `udata\algo` sem chamar `MkDir` antes.
+        let path = alvo.path;
+        // O pacote nunca é alterado: a primeira escrita copia o recurso para o overlay.
+        if let Some(origem) = alvo.copy_from {
             if let Some(parent) = path.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
+            if std::fs::copy(&origem, &path).is_err() {
+                self.file_error = EFAILED;
+                return Ok(0);
+            }
+        }
+        // **O diretório do módulo já vem pronto no console; aqui não.** Vários jogos abrem
+        // `udata/algo` com `OFM_CREATE` sem chamar `MkDir` antes — o Double Dragon é um deles, e
+        // quando a criação do diretório se perdeu num refactor, ele falhava ao abrir o save e
+        // mostrava a tela "Memory is insufficient. Please delete some files." em vez do jogo.
+        if mode & OFM_CREATE != 0
+            && let Some(parent) = path.parent()
+        {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let options = Self::open_options(mode);
+
+        self.open_resolved(guest_path, path, options)
+    }
+
+    /// As opções de abertura equivalentes ao modo do BREW.
+    fn open_options(mode: u32) -> std::fs::OpenOptions {
+        let mut options = std::fs::OpenOptions::new();
+        if mode & OFM_CREATE != 0 {
             options.create(true).read(true).write(true);
         } else if mode & (OFM_READWRITE | OFM_APPEND) != 0 {
             options.read(true).write(true);
@@ -368,8 +485,28 @@ impl<C: CpuBackend> Machine<C> {
         if mode & OFM_APPEND != 0 {
             options.append(true);
         }
+        options
+    }
 
+    /// Abre `path` já resolvido e registra o `IFile`.
+    fn open_resolved(
+        &mut self,
+        guest_path: &str,
+        path: std::path::PathBuf,
+        options: std::fs::OpenOptions,
+    ) -> Result<u32, CpuError> {
         let Ok(file) = options.open(&path) else {
+            // O caminho do host e o erro do sistema entram no registro: "o jogo não conseguiu
+            // abrir o save" não diz se o problema é o caminho resolvido, a permissão ou o modo.
+            let erro = options.open(&path).err().map(|e| e.to_string());
+            if self.fs_log.len() >= MAX_FS_LOG {
+                self.fs_log.pop_front();
+            }
+            self.fs_log.push_back(format!(
+                "open falhou: {} ({})",
+                path.display(),
+                erro.unwrap_or_else(|| "sem motivo".into())
+            ));
             self.file_error = EFAILED;
             self.missing_files.insert(guest_path.to_string());
             return Ok(0);
@@ -405,17 +542,27 @@ impl<C: CpuBackend> Machine<C> {
         let Some(dir) = self.vfs.resolve_dir(guest_dir) else {
             return Default::default();
         };
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            return Default::default();
-        };
-        // Ordenar deixa a listagem repetível: `read_dir` não promete ordem, e um jogo que
-        // monta um menu com ela mudaria de ordem entre duas aberturas.
-        let mut names: Vec<String> = entries
-            .flatten()
-            .filter(|entry| entry.path().is_dir() == want_dirs)
-            .filter_map(|entry| entry.file_name().into_string().ok())
-            .collect();
+        // Conteúdo e overlay somam: o jogo precisa ver o que veio no pacote **e** o que ele
+        // mesmo gravou. `read_dir` não promete ordem, e um jogo que monta menu com ela mudaria
+        // de ordem entre duas aberturas; por isso a lista sai ordenada.
+        let mut dirs = vec![dir];
+        if let Some(overlay) = self.vfs.overlay_dir(guest_dir) {
+            dirs.push(overlay);
+        }
+        let mut names: Vec<String> = Vec::new();
+        for dir in dirs {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            names.extend(
+                entries
+                    .flatten()
+                    .filter(|entry| entry.path().is_dir() == want_dirs)
+                    .filter_map(|entry| entry.file_name().into_string().ok()),
+            );
+        }
         names.sort();
+        names.dedup();
         let prefix = guest_dir.trim_end_matches('/');
         names
             .into_iter()
@@ -447,7 +594,7 @@ impl<C: CpuBackend> Machine<C> {
 }
 
 /// A `tectoy.cfg` com as trocas de [`Machine::configura_z_wheel`], o resto como veio.
-fn ajusta_cfg(original: &str, opcoes: crate::ui::settings::ZWheel) -> String {
+fn ajusta_cfg(original: &str, opcoes: crate::config::ZWheel) -> String {
     original
         .split_inclusive('\n')
         .map(|linha| {
@@ -469,7 +616,7 @@ fn ajusta_cfg(original: &str, opcoes: crate::ui::settings::ZWheel) -> String {
 #[cfg(test)]
 mod testes_da_cfg {
     use super::ajusta_cfg;
-    use crate::ui::settings::ZWheel;
+    use crate::config::ZWheel;
 
     const ORIGINAL: &str = "; EOL\r\nEOL=1\r\n#zeebomenu_hide - x\r\nzeebomenu_hide=1\r\nEOLX=1\r\nSlideOnceToForm=31\n";
 

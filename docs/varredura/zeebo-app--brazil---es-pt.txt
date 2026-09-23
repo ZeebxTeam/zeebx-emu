@@ -1,0 +1,9 @@
+Zeebo App (Brazil) (Es,Pt)
+estado: terminou sozinho
+motivo: o jogo terminou
+tela: 1 cor(es), dominante 0x0000 (tela quase uniforme: pode ser carregamento — vale aumentar ZEEBX_ROM_MS)
+APIs que faltaram:
+  IWidget::Acessador seletor 0x0 (classe 0x1028e51, de 0x00013548, 0x0, 0x100021c8)
+classes pedidas:
+  0x01001001  (1x)
+  0x01028e51  (1x)

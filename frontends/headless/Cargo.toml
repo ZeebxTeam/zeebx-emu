@@ -1,0 +1,46 @@
+[package]
+name = "zeebx-headless"
+version = "0.3.0"
+edition = "2024"
+license = "GPL-2.0-only"
+description = "O Zeebx sem interface, para quem tem frontend próprio"
+publish = false
+
+# Um binário só, e nenhuma biblioteca: este pacote não tem nada que alguém queira importar. O
+# que é reaproveitável mora no núcleo, que é de onde ele vem.
+[[bin]]
+name = "zeebx-headless"
+path = "src/main.rs"
+
+[dependencies]
+zeebx = { path = "../.." }
+
+# **Não há eframe aqui, e é essa a razão de este pacote existir.** O eframe existe para pôr uma
+# interface na tela; aqui não há interface, há um quadro, e girar um laço de egui por baixo de
+# nada seria pagar a interface inteira para desenhar um retângulo.
+#
+# Isso é sobre o **laço**, não sobre o tamanho da compilação: o `zeebx` abaixo é a biblioteca
+# inteira, e fora do Android ela traz o eframe, o `rfd`, o Discord e o `ureq` por conta própria
+# — ver o `[target.'cfg(not(target_os = "android"))'.dependencies]` da raiz. Compilar isto
+# compila aquilo junto. Separá-las de verdade seria pôr as telas do desktop atrás de uma feature
+# do núcleo, o que ainda não foi feito.
+#
+# O `egui` fica, mas só pelos tipos: `egui::Key` é o nome canônico de uma tecla no
+# `settings.json`, e o `ViewportInPixels` é o que o pincel do núcleo recebe. Nada é desenhado
+# com ele — e, por já estar na árvore por causa do núcleo, não acrescenta compilação nenhuma.
+egui = { version = "0.33.3", default-features = false }
+glow = "0.16"
+raw-window-handle = "0.6"
+# A janela e a entrada, sem interface no meio. O glutin dá o contexto de GL, e é a mesma caixa
+# que o núcleo já usa para o contexto fora de tela e que o frontend de Android usa para o EGL.
+#
+# **Com as features de fábrica, e isto importa.** Elas são `rwh_06`, `x11`, `wayland`,
+# `wayland-dlopen` e `wayland-csd-adwaita`; num sistema que não é Unix as três últimas não
+# existem e não custam nada. Uma versão daqui listou `x11` e `wayland` à mão, sem defaults, e
+# perdeu justamente o `wayland-dlopen`: sem ele o binário amarra a `libwayland-client.so` no
+# ligador e não abre onde ela não está instalada — que é a máquina de quem só tem X11.
+winit = "0.30"
+glutin = "0.32.3"
+glutin-winit = "0.5"
+# Só o despejo de quadros em `.png`. Já vinha na árvore pelo núcleo.
+png = "0.18.1"

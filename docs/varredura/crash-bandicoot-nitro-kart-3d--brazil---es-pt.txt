@@ -1,0 +1,213 @@
+Crash Bandicoot Nitro Kart 3D (Brazil) (Es,Pt)
+estado: roda
+tela: 51 cor(es), dominante 0xffff
+classes pedidas:
+  0x01001001  (1x)
+  0x01001003  (1x)
+  0x01001056  (1x)
+  0x01014bc3  (2x)
+  0x01014bc4  (2x)
+  0x01041207  (1x)
+  0x0106c411  (1x)
+chamadas ao sistema de arquivos:
+  Seek  (0x2 0x0 0x30000450) -> 4479668
+  Read  (0x200ffe48 0x4 0xe0001000) -> 4
+  Seek  (0x0 0x445ab4 0xe0001000) -> 0
+  Seek  (0x2 0x0 0x30000450) -> 4479668
+  Read  (0x200ffe9c 0x4 0xe0001000) -> 4
+  Seek  (0x0 0x445ab4 0xe0001000) -> 0
+  Seek  (0x2 0x0 0x30000450) -> 4479668
+  Read  (0x200ffea0 0x8 0xe0001000) -> 8
+  Seek  (0x0 0x445ab4 0xe0001000) -> 0
+  Seek  (0x2 0x0 0x30000450) -> 4479668
+  Read  (0x1008fa9c 0x1d 0xe0001000) -> 29
+  Read  (0x1008fa9c 0xc 0xe0001000) -> 12
+  Read  (0x1008fa9c 0x1000 0xe0001000) -> 4096
+  Read  (0x1008fa9c 0x1000 0xe0001000) -> 4096
+  Read  (0x1008fa9c 0x1000 0xe0001000) -> 4096
+  Read  (0x1008fa9c 0x1000 0xe0001000) -> 4096
+  Read  (0x1008fa9c 0x1000 0xe0001000) -> 4096
+  Read  (0x1008fa9c 0x1000 0xe0001000) -> 4096
+  Read  (0x1008fa9c 0x1000 0xe0001000) -> 4096
+  Read  (0x1008fa9c 0x1000 0xe0001000) -> 4096
+  Read  (0x1008fa9c 0x1000 0xe0001000) -> 4096
+  Read  (0x1008fa9c 0x1000 0xe0001000) -> 4096
+  Read  (0x1008fa9c 0x1000 0xe0001000) -> 4096
+  Read  (0x1008fa9c 0x1000 0xe0001000) -> 4096
+  Read  (0x1008fa9c 0x1000 0xe0001000) -> 4096
+  Read  (0x1008fa9c 0x1000 0xe0001000) -> 4096
+  Read  (0x1008fa9c 0x1000 0xe0001000) -> 4096
+  Read  (0x1008fa9c 0x1000 0xe0001000) -> 4096
+  Read  (0x1008fa9c 0x1000 0xe0001000) -> 4096
+  Read  (0x1008fa9c 0x1000 0xe0001000) -> 4096
+  Read  (0x1008fa9c 0x1000 0xe0001000) -> 4096
+  Read  (0x1008fa9c 0x1000 0xe0001000) -> 4096
+  Read  (0x1008fa9c 0x1000 0xe0001000) -> 4096
+  Read  (0x1008fa9c 0x1000 0xe0001000) -> 4096
+  Read  (0x1008fa9c 0x983 0xe0001000) -> 2435
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Crash-Bandicoot-Nitro-Kart-3D--Brazil---Es-Pt--0c9aef377a62f6211acb6e1dd1d79ce97c39d5fa2a3db82d36fcf25de2f2222f/mod/274214/data/gfx/menu/activision.png (No such file or directory (os error 2))
+  OpenFile "data\gfx\menu\activision.png"  (0xa19e8 0x1 0xe0000c00) -> 0
+  Seek  (0x0 0x4f515a 0xe0001000) -> 0
+  Seek  (0x2 0x0 0x30000450) -> 5198170
+  Read  (0x200ffe48 0x4 0xe0001000) -> 4
+  Seek  (0x0 0x4f515a 0xe0001000) -> 0
+  Seek  (0x2 0x0 0x30000450) -> 5198170
+  Read  (0x200ffe9c 0x4 0xe0001000) -> 4
+  Seek  (0x0 0x4f515a 0xe0001000) -> 0
+  Seek  (0x2 0x0 0x30000450) -> 5198170
+  Read  (0x200ffea0 0x8 0xe0001000) -> 8
+  Seek  (0x0 0x4f515a 0xe0001000) -> 0
+  Seek  (0x2 0x0 0x30000450) -> 5198170
+  Read  (0x1008fa9c 0x1d 0xe0001000) -> 29
+  Read  (0x1008fa9c 0xc 0xe0001000) -> 12
+  Read  (0x1008fa9c 0x1000 0xe0001000) -> 4096
+  Read  (0x1008fa9c 0x1000 0xe0001000) -> 4096
+  Read  (0x1008fa9c 0x1000 0xe0001000) -> 4096
+  Read  (0x1008fa9c 0x1000 0xe0001000) -> 4096
+  Read  (0x1008fa9c 0x1000 0xe0001000) -> 4096
+  Read  (0x1008fa9c 0xb6 0xe0001000) -> 182
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Crash-Bandicoot-Nitro-Kart-3D--Brazil---Es-Pt--0c9aef377a62f6211acb6e1dd1d79ce97c39d5fa2a3db82d36fcf25de2f2222f/mod/274214/data/gfx/menu/publisher_med.png (No such file or directory (os error 2))
+  OpenFile "data\gfx\menu\publisher_med.png"  (0xa1a08 0x1 0xe0000c00) -> 0
+  Seek  (0x0 0x77b5d0 0xe0001000) -> 0
+  Seek  (0x2 0x0 0x30000450) -> 7845328
+  Read  (0x200ffe48 0x4 0xe0001000) -> 4
+  Seek  (0x0 0x77b5d0 0xe0001000) -> 0
+  Seek  (0x2 0x0 0x30000450) -> 7845328
+  Read  (0x200ffe9c 0x4 0xe0001000) -> 4
+  Seek  (0x0 0x77b5d0 0xe0001000) -> 0
+  Seek  (0x2 0x0 0x30000450) -> 7845328
+  Read  (0x200ffea0 0x8 0xe0001000) -> 8
+  Seek  (0x0 0x77b5d0 0xe0001000) -> 0
+  Seek  (0x2 0x0 0x30000450) -> 7845328
+  Read  (0x1008fa9c 0x1d 0xe0001000) -> 29
+  Read  (0x1008fa9c 0xc 0xe0001000) -> 12
+  Read  (0x1008fa9c 0x60 0xe0001000) -> 96
+  Read  (0x1008fa9c 0xc 0xe0001000) -> 12
+  Read  (0x1008fa9c 0x1000 0xe0001000) -> 4096
+  Read  (0x1008fa9c 0x1000 0xe0001000) -> 4096
+  Read  (0x1008fa9c 0x470 0xe0001000) -> 1136
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Crash-Bandicoot-Nitro-Kart-3D--Brazil---Es-Pt--0c9aef377a62f6211acb6e1dd1d79ce97c39d5fa2a3db82d36fcf25de2f2222f/mod/274214/data/gfx/menu/publisher_high.png (No such file or directory (os error 2))
+  OpenFile "data\gfx\menu\publisher_high.png"  (0xa1a28 0x1 0xe0000c00) -> 0
+  Seek  (0x0 0x555dd 0xe0001000) -> 0
+  Seek  (0x2 0x0 0x30000450) -> 349661
+  Read  (0x200ffe48 0x4 0xe0001000) -> 4
+  Seek  (0x0 0x555dd 0xe0001000) -> 0
+  Seek  (0x2 0x0 0x30000450) -> 349661
+  Read  (0x200ffe9c 0x4 0xe0001000) -> 4
+  Seek  (0x0 0x555dd 0xe0001000) -> 0
+  Seek  (0x2 0x0 0x30000450) -> 349661
+  Read  (0x200ffea0 0x8 0xe0001000) -> 8
+  Seek  (0x0 0x555dd 0xe0001000) -> 0
+  Seek  (0x2 0x0 0x30000450) -> 349661
+  Read  (0x1008fa9c 0x1d 0xe0001000) -> 29
+  Read  (0x1008fa9c 0xc 0xe0001000) -> 12
+  Read  (0x1008fa9c 0x60 0xe0001000) -> 96
+  Read  (0x1008fa9c 0xc 0xe0001000) -> 12
+  Read  (0x1008fa9c 0x1000 0xe0001000) -> 4096
+  Read  (0x1008fa9c 0x1000 0xe0001000) -> 4096
+  Read  (0x1008fa9c 0xa68 0xe0001000) -> 2664
+arquivos não encontrados:
+  data/carts/chars/coco.pof
+  data/carts/chars/cortex.pof
+  data/carts/chars/crash.pof
+  data/carts/chars/oxide.pof
+  data/carts/chars/ripper.pof
+  data/carts/chars/yaya.pof
+  data/carts/coco/body000.pof
+  data/carts/coco/body001.pof
+  data/carts/coco/body002.pof
+  data/carts/cortex/body000.pof
+  data/carts/cortex/body001.pof
+  data/carts/cortex/body002.pof
+  data/carts/oxide/body000.pof
+  data/carts/oxide/body001.pof
+  data/carts/oxide/body002.pof
+  data/carts/ripper/body000.pof
+  data/carts/ripper/body001.pof
+  data/carts/ripper/body002.pof
+  data/carts/tires/tire000.pof
+  data/carts/tires/tire001.pof
+  data/carts/tires/tire100.pof
+  data/carts/yaya/body000.pof
+  data/carts/yaya/body001.pof
+  data/carts/yaya/body002.pof
+  data/gfx/game/effects.png
+  data/gfx/game/explosion.png
+  data/gfx/game/explosion2.png
+  data/gfx/game/flares_small.png
+  data/gfx/game/pwriconeffect.png
+  data/gfx/game/shield.png
+  data/levels/adven/1.trk
+  data/levels/adven/2.trk
+  data/levels/adven/3.trk
+  data/levels/adven/4.trk
+  data/levels/egypt/1.trk
+  data/levels/egypt/2.trk
+  data/levels/egypt/3.trk
+  data/levels/egypt/4.trk
+  data/levels/fairy/1.trk
+  data/levels/fairy/2.trk
+  data/levels/fairy/3.trk
+  data/levels/fairy/4.trk
+  data/levels/solar/1.trk
+  data/levels/solar/2.trk
+  data/levels/solar/3.trk
+  data/levels/solar/4.trk
+  data/other/akuaku_opt.pof
+  data/other/podium.trk
+  data/textures/carts/CrashStang128_t.png
+  data/textures/carts/LeMans02.png
+  data/textures/carts/NeoMini.png
+  data/textures/carts/NeoSprint01.png
+  data/textures/carts/Wheel_t.png
+  data/textures/carts/cocster2.png
+  data/textures/carts/rallye.png
+  data/textures/chars/Crash.png
+  data/textures/chars/coco.png
+  data/textures/chars/coco_sprite.png
+  data/textures/chars/cortex.png
+  data/textures/chars/cortex_sprite.png
+  data/textures/chars/crash_sprite.png
+  data/textures/chars/eelectric2.png
+  data/textures/chars/kangaroo2.png
+  data/textures/chars/oxide_sprite.png
+  data/textures/chars/roo_sprite.png
+  data/textures/chars/yaya.png
+  data/textures/chars/yaya_sprite.png
+  data/textures/other/feathers2.png
+  data/textures/other/pla_grass_005.png
+  data/textures/other/wood2.png
+  data/textures/world/alt_sky_top.png
+  data/textures/world/con_030a.png
+  data/textures/world/con_032a.png
+  data/textures/world/drt_001.png
+  data/textures/world/fab_012b.png
+  data/textures/world/fairy3_sky_bottom.png
+  data/textures/world/mtl_126.png
+  data/textures/world/plant2.png
+  data/textures/world/rck_007.png
+  data/textures/world/tiki_heads.png
+  data/textures/world/tree2.png
+  data/textures/world/wud_033.png
+  data\carts\crash\body000.pof
+  data\carts\crash\body001.pof
+  data\carts\crash\body002.pof
+  data\fonts\candyRandy12.fnt
+  data\fonts\candyRandy18.fnt
+  data\fonts\font1.fnt
+  data\fonts\font2.fnt
+  data\fonts\fonttimer.fnt
+  data\gfx\menu\accel_buy.png
+  data\gfx\menu\activision.png
+  data\gfx\menu\arrow_curved.png
+  data\gfx\menu\arrow_flat.png
+  data\gfx\menu\arrows.png
+  data\gfx\menu\buttons.png
+  data\gfx\menu\publisher_high.png
+  data\gfx\menu\publisher_med.png
+  data\gfx\menu\text_bgs.png
+  data\gfx\menu\top_bottom.png
+  data\gfx\menu\top_bottom2.png
+  data\lang\lang_modified.bin
+  udata/config.txt
+  udata/settings.dat

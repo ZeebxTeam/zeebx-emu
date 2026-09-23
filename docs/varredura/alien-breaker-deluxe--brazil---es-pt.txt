@@ -1,0 +1,21 @@
+Alien Breaker Deluxe (Brazil) (Es,Pt)
+estado: roda
+tela: 30 cor(es), dominante 0x51f1
+classes pedidas:
+  0x01001001  (1x)
+  0x01001003  (1x)
+  0x01005511  (15x)
+  0x010127d4  (1x)
+  0x01030766  (1x)
+  0x0103d8ec  (1x)
+  0x01041207  (1x)
+  0x0106c411  (1x)
+chamadas ao sistema de arquivos:
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Alien-Breaker-Deluxe--Brazil---Es-Pt--7e3eaf16548a77e70789397ad4194655acae4401f20d0c4fe9eaf9d69ab0931a/mod/279369/udata/gamename (No such file or directory (os error 2))
+  OpenFile "udata\gamename"  (0x1efbc 0x1 0xf0003008) -> 0
+  Remove "udata\gamename"  (0x1f050 0xf0003010 0x100000c7) -> 1
+  OpenFile "udata\gamename"  (0x1f050 0x4 0xf0003008) -> 805307024
+  Write  (0x100001dc 0x11c 0xf0004014) -> 284
+  Release  (0xf0004004 0x11c 0xf0004014) -> 0
+arquivos não encontrados:
+  udata\gamename

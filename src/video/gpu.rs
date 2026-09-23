@@ -14,10 +14,23 @@
 //! o Crash fazem deixam de ser chamadas de GL uma a uma. O estado é aplicado **uma vez por draw**,
 //! a partir do que foi anotado aqui.
 
+// A criação do contexto **nosso** é da feature `gpu`, que traz o glutin. Com só a `gl`, o backend
+// desenha no contexto que quem chama entregou — que é o caso do core Libretro, e a razão de as
+// duas features existirem separadas.
+#[cfg(feature = "gpu")]
 use super::contexto::Contexto;
+
+/// O contexto próprio, quando esta construção sabe abrir um.
+///
+/// Com só a feature `gl` o tipo é a unidade: o campo existe e fica vazio, e a inferência de tipos
+/// do `match` abaixo não precisa de anotação em dois ramos que só existem em um deles.
+#[cfg(feature = "gpu")]
+type ContextoProprio = Contexto;
+#[cfg(not(feature = "gpu"))]
+type ContextoProprio = ();
 use super::gles;
 use super::rasterizer::{GlState, Matrix, QuadroNaPlaca, Rasterizador, TexEnv, UnidadeDeTextura, Vertex};
-use eframe::glow::{self, HasContext};
+use glow::{self, HasContext};
 use std::collections::HashMap;
 
 /// `GL_TEXTURE_MAX_ANISOTROPY` e o máximo que a placa aceita, da extensão
@@ -142,7 +155,7 @@ pub struct GpuState {
     ///
     /// Nunca é lido: existe para não ser solto enquanto o backend vive. Soltá-lo destruiria o
     /// contexto de onde vêm as funções de GL que o `gl` acabou de guardar.
-    _proprio: Option<Contexto>,
+    _proprio: Option<ContextoProprio>,
     /// As funções de GL: emprestadas da janela, ou do contexto próprio.
     gl: std::sync::Arc<glow::Context>,
     /// Se o contexto é de outro. Nesse caso o estado tem que ser devolvido depois de cada uso —
@@ -200,6 +213,11 @@ pub struct GpuState {
     proporcao: Option<f32>,
     /// Se o lote que vai para a placa foi transformado por uma projeção em perspectiva.
     em_perspectiva: bool,
+    /// O framebuffer de fora em que desenhar, quando o frontend entrega um. `None` é o próprio.
+    ///
+    /// `Some(0)` é o framebuffer padrão do frontend — o que o `glow` escreve `None` no `bind`.
+    /// Ver [`Rasterizador::desenha_no_fbo`].
+    fbo_externo: Option<u32>,
 }
 
 struct Destino {
@@ -239,12 +257,23 @@ impl GpuState {
         altura: usize,
         emprestado: Option<std::sync::Arc<glow::Context>>,
     ) -> Result<Self, String> {
+        #[allow(unused_variables)]
         let (proprio, gl, emprestado) = match emprestado {
             Some(gl) => (None, gl, true),
+            // **Sem contexto emprestado, esta feature não abre um.** Quem precisa de contexto
+            // próprio usa a `gpu`; quem recebe o do frontend — o core — não pode abrir um, e
+            // responder isso é melhor que falhar com um erro de link.
+            #[cfg(feature = "gpu")]
             None => {
                 let proprio = Contexto::novo()?;
                 let gl = proprio.gl.clone();
                 (Some(proprio), gl, false)
+            }
+            #[cfg(not(feature = "gpu"))]
+            None => {
+                return Err(
+                    "sem contexto emprestado: esta construção não abre contexto de placa".to_string(),
+                )
             }
         };
         let (programa, vao, vbo, ponte) = unsafe {
@@ -287,6 +316,7 @@ impl GpuState {
             escala: 1,
             proporcao: None,
             em_perspectiva: false,
+            fbo_externo: None,
             reduzido: None,
             amostras: 1,
             anisotropia: 1.0,
@@ -319,14 +349,31 @@ impl GpuState {
         largura.saturating_sub(fw) / 2 * sw / fw
     }
 
+    /// O framebuffer em que se desenha **agora**.
+    ///
+    /// Quando o frontend entrega um framebuffer, é ele o alvo — e não o nosso. Este método existe
+    /// porque a escolha estava escrita em dois lugares, e os dois discordaram: o caminho que cria o
+    /// destino respeitava o framebuffer do frontend, e o caminho curto (destino já pronto, igual)
+    /// religava o nosso. Como o curto é o que roda em todo quadro depois do primeiro, o desenho
+    /// ficava no nosso framebuffer, o frontend apresentava o dele — tela preta — e a placa
+    /// trabalhava o mesmo tanto. O sintoma foi exatamente esse: **placa ocupada e nada na tela**.
+    fn alvo_do_desenho(&self) -> Option<glow::Framebuffer> {
+        match self.fbo_externo {
+            // `0` é o framebuffer que já está ligado; o frontend é quem manda nele.
+            Some(0) => None,
+            Some(id) => std::num::NonZeroU32::new(id).map(glow::NativeFramebuffer),
+            None => self.quadro.as_ref().map(Destino::desenho),
+        }
+    }
+
     fn destino(&mut self) {
         let medida = self.estado.frame_size();
         let (escala, amostras, extra) = (self.escala, self.amostras, self.extra());
         if self.quadro.as_ref().is_some_and(|d| {
             d.medida == medida && d.escala == escala && d.amostras == amostras && d.extra == extra
         }) {
-            let fbo = self.quadro.as_ref().map(Destino::desenho);
-            unsafe { self.gl.bind_framebuffer(glow::FRAMEBUFFER, fbo) };
+            let alvo = self.alvo_do_desenho();
+            unsafe { self.gl.bind_framebuffer(glow::FRAMEBUFFER, alvo) };
             return;
         }
         let gl = &self.gl;
@@ -454,8 +501,12 @@ impl GpuState {
                 amostras,
                 multi,
             };
-            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(destino.desenho()));
             self.quadro = Some(destino);
+            // Quem manda no alvo é o frontend, quando ele entregou um framebuffer; sem isso, o
+            // destino é o nosso, com o antialias resolvido depois. A escolha é a mesma do caminho
+            // curto, e é por isso que ela vive em `alvo_do_desenho`.
+            let alvo = self.alvo_do_desenho();
+            gl.bind_framebuffer(glow::FRAMEBUFFER, alvo);
         }
     }
 
@@ -495,6 +546,49 @@ impl GpuState {
     }
 
     /// Põe na placa o estado anotado. Chamado uma vez por draw.
+    /// Copia o estado de desenho do `GlState` para o espelho que vai para o GL.
+    ///
+    /// Existe por causa do save state. O espelho (`fill`) é atualizado **campo a campo** por cada
+    /// método do `Rasterizador`, e não é derivado do `GlState` a cada lote. Carregar um estado troca
+    /// o `GlState` inteiro e deixa o espelho descrevendo o mundo anterior — e como é o espelho que
+    /// o `aplica` escreve na placa, a cena sairia com a matriz, as bandeiras de teste e as cores de
+    /// limpeza de antes. Esta função é o ponto único onde os dois voltam a concordar.
+    fn ressincroniza_o_espelho(&mut self) {
+        let e = &self.estado;
+        self.fill.teste_profundidade = e.depth_test;
+        self.fill.mascara_profundidade = e.depth_mask;
+        self.fill.faixa_profundidade = e.depth_range;
+        self.fill.neblina = e.fog;
+        self.fill.func_profundidade = e.depth_func;
+        self.fill.mistura = e.blend;
+        self.fill.mistura_src = e.blend_src;
+        self.fill.mistura_dst = e.blend_dst;
+        self.fill.teste_alfa = e.alpha_test;
+        self.fill.func_alfa = e.alpha_func;
+        self.fill.ref_alfa = e.alpha_ref;
+        self.fill.mascara_cor = e.color_mask;
+        self.fill.descarte = e.cull_face;
+        self.fill.modo_descarte = e.cull_mode;
+        self.fill.face_frontal = e.front_face;
+        self.fill.teste_stencil = e.stencil_test;
+        self.fill.func_stencil = e.stencil_func;
+        self.fill.ref_stencil = e.stencil_ref;
+        self.fill.mascara_valor_stencil = e.stencil_value_mask;
+        self.fill.mascara_escrita_stencil = e.stencil_write_mask;
+        self.fill.op_stencil = e.stencil_op;
+        self.fill.env_textura = e.texture_env;
+        self.fill.textura_ligada = e.bound_texture;
+        self.fill.texturando = e.texture_2d;
+        self.fill.viewport = e.viewport;
+        // O espelho guarda a tesoura **crua** e uma bandeira: ele não tem o estado "sem tesoura",
+        // e é a bandeira que o `aplica` consulta para ligá-la ou não.
+        self.fill.tesoura = e.tesoura_crua;
+        self.fill.tesoura_ligada = e.tesoura_ligada;
+        self.fill.limpa_cor = e.clear_color;
+        self.fill.limpa_profundidade = e.clear_depth;
+        self.fill.limpa_stencil = i32::from(e.clear_stencil);
+    }
+
     fn aplica(&mut self) {
         let (x, y, w, h) = self.viewport_do_topo();
         let extra = self.quadro.as_ref().map_or(0, |d| d.extra) as i32;
@@ -523,7 +617,7 @@ impl GpuState {
             // — na Z-Wheel era uma faixa do fundo, entre a linha do horizonte e o chão. Preso em
             // vez de recortado, o comportamento volta a ser o do software.
             //
-            // É core desde o OpenGL 3.2, que é o perfil pedido. Na queda para GLES 3.0 ele não
+            // É core desde o OpenGL 3.2, que é o perfil pedido. Na queda para GLES 3.x ele não
             // existe e a chamada não tem efeito: ali o plano distante volta a recortar.
             gl.enable(glow::DEPTH_CLAMP);
             // O `glScissor` do jogo vem em pixels do console, com o `y` de baixo para cima —
@@ -1330,6 +1424,40 @@ fn expande565(bytes: &[u8], offset: usize) -> [u8; 3] {
 }
 
 impl Rasterizador for GpuState {
+    fn grava_estado(&self, destino: &mut crate::save_state::Secoes) {
+        // O estado é o mesmo `GlState` que o rasterizador de software usa — este apenas o desenha
+        // na placa em vez de no processador. Gravar é delegar.
+        crate::save_state::Guardavel::grava(&self.estado, destino);
+    }
+
+    fn restaura_estado(
+        &mut self,
+        origem: &crate::save_state::Leitor<'_>,
+    ) -> Result<(), crate::save_state::Erro> {
+        crate::save_state::Guardavel::restaura(&mut self.estado, origem)?;
+        // **Os objetos de placa são cache do estado**, e não estado: as texturas já subidas, os
+        // programas e os buffers saem daqui do `GlState`. Derrubá-las faz subir de novo na próxima
+        // vez que o jogo desenhar, e é o caminho mais seguro — não há o que ficar pela metade.
+        self.texturas.clear();
+        // O espelho de estado de desenho é mantido **incrementalmente** pelos métodos do trait, e
+        // não reconstruído do `GlState`. Depois de carregar, ele descreveria o mundo anterior, e é
+        // ele que vai para o GL a cada lote — a cena sairia com a matriz e as bandeiras de antes.
+        self.ressincroniza_o_espelho();
+        Ok(())
+    }
+
+    fn descarrega_o_desenho(&mut self) {
+        self.descarrega();
+    }
+
+    fn desenho_em_curso(&self) -> bool {
+        self.estado.desenho_em_curso()
+    }
+
+    fn desenha_no_fbo(&mut self, fbo: Option<u32>) {
+        self.fbo_externo = fbo;
+    }
+
     fn set_matrix_mode(&mut self, mode: u32) {
         self.estado.set_matrix_mode(mode);
     }

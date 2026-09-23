@@ -625,7 +625,580 @@ O que ainda falta nessa tela:
 - **`ISHELL_CloseApplet`** anota o pedido; a sessão entrega o `EVT_APP_STOP` e termina como saída
   normal. Um jogo aberto pela Z-Wheel que sai assim devolve a janela à Z-Wheel.
 
+## 7.5 A prova roteirizada do lançamento (22/09/2026)
+
+O ciclo passou a fechar **na varredura**, sem janela e sem RetroArch, com um comando só:
+
+```bash
+ZEEBX_ROM="Z-Wheel (Brazil) (Es,Pt).zip" \
+ZEEBX_ROM_MS=70000 ZEEBX_ROM_TETO=300 ZEEBX_ROM_INSTALADOS=auto \
+ZEEBX_ROM_TECLAS=30500:k0xe064,33000:k0xe032,35000:k0xe034,36500:k0xe034,38000:k0xe064,45000:k0xe032,48000:k0xe064 \
+cargo test --locked a_rom_indicada_avanca -- --nocapture
+```
+
+e o relatório responde com o desfecho que não engana — `Session::take_launch_request`, o mesmo
+gancho que o core usa para trocar de sessão:
+
+```text
+estado: terminou sozinho
+abertura pedida: 0x0108e356        (Alien Breaker Deluxe)
+```
+
+O roteiro faz o caminho inteiro: confirmar em "Jogar" (`0xe064`), descer às capas (`0xe032`),
+andar duas capas à direita (`0xe034`), confirmar de novo. A grade aparece desenhada a partir de
+37,6 s, com os jogos da biblioteca local em três colunas.
+
+**Duas armadilhas do instrumento, medidas aqui:**
+
+- **O `id` do `--instalados` é obrigatório**, e é o **número da pasta do módulo** dentro do pacote
+  (`fs:/mod/N`). Sem ele a Z-Wheel registra `Tectoy.c:2925 No mod number for this game!!!` e
+  desiste — foi o que aconteceu com a lista de classes sem id. É o que `ZEEBX_ROM_INSTALADOS=auto`
+  resolve: varre a pasta da ROM e monta os pares `0xCLSID:id` dos pacotes.
+- **O cache é estado do jogo.** A Z-Wheel grava `zeeboprefs.dat` e `ttgmrun.tmp` **dentro do pacote
+  extraído**, e no boot seguinte reage a eles — lançando o último jogo em 2 s, sem passar pelo
+  roteiro. Medir o caminho fresco exige limpar `~/.config/zeebx/cache` **e** o perfil do aparelho
+  antes de cada execução; sem isso o mesmo comando dá resultados diferentes em execuções seguidas.
+
+**O que ainda não fecha, medido:** a Z-Wheel registra `check_malloc: Malloc failed in Tectoy.c at
+line 570` depois de alocar ~64 MiB no próprio pool (o `memcheck` dela imprime
+`Free(67001392)`), e sai. O pedido que falha **acompanha o tamanho do heap** — 67 001 488 com
+64 MB, 134 110 352 com 128 MB —, então aumentar o heap só move o alvo: ela pede o que sobra, e
+não uma necessidade própria. O que ficou dessa medição é a contabilidade honesta do "quanto há
+livre" (`Heap::maior_bloco`), que antes somava buracos com o que resta à frente e respondia um
+número que nenhuma alocação consegue.
+
+### 7.6 O widget proprietário `0x01028e19`, medido pelo uso
+
+A família dos widgets é atendida em bloco (por vizinhança de numeração), e o que distingue uma
+classe da outra não está em header nenhum. O censo do acessador por classe
+(`ZEEBX_ROM_SELETORES=1`) responde **pelo uso**, e na Z-Wheel a `0x01028e19` — a única do trio
+`0x01028e19` / `0x01028e2a` / `0x01028e4b` que este roteiro cria — recebe dois seletores, e só:
+
+```text
+classe 0x01028e19  seletor 0x800  (5x)
+classe 0x01028e19  seletor 0x801  (10x)
+```
+
+`0x800` é leitura de item e `0x801` a gravação; os itens são **tipados**, com o corte medido em
+`0x5000` — de lá para cima o item guarda objeto, abaixo guarda número. É o mesmo caminho que a
+família inteira usa, então neste ciclo **o que a classe proprietária pede é o comportamento
+genérico** — e é o que o emulador faz.
+
+**O que não se reproduz, e fica registrado:**
+
+1. **O desenho próprio da classe.** Pintamos imagens e textos por substituto declarado, e não
+   emulando a extensão de widgets — o que a classe faria de diferente ao desenhar não é medido
+   aqui.
+2. **Qualquer comportamento dela fora dos caminhos que este roteiro exercita.** O censo mede o
+   *uso*; ausência de uso não é ausência de comportamento.
+
+### 7.7 O core não traduzia o controle em teclas do console
+
+`input::teclas_do_controle` existe desde sempre e é o que transforma o **controle** nas **teclas do
+BREW** que os aplicativos leem (`0xe031` a `0xe034` para o direcional, `0xe064` para o botão 1). A
+janela e o desktop a usam. O core Libretro **nunca a chamava** — entregava o controle pelo
+`set_port_pad` e parava ali. Medido em 22/09/2026, pelo caminho que o RetroArch usa:
+
+```text
+sem a tradução   a roda anima para sempre: 13 a 14 imagens distintas em cada 24 quadros,
+                 em todos os passos do roteiro, e nenhuma tecla é tratada
+com a tradução   55 imagens distintas nos 100 quadros antes da tecla (animando) e
+                 1 imagem distinta nos 100 quadros depois do confirmar (tratada)
+```
+
+É a diferença entre "o controle chega ao guest" — que estava medido — e "o controle chega ao
+applet do jeito que ele lê". No aparelho isso é o RetroArch entregando o controle a um aplicativo
+que só entende teclas do console.
+
+**O que este caminho ainda não fecha, medido.** Com as **mesmas teclas** e a mesma máquina, a
+varredura pede (`abertura pedida: 0x0108e356`) e o core não. Três medições estreitaram onde está a
+diferença, e nenhuma delas é a tecla:
+
+1. **Não é paciência.** Depois do roteiro, mais 6 000 quadros (100 s de relógio virtual) e o pedido
+   continua zero: a roda fica **presa** depois do confirmar (1 imagem distinta em 100 quadros), não
+   lenta.
+2. **O compasso não é a contagem de quadros.** Medido com um relógio de teste: cada `retro_run`
+   avança **~26 ms** de relógio virtual, e não os 16 ms de um quadro a 60 Hz, porque a volta do
+   core termina quando a máquina **apresenta** um quadro. Contando quadros, o roteiro começava aos
+   **50,6 s** em vez dos 30,5 s do roteiro da varredura — outro ponto da linha do tempo, outra
+   tela, outro desfecho.
+3. **E o mesmo instante não é o mesmo estado.** Conduzindo pelo relógio, aos **30,5 s** a roda no
+   caminho do core está **parada** (1 imagem distinta em 100 quadros) enquanto no da varredura
+   anima. Ou seja: os dois caminhos não estão no mesmo ponto da linha do tempo quando o relógio
+   marca o mesmo número — e é isso que o próximo experimento tem de separar (o que a varredura
+   apresenta que o core não apresenta, ou o contrário).
+
+Os instrumentos ficam no teste: `CLASSE_ATUAL` (quem roda) e `RELOGIO` (em que instante), e os
+mesmos instantes do roteiro da varredura (30 500 / 33 000 / 35 000 / 36 500 / 38 000 ms) valem para
+os dois caminhos.
+
+**4. O relógio virtual para, e é isto que prende a roda.** Medido com um roteiro que tecla de dois
+em dois segundos e meio entre 25 s e 75 s: **517 036 quadros entregues ao frontend com o relógio
+virtual em ~25,4 s** — 426 ms de tempo virtual em meio milhão de quadros. O `run_frame` fecha cada
+volta quando a máquina apresenta um quadro *ou* quando gasta `MAX_STEPS_PER_FRAME` (200 000) voltas;
+com o guest num laço que não avança o relógio, o orçamento de voltas acaba **antes** do próximo
+temporizador vencer, e o relógio — que é quem dispara os temporizadores da roda — nunca anda. A
+roda não fica lenta: ela para.
+
+**5. A soltura da tecla não é o fator.** No roteiro da varredura a tecla é **presa e nunca solta**
+(não há passo `Solto` no roteiro que pede a abertura, e o `Passo::Tecla` empurra só `(avk, true)`),
+enquanto no caminho do core o botão era apertado e solto 300 ms depois. Mantendo o botão preso no
+teste do core, o desfecho é **o mesmo**: 1 imagem distinta em 100 quadros e pedido zero. A
+diferença não está no par aperta/solta.
+
+**6. Com a captura de serial no core, a pergunta virou o foco.** O core ganhou o mesmo
+instrumento da varredura (`ZEEBX_CORE_SERIAL`), e ele mostra o que a roda faz por dentro nos dois
+caminhos. A diferença está numa consulta:
+
+```text
+varredura   [  30508 ms] ... AND GAMEINFO.class_id = -1 -> 0 linha(s)
+            [  38022 ms] ... AND GAMEINFO.class_id = 17359702 -> 2 linha(s)   <- o foco, e o pedido sai
+core        [  50611 ms] ... AND GAMEINFO.class_id = -1 -> 0 linha(s)
+            [  53033 ms] ... AND GAMEINFO.class_id = -1 -> 0 linha(s)        <- a tecla é tratada, o foco não vem
+```
+
+`17359702` é `0x0108E356`, o Alien Breaker — o mesmo que a varredura pede para abrir. No core a
+tecla **é tratada** (a roda cria o `IValueModel` em `0x01028e3c`, pendura o `0x5000` no formulário e
+liga o `FID_ACTIVE`), mas o foco nunca vira um jogo: a consulta continua com `-1`. É esta a
+pergunta do próximo experimento — **de onde a roda tira a classe do item em foco, e por que ela sai
+`-1` no caminho do core** —, e agora há como medi-la, porque o instrumento existe nos dois lados.
+
+**7. A árvore de widgets é a mesma, e o primeiro confirmar faz o mesmo — a divergência está depois.**
+Comparando as duas capturas no instante da primeira tecla, as árvores são **idênticas**, linha por
+linha: mesmos endereços, mesmas classes, mesmos tratadores. O `0x300007d0` que a §7.6 mede
+(`classe 0x1028e19`, 39×25 em (100,21), dois filhos) está nos dois, pendurado na barra
+`0x1028e3f`, cujo tratador é a `0x77300` — a que responde "tratei" para qualquer tecla.
+
+E o **primeiro** confirmar faz o mesmo nos dois: `IWeb` (`0x0100550d`), display, e
+`prop 0x5064=0x1` (o `FID_ACTIVE`) — na varredura aos 30 910 ms, no core aos 53 434 ms.
+
+A divergência aparece **na tecla seguinte**: na varredura, a seta para baixo (33 023 ms) e a da
+direita (35 023 ms) produzem atividade (`IWeb` + display, uma vez cada); no core, as teclas
+seguintes não produzem **nada** na captura. Mesma árvore, mesmo primeiro efeito, e a segunda tecla
+se perde — o que aponta para a **entrega do evento**, e não para o estado da tela. É a única
+variável que difere entre os dois caminhos: lá a tecla entra como tecla do console, aqui ela é
+traduzida do controle.
+
+**8. E só **uma** tecla chega à máquina.** O instrumento que faltava — a linha da entrega, no
+próprio despacho — respondeu de imediato. Na execução inteira do caminho do core, a máquina recebeu
+**um único par**:
+
+```text
+[36612 ms] <tecla 0xe064 aperta para 2 tratador(es) na tela e 0 fora, tratada>
+[36771 ms] <tecla 0xe064 solta  para 2 tratador(es) na tela e 4 fora, tratada>
+```
+
+As **sete teclas seguintes do roteiro não chegam à máquina** — nem como aperta, nem como solta. Isso
+não é o applet ignorando: é o evento não chegando. Com a primeira tecla tratada e as demais ausentes,
+a pergunta muda de lado: ou a **tradução do controle** não produz as bordas seguintes, ou a **fila**
+da máquina não é esvaziada depois desse despacho. É o próximo experimento, e ele é de código, não de
+comportamento do applet — a instrumentação para ele já está na captura.
+
+**9. E só uma tecla chega, em três variações.** O mesmo instrumento, rodado nos dois caminhos,
+compara o que entra na máquina:
+
+```text
+varredura  [30510] 0xe064 aperta   [33023] 0xe032 aperta   [35023] 0xe034 aperta
+           [36508] 0xe034 aperta   [38024] 0xe064 aperta      <- as cinco do roteiro, todas tratadas
+core       [36612] 0xe064 aperta   [36771] 0xe064 solta      <- um único par, e mais nada
+```
+
+E o fato se sustenta em três variações, todas medidas: botões diferentes, o **mesmo** botão quatro
+vezes, e um aperto de **120 quadros** (contra 8) — em todas, a máquina recebe **uma** tecla e as
+seguintes não aparecem, nem como aperta nem como solta. Na varredura, a captura mostra as cinco, uma
+a uma, cada uma tratada por dois tratadores.
+
+Isso não é o applet: é a **entrega**. Depois da primeira tecla o caminho do core não leva mais
+nenhuma à máquina, e é essa a pergunta do próximo experimento — com o instrumento já nos dois lados
+(a linha da entrega na captura) e o roteiro da varredura como referência do que deveria aparecer.
+
+**10. O pad muda, a entrega não chega — e há um atalho que consome setas.** Medindo direto a
+tradução (impressão temporária do que `le_pad` devolve por quadro), o pad muda **corretamente** em
+todos os passos:
+
+```text
+0x0 -> 0x1       aperta o botão 1 (o confirmar)
+0x1 -> 0x1  ...  segura
+0x1 -> 0x0       solta
+0x0 -> 0x4000    aperta o direcional para baixo
+```
+
+Ou seja: a leitura do controle está certa e as bordas existem. O que não acontece é a **entrega** —
+a captura registra uma tecla e as outras não aparecem. E no despacho das teclas há um caminho que
+**consome as setas antes de entregá-las**: o rolamento do HTML em foco, que devolve "tratei" para
+cima/baixo quando há um widget de HTML com foco, e sai do laço antes de chamar tratador nenhum.
+Também merece olhar: o `continue` dele não passa pela linha da captura, então uma seta consumida ali
+**não deixa rastro** — o que faz "a tecla não chegou" e "a tecla foi consumida pelo rolamento" se
+parecerem.
+
+**11. O que ficou refutado, para não repetir o caminho.** Duas hipóteses caíram por medição, e as
+duas eram boas:
+
+- **"a sessão parou depois da primeira tecla, e por isso a fila não é esvaziada"** — refutada: a
+  máquina continua executando **84 360 instruções por quadro** depois do confirmar. Sessão parada não
+  executa nada.
+- **"o atalho do rolamento do HTML come as setas"** — insuficiente: ele só consome **cima e baixo**,
+  e a seta da **direita** também não chega à captura.
+
+O que sobra, medido: o pad **muda** em todo passo (`0x0->0x1`, `0x1->0x0`, `0x0->0x4000`), as
+bordas existem, `Session::set_key` delega para a fila da máquina sem intermediário — e a captura
+registra **uma** tecla. Entre "a fila recebeu" e "o despacho entregou" não há mais nada no caminho
+além dessas duas linhas. O próximo experimento é instrumentar exatamente esses dois pontos, num
+commit só: uma linha em `Session::set_key` (entrou na fila) e a linha que já existe em `flush_keys`
+movida para o **topo** do laço (saiu da fila, antes de qualquer atalho consumir).
+
+**12. O quadro que fecha, com dois fatos que ainda não encaixam.** Três medições da mesma execução:
+
+- o pad **muda** em todos os sete passos (`0x1`, `0x4000`, `0x8000`, `0x8000`, `0x1`, `0x1`, `0x4000`);
+- a tradução **funciona no crate do core** — provado com pads construídos à mão:
+  `tradução de b1: [(57444, true)]`, que é `0xe064`, o confirmar;
+- e a captura registra **um** par de teclas, com o relógio virtual **parando em 37 012 ms** depois do
+  confirmar.
+
+O que **encaixa**: com o relógio parado, o guest deixou de chegar às fronteiras de API, e é nelas
+que a fila de teclas é esvaziada — as teclas seguintes ficam **presas na fila**, e é por isso que a
+captura não as mostra. Isso explica o sintoma inteiro (tela parada, teclas sem efeito) sem precisar de
+nenhum defeito novo.
+
+O que **não encaixa ainda**, e é o próximo experimento: o guest executa 84 360 instruções por quadro
+depois do confirmar, e uma volta com esse trabalho deveria voltar de `advance` e passar por
+`deliver_signals`. Se ele não passa, a pergunta é **onde a volta fica presa** — e a medição é uma
+linha em `advance_once_inner`, dizendo se `deliver_signals` roda depois do confirmar.
+
+### 7.8 A causa estava no core: as telas intermediárias do `Update` não eram consumidas
+
+Quando o guest chama `IDISPLAY_Update` **dentro de um callback** — e a transição da Z-Wheel faz isso
+num laço síncrono, umas duzentas vezes —, a máquina guarda uma tela por chamada
+(`quadros_do_update`). Quem as mostra é o frontend, **uma por quadro**, sem avançar o relógio: a
+janela as consome (`ui/mod.rs`) e a sessão sem janela também (`main.rs`). **O core Libretro não as
+consumia.**
+
+Com a fila cheia, `advance_once` devolvia "apresentou" **para sempre** — sem rodar o guest, sem
+fronteira de API, sem esvaziar a fila de teclas. Medido, na Z-Wheel pelo caminho do core:
+
+```text
+antes    relógio parado em 37 012 ms · 1 par de teclas em toda a execução · pedido de abertura 0x0
+depois   relógio chega a 78 983 ms  · as 8 teclas do roteiro, uma a uma, cada uma tratada
+```
+
+E o ciclo fecha, no caminho que o RetroArch usa:
+
+```text
+passo 1: abertura 0x0108e356, 11 assinatura(s) distinta(s)
+depois da tecla: 11 imagens distintas em 100 quadros, relógio 566 ms   <- a sessão nova, o jogo rodando
+pedido de abertura no caminho do core: 0x0108e356
+6886 quadros, 19 088 154 instruções em 61 814 ms virtuais
+```
+
+`0x0108E356` é o **Alien Breaker**, o mesmo jogo que a varredura pede — e o relógio em 566 ms é a
+sessão do jogo, que começou do zero: o core **abriu e executou**. A volta à roda fica medida e não
+cobrada: depende de o jogo terminar sozinho, e o que a grade põe em foco é o primeiro título da
+pasta.
+
+**A volta à roda, medida e ainda não provada.** O roteiro do teste do core virou configurável
+(`ZEEBX_CORE_TECLAS=ms:id`, com o `id` do RetroPad — `1` é o `Y`, o confirmar), para a prova poder
+ser roteirizada como na varredura. Com ele, a tentativa óbvia — uma pasta com a Z-Wheel e **um jogo
+que termina sozinho** (o `Zeebo Clube`, medido na varredura) — **não lança**: a roda reage ao
+confirmar (50 imagens distintas) e o pedido fica em zero. A grade depende do **conteúdo** para pôr o
+foco, e com dois títulos o roteiro de navegação tira o foco do único que existe.
+
+Com a pasta cheia (62 jogos), o roteiro da doc lança e executa (o `0x0108E356`), e a volta fica em
+`false` porque **o jogo em foco — o Alien Breaker, o primeiro em ordem depois da navegação — não sai
+sozinho**. Fica medido e registrado: falta um roteiro que abra, na pasta cheia, um dos dois títulos
+que terminam sozinhos.
+
+**A volta à roda: o que a medição delimitou.** Três pastas, o mesmo teste, o mesmo roteiro
+padrão — e só uma lança:
+
+```text
+62 jogos (a pasta cheia)   lança e executa (0x0108E356); a volta fica em false porque o jogo em
+                           foco nao sai sozinho
+3 jogos (Action Hero 3D, Alice, Zeebo Clube)   nao lanca: a primeira tecla produz 50 imagens
+                           distintas (uma transicao) e o pedido fica em zero
+2 jogos (Zeebo Clube)       nao lanca, com o mesmo sintoma
+```
+
+Ou seja: **a grade só põe foco alcançável com catálogo grande**, e é isso que a navegação do roteiro
+precisa para escolher — e não a quantidade de títulos em si, porque a lista é montada pelo catálogo.
+A volta à roda fica, portanto, dependente de duas coisas ao mesmo tempo: um catálogo onde o roteiro
+ache o foco, e um jogo que **saia sozinho** nesse foco. O `Zeebo Clube` e o `Zeebo App` são os dois
+que saem (medidos na varredura), e nenhum dos dois é alcançado pelo roteiro na pasta cheia.
+
+Quatro tentativas, e todas com o mesmo desfecho — o lançamento **só acontece com a pasta cheia**:
+
+```text
+2 jogos, roteiro da doc                     nao lanca
+3 jogos (Action Hero 3D, Alice, Zeebo Clube) nao lanca
+3 jogos com um titulo que PARA NA HORA       nao lanca
+4 jogos, instantes da varredura (30,5 a 38 s) nao lanca
+```
+
+A terceira foi a mais promissora: o `Zeebo Channels - Opera Mini` **não cria o applet** e a sessão
+para logo, então a volta à roda seria exercitada de verdade. E o título da grade vem do **nome do
+pacote** (é o que a varredura grava no catálogo), então renomeei a cópia para `Alien Z` para ela cair
+na terceira posição alfabética — que é onde o roteiro põe o foco na pasta cheia. Mesmo assim, sem
+lançamento.
+
+O que isso delimita: **não é o título nem o número de arquivos** — é o que a grade monta. Com poucos
+títulos ela não oferece o foco que o roteiro alcança, e com muitos ela oferece, mas aí o foco cai num
+jogo que não sai sozinho. As duas condições precisam valer ao mesmo tempo, e é isso que falta montar.
+
+**A barra pergunta à lista todo quadro, e nós respondemos zero.** Na captura, o par `(barra,
+endereço da lista)` aparece **14 319 vezes**, uma a cada 5 ms — um laço de consulta da barra
+`0x01028e3f` ao roller `0x30000ad0`, com o **endereço do filho no lugar do seletor**. É o caso que a
+§5.3 já conhece ("o acessador é chamado com o endereço de um filho no lugar do seletor"), e a nossa
+resposta é o `OK` seco daquele ramo.
+
+O que faz disso a próxima pista: **é uma pergunta repetida**, e o que a barra faz com a resposta não
+está medido. Se ela pergunta a cada quadro para saber *qual item está escolhido* — ou *quantos* a
+lista tem —, o zero que devolvemos é a diferença entre a grade escolher e não escolher.
+
+**Onde está a lista de jogos, medido na árvore.** A captura de serial despeja a árvore de widgets na
+primeira tecla, e nela a roda tem **dois** rollers (classe `0x01028e14`):
+
+```text
+0x30000ad0  tratador 0x75724  640x330 em (0,50)     <- a LISTA de jogos
+0x30000cd0  tratador 0x6089c  440x49 em (100,405)   <- a roda de baixo (Jogar, Comprar, ...)
+```
+
+O de baixo é o que a doc §7.3 já conhece (é o `0x6089c` que desenha a moldura azul ao receber
+`SETFOCUS`). O de cima, `0x30000ad0`, com `640x330` — a área inteira da grade — e tratador `0x75724`,
+é a **lista de jogos**: é nele que vive a escolha que o confirmar transforma no `class_id` do
+lançamento.
+
+É o próximo experimento, e agora com endereço e tratador na mão: registrar o que o `0x30000ad0`
+recebe enquanto o roteiro navega (o censo já mostra a classe `0x01028e14` recebendo `0x801` dez vezes)
+e o que ele faz no confirmar.
+
+**A hipótese do último jogado caiu.** Zerando o cache (onde a roda grava o estado dela, dentro do
+pacote extraído) o lançamento continua a ser `0x0108E356` — o mesmo Alien Breaker. A escolha é
+**determinística** e não depende do estado que as execuções anteriores deixaram.
+
+O que continua de pé, medido: a consulta da grade devolve 120 linhas fundindo oficiais e locais, e o
+jogo que o roteiro alcança é o mesmo com ou sem a cópia renomeada que eu inseri. Ou seja, o roteiro
+chega a um **jogo**, e não a uma **posição** da lista — o que só fecha com uma leitura da própria
+grade, que fica como próximo experimento.
+
+**A lista é fundida, e a ordem não é a alfabética.** Medido no catálogo que a roda abre: **59
+títulos oficiais** (curtos — `Alice`, `Alien Breaker`) mais **61 locais** (o nome do pacote —
+`Alice no Pais das Maravilhas (Brazil) (Es,Pt)`), **120 linhas** na consulta da grade. Ordenados por
+título, os seis primeiros são:
+
+```text
+Action Hero 3D                                  (oficial)
+Action Hero 3D - Wild Dog & IMICRO3D (...)      (local)
+Alice                                           (oficial)
+Alice no Pais das Maravilhas (...)              (local)
+Alien A (Brazil) (Es,Pt)                        (a copia quebrada, renomeada por mim)
+Alien Breaker                                   (oficial)
+```
+
+O lançamento, mesmo assim, foi `0x0108E356` — **o Alien Breaker**, o sexto. Logo o foco da grade
+**não é a terceira linha da lista fundida**. O que sobra como explicação medida é a ordem da própria
+roda: ela guarda `dt_lastplayed` e tem a aba "Novos / Recentes", e `Alien Breaker` é exatamente o
+jogo que **estas execuções vêm abrindo** — o mais recente é o primeiro.
+
+Quinta tentativa, com a pasta **cheia** e o título quebrado encomendado para a terceira posição:
+ligações simbólicas para os 62 pacotes (sem duplicar 705 MB) mais uma cópia real do `Opera Mini`
+renomeada para `Alien A`, que ordena **antes** do `Alien Breaker`. Resultado: o pedido continua a ser
+`0x0108E356` — **o Alien Breaker**, não o `Alien A`. O foco da grade **não segue a ordem de título**
+que eu supus: o `class_id` do relatório (`17359702`) é o que a grade escolhe por conta própria.
+
+Isso fecha o que dá para medir sem entrar na grade: lançamento e execução provados nos dois caminhos,
+e a **volta** dependendo de um item em foco que saia sozinho — com a grade não obedecendo à ordem que
+se vê de fora.
+
+É o próximo experimento, com o alvo já estreito: **descobrir como a grade escolhe o item em foco na
+pasta cheia** (o relatório diz `class_id = 17359702`, o terceiro em ordem de título) e reproduzir essa
+condição numa pasta onde o terceiro seja um título que sai — ou aceitar, com a medição na mão, que a
+volta à roda fica demonstrada só no aparelho.
+
+**13. O armazenamento muda o instante, e não a prisão.** O caminho da varredura usa o armazenamento
+padrão (a config do usuário) e o do core usa o que o frontend entrega; apontando o teste do core
+para a árvore do usuário (`ZEEBX_CORE_SISTEMA=$HOME/.config/zeebx`), o mesmo número de quadros leva
+a roda a **36,6 s** em vez de **50,6 s** — o estado do aparelho muda quando as coisas acontecem, o
+que confirma que os dois caminhos não se comparam por relógio. Mas a prisão depois do confirmar
+continua igual (1 imagem distinta em 100 quadros, pedido zero). Não é artefato da pasta.
+
+A conta, com os números que saíram (o teste ganhou `INSTRUCOES` ao lado do `RELOGIO`; o acesso
+`Session::instrucoes` já existia):
+
+```text
+antes da tecla    1 060 495 350 instruções · 55 088 ms virtuais · 55 imagens distintas em 100 quadros
+depois da tecla   1 068 931 395 instruções · 51 012 ms virtuais ·  1 imagem distinta em 100 quadros
+                  -> +8 436 045 instruções em 100 quadros = 84 360 por quadro, e 4,2 ms de relógio
+```
+
+**A roda não está presa nem ociosa: ela roda e não apresenta.** 84 mil instruções por quadro é
+trabalho de verdade (o mesmo patamar da varredura, ~17 milhões por segundo virtual), e o relógio
+anda 4,2 ms por quadro em vez dos 16,67 de um quadro cheio — porque a volta termina antes, com a
+máquina devolvendo o controle sem trocar o buffer. O que ela faz nesse estado é **esperar um
+evento**, e é isso que as teclas do RetroPad não produzem no caminho do core — e que o roteiro da
+varredura produz, porque lá as teclas entram como teclas do console e não como controle.
+
+Some-se a isso o teto de voltas por quadro (o item 4 acima): com o guest num laço que devolve o
+controle sem apresentar, o `run_frame` gasta o orçamento antes do próximo temporizador vencer.
+
+O próximo experimento é este, e ele é de uma pergunta só: **quantas voltas cada caminho gasta por
+quadro virtual, e quantas delas avançam o relógio**. A varredura dá uma volta por iteração e o core
+acumula até o teto; se o teto é atingido em laço sem relógio, a diferença entre os dois caminhos
+está aí, e não no roteiro nem na tecla. O instrumento para isso (contar voltas do motor por quadro)
+ainda não existe no core: `Session::machine` é privado do motor, e expor um acesso público é
+mudança no `src/`, que custa os doze trabalhos de CI — vale a pena fazer isso junto de outra
+mudança, não sozinho.
+
+### 7.9 Retorno à roda, observado na captura serial
+
+A captura do caminho do core registra o retorno que o teste antigo não conseguia afirmar pelo
+`CLASSE_ATUAL`: depois da sessão do jogo, a Z-Wheel volta a construir seus objetos. Em
+`/tmp/quem.txt`, medido no roteiro completo, aos `78611 ms` aparecem de novo
+`0x01028e14`/`0x01028e05` e os `IValueModel`; aos `85451 ms` ela reconstrói a barra, lê a lista e
+consulta `GAMEINFO.class_id = 17359702`. O mesmo trecho grava `StringLastAppRan = 279369`, atualiza
+`playcount/dt_lastplayed` e destrói o contexto EGL do jogo:
+
+```text
+78611 ms  classe 0x01028e14 · classe 0x01028e05 · IValueModel · GAMEINFO
+85452 ms  StringLastAppRan = 279369 · UPDATE GAMEINFO · eglDestroyContext · eglDestroySurface
+```
+
+Isso é a volta ao shell observada no guest: o jogo escolhido sai, o core reabre a Z-Wheel e ela
+monta a biblioteca outra vez. O teste do core ainda relata `voltou=false` quando a janela de espera
+termina antes desse desfecho ou quando o foco cai num título que não sai; a captura é a evidência
+mais direta do caminho que realmente aconteceu.
+
 ## 8. O que ainda não funciona
+
+### 8.1 Medido em 22/09/2026: a roda não reage a tecla, e a causa era uma classe
+
+Com o roteiro da varredura (`ZEEBX_ROM_TECLAS=30500:k0xe064,33000:k0xe032,…`) a roda sobe, desenha
+e **não reage**: os cinco quadros gravados um meio segundo depois de cada tecla saem **idênticos**
+(mesmo `sha1`), 86% brancos, e o log dela termina em
+`Shop_Action.c:77 Unable to create instance of IDOWNLOAD in ShopAction_Init` seguido de
+`GameLib_Form.c:1315 Unable to init ShopAction in Gamelib_CheckPreLoaded` — a biblioteca de jogos
+não monta, e sem grade nenhuma tecla tem o que mover.
+
+O `IDOWNLOAD` é a classe **`0x01000000`**, que estava recusada como "só o `QVERSION`". O
+`AEEClassIDs.h` do SDK 4.0.2 diz, em três linhas seguidas: `QVERSION` é `0x01000000`,
+`AEECLSID_PRIV` é `QVERSION` e **`AEECLSID_DOWNLOAD` é `AEECLSID_PRIV`**. A leitura anterior parou
+na primeira das três.
+
+Atendida por sonda, o abort **desaparece** do log e a execução sobe (473 828 → 474 692
+instruções; 7 353 → 7 394 chamadas de API), mas a roda ainda **não monta o menu**: ela fica no
+pulso descrito em §4 — um timer, 2 582 voltas de 16,6 ms lendo pontos e fila de download, sem
+desenhar nada de novo. É ali que a investigação está agora.
+
+**A árvore de widgets na primeira tecla explica o "não reage".** Com a captura de serial ligada na
+varredura (`ZEEBX_ROM_SERIAL`), o despejo da primeira tecla (30 533 ms) mostra **três** widgets: o
+formulário raiz `0x1028e51` com dois filhos, e mais dois objetos de classe `0x0`, sem tratador, sem
+tamanho e sem texto. Não há palco, roller, barra nem grade — não existe o que uma tecla mova. O que
+se vê na tela é o *splash* herdado da sessão, e não desenho da roda.
+
+E a captura diz o que ela faz no lugar disso, na ordem:
+
+```text
+  0 ms  classe 0x0100104f  ... abriu tt_prefs.db, asset_cache, tt_game_info, tt_dlqueue.db
+  0 ms  sql SELECT * FROM GAMEINFO, TITLETEXT WHERE ... AND GAMEINFO.class_id = -1 -> 0 linha(s)
+  0 ms  classe 0x01028e47 (formulário) · 0x01028e19 · 0x01028e3f (barra) · 0x0100550d (IWeb) 2x
+  0 ms  prop 0x216=0x1 em 0x30000650
+  6000 ms  prop 0x216=0x0
+  7000 ms  prop 0x216=0x0 · classe 0x01006c01 (cartão SIM)
+30533 ms  primeira tecla: 3 widgets
+```
+
+Ou seja: a consulta ao `tt_game_info` para `class_id = -1` volta **vazia**, o `IWeb` é criado duas
+vezes e não é chamado, e o sinalizador `0x216` é ligado e desligado entre 6 s e 7 s. Depois disso a
+roda fica parada. É ali — e não na entrada — que o item 8 está preso.
+
+### 8.1.1 O slot 5 do controle de sistema: a primeira tecla não é inerte
+
+Pressionar o confirmar **cedo** (3 s, e não os 30 s do roteiro da doc) não é inerte: a varredura
+abortava com
+
+```text
+erro: laço parou em Unimplemented { addr: 0xf0030014, args: [0x300006d0, 2, 0, 0xf0030014], caller: 0x81898 }
+```
+
+e o endereço decodifica pelo próprio esquema do emulador — `API_BASE + interface*0x1000 + slot*4`,
+com `API_BASE = 0xf0000000` — em **`Interface::SystemCtl` (48), slot 5**. Ou seja: no confirmar, a
+Z-Wheel chama o slot 5 do controle de sistema, com o modo em `r1 = 2`, e nós não o tínhamos.
+
+A tabela de slots traz `"slot5"`, que é **marcador**: `aee::e_marcador` faz o despacho devolver
+`None`, e a execução para ali de propósito — "um travamento é melhor que uma abertura errada". O
+nome veio do firmware, desmontado de `1.1.2_APPS.bin` (`ferramentas/firmware.py`, Thumb):
+
+```text
+vtable 0x10691ea8     slot[3] = 0x10e9fdb6   (DefinirModo)
+                      slot[4] = 0x10e9fe7a
+                      slot[5] = 0x10e9fe92   <- o que a roda chama
+                      slot[6] = 0x10e9ff84   (Consultar)
+```
+
+O slot 5 recebe `(this, modo, opção)` — a opção com `-1` valendo "a do aparelho", lida de
+`0x114287ec` — e a **última coisa que faz é `bl 0x10e9fdb6`**, que é o corpo do `DefinirModo`. É o
+slot 3 com um argumento a mais. Implementado assim, o abort **desaparece** e a roda passa a receber
+as sete teclas do roteiro sem parar — mas **não redesenha**: os sete quadros continuam idênticos
+(`sha1` igual), e o pedido de abertura não aparece.
+
+### 8.1.2 A causa: a classe do cartão SIM estava sendo oferecida
+
+O `268d6fb` (21/09) pôs `AEECLSID_SIMCARDCTL` (`0x01006c01`) na fábrica, para calar o
+`tectoymain.c:1668 ERROR: Unable to create instance of AEECLSID_LCT_SIMCARDCTL, cannot do SIM
+check`. O comentário longo de `Interface::SimCardCtl` já dizia que **aquele log é o jogo tomando o
+caminho certo**: recusada a classe, a Z-Wheel põe o estado em `0x27` e o `0x82464` chama a
+`0x1f7b4`, que avança a interface; oferecida, o slot 3 responde zero, o estado vira `0x28`, e o
+`0x82464` **não faz nada com ele**. Era o `0x28` — "a tela fica onde está, calada".
+
+O A/B, medido no `bench` sem janela, 43 s de relógio virtual, mesmo roteiro nos dois:
+
+```text
+com a classe oferecida    474 692 instruções · 2582 voltas · 1 timer · 6 chamadas de IMedia
+                          5 quadros IDÊNTICOS (sha1 igual) · 0 quadro apresentado
+com a classe recusada     750 milhões de instruções · 6572 voltas · 4 timers · 32 chamadas de IMedia
+                          5 quadros DIFERENTES · 1 quadro apresentado
+```
+
+E a varredura passa a mostrar o que a roda desenha — a **grade da biblioteca local**, com os
+nossos jogos em três colunas, a partir de 37,6 s, que é depois do confirmar em "Jogar":
+
+```text
+texto desenhado na tela:
+    37605 ms  (427, 272)  Alien Breaker
+    37622 ms  (42, 272)  Action Hero 3D
+    37622 ms  (271, 272)  Alice
+```
+
+Falta o **pedido de abertura**: ele ainda não aparece, e o novo candidato está no próprio
+relatório — `IWidget::Acessador seletor 0x7001` entrou na lista de APIs que faltaram, e a `0x7001`
+é o evento que a transição manda no fim (§7.3).
+
+**A ponte do catálogo, e o que ela não resolve.** A roda não lê a pasta de ROMs: lê o
+`tt_game_info` do perfil, e quem liga um ao outro é o `catalog.json` que a interface grava
+(`library::sync_catalog`). A varredura não o alimentava — medido: com `ZEEBX_ROM_INSTALADOS`, o
+banco do perfil abria com as 59 linhas oficiais do pacote e a `ZEEBX_LIBRARY` com **zero**. A
+varredura agora varre a pasta da ROM e sincroniza (63 linhas passam a entrar), o que é necessário
+— mas **não suficiente**: a árvore de widgets na primeira tecla continua com os mesmos três, e a
+roda continua sem montar o palco (`0x01028e05`) nem o roller (`0x01028e14`), que são os dois
+objetos por onde passa a montagem do menu (§4 a §5.4). O `0x01028e19` que a §2.2 cita **é** criado,
+uma vez, logo depois do formulário — e é o único do trio.
+
+Duas armadilhas de instrumento saíram desta medição, e as duas estão consertadas no código:
+
+- **O passo do roteiro sem o `k` era descartado em silêncio.** Escrito na forma da bancada
+  (`30500:0xe064`), o roteiro inteiro virou "nenhuma tecla" sem uma linha de aviso, e a medida
+  dizia que a roda não responde — quando quem não apertou nada foi o roteiro. Agora o `k` é
+  opcional (o botão vem primeiro, porque `up` e `down` são nomes dos dois) e o que for descartado
+  sai como aviso.
+- **A varredura não tinha captura de serial.** A árvore de widgets da primeira tecla, as classes
+  criadas e os bancos abertos vão para a captura de serial, que é onde a instrumentação escreve sem
+  se misturar com o log do jogo — e ela só existia no `run` (`--serial=`). Sem ela, "para quem foi
+  esta tecla?" só se respondia com janela aberta, que é o que a varredura existe para não exigir.
+  Agora é `ZEEBX_ROM_SERIAL=<arquivo>`.
+- **A varredura não tinha sonda nem a mostrava.** `ZEEBX_ROM_SONDA=0xCLSID,…` responde a classe
+  com um objeto de observação e o relatório ganhou a seção "o que o jogo chamou nas classes de
+  sonda", slot a slot, com os textos que os argumentos apontam. Foi assim que se viu que a roda
+  pega o objeto, pergunta o slot 2 (`QueryInterface`), usa e solta.
+
+### 8.2 O que continua apoiado em hipótese
 
 Honestidade sobre o estado: a roda sobe, desenha, compõe na tela e gira — mas boa parte do caminho
 continua apoiada em hipótese registrada, não em leitura confirmada. O que **ainda não foi

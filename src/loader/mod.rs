@@ -10,6 +10,7 @@
 //! ```
 
 pub mod archive;
+pub mod sete_z;
 pub mod miffile;
 pub mod modfile;
 pub mod resfile;
@@ -39,8 +40,16 @@ pub const MODULE_BSS_SLACK: usize = 1024 * 1024;
 /// Heap do módulo — onde `MALLOC` vai servir.
 ///
 /// 64 MB porque o Quake mede a memória livre antes de carregar os `.pak` e desiste com
-/// "Not enough free memory" se ela for pequena. O console tem 128 MB de RAM, e o tamanho aqui
-/// é escolha nossa — só precisa ser folgado o bastante para o jogo reconhecer o aparelho.
+/// "Not enough free memory" se ela for pequena. O console tem 128 MB de RAM
+/// (`docs/01-hardware.md`), e o tamanho aqui é escolha nossa — só precisa ser folgado o bastante
+/// para o jogo reconhecer o aparelho.
+///
+/// **Medido em 22/09/2026, e o número ficou:** dobrar para 128 MB não move a Z-Wheel. Ela aloca
+/// ~64 MiB no próprio pool (o `memcheck` dela imprime `Free(67001392)`, o mesmo número nos dois
+/// tamanhos) e depois pede **o total que sobra** — 67 001 488 com 64 MB, 134 110 352 com 128 MB.
+/// O pedido acompanha o heap em vez de ser uma necessidade dele, então aumentar o heap só move o
+/// alvo. O que ficou dessa medição é a contabilidade honesta de "quanto há livre": ver
+/// [`crate::brew::heap::Heap::maior_bloco`].
 pub const HEAP_BASE: u32 = 0x1000_0000;
 pub const HEAP_SIZE: usize = 64 * 1024 * 1024;
 /// Pilha. `sp` começa no topo porque a pilha do ARM cresce para baixo.

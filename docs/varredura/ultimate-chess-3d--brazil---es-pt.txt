@@ -1,0 +1,129 @@
+Ultimate Chess 3D (Brazil) (Es,Pt)
+estado: roda
+tela: 268 cor(es), dominante 0x632c
+classes que o jogo pediu e não temos:
+  0x01002000
+classes pedidas:
+  0x01001001  (1x)
+  0x01001003  (103x)
+  0x0100100c  (3x)
+  0x0100100f  (1x)
+  0x01002000  (1x)
+  0x01004004  (3x)
+  0x01005501  (2x)
+  0x01005503  (1x)
+  0x01014bc3  (1x)
+  0x01014bc4  (1x)
+  0x01041207  (1x)
+  0x0106c411  (1x)
+chamadas ao sistema de arquivos:
+  GetFreeSpace  (0x0 0xf0003020 0x0) -> 268435456
+  GetFreeSpace  (0x0 0xf0003020 0xb7d98) -> 268435456
+  Test "udata/setting.sv0"  (0x100f77b8 0xf000301c 0x100f77b8) -> 1
+  Test "udata/setting.sv1"  (0x100f77b8 0xf000301c 0x100f77b8) -> 1
+  Test "udata/setting.sv2"  (0x100f77b8 0xf000301c 0x100f77b8) -> 1
+  Test "udata/setting.sv0"  (0x100f77d0 0xf000301c 0x100f77d0) -> 1
+  OpenFile "udata/setting.sv0"  (0x100f77d0 0x4 0xf0003008) -> 805307472
+  Write  (0x100e8e64 0x12 0xf0004014) -> 18
+  Release  (0xf0004004 0x12 0xf0004014) -> 0
+  Remove "udata/setting.sv2"  (0x100f77b8 0xf0003010 0xb7d98) -> 1
+  GetFreeSpace  (0x0 0xf0003020 0xb7d98) -> 268435456
+  Test "udata/setting.sv0"  (0x100f77b8 0xf000301c 0x100f77b8) -> 0
+  Remove "udata/setting.sv1"  (0x100f77f0 0xf0003010 0x100f77f0) -> 1
+  Test "udata/setting.sv1"  (0x100f77b8 0xf000301c 0x100f77b8) -> 1
+  Test "udata/setting.sv2"  (0x100f77b8 0xf000301c 0x100f77b8) -> 1
+  Test "udata/setting.sv1"  (0x100f77f0 0xf000301c 0x0) -> 1
+  OpenFile "udata/setting.sv1"  (0x100f77f0 0x4 0xf0003008) -> 805307472
+  Write  (0x100e8e64 0x12 0xf0004014) -> 18
+  Release  (0xf0004004 0x12 0xf0004014) -> 0
+  Remove "udata/setting.sv0"  (0x100f77d0 0xf0003010 0xb7d98) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Ultimate-Chess-3D--Brazil---Es-Pt--79da4b9fbe2bf1905410522d7e3b9433beb82117c2eb25cd3997c1ae4523ac3c/mod/263019/pt_main.sar (No such file or directory (os error 2))
+  OpenFile "pt_main.sar"  (0x1001053c 0x1 0xf0003008) -> 0
+  GetLastError  (0xf0003024 0x1 0xf0003008) -> 1
+  Release  (0xf0003004 0x1397c 0xf0003008) -> 0
+  OpenFile "main.sar"  (0x1000091c 0x1 0xf0003008) -> 805307600
+  Read  (0x100e9264 0x400 0xf000400c) -> 1024
+  GetInfo  (0x200ffd60 0xf0004018 0x100e9271) -> 0
+  Read  (0x100e9264 0x400 0xf000400c) -> 1024
+  Read  (0x100e9264 0x400 0xf000400c) -> 1024
+  Read  (0x100e9264 0x400 0xf000400c) -> 1024
+  Read  (0x100e9264 0x400 0xf000400c) -> 1024
+  Read  (0x100e9264 0x400 0xf000400c) -> 1024
+  Seek  (0x0 0x21 0xf000401c) -> 0
+  Read  (0x10057004 0x1604 0xf000400c) -> 5636
+  Release  (0xf0003004 0x87fc8 0xf000400c) -> 0
+  Seek  (0x0 0x212e8 0xf000401c) -> 0
+  Read  (0x10053930 0x36c2 0xf000400c) -> 14018
+  Release  (0xf0004004 0x85764 0x3e23c) -> 0
+  Test "pt_main.sar"  (0x1001053c 0xf000301c 0x9063c) -> 1
+  Test "main.sar"  (0x1000091c 0xf000301c 0x9063c) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Ultimate-Chess-3D--Brazil---Es-Pt--79da4b9fbe2bf1905410522d7e3b9433beb82117c2eb25cd3997c1ae4523ac3c/mod/263019/pt_main.sar (No such file or directory (os error 2))
+  OpenFile "pt_main.sar"  (0x1001053c 0x1 0xf0003008) -> 0
+  GetLastError  (0xf0003024 0x1 0xf0003008) -> 1
+  Release  (0xf0003004 0x1397c 0xf0003008) -> 0
+  OpenFile "main.sar"  (0x1000091c 0x1 0xf0003008) -> 805307664
+  Read  (0x100e9264 0x400 0xf000400c) -> 1024
+  GetInfo  (0x200ffd50 0xf0004018 0x100e9271) -> 0
+  Read  (0x100e9264 0x400 0xf000400c) -> 1024
+  Read  (0x100e9264 0x400 0xf000400c) -> 1024
+  Read  (0x100e9264 0x400 0xf000400c) -> 1024
+  Read  (0x100e9264 0x400 0xf000400c) -> 1024
+  Read  (0x100e9264 0x400 0xf000400c) -> 1024
+  Seek  (0x0 0x21 0xf000401c) -> 0
+  Read  (0x10057004 0x1604 0xf000400c) -> 5636
+  Release  (0xf0003004 0x87fc8 0xf000400c) -> 0
+  Seek  (0x0 0x54202 0xf000401c) -> 0
+  Read  (0x10052820 0x10ff 0xf000400c) -> 4351
+  Release  (0xf0004004 0x85764 0x3e29c) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Ultimate-Chess-3D--Brazil---Es-Pt--79da4b9fbe2bf1905410522d7e3b9433beb82117c2eb25cd3997c1ae4523ac3c/mod/263019/pt_main.sar (No such file or directory (os error 2))
+  OpenFile "pt_main.sar"  (0x1001053c 0x1 0xf0003008) -> 0
+  GetLastError  (0xf0003024 0x1 0xf0003008) -> 1
+  Release  (0xf0003004 0x1397c 0xf0003008) -> 0
+  OpenFile "main.sar"  (0x1000091c 0x1 0xf0003008) -> 805307728
+  Read  (0x100e9264 0x400 0xf000400c) -> 1024
+  GetInfo  (0x200ffe08 0xf0004018 0x100e9271) -> 0
+  Read  (0x100e9264 0x400 0xf000400c) -> 1024
+  Read  (0x100e9264 0x400 0xf000400c) -> 1024
+  Read  (0x100e9264 0x400 0xf000400c) -> 1024
+  Read  (0x100e9264 0x400 0xf000400c) -> 1024
+  Read  (0x100e9264 0x400 0xf000400c) -> 1024
+  Seek  (0x0 0x21 0xf000401c) -> 0
+  Read  (0x10057004 0x1604 0xf000400c) -> 5636
+  Release  (0xf0003004 0x87fc8 0xf000400c) -> 0
+  Seek  (0x0 0x50f5c 0xf000401c) -> 0
+  Read  (0x100b4378 0x32a6 0xf000400c) -> 12966
+  Release  (0xf0004004 0x85764 0x3e2a4) -> 0
+  Test "pt_main.sar"  (0x1001053c 0xf000301c 0x9063c) -> 1
+  Test "main.sar"  (0x1000091c 0xf000301c 0x9063c) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Ultimate-Chess-3D--Brazil---Es-Pt--79da4b9fbe2bf1905410522d7e3b9433beb82117c2eb25cd3997c1ae4523ac3c/mod/263019/pt_main.sar (No such file or directory (os error 2))
+  OpenFile "pt_main.sar"  (0x1001053c 0x1 0xf0003008) -> 0
+  GetLastError  (0xf0003024 0x1 0xf0003008) -> 1
+  Release  (0xf0003004 0x1397c 0xf0003008) -> 0
+  OpenFile "main.sar"  (0x1000091c 0x1 0xf0003008) -> 805307664
+  Read  (0x100e8e0c 0x400 0xf000400c) -> 1024
+  GetInfo  (0x200ffcc8 0xf0004018 0x100e8e19) -> 0
+  Read  (0x100e8e0c 0x400 0xf000400c) -> 1024
+  Read  (0x100e8e0c 0x400 0xf000400c) -> 1024
+  Read  (0x100e8e0c 0x400 0xf000400c) -> 1024
+  Read  (0x100e8e0c 0x400 0xf000400c) -> 1024
+  Read  (0x100e8e0c 0x400 0xf000400c) -> 1024
+  Seek  (0x0 0x21 0xf000401c) -> 0
+  Read  (0x10057004 0x1604 0xf000400c) -> 5636
+  Release  (0xf0003004 0x87fc8 0xf000400c) -> 0
+  Seek  (0x0 0x6934a 0xf000401c) -> 0
+  Read  (0x10050f38 0x18d5 0xf000400c) -> 6357
+  Release  (0xf0004004 0x85764 0x3e2f4) -> 0
+arquivos não encontrados:
+  chessbotexplode_01_v01.pmd
+  chessbotgears_02_v01.pmd
+  chesswars_battlevictory1.mid
+  death03_v01.pmd
+  intro_background.png
+  pt_chessbotexplode_01_v01.pmd
+  pt_chessbotgears_02_v01.pmd
+  pt_chesswars_battlevictory1.mid
+  pt_death03_v01.pmd
+  pt_intro_background.png
+  pt_main.sar
+APIs atendidas por hipótese:
+  a música MIDI é sintetizada aqui, com timbre aproximado — o banco de instrumentos do console está no firmware que ainda não lemos

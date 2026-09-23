@@ -1,0 +1,159 @@
+# Compila, testa e abre o emulador standalone (a interface desktop) nas seis plataformas.
+#
+# O que este trabalho responde é "o binário sai, os testes passam e ele abre?", que o `release.yml`
+# **não** responde: ele roda em tag, empacota, e não pode segurar os instaladores por causa de um
+# teste. A release continua sendo só por tag — nenhum PR dispara release.
+#
+# Seis alvos, três sistemas × duas arquiteturas:
+#
+#   linux-x86_64 / linux-aarch64      ubuntu-24.04 / ubuntu-24.04-arm
+#   macos-x86_64 / macos-arm64        macos-15-intel / macos-latest
+#
+# **Runners nativos, não cross-compilação**: o `unicorn` compila o QEMU em C e o `dynarmic` compila
+# C++20, que é justamente a combinação que cross-build faz sofrer (toolchain C++ e sysroot). Runner
+# ARM64 nativo existe para Linux, Windows e macOS, e sai mais barato que manter cross.
+#
+# Custo: cada alvo compila o QEMU e o JIT, uns 15 minutos por runner. Seis runners por execução é
+# caro demais para gastar em cada push — por isso este trabalho **só roda à mão**, pela aba Actions.
+
+name: ci
+
+# **Nenhum push ou merge dispara isto.** O único gatilho automático do repositório é a tag, no
+# `release.yml`; aqui é você quem pede o run, quando quer a resposta antes de marcar uma versão.
+on:
+  workflow_dispatch:
+
+# **Um run não cancela o outro.** Medido: quatro execuções seguidas do `ci` terminaram "cancelled"
+# porque a nova derrubava o build de seis alvos que estava no meio — e nenhuma delas chegou a dizer
+# se o standalone compila no Windows ou no macOS.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  compila:
+    name: ${{ matrix.nome }}
+    runs-on: ${{ matrix.sistema }}
+    # Um alvo que ficou pendurado não pode queimar a cota da conta: seis horas de espera viram uma
+    # hora de falha.
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        # Disparo à mão é sempre a matriz inteira: quem pede o run quer a resposta dos seis alvos.
+        alvo:
+          - linux-x86_64
+          - linux-aarch64
+          - windows-x86_64
+          - windows-aarch64
+          - macos-x86_64
+          - macos-arm64
+        include:
+          - alvo: linux-x86_64
+            nome: linux-x86_64
+            sistema: ubuntu-24.04
+            binario: target/release/zeebx
+          - alvo: linux-aarch64
+            nome: linux-aarch64
+            sistema: ubuntu-24.04-arm
+            binario: target/release/zeebx
+          - alvo: windows-x86_64
+            nome: windows-x86_64
+            sistema: windows-latest
+            binario: target/release/zeebx.exe
+          - alvo: windows-aarch64
+            nome: windows-aarch64
+            sistema: windows-11-arm
+            # Windows ARM64 **não** tem o `unicorn` (falta montador MASM para ARM64 e o QEMU do Windows
+            # monta um `.asm` com o `ml` do MSVC, que só existe para x86 e x64). O alvo compila assim
+            # mesmo: o `unicorn-engine` sai do grafo por dependência condicional de alvo e o motor usa o
+            # `dynarmic`, que recompila os blocos A32. Ver `src/cpu/mod.rs`, `BackendPadrao`.
+            binario: target/release/zeebx.exe
+          - alvo: macos-x86_64
+            nome: macos-x86_64
+            sistema: macos-15-intel
+            binario: target/release/zeebx
+          - alvo: macos-arm64
+            nome: macos-arm64
+            sistema: macos-latest
+            binario: target/release/zeebx
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ci-${{ matrix.nome }}
+
+      # A lista do Linux é a do `release.yml`, mais `ninja` e `libclang` de propósito: o `dynarmic`
+      # pede gerador Ninja e o `bindgen` do unicorn carrega a biblioteca do clang. Depender do que a
+      # imagem do runner já traz funciona até o dia em que não traz.
+      - name: Dependências do Linux
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build pkg-config python3 libclang-dev \
+            libglib2.0-dev libasound2-dev libudev-dev libxkbcommon-dev libwayland-dev \
+            libgl1-mesa-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev
+
+      - name: Dependências do macOS
+        if: runner.os == 'macOS'
+        run: brew install cmake ninja pkg-config || true
+
+      # Sem debuginfo a árvore passa de mais de 5 GiB para algumas centenas de MB — o mesmo motivo
+      # que fez o build local encher o disco.
+      # O pacote da raiz é só biblioteca desde a 0.3.0: quem produz o `zeebx` é o
+      # `frontends/classical-standalone`, e sem nomeá-lo não sai binário nenhum para provar.
+      - name: Compila
+        env:
+          CARGO_PROFILE_DEV_DEBUG: "0"
+        run: cargo build --release --locked -p zeebx-classical-standalone
+
+      - name: Testes
+        env:
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
+        run: cargo test --release --locked -p zeebx -p zeebx-classical-standalone
+
+      - name: O binário existe
+        shell: bash
+        run: ls -la ${{ matrix.binario }}
+
+      # O CI também é uma bancada de teste para quem não quer compilar. Cada alvo entrega seu
+      # executável separado; o core Libretro é publicado pelo workflow libretro.yml.
+      - name: Entrega o standalone
+        uses: actions/upload-artifact@v4
+        with:
+          name: zeebx-standalone-${{ matrix.nome }}
+          path: ${{ matrix.binario }}
+          if-no-files-found: error
+          retention-days: 14
+
+      # `controles` lista o que o sistema vê de controle e sai: é o comando mais barato que
+      # exercita a inicialização de verdade (udev, gilrs) sem precisar de tela. Em cada sistema,
+      # com o comando de tempo limite que ele tem.
+      - name: O binário abre (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          file ${{ matrix.binario }}
+          ldd ${{ matrix.binario }} | head -20
+          timeout 60 ${{ matrix.binario }} controles
+
+      - name: O binário abre (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          file ${{ matrix.binario }}
+          otool -L ${{ matrix.binario }} | head -20
+          # O macOS não traz o `timeout` do GNU; o `perl` traz o alarme, e existe em toda imagem.
+          perl -e 'alarm 60; exec @ARGV' ${{ matrix.binario }} controles
+
+      - name: O binário abre (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $prova = Start-Process -FilePath "${{ matrix.binario }}" -ArgumentList "controles" -PassThru -NoNewWindow
+          if (-not $prova.WaitForExit(60000)) { $prova.Kill(); throw "o binario pendurou" }
+          if ($prova.ExitCode -ne 0) { throw "o binario saiu com $($prova.ExitCode)" }

@@ -1,0 +1,4 @@
+Kingdom Hearts V CAST (Zeebo Homebrew) (Chapter 1 + Agrabah)
+estado: não cria o applet
+motivo: nenhum .mif ao lado do módulo diz qual applet criar
+nada a apontar

@@ -1,0 +1,75 @@
+[package]
+name = "zeebx-classical-standalone"
+version = "0.3.0"
+edition = "2024"
+license = "GPL-2.0-only"
+description = "O emulador definitivo de Zeebo!"
+authors = ["ZeebxTeam"]
+repository = "https://github.com/ZeebxTeam/zeebx-emu"
+publish = false
+
+# **O nome do binário continua `zeebx`.** O pacote mudou de lugar e de nome; o que o usuário
+# digita, não. Trocar isso quebraria atalho, `.desktop`, script e a memória de quem já usa.
+[[bin]]
+name = "zeebx"
+path = "src/main.rs"
+
+[dependencies]
+# A janela do egui e tudo o que ela arrasta -- gilrs, rfd, Discord, glutin -- vêm pela feature
+# `desktop` do núcleo. Este crate não declara nenhuma delas: ele é a interface, e a interface é
+# a que o `desktop` já descreve.
+zeebx = { path = "../..", features = ["desktop"] }
+
+# **Os instaladores vivem aqui, e não na raiz.** O `cargo packager` lê o manifesto do pacote que
+# produz o binário, e desde a 0.3.0 quem produz o `zeebx` é este crate. Os caminhos de ícone
+# sobem dois níveis porque o `assets/` continua na raiz do repositório -- ele é do projeto, não
+# deste frontend.
+# Os instaladores, gerados pelo `cargo packager --release`: `.deb` e AppImage no Linux, NSIS no
+# Windows, `.dmg` no macOS. O workflow `.github/workflows/release.yml` roda isto nos três sistemas
+# quando uma tag de versão é enviada.
+[package.metadata.packager]
+product-name = "Zeebx"
+identifier = "io.github.zeebxteam.zeebx"
+publisher = "ZeebxTeam"
+homepage = "https://github.com/ZeebxTeam/zeebx-emu"
+category = "Game"
+description = "O emulador definitivo de Zeebo!"
+out-dir = "../../target/pacotes"
+before-packaging-command = "cargo build --release --locked -p zeebx-classical-standalone"
+icons = ["../../assets/icones/zeebx-512.png", "../../assets/icones/zeebx.ico", "../../assets/icones/zeebx.icns"]
+
+[[package.metadata.packager.binaries]]
+path = "zeebx"
+main = true
+
+[package.metadata.packager.deb]
+# O `libasound2t64` é o nome do ALSA a partir do Ubuntu 24.04 e do Debian 13.
+# As de áudio, entrada e GL já estavam; **as de janela faltavam**, e o defeito só apareceria
+# numa instalação de sistema mínimo: o `eframe` é declarado com as features `x11` e `wayland`, então
+# o binário linka `libX11`, `libXcursor`, `libXrandr`, `libXi` e `libwayland-client`, e o `.deb` não
+# puxava nenhuma delas. A lista abaixo é a mesma do `ci.yml`, que é o que o build precisa para
+# compilar — trocando os `-dev` pelos pacotes de execução.
+depends = [
+    "libasound2 | libasound2t64",
+    "libudev1",
+    "libgl1",
+    "libxkbcommon0",
+    "libatomic1",
+    "libx11-6",
+    "libxcursor1",
+    "libxrandr2",
+    "libxi6",
+    "libwayland-client0",
+]
+section = "games"
+
+[package.metadata.packager.nsis]
+installer-icon = "../../assets/icones/zeebx.ico"
+installer-mode = "currentUser"
+languages = ["PortugueseBR", "English", "Spanish"]
+
+[package.metadata.packager.macos]
+minimum-system-version = "11.0"
+
+[build-dependencies]
+winresource = "0.1"

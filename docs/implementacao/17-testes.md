@@ -42,9 +42,8 @@ Rust tem duas camadas de teste: as de integração, em `tests/` na raiz, cada ar
 um binário separado que só vê a **API pública** do crate; e as unitárias, junto do código em
 `#[cfg(test)] mod tests`, que podem tocar em campo privado.
 
-Aqui só existe a segunda, e não por descuido. O crate agora tem `src/lib.rs` (o binário e o
-núcleo Libretro compartilham a `Session`), mas a API pública continua mínima: um arquivo em
-`tests/` não veria a `Machine` por dentro, e é exatamente isso que estes testes precisam.
+Aqui só existe a segunda, e não por descuido: **o crate é só binário**, não tem `src/lib.rs`. Um
+arquivo em `tests/` não conseguiria nem `use zeebx::…`, porque não há biblioteca para importar.
 
 Isso combina com o que estes testes precisam fazer. Um teste que confere o recorte de um blit
 precisa montar uma `Machine`, chamar um método por slot e ler a superfície de dentro — nada disso
@@ -70,6 +69,45 @@ clonou o repositório.
 | `ZEEBX_ROM_TETO` | teto de tempo **real** por jogo, em segundos (padrão 90) |
 | `ZEEBX_ROM_SAIDA` | diretório onde gravar o relatório completo de cada jogo |
 | `ZEEBX_ROM_BASE` | diretório da linha de base: o que falta é gravado, o que existe é cobrado |
+| `ZEEBX_ROM_TECLAS` | roteiro de controle no **relógio virtual**: `ms:botão` separado por vírgula, e `ms:eixo=valor` para o manche |
+| `ZEEBX_ROM_PERFIL` | liga o perfil de custo por método de API (encarece a execução: não use para medir velocidade) |
+
+### Roteiro de controle
+
+Havia perguntas que só se respondiam com alguém apertando o controle — se a entrada chega ao
+guest, se um menu aceita a escolha. Com o roteiro, a varredura responde sozinha:
+
+```bash
+# empurra o manche para a esquerda aos 4 s, devolve ao repouso aos 6 s, confirma aos 10 s
+ZEEBX_ROM="roms/Z-Wheel.zip" ZEEBX_ROM_MS=12000 \
+  ZEEBX_ROM_TECLAS="4000:x=-128,6000:x=0,7000:y=-128,9000:y=0,10000:b1,11000:" \
+  cargo test --release varredura -- --nocapture
+```
+
+Os nomes de botão são os da tabela do aparelho (`b1`…`b4`, `start`, `up`, `left`, `down`,
+`right`), e os eixos são `x`, `y`, `z` e `rz` no curso `-128..=128`. **O passo é no relógio
+virtual**, então o mesmo roteiro vale igual com a máquina a 30% ou a 300% da velocidade do
+console. Um passo com dois-pontos e nada depois (`11000:`) solta tudo.
+
+Vale saber de um detalhe que já custou uma investigação: **a Z-Wheel é navegada pelo manche**,
+não pelos botões (ela registra `RegisterForPositionChange`). Um roteiro só de botões não move a
+roda um pixel — e o sintoma é uma imagem parada, que parece defeito de entrada.
+
+### O que a varredura **não** consegue verificar, medido
+
+Tentativa de exercitar o ciclo da Z-Wheel por aqui, com o roteiro acima: **não funciona**, e vale
+saber por quê antes de tentar de novo. Doze segundos virtuais, com e sem manche:
+
+| | com roteiro | sem roteiro |
+|---|---:|---:|
+| voltas | 1547 | 1543 |
+| instruções | 133.567.092 | 133.566.074 |
+| chamadas de API | 264.953 | 264.931 |
+
+A diferença é de mil instruções em 133 milhões: a roda **não reage** e não desenha nada neste
+caminho (zero quadros apresentados, zero texto desenhado nos dois casos). A Z-Wheel monta a
+interface pelo caminho de placa, que o laço da varredura não exercita; conclusão prática: **o ciclo
+dela só se verifica no RetroArch, com controle na mão** — e é o que o plano já dizia no item 8.
 
 ### Um jogo, com o relatório inteiro
 
@@ -213,3 +251,39 @@ estava sendo protegido.
 **O teste mede comportamento, não implementação.** Chamar o método pelo slot, como o jogo chama, e
 conferir o que saiu na superfície ou no registrador de retorno — não conferir que uma função
 interna foi chamada. É o que permite reescrever o miolo sem reescrever o teste.
+
+## A varredura precisa de cache limpo, e o motivo não é óbvio
+
+A varredura das 62 ROMs compara o resumo de cada jogo com a linha de base commitada. Ela falhou em
+seis lotes de oito depois de uma mudança de áudio, e o susto era falso: **o jogo grava os próprios
+arquivos dentro do pacote extraído** — `udata/dooopt.sav`, `udata/options`, `default.opt` — e o
+cache de extração sobrevive entre execuções.
+
+O efeito é exatamente o inverso do que parece: com o arquivo já gravado por uma execução anterior,
+o `open` que antes falhava passa a funcionar, o relatório **perde** uma pendência, e a linha de base
+acusa diferença. Cinco jogos "mudaram" por causa de save deixado para trás:
+
+```text
+Iron Sight        - udata/dooopt.sav
+Karnov's Revenge  - open falhou: .../udata/options
+                  - open falhou: .../default.opt
+```
+
+Limpar o cache **antes** de cada lote devolve o mesmo resultado de sempre: nenhuma diferença.
+
+Duas coisas ficam desta medição:
+
+1. O script de varredura limpa o cache nas duas pontas do lote, não só no fim.
+2. Nem toda falha do teste é regressão. O teste falha por dois motivos — categoria que não passa
+   (jogo sabidamente fora da lista) e diferença de linha de base —, e só a segunda interessa. O
+   resumo do script separa as duas, senão seis jogos conhecidos escondem a resposta que se quer.
+
+O script é `ferramentas/varredura_por_lotes.py`, e ele carrega as duas lições:
+
+```bash
+python3 ferramentas/varredura_por_lotes.py --roms /caminho/das/roms --ms 6000
+```
+
+O `--ms` tem de ser o mesmo com que a linha de base foi gravada (6000). Medido: com 3000 o mesmo
+jogo aparece como diferença de linha de base — o resumo tem a tela e as pendências do instante em
+que a medição parou, e parar noutro instante muda os dois.

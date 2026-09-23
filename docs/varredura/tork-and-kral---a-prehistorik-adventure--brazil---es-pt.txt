@@ -1,0 +1,22 @@
+Tork and Kral - A Prehistorik Adventure (Brazil) (Es,Pt)
+estado: roda
+tela: 53 cor(es), dominante 0x51f1
+classes pedidas:
+  0x01001001  (1x)
+  0x01001003  (1x)
+  0x01005502  (1x)
+  0x01005511  (6x)
+  0x010127d4  (1x)
+  0x01030766  (1x)
+  0x0103d8ec  (1x)
+  0x01041207  (1x)
+  0x0106c411  (1x)
+chamadas ao sistema de arquivos:
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Tork-and-Kral---A-Prehistorik-Adventure--Brazil---Es-Pt--e73ba76166703f3a8e1b6240bfef022576987734b80a8757f49c1cbc20fb0335/mod/280463/udata/gamename (No such file or directory (os error 2))
+  OpenFile "udata\gamename"  (0x1e224 0x1 0xf0003008) -> 0
+  Remove "udata\gamename"  (0x1e2b8 0xf0003010 0x0) -> 1
+  OpenFile "udata\gamename"  (0x1e2b8 0x4 0xf0003008) -> 805307024
+  Write  (0x100001dc 0x1b8 0xf0004014) -> 440
+  Release  (0xf0004004 0x1b8 0xf0004014) -> 0
+arquivos não encontrados:
+  udata\gamename

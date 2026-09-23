@@ -1,0 +1,205 @@
+Armageddon Squadron (Brazil) (Es,Pt)
+estado: roda
+tela: 30 cor(es), dominante 0x0000
+classes pedidas:
+  0x01001001  (1x)
+  0x01001003  (1x)
+  0x01001056  (1x)
+  0x01005511  (1x)
+  0x01014bc3  (1x)
+  0x01014bc4  (1x)
+  0x01041207  (1x)
+  0x0106c411  (1x)
+chamadas ao sistema de arquivos:
+  Read  (0x100106dc 0x8 0xe0001000) -> 8
+  Seek  (0x0 0x671a0e 0x300000d0) -> 0
+  Seek  (0x2 0x0 0xe0001000) -> 6756878
+  Read  (0x10022ae4 0x1d 0xe0001000) -> 29
+  Read  (0x10022ae4 0xc 0xe0001000) -> 12
+  Read  (0x10022ae4 0x63 0xe0001000) -> 99
+  Read  (0x10022ae4 0xc 0xe0001000) -> 12
+  Read  (0x10022ae4 0x553 0xe0001000) -> 1363
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Armageddon-Squadron--Brazil---Es-Pt--6e232a41cfbc78060e2d0190eeb84b117739a259f9439161582032a41fae075f/mod/280214/data/2dgfx/titlebackground.png (No such file or directory (os error 2))
+  OpenFile "data\2dgfx\titlebackground.png"  (0xaeab8 0x1 0x1) -> 0
+  Seek  (0x0 0x5163d5 0x300000d0) -> 0
+  Seek  (0x2 0x0 0xe0001000) -> 5333973
+  Read  (0x100106a8 0x4 0xe0001000) -> 4
+  Seek  (0x0 0x5163d5 0x300000d0) -> 0
+  Seek  (0x2 0x0 0xe0001000) -> 5333973
+  Read  (0x100106e0 0x4 0xe0001000) -> 4
+  Seek  (0x0 0x5163d5 0x300000d0) -> 0
+  Seek  (0x2 0x0 0xe0001000) -> 5333973
+  Read  (0x100106dc 0x8 0xe0001000) -> 8
+  Seek  (0x0 0x5163d5 0x300000d0) -> 0
+  Seek  (0x2 0x0 0xe0001000) -> 5333973
+  Read  (0x10022ae4 0x1d 0xe0001000) -> 29
+  Read  (0x10022ae4 0xc 0xe0001000) -> 12
+  Seek  (0x0 0x516407 0x300000d0) -> 0
+  Seek  (0x2 0x0 0xe0001000) -> 5334023
+  Read  (0x10022ae4 0xc 0xe0001000) -> 12
+  Seek  (0x0 0x516e60 0x300000d0) -> 0
+  Seek  (0x2 0x0 0xe0001000) -> 5336672
+  Read  (0x10022ae4 0xc 0xe0001000) -> 12
+  Seek  (0x0 0x516e70 0x300000d0) -> 0
+  Seek  (0x2 0x0 0xe0001000) -> 5336688
+  Read  (0x10022ae4 0xc 0xe0001000) -> 12
+  Seek  (0x0 0x516e9c 0x300000d0) -> 0
+  Seek  (0x2 0x0 0xe0001000) -> 5336732
+  Read  (0x10022ae4 0xc 0xe0001000) -> 12
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x1000 0xe0001000) -> 4096
+  Read  (0x10022ae4 0x7de 0xe0001000) -> 2014
+arquivos não encontrados:
+  data/2dgfx/zeebo_1.png
+  data/2dgfx/zeebo_2.png
+  data/2dgfx/zeebo_3.png
+  data/2dgfx/zeebo_4.png
+  data/2dgfx/zeebo_home.png
+  data/2dgfx/zeebo_zl.png
+  data/2dgfx/zeebo_zr.png
+  data\2dgfx\char_delete.png
+  data\2dgfx\icon_in_action.png
+  data\2dgfx\in_use.png
+  data\2dgfx\lock.png
+  data\2dgfx\lock_mini.png
+  data\2dgfx\medal_0.png
+  data\2dgfx\medal_0_mask.png
+  data\2dgfx\medal_0_mask_out.png
+  data\2dgfx\medal_1.png
+  data\2dgfx\medal_1_mask.png
+  data\2dgfx\medal_1_mask_out.png
+  data\2dgfx\medal_2.png
+  data\2dgfx\medal_2_mask.png
+  data\2dgfx\medal_2_mask_out.png
+  data\2dgfx\medal_3.png
+  data\2dgfx\medal_3_mask.png
+  data\2dgfx\medal_3_mask_out.png
+  data\2dgfx\medal_4.png
+  data\2dgfx\medal_4_mask.png
+  data\2dgfx\medal_4_mask_out.png
+  data\2dgfx\medal_5.png
+  data\2dgfx\medal_5_mask.png
+  data\2dgfx\medal_5_mask_out.png
+  data\2dgfx\metal_bar.png
+  data\2dgfx\mission_icons\campaign_1_1.png
+  data\2dgfx\mission_icons\campaign_1_2.png
+  data\2dgfx\mission_icons\campaign_1_3.png
+  data\2dgfx\mission_icons\campaign_1_4.png
+  data\2dgfx\mission_icons\campaign_2_1.png
+  data\2dgfx\mission_icons\campaign_2_2.png
+  data\2dgfx\mission_icons\campaign_2_3.png
+  data\2dgfx\mission_icons\campaign_2_4.png
+  data\2dgfx\mission_icons\campaign_3_1.png
+  data\2dgfx\mission_icons\campaign_3_2.png
+  data\2dgfx\mission_icons\campaign_3_3.png
+  data\2dgfx\mission_icons\campaign_3_4.png
+  data\2dgfx\mission_icons\t_attack_1.png
+  data\2dgfx\mission_icons\t_attack_2.png
+  data\2dgfx\mission_icons\t_attack_3.png
+  data\2dgfx\mission_icons\t_attack_4.png
+  data\2dgfx\polar.png
+  data\2dgfx\rank_0.png
+  data\2dgfx\rank_1.png
+  data\2dgfx\rank_2.png
+  data\2dgfx\rank_3.png
+  data\2dgfx\rank_4.png
+  data\2dgfx\rank_border.png
+  data\2dgfx\soft_label_back_paper.png
+  data\2dgfx\titlebackground.png
+  data\2dgfx\typing_bg.png
+  data\2dgfx\typing_bg_.png
+  data\2dgfx\warroom.png
+  data\audio\music\_notused_.pmf
+  data\audio\music\menuMusic.psn
+  data\audio\sfx\artillery.psn
+  data\audio\sfx\boing.psn
+  data\audio\sfx\click.psn
+  data\audio\sfx\large_explosion.psn
+  data\audio\sfx\machinegun1.psn
+  data\audio\sfx\menubomb.psn
+  data\audio\sfx\menubombexp.psn
+  data\audio\sfx\menumovebomb.psn
+  data\audio\sfx\nuke.psn
+  data\audio\sfx\plane1.psn
+  data\audio\sfx\planeexplode.psn
+  data\audio\sfx\planehiccup.psn
+  data\audio\sfx\stall.psn
+  data\fonts\font12x16.fnt
+  data\fonts\font12x16_.fnt
+  data\fonts\font16x20.fnt
+  data\fonts\font20x28.fnt
+  data\fonts\font6x8.fnt
+  data\fonts\prop.fnt
+  data\lang0.bin
+  data\lang1.bin
+  data\lang2.bin
+  data\scripts\levels.cfg
+  udata\dummyfile0
+  udata\dummyfile1
+  udata\dummyfile2
+  udata\dummyfile3
+  udata\dummyfile4
+  udata\dummyfile5
+  udata\dummyfile6
+  udata\profiles.cfg
+  udata\profiles.cfg_backup
+  udata\settings.dat
+  udata\settings.dat_backup

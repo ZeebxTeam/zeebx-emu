@@ -1,0 +1,297 @@
+Raging Thunder 2 (Brazil) (Es,Pt)
+estado: roda
+tela: 255 cor(es), dominante 0x0000
+classes pedidas:
+  0x01001001  (1x)
+  0x01001003  (1x)
+  0x01001056  (1x)
+  0x01005511  (1x)
+  0x01014bc3  (1x)
+  0x01014bc4  (1x)
+  0x01041207  (1x)
+  0x0106c411  (1x)
+chamadas ao sistema de arquivos:
+  Seek  (0x0 0x9b1345 0x300001d0) -> 0
+  Seek  (0x2 0x0 0xe0001000) -> 10163013
+  Read  (0x100100d8 0x4 0xe0001000) -> 4
+  Seek  (0x0 0x9b1345 0x300001d0) -> 0
+  Seek  (0x2 0x0 0xe0001000) -> 10163013
+  Read  (0x106cddc8 0x1000 0xe0001000) -> 4096
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Raging-Thunder-2--Brazil---Es-Pt--797ae94ab8799dd5aea759c33e7b2e8dd16485bdad62c7653a96bedf7731780a/mod/280602/data/car/tex/MK4.pvr (No such file or directory (os error 2))
+  OpenFile "data\car\tex\MK4.pvr"  (0x106cddc8 0x1 0x1) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Raging-Thunder-2--Brazil---Es-Pt--797ae94ab8799dd5aea759c33e7b2e8dd16485bdad62c7653a96bedf7731780a/mod/280602/data/car/tex/MK4.pvr (No such file or directory (os error 2))
+  OpenFile "data\car\tex\MK4.pvr"  (0x106cddc8 0x1 0x1) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Raging-Thunder-2--Brazil---Es-Pt--797ae94ab8799dd5aea759c33e7b2e8dd16485bdad62c7653a96bedf7731780a/mod/280602/data/car/tex/MK4.ctes (No such file or directory (os error 2))
+  OpenFile "data\car\tex\MK4.ctes"  (0x1001015c 0x1 0x1) -> 0
+  Seek  (0x0 0x9b1345 0x300001d0) -> 0
+  Seek  (0x2 0x0 0xe0001000) -> 10163013
+  Read  (0x100100d8 0x4 0xe0001000) -> 4
+  Seek  (0x0 0x9b1345 0x300001d0) -> 0
+  Seek  (0x2 0x0 0xe0001000) -> 10163013
+  Read  (0x106cde10 0x1000 0xe0001000) -> 4096
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Raging-Thunder-2--Brazil---Es-Pt--797ae94ab8799dd5aea759c33e7b2e8dd16485bdad62c7653a96bedf7731780a/mod/280602/data/car/tex/MK4.pvr (No such file or directory (os error 2))
+  OpenFile "data\car\tex\MK4.pvr"  (0x106cde10 0x1 0x1) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Raging-Thunder-2--Brazil---Es-Pt--797ae94ab8799dd5aea759c33e7b2e8dd16485bdad62c7653a96bedf7731780a/mod/280602/data/car/tex/MK4.pvr (No such file or directory (os error 2))
+  OpenFile "data\car\tex\MK4.pvr"  (0x106cde10 0x1 0x1) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Raging-Thunder-2--Brazil---Es-Pt--797ae94ab8799dd5aea759c33e7b2e8dd16485bdad62c7653a96bedf7731780a/mod/280602/data/car/tex/MK4.ctes (No such file or directory (os error 2))
+  OpenFile "data\car\tex\MK4.ctes"  (0x1001015c 0x1 0x1) -> 0
+  Seek  (0x0 0x9b1345 0x300001d0) -> 0
+  Seek  (0x2 0x0 0xe0001000) -> 10163013
+  Read  (0x100100d8 0x4 0xe0001000) -> 4
+  Seek  (0x0 0x9b1345 0x300001d0) -> 0
+  Seek  (0x2 0x0 0xe0001000) -> 10163013
+  Read  (0x106cde58 0x1000 0xe0001000) -> 4096
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Raging-Thunder-2--Brazil---Es-Pt--797ae94ab8799dd5aea759c33e7b2e8dd16485bdad62c7653a96bedf7731780a/mod/280602/data/car/tex/MK4.pvr (No such file or directory (os error 2))
+  OpenFile "data\car\tex\MK4.pvr"  (0x106cde58 0x1 0x1) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Raging-Thunder-2--Brazil---Es-Pt--797ae94ab8799dd5aea759c33e7b2e8dd16485bdad62c7653a96bedf7731780a/mod/280602/data/car/tex/MK4.pvr (No such file or directory (os error 2))
+  OpenFile "data\car\tex\MK4.pvr"  (0x106cde58 0x1 0x1) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Raging-Thunder-2--Brazil---Es-Pt--797ae94ab8799dd5aea759c33e7b2e8dd16485bdad62c7653a96bedf7731780a/mod/280602/data/car/tex/MK4.ctes (No such file or directory (os error 2))
+  OpenFile "data\car\tex\MK4.ctes"  (0x1001015c 0x1 0x1) -> 0
+  Seek  (0x0 0x9b1345 0x300001d0) -> 0
+  Seek  (0x2 0x0 0xe0001000) -> 10163013
+  Read  (0x100100d8 0x4 0xe0001000) -> 4
+  Seek  (0x0 0x9b1345 0x300001d0) -> 0
+  Seek  (0x2 0x0 0xe0001000) -> 10163013
+  Read  (0x106cdea0 0x1000 0xe0001000) -> 4096
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Raging-Thunder-2--Brazil---Es-Pt--797ae94ab8799dd5aea759c33e7b2e8dd16485bdad62c7653a96bedf7731780a/mod/280602/data/car/tex/MK4.pvr (No such file or directory (os error 2))
+  OpenFile "data\car\tex\MK4.pvr"  (0x106cea78 0x1 0x1) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Raging-Thunder-2--Brazil---Es-Pt--797ae94ab8799dd5aea759c33e7b2e8dd16485bdad62c7653a96bedf7731780a/mod/280602/data/car/tex/MK4.pvr (No such file or directory (os error 2))
+  OpenFile "data\car\tex\MK4.pvr"  (0x106cea78 0x1 0x1) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Raging-Thunder-2--Brazil---Es-Pt--797ae94ab8799dd5aea759c33e7b2e8dd16485bdad62c7653a96bedf7731780a/mod/280602/data/car/tex/MK4.ctes (No such file or directory (os error 2))
+  OpenFile "data\car\tex\MK4.ctes"  (0x1001015c 0x1 0x1) -> 0
+  Seek  (0x0 0x9b1345 0x300001d0) -> 0
+  Seek  (0x2 0x0 0xe0001000) -> 10163013
+  Read  (0x100100d8 0x4 0xe0001000) -> 4
+  Seek  (0x0 0x9b1345 0x300001d0) -> 0
+  Seek  (0x2 0x0 0xe0001000) -> 10163013
+  Read  (0x106ceac0 0x1000 0xe0001000) -> 4096
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Raging-Thunder-2--Brazil---Es-Pt--797ae94ab8799dd5aea759c33e7b2e8dd16485bdad62c7653a96bedf7731780a/mod/280602/data/car/tex/MK4.pvr (No such file or directory (os error 2))
+  OpenFile "data\car\tex\MK4.pvr"  (0x106ceac0 0x1 0x1) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Raging-Thunder-2--Brazil---Es-Pt--797ae94ab8799dd5aea759c33e7b2e8dd16485bdad62c7653a96bedf7731780a/mod/280602/data/car/tex/MK4.pvr (No such file or directory (os error 2))
+  OpenFile "data\car\tex\MK4.pvr"  (0x106ceac0 0x1 0x1) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Raging-Thunder-2--Brazil---Es-Pt--797ae94ab8799dd5aea759c33e7b2e8dd16485bdad62c7653a96bedf7731780a/mod/280602/data/car/tex/MK4.ctes (No such file or directory (os error 2))
+  OpenFile "data\car\tex\MK4.ctes"  (0x1001015c 0x1 0x1) -> 0
+  Seek  (0x0 0x9b1345 0x300001d0) -> 0
+  Seek  (0x2 0x0 0xe0001000) -> 10163013
+  Read  (0x100100d8 0x4 0xe0001000) -> 4
+  Seek  (0x0 0x9b1345 0x300001d0) -> 0
+  Seek  (0x2 0x0 0xe0001000) -> 10163013
+  Read  (0x106ceb08 0x1000 0xe0001000) -> 4096
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Raging-Thunder-2--Brazil---Es-Pt--797ae94ab8799dd5aea759c33e7b2e8dd16485bdad62c7653a96bedf7731780a/mod/280602/data/car/tex/MK4.pvr (No such file or directory (os error 2))
+  OpenFile "data\car\tex\MK4.pvr"  (0x106ceb08 0x1 0x1) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Raging-Thunder-2--Brazil---Es-Pt--797ae94ab8799dd5aea759c33e7b2e8dd16485bdad62c7653a96bedf7731780a/mod/280602/data/car/tex/MK4.pvr (No such file or directory (os error 2))
+  OpenFile "data\car\tex\MK4.pvr"  (0x106ceb08 0x1 0x1) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Raging-Thunder-2--Brazil---Es-Pt--797ae94ab8799dd5aea759c33e7b2e8dd16485bdad62c7653a96bedf7731780a/mod/280602/data/car/tex/MK4.ctes (No such file or directory (os error 2))
+  OpenFile "data\car\tex\MK4.ctes"  (0x1001015c 0x1 0x1) -> 0
+  Seek  (0x0 0x9b1345 0x300001d0) -> 0
+  Seek  (0x2 0x0 0xe0001000) -> 10163013
+  Read  (0x100100d8 0x4 0xe0001000) -> 4
+  Seek  (0x0 0x9b1345 0x300001d0) -> 0
+  Seek  (0x2 0x0 0xe0001000) -> 10163013
+  Read  (0x106ceb50 0x1000 0xe0001000) -> 4096
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Raging-Thunder-2--Brazil---Es-Pt--797ae94ab8799dd5aea759c33e7b2e8dd16485bdad62c7653a96bedf7731780a/mod/280602/data/car/tex/Mk4_clean.pvr (No such file or directory (os error 2))
+  OpenFile "data/car/tex/Mk4_clean.pvr"  (0x105e2040 0x1 0x1) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Raging-Thunder-2--Brazil---Es-Pt--797ae94ab8799dd5aea759c33e7b2e8dd16485bdad62c7653a96bedf7731780a/mod/280602/data/car/tex/Mk4_clean.pvr (No such file or directory (os error 2))
+  OpenFile "data/car/tex/Mk4_clean.pvr"  (0x105e2040 0x1 0x1) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Raging-Thunder-2--Brazil---Es-Pt--797ae94ab8799dd5aea759c33e7b2e8dd16485bdad62c7653a96bedf7731780a/mod/280602/data/car/tex/Mk4_clean.ctes (No such file or directory (os error 2))
+  OpenFile "data/car/tex/Mk4_clean.ctes"  (0x100103a4 0x1 0x1) -> 0
+  Seek  (0x0 0x91f34 0x300001d0) -> 0
+  Seek  (0x2 0x0 0xe0001000) -> 597812
+  Read  (0x10010320 0x4 0xe0001000) -> 4
+  Seek  (0x0 0x91f34 0x300001d0) -> 0
+  Seek  (0x2 0x0 0xe0001000) -> 597812
+  Read  (0x105fcc78 0x1000 0xe0001000) -> 4096
+  Read  (0x105fcc78 0x1000 0xe0001000) -> 4096
+  Read  (0x105fcc78 0x1000 0xe0001000) -> 4096
+  Read  (0x105fcc78 0x1000 0xe0001000) -> 4096
+  Read  (0x105fcc78 0x1000 0xe0001000) -> 4096
+  Read  (0x105fcc78 0x1000 0xe0001000) -> 4096
+  Read  (0x105fcc78 0x8e7 0xe0001000) -> 2279
+arquivos não encontrados:
+  data/Audio/RT2_Ingame_L.psn
+  data/Audio/RT2_Ingame_R.psn
+  data/Audio/RT2_Menu_L.psn
+  data/Audio/RT2_Menu_R.psn
+  data/audio/Boost.psn
+  data/audio/Boost_engine.psn
+  data/audio/Boost_engine2.psn
+  data/audio/Boost_engine3.psn
+  data/audio/Boost_engine4.psn
+  data/audio/Boost_engine5.psn
+  data/audio/Boost_engine6.psn
+  data/audio/Boost_loop.psn
+  data/audio/Boost_loop2.psn
+  data/audio/Boost_loop3.psn
+  data/audio/Boost_loop4.psn
+  data/audio/Boost_loop5.psn
+  data/audio/Boost_loop6.psn
+  data/audio/Bump.psn
+  data/audio/Bump2.psn
+  data/audio/Checkpoint.psn
+  data/audio/Cone_hit.psn
+  data/audio/Countdown_321.psn
+  data/audio/Countdown_go.psn
+  data/audio/Crash1.psn
+  data/audio/Crash2.psn
+  data/audio/Crash_land.psn
+  data/audio/Crash_land_soft.psn
+  data/audio/Engine_sound.psn
+  data/audio/Engine_sound2.psn
+  data/audio/Engine_sound3.psn
+  data/audio/Engine_sound4.psn
+  data/audio/Engine_sound5.psn
+  data/audio/Engine_sound6.psn
+  data/audio/Explosion.psn
+  data/audio/Fire.psn
+  data/audio/Knockout.psn
+  data/audio/Lava_puddle.psn
+  data/audio/Menu_back.psn
+  data/audio/Menu_next.psn
+  data/audio/Menu_touch.psn
+  data/audio/Metal_dong.psn
+  data/audio/Oil_slick.psn
+  data/audio/Pickup.psn
+  data/audio/Rapair.psn
+  data/audio/Respawn.psn
+  data/audio/Road_noise.psn
+  data/audio/Scrape.psn
+  data/audio/Tire_skid.psn
+  data/audio/Tire_skid_gravel.psn
+  data/audio/Water_puddle.psn
+  data/audio/Water_splash.psn
+  data/audio/Waterbarrel.psn
+  data/car/00/car.pxc
+  data/car/01/car.pxc
+  data/car/02/car.pxc
+  data/car/03/car.pxc
+  data/car/04/car.pxc
+  data/car/05/car.pxc
+  data/car/tex/Ferrari_clean.ctes
+  data/car/tex/Ferrari_clean.pvr
+  data/car/tex/Gt4000_clean.ctes
+  data/car/tex/Gt4000_clean.pvr
+  data/car/tex/Mk4_clean.ctes
+  data/car/tex/Mk4_clean.pvr
+  data/car/tex/Mustang_clean.ctes
+  data/car/tex/Mustang_clean.pvr
+  data/car/tex/Storm_clean.ctes
+  data/car/tex/Storm_clean.pvr
+  data/car/tex/Viper_clean.ctes
+  data/car/tex/Viper_clean.pvr
+  data/fnt/font02.fnt
+  data/fnt/font_european_full_big.ctes
+  data/fnt/font_european_full_big.glp
+  data/fnt/font_european_full_big.plt
+  data/fnt/font_european_full_big.pvr
+  data/fnt/font_european_full_small.glp
+  data/fnt/font_european_full_small.plt
+  data/fnt/font_european_full_small.pvr
+  data/locale/bstrings.eng
+  data/menu/credits.txt
+  data/menu/dir_hud.png
+  data/menu/mmap_1.pvr
+  data/menu/mmap_10.pvr
+  data/menu/mmap_11.pvr
+  data/menu/mmap_12.pvr
+  data/menu/mmap_2.pvr
+  data/menu/mmap_3.pvr
+  data/menu/mmap_4.pvr
+  data/menu/mmap_5.pvr
+  data/menu/mmap_6.pvr
+  data/menu/mmap_7.pvr
+  data/menu/mmap_8.pvr
+  data/menu/mmap_9.pvr
+  data/menu/rt2_01.ctes
+  data/menu/rt2_01.plt
+  data/menu/rt2_01.pvr
+  data/menu/rt2_02.ctes
+  data/menu/rt2_02.plt
+  data/menu/rt2_02.pvr
+  data/menu/rt2_03.plt
+  data/menu/rt2_03.pvr
+  data/menu/rt2_04.plt
+  data/menu/rt2_04.pvr
+  data/obj/pickups.pxc
+  data/tex/particle_01.plt
+  data/tex/particle_01.pvr
+  data/tex/particle_02.pvr
+  data/tex/particle_add_01.plt
+  data\car\tex\Ferrari.ctes
+  data\car\tex\Ferrari.pvr
+  data\car\tex\Gt4000.ctes
+  data\car\tex\Gt4000.pvr
+  data\car\tex\MK4.ctes
+  data\car\tex\MK4.pvr
+  data\car\tex\Mustang.ctes
+  data\car\tex\Mustang.pvr
+  data\car\tex\Storm.ctes
+  data\car\tex\Storm.pvr
+  data\car\tex\Viper.ctes
+  data\car\tex\Viper.pvr
+  data\tex\Effect1.ctes
+  data\tex\Effect1.pvr
+  data\tex\Effect10.ctes
+  data\tex\Effect10.pvr
+  data\tex\Effect2.ctes
+  data\tex\Effect2.pvr
+  data\tex\Effect3.ctes
+  data\tex\Effect3.pvr
+  data\tex\Effect4.ctes
+  data\tex\Effect4.pvr
+  data\tex\Effect5.ctes
+  data\tex\Effect5.pvr
+  data\tex\Effect6.ctes
+  data\tex\Effect6.pvr
+  data\tex\Effect7.ctes
+  data\tex\Effect7.pvr
+  data\tex\Effect8.ctes
+  data\tex\Effect8.pvr
+  data\tex\Effect9.ctes
+  data\tex\Effect9.pvr
+  data\trk_tex\Banners.ctes
+  data\trk_tex\Banners.pvr
+  data\trk_tex\Banners2.ctes
+  data\trk_tex\Banners2.pvr
+  data\trk_tex\Garage.ctes
+  data\trk_tex\Garage.pvr
+  data\trk_tex\Glow_cyl.ctes
+  data\trk_tex\Glow_cyl.pvr
+  data\trk_tex\Small_objects.ctes
+  data\trk_tex\Small_objects.pvr
+  data\trk_tex\blinking_lights.ctes
+  data\trk_tex\blinking_lights.pvr
+  data\trk_tex\road_closed.ctes
+  data\trk_tex\road_closed.pvr
+  udata\dl_ghost_0.rtg
+  udata\dl_ghost_1.rtg
+  udata\dl_ghost_10.rtg
+  udata\dl_ghost_11.rtg
+  udata\dl_ghost_12.rtg
+  udata\dl_ghost_13.rtg
+  udata\dl_ghost_14.rtg
+  udata\dl_ghost_15.rtg
+  udata\dl_ghost_2.rtg
+  udata\dl_ghost_3.rtg
+  udata\dl_ghost_4.rtg
+  udata\dl_ghost_5.rtg
+  udata\dl_ghost_6.rtg
+  udata\dl_ghost_7.rtg
+  udata\dl_ghost_8.rtg
+  udata\dl_ghost_9.rtg
+  udata\ghost_0.rtg
+  udata\ghost_1.rtg
+  udata\ghost_10.rtg
+  udata\ghost_11.rtg
+  udata\ghost_12.rtg
+  udata\ghost_13.rtg
+  udata\ghost_14.rtg
+  udata\ghost_15.rtg
+  udata\ghost_2.rtg
+  udata\ghost_3.rtg
+  udata\ghost_4.rtg
+  udata\ghost_5.rtg
+  udata\ghost_6.rtg
+  udata\ghost_7.rtg
+  udata\ghost_8.rtg
+  udata\ghost_9.rtg
+  udata\rt2save.dat

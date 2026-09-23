@@ -1348,6 +1348,34 @@ impl<C: CpuBackend> Machine<C> {
                     self.cpu.read_reg(Reg::R2),
                     self.cpu.read_reg(Reg::R3),
                 );
+                // **O que cada classe de widget recebe, contado por seletor.** É o instrumento
+                // para responder "que comportamento esta classe proprietária espera?" sem sonda e
+                // sem desmonte: a contagem por par `(classe, seletor)` diz o que o jogo usa de
+                // fato, e não o que a família inteira poderia usar. A `0x01028e19` é o caso que
+                // motivou: ela entra na família dos widgets por vizinhança de numeração, e o que
+                // se sabe dela é o que se mediu.
+                //
+                // **Desligado por padrão**, e a razão é medida: o censo entra no relatório, o
+                // relatório entra na linha de base, e uma seção nova faria os **62 jogos** da
+                // varredura acusarem diferença de uma vez. Ele se liga com `ZEEBX_ROM_SELETORES`,
+                // como o perfil de custo.
+                if self.censo_de_widgets {
+                    let classe = self.widgets.get(&this).map_or(0, |widget| widget.classe);
+                    let vezes = {
+                        let contagem = self.seletores_por_classe.entry((classe, seletor)).or_insert(0);
+                        *contagem += 1;
+                        *contagem
+                    };
+                    // **A captura é o relatório de quem não tem relatório.** A varredura imprime o
+                    // censo no relatório dela; o core não tem onde imprimir, e é na captura de
+                    // serial que ele já escreve tudo o mais. Sem esta linha, o censo ligado no core
+                    // ficaria só na memória do processo.
+                    if self.serial.is_some() {
+                        self.registra_serial(format!(
+                            "<acessor classe {classe:#010x} seletor {seletor:#x} ({vezes}x)>"
+                        ));
+                    }
+                }
                 match seletor {
                     // Algumas classes usam o próprio endereço de um filho como seletor para
                     // consultar/ligar o estado visual. É uma operação sem valor de retorno;

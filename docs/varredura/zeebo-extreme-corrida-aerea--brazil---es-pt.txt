@@ -1,0 +1,157 @@
+Zeebo Extreme Corrida Aerea (Brazil) (Es,Pt)
+estado: roda
+tela: 1386 cor(es), dominante 0xffff
+classes pedidas:
+  0x01001001  (1x)
+  0x01001003  (211x)
+  0x01001017  (1x)
+  0x010127d4  (1x)
+  0x0103d8ec  (1x)
+  0x0106c411  (1x)
+chamadas ao sistema de arquivos:
+  Read  (0x114ffe94 0xd 0xf000400c) -> 13
+  Seek  (0x0 0x72ee75 0xf000401c) -> 0
+  Read  (0x114ffe94 0xd 0xf000400c) -> 13
+  Read  (0x114fe294 0x1c00 0xf000400c) -> 7168
+  Release  (0xf0004004 0x100000b0 0x1) -> 0
+  Test ".//pak0.pakz"  (0x10007df4 0xf000301c 0xf0000008) -> 0
+  OpenFile ".//pak0.pakz"  (0x10007df4 0x1 0xf0003008) -> 805307024
+  Release  (0xf0003004 0x1 0xf0003008) -> 0
+  Seek  (0x0 0x72eac7 0xf000401c) -> 0
+  Read  (0x114ffe94 0xd 0xf000400c) -> 13
+  Seek  (0x0 0x72eac7 0xf000401c) -> 0
+  Read  (0x114ffe94 0xd 0xf000400c) -> 13
+  Read  (0x114fe294 0x1c00 0xf000400c) -> 7168
+  Release  (0xf0004004 0x100000b0 0x1) -> 0
+  Test ".//pak0.pakz"  (0x10007df4 0xf000301c 0xf0000008) -> 0
+  OpenFile ".//pak0.pakz"  (0x10007df4 0x1 0xf0003008) -> 805306960
+  Release  (0xf0003004 0x1 0xf0003008) -> 0
+  Seek  (0x0 0x72d4be 0xf000401c) -> 0
+  Read  (0x114ffe94 0xd 0xf000400c) -> 13
+  Seek  (0x0 0x72d4be 0xf000401c) -> 0
+  Read  (0x114ffe94 0xd 0xf000400c) -> 13
+  Read  (0x114fe294 0x1c00 0xf000400c) -> 7168
+  Release  (0xf0004004 0x100000b0 0x1) -> 0
+  Test ".//pak0.pakz"  (0x10007df4 0xf000301c 0xf0000008) -> 0
+  OpenFile ".//pak0.pakz"  (0x10007df4 0x1 0xf0003008) -> 805307024
+  Release  (0xf0003004 0x1 0xf0003008) -> 0
+  Seek  (0x0 0x72be69 0xf000401c) -> 0
+  Read  (0x114ffe94 0xd 0xf000400c) -> 13
+  Seek  (0x0 0x72be69 0xf000401c) -> 0
+  Read  (0x114ffe94 0xd 0xf000400c) -> 13
+  Read  (0x114fe294 0x1c00 0xf000400c) -> 7168
+  Release  (0xf0004004 0x100000b0 0x1) -> 0
+  Test ".//pak0.pakz"  (0x10007df4 0xf000301c 0xf0000008) -> 0
+  OpenFile ".//pak0.pakz"  (0x10007df4 0x1 0xf0003008) -> 805306960
+  Release  (0xf0003004 0x1 0xf0003008) -> 0
+  Seek  (0x0 0x72b3da 0xf000401c) -> 0
+  Read  (0x114ffe94 0xd 0xf000400c) -> 13
+  Seek  (0x0 0x72b3da 0xf000401c) -> 0
+  Read  (0x114ffe94 0xd 0xf000400c) -> 13
+  Read  (0x114fe294 0x1c00 0xf000400c) -> 7168
+  Release  (0xf0004004 0x100000b0 0x1) -> 0
+  Test ".//pak0.pakz"  (0x10007df4 0xf000301c 0xf0000008) -> 0
+  OpenFile ".//pak0.pakz"  (0x10007df4 0x1 0xf0003008) -> 805307024
+  Release  (0xf0003004 0x1 0xf0003008) -> 0
+  Seek  (0x0 0x72cb64 0xf000401c) -> 0
+  Read  (0x114ffe94 0xd 0xf000400c) -> 13
+  Seek  (0x0 0x72cb64 0xf000401c) -> 0
+  Read  (0x114ffe94 0xd 0xf000400c) -> 13
+  Read  (0x114fe294 0x1c00 0xf000400c) -> 7168
+  Release  (0xf0004004 0x100000b0 0x1) -> 0
+  Test ".//pak0.pakz"  (0x10007df4 0xf000301c 0xf0000008) -> 0
+  OpenFile ".//pak0.pakz"  (0x10007df4 0x1 0xf0003008) -> 805306960
+  Release  (0xf0003004 0x1 0xf0003008) -> 0
+  Seek  (0x0 0x727e9b 0xf000401c) -> 0
+  Read  (0x114ffe94 0xd 0xf000400c) -> 13
+  Seek  (0x0 0x727e9b 0xf000401c) -> 0
+  Read  (0x114ffe94 0xd 0xf000400c) -> 13
+  Read  (0x114fe294 0x1c00 0xf000400c) -> 7168
+  Release  (0xf0004004 0x100000b0 0x1) -> 0
+  Test ".//pak0.pakz"  (0x10007df4 0xf000301c 0xf0000008) -> 0
+  OpenFile ".//pak0.pakz"  (0x10007df4 0x1 0xf0003008) -> 805307024
+  Release  (0xf0003004 0x1 0xf0003008) -> 0
+  Seek  (0x0 0x72650b 0xf000401c) -> 0
+  Read  (0x114ffe94 0xd 0xf000400c) -> 13
+  Seek  (0x0 0x72650b 0xf000401c) -> 0
+  Read  (0x114ffe94 0xd 0xf000400c) -> 13
+  Read  (0x114fe294 0x1c00 0xf000400c) -> 7168
+  Release  (0xf0004004 0x100000b0 0x1) -> 0
+  Test ".//pak0.pakz"  (0x10007df4 0xf000301c 0xf0000008) -> 0
+  OpenFile ".//pak0.pakz"  (0x10007df4 0x1 0xf0003008) -> 805306960
+  Release  (0xf0003004 0x1 0xf0003008) -> 0
+  Seek  (0x0 0x71935f 0xf000401c) -> 0
+  Read  (0x114ffe94 0xd 0xf000400c) -> 13
+  Seek  (0x0 0x71935f 0xf000401c) -> 0
+  Read  (0x114ffe94 0xd 0xf000400c) -> 13
+  Read  (0x114fe294 0x1c00 0xf000400c) -> 7168
+  Release  (0xf0004004 0x100000b0 0x1) -> 0
+  Test ".//pak0.pakz"  (0x10007df4 0xf000301c 0xf0000008) -> 0
+  OpenFile ".//pak0.pakz"  (0x10007df4 0x1 0xf0003008) -> 805307024
+  Release  (0xf0003004 0x1 0xf0003008) -> 0
+  Seek  (0x0 0x7161ff 0xf000401c) -> 0
+  Read  (0x114ffe94 0xd 0xf000400c) -> 13
+  Seek  (0x0 0x7161ff 0xf000401c) -> 0
+  Read  (0x114ffe94 0xd 0xf000400c) -> 13
+  Read  (0x114fe294 0x1c00 0xf000400c) -> 7168
+  Read  (0x114fe294 0x1c00 0xf000400c) -> 7168
+  Release  (0xf0004004 0x100000b0 0x1) -> 0
+  Test ".//pak0.pakz"  (0x10007df4 0xf000301c 0xf0000008) -> 0
+  OpenFile ".//pak0.pakz"  (0x10007df4 0x1 0xf0003008) -> 805306960
+  Release  (0xf0003004 0x1 0xf0003008) -> 0
+  Seek  (0x0 0x707a98 0xf000401c) -> 0
+  Read  (0x114ffe94 0xd 0xf000400c) -> 13
+  Seek  (0x0 0x707a98 0xf000401c) -> 0
+  Read  (0x114ffe94 0xd 0xf000400c) -> 13
+  Read  (0x114fe294 0x1c00 0xf000400c) -> 7168
+  Release  (0xf0004004 0x100000b0 0x1) -> 0
+arquivos não encontrados:
+  .//../udata/optionsinfo.txt
+  .//../udata/trackinfo.txt
+  .//audio/xui/count_1.wav
+  .//audio/xui/count_2.wav
+  .//audio/xui/count_3.wav
+  .//audio/xui/count_e.wav
+  .//audio/xui/count_ja.wav
+  .//audio/xui/finished_loading.wav
+  .//audio/xui/long_claps.wav
+  .//audio/xui/menu_cursor.wav
+  .//audio/xui/menu_plane.wav
+  .//audio/xui/menu_select.wav
+  .//audio/xui/sfx_01.wav
+  .//audio/xui/sfx_02.wav
+  .//audio/xui/sfx_03.wav
+  .//audio/xui/sfx_04.wav
+  .//audio/xui/sfx_impact02.wav
+  .//audio/xui/splashscreen.wav
+  .//pak1.pakz
+  .//pak2.pakz
+  .//pak3.pakz
+  .//pak4.pakz
+  .//pak5.pakz
+  .//pak6.pakz
+  .//pak7.pakz
+  .//pak8.pakz
+  .//pak9.pakz
+  .//texture/op_jogador1e2.qxt
+  .//texture/picture_player.qxt
+  /../udata/optionsinfo.txt
+  /../udata/trackinfo.txt
+  /audio/xui/count_1.wav
+  /audio/xui/count_2.wav
+  /audio/xui/count_3.wav
+  /audio/xui/count_e.wav
+  /audio/xui/count_ja.wav
+  /audio/xui/finished_loading.wav
+  /audio/xui/long_claps.wav
+  /audio/xui/menu_cursor.wav
+  /audio/xui/menu_plane.wav
+  /audio/xui/menu_select.wav
+  /audio/xui/sfx_01.wav
+  /audio/xui/sfx_02.wav
+  /audio/xui/sfx_03.wav
+  /audio/xui/sfx_04.wav
+  /audio/xui/sfx_impact02.wav
+  /audio/xui/splashscreen.wav
+  /texture/op_jogador1e2.qxt
+  /texture/picture_player.qxt

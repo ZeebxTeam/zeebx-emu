@@ -1,0 +1,198 @@
+Zeebo Family Pack (Brazil) (Es,Pt)
+estado: roda
+tela: 381 cor(es), dominante 0xffff
+classes pedidas:
+  0x01001001  (1x)
+  0x01001003  (1x)
+  0x01001056  (1x)
+  0x01005502  (1x)
+  0x01005511  (2x)
+  0x01014bc3  (1x)
+  0x01014bc4  (1x)
+  0x01041207  (1x)
+  0x0106c411  (1x)
+chamadas ao sistema de arquivos:
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0xd03 0xe0001000) -> 3331
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Zeebo-Family-Pack--Brazil---Es-Pt--be8ed1751c4c7ba7d95b62e5beb33fc0d1828b457331184aa24ab599722a4524/mod/277229/f1/sfx/lap.wav (No such file or directory (os error 2))
+  OpenFile "f1\sfx\lap.wav"  (0xb2fc4 0x1 0xe0000c00) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Zeebo-Family-Pack--Brazil---Es-Pt--be8ed1751c4c7ba7d95b62e5beb33fc0d1828b457331184aa24ab599722a4524/mod/277229/f1/sfx/lap.wav (No such file or directory (os error 2))
+  OpenFile "f1\sfx\lap.wav"  (0xb2fc4 0x1 0xe0000c00) -> 0
+  Seek  (0x0 0x9ceb34 0xe0001000) -> 0
+  Seek  (0x2 0x0 0x300003d0) -> 10283828
+  Read  (0x100105f8 0x4 0xe0001000) -> 4
+  Seek  (0x0 0x9ceb34 0xe0001000) -> 0
+  Seek  (0x2 0x0 0x300003d0) -> 10283828
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x4c6 0xe0001000) -> 1222
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Zeebo-Family-Pack--Brazil---Es-Pt--be8ed1751c4c7ba7d95b62e5beb33fc0d1828b457331184aa24ab599722a4524/mod/277229/shared/sfx/select.wav (No such file or directory (os error 2))
+  OpenFile "shared\sfx\select.wav"  (0xb1298 0x1 0xe0000c00) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Zeebo-Family-Pack--Brazil---Es-Pt--be8ed1751c4c7ba7d95b62e5beb33fc0d1828b457331184aa24ab599722a4524/mod/277229/shared/sfx/select.wav (No such file or directory (os error 2))
+  OpenFile "shared\sfx\select.wav"  (0xb1298 0x1 0xe0000c00) -> 0
+  Seek  (0x0 0x53f25f 0xe0001000) -> 0
+  Seek  (0x2 0x0 0x300003d0) -> 5501535
+  Read  (0x10010634 0x4 0xe0001000) -> 4
+  Seek  (0x0 0x53f25f 0xe0001000) -> 0
+  Seek  (0x2 0x0 0x300003d0) -> 5501535
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0x1000 0xe0001000) -> 4096
+  Read  (0x101e1778 0xc5c 0xe0001000) -> 3164
+arquivos não encontrados:
+  f1\sfx\lap.wav
+  font.fnt
+  highscore\gfx\arrow_left.png
+  highscore\gfx\number_bg.png
+  highscore\gfx\number_bg_selected.png
+  menu/gfx/line.png
+  menu/gfx/menu_bg.png
+  menu\gfx\avatar_bg_left.png
+  menu\gfx\exit_sign.png
+  menu\gfx\familypack.png
+  menu\gfx\game_selected.png
+  menu\gfx\highscore.png
+  menu\gfx\jadestone_logo.png
+  menu\gfx\load_hourglass.png
+  menu\gfx\load_progress_bottom.png
+  menu\gfx\load_progress_top.png
+  menu\gfx\logo_8ball.png
+  menu\gfx\logo_cannonball.png
+  menu\gfx\logo_dirtbike.png
+  menu\gfx\logo_formula001.png
+  menu\gfx\logo_longjohnsilver.png
+  menu\gfx\logo_score.png
+  menu\gfx\logo_zap.png
+  menu\gfx\music.png
+  menu\gfx\pause_icon_bg.png
+  menu\gfx\pause_icon_bg_selected.png
+  menu\gfx\podium.png
+  menu\gfx\pokal.png
+  menu\gfx\quit.png
+  menu\gfx\restart.png
+  menu\gfx\resume.png
+  menu\gfx\screen_8ball.png
+  menu\gfx\screen_cannonball.png
+  menu\gfx\screen_dirtbike.png
+  menu\gfx\screen_formula001.png
+  menu\gfx\screen_longjohnsilver.png
+  menu\gfx\screen_score.png
+  menu\gfx\screen_zap.png
+  menu\gfx\small_load_hourglass.png
+  menu\gfx\small_load_progress_bottom.png
+  menu\gfx\small_load_progress_top.png
+  menu\gfx\toggle_player_two.png
+  menu\gfx\vs.png
+  menu\sfx\music.mp3
+  shared\gfx\aiavatar1.png
+  shared\gfx\aiavatar2.png
+  shared\gfx\aiavatar3.png
+  shared\gfx\avatar1.png
+  shared\gfx\avatar10.png
+  shared\gfx\avatar11.png
+  shared\gfx\avatar12.png
+  shared\gfx\avatar13.png
+  shared\gfx\avatar14.png
+  shared\gfx\avatar15.png
+  shared\gfx\avatar16.png
+  shared\gfx\avatar17.png
+  shared\gfx\avatar18.png
+  shared\gfx\avatar19.png
+  shared\gfx\avatar2.png
+  shared\gfx\avatar20.png
+  shared\gfx\avatar21.png
+  shared\gfx\avatar22.png
+  shared\gfx\avatar23.png
+  shared\gfx\avatar3.png
+  shared\gfx\avatar4.png
+  shared\gfx\avatar5.png
+  shared\gfx\avatar6.png
+  shared\gfx\avatar7.png
+  shared\gfx\avatar8.png
+  shared\gfx\avatar9.png
+  shared\gfx\icon_flag_blue.png
+  shared\gfx\icon_flag_darkblue.png
+  shared\gfx\icon_flag_green.png
+  shared\gfx\icon_level_darkblue.png
+  shared\gfx\icon_score_blue.png
+  shared\gfx\icon_score_darkblue.png
+  shared\gfx\icon_score_green.png
+  shared\gfx\icon_stopwatch_blue.png
+  shared\gfx\icon_stopwatch_darkblue.png
+  shared\gfx\icon_stopwatch_green.png
+  shared\gfx\icon_time_score_blue.png
+  shared\gfx\icon_time_score_darkblue.png
+  shared\gfx\icon_time_score_green.png
+  shared\gfx\icon_trophy_gold.png
+  shared\gfx\icon_trophy_silver.png
+  shared\sfx\select.wav
+  udata\highscore.dat

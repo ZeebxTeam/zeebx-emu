@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- O aplicativo não tem classe própria: a atividade é a NativeActivity do sistema, e o que
+     ela carrega é a `libzeebx_android.so`, pelo `android.app.lib_name`. Daí o hasCode="false". -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-feature android:glEsVersion="0x00030000" android:required="true" />
+
+    <!-- Uma coleção de ROMs mora fora do diretório do aplicativo, e desde o Android 11 lê-la
+         exige o "acesso a todos os arquivos". Ele não é concedido na instalação: o usuário o
+         dá em Ajustes › Aplicativos › Zeebx. Sem ele o Zeebx só enxerga a própria pasta. -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+
+    <!-- `appCategory="game"` não é enfeite de vitrine: é o que **mantém o travamento de
+         orientação valendo**. A partir do Android 16, num alvo 36 ou maior, o sistema passa a
+         ignorar `screenOrientation`, `resizeableActivity` e as razões de aspecto em telas com
+         600dp ou mais de menor lado — tablet, dobrável, desktop —, e o Android 17 tira até a
+         opção de recusar. Jogos são a exceção que sobrou, e um emulador de console é um jogo.
+         Hoje o alvo é 35 e nada disso nos alcança; quando ele subir, esta linha é o que evita a
+         tela girar sozinha no meio de uma corrida. -->
+    <application
+        android:label="Zeebx"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:appCategory="game"
+        android:hasCode="false">
+        <activity
+            android:name="android.app.NativeActivity"
+            android:exported="true"
+            android:screenOrientation="landscape"
+            android:resizeableActivity="false"
+            android:configChanges="orientation|keyboardHidden|screenSize|screenLayout|density|uiMode">
+            <meta-data
+                android:name="android.app.lib_name"
+                android:value="zeebx_android" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>

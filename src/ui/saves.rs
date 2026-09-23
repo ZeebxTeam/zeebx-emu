@@ -265,11 +265,8 @@ mod tests {
         assert!(dos_jogos(&raiz).is_empty());
     }
 
-    fn temporario(nome: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("zeebx-saves-{nome}"));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    fn temporario(nome: &str) -> crate::scratch::TempDir {
+        crate::scratch::TempDir::new(&format!("zeebx-saves-{nome}"))
     }
 
     #[test]

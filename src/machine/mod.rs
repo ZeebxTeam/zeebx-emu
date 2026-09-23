@@ -14,7 +14,7 @@ use crate::brew::fmath;
 use crate::brew::heap::Heap;
 use crate::brew::objects::ObjectStore;
 use crate::brew::vfs::Vfs;
-use crate::cpu::unicorn::RETURN_MAGIC;
+use crate::cpu::RETURN_MAGIC;
 use crate::cpu::{CpuBackend, CpuError, Reg, StopReason};
 use crate::input::{self, Pad};
 use crate::loader::{self, LoadedModule};
@@ -26,6 +26,7 @@ use crate::video::gles;
 use crate::video::paltex;
 use crate::video::rasterizer::{self, GlState, Rasterizador, Vertex};
 
+mod save;
 mod bitmap;
 mod cifra;
 mod diagnostico;
@@ -33,6 +34,7 @@ mod display;
 mod diversos;
 mod egl;
 mod file;
+mod font;
 mod gl;
 mod helper;
 mod hid;
@@ -162,7 +164,10 @@ fn fold_case(units: &[u16], take: usize) -> Vec<u16> {
 /// octal e o resto é decimal. Devolve o valor e quantos bytes foram consumidos.
 fn parse_unsigned(text: &str, base: u32) -> (u32, usize) {
     // O espaço do `isspace` do C, e não o do Unicode: lido em Latin-1, o `0xA0` viraria espaço.
-    let start = text.len() - text.trim_start_matches([' ', '\t', '\n', '\x0b', '\x0c', '\r']).len();
+    let start = text.len()
+        - text
+            .trim_start_matches([' ', '\t', '\n', '\x0b', '\x0c', '\r'])
+            .len();
     // **O sinal vale.** A `strtoul` do C aceita `+` e `-`, e com `-` devolve o número negado. O
     // Alice no País das Maravilhas lê linhas como `-2 12 16 73 ...`: parado no `-`, o laço dele
     // contava o campo sem sair do lugar e repetia a linha até esgotar os 18 MB do pool.
@@ -205,6 +210,16 @@ fn component_size(kind: u32) -> u32 {
 }
 
 /// Tamanho em bytes de um texel, conforme o par formato/tipo do `TexImage2D`.
+/// Arredonda `valor` para o próximo múltiplo de `alinhamento`.
+///
+/// É a conta que o `glPixelStorei` manda fazer: cada linha de uma textura começa num múltiplo do
+/// alinhamento, e o que sobra entre o fim de uma linha e o começo da seguinte é enchimento. O GL
+/// só admite 1, 2, 4 e 8, e o padrão é 4.
+pub(super) fn arredonda_para(valor: u32, alinhamento: u32) -> u32 {
+    let passo = alinhamento.max(1);
+    valor.div_ceil(passo) * passo
+}
+
 fn bytes_per_texel(format: u32, kind: u32) -> u32 {
     match kind {
         gles::GL_UNSIGNED_BYTE => match format {
@@ -427,6 +442,13 @@ const AEECLSID_BMP: u32 = 0x0100_4001;
 /// padrão das duas é `IImageDecoder`.
 const AEECLSID_PNGDECODER: u32 = 0x0102_6e23;
 const AEECLSID_PNGDECODER_BREW: u32 = 0x0103_0766;
+/// `AEECLSID_JPEGDECODER_BREW` (`AEECLSID_JPEGDecoderBREW` na tabela de ClassIDs do toolset).
+///
+/// **É o que faltava para o Zuma's Revenge**: ele pede esta classe, recebia recusa, seguia com o
+/// ponteiro nulo e quebrava — a varredura o pegava em "quebrou no laço de quadros" com o motivo
+/// `acesso inválido a 0x0`. O decodificador que ele quer é o mesmo que já atende PNG, BMP, JPEG e
+/// GIF: o nosso olha a assinatura dos bytes e escolhe o formato sozinho.
+const AEECLSID_JPEGDECODER_BREW: u32 = 0x0102_fd92;
 /// `IPARM_*` de `inc/AEEIImage.h`.
 ///
 /// O `SIZE`, o `OFFSET` e o `ROP` saíram do uso: o Action Hero 3D escreve cada letra do menu
@@ -560,6 +582,14 @@ const AEECLSID_QEGL: u32 = 0x0103_d8ec;
 const AEECLSID_EGL: u32 = 0x0101_4bc4;
 /// `AEECLSID_WEB`, do `BMPIds.csv` do SDK: o cliente HTTP do BREW.
 const AEECLSID_WEB: u32 = 0x0100_5000;
+/// `AEECLSID_DOWNLOAD`, do SDK 4.0.2 — e a resposta para o enigma do `0x01000000`.
+///
+/// O `AEE_CLSIDs.h` diz, em três linhas seguidas: `QVERSION` é `0x01000000`, `AEECLSID_PRIV` é
+/// `QVERSION` e **`AEECLSID_DOWNLOAD` é `AEECLSID_PRIV`**. A leitura anterior parou na primeira
+/// das três e registrou que a classe era "só o `QVERSION`", sem interface. Medido: é o
+/// `IDownload`, e é ele que a Z-Wheel pede em `ShopAction_Init` — recusado, a biblioteca de jogos
+/// da roda não monta.
+const AEECLSID_DOWNLOAD: u32 = 0x0100_0000;
 /// Quantos blocos de texto claro o registro guarda, e quanto de cada um.
 const PLAINTEXT_MAX: usize = 8;
 const PLAINTEXT_BYTES: usize = 512;
@@ -687,6 +717,29 @@ const AEEIID_EGL_SURFACE_MANIP: u32 = 0x0105_1834;
 /// `AEEIID_GLESIMAGEONEXT_V1` e `AEEIID_GLESIMAGEONEXT`, de `sdk/inc/AEEGLESImageonEXT.h`.
 const AEEIID_GLES_IMAGEON_EXT_V1: u32 = 0x0104_59b1;
 const AEEIID_GLES_IMAGEON_EXT: u32 = 0x0105_8546;
+/// `AEEIID_GLES11EXT`, de `sdk/inc/AEEGLES11Ext.h` — as extensões OES do OpenGL ES 1.1.
+///
+/// **O Prey Evil pede esta classe por `ISHELL_CreateInstance`** e desiste do caminho de desenho
+/// quando recebe nulo: sem ela, o levantamento o pega com onze métodos de GL e nenhum desenho.
+const AEECLSID_GLES11EXT: u32 = 0x0103_d8eb;
+
+/// `AEEIID_GLES10EXT`, de `sdk/inc/AEEGLES10Ext.h`. O Prey Evil a pede no objeto do EGL.
+const AEEIID_GLES10EXT: u32 = 0x0103_d8de;
+/// `AEEIID_EGLGETPOWERLEVEL`, de `sdk/inc/AEEEGLGetPowerLevel.h`.
+const AEEIID_EGLGETPOWERLEVEL: u32 = 0x0103_d8f0;
+/// `AEEIID_EGLOESSWAPINTERVAL`, de `sdk/inc/AEEEGLOESSwapInterval.h`.
+const AEEIID_EGLOESSWAPINTERVAL: u32 = 0x0104_26e3;
+/// `AEEIID_EGLGETCOLORBUFFER`, de `sdk/inc/AEEEGLGetColorBuffer.h`.
+const AEEIID_EGLGETCOLORBUFFER: u32 = 0x0103_d8ef;
+/// `AEEIID_GLES11EXTPAK`, de `sdk/inc/AEEGLES11ExtPak.h`.
+const AEEIID_GLES11EXTPAK: u32 = 0x0103_def1;
+/// `AEECLSID_IJOYSTICK1` e `AEECLSID_IJOYSTICK2`, de `sdk/inc/AEEJoystick.h`.
+///
+/// **O Prey Evil cria esta e guarda o resultado.** Nula, o gerenciador de joystick da Qualcomm
+/// segue com o ponteiro vazio e cai no primeiro `Read` — que é a falha que o levantamento pegou.
+const AEECLSID_IJOYSTICK1: u32 = 0x0102_1c2b;
+const AEECLSID_IJOYSTICK2: u32 = 0x0102_1dac;
+
 const AEEIID_EGL10: u32 = 0x0103_d8ed;
 const AEEIID_EGL11: u32 = 0x0103_d8ee;
 /// Identificador do display do EGL. Só existe um, e o valor é arbitrário — o que não pode é
@@ -830,6 +883,11 @@ const AEEIID_IBITMAP: u32 = 0x0100_1021;
 const MAX_POLYGON_POINTS: usize = 4096;
 /// `AEE_MAX_FILE_NAME`.
 const MAX_FILE_NAME: usize = 64;
+/// Quantas linhas de texto desenhado o relatório guarda.
+const MAX_TEXTOS_DESENHADOS: usize = 64;
+/// Quantas chamadas de arquivo o relatório guarda. Um jogo de 6 s faz centenas de `Test`;
+/// o que interessa é o começo da execução, e é ele que a fila preserva.
+const MAX_FS_LOG: usize = 96;
 /// Espaço que reportamos no cartão. O Zeebo tem 1 GB de NAND; anunciamos algo dessa ordem
 /// para que nenhum jogo se recuse a salvar por falta de espaço.
 const FS_TOTAL_BYTES: u32 = 512 * 1024 * 1024;
@@ -1053,6 +1111,10 @@ const FAMILIA_DOS_WIDGETS: [u32; 10] = [
 /// `0x01035156`, a fonte TrueType do console. Ver [`Interface::Typeface`].
 const AEECLSID_TYPEFACE: u32 = 0x0103_5156;
 /// Classe concreta de fonte usada pelo roller da Z-Wheel.
+/// A fonte com que a Z-Wheel desenha o rolo de capas. **É uma fonte do sistema**: `0x0102f67c` é o
+/// `AEECLSID_FONT_STANDARD18B`, atendido por [`crate::machine::font`]. O nome fica porque é assim
+/// que a Z-Wheel o chama.
+#[allow(dead_code)]
 const AEECLSID_ROLLER_FONT: u32 = 0x0102_f67c;
 
 /// `0x01006c01`, o controle do cartão SIM. Ver [`Interface::SimCardCtl`].
@@ -1372,6 +1434,51 @@ fn decodifica_imagem(bytes: &[u8]) -> Option<DecodedImage> {
 }
 
 /// Decodifica um PNG para RGB565, devolvendo `None` se não for um PNG que saibamos ler.
+/// Decodifica uma imagem **pela assinatura**, e não por um formato só.
+///
+/// O caminho do PNG continua sendo o primeiro, porque ele tem tratamento próprio: paleta com
+/// `tRNS`, profundidades menores que oito bits e alfa de meio-tom, que o `decode_png` abaixo
+/// resolve com as transformações do `png` e o resto do motor não sabe repetir.
+///
+/// **O que faltava era o resto.** O Zuma's Revenge pede o decodificador de **JPEG**, alimenta um
+/// JPEG de dezesseis kilobytes e recebia `EFAILED` do `GetBitmap` — o motor só tentava PNG, e a
+/// hipótese registrada era "um decodificador recebeu dados que não são um PNG". O despachante por
+/// assinatura já existia em [`crate::video::icon::decode`], usado pelos ícones dos módulos; aqui
+/// ele passa a servir também ao decodificador do guest.
+fn decode_imagem(bytes: &[u8]) -> Option<DecodedImage> {
+    if let Some(imagem) = decode_png(bytes) {
+        return Some(imagem);
+    }
+    let imagem = crate::video::icon::decode(bytes).ok()?;
+    let count = imagem.pixels();
+    let mut pixels = Vec::with_capacity(count);
+    let mut opaque = Vec::with_capacity(count);
+    let mut alfa = Vec::with_capacity(count);
+    for pixel in imagem.rgba.chunks_exact(4) {
+        pixels.push(
+            Rgb {
+                r: pixel[0],
+                g: pixel[1],
+                b: pixel[2],
+            }
+            .to_rgb565(),
+        );
+        let a = pixel[3];
+        opaque.push(a == 255);
+        alfa.push(a);
+    }
+    Some(DecodedImage {
+        width: imagem.width as u32,
+        height: imagem.height as u32,
+        pixels,
+        opaque,
+        alfa,
+        // Sem `IPARM_CXFRAME`: quem divide a imagem em tiras é o PNG do decodificador, e o
+        // caminho dos outros formatos não recebe esse parâmetro.
+        frame_width: 0,
+    })
+}
+
 fn decode_png(bytes: &[u8]) -> Option<DecodedImage> {
     let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
     // Os PNGs do Bejeweled Twist usam paleta com `tRNS`. Pedir a expansão aqui evita ter de
@@ -1403,7 +1510,11 @@ fn decode_png(bytes: &[u8]) -> Option<DecodedImage> {
         // Meio-tom não existe numa superfície sem canal alfa: ou o pixel entra, ou não entra.
         // Numa superfície sem canal alfa, o meio-tom vira opaco ou transparente; é o `alfa`
         // que o preserva para quem desenha a imagem por cima de outra coisa.
-        let a = if has_alpha { chunk[channels - 1] } else { u8::MAX };
+        let a = if has_alpha {
+            chunk[channels - 1]
+        } else {
+            u8::MAX
+        };
         opaque.push(a >= 128);
         alfa.push(a);
     }
@@ -1814,12 +1925,30 @@ fn font_do_modulo(raiz: &std::path::Path) -> Option<crate::video::font::Font> {
     crate::video::font::Font::load(std::fs::read(caminho).ok()?, nome)
 }
 
+/// O banco de amostras do MIDI, procurado na pasta do aparelho.
+///
+/// Devolve `None` em silêncio quando não há banco: é o caso comum, e o motor continua com a tabela
+/// de timbres. O relatório é que diz, pela hipótese em uso, qual dos dois caminhos tocou.
+#[cfg(feature = "soundfont")]
+fn banco_do_aparelho(aparelho: &std::path::Path) -> Option<std::sync::Arc<crate::audio::soundfont::Banco>> {
+    let caminho = crate::audio::soundfont::primeiro_banco(aparelho)?;
+    crate::audio::soundfont::abre(&caminho)
+}
+
 /// A fonte do aparelho, para quem não trouxe a sua.
 ///
 /// Sem ela, todo `DrawText` de um jogo sem `.ttf` ia só para o relatório: o menu do Kingdom
 /// Hearts desenhava as cinco caixas e nenhuma das palavras dentro delas.
-fn fonte_do_console() -> Option<crate::video::font::Font> {
-    let caminho = crate::loader::archive::fonte_do_sistema()?;
+fn fonte_do_console(aparelho: &std::path::Path) -> Option<crate::video::font::Font> {
+    // **O aparelho do frontend primeiro.** A versão anterior só olhava o caminho do desktop, então
+    // a fonte que o core instala no perfil dele — `<raiz do aparelho>/shared/fonts/tectoy.ttf` —
+    // nunca era encontrada: o jogo seguia sem desenhar texto, e o quadro ficava em branco quando a
+    // tela é fundo branco mais as palavras.
+    let do_aparelho = aparelho.join("shared").join("fonts").join("tectoy.ttf");
+    let caminho = match do_aparelho.is_file() {
+        true => do_aparelho,
+        false => crate::loader::archive::fonte_do_sistema()?,
+    };
     crate::video::font::Font::load(std::fs::read(caminho).ok()?, "tectoy.ttf".into())
 }
 
@@ -1981,6 +2110,10 @@ pub struct Machine<C: CpuBackend> {
     module: LoadedModule,
     heap: Heap,
     objects: ObjectStore,
+    /// O que o jogo perguntou ao `IFileMgr`, com o caminho e o retorno.
+    fs_log: std::collections::VecDeque<String>,
+    /// Quantas vezes o jogo pediu cada classe, conhecida ou não.
+    classes_pedidas: BTreeMap<u32, u32>,
     /// ClassIDs que o jogo pediu e não sabemos criar — a lista do que falta.
     unknown_classes: BTreeSet<u32>,
     /// ClassIDs que o `--sonda` manda atender com um objeto de observação.
@@ -1988,6 +2121,22 @@ pub struct Machine<C: CpuBackend> {
     web_requests: BTreeSet<String>,
     /// As coleções vivas, cada uma com os itens e onde o cursor está.
     collections: HashMap<u32, (Vec<u32>, usize)>,
+    /// O texto que o jogo mandou desenhar, com o instante e a posição, para o relatório.
+    ///
+    /// É o que responde "o que está escrito na tela agora?": a lista de texto *pendente* só existe
+    /// quando falta a fonte, e um jogo que desenha várias telas de aviso ao longo da execução
+    /// aparece no relatório como uma sopa de mensagens sem dono.
+    textos_desenhados: std::collections::VecDeque<(u32, i32, i32, String)>,
+    /// Alocações que o heap recusou, por tamanho pedido e por quem pediu.
+    ///
+    /// O `malloc` do BREW devolve zero quando não cabe, e um jogo que não distingue "não cabe" de
+    /// qualquer outra falha mostra uma mensagem genérica — foi assim que o Double Dragon foi parar
+    /// na tela "Memory is insufficient" sem nada no relatório que apontasse para o pedido recusado.
+    alocacoes_recusadas: BTreeSet<(u32, u32)>,
+    /// Perguntas de `IHeap::CheckAvail` respondidas com "não cabe", pelo mesmo motivo.
+    checagens_recusadas: BTreeSet<(u32, u32)>,
+    /// As fontes do sistema vivas, por objeto `IFont`, com as métricas da classe que as criou.
+    fontes: std::collections::HashMap<u32, crate::machine::font::Metricas>,
     /// Os bancos SQLite abertos, por objeto `ISQLDatabase`.
     databases: HashMap<u32, crate::brew::sql::Database>,
     probe_classes: BTreeSet<u32>,
@@ -2025,6 +2174,18 @@ pub struct Machine<C: CpuBackend> {
     /// Os objetos das extensões gráficas do console, criados na primeira vez que são pedidos.
     surface_manip: u32,
     imageon_ext: u32,
+    /// O objeto do `IGLES11Ext`, criado na primeira vez que o pedem. Ver o slot 2 da vtable do EGL.
+    gles11_ext: u32,
+    /// O objeto do `IGLES10Ext`, pelo mesmo motivo.
+    gles10_ext: u32,
+    /// O objeto do `IEGLGetPowerLevel`.
+    egl_get_power_level: u32,
+    /// O objeto do `IEGLOESSwapInterval`.
+    egl_oes_swap_interval: u32,
+    /// O objeto do `IEGLGetColorBuffer`.
+    egl_get_color_buffer: u32,
+    /// O objeto do `IGLES11ExtPak`.
+    gles11_ext_pak: u32,
     /// O retângulo em que o jogo desenha, quando ele o declara pelo `SetSurfaceScale`. Vale
     /// mais que a dedução por viewport: aqui o jogo **diz** o tamanho.
     scale_source: Option<(i32, i32)>,
@@ -2141,7 +2302,7 @@ pub struct Machine<C: CpuBackend> {
     escritas_do_quadro_gl: Option<u64>,
     wheel_boot_skipped: bool,
     /// Como a Z-Wheel lê a `tectoy.cfg`. Ver [`Machine::configura_z_wheel`].
-    z_wheel: crate::ui::settings::ZWheel,
+    z_wheel: crate::config::ZWheel,
     /// O applet pediu para fechar com `ISHELL_CloseApplet`. Ver [`Machine::pediu_para_fechar`].
     applet_fechado: bool,
     /// `(raiz, formulário)` à espera do aviso de ativo. Ver [`Machine::entrega_ativacao`].
@@ -2208,12 +2369,24 @@ pub struct Machine<C: CpuBackend> {
     config_items: HashMap<u32, HashMap<u32, Vec<u8>>>,
     /// O estado de cada widget vivo. Ver [`Widget`].
     widgets: HashMap<u32, Widget>,
+    /// Quantas vezes cada par `(classe de widget, seletor)` passou pelo acessador. Ver o braço
+    /// `Acessador` de `widget_call`: é o que responde "que comportamento esta classe proprietária
+    /// espera" pelo uso, sem sonda e sem desmonte. Ligado por [`Machine::liga_censo_de_widgets`].
+    seletores_por_classe: std::collections::BTreeMap<(u32, u32), u32>,
+    /// Se o censo do acessador por classe está ligado. Desligado, para não mexer na linha de base.
+    censo_de_widgets: bool,
     /// As APIs que faltaram, com quem as chamou. Ver o `None` do despacho.
     missing_apis: BTreeSet<String>,
     /// Acessos inválidos que aconteceram dentro de retorno de chamada e não pararam o jogo.
     falhas_engolidas: BTreeSet<String>,
     /// Chamadas de GL atendidas com sucesso sem fazer nada.
     ignored_gl: BTreeSet<&'static str>,
+    /// `glPixelStorei(GL_UNPACK_ALIGNMENT, n)`: com quantos bytes cada linha de textura começa
+    /// alinhada na memória do guest. O padrão do OpenGL é 4.
+    ///
+    /// Mora no `Machine`, e não no estado do rasterizador, porque é propriedade **da memória do
+    /// jogo** — quem lê os texels é `machine/gl.rs`, antes de entregá-los a qualquer rasterizador.
+    unpack_alignment: u32,
     /// O que o jogo entregou ao `ICipher1`, em claro, antes de ser cifrado.
     plaintexts: std::collections::VecDeque<Vec<u8>>,
     /// Se a ponte do módulo pode entregar a resposta ao jogo. Ver [`crate::ponte`].
@@ -2420,6 +2593,12 @@ pub struct Machine<C: CpuBackend> {
     pending_text: Vec<String>,
     /// A fonte do próprio jogo, quando ele empacota uma.
     font: Option<crate::video::font::Font>,
+    /// O banco de amostras com que o MIDI é tocado, quando o aparelho tem um.
+    ///
+    /// `None` é o caso comum: o banco não vem embutido (medido: 32.319.396 B e +64 MiB de RSS na
+    /// carga), então quem não instalou um `.sf2` continua ouvindo a tabela de timbres.
+    #[cfg(feature = "soundfont")]
+    banco_de_som: Option<std::sync::Arc<crate::audio::soundfont::Banco>>,
     /// Quantas vezes cada método foi chamado — o retrato do que o jogo usa.
     calls: BTreeMap<(u32, u32), u64>,
     /// Total de chamadas atendidas, para aplicar o teto.
@@ -2447,20 +2626,25 @@ fn placa_pedida(padrao: bool) -> bool {
 /// não tem janela. O caminho com janela troca depois, já com o contexto dela.
 fn rasterizador(largura: usize, altura: usize) -> Box<dyn Rasterizador> {
     match placa_pedida(false) {
-        #[cfg(feature = "desktop")]
         true => na_placa(largura, altura, None),
-        _ => Box::new(GlState::new(largura, altura)),
+        false => Box::new(GlState::new(largura, altura)),
     }
 }
 
 /// A placa quando ela abre, o software quando não.
-#[cfg(feature = "desktop")]
+///
+/// A queda **não é tratamento de erro**, é um caminho normal: num terminal sem EGL alcançável não
+/// há placa para usar, e o emulador tem que rodar de todo jeito. O motivo é dito uma vez, porque
+/// um emulador que silenciosamente roda diferente do pedido é pior que um lento.
 fn na_placa(
     largura: usize,
     altura: usize,
-    #[cfg(feature = "desktop")] contexto: Option<std::sync::Arc<eframe::glow::Context>>,
+    contexto: Option<std::sync::Arc<glow::Context>>,
 ) -> Box<dyn Rasterizador> {
-    #[cfg(feature = "desktop")]
+    // Com a feature `gl`, o rasterizador de placa existe — e ele **não** cria contexto: quem
+    // chama entrega o dele. Sem ela, o software é a única rota, que é o caso do core quando o
+    // frontend não oferece contexto.
+    #[cfg(feature = "gl")]
     {
         match crate::video::gpu::GpuState::novo(largura, altura, contexto) {
             Ok(gpu) => return Box::new(gpu),
@@ -2469,7 +2653,7 @@ fn na_placa(
             }
         }
     }
-    let _ = (largura, altura);
+    let _ = contexto;
     Box::new(GlState::new(largura, altura))
 }
 
@@ -2484,13 +2668,12 @@ impl<C: CpuBackend> Machine<C> {
     pub fn usa_placa(
         &mut self,
         sim: bool,
-        #[cfg(feature = "desktop")] contexto: Option<std::sync::Arc<eframe::glow::Context>>,
+        contexto: Option<std::sync::Arc<glow::Context>>,
     ) {
         let (largura, altura) = self.gl.frame_size();
         self.gl = match placa_pedida(sim) {
-            #[cfg(feature = "desktop")]
             true => na_placa(largura, altura, contexto),
-            _ => Box::new(GlState::new(largura, altura)),
+            false => Box::new(GlState::new(largura, altura)),
         };
     }
 
@@ -2573,12 +2756,29 @@ impl<C: CpuBackend> Machine<C> {
     ///   ela marca na primeira vez; fora dele, sempre, a não ser que esteja no `NoSlideToForm`.
     ///   A cfg traz `SlideOnceToForm=31` e o dump já vem com `HasSlidToForm=14` — Jogar,
     ///   Configurar e zeebo vistos —, então nada deslizava. Com `SlideOnceToForm=0`, tudo desliza.
-    pub fn configura_z_wheel(&mut self, opcoes: crate::ui::settings::ZWheel) {
+    pub fn configura_z_wheel(&mut self, opcoes: crate::config::ZWheel) {
         self.z_wheel = opcoes;
     }
 
     pub fn new(cpu: C, module: LoadedModule, root: impl Into<std::path::PathBuf>) -> Self {
+        let storage = crate::storage::StoragePaths::from_root(crate::config::config_dir());
+        Self::new_with_storage(cpu, module, root, &storage, None)
+    }
+
+    /// Como [`Machine::new`], mas recebe as raízes persistentes do frontend.
+    ///
+    /// O construtor antigo preserva a UI desktop. Frontends isolados, como Libretro, não podem
+    /// depender de `ui::settings::config_dir()` e usam esta forma com sua raiz autorizada: a NAND
+    /// compartilhada e, quando o perfil pede, o overlay gravável do título.
+    pub fn new_with_storage(
+        cpu: C,
+        module: LoadedModule,
+        root: impl Into<std::path::PathBuf>,
+        storage: &crate::storage::StoragePaths,
+        save_root: Option<std::path::PathBuf>,
+    ) -> Self {
         let raiz: std::path::PathBuf = root.into();
+        let aparelho: std::path::PathBuf = storage.device.clone();
         let heap = Heap::new(loader::HEAP_BASE, loader::HEAP_SIZE);
         // Os objetos ficam depois dos ponteiros que o carregador já reservou no começo da
         // região, para não sobrescrevê-los.
@@ -2594,9 +2794,15 @@ impl<C: CpuBackend> Machine<C> {
             module,
             heap,
             objects,
+            fs_log: std::collections::VecDeque::new(),
+            classes_pedidas: BTreeMap::new(),
             unknown_classes: BTreeSet::new(),
             web_requests: BTreeSet::new(),
             collections: HashMap::new(),
+            textos_desenhados: std::collections::VecDeque::new(),
+            alocacoes_recusadas: BTreeSet::new(),
+            checagens_recusadas: BTreeSet::new(),
+            fontes: std::collections::HashMap::new(),
             databases: HashMap::new(),
             probe_classes: BTreeSet::new(),
             probe_answers: HashMap::new(),
@@ -2614,7 +2820,10 @@ impl<C: CpuBackend> Machine<C> {
             vfs: {
                 let mut vfs = Vfs::new(raiz.clone());
                 // Todos os jogos compartilham o mesmo `fs:/`, como no console.
-                vfs.set_device_root(crate::loader::archive::device_dir());
+                vfs.set_device_root(aparelho.clone());
+                if let Some(save) = save_root {
+                    vfs.set_save_root(save);
+                }
                 vfs
             },
             open_files: HashMap::new(),
@@ -2623,6 +2832,12 @@ impl<C: CpuBackend> Machine<C> {
             feeds: HashMap::new(),
             surface_manip: 0,
             imageon_ext: 0,
+            gles11_ext: 0,
+            gles10_ext: 0,
+            egl_get_power_level: 0,
+            egl_oes_swap_interval: 0,
+            egl_get_color_buffer: 0,
+            gles11_ext_pak: 0,
             scale_source: None,
             prefs: HashMap::new(),
             enumerations: HashMap::new(),
@@ -2670,7 +2885,7 @@ impl<C: CpuBackend> Machine<C> {
             pending_launch: None,
             wheel_boot_skipped: false,
             escritas_do_quadro_gl: None,
-            z_wheel: crate::ui::settings::ZWheel {
+            z_wheel: crate::config::ZWheel {
                 fim_de_vida: true,
                 transicoes_sempre: false,
             },
@@ -2703,6 +2918,8 @@ impl<C: CpuBackend> Machine<C> {
             teclas_da_rolagem: Default::default(),
             peeks: HashMap::new(),
             widgets: HashMap::new(),
+            seletores_por_classe: std::collections::BTreeMap::new(),
+            censo_de_widgets: false,
             config_items: HashMap::new(),
             network: true,
             // Pelo mesmo motivo, o desvio de servidor também vem do ambiente:
@@ -2722,6 +2939,7 @@ impl<C: CpuBackend> Machine<C> {
             missing_apis: BTreeSet::new(),
             falhas_engolidas: BTreeSet::new(),
             ignored_gl: BTreeSet::new(),
+            unpack_alignment: 4,
             web_response: Vec::new(),
             streams: HashMap::new(),
             sounds: HashMap::new(),
@@ -2788,7 +3006,13 @@ impl<C: CpuBackend> Machine<C> {
             screen: Framebuffer::new(SCREEN_WIDTH as u32, SCREEN_HEIGHT as u32),
             colors: default_colors(),
             pending_text: Vec::new(),
-            font: font_do_modulo(&raiz).or_else(fonte_do_console),
+            // A fonte do aparelho sai da raiz que este motor recebeu, não da configuração do
+            // desktop: é isso que faz a fonte instalada pelo frontend ser encontrada.
+            font: font_do_modulo(&raiz).or_else(|| fonte_do_console(&aparelho)),
+            // O banco de amostras do MIDI, quando o aparelho tem um. É opcional de propósito: o
+            // banco não vem embutido, e sem ele a música volta para a tabela de timbres.
+            #[cfg(feature = "soundfont")]
+            banco_de_som: banco_do_aparelho(&aparelho),
             calls: BTreeMap::new(),
             calls_total: 0,
         }
@@ -3185,7 +3409,11 @@ impl<C: CpuBackend> Machine<C> {
             }
             (Interface::Shell, slot) if Interface::Shell.method(slot) == Some("EnumNextApplet") => {
                 let saida = self.cpu.read_reg(Reg::R1);
-                match self.modulos_instalados.get(self.enumeracao_de_applets).cloned() {
+                match self
+                    .modulos_instalados
+                    .get(self.enumeracao_de_applets)
+                    .cloned()
+                {
                     Some((classe, id)) if saida != 0 => {
                         self.enumeracao_de_applets += 1;
                         let mif = match self.mif_no_guest.get(&classe) {
@@ -3361,7 +3589,15 @@ impl<C: CpuBackend> Machine<C> {
                 Some(result) => result,
                 None => return Ok(None),
             },
-            (Interface::EglSurfaceManip, _) | (Interface::GlesImageonExt, _) => {
+            (Interface::EglSurfaceManip, _)
+            | (Interface::GlesImageonExt, _)
+            | (Interface::Gles11Ext, _)
+            | (Interface::Gles10Ext, _)
+            | (Interface::EglGetPowerLevel, _)
+            | (Interface::EglOesSwapInterval, _)
+            | (Interface::EglGetColorBuffer, _)
+            | (Interface::Gles11ExtPak, _)
+            | (Interface::Joystick, _) => {
                 match self.extension_call(iface, slot)? {
                     Some(result) => result,
                     None => return Ok(None),
@@ -3438,6 +3674,10 @@ impl<C: CpuBackend> Machine<C> {
                 None => return Ok(None),
             },
             (Interface::Classe28e3c, _) => match self.modelo_de_valor_call(slot)? {
+                Some(result) => result,
+                None => return Ok(None),
+            },
+            (Interface::Font, _) => match self.font_call(slot)? {
                 Some(result) => result,
                 None => return Ok(None),
             },

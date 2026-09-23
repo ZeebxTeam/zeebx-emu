@@ -90,13 +90,13 @@ girando com o Wii Remote, o botão de calibrar e a opção do aviso de calibraç
 
 ## Idiomas
 
-`ui/i18n.rs`. Dois idiomas embutidos no binário (en, pt-BR) e a possibilidade de acrescentar outros
-por JSON solto — ao lado do executável, para uma cópia portátil, ou no diretório de configuração,
-para quem quer traduzir sem mexer na instalação. Um arquivo com o código de um embutido o
-substitui, que é como corrigir uma tradução sem esperar versão nova.
+`ui/i18n.rs`. Quatro idiomas embutidos no binário (en, es, es-MX, pt-BR) e a possibilidade de acrescentar
+outros por JSON solto — ao lado do executável, para uma cópia portátil, ou no diretório de
+configuração, para quem quer traduzir sem mexer na instalação. Um arquivo com o código de um
+embutido o substitui, que é como corrigir uma tradução sem esperar versão nova.
 
-Um teste compara as chaves dos dois idiomas: **chave que existe só num deles é texto que aparece
-em inglês no meio do português.**
+Um teste compara as chaves dos idiomas embutidos: **chave que existe só num deles é texto que
+aparece em inglês no meio do português.**
 
 ## O mapa visual do controle
 

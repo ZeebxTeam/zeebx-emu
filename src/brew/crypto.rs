@@ -221,6 +221,34 @@ impl Md5 {
         }
     }
 
+    /// O estado interno, para o save state: os quatro registradores, os bytes que ainda não
+    /// completaram um bloco de 64 e o total visto.
+    ///
+    /// **Um MD5 no meio de um cálculo é estado de verdade.** Sem isto, um jogo que salve entre dois
+    /// `Update` de um resumo perde o que já tinha somado — e o resumo sai errado depois, sem nada
+    /// apontando para o save state. O estado cabe em poucos bytes: são quatro palavras e, no
+    /// máximo, sessenta e três bytes de resto.
+    pub fn estado(&self) -> ([u32; 4], &[u8], u64) {
+        (self.state, &self.buffer, self.length)
+    }
+
+    /// Repõe o estado gravado por [`Md5::estado`].
+    ///
+    /// Recusa um resto de bloco maior que sessenta e três bytes: não é estado de MD5, é arquivo
+    /// errado — e um resto assim faria o próximo `compress` ler o que não devia.
+    pub fn restaura_estado(&mut self, state: [u32; 4], buffer: &[u8], length: u64) -> Result<(), String> {
+        if buffer.len() >= 64 {
+            return Err(format!(
+                "o resto de bloco tem {} bytes, e o MD5 guarda no máximo 63",
+                buffer.len()
+            ));
+        }
+        self.state = state;
+        self.buffer = buffer.to_vec();
+        self.length = length;
+        Ok(())
+    }
+
     /// A constante `T[i]`, definida na RFC como `floor(2^32 * abs(sin(i + 1)))`.
     fn t(i: usize) -> u32 {
         ((i as f64 + 1.0).sin().abs() * 4_294_967_296.0) as u32

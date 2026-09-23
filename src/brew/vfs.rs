@@ -62,10 +62,40 @@ fn sem_classe(resto: &str) -> String {
 /// Nome da raiz comum, que faz o papel do sistema de arquivos do aparelho.
 const DEVICE_DIR: &str = "aparelho";
 
+/// Para que serve uma abertura.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpenIntent {
+    /// Ler um arquivo que precisa existir.
+    Read,
+    /// Criar um nome novo, sem sobrescrever um existente de caixa diferente.
+    Create,
+    /// Ler e escrever o mesmo arquivo, preservando o conteúdo atual.
+    ReadWrite,
+    /// Acrescentar ao fim do arquivo.
+    Append,
+}
+
+/// Onde abrir, e a cópia que precisa preceder a escrita.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenTarget {
+    /// Caminho do host a abrir.
+    pub path: PathBuf,
+    /// Arquivo do pacote a copiar para `path` antes de escrever, no copy-on-write.
+    pub copy_from: Option<PathBuf>,
+}
+
 #[derive(Debug)]
 pub struct Vfs {
     /// Diretório do módulo — onde caem os caminhos relativos e o `~`.
+    ///
+    /// É o **conteúdo**: pacote extraído ou instalação ao lado do `.mod`. Tratado como
+    /// somente-leitura a partir do momento em que existe um overlay.
     root: PathBuf,
+    /// Overlay gravável do título, quando o frontend fornece um.
+    ///
+    /// Sem ele o emulador grava dentro do próprio conteúdo, que é o comportamento histórico do
+    /// desktop. Com ele, o pacote nunca é alterado e o save sobrevive a reextrair a ROM.
+    save: Option<PathBuf>,
     /// A raiz comum, que faz o papel do sistema de arquivos do aparelho.
     device: PathBuf,
     /// Até onde o `..` pode subir. No console é a raiz de módulos: o Quake mantém os dados
@@ -85,7 +115,13 @@ impl Vfs {
             root,
             boundary,
             device,
+            save: None,
         }
+    }
+
+    /// Liga o overlay gravável do título. Ver [`Vfs::open_target`].
+    pub fn set_save_root(&mut self, save: impl Into<PathBuf>) {
+        self.save = Some(save.into());
     }
 
     /// Aponta a raiz comum para outro lugar.
@@ -115,7 +151,109 @@ impl Vfs {
     /// origem desconhecida não deveria conseguir ler o resto da máquina.
     pub fn resolve(&self, guest_path: &str) -> Option<PathBuf> {
         let caminho = self.resolve_inner(guest_path, false).map(match_case);
-        self.ou_na_raiz_de_modulos(guest_path, caminho, false)
+        let caminho = self.ou_na_raiz_de_modulos(guest_path, caminho, false);
+        self.overlay_existente(&caminho).or(caminho)
+    }
+
+    /// O mesmo caminho dentro do overlay, quando ele já existe lá.
+    ///
+    /// Um arquivo gravado pelo jogo esconde o do pacote: é o que faz o save relido ser o save, e
+    /// não o recurso original.
+    fn overlay_existente(&self, conteudo: &Option<PathBuf>) -> Option<PathBuf> {
+        let save = self.save.as_deref()?;
+        let relativo = conteudo.as_ref()?.strip_prefix(&self.root).ok()?;
+        let candidato = match_case(save.join(relativo));
+        candidato.exists().then_some(candidato)
+    }
+
+    /// Onde abrir um caminho, e de onde copiar antes de escrever.
+    ///
+    /// Ver [`OpenIntent`]. Sem overlay configurado o resultado é o comportamento histórico: o
+    /// jogo grava ao lado do `.mod`.
+    pub fn open_target(&self, guest_path: &str, intent: OpenIntent) -> Option<OpenTarget> {
+        // Caminho do aparelho (`fs:/` sem `~`) é persistente e compartilhado: não passa pelo
+        // overlay do título.
+        let normalizado = guest_path.replace('\\', "/");
+        let do_aparelho = normalizado.starts_with("fs:/") && !normalizado.starts_with("fs:/~");
+        if do_aparelho || self.save.is_none() {
+            return self.legacy_target(guest_path, intent);
+        }
+        let base = self.resolve_inner(guest_path, false)?;
+        // Só o que vive dentro do conteúdo do título tem overlay. `fs:/~/../id1/x` fica de fora.
+        let Ok(relativo) = base.strip_prefix(&self.root) else {
+            return self.legacy_target(guest_path, intent);
+        };
+        let save = self.save.as_deref()?;
+        let destino_pai = match_case_parent(save.join(relativo));
+        let existente_no_overlay = match_case(save.join(relativo));
+        let no_overlay = existente_no_overlay
+            .exists()
+            .then_some(existente_no_overlay);
+        let conteudo = match_case(base.clone());
+        let no_conteudo = conteudo.exists().then_some(conteudo);
+        match intent {
+            OpenIntent::Read => Some(OpenTarget {
+                path: no_overlay.or(no_conteudo)?,
+                copy_from: None,
+            }),
+            OpenIntent::Create => Some(OpenTarget {
+                path: no_overlay.unwrap_or(destino_pai),
+                copy_from: None,
+            }),
+            // Abrir para escrita um recurso do pacote copia-o antes: o pacote fica intacto e as
+            // escritas seguintes já encontram o arquivo no overlay.
+            OpenIntent::ReadWrite | OpenIntent::Append => Some(OpenTarget {
+                path: no_overlay.clone().unwrap_or(destino_pai),
+                copy_from: match no_overlay {
+                    Some(_) => None,
+                    None => no_conteudo,
+                },
+            }),
+        }
+    }
+
+    /// Se o caminho já está dentro do overlay gravável.
+    pub fn is_overlay_path(&self, path: &Path) -> bool {
+        self.save
+            .as_deref()
+            .is_some_and(|save| path.starts_with(save))
+    }
+
+    /// O caminho equivalente no overlay, exista ele ou não.
+    ///
+    /// É o par de [`Vfs::overlay_dir`] para quem vai **remover** ou **renomear**: um caminho do
+    /// pacote não pode ser apagado nem movido, porque o pacote é imutável.
+    pub fn overlay_path(&self, guest_path: &str) -> Option<PathBuf> {
+        let save = self.save.as_deref()?;
+        let base = self.resolve_inner(guest_path, false)?;
+        let relativo = base.strip_prefix(&self.root).ok()?;
+        Some(match_case_parent(save.join(relativo)))
+    }
+
+    /// O diretório equivalente no overlay, quando ele existe.
+    ///
+    /// Serve à listagem: o jogo precisa enxergar os arquivos que ele mesmo gravou, e não só os
+    /// que vieram no pacote.
+    pub fn overlay_dir(&self, guest_path: &str) -> Option<PathBuf> {
+        let save = self.save.as_deref()?;
+        let base = self.resolve_inner(guest_path, true)?;
+        let relativo = base.strip_prefix(&self.root).ok()?;
+        let caminho = match_case(save.join(relativo));
+        caminho.is_dir().then_some(caminho)
+    }
+
+    /// Comportamento histórico, sem overlay: grava dentro do próprio conteúdo.
+    fn legacy_target(&self, guest_path: &str, intent: OpenIntent) -> Option<OpenTarget> {
+        let path = match intent {
+            OpenIntent::Read | OpenIntent::ReadWrite | OpenIntent::Append => {
+                self.resolve(guest_path)?
+            }
+            OpenIntent::Create => self.resolve_new(guest_path)?,
+        };
+        Some(OpenTarget {
+            path,
+            copy_from: None,
+        })
     }
 
     /// **Sobre o `preloaded.cfg`.**
@@ -130,7 +268,10 @@ impl Vfs {
     /// É para quem vai **criar** um nome, não abrir um existente: renomear para `save.dat`
     /// quando existe um `SAVE.DAT` tem de criar o primeiro, não sobrescrever o segundo.
     pub fn resolve_new(&self, guest_path: &str) -> Option<PathBuf> {
-        self.resolve_inner(guest_path, false)
+        // O nome novo fica exatamente como o guest escreveu, mas os diretórios que já existem
+        // continuam seguindo a semântica sem caixa do console. Sem isto, `UDATA/save.dat`
+        // criaria uma segunda pasta ao lado de `udata/` num host Linux.
+        self.resolve_inner(guest_path, false).map(match_case_parent)
     }
 
     /// Como [`Vfs::resolve`], mas aceita o próprio diretório do módulo.
@@ -218,6 +359,14 @@ impl Vfs {
         }
         Some(resolved)
     }
+}
+
+/// Resolve só os diretórios de um caminho novo, preservando o último componente para criação.
+fn match_case_parent(path: PathBuf) -> PathBuf {
+    let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+        return path;
+    };
+    match_case(parent.to_path_buf()).join(name)
 }
 
 /// O mesmo caminho, com a caixa que os arquivos têm de verdade no disco.
@@ -386,6 +535,23 @@ mod tests {
 mod tests_no_disco {
     use super::*;
 
+    /// O sistema de arquivos distingue maiúsculas de minúsculas?
+    ///
+    /// **O APFS do macOS e o NTFS do Windows, por padrão, não distinguem**: `data` e `DATA` são a
+    /// mesma pasta, `font.fnz` e `font.FNZ` são o mesmo arquivo. Nesses sistemas o caminho pedido
+    /// já existe, a resposta do VFS é ele mesmo, e não há duas grafias para comparar — foi assim
+    /// que dois testes desta seção passaram a falhar **só no macOS** no primeiro run de CI que
+    /// chegou até eles. Onde o sistema funde as grafias, o que a busca sem caixa tem de garantir
+    /// vem de graça do próprio sistema de arquivos.
+    fn distingue_caixa(onde: &Path) -> bool {
+        let alta = onde.join("zeebx-CAIXA");
+        let baixa = onde.join("zeebx-caixa");
+        std::fs::write(&alta, b"x").unwrap();
+        let distingue = !baixa.exists();
+        let _ = std::fs::remove_file(&alta);
+        distingue
+    }
+
     /// Os dez ports de arcade pedem `font.fnz` e trazem `font.FNZ`. No console dá na mesma.
     #[test]
     fn acha_o_arquivo_com_outra_caixa() {
@@ -395,12 +561,102 @@ mod tests_no_disco {
         std::fs::write(modulo.join("font.FNZ"), b"fonte").unwrap();
 
         let vfs = Vfs::new(&modulo);
-        assert_eq!(vfs.resolve("font.fnz"), Some(modulo.join("font.FNZ")));
-        // O nome exato continua ganhando de qualquer outro.
-        std::fs::write(modulo.join("font.fnz"), b"outra").unwrap();
-        assert_eq!(vfs.resolve("font.fnz"), Some(modulo.join("font.fnz")));
-        // O que não existe volta como veio: é assim que um arquivo novo é criado.
+        let distingue = distingue_caixa(&modulo);
+        if distingue {
+            assert_eq!(vfs.resolve("font.fnz"), Some(modulo.join("font.FNZ")));
+        } else {
+            // Sistema que funde as duas grafias: a resposta é o nome pedido, e o arquivo é o
+            // mesmo. A prova que interessa aqui é que a resposta abre o conteúdo do pacote.
+            let achado = vfs.resolve("font.fnz").expect("respondeu pelo arquivo");
+            assert_eq!(std::fs::read(&achado).unwrap(), b"fonte");
+        }
+        // O que não existe volta como veio numa busca existente.
         assert_eq!(vfs.resolve("save.dat"), Some(modulo.join("save.dat")));
+        // Uma criação preserva o nome do arquivo, mas acha diretórios existentes sem caixa.
+        std::fs::create_dir_all(modulo.join("udata")).unwrap();
+        if distingue {
+            assert_eq!(
+                vfs.resolve_new("UDATA/save.dat"),
+                Some(modulo.join("udata/save.dat"))
+            );
+        } else {
+            assert!(vfs.resolve_new("UDATA/save.dat").is_some());
+        }
+
+        std::fs::remove_dir_all(&raiz).unwrap();
+    }
+
+    /// O overlay do título guarda o que o jogo grava, sem tocar no conteúdo do pacote.
+    #[test]
+    fn overlay_grava_fora_do_conteudo_e_esconde_o_recurso_do_pacote() {
+        let raiz = std::env::temp_dir().join(format!("zeebx-vfs-overlay-{}", std::process::id()));
+        let modulo = raiz.join("jogo/mod/1");
+        let save = raiz.join("saves/abc");
+        std::fs::create_dir_all(&modulo).unwrap();
+        std::fs::create_dir_all(&save).unwrap();
+        std::fs::write(modulo.join("config.ini"), b"do pacote").unwrap();
+
+        let mut vfs = Vfs::new(&modulo);
+        vfs.set_save_root(&save);
+
+        // Leitura: o pacote é encontrado enquanto não há nada no overlay.
+        assert_eq!(vfs.resolve("config.ini"), Some(modulo.join("config.ini")));
+
+        // Escrita de recurso existente: copia antes e depois o overlay vence.
+        let alvo = vfs
+            .open_target("config.ini", OpenIntent::ReadWrite)
+            .unwrap();
+        assert_eq!(alvo.path, save.join("config.ini"));
+        assert_eq!(alvo.copy_from, Some(modulo.join("config.ini")));
+        std::fs::write(&alvo.path, b"do save").unwrap();
+        assert_eq!(vfs.resolve("config.ini"), Some(save.join("config.ini")));
+        assert_eq!(
+            std::fs::read(modulo.join("config.ini")).unwrap(),
+            b"do pacote"
+        );
+
+        // Arquivo novo: nasce no overlay.
+        let novo = vfs
+            .open_target("udata/recorde.dat", OpenIntent::Create)
+            .unwrap();
+        assert_eq!(novo.path, save.join("udata/recorde.dat"));
+        assert_eq!(novo.copy_from, None);
+
+        // O aparelho continua fora do overlay do título.
+        let mut vfs = vfs;
+        let aparelho = raiz.join("aparelho");
+        vfs.set_device_root(&aparelho);
+        let dispositivo = vfs
+            .open_target("fs:/zeeboiddata/zeeboid.db", OpenIntent::Create)
+            .unwrap();
+        assert_eq!(dispositivo.path, aparelho.join("zeeboiddata/zeeboid.db"));
+
+        std::fs::remove_dir_all(&raiz).unwrap();
+    }
+
+    /// Com overlay, o que o jogo gravou pode ser apagado e renomeado; o pacote não.
+    #[test]
+    fn overlay_protege_o_pacote_de_remocao_e_renomeio() {
+        let raiz = std::env::temp_dir().join(format!("zeebx-vfs-rm-{}", std::process::id()));
+        let modulo = raiz.join("jogo/mod/1");
+        let save = raiz.join("saves/abc");
+        std::fs::create_dir_all(&modulo).unwrap();
+        std::fs::create_dir_all(&save).unwrap();
+        std::fs::write(modulo.join("recurso.pak"), b"do pacote").unwrap();
+
+        let mut vfs = Vfs::new(&modulo);
+        vfs.set_save_root(&save);
+
+        // O alvo de remoção de um recurso do pacote é o caminho do overlay, não o do pacote.
+        assert_eq!(
+            vfs.overlay_path("recurso.pak"),
+            Some(save.join("recurso.pak"))
+        );
+        assert!(!vfs.is_overlay_path(&modulo.join("recurso.pak")));
+
+        // Depois de copiado para o overlay, o alvo passa a ser dele.
+        std::fs::write(save.join("recurso.pak"), b"do save").unwrap();
+        assert!(vfs.is_overlay_path(&vfs.resolve("recurso.pak").unwrap()));
 
         std::fs::remove_dir_all(&raiz).unwrap();
     }
@@ -419,10 +675,17 @@ mod tests_no_disco {
 
         let mut vfs = Vfs::new(&modulo);
         vfs.set_device_root(&aparelho);
-        assert_eq!(
-            vfs.resolve("fs:/mod/tyrian/DATA/tyrian1.lvl"),
-            Some(modulo.join("data/tyrian1.lvl"))
-        );
+        if distingue_caixa(&raiz) {
+            assert_eq!(
+                vfs.resolve("fs:/mod/tyrian/DATA/tyrian1.lvl"),
+                Some(modulo.join("data/tyrian1.lvl"))
+            );
+        } else {
+            let achado = vfs
+                .resolve("fs:/mod/tyrian/DATA/tyrian1.lvl")
+                .expect("respondeu pela pasta");
+            assert_eq!(std::fs::read(&achado).unwrap(), b"fase");
+        }
         // O que o aparelho tem continua vindo dele.
         assert_eq!(
             vfs.resolve("fs:/mod/tyrian/tyrian.cfg"),
@@ -433,7 +696,10 @@ mod tests_no_disco {
             vfs.resolve("fs:/mod/tyrian/novo.sav"),
             Some(aparelho.join("mod/tyrian/novo.sav"))
         );
-        assert_eq!(vfs.resolve_dir("fs:/mod/tyrian/data"), Some(modulo.join("data")));
+        assert_eq!(
+            vfs.resolve_dir("fs:/mod/tyrian/data"),
+            Some(modulo.join("data"))
+        );
         // E dali não se sobe para fora da instalação.
         assert_eq!(vfs.resolve("fs:/mod/../../segredo"), None);
 

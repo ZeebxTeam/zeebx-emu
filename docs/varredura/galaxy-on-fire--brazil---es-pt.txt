@@ -1,0 +1,141 @@
+Galaxy on Fire (Brazil) (Es,Pt)
+estado: roda
+tela: 162 cor(es), dominante 0x0000
+classes pedidas:
+  0x01001001  (1x)
+  0x01001003  (1x)
+  0x01001014  (12x)
+  0x01005502  (7x)
+  0x0100550a  (25x)
+  0x010127d4  (1x)
+  0x0103d8ec  (1x)
+  0x01041207  (1x)
+  0x0106c411  (1x)
+chamadas ao sistema de arquivos:
+  Read  (0x108540c0 0x703c 0xf000400c) -> 28732
+  Release  (0xf0004004 0x703c 0xf000400c) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Galaxy-on-Fire--Brazil---Es-Pt--ab8d465f1bbc6c31fe8c29b13ceab12e2a12a3129cbeeb1aff90d56bea4580d2/mod/277380/wpn_laser_05.wav (No such file or directory (os error 2))
+  OpenFile "/wpn_laser_05.wav"  (0x108540a8 0x1 0xf0003008) -> 0
+  OpenFile "/res.aez"  (0x1085b100 0x1 0xf0003008) -> 805308752
+  Seek  (0x2 0x24cbd8 0xf000401c) -> 0
+  Read  (0x1085b150 0x403c 0xf000400c) -> 16444
+  Release  (0xf0004004 0x403c 0xf000400c) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Galaxy-on-Fire--Brazil---Es-Pt--ab8d465f1bbc6c31fe8c29b13ceab12e2a12a3129cbeeb1aff90d56bea4580d2/mod/277380/wpn_rocket_01.wav (No such file or directory (os error 2))
+  OpenFile "/wpn_rocket_01.wav"  (0x1084d810 0x1 0xf0003008) -> 0
+  OpenFile "/res.aez"  (0x108540a8 0x1 0xf0003008) -> 805308816
+  Seek  (0x2 0x250c2f 0xf000401c) -> 0
+  Read  (0x1085f1f8 0xa03c 0xf000400c) -> 41020
+  Release  (0xf0004004 0xa03c 0xf000400c) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Galaxy-on-Fire--Brazil---Es-Pt--ab8d465f1bbc6c31fe8c29b13ceab12e2a12a3129cbeeb1aff90d56bea4580d2/mod/277380/wpn_rocket_04.wav (No such file or directory (os error 2))
+  OpenFile "/wpn_rocket_04.wav"  (0x108540a8 0x1 0xf0003008) -> 0
+  OpenFile "/res.aez"  (0x1085b140 0x1 0xf0003008) -> 805308880
+  Seek  (0x2 0x25ac86 0xf000401c) -> 0
+  Read  (0x10869278 0x783c 0xf000400c) -> 30780
+  Release  (0xf0004004 0x783c 0xf000400c) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Galaxy-on-Fire--Brazil---Es-Pt--ab8d465f1bbc6c31fe8c29b13ceab12e2a12a3129cbeeb1aff90d56bea4580d2/mod/277380/wpn_rocket_04.wav (No such file or directory (os error 2))
+  OpenFile "/wpn_rocket_04.wav"  (0x10870ab8 0x1 0xf0003008) -> 0
+  OpenFile "/res.aez"  (0x1085b140 0x1 0xf0003008) -> 805308944
+  Seek  (0x2 0x25ac86 0xf000401c) -> 0
+  Read  (0x10870b10 0x783c 0xf000400c) -> 30780
+  Release  (0xf0004004 0x783c 0xf000400c) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Galaxy-on-Fire--Brazil---Es-Pt--ab8d465f1bbc6c31fe8c29b13ceab12e2a12a3129cbeeb1aff90d56bea4580d2/mod/277380/fx_message_03.wav (No such file or directory (os error 2))
+  OpenFile "/fx_message_03.wav"  (0x1085f1d8 0x1 0xf0003008) -> 0
+  OpenFile "/res.aez"  (0x10870af8 0x1 0xf0003008) -> 805309008
+  Seek  (0x2 0x16ac13 0xf000401c) -> 0
+  Read  (0x108783b8 0x283c 0xf000400c) -> 10300
+  Release  (0xf0004004 0x283c 0xf000400c) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Galaxy-on-Fire--Brazil---Es-Pt--ab8d465f1bbc6c31fe8c29b13ceab12e2a12a3129cbeeb1aff90d56bea4580d2/mod/277380/fx_hit_shield.wav (No such file or directory (os error 2))
+  OpenFile "/fx_hit_shield.wav"  (0x10870af8 0x1 0xf0003008) -> 0
+  OpenFile "/res.aez"  (0x1087abf8 0x1 0xf0003008) -> 805309072
+  Seek  (0x2 0x15e35e 0xf000401c) -> 0
+  Read  (0x1087ac48 0x603c 0xf000400c) -> 24636
+  Release  (0xf0004004 0x603c 0xf000400c) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Galaxy-on-Fire--Brazil---Es-Pt--ab8d465f1bbc6c31fe8c29b13ceab12e2a12a3129cbeeb1aff90d56bea4580d2/mod/277380/fx_hit_shield_02.wav (No such file or directory (os error 2))
+  OpenFile "/fx_hit_shield_02.wav"  (0x10878390 0x1 0xf0003008) -> 0
+  OpenFile "/res.aez"  (0x108783a8 0x1 0xf0003008) -> 805309136
+  Seek  (0x2 0x1643b8 0xf000401c) -> 0
+  Read  (0x10880cf8 0x603c 0xf000400c) -> 24636
+  Release  (0xf0004004 0x603c 0xf000400c) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Galaxy-on-Fire--Brazil---Es-Pt--ab8d465f1bbc6c31fe8c29b13ceab12e2a12a3129cbeeb1aff90d56bea4580d2/mod/277380/jet_interior06_30.wav (No such file or directory (os error 2))
+  OpenFile "/jet_interior06_30.wav"  (0x108783a0 0x1 0xf0003008) -> 0
+  OpenFile "/res.aez"  (0x1087ac38 0x1 0xf0003008) -> 805309200
+  Seek  (0x2 0x1870a2 0xf000401c) -> 0
+  Read  (0x10886d78 0xab1c4 0xf000400c) -> 700868
+  Release  (0xf0004004 0xab1c4 0xf000400c) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Galaxy-on-Fire--Brazil---Es-Pt--ab8d465f1bbc6c31fe8c29b13ceab12e2a12a3129cbeeb1aff90d56bea4580d2/mod/277380/fx_minebeeps.wav (No such file or directory (os error 2))
+  OpenFile "/fx_minebeeps.wav"  (0x10931f40 0x1 0xf0003008) -> 0
+  OpenFile "/res.aez"  (0x1087ac38 0x1 0xf0003008) -> 805309264
+  Seek  (0x2 0x16f4c0 0xf000401c) -> 0
+  Release  (0xf0004004 0x283c 0xf001e00c) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Galaxy-on-Fire--Brazil---Es-Pt--ab8d465f1bbc6c31fe8c29b13ceab12e2a12a3129cbeeb1aff90d56bea4580d2/mod/277380/gb.lang (No such file or directory (os error 2))
+  OpenFile "/gb.lang"  (0x10936b00 0x1 0xf0003008) -> 0
+  OpenFile "/res.aez"  (0x10936b10 0x1 0xf0003008) -> 805309328
+  Seek  (0x2 0x281ff2 0xf000401c) -> 0
+  Release  (0xf0004004 0x17 0x0) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Galaxy-on-Fire--Brazil---Es-Pt--ab8d465f1bbc6c31fe8c29b13ceab12e2a12a3129cbeeb1aff90d56bea4580d2/mod/277380/data/txt/stations.txt (No such file or directory (os error 2))
+  OpenFile "/data/txt/stations.txt"  (0x10946390 0x1 0xf0003008) -> 0
+  OpenFile "/res.aez"  (0x10936b00 0x1 0xf0003008) -> 805309328
+  Seek  (0x2 0x1267b6 0xf000401c) -> 0
+  Release  (0xf0004004 0x1 0xf001e00c) -> 0
+  Test "udata/gof_save_options"  (0x1000b230 0xf000301c 0x0) -> 1
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Galaxy-on-Fire--Brazil---Es-Pt--ab8d465f1bbc6c31fe8c29b13ceab12e2a12a3129cbeeb1aff90d56bea4580d2/mod/277380/data/textures/pre_game.aei (No such file or directory (os error 2))
+  OpenFile "/data/textures/pre_game.aei"  (0x10946740 0x1 0xf0003008) -> 0
+  OpenFile "/res.aez"  (0x1000b258 0x1 0xf0003008) -> 805309904
+  Seek  (0x2 0xfb529 0xf000401c) -> 0
+  Release  (0xf0004004 0x100000 0xf001e00c) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Galaxy-on-Fire--Brazil---Es-Pt--ab8d465f1bbc6c31fe8c29b13ceab12e2a12a3129cbeeb1aff90d56bea4580d2/mod/277380/data/textures/main_menu.aei (No such file or directory (os error 2))
+  OpenFile "/data/textures/main_menu.aei"  (0x109467a8 0x1 0xf0003008) -> 0
+  OpenFile "/res.aez"  (0x10936b40 0x1 0xf0003008) -> 805309904
+  Seek  (0x2 0x73b98 0xf000401c) -> 0
+  Release  (0xf0004004 0x3 0xf001e00c) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Galaxy-on-Fire--Brazil---Es-Pt--ab8d465f1bbc6c31fe8c29b13ceab12e2a12a3129cbeeb1aff90d56bea4580d2/mod/277380/pt.lang (No such file or directory (os error 2))
+  OpenFile "/pt.lang"  (0x1094c188 0x1 0xf0003008) -> 0
+  OpenFile "/res.aez"  (0x1094c198 0x1 0xf0003008) -> 805309904
+  Seek  (0x2 0x285abb 0xf000401c) -> 0
+  Release  (0xf0004004 0x1c 0x0) -> 0
+  Test "udata/gof_save_options"  (0x10945408 0xf000301c 0x0) -> 1
+  GetFreeSpace  (0x0 0xf0003020 0x0) -> 268435456
+  OpenFile "udata/gof_save_options"  (0x10945408 0x4 0xf0003008) -> 805309904
+  Write  (0x200fff90 0x1 0xf0004014) -> 1
+  Write  (0x200fff90 0x1 0xf0004014) -> 1
+  Write  (0x200fff90 0x1 0xf0004014) -> 1
+  Write  (0x200fff90 0x1 0xf0004014) -> 1
+  Write  (0x200fff90 0x1 0xf0004014) -> 1
+  Write  (0x200fff88 0x4 0xf0004014) -> 4
+  Write  (0x200fff90 0x4 0xf0004014) -> 4
+  Write  (0x200fff90 0x1 0xf0004014) -> 1
+  Write  (0x200fff90 0x4 0xf0004014) -> 4
+  Write  (0x200fff90 0x1 0xf0004014) -> 1
+  Write  (0x200fff90 0x2 0xf0004014) -> 2
+  Release  (0xf0004004 0x2 0xf0004014) -> 0
+arquivos não encontrados:
+  /data/textures/main_menu.aei
+  /data/textures/pre_game.aei
+  /data/txt/items.txt
+  /data/txt/ships.txt
+  /data/txt/stations.txt
+  /fx_boost_01.wav
+  /fx_explosion_01_ship.wav
+  /fx_explosion_03_junk.wav
+  /fx_explosion_04_asteroid.wav
+  /fx_hit_06.wav
+  /fx_hit_08.wav
+  /fx_hit_shield.wav
+  /fx_hit_shield_02.wav
+  /fx_menu_03.wav
+  /fx_message_03.wav
+  /fx_message_05.wav
+  /fx_minebeeps.wav
+  /fx_pass_01.wav
+  /fx_wpnemp_01.wav
+  /fx_wpnemp_02.wav
+  /gb.lang
+  /jet_interior06_30.wav
+  /pt.lang
+  /wpn_laser_01.wav
+  /wpn_laser_02.wav
+  /wpn_laser_03.wav
+  /wpn_laser_04.wav
+  /wpn_laser_05.wav
+  /wpn_rocket_01.wav
+  /wpn_rocket_04.wav

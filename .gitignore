@@ -40,3 +40,8 @@ vendor/
 *.bmp
 .nodeterm/project.json
 ref z-wheel2.png
+
+# Android: o Gradle e o `.so` copiado pelo `cargo-ndk` são saída de build, não fonte.
+frontends/android/apk/.gradle/
+frontends/android/apk/local.properties
+frontends/android/apk/app/src/main/jniLibs/

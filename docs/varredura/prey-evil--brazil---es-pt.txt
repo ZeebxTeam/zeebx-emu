@@ -1,0 +1,20 @@
+Prey Evil (Brazil) (Es,Pt)
+estado: quebrou no laço de quadros
+motivo: acesso inválido a 0x00000000, em 0x00000000 (de 0x000161d8)
+tela: 1 cor(es), dominante 0x0000 (tela quase uniforme: pode ser carregamento — vale aumentar ZEEBX_ROM_MS)
+classes pedidas:
+  0x01001001  (3x)
+  0x01001002  (1x)
+  0x01001003  (2x)
+  0x01005511  (1x)
+  0x010127d4  (1x)
+  0x0103d8ec  (1x)
+  0x01041207  (1x)
+  0x0106c411  (1x)
+chamadas ao sistema de arquivos:
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Prey-Evil--Brazil---Es-Pt--afa8a5a78839e91b3afa21daeadad4b7e909c0a91d2f5c70171eaf8cbc232b6b/mod/276154/udata/save.dat (No such file or directory (os error 2))
+  OpenFile "udata/save.dat"  (0x1002bcb4 0x1 0xf0003008) -> 0
+arquivos não encontrados:
+  udata/save.dat
+acessos inválidos que o jogo seguiu por cima:
+  acesso inválido a 0x00000000 em pc 0x00000000

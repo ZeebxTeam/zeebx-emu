@@ -12,9 +12,31 @@ pub mod midi;
 pub mod mp3;
 pub mod wav;
 
+/// Síntese por banco de amostras. Ver a feature `soundfont` e o cabeçalho do módulo.
+#[cfg(feature = "soundfont")]
+pub mod soundfont;
+
+/// Onde o banco de amostras deve ficar, quando a build não tem o sintetizador de banco.
+///
+/// A mensagem existe nos dois casos de propósito: uma compilação sem a feature precisa dizer que
+/// **não tem** o recurso, e não calar — silêncio aqui vira "o banco não funciona".
+#[cfg(not(feature = "soundfont"))]
+pub mod soundfont {
+    use std::path::Path;
+
+    pub fn relato(aparelho: &Path) -> String {
+        let pasta = aparelho.join("soundfonts");
+        format!(
+            "Zeebx: esta compilação não tem o sintetizador de banco de amostras; o MIDI toca com a \
+             tabela de timbres (o .sf2 iria em {})",
+            pasta.display()
+        )
+    }
+}
+
 use std::sync::{Arc, Mutex};
 
-#[cfg(feature = "desktop")]
+#[cfg(feature = "audio")]
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
 use crate::audio::wav::Sound;
@@ -32,7 +54,21 @@ struct Voice {
     remaining: Option<u32>,
     paused: bool,
     done: bool,
+    /// Quadros que faltam para a voz sumir, quando o som chegou ao fim.
+    ///
+    /// **Uma voz que some de uma vez estala.** O som acaba, o nível pode estar em 0,947 — foi o
+    /// medido na Peteca — e a amostra seguinte é zero: a queda de quase o curso inteiro em uma
+    /// amostra é um estalo audível, e não uma propriedade do som do jogo. A descida leva
+    /// [`DESCIDA_FRAMES`] quadros, que a 44,1 kHz são menos de dois milissegundos: some sem degrau
+    /// e sem atrasar o efeito seguinte.
+    descida: u32,
 }
+
+/// Quantos quadros a voz leva para sumir quando o som acaba.
+///
+/// 64 quadros a 44,1 kHz são 1,5 ms — abaixo do que o ouvido distingue como silêncio à parte, e
+/// suficiente para o degrau deixar de existir.
+const DESCIDA_FRAMES: u32 = 64;
 
 impl Voice {
     /// A amostra do canal `channel` na posição corrente, interpolada entre os dois quadros
@@ -65,11 +101,38 @@ impl Voice {
         }
         match &mut self.remaining {
             None => self.position = 0.0,
-            Some(0) | Some(1) => self.done = true,
+            // O fim do som **não** corta: segura o último valor e desce em `DESCIDA_FRAMES`
+            // quadros. Repetir não é fim — a volta começa de novo no começo e não precisa disto.
+            Some(0) | Some(1) => {
+                if self.descida == 0 {
+                    self.descida = DESCIDA_FRAMES;
+                }
+            }
             Some(left) => {
                 *left -= 1;
                 self.position = 0.0;
             }
+        }
+    }
+
+    /// Anda um quadro da placa: ou o som avança, ou a descida consome o que resta dele.
+    ///
+    /// **Os dois caminhos da mixagem usam este passo** — o audível e o mudo. O mudo também precisa
+    /// consumir a descida: sem isso a voz nunca chegaria ao fim ali, e o teste que cobra "o som
+    /// andou até o fim" pegou exatamente isso.
+    fn passo(&mut self) {
+        match self.descida {
+            0 => self.advance(),
+            1 => self.done = true,
+            restante => self.descida = restante - 1,
+        }
+    }
+
+    /// O quanto esta voz ainda vale, de 1,0 durante o som a 0,0 no fim da descida.
+    fn decaimento(&self) -> f32 {
+        match self.descida {
+            0 => 1.0,
+            restante => restante as f32 / DESCIDA_FRAMES as f32,
         }
     }
 }
@@ -95,6 +158,11 @@ struct Stream {
     /// O máximo de amostras guardadas: se o jogo entrega mais rápido do que a placa toca, as mais
     /// antigas saem, em vez de o atraso crescer sem fim.
     capacity: usize,
+    /// Quanto uma amostra restante cai por quadro da saída quando o fluxo seca.
+    ///
+    /// Segurar a última amostra durante uma falta curta transforma um underrun em tensão DC e
+    /// soa como um zumbido/estalo. Um fade curtíssimo mantém continuidade sem inventar áudio.
+    underrun_decay: f32,
 }
 
 impl Stream {
@@ -105,10 +173,19 @@ impl Stream {
             self.fraction -= 1.0;
             self.previous = self.current;
             if self.samples.len() < self.channels {
-                // Faltou amostra: segura o último valor em vez de estalar para o zero, e não
-                // acumula atraso.
+                // Faltou amostra: não segure o último valor indefinidamente. Isso vira uma
+                // componente DC audível (principalmente nos ports que alimentam PCM em blocos).
+                // Cai suavemente para zero em poucos milissegundos e não acumula atraso.
                 self.fraction = 0.0;
-                break;
+                let out = self.current;
+                for sample in &mut self.current {
+                    *sample *= self.underrun_decay;
+                    if sample.abs() < 0.0001 {
+                        *sample = 0.0;
+                    }
+                }
+                self.previous = self.current;
+                return out;
             }
             let left = self.samples.pop_front().unwrap_or(0.0);
             let right = match self.channels {
@@ -172,6 +249,7 @@ impl Mixer {
         state.voices.insert(
             id,
             Voice {
+                descida: 0,
                 sound,
                 position: 0.0,
                 step,
@@ -193,6 +271,11 @@ impl Mixer {
         };
         let channels = usize::from(channels.max(1));
         let step = f64::from(rate) / f64::from(state.rate.max(1));
+        // O decaimento é aplicado quando avançamos um quadro da fonte, não um quadro da saída.
+        // Usar a taxa da placa aqui alonga o fade quando um jogo entrega 11/22 kHz.
+        // Aproximadamente 5 ms até -60 dB, independentemente das duas taxas.
+        let fade_frames = (rate.max(1) as f32 * 0.005).max(1.0);
+        let underrun_decay = 0.001_f32.powf(1.0 / fade_frames);
         state.voices.remove(&id);
         state.streams.insert(
             id,
@@ -207,6 +290,7 @@ impl Mixer {
                 paused: false,
                 // Meio segundo de folga.
                 capacity: rate as usize * channels / 2,
+                underrun_decay,
             },
         );
     }
@@ -292,6 +376,8 @@ impl Mixer {
     /// Preenche `out` com a mistura das vozes. `channels` é quantos canais a placa quer.
     fn fill(&self, out: &mut [f32], channels: usize) {
         out.fill(0.0);
+        let channels = channels.max(1);
+        let frames = out.len() / channels;
         let Ok(mut state) = self.state.lock() else {
             return;
         };
@@ -303,15 +389,15 @@ impl Mixer {
             // Mudo ainda consome as vozes: o som continua correndo, só não sai.
             for voice in state.voices.values_mut() {
                 if !voice.paused && !voice.done {
-                    for _ in 0..out.len() / channels.max(1) {
-                        voice.advance();
+                    for _ in 0..frames {
+                        voice.passo();
                     }
                 }
             }
             state.voices.retain(|_, voice| !voice.done);
             for stream in state.streams.values_mut() {
                 if !stream.paused {
-                    for _ in 0..out.len() / channels.max(1) {
+                    for _ in 0..frames {
                         stream.next_frame();
                     }
                 }
@@ -322,15 +408,19 @@ impl Mixer {
             if voice.paused || voice.done {
                 continue;
             }
-            for frame in out.chunks_mut(channels.max(1)) {
+            for frame in out.chunks_mut(channels) {
                 if voice.done {
                     break;
                 }
-                let gain = voice.volume * master;
+                // **O ganho fica dentro do laço.** O `decaimento()` muda a cada quadro enquanto a
+                // voz desce; içá-lo para fora congelaria o primeiro valor e apagaria a descida.
+                let gain = voice.volume * master * voice.decaimento();
                 for (channel, slot) in frame.iter_mut().enumerate() {
                     *slot += voice.sample(channel) * gain;
                 }
-                voice.advance();
+                // Depois de começar a descida, o som não avança mais: o que se ouve é o último
+                // valor, cada vez menor. Quando a descida acaba, a voz sai.
+                voice.passo();
             }
         }
         for stream in state.streams.values_mut() {
@@ -338,7 +428,7 @@ impl Mixer {
                 continue;
             }
             let gain = stream.volume * master;
-            for frame in out.chunks_mut(channels.max(1)) {
+            for frame in out.chunks_mut(channels) {
                 let stereo = stream.next_frame();
                 for (channel, slot) in frame.iter_mut().enumerate() {
                     *slot += stereo[channel.min(1)] * gain;
@@ -357,13 +447,16 @@ impl Mixer {
 }
 
 /// A saída de áudio. Enquanto ela existe, o som toca; largá-la fecha o fluxo.
-#[cfg(feature = "desktop")]
+///
+/// Só existe com a feature `desktop`: um frontend Libretro recebe o que o mixer gera por callback
+/// e não tem placa própria para abrir.
+#[cfg(feature = "audio")]
 pub struct Output {
     _stream: cpal::Stream,
     mixer: Mixer,
 }
 
-#[cfg(feature = "desktop")]
+#[cfg(feature = "audio")]
 impl Output {
     /// Abre a placa padrão do sistema.
     ///
@@ -374,17 +467,59 @@ impl Output {
         let device = host
             .default_output_device()
             .ok_or("nenhuma saída de áudio disponível")?;
-        let config = device
-            .default_output_config()
-            .map_err(|err| err.to_string())?;
+        // O backend Android do CPAL 0.15 escolhe 44,1 kHz pela heurística genérica mesmo em
+        // aparelhos cuja saída nativa é 48 kHz. Isso faz o nosso mixer reamostrar para 44,1 e o
+        // Android reamostrar de novo para 48. Preferir 48 kHz/F32 evita essa segunda conversão.
+        let config = if cfg!(target_os = "android") {
+            let rate = cpal::SampleRate(48_000);
+            let ranges: Vec<_> = device
+                .supported_output_configs()
+                .map(|configs| configs.collect())
+                .unwrap_or_default();
+            let preferred = ranges
+                .iter()
+                .copied()
+                .filter(|range| {
+                    range.channels() == 2 && range.sample_format() == cpal::SampleFormat::F32
+                })
+                .find_map(|range| range.try_with_sample_rate(rate))
+                .or_else(|| {
+                    ranges
+                        .iter()
+                        .copied()
+                        .filter(|range| range.sample_format() == cpal::SampleFormat::F32)
+                        .find_map(|range| range.try_with_sample_rate(rate))
+                });
+            match preferred {
+                Some(config) => config,
+                None => device
+                    .default_output_config()
+                    .map_err(|err| err.to_string())?,
+            }
+        } else {
+            device
+                .default_output_config()
+                .map_err(|err| err.to_string())?
+        };
         let channels = config.channels() as usize;
         let mixer = Mixer::new(config.sample_rate().0, volume, muted);
+        let mut stream_config = config.config();
+        // O emulador pode ter picos pesados de CPU/GPU. Dar ~21 ms de capacidade ao Oboe evita
+        // que uma fatia ruim vire crackle, sem empurrar a latência para valores perceptivelmente
+        // altos.
+        //
+        // **Não há recuo para o padrão do driver, e não falta:** o backend Oboe do cpal 0.15.3
+        // traduz `BufferSize::Fixed(n)` em `set_buffer_capacity_in_frames(n)` e não tem caminho
+        // de recusa. Um `match` de retry aqui seria um ramo que nunca roda.
+        if cfg!(target_os = "android") {
+            stream_config.buffer_size = cpal::BufferSize::Fixed(1024);
+        }
 
         let stream = match config.sample_format() {
             cpal::SampleFormat::F32 => {
                 let mixer = mixer.clone();
                 device.build_output_stream(
-                    &config.into(),
+                    &stream_config,
                     move |out: &mut [f32], _| mixer.fill(out, channels),
                     |err| eprintln!("erro na saída de áudio: {err}"),
                     None,
@@ -405,7 +540,7 @@ impl Output {
     }
 }
 
-#[cfg(feature = "desktop")]
+#[cfg(feature = "audio")]
 impl std::fmt::Debug for Output {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Output").finish_non_exhaustive()
@@ -496,13 +631,36 @@ mod tests {
 
     #[test]
     fn a_voz_que_termina_sai_da_lista() {
-        // Dois quadros de som numa placa da mesma taxa: depois de dois quadros, acabou — e
-        // some sozinha, senão a lista de vozes cresceria a cada efeito tocado.
+        // Dois quadros de som numa placa da mesma taxa: o som acaba, e a voz **desce** antes de
+        // sair — some sozinha, senão a lista de vozes cresceria a cada efeito tocado.
         let mixer = mixer(8000);
         mixer.play(7, tone(8000, 2), 1.0, 1);
-        let mut out = [0.0f32; 8];
+        let mut out = [0.0f32; (DESCIDA_FRAMES as usize + 16) * 2];
         mixer.fill(&mut out, 2);
-        assert!(!mixer.is_playing(7));
+        assert!(!mixer.is_playing(7), "a voz sai depois da descida");
+    }
+
+    /// **A descida existe, e é monótona.**
+    ///
+    /// O som acaba no meio da onda, o nível pode estar em quase o curso inteiro, e cortar ali é um
+    /// estalo. A voz segura o último valor e desce em [`DESCIDA_FRAMES`] quadros; como a posição
+    /// não anda nesse trecho, a saída é exatamente uma rampa — e é isso que o teste cobra.
+    #[test]
+    fn a_voz_desce_em_vez_de_sumir_de_uma_vez() {
+        let mixer = mixer(8000);
+        mixer.play(7, tone(8000, 2), 1.0, 1);
+        let mut out = vec![0.0f32; (DESCIDA_FRAMES as usize + 4) * 2];
+        mixer.fill(&mut out, 2);
+        let esquerdo: Vec<f32> = out.chunks_exact(2).map(|par| par[0]).collect();
+        let ultimo = esquerdo[..DESCIDA_FRAMES as usize].to_vec();
+        assert!(
+            ultimo.windows(2).all(|par| par[1] <= par[0] + 1e-6),
+            "a descida tem de ser monótona: {ultimo:?}"
+        );
+        assert!(
+            ultimo.first().copied().unwrap_or(0.0) > 0.0,
+            "a descida começa onde o som parou"
+        );
     }
 
     #[test]
@@ -530,6 +688,33 @@ mod tests {
     }
 
     #[test]
+    fn fluxo_que_seca_cai_para_silencio_em_vez_de_zumbir() {
+        // Um bloco curto não pode deixar a última amostra presa na saída. Antes, um fluxo que
+        // atrasasse a próxima remessa sustentava 1.0 indefinidamente — tensão DC audível como
+        // estalo/zumbido. A última amostra sai inteira uma vez e depois desaparece em ~5 ms.
+        let mixer = mixer(1000);
+        mixer.open_stream(9, 1000, 1, 1.0);
+        mixer.feed_stream(9, &[1.0]);
+        let samples = mixer.render(12);
+        let left: Vec<f32> = samples.iter().step_by(2).copied().collect();
+        assert!(left.iter().any(|sample| *sample > 0.9), "{left:?}");
+        assert!(left.last().copied().unwrap_or(1.0).abs() < 0.001, "{left:?}");
+    }
+
+    #[test]
+    fn fade_de_underrun_nao_depende_da_taxa_da_placa() {
+        // A fonte é 1 kHz e a placa 4 kHz. O decaimento acontece ao consumir quadros da fonte;
+        // depois de ~10 ms ele já deve estar efetivamente em silêncio mesmo com a placa 4x maior.
+        let mixer = mixer(4000);
+        mixer.open_stream(10, 1000, 1, 1.0);
+        mixer.feed_stream(10, &[1.0]);
+        let samples = mixer.render(48);
+        let left: Vec<f32> = samples.iter().step_by(2).copied().collect();
+        assert!(left.iter().any(|sample| *sample > 0.9), "{left:?}");
+        assert!(left.last().copied().unwrap_or(1.0).abs() < 0.001, "{left:?}");
+    }
+
+    #[test]
     fn a_taxa_do_som_e_convertida_para_a_da_placa() {
         // Som de 4000 Hz numa placa de 8000: cada quadro do som rende dois da placa, então
         // quatro quadros de som viram oito antes de acabar.
@@ -538,8 +723,9 @@ mod tests {
         let mut out = [0.0f32; 12]; // seis quadros estéreo
         mixer.fill(&mut out, 2);
         assert!(mixer.is_playing(1), "ainda não podia ter acabado");
-        mixer.fill(&mut out, 2);
-        assert!(!mixer.is_playing(1));
+        let mut resto = [0.0f32; (DESCIDA_FRAMES as usize + 16) * 2];
+        mixer.fill(&mut resto, 2);
+        assert!(!mixer.is_playing(1), "sai depois da descida");
     }
 
     #[test]
@@ -598,9 +784,26 @@ mod tests {
         let mixer = mixer(8000);
         mixer.play(1, tone(8000, 4), 1.0, 1);
         mixer.set_master(1.0, true);
-        let mut out = [0.0f32; 8];
+        let mut out = [0.0f32; (DESCIDA_FRAMES as usize + 8) * 2];
         mixer.fill(&mut out, 2);
-        assert!(out.iter().all(|&s| s == 0.0));
-        assert!(!mixer.is_playing(1), "o som andou até o fim");
+        assert!(out.iter().all(|&s| s == 0.0), "no mudo nada sai");
+        assert!(!mixer.is_playing(1), "o som andou até o fim, inclusive a descida");
+    }
+}
+
+#[cfg(test)]
+mod testes_do_relato {
+    /// **A build sem o sintetizador também responde**, e diz que não tem — em vez de calar.
+    /// Silêncio aqui viraria a mesma conclusão errada do outro lado: "o banco não funciona".
+    #[cfg(not(feature = "soundfont"))]
+    #[test]
+    fn o_relato_avisa_que_a_build_nao_tem_banco() {
+        let aparelho = std::env::temp_dir().join("zeebx-aparelho-sem-feature");
+        let texto = super::soundfont::relato(&aparelho);
+        assert!(
+            texto.contains("não tem o sintetizador de banco"),
+            "o relato tem de dizer que a build não tem o recurso: {texto}"
+        );
+        assert!(texto.contains("soundfonts"), "e onde o arquivo iria: {texto}");
     }
 }

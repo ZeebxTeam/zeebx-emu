@@ -144,6 +144,34 @@ pub fn probe(data: &[u8]) -> Option<Mp3> {
 /// Fluxo seria o certo para um jogo que troque de música o tempo todo; nenhum dos nossos faz
 /// isso, e streaming acrescentaria estado e uma linha de execução a mais para nada.
 pub fn decode(data: &[u8]) -> Option<crate::audio::wav::Sound> {
+    decode_detalhado(data).ok()
+}
+
+/// Como [`decode`], mas **dizendo por quê** quando recusa.
+///
+/// O motivo importa: sem ele o relatório mostrava só o erro do WAV ("não é um RIFF/WAVE"), que é
+/// verdade e não ajuda em nada — a pergunta é o que a sondagem do `symphonia` não aceitou. Foi
+/// assim que se descobriu que o Turma da Mônica entrega Ogg e o Peggle MP3 com etiqueta ID3v2.
+/// Onde começa o primeiro quadro MPEG.
+///
+/// A etiqueta ID3v2 declara o **próprio tamanho** no cabeçalho, e é por ele que um decodificador
+/// pula até o áudio. O Peggle entrega MP3 cuja etiqueta diz zero byte e tem trinta mil de
+/// conteúdo: quem confia no campo procura o quadro no lugar errado, não acha, e recusa o som
+/// inteiro — era o que acontecia com sete trilhas do jogo. Aqui a busca é pelo próprio quadro,
+/// `0xFF` seguido de três bits altos, que é o que o formato garante de verdade.
+fn inicio_do_audio(bytes: &[u8]) -> usize {
+    if bytes.len() < 3 || &bytes[0..3] != b"ID3" {
+        return 0;
+    }
+    for i in 3..bytes.len().saturating_sub(1) {
+        if bytes[i] == 0xFF && (bytes[i + 1] & 0xE0) == 0xE0 {
+            return i;
+        }
+    }
+    0
+}
+
+pub fn decode_detalhado(data: &[u8]) -> Result<crate::audio::wav::Sound, String> {
     use symphonia::core::audio::SampleBuffer;
     use symphonia::core::codecs::DecoderOptions;
     use symphonia::core::errors::Error;
@@ -154,24 +182,43 @@ pub fn decode(data: &[u8]) -> Option<crate::audio::wav::Sound> {
 
     // O `MediaSourceStream` quer posse do que lê, e o buffer é do guest: copiar é o preço de
     // não deixar o decodificador olhando para a memória do jogo enquanto ele a reescreve.
-    let fonte = std::io::Cursor::new(data.to_vec());
-    let fluxo = MediaSourceStream::new(Box::new(fonte), Default::default());
-    let mut hint = Hint::new();
-    hint.with_extension("mp3");
-    let sondado = symphonia::default::get_probe()
-        .format(
+    // **Duas caixas, o mesmo decodificador.** A música da maioria dos jogos chega em MP3; a do
+    // Turma da Mônica chega em Ogg/Vorbis — 86 sons que eram recusados um a um e deixavam o jogo
+    // em **silêncio absoluto** (medido: pico 0,000 no relatório, com oito mil amostras de Ogg na
+    // lista de recusados). A dica de extensão ajuda a sondagem e não atrapalha: com a errada ela
+    // falha, e aí vale tentar a outra. Antes desta linha, o `recusado (formato desconhecido, 4f 67
+    // 67 53 ...)` do relatório era a única pista, e ela ficou visível por uma tarde.
+    // **A busca pelo quadro vem antes da sondagem.** Uma etiqueta ID3 que mente no tamanho faz a
+    // sondagem falhar no arquivo inteiro; começando no primeiro quadro, ela vê o que o formato
+    // promete. Para um arquivo sem etiqueta, ou com etiqueta honesta, o deslocamento é zero e
+    // nada muda.
+    let inicio = inicio_do_audio(data);
+    let audio = &data[inicio..];
+    let mut sondado = None;
+    for extensao in ["mp3", "ogg"] {
+        let fonte = std::io::Cursor::new(audio.to_vec());
+        let fluxo = MediaSourceStream::new(Box::new(fonte), Default::default());
+        let mut hint = Hint::new();
+        hint.with_extension(extensao);
+        if let Ok(encontrado) = symphonia::default::get_probe().format(
             &hint,
             fluxo,
             &FormatOptions::default(),
             &MetadataOptions::default(),
-        )
-        .ok()?;
+        ) {
+            sondado = Some(encontrado);
+            break;
+        }
+    }
+    let sondado = sondado.ok_or_else(|| "a sondagem não reconheceu o contêiner".to_string())?;
     let mut formato = sondado.format;
-    let trilha = formato.default_track()?;
+    let trilha = formato
+        .default_track()
+        .ok_or_else(|| "o contêiner não declara trilha de áudio".to_string())?;
     let id = trilha.id;
     let mut decodificador = symphonia::default::get_codecs()
         .make(&trilha.codec_params, &DecoderOptions::default())
-        .ok()?;
+        .map_err(|erro| format!("sem decodificador para {:#?}: {erro}", trilha.codec_params.codec))?;
 
     let mut samples: Vec<f32> = Vec::new();
     let mut rate = 0;
@@ -202,9 +249,12 @@ pub fn decode(data: &[u8]) -> Option<crate::audio::wav::Sound> {
         samples.extend_from_slice(buffer.samples());
     }
     if samples.is_empty() || rate == 0 || channels == 0 {
-        return None;
+        return Err(format!(
+            "decodificou {} amostra(s), taxa {rate}, {channels} canal(is)",
+            samples.len()
+        ));
     }
-    Some(crate::audio::wav::Sound {
+    Ok(crate::audio::wav::Sound {
         rate,
         channels,
         samples,
@@ -214,6 +264,30 @@ pub fn decode(data: &[u8]) -> Option<crate::audio::wav::Sound> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **A etiqueta que mente no tamanho.**
+    ///
+    /// `ID3` + versão + flags + quatro bytes de tamanho. O Peggle entrega etiqueta dizendo zero
+    /// byte; procurar o quadro pelo campo declarado levava a decodificador nenhum. A busca pelo
+    /// padrão do quadro acha o áudio de qualquer jeito.
+    #[test]
+    fn acha_o_quadro_depois_de_uma_etiqueta_que_mente() {
+        let mut dados = b"ID3\x03\x00\x00\x00\x00\x00\x00".to_vec();
+        dados.extend_from_slice(&[0u8; 32]); // conteúdo da etiqueta, sem quadro nenhum
+        let onde = dados.len();
+        dados.extend_from_slice(&[0xFF, 0xFB, 0x90, 0x00]); // sincronia de quadro MPEG-1 Layer III
+        assert_eq!(inicio_do_audio(&dados), onde);
+    }
+
+    /// Sem etiqueta, o áudio começa no começo — e um `0xFF` solto não vira falso positivo no
+    /// primeiro byte, que é o caso de todo WAV e de todo Ogg.
+    #[test]
+    fn sem_etiqueta_o_audio_comeca_no_zero() {
+        assert_eq!(inicio_do_audio(&[0xFF, 0xFB, 0x90, 0x00]), 0);
+        assert_eq!(inicio_do_audio(b"OggS\x00\x02\x00\x00"), 0);
+        assert_eq!(inicio_do_audio(b"RIFF\x24\x00\x00\x00WAVE"), 0);
+        assert_eq!(inicio_do_audio(b""), 0);
+    }
 
     /// Um quarto de segundo de 440 Hz, mono, 22.050 Hz, gerado com o `lame`.
     ///

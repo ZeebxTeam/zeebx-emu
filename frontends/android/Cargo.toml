@@ -1,0 +1,40 @@
+[package]
+name = "zeebx-android"
+version = "0.3.0"
+edition = "2024"
+license = "GPL-2.0-only"
+description = "O frontend de Android do Zeebx"
+publish = false
+
+# A `NativeActivity` carrega um `.so` e chama o `android_main` dele. Não há classe Java nossa:
+# o aplicativo inteiro é este Rust, sobre o mesmo núcleo que o desktop usa.
+[lib]
+name = "zeebx_android"
+crate-type = ["cdylib"]
+
+[dependencies]
+# `audio` e nada mais: é o `cpal`, que no Android fala com o Oboe. Sem ele o `set_audio` da
+# sessão não existe e o aparelho fica mudo -- e sem compilar.
+zeebx = { path = "../..", default-features = false, features = ["audio", "gl"] }
+
+# **Não há eframe aqui, e isso é a razão de este arquivo existir.** O eframe gira o laço pelo
+# winit, e o winit joga fora todo botão de controle: ele traduz os códigos de tecla do Android
+# para `Key::Unidentified`, que o egui descarta, e os eixos do manche nem chegam a virar evento.
+# Falando direto com a `android-activity` nós recebemos a entrada como o Android a entrega —
+# botões, gatilhos, eixos e o "voltar" — e ainda ficamos donos do ciclo de vida da janela.
+android-activity = { version = "0.6", features = ["native-activity"] }
+egui = { version = "0.33.3", default-features = false, features = ["default_fonts"] }
+egui_glow = { version = "0.33.3", default-features = false }
+glow = "0.16"
+# O contexto de GL: a `NativeActivity` dá uma `ANativeWindow`, e o resto é EGL. O glutin já
+# sabe fazer isso no Android e é a mesma caixa que o desktop usa.
+glutin = { version = "0.32.3", default-features = false, features = ["egl"] }
+raw-window-handle = "0.6"
+
+# O `MANAGE_EXTERNAL_STORAGE` não é permissão de diálogo: quem a pede abre uma tela do sistema
+# por `Intent`, e isso é uma chamada ao Java. A versão tem de ser a que a `android-activity`
+# resolve, senão são duas JNI diferentes na mesma imagem.
+jni = "0.21"
+# Sem isto, um pânico do Rust morre em silêncio: o `adb logcat` não mostra nada.
+log = "0.4"
+android_logger = "0.14"

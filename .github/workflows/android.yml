@@ -1,0 +1,109 @@
+# Compila o núcleo para Android e monta a APK, sem esperar a tag.
+#
+# O `release.yml` monta a mesma APK, mas só no dia da tag e junto com tudo o mais. Aqui a APK sai
+# sozinha, à mão, e com duas conferências que a release não faz: a `.so` de dentro é AArch64 e a
+# ABI empacotada é a que se pediu. Um APK que monta mas leva a biblioteca errada instala e quebra
+# no aparelho, e isso é caro de descobrir depois da tag.
+#
+# **Nenhum push ou merge dispara isto.** O único gatilho automático do repositório é a tag, no
+# `release.yml`; aqui é você quem pede o run pela aba Actions.
+#
+# A APK sai assinada com a chave de depuração, que é a que o Gradle gera sozinho: serve para
+# instalar de lado (`adb install`), não para a Play Store.
+
+name: android
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  apk:
+    name: android ${{ matrix.abi }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        # Uma ABI só, e é o que o `apk/app/build.gradle.kts` filtra. Acrescentar outra é mexer
+        # nos dois lugares, não só aqui.
+        include:
+          - abi: arm64-v8a
+            alvo: aarch64-linux-android
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.alvo }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: android-ci-${{ matrix.abi }}
+
+      # O AGP 8.7 pede o JDK 17. O runner traz vários; dizer qual evita depender de qual deles
+      # está como padrão na imagem do mês.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # Sem wrapper no projeto, a versão do Gradle é escolhida aqui — e precisa ser uma que o
+      # AGP 8.7.3 aceite.
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      # O `ninja` é o gerador que o `ndk-toolchain.cmake` usa para o C e o C++ do núcleo — o
+      # unicorn e o dynarmic.
+      - name: Dependências
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build
+
+      # A versão exata que o `compilar.sh` espera. A imagem do runner traz algum NDK, mas qual
+      # muda com ela, e o script monta o caminho a partir do número.
+      - name: NDK
+        run: |
+          versao=$(grep -oP 'ANDROID_NDK_VERSAO:=\K[0-9.]+' frontends/android/compilar.sh)
+          echo "instalando o NDK $versao"
+          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "ndk;$versao" > /dev/null
+
+      - name: cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      - name: Compila e monta a APK
+        env:
+          ZEEBX_ANDROID_ABI: ${{ matrix.abi }}
+        run: frontends/android/compilar.sh --apk
+
+      # O que a release não confere: abrir a APK e olhar a biblioteca que está lá dentro. Uma APK
+      # que monta com a `.so` do host instala e morre no primeiro `System.loadLibrary`.
+      - name: A APK leva a biblioteca certa
+        shell: bash
+        run: |
+          apk=frontends/android/apk/app/build/outputs/apk/debug/zeebx-android-${{ matrix.abi }}.apk
+          ls -la "$apk"
+          unzip -l "$apk" | grep "lib/${{ matrix.abi }}/"
+          if unzip -l "$apk" | grep -qE 'lib/(x86|x86_64|armeabi-v7a)/'; then
+            echo "a APK levou ABI que não é a pedida"
+            exit 1
+          fi
+          mkdir -p prova && unzip -o -j "$apk" "lib/${{ matrix.abi }}/*.so" -d prova > /dev/null
+          for so in prova/*.so; do
+            file "$so" | grep -Eiq 'ARM aarch64|aarch64' || {
+              echo "$so não é AArch64"
+              exit 1
+            }
+          done
+          echo "as bibliotecas da APK são AArch64, e só há a ABI ${{ matrix.abi }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zeebx-android-${{ matrix.abi }}
+          path: frontends/android/apk/app/build/outputs/apk/debug/zeebx-android-${{ matrix.abi }}.apk
+          if-no-files-found: error
+          retention-days: 14

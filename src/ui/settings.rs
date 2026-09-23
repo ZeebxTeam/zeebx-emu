@@ -8,9 +8,10 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-/// Nome da pasta do emulador dentro do diretório de configuração do sistema.
-const APP_DIR: &str = "Zeebx";
 const FILE_NAME: &str = "settings.json";
+
+/// Reexportado para preservar a API desktop durante a migração para configuração neutra.
+pub use crate::config::config_dir;
 
 /// Como a imagem do console preenche a janela.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -62,8 +63,7 @@ impl ModoDaJanela {
     }
 
     /// Aplica o modo a uma janela que ainda vai abrir.
-    #[cfg(feature = "desktop")]
-    pub fn no_construtor(self, janela: eframe::egui::ViewportBuilder) -> eframe::egui::ViewportBuilder {
+    pub fn no_construtor(self, janela: egui::ViewportBuilder) -> egui::ViewportBuilder {
         match self {
             Self::Janela => janela,
             Self::Maximizada => janela.with_maximized(true),
@@ -72,11 +72,10 @@ impl ModoDaJanela {
     }
 
     /// Os comandos que levam uma janela aberta a este modo.
-    #[cfg(feature = "desktop")]
-    pub fn comandos(self) -> [eframe::egui::ViewportCommand; 2] {
+    pub fn comandos(self) -> [egui::ViewportCommand; 2] {
         [
-            eframe::egui::ViewportCommand::Fullscreen(self == Self::TelaCheia),
-            eframe::egui::ViewportCommand::Maximized(self == Self::Maximizada),
+            egui::ViewportCommand::Fullscreen(self == Self::TelaCheia),
+            egui::ViewportCommand::Maximized(self == Self::Maximizada),
         ]
     }
 }
@@ -332,25 +331,8 @@ pub enum ModoDaBiblioteca {
     Slider,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct ZWheel {
-    /// A roda inferior de fim de vida ("Jogar" e "Ajuda"), que é a de fábrica desta ROM. Sem
-    /// ela, a de antes: "Jogar", zeebo, "Comprar" e "Configurar".
-    pub fim_de_vida: bool,
-    /// A transição deslizante em toda troca de tela. A ROM desliza cada tela uma vez só
-    /// (`SlideOnceToForm=31`), e o dump já traz as principais marcadas como vistas.
-    pub transicoes_sempre: bool,
-}
-
-impl Default for ZWheel {
-    fn default() -> Self {
-        Self {
-            fim_de_vida: true,
-            transicoes_sempre: true,
-        }
-    }
-}
+/// Reexportado pela UI para não quebrar preferências serializadas e chamadas desktop.
+pub use crate::config::ZWheel;
 
 impl Settings {
     /// Lê as preferências de `path`. Arquivo ausente ou ilegível devolve o padrão — abrir com
@@ -381,31 +363,6 @@ impl Settings {
     pub fn save(&self) -> std::io::Result<()> {
         self.save_to(&settings_path())
     }
-}
-
-/// A pasta onde o sistema espera que um programa guarde configuração.
-///
-/// Escrito à mão em vez de vir de uma dependência porque são três regras conhecidas e cada uma
-/// cabe numa linha. Sem nenhuma das variáveis, o diretório corrente serve.
-pub fn config_dir() -> PathBuf {
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    if cfg!(target_os = "windows") {
-        if let Some(appdata) = std::env::var_os("APPDATA") {
-            return PathBuf::from(appdata).join(APP_DIR);
-        }
-    } else if cfg!(target_os = "macos") {
-        if let Some(home) = &home {
-            return home.join("Library/Application Support").join(APP_DIR);
-        }
-    } else {
-        if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
-            return PathBuf::from(xdg).join(APP_DIR.to_lowercase());
-        }
-        if let Some(home) = &home {
-            return home.join(".config").join(APP_DIR.to_lowercase());
-        }
-    }
-    PathBuf::from(".")
 }
 
 pub fn settings_path() -> PathBuf {

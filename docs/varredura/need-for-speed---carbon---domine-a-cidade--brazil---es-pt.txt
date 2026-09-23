@@ -1,0 +1,111 @@
+Need For Speed - Carbon - Domine a Cidade (Brazil) (Es,Pt)
+estado: roda
+tela: 164 cor(es), dominante 0x0000
+classes pedidas:
+  0x01001001  (1x)
+  0x01001003  (1x)
+  0x01001017  (1x)
+  0x01014bc3  (1x)
+  0x01014bc4  (1x)
+  0x01041207  (1x)
+  0x0106c411  (1x)
+chamadas ao sistema de arquivos:
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Need-For-Speed---Carbon---Domine-a-Cidade--Brazil---Es-Pt--57c103acc78b0ea6f2b8d474c0c114659b03a24baf050c3ae1c37a7c133e8f44/mod/nfsresources/userconfig.ini (No such file or directory (os error 2))
+  OpenFile "../nfsresources/userconfig.ini"  (0x23d7a8 0x1 0xf0003008) -> 0
+  OpenFile "../nfsresources/locale/english.loc"  (0x23d7a8 0x1 0xf0003008) -> 805306768
+  GetInfo  (0x200ffa88 0xf0004018 0xf0003008) -> 0
+  Seek  (0x0 0x0 0xf000401c) -> 0
+  Read  (0x106e9c00 0x2fcd8 0xf000400c) -> 195800
+  Release  (0xf0004004 0x0 0x0) -> 0
+  OpenFile "../nfsresources/locale/string.idx"  (0x23d7a8 0x1 0xf0003008) -> 805306768
+  GetInfo  (0x200ffa78 0xf0004018 0xf0003008) -> 0
+  Seek  (0x0 0x0 0xf000401c) -> 0
+  Read  (0x1071a180 0x5920 0xf000400c) -> 22816
+  Release  (0xf0004004 0x0 0x0) -> 0
+  OpenFile "../nfsresources/hud/LoadingAnimBkg.viv"  (0x23d7a8 0x1 0xf0003008) -> 805306768
+  GetInfo  (0x200ffa70 0xf0004018 0xf0003008) -> 0
+  Seek  (0x0 0x0 0xf000401c) -> 0
+  Read  (0x1119b380 0x5aa 0xf000400c) -> 1450
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Need-For-Speed---Carbon---Domine-a-Cidade--Brazil---Es-Pt--57c103acc78b0ea6f2b8d474c0c114659b03a24baf050c3ae1c37a7c133e8f44/mod/nfsresources/LoadingAnimBkg.msh (No such file or directory (os error 2))
+  OpenFile "../nfsresources/LoadingAnimBkg.msh"  (0x23d7a8 0x1 0xf0003008) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Need-For-Speed---Carbon---Domine-a-Cidade--Brazil---Es-Pt--57c103acc78b0ea6f2b8d474c0c114659b03a24baf050c3ae1c37a7c133e8f44/mod/nfsresources/LoadingAnimBkg.msh (No such file or directory (os error 2))
+  OpenFile "../nfsresources/LoadingAnimBkg.msh"  (0x23d7a8 0x1 0xf0003008) -> 0
+  Seek  (0x0 0x34 0xf000401c) -> 0
+  Read  (0x1119adf0 0x576 0xf000400c) -> 1398
+  Release  (0xf0004004 0x0 0x0) -> 0
+  OpenFile "../nfsresources/hud/fontbootup.viv"  (0x23d7a8 0x1 0xf0003008) -> 805306768
+  GetInfo  (0x200ffa30 0xf0004018 0xf0003008) -> 0
+  Seek  (0x0 0x0 0xf000401c) -> 0
+  Read  (0x11191200 0xa9fc 0xf000400c) -> 43516
+  Release  (0xf0004004 0x0 0x0) -> 0
+  OpenFile "../nfsresources/hud/loadingbootup.viv"  (0x23d7a8 0x1 0xf0003008) -> 805306768
+  GetInfo  (0x200ff9d8 0xf0004018 0xf0003008) -> 0
+  Seek  (0x0 0x0 0xf000401c) -> 0
+  Read  (0x11173600 0x9bc6 0xf000400c) -> 39878
+  Release  (0xf0004004 0x0 0x0) -> 0
+  OpenFile "../nfsresources/global/globalb.bun"  (0x23d7a8 0x1 0xf0003008) -> 805306768
+  GetInfo  (0x200ffb60 0xf0004018 0xf0003008) -> 0
+  Seek  (0x0 0x0 0xf000401c) -> 0
+  Read  (0x10725310 0x559d0 0xf000400c) -> 350672
+  OpenFile "../nfsresources/fe_fonts/realfonts.viv"  (0x23d7a8 0x1 0xf0003008) -> 805306832
+  GetInfo  (0x200ff9d0 0xf0004018 0xf0003008) -> 0
+  Seek  (0x0 0x0 0xf000401c) -> 0
+  Read  (0x10d71e80 0x800 0xf000400c) -> 2048
+  Seek  (0x0 0x50018 0xf000401c) -> 0
+  Read  (0x10e4b8e0 0x5d 0xf000400c) -> 93
+  Seek  (0x0 0x8374 0xf000401c) -> 0
+  Read  (0x10e4b980 0x97b0 0xf000400c) -> 38832
+  Seek  (0x0 0x11b28 0xf000401c) -> 0
+  Read  (0x10e55180 0x2e70 0xf000400c) -> 11888
+  Seek  (0x0 0x1499c 0xf000401c) -> 0
+  Read  (0x10e58080 0x4e70 0xf000400c) -> 20080
+  Seek  (0x0 0x4d0f4 0xf000401c) -> 0
+  Read  (0x10e5cf80 0x2bf0 0xf000400c) -> 11248
+  Seek  (0x0 0x1c984 0xf000401c) -> 0
+  Read  (0x10e5fc00 0x2d70 0xf000400c) -> 11632
+  Seek  (0x0 0x1f6f8 0xf000401c) -> 0
+  Read  (0x10e62a00 0x4d70 0xf000400c) -> 19824
+  Seek  (0x0 0x42518 0xf000401c) -> 0
+  Read  (0x10e67800 0x2e70 0xf000400c) -> 11888
+  Seek  (0x0 0x4538c 0xf000401c) -> 0
+  Read  (0x10e6a700 0x2e70 0xf000400c) -> 11888
+  Seek  (0x0 0x48200 0xf000401c) -> 0
+  Read  (0x10e6d600 0x4ef0 0xf000400c) -> 20208
+  Seek  (0x0 0x1e0 0xf000401c) -> 0
+  Read  (0x10e72580 0x8190 0xf000400c) -> 33168
+  Seek  (0x0 0x4fce8 0xf000401c) -> 0
+  Read  (0x10e7a740 0x32c 0xf000400c) -> 812
+  Release  (0xf0004004 0x0 0x0) -> 0
+  OpenFile "../nfsresources/fe_movies/easplash.big"  (0x23d7a8 0x1 0xf0003008) -> 805307216
+  Release  (0xf0004004 0x1 0xf0003008) -> 0
+  OpenFile "../nfsresources/fe_movies/easplash.big"  (0x23d7a8 0x1 0xf0003008) -> 805307216
+  GetInfo  (0x111adfa0 0xf0004018 0xf0003008) -> 0
+  Release  (0xf0004004 0x0 0x0) -> 0
+  OpenFile "../nfsresources/fe_movies/easplash.big"  (0x23d7a8 0x1 0xf0003008) -> 805307216
+  GetInfo  (0x111adfe0 0xf0004018 0xf0003008) -> 0
+  Seek  (0x0 0x0 0xf000401c) -> 0
+  Read  (0x10e7d300 0x398b9 0xf000400c) -> 235705
+  Release  (0xf0004004 0x0 0x0) -> 0
+  OpenFile "../nfsresources/fe_mainsystem.big"  (0x23d7a8 0x1 0xf0003008) -> 805307216
+  Release  (0xf0004004 0x1 0xf0003008) -> 0
+  OpenFile "../nfsresources/fe_mainsystem.big"  (0x23d7a8 0x1 0xf0003008) -> 805307216
+  GetInfo  (0x111adfa0 0xf0004018 0xf0003008) -> 0
+  Release  (0xf0004004 0x0 0x0) -> 0
+  OpenFile "../nfsresources/fe_mainsystem.big"  (0x23d7a8 0x1 0xf0003008) -> 805307216
+  GetInfo  (0x111adfe0 0xf0004018 0xf0003008) -> 0
+  Seek  (0x0 0x0 0xf000401c) -> 0
+  Read  (0x10eb6bd0 0x2c8 0xf000400c) -> 712
+  Release  (0xf0004004 0x0 0x0) -> 0
+  OpenFile "../nfsresources/fe_screens/eatrax/eaTraxChyron.big"  (0x23d7a8 0x1 0xf0003008) -> 805307216
+  Release  (0xf0004004 0x1 0xf0003008) -> 0
+  OpenFile "../nfsresources/fe_screens/eatrax/eaTraxChyron.big"  (0x23d7a8 0x1 0xf0003008) -> 805307216
+  GetInfo  (0x111adf88 0xf0004018 0xf0003008) -> 0
+  Release  (0xf0004004 0x0 0x0) -> 0
+  OpenFile "../nfsresources/fe_screens/eatrax/eaTraxChyron.big"  (0x23d7a8 0x1 0xf0003008) -> 805307216
+  GetInfo  (0x111adfc8 0xf0004018 0xf0003008) -> 0
+  Seek  (0x0 0x0 0xf000401c) -> 0
+  Read  (0x10eb96e0 0x7d47 0xf000400c) -> 32071
+  Release  (0xf0004004 0x0 0x0) -> 0
+arquivos não encontrados:
+  ../nfsresources/LoadingAnimBkg.msh
+  ../nfsresources/userconfig.ini

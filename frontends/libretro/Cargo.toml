@@ -1,6 +1,6 @@
 [package]
 name = "zeebx-libretro"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2024"
 license = "GPL-2.0-only"
 description = "Core Libretro do emulador Zeebx"
@@ -12,4 +12,13 @@ crate-type = ["cdylib"]
 
 [dependencies]
 # Sem `desktop`: o core não linka janela, placa de som nem controle do host.
-zeebx = { path = "../..", default-features = false }
+#
+# **Com `gl`, e sem `gpu`.** `gl` é o desenho na placa e não traz nada de host — só o `glow`, que
+# é o vínculo com a API. `gpu` é abrir contexto próprio e traz o `glutin`, que linka EGL/GLX: um
+# core não pode depender disso, porque quem entrega o contexto é o frontend. É o que a checagem de
+# `ldd` do `libretro.yml` cobra.
+# `soundfont` entra junto: é Rust puro (MIT) e não traz biblioteca de host, então o núcleo pode
+# tocar MIDI com o banco de amostras do aparelho sem quebrar a regra de zero dependências de host.
+zeebx = { path = "../..", default-features = false, features = ["gl", "soundfont"] }
+# O mesmo `glow` que o motor usa: o contexto que o frontend entrega é montado com ele.
+glow = "0.16"

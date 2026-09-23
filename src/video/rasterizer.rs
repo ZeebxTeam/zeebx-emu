@@ -625,6 +625,35 @@ impl Default for Material {
 /// chamada, ele só escreve o que a fronteira é. Quem for implementar outro backend começa por
 /// esta lista, e o que não estiver nela não é usado pelo emulador.
 pub trait Rasterizador {
+    /// Grava, numa seção por grupo, o estado que as chamadas de GL do jogo mudaram.
+    ///
+    /// **É o par de [`Rasterizador::restaura_estado`], e os dois são obrigatórios de propósito.** Um
+    /// rasterizador que não saiba se gravar tem de dizer isso, e não gravar nada em silêncio: um
+    /// save state que perde o estado de desenho volta com a cena errada, e nada aponta para ele.
+    fn grava_estado(&self, destino: &mut crate::save_state::Secoes);
+
+    /// Repõe o estado gravado por [`Rasterizador::grava_estado`].
+    fn restaura_estado(
+        &mut self,
+        origem: &crate::save_state::Leitor<'_>,
+    ) -> Result<(), crate::save_state::Erro>;
+
+    /// Termina o desenho que estava na fila.
+    ///
+    /// Existe por causa do save state, e ele é a resposta certa para o caso comum: um lote de
+    /// triângulos esperando a vez **não é** um desenho pela metade — é trabalho que ia ser feito no
+    /// quadro seguinte de qualquer maneira. Recusar o save por causa dele seria bloquear o jogador
+    /// por algo que o motor resolve sozinho. Depois de drenar, o que sobrar é o desenho de
+    /// verdade interrompido, e aí [`Rasterizador::desenho_em_curso`] responde sim.
+    fn descarrega_o_desenho(&mut self);
+
+    /// Se há um desenho **começado e não terminado**.
+    ///
+    /// O frontend serializa entre quadros, nunca dentro de um `retro_run`, então isto responde
+    /// `false` em todo save normal. Quem grava pergunta, e **recusa** quando a resposta é sim: um
+    /// estado salvo no meio de um `glBegin` prometeria um desenho que nunca existiu.
+    fn desenho_em_curso(&self) -> bool;
+
     fn set_matrix_mode(&mut self, mode: u32);
     fn load_identity(&mut self);
     fn load_matrix(&mut self, m: Matrix);
@@ -707,6 +736,17 @@ pub trait Rasterizador {
     fn draw_texture(&mut self, x: f32, y: f32, z: f32, width: f32, height: f32);
 
     fn read_rect(&mut self, x: i32, y: i32, width: usize, height: usize) -> Vec<[u8; 4]>;
+    /// Manda o desenho para um framebuffer de fora — o que o frontend Libretro entrega.
+    ///
+    /// No contrato do `libretro`, quem apresenta o quadro é o frontend, e o core desenha no
+    /// framebuffer que ele indica (o `get_current_framebuffer` do `retro_hw_render_callback`),
+    /// que pode mudar de um quadro para o outro — daí a função aceitar troca. `Some(0)` é o
+    /// framebuffer padrão do frontend, que no `glow` se escreve `None`.
+    ///
+    /// **No software não há o que fazer**: ele desenha em memória, e o quadro sai pelo
+    /// [`Self::frame_rgb565`] de sempre. É o que permite ao mesmo motor servir aos dois caminhos.
+    fn desenha_no_fbo(&mut self, _fbo: Option<u32>) {}
+
     fn frame_rgb565(&mut self, width: usize, height: usize, out: &mut Vec<u8>);
     fn import_rgb565_changes(&mut self, width: usize, height: usize, old: &[u8], new: &[u8]);
 
@@ -737,13 +777,19 @@ pub trait Rasterizador {
     fn quadro_na_placa(&self) -> Option<QuadroNaPlaca> {
         None
     }
+
+    /// Devolve ao dono o estado de GL que o rasterizador mexeu.
+    ///
+    /// **Só faz sentido para quem desenha num contexto emprestado**, e é chamado uma vez por
+    /// fatia de execução, quando o controle volta para a interface — não a cada desenho. Ver
+    /// [`crate::session::Session::step`] e o comentário do `GpuState::submete_com`.
+    fn devolve_o_contexto(&self) {}
 }
 
 /// Uma textura de cor da placa com o quadro já desenhado, e o pedaço dela que é a imagem.
 #[derive(Debug, Clone, Copy)]
 pub struct QuadroNaPlaca {
-    #[cfg(feature = "desktop")]
-    pub textura: eframe::glow::Texture,
+    pub textura: glow::Texture,
     /// A fração da textura que a superfície do jogo ocupa, em `(u, v)`; a linha 0 é o topo.
     pub recorte: [f32; 2],
     /// Largura sobre altura da imagem: 4:3 no nativo, mais larga com a
@@ -752,6 +798,36 @@ pub struct QuadroNaPlaca {
 }
 
 impl Rasterizador for GlState {
+    fn grava_estado(&self, destino: &mut crate::save_state::Secoes) {
+        crate::save_state::Guardavel::grava(self, destino);
+    }
+
+    fn restaura_estado(
+        &mut self,
+        origem: &crate::save_state::Leitor<'_>,
+    ) -> Result<(), crate::save_state::Erro> {
+        crate::save_state::Guardavel::restaura(self, origem)
+    }
+
+    /// Os três acumuladores de um desenho em curso.
+    ///
+    /// `transformed` é o que sobra de um `glBegin` sem `glEnd`, e `batch`/`pending` são o lote
+    /// esperando a vez de ser submetido. Vazios, não há desenho pela metade.
+    fn descarrega_o_desenho(&mut self) {
+        self.flush();
+    }
+
+    /// O lote que ainda não foi submetido.
+    ///
+    /// **`transformed` fica de fora, e não por esquecimento**: ele é área de **rascunho** da etapa
+    /// de vértice — o `etapa_de_vertice` faz `mem::take` e reaproveita o vetor. Sobra dele é o que
+    /// ficou do último lote, e não um desenho interrompido. Eu o incluí na primeira versão e o
+    /// resultado foi o save state recusado **sempre**: os quatro vértices de um quad ficavam lá
+    /// entre quadros, e gravar virou impossível. Foi o instrumento que mostrou os quatro.
+    fn desenho_em_curso(&self) -> bool {
+        !self.batch.triangles.is_empty() || !self.pending.triangles.is_empty()
+    }
+
     fn set_matrix_mode(&mut self, mode: u32) {
         GlState::set_matrix_mode(self, mode)
     }
@@ -932,48 +1008,48 @@ impl Rasterizador for GlState {
 }
 
 pub struct GlState {
-    width: usize,
-    height: usize,
+    pub(crate) width: usize,
+    pub(crate) height: usize,
     /// Cor do quadro, em RGBA de 8 bits — convertida para RGB565 só na apresentação.
-    color: Vec<[u8; 4]>,
+    pub(crate) color: Vec<[u8; 4]>,
     /// Profundidade normalizada em `[0, 1]`.
-    depth: Vec<f32>,
+    pub(crate) depth: Vec<f32>,
     /// O stencil, de oito bits — o tamanho que o `GL_STENCIL_BITS` do console anuncia.
     ///
     /// Existe por causa do reflexo do palco da Z-Wheel: ela marca o chão aqui e desenha o
     /// modelo espelhado só onde a marca ficou. Sem o buffer, o espelhado saía por fora do chão
     /// e virava um rastro esticado ao lado do modelo.
-    stencil: Vec<u8>,
+    pub(crate) stencil: Vec<u8>,
 
-    matrix_mode: u32,
-    modelview: Vec<Matrix>,
-    projection: Vec<Matrix>,
-    texture_matrix: Vec<Matrix>,
+    pub(crate) matrix_mode: u32,
+    pub(crate) modelview: Vec<Matrix>,
+    pub(crate) projection: Vec<Matrix>,
+    pub(crate) texture_matrix: Vec<Matrix>,
 
-    viewport: (i32, i32, i32, i32),
+    pub(crate) viewport: (i32, i32, i32, i32),
     /// O `glScissor`, já com o `y` contado do topo, e só quando o `GL_SCISSOR_TEST` está ligado.
     ///
     /// O Peggle desenha a folha de fontes inteira e conta com ele para aparecer uma letra só —
     /// o mesmo truque que o Pac-Mania faz com o recorte do `IDisplay`. Ignorá-lo punha a folha
     /// inteira na tela.
-    tesoura: Option<(i32, i32, i32, i32)>,
+    pub(crate) tesoura: Option<(i32, i32, i32, i32)>,
     /// O retângulo cru do `glScissor`, com o `y` de baixo para cima, como o jogo o passou.
-    tesoura_crua: (i32, i32, i32, i32),
-    tesoura_ligada: bool,
-    surface: Option<(usize, usize)>,
+    pub(crate) tesoura_crua: (i32, i32, i32, i32),
+    pub(crate) tesoura_ligada: bool,
+    pub(crate) surface: Option<(usize, usize)>,
     /// Se a superfície vai esticada à tela inteira. Ver [`GlState::superficie_esticada`].
-    esticada: bool,
-    clear_color: [f32; 4],
-    clear_depth: f32,
-    current_color: [f32; 4],
+    pub(crate) esticada: bool,
+    pub(crate) clear_color: [f32; 4],
+    pub(crate) clear_depth: f32,
+    pub(crate) current_color: [f32; 4],
 
-    textures: HashMap<u32, Texture>,
-    bound_texture: u32,
-    texture_env: TexEnv,
+    pub(crate) textures: HashMap<u32, Texture>,
+    pub(crate) bound_texture: u32,
+    pub(crate) texture_env: TexEnv,
     /// A unidade 1. A 0 são os campos soltos acima, de antes de haver outra.
-    unidade1: UnidadeDeTextura,
+    pub(crate) unidade1: UnidadeDeTextura,
 
-    texture_2d: bool,
+    pub(crate) texture_2d: bool,
     /// Unidade de textura ativa, contada de zero. O `glActiveTexture` a escolhe.
     ///
     /// O pipeline lê uma textura por fragmento, então só a unidade zero tem efeito e as outras
@@ -982,56 +1058,56 @@ pub struct GlState {
     /// unidades e termina cada bloco na unidade 1; como o `glActiveTexture` não era tratado,
     /// tudo caía num estado só, a última ligação vencia e a textura base era perdida — a vila
     /// inteira saía branca.
-    active_unit: u32,
+    pub(crate) active_unit: u32,
     /// Unidade escolhida pelo `glClientActiveTexture`, que vale para o vetor de coordenadas.
-    client_unit: u32,
-    depth_test: bool,
-    depth_mask: bool,
+    pub(crate) client_unit: u32,
+    pub(crate) depth_test: bool,
+    pub(crate) depth_mask: bool,
     /// A névoa do `glFog*`: ligada, curva, cor e os parâmetros de cada curva.
     ///
     /// O Resident Evil 4 a usa para escurecer o fundo dos cenários, e é assim que ele separa o
     /// que está perto do que está longe. Ignorá-la deixava a cena inteira com o mesmo brilho.
-    fog: Neblina,
+    pub(crate) fog: Neblina,
     /// O `glDepthRange`: `(perto, longe)`, de 0 a 1.
     ///
     /// **Ignorá-lo fazia a pista do Crash Nitro Kart surgir do nada perto do jogador.** O jogo
     /// desenha partes da cena em faixas de profundidade diferentes — `(0, 0,985)` e `(0, 1)` —
     /// para que umas fiquem sempre à frente de outras. Com todas na faixa inteira, um pedaço de
     /// pista distante perdia o teste de profundidade para o cenário e só aparecia de perto.
-    depth_range: (f32, f32),
+    pub(crate) depth_range: (f32, f32),
     /// Quais canais de cor podem ser escritos, do `glColorMask`.
-    color_mask: [bool; 4],
-    depth_func: u32,
-    blend: bool,
-    blend_src: u32,
-    blend_dst: u32,
-    alpha_test: bool,
-    alpha_func: u32,
-    alpha_ref: f32,
-    cull_face: bool,
-    cull_mode: u32,
-    front_face: u32,
-    stencil_test: bool,
+    pub(crate) color_mask: [bool; 4],
+    pub(crate) depth_func: u32,
+    pub(crate) blend: bool,
+    pub(crate) blend_src: u32,
+    pub(crate) blend_dst: u32,
+    pub(crate) alpha_test: bool,
+    pub(crate) alpha_func: u32,
+    pub(crate) alpha_ref: f32,
+    pub(crate) cull_face: bool,
+    pub(crate) cull_mode: u32,
+    pub(crate) front_face: u32,
+    pub(crate) stencil_test: bool,
     /// `glStencilFunc(func, ref, mask)`.
-    stencil_func: u32,
-    stencil_ref: i32,
-    stencil_value_mask: u32,
+    pub(crate) stencil_func: u32,
+    pub(crate) stencil_ref: i32,
+    pub(crate) stencil_value_mask: u32,
     /// `glStencilMask` — que bits o desenho pode escrever.
-    stencil_write_mask: u32,
+    pub(crate) stencil_write_mask: u32,
     /// `glStencilOp(sfail, dpfail, dppass)`.
-    stencil_op: [u32; 3],
-    clear_stencil: u8,
+    pub(crate) stencil_op: [u32; 3],
+    pub(crate) clear_stencil: u8,
 
     /// `GL_LIGHTING`. Com ele ligado a cor do vértice **deixa de valer**, a menos que o
     /// `GL_COLOR_MATERIAL` diga o contrário: é o que a especificação manda, e o palco da
     /// Z-Wheel depende disso — os modelos dele chegam com cor de vértice branca e é a luz que
     /// dá o relevo.
-    lighting: bool,
-    color_material: bool,
-    lights: [Light; gles::LUZES],
-    material: Material,
-    light_model_ambient: [f32; 4],
-    shade_model: u32,
+    pub(crate) lighting: bool,
+    pub(crate) color_material: bool,
+    pub(crate) lights: [Light; gles::LUZES],
+    pub(crate) material: Material,
+    pub(crate) light_model_ambient: [f32; 4],
+    pub(crate) shade_model: u32,
 
     /// Lote de triângulos da draw call em curso. Vive na struct só para reaproveitar a
     /// alocação de uma chamada para a outra.
@@ -2403,7 +2479,7 @@ impl GlState {
         self.sujo = false;
     }
 
-    #[cfg(test)]
+#[cfg(test)]
     pub fn present(&mut self, width: usize, height: usize) -> Vec<u16> {
         // Entregar o quadro é o ponto em que ele precisa estar pintado — quem pede o resultado
         // não tem por que saber que o desenho é acumulado.
@@ -3722,5 +3798,990 @@ mod tests {
         // E uma mudança de tamanho não pode cair no atalho.
         state.frame_rgb565(32, 32, &mut bytes);
         assert_eq!(bytes.len(), 32 * 32 * 2);
+    }
+}
+
+/// O estado de GL que o **guest** mudou, em seções — e a regra de quando não se pode salvar.
+///
+/// ## Por que seções pequenas, e não uma lista de números
+///
+/// A primeira versão do estado da máquina usava uma lista corrida de números, e eu errei o índice
+/// dela **duas vezes** — o `pending_launch` voltou com a metade alta do `proximo_serial`, e o
+/// `network` voltou com a largura do retângulo de recorte. Aqui são mais de cem números, então a
+/// lista corrida seria pedir para errar de novo. Cada seção tem o tamanho conferido na leitura, e um
+/// deslocamento dentro dela é recusado em vez de virar valor trocado.
+///
+/// ## O que entra, e o que fica para depois
+///
+/// Entram os 48 campos que são **estado** — as três pilhas de matriz, o viewport e a tesoura, as
+/// cores, as bandeiras e funções de teste, a névoa, a faixa de profundidade, a máscara de cor, a
+/// unidade de textura e a **iluminação** (oito luzes, o material e o modelo). Ficam de fora, por
+/// enquanto e com motivo:
+///
+/// - `textures`, que precisa de formato próprio por causa das cadeias de mipmap;
+/// - `color`, `depth` e `stencil` — os três buffers de 640×480. Medido: **o de cor não é duplicata
+///   da tela**. A tela que o core apresenta é o bitmap do aparelho, e o buffer de cor é a superfície
+///   de desenho do GL; `eglSwapBuffers` lê um e entrega o outro. Os dois têm de ser gravados, e é
+///   isso que faz o estado crescer cerca de 2,7 MB.
+///
+/// ## A regra do desenho em curso
+///
+/// `batch`, `pending` e `transformed` são acumuladores de um desenho **começado e não terminado**.
+/// O frontend chama o serialize **entre quadros**, nunca dentro de um `retro_run`, então no instante
+/// do save eles estão vazios — e é isso que os torna dispensáveis. Confiar nisso seria frágil: quem
+/// grava **pergunta** com [`GlState::desenho_em_curso`] e recusa o save se a resposta for sim. Um
+/// estado salvo no meio de um `glBegin` prometeria um desenho que nunca existiu.
+impl crate::save_state::Guardavel for GlState {
+    fn grava(&self, destino: &mut crate::save_state::Secoes) {
+        let floats = |valores: &[f32]| -> Vec<u32> {
+            valores.iter().map(|v| v.to_bits()).collect()
+        };
+
+        // As três pilhas de matriz, cada uma com a contagem na frente.
+        let mut matrizes = vec![self.matrix_mode];
+        for pilha in [&self.modelview, &self.projection, &self.texture_matrix] {
+            matrizes.push(pilha.len() as u32);
+            for matriz in pilha {
+                matrizes.extend(floats(matriz));
+            }
+        }
+        destino.poe_u32s("gl.matrizes", matrizes);
+
+        // Onde se desenha.
+        let mut onde = vec![
+            self.viewport.0 as u32,
+            self.viewport.1 as u32,
+            self.viewport.2 as u32,
+            self.viewport.3 as u32,
+            u32::from(self.tesoura.is_some()),
+            self.tesoura.unwrap_or((0, 0, 0, 0)).0 as u32,
+            self.tesoura.unwrap_or((0, 0, 0, 0)).1 as u32,
+            self.tesoura.unwrap_or((0, 0, 0, 0)).2 as u32,
+            self.tesoura.unwrap_or((0, 0, 0, 0)).3 as u32,
+            self.tesoura_crua.0 as u32,
+            self.tesoura_crua.1 as u32,
+            self.tesoura_crua.2 as u32,
+            self.tesoura_crua.3 as u32,
+            u32::from(self.tesoura_ligada),
+            u32::from(self.surface.is_some()),
+            self.surface.unwrap_or((0, 0)).0 as u32,
+            self.surface.unwrap_or((0, 0)).1 as u32,
+            u32::from(self.esticada),
+            u32::from(self.sujo),
+        ];
+        onde.extend(floats(&self.clear_color));
+        onde.push(self.clear_depth.to_bits());
+        onde.extend(floats(&self.current_color));
+        onde.push(u32::from(self.clear_stencil));
+        onde.extend(self.color_mask.iter().map(|m| u32::from(*m)));
+        destino.poe_u32s("gl.onde", onde);
+
+        // As bandeiras e funções de teste.
+        destino.poe_u32s(
+            "gl.testes",
+            vec![
+                u32::from(self.depth_test),
+                u32::from(self.depth_mask),
+                self.depth_func,
+                u32::from(self.blend),
+                self.blend_src,
+                self.blend_dst,
+                u32::from(self.alpha_test),
+                self.alpha_func,
+                self.alpha_ref.to_bits(),
+                u32::from(self.cull_face),
+                self.cull_mode,
+                self.front_face,
+                u32::from(self.stencil_test),
+                self.stencil_func,
+                self.stencil_ref as u32,
+                self.stencil_value_mask,
+                self.stencil_write_mask,
+                self.stencil_op[0],
+                self.stencil_op[1],
+                self.stencil_op[2],
+                self.depth_range.0.to_bits(),
+                self.depth_range.1.to_bits(),
+                u32::from(self.lighting),
+                u32::from(self.color_material),
+                self.shade_model,
+            ],
+        );
+
+        // As texturas ligadas e o ambiente de textura das duas unidades.
+        let mut textura = vec![
+            self.bound_texture,
+            u32::from(self.texture_2d),
+            self.active_unit,
+            self.client_unit,
+        ];
+        textura.extend(ambientes_do_texto(&self.texture_env));
+        textura.push(u32::from(self.unidade1.ligada));
+        textura.push(self.unidade1.textura);
+        textura.extend(ambientes_do_texto(&self.unidade1.env));
+        destino.poe_u32s("gl.textura", textura);
+
+        // A névoa.
+        let mut nevoa: Vec<u32> = vec![
+            u32::from(self.fog.ligada),
+            self.fog.curva,
+            self.fog.densidade.to_bits(),
+            self.fog.inicio.to_bits(),
+            self.fog.fim.to_bits(),
+            u32::from(self.fog.permitida),
+        ];
+        nevoa.extend(floats(&self.fog.cor));
+        destino.poe_u32s("gl.nevoa", nevoa);
+
+        // A iluminação: o material, o ambiente do modelo e as oito luzes.
+        let mut luz = floats(&self.material.ambient);
+        luz.extend(floats(&self.material.diffuse));
+        luz.extend(floats(&self.material.specular));
+        luz.extend(floats(&self.material.emission));
+        luz.push(self.material.shininess.to_bits());
+        luz.extend(floats(&self.light_model_ambient));
+        for fonte in &self.lights {
+            luz.push(u32::from(fonte.enabled));
+            luz.extend(floats(&fonte.ambient));
+            luz.extend(floats(&fonte.diffuse));
+            luz.extend(floats(&fonte.specular));
+            luz.extend(floats(&fonte.position));
+            luz.extend(floats(&fonte.spot_direction));
+            luz.push(fonte.spot_exponent.to_bits());
+            luz.push(fonte.spot_cutoff.to_bits());
+            luz.extend(floats(&fonte.attenuation));
+        }
+        destino.poe_u32s("gl.iluminacao", luz);
+        destino.poe_u32s(
+            "gl.buffers",
+            [
+                self.width as u32,
+                self.height as u32,
+                self.color.len() as u32,
+                self.depth.len() as u32,
+                self.stencil.len() as u32,
+            ],
+        );
+        destino.poe("gl.buffer.cor", bytes_dos_rgba(&self.color));
+        let mut profundidade = Vec::with_capacity(self.depth.len() * 4);
+        for valor in &self.depth {
+            profundidade.extend_from_slice(&valor.to_bits().to_le_bytes());
+        }
+        destino.poe("gl.buffer.profundidade", profundidade);
+        destino.poe("gl.buffer.stencil", self.stencil.clone());
+        grava_texturas(&self.textures, destino);
+    }
+
+    fn restaura(&mut self, origem: &crate::save_state::Leitor<'_>) -> Result<(), crate::save_state::Erro> {
+        use crate::save_state::Erro;
+        let faltando = |nome: &str| Erro::Secao {
+            nome: nome.to_string(),
+            motivo: "a seção não está no arquivo".to_string(),
+        };
+
+        let matrizes = origem.u32s("gl.matrizes")?;
+        let onde = origem.u32s("gl.onde")?;
+        let testes = origem.u32s("gl.testes")?;
+        let textura = origem.u32s("gl.textura")?;
+        let nevoa = origem.u32s("gl.nevoa")?;
+        let luz = origem.u32s("gl.iluminacao")?;
+
+        let conferir = |nome: &str, veio: usize, esperado: usize| -> Result<(), Erro> {
+            if veio != esperado {
+                return Err(Erro::Secao {
+                    nome: nome.to_string(),
+                    motivo: format!("esperava {esperado} números e veio {veio}"),
+                });
+            }
+            Ok(())
+        };
+        // Dezenove do viewport, da tesoura e da superfície; quatro da cor de limpeza; uma da
+        // profundidade; quatro da cor corrente; uma do stencil; quatro da máscara de cor.
+        conferir("gl.onde", onde.len(), 19 + 4 + 1 + 4 + 1 + 4)?;
+        conferir("gl.testes", testes.len(), 25)?;
+        conferir("gl.textura", textura.len(), 4 + AMBIENTES + 2 + AMBIENTES)?;
+        conferir("gl.nevoa", nevoa.len(), 6 + 4)?;
+        // Material (dezesseis floats e o brilho) mais o ambiente do modelo: vinte e um. Cada luz
+        // ocupa vinte e cinco: ligada, quatro de ambiente, quatro de difusa, quatro de especular,
+        // quatro de posição, três de direção do facho, expoente, corte e três de atenuação.
+        conferir(
+            "gl.iluminacao",
+            luz.len(),
+            21 + crate::video::gles::LUZES * 25,
+        )?;
+
+        let f = |valor: u32| f32::from_bits(valor);
+        let booleano = |valor: u32, campo: &str, onde: &str| -> Result<bool, Erro> {
+            match valor {
+                0 => Ok(false),
+                1 => Ok(true),
+                outro => Err(Erro::Secao {
+                    nome: onde.to_string(),
+                    motivo: format!("o campo `{campo}` vale {outro}, e é booleano"),
+                }),
+            }
+        };
+
+        // As pilhas de matriz.
+        let mut cursor = 0usize;
+        let matrix_mode = matrizes[cursor];
+        cursor += 1;
+        let mut pilhas: Vec<Vec<Matrix>> = Vec::new();
+        for _ in 0..3 {
+            if matrizes.len() < cursor + 1 {
+                return Err(faltando("gl.matrizes"));
+            }
+            let quantas = matrizes[cursor] as usize;
+            cursor += 1;
+            if matrizes.len() < cursor + quantas * 16 {
+                return Err(Erro::Secao {
+                    nome: "gl.matrizes".to_string(),
+                    motivo: format!("uma pilha diz ter {quantas} matrizes e o arquivo acaba antes"),
+                });
+            }
+            let mut pilha = Vec::with_capacity(quantas);
+            for _ in 0..quantas {
+                let mut matriz = [0.0f32; 16];
+                for (indice, destino) in matriz.iter_mut().enumerate() {
+                    *destino = f(matrizes[cursor + indice]);
+                }
+                cursor += 16;
+                pilha.push(matriz);
+            }
+            pilhas.push(pilha);
+        }
+
+        // Daqui para baixo é aplicação.
+        self.matrix_mode = matrix_mode;
+        // **A ordem do escritor, não a que eu lembrava.** Eu tinha posto a projeção primeiro, e o
+        // teste mostrou a troca: a pilha `modelview` voltou com a projeção dentro. Trocar duas
+        // matrizes não dá erro nenhum — dá a cena desenhada no lugar errado, e só se vê olhando.
+        self.modelview = pilhas.remove(0);
+        self.projection = pilhas.remove(0);
+        self.texture_matrix = pilhas.remove(0);
+
+        self.viewport = (
+            onde[0] as i32,
+            onde[1] as i32,
+            onde[2] as i32,
+            onde[3] as i32,
+        );
+        self.tesoura = booleano(onde[4], "tesoura", "gl.onde")?.then(|| {
+            (
+                onde[5] as i32,
+                onde[6] as i32,
+                onde[7] as i32,
+                onde[8] as i32,
+            )
+        });
+        self.tesoura_crua = (
+            onde[9] as i32,
+            onde[10] as i32,
+            onde[11] as i32,
+            onde[12] as i32,
+        );
+        self.tesoura_ligada = booleano(onde[13], "tesoura_ligada", "gl.onde")?;
+        self.surface = booleano(onde[14], "surface", "gl.onde")?
+            .then(|| (onde[15] as usize, onde[16] as usize));
+        self.esticada = booleano(onde[17], "esticada", "gl.onde")?;
+        self.sujo = booleano(onde[18], "sujo", "gl.onde")?;
+        for (indice, valor) in self.clear_color.iter_mut().enumerate() {
+            *valor = f(onde[19 + indice]);
+        }
+        self.clear_depth = f(onde[23]);
+        for (indice, valor) in self.current_color.iter_mut().enumerate() {
+            *valor = f(onde[24 + indice]);
+        }
+        self.clear_stencil = onde[28] as u8;
+        for (indice, valor) in self.color_mask.iter_mut().enumerate() {
+            *valor = onde[29 + indice] != 0;
+        }
+
+        self.depth_test = booleano(testes[0], "depth_test", "gl.testes")?;
+        self.depth_mask = booleano(testes[1], "depth_mask", "gl.testes")?;
+        self.depth_func = testes[2];
+        self.blend = booleano(testes[3], "blend", "gl.testes")?;
+        self.blend_src = testes[4];
+        self.blend_dst = testes[5];
+        self.alpha_test = booleano(testes[6], "alpha_test", "gl.testes")?;
+        self.alpha_func = testes[7];
+        self.alpha_ref = f(testes[8]);
+        self.cull_face = booleano(testes[9], "cull_face", "gl.testes")?;
+        self.cull_mode = testes[10];
+        self.front_face = testes[11];
+        self.stencil_test = booleano(testes[12], "stencil_test", "gl.testes")?;
+        self.stencil_func = testes[13];
+        self.stencil_ref = testes[14] as i32;
+        self.stencil_value_mask = testes[15];
+        self.stencil_write_mask = testes[16];
+        self.stencil_op = [testes[17], testes[18], testes[19]];
+        self.depth_range = (f(testes[20]), f(testes[21]));
+        self.lighting = booleano(testes[22], "lighting", "gl.testes")?;
+        self.color_material = booleano(testes[23], "color_material", "gl.testes")?;
+        self.shade_model = testes[24];
+
+        self.bound_texture = textura[0];
+        self.texture_2d = booleano(textura[1], "texture_2d", "gl.textura")?;
+        self.active_unit = textura[2];
+        self.client_unit = textura[3];
+        self.texture_env = le_ambiente_do_texto(&textura[4..4 + AMBIENTES]);
+        self.unidade1.ligada = booleano(textura[4 + AMBIENTES], "unidade1.ligada", "gl.textura")?;
+        self.unidade1.textura = textura[5 + AMBIENTES];
+        self.unidade1.env = le_ambiente_do_texto(&textura[6 + AMBIENTES..]);
+
+        self.fog.ligada = booleano(nevoa[0], "fog.ligada", "gl.nevoa")?;
+        self.fog.curva = nevoa[1];
+        self.fog.densidade = f(nevoa[2]);
+        self.fog.inicio = f(nevoa[3]);
+        self.fog.fim = f(nevoa[4]);
+        self.fog.permitida = booleano(nevoa[5], "fog.permitida", "gl.nevoa")?;
+        for (indice, valor) in self.fog.cor.iter_mut().enumerate() {
+            *valor = f(nevoa[6 + indice]);
+        }
+
+        // Um cursor por índice, e não por closure que o empresta: a closure mutável não deixa o
+        // contador ser lido no meio, e o compilador disse isso antes de eu errar a conta na mão.
+        let mut cursor = 0usize;
+        macro_rules! quatro {
+            ($destino:expr) => {
+                for valor in $destino.iter_mut() {
+                    *valor = f(luz[cursor]);
+                    cursor += 1;
+                }
+            };
+        }
+        quatro!(self.material.ambient);
+        quatro!(self.material.diffuse);
+        quatro!(self.material.specular);
+        quatro!(self.material.emission);
+        self.material.shininess = f(luz[cursor]);
+        cursor += 1;
+        quatro!(self.light_model_ambient);
+        for indice in 0..self.lights.len() {
+            self.lights[indice].enabled = booleano(luz[cursor], "luz.enabled", "gl.iluminacao")?;
+            cursor += 1;
+            quatro!(self.lights[indice].ambient);
+            quatro!(self.lights[indice].diffuse);
+            quatro!(self.lights[indice].specular);
+            quatro!(self.lights[indice].position);
+            for posicao in 0..3 {
+                self.lights[indice].spot_direction[posicao] = f(luz[cursor]);
+                cursor += 1;
+            }
+            self.lights[indice].spot_exponent = f(luz[cursor]);
+            self.lights[indice].spot_cutoff = f(luz[cursor + 1]);
+            cursor += 2;
+            quatro!(self.lights[indice].attenuation);
+        }
+
+        // **Os três buffers.** Medido antes de decidir: o de cor NÃO é duplicata da tela. A tela
+        // que o core apresenta é o bitmap do aparelho, e o buffer de cor é a superfície de desenho
+        // do GL — o `eglSwapBuffers` lê um e entrega o outro. Os dois têm de ser gravados.
+        let buffers = origem.u32s("gl.buffers")?;
+        if buffers.len() != 5 {
+            return Err(Erro::Secao {
+                nome: "gl.buffers".to_string(),
+                motivo: format!("esperava 5 números e veio {}", buffers.len()),
+            });
+        }
+        let (largura, altura) = (buffers[0] as usize, buffers[1] as usize);
+        let teto = largura * altura;
+        // **Um teto no tamanho declarado.** Um arquivo corrompido — ou escrito por uma versão com
+        // outra resolução — não pode fazer o carregamento pedir memória absurda. Acima do tamanho
+        // da superfície é recusa, e não alocação.
+        let conferir_tamanho = |nome: &str, declarado: usize, por_pixel: usize| -> Result<usize, Erro> {
+            if declarado > teto {
+                return Err(Erro::Secao {
+                    nome: nome.to_string(),
+                    motivo: format!(
+                        "o estado diz ter {declarado} element(s) e a superfície é {largura}x{altura}"
+                    ),
+                });
+            }
+            let esperado = declarado * por_pixel;
+            Ok(esperado)
+        };
+        let quantos = conferir_tamanho("gl.buffer.cor", buffers[2] as usize, 4)?;
+        let cor = secao_do_estado(origem, "gl.buffer.cor")?;
+        if cor.len() != quantos {
+            return Err(Erro::Secao {
+                nome: "gl.buffer.cor".to_string(),
+                motivo: format!("esperava {quantos} bytes e veio {}", cor.len()),
+            });
+        }
+        let quantos = conferir_tamanho("gl.buffer.profundidade", buffers[3] as usize, 4)?;
+        let profundidade = secao_do_estado(origem, "gl.buffer.profundidade")?;
+        if profundidade.len() != quantos {
+            return Err(Erro::Secao {
+                nome: "gl.buffer.profundidade".to_string(),
+                motivo: format!("esperava {quantos} bytes e veio {}", profundidade.len()),
+            });
+        }
+        let quantos = conferir_tamanho("gl.buffer.stencil", buffers[4] as usize, 1)?;
+        let stencil = secao_do_estado(origem, "gl.buffer.stencil")?;
+        if stencil.len() != quantos {
+            return Err(Erro::Secao {
+                nome: "gl.buffer.stencil".to_string(),
+                motivo: format!("esperava {quantos} bytes e veio {}", stencil.len()),
+            });
+        }
+        let cor: Vec<[u8; 4]> = cor.chunks_exact(4).map(|p| [p[0], p[1], p[2], p[3]]).collect();
+        let profundidade: Vec<f32> = profundidade
+            .chunks_exact(4)
+            .map(|p| f32::from_bits(u32::from_le_bytes([p[0], p[1], p[2], p[3]])))
+            .collect();
+
+        self.color = cor;
+        self.depth = profundidade;
+        self.stencil = stencil;
+        self.textures = le_texturas(origem)?;
+        Ok(())
+    }
+}
+
+/// Grava as texturas: por objeto, os números, os pixels e os níveis de redução.
+///
+/// A cadeia de mipmaps é o motivo de esta tabela ter formato próprio. Descartá-la foi a causa das
+/// listras nos modelos do palco da Z-Wheel: eles vêm com a cadeia inteira, de 128×128 até 1×1, e
+/// são vistos de raspão — a lateral de um carro ocupa poucos pixels de largura e cobre a textura
+/// toda. Amostrando sempre o nível zero, cada pixel cai num texel qualquer e o resultado é o
+/// traseiro do carro repetido em colunas.
+///
+/// Os pixels vão **crus**, um byte de alpha inclusive: quatro por pixel, na ordem de leitura. É a
+/// tabela que mais pesa no estado, e é onde comprimir valeria mais — mas comprimir é uma decisão
+/// sobre o formato, e o formato já tem versão para receber isso depois.
+fn grava_texturas(
+    texturas: &std::collections::HashMap<u32, Texture>,
+    destino: &mut crate::save_state::Secoes,
+) {
+    let mut ids: Vec<u32> = texturas.keys().copied().collect();
+    ids.sort_unstable();
+    destino.poe_u32s("tex.ids", ids.iter().copied());
+    for id in ids {
+        let textura = &texturas[&id];
+        destino.poe_u32s(
+            &format!("tex.{id}.meta"),
+            [
+                textura.width as u32,
+                textura.height as u32,
+                textura.wrap[0],
+                textura.wrap[1],
+                textura.filter,
+                textura.min_filter,
+                textura.crop[0] as u32,
+                textura.crop[1] as u32,
+                textura.crop[2] as u32,
+                textura.crop[3] as u32,
+                textura.mipmaps.len() as u32,
+            ],
+        );
+        destino.poe(&format!("tex.{id}.pixels"), bytes_dos_pixels(&textura.pixels));
+        // As dimensões de cada nível, e depois todos os pixels deles em seguida.
+        let mut medidas = Vec::with_capacity(textura.mipmaps.len() * 2);
+        let mut pixels = Vec::new();
+        for nivel in &textura.mipmaps {
+            medidas.push(nivel.width as u32);
+            medidas.push(nivel.height as u32);
+            pixels.extend_from_slice(&bytes_dos_pixels(&nivel.pixels));
+        }
+        destino.poe_u32s(&format!("tex.{id}.mips"), medidas);
+        destino.poe(&format!("tex.{id}.mip_pixels"), pixels);
+    }
+}
+
+/// Os pixels RGBA como bytes, num vetor só.
+fn bytes_dos_rgba(pixels: &[[u8; 4]]) -> Vec<u8> {
+    let mut saida = Vec::with_capacity(pixels.len() * 4);
+    for pixel in pixels {
+        saida.extend_from_slice(pixel);
+    }
+    saida
+}
+
+/// Os pixels RGBA como bytes.
+fn bytes_dos_pixels(pixels: &[[u8; 4]]) -> Vec<u8> {
+    let mut saida = Vec::with_capacity(pixels.len() * 4);
+    for pixel in pixels {
+        saida.extend_from_slice(pixel);
+    }
+    saida
+}
+
+/// O caminho de volta de [`grava_texturas`], com a conferência que importa.
+///
+/// **O número de pixels tem de casar com as dimensões.** Um arquivo truncado, ou um nível de
+/// mipmap com as medidas trocadas, desenharia listras — e o defeito apareceria como imagem
+/// errada, sem nada apontando para o save state. Aqui é recusa.
+fn le_texturas(
+    origem: &crate::save_state::Leitor<'_>,
+) -> Result<std::collections::HashMap<u32, Texture>, crate::save_state::Erro> {
+    use crate::save_state::Erro;
+    let ids = origem.u32s("tex.ids")?;
+    let mut texturas = std::collections::HashMap::new();
+    for id in ids {
+        let meta = origem.u32s(&format!("tex.{id}.meta"))?;
+        if meta.len() != 11 {
+            return Err(Erro::Secao {
+                nome: format!("tex.{id}.meta"),
+                motivo: format!("esperava 11 números e veio {}", meta.len()),
+            });
+        }
+        let (largura, altura) = (meta[0] as usize, meta[1] as usize);
+        let pixels = pixels_dos_bytes(&secao_do_estado(origem, &format!("tex.{id}.pixels"))?);
+        if pixels.len() != largura * altura {
+            return Err(Erro::Secao {
+                nome: format!("tex.{id}.pixels"),
+                motivo: format!(
+                    "a textura é {largura}x{altura} ({} pixels) e vieram {}",
+                    largura * altura,
+                    pixels.len()
+                ),
+            });
+        }
+        let medidas = origem.u32s(&format!("tex.{id}.mips"))?;
+        let quantos = meta[10] as usize;
+        if medidas.len() != quantos * 2 {
+            return Err(Erro::Secao {
+                nome: format!("tex.{id}.mips"),
+                motivo: format!("diz ter {quantos} nível(is) e veio {} número(s)", medidas.len()),
+            });
+        }
+        let cru = secao_do_estado(origem, &format!("tex.{id}.mip_pixels"))?;
+        let mut mipmaps = Vec::with_capacity(quantos);
+        let mut cursor = 0usize;
+        for nivel in 0..quantos {
+            let (l, a) = (medidas[nivel * 2] as usize, medidas[nivel * 2 + 1] as usize);
+            let precisa = l * a * 4;
+            if cru.len() < cursor + precisa {
+                return Err(Erro::Secao {
+                    nome: format!("tex.{id}.mip_pixels"),
+                    motivo: format!(
+                        "o nível {nivel} é {l}x{a} e precisa de {precisa} bytes, e restam {}",
+                        cru.len() - cursor
+                    ),
+                });
+            }
+            mipmaps.push(Nivel {
+                width: l,
+                height: a,
+                pixels: pixels_dos_bytes(&cru[cursor..cursor + precisa]),
+            });
+            cursor += precisa;
+        }
+        texturas.insert(
+            id,
+            Texture {
+                width: largura,
+                height: altura,
+                pixels,
+                mipmaps,
+                wrap: [meta[2], meta[3]],
+                filter: meta[4],
+                min_filter: meta[5],
+                crop: [
+                    meta[6] as i32,
+                    meta[7] as i32,
+                    meta[8] as i32,
+                    meta[9] as i32,
+                ],
+            },
+        );
+    }
+    Ok(texturas)
+}
+
+/// Uma seção de bytes que tem de existir.
+fn secao_do_estado<'a>(
+    origem: &'a crate::save_state::Leitor<'a>,
+    nome: &str,
+) -> Result<Vec<u8>, crate::save_state::Erro> {
+    origem
+        .secao(nome)
+        .map(|bytes| bytes.to_vec())
+        .ok_or_else(|| crate::save_state::Erro::Secao {
+            nome: nome.to_string(),
+            motivo: "a seção não está no arquivo".to_string(),
+        })
+}
+
+/// Bytes RGBA como pixels. Sobra de menos de quatro bytes é descartada, e quem confere o número
+/// é quem chama.
+fn pixels_dos_bytes(bytes: &[u8]) -> Vec<[u8; 4]> {
+    bytes
+        .chunks_exact(4)
+        .map(|p| [p[0], p[1], p[2], p[3]])
+        .collect()
+}
+
+/// Quantos números o ambiente de textura ocupa: modo, dois de combinação, seis fontes, seis
+/// operandos, duas escalas e quatro de cor.
+const AMBIENTES: usize = 1 + 2 + 6 + 6 + 2 + 4;
+
+/// O ambiente de textura como números.
+fn ambientes_do_texto(env: &TexEnv) -> Vec<u32> {
+    let mut saida = vec![env.modo];
+    saida.extend(env.combina);
+    saida.extend(env.fontes.iter().flatten().copied());
+    saida.extend(env.operandos.iter().flatten().copied());
+    saida.extend(env.escala.iter().map(|e| e.to_bits()));
+    saida.extend(env.cor.iter().map(|c| c.to_bits()));
+    saida
+}
+
+/// O caminho de volta de [`ambientes_do_texto`].
+fn le_ambiente_do_texto(numeros: &[u32]) -> TexEnv {
+    let mut cursor = 0usize;
+    let mut proximo = || {
+        let valor = numeros[cursor];
+        cursor += 1;
+        valor
+    };
+    let modo = proximo();
+    let combina = [proximo(), proximo()];
+    let mut fontes = [[0u32; 3]; 2];
+    for linha in fontes.iter_mut() {
+        for valor in linha.iter_mut() {
+            *valor = proximo();
+        }
+    }
+    let mut operandos = [[0u32; 3]; 2];
+    for linha in operandos.iter_mut() {
+        for valor in linha.iter_mut() {
+            *valor = proximo();
+        }
+    }
+    let escala = [f32::from_bits(proximo()), f32::from_bits(proximo())];
+    let cor = [
+        f32::from_bits(proximo()),
+        f32::from_bits(proximo()),
+        f32::from_bits(proximo()),
+        f32::from_bits(proximo()),
+    ];
+    TexEnv {
+        modo,
+        combina,
+        fontes,
+        operandos,
+        escala,
+        cor,
+    }
+}
+
+#[cfg(test)]
+mod testes_do_estado_de_gl {
+    use super::*;
+    use crate::save_state::{Guardavel, Leitor, Secoes};
+
+    /// **O estado de GL vai e volta**, campo por campo.
+    ///
+    /// Cada seção é conferida pelo tamanho na leitura; este teste confere os **valores**, que é o
+    /// que o tamanho não pega. Ele cobre os quatro grupos de uma vez: as pilhas de matriz, onde se
+    /// desenha, as bandeiras, a textura, a névoa e a iluminação.
+    #[test]
+    fn o_estado_de_gl_vai_e_volta() {
+        let mut antes = GlState::new(640, 480);
+        antes.matrix_mode = 0x1700;
+        antes.modelview.push([1.5; 16]);
+        antes.projection.push([-2.25; 16]);
+        antes.texture_matrix.push([0.5; 16]);
+        antes.viewport = (1, 2, 640, 480);
+        antes.tesoura = Some((3, 4, 100, 200));
+        antes.tesoura_crua = (5, 6, 7, 8);
+        antes.tesoura_ligada = true;
+        antes.surface = Some((320, 240));
+        antes.esticada = true;
+        antes.sujo = true;
+        antes.clear_color = [0.25, 0.5, 0.75, 1.0];
+        antes.clear_depth = 0.5;
+        antes.current_color = [1.0, 0.0, 0.5, 0.25];
+        antes.clear_stencil = 7;
+        antes.color_mask = [true, false, true, false];
+        antes.depth_test = true;
+        antes.depth_mask = false;
+        antes.depth_func = 0x0203;
+        antes.blend = true;
+        antes.blend_src = 1;
+        antes.blend_dst = 2;
+        antes.alpha_test = true;
+        antes.alpha_func = 0x0204;
+        antes.alpha_ref = 0.375;
+        antes.cull_face = true;
+        antes.cull_mode = 0x0405;
+        antes.front_face = 0x0901;
+        antes.stencil_test = true;
+        antes.stencil_func = 0x0207;
+        antes.stencil_ref = -3;
+        antes.stencil_value_mask = 0xff;
+        antes.stencil_write_mask = 0x0f;
+        antes.stencil_op = [1, 2, 3];
+        antes.depth_range = (0.0, 0.985);
+        antes.lighting = true;
+        antes.color_material = true;
+        antes.shade_model = 0x1d01;
+        antes.bound_texture = 0x1234;
+        antes.texture_2d = true;
+        antes.active_unit = 1;
+        antes.client_unit = 2;
+        antes.texture_env.modo = 0x2100;
+        antes.texture_env.cor = [0.1, 0.2, 0.3, 0.4];
+        antes.unidade1.ligada = true;
+        antes.unidade1.textura = 0x5678;
+        antes.fog.ligada = true;
+        antes.fog.curva = 0x2601;
+        antes.fog.densidade = 0.125;
+        antes.fog.inicio = 10.0;
+        antes.fog.fim = 20.0;
+        antes.fog.permitida = true;
+        antes.fog.cor = [0.5, 0.25, 0.125, 1.0];
+        antes.material.shininess = 12.5;
+        antes.material.ambient = [0.11; 4];
+        antes.light_model_ambient = [0.22; 4];
+        antes.lights[0].enabled = true;
+        antes.lights[0].position = [1.0, 2.0, 3.0, 0.0];
+        antes.lights[0].spot_cutoff = 45.0;
+        antes.lights[0].attenuation = [1.0, 0.5, 0.25];
+
+        let mut secoes = Secoes::nova();
+        antes.grava(&mut secoes);
+        let arquivo = secoes.fecha();
+        let leitor = Leitor::abre(&arquivo).expect("abriu");
+
+        let mut depois = GlState::new(640, 480);
+        depois.restaura(&leitor).expect("restaurou");
+
+        assert_eq!(depois.matrix_mode, 0x1700);
+        // **O topo da pilha e o tamanho dela**, e não a lista inteira: o `GlState::new` já põe uma
+        // identidade em cada pilha, e afirmar a lista supunha quantas havia antes. Foi assim que
+        // este teste me reprovou uma vez, com o valor certo.
+        for (nome, pilha, esperado) in [
+            ("modelview", &depois.modelview, [1.5f32; 16]),
+            ("projection", &depois.projection, [-2.25f32; 16]),
+            ("texture_matrix", &depois.texture_matrix, [0.5f32; 16]),
+        ] {
+            assert_eq!(pilha.len(), 2, "o tamanho da pilha {nome}");
+            assert_eq!(
+                pilha.last().copied(),
+                Some(esperado),
+                "o topo da pilha {nome} não voltou"
+            );
+        }
+        assert_eq!(depois.viewport, (1, 2, 640, 480));
+        assert_eq!(depois.tesoura, Some((3, 4, 100, 200)));
+        assert_eq!(depois.tesoura_crua, (5, 6, 7, 8));
+        assert!(depois.tesoura_ligada);
+        assert_eq!(depois.surface, Some((320, 240)));
+        assert!(depois.esticada);
+        assert!(depois.sujo);
+        assert_eq!(depois.clear_color, [0.25, 0.5, 0.75, 1.0], "as cores são f32");
+        assert_eq!(depois.clear_depth, 0.5);
+        assert_eq!(depois.current_color, [1.0, 0.0, 0.5, 0.25]);
+        assert_eq!(depois.clear_stencil, 7);
+        assert_eq!(depois.color_mask, [true, false, true, false]);
+        assert!(depois.depth_test);
+        assert!(!depois.depth_mask);
+        assert_eq!(depois.depth_func, 0x0203);
+        assert!(depois.blend);
+        assert_eq!((depois.blend_src, depois.blend_dst), (1, 2));
+        assert!(depois.alpha_test);
+        assert_eq!(depois.alpha_ref, 0.375);
+        assert!(depois.cull_face);
+        assert_eq!(depois.cull_mode, 0x0405);
+        assert_eq!(depois.front_face, 0x0901);
+        assert!(depois.stencil_test);
+        assert_eq!(depois.stencil_ref, -3, "o `ref` do stencil é assinado");
+        assert_eq!(
+            (depois.stencil_value_mask, depois.stencil_write_mask),
+            (0xff, 0x0f)
+        );
+        assert_eq!(depois.stencil_op, [1, 2, 3]);
+        assert_eq!(depois.depth_range, (0.0, 0.985), "a faixa do Crash");
+        assert!(depois.lighting);
+        assert!(depois.color_material);
+        assert_eq!(depois.shade_model, 0x1d01);
+        assert_eq!(depois.bound_texture, 0x1234);
+        assert!(depois.texture_2d);
+        assert_eq!((depois.active_unit, depois.client_unit), (1, 2));
+        assert_eq!(depois.texture_env.modo, 0x2100);
+        assert_eq!(depois.texture_env.cor, [0.1, 0.2, 0.3, 0.4]);
+        assert!(depois.unidade1.ligada);
+        assert_eq!(depois.unidade1.textura, 0x5678);
+        assert!(depois.fog.ligada);
+        assert_eq!(depois.fog.curva, 0x2601);
+        assert_eq!(depois.fog.densidade, 0.125);
+        assert_eq!((depois.fog.inicio, depois.fog.fim), (10.0, 20.0));
+        assert!(depois.fog.permitida);
+        assert_eq!(depois.fog.cor, [0.5, 0.25, 0.125, 1.0]);
+        assert_eq!(depois.material.shininess, 12.5);
+        assert_eq!(depois.material.ambient, [0.11; 4]);
+        assert_eq!(depois.light_model_ambient, [0.22; 4]);
+        assert!(depois.lights[0].enabled);
+        assert_eq!(depois.lights[0].position, [1.0, 2.0, 3.0, 0.0]);
+        assert_eq!(depois.lights[0].spot_cutoff, 45.0);
+        assert_eq!(depois.lights[0].attenuation, [1.0, 0.5, 0.25]);
+    }
+
+    /// Uma seção de tamanho errado é **recusa**, e não leitura deslocada.
+    #[test]
+    fn secao_com_tamanho_errado_e_recusada() {
+        let mut antes = GlState::new(640, 480);
+        antes.depth_test = true;
+        let mut secoes = Secoes::nova();
+        antes.grava(&mut secoes);
+        let mut arquivo = secoes.fecha();
+
+        // Tira um número do meio do arquivo: o crc32 deixa de bater, e é a primeira barreira.
+        let meio = arquivo.len() / 2;
+        arquivo[meio] ^= 0xff;
+        match Leitor::abre(&arquivo) {
+            Err(crate::save_state::Erro::Integridade { .. }) => {}
+            outro => panic!("devia recusar por integridade, e devolveu {outro:?}"),
+        }
+    }
+
+    /// **As texturas vão e voltam, com a cadeia de mipmaps inteira.**
+    ///
+    /// A cadeia é o motivo de esta tabela ter formato próprio: o teste usa dois níveis, e confere
+    /// que o segundo voltou com as medidas e os pixels dele.
+    #[test]
+    fn as_texturas_e_os_mipmaps_vem_de_volta() {
+        let mut antes = GlState::new(640, 480);
+        let nivel_zero: Vec<[u8; 4]> = (0..16u8).map(|n| [n, n + 1, n + 2, 255]).collect();
+        let nivel_um: Vec<[u8; 4]> = (0..4u8).map(|n| [n + 100, 0, 0, 128]).collect();
+        antes.textures.insert(
+            0x1000,
+            Texture {
+                width: 4,
+                height: 4,
+                pixels: nivel_zero.clone(),
+                mipmaps: vec![Nivel {
+                    width: 2,
+                    height: 2,
+                    pixels: nivel_um.clone(),
+                }],
+                wrap: [0x2901, 0x2900],
+                filter: 0x2601,
+                min_filter: 0x2703,
+                crop: [1, -2, 3, -4],
+            },
+        );
+
+        let mut secoes = Secoes::nova();
+        antes.grava(&mut secoes);
+        let arquivo = secoes.fecha();
+        let leitor = Leitor::abre(&arquivo).expect("abriu");
+        let mut depois = GlState::new(640, 480);
+        depois.restaura(&leitor).expect("restaurou");
+
+        let textura = depois.textures.get(&0x1000).expect("a textura voltou");
+        assert_eq!((textura.width, textura.height), (4, 4));
+        assert_eq!(textura.pixels, nivel_zero, "os pixels não voltaram");
+        assert_eq!((textura.wrap[0], textura.wrap[1]), (0x2901, 0x2900));
+        assert_eq!((textura.filter, textura.min_filter), (0x2601, 0x2703));
+        assert_eq!(textura.crop, [1, -2, 3, -4], "o recorte é assinado");
+        assert_eq!(textura.mipmaps.len(), 1, "a cadeia de mipmaps não voltou");
+        assert_eq!((textura.mipmaps[0].width, textura.mipmaps[0].height), (2, 2));
+        assert_eq!(
+            textura.mipmaps[0].pixels, nivel_um,
+            "os pixels do nível um não voltaram"
+        );
+    }
+
+    /// Uma textura cujo número de pixels não casa com as dimensões é **recusada**.
+    ///
+    /// É a conferência que importa: um nível de mipmap com as medidas trocadas desenharia listras,
+    /// e o defeito apareceria como imagem errada, sem nada apontando para o save state.
+    #[test]
+    fn textura_com_pixels_a_menos_e_recusada() {
+        let mut antes = GlState::new(640, 480);
+        antes.textures.insert(
+            0x1000,
+            Texture {
+                width: 4,
+                height: 4,
+                pixels: vec![[0, 0, 0, 255]],
+                mipmaps: Vec::new(),
+                wrap: [0, 0],
+                filter: 0,
+                min_filter: 0,
+                crop: [0; 4],
+            },
+        );
+        let mut secoes = Secoes::nova();
+        antes.grava(&mut secoes);
+        let arquivo = secoes.fecha();
+        let leitor = Leitor::abre(&arquivo).expect("abriu");
+        let mut depois = GlState::new(640, 480);
+        match depois.restaura(&leitor) {
+            Err(crate::save_state::Erro::Secao { nome, motivo }) => {
+                // O identificador entra em decimal no nome da seção, como nas outras tabelas.
+                assert_eq!(nome, "tex.4096.pixels");
+                assert!(motivo.contains("16"), "{motivo}");
+            }
+            outro => panic!("devia recusar a textura curta, e devolveu {outro:?}"),
+        }
+    }
+
+    /// **Os três buffers vão e voltam** — cor, profundidade e stencil, cada um no seu formato.
+    ///
+    /// Medido antes de decidir: o buffer de cor **não** é duplicata da tela. A tela que o core
+    /// apresenta é o bitmap do aparelho, e o buffer de cor é a superfície de desenho do GL; o
+    /// `eglSwapBuffers` lê um e entrega o outro. Gravar só um dos dois deixaria a próxima cena
+    /// desenhada sobre nada.
+    #[test]
+    fn os_buffers_de_cor_profundidade_e_stencil_vem_de_volta() {
+        let mut antes = GlState::new(4, 2);
+        assert_eq!(antes.color.len(), 8, "o estado novo já tem os buffers da superfície");
+        antes.color[0] = [1, 2, 3, 4];
+        antes.color[7] = [5, 6, 7, 8];
+        antes.depth[3] = 0.25;
+        antes.depth[7] = 0.75;
+        antes.stencil[5] = 9;
+
+        let mut secoes = Secoes::nova();
+        antes.grava(&mut secoes);
+        let arquivo = secoes.fecha();
+        let leitor = Leitor::abre(&arquivo).expect("abriu");
+        let mut depois = GlState::new(4, 2);
+        depois.restaura(&leitor).expect("restaurou");
+
+        assert_eq!(depois.color.len(), 8);
+        assert_eq!(depois.color[0], [1, 2, 3, 4], "o primeiro pixel da cor");
+        assert_eq!(depois.color[7], [5, 6, 7, 8], "o último pixel da cor");
+        assert_eq!(depois.depth.len(), 8);
+        assert_eq!(depois.depth[3], 0.25, "a profundidade é f32");
+        assert_eq!(depois.depth[7], 0.75);
+        assert_eq!(depois.stencil.len(), 8);
+        assert_eq!(depois.stencil[5], 9);
+    }
+
+    /// **Um buffer maior que a superfície é recusado**, e não alocado.
+    ///
+    /// É o teto que impede um arquivo corrompido — ou escrito por uma versão com outra resolução —
+    /// de fazer o carregamento pedir memória absurda. O teste monta um estado **válido** e estraga
+    /// só o campo do stencil: refazer as seções à mão faria ele medir outra coisa.
+    #[test]
+    fn buffer_maior_que_a_superficie_e_recusado() {
+        let antes = GlState::new(4, 2);
+        let mut secoes = Secoes::nova();
+        antes.grava(&mut secoes);
+        // Os cinco números do cabeçalho dos buffers, com o último mentindo. O primeiro número é a
+        // **contagem** da seção (5), e não um valor: errar isso faz o leitor recusar a seção
+        // inteira, e foi o que o teste mostrou antes de eu acertar.
+        let mut mentiroso = 5u32.to_le_bytes().to_vec();
+        for valor in [4u32, 2, 8, 8, 9999] {
+            mentiroso.extend_from_slice(&valor.to_le_bytes());
+        }
+        secoes.troca("gl.buffers", mentiroso);
+        let arquivo = secoes.fecha();
+        let leitor = Leitor::abre(&arquivo).expect("abriu");
+
+        let mut depois = GlState::new(4, 2);
+        match depois.restaura(&leitor) {
+            Err(crate::save_state::Erro::Secao { nome, motivo }) => {
+                assert_eq!(nome, "gl.buffer.stencil");
+                assert!(motivo.contains("9999"), "{motivo}");
+            }
+            outro => panic!("devia recusar o buffer gigante, e devolveu {outro:?}"),
+        }
     }
 }

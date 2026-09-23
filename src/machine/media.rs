@@ -413,6 +413,27 @@ impl<C: CpuBackend> Machine<C> {
             .retain(|chave, _| *chave == nova || em_uso.contains(chave));
     }
 
+
+    /// Toca uma partitura com o banco de amostras, quando o aparelho tem um.
+    ///
+    /// Só tenta quando os bytes começam com `MThd`: reconhecer o formato **antes** de abrir o banco
+    /// evita gastar 32 MB de carga por causa de um som que não é partitura, e evita que o banco
+    /// mude o desfecho de um formato que a tabela já tratava.
+    #[cfg(feature = "soundfont")]
+    fn toca_com_banco(&self, bytes: &[u8]) -> Option<crate::audio::wav::Sound> {
+        if !bytes.starts_with(b"MThd") {
+            return None;
+        }
+        let banco = self.banco_de_som.as_ref()?;
+        crate::audio::soundfont::toca(banco, bytes, crate::audio::midi::RATE)
+    }
+
+    /// Sem a feature, o caminho é sempre o da tabela de timbres.
+    #[cfg(not(feature = "soundfont"))]
+    fn toca_com_banco(&self, _bytes: &[u8]) -> Option<crate::audio::wav::Sound> {
+        None
+    }
+
     /// Decodifica um som pelo que ele é, e não pelo nome.
     fn decodifica_som(&mut self, bytes: &[u8]) -> CargaDeMidia {
         // RIFF/WAVE primeiro porque é o que quase todo som é, e é o mais barato de reconhecer.
@@ -420,25 +441,56 @@ impl<C: CpuBackend> Machine<C> {
         // e trilha não tocava em jogo nenhum.
         let som = match crate::audio::wav::parse(bytes) {
             Ok(sound) => Some(sound),
-            Err(err) => match crate::audio::mp3::decode(bytes).or_else(|| {
-                crate::audio::midi::decode(bytes).inspect(|_| {
-                    self.assumptions.insert(concat!(
-                        "a música MIDI é sintetizada aqui, com timbre aproximado — ",
-                        "o banco de instrumentos do console está no firmware que ainda não lemos"
-                    ));
-                })
-            }) {
-                Some(sound) => Some(sound),
-                None => {
+            Err(sem_wav) => match crate::audio::mp3::decode_detalhado(bytes) {
+                Ok(sound) => Some(sound),
+                // **O banco de amostras vem antes da tabela de timbres.** Quando ele existe, a
+                // partitura é tocada com as amostras de verdade, e o que a tabela não alcança (a
+                // razão de harmônicos das cordas e da distorção, a ressonância da bateria) passa a
+                // vir do banco. Sem banco, o caminho é o de sempre.
+                Err(porque) => match self.toca_com_banco(bytes) {
+                    Some(sound) => {
+                        self.assumptions.insert(concat!(
+                            "a música MIDI é tocada com o banco de amostras do aparelho, e não com ",
+                            "a tabela de timbres; o banco do console está no firmware que ainda não lemos"
+                        ));
+                        Some(sound)
+                    }
+                    None => match crate::audio::midi::decode(bytes) {
+                    Some(sound) => {
+                        self.assumptions.insert(concat!(
+                            "a música MIDI é sintetizada aqui, com timbre aproximado — ",
+                            "o banco de instrumentos do console está no firmware que ainda não lemos"
+                        ));
+                        Some(sound)
+                    }
+                    None => {
                     // Dizer *qual* formato chegou é o que permite saber o que implementar
                     // depois — e "não é um RIFF/WAVE" não diz. O que diz é a assinatura do
                     // próprio bloco: é assim que se soube que a trilha do Tekken 2 é MP3 sem
                     // abrir o jogo, e que a dos ports de arcade é MIDI.
                     let formato = detect_mime(bytes, "").unwrap_or("formato desconhecido");
-                    self.bad_pointers
-                        .insert(format!("som recusado ({formato}): {err}"));
-                    None
-                }
+                    // Os primeiros bytes vão no relatório junto do nome do formato: é o que
+                    // **identifica** o que chegou sem abrir o jogo. `FF FB` é quadro MP3, `ftyp`
+                    // é caixa MP4, `OggS` é Ogg — e a diferença entre eles decide o que
+                    // implementar. Sem isto, a linha dizia só "recusado", e a investigação
+                    // seguinte começava do zero, dentro do jogo.
+                    let assinatura: String = bytes
+                        .iter()
+                        .take(16)
+                        .map(|b| format!("{b:02x}"))
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                        // **Os dois motivos**, e não só o do WAV: "não é um RIFF/WAVE" é
+                        // verdade e não ajuda — a pergunta é o que o decodificador de música
+                        // recusou. Foi vendo os dois que se descobriu o Ogg do Turma da Mônica.
+                        self.bad_pointers.insert(format!(
+                            "som recusado ({formato}, {} bytes, {assinatura}): {sem_wav} / {porque}",
+                            bytes.len()
+                        ));
+                        None
+                    }
+                    },
+                },
             },
         };
         let silencio_us = match som {

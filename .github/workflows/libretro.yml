@@ -1,30 +1,29 @@
-# Compila o core Libretro e confere que ele é carregável, sem bibliotecas de host.
+# Compila o core Libretro e confere que ele é carregável e completo.
 #
-# O core é o pacote `frontends/libretro`, compilado com `--no-default-features` no motor.
-# Artefatos: `zeebx_libretro_<alvo>` (underscore), para não colidir com os zips do `release.yml`.
+# O core é um pacote separado (`frontends/libretro`) e o build dele **não** usa biblioteca de
+# interface: sem ALSA, sem udev, sem Wayland ou X11. As provas, em ordem de força:
 #
-# Uma tag de versão — a mesma do `release.yml` — anexa os zips do core ao rascunho da release.
-# Os instaladores continuam saindo só do `release.yml`.
+# 1. a biblioteca **carrega** de verdade (`ctypes` = `dlopen`/`LoadLibrary`, como o frontend faz) —
+#    isso apanha dependência que faltou no link, que uma lista de símbolos não apanha;
+# 2. os 25 símbolos `retro_*` respondem, `retro_api_version` devolve 1 e `retro_get_system_info`
+#    preenche a struct com `Zeebx`, `mod|zip`, `need_fullpath` e `block_extract`;
+# 3. no Linux, `ldd` mostra que não há `libX11`, Wayland, EGL, ALSA, udev nem GTK pendurados.
+#
+# Cada alvo roda no seu próprio runner: AArch64 Linux e Windows em runner ARM64 nativo, porque
+# cross-build de `unicorn` (QEMU em C) e `dynarmic` (C++20 com CMake) exigiria toolchain e sysroot
+# que ninguém quer manter só para empacotar.
 
 name: libretro
 
+# **Só à mão, pela aba Actions.** Nenhum push ou merge dispara isto: quem gasta runner sozinho é
+# o `release.yml`, na tag. Rode daqui quando quiser conferir o core antes de marcar uma versão.
 on:
-  push:
-    tags:
-      - "v[0-9]+.[0-9]+.[0-9]+*"
-      - "[0-9]+.[0-9]+.[0-9]+*"
   workflow_dispatch:
-  pull_request:
-    paths:
-      - "frontends/libretro/**"
-      - "src/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "build.rs"
-      - ".github/workflows/libretro.yml"
 
-permissions:
-  contents: read
+# Uma execução nova espera a anterior do mesmo ref terminar, em vez de derrubá-la no meio.
+concurrency:
+  group: libretro-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   core:
@@ -33,25 +32,47 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Disparo à mão é sempre a matriz inteira: quem pede o run quer a resposta dos seis alvos.
+        alvo:
+          - linux-x86_64
+          - linux-aarch64
+          - windows-x86_64
+          - windows-aarch64
+          - macos-x86_64
+          - macos-arm64
         include:
-          - nome: linux-x86_64
-            sistema: ubuntu-22.04
+          - alvo: linux-x86_64
+            nome: linux-x86_64
+            sistema: ubuntu-24.04
             biblioteca: target/release/libzeebx_libretro.so
             pacote: zeebx_libretro.so
-          - nome: linux-arm64
-            sistema: ubuntu-22.04-arm
+          - alvo: linux-aarch64
+            nome: linux-aarch64
+            sistema: ubuntu-24.04-arm
             biblioteca: target/release/libzeebx_libretro.so
             pacote: zeebx_libretro.so
-          - nome: windows-x86_64
+          - alvo: windows-x86_64
+            nome: windows-x86_64
             sistema: windows-latest
             biblioteca: target/release/zeebx_libretro.dll
             pacote: zeebx_libretro.dll
-          - nome: macos-arm64
-            sistema: macos-latest
+          - alvo: windows-aarch64
+            nome: windows-aarch64
+            sistema: windows-11-arm
+            # Windows ARM64 **não** tem o `unicorn` (falta montador MASM para ARM64 e o QEMU do Windows
+            # monta um `.asm` com o `ml` do MSVC, que só existe para x86 e x64). O alvo compila assim
+            # mesmo: o `unicorn-engine` sai do grafo por dependência condicional de alvo e o motor usa o
+            # `dynarmic`, que recompila os blocos A32. Ver `src/cpu/mod.rs`, `BackendPadrao`.
+            biblioteca: target/release/zeebx_libretro.dll
+            pacote: zeebx_libretro.dll
+          - alvo: macos-x86_64
+            nome: macos-x86_64
+            sistema: macos-15-intel
             biblioteca: target/release/libzeebx_libretro.dylib
             pacote: zeebx_libretro.dylib
-          - nome: macos-x86_64
-            sistema: macos-15-intel
+          - alvo: macos-arm64
+            nome: macos-arm64
+            sistema: macos-latest
             biblioteca: target/release/libzeebx_libretro.dylib
             pacote: zeebx_libretro.dylib
     steps:
@@ -63,20 +84,31 @@ jobs:
         with:
           key: libretro-${{ matrix.nome }}
 
-      - name: Dependências do Linux
+      # As duas dependências nativas: o `unicorn-engine` compila o QEMU em C e usa o `bindgen`
+      # (que carrega o `libclang`), e o `dynarmic` compila C++20 com CMake e Ninja. Depender do que
+      # a imagem do runner já traz funciona até o dia em que não traz.
+      - name: Dependências do build (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential cmake ninja-build pkg-config python3 libclang-dev
+            build-essential cmake ninja-build pkg-config python3 \
+            libclang-dev libglib2.0-dev
 
-      - name: Dependências do macOS
+      - name: Dependências do build (macOS)
         if: runner.os == 'macOS'
         run: brew install cmake ninja pkg-config || true
 
+      # Sem debuginfo a árvore do `dynarmic` sai de mais de 5 GiB para algumas centenas de MB.
       - name: Compila o core
+        env:
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          # A35 é o denominador comum seguro entre RK3326 e H700/A53. AArch64 continua usando
+          # NEON/AdvSIMD, mas o artefato não ganha instrução exclusiva do Cortex-A53.
+          RUSTFLAGS: ${{ matrix.alvo == 'linux-aarch64' && '-C target-cpu=cortex-a35' || '' }}
         run: cargo build --release --locked -p zeebx-libretro
 
+      # A prova principal: abrir a biblioteca como o frontend abre e chamar a ABI.
       - name: A biblioteca carrega e a ABI responde
         run: python3 ferramentas/verifica_core.py "${{ matrix.biblioteca }}"
 
@@ -90,49 +122,32 @@ jobs:
           fi
           echo "só libc, libm, libstdc++ e libgcc"
 
+      # R36S/R35S/RGB20S (ArkOS, AeolusUX, dArkOS e dArkOSen) e RG40XX-H (muOS Pixie ou
+      # posterior) carregam o mesmo core Linux AArch64. Não basta o nome do job: confira o ELF
+      # que será copiado para o cartão e rejeite um artefato x86 ou uma biblioteca com RPATH da
+      # máquina de build. A checagem de dependências acima continua proibindo bibliotecas desktop.
+      - name: O artefato handheld é AArch64 portátil
+        if: matrix.alvo == 'linux-aarch64'
+        shell: bash
+        run: |
+          file "${{ matrix.biblioteca }}" | grep -Eiq 'ARM aarch64|aarch64'
+          readelf -h "${{ matrix.biblioteca }}" | grep -E 'Class:.*ELF64|Machine:.*AArch64'
+          if readelf -d "${{ matrix.biblioteca }}" | grep -Eiq 'RPATH|RUNPATH'; then
+            echo "o core não pode carregar caminho da máquina de build"
+            exit 1
+          fi
+          echo "ELF Linux AArch64 sem caminho absoluto de build"
+
       - name: Monta o pacote do core
         shell: bash
         run: |
           mkdir -p pacote
           cp "${{ matrix.biblioteca }}" "pacote/${{ matrix.pacote }}"
           cp frontends/libretro/zeebx_libretro.info pacote/
-          grep -q '^display_name = "Zeebx"' pacote/zeebx_libretro.info
+          grep -q '^database = "Mobile - Zeebo"' pacote/zeebx_libretro.info
+          ls -la pacote/
 
       - uses: actions/upload-artifact@v4
         with:
           name: zeebx_libretro_${{ matrix.nome }}
           path: pacote/
-          if-no-files-found: error
-
-  release:
-    needs: core
-    # Sai com o que deu certo: um alvo que falhou não segura os outros.
-    if: ${{ !cancelled() && startsWith(github.ref, 'refs/tags/') }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: nucleos
-          pattern: zeebx_libretro_*
-
-      - name: Zip por alvo
-        run: |
-          mkdir -p dist
-          shopt -s nullglob
-          for d in nucleos/zeebx_libretro_*; do
-            nome=$(basename "$d")
-            (cd "$d" && zip -9 "../../dist/${nome}.zip" *)
-          done
-          ls -l dist
-
-      - uses: softprops/action-gh-release@v2
-        with:
-          name: ${{ github.ref_name }}
-          tag_name: ${{ github.ref_name }}
-          draft: true
-          # O `release.yml` já gera as notas; aqui só entram os zips do core.
-          generate_release_notes: false
-          files: dist/*
-          fail_on_unmatched_files: true

@@ -1,0 +1,401 @@
+Reckless Racing (Brazil) (Es,Pt)
+estado: roda
+tela: 1059 cor(es), dominante 0x4208
+classes pedidas:
+  0x01001001  (1x)
+  0x01001003  (1x)
+  0x01001056  (1x)
+  0x01005511  (1x)
+  0x01014bc3  (1x)
+  0x01014bc4  (1x)
+  0x01041207  (1x)
+  0x0106c411  (1x)
+chamadas ao sistema de arquivos:
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Reckless-Racing--Brazil---Es-Pt--2a27e2ddb542c361478532a231bc426b63ce052e7769a8276b688fe11d034367/mod/280394/data/car/tex/buggyOriginal.ctes (No such file or directory (os error 2))
+  OpenFile "data\car\tex\buggyOriginal.ctes"  (0x100100d4 0x1 0x1) -> 0
+  Seek  (0x0 0x622bf4 0x30000490) -> 0
+  Seek  (0x2 0x0 0xe0001000) -> 6433780
+  Read  (0x10010048 0x4 0xe0001000) -> 4
+  Seek  (0x0 0x622bf4 0x30000490) -> 0
+  Seek  (0x2 0x0 0xe0001000) -> 6433780
+  Read  (0x11123b68 0x1000 0xe0001000) -> 4096
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Reckless-Racing--Brazil---Es-Pt--2a27e2ddb542c361478532a231bc426b63ce052e7769a8276b688fe11d034367/mod/280394/data/car/tex/buggyOriginal.pvr (No such file or directory (os error 2))
+  OpenFile "data\car\tex\buggyOriginal.pvr"  (0x11124210 0x1 0x1) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Reckless-Racing--Brazil---Es-Pt--2a27e2ddb542c361478532a231bc426b63ce052e7769a8276b688fe11d034367/mod/280394/data/car/tex/buggyOriginal.pvr (No such file or directory (os error 2))
+  OpenFile "data\car\tex\buggyOriginal.pvr"  (0x11124210 0x1 0x1) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Reckless-Racing--Brazil---Es-Pt--2a27e2ddb542c361478532a231bc426b63ce052e7769a8276b688fe11d034367/mod/280394/data/car/tex/buggyOriginal.ctes (No such file or directory (os error 2))
+  OpenFile "data\car\tex\buggyOriginal.ctes"  (0x100100d4 0x1 0x1) -> 0
+  Seek  (0x0 0x622bf4 0x30000490) -> 0
+  Seek  (0x2 0x0 0xe0001000) -> 6433780
+  Read  (0x10010048 0x4 0xe0001000) -> 4
+  Seek  (0x0 0x622bf4 0x30000490) -> 0
+  Seek  (0x2 0x0 0xe0001000) -> 6433780
+  Read  (0x11124280 0x1000 0xe0001000) -> 4096
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Reckless-Racing--Brazil---Es-Pt--2a27e2ddb542c361478532a231bc426b63ce052e7769a8276b688fe11d034367/mod/280394/data/car/tex/Car_Marker.pvr (No such file or directory (os error 2))
+  OpenFile "data\car\tex\Car_Marker.pvr"  (0x111244c8 0x1 0x1) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Reckless-Racing--Brazil---Es-Pt--2a27e2ddb542c361478532a231bc426b63ce052e7769a8276b688fe11d034367/mod/280394/data/car/tex/Car_Marker.pvr (No such file or directory (os error 2))
+  OpenFile "data\car\tex\Car_Marker.pvr"  (0x111244c8 0x1 0x1) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Reckless-Racing--Brazil---Es-Pt--2a27e2ddb542c361478532a231bc426b63ce052e7769a8276b688fe11d034367/mod/280394/data/car/tex/Car_Marker.ctes (No such file or directory (os error 2))
+  OpenFile "data\car\tex\Car_Marker.ctes"  (0x100100d4 0x1 0x1) -> 0
+  Seek  (0x0 0xc52ad8 0x30000490) -> 0
+  Seek  (0x2 0x0 0xe0001000) -> 12921560
+  Read  (0x10010048 0x4 0xe0001000) -> 4
+  Seek  (0x0 0xc52ad8 0x30000490) -> 0
+  Seek  (0x2 0x0 0xe0001000) -> 12921560
+  Read  (0x11124538 0x1000 0xe0001000) -> 4096
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Reckless-Racing--Brazil---Es-Pt--2a27e2ddb542c361478532a231bc426b63ce052e7769a8276b688fe11d034367/mod/280394/data/car/tex/CarShadow.pvr (No such file or directory (os error 2))
+  OpenFile "data\car\tex\CarShadow.pvr"  (0x11124698 0x1 0x1) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Reckless-Racing--Brazil---Es-Pt--2a27e2ddb542c361478532a231bc426b63ce052e7769a8276b688fe11d034367/mod/280394/data/car/tex/CarShadow.pvr (No such file or directory (os error 2))
+  OpenFile "data\car\tex\CarShadow.pvr"  (0x11124698 0x1 0x1) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Reckless-Racing--Brazil---Es-Pt--2a27e2ddb542c361478532a231bc426b63ce052e7769a8276b688fe11d034367/mod/280394/data/car/tex/CarShadow.ctes (No such file or directory (os error 2))
+  OpenFile "data\car\tex\CarShadow.ctes"  (0x10010144 0x1 0x1) -> 0
+  Seek  (0x0 0x1239ee4 0x30000490) -> 0
+  Seek  (0x2 0x0 0xe0001000) -> 19111652
+  Read  (0x100100b8 0x4 0xe0001000) -> 4
+  Seek  (0x0 0x1239ee4 0x30000490) -> 0
+  Seek  (0x2 0x0 0xe0001000) -> 19111652
+  Read  (0x11124708 0x4dd 0xe0001000) -> 1245
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Reckless-Racing--Brazil---Es-Pt--2a27e2ddb542c361478532a231bc426b63ce052e7769a8276b688fe11d034367/mod/280394/data/car/tex/BuggyBlue.pvr (No such file or directory (os error 2))
+  OpenFile "data/car/tex/BuggyBlue.pvr"  (0x11115cd8 0x1 0x1) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Reckless-Racing--Brazil---Es-Pt--2a27e2ddb542c361478532a231bc426b63ce052e7769a8276b688fe11d034367/mod/280394/data/car/tex/BuggyBlue.pvr (No such file or directory (os error 2))
+  OpenFile "data/car/tex/BuggyBlue.pvr"  (0x11115cd8 0x1 0x1) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Reckless-Racing--Brazil---Es-Pt--2a27e2ddb542c361478532a231bc426b63ce052e7769a8276b688fe11d034367/mod/280394/data/car/tex/BuggyBlue.ctes (No such file or directory (os error 2))
+  OpenFile "data/car/tex/BuggyBlue.ctes"  (0x1001031c 0x1 0x1) -> 0
+  Seek  (0x0 0x12fc829 0x30000490) -> 0
+  Seek  (0x2 0x0 0xe0001000) -> 19908649
+  Read  (0x10010290 0x4 0xe0001000) -> 4
+  Seek  (0x0 0x12fc829 0x30000490) -> 0
+  Seek  (0x2 0x0 0xe0001000) -> 19908649
+  Read  (0x1111e218 0x1000 0xe0001000) -> 4096
+  Read  (0x1111e218 0xa12 0xe0001000) -> 2578
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Reckless-Racing--Brazil---Es-Pt--2a27e2ddb542c361478532a231bc426b63ce052e7769a8276b688fe11d034367/mod/280394/data/car/tex/BuggyGreen.pvr (No such file or directory (os error 2))
+  OpenFile "data/car/tex/BuggyGreen.pvr"  (0x1111e1d8 0x1 0x1) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Reckless-Racing--Brazil---Es-Pt--2a27e2ddb542c361478532a231bc426b63ce052e7769a8276b688fe11d034367/mod/280394/data/car/tex/BuggyGreen.pvr (No such file or directory (os error 2))
+  OpenFile "data/car/tex/BuggyGreen.pvr"  (0x1111e1d8 0x1 0x1) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Reckless-Racing--Brazil---Es-Pt--2a27e2ddb542c361478532a231bc426b63ce052e7769a8276b688fe11d034367/mod/280394/data/car/tex/BuggyGreen.ctes (No such file or directory (os error 2))
+  OpenFile "data/car/tex/BuggyGreen.ctes"  (0x1001031c 0x1 0x1) -> 0
+  Seek  (0x0 0x7633c6 0x30000490) -> 0
+  Seek  (0x2 0x0 0xe0001000) -> 7746502
+  Read  (0x10010290 0x4 0xe0001000) -> 4
+  Seek  (0x0 0x7633c6 0x30000490) -> 0
+  Seek  (0x2 0x0 0xe0001000) -> 7746502
+  Read  (0x1111e268 0x1000 0xe0001000) -> 4096
+  Read  (0x1111e268 0xa5e 0xe0001000) -> 2654
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Reckless-Racing--Brazil---Es-Pt--2a27e2ddb542c361478532a231bc426b63ce052e7769a8276b688fe11d034367/mod/280394/data/car/tex/BuggyRed.pvr (No such file or directory (os error 2))
+  OpenFile "data/car/tex/BuggyRed.pvr"  (0x1111e228 0x1 0x1) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Reckless-Racing--Brazil---Es-Pt--2a27e2ddb542c361478532a231bc426b63ce052e7769a8276b688fe11d034367/mod/280394/data/car/tex/BuggyRed.pvr (No such file or directory (os error 2))
+  OpenFile "data/car/tex/BuggyRed.pvr"  (0x1111e228 0x1 0x1) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Reckless-Racing--Brazil---Es-Pt--2a27e2ddb542c361478532a231bc426b63ce052e7769a8276b688fe11d034367/mod/280394/data/car/tex/BuggyRed.ctes (No such file or directory (os error 2))
+  OpenFile "data/car/tex/BuggyRed.ctes"  (0x1001031c 0x1 0x1) -> 0
+  Seek  (0x0 0xe49e75 0x30000490) -> 0
+  Seek  (0x2 0x0 0xe0001000) -> 14982773
+  Read  (0x10010290 0x4 0xe0001000) -> 4
+  Seek  (0x0 0xe49e75 0x30000490) -> 0
+  Seek  (0x2 0x0 0xe0001000) -> 14982773
+  Read  (0x1111e2b8 0x1000 0xe0001000) -> 4096
+  Read  (0x1111e2b8 0x9e7 0xe0001000) -> 2535
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Reckless-Racing--Brazil---Es-Pt--2a27e2ddb542c361478532a231bc426b63ce052e7769a8276b688fe11d034367/mod/280394/data/car/tex/BuggyYellow.pvr (No such file or directory (os error 2))
+  OpenFile "data/car/tex/BuggyYellow.pvr"  (0x1111e278 0x1 0x1) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Reckless-Racing--Brazil---Es-Pt--2a27e2ddb542c361478532a231bc426b63ce052e7769a8276b688fe11d034367/mod/280394/data/car/tex/BuggyYellow.pvr (No such file or directory (os error 2))
+  OpenFile "data/car/tex/BuggyYellow.pvr"  (0x1111e278 0x1 0x1) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Reckless-Racing--Brazil---Es-Pt--2a27e2ddb542c361478532a231bc426b63ce052e7769a8276b688fe11d034367/mod/280394/data/car/tex/BuggyYellow.ctes (No such file or directory (os error 2))
+  OpenFile "data/car/tex/BuggyYellow.ctes"  (0x1001031c 0x1 0x1) -> 0
+  Seek  (0x0 0x6d234a 0x30000490) -> 0
+  Seek  (0x2 0x0 0xe0001000) -> 7152458
+  Read  (0x10010290 0x4 0xe0001000) -> 4
+  Seek  (0x0 0x6d234a 0x30000490) -> 0
+  Seek  (0x2 0x0 0xe0001000) -> 7152458
+  Read  (0x1111e308 0x1000 0xe0001000) -> 4096
+  Read  (0x1111e308 0xa03 0xe0001000) -> 2563
+arquivos não encontrados:
+  data/Audio/Banjo_deliveryS_L.psn
+  data/Audio/Banjo_deliveryS_R.psn
+  data/Audio/Banjo_ingame2_L.psn
+  data/Audio/Banjo_ingame2_R.psn
+  data/Audio/Banjo_ingame_L.psn
+  data/Audio/Banjo_ingame_R.psn
+  data/Audio/Banjo_menu_L.psn
+  data/Audio/Banjo_menu_R.psn
+  data/audio/Bump.psn
+  data/audio/Bump2.psn
+  data/audio/Bump_crate.psn
+  data/audio/Bump_hay.psn
+  data/audio/Bump_mailbox.psn
+  data/audio/Bump_oildrum.psn
+  data/audio/Bump_trolley.psn
+  data/audio/Car_roll.psn
+  data/audio/Car_roll2.psn
+  data/audio/Car_roll3.psn
+  data/audio/Checkpoint.psn
+  data/audio/Cone_hit.psn
+  data/audio/Countdown_321.psn
+  data/audio/Countdown_go.psn
+  data/audio/Crash1.psn
+  data/audio/Crash2.psn
+  data/audio/Crash_land.psn
+  data/audio/Crash_land_soft.psn
+  data/audio/Delivery_clock.psn
+  data/audio/Delivery_fail.psn
+  data/audio/Delivery_pickup.psn
+  data/audio/Delivery_success.psn
+  data/audio/Engine_sound.psn
+  data/audio/Engine_sound2.psn
+  data/audio/Engine_sound2_idle.psn
+  data/audio/Engine_sound2_mid.psn
+  data/audio/Engine_sound3.psn
+  data/audio/Engine_sound3_idle.psn
+  data/audio/Engine_sound3_mid.psn
+  data/audio/Engine_sound4.psn
+  data/audio/Engine_sound4_idle.psn
+  data/audio/Engine_sound4_mid.psn
+  data/audio/Engine_sound5.psn
+  data/audio/Engine_sound5_idle.psn
+  data/audio/Engine_sound5_mid.psn
+  data/audio/Engine_sound6.psn
+  data/audio/Engine_sound6_idle.psn
+  data/audio/Engine_sound6_mid.psn
+  data/audio/Engine_sound_idle.psn
+  data/audio/Engine_sound_mid.psn
+  data/audio/Finish.psn
+  data/audio/Gravel_surface.psn
+  data/audio/Hotlap_rank1.psn
+  data/audio/Menu_back.psn
+  data/audio/Menu_next.psn
+  data/audio/Menu_touch.psn
+  data/audio/Metal_dong.psn
+  data/audio/Respawn.psn
+  data/audio/Scrape.psn
+  data/audio/Tire_skid.psn
+  data/audio/Tire_skid_grass.psn
+  data/audio/Tire_skid_gravel.psn
+  data/audio/Tire_skid_wood.psn
+  data/audio/Water_puddle.psn
+  data/audio/Water_splash.psn
+  data/audio/Wood_splinter.psn
+  data/audio/Wood_surface.psn
+  data/car/Buggy/car.pxc
+  data/car/General/car.pxc
+  data/car/Hummer/car.pxc
+  data/car/Jeep/car.pxc
+  data/car/Pickup/car.pxc
+  data/car/Truck/car.pxc
+  data/car/TweakEngine.dat
+  data/car/tex/BuggyBlue.ctes
+  data/car/tex/BuggyBlue.pvr
+  data/car/tex/BuggyGreen.ctes
+  data/car/tex/BuggyGreen.pvr
+  data/car/tex/BuggyRed.ctes
+  data/car/tex/BuggyRed.pvr
+  data/car/tex/BuggyYellow.ctes
+  data/car/tex/BuggyYellow.pvr
+  data/car/tex/Car_PickupBlue.ctes
+  data/car/tex/Car_PickupBlue.pvr
+  data/car/tex/Car_PickupGreen.ctes
+  data/car/tex/Car_PickupGreen.pvr
+  data/car/tex/Car_PickupRed.ctes
+  data/car/tex/Car_PickupRed.pvr
+  data/car/tex/Car_PickupYellow.ctes
+  data/car/tex/Car_PickupYellow.pvr
+  data/car/tex/GeneralBlue.ctes
+  data/car/tex/GeneralBlue.pvr
+  data/car/tex/GeneralGreen.ctes
+  data/car/tex/GeneralGreen.pvr
+  data/car/tex/GeneralRed.ctes
+  data/car/tex/GeneralRed.pvr
+  data/car/tex/GeneralYellow.ctes
+  data/car/tex/GeneralYellow.pvr
+  data/car/tex/HummerBlue.ctes
+  data/car/tex/HummerBlue.pvr
+  data/car/tex/HummerGreen.ctes
+  data/car/tex/HummerGreen.pvr
+  data/car/tex/HummerRed.ctes
+  data/car/tex/HummerRed.pvr
+  data/car/tex/HummerYellow.ctes
+  data/car/tex/HummerYellow.pvr
+  data/car/tex/JeepBlue.ctes
+  data/car/tex/JeepBlue.pvr
+  data/car/tex/JeepGreen.ctes
+  data/car/tex/JeepGreen.pvr
+  data/car/tex/JeepRed.ctes
+  data/car/tex/JeepRed.pvr
+  data/car/tex/JeepYellow.ctes
+  data/car/tex/JeepYellow.pvr
+  data/car/tex/TruckBlue.ctes
+  data/car/tex/TruckBlue.pvr
+  data/car/tex/TruckGreen.ctes
+  data/car/tex/TruckGreen.pvr
+  data/car/tex/TruckRed.ctes
+  data/car/tex/TruckRed.pvr
+  data/car/tex/TruckYellow.ctes
+  data/car/tex/TruckYellow.pvr
+  data/menu/mmap_0.ctes
+  data/menu/mmap_0.etc
+  data/menu/mmap_0.png
+  data/menu/mmap_0.pvr
+  data/menu/mmap_1.pvr
+  data/menu/mmap_10.pvr
+  data/menu/mmap_2.pvr
+  data/menu/mmap_3.pvr
+  data/menu/mmap_4.pvr
+  data/menu/mmap_5.pvr
+  data/menu/mmap_6.ctes
+  data/menu/mmap_6.etc
+  data/menu/mmap_6.png
+  data/menu/mmap_6.pvr
+  data/obj/alphabet.pxc
+  data/obj/menubkg.pxc
+  data/obj/pickups.pxc
+  data/tex/particle_01.plt
+  data/tex/particle_01.pvr
+  data/tex/particle_02.pvr
+  data/tex/particle_add_01.plt
+  data\car\tex\CarShadow.ctes
+  data\car\tex\CarShadow.pvr
+  data\car\tex\Car_Marker.ctes
+  data\car\tex\Car_Marker.pvr
+  data\car\tex\Car_Pickup.ctes
+  data\car\tex\Car_Pickup.pvr
+  data\car\tex\buggyOriginal.ctes
+  data\car\tex\buggyOriginal.pvr
+  data\car\tex\generalOriginal.ctes
+  data\car\tex\generalOriginal.pvr
+  data\car\tex\hummerOriginal.ctes
+  data\car\tex\hummerOriginal.pvr
+  data\car\tex\jeepOriginal.ctes
+  data\car\tex\jeepOriginal.pvr
+  data\car\tex\truckOriginal.ctes
+  data\car\tex\truckOriginal.pvr
+  data\tex\Effect1.ctes
+  data\tex\Effect1.pvr
+  data\tex\Effect10.ctes
+  data\tex\Effect10.pvr
+  data\tex\Effect2.ctes
+  data\tex\Effect2.pvr
+  data\tex\Effect3.ctes
+  data\tex\Effect3.pvr
+  data\tex\Effect4.ctes
+  data\tex\Effect4.pvr
+  data\tex\Effect5.ctes
+  data\tex\Effect5.pvr
+  data\tex\Effect6.ctes
+  data\tex\Effect6.pvr
+  data\tex\Effect7.ctes
+  data\tex\Effect7.pvr
+  data\tex\Effect8.ctes
+  data\tex\Effect8.pvr
+  data\tex\Effect9.ctes
+  data\tex\Effect9.pvr
+  data\trk_tex\Car_Junker.ctes
+  data\trk_tex\Car_Junker.pvr
+  data\trk_tex\Mine_flashing.pvr
+  data\trk_tex\Small_Objects2.ctes
+  data\trk_tex\Small_Objects2.pvr
+  data\trk_tex\Small_objects.ctes
+  data\trk_tex\Small_objects.pvr
+  data\trk_tex\menu_bkg1.ctes
+  data\trk_tex\menu_bkg1.pvr
+  downl_0.rtg
+  downl_1.rtg
+  downl_10.rtg
+  downl_11.rtg
+  downl_12.rtg
+  downl_13.rtg
+  downl_14.rtg
+  downl_15.rtg
+  downl_16.rtg
+  downl_17.rtg
+  downl_18.rtg
+  downl_19.rtg
+  downl_2.rtg
+  downl_20.rtg
+  downl_21.rtg
+  downl_22.rtg
+  downl_23.rtg
+  downl_24.rtg
+  downl_25.rtg
+  downl_26.rtg
+  downl_27.rtg
+  downl_28.rtg
+  downl_29.rtg
+  downl_3.rtg
+  downl_30.rtg
+  downl_31.rtg
+  downl_4.rtg
+  downl_5.rtg
+  downl_6.rtg
+  downl_7.rtg
+  downl_8.rtg
+  downl_9.rtg
+  pak01/menu/mmap_7.pvr
+  pak01/menu/mmap_8.pvr
+  pak01/menu/mmap_9.pvr
+  pak01/menu/topdown_05.plt
+  pak01/menu/topdown_05.pvr
+  pak01\pak01.dat
+  pak02.vfs
+  pak02\pak02.dat
+  pak03.vfs
+  pak03\pak03.dat
+  pak04.vfs
+  pak04\pak04.dat
+  pak05.vfs
+  pak05\pak05.dat
+  pak06.vfs
+  pak06\pak06.dat
+  pak07.vfs
+  pak07\pak07.dat
+  pak08.vfs
+  pak08\pak08.dat
+  pak09.vfs
+  pak09\pak09.dat
+  pak10.vfs
+  pak10\pak10.dat
+  splash/locale/bstrings.ben
+  splash/menu/Topdown_02.ctes
+  splash/menu/Topdown_02.pvr
+  splash/menu/credits_zeebo.txt
+  splash/menu/topdown_01.plt
+  splash/menu/topdown_01.pvr
+  splash/menu/topdown_02.ctes
+  splash/menu/topdown_02.plt
+  splash/menu/topdown_02.pvr
+  splash/menu/topdown_03.plt
+  splash/menu/topdown_03.pvr
+  splash/menu/topdown_04.plt
+  splash/menu/topdown_04.pvr
+  splash/menu/topdown_07.plt
+  splash/menu/zeebo.ctes
+  splash/menu/zeebo.pvr
+  udata\ghost_0.rtg
+  udata\ghost_1.rtg
+  udata\ghost_10.rtg
+  udata\ghost_11.rtg
+  udata\ghost_12.rtg
+  udata\ghost_13.rtg
+  udata\ghost_14.rtg
+  udata\ghost_15.rtg
+  udata\ghost_16.rtg
+  udata\ghost_17.rtg
+  udata\ghost_18.rtg
+  udata\ghost_19.rtg
+  udata\ghost_2.rtg
+  udata\ghost_20.rtg
+  udata\ghost_21.rtg
+  udata\ghost_22.rtg
+  udata\ghost_23.rtg
+  udata\ghost_24.rtg
+  udata\ghost_25.rtg
+  udata\ghost_26.rtg
+  udata\ghost_27.rtg
+  udata\ghost_28.rtg
+  udata\ghost_29.rtg
+  udata\ghost_3.rtg
+  udata\ghost_30.rtg
+  udata\ghost_31.rtg
+  udata\ghost_4.rtg
+  udata\ghost_5.rtg
+  udata\ghost_6.rtg
+  udata\ghost_7.rtg
+  udata\ghost_8.rtg
+  udata\ghost_9.rtg
+  udata\topsave.dat

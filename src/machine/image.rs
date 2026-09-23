@@ -109,9 +109,12 @@ impl<C: CpuBackend> Machine<C> {
         let Some(fed) = self.decoders.get(&decoder).map(|d| d.fed.clone()) else {
             return Ok(0);
         };
-        let Some(image) = decode_png(&fed) else {
-            self.assumptions
-                .insert("um decodificador recebeu dados que não são um PNG");
+        let Some(image) = decode_imagem(&fed) else {
+            // A hipótese nomeia o que o decodificador **não** reconheceu, e não mais "não é um
+            // PNG": ele passou a tentar pelo menos três formatos pela assinatura.
+            self.assumptions.insert(concat!(
+                "um decodificador recebeu dados que não são PNG, BMP nem JPEG"
+            ));
             return Ok(0);
         };
         let addr = self.bitmap_from_decoded(&image)?;

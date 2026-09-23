@@ -1,0 +1,137 @@
+Powerboat Challenge (Brazil) (Es,Pt)
+estado: roda
+tela: 347 cor(es), dominante 0x098b
+classes pedidas:
+  0x01001001  (1x)
+  0x01001003  (1x)
+  0x01001014  (10x)
+  0x01001039  (1x)
+  0x01005502  (2x)
+  0x0100550a  (17x)
+  0x010127d4  (1x)
+  0x0103d8ec  (1x)
+  0x0106c411  (1x)
+chamadas ao sistema de arquivos:
+  Release  (0xf0004004 0x1dac 0xf000400c) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Powerboat-Challenge--Brazil---Es-Pt--49a59a270fa699685710deeeb90c5ea6892c4ed5aeb83883b308818d5d3a1f6b/mod/280238/content/sound/fx_startl.wav (No such file or directory (os error 2))
+  OpenFile "/content/sound/fx_startl.wav"  (0x10013d40 0x1 0xf0003008) -> 0
+  OpenFile "/pbc_data.aez"  (0x10013660 0x1 0xf0003008) -> 805307984
+  Seek  (0x2 0x4613f 0xf000401c) -> 0
+  Read  (0x1048c550 0x49dc 0xf000400c) -> 18908
+  Release  (0xf0004004 0x49dc 0xf000400c) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Powerboat-Challenge--Brazil---Es-Pt--49a59a270fa699685710deeeb90c5ea6892c4ed5aeb83883b308818d5d3a1f6b/mod/280238/content/sound/fx_starts.wav (No such file or directory (os error 2))
+  OpenFile "/content/sound/fx_starts.wav"  (0x10013d40 0x1 0xf0003008) -> 0
+  OpenFile "/pbc_data.aez"  (0x100140a0 0x1 0xf0003008) -> 805308048
+  Seek  (0x2 0x4ab40 0xf000401c) -> 0
+  Read  (0x10490f30 0x39ac 0xf000400c) -> 14764
+  Release  (0xf0004004 0x39ac 0xf000400c) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Powerboat-Challenge--Brazil---Es-Pt--49a59a270fa699685710deeeb90c5ea6892c4ed5aeb83883b308818d5d3a1f6b/mod/280238/content/sound/fx_boost.wav (No such file or directory (os error 2))
+  OpenFile "/content/sound/fx_boost.wav"  (0x10014338 0x1 0xf0003008) -> 0
+  OpenFile "/pbc_data.aez"  (0x10013d50 0x1 0xf0003008) -> 805308112
+  Seek  (0x2 0x23127 0xf000401c) -> 0
+  Read  (0x104948e0 0x643c 0xf000400c) -> 25660
+  Release  (0xf0004004 0x643c 0xf000400c) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Powerboat-Challenge--Brazil---Es-Pt--49a59a270fa699685710deeeb90c5ea6892c4ed5aeb83883b308818d5d3a1f6b/mod/280238/content/sound/fx_boostch.wav (No such file or directory (os error 2))
+  OpenFile "/content/sound/fx_boostch.wav"  (0x10014338 0x1 0xf0003008) -> 0
+  OpenFile "/pbc_data.aez"  (0x100140a0 0x1 0xf0003008) -> 805308176
+  Seek  (0x2 0x29589 0xf000401c) -> 0
+  Read  (0x1049ad20 0x8a84 0xf000400c) -> 35460
+  Release  (0xf0004004 0x8a84 0xf000400c) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Powerboat-Challenge--Brazil---Es-Pt--49a59a270fa699685710deeeb90c5ea6892c4ed5aeb83883b308818d5d3a1f6b/mod/280238/content/sound/ch_ami.wav (No such file or directory (os error 2))
+  OpenFile "/content/sound/ch_ami.wav"  (0x10014338 0x1 0xf0003008) -> 0
+  OpenFile "/pbc_data.aez"  (0x100143d8 0x1 0xf0003008) -> 805308240
+  Seek  (0x2 0xf2a5 0xf000401c) -> 0
+  Read  (0x104a37a8 0x37f4 0xf000400c) -> 14324
+  Release  (0xf0004004 0x37f4 0xf000400c) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Powerboat-Challenge--Brazil---Es-Pt--49a59a270fa699685710deeeb90c5ea6892c4ed5aeb83883b308818d5d3a1f6b/mod/280238/content/sound/ch_kor.wav (No such file or directory (os error 2))
+  OpenFile "/content/sound/ch_kor.wav"  (0x10014728 0x1 0xf0003008) -> 0
+  OpenFile "/pbc_data.aez"  (0x10014348 0x1 0xf0003008) -> 805308304
+  Seek  (0x2 0x185c1 0xf000401c) -> 0
+  Read  (0x104a6fa0 0x465c 0xf000400c) -> 18012
+  Release  (0xf0004004 0x465c 0xf000400c) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Powerboat-Challenge--Brazil---Es-Pt--49a59a270fa699685710deeeb90c5ea6892c4ed5aeb83883b308818d5d3a1f6b/mod/280238/content/sound/ch_irl.wav (No such file or directory (os error 2))
+  OpenFile "/content/sound/ch_irl.wav"  (0x10014728 0x1 0xf0003008) -> 0
+  OpenFile "/pbc_data.aez"  (0x100143d8 0x1 0xf0003008) -> 805308368
+  Seek  (0x2 0x12abb 0xf000401c) -> 0
+  Read  (0x104ab600 0x5ae4 0xf000400c) -> 23268
+  Release  (0xf0004004 0x5ae4 0xf000400c) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Powerboat-Challenge--Brazil---Es-Pt--49a59a270fa699685710deeeb90c5ea6892c4ed5aeb83883b308818d5d3a1f6b/mod/280238/content/sound/ch_swe.wav (No such file or directory (os error 2))
+  OpenFile "/content/sound/ch_swe.wav"  (0x10014728 0x1 0xf0003008) -> 0
+  OpenFile "/pbc_data.aez"  (0x10014748 0x1 0xf0003008) -> 805308432
+  Seek  (0x2 0x1cc3f 0xf000401c) -> 0
+  Read  (0x104b10e8 0x64c4 0xf000400c) -> 25796
+  Release  (0xf0004004 0x64c4 0xf000400c) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Powerboat-Challenge--Brazil---Es-Pt--49a59a270fa699685710deeeb90c5ea6892c4ed5aeb83883b308818d5d3a1f6b/mod/280238/content/sound/fx_missed.wav (No such file or directory (os error 2))
+  OpenFile "/content/sound/fx_missed.wav"  (0x10014738 0x1 0xf0003008) -> 0
+  OpenFile "/pbc_data.aez"  (0x10014a18 0x1 0xf0003008) -> 805308496
+  Seek  (0x2 0x32032 0xf000401c) -> 0
+  Read  (0x104b75b0 0x2a6c 0xf000400c) -> 10860
+  Release  (0xf0004004 0x2a6c 0xf000400c) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Powerboat-Challenge--Brazil---Es-Pt--49a59a270fa699685710deeeb90c5ea6892c4ed5aeb83883b308818d5d3a1f6b/mod/280238/content/sound/fx_mount.wav (No such file or directory (os error 2))
+  OpenFile "/content/sound/fx_mount.wav"  (0x10014a18 0x1 0xf0003008) -> 0
+  OpenFile "/pbc_data.aez"  (0x10014748 0x1 0xf0003008) -> 805308560
+  Seek  (0x2 0x34ac2 0xf000401c) -> 0
+  Release  (0xf0004004 0x40dc 0xf001e00c) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Powerboat-Challenge--Brazil---Es-Pt--49a59a270fa699685710deeeb90c5ea6892c4ed5aeb83883b308818d5d3a1f6b/mod/280238/content/sound/fx_powdown.wav (No such file or directory (os error 2))
+  OpenFile "/content/sound/fx_powdown.wav"  (0x10014a18 0x1 0xf0003008) -> 0
+  OpenFile "/pbc_data.aez"  (0x10014b90 0x1 0xf0003008) -> 805308624
+  Seek  (0x2 0x3e47e 0xf000401c) -> 0
+  Read  (0x104be100 0x7c9c 0xf000400c) -> 31900
+  Release  (0xf0004004 0x7c9c 0xf000400c) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Powerboat-Challenge--Brazil---Es-Pt--49a59a270fa699685710deeeb90c5ea6892c4ed5aeb83883b308818d5d3a1f6b/mod/280238/content/textures/tex2d_main_menu.aei (No such file or directory (os error 2))
+  OpenFile "/content/textures/tex2d_main_menu.aei"  (0x100157d0 0x1 0xf0003008) -> 0
+  OpenFile "/pbc_data.aez"  (0x100157f8 0x1 0xf0003008) -> 805308688
+  Seek  (0x2 0x94a2f 0xf000401c) -> 0
+  Release  (0xf0004004 0x100000 0xf001e00c) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Powerboat-Challenge--Brazil---Es-Pt--49a59a270fa699685710deeeb90c5ea6892c4ed5aeb83883b308818d5d3a1f6b/mod/280238/content/textures/tex2d_main_menu.aei (No such file or directory (os error 2))
+  OpenFile "/content/textures/tex2d_main_menu.aei"  (0x100157c0 0x1 0xf0003008) -> 0
+  OpenFile "/pbc_data.aez"  (0x100157e8 0x1 0xf0003008) -> 805308688
+  Seek  (0x2 0x94a2f 0xf000401c) -> 0
+  Release  (0xf0004004 0x3 0xf001e00c) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Powerboat-Challenge--Brazil---Es-Pt--49a59a270fa699685710deeeb90c5ea6892c4ed5aeb83883b308818d5d3a1f6b/mod/280238/content/textures/tex2d_pre_game.aei (No such file or directory (os error 2))
+  OpenFile "/content/textures/tex2d_pre_game.aei"  (0x10015810 0x1 0xf0003008) -> 0
+  OpenFile "/pbc_data.aez"  (0x104c78e8 0x1 0xf0003008) -> 805308688
+  Seek  (0x2 0x105815 0xf000401c) -> 0
+  Release  (0xf0004004 0x40000 0xf001e00c) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Powerboat-Challenge--Brazil---Es-Pt--49a59a270fa699685710deeeb90c5ea6892c4ed5aeb83883b308818d5d3a1f6b/mod/280238/content/textures/tex2d_controls.aei (No such file or directory (os error 2))
+  OpenFile "/content/textures/tex2d_controls.aei"  (0x104c7b10 0x1 0xf0003008) -> 0
+  OpenFile "/pbc_data.aez"  (0x104c7b38 0x1 0xf0003008) -> 805308688
+  Seek  (0x2 0x184488 0xf000401c) -> 0
+  Release  (0xf0004004 0x80000 0xf001e00c) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Powerboat-Challenge--Brazil---Es-Pt--49a59a270fa699685710deeeb90c5ea6892c4ed5aeb83883b308818d5d3a1f6b/mod/280238/content/textures/tex2d_in_game.aei (No such file or directory (os error 2))
+  OpenFile "/content/textures/tex2d_in_game.aei"  (0x104c7d50 0x1 0xf0003008) -> 0
+  OpenFile "/pbc_data.aez"  (0x104c7d78 0x1 0xf0003008) -> 805308688
+  Seek  (0x2 0x19a189 0xf000401c) -> 0
+  Release  (0xf0004004 0x100000 0xf001e00c) -> 0
+  open falhou: /home/rafaelfrequiao/.config/zeebx/cache/Powerboat-Challenge--Brazil---Es-Pt--49a59a270fa699685710deeeb90c5ea6892c4ed5aeb83883b308818d5d3a1f6b/mod/280238/content/textures/tex2d_main_menu.aei (No such file or directory (os error 2))
+  OpenFile "/content/textures/tex2d_main_menu.aei"  (0x104c8f38 0x1 0xf0003008) -> 0
+  OpenFile "/pbc_data.aez"  (0x104c8e68 0x1 0xf0003008) -> 805308688
+  Seek  (0x2 0x94a2f 0xf000401c) -> 0
+  Release  (0xf0004004 0x640 0xf001e00c) -> 0
+arquivos não encontrados:
+  /config.cfg
+  /content/sound/ch_ami.wav
+  /content/sound/ch_irl.wav
+  /content/sound/ch_kor.wav
+  /content/sound/ch_swe.wav
+  /content/sound/fx_boost.wav
+  /content/sound/fx_boostch.wav
+  /content/sound/fx_missed.wav
+  /content/sound/fx_mount.wav
+  /content/sound/fx_perfect1.wav
+  /content/sound/fx_perfect2.wav
+  /content/sound/fx_perfect3.wav
+  /content/sound/fx_powdown.wav
+  /content/sound/fx_startl.wav
+  /content/sound/fx_starts.wav
+  /content/sound/pbc_fin1.wav
+  /content/sound/pbc_fin2.wav
+  /content/sound/pbc_fin3.wav
+  /content/textures/tex2d_controls.aei
+  /content/textures/tex2d_in_game.aei
+  /content/textures/tex2d_main_menu.aei
+  /content/textures/tex2d_pre_game.aei
+  /data.txt
+  /gb.lang
+APIs atendidas por hipótese:
+  uma classe do firmware é atendida por um objeto que responde sucesso a tudo

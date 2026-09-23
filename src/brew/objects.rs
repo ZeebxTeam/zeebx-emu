@@ -38,6 +38,11 @@ pub struct ObjectStore {
 }
 
 impl ObjectStore {
+    /// O primeiro endereço nunca usado. Mesma função do [`crate::brew::heap::Heap::proximo`].
+    pub fn proximo(&self) -> u32 {
+        self.next
+    }
+
     pub fn new(base: u32, size: usize) -> Self {
         Self {
             end: base + size as u32,
@@ -137,9 +142,136 @@ impl ObjectStore {
     }
 }
 
+
+impl crate::save_state::Guardavel for ObjectStore {
+    /// Grava o livro inteiro: o fim da região, o primeiro endereço nunca usado, os endereços
+    /// soltos e, por ponteiro, a interface e a contagem de referências de cada objeto vivo.
+    ///
+    /// **Sem `kinds` o save state carrega objetos que não sabem o que são**: o ponteiro volta
+    /// apontando para a vtable certa na memória, e o despacho do emulador não sabe qual interface
+    /// atender. A codificação da interface é o discriminante da enumeração, e há teste que cobra a
+    /// volta das 62.
+    fn grava(&self, destino: &mut crate::save_state::Secoes) {
+        destino.poe_u32("objects.end", self.end);
+        destino.poe_u32("objects.next", self.next);
+        destino.poe_u32s("objects.livres", self.livres.iter().copied());
+        destino.poe_mapa(
+            "objects.kinds",
+            self.kinds.iter().map(|(a, i)| (*a, crate::brew::aee::codigo(*i))),
+        );
+        destino.poe_mapa("objects.refs", self.refs.iter().map(|(a, r)| (*a, *r)));
+    }
+
+    /// Restaura, e recusa antes de aplicar: o fim da região tem de ser o desta máquina, todo
+    /// endereço vivo tem de saber a interface, e um endereço não pode estar livre e vivo.
+    fn restaura(
+        &mut self,
+        origem: &crate::save_state::Leitor<'_>,
+    ) -> Result<(), crate::save_state::Erro> {
+        use crate::save_state::Erro;
+        let fim = origem.u32("objects.end")?;
+        if fim != self.end {
+            return Err(Erro::Secao {
+                nome: "objects".to_string(),
+                motivo: format!(
+                    "o estado é de uma região {fim:#010x}.. e esta máquina tem {:#010x}..",
+                    self.end
+                ),
+            });
+        }
+        let next = origem.u32("objects.next")?;
+        let livres = origem.u32s("objects.livres")?;
+        let kinds_crus = origem.pares("objects.kinds")?;
+        let refs = origem.pares("objects.refs")?;
+
+        let mut kinds = std::collections::HashMap::new();
+        for (endereco, codigo) in kinds_crus {
+            let iface = crate::brew::aee::de_codigo(codigo).ok_or_else(|| Erro::Secao {
+                nome: "objects.kinds".to_string(),
+                motivo: format!("o objeto {endereco:#010x} diz ser a interface {codigo}, que este motor não conhece"),
+            })?;
+            kinds.insert(endereco, iface);
+        }
+        if let Some((endereco, _)) = kinds
+            .keys()
+            .find(|a| livres.contains(a))
+            .map(|a| (*a, 0))
+        {
+            return Err(Erro::Secao {
+                nome: "objects".to_string(),
+                motivo: format!("o objeto {endereco:#010x} aparece solto e vivo"),
+            });
+        }
+
+        self.next = next;
+        self.livres = livres;
+        self.kinds = kinds;
+        self.refs = refs.into_iter().collect();
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **O livro dos objetos volta inteiro**: o próximo endereço, os soltos, a interface de cada
+    /// objeto vivo e a contagem de referências.
+    ///
+    /// O que este teste guarda é a diferença entre "o ponteiro voltou" e "o ponteiro voltou
+    /// **sabendo o que é**". Sem a interface, o despacho do emulador não sabe qual vtable atender,
+    /// e o jogo quebra no primeiro método que chamar.
+    #[test]
+    fn o_livro_dos_objetos_vai_e_volta() {
+        use crate::save_state::{Guardavel, Leitor, Secoes};
+
+        let mut antes = ObjectStore::new(0x4000_0000, 4096);
+        let a = antes.create(Interface::Shell).expect("primeiro objeto");
+        let b = antes.create(Interface::Display).expect("segundo objeto");
+        // Um terceiro que **morre**: assim o estado tem uma entrada em `livres` para conferir,
+        // e dois objetos vivos de interfaces diferentes.
+        let morto = antes.create(Interface::Bitmap).expect("terceiro objeto");
+        let _ = antes.add_ref(a);
+        antes.release(morto);
+
+        let mut secoes = Secoes::nova();
+        antes.grava(&mut secoes);
+        let arquivo = secoes.fecha();
+        let leitor = Leitor::abre(&arquivo).expect("abriu");
+
+        let mut depois = ObjectStore::new(0x4000_0000, 4096);
+        depois.restaura(&leitor).expect("restaurou");
+
+        assert_eq!(
+            depois.kind_of(a),
+            Some(Interface::Shell),
+            "a interface de {a:#x} não voltou"
+        );
+        assert_eq!(depois.kind_of(b), Some(Interface::Display));
+        assert_eq!(depois.kind_of(morto), None, "o objeto liberado não devia voltar vivo");
+        assert_eq!(depois.contagem(a), antes.contagem(a), "a conta de {a:#x}");
+        assert_eq!(depois.contagem(b), antes.contagem(b), "a conta de {b:#x}");
+        // E o próximo objeto sai onde sairia antes: é o que faz o jogo continuar de onde parou.
+        assert_eq!(depois.create(Interface::Bitmap), antes.create(Interface::Bitmap));
+    }
+
+    #[test]
+    fn um_livro_de_outra_maquina_e_recusado() {
+        use crate::save_state::{Guardavel, Leitor, Secoes};
+
+        let antes = ObjectStore::new(0x4000_0000, 4096);
+        let mut secoes = Secoes::nova();
+        antes.grava(&mut secoes);
+        let arquivo = secoes.fecha();
+        let leitor = Leitor::abre(&arquivo).expect("abriu");
+
+        let mut outra = ObjectStore::new(0x4000_0000, 8192);
+        assert!(matches!(
+            outra.restaura(&leitor),
+            Err(crate::save_state::Erro::Secao { .. })
+        ));
+    }
+
 
     #[test]
     fn addref_num_objeto_solto_nao_duplica_o_endereco() {

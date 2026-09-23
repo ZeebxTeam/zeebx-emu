@@ -467,6 +467,86 @@ pub const EGL: &[&str] = &[
 /// Mesma convenção do [`EGL`]: `this` no primeiro argumento, código de erro no retorno e o
 /// resultado por ponteiro de saída. Um objeto `IGLES11` serve também como `IGLES10`, porque a
 /// segunda tabela apenas estende a primeira.
+/// `IGLES11ExtPak`: as extensões OES do pacote. Ver `AEEGLES11ExtPak.h`.
+///
+/// Três famílias: a geração de coordenadas de textura (`TexGen`), o blending separado por equação
+/// e os objetos de framebuffer e renderbuffer. **É a última porta entre o Prey Evil e o desenho** —
+/// as outras cinco já foram entregues, cada uma medida.
+pub const GLES11_EXT_PAK: &[&str] = &[
+    "AddRef", "Release", "QueryInterface",
+    "GetTexGenfv", "GetTexGeniv", "GetTexGenxv",
+    "TexGenf", "TexGeni", "TexGenx", "TexGenfv", "TexGeniv", "TexGenxv",
+    "BlendEquation", "BlendFuncSeparate", "BlendEquationSeparate",
+    "BindFramebufferOES", "BindRenderbufferOES", "CheckFramebufferStatusOES",
+    "DeleteFramebuffersOES", "DeleteRenderbuffersOES",
+    "FramebufferRenderbufferOES", "FramebufferTexture2DOES",
+    "GenerateMipmapOES", "GenFramebuffersOES", "GenRenderbuffersOES",
+    "GetFramebufferAttachmentParameterivOES", "GetRenderbufferParameterivOES",
+    "IsFramebufferOES", "IsRenderbufferOES", "RenderbufferStorageOES",
+];
+
+/// `IGLES11Ext`: as extensões OES do OpenGL ES 1.1, na ordem do `AEEGLES11Ext.h`.
+///
+/// **O Prey Evil pede esta interface por `CreateInstance` e para de desenhar sem ela**: o
+/// levantamento das 62 ROMs mostrou onze métodos de GL, nenhum desenho e tela preta. Os
+/// `DrawTex*` são os que importam para um jogo que monta o quadro numa textura.
+/// `IGLES10Ext`: uma extensão do OpenGL ES 1.0. Ver `AEEGLES10Ext.h`.
+///
+/// Um método só, e é o que o Prey Evil usa para saber que a extensão existe.
+pub const GLES10_EXT: &[&str] = &["AddRef", "Release", "QueryInterface", "QueryMatrixxOES"];
+
+/// `IJoystick`: o joystick USB, na ordem do `AEEJoystick.h`.
+///
+/// **É o que o gerenciador de joystick da Qualcomm pede** (`gamepadmgr.cpp`, que o Prey Evil usa):
+/// ele cria a interface, e sem ela guarda nulo e cai no primeiro `Read`. Seis slots.
+pub const JOYSTICK: &[&str] = &[
+    "AddRef",
+    "Release",
+    "QueryInterface",
+    "SetParm",
+    "GetParm",
+    "Read",
+];
+
+/// `IEGLGetPowerLevel`: o nível de bateria. Ver `AEEEGLGetPowerLevel.h`.
+pub const EGL_GET_POWER_LEVEL: &[&str] =
+    &["AddRef", "Release", "QueryInterface", "GetPowerLevel"];
+
+/// `IEGLGetColorBuffer`: o buffer de cor do EGL. Ver `AEEEGLGetColorBuffer.h`.
+///
+/// É o par por interface da função `eglGetColorBufferQUALCOMM`, e as duas compartilham o cálculo.
+pub const EGL_GET_COLOR_BUFFER: &[&str] =
+    &["AddRef", "Release", "QueryInterface", "GetColorBuffer"];
+
+/// `IEGLOESSwapInterval`: o ritmo de quadro pedido pelo jogo. Ver `AEEEGLOESSwapInterval.h`.
+///
+/// Por **função** o motor já responde `SwapIntervalOES`; aqui é a mesma resposta, pela interface.
+pub const EGL_OES_SWAP_INTERVAL: &[&str] = &[
+    "AddRef",
+    "Release",
+    "QueryInterface",
+    "SwapInterval",
+    "GetSwapInterval",
+];
+
+pub const GLES11_EXT: &[&str] = &[
+    "AddRef",
+    "Release",
+    "QueryInterface",
+    "CurrentPaletteMatrixOES",
+    "LoadPaletteFromModelViewMatrixOES",
+    "MatrixIndexPointerOES",
+    "WeightPointerOES",
+    "DrawTexsOES",
+    "DrawTexiOES",
+    "DrawTexxOES",
+    "DrawTexsvOES",
+    "DrawTexivOES",
+    "DrawTexxvOES",
+    "DrawTexfOES",
+    "DrawTexfvOES",
+];
+
 pub const GLES: &[&str] = &[
     "AddRef",
     "Release",
@@ -1100,7 +1180,12 @@ pub const SYSTEM_CTL: &[&str] = &[
     "QueryInterface",
     "DefinirModo",
     "slot4",
-    "slot5",
+    // **O slot 5 tem nome, e o nome vem do firmware.** Desmontado em `1.1.2_APPS.bin` (Thumb,
+    // `0x10e9fe92`): ele recebe `(this, modo, opção)` — a opção com `-1` valendo "a do aparelho",
+    // lida de `0x114287ec` — e **termina chamando o corpo do `DefinirModo`** (`bl 0x10e9fdb6`, o
+    // slot 3). Medido: é a chamada que a Z-Wheel faz no **confirmar** (`0xe064`), e sem ela a
+    // varredura parava em `Unimplemented` na primeira tecla.
+    "DefinirModoComOpcao",
     "Consultar",
 ];
 
@@ -1156,6 +1241,28 @@ pub const CLASSE_28E3C: &[&str] = &[
 /// O slot 4 é o que a `0x7bfc8` chama para obter uma fonte utilizável a partir do tipo. Ver
 /// [`crate::brew::aee::Interface::Typeface`].
 pub const TYPEFACE: &[&str] = &["AddRef", "Release", "slot2", "slot3", "CriarFonte"];
+
+/// Métodos do `IFont` — a fonte de bitmap do sistema.
+///
+/// A ordem é a do código de referência que já implementa esta interface
+/// (`zeebo-emulator/.../zeemu/brew/BrewFont.cpp`) e a dos seis `#define` do `AEEFont.h`:
+///
+/// ```text
+/// AddRef(0)  Release(1)  QueryInterface(2)  DrawText(3)  GetInfo(4)  MeasureText(5)
+/// ```
+///
+/// **Isto não é o `ITypeface`**, e a diferença é o motivo desta interface existir: o `ITypeface`
+/// cria fontes a partir de um TTF, e o `IFont` **já é** a fonte desenhável. O Double Dragon, o
+/// Resident Evil 4 e os ports da Data East pedem as classes de fonte do sistema; respondê-las como
+/// desconhecidas fazia o jogo cair na tela de aviso "Memory is insufficient".
+pub const FONT: &[&str] = &[
+    "AddRef",
+    "Release",
+    "QueryInterface",
+    "DrawText",
+    "GetInfo",
+    "MeasureText",
+];
 
 /// Métodos da lista genérica da Z-Wheel (`0x01028e35`).
 ///

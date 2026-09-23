@@ -209,7 +209,8 @@ impl<C: CpuBackend> Machine<C> {
             }
             "memset" => {
                 if a2 > 0 {
-                    self.cpu.write_mem(a0, &vec![a1 as u8; a2 as usize])?;
+                    // Em blocos: ver [`CpuBackend::fill_mem`] para o motivo, que é medido.
+                    self.cpu.fill_mem(a0, a1 as u8, a2)?;
                     self.cpu.marca_sujo(a0, a2);
                 }
                 a0

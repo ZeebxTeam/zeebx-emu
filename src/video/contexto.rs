@@ -18,7 +18,7 @@
 //! de tela responde que não existe, e o caminho sem janela usa o rasterizador de software. Com
 //! janela nada muda: o backend recebe o contexto do `eframe`.
 
-use eframe::glow;
+use glow;
 #[cfg(not(target_os = "macos"))]
 use glutin::config::{ConfigSurfaceTypes, ConfigTemplateBuilder};
 #[cfg(not(target_os = "macos"))]
@@ -80,7 +80,7 @@ impl Contexto {
             .next()
             .ok_or("nenhuma configuração com profundidade de 24 e stencil de 8")?;
 
-        // O shader é escrito em GLSL 3.30, então o pedido é por OpenGL 3.3 core. O GLES 3.0 é a
+        // O shader é escrito em GLSL 3.30, então o pedido é por OpenGL 3.3 core. O GLES 3.x é a
         // queda para as placas que só oferecem o perfil embarcado — o mesmo par de tentativas que
         // o pintor da interface já faz.
         let contexto = [
@@ -92,7 +92,7 @@ impl Contexto {
             let attrs = ContextAttributesBuilder::new().with_context_api(api).build(None);
             unsafe { display.create_context(&config, &attrs) }.ok()
         })
-        .ok_or("nem OpenGL 3.3 nem GLES 3.0 foram aceitos")?;
+        .ok_or("nem OpenGL 3.3 nem GLES 3.x foram aceitos")?;
 
         let um = NonZeroU32::new(1).expect("1 não é zero");
         let attrs = SurfaceAttributesBuilder::<PbufferSurface>::new().build(um, um);
@@ -127,13 +127,39 @@ mod tests {
     fn o_contexto_fora_de_tela_abre_ou_diz_por_que_nao() {
         match Contexto::novo() {
             Ok(contexto) => {
-                use eframe::glow::HasContext;
+                use glow::HasContext;
                 let versao = unsafe { contexto.gl.get_parameter_string(glow::VERSION) };
                 let placa = unsafe { contexto.gl.get_parameter_string(glow::RENDERER) };
                 println!("contexto aberto: {versao} — {placa}");
                 assert!(!versao.is_empty(), "contexto sem versão de GL");
             }
             Err(motivo) => println!("sem contexto nesta máquina: {motivo}"),
+        }
+    }
+}
+
+
+#[cfg(test)]
+mod tests_contexto {
+    use super::*;
+
+    /// **O contexto de placa abre sem janela, e é a primeira coisa a saber.**
+    ///
+    /// O render em hardware só é verificável se o caminho fora de tela funcionar: com janela, quem
+    /// mede é a mão de quem olha. Se o EGL não estiver alcançável — um terminal sem placa, um
+    /// contêiner —, o teste diz isso e passa: é o caso normal previsto no módulo, e é para isso
+    /// que o emulador cai no rasterizador de software.
+    #[test]
+    fn o_contexto_fora_de_tela_abre_ou_diz_por_que_nao() {
+        match Contexto::novo() {
+            Ok(contexto) => {
+                let versao = unsafe {
+                    use glow::HasContext;
+                    contexto.gl.get_parameter_string(glow::VERSION)
+                };
+                eprintln!("placa disponível: {versao}");
+            }
+            Err(porque) => eprintln!("sem placa fora de tela: {porque}"),
         }
     }
 }
