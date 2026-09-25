@@ -1,0 +1,294 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A1000000000000000000000C /* ZeebxApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000001 /* ZeebxApp.swift */; };
+		A1000000000000000000000D /* BibliotecaView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000002 /* BibliotecaView.swift */; };
+		A1000000000000000000000E /* JogoView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000003 /* JogoView.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		A10000000000000000000001 /* ZeebxApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZeebxApp.swift; sourceTree = "<group>"; };
+		A10000000000000000000002 /* BibliotecaView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BibliotecaView.swift; sourceTree = "<group>"; };
+		A10000000000000000000003 /* JogoView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JogoView.swift; sourceTree = "<group>"; };
+		A10000000000000000000004 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		A10000000000000000000005 /* Zeebx-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "Zeebx-Bridging-Header.h"; sourceTree = "<group>"; };
+		A10000000000000000000009 /* Zeebx.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Zeebx.app; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		A10000000000000000000010 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		A10000000000000000000006 /* Zeebx */ = {
+			isa = PBXGroup;
+			children = (
+				A10000000000000000000001 /* ZeebxApp.swift */,
+				A10000000000000000000002 /* BibliotecaView.swift */,
+				A10000000000000000000003 /* JogoView.swift */,
+				A10000000000000000000005 /* Zeebx-Bridging-Header.h */,
+				A10000000000000000000004 /* Info.plist */,
+			);
+			path = Zeebx;
+			sourceTree = "<group>";
+		};
+		A10000000000000000000007 = {
+			isa = PBXGroup;
+			children = (
+				A10000000000000000000006 /* Zeebx */,
+				A10000000000000000000008 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		A10000000000000000000008 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				A10000000000000000000009 /* Zeebx.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		A1000000000000000000000A /* Zeebx */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A10000000000000000000016 /* Build configuration list for PBXNativeTarget "Zeebx" */;
+			buildPhases = (
+				A10000000000000000000011 /* Compila o núcleo */,
+				A1000000000000000000000F /* Sources */,
+				A10000000000000000000010 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = Zeebx;
+			productName = Zeebx;
+			productReference = A10000000000000000000009 /* Zeebx.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A1000000000000000000000B /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastUpgradeCheck = 2700;
+				TargetAttributes = {
+					A1000000000000000000000A = {
+						CreatedOnToolsVersion = 16.0;
+					};
+				};
+			};
+			buildConfigurationList = A10000000000000000000017 /* Build configuration list for PBXProject "Zeebx" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = "pt-BR";
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				"pt-BR",
+				Base,
+			);
+			mainGroup = A10000000000000000000007;
+			productRefGroup = A10000000000000000000008 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				A1000000000000000000000A /* Zeebx */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		A10000000000000000000011 /* Compila o núcleo */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+			);
+			name = "Compila o núcleo";
+			outputPaths = (
+				"$(BUILT_PRODUCTS_DIR)/libzeebx_ios.a",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/bash;
+			shellScript = "\"$SRCROOT/../compilar.sh\" --na-fase\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		A1000000000000000000000F /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A1000000000000000000000C /* ZeebxApp.swift in Sources */,
+				A1000000000000000000000D /* BibliotecaView.swift in Sources */,
+				A1000000000000000000000E /* JogoView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		A10000000000000000000012 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ARCHS = arm64;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
+				GENERATE_INFOPLIST_FILE = NO;
+				HEADER_SEARCH_PATHS = "$(SRCROOT)/../include";
+				INFOPLIST_FILE = Zeebx/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				LIBRARY_SEARCH_PATHS = "$(BUILT_PRODUCTS_DIR)";
+				MARKETING_VERSION = 0.3.0;
+				OTHER_LDFLAGS = (
+					"-lzeebx_ios",
+					"-framework",
+					AudioToolbox,
+					"-framework",
+					CoreAudio,
+					"-framework",
+					CoreFoundation,
+					"-framework",
+					Security,
+					"-framework",
+					AVFoundation,
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = io.github.zeebxteam.zeebx;
+				PRODUCT_NAME = Zeebx;
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "Zeebx/Zeebx-Bridging-Header.h";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		A10000000000000000000013 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ARCHS = arm64;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
+				GENERATE_INFOPLIST_FILE = NO;
+				HEADER_SEARCH_PATHS = "$(SRCROOT)/../include";
+				INFOPLIST_FILE = Zeebx/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				LIBRARY_SEARCH_PATHS = "$(BUILT_PRODUCTS_DIR)";
+				MARKETING_VERSION = 0.3.0;
+				OTHER_LDFLAGS = (
+					"-lzeebx_ios",
+					"-framework",
+					AudioToolbox,
+					"-framework",
+					CoreAudio,
+					"-framework",
+					CoreFoundation,
+					"-framework",
+					Security,
+					"-framework",
+					AVFoundation,
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = io.github.zeebxteam.zeebx;
+				PRODUCT_NAME = Zeebx;
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "Zeebx/Zeebx-Bridging-Header.h";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		A10000000000000000000014 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_TESTABILITY = YES;
+				GCC_DYNAMIC_NO_PIC = NO;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		A10000000000000000000015 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		A10000000000000000000016 /* Build configuration list for PBXNativeTarget "Zeebx" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A10000000000000000000012 /* Debug */,
+				A10000000000000000000013 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A10000000000000000000017 /* Build configuration list for PBXProject "Zeebx" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A10000000000000000000014 /* Debug */,
+				A10000000000000000000015 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = A1000000000000000000000B /* Project object */;
+}

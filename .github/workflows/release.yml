@@ -9,6 +9,7 @@
 #   zeebx-standalone-linux-x86_64.deb        o emulador com a interface, para instalar
 #   zeebx-headless-linux-x86_64.zip          o binário sem interface, para quem tem frontend próprio
 #   zeebx-android-arm64-v8a.apk              o aplicativo de Android
+#   zeebx-ios-simulator.zip                  o aplicativo de iOS, para o simulador
 #   zeebx_libretro-linux-aarch64.zip         o core Libretro, com o `.info`, para RetroArch
 #   zeebx_libretro-wasm.zip                  o mesmo core em WebAssembly, para o ROMBundler
 #
@@ -292,6 +293,39 @@ jobs:
           path: frontends/android/apk/app/build/outputs/apk/debug/zeebx-android-${{ matrix.abi }}.apk
           if-no-files-found: error
 
+  ios:
+    name: ios
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ios
+
+      # O script é o mesmo da máquina. `--app` monta o simulador; `--app-aparelho` fecha o link
+      # do aparelho sem certificado — instalar no telefone pede DEVELOPMENT_TEAM, que não mora
+      # no repositório.
+      - name: Simulador
+        run: frontends/ios/compilar.sh --app
+
+      - name: Aparelho
+        run: frontends/ios/compilar.sh --app-aparelho
+
+      - name: Empacota o simulador
+        run: ditto -c -k --keepParent frontends/ios/build/iphonesimulator/Zeebx.app zeebx-ios-simulator.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zeebx-ios-simulator
+          path: zeebx-ios-simulator.zip
+          if-no-files-found: error
+
   core:
     name: core-${{ matrix.nome }}
     runs-on: ${{ matrix.sistema }}
@@ -445,7 +479,7 @@ jobs:
           if-no-files-found: error
 
   release:
-    needs: [standalone, headless, android, core, wasm]
+    needs: [standalone, headless, android, ios, core, wasm]
     # Sai com o que deu certo: um sistema que falhou não segura os outros.
     #
     # A tag vem de dois lugares: do `push` de uma tag, e aí é o `github.ref_name`; ou do
