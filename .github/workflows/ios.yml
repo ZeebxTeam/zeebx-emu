@@ -44,11 +44,17 @@ jobs:
           xcrun simctl install "$dispositivo" frontends/ios/build/iphonesimulator/Zeebx.app
           xcrun simctl launch "$dispositivo" io.github.zeebxteam.zeebx
 
-      - name: Empacota o simulador
-        run: ditto -c -k --keepParent frontends/ios/build/iphonesimulator/Zeebx.app zeebx-ios-simulator.zip
+      - name: Empacota
+        run: frontends/ios/compilar.sh --pacote
 
       - uses: actions/upload-artifact@v4
         with:
           name: zeebx-ios-simulator
-          path: zeebx-ios-simulator.zip
+          path: frontends/ios/build/zeebx-ios-simulator.zip
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zeebx-ios
+          path: frontends/ios/build/zeebx-ios.ipa
           if-no-files-found: error

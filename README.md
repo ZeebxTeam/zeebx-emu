@@ -113,7 +113,8 @@ São dois formatos em cada um dos quatro sistemas, e o nome do arquivo diz qual 
 | `zeebx-standalone-macos-arm64.dmg`, `-x86_64.dmg` | idem, nos dois Macs |
 | `zeebx-headless-<sistema>.zip` | o binário sem interface, com o `config.ini` e o leia-me |
 | `zeebx-android-arm64-v8a.apk` | o aplicativo de Android |
-| `zeebx-ios-simulator.zip` | o aplicativo de iOS, para o simulador |
+| `zeebx-ios-simulator.zip` | o simulador e o leia-me |
+| `zeebx-ios.ipa` | o aplicativo de iPhone, para o AltStore clássico |
 
 No macOS, a primeira abertura pode dizer que o `Zeebx.app` está damaged. O aplicativo não está:
 o Gatekeeper marca o que veio da internet, e esta build ainda não é assinada pela Apple. A imagem
@@ -133,9 +134,11 @@ O iOS sai de um Mac com Xcode. O núcleo vira uma biblioteca estática e o Xcode
 ```
 
 O simulador é arm64. No aparelho o mesmo script com `--app-aparelho` pede um time de
-desenvolvimento (`DEVELOPMENT_TEAM`) para instalar; sem ele, o link ainda fecha, mas o `.app`
-não é assinado. O iOS não deixa o processo mapear código executável, então nesse alvo o núcleo
-é o interpretador, não o Dynarmic. Ver [`frontends/ios/LEIAME.md`](frontends/ios/LEIAME.md).
+desenvolvimento (`DEVELOPMENT_TEAM`) para instalar direto; sem ele, o `.app` sai sem assinatura
+e o `--pacote` o entrega como `zeebx-ios.ipa`, para o AltStore clássico assinar com um Apple ID. O
+zip traz também o `LEIA-ME.txt`, com a instalação e a pasta dos jogos. O iOS não deixa o
+processo mapear código executável, então nesse alvo o núcleo é o interpretador, não o Dynarmic.
+Ver [`frontends/ios/LEIAME.md`](frontends/ios/LEIAME.md).
 
 ## Usando
 

@@ -9,7 +9,8 @@
 #   zeebx-standalone-linux-x86_64.deb        o emulador com a interface, para instalar
 #   zeebx-headless-linux-x86_64.zip          o binário sem interface, para quem tem frontend próprio
 #   zeebx-android-arm64-v8a.apk              o aplicativo de Android
-#   zeebx-ios-simulator.zip                  o aplicativo de iOS, para o simulador
+#   zeebx-ios-simulator.zip                  o aplicativo de iOS, para o simulador, com o leia-me
+#   zeebx-ios.ipa                            o mesmo aplicativo, para o AltStore clássico
 #   zeebx_libretro-linux-aarch64.zip         o core Libretro, com o `.info`, para RetroArch
 #   zeebx_libretro-wasm.zip                  o mesmo core em WebAssembly, para o ROMBundler
 #
@@ -317,13 +318,19 @@ jobs:
       - name: Aparelho
         run: frontends/ios/compilar.sh --app-aparelho
 
-      - name: Empacota o simulador
-        run: ditto -c -k --keepParent frontends/ios/build/iphonesimulator/Zeebx.app zeebx-ios-simulator.zip
+      - name: Empacota
+        run: frontends/ios/compilar.sh --pacote
 
       - uses: actions/upload-artifact@v4
         with:
           name: zeebx-ios-simulator
-          path: zeebx-ios-simulator.zip
+          path: frontends/ios/build/zeebx-ios-simulator.zip
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zeebx-ios
+          path: frontends/ios/build/zeebx-ios.ipa
           if-no-files-found: error
 
   core:

@@ -91,6 +91,43 @@ xcode() {
   ls -lh "$AQUI/build/${sdk}/Zeebx.app"
 }
 
+# O zip que o CI publica. Não é o .app nu: quem baixa precisa do leia-me, e o
+# .app do aparelho vai como IPA para o AltStore reassinar. Um .app na raiz do
+# zip não cabe ao lado desses dois.
+pacote() {
+  local sim="$AQUI/build/iphonesimulator/Zeebx.app"
+  local aparelho="$AQUI/build/iphoneos/Zeebx.app"
+  local saida="${1:-$AQUI/build/zeebx-ios-simulator.zip}"
+  local stage ipa_stage ipa
+  if [ ! -d "$sim" ] || [ ! -d "$aparelho" ]; then
+    echo "faltam os dois .app. Rode --app e --app-aparelho antes." >&2
+    exit 1
+  fi
+  mkdir -p "$(dirname "$saida")"
+  ipa="$(dirname "$saida")/zeebx-ios.ipa"
+  stage="$(mktemp -d)"
+  mkdir -p "$stage/simulador"
+  ditto --norsrc "$sim" "$stage/simulador/Zeebx.app"
+  # O IPA é um zip cuja raiz é Payload/, não o .app. O --keepParent é o que
+  # põe essa pasta; sem ela o AltStore não reconhece o pacote.
+  ipa_stage="$(mktemp -d)"
+  mkdir -p "$ipa_stage/Payload"
+  ditto --norsrc "$aparelho" "$ipa_stage/Payload/Zeebx.app"
+  xattr -cr "$ipa_stage" "$stage/simulador"
+  # O zip se chama simulador. O AltStore não abre o .app de dentro dele: instala
+  # este IPA, que é o binário de aparelho. Ele sai também ao lado do zip, para
+  # a release oferecer o arquivo direto.
+  ditto -c -k --norsrc --keepParent "$ipa_stage/Payload" "$ipa"
+  rm -rf "$ipa_stage"
+  cp "$ipa" "$stage/zeebx-ios.ipa"
+  cp "$AQUI/LEIA-ME.txt" "$stage/LEIA-ME.txt"
+  rm -f "$saida"
+  ditto -c -k --norsrc "$stage" "$saida"
+  rm -rf "$stage"
+  echo "== zip =="
+  ls -lh "$saida" "$ipa"
+}
+
 caso="${1:---simulador}"
 case "$caso" in
   --na-fase)
@@ -114,8 +151,11 @@ case "$caso" in
   --app-aparelho)
     xcode iphoneos iOS
     ;;
+  --pacote)
+    pacote "${2:-$AQUI/build/zeebx-ios-simulator.zip}"
+    ;;
   *)
-    echo "uso: $0 [--simulador | --aparelho | --app | --app-aparelho]" >&2
+    echo "uso: $0 [--simulador | --aparelho | --app | --app-aparelho | --pacote]" >&2
     exit 2
     ;;
 esac
