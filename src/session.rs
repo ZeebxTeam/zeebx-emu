@@ -8,12 +8,12 @@
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-/// No desktop e no core nativo a sessão recompila os blocos. No `wasm32` o JIT não tem
-/// arquitetura de destino — o bloco emitido não roda no navegador — e o interpretador ocupa
-/// o mesmo lugar.
-#[cfg(not(target_arch = "wasm32"))]
+/// No desktop e no core nativo a sessão recompila os blocos. No `wasm32` o bloco emitido não
+/// roda no navegador. No iOS o sistema recusa a página executável que o Dynarmic aloca — o
+/// simulador também é `TARGET_OS_IPHONE`. Nos dois, o interpretador ocupa o mesmo lugar.
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 use crate::cpu::dynarmic::DynarmicCpu as CpuDaSessao;
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", target_os = "ios"))]
 use crate::cpu::interpretador::Interpretador as CpuDaSessao;
 use crate::input::Pad;
 use crate::library;

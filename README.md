@@ -21,6 +21,7 @@ Não abra PR para a branch master, visto que é onde organizamos e concentramos 
 
 Para novos targets de frontend, siga sempre a regrinha de mantê-lo dentro da pasta "frontends", exemplo:
 frontends/android/
+frontends/ios/
 frontends/headless/
 frontends/libretro/
 frontends/standalone-qt/
@@ -129,6 +130,8 @@ São dois formatos em cada um dos quatro sistemas, e o nome do arquivo diz qual 
 | `zeebx-standalone-macos-arm64.dmg`, `-x86_64.dmg` | idem, nos dois Macs |
 | `zeebx-headless-<sistema>.zip` | o binário sem interface, com o `config.ini` e o leia-me |
 | `zeebx-android-arm64-v8a.apk` | o aplicativo de Android |
+| `zeebx-ios-simulator.zip` | o simulador e o leia-me |
+| `zeebx-ios.zip` | o IPA do AltStore clássico e o leia-me |
 
 No macOS, a primeira abertura pode dizer que o `Zeebx.app` está damaged. O aplicativo não está:
 o Gatekeeper marca o que veio da internet, e esta build ainda não é assinada pela Apple. A imagem
@@ -140,6 +143,19 @@ instalar de lado (`adb install`), não para a Play Store — aquela pede a chave
 não pode morar num repositório público. O mesmo
 [`compilar.sh`](frontends/android/compilar.sh) que se usa na máquina é o que roda no CI; ele
 aceita o `ANDROID_SDK_ROOT` que os runners exportam e o `gradle` que estiver no caminho.
+
+O iOS sai de um Mac com Xcode. O núcleo vira uma biblioteca estática e o Xcode monta o `.app`:
+
+```bash
+./frontends/ios/compilar.sh --app
+```
+
+O simulador é arm64. No aparelho o mesmo script com `--app-aparelho` pede um time de
+desenvolvimento (`DEVELOPMENT_TEAM`) para instalar direto; sem ele, o `.app` sai sem assinatura
+e o `--pacote` o coloca, como `zeebx-ios.ipa`, dentro de `zeebx-ios.zip`, para o AltStore clássico
+assinar com um Apple ID. Cada zip traz o seu `LEIA-ME.txt`: o do simulador e o do aparelho. O iOS não deixa o
+processo mapear código executável, então nesse alvo o núcleo é o interpretador, não o Dynarmic.
+Ver [`frontends/ios/LEIAME.md`](frontends/ios/LEIAME.md).
 
 ## Usando
 

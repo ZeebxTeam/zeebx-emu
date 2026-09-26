@@ -259,19 +259,19 @@ impl std::fmt::Display for CpuError {
 
 impl std::error::Error for CpuError {}
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 pub mod dynarmic;
 
-/// Interpretador A32/T32. Existe porque o `dynarmic` emite código nativo do host, e um módulo
-/// WebAssembly não executa esse bloco. Entra no `wasm32` e nos testes do próprio arquivo; o
-/// desktop continua no JIT.
-#[cfg(any(test, target_arch = "wasm32"))]
+/// Interpretador A32/T32. Entra onde o JIT não pode emitir código que o processo execute: no
+/// `wasm32` o navegador não salta para o bloco, e no iOS o kernel recusa a página executável.
+/// Também entra nos testes do próprio arquivo. O desktop continua no JIT.
+#[cfg(any(test, target_arch = "wasm32", target_os = "ios"))]
 pub mod interpretador;
 
 /// O alias que o resto do código usa para pedir "o backend padrão".
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 pub type BackendPadrao = dynarmic::DynarmicCpu;
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", target_os = "ios"))]
 pub type BackendPadrao = interpretador::Interpretador;
 
 // As constantes da faixa de vtables do BREW são parte do contrato entre o backend e o despachante.

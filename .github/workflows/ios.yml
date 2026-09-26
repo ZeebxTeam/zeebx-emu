@@ -1,0 +1,60 @@
+# Compila o núcleo para iOS e monta o .app, sem esperar a tag.
+#
+# O `release.yml` monta o mesmo aplicativo, mas só no dia da tag. Aqui ele sai sozinho, à mão.
+# Nenhum push dispara isto.
+
+name: ios
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  app:
+    name: ios
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ios-ci
+
+      - name: Simulador
+        run: frontends/ios/compilar.sh --app
+
+      - name: Aparelho
+        run: frontends/ios/compilar.sh --app-aparelho
+
+      - name: Abre no simulador
+        run: |
+          set -euo pipefail
+          dispositivo="$(xcrun simctl list devices available | sed -n 's/^[[:space:]]*iPhone[^(]*(\([A-F0-9-]\{36\}\)).*/\1/p' | head -1)"
+          test -n "$dispositivo"
+          xcrun simctl boot "$dispositivo" || true
+          xcrun simctl bootstatus "$dispositivo" -b
+          xcrun simctl install "$dispositivo" frontends/ios/build/iphonesimulator/Zeebx.app
+          xcrun simctl launch "$dispositivo" io.github.zeebxteam.zeebx
+
+      - name: Empacota
+        run: frontends/ios/compilar.sh --pacote
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zeebx-ios-simulator
+          path: frontends/ios/build/zeebx-ios-simulator.zip
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zeebx-ios
+          path: frontends/ios/build/zeebx-ios.zip
+          if-no-files-found: error

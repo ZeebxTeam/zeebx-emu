@@ -5,6 +5,7 @@ members = [
     "frontends/libretro",
     "frontends/android",
     "frontends/headless",
+    "frontends/ios",
 ]
 resolver = "3"
 
@@ -130,10 +131,14 @@ sevenz-rust2 = "0.23.0"
 rustysynth = { version = "1.3.6", optional = true }
 
 # O `dynarmic` recompila A32 para o código nativo do host. O Kingdom Hearts precisa dele
-# porque a extensão 3D roda o próprio rasterizador ARM por milhões de pixels. No `wasm32`
-# não há para onde recompilar — o navegador não executa o bloco que o JIT emitiria — então
-# a dependência nem entra no grafo. O núcleo de lá é o interpretador em `src/cpu/interpretador.rs`.
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# porque a extensão 3D roda o próprio rasterizador ARM por milhões de pixels. Dois alvos ficam
+# de fora, e nos dois o núcleo é o interpretador em `src/cpu/interpretador.rs`:
+#
+# - no `wasm32` não há para onde recompilar — o navegador não executa o bloco que o JIT emitiria;
+# - no iOS o sistema recusa a página executável que o alocador pede. O oaknut, no
+#   `TARGET_OS_IPHONE`, mapeia a página como executável e depois troca a proteção com `mprotect`,
+#   e isso é privilégio do sistema — o simulador também é iPhone OS.
+[target.'cfg(not(any(target_arch = "wasm32", target_os = "ios")))'.dependencies]
 dynarmic = "0.1.3"
 
 # O `ioctl` que lê a escala dos sensores de movimento em `/dev/input`. Já vinha na árvore por

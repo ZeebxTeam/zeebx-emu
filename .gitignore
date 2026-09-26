@@ -47,3 +47,7 @@ ref z-wheel2.png
 frontends/android/apk/.gradle/
 frontends/android/apk/local.properties
 frontends/android/apk/app/src/main/jniLibs/
+
+# Xcode: estado local. O projeto em si (`project.pbxproj`) fica versionado.
+xcuserdata/
+*.xcuserstate

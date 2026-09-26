@@ -1,0 +1,21 @@
+Zeebx para o Simulador
+
+O aplicativo é simulador/Zeebx.app. Ele só abre no Simulador do Mac.
+O jogo fica em Documents/roms, dentro do aplicativo. Serve um .mod
+solto, um .zip ou um .7z. Abra o Zeebx uma vez antes de copiar o jogo,
+para a pasta roms existir, e toque em Atualizar depois.
+
+Arraste o Zeebx.app para a janela do Simulador, ou:
+
+    xcrun simctl boot "iPhone 16"
+    xcrun simctl install booted simulador/Zeebx.app
+    xcrun simctl launch booted io.github.zeebxteam.zeebx
+
+O jogo entra pela pasta do aplicativo no disco. Colar pelo Finder grava um
+arquivo de zero bytes; se você apaga, o compartilhamento cria o arquivo
+vazio de novo.
+
+    ditto "Jogo.zip" "$(xcrun simctl get_app_container booted io.github.zeebxteam.zeebx data)/Documents/roms/"
+
+Com mais de um simulador ligado, booted não escolhe qual. No lugar dele,
+use o identificador que `xcrun simctl list devices` mostra.
