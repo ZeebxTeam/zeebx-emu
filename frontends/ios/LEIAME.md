@@ -55,9 +55,10 @@ rustup target add aarch64-apple-ios aarch64-apple-ios-sim
 
 O `.app` do simulador sai em `frontends/ios/build/iphonesimulator/`. O do aparelho, em
 `frontends/ios/build/iphoneos/`. Sem `DEVELOPMENT_TEAM` o do aparelho não é assinado. Esse
-binário é o `zeebx-ios.ipa`: o AltStore clássico assina com o Apple ID de quem instala.
-`./frontends/ios/compilar.sh --pacote` junta os dois `.app` e o [`LEIA-ME.txt`](LEIA-ME.txt),
-que diz como instalar e onde colocar o jogo. Para instalar com a sua conta de desenvolvedor:
+binário é o `zeebx-ios.ipa`, dentro de `zeebx-ios.zip`: o AltStore clássico assina com o Apple ID
+de quem instala. `./frontends/ios/compilar.sh --pacote` faz dois zips, cada um com o seu leia-me:
+[`LEIA-ME-simulador.txt`](LEIA-ME-simulador.txt) no do simulador e
+[`LEIA-ME-altstore.txt`](LEIA-ME-altstore.txt) no do aparelho. Para instalar com a sua conta de desenvolvedor:
 
 ```bash
 DEVELOPMENT_TEAM=XXXXXXXXXX ./frontends/ios/compilar.sh --app-aparelho

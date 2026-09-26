@@ -56,5 +56,5 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: zeebx-ios
-          path: frontends/ios/build/zeebx-ios.ipa
+          path: frontends/ios/build/zeebx-ios.zip
           if-no-files-found: error

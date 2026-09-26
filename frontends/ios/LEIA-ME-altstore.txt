@@ -1,41 +1,11 @@
-Zeebx para iOS
-
-Este zip traz duas builds. As duas leem o jogo em Documents/roms, dentro do
-aplicativo. Serve um .mod solto, um .zip ou um .7z. Abra o Zeebx uma vez
-antes de copiar o jogo, para a pasta roms existir, e toque em Atualizar
-depois.
-
-
-Simulador
----------
-
-O aplicativo é simulador/Zeebx.app. Ele só abre no Simulador do Mac.
-
-Arraste o Zeebx.app para a janela do Simulador, ou:
-
-    xcrun simctl boot "iPhone 16"
-    xcrun simctl install booted simulador/Zeebx.app
-    xcrun simctl launch booted io.github.zeebxteam.zeebx
-
-O jogo entra pela pasta do aplicativo no disco. Colar pelo Finder grava um
-arquivo de zero bytes; se você apaga, o compartilhamento cria o arquivo
-vazio de novo.
-
-    ditto "Jogo.zip" "$(xcrun simctl get_app_container booted io.github.zeebxteam.zeebx data)/Documents/roms/"
-
-Com mais de um simulador ligado, booted não escolhe qual. No lugar dele,
-use o identificador que `xcrun simctl list devices` mostra.
-
-
-iPhone, pelo AltStore
-----------------------
+Zeebx para iPhone, pelo AltStore
 
 O arquivo é o zeebx-ios.ipa, ao lado deste texto. Ele é o aplicativo de
 aparelho, sem assinatura. O AltStore clássico assina com o seu Apple ID.
-O simulador/Zeebx.app não instala no telefone. O AltStore PAL só instala
-pacote notarizado pela Apple, e este IPA não é isso.
+O AltStore PAL só instala pacote notarizado pela Apple, e este IPA não é isso.
 
-O iPhone precisa de iOS 16 ou mais novo.
+O jogo fica em Documents/roms, dentro do aplicativo. Serve um .mod solto,
+um .zip ou um .7z. O iPhone precisa de iOS 16 ou mais novo.
 
 1. No Mac, baixe o AltServer em https://altstore.io e abra. Ele fica na
    barra de menus.

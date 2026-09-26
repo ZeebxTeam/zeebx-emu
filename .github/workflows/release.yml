@@ -10,7 +10,7 @@
 #   zeebx-headless-linux-x86_64.zip          o binário sem interface, para quem tem frontend próprio
 #   zeebx-android-arm64-v8a.apk              o aplicativo de Android
 #   zeebx-ios-simulator.zip                  o aplicativo de iOS, para o simulador, com o leia-me
-#   zeebx-ios.ipa                            o mesmo aplicativo, para o AltStore clássico
+#   zeebx-ios.zip                            o IPA para o AltStore clássico, com o leia-me
 #   zeebx_libretro-linux-aarch64.zip         o core Libretro, com o `.info`, para RetroArch
 #   zeebx_libretro-wasm.zip                  o mesmo core em WebAssembly, para o ROMBundler
 #
@@ -330,7 +330,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: zeebx-ios
-          path: frontends/ios/build/zeebx-ios.ipa
+          path: frontends/ios/build/zeebx-ios.zip
           if-no-files-found: error
 
   core:
