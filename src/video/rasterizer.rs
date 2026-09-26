@@ -747,7 +747,41 @@ pub trait Rasterizador {
     /// [`Self::frame_rgb565`] de sempre. É o que permite ao mesmo motor servir aos dois caminhos.
     fn desenha_no_fbo(&mut self, _fbo: Option<u32>) {}
 
+    /// Se trazer o quadro para a memória da CPU custa uma **espera pela placa**.
+    ///
+    /// Reduz a resolução interna do 3D, desenhando numa superfície menor e ampliando na
+    /// apresentação. **Só o rasterizador de processador faz isto**: ver
+    /// [`GlState::define_reducao`]. Na placa não há o que fazer — ali o preenchimento a 640×480
+    /// não satura a GPU, e reduzir só estragaria a imagem.
+    fn define_reducao(&mut self, _reducao: usize) {}
+
+    /// Chamadas de estado enviadas à placa e quantas o espelho poupou. Zero no software.
+    ///
+    /// Existe para o ganho do espelho ser **verificável**: sem os dois números não há como dizer
+    /// se ele está poupando chamadas ou só repetindo o que já estava lá.
+    fn estado_enviado_e_poupado(&self) -> (u64, u64) {
+        (0, 0)
+    }
+
+    /// Diz ao driver que os anexos de profundidade e estêncil podem ser descartados depois do
+    /// quadro. **Experimental, desligado por padrão, e só o rasterizador de placa faz.**
+    ///
+    /// Rende em GPU de tiles — o Mali dos dois portáteis —, onde evita escrever os anexos de volta
+    /// na memória. Um jogo que **não** limpe a profundidade de um quadro para o outro conta com
+    /// ela, e é por isso que não vem ligado. Ver `GpuState::define_descarte_de_tiles`.
+    fn define_descarte_de_tiles(&mut self, _descartar: bool) {}
+
+    /// Verdadeiro no rasterizador de placa: ler o quadro de volta obriga a GPU a terminar e
+    /// devolver os pixels, e num GPU de tiles isso é parada. Falso no de processador, onde a
+    /// "leitura" é uma conversão em memória — ali adiar não economiza nada e ainda arrisca o
+    /// frontend apresentar um quadro velho. Ver [`crate::machine::Machine::present_gl`].
+    fn quadro_espera_pela_placa(&self) -> bool {
+        false
+    }
+
     fn frame_rgb565(&mut self, width: usize, height: usize, out: &mut Vec<u8>);
+    /// Exporta diretamente em RGB565 nativo para a tela do host, sem passar por bytes.
+    fn frame_rgb565_words(&mut self, width: usize, height: usize, out: &mut Vec<u16>);
     fn import_rgb565_changes(&mut self, width: usize, height: usize, old: &[u8], new: &[u8]);
 
     /// Quantas vezes o quadro é desenhado maior que o do console, por lado. O jogo continua
@@ -798,6 +832,10 @@ pub struct QuadroNaPlaca {
 }
 
 impl Rasterizador for GlState {
+    fn define_reducao(&mut self, reducao: usize) {
+        GlState::define_reducao(self, reducao)
+    }
+
     fn grava_estado(&self, destino: &mut crate::save_state::Secoes) {
         crate::save_state::Guardavel::grava(self, destino);
     }
@@ -1002,6 +1040,9 @@ impl Rasterizador for GlState {
     fn frame_rgb565(&mut self, width: usize, height: usize, out: &mut Vec<u8>) {
         GlState::frame_rgb565(self, width, height, out)
     }
+    fn frame_rgb565_words(&mut self, width: usize, height: usize, out: &mut Vec<u16>) {
+        GlState::frame_rgb565_words(self, width, height, out)
+    }
     fn import_rgb565_changes(&mut self, width: usize, height: usize, old: &[u8], new: &[u8]) {
         GlState::import_rgb565_changes(self, width, height, old, new)
     }
@@ -1020,6 +1061,10 @@ pub struct GlState {
     /// modelo espelhado só onde a marca ficou. Sem o buffer, o espelhado saía por fora do chão
     /// e virava um rastro esticado ao lado do modelo.
     pub(crate) stencil: Vec<u8>,
+
+    /// A redução da resolução interna do 3D: 1 é nativo, 2 é metade, 4 é um quarto. Ver
+    /// [`GlState::define_reducao`].
+    reducao: usize,
 
     pub(crate) matrix_mode: u32,
     pub(crate) modelview: Vec<Matrix>,
@@ -1159,6 +1204,7 @@ impl GlState {
             tesoura: None,
             tesoura_crua: (0, 0, width as i32, height as i32),
             tesoura_ligada: false,
+            reducao: 1,
             surface: None,
             esticada: false,
             clear_color: [0.0, 0.0, 0.0, 1.0],
@@ -1244,6 +1290,18 @@ impl GlState {
 
     /// O retângulo do `glScissor`. Guardado cru e convertido para o topo quando vale.
     pub fn set_scissor(&mut self, x: i32, y: i32, width: i32, height: i32) {
+        // A tesoura chega em pixels do console, como a viewport, e vale na mesma superfície.
+        let (x, y, width, height) = if self.reducao == 1 {
+            (x, y, width, height)
+        } else {
+            let n = self.reducao as i32;
+            (
+                self.na_reducao(x),
+                self.na_reducao(y),
+                (width / n).max(0),
+                (height / n).max(0),
+            )
+        };
         self.tesoura_crua = (x, y, width, height);
         self.atualiza_tesoura();
     }
@@ -1266,7 +1324,72 @@ impl GlState {
         };
     }
 
+    /// A redução da resolução interna do 3D: 1 é nativo, 2 é metade, 4 é um quarto.
+    ///
+    /// **Só o rasterizador de processador reduz.** Aqui o preenchimento custa CPU e escala com a
+    /// área do quadro: desenhar 320×240 é um quarto do trabalho de 640×480. A apresentação
+    /// continua em 640×480 — [`GlState::frame_rgb565`] já sabe reamostrar de uma superfície menor,
+    /// que é o caminho do `EGL_QUALCOMM_surface_scale`.
+    ///
+    /// Na placa quem reduz é outro mecanismo, e um fator abaixo de 1 ali não faria sentido: o
+    /// Mali não está saturado a 640×480.
+    pub fn define_reducao(&mut self, reducao: usize) {
+        // A fila foi montada no tamanho antigo; ela vira pixel antes da troca.
+        self.flush();
+        let nova = match reducao {
+            0 | 1 => 1,
+            n => n.min(4),
+        };
+        if nova == self.reducao {
+            return;
+        }
+        self.reducao = nova;
+        // **A viewport inicial também é reduzida.** Ela é o que a superfície deduz quando o jogo
+        // nunca chama `glViewport` — e há jogo assim: a Z-Wheel não o chama nenhuma vez em treze
+        // segundos, medido. Reiniciá-la no tamanho do quadro deixaria a redução sem efeito
+        // justamente em quem depende dela.
+        let (largura, altura) = (self.width / nova, self.height / nova);
+        self.surface = None;
+        self.viewport = (0, 0, largura as i32, altura as i32);
+        self.tesoura_crua = (0, 0, largura as i32, altura as i32);
+        self.atualiza_tesoura();
+        crate::registro!(
+            crate::registro::Nivel::Informacao,
+            "gl",
+            "resolução interna do 3D reduzida a 1/{nova} do quadro ({}x{})",
+            self.width / nova,
+            self.height / nova
+        );
+    }
+
+    /// A redução em vigor. Ver [`GlState::define_reducao`].
+    pub fn reducao(&self) -> usize {
+        self.reducao
+    }
+
+    /// Converte uma coordenada do console para a superfície reduzida.
+    fn na_reducao(&self, valor: i32) -> i32 {
+        match self.reducao {
+            1 => valor,
+            n => valor.div_euclid(n as i32),
+        }
+    }
+
     pub fn set_viewport(&mut self, x: i32, y: i32, width: i32, height: i32) {
+        // **A viewport é a entrada de tudo.** O jogo diz o retângulo em pixels do console, e é
+        // por ele que o vértice vira pixel; reduzindo aqui, o desenho inteiro cai na superfície
+        // reduzida — e a superfície deduzida logo abaixo sai reduzida junto, sem mais nada.
+        let (x, y, width, height) = if self.reducao == 1 {
+            (x, y, width, height)
+        } else {
+            let n = self.reducao as i32;
+            (
+                self.na_reducao(x),
+                self.na_reducao(y),
+                (width / n).max(1),
+                (height / n).max(1),
+            )
+        };
         self.viewport = (x, y, width, height);
         // O jogo desenha numa superfície que pode ser menor que a tela e é ampliada na
         // apresentação — no console isso é a extensão `EGL_QUALCOMM_surface_scale`. Ele nunca
@@ -1331,7 +1454,12 @@ impl GlState {
     /// Sports Peteca, que desenha em coordenadas de tela e nunca mexe na viewport, saía
     /// inteiramente branco.
     pub fn surface(&self) -> (usize, usize) {
-        let (width, height) = self.surface.unwrap_or((self.width, self.height));
+        // **O padrão também é reduzido.** Sem isto, um jogo que nunca chama `glViewport` desenharia
+        // na área reduzida e a apresentação copiaria o quadro inteiro — a imagem sairia num canto,
+        // em vez de ampliada. É o caso da Z-Wheel, que não chama `glViewport` nenhuma vez em treze
+        // segundos.
+        let padrao = (self.width / self.reducao, self.height / self.reducao);
+        let (width, height) = self.surface.unwrap_or(padrao);
         (width.clamp(1, self.width), height.clamp(1, self.height))
     }
 
@@ -1347,10 +1475,15 @@ impl GlState {
         self.flush();
         let (sw, sh) = self.surface();
         let mut saida = vec![[0, 0, 0, 255]; width * height];
+        // **O pedido vem em pixels do console e a superfície pode estar reduzida.** Cada pixel
+        // daqui vale `reducao` pixels lá, então o retângulo é mapeado e o resultado é replicado:
+        // quem chamou escreve `width * height` pixels na memória do jogo, e devolver menos
+        // deixaria o resto da faixa com o que estava lá.
+        let n = self.reducao as i32;
         for linha in 0..height {
             for coluna in 0..width {
-                let fx = x + coluna as i32;
-                let fy = y + linha as i32;
+                let fx = self.na_reducao(x + coluna as i32);
+                let fy = self.na_reducao(y + linha as i32);
                 if fx < 0 || fy < 0 || fx as usize >= sw || fy as usize >= sh {
                     continue;
                 }
@@ -1359,6 +1492,10 @@ impl GlState {
                 saida[linha * width + coluna] = self.color[origem];
             }
         }
+        // O `n` só é diferente de 1 quando há redução, e aí o laço acima já amostrou a superfície
+        // menor: nada mais a fazer. O `_` existe para o compilador não acusar a variável quando a
+        // redução é 1 — a conta de replicação é a própria amostragem por divisão.
+        let _ = n;
         saida
     }
 
@@ -2479,6 +2616,33 @@ impl GlState {
         self.sujo = false;
     }
 
+    /// Mesmo quadro da exportação em bytes, mas sem a ida RGB565 -> bytes -> RGB565.
+    pub fn frame_rgb565_words(&mut self, width: usize, height: usize, out: &mut Vec<u16>) {
+        self.flush();
+        if !self.sujo && out.len() == width * height {
+            return;
+        }
+        let (sw, sh) = self.surface();
+        out.clear();
+        out.resize(width * height, 0);
+        let converte = |p: [u8; 4]| {
+            ((p[0] as u16 >> 3) << 11) | ((p[1] as u16 >> 2) << 5) | (p[2] as u16 >> 3)
+        };
+        if sw == width && sh == height {
+            for (saida, &pixel) in out.iter_mut().zip(&self.color) {
+                *saida = converte(pixel);
+            }
+        } else {
+            for y in 0..height {
+                let linha = &self.color[(y * sh / height) * self.width..][..self.width];
+                for x in 0..width {
+                    out[y * width + x] = converte(linha[x * sw / width]);
+                }
+            }
+        }
+        self.sujo = false;
+    }
+
 #[cfg(test)]
     pub fn present(&mut self, width: usize, height: usize) -> Vec<u16> {
         // Entregar o quadro é o ponto em que ele precisa estar pintado — quem pede o resultado
@@ -3034,6 +3198,45 @@ fn unpack(color: [u8; 4]) -> [f32; 4] {
 
 #[cfg(test)]
 mod tests {
+
+    /// **A redução da resolução interna**, e o caso que a teria deixado sem efeito.
+    ///
+    /// Há jogo que nunca chama `glViewport` — a Z-Wheel não o chama nenhuma vez em treze segundos,
+    /// medido —, e para ele a superfície sai da viewport **inicial**. Se ela fosse reiniciada no
+    /// tamanho do quadro, a redução não valeria justamente em quem depende dela.
+    #[test]
+    fn a_reducao_alcanca_quem_nunca_chama_viewport() {
+        let mut state = GlState::new(640, 480);
+
+        // Sem redução, a superfície inicial é o quadro inteiro.
+        assert_eq!(state.surface(), (640, 480));
+
+        state.define_reducao(2);
+        assert_eq!(
+            state.surface(),
+            (320, 240),
+            "a viewport inicial tem de sair reduzida"
+        );
+
+        // E o jogo que **declara** a viewport do console, como o comum, também é dividido.
+        state.set_viewport(0, 0, 640, 480);
+        assert_eq!(state.surface(), (320, 240));
+
+        // A tesoura passa pela mesma conta.
+        state.set_scissor(0, 0, 640, 480);
+        state.set_scissor_test(true);
+        let (_, _, largura, altura) = state.tesoura.unwrap_or((0, 0, 0, 0));
+        assert_eq!((largura, altura), (320, 240));
+
+        // O quadro entregue continua sendo o do console: quem amplia é a apresentação.
+        let mut bytes = Vec::new();
+        state.frame_rgb565(640, 480, &mut bytes);
+        assert_eq!(bytes.len(), 640 * 480 * 2, "o quadro sai em 640x480");
+
+        // E voltar a 1x devolve o tamanho do console — a opção é reversível.
+        state.define_reducao(1);
+        assert_eq!(state.surface(), (640, 480));
+    }
 
     #[test]
     fn escrita_no_buffer_egl_preserva_desenhos_e_profundidade() {

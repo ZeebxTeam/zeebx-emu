@@ -419,6 +419,16 @@ impl Leitor<'_> {
             )));
         }
         let quantos = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
+        // **Conferir antes de reservar.** O número vem do arquivo, e um estado forjado com
+        // `quantos` enorme fazia o `with_capacity` pedir dezenas de gigabytes — o processo morria
+        // por um número, antes de qualquer checagem de conteúdo. Cada texto ocupa pelo menos os
+        // quatro bytes do próprio tamanho, então o teto é o que cabe na seção.
+        if quantos > bytes.len() / 4 {
+            return Err(malformada(format!(
+                "diz ter {quantos} textos, e a seção tem {} bytes",
+                bytes.len()
+            )));
+        }
         let mut posicao = 4usize;
         let mut textos = Vec::with_capacity(quantos);
         for _ in 0..quantos {
@@ -471,6 +481,13 @@ impl Leitor<'_> {
         let chaves = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) as usize;
         if chaves == 0 || chaves > 8 {
             return Err(malformada(format!("largura de chave {chaves}")));
+        }
+        // Mesma conferência do `textos`: cada item precisa de `chaves` valores mais o tamanho.
+        if quantos > bytes.len() / (chaves * 4 + 4) {
+            return Err(malformada(format!(
+                "diz ter {quantos} itens de {chaves} chave(s), e a seção tem {} bytes",
+                bytes.len()
+            )));
         }
         let mut posicao = 8usize;
         let mut itens = Vec::with_capacity(quantos);

@@ -13,6 +13,7 @@ use std::ffi::{CStr, CString, c_char, c_void};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
+use glow::HasContext;
 use zeebx::audio::Mixer;
 use zeebx::config::ZWheel;
 use zeebx::input::Pad;
@@ -113,10 +114,10 @@ const ENV_SET_HW_RENDER: u32 = 14;
 ///
 /// Desktop usa `RETRO_HW_CONTEXT_OPENGL_CORE` (3), medido com RetroArch/Mesa. Os handhelds
 /// Linux AArch64 (R36S/R35S/RGB20S com ArkOS/AeolusUX/dArkOS/dArkOSen e RG40XX-H com muOS)
-/// expõem OpenGL ES no RetroArch, não um contexto OpenGL Core 3.3. Neles pedimos GLES 3.2
-/// (`RETRO_HW_CONTEXT_OPENGLES_VERSION`, 5), e o `gpu.rs` usa `#version 300 es`, compatível com
-/// o subconjunto necessário. Se o frontend/driver só oferecer GLES 3.1, ele recusa
-/// o pedido e o core permanece no rasterizador software — nunca depende de X11, Wayland ou EGL.
+/// expõem OpenGL ES no RetroArch, não um contexto OpenGL Core 3.3. Neles pedimos GLES 3.0
+/// (`RETRO_HW_CONTEXT_OPENGLES3`, 4): VAO, FBO blit, MSAA e `#version 300 es` já são ES 3.0.
+/// Pedir 3.2 recusava desnecessariamente drivers Panfrost que oferecem 3.1 e devolvia todo o
+/// desenho ao processador — nunca dependemos de X11, Wayland ou EGL.
 ///
 /// No desktop o valor 1 (`RETRO_HW_CONTEXT_OPENGL`, compatibilidade) não serve: em RetroArch/EGL
 /// ele entregava perfil diferente do que o motor esperava e falhava com `GL: Invalid enum`.
@@ -128,11 +129,11 @@ const HW_VERSION_MAJOR: u32 = 3;
 const HW_VERSION_MINOR: u32 = 0;
 
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-const HW_CONTEXT: u32 = 5; // RETRO_HW_CONTEXT_OPENGLES_VERSION (GLES 3.1+)
+const HW_CONTEXT: u32 = 4; // RETRO_HW_CONTEXT_OPENGLES3 — GLES 3.0
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
 const HW_VERSION_MAJOR: u32 = 3;
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-const HW_VERSION_MINOR: u32 = 2;
+const HW_VERSION_MINOR: u32 = 0;
 
 #[cfg(not(any(
     target_os = "emscripten",
@@ -199,12 +200,29 @@ static OFERTA_DE_PLACA: Mutex<Option<RetroHwRenderCallback>> = Mutex::new(None);
 static CONTEXTO_PRONTO: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// O contexto de GL montado a partir do que o frontend entregou, quando ele entregou.
+///
+/// **Este cadeado guarda o ponteiro, e não o uso do contexto.** Ele serializa quem lê e quem troca
+/// o `Arc` — `placa()`, o `liga_a_placa` e os dois callbacks do frontend —, e não os `gl*` que o
+/// emulador roda dentro do `retro_run`: o contexto em si é usado **sem** cadeado nenhum, em duas
+/// threads (ver a nota de corrida em [`contexto_perdido`]). É o que a ABI permite: ela diz o que
+/// fazer com o contexto (`libretro.h`: "Any GL state is lost, and must not be deinitialized
+/// explicitly"; "If context_reset is called without any notification (context_destroy), the OpenGL
+/// context was lost and resources should just be recreated without any attempt to free old
+/// resources"), e não diz de que thread os callbacks vêm nem que eles não cheguem no meio de um
+/// `retro_run`.
 static PLACA: std::sync::Mutex<Option<std::sync::Arc<glow::Context>>> =
     std::sync::Mutex::new(None);
 
 /// O contexto de placa, quando já se desenha nele.
 fn placa() -> Option<std::sync::Arc<glow::Context>> {
-    PLACA.lock().ok().and_then(|guarda| guarda.clone())
+    // **Cadeado envenenado não pode virar "não há placa".** Um pânico enquanto ele estava preso —
+    // há `catch_unwind` em [`liga_a_placa`], e o que ele protege mexe em GL — deixaria o emulador
+    // concluindo que não há placa e caindo no processador em silêncio, com `placa_ligada`
+    // verdadeiro. O valor que ficou guardado é o que interessa, e ele continua legível.
+    PLACA
+        .lock()
+        .unwrap_or_else(|envenenado| envenenado.into_inner())
+        .clone()
 }
 
 /// Pede o contexto de placa ao frontend, uma vez, e guarda a resposta.
@@ -240,7 +258,7 @@ fn pede_o_contexto_de_placa() {
         ));
         if let Ok(mut g) = OFERTA_DE_PLACA.lock() { *g = Some(oferta); }
     } else {
-        log("Zeebx: o frontend não oferece render em hardware; o desenho fica no processador");
+        aviso("Zeebx: o frontend não oferece render em hardware; o desenho fica no processador");
     }
 }
 
@@ -275,6 +293,23 @@ fn liga_a_placa(estado: &mut Core) {
             pega_endereco(nome.as_ptr())
         })
     });
+    // **A placa de agora pode ter caído no endereço de uma que morreu.** A marca de óbito é por
+    // endereço, e endereço é coisa do alocador: sem esta limpeza a placa nova nasceria marcada como
+    // morta e não desenharia nada, em silêncio. Ver [`zeebx::video::gpu::a_placa_nasceu`].
+    zeebx::video::gpu::a_placa_nasceu(zeebx::video::gpu::endereco_da_placa(&contexto));
+    // A versão pedida pelo callback não prova a versão realmente entregue pelo driver. Registrar
+    // os quatro valores evita confundir o libMali do RK3326 com o caminho Mesa/Panfrost do H700.
+    let (vendor, renderer, version, shading) = unsafe {
+        (
+            contexto.get_parameter_string(glow::VENDOR),
+            contexto.get_parameter_string(glow::RENDERER),
+            contexto.get_parameter_string(glow::VERSION),
+            contexto.get_parameter_string(glow::SHADING_LANGUAGE_VERSION),
+        )
+    };
+    log(&format!(
+        "Zeebx: GL real vendor={vendor}; renderer={renderer}; version={version}; GLSL={shading}"
+    ));
     // A placa entra no global **antes** da troca: é ele que `troca_para` consulta para decidir se
     // a sessão nasce com o rasterizador de placa. Assim as trocas seguintes — a Z-Wheel abrindo um
     // jogo, o jogo voltando para ela — também nascem na placa.
@@ -320,8 +355,30 @@ fn liga_a_placa(estado: &mut Core) {
 }
 
 /// O `context_reset` que nós preenchemos: o frontend chama quando o contexto está utilizável.
+///
+/// **E também quando ele foi refeito.** A ABI é explícita: "When context_reset is called, OpenGL
+/// resources in the libretro implementation are guaranteed to be invalid" (`libretro.h`), e um
+/// `context_reset` pode chegar **sem** o `context_destroy` — quando o contexto se perdeu por fora,
+/// "the OpenGL context was lost and resources should just be recreated without any attempt to free
+/// old resources". Ou seja: este callback diz as duas coisas ao mesmo tempo — o contexto novo está
+/// de pé **e** o que a sessão viva guarda da placa anterior é lixo.
+///
+/// Por isso ele faz o mesmo que o [`contexto_perdido`] com o contexto velho, e mais: marca que a
+/// sessão precisa nascer de novo. É o `liga_a_placa` do `retro_run` seguinte que a traz de volta —
+/// a placa é reconstruída **sob demanda**, com o resolvedor que o frontend deixou em
+/// [`OFERTA_DE_PLACA`], que continua valendo.
 unsafe extern "C" fn contexto_pronto() {
+    if let Ok(mut guarda) = PLACA.lock() {
+        // O `glow::Context` que guardamos é o do contexto que acabou de ser refeito: as funções
+        // que ele resolveu apontam para o contexto **velho**. Quem desenha com ele precisa saber
+        // disso antes de qualquer `gl*` — ver [`zeebx::video::gpu::a_placa_morreu`].
+        if let Some(placa) = guarda.as_ref() {
+            zeebx::video::gpu::a_placa_morreu(zeebx::video::gpu::endereco_da_placa(placa));
+        }
+        *guarda = None;
+    }
     CONTEXTO_PRONTO.store(true, std::sync::atomic::Ordering::Relaxed);
+    PERDEU_A_PLACA.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// O frontend avisa que o contexto deixou de valer.
@@ -329,15 +386,46 @@ unsafe extern "C" fn contexto_pronto() {
 /// **O `glow::Context` guardado vira lixo aqui**: as funções de GL que ele resolveu não existem
 /// mais. Descartar o contexto e voltar ao software é a resposta segura — o jogo continua rodando
 /// no processador, e o aviso diz por quê.
+///
+/// # A corrida, e o que ela custa
+///
+/// **Quem chama isto é o driver de vídeo do frontend, e pode ser outra thread.** O core roda
+/// [`retro_run`] na thread que o frontend usa para o jogo; este callback chega da thread de vídeo
+/// dele — trocar de driver, ligar ou desligar vídeo em thread, recriar a janela. A ABI
+/// (`libretro.h`) **não garante nada** sobre isso: ela diz o que fazer com os objetos de GL quando
+/// o aviso chega, e não de que thread ele vem nem que ele espere o quadro terminar.
+///
+/// O que o núcleo pode fazer aqui é barato e é o que está feito: **marcar a placa como morta**, com
+/// um `AtomicUsize` e sem cadeado nenhum (`a_placa_morreu`), porque travar neste callback pode
+/// travar o núcleo — o frontend pode estar com o quadro do emulador nas mãos, e um cadeado
+/// partilhado com o `retro_run` fecharia o ciclo. A partir daí quem desenha vê a marca
+/// (`GpuState`): para de mandar desenho e de ler o quadro, e o `Drop` da sessão larga os nomes de
+/// GL sem chamar `delete_*` num contexto morto.
+///
+/// **O que não dá para consertar daqui, e por quê:** o `gl*` que já está em curso quando o aviso
+/// chega **termina no contexto morto** — não há como interromper uma chamada de driver no meio. E
+/// não há como impedir que as duas threads usem o mesmo contexto sem mudar o contrato com o
+/// frontend: serializar desenho e `context_destroy` num cadeado exige que o desenho aconteça numa
+/// thread que o core controle, e ele não controla — o `retro_run` é chamado pelo frontend, e é ele
+/// quem decide se o vídeo é em thread separada. Um cadeado em volta de `core()` aqui, além disso,
+/// trava de verdade: o `retro_video_refresh` entrega o quadro sem cadeado nenhum (ver a nota no
+/// começo do [`retro_run`]), e o frontend que espera este callback enquanto o núcleo espera o
+/// frontend consome o quadro é um abraço mortal.
 unsafe extern "C" fn contexto_perdido() {
     if let Ok(mut guarda) = PLACA.lock() {
+        if let Some(placa) = guarda.as_ref() {
+            zeebx::video::gpu::a_placa_morreu(zeebx::video::gpu::endereco_da_placa(placa));
+        }
         *guarda = None;
     }
     CONTEXTO_PRONTO.store(false, std::sync::atomic::Ordering::Relaxed);
     PERDEU_A_PLACA.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// Se o frontend já avisou que o contexto se perdeu. Ver [`contexto_perdido`].
+/// Se o frontend avisou que a placa de agora deixou de valer, ou que uma placa nova está pronta.
+///
+/// Os dois avisos entram aqui porque a resposta é a mesma: a sessão viva desenha numa placa que já
+/// não é a de agora. Ver [`contexto_perdido`] e [`contexto_pronto`].
 static PERDEU_A_PLACA: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Pergunta se o frontend aceita receber quadro nulo quando nada mudou.
@@ -365,6 +453,32 @@ const ENV_SET_CORE_OPTIONS_V2: u32 = 67;
 /// É o mecanismo do próprio Libretro para frameskip automático — não é invenção nossa: o parágrafo
 /// da própria `libretro.h` diz "se `underrun_likely`, o core deveria tentar pular quadro".
 const ENV_SET_AUDIO_BUFFER_STATUS_CALLBACK: u32 = 62;
+/// `RETRO_ENVIRONMENT_GET_CURRENT_SOFTWARE_FRAMEBUFFER`: o frontend **empresta** um buffer para o
+/// core desenhar o quadro.
+///
+/// Sem ele, o core monta o quadro num vetor próprio e o frontend copia — uma cópia de 600 KB por
+/// quadro, que num aparelho fraco é trabalho de verdade. Com ele, o core escreve onde o quadro vai
+/// ficar, e o ponteiro emprestado é o que se entrega ao `retro_video_refresh`.
+///
+/// **O ponteiro vale só dentro desta chamada de `retro_run`** — a própria `libretro.h` avisa —, e
+/// é por isso que o pedido e o uso ficam no mesmo lugar, sem guardar nada entre quadros.
+const ENV_GET_CURRENT_SOFTWARE_FRAMEBUFFER: u32 = 40 | 0x1_0000;
+
+/// O buffer que o frontend empresta. A ordem e os tipos são os do `libretro.h`.
+#[repr(C)]
+struct RetroFramebuffer {
+    /// Preenchido pelo frontend; o core pede com nulo.
+    data: *mut c_void,
+    /// O core pede o tamanho que quer; o frontend pode devolver outro.
+    width: u32,
+    height: u32,
+    /// Distância em bytes entre o começo de duas linhas, posto pelo frontend.
+    pitch: usize,
+    /// O formato dos pixels, posto pelo frontend — **pode ser diferente do negociado**, e é por
+    /// isso que ele é conferido antes de escrever.
+    format: u32,
+}
+
 /// `RETRO_ENVIRONMENT_SET_MINIMUM_AUDIO_LATENCY`: pede mais folga no buffer de áudio do frontend.
 ///
 /// A própria documentação do callback acima recomenda isto: sem folga, o aviso de estouro chega
@@ -580,6 +694,10 @@ struct Core {
     bitmasks: bool,
     /// Se o frontend aceita quadro nulo quando a tela não mudou.
     aceita_dupe: bool,
+    /// Quantos quadros de placa o jogo tinha desenhado no quadro anterior. O contador do motor é
+    /// acumulado, e a placa pode ter desenhado uma vez na abertura e nunca mais: o que decide é a
+    /// diferença entre este quadro e o anterior. Ver o comentário no bloco que monta o quadro.
+    gl_quadros_antes: u32,
     /// Assinatura do último quadro entregue.
     ultima_assinatura: Option<u64>,
     /// Relógio virtual da última chamada, para o áudio acompanhar o tempo que passou de verdade.
@@ -732,7 +850,23 @@ unsafe fn environ(cmd: u32, data: *mut c_void) -> bool {
     unsafe { callback(cmd, data) }
 }
 
+/// Uma linha **informativa** no log do frontend: o que o núcleo decidiu e onde foi buscar as coisas.
+///
+/// **Estava tudo saindo como erro.** Este atalho escrevia com o nível 3 (`RETRO_LOG_ERROR`) e é por
+/// ele que passa quase todo o relato do núcleo — fonte, banco de som, rasterizador, fim de jogo. No
+/// log do RetroArch isso vira `[libretro ERROR]` em linha informativa, e quem lê o log para decidir
+/// alguma coisa (foi assim que se leu a sessão do R36S) começa procurando um defeito que não existe.
 fn log(mensagem: &str) {
+    log_com_nivel(1, mensagem);
+}
+
+/// Escreve no log do frontend com o nível do `retro_log_level`.
+///
+/// `0..=3` são `DEBUG`, `INFO`, `WARN` e `ERROR` do `libretro.h`. **Não há `FATAL` na ABI**, e
+/// por isso o [`zeebx::registro::Nivel::Fatal`] sai como `ERROR`: inventar um número fora da
+/// faixa faria o frontend descartar a linha, que é o pior desfecho para a mensagem que diz que
+/// o emulador não pode continuar.
+fn log_com_nivel(nivel: u32, mensagem: &str) {
     let Ok(texto) = CString::new(mensagem) else {
         return;
     };
@@ -741,8 +875,134 @@ fn log(mensagem: &str) {
     if unsafe { environ(ENV_GET_LOG_INTERFACE, alvo) } {
         if let Some(escreve) = callback.log {
             // SAFETY: o frontend forneceu o callback e o formato é literal.
-            unsafe { escreve(3, c"%s".as_ptr(), texto.as_ptr()) };
+            unsafe { escreve(nivel, c"%s".as_ptr(), texto.as_ptr()) };
         }
+    }
+}
+
+/// Quadros de áudio entregues, e a contagem de tempo real para medir a taxa de verdade.
+///
+/// O `av_info` declara 44100 quadros por segundo. Se o que sai daqui for outra coisa, o frontend
+/// reamostra — ou o buffer dele esvazia — e o sintoma é som agudo, rápido ou fatiado, sem que nada
+/// dentro do motor apareça. Uma linha por segundo responde isso em qualquer aparelho.
+static AUDIO_QUADROS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static AUDIO_ANTERIOR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static AUDIO_ULTIMO_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static AUDIO_RELOGIO: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
+/// Pede ao frontend o buffer em que o quadro deve ser desenhado.
+///
+/// Devolve `None` quando ele não oferece, quando o buffer não serve (formato diferente de RGB565,
+/// ou tamanho diferente do pedido) ou quando o ponteiro vem nulo. **Toda recusa cai no caminho de
+/// sempre** — o vetor próprio do core —, porque um frontend que não empresta buffer não pode
+/// deixar o core sem imagem.
+///
+/// Ver [`ENV_GET_CURRENT_SOFTWARE_FRAMEBUFFER`].
+fn pede_o_buffer_do_frontend(largura: u32, altura: u32) -> Option<(*mut u8, usize)> {
+    let mut pedido = RetroFramebuffer {
+        data: std::ptr::null_mut(),
+        width: largura,
+        height: altura,
+        pitch: 0,
+        format: PIXEL_FORMAT_RGB565,
+    };
+    let alvo = &mut pedido as *mut RetroFramebuffer as *mut c_void;
+    if !unsafe { environ(ENV_GET_CURRENT_SOFTWARE_FRAMEBUFFER, alvo) } {
+        return None;
+    }
+    // O frontend **pode** devolver outro formato — a `libretro.h` diz que sim, para conversão.
+    // Escrever RGB565 num buffer XRGB8888 daria uma imagem plausível e falsa, então aqui se recusa.
+    if pedido.data.is_null()
+        || pedido.format != PIXEL_FORMAT_RGB565
+        || pedido.width != largura
+        || pedido.height != altura
+    {
+        return None;
+    }
+    Some((pedido.data.cast::<u8>(), pedido.pitch))
+}
+
+/// Escreve o quadro no buffer que o frontend emprestou, respeitando o passo de linha dele.
+///
+/// # Safety
+///
+/// O ponteiro e o passo vêm de [`pede_o_buffer_do_frontend`], que só os devolve quando o frontend
+/// aceitou o pedido — e a `libretro.h` garante que o buffer vale até o fim desta chamada de
+/// `retro_run`, que é onde isto roda.
+fn escreve_o_quadro(tela: &zeebx::video::display::Framebuffer, dados: *mut u8, passo: usize) {
+    let (largura, altura) = (tela.width() as usize, tela.height() as usize);
+    let passo = passo.max(largura * 2);
+    let bytes = passo.saturating_mul(altura);
+    if bytes == 0 {
+        return;
+    }
+    // SAFETY: o frontend prometeu um buffer com `passo * altura` bytes utilizáveis nesta chamada.
+    let destino = unsafe { std::slice::from_raw_parts_mut(dados, bytes) };
+    tela.write_rgb565_with_pitch(destino, passo);
+}
+
+/// O nível do `libretro.h` que corresponde ao nível do núcleo.
+fn nivel_do_libretro(nivel: zeebx::registro::Nivel) -> u32 {
+    use zeebx::registro::Nivel;
+    match nivel {
+        Nivel::Depuracao => 0,
+        Nivel::Informacao => 1,
+        Nivel::Aviso => 2,
+        // `FATAL` não existe na ABI: o teto dela é `ERROR`.
+        Nivel::Erro | Nivel::Fatal => 3,
+    }
+}
+
+/// Despeja no frontend o que o núcleo registrou desde a última chamada.
+///
+/// **Aqui, e não dentro do núcleo.** O log do frontend é um callback variádico do C, e chamá-lo
+/// do fundo de uma função de desenho ou de carregamento significaria atravessar código do
+/// frontend no meio de um estado nosso. O anel do [`zeebx::registro`] existe exatamente para
+/// isso: o núcleo guarda, e o core entrega num ponto em que a ABI espera ser chamada.
+///
+/// O teto por chamada evita que um jogo depurado, que escreve milhares de linhas por quadro,
+/// transforme o log do frontend no gargalo do emulador.
+fn despeja_o_registro() {
+    /// Quantas linhas saem por quadro. Trezentas é o anel inteiro, e mais que isso só sairia no
+    /// quadro seguinte — sem atrasar o jogo para servir de log.
+    const POR_QUADRO: usize = 64;
+
+    for linha in zeebx::registro::drena().into_iter().take(POR_QUADRO) {
+        log_com_nivel(
+            nivel_do_libretro(linha.nivel),
+            &format!(
+                "Zeebx [{}] {}: {}",
+                linha.nivel.etiqueta(),
+                linha.alvo,
+                linha.texto
+            ),
+        );
+    }
+    let descartes = zeebx::registro::descartes();
+    if descartes > 0 {
+        zeebx::registro::zera_descartes();
+        log_com_nivel(
+            2,
+            &format!("Zeebx: {descartes} linha(s) de log descartada(s) pelo teto do anel"),
+        );
+    }
+}
+
+/// Aplica a opção `zeebx_log` ao registro do núcleo.
+///
+/// A variável de ambiente `ZEEBX_LOG` vale como ponto de partida — é o que serve a quem depura
+/// pela linha de comando —, e a opção do frontend ganha dela quando existe, porque é escolha
+/// explícita de quem está com o RetroArch aberto.
+fn aplica_nivel_de_log() {
+    zeebx::registro::le_do_ambiente();
+    let Some(texto) = (unsafe { le_opcao(c"zeebx_log") }) else {
+        return;
+    };
+    match zeebx::registro::Ajuste::de_texto(&texto) {
+        Some(ajuste) => ajuste.aplica(),
+        None => log(&format!(
+            "Zeebx: `{texto}` não é nível de log; seguindo no valor do ZEEBX_LOG ou no padrão"
+        )),
     }
 }
 
@@ -769,6 +1029,47 @@ fn le_select(porta: u32) -> bool {
     }
 }
 
+/// A chave da opção que espelha o direcional nos eixos desta porta.
+///
+/// **Uma por porta, e não uma para todos.** O console tem duas portas e dois jogadores: quem joga
+/// de manche no Z-Pad 1 não obriga o dono do Z-Pad 2 a jogar com o direcional virando eixo. O
+/// RetroArch anuncia oito portas e o núcleo só registra duas; porta fora da faixa não tem opção, e
+/// fica desligada.
+fn chave_do_espelho(porta: u32) -> Option<&'static CStr> {
+    match porta {
+        0 => Some(c"zeebx_dpad_to_analog_p1"),
+        1 => Some(c"zeebx_dpad_to_analog_p2"),
+        _ => None,
+    }
+}
+
+/// O que cada botão do RetroPad vira no console, e como ele se chama na tela de mapeamento.
+///
+/// **Uma tabela só para as duas coisas, de propósito.** O `le_pad` lê por ela e o
+/// [`registra_botoes`] rotula por ela. Quando eram duas listas paralelas, elas divergiram em
+/// silêncio: o rótulo dizia "B = Botão 1" e a leitura entregava B como Botão 2 — a tela de
+/// mapeamento do frontend ensinava a apertar o botão errado (issue #41). Com uma tabela só, essa
+/// divergência é impossível de escrever.
+///
+/// **O nome de cada botão do console carrega a posição no aparelho, e não a ordem dos números:**
+/// o `b1` fica **embaixo**, o `b2` à **esquerda**, o `b3` no **topo** e o `b4` à **direita**
+/// (conferido nas imagens oficiais). Por isso o Botão 1 cai no `B` do RetroPad, que é o de baixo, e
+/// não no `A`, que é o da direita. Ver `docs/implementacao/09-entrada.md`.
+const BOTOES_DO_RETROPAD: [(u32, &str, &str); 12] = [
+    (ID_UP, "up", "Direcional cima"),
+    (ID_DOWN, "down", "Direcional baixo"),
+    (ID_LEFT, "left", "Direcional esquerda"),
+    (ID_RIGHT, "right", "Direcional direita"),
+    (ID_B, "b1", "Botão 1 (embaixo)"),
+    (ID_Y, "b2", "Botão 2 (esquerda)"),
+    (ID_X, "b3", "Botão 3 (topo)"),
+    (ID_A, "b4", "Botão 4 (direita)"),
+    (ID_L, "zl", "ZL"),
+    (ID_R, "zr", "ZR"),
+    (ID_START, "start", "Start"),
+    (ID_SELECT, "back", "HOME/Voltar"),
+];
+
 /// Lê o RetroPad e monta o estado que o console enxerga.
 ///
 /// Com `bitmasks`, os doze botões vêm numa palavra só — uma chamada ao frontend por quadro em vez
@@ -793,32 +1094,45 @@ fn le_pad(porta: u32, bitmasks: bool) -> Pad {
         }
     };
     let mut pad = Pad::default();
-    let mapa = [
-        (ID_UP, "up"),
-        (ID_DOWN, "down"),
-        (ID_LEFT, "left"),
-        (ID_RIGHT, "right"),
-        (ID_Y, "b1"),
-        (ID_B, "b2"),
-        (ID_X, "b3"),
-        (ID_A, "b4"),
-        (ID_L, "zl"),
-        (ID_R, "zr"),
-        (ID_START, "start"),
-        (ID_SELECT, "back"),
-    ];
-    for (id, nome) in mapa {
+    // A leitura e o rótulo saem da **mesma** tabela: ver [`BOTOES_DO_RETROPAD`].
+    for (id, nome, _) in BOTOES_DO_RETROPAD {
         if botao(id) {
             if let Some(indice) = Pad::button_by_name(nome) {
                 pad.press(indice, true);
             }
         }
     }
+    // O direcional espelhado nos eixos, quando a opção desta porta está ligada. **Antes** do laço
+    // do analógico: o espelho escreve zero no repouso — é assim que o manche volta ao centro ao
+    // soltar a direção —, e quem tem a última palavra tem de ser o manche de verdade, que só
+    // escreve quando sai da zona morta.
+    if let Some(chave) = chave_do_espelho(porta) {
+        // SAFETY: consulta de opção do frontend, na thread de `retro_run`.
+        if unsafe { le_opcao(chave) }.as_deref() == Some("enabled") {
+            pad.espelha_o_direcional_nos_eixos();
+        }
+    }
     // Os dois analógicos do RetroPad viram os quatro eixos do console, na faixa que o guest lê.
-    let eixo = |index: u32, id: u32| -> i32 {
+    poe_os_eixos_do_retropad(&mut pad, |index, id| {
         // SAFETY: consulta de estado do próprio frontend.
         unsafe { state(porta, DEVICE_ANALOG, index, id) as i32 }
-    };
+    });
+    pad
+}
+
+/// Põe nos eixos do console os dois analógicos do RetroPad, com a zona morta do repouso.
+///
+/// **A zona morta não é por tremor: é o que faz a opção do direcional funcionar.** O RetroPad
+/// entrega o manche parado no centro como zero, e escrever esse zero apagaria, a cada quadro, o que
+/// o espelho do direcional acabou de pôr — a opção `zeebx_dpad_to_analog_pN` ficava sem efeito
+/// dentro do núcleo, e só nele (o `Player::pad` do standalone já tinha esta regra, e foi por isso
+/// que a medida no harness passava e o RetroArch não). Quem está no centro **não escreve**; quem
+/// está fora da zona morta vence o espelho.
+///
+/// A leitura entra por parâmetro para o teste poder chamar isto sem frontend nenhum.
+fn poe_os_eixos_do_retropad(pad: &mut Pad, eixo: impl Fn(u32, u32) -> i32) {
+    let zona_morta =
+        (zeebx::input::bindings::DEADZONE * zeebx::input::AXIS_CURSO as f32).round() as i32;
     for (indice, valor) in [
         (0usize, eixo(ANALOG_LEFT, ANALOG_AXIS_X)),
         (1usize, eixo(ANALOG_LEFT, ANALOG_AXIS_Y)),
@@ -826,9 +1140,12 @@ fn le_pad(porta: u32, bitmasks: bool) -> Pad {
         (3usize, eixo(1, ANALOG_AXIS_Y)),
     ] {
         // `-0x8000..=0x7fff` do frontend para o curso do manche do console.
-        pad.set_axis(indice, valor / 256);
+        let valor = valor / 256;
+        if valor.abs() < zona_morta {
+            continue;
+        }
+        pad.set_axis(indice, valor);
     }
-    pad
 }
 
 /// Registra os aparelhos que o usuário pode escolher em cada porta.
@@ -878,22 +1195,7 @@ unsafe fn registra_controladores() {
 /// Rotula os botões para a tela de configuração do frontend.
 unsafe fn registra_botoes() {
     let mut descritores: Vec<RetroInputDescriptor> = Vec::new();
-    let rotulos = [
-        (ID_UP, "Direcional cima"),
-        (ID_DOWN, "Direcional baixo"),
-        (ID_LEFT, "Direcional esquerda"),
-        (ID_RIGHT, "Direcional direita"),
-        // O rótulo vai no `id` que o core realmente lê, senão a tela de mapeamento do frontend
-        // ensina o jogador a apertar o botão errado.
-        (ID_B, "Botão 1"),
-        (ID_Y, "Botão 2"),
-        (ID_X, "Botão 3"),
-        (ID_A, "Botão 4"),
-        (ID_L, "ZL"),
-        (ID_R, "ZR"),
-        (ID_START, "HOME/Start"),
-        (ID_SELECT, "Voltar"),
-    ];
+    let rotulos = BOTOES_DO_RETROPAD.map(|(id, _, rotulo)| (id, rotulo));
     for porta in 0..2u32 {
         for (id, texto) in rotulos {
             descritores.push(RetroInputDescriptor {
@@ -961,7 +1263,7 @@ unsafe fn registra_opcoes_do_core() {
         // `category_key: c"video"`, mas este arranjo só tinha a categoria `"audio"` — a de vídeo
         // nunca foi registrada. O frontend não trava com uma chave que não bate com nenhuma
         // categoria, mas a opção fica sem o agrupamento certo no menu, e ninguém tinha reparado.
-        static CATEGORIAS: [RetroCoreOptionV2Category; 4] = [
+        static CATEGORIAS: [RetroCoreOptionV2Category; 5] = [
             RetroCoreOptionV2Category {
                 key: c"audio".as_ptr(),
                 desc: c"Áudio".as_ptr(),
@@ -976,6 +1278,11 @@ unsafe fn registra_opcoes_do_core() {
                 key: c"sistema".as_ptr(),
                 desc: c"Sistema".as_ptr(),
                 info: c"Perfis e ajustes gerais do Zeebx".as_ptr(),
+            },
+            RetroCoreOptionV2Category {
+                key: c"controles".as_ptr(),
+                desc: c"Controles".as_ptr(),
+                info: c"Como o RetroPad de cada porta vira o controle do console".as_ptr(),
             },
             RetroCoreOptionV2Category {
                 key: std::ptr::null(),
@@ -1056,11 +1363,16 @@ unsafe fn registra_opcoes_do_core() {
             value: std::ptr::null(),
             label: std::ptr::null(),
         }; 128];
-        const ESCALAS: [(&CStr, &CStr); 4] = [
-            (c"1", c"1x — sem supersampling (padrão)"),
-            (c"2", c"2x — desenha em 1280×960"),
-            (c"3", c"3x — desenha em 1920×1440"),
-            (c"4", c"4x — desenha em 2560×1920"),
+        // **Os dois sentidos, e é importante dizer qual vale onde.** Abaixo de 1x o desenho é
+        // menor e quem amplia é a apresentação: só o rasterizador de processador faz isso, e é
+        // onde o preenchimento custa CPU. Acima de 1x é supersampling, que só a placa faz.
+        const ESCALAS: [(&CStr, &CStr); 6] = [
+            (c"1", c"1x — nativo, sem supersampling (padrão)"),
+            (c"0.5", c"0.5x — metade (320×240), só no processador"),
+            (c"0.25", c"0.25x — um quarto (160×120), só no processador"),
+            (c"2", c"2x — desenha em 1280×960 (só na placa)"),
+            (c"3", c"3x — desenha em 1920×1440 (só na placa)"),
+            (c"4", c"4x — desenha em 2560×1920 (só na placa)"),
         ];
         for (i, (valor, rotulo)) in ESCALAS.iter().enumerate() {
             escala_values[i] = RetroCoreOptionValue {
@@ -1185,7 +1497,67 @@ unsafe fn registra_opcoes_do_core() {
             };
         }
 
-        let definicoes: [RetroCoreOptionV2Definition; 14] = [
+        // **Cinco níveis, e "desligado" separado deles.** A lista é a mesma do registro do núcleo
+        // ([`zeebx::registro::Nivel`]) e a ordem é do mais grave para o mais falador, que é como
+        // se escolhe um teto de gravidade: o nível escolhido entra, e tudo o que é mais grave
+        // também.
+        let mut descarte_values = [RetroCoreOptionValue {
+            value: std::ptr::null(),
+            label: std::ptr::null(),
+        }; 128];
+        const DESCARTE_OPC: [(&CStr, &CStr); 2] = [
+            (c"desligado", c"Desligado (padrão)"),
+            (
+                c"ligado",
+                c"Ligado — experimental, só ajuda em GPU de tiles (Mali)",
+            ),
+        ];
+        for (i, (valor, rotulo)) in DESCARTE_OPC.iter().enumerate() {
+            descarte_values[i] = RetroCoreOptionValue {
+                value: valor.as_ptr(),
+                label: rotulo.as_ptr(),
+            };
+        }
+
+        let mut log_values = [RetroCoreOptionValue {
+            value: std::ptr::null(),
+            label: std::ptr::null(),
+        }; 128];
+        const LOG_OPC: [(&CStr, &CStr); 6] = [
+            (c"desligado", c"Desligado"),
+            (c"fatal", c"Fatal — só o que impede continuar"),
+            (c"erro", c"Erro — falhas tratadas e acima"),
+            (c"aviso", c"Aviso — o que saiu do previsto (padrão)"),
+            (c"informacao", c"Informação — o que aconteceu e vale saber"),
+            (c"depuracao", c"Depuração — o caminho de cada decisão (verboso)"),
+        ];
+        for (i, (valor, rotulo)) in LOG_OPC.iter().enumerate() {
+            log_values[i] = RetroCoreOptionValue {
+                value: valor.as_ptr(),
+                label: rotulo.as_ptr(),
+            };
+        }
+
+        // O espelho do direcional nos eixos. A lista é a do pedido (issue #39): desligado primeiro,
+        // porque desligado é o padrão — e é o padrão porque a ideia já foi tentada e desfeita duas
+        // vezes (ver `Pad::espelha_o_direcional_nos_eixos`).
+        let mut espelho_values = [RetroCoreOptionValue {
+            value: std::ptr::null(),
+            label: std::ptr::null(),
+        }; 128];
+        const ESPELHO_OPC: [(&CStr, &CStr); 2] =
+            [(c"disabled", c"Desligado"), (c"enabled", c"Ligado")];
+        for (i, (valor, rotulo)) in ESPELHO_OPC.iter().enumerate() {
+            espelho_values[i] = RetroCoreOptionValue {
+                value: valor.as_ptr(),
+                label: rotulo.as_ptr(),
+            };
+        }
+
+        // **Uma definição por porta**, e são duas porque o console tem duas (`input::PORTAS`).
+        // Cada jogador liga a sua: quem joga de manche no Z-Pad 1 não obriga o dono do Z-Pad 2 a
+        // jogar com o direcional virando eixo.
+        let definicoes: [RetroCoreOptionV2Definition; 18] = [
             RetroCoreOptionV2Definition {
                 key: c"zeebx_midi_backend".as_ptr(),
                 desc: c"Sintetizador MIDI (reinício)".as_ptr(),
@@ -1210,7 +1582,7 @@ unsafe fn registra_opcoes_do_core() {
                 key: c"zeebx_perfil".as_ptr(),
                 desc: c"Perfil".as_ptr(),
                 desc_categorized: c"Perfil".as_ptr(),
-                info: c"Portátil aplica de uma vez o que o aparelho de mão fraco (RG40XX-H, muOS) precisa: tabela de timbres em vez de SoundFont, taxa e vozes do MIDI reduzidas, cache de som menor e sem supersampling no 3D. Enquanto ativo, ignora as opções individuais que ele cobre (mas não volume, névoa nem rasterizador, que continuam por conta própria). O sintetizador MIDI muda ao recarregar o conteúdo; o resto vale sem recarregar.".as_ptr(),
+                info: c"Portátil aplica de uma vez o que o aparelho de mão fraco (RG40XX-H, muOS) precisa: tabela de timbres em vez de SoundFont, taxa e vozes do MIDI reduzidas, cache de som menor e, **quando o desenho é no processador**, o 3D em 0,5x — 320x240 ampliado para os 640x480 na apresentação, o que mediu 22% menos tempo real, com a imagem mais quadrada. Com o rasterizador de placa o perfil não mexe na resolução: ali quem manda é a opção separada. Enquanto ativo, ignora as opções individuais que ele cobre (mas não volume, névoa nem rasterizador, que continuam por conta própria). O sintetizador MIDI muda ao recarregar o conteúdo; o resto vale sem recarregar.".as_ptr(),
                 info_categorized: c"Portátil junta os ajustes de desempenho para aparelho de mão fraco. Ignora as opções individuais que cobre.".as_ptr(),
                 category_key: c"sistema".as_ptr(),
                 values: perfil_values,
@@ -1260,8 +1632,8 @@ unsafe fn registra_opcoes_do_core() {
                 key: c"zeebx_resolucao_interna".as_ptr(),
                 desc: c"Resolução interna do 3D".as_ptr(),
                 desc_categorized: c"Resolução interna".as_ptr(),
-                info: c"Desenha o 3D numa resolução maior e reduz de volta para os 640x480 do console, o que suaviza a borda do polígono (supersampling). O quadro entregue ao frontend continua 640x480: shader e proporção nao mudam. Só tem efeito com o rasterizador de placa, e custa memória e preenchimento.".as_ptr(),
-                info_categorized: c"Desenha o 3D maior e reduz para 640x480, suavizando a borda. Só na placa.".as_ptr(),
+                info: c"A resolução em que o 3D é desenhado, por lado. O quadro entregue ao frontend continua 640x480, e shader e proporção não mudam. Abaixo de 1x (0.5x, 0.25x) o desenho sai menor e é ampliado na apresentação: alivia o processador, e é o que serve a aparelho fraco — a imagem fica mais quadrada. Acima de 1x é supersampling: suaviza a borda do polígono, custa memória e preenchimento, e só vale com o rasterizador de placa. **Esta opção não muda o tamanho da imagem na tela**: o console entrega 640x480 e quem amplia é o frontend — com a escala inteira ligada no RetroArch (Integer Scale) ela só é apresentada em múltiplos de 640x480, o que numa tela 1080p dá 1280x960 com tarja. Para ocupar a tela, desligue a escala inteira lá. Vale na hora.".as_ptr(),
+                info_categorized: c"Abaixo de 1x alivia o processador; acima de 1x é supersampling e só vale na placa. O perfil Portátil fixa isto em 0,5x e ganha desta opção.".as_ptr(),
                 category_key: c"video".as_ptr(),
                 values: escala_values,
                 default_value: c"1".as_ptr(),
@@ -1317,6 +1689,46 @@ unsafe fn registra_opcoes_do_core() {
                 default_value: c"desligado".as_ptr(),
             },
             RetroCoreOptionV2Definition {
+                key: c"zeebx_descarte_de_tiles".as_ptr(),
+                desc: c"Descartar tiles (experimental)".as_ptr(),
+                desc_categorized: c"Descartar tiles (experimental)".as_ptr(),
+                info: c"Diz ao driver de vídeo que a profundidade e o estêncil do quadro podem ser jogados fora depois de ele ser apresentado. Rende em GPU de tiles, como o Mali dos portáteis, onde evita escrever esses anexos de volta na memória — e não se mede em placa de desktop. Desligado por padrão porque um jogo que não limpe a profundidade de um quadro para o outro conta com ela; se aparecer lixo na imagem com isto ligado, desligue. Vale na hora, e só tem efeito com o rasterizador de placa.".as_ptr(),
+                info_categorized: c"Só ajuda em GPU de tiles. Desligado por padrão porque um jogo pode contar com a profundidade do quadro anterior. Vale na hora.".as_ptr(),
+                category_key: c"video".as_ptr(),
+                values: descarte_values,
+                default_value: c"desligado".as_ptr(),
+            },
+            RetroCoreOptionV2Definition {
+                key: c"zeebx_log".as_ptr(),
+                desc: c"Log do núcleo".as_ptr(),
+                desc_categorized: c"Log do núcleo".as_ptr(),
+                info: c"Quanto o núcleo escreve no log do RetroArch. O nível escolhido entra e tudo o que for mais grave também: Aviso mostra só o que saiu do previsto, Informação acrescenta abertura de jogo, poda de cache e carga do banco de som, e Depuração mostra o caminho de cada decisão (verboso, e mais lento). Vale na hora, e o log sai no arquivo que o RetroArch configurar.".as_ptr(),
+                info_categorized: c"Quanto o núcleo escreve no log. O nível entra com o que for mais grave. Vale na hora.".as_ptr(),
+                category_key: c"sistema".as_ptr(),
+                values: log_values,
+                default_value: c"aviso".as_ptr(),
+            },
+            RetroCoreOptionV2Definition {
+                key: c"zeebx_dpad_to_analog_p1".as_ptr(),
+                desc: c"Direcional nos eixos do manche (jogador 1)".as_ptr(),
+                desc_categorized: c"Direcional nos eixos (jogador 1)".as_ptr(),
+                info: c"Com Ligado, o direcional do jogador 1 também empurra o manche esquerdo dos jogos: cada sentido escreve o curso inteiro no eixo, e soltar devolve o eixo ao centro. Serve a jogo que só escuta o eixo e ignora o direcional por completo. **Desligado por padrão** porque um jogo que lê os dois canais anda duas casas por toque, e porque quem lê variação lê a volta ao centro como um passo no sentido contrário — foi o defeito que desfez as duas tentativas anteriores. Os botões continuam funcionando: esta opção acrescenta o eixo, não troca o canal. Não tem efeito na porta do Boomerang, cujo eixo vem do sensor de movimento. **É o inverso do Analog to Digital Type do RetroArch**, que lê o manche e aperta o direcional: aqui é o direcional que lê, e o manche que recebe. Os dois juntos não se atropelam — o manche de verdade é lido depois, e é ele que fica valendo. Vale na hora.".as_ptr(),
+                info_categorized: c"O direcional do jogador 1 também empurra o manche. Para jogo que só lê o eixo. Desligado por padrão: quem lê os dois canais anda duas casas por toque.".as_ptr(),
+                category_key: c"controles".as_ptr(),
+                values: espelho_values,
+                default_value: c"disabled".as_ptr(),
+            },
+            RetroCoreOptionV2Definition {
+                key: c"zeebx_dpad_to_analog_p2".as_ptr(),
+                desc: c"Direcional nos eixos do manche (jogador 2)".as_ptr(),
+                desc_categorized: c"Direcional nos eixos (jogador 2)".as_ptr(),
+                info: c"O mesmo do jogador 1, para o controle da segunda porta. É uma opção separada porque são dois jogadores e dois controles: ligar no 1 não obriga o 2. Vale na hora.".as_ptr(),
+                info_categorized: c"O mesmo do jogador 1, para a segunda porta. Vale na hora.".as_ptr(),
+                category_key: c"controles".as_ptr(),
+                values: espelho_values,
+                default_value: c"disabled".as_ptr(),
+            },
+            RetroCoreOptionV2Definition {
                 key: std::ptr::null(),
                 desc: std::ptr::null(),
                 desc_categorized: std::ptr::null(),
@@ -1340,7 +1752,7 @@ unsafe fn registra_opcoes_do_core() {
             );
         }
     } else {
-        static VARIAVEIS: [RetroVariable; 14] = [
+        static VARIAVEIS: [RetroVariable; 18] = [
             RetroVariable {
                 key: c"zeebx_midi_backend".as_ptr(),
                 value: c"Sintetizador MIDI (reinício); auto|timbres|soundfont".as_ptr(),
@@ -1371,7 +1783,7 @@ unsafe fn registra_opcoes_do_core() {
             },
             RetroVariable {
                 key: c"zeebx_resolucao_interna".as_ptr(),
-                value: c"Resolução interna do 3D; 1|2|3|4".as_ptr(),
+                value: c"Resolução interna do 3D; 1|0.5|0.25|2|3|4".as_ptr(),
             },
             RetroVariable {
                 key: c"zeebx_antialias".as_ptr(),
@@ -1392,6 +1804,24 @@ unsafe fn registra_opcoes_do_core() {
             RetroVariable {
                 key: c"zeebx_frameskip".as_ptr(),
                 value: c"Pular quadros; desligado|automatico|1|2|3|4|5|6".as_ptr(),
+            },
+            RetroVariable {
+                key: c"zeebx_descarte_de_tiles".as_ptr(),
+                value: c"Descartar tiles (experimental); desligado|ligado".as_ptr(),
+            },
+            RetroVariable {
+                key: c"zeebx_log".as_ptr(),
+                value: c"Log do núcleo; desligado|fatal|erro|aviso|informacao|depuracao".as_ptr(),
+            },
+            // Uma por porta: o console tem duas (`zeebx::input::PORTAS`), e cada jogador liga a
+            // sua. Ver `chave_do_espelho`, do lado que lê.
+            RetroVariable {
+                key: c"zeebx_dpad_to_analog_p1".as_ptr(),
+                value: c"Direcional nos eixos do manche (jogador 1); disabled|enabled".as_ptr(),
+            },
+            RetroVariable {
+                key: c"zeebx_dpad_to_analog_p2".as_ptr(),
+                value: c"Direcional nos eixos do manche (jogador 2); disabled|enabled".as_ptr(),
             },
             RetroVariable {
                 key: std::ptr::null(),
@@ -1620,6 +2050,9 @@ fn ligado_de_texto(texto: &str) -> Option<bool> {
 /// Cada opção ausente ou estragada mantém o que já havia, em vez de voltar ao padrão: um frontend
 /// antigo, que não conhece a chave, não pode desfazer a escolha de quem configurou.
 fn aplica_opcoes_quentes(estado: &mut Core) {
+    // **Primeiro o log.** Tudo o que as opções abaixo decidirem sai registrado no nível que o
+    // usuário acabou de escolher, em vez de o nível ser aplicado depois das decisões.
+    aplica_nivel_de_log();
     // **O modo é lido aqui; a decisão de pular ou não é por quadro**, em `retro_run`. Ver
     // [`Frameskip`]: reler o modo só quando algo mudou é barato, mas a decisão em si (que quadro
     // pular) precisa de um contador ou do aviso do frontend, e os dois valem a cada quadro, não
@@ -1660,6 +2093,11 @@ fn aplica_opcoes_quentes(estado: &mut Core) {
     if let Some(neblina) = unsafe { le_opcao(c"zeebx_neblina") }.as_deref().and_then(ligado_de_texto) {
         estado.session.define_neblina(neblina);
     }
+    if let Some(descartar) =
+        unsafe { le_opcao(c"zeebx_descarte_de_tiles") }.as_deref().and_then(ligado_de_texto)
+    {
+        estado.session.define_descarte_de_tiles(descartar);
+    }
     // **O perfil "Portátil" ganha das opções individuais que ele cobre, quando ativo.** Volume e
     // névoa ficam de fora de propósito: são gosto de quem joga, não custo de processador ou
     // memória, e o perfil é sobre desempenho. O rasterizador também fica de fora — ele só muda ao
@@ -1667,15 +2105,32 @@ fn aplica_opcoes_quentes(estado: &mut Core) {
     // continua sendo o escape para quem precisa dela.
     let perfil_portatil = perfil_e_portatil(unsafe { le_opcao(c"zeebx_perfil") }.as_deref());
 
-    let escala = if perfil_portatil {
-        Some(1)
-    } else {
-        unsafe { le_opcao(c"zeebx_resolucao_interna") }
-            .as_deref()
-            .and_then(|texto| numero_de_texto(texto, 1, 8))
+    // **Um número só, dois mecanismos.** Abaixo de 1x quem reduz é o rasterizador de
+    // processador (superfície menor, ampliada na apresentação); acima de 1x quem amplia é o de
+    // placa (supersampling). O valor é entregue aos dois, e cada um usa o que lhe cabe.
+    // **O perfil Portátil traz a redução de fábrica.** Num aparelho fraco o preenchimento é o
+    // que domina, e desenhar em 320×240 mediu 22% menos tempo real (ver
+    // `docs/OPTIMIZING_V0.3.0.md`, seção 28). Quem não gostar da imagem mais quadrada escolhe a
+    // opção à mão — o perfil é sobre desempenho, e este é o item de desempenho que faltava nele.
+    let texto_escala = match perfil_portatil {
+        true => Some("0.5".to_string()),
+        false => unsafe { le_opcao(c"zeebx_resolucao_interna") },
     };
-    if let Some(escala) = escala {
-        estado.session.define_resolucao_interna(escala);
+    match texto_escala.as_deref().map(str::trim) {
+        Some("0.5") | Some("0,5") => {
+            estado.session.define_reducao(2);
+            estado.session.define_resolucao_interna(1);
+        }
+        Some("0.25") | Some("0,25") => {
+            estado.session.define_reducao(4);
+            estado.session.define_resolucao_interna(1);
+        }
+        outro => {
+            estado.session.define_reducao(1);
+            if let Some(escala) = outro.and_then(|texto| numero_de_texto(texto, 1, 8)) {
+                estado.session.define_resolucao_interna(escala);
+            }
+        }
     }
 
     // **Áudio e memória valem para o que vier depois.** A música já sintetizada não muda de taxa
@@ -1923,7 +2378,7 @@ pub unsafe extern "C" fn retro_load_game(game: *const RetroGameInfo) -> bool {
         .to_string_lossy()
         .into_owned();
     let Some(save_dir) = diretorio(ENV_GET_SAVE_DIRECTORY) else {
-        log("Zeebx: o frontend não informou diretório de saves; recusando carregar.");
+        log_com_nivel(3, "Zeebx: o frontend não informou diretório de saves; recusando carregar.");
         return false;
     };
     let sistema = diretorio(ENV_GET_SYSTEM_DIRECTORY);
@@ -1958,7 +2413,7 @@ pub unsafe extern "C" fn retro_load_game(game: *const RetroGameInfo) -> bool {
     let mut formato = PIXEL_FORMAT_RGB565;
     let alvo = &mut formato as *mut u32 as *mut c_void;
     if !unsafe { environ(ENV_SET_PIXEL_FORMAT, alvo) } {
-        log("Zeebx: o frontend não aceita RGB565.");
+        log_com_nivel(3, "Zeebx: o frontend não aceita RGB565.");
         return false;
     }
     // Uma chamada por quadro em vez de doze, quando o frontend entrega a máscara.
@@ -1988,7 +2443,7 @@ pub unsafe extern "C" fn retro_load_game(game: *const RetroGameInfo) -> bool {
             true
         }
         Err(erro) => {
-            log(&format!("Zeebx: não deu para abrir {caminho}: {erro}"));
+            log_com_nivel(3, &format!("Zeebx: não deu para abrir {caminho}: {erro}"));
             false
         }
     }
@@ -2137,6 +2592,7 @@ unsafe fn carrega(
         aberto_pela_z_wheel: false,
         bitmasks: false,
         aceita_dupe: false,
+        gl_quadros_antes: 0,
         ultima_assinatura: None,
         ultimo_relogio_ms: 0,
         audio_pendente: Vec::new(),
@@ -2150,6 +2606,7 @@ unsafe fn carrega(
     // As opções valem desde o primeiro quadro. É a **mesma** função do caminho quente de propósito:
     // duas cópias da aplicação divergem com o tempo, e a que roda menos é a que fica errada sem
     // ninguém ver.
+    aplica_nivel_de_log();
     aplica_opcoes_quentes(&mut core);
     Ok(core)
 }
@@ -2259,7 +2716,7 @@ pub extern "C" fn retro_run() {
     // Os buffers saem do estado antes das chamadas ao frontend: nenhum cadeado do core fica preso
     // enquanto o frontend executa, e é isso que impede um aviso dele — "disco cheio, quer salvar?"
     // — de travar o emulador.
-    let (frame, audio, largura, altura, duplicado) = {
+    let (frame, audio, largura, altura, duplicado, emprestado, na_placa, passo_do_video) = {
         let Ok(mut guard) = core().lock() else {
             return;
         };
@@ -2279,10 +2736,6 @@ pub extern "C" fn retro_run() {
         RELOGIO.store(estado.session.clock_ms(), std::sync::atomic::Ordering::Relaxed);
         #[cfg(test)]
         INSTRUCOES.store(estado.session.instrucoes(), std::sync::atomic::Ordering::Relaxed);
-        // **A placa entra no primeiro quadro.** O contexto de GL só existe depois que o frontend
-        // chama o `context_reset`, que acontece depois do `retro_load_game`; aqui é o primeiro
-        // lugar em que ele pode estar pronto. Recriar a sessão custa um reinício que ninguém vê:
-        // nenhum quadro foi entregue ainda.
         // **As opções que dá para aplicar a quente.** Ver [`opcoes_mudaram`]: o frontend avisa uma
         // vez, e só então vale reler — e a releitura trata todas juntas, porque o aviso é
         // consumido na primeira pergunta (ver [`aplica_opcoes_quentes`]). O sintetizador MIDI e o
@@ -2291,6 +2744,9 @@ pub extern "C" fn retro_run() {
         if opcoes_mudaram() {
             aplica_opcoes_quentes(estado);
         }
+        // O ponto seguro para falar com o frontend: dentro do `retro_run`, onde a ABI espera ser
+        // chamada. Ver [`despeja_o_registro`].
+        despeja_o_registro();
         // **A decisão de pular é por quadro, e vale a cada quadro** — ao contrário do modo, que só
         // muda quando o usuário mexe na opção. Um `Fixo(n)` que só decidisse quando a opção muda
         // pularia (ou não) para sempre a partir da primeira leitura, e não a cada quadro n de n+1.
@@ -2335,12 +2791,27 @@ pub extern "C" fn retro_run() {
         estado.session.define_pula_desenho(
             (pula_por_frameskip || pula_por_limite) && !estado.session.leu_pixels(),
         );
-        liga_a_placa(estado);
-        // **O contexto se perdeu e a sessão estava nele.** O aviso sozinho não basta: a sessão
-        // guarda o rasterizador de placa, e continuar desenhando por ele chamaria funções de GL que
-        // já não existem. Voltar ao software é o mesmo caminho da falha na ativação.
-        if PERDEU_A_PLACA.swap(false, std::sync::atomic::Ordering::Relaxed) && estado.placa_ligada {
+        // **A placa de agora, e a sessão de agora.** O aviso do frontend — contexto perdido, ou
+        // contexto refeito — chega no meio do quadro e vira uma marca só (`PERDEU_A_PLACA`, ver
+        // [`contexto_perdido`]); o que se faz com ela é isto, **antes** de [`liga_a_placa`], porque
+        // a sessão viva guarda o rasterizador da placa de antes: continuar desenhando por ele
+        // chamaria funções de GL que já não existem.
+        //
+        // `placa_ligada` é o que diz que a sessão está na placa, e é ele que se zera — a sessão
+        // nova nasce **sob demanda**, no `liga_a_placa` logo abaixo, quando o contexto já voltou.
+        // Sem contexto novo, ela volta ao processador, que é o mesmo caminho da falha na ativação.
+        //
+        // **A placa também entra no primeiro quadro, e por isto é aqui.** O contexto de GL só
+        // existe depois que o frontend chama o `context_reset`, que acontece depois do
+        // `retro_load_game`: este é o primeiro lugar em que ele pode estar pronto. Recriar a sessão
+        // custa um reinício que ninguém vê — nenhum quadro foi entregue ainda.
+        let perdeu = PERDEU_A_PLACA.swap(false, std::sync::atomic::Ordering::Relaxed);
+        let estava_na_placa = perdeu && estado.placa_ligada;
+        if perdeu {
             estado.placa_ligada = false;
+        }
+        liga_a_placa(estado);
+        if estava_na_placa && !estado.placa_ligada {
             let antes = estado.path.clone();
             if let Err(erro) = troca_para(estado, &antes, false) {
                 aviso(&format!(
@@ -2475,6 +2946,20 @@ pub extern "C" fn retro_run() {
         // Vídeo: o framebuffer do console, no formato negociado.
         let tela = estado.session.screen();
         let (largura, altura) = (tela.width(), tela.height());
+        // **A placa desenhou neste quadro?** Um jogo que só desenha 2D — a Turma da Mônica e o
+        // Zenonia desenham por `IDisplay`/`IBitmap` e nunca trocam buffer de placa — não tem nada
+        // no FBO, e o frontend apresentaria uma tela preta nos dois frontends.
+        //
+        // O contador do motor é **acumulado**, e a placa pode ter desenhado uma vez na abertura e
+        // nunca mais: o que vale é a diferença desde o quadro anterior. Quando ela não desenhou, o
+        // que existe é o quadro do processador, e é ele que se entrega.
+        let gl_agora = estado.session.quadros_da_placa();
+        let desenhou_na_placa = gl_agora != estado.gl_quadros_antes;
+        estado.gl_quadros_antes = gl_agora;
+        // No caminho de placa o frontend apresenta o FBO que recebeu no callback e ignora o
+        // ponteiro de pixels. Não copie 600 KiB nem calcule assinatura CPU nesse caso: além de
+        // inútil, isso competia com o Mali pela mesma CPU fraca que queremos deixar para o guest.
+        let na_placa = placa().is_some() && desenhou_na_placa;
         // O console é 640×480, e é esse o quadro que o shader espera receber. Um tamanho
         // diferente é avisado uma vez, em vez de aparecer como imagem torta sem explicação.
         if !estado.avisou_tamanho && (largura != 640 || altura != 480) {
@@ -2487,10 +2972,28 @@ pub extern "C" fn retro_run() {
         // 30 FPS é cadência de apresentação, não só otimização 3D: no quadro oculto preservamos
         // os bytes anteriores. Se o frontend aceita dupe, entregaremos ponteiro nulo; se não
         // aceita, entregaremos os mesmos bytes de novo — nos dois casos a imagem é realmente 30.
-        let duplicado = if estado.limite_fps_duplica {
+        // **O buffer emprestado, quando o frontend o oferece.** Só no caminho de software: com o
+        // desenho na placa quem apresenta é o FBO, e não há quadro na CPU para escrever.
+        let emprestado = match na_placa {
+            true => None,
+            false => pede_o_buffer_do_frontend(largura, altura),
+        };
+        let passo_do_video = emprestado
+            .as_ref()
+            .map(|(_, passo)| *passo)
+            .unwrap_or(largura as usize * 2);
+        let duplicado = if na_placa {
+            false
+        } else if estado.limite_fps_duplica {
             estado.aceita_dupe
         } else {
-            tela.write_rgb565_into(&mut quadro);
+            match &emprestado {
+                // Escreve onde o quadro vai ficar: sem vetor intermediário e sem cópia.
+                Some((dados, passo)) => escreve_o_quadro(tela, *dados, *passo),
+                None => {
+                    tela.write_rgb565_into(&mut quadro);
+                }
+            }
             let assinatura = tela.signature();
             let igual = estado.aceita_dupe && estado.ultima_assinatura == Some(assinatura);
             estado.ultima_assinatura = Some(assinatura);
@@ -2510,22 +3013,35 @@ pub extern "C" fn retro_run() {
         for amostra in estado.mixer.render(devidas) {
             som.push((amostra.clamp(-1.0, 1.0) * f32::from(i16::MAX)) as i16);
         }
-        (quadro, som, largura, altura, duplicado)
+        (
+            quadro,
+            som,
+            largura,
+            altura,
+            duplicado,
+            emprestado,
+            na_placa,
+            passo_do_video,
+        )
     };
     let frente = callbacks();
     if let Some(video) = frente.video {
-        let na_placa = placa().is_some();
         let (ponteiro, _) = match (na_placa, duplicado) {
             // **Em modo de placa o quadro já está no framebuffer do frontend**: entregar pixels
             // aqui seria mentira, e o `libretro` tem um sentinela para dizer exatamente isso.
             (true, _) => (HW_FRAME_BUFFER_VALID as *const c_void, ()),
             // Quadro nulo avisa "repete o anterior", que é o que a ABI oferece para tela parada.
             (false, true) => (std::ptr::null(), ()),
-            (false, false) => (frame.as_ptr() as *const c_void, ()),
+            // **O ponteiro emprestado é o que se entrega**, e não o nosso: a `libretro.h` exige
+            // que seja ele, sem deslocamento.
+            (false, false) => match &emprestado {
+                Some((dados, _)) => (*dados as *const c_void, ()),
+                None => (frame.as_ptr() as *const c_void, ()),
+            },
         };
         // SAFETY: o buffer vive durante a chamada; no quadro repetido o frontend reusa o último.
         unsafe {
-            video(ponteiro, largura, altura, largura as usize * 2);
+            video(ponteiro, largura, altura, passo_do_video);
         }
     }
     // O retorno do lote é em quadros **aceitos**; o que sobrar espera a próxima chamada.
@@ -2534,6 +3050,28 @@ pub extern "C" fn retro_run() {
         let quadros = audio.len() / 2;
         // SAFETY: o lote é intercalado em estéreo e o tamanho é o número de quadros.
         let aceitos = unsafe { batch(audio.as_ptr(), quadros) }.min(quadros);
+        // **A última légua, medida.** Quantos quadros o core entrega por segundo real, contra os
+        // 44100 que ele declara. Ver [`AUDIO_QUADROS`].
+        {
+            use std::sync::atomic::Ordering;
+            let total = AUDIO_QUADROS.fetch_add(quadros as u64, Ordering::Relaxed) + quadros as u64;
+            let inicio = *AUDIO_RELOGIO.get_or_init(std::time::Instant::now);
+            let agora = inicio.elapsed().as_millis() as u64;
+            let ultimo = AUDIO_ULTIMO_MS.load(Ordering::Relaxed);
+            if agora >= ultimo + 1_000 {
+                let antes = AUDIO_ANTERIOR.swap(total, Ordering::Relaxed);
+                AUDIO_ULTIMO_MS.store(agora, Ordering::Relaxed);
+                zeebx::registro!(
+                    zeebx::registro::Nivel::Informacao,
+                    "audio",
+                    "audio: {} quadros por segundo real ({:.0}% de 44100); o frontend aceitou {}/{} neste quadro",
+                    (total - antes) * 1_000 / (agora - ultimo).max(1),
+                    ((total - antes) * 1_000) as f64 / (agora - ultimo).max(1) as f64 / 441.0,
+                    aceitos,
+                    quadros
+                );
+            }
+        }
         if aceitos < quadros {
             sobra = audio[aceitos * 2..].to_vec();
         }
@@ -2564,7 +3102,7 @@ pub extern "C" fn retro_run() {
                         Some(caminho) => match troca_para(estado, &caminho, false) {
                             Ok(()) => log("Zeebx: fim do jogo; de volta à Z-Wheel"),
                             Err(erro) => {
-                                log(&format!("Zeebx: não deu para voltar à Z-Wheel: {erro}"));
+                                log_com_nivel(2, &format!("Zeebx: não deu para voltar à Z-Wheel: {erro}"));
                                 dispensar = true;
                             }
                         },
@@ -2987,6 +3525,32 @@ mod testes {
         assert_eq!(numero_de_texto("muito", 1, 8), None);
     }
 
+    /// O nível de log do núcleo atravessa os tokens da opção, e o token inválido **não** cala o
+    /// registro: um erro de escrita desligando o log sem avisar é o pior desfecho.
+    #[test]
+    fn o_nivel_de_log_da_opcao_vira_o_ajuste_do_nucleo() {
+        use zeebx::registro::{Ajuste, Nivel};
+
+        assert_eq!(Ajuste::de_texto("desligado"), Some(Ajuste::Desligado));
+        assert_eq!(Ajuste::de_texto("aviso"), Some(Ajuste::Ate(Nivel::Aviso)));
+        assert_eq!(Ajuste::de_texto("informacao"), Some(Ajuste::Ate(Nivel::Informacao)));
+        assert_eq!(Ajuste::de_texto("depuracao"), Some(Ajuste::Ate(Nivel::Depuracao)));
+        assert_eq!(Ajuste::de_texto("fatal"), Some(Ajuste::Ate(Nivel::Fatal)));
+        // O que não é token nenhum é recusado, e quem trata é quem chama.
+        assert_eq!(Ajuste::de_texto("banana"), None);
+
+        // Cada nível tem o seu número no `libretro.h`, e o `FATAL` cai no teto da ABI.
+        assert_eq!(nivel_do_libretro(Nivel::Depuracao), 0);
+        assert_eq!(nivel_do_libretro(Nivel::Informacao), 1);
+        assert_eq!(nivel_do_libretro(Nivel::Aviso), 2);
+        assert_eq!(nivel_do_libretro(Nivel::Erro), 3);
+        assert_eq!(
+            nivel_do_libretro(Nivel::Fatal),
+            3,
+            "a ABI não tem FATAL: o teto é ERROR"
+        );
+    }
+
     /// O texto da opção de volume vira fator do mixer, e o texto estragado **não** vira silêncio.
     #[test]
     fn o_volume_da_opcao_vira_fator_do_mixer() {
@@ -3031,13 +3595,50 @@ mod testes {
     static SISTEMA: OnceLock<CString> = OnceLock::new();
     /// A assinatura de cada quadro entregue, na ordem.
     static ASSINATURAS: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::new());
+    /// O último passo de linha anunciado ao callback de vídeo.
+    static PASSO_DO_VIDEO: AtomicU32 = AtomicU32::new(0);
 
     /// O ambiente mínimo que o core precisa, respondendo como um frontend de verdade.
     ///
     /// O que não temos responde `false` — é o que o RetroArch faz com o que não conhece, e é
     /// assim que o caminho de recusa do core também fica exercitado.
+    /// O buffer que o frontend falso empresta ao core no `GET_CURRENT_SOFTWARE_FRAMEBUFFER`.
+    ///
+    /// Estático porque o ponteiro tem de continuar válido durante toda a chamada de `retro_run`
+    /// em que foi entregue — a `libretro.h` só garante isso.
+    static BUFFER_EMPRESTADO: Mutex<Option<Vec<u8>>> = Mutex::new(None);
+
+    /// O passo que o frontend falso usa: a largura em bytes **mais uma folga**.
+    ///
+    /// A folga é de propósito. Com `pitch == largura * 2` o core poderia escrever o quadro inteiro
+    /// de uma vez e acertar por sorte; com folga, quem não respeitar o passo escreve a imagem
+    /// torta — e é isso que a prova precisa pegar.
+    const FOLGA_DO_PASSO: usize = 64;
+
     unsafe extern "C" fn ambiente(cmd: u32, dados: *mut c_void) -> bool {
         match cmd {
+            // **O frontend empresta o buffer.** Ver [`ENV_GET_CURRENT_SOFTWARE_FRAMEBUFFER`].
+            ENV_GET_CURRENT_SOFTWARE_FRAMEBUFFER => {
+                if dados.is_null() {
+                    return false;
+                }
+                let pedido = dados as *mut RetroFramebuffer;
+                let (largura, altura) = unsafe { ((*pedido).width, (*pedido).height) };
+                let passo = largura as usize * 2 + FOLGA_DO_PASSO;
+                let Ok(mut guarda) = BUFFER_EMPRESTADO.lock() else {
+                    return false;
+                };
+                *guarda = Some(vec![0u8; passo * altura as usize]);
+                let Some(buffer) = guarda.as_mut() else {
+                    return false;
+                };
+                unsafe {
+                    (*pedido).data = buffer.as_mut_ptr() as *mut c_void;
+                    (*pedido).pitch = passo;
+                    (*pedido).format = PIXEL_FORMAT_RGB565;
+                }
+                true
+            }
             // Aceita RGB565 e recusa o resto: é o formato que o console entrega, e recusar os
             // outros faz o core seguir pelo caminho que ele usa no RetroArch.
             ENV_SET_PIXEL_FORMAT => {
@@ -3090,6 +3691,7 @@ mod testes {
 
     unsafe extern "C" fn video(dados: *const c_void, largura: u32, altura: u32, passo: usize) {
         QUADROS.fetch_add(1, Ordering::Relaxed);
+        PASSO_DO_VIDEO.store(passo.min(u32::MAX as usize) as u32, Ordering::Relaxed);
         // Assinatura barata do quadro: muda quando a imagem muda, que é o que o teste precisa
         // saber para dizer se a entrada chegou ao guest — um controle que não chega deixa a tela
         // parada, e um botão errado também, e as duas coisas se separam olhando o resto.
@@ -3115,6 +3717,81 @@ mod testes {
         // tem a medida dele (pico, rms, salto), e o core tem esta — se o lote chega ao frontend.
         AMOSTRAS.fetch_add(quadros as u32, Ordering::Relaxed);
         quadros
+    }
+
+    /// **A posição de cada botão, presa por teste.** Era o que faltava no issue #41: o rótulo da
+    /// tela de mapeamento e a tabela de leitura eram duas listas paralelas, e divergiram em
+    /// silêncio — o rótulo dizia "B = Botão 1" e a leitura entregava B como Botão 2. Agora a
+    /// tabela é uma só, e este teste prende a numeração física do aparelho: quem trocar o `b1` de
+    /// lugar cai aqui, e não no colo do jogador.
+    #[test]
+    fn os_botoes_de_acao_seguem_a_numeracao_do_aparelho() {
+        // No aparelho: 1 embaixo, 2 à esquerda, 3 no topo, 4 à direita. No RetroPad: `B` embaixo,
+        // `Y` à esquerda, `X` no topo, `A` à direita — a posição da mão é a mesma nos dois.
+        let acao = &BOTOES_DO_RETROPAD[4..8];
+        assert_eq!(
+            acao.iter().map(|(_, nome, _)| *nome).collect::<Vec<_>>(),
+            ["b1", "b2", "b3", "b4"]
+        );
+        assert_eq!(
+            acao.iter().map(|(id, _, _)| *id).collect::<Vec<_>>(),
+            [ID_B, ID_Y, ID_X, ID_A]
+        );
+
+        // E todo nome da tabela existe na lista do console: um erro de digitação aqui deixaria o
+        // botão mudo, sem erro em lugar nenhum.
+        for (_, nome, _) in BOTOES_DO_RETROPAD {
+            assert!(
+                zeebx::input::BUTTON_NAMES.contains(&nome),
+                "{nome} não é botão do console"
+            );
+        }
+    }
+
+    /// **O caminho inteiro do núcleo, na ordem em que ele acontece.** O direcional espelhado
+    /// escreve o eixo e, logo depois, o laço do analógico roda — com o RetroPad entregando o manche
+    /// **parado no centro**, que é o caso real de quem joga de direcional. Era ali que a opção não
+    /// fazia nada: o zero do repouso apagava o espelho a cada quadro, e só dentro do núcleo (o
+    /// standalone já tinha a zona morta, e foi por isso que a medida no harness passava).
+    #[test]
+    fn o_manche_parado_no_centro_nao_apaga_o_direcional_espelhado() {
+        use zeebx::input::{AXIS_CURSO, DPAD, Pad};
+
+        let parado = |_: u32, _: u32| 0i32;
+        let mut pad = Pad::default();
+        pad.press(DPAD[0], true); // direcional para cima
+        pad.espelha_o_direcional_nos_eixos();
+        poe_os_eixos_do_retropad(&mut pad, parado);
+        assert!(
+            pad.axes[1] < 0,
+            "o zero do manche parado apagou o direcional: eixo Y = {}",
+            pad.axes[1]
+        );
+        assert_eq!(pad.eixo_do_console(1), 128 - AXIS_CURSO, "cima é o valor baixo");
+
+        // Soltar a direção devolve o eixo ao centro, e o manche parado continua sem escrever.
+        pad.press(DPAD[0], false);
+        pad.espelha_o_direcional_nos_eixos();
+        poe_os_eixos_do_retropad(&mut pad, parado);
+        assert_eq!(pad.axes[1], 0);
+
+        // E o manche de verdade, quando sai da zona morta, vence o espelho.
+        let empurrado = |indice: u32, id: u32| match (indice, id) {
+            (0, 0) => 0x4000,
+            _ => 0,
+        };
+        pad.press(DPAD[0], true);
+        pad.espelha_o_direcional_nos_eixos();
+        poe_os_eixos_do_retropad(&mut pad, empurrado);
+        assert_eq!(pad.axes[0], 0x4000 / 256, "o manche de verdade tem a última palavra");
+        assert_eq!(pad.axes[1], -AXIS_CURSO, "e o direcional fica no outro eixo");
+
+        // Um tremor dentro da zona morta não escreve: é o que mantém um manche gasto em silêncio.
+        let tremor = |_: u32, _: u32| 512i32; // 2 no curso do console
+        pad.press(DPAD[0], true);
+        pad.espelha_o_direcional_nos_eixos();
+        poe_os_eixos_do_retropad(&mut pad, tremor);
+        assert_eq!(pad.axes[0], 0, "o tremor não passou da zona morta");
     }
 
     /// O eixo que o teste está empurrando, na faixa do RetroPad (`-0x8000..=0x7fff`).
@@ -3234,9 +3911,56 @@ mod testes {
             retro_init();
             retro_set_controller_port_device(0, DEVICE_JOYPAD);
             assert!(retro_load_game(&info), "o core recusou {caminho}");
+            // **O ritmo, medido.** Este laço é o único lugar em que o nosso freio de velocidade age
+            // sozinho: não há frontend esperando retraço nem áudio. O que se quer saber é se o
+            // `sleep` do `run_frame` entrega 1× (tempo virtual igual ao real) e **quanto ele
+            // irregulariza** — freio que acerta a média e treme a cada quadro é judder.
+            //
+            // Ver `Session::run_frame` e a frente 10 de `docs/OPTIMIZING_V0.3.0.md`.
+            let real_antes = std::time::Instant::now();
+            let relogio_antes = RELOGIO.load(Ordering::Relaxed);
+            let mut por_quadro = Vec::with_capacity(quadros_pedidos as usize);
             for _ in 0..quadros_pedidos {
+                let t = std::time::Instant::now();
                 retro_run();
+                por_quadro.push(t.elapsed());
             }
+            // **O quadro foi para o buffer do frontend.** Se o core tivesse escrito no vetor dele,
+            // o buffer emprestado ficaria zerado; se tivesse ignorado o passo, as linhas estariam
+            // deslocadas. As duas coisas aparecem aqui.
+            {
+                let guarda = BUFFER_EMPRESTADO.lock().expect("o buffer do teste");
+                let buffer = guarda.as_ref().expect("o frontend emprestou o buffer");
+                let acesos = buffer.iter().filter(|b| **b != 0).count();
+                assert!(
+                    acesos > buffer.len() / 100,
+                    "o buffer emprestado ficou apagado ({acesos} de {} byte(s)): o core não desenhou nele",
+                    buffer.len()
+                );
+                assert_eq!(
+                    PASSO_DO_VIDEO.load(Ordering::Relaxed) as usize,
+                    640 * 2 + FOLGA_DO_PASSO,
+                    "o core escreveu no pitch emprestado, mas anunciou outro passo ao frontend"
+                );
+            }
+            let real = real_antes.elapsed();
+            let avancou = RELOGIO.load(Ordering::Relaxed).wrapping_sub(relogio_antes);
+            por_quadro.sort();
+            let mediana = por_quadro.get(por_quadro.len() / 2).copied().unwrap_or_default();
+            let p95 = por_quadro
+                .get(por_quadro.len() * 95 / 100)
+                .copied()
+                .unwrap_or_default();
+            let pior = por_quadro.last().copied().unwrap_or_default();
+            eprintln!(
+                "ritmo: {} quadro(s) — virtual {avancou} ms em real {:.0} ms ({:.0}% da velocidade),                  por quadro: mediana {:.2} ms, p95 {:.2} ms, pior {:.2} ms",
+                quadros_pedidos,
+                real.as_secs_f64() * 1000.0,
+                f64::from(avancou) / (real.as_secs_f64() * 1000.0) * 100.0,
+                mediana.as_secs_f64() * 1000.0,
+                p95.as_secs_f64() * 1000.0,
+                pior.as_secs_f64() * 1000.0
+            );
             // **Dirige a Z-Wheel.** A pergunta desta parte é prática: com que botão o jogador
             // confirma a escolha, e o pedido de abertura chega ao core? Cada botão do RetroPad é
             // segurado por vinte quadros e solto por dez, e o teste para no primeiro que o shell

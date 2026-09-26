@@ -151,6 +151,315 @@ impl Default for Estado {
     }
 }
 
+/// Se o `glBlitFramebuffer` desta placa entrega o que promete.
+///
+/// **O anúncio não basta.** O Flycast, que roda nos drivers ruins de Android e de portátil, não
+/// confia nele: faz um blit de verdade e, quando o resultado não bate, desenha um quadrilátero no
+/// lugar. Aqui o blit também não é enfeite — é o `resolve` do MSAA e a redução do quadro grande
+/// antes da leitura —, e um blit que mente **não dá erro**: dá imagem errada em silêncio, que é
+/// exatamente o tipo de defeito que só aparece no aparelho de quem está jogando.
+///
+/// A prova é mínima de propósito: 2×2, uma cor chapada, ida e volta pela CPU. Custa duas texturas
+/// e dois framebuffers, uma vez por contexto.
+#[cfg(not(target_arch = "wasm32"))]
+fn blit_serve(gl: &glow::Context) -> bool {
+    use glow::HasContext;
+
+    /// A cor que se escreve num lado e se cobra do outro.
+    const MARCA: [u8; 4] = [0x00, 0xff, 0x00, 0xff];
+
+    (|| -> Option<bool> {
+        unsafe {
+            let criar = |largura: u32| -> Option<(glow::Texture, glow::Framebuffer)> {
+                let cor = gl.create_texture().ok()?;
+                gl.bind_texture(glow::TEXTURE_2D, Some(cor));
+                gl.tex_image_2d(
+                    glow::TEXTURE_2D,
+                    0,
+                    glow::RGBA8 as i32,
+                    largura as i32,
+                    largura as i32,
+                    0,
+                    glow::RGBA,
+                    glow::UNSIGNED_BYTE,
+                    glow::PixelUnpackData::Slice(None),
+                );
+                let fbo = gl.create_framebuffer().ok()?;
+                gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
+                gl.framebuffer_texture_2d(
+                    glow::FRAMEBUFFER,
+                    glow::COLOR_ATTACHMENT0,
+                    glow::TEXTURE_2D,
+                    Some(cor),
+                    0,
+                );
+                Some((cor, fbo))
+            };
+
+            let (cor_a, fbo_a) = criar(2)?;
+            let (cor_b, fbo_b) = criar(2)?;
+
+            // Ida: pinta o lado A. A tesoura fica desligada porque ela é do jogo e pode estar
+            // recortando fora deste pedaço.
+            gl.disable(glow::SCISSOR_TEST);
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo_a));
+            gl.clear_color(
+                f32::from(MARCA[0]) / 255.0,
+                f32::from(MARCA[1]) / 255.0,
+                f32::from(MARCA[2]) / 255.0,
+                f32::from(MARCA[3]) / 255.0,
+            );
+            gl.clear(glow::COLOR_BUFFER_BIT);
+
+            // Volta: copia A para B pelo mesmo caminho que o `resolve` e a redução usam.
+            gl.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(fbo_a));
+            gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(fbo_b));
+            gl.blit_framebuffer(
+                0,
+                0,
+                2,
+                2,
+                0,
+                0,
+                2,
+                2,
+                glow::COLOR_BUFFER_BIT,
+                glow::NEAREST,
+            );
+
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo_b));
+            let mut lido = [0u8; 4];
+            gl.read_pixels(
+                0,
+                0,
+                1,
+                1,
+                glow::RGBA,
+                glow::UNSIGNED_BYTE,
+                glow::PixelPackData::Slice(Some(&mut lido)),
+            );
+
+            gl.bind_framebuffer(glow::FRAMEBUFFER, None);
+            gl.bind_texture(glow::TEXTURE_2D, None);
+            gl.delete_framebuffer(fbo_a);
+            gl.delete_framebuffer(fbo_b);
+            gl.delete_texture(cor_a);
+            gl.delete_texture(cor_b);
+
+            // **Um erro armado conta como falha.** Um blit que devolve a imagem certa e deixa um
+            // erro pendente é um driver que aceitou por sorte, e o erro apareceria depois, longe
+            // daqui, na primeira chamada que o consumisse.
+            let limpo = gl.get_error() == glow::NO_ERROR;
+            Some(lido == MARCA && limpo)
+        }
+    })()
+    .unwrap_or(false)
+}
+
+/// O que já está na placa, para não reenviar o que não mudou.
+///
+/// **Todo campo começa em `None`, e `None` quer dizer "não se sabe".** É o que torna a
+/// invalidação trivial: esquecer o espelho é voltar ao valor padrão, e daí tudo é reenviado uma
+/// vez — o que [`GpuState::esquece_o_espelho`] faz quando outra pessoa mexe no contexto.
+///
+/// São dezoito chamadas de GL por lote em [`GpuState::aplica`], e quase sempre são as mesmas
+/// dezoito do lote anterior: o mesmo programa, a mesma névoa, a mesma tesoura. Um jogo que desenha
+/// centenas de vezes por quadro paga isso centenas de vezes.
+#[derive(Clone, Copy, PartialEq)]
+struct Espelho {
+    viewport: Option<(i32, i32, i32, i32)>,
+    tesoura: Option<(i32, i32, i32, i32)>,
+    tesoura_ligada: Option<bool>,
+    abraco_de_profundidade: Option<bool>,
+    teste_de_profundidade: Option<bool>,
+    func_profundidade: Option<u32>,
+    mascara_profundidade: Option<bool>,
+    faixa_profundidade: Option<(f32, f32)>,
+    mistura: Option<bool>,
+    func_mistura: Option<(u32, u32)>,
+    mascara_cor: Option<[bool; 4]>,
+    descarte: Option<bool>,
+    modo_descarte: Option<u32>,
+    face_frontal: Option<u32>,
+    teste_de_estencil: Option<bool>,
+    func_estencil: Option<(u32, i32, u32)>,
+    mascara_estencil: Option<u32>,
+    ops_estencil: Option<[u32; 3]>,
+}
+
+impl Default for Espelho {
+    /// Tudo desconhecido: é o estado "acabei de receber o contexto de outro".
+    fn default() -> Self {
+        Self {
+            viewport: None,
+            tesoura: None,
+            tesoura_ligada: None,
+            abraco_de_profundidade: None,
+            teste_de_profundidade: None,
+            func_profundidade: None,
+            mascara_profundidade: None,
+            faixa_profundidade: None,
+            mistura: None,
+            func_mistura: None,
+            mascara_cor: None,
+            descarte: None,
+            modo_descarte: None,
+            face_frontal: None,
+            teste_de_estencil: None,
+            func_estencil: None,
+            mascara_estencil: None,
+            ops_estencil: None,
+        }
+    }
+}
+
+impl Espelho {
+    /// Marca o valor como enviado e diz se ele **mudou** — isto é, se a chamada é necessária.
+    ///
+    /// Conta os dois lados de propósito: sem os números não há como saber se o espelho está
+    /// poupando chamadas ou apenas repetindo o que já estava lá.
+    fn mudou<T: PartialEq + Copy>(
+        slot: &mut Option<T>,
+        novo: T,
+        enviados: &mut u64,
+        poupados: &mut u64,
+    ) -> bool {
+        if *slot == Some(novo) {
+            *poupados += 1;
+            false
+        } else {
+            *slot = Some(novo);
+            *enviados += 1;
+            true
+        }
+    }
+}
+
+/// **A placa que o frontend avisou que morreu**, pelo endereço do `glow::Context`, ou zero.
+///
+/// O aviso de que um contexto deixou de valer chega de fora do emulador, **no meio de um quadro**,
+/// e quem o recebe não pode mais tocar no contexto: os ponteiros de função que ele resolveu já não
+/// existem. Um endereço, comparado sem desreferenciar nada, é o que sobra — e basta, porque duas
+/// cópias de `Arc` da mesma placa têm o mesmo endereço.
+///
+/// **Um `AtomicUsize`, e não um cadeado**, porque quem escreve aqui é a thread de vídeo do frontend
+/// enquanto o emulador desenha: ver a nota de corrida em `frontends/libretro/src/lib.rs`. Um
+/// `Mutex` no caminho do desenho trocaria uma corrida por um travamento.
+static PLACA_MORTA: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// O endereço de uma placa: a identidade dela entre quem a criou e quem desenha nela.
+pub fn endereco_da_placa(gl: &glow::Context) -> usize {
+    gl as *const glow::Context as usize
+}
+
+/// O frontend avisou que a placa em `endereco` deixou de valer.
+///
+/// No `libretro` os dois callbacks dizem isso: o `context_destroy` avisa que o contexto vai morrer
+/// e o `context_reset` que ele nasceu de novo — e a ABI é explícita que os objetos de GL do core
+/// são inválidos nos dois casos (`libretro.h`: "When context_reset is called, OpenGL resources in
+/// the libretro implementation are guaranteed to be invalid"), e que um `context_reset` pode
+/// chegar **sem** o `context_destroy`, quando o contexto se perdeu por fora ("resources should
+/// just be recreated without any attempt to free old resources").
+pub fn a_placa_morreu(endereco: usize) {
+    PLACA_MORTA.store(endereco, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// A placa em `endereco` nasceu de novo: se a marca de óbito era da placa anterior **naquele mesmo
+/// endereço**, ela sai.
+///
+/// O endereço é do alocador, e o de uma placa nova pode ser o de uma que morreu. Sem esta limpeza
+/// a placa nova nasceria marcada como morta e não desenharia nada, em silêncio.
+pub fn a_placa_nasceu(endereco: usize) {
+    let _ = PLACA_MORTA.compare_exchange(
+        endereco,
+        0,
+        std::sync::atomic::Ordering::Relaxed,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+/// O que este estado sabe sobre a placa em que desenha: de quem é o contexto, se ele ainda vale e o
+/// que ficou ligado nele.
+///
+/// **Está separado do [`GpuState`] por causa da regra da casa — não manter mudança sem medida.** Um
+/// contexto de GL não existe em teste unitário, mas as três decisões abaixo não dependem de driver
+/// nenhum, e são elas que a auditoria de GPU apontou erradas (achados 1, 2 e 4):
+///
+/// - [`Placa::apaga_ao_morrer`]: se o `Drop` chama os `delete_*`. Com a placa morta, **não chama**;
+/// - [`Placa::precisa_ligar`]: se o próximo lote religa programa, VAO e VBO, ou reaproveita o cache;
+/// - [`Placa::morreu`]: se a placa emprestada acabou — o que pode acontecer **dentro** de um quadro.
+struct Placa {
+    /// Se o contexto é de outro — a janela, ou o frontend. Nesse caso o estado tem que ser devolvido
+    /// depois de cada uso (ver [`GpuState::devolve_o_contexto`]) e pode ser tomado de volta pelo dono.
+    de_outro: bool,
+    /// O endereço do contexto, para reconhecer o aviso de que ele morreu. Ver [`PLACA_MORTA`].
+    endereco: usize,
+    /// Se o **programa**, o `vao` e o `vbo` já estão ligados na placa.
+    ///
+    /// Os três são criados uma vez e nunca trocam, então ligá-los a cada desenho era pagar três
+    /// chamadas de driver por lote — e o lote do Quake chega a umas 370 por quadro. Pior: o
+    /// `submete_com` **desligava** os dois no fim de cada desenho, e num driver fino de ARM, como o
+    /// Mali dos portáteis, desligar programa e VAO é justamente o que revalida mais coisa. Medido no
+    /// caminho de placa do RetroArch, antes e depois (commit `e6a436e`).
+    ///
+    /// **O que pode largar um dos três é outro código desenhando com o mesmo contexto — e há.** O
+    /// `Pintor` da janela termina cada pintura com `use_program(None)` e `bind_vertex_array(None)`
+    /// **de propósito**, para devolver o contexto ao `egui` (`src/ui/gpu.rs`), e o contexto em que
+    /// ele pinta é o mesmo em que o rasterizador desenha (`src/ui/app.rs`, com
+    /// `graphics.gpu_rasterizer`). Por isso o cache não é invalidado só pelo contexto refeito: quem
+    /// o invalida é [`GpuState::devolve_o_contexto`] e [`GpuState::desenha_no_fbo`].
+    ligados: std::cell::Cell<bool>,
+}
+
+impl Placa {
+    /// A placa deste estado, com o contexto recém-criado e nada ligado nele.
+    fn nova(de_outro: bool, endereco: usize) -> Self {
+        Self {
+            de_outro,
+            endereco,
+            ligados: std::cell::Cell::new(false),
+        }
+    }
+
+    /// Se o contexto é de outro. Ver [`GpuState::devolve_o_contexto`].
+    fn de_outro(&self) -> bool {
+        self.de_outro
+    }
+
+    /// Se a placa emprestada deixou de valer.
+    ///
+    /// Contexto próprio nunca morre antes do dono: quem o fecharia é este mesmo estado, no `Drop`.
+    fn morreu(&self) -> bool {
+        self.de_outro && self.endereco == PLACA_MORTA.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Se os nomes de GL deste estado podem ser apagados.
+    ///
+    /// **Com a placa morta, não podem.** Apagar é chamar `delete_*` no driver, e as funções que este
+    /// estado guardou morreram com o contexto: no melhor caso o driver anota um erro, no pior o
+    /// ponteiro aponta para código que já não existe. Os nomes são **largados**, e quem os apagaria
+    /// já não existe. É a regra que o repositório já escreve do outro lado da janela
+    /// (`src/ui/app.rs`, no `on_exit`: "soltar depois seria mexer num contexto morto").
+    fn apaga_ao_morrer(&self) -> bool {
+        !self.morreu()
+    }
+
+    /// Se o próximo lote precisa religar programa, VAO e VBO.
+    fn precisa_ligar(&self) -> bool {
+        !self.ligados.get()
+    }
+
+    /// Os três entraram na placa: o próximo lote pode pular as três chamadas.
+    fn ligou(&self) {
+        self.ligados.set(true);
+    }
+
+    /// O contexto saiu das nossas mãos: o que estava ligado nele deixou de ser nosso.
+    fn esquece_o_ligado(&self) {
+        self.ligados.set(false);
+    }
+}
+
 pub struct GpuState {
     /// A contabilidade de estado e a etapa de vértice, compartilhadas com o software.
     estado: GlState,
@@ -161,9 +470,9 @@ pub struct GpuState {
     _proprio: Option<ContextoProprio>,
     /// As funções de GL: emprestadas da janela, ou do contexto próprio.
     gl: std::sync::Arc<glow::Context>,
-    /// Se o contexto é de outro. Nesse caso o estado tem que ser devolvido depois de cada uso —
-    /// ver [`GpuState::devolve_o_contexto`].
-    emprestado: bool,
+    /// A placa em que este estado desenha: de quem é o contexto, se ele ainda vale e o que ficou
+    /// ligado nele. Ver [`Placa`].
+    placa: Placa,
     fill: Estado,
     /// O destino: uma textura de cor mais profundidade e stencil juntos.
     quadro: Option<Destino>,
@@ -216,11 +525,24 @@ pub struct GpuState {
     proporcao: Option<f32>,
     /// Se o lote que vai para a placa foi transformado por uma projeção em perspectiva.
     em_perspectiva: bool,
+    /// Se o `glBlitFramebuffer` desta placa passou na prova de [`blit_serve`].
+    ///
+    /// Falso desliga o antialias e a resolução interna: os dois dependem de copiar entre
+    /// framebuffers, e um blit que mente daria imagem errada em silêncio.
+    blit_confiavel: bool,
     /// O framebuffer de fora em que desenhar, quando o frontend entrega um. `None` é o próprio.
     ///
     /// `Some(0)` é o framebuffer padrão do frontend — o que o `glow` escreve `None` no `bind`.
     /// Ver [`Rasterizador::desenha_no_fbo`].
     fbo_externo: Option<u32>,
+    /// Se os anexos de profundidade e estêncil são descartados depois do quadro. Ver
+    /// [`GpuState::define_descarte_de_tiles`].
+    descarta_tiles: bool,
+    /// O que já está na placa. Ver [`Espelho`].
+    espelho: std::cell::Cell<Espelho>,
+    /// Chamadas de estado enviadas e poupadas pelo espelho, para conferência.
+    envios_de_estado: std::cell::Cell<u64>,
+    poupancas_de_estado: std::cell::Cell<u64>,
 }
 
 struct Destino {
@@ -286,11 +608,28 @@ impl GpuState {
             let ponte = gl.create_texture()?;
             (programa, vao, vbo, ponte)
         };
+        // A prova do blit antes de qualquer desenho, uma vez por contexto.
+        #[cfg(not(target_arch = "wasm32"))]
+        let blit_confiavel = blit_serve(&gl);
+        // O `wasm32` não tem `blitFramebuffer`: ali o WebGL2 não expõe a função, e o caminho de
+        // placa nem é usado. Responder `true` mantém o resto do código com uma resposta só.
+        #[cfg(target_arch = "wasm32")]
+        let blit_confiavel = true;
+        if !blit_confiavel {
+            crate::registro!(
+                crate::registro::Nivel::Aviso,
+                "gl",
+                "o glBlitFramebuffer desta placa não devolve o que mandaram copiar: antialias e resolução interna ficam desligados nesta sessão"
+            );
+        }
+        let placa = Placa::nova(emprestado, endereco_da_placa(&gl));
         Ok(Self {
             estado: GlState::new(largura, altura),
             _proprio: proprio,
             gl,
-            emprestado,
+            placa,
+            blit_confiavel,
+            descarta_tiles: false,
             // **A viewport nasce com a tela inteira**, que é o que o OpenGL especifica como
             // padrão e o que o `GlState::new` faz. Nascer em zero era o que apagava toda a
             // geometria da Z-Wheel: ela nunca chama `glViewport` — zero vezes em treze segundos
@@ -320,6 +659,9 @@ impl GpuState {
             proporcao: None,
             em_perspectiva: false,
             fbo_externo: None,
+            espelho: std::cell::Cell::new(Espelho::default()),
+            envios_de_estado: std::cell::Cell::new(0),
+            poupancas_de_estado: std::cell::Cell::new(0),
             reduzido: None,
             amostras: 1,
             anisotropia: 1.0,
@@ -485,6 +827,9 @@ impl GpuState {
             gl.color_mask(true, true, true, true);
             gl.depth_mask(true);
             gl.stencil_mask(u32::MAX);
+            // **Um destino novo mexe no estado por fora do `aplica`.** Daqui em diante o espelho
+            // não sabe o que está na placa, e prefere reenviar tudo a mentir.
+            self.esquece_o_espelho();
             gl.clear_color(0.0, 0.0, 0.0, 1.0);
             gl.clear_depth_f32(1.0);
             gl.clear_stencil(0);
@@ -530,6 +875,7 @@ impl GpuState {
             gl.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(multi));
             gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(destino.fbo));
             gl.disable(glow::SCISSOR_TEST);
+            self.esquece_a_tesoura();
             gl.blit_framebuffer(0, 0, w, h, 0, 0, w, h, glow::COLOR_BUFFER_BIT, glow::NEAREST);
             gl.bind_framebuffer(glow::FRAMEBUFFER, Some(destino.fbo));
         }
@@ -684,23 +1030,62 @@ impl GpuState {
     /// Descarta os recursos que representam o quadro do host, nao o estado do guest.
     fn descarta_caches_de_quadro(&mut self) {
         let gl = self.gl.clone();
-        unsafe {
-            if let Some(destino) = self.quadro.take() {
-                solta_destino(&gl, destino);
+        // **Com a placa morta, os objetos são largados, não apagados.** Quem chega aqui depois de o
+        // contexto acabar — um carregar de estado entre dois quadros, por exemplo — chamaria os
+        // `delete_*` de um contexto que já era. Ver [`Placa::apaga_ao_morrer`].
+        if self.placa.apaga_ao_morrer() {
+            unsafe {
+                if let Some(destino) = self.quadro.take() {
+                    solta_destino(&gl, destino);
+                }
+                if let Some((fbo, cor, _)) = self.reduzido.take() {
+                    gl.delete_framebuffer(fbo);
+                    gl.delete_texture(cor);
+                }
             }
-            if let Some((fbo, cor, _)) = self.reduzido.take() {
-                gl.delete_framebuffer(fbo);
-                gl.delete_texture(cor);
-            }
+        } else {
+            self.quadro = None;
+            self.reduzido = None;
         }
         self.uniformes = Uniformes::default();
         self.anel = (0, 0);
         self.vao_pronto = false;
+        // O contexto foi refeito: o que estava ligado nele deixou de estar.
+        self.placa.esquece_o_ligado();
         self.lote.clear();
         self.estado_do_lote = None;
         self.soltos.clear();
         self.vertices.clear();
         self.sujo = true;
+    }
+
+    /// Esquece tudo o que o espelho sabia: a próxima [`GpuState::aplica`] reenvia o estado
+    /// inteiro.
+    ///
+    /// Chamado quando **outra pessoa** mexe no contexto — o `egui`, o frontend — ou quando o
+    /// próprio rasterizador o mexe fora do `aplica` (o `destino` novo, o `resolve`, a leitura do
+    /// quadro). Sem isto o espelho mentiria, e mentir aqui é desenho errado.
+    fn esquece_o_espelho(&self) {
+        self.espelho.set(Espelho::default());
+    }
+
+    /// Só a parte da tesoura: o `glScissor` e o `GL_SCISSOR_TEST`.
+    ///
+    /// É o que basta nos pontos que desligam a tesoura para um blit — ver os comentários em
+    /// `resolve`, `liga_para_leitura` e `clear`.
+    fn esquece_a_tesoura(&self) {
+        let mut m = self.espelho.get();
+        m.tesoura = None;
+        m.tesoura_ligada = None;
+        self.espelho.set(m);
+    }
+
+    /// Quantas chamadas de estado o espelho enviou e quantas poupou.
+    pub fn estado_enviado_e_poupado(&self) -> (u64, u64) {
+        (
+            self.envios_de_estado.get(),
+            self.poupancas_de_estado.get(),
+        )
     }
 
     fn aplica(&mut self) {
@@ -722,48 +1107,133 @@ impl GpuState {
         let (x, w) = para_o_anexo(x, w);
         let gl = &self.gl;
         let e = &self.fill;
+        // **Tudo o que segue passa pelo espelho.** São dezoito chamadas por lote, quase sempre
+        // com os mesmos valores do lote anterior.
+        let mut m = self.espelho.get();
+        let mut e_n = 0u64;
+        let mut p_n = 0u64;
         unsafe {
             // A viewport vem em pixels do console; o anexo é `escala` vezes maior.
             let n = self.escala as i32;
-            gl.viewport(x * n, y * n, w.max(0) * n, h.max(0) * n);
+            let viewport = (x * n, y * n, w.max(0) * n, h.max(0) * n);
+            if Espelho::mudou(&mut m.viewport, viewport, &mut e_n, &mut p_n) {
+                gl.viewport(viewport.0, viewport.1, viewport.2, viewport.3);
+            }
             // **O rasterizador de software só recorta no plano próximo.** O OpenGL recorta nos
             // seis planos do frustum, e o plano distante fazia superfícies inteiras desaparecerem
             // — na Z-Wheel era uma faixa do fundo, entre a linha do horizonte e o chão. Preso em
             // vez de recortado, o comportamento volta a ser o do software.
             //
-            // É core desde o OpenGL 3.2, que é o perfil pedido. Na queda para GLES 3.x ele não
-            // existe e a chamada não tem efeito: ali o plano distante volta a recortar.
-            gl.enable(glow::DEPTH_CLAMP);
+            // É core no OpenGL desktop, mas não existe no GLES. Emitir o enum inválido em todo
+            // lote custa validação no driver Mali e deixa `GL_INVALID_ENUM` pendente — e é por
+            // isso que ele tem um valor próprio aqui, em vez de ir direto para a chamada.
+            let embutido = gl.version().is_embedded;
+            if !embutido
+                && Espelho::mudou(&mut m.abraco_de_profundidade, true, &mut e_n, &mut p_n)
+            {
+                gl.enable(glow::DEPTH_CLAMP);
+            }
             // O `glScissor` do jogo vem em pixels do console, com o `y` de baixo para cima —
             // a mesma convenção da viewport —, e o anexo é `escala` vezes maior. Ver
             // [`tesoura_no_anexo`].
-            liga(gl, glow::SCISSOR_TEST, e.tesoura_ligada);
+            if Espelho::mudou(&mut m.tesoura_ligada, e.tesoura_ligada, &mut e_n, &mut p_n) {
+                liga(gl, glow::SCISSOR_TEST, e.tesoura_ligada);
+            }
             if e.tesoura_ligada {
                 let (sx, sy, sw, sh) = tesoura_no_anexo(e.tesoura, self.estado.surface(), extra);
-                gl.scissor(sx * n, sy * n, sw.max(0) * n, sh.max(0) * n);
+                let tesoura = (sx * n, sy * n, sw.max(0) * n, sh.max(0) * n);
+                if Espelho::mudou(&mut m.tesoura, tesoura, &mut e_n, &mut p_n) {
+                    gl.scissor(tesoura.0, tesoura.1, tesoura.2, tesoura.3);
+                }
             }
-            liga(gl, glow::DEPTH_TEST, e.teste_profundidade);
-            gl.depth_func(e.func_profundidade);
-            gl.depth_mask(e.mascara_profundidade);
-            gl.depth_range_f32(e.faixa_profundidade.0, e.faixa_profundidade.1);
-            liga(gl, glow::BLEND, e.mistura);
-            gl.blend_func(e.mistura_src, e.mistura_dst);
-            let [r, g, b, a] = e.mascara_cor;
-            gl.color_mask(r, g, b, a);
-            liga(gl, glow::CULL_FACE, e.descarte);
-            gl.cull_face(e.modo_descarte);
+            if Espelho::mudou(
+                &mut m.teste_de_profundidade,
+                e.teste_profundidade,
+                &mut e_n,
+                &mut p_n,
+            ) {
+                liga(gl, glow::DEPTH_TEST, e.teste_profundidade);
+            }
+            if Espelho::mudou(
+                &mut m.func_profundidade,
+                e.func_profundidade,
+                &mut e_n,
+                &mut p_n,
+            ) {
+                gl.depth_func(e.func_profundidade);
+            }
+            if Espelho::mudou(
+                &mut m.mascara_profundidade,
+                e.mascara_profundidade,
+                &mut e_n,
+                &mut p_n,
+            ) {
+                gl.depth_mask(e.mascara_profundidade);
+            }
+            if Espelho::mudou(
+                &mut m.faixa_profundidade,
+                e.faixa_profundidade,
+                &mut e_n,
+                &mut p_n,
+            ) {
+                gl.depth_range_f32(e.faixa_profundidade.0, e.faixa_profundidade.1);
+            }
+            if Espelho::mudou(&mut m.mistura, e.mistura, &mut e_n, &mut p_n) {
+                liga(gl, glow::BLEND, e.mistura);
+            }
+            let func_mistura = (e.mistura_src, e.mistura_dst);
+            if Espelho::mudou(&mut m.func_mistura, func_mistura, &mut e_n, &mut p_n) {
+                gl.blend_func(func_mistura.0, func_mistura.1);
+            }
+            if Espelho::mudou(&mut m.mascara_cor, e.mascara_cor, &mut e_n, &mut p_n) {
+                let [r, g, b, a] = e.mascara_cor;
+                gl.color_mask(r, g, b, a);
+            }
+            if Espelho::mudou(&mut m.descarte, e.descarte, &mut e_n, &mut p_n) {
+                liga(gl, glow::CULL_FACE, e.descarte);
+            }
+            if Espelho::mudou(&mut m.modo_descarte, e.modo_descarte, &mut e_n, &mut p_n) {
+                gl.cull_face(e.modo_descarte);
+            }
             // A linha 0 do framebuffer é tratada como o topo da imagem, e o Y é virado no shader
             // de vértice. Isso inverte a orientação vista pelo descarte de face, então a face
             // frontal é trocada aqui para compensar — sem isto o descarte come o lado errado.
-            gl.front_face(match e.face_frontal {
+            let face = match e.face_frontal {
                 gles::GL_CCW => glow::CW,
                 _ => glow::CCW,
-            });
-            liga(gl, glow::STENCIL_TEST, e.teste_stencil);
-            gl.stencil_func(e.func_stencil, e.ref_stencil, e.mascara_valor_stencil);
-            gl.stencil_mask(e.mascara_escrita_stencil);
-            gl.stencil_op(e.op_stencil[0], e.op_stencil[1], e.op_stencil[2]);
+            };
+            if Espelho::mudou(&mut m.face_frontal, face, &mut e_n, &mut p_n) {
+                gl.front_face(face);
+            }
+            if Espelho::mudou(
+                &mut m.teste_de_estencil,
+                e.teste_stencil,
+                &mut e_n,
+                &mut p_n,
+            ) {
+                liga(gl, glow::STENCIL_TEST, e.teste_stencil);
+            }
+            let func_estencil = (e.func_stencil, e.ref_stencil, e.mascara_valor_stencil);
+            if Espelho::mudou(&mut m.func_estencil, func_estencil, &mut e_n, &mut p_n) {
+                gl.stencil_func(func_estencil.0, func_estencil.1, func_estencil.2);
+            }
+            if Espelho::mudou(
+                &mut m.mascara_estencil,
+                e.mascara_escrita_stencil,
+                &mut e_n,
+                &mut p_n,
+            ) {
+                gl.stencil_mask(e.mascara_escrita_stencil);
+            }
+            if Espelho::mudou(&mut m.ops_estencil, e.op_stencil, &mut e_n, &mut p_n) {
+                gl.stencil_op(e.op_stencil[0], e.op_stencil[1], e.op_stencil[2]);
+            }
         }
+        self.espelho.set(m);
+        self.envios_de_estado
+            .set(self.envios_de_estado.get() + e_n);
+        self.poupancas_de_estado
+            .set(self.poupancas_de_estado.get() + p_n);
     }
 
     /// Manda o lote de vértices já transformados para a placa.
@@ -799,6 +1269,14 @@ impl GpuState {
         if quantos == 0 {
             return;
         }
+        // **A placa pode morrer no meio do quadro.** O aviso do frontend não espera o `retro_run`
+        // terminar, e desenhar depois dele é chamar funções de GL que já não existem. O que estava
+        // na placa fica — o quadro sai do que já foi desenhado —, e a sessão nasce de novo no
+        // começo do quadro seguinte, que é onde a perda vira troca de rasterizador.
+        if self.placa.morreu() {
+            self.vertices.clear();
+            return;
+        }
         self.destino();
         self.aplica();
         let textura_da_ponte = textura.is_some();
@@ -815,9 +1293,13 @@ impl GpuState {
         };
         let gl = &self.gl;
         unsafe {
-            gl.use_program(Some(self.programa));
-            gl.bind_vertex_array(Some(self.vao));
-            gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.vbo));
+            // Ligados **uma vez**, e nao a cada desenho: ver [`Placa::ligados`].
+            if self.placa.precisa_ligar() {
+                gl.use_program(Some(self.programa));
+                gl.bind_vertex_array(Some(self.vao));
+                gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.vbo));
+                self.placa.ligou();
+            }
             let passo = (FLOATS_POR_VERTICE * 4) as i32;
             if !self.vao_pronto {
                 for (indice, tamanho, deslocamento) in
@@ -891,8 +1373,8 @@ impl GpuState {
             );
             uniforme_vec3(gl, &self.uniformes, self.programa, "cor_neblina", neblina.cor);
             gl.draw_arrays(modo, primeiro as i32, quantos as i32);
-            gl.bind_vertex_array(None);
-            gl.use_program(None);
+            // **Nao desligue aqui.** Desligar no fim de cada desenho era o custo que este cache
+            // veio tirar: um programa a menos por lote e uma revalidacao a menos em cada um.
         }
         self.devolve_o_contexto();
         self.sujo = true;
@@ -911,10 +1393,17 @@ impl GpuState {
     /// em bytes para jogar quase tudo fora.
     fn liga_para_leitura(&mut self) {
         self.destino();
-        self.resolve();
+        // O framebuffer do frontend não passa pelo nosso resolve. No caminho interno, resolve
+        // MSAA antes de ler.
+        if self.fbo_externo.is_none() {
+            self.resolve();
+        }
         let extra = self.quadro.as_ref().map_or(0, |d| d.extra) as i32;
         if self.escala <= 1 && extra == 0 {
-            let fbo = self.quadro.as_ref().map(|d| d.fbo);
+            let fbo = match self.fbo_externo {
+                Some(_) => self.alvo_do_desenho(),
+                None => self.quadro.as_ref().map(|d| d.fbo),
+            };
             unsafe { self.gl.bind_framebuffer(glow::FRAMEBUFFER, fbo) };
             return;
         }
@@ -958,6 +1447,7 @@ impl GpuState {
             gl.bind_framebuffer(glow::READ_FRAMEBUFFER, origem);
             gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, destino);
             gl.disable(glow::SCISSOR_TEST);
+            self.esquece_a_tesoura();
             // Na proporção larga, o jogo lê só o centro: é ali que está a imagem de 640×480 que
             // ele desenhou, e os lados são nossos.
             gl.blit_framebuffer(
@@ -1032,8 +1522,11 @@ impl GpuState {
     /// de profundidade aceso com uma profundidade que não é a dele, faz a interface desaparecer.
     ///
     /// Com contexto próprio isto não custa nada porque não roda: ninguém mais o usa.
+    ///
+    /// **Aqui, e não só no contexto refeito, morre o cache dos objetos ligados** quando quem
+    /// apresenta é o anfitrião. Ver o fim desta função.
     fn devolve_o_contexto(&self) {
-        if !self.emprestado {
+        if !self.placa.de_outro() {
             return;
         }
         let gl = &self.gl;
@@ -1043,12 +1536,51 @@ impl GpuState {
             gl.disable(glow::DEPTH_TEST);
             gl.disable(glow::CULL_FACE);
             gl.disable(glow::STENCIL_TEST);
-            gl.disable(glow::DEPTH_CLAMP);
+            if !gl.version().is_embedded {
+                gl.disable(glow::DEPTH_CLAMP);
+            }
             gl.disable(glow::BLEND);
             gl.depth_mask(true);
             gl.depth_range_f32(0.0, 1.0);
             gl.stencil_mask(u32::MAX);
             gl.color_mask(true, true, true, true);
+        }
+        // **Aqui o contexto vai para outra pessoa — e o espelho aprende o que ficou.**
+        //
+        // Esquecer tudo seria mais seguro e não pouparia nada: esta função roda a cada lote, e
+        // um espelho zerado a cada lote responde "mudou" dezoito vezes sempre. Medido: zero
+        // chamadas poupadas. O que se faz é registrar o estado **conhecido** que ela deixa, que é
+        // o que o próximo `aplica` vai comparar — e as chaves que não estão aqui continuam
+        // desconhecidas, porque o outro pode ter mexido nelas.
+        let mut m = self.espelho.get();
+        m.tesoura = None;
+        m.tesoura_ligada = Some(false);
+        m.teste_de_profundidade = Some(false);
+        m.mistura = Some(false);
+        m.descarte = Some(false);
+        m.teste_de_estencil = Some(false);
+        m.mascara_profundidade = Some(true);
+        m.faixa_profundidade = Some((0.0, 1.0));
+        m.mascara_estencil = Some(u32::MAX);
+        m.mascara_cor = Some([true, true, true, true]);
+        if !self.gl.version().is_embedded {
+            m.abraco_de_profundidade = Some(false);
+        }
+        self.espelho.set(m);
+        // **E o cache dos três objetos ligados morre aqui também**, quando quem apresenta o quadro
+        // é o anfitrião: sem um framebuffer de fora, quem desenha o nosso destino é a interface, no
+        // mesmo contexto, logo depois de nós — e o `Pintor` dela termina cada pintura **desligando**
+        // programa e VAO de propósito (`src/ui/gpu.rs`). Confiar no cache depois disso é desenhar
+        // com o programa do `egui`: no perfil de núcleo, VAO zero é `GL_INVALID_OPERATION` e nada
+        // na tela, e sem erro nenhum do lado de cá.
+        //
+        // **Quando o frontend entrega o framebuffer dele, não**: ali quem desenha é o libretro, o
+        // quadro é dele, e o `devolve_o_contexto` roda a cada lote — invalidar aqui seria pagar três
+        // chamadas de driver por lote de novo, que é justamente o custo que o `e6a436e` tirou do
+        // caminho do RetroArch (370 lotes por quadro no Quake). Nesse caminho quem invalida é o
+        // [`GpuState::desenha_no_fbo`], uma vez por quadro, quando o frontend pega o contexto.
+        if self.fbo_externo.is_none() {
+            self.placa.esquece_o_ligado();
         }
     }
 
@@ -1091,6 +1623,15 @@ impl GpuState {
 
 impl Drop for GpuState {
     fn drop(&mut self) {
+        // **Com a placa morta, nada é apagado.** O frontend avisa que o contexto acabou e a sessão
+        // viva ainda guarda este estado: no `retro_run` seguinte ele é trocado, e o `Drop` corre
+        // aqui. Chamar `delete_*` neste ponto seria usar os ponteiros de função de um contexto que
+        // já não existe — no melhor caso o driver anota um erro, no pior o endereço aponta para
+        // código que não está mais lá (auditoria de GPU, achado 1). Os nomes são largados com o
+        // contexto, que é de quem avisou. Ver [`Placa::apaga_ao_morrer`].
+        if !self.placa.apaga_ao_morrer() {
+            return;
+        }
         let gl = &self.gl;
         unsafe {
             gl.delete_program(self.programa);
@@ -1572,7 +2113,20 @@ impl Rasterizador for GpuState {
         self.estado.desenho_em_curso()
     }
 
+    /// O framebuffer de fora, quando o frontend entrega um — e com ele a **fronteira do quadro**.
+    ///
+    /// **É aqui que o cache dos objetos ligados é invalidado no caminho do libretro.** Entre dois
+    /// quadros o frontend desenha o FBO dele no mesmo contexto, ligando o que precisa — e o
+    /// `e6a436e` mediu que, naquele consumidor, o que ele deixa é inofensivo para nós. O que não se
+    /// pode é *supor* isso: esta chamada é a única que o core faz uma vez por quadro, antes de
+    /// qualquer desenho, e é a hora certa de não confiar no que ficou de antes. Custa três chamadas
+    /// de driver por quadro, e não por lote, mais o estado de desenho reenviado uma vez no primeiro
+    /// lote — o espelho também esquece, pelo mesmo motivo.
     fn desenha_no_fbo(&mut self, fbo: Option<u32>) {
+        if fbo.is_some() {
+            self.esquece_o_espelho();
+            self.placa.esquece_o_ligado();
+        }
         self.fbo_externo = fbo;
     }
 
@@ -1667,6 +2221,7 @@ impl Rasterizador for GpuState {
                 // O recorte do `glScissor` fica de fora: o rasterizador de software não o tem, e
                 // divergir aqui tornaria a comparação entre os dois inútil.
                 gl.disable(glow::SCISSOR_TEST);
+                self.esquece_a_tesoura();
                 gl.clear(bits);
             }
         }
@@ -1840,7 +2395,10 @@ impl Rasterizador for GpuState {
         self.descarrega();
         self.estado.delete_texture(name);
         if let Some(t) = self.texturas.remove(&name) {
-            unsafe { self.gl.delete_texture(t.objeto) };
+            // Com a placa morta o nome é largado, e não apagado: ver [`Placa::apaga_ao_morrer`].
+            if self.placa.apaga_ao_morrer() {
+                unsafe { self.gl.delete_texture(t.objeto) };
+            }
         }
     }
 
@@ -2103,8 +2661,26 @@ impl Rasterizador for GpuState {
         saida
     }
 
+    fn quadro_espera_pela_placa(&self) -> bool {
+        true
+    }
+
+    fn estado_enviado_e_poupado(&self) -> (u64, u64) {
+        GpuState::estado_enviado_e_poupado(self)
+    }
+
     fn frame_rgb565(&mut self, width: usize, height: usize, out: &mut Vec<u8>) {
         self.descarrega();
+        // **A placa morreu no meio do quadro: a leitura não acontece.** `glReadPixels` é uma
+        // chamada como as outras, e depois do aviso as funções que este estado guardou não
+        // existem. Sai um quadro preto do tamanho pedido — um só, até a sessão nascer de novo no
+        // quadro seguinte (ver [`Placa::morreu`] e a nota de corrida em `frontends/libretro`).
+        if self.placa.morreu() {
+            out.clear();
+            out.resize(width * height * 2, 0);
+            self.sujo = false;
+            return;
+        }
         // Mesmo atalho do rasterizador de software: quadro igual ao que já está em `out` não tem
         // o que reconverter. Na placa isso vale ainda mais, porque a leitura é uma ida e volta.
         if !self.sujo && out.len() == width * height * 2 {
@@ -2143,6 +2719,77 @@ impl Rasterizador for GpuState {
             }
         }
         self.sujo = false;
+    }
+
+    fn define_descarte_de_tiles(&mut self, descartar: bool) {
+        self.descarta_tiles = descartar;
+        crate::registro!(
+            crate::registro::Nivel::Informacao,
+            "gl",
+            "descarte de profundidade e estêncil depois do quadro: {}",
+            match descartar {
+                true => "ligado (experimental, para GPU de tiles)",
+                false => "desligado",
+            }
+        );
+    }
+
+    fn frame_rgb565_words(&mut self, width: usize, height: usize, out: &mut Vec<u16>) {
+        self.descarrega();
+        // Placa morta: nem esta leitura toca nela. Ver [`GpuState::frame_rgb565`].
+        if self.placa.morreu() {
+            out.clear();
+            out.resize(width * height, 0);
+            self.sujo = false;
+            return;
+        }
+        if !self.sujo && out.len() == width * height {
+            return;
+        }
+        let (sw, sh) = self.surface();
+        if sw == 0 || sh == 0 {
+            return;
+        }
+        let em_565 = self.le_quadro_rgb565(sw, sh);
+        out.clear();
+        out.resize(width * height, 0);
+        let pixel = |p: &[u8]| -> u16 {
+            if em_565 {
+                u16::from_le_bytes([p[0], p[1]])
+            } else {
+                ((p[0] as u16 >> 3) << 11) | ((p[1] as u16 >> 2) << 5) | (p[2] as u16 >> 3)
+            }
+        };
+        let passo = if em_565 { 2 } else { 4 };
+        let colunas: Vec<usize> = (0..width)
+            .map(|x| (x * sw / width).min(sw - 1) * passo)
+            .collect();
+        for (y, saida) in out.chunks_exact_mut(width).enumerate() {
+            let inicio = (y * sh / height).min(sh - 1) * sw * passo;
+            let linha = &self.pixels[inicio..inicio + sw * passo];
+            for (destino, &coluna) in saida.iter_mut().zip(&colunas) {
+                *destino = pixel(&linha[coluna..coluna + passo]);
+            }
+        }
+        self.sujo = false;
+        // **O descarte dos anexos que ninguém vai ler.** O quadro de cor acabou de ser lido para
+        // a memória da CPU, e a profundidade e o estêncil deste quadro não são precisos para
+        // desenhar o próximo — desde que o jogo os limpe, que é o caso comum.
+        //
+        // **É experimental e vem desligado**, porque um jogo que **não** limpe a profundidade
+        // conta com ela de um quadro para o outro — o console é um framebuffer de verdade, e a
+        // profundidade de lá persiste. Num GPU de tiles, que é o caso do Mali dos portáteis,
+        // dizer isto ao driver evita escrever os anexos de volta na memória: rende lá, e não no
+        // desktop, que é onde ele não pode ser medido.
+        if self.descarta_tiles && self.fbo_externo.is_none() {
+            let gl = &self.gl;
+            unsafe {
+                gl.invalidate_framebuffer(
+                    glow::FRAMEBUFFER,
+                    &[glow::DEPTH, glow::STENCIL],
+                );
+            }
+        }
     }
 
     fn import_rgb565_changes(&mut self, width: usize, height: usize, old: &[u8], new: &[u8]) {
@@ -2257,6 +2904,11 @@ impl Rasterizador for GpuState {
     }
 
     fn define_escala(&mut self, escala: usize) {
+        // Sem blit confiável não há redução do quadro grande, e a escala é justamente isso: o
+        // desenho maior reduzido antes de qualquer leitura. Ficar em 1x é a resposta certa.
+        if !self.blit_confiavel {
+            return;
+        }
         self.descarrega();
         // O teto é o maior anexo que a placa aceita: um fator acima dele não criaria o destino.
         let maximo = unsafe {
@@ -2311,6 +2963,11 @@ impl Rasterizador for GpuState {
     }
 
     fn define_antialias(&mut self, amostras: usize) {
+        // O `resolve` do MSAA é um blit entre framebuffers. Sem blit confiável, pedir amostras
+        // daria borda suja em vez de borda suave.
+        if !self.blit_confiavel {
+            return;
+        }
         self.descarrega();
         let maximo = unsafe { self.gl.get_parameter_i32(glow::MAX_SAMPLES) }.max(1) as usize;
         // Potências de dois são o que as placas oferecem; 1 é desligado.
@@ -2435,11 +3092,17 @@ mod tests {
         let Some((mut gpu, _)) = par(16, 16) else {
             return;
         };
-        gpu.set_active_texture(0);
+        // **A unidade vem como enum do GL, não como índice.** `set_active_texture` recebe o que o
+        // guest manda no `glActiveTexture`, e o estado guarda `enum - GL_TEXTURE0`. Passando `1`,
+        // a subtração dá um número enorme, a unidade 1 nunca é preparada — e a prova falhava
+        // acusando o código de perder o que ela mesma não tinha posto. Este teste ficou vermelho
+        // em `development` por isso: ele nasceu no PR dos save states do Android, cuja CI foi
+        // cancelada antes de rodá-lo.
+        gpu.set_active_texture(gles::GL_TEXTURE0);
         gpu.bind_texture(10);
         gpu.upload_level(10, 0, 1, 1, vec![[255, 0, 0, 255]]);
         gpu.set_capability(gles::GL_TEXTURE_2D, true);
-        gpu.set_active_texture(1);
+        gpu.set_active_texture(gles::GL_TEXTURE0 + 1);
         gpu.bind_texture(20);
         gpu.upload_level(20, 0, 1, 1, vec![[0, 255, 0, 255]]);
         gpu.set_capability(gles::GL_TEXTURE_2D, true);
@@ -3018,6 +3681,263 @@ mod tests {
             pixel(&b, largura, 3, 5),
             "linha do meio devia ter ficado preta nos dois"
         );
+    }
+
+    /// Um endereço que placa nenhuma tem, para as provas que não abrem contexto nenhum.
+    const ENDERECO_FALSO: usize = usize::MAX;
+    /// O endereço de uma segunda placa que também não existe.
+    const OUTRO_ENDERECO: usize = usize::MAX - 8;
+
+    /// **A placa que morreu larga os nomes de GL sem apagar nenhum deles.**
+    ///
+    /// Um contexto de GL não existe em teste unitário — e é por isso que as decisões que dependem
+    /// dele moram na [`Placa`], que se prova sem placa nenhuma. O que se cobra aqui é o que o `Drop`
+    /// pergunta antes de chamar `delete_*` (auditoria de GPU, achado 1): depois do aviso de que o
+    /// contexto acabou, **nenhum** apagamento acontece — e depois de uma placa nova, volta a
+    /// acontecer.
+    #[test]
+    fn a_placa_que_morreu_larga_os_nomes_e_a_que_nasceu_apaga() {
+        // Placa emprestada e viva: o `Drop` apaga, como sempre apagou.
+        let viva = Placa::nova(true, ENDERECO_FALSO);
+        assert!(
+            viva.apaga_ao_morrer(),
+            "placa viva: o `Drop` apaga os nomes que criou"
+        );
+
+        // O aviso de que o contexto morreu — é a mesma chamada que o `contexto_perdido` e o
+        // `contexto_reset` do core fazem.
+        a_placa_morreu(ENDERECO_FALSO);
+        assert!(viva.morreu(), "o estado não reconheceu o aviso da placa morta");
+        assert!(
+            !viva.apaga_ao_morrer(),
+            "o `Drop` chamaria delete_* com os ponteiros de função de um contexto morto"
+        );
+
+        // **Recriada sob demanda:** uma placa nova, em outro endereço, volta a valer — a marca
+        // antiga não a alcança.
+        let nova = Placa::nova(true, OUTRO_ENDERECO);
+        assert!(!nova.morreu());
+        assert!(nova.apaga_ao_morrer());
+
+        // E a que nasceu **no mesmo endereço** da morta — o alocador reaproveita endereços — também:
+        // quem limpa a marca é `a_placa_nasceu`, que é o que o `liga_a_placa` do core chama.
+        a_placa_nasceu(ENDERECO_FALSO);
+        let renascida = Placa::nova(true, ENDERECO_FALSO);
+        assert!(!renascida.morreu());
+        assert!(renascida.apaga_ao_morrer());
+
+        // Contexto próprio nunca morre antes do dono: quem o fecharia é este mesmo estado.
+        a_placa_morreu(ENDERECO_FALSO);
+        let propria = Placa::nova(false, ENDERECO_FALSO);
+        assert!(!propria.morreu());
+        assert!(
+            propria.apaga_ao_morrer(),
+            "contexto próprio: quem apaga os nomes é o `Drop` dele"
+        );
+
+        // A marca é do processo todo: deixá-la posta mudaria o teste que rodasse depois.
+        a_placa_nasceu(ENDERECO_FALSO);
+        a_placa_nasceu(OUTRO_ENDERECO);
+    }
+
+    /// **O cache dos três objetos morre quando o contexto sai das nossas mãos.**
+    ///
+    /// O `Pintor` da janela termina cada pintura **desligando** programa e VAO, e pinta no mesmo
+    /// contexto em que o rasterizador desenha: sem invalidar, o lote seguinte desenharia com o
+    /// programa do `egui` — ou com nenhum, que é `GL_INVALID_OPERATION` e nada na tela, sem erro
+    /// nenhum do lado de cá (auditoria de GPU, achado 2).
+    #[test]
+    fn o_contexto_que_sai_das_maos_invalida_os_objetos_ligados() {
+        let placa = Placa::nova(true, ENDERECO_FALSO);
+        assert!(placa.precisa_ligar(), "o primeiro lote liga os três");
+        placa.ligou();
+        assert!(
+            !placa.precisa_ligar(),
+            "o lote seguinte reaproveita o que já está ligado — é o ganho do commit e6a436e"
+        );
+        placa.esquece_o_ligado();
+        assert!(
+            placa.precisa_ligar(),
+            "o contexto foi devolvido ao anfitrião: o próximo lote tem de religar"
+        );
+    }
+
+    /// Uma placa fora de tela para os testes que precisam de um contexto **emprestado**.
+    ///
+    /// É o caminho da janela e do frontend: o contexto é de outro, e é por isso que ele pode ser
+    /// tomado de volta no meio do desenho. O `Contexto` volta junto porque é ele que mantém as
+    /// funções de GL vivas: largá-lo antes do estado derrubaria o teste, como derruba o programa.
+    #[cfg(feature = "gpu")]
+    fn placa_emprestada() -> Option<(Contexto, std::sync::Arc<glow::Context>)> {
+        match Contexto::novo() {
+            Ok(contexto) => {
+                let gl = contexto.gl.clone();
+                // O endereço pode ter sido o de uma placa que outro teste marcou como morta: a
+                // marca é do processo todo, e quem a limpa é quem monta a placa — aqui, e no
+                // `liga_a_placa` do core.
+                a_placa_nasceu(endereco_da_placa(&gl));
+                Some((contexto, gl))
+            }
+            Err(porque) => {
+                println!("sem placa fora de tela: {porque}");
+                None
+            }
+        }
+    }
+
+    /// Um estado de placa sobre o contexto emprestado, como o do jogo na janela.
+    #[cfg(feature = "gpu")]
+    fn estado_emprestado(
+        largura: usize,
+        altura: usize,
+        gl: &std::sync::Arc<glow::Context>,
+    ) -> Option<GpuState> {
+        match GpuState::novo(largura, altura, Some(gl.clone())) {
+            Ok(estado) => Some(estado),
+            Err(motivo) => {
+                println!("sem estado de placa: {motivo}");
+                None
+            }
+        }
+    }
+
+    /// Um triângulo da cena, em espaço de recorte, na cor dada.
+    #[cfg(feature = "gpu")]
+    fn triangulo(r: &mut dyn Rasterizador, cor: [f32; 4], cantos: [(f32, f32); 3]) {
+        let vertice = |(x, y): (f32, f32)| Vertex {
+            position: [x, y, 0.0, 1.0],
+            color: cor,
+            uv: [0.0, 0.0],
+            uv1: [0.0; 2],
+            normal: [0.0, 0.0, 1.0],
+            fog: 1.0,
+        };
+        r.set_color(cor);
+        r.draw(gles::GL_TRIANGLES, &cantos.map(vertice));
+    }
+
+    /// O primeiro lote da cena dos dois testes abaixo: um triângulo vermelho no canto de cima.
+    #[cfg(feature = "gpu")]
+    fn primeiro_lote(r: &mut dyn Rasterizador, (largura, altura): (usize, usize)) {
+        r.set_viewport(0, 0, largura as i32, altura as i32);
+        r.set_clear_color([0.0, 0.0, 0.0, 1.0]);
+        r.clear(gles::GL_COLOR_BUFFER_BIT);
+        triangulo(r, [1.0, 0.0, 0.0, 1.0], [(-1.0, 1.0), (-1.0, -1.0), (1.0, 1.0)]);
+        // Fechar o lote é o que o põe na placa — e é ali que o contexto volta ao anfitrião.
+        r.descarrega_o_desenho();
+    }
+
+    /// O segundo lote: outro triângulo, na outra metade do quadro.
+    #[cfg(feature = "gpu")]
+    fn segundo_lote(r: &mut dyn Rasterizador) {
+        triangulo(r, [0.0, 1.0, 0.0, 1.0], [(1.0, -1.0), (1.0, 1.0), (-1.0, -1.0)]);
+        r.descarrega_o_desenho();
+    }
+
+    /// **Um segundo desenhista no mesmo contexto não apaga o desenho do jogo.**
+    ///
+    /// É a metade que faltava do achado 2: nenhum teste punha o `Pintor` do `egui` entre dois lotes
+    /// do rasterizador, **no mesmo contexto** — que é o caminho de `graphics.gpu_rasterizer = true`
+    /// (`src/ui/app.rs` entrega o contexto do `eframe` à sessão, e `src/ui/gpu.rs` o pinta). O que
+    /// o `Pintor` faz no fim de cada pintura está copiado aqui: `use_program(None)` e
+    /// `bind_vertex_array(None)`. O quadro dos dois lados tem de sair **igual**.
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn o_pintor_no_mesmo_contexto_nao_apaga_o_desenho_do_jogo() {
+        use glow::HasContext as _;
+
+        let (largura, altura) = (16, 16);
+        let Some((contexto, gl)) = placa_emprestada() else {
+            return;
+        };
+        let (Some(mut so_o_primeiro), Some(mut referencia), Some(mut com_pintor)) = (
+            estado_emprestado(largura, altura, &gl),
+            estado_emprestado(largura, altura, &gl),
+            estado_emprestado(largura, altura, &gl),
+        ) else {
+            return;
+        };
+        let _ = &contexto;
+        let medida = (largura, altura);
+
+        primeiro_lote(&mut so_o_primeiro, medida);
+        primeiro_lote(&mut referencia, medida);
+        primeiro_lote(&mut com_pintor, medida);
+
+        // **O `Pintor` do `egui` pinta aqui**, no mesmo contexto, e é assim que ele termina.
+        unsafe {
+            gl.use_program(None);
+            gl.bind_vertex_array(None);
+        }
+
+        // Na referência ninguém mexeu no contexto; no outro, o `egui` acabou de desligar os dois.
+        segundo_lote(&mut referencia);
+        segundo_lote(&mut com_pintor);
+
+        let so_um = so_o_primeiro.read_rect(0, 0, largura, altura);
+        let esperado = referencia.read_rect(0, 0, largura, altura);
+        let obtido = com_pintor.read_rect(0, 0, largura, altura);
+        assert_ne!(
+            so_um, esperado,
+            "a cena do teste não discrimina: o segundo lote não desenhou nada nem na referência"
+        );
+        assert_eq!(
+            obtido, esperado,
+            "o segundo lote desenhou com o programa que o egui deixou: o cache dos objetos ligados \
+             sobreviveu a outra pessoa usar o contexto"
+        );
+    }
+
+    /// **A placa que morreu no meio do quadro não recebe desenho novo.**
+    ///
+    /// O aviso de que o contexto acabou chega de fora do emulador e **não espera** o `retro_run`
+    /// terminar (auditoria de GPU, achados 1 e 4): o que se cobra é que o rasterizador pare de
+    /// chamar o driver assim que souber, em vez de desenhar por ponteiros de função que já não
+    /// existem. O quadro que sai é o que já estava na placa.
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn a_placa_que_morreu_no_meio_do_quadro_nao_desenha_mais() {
+        let (largura, altura) = (16, 16);
+        let Some((contexto, gl)) = placa_emprestada() else {
+            return;
+        };
+        // Os dois estados do teste nascem antes do aviso: criar um depois dele seria pedir GL a uma
+        // placa morta. Os dois são do **mesmo** contexto — a marca de óbito é da placa, e não do
+        // estado, que é o que o aviso do frontend quer dizer.
+        let (Some(mut vivo), Some(mut com_a_morta)) = (
+            estado_emprestado(largura, altura, &gl),
+            estado_emprestado(largura, altura, &gl),
+        ) else {
+            return;
+        };
+        let _ = &contexto;
+        let medida = (largura, altura);
+
+        // **A cena discrimina:** com a placa viva, o segundo lote muda o quadro. É o controle deste
+        // teste, e ele roda no mesmo contexto e na mesma medida do caso que interessa.
+        primeiro_lote(&mut vivo, medida);
+        let antes = vivo.read_rect(0, 0, largura, altura);
+        segundo_lote(&mut vivo);
+        let depois = vivo.read_rect(0, 0, largura, altura);
+        assert_ne!(
+            antes, depois,
+            "a cena do teste não discrimina: com a placa viva o segundo lote tem de aparecer"
+        );
+
+        // O aviso, no meio do quadro — o mesmo que o `contexto_perdido` e o `contexto_reset` dão.
+        primeiro_lote(&mut com_a_morta, medida);
+        let antes = com_a_morta.read_rect(0, 0, largura, altura);
+        a_placa_morreu(endereco_da_placa(&gl));
+        segundo_lote(&mut com_a_morta);
+        let depois = com_a_morta.read_rect(0, 0, largura, altura);
+        assert_eq!(
+            depois,
+            antes,
+            "a placa morta continuou desenhando: o estado não foi invalidado no aviso"
+        );
+
+        // A marca é do processo todo: limpa, senão o teste seguinte herdaria uma placa morta.
+        a_placa_nasceu(endereco_da_placa(&gl));
     }
 }
 

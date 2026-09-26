@@ -35,18 +35,23 @@ Não há código ARM de cola, stub compilado nem tabela de saltos dentro do gues
 identificador da chamada. O retorno funciona igual: `lr` recebe um endereço-sentinela também não
 mapeado, e chegar nele significa que o módulo retornou.
 
-O preço disso está medido, e a medida mudou quando ficou mais fina. A volta pelo núcleo — sair
-do `emu_start` e entrar de novo — custa **1,4 µs**, e é o que se paga por chamada de API mesmo
-quando o método não faz nada. O que sobra depende do método, e às vezes é muito mais que isso.
-Num jogo que faz milhões delas por quadro isso vira o gargalo, como está descrito no fim deste
-documento.
+O preço disso está medido, **mas a medida é da era do Unicorn**. A volta pelo núcleo — sair do
+JIT e entrar de novo — custava **1,4 µs** por chamada mesmo quando o método não fazia nada. Com o
+Dynarmic esse número **não foi refeito**: o instrumento de hoje (`ZEEBX_ROM_PERFIL`) cronometra
+só o corpo do método, e não o `halt` mais a reentrada, que é onde mora o custo fixo. Enquanto o
+micro-teste não existir, o custo por chamada é desconhecido, e não 1,4 µs.
+
+O que sobra depende do método, e às vezes é muito mais que isso: no Pac-Mania a média de 8 µs por
+chamada não vinha do trampolim, vinha de dois métodos que faziam trabalho demais. Ver
+[`docs/OPTIMIZING_V0.3.0.md`](docs/OPTIMIZING_V0.3.0.md).
 
 ## Camadas
 
 ```
   interface (egui)        ─┐
   linha de comando        ─┤
-  frontends/android       ─┼─▶  Session  ─▶  Machine  ─▶  CpuBackend  ─▶  unicorn (TCG)
+  frontends/android       ─┼─▶  Session  ─▶  Machine  ─▶  CpuBackend  ─▶  dynarmic (A32)
+  frontends/libretro      ─┘                                            └─▶ interpretador (wasm32)
   frontends/headless      ─┘
                                               │
                                               ├─▶ rasterizador de software (OpenGL ES 1.1)
@@ -56,8 +61,10 @@ documento.
                                               └─▶ heap, objetos, temporizadores
 ```
 
-O `CpuBackend` isola o núcleo ARM. Hoje a implementação é sobre o unicorn; se a performance
-exigir, um backend sobre `dynarmic` entra no lugar sem tocar no resto do código.
+O `CpuBackend` isola o núcleo ARM. No nativo a implementação é o **Dynarmic** (A32, ARMv6K), e
+no `wasm32` é o interpretador: o Dynarmic não compila para WebAssembly. **O Unicorn foi
+removido**; a troca de backend que este parágrafo previa aconteceu, e sem tocar no resto do
+código — que era exatamente o que o trait existia para garantir.
 
 A `Machine` é o emulador propriamente dito: o laço, o despacho e a implementação das APIs. Ela
 não sabe que existe janela.
@@ -81,7 +88,8 @@ Execução:
 | | |
 |---|---|
 | `cpu/mod.rs` | O trait `CpuBackend`: registradores, memória, `run` |
-| `cpu/unicorn.rs` | A implementação sobre o unicorn, configurada como ARM1176 |
+| `cpu/dynarmic.rs` | A implementação sobre o Dynarmic, com tabela de páginas direta |
+| `cpu/interpretador.rs` | O backend do `wasm32`, onde o Dynarmic não existe |
 | `cpu/mem.rs` | O mapa de memória do guest, em regiões nomeadas |
 | `loader/` | Carga do `.mod` e montagem do ambiente, mais os formatos `.mif`, `.bar` e `.zip` |
 | `machine/mod.rs` | O laço, o despacho e o estado da máquina |
@@ -130,10 +138,11 @@ callback, e cada volta devolve apenas a fatia de instruções que coube; no Zeeb
 um milhão e meio de voltas para algumas dezenas de quadros. Quem manda no redesenho é o
 `eglSwapBuffers` no 3D e o relógio real no 2D.
 
-O emulador roda na mesma linha de execução da interface. O núcleo do unicorn não atravessa
-threads, e o `Session::step` já devolve o controle a cada fatia de tempo real, que é o que mantém
-a janela viva enquanto o jogo corre. Uma thread separada traria sincronização sem trazer nada em
-troca.
+O emulador roda na mesma linha de execução da interface. O Dynarmic não atravessa threads — o
+`Jit` é preso à linha em que nasceu —, e o `Session::step` já devolve o controle a cada fatia de
+tempo real, que é o que mantém a janela viva enquanto o jogo corre. Uma thread separada traria
+sincronização sem trazer nada em troca. É a mesma razão para o core Libretro entregar um quadro
+por `retro_run`, e para o registro do núcleo ser drenado ali e não de dentro do desenho.
 
 ## O que o projeto mantém de propósito
 
@@ -141,6 +150,14 @@ O quadro é reproduzível bit a bit: duas execuções iguais desenham os mesmos 
 permitiu provar que a paralelização do rasterizador e o despejo por quadro não mudaram nada, com
 921.600 bytes comparados e zero diferenças. Um backend de GPU real custaria essa garantia, e é
 uma das razões de ele não estar na frente da fila.
+
+**Uma ressalva, medida em 2026-09-24: a reprodução exige o mesmo estado de cache de extração.**
+Três execuções com a extração já no cache dão **760 815 instruções, dígito por dígito**; a mesma
+ROM com o cache recém-extraído dá **760 921**, com uma `CreateInstance` a mais e o heap deslocado 64
+bytes. O emulador é determinístico — o que muda é o que o guest observa do host, e a causa ainda
+não está fechada: a hipótese do manifesto `.zeebx-pacote` foi testada e **rejeitada**. Ver
+[`docs/OPTIMIZING_V0.3.0.md`](docs/OPTIMIZING_V0.3.0.md), seções 32 e 33. Quem for comparar duas
+execuções precisa aquecer o cache antes, ou vai medir isto em vez do que queria.
 
 O relógio é do guest, não do host. O tempo que o jogo mede vem das instruções executadas, e o
 tempo ocioso é adiantado em vez de gasto. Sem isso um jogo que espera em laço gasta a espera de
@@ -155,7 +172,8 @@ o header, então a ordem é hipótese, e isso está dito no código e na saída 
 A decodificação de imagem, o som, a rasterização, o `printf`, o AES, o MD5 e o inflate de
 recursos são escritos aqui. As dependências cobrem o que é do host ou o que seria reinventar mal.
 
-O `unicorn-engine` é o núcleo ARM, atrás do `CpuBackend`. O `eframe` com o `egui` é a interface,
+O `dynarmic` é o núcleo ARM, atrás do `CpuBackend`, e só existe no nativo: o `wasm32` usa o
+interpretador de `cpu/interpretador.rs`. O `eframe` com o `egui` é a interface,
 e o `minifb` é a janela do modo `--window`, que é separada dela. O `cpal` só põe som na placa; a
 decodificação é nossa. O `gilrs` dá controles de verdade nos três sistemas.
 
@@ -173,9 +191,14 @@ O `flate2` faz o inflate do `IUnzipAStream` do BREW. O `zip` entra só para leit
 formatos que os `.mif` e os recursos trazem. O `rfd` é só o seletor de pastas, por `xdg-portal`
 para não depender do GTK no Linux. O `serde` e o `serde_json` guardam a configuração.
 
-O `build.rs` existe por um motivo só: linkar a `libatomic`. O `cputlb` do QEMU que o
-`unicorn-engine-sys` embute usa atômicos de 128 bits que o x86-64 não gera inline, e o crate não
-declara essa dependência.
+O `build.rs` da raiz existia por um motivo só: linkar a `libatomic` que o `unicorn-engine-sys`
+precisava, e esse motivo **saiu da árvore com o Unicorn**. O que sobrou dele é o
+`cargo:rerun-if-changed` e o registro de que o ícone do `.exe` passou a ser compilado pelo
+`frontends/classical-standalone`, que é quem produz o executável. Quem tem um `build.rs` com
+trabalho de verdade hoje é o core Libretro, e por outro motivo: o shim de compatibilidade com
+glibc anterior a 2.34
+([`frontends/libretro/src/r36s_compat.c`](frontends/libretro/src/r36s_compat.c)), que define
+`__libc_single_threaded` e o par `__dso_handle`/`__cxa_finalize` como símbolos fracos.
 
 ## Ferramentas de depuração
 
@@ -239,35 +262,64 @@ está em [docs/implementacao/11-compatibilidade.md](docs/implementacao/11-compat
 
 ## Limites conhecidos
 
-Os números abaixo são medidos, não estimados, em Quake — o pior caso da árvore, porque ele
-espalha a cena por meio milhão de draw calls de dois triângulos. Em 15 segundos virtuais são
-29 segundos de parede, cerca de **52% da velocidade do console**: ~68% do tempo em emulação do
-ARM e despacho de API, ~28% em preenchimento de pixels, ~4% em geometria.
+**Os números abaixo têm data, e a data importa.** Tudo o que está marcado como *era do Unicorn*
+foi medido antes de o Dynarmic virar o backend, e **não descreve o emulador de hoje**. Quando o
+Unicorn saiu da árvore ninguém refez as medidas; refazê-las é o item 1 de
+[`docs/OPTIMIZING_V0.3.0.md`](docs/OPTIMIZING_V0.3.0.md), onde vivem os números de agora.
 
-**Meça sempre sem o `--profile`.** Ele custa 24% — 36 s contra 29 s no mesmo trabalho —, porque
-o perfil de blocos faz uma inserção de tabela por bloco de tradução. O preço cai quase todo na
-fatia do ARM, então com ele ligado a emulação parece maior do que é. As porcentagens acima
-servem para comparar; o relógio, só sem ele.
+### O que se sabe hoje (Dynarmic)
 
-A geometria já foi 14%, e caiu quando o `read_attribute` deixou de pedir um `read_u32` por
-componente. Cada pedido atravessa a FFI do unicorn, que procura a região antes de copiar quatro
-bytes: **57 ns**, contra **0,3 ns** quando os mesmos bytes vêm de um `read_mem` de um
-quilobyte. Com 6,65 milhões de vértices em 15 segundos, isso era 3,2 s dos 3,6 s que as draw
-calls custavam — o desenho em si era 400 ms. A lição vale para todo dado que o guest entrega em
-array: **pedir o bloco, nunca o elemento**.
+Medido em bancada x86-64, `--release`, sem o perfil ligado, 15.016 ms virtuais de Quake:
 
-O núcleo faz 218 milhões de instruções por segundo num laço apertado que não toca memória
-(`cargo test --release instrucoes_por_segundo -- --ignored --nocapture`), e cerca de **86
-milhões** no Quake de verdade — a diferença é o tráfego de memória pela softmmu e o milhão de
-idas e voltas do `emu_start` por causa das chamadas de API. Um jogo que use um quarto da
-capacidade do ARM11 do console já consome boa parte do nosso relógio só para executar instrução.
+| | |
+|---|---|
+| velocidade | **170%** da do console |
+| ritmo do núcleo | **195 milhões** de instruções por segundo |
 
-O próximo gargalo é o custo por chamada de API, 1,4 µs de ida e volta pelo núcleo, porque toda
-chamada para e reinicia a emulação. Atendê-las dentro de um hook é um redesenho do trampolim, e é
-a maior melhoria estrutural que resta. Vale, porém, a lição do perfil de API: antes de atacar o
-mecanismo, conferir o que cada método custa por dentro — no Pac-Mania a média de 8 µs por chamada
-não vinha do trampolim, vinha de dois métodos que faziam trabalho demais.
+Nos dois números, 2,3 vezes o que o Unicorn entregava. **A ressalva está no documento:** a cena
+não é a mesma da medida antiga, então o que compara direto é o ritmo do núcleo, não o relógio de
+parede de duas cenas diferentes.
 
-O rasterizador não é gargalo hoje. Ele já divide o quadro em faixas paralelas, e são 8,0 s dos
-29 s do Quake — 13,7 ms por quadro apresentado. Mesmo que fosse instantâneo o jogo ficaria em
-torno de 71% da velocidade do console: o que sobra é o ARM.
+O que a rodada longa mostrou, com 63 ROMs e 60 s virtuais cada, **com o perfil ligado** — que
+encarece o relógio em cerca de 43% e por isso serve para ordenar, não para publicar: Action Hero
+3D 91%, Quake 93%, Ultimate Chess 3D 114%, Need for Speed Carbon 123%. O Pac-Mania não fecha 60 s
+nem em 240 s de relógio real: gasta 32 milhões de `GetClipRect` e 16 milhões de `SetClipRect` no
+caminho de desenho, e é o candidato mais claro a otimização que a árvore tem hoje.
+
+### O que ficou da era do Unicorn
+
+Está aqui porque ainda é verdade como **lição**, e não como medida atual.
+
+**Meça sempre sem o `--profile`.** Ele custava 24% na medição antiga — 36 s contra 29 s no mesmo
+trabalho —, porque o perfil de blocos faz uma inserção de tabela por bloco de tradução. O preço
+caía quase todo na fatia do ARM, então com ele ligado a emulação parecia maior do que era. O
+mesmo cuidado vale hoje, por outro motivo: o `ZEEBX_ROM_PERFIL` cronometra cada método de API.
+
+**Pedir o bloco, nunca o elemento.** A geometria foi 14% do tempo numa medição antiga e caiu
+quando o `read_attribute` deixou de pedir um `read_u32` por componente: cada pedido atravessava a
+FFI do Unicorn, que procurava a região antes de copiar quatro bytes — **57 ns**, contra **0,3 ns**
+quando os mesmos bytes vinham de um `read_mem` de um quilobyte. Com 6,65 milhões de vértices em
+15 segundos, isso eram 3,2 s dos 3,6 s que as draw calls custavam, contra 400 ms do desenho de
+fato. A lição continua valendo para todo dado que o guest entrega em array, e é ela que sustenta
+a leitura em bloco de hoje.
+
+**O custo por chamada de API é desconhecido, não 1,4 µs.** Aquele número media a volta pelo
+`emu_start` do Unicorn. O instrumento atual não mede o `halt` mais a reentrada do JIT: mede o
+corpo do método. Enquanto o micro-teste não existir, tratar 1,4 µs como fato é tratar uma medida
+de um backend removido como se fosse do atual — e foi exatamente esse erro que a revisão externa
+cometeu.
+
+**O rasterizador *é* gargalo no caminho de software.** A frase "não é gargalo hoje" também é da
+era do Unicorn. Com o Dynarmic, a fatia do ARM encolheu e a apresentação passou a dominar: nos
+cinco jogos perfilados ela ficou entre 54% e 85% do tempo de método de API, e o `eglSwapBuffers`
+carrega rasterização, conversão para RGB565 e cópia, porque é ali que a fila de triângulos vira
+pixel (`frame_rgb565` chama `flush`). No caminho de placa, quem manda é outro conjunto de custos
+— e é o que a telemetria no portátil ainda precisa mostrar.
+
+### O que ninguém mediu ainda
+
+- o custo real de uma chamada de API com o Dynarmic, trampolim incluído;
+- quanto do tempo do portátil é ARM, quanto é rasterização e quanto é `glReadPixels`;
+- quantas páginas de código+código se misturam e fazem o SMC pesar.
+
+O primeiro número sai de um micro-teste; os outros dois, da telemetria por quadro no core.

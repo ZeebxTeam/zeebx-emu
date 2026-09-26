@@ -7,6 +7,9 @@ impl<C: CpuBackend> Machine<C> {
     /// nomes vem dos headers do SDK, então um método fora de ordem viraria erro de compilação
     /// aqui em vez de desenho errado lá.
     pub(super) fn display_call(&mut self, slot: u32) -> Result<Option<u32>, CpuError> {
+        // **O quadro do OpenGL vem antes do 2D.** Um HUD desenhado por cima de uma tela que
+        // ainda não recebeu a cena apagaria a cena — ver [`Machine::materializa_quadro_gl`].
+        self.materializa_quadro_gl();
         let Some(name) = Interface::Display.method(slot) else {
             return Ok(None);
         };
@@ -376,6 +379,9 @@ impl<C: CpuBackend> Machine<C> {
     /// O estado (cor de traço, cor de preenchimento, se preenche ou não, translação) fica no
     /// host; as primitivas viram operações no framebuffer.
     pub(super) fn graphics_call(&mut self, slot: u32) -> Result<Option<u32>, CpuError> {
+        // **O quadro do OpenGL vem antes do 2D.** Um HUD desenhado por cima de uma tela que
+        // ainda não recebeu a cena apagaria a cena — ver [`Machine::materializa_quadro_gl`].
+        self.materializa_quadro_gl();
         let Some(name) = Interface::Graphics.method(slot) else {
             return Ok(None);
         };

@@ -9,6 +9,7 @@ dynarmic" — sem dizer o que instalar. Este script diz.
 """
 
 import glob
+import os
 import pathlib
 import shutil
 import subprocess
@@ -26,11 +27,22 @@ FERRAMENTAS = [
     ("python3", "Python 3 (unicorn/QEMU)", "python3"),
 ]
 
+# O Qt 6 da interface entra junto: os `-dev` para compilar, e os módulos QML e o plugin do Wayland
+# para a janela abrir depois. Sem o Qt, `--no-default-features` compila a interface do egui.
 PACOTES = {
-    "debian": "sudo apt install build-essential cmake ninja-build pkg-config python3 libclang-dev libglib2.0-dev",
-    "arch": "sudo pacman -S --needed base-devel cmake ninja pkgconf python clang glib2",
-    "fedora": "sudo dnf install gcc-c++ cmake ninja-build pkgconf-pkg-config python3 clang-devel glib2-devel",
+    "debian": "sudo apt install build-essential cmake ninja-build pkg-config python3 libclang-dev libglib2.0-dev"
+    " qt6-base-dev qt6-base-dev-tools qt6-declarative-dev qt6-declarative-dev-tools qmake6 qt6-wayland"
+    " qml6-module-qtquick qml6-module-qtquick-controls qml6-module-qtquick-layouts"
+    " qml6-module-qtquick-templates qml6-module-qtquick-window qml6-module-qtqml-workerscript",
+    "arch": "sudo pacman -S --needed base-devel cmake ninja pkgconf python clang glib2"
+    " qt6-base qt6-declarative qt6-wayland",
+    "fedora": "sudo dnf install gcc-c++ cmake ninja-build pkgconf-pkg-config python3 clang-devel glib2-devel"
+    " qt6-qtbase-devel qt6-qtdeclarative-devel qt6-qtwayland",
 }
+
+# O Qt mais velho em que a interface foi conferida: o do Ubuntu 24.04. O Qt Quick dela usa o
+# `FrameAnimation`, que nasceu no 6.4.
+QT_MINIMO = (6, 4)
 
 
 def distro():
@@ -76,6 +88,23 @@ def tem_glib():
     )
 
 
+def versao_do_qt():
+    """A versão do Qt que o `cxx-qt-build` vai achar: o `QMAKE`, ou o `qmake6`, ou o `qmake`."""
+    for qmake in (os.environ.get("QMAKE"), shutil.which("qmake6"), shutil.which("qmake")):
+        if not qmake:
+            continue
+        try:
+            resposta = subprocess.run(
+                [qmake, "-query", "QT_VERSION"], capture_output=True, text=True
+            )
+        except OSError:
+            continue
+        versao = resposta.stdout.strip()
+        if resposta.returncode == 0 and versao.startswith("6."):
+            return versao
+    return None
+
+
 def main():
     faltando = []
     print("ferramentas:")
@@ -97,6 +126,14 @@ def main():
     print(f"  [{'ok ' if glib else 'FALTA'}] glib-2.0      unicorn/QEMU")
     if not glib:
         faltando.append("libglib2.0-dev")
+
+    qt = versao_do_qt()
+    qt_serve = qt is not None and tuple(int(n) for n in qt.split(".")[:2]) >= QT_MINIMO
+    print(
+        f"  [{'ok ' if qt_serve else 'FALTA'}] Qt {qt or '6':<9} a interface (6.{QT_MINIMO[1]} ou mais novo)"
+    )
+    if not qt_serve:
+        faltando.append("qt6")
 
     familia = distro()
     if faltando:

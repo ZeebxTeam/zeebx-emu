@@ -438,6 +438,12 @@ ZEEBX_ROM=roms ZEEBX_ROM_SAIDA=saida ZEEBX_ROM_BASE=docs/varredura \
 |---|---|
 | `ZEEBX_ROM` | um `.mod`/`.zip`, uma lista separada por vírgula, ou um diretório |
 | `ZEEBX_ROM_MS` | quanto tempo **virtual** rodar, em ms (padrão 6000, o desta página) |
+
+> **Aqueça o cache antes de comparar.** O **primeiro** jogo aberto de cada extração executa
+> diferente dos seguintes — medido: 760 921 instruções em cache frio contra 760 815 em cache quente,
+> com o heap deslocado 64 bytes. A comparação com a linha de base acusa essa diferença como
+> regressão. Rode o corpus uma vez sem `ZEEBX_ROM_BASE` (a passada que aquece) e só a segunda
+> passada vale como medida. Ver `docs/OPTIMIZING_V0.3.0.md`, seção 33.
 | `ZEEBX_ROM_TETO` | teto de tempo **real** por jogo, em segundos (padrão 90) |
 | `ZEEBX_ROM_SAIDA` | diretório onde gravar o relatório completo de cada jogo |
 | `ZEEBX_ROM_BASE` | diretório da linha de base: o que falta é gravado, o que existe é cobrado |

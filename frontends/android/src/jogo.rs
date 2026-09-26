@@ -132,7 +132,12 @@ impl Emulador {
         // quadro em vez de tapá-lo. Precisa ser declarado antes do painel central, porque no
         // egui quem pede espaço primeiro é quem o recebe.
         if let Some((amostra, memoria, relogio, historia)) = painel {
-            let debug = self.settings.debug;
+            // **Clonado, e não movido.** O `DebugView` ganhou um campo de texto (`nivel_de_log`,
+            // o nível do registro do núcleo), e por isso deixou de ser `Copy`. O `clone` é de uma
+            // struct de meia dúzia de campos por volta de desenho do painel — e o painel só existe
+            // quando ligado. Este erro só apareceu na CI do Android: o pacote nem compila fora de
+            // um alvo Android, então `cargo check` no desktop não o vê.
+            let debug = self.settings.debug.clone();
             let escuro = egui::Frame::NONE
                 .fill(egui::Color32::from_black_alpha(200))
                 .inner_margin(egui::Margin::symmetric(8, 2));
@@ -204,9 +209,9 @@ impl Emulador {
                             let Some(pintor) = guarda.as_mut() else {
                                 return;
                             };
-                            let vp = info.viewport_in_pixels();
+                            let vp = gpu::Viewport::from(info.viewport_in_pixels());
                             match quadro_gl {
-                                Some(quadro) => pintor.desenha_textura(gl, quadro, &vp, suave),
+                                Some(quadro) => pintor.desenha_textura(gl, quadro, vp, suave),
                                 None => {
                                     if let Some((chave, bytes)) = &quadro_2d {
                                         pintor.desenha_quadro(
@@ -215,7 +220,7 @@ impl Emulador {
                                             lg,
                                             at,
                                             *chave,
-                                            &vp,
+                                            vp,
                                             suave,
                                         );
                                     }

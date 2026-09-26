@@ -31,6 +31,7 @@ função não está aqui.
 | [18-a-roda-da-z-wheel.md](18-a-roda-da-z-wheel.md) | Da tela preta ao desenho na Z-Wheel: os degraus do lado do guest, para qualquer emulador |
 | [19-jit-arm-e-renderizadores.md](19-jit-arm-e-renderizadores.md) | Dynarmic, o gargalo dos renderizadores ARM e como validar sem alterar o tempo BREW |
 | [20-boomerang-e-wii-remote.md](20-boomerang-e-wii-remote.md) | O controle de movimento: o relatório do receptor lido no código dos jogos, e o Wii Remote no lugar dele |
+| [21-migracao-para-qt.md](21-migracao-para-qt.md) | Plano da troca do egui por Qt Quick com cxx-qt, e o que o núcleo empresta da janela |
 
 ## Como medir
 

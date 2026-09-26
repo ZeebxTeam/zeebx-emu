@@ -22,6 +22,8 @@ cmake-build-*/
 
 # Rust
 /target/
+# O cxx-qt-build escreve a configuração do servidor de linguagem QML com o caminho desta máquina.
+.qmlls.ini
 
 # Saídas de depuração do `run` (--dump-heap) e o framebuffer exportado
 heap.bin

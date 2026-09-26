@@ -444,7 +444,7 @@ impl<C: CpuBackend> Machine<C> {
 /// (`HashMap<u32, número>` ou `HashMap<u32, punhado de números>`), e o que muda é só o nome.
 ///
 /// **O que não entra:** as tabelas que guardam pixels ou bytes em quantidade — `bitmaps`,
-/// `images`, `gl_last_frame`. Elas são a maior parte do que sobra e precisam de um formato próprio
+/// `images`, `gl_last_frame_words`. Elas são a maior parte do que sobra e precisam de um formato próprio
 /// (comprimir, ou apontar para a memória do guest quando o conteúdo já está lá). Enquanto não
 /// entrarem, o core continua dizendo que não salva.
 impl<C: CpuBackend> Machine<C> {
@@ -1972,6 +1972,9 @@ impl<C: CpuBackend> Machine<C> {
                     inicio_us: u64::from(meta[6]) | (u64::from(meta[7]) << 32),
                     quadros_lidos: u64::from(meta[8]) | (u64::from(meta[9]) << 32),
                     tocando: meta[5] != 0,
+                    // O aviso do fim é do log, não do estado do jogo: um save restaurado pode
+                    // avisar de novo, e isso é melhor que esconder o fim de um fluxo.
+                    avisou_do_fim: false,
                 },
             );
         }
@@ -3762,6 +3765,7 @@ mod tests {
                 inicio_us: 0x1_0000_0005,
                 quadros_lidos: 0x2_0000_0007,
                 tocando: true,
+                avisou_do_fim: false,
             },
         );
         antes.pending_blits.push(PendingBlit {

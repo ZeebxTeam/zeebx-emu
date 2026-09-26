@@ -929,7 +929,7 @@ impl<C: CpuBackend> Machine<C> {
     }
 
     pub(super) fn read_bytes(&self, addr: u32, len: u32) -> Result<Vec<u8>, CpuError> {
-        let mut buf = vec![0u8; len as usize];
+        let mut buf = vec![0u8; tamanho_do_guest(len as usize)?];
         if len > 0 {
             self.cpu.read_mem(addr, &mut buf)?;
         }

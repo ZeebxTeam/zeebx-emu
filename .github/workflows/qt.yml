@@ -1,0 +1,332 @@
+# A interface Qt: compila e testa o standalone com a feature `ui-qt` nos três sistemas. Nasceu
+# como o ponto 4 da fase 0 de `docs/implementacao/21-migracao-para-qt.md`; desde a fase 8, com a
+# feature, o Qt é a interface padrão, e a do egui fica em `zeebx egui`.
+#
+# **Separado do `ci.yml` de propósito.** O `ci.yml` responde se o binário que vai para a release
+# sai; este responde se a migração para Qt é viável fora do Linux em que ela nasceu. Um Qt que não
+# instala num runner não pode deixar vermelho o CI de quem só mexeu no motor.
+#
+# O Qt vem do `install-qt-action`, e não do sistema: o do `apt` do Ubuntu 24.04 é o 6.4.
+#
+# **É o 6.11, e não o 6.8 LTS.** O `6.8.*` resolveu para o 6.8.3, e o `qyieldcpu.h` dela chama
+# `__yield()` direto no ARM. O clang do Xcode do `macos-latest` passou a exigir o `<arm_acle.h>`
+# para isso, e o macOS ARM64 não compilava nem o `init.cpp` do próprio cxx-qt. O 6.11 tenta
+# `__builtin_arm_yield` primeiro — conferido no cabeçalho — e é o mesmo Qt do Linux em que a
+# interface é desenvolvida.
+#
+# **Menos no Windows, que fica no 6.10.** A partir do 6.11 o repositório do Qt para Windows ganhou
+# uma pasta por arquitetura (`qt6_6112/qt6_6112_msvc2022_64/`), e o índice único que o
+# `aqtinstall` procura (`qt6_6112/qt6_6112/Updates.xml`) não existe mais: 404, conferido no
+# `download.qt.io`. O `aqtinstall` 3.3.0, o mais novo publicado, ainda não entende a pasta nova, e
+# o passo falhava com "Failed to locate XML data". O 6.10 ainda tem o índice antigo, com a
+# `win64_msvc2022_64`, e o defeito do `__yield` é só do ARM. Quando o `aqtinstall` entender o
+# formato novo, o Windows volta para o 6.11.
+#
+# **As versões são exatas, e não `6.11.*`.** O curinga pega o patch do dia em que ele sai, e o Qt
+# publica os pacotes antes dos checksums: o 6.11.3 apareceu em 24/09/2026 com os `.7z` no ar e
+# todos os `.sha256` em 404, conferido no `download.qt.io`. O `aqtinstall` baixa o checksum antes
+# do pacote, e o Linux e o macOS falharam no passo do Qt sem mudar uma linha do projeto. Subir de
+# versão passa a ser uma mudança deste arquivo, feita quando o patch novo estiver completo.
+#
+# **Os instaladores saem como artefatos da execução** (fase 9 do plano), com os mesmos passos do
+# `release.yml` e a mesma configuração, a do `Cargo.toml` do standalone: aqui eles se baixam na
+# página da execução para testar antes de uma tag, e cada um é aberto numa tela virtual antes de
+# sair. O AppImage, o NSIS e o `.dmg` levam o próprio Qt; o `.deb` usa o do sistema, e por isso
+# tem um job à parte, compilado contra o Qt do Ubuntu 24.04.
+#
+# Fica de fora o Windows ARM64: o `install-qt-action` não tem ali o mesmo pacote de desktop que tem
+# no x64, e a pergunta da fase 0 é se a ponte compila com MSVC e com o clang da Apple, não em
+# quantas arquiteturas.
+
+name: qt
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: qt-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  compila:
+    name: ${{ matrix.nome }}
+    runs-on: ${{ matrix.sistema }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # O Ubuntu 22.04, e não o 24.04, pelo AppImage: ele roda nos sistemas com uma glibc igual
+          # ou mais nova que a de onde foi montado, e a release o monta no 22.04 pelo mesmo motivo.
+          - nome: linux-x86_64
+            sistema: ubuntu-22.04
+            binario: target/release/zeebx
+            qt: "6.11.2"
+            formato: appimage
+          - nome: windows-x86_64
+            sistema: windows-latest
+            binario: target/release/zeebx.exe
+            qt: "6.10.3"
+            formato: nsis
+          - nome: macos-x86_64
+            sistema: macos-15-intel
+            binario: target/release/zeebx
+            qt: "6.11.2"
+            formato: app
+          - nome: macos-arm64
+            sistema: macos-latest
+            binario: target/release/zeebx
+            qt: "6.11.2"
+            formato: app
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # O sistema entra na chave: o cache do Ubuntu 24.04 restaurado no 22.04 traz scripts de build
+      # ligados a uma glibc mais nova, que não rodam lá. Foi a causa provável do "Compila" saindo
+      # com 101 quando o job do AppImage passou ao 22.04 — o mesmo build passava num contêiner
+      # 22.04 limpo.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: qt-${{ matrix.nome }}-${{ matrix.sistema }}
+
+      # A mesma lista do `ci.yml`: o núcleo e a janela do egui continuam no binário. As `libxcb-*`
+      # são as dependências do plugin de plataforma do Qt (`libqxcb.so`), que o
+      # `linuxdeploy-plugin-qt` precisa achar para levar ao AppImage; o `xvfb`, a tela virtual
+      # em que o AppImage é aberto antes de sair como artefato.
+      - name: Dependências do Linux
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build pkg-config python3 libclang-dev \
+            libglib2.0-dev libasound2-dev libudev-dev libxkbcommon-dev libwayland-dev \
+            libgl1-mesa-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev \
+            libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+            libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-xkb1 \
+            xvfb
+
+      - name: Dependências do macOS
+        if: runner.os == 'macOS'
+        run: brew install cmake ninja pkg-config || true
+
+      # Instala qtbase e qtdeclarative — o Qt Quick e o QML vêm no pacote de desktop — e põe o
+      # `bin` do Qt no PATH, que é onde o Windows procura as DLLs na hora de abrir o binário.
+      - name: Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ matrix.qt }}
+          cache: true
+
+      # O `cxx-qt-build` acha o Qt pelo `qmake`. Dizer qual evita pegar outro que esteja no PATH
+      # da imagem do runner.
+      - name: Compila
+        shell: bash
+        env:
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          QMAKE: ${{ env.QT_ROOT_DIR }}/bin/qmake${{ runner.os == 'Windows' && '.exe' || '' }}
+        run: cargo build --release --locked -p zeebx-classical-standalone --features ui-qt
+
+      # Os testes da ponte, e os do standalone de sempre, agora com o Qt linkado no binário de
+      # teste.
+      - name: Testes
+        shell: bash
+        env:
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
+          QMAKE: ${{ env.QT_ROOT_DIR }}/bin/qmake${{ runner.os == 'Windows' && '.exe' || '' }}
+        run: cargo test --release --locked -p zeebx-classical-standalone --features ui-qt
+
+      # `controles` não abre janela, mas o binário com Qt linkado precisa achar as bibliotecas do
+      # Qt para chegar ao `main`: uma DLL ou um framework que não carrega falha aqui, antes de
+      # qualquer linha nossa.
+      - name: O binário abre (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          ldd ${{ matrix.binario }} | grep -i qt
+          timeout 60 ${{ matrix.binario }} controles
+
+      - name: O binário abre (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          otool -L ${{ matrix.binario }} | grep -i qt
+          perl -e 'alarm 60; exec @ARGV' ${{ matrix.binario }} controles
+
+      - name: O binário abre (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $prova = Start-Process -FilePath "${{ matrix.binario }}" -ArgumentList "controles" -PassThru -NoNewWindow
+          if (-not $prova.WaitForExit(60000)) { $prova.Kill(); throw "o binario pendurou" }
+          if ($prova.ExitCode -ne 0) { throw "o binario saiu com $($prova.ExitCode)" }
+
+      - name: cargo-packager
+        run: cargo install cargo-packager --locked
+
+      # O `linuxdeploy-plugin-qt` leva o Qt que o `QMAKE` diz, com os módulos QML que o
+      # `QML_SOURCES_PATHS` importa. O Wayland vai à parte: o plugin de plataforma
+      # (`libqwayland.so`, um só a partir do Qt 6.10) e o módulo `waylandcompositor`, sem o qual a
+      # integração gráfica não vai junto e a janela não tem GL no Wayland — conferido desmontando o
+      # AppImage.
+      - name: AppImage
+        if: runner.os == 'Linux'
+        shell: bash
+        working-directory: frontends/classical-standalone
+        env:
+          QMAKE: ${{ env.QT_ROOT_DIR }}/bin/qmake
+          QML_SOURCES_PATHS: ${{ github.workspace }}/frontends/classical-standalone/qml
+          EXTRA_PLATFORM_PLUGINS: libqwayland.so
+          EXTRA_QT_MODULES: waylandcompositor
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: cargo packager --release --formats appimage
+
+      # O `windeployqt` junta numa pasta o que o `zeebx.exe` precisa do Qt — as DLLs, os plugins e
+      # os módulos QML que os arquivos de `qml/` importam —, e a configuração dos pacotes manda o
+      # NSIS instalar a pasta ao lado do executável.
+      - name: Instalador do Windows
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          QMAKE: ${{ env.QT_ROOT_DIR }}/bin/qmake.exe
+        run: |
+          windeployqt --release --no-translations \
+            --qmldir frontends/classical-standalone/qml \
+            --dir target/qt-implantado target/release/zeebx.exe
+          cd frontends/classical-standalone
+          cargo packager --release --formats nsis
+
+      # O `cargo packager` monta o `.app`, e o `macdeployqt` põe dentro dele os frameworks, os
+      # plugins e os módulos QML. Ele altera os binários, e no ARM um binário alterado sem
+      # assinatura válida é morto ao abrir: a assinatura ad-hoc é refeita depois. O `.dmg` sai do
+      # `hdiutil` porque o `dmg` do `cargo packager` remontaria o `.app` por cima do que o
+      # `macdeployqt` fez; ele leva o atalho para Aplicativos, como o do `cargo packager` levava.
+      - name: Imagem do macOS
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          QMAKE: ${{ env.QT_ROOT_DIR }}/bin/qmake
+        run: |
+          set -euo pipefail
+          (cd frontends/classical-standalone && cargo packager --release --formats app)
+          app=target/pacotes/Zeebx.app
+          macdeployqt "$app" -qmldir="$GITHUB_WORKSPACE/frontends/classical-standalone/qml"
+          codesign --force --deep --sign - "$app"
+          codesign --verify --deep --strict "$app"
+          raiz=$(mktemp -d)
+          cp -R "$app" "$raiz/"
+          ln -s /Applications "$raiz/Applications"
+          hdiutil create -volname Zeebx -srcfolder "$raiz" -ov -format UDZO target/pacotes/Zeebx.dmg
+          rm -rf "$raiz"
+
+      - name: Nomear
+        shell: bash
+        run: |
+          cd target/pacotes
+          for arquivo in *; do
+            case "$arquivo" in
+              *-setup.exe) novo="zeebx-qt-${{ matrix.nome }}-setup.exe" ;;
+              *.AppImage)  novo="zeebx-qt-${{ matrix.nome }}.AppImage" ;;
+              *.dmg)       novo="zeebx-qt-${{ matrix.nome }}.dmg" ;;
+              *)           continue ;;
+            esac
+            mv -- "$arquivo" "$novo"
+            echo "$arquivo -> $novo"
+          done
+
+      # Abrir o AppImage numa tela virtual pega o que faltou nele: uma biblioteca, um plugin ou um
+      # módulo QML. A janela fica aberta até o `timeout`; sair antes, ou o QML reclamar de módulo,
+      # é falha. O ALSA e o resto do que todo desktop tem ficam de fora do AppImage de propósito.
+      - name: O AppImage abre
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+          QT_FORCE_STDERR_LOGGING: "1"
+        run: |
+          mkdir -p "$RUNNER_TEMP/cfg/zeebx"
+          # Sem o Qt do `install-qt-action` no caminho: o AppImage tem de achar o dele.
+          unset LD_LIBRARY_PATH QT_PLUGIN_PATH QML2_IMPORT_PATH
+          set +e
+          XDG_CONFIG_HOME="$RUNNER_TEMP/cfg" timeout 15 xvfb-run -a \
+            target/pacotes/zeebx-qt-${{ matrix.nome }}.AppImage > abre.log 2>&1
+          saida=$?
+          set -e
+          cat abre.log
+          [ "$saida" = 124 ] || { echo "o AppImage saiu com $saida antes do tempo"; exit 1; }
+          if grep -iE "is not installed|could not load|failed to load" abre.log; then exit 1; fi
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: zeebx-qt-${{ matrix.nome }}
+          path: target/pacotes/zeebx-qt-*
+          if-no-files-found: error
+          retention-days: 14
+
+  # O `.deb` usa o Qt do sistema, e um binário do Qt 6.11 não roda num Qt mais velho: ele é
+  # compilado contra o do Ubuntu 24.04, o 6.4. Depois é instalado num Ubuntu 24.04 e num Debian 13
+  # limpos, com o `apt` resolvendo as dependências, e aberto numa tela virtual — o que pega uma
+  # dependência esquecida ou com o nome de uma distribuição só.
+  deb:
+    name: linux-x86_64 (deb)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: qt-deb
+
+      - name: Dependências
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build pkg-config python3 libclang-dev \
+            libglib2.0-dev libasound2-dev libudev-dev libxkbcommon-dev libwayland-dev \
+            libgl1-mesa-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev \
+            qt6-base-dev qt6-base-dev-tools qt6-declarative-dev qt6-declarative-dev-tools qmake6
+
+      - name: cargo-packager
+        run: cargo install cargo-packager --locked
+
+      - name: Pacote
+        working-directory: frontends/classical-standalone
+        env:
+          QMAKE: /usr/bin/qmake6
+        run: |
+          cargo packager --release --formats deb
+          mv ../../target/pacotes/*.deb ../../target/pacotes/zeebx-qt-linux-x86_64.deb
+
+      - name: Instala e abre
+        run: |
+          for sistema in ubuntu:24.04 debian:trixie; do
+            echo "::group::$sistema"
+            docker run --rm -v "$PWD/target/pacotes":/p:ro "$sistema" bash -c '
+              set -e
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update -qq
+              apt-get install -y -qq /p/zeebx-qt-linux-x86_64.deb
+              apt-get install -y -qq xvfb xauth libgl1-mesa-dri > /dev/null
+              if ldd /usr/bin/zeebx | grep "not found"; then exit 1; fi
+              mkdir -p /tmp/cfg/zeebx
+              set +e
+              XDG_CONFIG_HOME=/tmp/cfg LANG=C.UTF-8 QT_FORCE_STDERR_LOGGING=1 \
+                timeout 15 xvfb-run -a zeebx > /tmp/abre.log 2>&1
+              saida=$?
+              set -e
+              cat /tmp/abre.log
+              [ "$saida" = 124 ] || { echo "saiu com $saida antes do tempo"; exit 1; }
+              if grep -iE "is not installed|could not load|failed to load" /tmp/abre.log; then exit 1; fi
+            '
+            echo "::endgroup::"
+          done
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: zeebx-qt-linux-x86_64-deb
+          path: target/pacotes/zeebx-qt-linux-x86_64.deb
+          if-no-files-found: error
+          retention-days: 14

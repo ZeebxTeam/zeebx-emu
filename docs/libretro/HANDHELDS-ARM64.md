@@ -28,11 +28,71 @@ O core não depende de X11, Wayland, EGL, ALSA, udev ou GTK. Vídeo, áudio e co
 ABI Libretro. Se o RetroArch não oferecer contexto OpenGL ES 3, o core aceita a recusa e usa o
 rasterizador software; ele não cai por falta de uma GPU compatível.
 
-Em Linux AArch64 o pedido de renderização em hardware é `RETRO_HW_CONTEXT_OPENGLES_VERSION`,
-com versão 3.2. O rasterizador seleciona `#version 300 es`, pois usa somente o subconjunto GLES 3
-necessário ao desenho. Se o driver aberto expuser apenas GLES 3.1, o frontend recusa o pedido e o
-core usa software. Em desktop continua pedindo OpenGL Core 3.3, pois o contexto é diferente. Os
+Em Linux AArch64 o pedido de renderização em hardware é `RETRO_HW_CONTEXT_OPENGLES3`,
+ou seja, GLES 3.0. VAO, blit de FBO, MSAA e o shader `#version 300 es` já pertencem a essa versão;
+pedir 3.2 fazia um Panfrost 3.1 perfeitamente suficiente recusar o contexto e mandar todo o desenho
+para o processador. Em desktop continua pedindo OpenGL Core 3.3, pois o contexto é diferente. Os
 dois caminhos usam o mesmo FBO do frontend.
+
+## A imagem não preenche a tela: é a escala inteira do frontend
+
+O console entrega **640x480**, e quem amplia é o frontend — nenhum ajuste do core muda esse
+tamanho. Com a **escala inteira** ligada (`Settings > Video > Scaling > Integer Scale`, ou
+`video_scale_integer = "true"` no `retroarch.cfg`), o RetroArch só apresenta a imagem em
+**múltiplos** de 640x480: numa tela 1080p isso é 2x, ou seja **1280x960 com tarja em volta**.
+
+Desligue a escala inteira para a imagem ocupar a tela. Se a janela ainda passar da tela, olhe
+`video_scale`, que é o fator dela: 3x de 640x480 dá 1920x1440, que não cabe em 1080p.
+
+Duas coisas que **não** são esse defeito, para não se perder tempo com elas:
+
+- A imagem é **4:3**, então em tela 16:9 sobra tarja lateral de qualquer maneira. É a proporção, e
+  quem quiser esticar mexe no `Aspect Ratio` do RetroArch.
+- `zeebx_resolucao_interna` **não muda o tamanho da imagem**. Ela é superamostragem: o mesmo quadro,
+  com a borda do polígono mais suave (medido no Rally Master Pro: 15.920 cores distintas em 1x e
+  86.935 em 2x, com a mesma captura de 1280x960). Quem só quer preencher a tela deixa em 1x.
+
+## O que cada botão do controle faz no Zeebx
+
+O losango do controle do Zeebo **não** é numerado na ordem em que os olhos leem: **1 fica embaixo, 2
+à esquerda, 3 no topo e 4 à direita**. O mapeamento para o RetroPad guarda a **posição da mão**, e
+não o número:
+
+| aparelho | onde fica | RetroPad |
+|---|---|---|
+| Botão 1 | embaixo | `B` |
+| Botão 2 | esquerda | `Y` |
+| Botão 3 | topo | `X` |
+| Botão 4 | direita | `A` |
+| HOME | no meio | `Select` |
+| ZL / ZR | ombros | `L` / `R` |
+| direcional | cruz | `D-Pad` |
+| dois manches | — | analógicos esquerdo e direito |
+
+A tela de controles do RetroArch mostra esses nomes com a posição junto — *"Botão 1 (embaixo)"* —,
+então dá para conferir sem decorar. Se preferir outra ordem, o remapeamento é do próprio RetroArch
+(Settings → Input), e o mesmo vale para o aplicativo, que tem tela de controles.
+
+## Medir no aparelho: o `testa_zeebx.sh`
+
+O teste do aparelho é **um script e um menu**, sem SSH e sem digitar comando na mão:
+
+1. Copie `ferramentas/testa_zeebx.sh` para a pasta de **ports** do cartão (`EASYROMS/ports/` no
+   ArkOS, `ROMS/Ports/` no muOS).
+2. No aparelho: **Ports** → **testa_zeebx**. Ele roda sozinho, na tela do aparelho.
+3. São doze rodadas de vinte segundos (~5 min). No fim, o cartão traz `logs-zeebx-<data>/` com o
+   `resumo.txt` e o log de cada rodada.
+
+Cada rodada roda um número fixo de quadros e mede o **tempo de parede**: a conta é *quadros por
+segundo de verdade*, e **60 quer dizer velocidade cheia naquele ajuste**. As rodadas comparam o
+ajuste de fábrica com o perfil Portátil e com o descarte de tiles — este último **só rende em GPU de
+tiles**, e é por isso que o aparelho é o único lugar onde ele se mede.
+
+Os jogos incluem de propósito o **Zenonia** (que só desenha 2D: no caminho de placa fica preto e no
+processador aparece — é o par que documenta o defeito no aparelho) e o **Zeebo Sports Peteca**.
+
+O script guarda e devolve as Core Options no fim, e escreve o aviso do `glBlitFramebuffer` no log se
+o driver da placa reprovar na prova do blit (ver a frente 5 em `docs/OPTIMIZING_V0.3.0.md`).
 
 ## Instalação
 
@@ -185,8 +245,8 @@ deixe o core cair para software; isso é uma degradação suportada, não uma fa
   <https://docs.mesa3d.org/drivers/panfrost.html>
 
 Portanto **3.2 é a capacidade anunciada do hardware e do libMali**, mas não é seguro afirmar que
-cada imagem com Panfrost expõe 3.2. O core solicita 3.2 para aproveitar o caminho de hardware e
-continua funcional em software quando o driver só oferece 3.1.
+cada imagem com Panfrost expõe 3.2. O core requer apenas GLES 3.0 e aceita Panfrost 3.1; continua
+funcional em software quando nem GLES 3.0 estiver disponível.
 
 
 ## Procedimento atual de teste — R36S com ArkOS/AeolusUX/dArkOSen
@@ -295,6 +355,28 @@ O perfil Portátil força tabela de timbres, 22.050 Hz, 48 vozes, cache de 8 MiB
 supersampling. Volume e névoa continuam independentes. Se o jogo ficar instável ou perder
 imagem, use `zeebx_frameskip = "desligado"`; jogos que usam `glReadPixels` desligam frameskip
 sozinhos depois da primeira leitura.
+
+### O relógio do aparelho mente, e isso engana quem lê log
+
+Em 2026-09-24 o R36S estava com o relógio em **2025-11-07**: os logs da sessão nasceram com essa
+data, e quem procurasse "o log de hoje" não achava nada. Os nomes e as datas dos arquivos são do
+relógio do aparelho, **não** do computador que copiou os arquivos — então, ao investigar uma sessão,
+procure por **ordem de modificação** e leia o conteúdo, nunca pela data do nome.
+
+Vale a mesma cautela com os drivers: os dois aparelhos são Mali-G31, mas **não são o mesmo driver**.
+Medido nos logs dos aparelhos:
+
+| aparelho | driver | GLES |
+|---|---|---|
+| R36S (ArkOS) | libMali **r13p0** | 3.2 |
+| RG40XX-H (muOS) | libMali **r20p0** | 3.2 |
+
+O mesmo código pode se comportar diferente nos dois, e um número de um não vale para o outro. A
+linha que diz qual está em uso é a primeira do log do núcleo:
+
+```text
+Zeebx: GL real vendor=ARM; renderer=Mali-G31; version=OpenGL ES 3.2 v1.r13p0-…
+```
 
 ### Logs e diagnóstico
 

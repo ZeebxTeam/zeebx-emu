@@ -434,6 +434,16 @@ impl Framebuffer {
         }
     }
 
+    /// Recarrega uma superfície já convertida em palavras RGB565.
+    pub fn load_rgb565_words(&mut self, words: &[u16]) {
+        for (pixel, &value) in self.pixels.iter_mut().zip(words) {
+            if *pixel != value {
+                *pixel = value;
+                self.touched += 1;
+            }
+        }
+    }
+
     /// Bytes por linha no buffer do `IDIB`: a largura em RGB565 alinhada em 4 bytes.
     ///
     /// Numa largura par é o mesmo `largura * 2`; numa ímpar sobra um pixel de enchimento no
@@ -459,6 +469,29 @@ impl Framebuffer {
             }
         }
         bytes
+    }
+
+    /// Escreve o quadro em RGB565 **direto num buffer alheio**, com o passo de linha dele.
+    ///
+    /// Existe pelo `RETRO_ENVIRONMENT_GET_CURRENT_SOFTWARE_FRAMEBUFFER`: o frontend empresta um
+    /// buffer para o core desenhar, e o passo pode não ser `largura * 2`. Sem isto, o quadro
+    /// passaria por um vetor nosso e depois por uma cópia — que é justamente a cópia que o
+    /// empréstimo existe para evitar.
+    ///
+    /// O `out` vem com o tamanho de `pitch * altura`; o que sobra no fim de cada linha (o passo
+    /// maior que a largura) fica como estava, que é o que o frontend espera.
+    pub fn write_rgb565_with_pitch(&self, out: &mut [u8], pitch: usize) {
+        let largura = self.width as usize;
+        let (linha_em_bytes, passo) = (largura * 2, pitch.max(largura * 2));
+        for (y, linha) in self.pixels.chunks_exact(largura).enumerate() {
+            let inicio = y * passo;
+            let Some(destino) = out.get_mut(inicio..inicio + linha_em_bytes) else {
+                return;
+            };
+            for (par, pixel) in destino.chunks_exact_mut(2).zip(linha) {
+                par.copy_from_slice(&pixel.to_le_bytes());
+            }
+        }
     }
 
     /// Como [`Framebuffer::load_rgb565_bytes`], com as linhas no passo do `IDIB`.

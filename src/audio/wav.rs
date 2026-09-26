@@ -153,6 +153,7 @@ impl std::fmt::Display for WavError {
 }
 
 /// Lê um RIFF/WAVE de PCM.
+///
 /// Quanto o bloco `data` pode passar do fim que o `RIFF` declara antes de valer o `RIFF`.
 const FOLGA_DO_RIFF: usize = 4096;
 
@@ -193,6 +194,12 @@ pub fn parse(data: &[u8]) -> Result<Sound, WavError> {
                 format = Some((read16(0), read16(2), rate, read16(12), read16(14)));
             }
             b"data" => {
+                // **O arquivo acaba onde o `RIFF` diz.** Cheguei a inverter isso, apoiado no
+                // `dwSize` do `AEEMediaData` — e estava errado: extraí os 315 sons do
+                // `resources.pakz` e medi com `ffprobe`, e o `sfx_bal_all.wav` que chegava com
+                // `data` de 881.956 bytes tem **0,63 s** de verdade. O `data` era o buffer; o
+                // `RIFF` (56.352) é que estava certo. É o mesmo caso do F.C. Super League, e é
+                // esta a regra que o atende.
                 let end = match fim_do_riff >= 44 && end > fim_do_riff + FOLGA_DO_RIFF {
                     true => fim_do_riff.max(body),
                     false => end,
@@ -280,6 +287,11 @@ mod tests {
 
     /// O som ocupa o começo de um buffer maior, o `data` diz o tamanho do buffer e o `RIFF` diz o
     /// do som: vale o `RIFF`, e o lixo depois dele não toca.
+    ///
+    /// **Confirmado pelos arquivos do próprio jogo.** Extraí os 315 sons do `resources.pakz` da
+    /// Turma da Mônica e medi: o `sfx_bal_all.wav` que chega com `data` de 881.956 bytes tem
+    /// **0,63 s** — o `data` é o buffer, e o `RIFF` (56.352) é a verdade. Cheguei a inverter esta
+    /// regra, e os arquivos mostraram o erro.
     #[test]
     fn o_riff_limita_um_data_maior_que_o_som() {
         let som = build(FORMAT_PCM, 1, 22050, 16, &[0x10, 0x00, 0x20, 0x00]);

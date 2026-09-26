@@ -19,6 +19,25 @@ path = "src/main.rs"
 # `desktop` do núcleo. Este crate não declara nenhuma delas: ele é a interface, e a interface é
 # a que o `desktop` já descreve.
 zeebx = { path = "../..", features = ["desktop"] }
+# A interface Qt: docs/implementacao/21-migracao-para-qt.md. Fica atrás da feature `ui-qt`, ligada
+# por padrão, para nada disto chegar ao núcleo, que o core Libretro e o Android também consomem — e
+# para quem não tem o Qt 6 ainda compilar a interface do egui com `--no-default-features`, até ela
+# sair.
+cxx = { version = "1", optional = true }
+cxx-qt = { version = "0.10", optional = true }
+cxx-qt-lib = { version = "0.10", optional = true, features = ["qt_gui", "qt_qml"] }
+# O `Arc<glow::Context>` que a sessão recebe é o do `glow` que o núcleo usa: a mesma versão, o
+# mesmo tipo.
+glow = { version = "0.16", optional = true }
+# O seletor de pastas e de arquivos das configurações, o mesmo que o egui usa pelo núcleo: o `rfd`
+# não é reexportado de lá. Mesma versão e mesmas features, então a árvore não cresce.
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "async-std"], optional = true }
+
+[features]
+# **A interface Qt é a padrão** (fase 8 do plano). O binário a abre, e a do egui fica em
+# `zeebx egui` por uma versão, para quem achar diferença ter como comparar; depois ela sai.
+default = ["ui-qt"]
+ui-qt = ["dep:cxx", "dep:cxx-qt", "dep:cxx-qt-lib", "dep:cxx-qt-build", "dep:qt-build-utils", "dep:glow", "dep:rfd"]
 
 # **Os instaladores vivem aqui, e não na raiz.** O `cargo packager` lê o manifesto do pacote que
 # produz o binário, e desde a 0.3.0 quem produz o `zeebx` é este crate. Os caminhos de ícone
@@ -27,6 +46,10 @@ zeebx = { path = "../..", features = ["desktop"] }
 # Os instaladores, gerados pelo `cargo packager --release`: `.deb` e AppImage no Linux, NSIS no
 # Windows, `.dmg` no macOS. O workflow `.github/workflows/release.yml` roda isto nos três sistemas
 # quando uma tag de versão é enviada.
+#
+# **O `cargo packager` não implanta o Qt**: cada sistema tem o passo dele no `release.yml` — o
+# `linuxdeploy-plugin-qt` no AppImage, o `windeployqt` no Windows, o `macdeployqt` no macOS — e o
+# `.deb` usa o Qt do sistema. Ver a fase 9 de `docs/implementacao/21-migracao-para-qt.md`.
 [package.metadata.packager]
 product-name = "Zeebx"
 identifier = "io.github.zeebxteam.zeebx"
@@ -37,20 +60,34 @@ description = "O emulador definitivo de Zeebo!"
 out-dir = "../../target/pacotes"
 before-packaging-command = "cargo build --release --locked -p zeebx-classical-standalone"
 icons = ["../../assets/icones/zeebx-512.png", "../../assets/icones/zeebx.ico", "../../assets/icones/zeebx.icns"]
+# O Qt do Windows, que o `windeployqt` junta nesta pasta — as DLLs, os plugins e os módulos QML — e
+# o NSIS instala ao lado do `zeebx.exe`, com as subpastas. Só existe no Windows: nos outros sistemas
+# o caminho não casa com nada, e o `cargo packager` não inclui nada.
+resources = [{ src = "../../target/qt-implantado", target = "." }]
 
 [[package.metadata.packager.binaries]]
 path = "zeebx"
 main = true
 
 [package.metadata.packager.deb]
-# O `libasound2t64` é o nome do ALSA a partir do Ubuntu 24.04 e do Debian 13.
+# O `libasound2t64` é o nome do ALSA a partir do Ubuntu 24.04 e do Debian 13, e vem **primeiro**: o
+# `apt` fica com a primeira alternativa que dá, e no Ubuntu 24.04 o `libasound2` é cumprido pelo
+# `liboss4-salsa-asound2`, uma imitação do ALSA sobre o OSS4 sem todos os símbolos. Num sistema sem
+# o ALSA de verdade, o `apt` escolhia a imitação e o binário parava ao abrir, com
+# "undefined symbol: snd_pcm_status_get_trigger_htstamp" — conferido num `ubuntu:24.04` limpo.
 # As de áudio, entrada e GL já estavam; **as de janela faltavam**, e o defeito só apareceria
 # numa instalação de sistema mínimo: o `eframe` é declarado com as features `x11` e `wayland`, então
 # o binário linka `libX11`, `libXcursor`, `libXrandr`, `libXi` e `libwayland-client`, e o `.deb` não
 # puxava nenhuma delas. A lista abaixo é a mesma do `ci.yml`, que é o que o build precisa para
 # compilar — trocando os `-dev` pelos pacotes de execução.
+#
+# **O `.deb` usa o Qt do sistema**, e por isso é compilado contra ele, no Ubuntu 24.04: um binário
+# do Qt 6.11 não roda num Qt mais velho, e o 24.04 traz o 6.4. As do Qt são as que o binário linka,
+# conferidas com `ldd` e `dpkg -S` num Ubuntu 24.04 — o `gui`, o `network` e o `opengl` com os dois
+# nomes, porque o Ubuntu 24.04 os chama com `t64` e o Debian 13 sem —, o plugin de plataforma, o
+# `qt6-wayland`, sem o qual a janela abre pelo XWayland, e os módulos QML que os `import` pedem.
 depends = [
-    "libasound2 | libasound2t64",
+    "libasound2t64 | libasound2",
     "libudev1",
     "libgl1",
     "libxkbcommon0",
@@ -60,8 +97,28 @@ depends = [
     "libxrandr2",
     "libxi6",
     "libwayland-client0",
+    "libqt6core6t64",
+    "libqt6gui6t64 | libqt6gui6",
+    "libqt6network6t64 | libqt6network6",
+    "libqt6opengl6t64 | libqt6opengl6",
+    "libqt6qml6",
+    "libqt6qmlmodels6",
+    "libqt6quick6",
+    "qt6-qpa-plugins",
+    "qt6-wayland",
+    "qml6-module-qtquick",
+    "qml6-module-qtquick-controls",
+    "qml6-module-qtquick-layouts",
+    "qml6-module-qtquick-templates",
+    "qml6-module-qtquick-window",
+    "qml6-module-qtqml-workerscript",
 ]
 section = "games"
+
+# O AppImage leva o próprio Qt, o mesmo 6.11 do desenvolvimento: o `linuxdeploy-plugin-qt` copia as
+# bibliotecas, os plugins e os módulos QML que o `QML_SOURCES_PATHS` pede. O `QMAKE` diz de qual Qt.
+[package.metadata.packager.appimage]
+linuxdeploy-plugins = { qt = "https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage" }
 
 [package.metadata.packager.nsis]
 installer-icon = "../../assets/icones/zeebx.ico"
@@ -73,3 +130,7 @@ minimum-system-version = "11.0"
 
 [build-dependencies]
 winresource = "0.1"
+cxx-qt-build = { version = "0.10", optional = true }
+# Só pelo `QResourceFile`, que dá apelido a um arquivo dos recursos do QML e que o cxx-qt-build não
+# reexporta: a imagem do Boomerang mora em `assets/`, dois níveis acima deste pacote.
+qt-build-utils = { version = "0.10", optional = true }

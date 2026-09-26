@@ -56,6 +56,13 @@ fn android_main(app: AndroidApp) {
             .with_max_level(log::LevelFilter::Info)
             .with_tag("Zeebx"),
     );
+    // **O registro do núcleo tem um destino no Android.** Até aqui ele era o único frontend que
+    // não drenava o anel: o desktop imprime no `stderr`, o core manda pelo `retro_log`, o headless
+    // imprime — e o Android não tinha onde. Aqui o destino é o `log`, que o `android_logger`
+    // acabou de instalar e que sai em `logcat` com a etiqueta e a gravidade certas.
+    //
+    // O nível começa no padrão do núcleo (`Aviso`); a variável `ZEEBX_LOG` vale se existir.
+    zeebx::registro::le_do_ambiente();
 
     // Um pânico do Rust escreve no stderr, e o Android joga o stderr fora: sem isto o
     // aplicativo morre sem deixar uma linha no `logcat`. O gancho manda a mensagem e o lugar
@@ -111,6 +118,23 @@ fn android_main(app: AndroidApp) {
     gira(app, &mut emulador);
 }
 
+/// Manda para o `logcat` o que o núcleo registrou desde a última volta.
+///
+/// A gravidade é preservada: um aviso do núcleo sai como `WARN` no `logcat`, e não como `INFO`
+/// como tudo o mais. É o que faz `adb logcat *:W` mostrar o que interessa sem o resto.
+fn despeja_o_registro() {
+    use zeebx::registro::Nivel;
+    for linha in zeebx::registro::drena() {
+        let texto = format!("[{}] {}: {}", linha.nivel.etiqueta(), linha.alvo, linha.texto);
+        match linha.nivel {
+            Nivel::Depuracao => log::debug!("{texto}"),
+            Nivel::Informacao => log::info!("{texto}"),
+            Nivel::Aviso => log::warn!("{texto}"),
+            Nivel::Erro | Nivel::Fatal => log::error!("{texto}"),
+        }
+    }
+}
+
 /// O laço: colhe eventos, deixa o jogo andar, desenha, repete.
 fn gira(app: AndroidApp, emulador: &mut Emulador) {
     let ctx = egui::Context::default();
@@ -131,6 +155,9 @@ fn gira(app: AndroidApp, emulador: &mut Emulador) {
     let comeco = Instant::now();
 
     while !sair {
+        // O registro do núcleo sai por aqui, uma vez por volta do laço. Com o anel vazio — o
+        // caso comum, no nível padrão — isto é um cadeado e uma leitura.
+        despeja_o_registro();
         // Com janela, o laço gira o mais rápido que a troca de buffers deixar; sem ela, não há
         // o que desenhar e esperar é o certo — é o que mantém o aplicativo parado em segundo
         // plano em vez de queimar bateria.

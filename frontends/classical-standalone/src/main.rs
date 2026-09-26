@@ -11,6 +11,10 @@ use zeebx::{audio, cpu, input, library, loader, machine, session, ui};
 
 use std::process::ExitCode;
 
+// A interface Qt: docs/implementacao/21-migracao-para-qt.md. Compilada, é a interface padrão.
+#[cfg(feature = "ui-qt")]
+mod qt;
+
 use zeebx::brew::aee;
 use zeebx::cpu::{BackendPadrao, CpuBackend, dynarmic::DynarmicCpu};
 use zeebx::input::bindings;
@@ -45,6 +49,11 @@ const PROFILE_LINES: usize = 20;
 const SEMIHOSTING_LINES: usize = 40;
 
 fn main() -> ExitCode {
+    // **O nível do registro entra aqui também.** A janela o lê ao abrir (`ui::app`), e os comandos
+    // de linha de comando não o liam: `ZEEBX_LOG=informacao` era ignorado em `run`, `bench` e
+    // `sessao`, e as linhas de instrumento -- todas de `Informacao` -- não apareciam. Foi assim que
+    // duas medidas minhas saíram vazias antes de eu perceber.
+    zeebx::registro::le_do_ambiente();
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("info") if args.len() == 2 => report(info(&args[1])),
@@ -480,10 +489,25 @@ fn main() -> ExitCode {
                 perfil, boomerang, portas,
             ))
         }
+        // A interface Qt é a padrão (a feature `ui-qt` vem ligada); a do egui continua em
+        // `zeebx egui` por uma versão, para quem achar diferença ter como comparar. Compilado com
+        // `--no-default-features`, sem o Qt, o `zeebx` abre a do egui — ver a fase 8 de
+        // docs/implementacao/21-migracao-para-qt.md.
+        #[cfg(feature = "ui-qt")]
+        Some("qt") => qt::launch(args.get(1).map(String::as_str)),
+        #[cfg(feature = "ui-qt")]
+        Some("egui") if args.len() == 1 => launch(),
         // Sem argumento nenhum, o que se quer é o emulador, não a ajuda.
+        #[cfg(feature = "ui-qt")]
+        None => qt::launch(None),
+        #[cfg(not(feature = "ui-qt"))]
         None => launch(),
         _ => {
             eprintln!("uso: zeebx            abre a interface");
+            #[cfg(feature = "ui-qt")]
+            eprintln!("     zeebx qt [arquivo.zip]  a interface, na biblioteca ou no jogo direto");
+            #[cfg(feature = "ui-qt")]
+            eprintln!("     zeebx egui       a interface antiga, em egui, até ela sair");
             eprintln!("     zeebx info <arquivo.mod>");
             eprintln!(
                 "     zeebx run <arquivo.mod> [--window] [--seconds=N] [--keys=ms:tecla,...]
@@ -495,10 +519,11 @@ fn main() -> ExitCode {
                              [--portas=controle|teclado|nenhum,...] [--teclas=ms:nome,...]"
             );
             eprintln!(
-                "     zeebx sessao <arquivo.zip> [--seconds=N] [--keys=ms:botão,...] [--dump=QUADRO.bmp] [--fotos=ms,...] [--placa] [--serial=CAMINHO] [--fabrica] [--sem-fim-de-vida] [--sem-transicoes] [--escala=N] [--msaa=N] [--aniso=N] [--perfil[=MS]] [--boomerang] [--movimento=ms:x:y:z,...] [--wiimote] [--proporcao=16:9] [--portas=controle,controle]  (a sessão da janela, sem janela)"
+                "     zeebx sessao <arquivo.zip> [--seconds=N] [--keys=ms:botão,...] [--dump=QUADRO.bmp] [--fotos=ms,...] [--placa] [--serial=CAMINHO] [--fabrica] [--sem-fim-de-vida] [--sem-transicoes] [--escala=N] [--msaa=N] [--aniso=N] [--perfil[=MS]] [--boomerang] [--movimento=ms:x:y:z,...] [--wiimote] [--proporcao=16:9]
+                             [--portas=controle,controle] [--dpad-nos-eixos]  (a sessão da janela, sem janela)"
             );
             eprintln!(
-                "     zeebx bench <arquivo.mod|zip> [--seconds=N] [--keys=ms:tecla,...] [--dump=QUADRO.bmp] [--teclas=ms:nome,...] [--instalados=0xCLSID[:id],...] [--dump-surfaces=DIR]  (Dynarmic, sem janela)"
+                "     zeebx bench <arquivo.mod|zip> [--seconds=N] [--keys=ms:tecla,...] [--dump=QUADRO.bmp] [--teclas=ms:nome,...] [--instalados=0xCLSID[:id],...] [--dump-surfaces=DIR] [--dpad-nos-eixos]  (Dynarmic, sem janela)"
             );
             ExitCode::FAILURE
         }
@@ -850,11 +875,37 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
         despeja_superficies(&machine, dir)?;
     }
 
+    let (heap, objetos) = (machine.heap_used(), machine.live_objects());
+    println!("heap:      {heap} bytes em uso, {objetos} objetos vivos");
+    // **Quanto sobra não diz como sobra.** Um heap com 30 MB livres em 400 buracos não entrega
+    // uma alocação de 2 MB, e o jogo relata isso como falta de memória; a linha abaixo é o que
+    // separa os dois casos no relatório.
+    let retrato = machine.heap_retrato();
     println!(
-        "heap:      {} bytes em uso, {} objetos vivos",
-        machine.heap_used(),
-        machine.live_objects()
+        "           {} buraco(s), maior livre {} de {} livres ({}% do livre preso em buracos), {} blocos vivos de {}",
+        retrato.buracos,
+        retrato.maior_buraco,
+        retrato.livre,
+        u64::from(retrato.perdido_em_buracos()) * 100 / u64::from(retrato.livre.max(1)),
+        retrato.vivos,
+        retrato.teto,
     );
+    let recusas = machine.refused_allocations();
+    if let Some((tamanho, lr)) = recusas.first() {
+        println!(
+            "recusado:  {} pedido(s) de malloc sem lugar; o primeiro: {} bytes, pedido em {lr:#010x}",
+            recusas.len(),
+            tamanho
+        );
+    }
+    let checagens = machine.refused_availability_checks();
+    if let Some((tamanho, lr)) = checagens.first() {
+        println!(
+            "recusado:  {} pergunta(s) de memória disponível respondidas com \"não cabe\"; a primeira: {} bytes em {lr:#010x}",
+            checagens.len(),
+            tamanho
+        );
+    }
     if !machine.suspicious_objects().is_empty() {
         println!(
             "atenção:   {} chamadas com ponteiro `this` inesperado",
@@ -1144,6 +1195,8 @@ fn bench_dynarmic(
     };
     let mut fotos: std::collections::VecDeque<u32> = std::collections::VecDeque::new();
     let mut numero_da_foto = 0;
+    // Ver o comentário do mesmo interruptor no laço: é o `zeebx_dpad_to_analog_p1` do núcleo.
+    let dpad_nos_eixos = std::env::args().any(|arg| arg == "--dpad-nos-eixos");
     while machine.clock_ms() < until && !machine.is_idle() {
         while pendentes
             .front()
@@ -1167,6 +1220,12 @@ fn bench_dynarmic(
                 };
                 std::fs::write(nome, machine.screen().to_bmp())?;
             }
+        }
+        // `--dpad-nos-eixos` é o mesmo que a opção do núcleo faz a cada quadro, para medir o issue
+        // #39 sem janela. **Antes** do roteiro, de propósito: um passo de eixo do roteiro é um
+        // manche de verdade, e quem tem a última palavra é ele — ver o espelho no `Player::pad`.
+        if dpad_nos_eixos {
+            pad.espelha_o_direcional_nos_eixos();
         }
         keys.apply(machine.clock_ms(), &mut pad);
         machine.set_pad(pad);
@@ -1210,6 +1269,52 @@ fn bench_dynarmic(
         for (name, count) in media {
             println!("  {count:>4}x {name}");
         }
+    }
+    // **O registro do núcleo, que na janela vai para o log do frontend.** No harness ele é o motivo
+    // de existir: é por estas linhas que se lê o que o motor decidiu -- o som entregue e a duração
+    // decodificada, o fluxo que o jogo para de alimentar, e quem calou cada som. Sem elas, medir
+    // isso exigia abrir o RetroArch, e com ele a navegação de alguém.
+    //
+    // O nível entra por `ZEEBX_LOG` (`aviso` é o padrão): as linhas de instrumento são
+    // `informacao`, e sem a variável elas não aparecem.
+    let registro = zeebx::registro::drena();
+    if !registro.is_empty() {
+        println!("registro:");
+        for linha in registro {
+            println!("  [{}] {}: {}", linha.nivel.etiqueta(), linha.alvo, linha.texto);
+        }
+    }
+    // **Dizer o que se perdeu.** Um instrumento que descarta linhas em silêncio mente por omissão:
+    // foi assim que uma medição relatou "zero sons decodificados" com 123 sons pedidos no registro.
+    let descartes = zeebx::registro::descartes();
+    if descartes > 0 {
+        println!("registro:  {descartes} linha(s) foram descartadas pelo anel antes de serem lidas");
+    }
+    // As chamadas de entrada dizem se o jogo chega a consultar o controle e por qual canal: o de
+    // eventos de botão (`GetNextButtonEvent`) ou o de posição (`GetPositionState`). É a pergunta
+    // que decide se espelhar o direcional nos eixos muda alguma coisa para este jogo.
+    let entrada: Vec<_> = machine
+        .call_log()
+        .into_iter()
+        .filter(|(name, _)| {
+            name.contains("Position") || name.contains("Button") || name.contains("HID")
+        })
+        .collect();
+    if !entrada.is_empty() {
+        println!("entrada:");
+        for (name, count) in entrada {
+            println!("  {count:>4}x {name}");
+        }
+    }
+    // A contagem de chamadas diz que o jogo **pergunta**; esta diz que a resposta **chegou**. Sem
+    // ela, um port de arcade que consulta o eixo todo quadro parece igual com o direcional solto e
+    // apertado — e é o número que prova o espelho do direcional (issue #39).
+    let deslocados = machine.leituras_com_eixo_deslocado();
+    if deslocados > 0 {
+        // **Quais** eixos, e não só quantos: `X` e `Y` são do manche esquerdo, `Z` e `RZ` do
+        // direito. É o que responde "o direcional chegou no manche que o jogo lê?".
+        let nomes = machine.eixos_vistos_deslocados().join(", ");
+        println!("eixo:      {deslocados} leitura(s) fora do centro, em {nomes}");
     }
     if let Some(path) = dump {
         std::fs::write(path, machine.screen().to_bmp())?;
@@ -1294,6 +1399,7 @@ fn sessao_sem_janela(
     let mut gravado_ms = 0u64;
     let mut fotos: std::collections::VecDeque<u32> = instantes.iter().copied().collect();
     let mut numero = 0;
+    let dpad_nos_eixos = std::env::args().any(|arg| arg == "--dpad-nos-eixos");
     while session.clock_ms() < fim {
         if let (Some(desde), None) = (perfil, perfil_ligado_em) {
             if session.clock_ms() >= desde {
@@ -1307,6 +1413,11 @@ fn sessao_sem_janela(
         }
         let antes = pad;
         if !reaberta {
+            // O mesmo interruptor do `bench`, e pelo mesmo motivo: medir o issue #39 na sessão
+            // sem janela. Antes do roteiro, para o passo de eixo do roteiro vencer.
+            if dpad_nos_eixos {
+                pad.espelha_o_direcional_nos_eixos();
+            }
             keys.apply(session.clock_ms(), &mut pad);
         } else {
             pad = input::Pad::default();
@@ -1449,10 +1560,56 @@ fn sessao_sem_janela(
     println!("tempo:     {} ms virtuais", session.clock_ms());
     let (heap, objetos) = session.memory();
     println!("heap:      {heap} bytes em uso, {objetos} objetos vivos");
+    // **Quanto sobra não diz como sobra.** Um heap com 30 MB livres em 400 buracos não entrega uma
+    // alocação de 2 MB, e o jogo relata isso como falta de memória: as duas linhas abaixo são o que
+    // separa "encheu" de "se despedaçou" no relatório.
+    let retrato = session.heap_retrato();
+    println!(
+        "           {} buraco(s), maior livre {} de {} livres ({}% do livre preso em buracos), {} blocos vivos de {}",
+        retrato.buracos,
+        retrato.maior_buraco,
+        retrato.livre,
+        u64::from(retrato.perdido_em_buracos()) * 100 / u64::from(retrato.livre.max(1)),
+        retrato.vivos,
+        retrato.teto,
+    );
+    let (recusas, checagens) = session.heap_recusas();
+    if let Some((tamanho, lr)) = recusas.first() {
+        println!(
+            "recusado:  {} pedido(s) de malloc sem lugar; o primeiro: {} bytes, pedido em {lr:#010x}",
+            recusas.len(),
+            tamanho
+        );
+    }
+    if let Some((tamanho, lr)) = checagens.first() {
+        println!(
+            "recusado:  {} pergunta(s) de memória disponível respondidas com \"não cabe\"; a primeira: {} bytes em {lr:#010x}",
+            checagens.len(),
+            tamanho
+        );
+    }
     if let (Some((caminho, _)), false) = (&gravacao, gravado.is_empty()) {
         std::fs::write(caminho, audio::to_wav(&gravado, RECORD_RATE))?;
         let pico = gravado.iter().fold(0.0f32, |m, s| m.max(s.abs()));
         println!("áudio:     {caminho} (pico {pico:.3})");
+    }
+    // **O registro do núcleo, com o som junto.** Esta função é a única que grava o áudio misturado
+    // em WAV, então é aqui que os dois se encontram: o WAV diz *o que* tocou, o registro diz *por
+    // quê* -- o som entregue e a duração decodificada, o fluxo que o jogo para de alimentar, e quem
+    // calou cada som. Separá-los foi o que me fez perseguir uma voz cortada sem saber se ela tinha
+    // sido cortada.
+    let registro = zeebx::registro::drena();
+    if !registro.is_empty() {
+        println!("registro:");
+        for linha in registro {
+            println!("  [{}] {}: {}", linha.nivel.etiqueta(), linha.alvo, linha.texto);
+        }
+    }
+    // **Dizer o que se perdeu.** Um instrumento que descarta linhas em silêncio mente por omissão:
+    // foi assim que uma medição relatou "zero sons decodificados" com 123 sons pedidos no registro.
+    let descartes = zeebx::registro::descartes();
+    if descartes > 0 {
+        println!("registro:  {descartes} linha(s) foram descartadas pelo anel antes de serem lidas");
     }
     if let Some((desde, inicio, instrucoes_antes)) = perfil_ligado_em {
         let real = inicio.elapsed();

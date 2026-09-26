@@ -138,11 +138,28 @@ pub fn candidatos(aparelho: &Path) -> Vec<PathBuf> {
     if let Some(caminho) = std::env::var_os("ZEEBX_SOUNDFONT") {
         saida.push(PathBuf::from(caminho));
     }
-    for base in [
+    saida.extend(candidatos_em(&pastas_padrao(aparelho)));
+    saida
+}
+
+/// As pastas onde o banco é procurado, na ordem: a do aparelho, que o frontend controla, e a do
+/// perfil do desktop.
+///
+/// Separada de [`candidatos`] para os testes poderem afirmar sem depender do perfil de quem roda.
+/// **Um `.sf2` no `~/.config/zeebx` — que é onde o LEIAME manda pôr — deixava a bateria vermelha**,
+/// porque duas provas perguntavam "não há banco nenhum" com o disco do desenvolvedor cheio.
+pub fn pastas_padrao(aparelho: &Path) -> Vec<PathBuf> {
+    vec![
         aparelho.join("soundfonts"),
         crate::config::config_dir().join("aparelho").join("soundfonts"),
-    ] {
-        for nome in bancos_em(&base) {
+    ]
+}
+
+/// Os bancos das pastas dadas, em ordem. Sem o perfil e sem o `ZEEBX_SOUNDFONT`.
+pub fn candidatos_em(pastas: &[PathBuf]) -> Vec<PathBuf> {
+    let mut saida = Vec::new();
+    for base in pastas {
+        for nome in bancos_em(base) {
             saida.push(nome);
         }
     }
@@ -172,7 +189,66 @@ fn bancos_em(base: &Path) -> Vec<PathBuf> {
 
 /// O primeiro banco que existir de verdade, entre os candidatos.
 pub fn primeiro_banco(aparelho: &Path) -> Option<PathBuf> {
-    candidatos(aparelho).into_iter().find(|c| c.is_file())
+    primeiro_banco_em(&pastas_padrao(aparelho))
+}
+
+/// O primeiro banco de verdade **só** nas pastas dadas: a busca sem o perfil de quem roda.
+pub fn primeiro_banco_em(pastas: &[PathBuf]) -> Option<PathBuf> {
+    candidatos_em(pastas).into_iter().find(|c| c.is_file())
+}
+
+/// O tamanho declarado do bloco `smpl` do `sdta`, em bytes, se o arquivo o declarar.
+///
+/// Percorre a cadeia do RIFF como o `rustysynth` a percorre — `RIFF`/`sfbk` e, dentro do
+/// `LIST`/`sdta`, os sub-blocos — porque é **o `smpl` do `sdta`** que a dependência lê com
+/// `slice::from_raw_parts_mut` (`binary_reader.rs`, `read_wave_data`). Devolve `None` para tudo o
+/// que não chegue até lá: quem julga um arquivo estranho é a biblioteca, não esta varredura, e o
+/// caminho normal (o `.sf2` do usuário) tem de continuar chegando inteiro ao sintetizador.
+fn tamanho_do_smpl(bytes: &[u8]) -> Option<u32> {
+    /// O identificador de quatro letras na posição `pos`, se houver quatro bytes lá.
+    fn id(bytes: &[u8], pos: usize) -> Option<&[u8]> {
+        bytes.get(pos..pos.checked_add(4)?)
+    }
+
+    /// O tamanho declarado na cabeça do bloco que começa em `pos`, em bytes.
+    fn tamanho(bytes: &[u8], pos: usize) -> Option<usize> {
+        let campo: [u8; 4] = bytes.get(pos.checked_add(4)?..pos.checked_add(8)?)?.try_into().ok()?;
+        Some(u32::from_le_bytes(campo) as usize)
+    }
+
+    if id(bytes, 0)? != b"RIFF" || id(bytes, 8)? != b"sfbk" {
+        return None;
+    }
+    // Os blocos de primeiro nível, a partir do fim do cabeçalho do RIFF. O avanço é o tamanho
+    // declarado mais o preenchimento par do RIFF, como no `bloco` dos testes.
+    let mut pos = 12usize;
+    while pos.checked_add(8).is_some_and(|fim| fim <= bytes.len()) {
+        let Some(bloco) = id(bytes, pos) else { return None };
+        let Some(declarado) = tamanho(bytes, pos) else { return None };
+        let corpo = pos + 8;
+        if bloco == b"LIST" && id(bytes, corpo) == Some(b"sdta".as_slice()) {
+            // Dentro do `sdta`: o `smpl` das amostras e o `sm24` dos oito bits extras.
+            let fim = corpo.saturating_add(declarado).min(bytes.len());
+            let mut sub = corpo + 4;
+            while sub.checked_add(8).is_some_and(|f| f <= fim) {
+                let (Some(nome), Some(tam)) = (id(bytes, sub), tamanho(bytes, sub)) else {
+                    break;
+                };
+                if nome == b"smpl" {
+                    return Some(tam as u32);
+                }
+                let Some(proximo) = sub.checked_add(8 + tam + (tam & 1)) else {
+                    break;
+                };
+                sub = proximo;
+            }
+        }
+        let Some(proximo) = corpo.checked_add(declarado) else {
+            return None;
+        };
+        pos = proximo + (declarado & 1);
+    }
+    None
 }
 
 /// Um banco carregado.
@@ -190,12 +266,34 @@ impl Banco {
         let t0 = Instant::now();
         let bytes = std::fs::read(caminho).ok()?;
         let read_elapsed = t0.elapsed();
+        // **A guarda contra a escrita de um byte além da alocação.** O `rustysynth` 1.3.6
+        // (`binary_reader.rs`, `read_wave_data`) reserva `Vec<i16>` de `tamanho / 2` elementos e
+        // cria com `slice::from_raw_parts_mut` uma fatia de `tamanho` **bytes**: com o `smpl` de
+        // tamanho ímpar a fatia é um byte maior que a alocação, e a leitura escreve fora dela. É
+        // UB acionada por arquivo do usuário — banco truncado ou montado por outra ferramenta —,
+        // não por jogo, então a recusa é nossa e vem antes do parse. O banco inteiro é recusado, e
+        // `None` faz o MIDI voltar para a tabela de timbres, como em qualquer banco que não abre.
+        if let Some(tamanho) = tamanho_do_smpl(&bytes)
+            && tamanho % 2 == 1
+        {
+            crate::registro!(
+                crate::registro::Nivel::Erro,
+                "soundfont",
+                "banco {} recusado: o bloco `smpl` tem {tamanho} bytes (tamanho ímpar) e o \
+                 `rustysynth` escreveria um byte além da alocação; o bloco `smpl` tem de ter \
+                 tamanho par, e o banco tem de ser regerado",
+                caminho.display()
+            );
+            return None;
+        }
         let t_parse = Instant::now();
         let mut leitor = std::io::Cursor::new(bytes);
         let fonte = Arc::new(rustysynth::SoundFont::new(&mut leitor).ok()?);
         let parse_elapsed = t_parse.elapsed();
-        eprintln!(
-            "Zeebx: SoundFont '{}' carregado em {:.1}ms (leitura: {:.1}ms, parse/amostras: {:.1}ms, presets: {})",
+        crate::registro!(
+            crate::registro::Nivel::Depuracao,
+            "midi",
+            "banco {} carregado em {:.1}ms (leitura: {:.1}ms, parse/amostras: {:.1}ms, presets: {})",
             caminho.display(),
             t0.elapsed().as_secs_f64() * 1000.0,
             read_elapsed.as_secs_f64() * 1000.0,
@@ -219,13 +317,26 @@ pub fn abre(caminho: &Path) -> Option<Arc<Banco>> {
     let guarda = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     let mut mapa = guarda.lock().ok()?;
     if let Some(banco) = mapa.get(caminho) {
-        eprintln!(
-            "Zeebx: SoundFont '{}' reutilizado do cache (hit)",
+        crate::registro!(
+            crate::registro::Nivel::Depuracao,
+            "soundfont",
+            "banco {} reutilizado do cache",
             caminho.display()
         );
         return Some(banco.clone());
     }
+    let comeco = Instant::now();
     let banco = Arc::new(Banco::carrega(caminho)?);
+    // O tempo de carga do banco é o que explica a demora da primeira música no portátil; ele
+    // vive aqui, e não no mixer, porque é aqui que o trabalho acontece.
+    crate::registro!(
+        crate::registro::Nivel::Informacao,
+        "soundfont",
+        "banco {} de {} preset(s) aberto em {} ms",
+        caminho.display(),
+        banco.presets(),
+        comeco.elapsed().as_millis()
+    );
     mapa.insert(caminho.to_path_buf(), banco.clone());
     Some(banco)
 }
@@ -278,8 +389,10 @@ pub fn toca(banco: &Banco, bytes: &[u8], taxa: u32) -> Option<Sound> {
     // do teto e corte. Uma música que ficou baixa **continua** baixa, porque é assim que ela é.
     let pico = limita(&mut amostras);
     let elapsed = t0.elapsed();
-    eprintln!(
-        "Zeebx: render MIDI SoundFont: {} bytes MIDI -> {:.1}s áudio ({} amostras @ {}Hz, pico bruto {:.3}) sintetizados em {:.1}ms ({:.2}x tempo real)",
+    crate::registro!(
+        crate::registro::Nivel::Informacao,
+        "midi",
+        "banco: {} bytes de SMF -> {:.1}s de áudio ({} amostras @ {}Hz, pico bruto {:.3}) sintetizados em {:.1}ms ({:.2}x tempo real)",
         bytes.len(),
         comprimento,
         amostras.len(),
@@ -323,7 +436,15 @@ fn limita(amostras: &mut [f32]) -> f32 {
 /// alternativa — inventar mais um diretório de busca — troca um aviso claro por um palpite, e
 /// palpite em caminho de arquivo é o defeito que se paga com "não funciona e não diz por quê".
 pub fn relato(aparelho: &Path) -> String {
-    match primeiro_banco(aparelho) {
+    relato_de(aparelho, primeiro_banco(aparelho))
+}
+
+/// O mesmo relato, com o banco já resolvido.
+///
+/// O `Option` entra por parâmetro para a prova do lado "sem banco" não depender do perfil de quem
+/// roda — ver [`pastas_padrao`].
+fn relato_de(aparelho: &Path, banco: Option<PathBuf>) -> String {
+    match banco {
         Some(caminho) => format!(
             "Zeebx: banco de amostras do MIDI em {}; a trilha toca com as amostras",
             caminho.display()
@@ -439,16 +560,29 @@ mod tests {
     fn banco_minimo() -> Vec<u8> {
         let taxa = 22_050u32;
         let quadros = 64usize;
+        let cru = amostras_do_banco_minimo(taxa, quadros);
+        banco_minimo_com_smpl(&cru, taxa, quadros)
+    }
 
-        // --- amostras: 64 quadros de seno a 440 Hz, mais os 46 zeros que o `smpl` exige no fim ---
-        let mut amostras: Vec<i16> = (0..quadros)
-            .map(|i| {
-                let angulo = std::f64::consts::TAU * 440.0 * i as f64 / f64::from(taxa);
-                (angulo.sin() * 20_000.0) as i16
-            })
-            .collect();
-        amostras.extend(std::iter::repeat_n(0i16, 46));
+    /// As amostras do banco mínimo como bytes crus: 64 quadros de seno a 440 Hz mais os 46 zeros
+    /// que o `smpl` exige no fim.
+    fn amostras_do_banco_minimo(taxa: u32, quadros: usize) -> Vec<u8> {
+        let mut cru = Vec::new();
+        for i in 0..quadros {
+            let angulo = std::f64::consts::TAU * 440.0 * i as f64 / f64::from(taxa);
+            cru.extend(((angulo.sin() * 20_000.0) as i16).to_le_bytes());
+        }
+        cru.extend(std::iter::repeat_n(0u8, 46 * 2));
+        cru
+    }
 
+    /// O mesmo banco, com os bytes crus do `smpl` entregues por quem chama.
+    ///
+    /// **Por que os bytes crus, e não as amostras.** É o que permite montar o `smpl` de tamanho
+    /// **ímpar**, o caso da guarda contra a escrita além da alocação. O resto da estrutura continua
+    /// a de um banco que o parser aceita — sem isso o teste provaria que um arquivo estragado é
+    /// recusado, e não que o bloco ímpar é barrado **antes** de chegar à dependência.
+    fn banco_minimo_com_smpl(cru: &[u8], taxa: u32, quadros: usize) -> Vec<u8> {
         fn bloco(nome: &[u8; 4], corpo: &[u8]) -> Vec<u8> {
             let mut out = nome.to_vec();
             out.extend((corpo.len() as u32).to_le_bytes());
@@ -506,11 +640,27 @@ mod tests {
         );
 
         // --- sdta: as amostras ---
-        let mut cru = Vec::new();
-        for valor in &amostras {
-            cru.extend(valor.to_le_bytes());
-        }
-        let sdta = lista(b"sdta", &[bloco(b"smpl", &cru)]);
+        // **Sem o preenchimento par do RIFF, e não pelo `bloco`.** É a única artificialidade do
+        // arquivo, e ela é do teste, não do formato: o `rustysynth` lê os sub-blocos até o tamanho
+        // do `LIST` e **não** pula o preenchimento. Com o `smpl` de tamanho par (o caso do
+        // `banco_minimo`) não há preenchimento nenhum, e o `LIST` sai byte a byte igual ao do
+        // `bloco`; com o `smpl` ímpar do outro teste, o byte de preenchimento ficaria entre as
+        // amostras e o `LIST` da `pdta`, e o parser o leria como o começo do identificador — o
+        // arquivo seria recusado por desalinhamento, e não pela guarda, que é o que se mede aqui.
+        let smpl = {
+            let mut out = b"smpl".to_vec();
+            out.extend((cru.len() as u32).to_le_bytes());
+            out.extend(cru);
+            out
+        };
+        let sdta = {
+            let mut corpo = b"sdta".to_vec();
+            corpo.extend(smpl);
+            let mut out = b"LIST".to_vec();
+            out.extend((corpo.len() as u32).to_le_bytes());
+            out.extend(corpo);
+            out
+        };
 
         // --- pdta ---
         // phdr: preset 0 e o terminador. `wPresetBagNdx` do terminador é o número de zonas.
@@ -599,13 +749,44 @@ mod tests {
         let _ = std::fs::remove_file(&pasta);
     }
 
+    /// **Um `smpl` de tamanho ímpar é recusado antes de chegar à dependência.**
+    ///
+    /// O `rustysynth` 1.3.6 (`binary_reader.rs`, `read_wave_data`) reserva `Vec<i16>` de
+    /// `tamanho / 2` elementos e cria com `slice::from_raw_parts_mut` uma fatia de `tamanho`
+    /// **bytes**: com o `smpl` de tamanho ímpar a fatia é um byte maior que a alocação, e a leitura
+    /// escreve fora dela. É UB no caminho do banco do usuário — arquivo que ele copia à mão, e o
+    /// defeito está na biblioteca —, então a guarda é nossa e vem antes do parse.
+    ///
+    /// **Sem a guarda este teste falha, e é isso que ele mede:** o banco montado aqui é válido em
+    /// tudo o mais (o mesmo do `banco_minimo`), então o `rustysynth` o aceita — com a escrita de um
+    /// byte além da alocação — e `abre` devolve `Some` em vez de `None`.
+    #[test]
+    fn banco_com_smpl_impar_e_recusado() {
+        let pasta = std::env::temp_dir().join("zeebx-banco-smpl-impar.sf2");
+        let (taxa, quadros) = (22_050u32, 64usize);
+        let mut cru = amostras_do_banco_minimo(taxa, quadros);
+        // O byte a mais: com ele o `smpl` declara um tamanho ímpar, e o `Vec<i16>` do `rustysynth`
+        // passa a ter um byte a menos que a fatia que a biblioteca cria por cima dele.
+        cru.push(0);
+        assert_eq!(cru.len() % 2, 1, "o caso é o do bloco ímpar");
+        std::fs::write(&pasta, banco_minimo_com_smpl(&cru, taxa, quadros)).expect("escreve o banco");
+
+        assert!(
+            abre(&pasta).is_none(),
+            "um `smpl` de tamanho ímpar tem de ser recusado antes do parse"
+        );
+        let _ = std::fs::remove_file(&pasta);
+    }
+
     /// **Um caminho que não existe também é recusado em silêncio**, e sem gastar a carga.
     #[test]
     fn banco_ausente_nao_e_erro() {
         let caminho = std::env::temp_dir().join("zeebx-banco-que-nao-existe.sf2");
         let _ = std::fs::remove_file(&caminho);
         assert!(abre(&caminho).is_none());
-        assert!(primeiro_banco(&std::env::temp_dir().join("zeebx-sem-pasta")) .is_none());
+        // Pelas pastas dadas, e não pelo perfil: com um banco em `~/.config/zeebx` esta afirmação
+        // caía — e é para lá que o LEIAME manda copiar o `.sf2`.
+        assert!(primeiro_banco_em(&[std::env::temp_dir().join("zeebx-sem-pasta")]).is_none());
     }
 
 
@@ -618,7 +799,7 @@ mod tests {
     fn o_relato_diz_onde_por_o_banco() {
         let aparelho = std::env::temp_dir().join("zeebx-aparelho-sem-banco");
         let _ = std::fs::remove_dir_all(&aparelho);
-        let texto = relato(&aparelho);
+        let texto = relato_de(&aparelho, None);
         assert!(
             texto.contains("soundfonts"),
             "o relato tem de dizer a pasta: {texto}"

@@ -142,7 +142,7 @@ impl Janela {
         };
         let vp = self.limpa_e_enquadra(altura_nativa, aspecto, escala);
         if let Some(pintor) = &mut self.pintor {
-            pintor.desenha_textura(&self.gl, quadro, &vp, suave);
+            pintor.desenha_textura(&self.gl, quadro, vp.into(), suave);
         }
         self.troca();
     }
@@ -155,7 +155,7 @@ impl Janela {
         };
         let vp = self.limpa_e_enquadra(altura.max(0) as u32, aspecto, escala);
         if let Some(pintor) = &mut self.pintor {
-            pintor.desenha(&self.gl, bytes, largura, altura, &vp, suave);
+            pintor.desenha(&self.gl, bytes, largura, altura, vp.into(), suave);
         }
         self.troca();
     }

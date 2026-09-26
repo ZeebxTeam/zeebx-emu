@@ -20,7 +20,7 @@ Cargo.toml          a biblioteca `zeebx` — o emulador inteiro, sem interface
 src/                BREW, CPU, vídeo, áudio, carregador, sessão, save state
 src/ui/             telas e estado compartilhados entre frontends (ver o aviso abaixo)
 frontends/
-  classical-standalone/   o binário `zeebx`: janela do egui e linha de comando
+  classical-standalone/   o binário `zeebx`: janela Qt (a do egui em `zeebx egui`) e linha de comando
   headless/               sem interface, configurado por `config.ini`
   libretro/               o core do RetroArch
   android/                o aplicativo, sem uma linha de Java
@@ -53,6 +53,11 @@ Três gates errados já quebraram o build do Android sem ninguém perceber, porq
 na tag.
 
 ## Compilar e provar
+
+O standalone pede o **Qt 6** (6.4 ou mais novo): a feature `ui-qt` vem ligada, e o build acha o Qt
+pelo `qmake6`, pelo `qmake` ou pelo `QMAKE`. `python3 ferramentas/prepara_build.py` diz o que falta.
+A interface Qt e a migração estão em
+[`docs/implementacao/21-migracao-para-qt.md`](docs/implementacao/21-migracao-para-qt.md).
 
 ```bash
 cargo build --release --locked -p zeebx-classical-standalone   # o binário `zeebx`
@@ -87,11 +92,14 @@ export JAVA_HOME="$HOME/Android/jdk"
 ## O CI
 
 **A tag é o único gatilho automático.** O `release.yml` dispara em `v0.0.0` e monta a release como
-rascunho. O `ci.yml`, o `libretro.yml`, o `headless.yml`, o `android.yml` e o `ios.yml` são
-`workflow_dispatch`: seis runners por execução é caro demais para gastar em cada push, e quem
-decide é quem pede.
-A exceção é o `discord-issues.yml`, que não compila nada: avisa no Discord quando uma issue abre,
-fecha ou muda de responsável.
+rascunho. O `ci.yml`, o `libretro.yml`, o `headless.yml`, o `android.yml`, o `ios.yml` e o
+`qt.yml` são `workflow_dispatch`: o CI padrão já compila o standalone clássico e, quando
+aplicável, o Qt nas seis plataformas, enquanto `ios.yml` e `qt.yml` ficam disponíveis para
+builds específicos e para montar os instaladores antes da tag. Esses workflows não precisam
+rodar em cada push: seis runners por execução, ou até doze jobs quando o Qt entra em cena, é
+caro demais para gastar automaticamente, e quem decide é quem pede. A exceção é o
+`discord-issues.yml`, que não compila nada: avisa no Discord quando uma issue abre, fecha ou
+muda de responsável.
 
 Se você mexeu em algo que só um deles cobre — o APK, o core num alvo ARM —, diga ao humano que
 vale disparar aquele workflow antes da tag. Você não consegue dispará-lo.

@@ -65,12 +65,23 @@ cargo build --release
 
 ### O que mais precisa estar instalado
 
-O standalone usa dependências nativas para `dynarmic`, áudio, janela e controles.
-Debian, Ubuntu e derivados:
+O standalone usa dependências nativas para `dynarmic`, áudio, janela e controles, e a interface é
+em **Qt 6** (6.4 ou mais novo). Debian, Ubuntu e derivados:
 
 ```bash
 sudo apt install build-essential cmake ninja-build pkg-config python3 clang libclang-dev \
-    libglib2.0-dev libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+    libglib2.0-dev libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev \
+    qt6-base-dev qt6-base-dev-tools qt6-declarative-dev qt6-declarative-dev-tools qmake6 \
+    qt6-wayland qml6-module-qtquick qml6-module-qtquick-controls qml6-module-qtquick-layouts \
+    qml6-module-qtquick-templates qml6-module-qtquick-window qml6-module-qtqml-workerscript
+```
+
+No Arch: `qt6-base qt6-declarative qt6-wayland`. O build acha o Qt pelo `qmake6` ou pelo `qmake`;
+para usar outro, aponte `QMAKE` para ele. Sem o Qt, a interface antiga, em egui, ainda compila por
+uma versão:
+
+```bash
+cargo build --release -p zeebx-classical-standalone --no-default-features
 ```
 
 O core Libretro não linka a interface desktop nem bibliotecas de áudio/controle do host:
@@ -88,17 +99,23 @@ python3 ferramentas/prepara_build.py
 ### Instaladores e releases
 
 Os instaladores saem do [cargo-packager](https://github.com/crabnebula-dev/cargo-packager), com a
-configuração em `[package.metadata.packager]` no `Cargo.toml`:
+configuração em `[package.metadata.packager]` no `Cargo.toml` do standalone, rodado de dentro de
+`frontends/classical-standalone/`. **Ele não implanta o Qt**: cada formato tem o passo dele, e o
+[`release.yml`](.github/workflows/release.yml) é a receita completa.
 
-```bash
-cargo install cargo-packager --locked
-cargo packager --release --formats deb,appimage   # Linux
-cargo packager --release --formats nsis           # Windows
-cargo packager --release --formats dmg            # macOS
-```
+- **`.deb`**: usa o Qt do sistema, então precisa ser montado contra ele — no Ubuntu 24.04, com os
+  pacotes acima: `cargo packager --release --formats deb`.
+- **AppImage**: leva o próprio Qt, pelo `linuxdeploy-plugin-qt`, com `QMAKE` apontando o Qt,
+  `QML_SOURCES_PATHS` para `frontends/classical-standalone/qml`, `EXTRA_PLATFORM_PLUGINS=libqwayland.so`
+  e `EXTRA_QT_MODULES=waylandcompositor`. Monte num Ubuntu 22.04 com o Qt do `aqtinstall`, como o
+  CI: no Arch, o `strip` do linuxdeploy não reconhece as bibliotecas do sistema, e o Qt de lá traz
+  plugins com dependências que o linuxdeploy não acha.
+- **Windows**: `windeployqt --release --no-translations --qmldir frontends/classical-standalone/qml
+  --dir target/qt-implantado target/release/zeebx.exe`, e depois `--formats nsis`.
+- **macOS**: `--formats app`, `macdeployqt` no `.app`, a assinatura ad-hoc refeita com
+  `codesign --force --deep --sign -`, e o `.dmg` pelo `hdiutil`.
 
-Os arquivos ficam em `target/pacotes/`. No Arch, o AppImage precisa de `NO_STRIP=1`: o `strip` do
-linuxdeploy não reconhece as bibliotecas do sistema.
+Os arquivos ficam em `target/pacotes/`.
 
 Uma tag de versão (`v0.1.0` ou `0.1.0`) enviada ao GitHub dispara o
 [`release.yml`](.github/workflows/release.yml), que monta a release como rascunho, com o título

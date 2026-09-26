@@ -76,7 +76,7 @@ jobs:
             biblioteca: target/release/libzeebx_libretro.dylib
             pacote: zeebx_libretro.dylib
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -158,7 +158,7 @@ jobs:
     name: core-wasm
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
         with:

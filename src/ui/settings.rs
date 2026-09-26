@@ -84,7 +84,7 @@ impl ModoDaJanela {
 ///
 /// Tudo desligado por padrão: é ferramenta de quem está caçando um problema, e informação
 /// sobre o quadro atrapalha quem só quer jogar.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DebugView {
     /// Liga o painel. Sem ele, nada do que está abaixo aparece.
@@ -99,6 +99,13 @@ pub struct DebugView {
     pub timeline: bool,
     /// A janela separada com o log da execução.
     pub log: bool,
+    /// Até que nível o **núcleo** registra: `aviso` (padrão), `informacao`, `depuracao`,
+    /// `erro`, `fatal` ou `desligado`. Ver [`crate::registro`].
+    ///
+    /// É texto e não um `enum` de propósito: o mesmo vocabulário vale no `config.ini` do
+    /// headless, na opção `zeebx_log` do core Libretro e na variável `ZEEBX_LOG`, e converter
+    /// num lugar só ([`crate::registro::Ajuste::de_texto`]) evita quatro tabelas que divergem.
+    pub nivel_de_log: String,
 }
 
 impl Default for DebugView {
@@ -110,6 +117,7 @@ impl Default for DebugView {
             memory: true,
             timeline: true,
             log: false,
+            nivel_de_log: "aviso".to_string(),
         }
     }
 }
@@ -362,6 +370,27 @@ impl Settings {
 
     pub fn save(&self) -> std::io::Result<()> {
         self.save_to(&settings_path())
+    }
+}
+
+/// O rótulo de um fator de resolução interna: o fator, o tamanho e a referência de mercado.
+pub fn rotulo_da_resolucao(fator: u8) -> String {
+    let (largura, altura) = (640 * u32::from(fator), 480 * u32::from(fator));
+    let referencia = match fator {
+        1 => "nativa",
+        2 => "~720p",
+        3 => "~1080p",
+        4 => "~1440p",
+        _ => "~4K",
+    };
+    format!("{fator}x · {largura}×{altura} · {referencia}")
+}
+
+/// O rótulo de um nível de antialias ou de anisotrópico: 1 é desligado.
+pub fn rotulo_de_nivel(nivel: u8, sigla: &str, desligado: &str) -> String {
+    match nivel {
+        0 | 1 => desligado.to_string(),
+        n => format!("{n}x {sigla}"),
     }
 }
 

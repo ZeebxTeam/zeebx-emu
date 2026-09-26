@@ -44,44 +44,86 @@ permissions:
 
 jobs:
   standalone:
-    name: standalone ${{ matrix.nome }}
+    name: standalone ${{ matrix.nome }} (${{ matrix.formatos }})
     runs-on: ${{ matrix.sistema }}
     strategy:
       fail-fast: false
       matrix:
+        # **A interface é a do Qt** (fase 8 de `docs/implementacao/21-migracao-para-qt.md`), e o
+        # `cargo packager` não implanta o Qt: cada formato tem o passo dele, abaixo. O AppImage, o
+        # NSIS e o `.dmg` levam o próprio Qt — a versão exata, e não `6.11.*`, porque o Qt publica
+        # os pacotes de um patch novo antes dos checksums e o `aqtinstall` falha no dia (ver o
+        # `qt.yml`). O `.deb` usa o Qt do sistema, e por isso sai à parte, no Ubuntu 24.04: um
+        # binário do Qt 6.11 não roda num Qt mais velho, e o 24.04 traz o 6.4.
         include:
           - nome: linux-x86_64
             sistema: ubuntu-22.04
-            formatos: deb,appimage
+            formatos: appimage
+            qt: "6.11.2"
+          - nome: linux-x86_64
+            sistema: ubuntu-24.04
+            formatos: deb
+            qt: sistema
           - nome: windows-x86_64
             sistema: windows-latest
             formatos: nsis
+            qt: "6.10.3"
           - nome: macos-arm64
             sistema: macos-latest
             formatos: dmg
+            qt: "6.11.2"
           - nome: macos-x86_64
             sistema: macos-15-intel
             formatos: dmg
+            qt: "6.11.2"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
 
+      # O sistema entra na chave: o cache do Ubuntu 24.04 restaurado no 22.04 traz scripts de build
+      # ligados a uma glibc mais nova, que não rodam lá.
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.nome }}
+          key: ${{ matrix.nome }}-${{ matrix.sistema }}
 
+      # As `libxcb-*` são as dependências do plugin de plataforma do Qt, que o
+      # `linuxdeploy-plugin-qt` precisa achar para levar ao AppImage.
       - name: Dependências do Linux
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake pkg-config libasound2-dev libudev-dev \
-            libxkbcommon-dev libwayland-dev libgl1-mesa-dev libx11-dev libxcursor-dev \
-            libxrandr-dev libxi-dev libfuse2
+          sudo apt-get install -y cmake ninja-build pkg-config python3 libclang-dev \
+            libglib2.0-dev libasound2-dev libudev-dev libxkbcommon-dev libwayland-dev \
+            libgl1-mesa-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev libfuse2 \
+            libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+            libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-xkb1
+
+      - name: Qt do sistema
+        if: matrix.qt == 'sistema'
+        run: |
+          sudo apt-get install -y qt6-base-dev qt6-base-dev-tools qt6-declarative-dev \
+            qt6-declarative-dev-tools qmake6
 
       - name: Dependências do macOS
         if: runner.os == 'macOS'
-        run: brew install cmake || true
+        run: brew install cmake ninja pkg-config || true
+
+      - name: Qt
+        if: matrix.qt != 'sistema'
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ matrix.qt }}
+          cache: true
+
+      # O `cxx-qt-build` acha o Qt pelo `qmake`. Dizer qual evita pegar outro que esteja no PATH
+      # da imagem do runner.
+      - name: qmake
+        shell: bash
+        run: |
+          if [ "${{ matrix.qt }}" = sistema ]; then qmake=/usr/bin/qmake6; else qmake="$QT_ROOT_DIR/bin/qmake"; fi
+          [ "$RUNNER_OS" = Windows ] && qmake="$qmake.exe"
+          echo "QMAKE=$qmake" >> "$GITHUB_ENV"
 
       - name: cargo-packager
         run: cargo install cargo-packager --locked
@@ -96,12 +138,61 @@ jobs:
       # **Roda no diretório do frontend, e não na raiz.** O `cargo packager` lê a configuração do
       # manifesto onde é chamado, e desde a 0.3.0 ela mora no pacote que produz o binário. Os
       # pacotes continuam saindo em `target/pacotes` da raiz, pelo `out-dir` de lá.
-      - name: Pacotes
+      #
+      # O `linuxdeploy-plugin-qt` leva o Qt que o `QMAKE` diz, com os módulos QML que o
+      # `QML_SOURCES_PATHS` importa. O Wayland vai à parte: o plugin de plataforma
+      # (`libqwayland.so`, um só a partir do Qt 6.10) e o módulo `waylandcompositor`, sem o qual a
+      # integração gráfica não vai junto e a janela não tem GL no Wayland.
+      - name: AppImage
+        if: matrix.formatos == 'appimage'
         working-directory: frontends/classical-standalone
         env:
+          QML_SOURCES_PATHS: ${{ github.workspace }}/frontends/classical-standalone/qml
+          EXTRA_PLATFORM_PLUGINS: libqwayland.so
+          EXTRA_QT_MODULES: waylandcompositor
           # O AppImage é montado sem FUSE no runner.
           APPIMAGE_EXTRACT_AND_RUN: "1"
-        run: cargo packager --release --formats ${{ matrix.formatos }}
+        run: cargo packager --release --formats appimage
+
+      - name: .deb
+        if: matrix.formatos == 'deb'
+        working-directory: frontends/classical-standalone
+        run: cargo packager --release --formats deb
+
+      # O `windeployqt` junta numa pasta o que o `zeebx.exe` precisa do Qt — as DLLs, os plugins e
+      # os módulos QML que os arquivos de `qml/` importam —, e a configuração dos pacotes manda o
+      # NSIS instalar a pasta ao lado do executável.
+      - name: Instalador do Windows
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          cargo build --release --locked -p zeebx-classical-standalone
+          windeployqt --release --no-translations \
+            --qmldir frontends/classical-standalone/qml \
+            --dir target/qt-implantado target/release/zeebx.exe
+          cd frontends/classical-standalone
+          cargo packager --release --formats nsis
+
+      # O `cargo packager` monta o `.app`, e o `macdeployqt` põe dentro dele os frameworks, os
+      # plugins e os módulos QML. Ele altera os binários, e no ARM um binário alterado sem
+      # assinatura válida é morto ao abrir: a assinatura ad-hoc é refeita depois. O `.dmg` sai do
+      # `hdiutil` porque o `dmg` do `cargo packager` remontaria o `.app` por cima do que o
+      # `macdeployqt` fez; ele leva o atalho para Aplicativos, como o do `cargo packager` levava.
+      - name: Imagem do macOS
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd frontends/classical-standalone && cargo packager --release --formats app)
+          app=target/pacotes/Zeebx.app
+          macdeployqt "$app" -qmldir="$GITHUB_WORKSPACE/frontends/classical-standalone/qml"
+          codesign --force --deep --sign - "$app"
+          codesign --verify --deep --strict "$app"
+          raiz=$(mktemp -d)
+          cp -R "$app" "$raiz/"
+          ln -s /Applications "$raiz/Applications"
+          hdiutil create -volname Zeebx -srcfolder "$raiz" -ov -format UDZO target/pacotes/Zeebx.dmg
+          rm -rf "$raiz"
 
       # O `cargo-packager` nomeia pelo produto e pela versão (`Zeebx_0.2.1_x64-setup.exe`), e o
       # nome não diz de qual sistema nem de qual formato o arquivo é. Numa release com oito
@@ -143,9 +234,11 @@ jobs:
           hdiutil convert "$tmp/rw.dmg" -format UDZO -o "${dmg%.dmg}"
           rm -rf "$tmp"
 
+      # O nome leva o formato: o Linux sai de dois jobs, e dois artefatos com o mesmo nome não
+      # sobem.
       - uses: actions/upload-artifact@v4
         with:
-          name: zeebx-standalone-${{ matrix.nome }}
+          name: zeebx-standalone-${{ matrix.nome }}-${{ matrix.formatos }}
           path: |
             target/pacotes/*.deb
             target/pacotes/*.AppImage
@@ -169,7 +262,7 @@ jobs:
           - nome: macos-x86_64
             sistema: macos-15-intel
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -239,7 +332,7 @@ jobs:
           - abi: arm64-v8a
             alvo: aarch64-linux-android
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -365,7 +458,7 @@ jobs:
             biblioteca: target/release/libzeebx_libretro.dylib
             arquivo: zeebx_libretro.dylib
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -453,7 +546,7 @@ jobs:
     name: core-wasm
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -496,7 +589,7 @@ jobs:
     steps:
       # O repositório entra por causa das notas: o corpo da release sai de um arquivo versionado,
       # e sem `checkout` este job só tem os artefatos baixados.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: actions/download-artifact@v4
         with:

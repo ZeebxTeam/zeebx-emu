@@ -109,6 +109,25 @@ struct Estado {
     instrucoes: Cell<u64>,
     limite: Cell<u64>,
     parada: Cell<Parada>,
+    /// Quantas vezes o host entrou no JIT, e quanto tempo ficou lá dentro.
+    ///
+    /// **É o número que separa o guest do despacho.** Cada chamada de API é uma saída e uma
+    /// reentrada, então o que sobra do relógio depois de descontar o tempo passado dentro do
+    /// `jit.run` é, quase todo, trampolim mais corpo do método. Sem esta conta o custo por
+    /// chamada de API é desconhecido — e foi tratando um número da era do Unicorn como atual que
+    /// a revisão externa errou. Ver [`CpuBackend::relato_do_jit`].
+    ///
+    /// Ficam aqui, e não no `DynarmicCpu`, porque o empréstimo do `Jit` está vivo durante toda a
+    /// `run`: um `Cell` no estado atravessa o empréstimo imutável sem brigar com ele.
+    ///
+    /// **Contar é de graça; cronometrar não é.** Medido: um par de `Instant::now()` por entrada
+    /// custava **40% do relógio** nesta máquina (o `Instant::now` daqui é chamada de sistema, não
+    /// o caminho rápido do vDSO), e são 1,3 milhão de entradas num Quake de quinze segundos. Por
+    /// isso a contagem é sempre ligada — uma soma num `Cell` — e o relógio é **amostrado** e só
+    /// quando alguém pede o perfil de custo. Ver [`liga_medicao_do_jit`].
+    entradas_no_jit: Cell<u64>,
+    nanos_no_jit: Cell<u64>,
+    amostras_no_jit: Cell<u64>,
     jit: Cell<*mut Jit<Estado>>,
     /// A tabela de páginas do Dynarmic: `PAGINAS` ponteiros, o início de cada página no host, ou
     /// nulo para a página que precisa passar pelas callbacks. Ver [`DynarmicCpu::tabela`].
@@ -305,6 +324,9 @@ impl Callbacks for Estado {
     }
 }
 
+/// De quantas em quantas entradas no JIT o relógio é lido, quando a medição está ligada.
+const AMOSTRA_DO_JIT: u64 = 64;
+
 /// Recompilador A32. Fica separado do backend padrão até a equivalência ser estabelecida jogo
 /// a jogo; criar a CPU não aloca o JIT, porque o mapa do guest só existe em `reset`.
 pub struct DynarmicCpu {
@@ -397,6 +419,18 @@ impl DynarmicCpu {
         };
         jit.marca_codigo_sujo(addr, len);
         let paginas = std::mem::take(&mut *jit.codigo_sujo.borrow_mut());
+        // **Quantas páginas de código caíram por escrita do host.** É o número que responde se
+        // leitura/escrita em página já executada é evento raro (nada a fazer) ou caminho quente
+        // (candidato a leitura direta com armadilha de escrita). Sem ele, o custo do SMC é
+        // invisível no perfil: aparece diluído no despacho, como "alguma chamada de API".
+        if !paginas.is_empty() {
+            crate::registro!(
+                crate::registro::Nivel::Depuracao,
+                "cpu",
+                "escrita em {addr:#010x}+{len} invalidou {} página(s) de código",
+                paginas.len()
+            );
+        }
         for pagina in paginas {
             jit.invalidate_cache_range(pagina * PAGE, PAGE as usize);
         }
@@ -427,6 +461,21 @@ impl CpuBackend for DynarmicCpu {
         for pagina in 0..PAGINAS as u32 {
             self.tabela[pagina as usize] = ponteiro_da_pagina(&copia, pagina);
         }
+        // Quantas páginas dos 32 bits do guest têm acesso direto e quantas ficaram na callback.
+        // É o primeiro número a olhar quando se discute custo de memória do JIT: a diferença
+        // entre as duas colunas é o que passa pelo Rust a cada leitura e escrita.
+        let diretas = self
+            .tabela
+            .iter()
+            .filter(|ponteiro| !ponteiro.is_null())
+            .count();
+        crate::registro!(
+            crate::registro::Nivel::Depuracao,
+            "cpu",
+            "tabela de páginas: {diretas} de {} com acesso direto ({} region(oes))",
+            PAGINAS,
+            copia.regions().len()
+        );
         self.memoria = Rc::new(RefCell::new(copia));
         self.semihosting.borrow_mut().clear();
         let estado = Estado {
@@ -440,6 +489,9 @@ impl CpuBackend for DynarmicCpu {
             instrucoes: Cell::new(0),
             limite: Cell::new(0),
             parada: Cell::new(Parada::Nenhuma),
+            entradas_no_jit: Cell::new(0),
+            nanos_no_jit: Cell::new(0),
+            amostras_no_jit: Cell::new(0),
             jit: Cell::new(std::ptr::null_mut()),
             tabela: self.tabela.as_mut_ptr(),
         };
@@ -469,6 +521,19 @@ impl CpuBackend for DynarmicCpu {
 
     fn instructions(&self) -> u64 {
         self.jit().map_or(0, |jit| jit.instrucoes.get())
+    }
+
+    fn relato_do_jit(&self) -> Option<(u64, u64, u64)> {
+        self.jit().ok().map(|jit| {
+            let entradas = jit.entradas_no_jit.get();
+            let amostras = jit.amostras_no_jit.get();
+            // A média amostrada vale para todas as entradas: nenhuma delas é especial.
+            let nanos = match amostras {
+                0 => 0,
+                n => jit.nanos_no_jit.get() / n * entradas,
+            };
+            (entradas, nanos, amostras)
+        })
     }
 
     fn set_instructions(&mut self, valor: u64) {
@@ -571,6 +636,15 @@ impl CpuBackend for DynarmicCpu {
         Ok(())
     }
 
+    fn fill_mem(&mut self, addr: u32, valor: u8, len: u32) -> Result<(), CpuError> {
+        self.memoria
+            .borrow_mut()
+            .fill(addr, valor, len)
+            .map_err(|e| CpuError(e.to_string()))?;
+        self.invalida_codigo_escrito(addr, len);
+        Ok(())
+    }
+
     fn run(&mut self, pc: u32, max_instructions: u64) -> Result<StopReason, CpuError> {
         let jit = self.jit_mut()?;
         // **O bit 0 do endereço é o modo, não parte do endereço.** O despachante retoma no `lr`
@@ -591,7 +665,28 @@ impl CpuBackend for DynarmicCpu {
         jit.parada.set(Parada::Nenhuma);
         jit.limite
             .set(jit.instrucoes.get().saturating_add(max_instructions));
+        // O relógio em volta do `jit.run`, e só dele: tudo o que se passa aqui dentro é execução
+        // do guest (mais as callbacks de memória, que o próprio JIT chama). O que fica de fora é
+        // o despacho — e é aí que o trampolim vive.
+        //
+        // **Amostrado de propósito, e ligado sempre.** O `Instant::now` desta máquina é chamada de
+        // sistema, e um par por entrada custou 40% do relógio. Uma entrada em cada `AMOSTRA` mede
+        // o mesmo por 1/64 do preço — cerca de 0,6% do relógio, medido —, e por isso a partilha
+        // sai em todo relatório em vez de depender de alguém lembrar de ligá-la. A média
+        // amostrada é multiplicada pelo contador depois.
+        let entrada = jit.entradas_no_jit.get();
+        let cronometrar = entrada % AMOSTRA_DO_JIT == 0;
+        let comeco = cronometrar.then(std::time::Instant::now);
         let _ = unsafe { jit.run() };
+        if let Some(comeco) = comeco {
+            jit.nanos_no_jit.set(
+                jit.nanos_no_jit
+                    .get()
+                    .saturating_add(comeco.elapsed().as_nanos() as u64),
+            );
+            jit.amostras_no_jit.set(jit.amostras_no_jit.get().saturating_add(1));
+        }
+        jit.entradas_no_jit.set(entrada.saturating_add(1));
         // Não há invalidação para páginas de dados: só código previamente executado chega aqui.
         // É seguro mexer no cache depois de o JIT devolver o controle, nunca da callback.
         let paginas = std::mem::take(&mut *jit.codigo_sujo.borrow_mut());
@@ -659,6 +754,35 @@ mod tests {
         let mut cpu = cpu_with(&code); // mov r0, #0x37 ; b .
         assert_eq!(cpu.run(0, 1).unwrap(), StopReason::Budget);
         assert_eq!(cpu.read_reg(Reg::R0), 0x37);
+    }
+
+    /// **Uma instrução exclusiva não pode derrubar o processo.**
+    ///
+    /// O emissor x64 do Dynarmic exige um `global_monitor` **no momento da tradução** de
+    /// LDREX/STREX: `EmitExclusiveReadMemory` faz `ASSERT(conf.global_monitor != nullptr)` e depois
+    /// o desreferencia (`emit_x64_memory.cpp.inc`). O invólucro nunca preencheu esse campo, e o
+    /// crate 0.1.3 não tem setter (`a32.rs` faz `unsafe { std::mem::zeroed() }` com um `todo`), ou
+    /// seja: o campo nasce nulo. Nada rebaixa essas instruções quando o monitor falta.
+    ///
+    /// 40 dos 62 `.mod` do acervo contêm esse padrão em algum lugar. O teste monta
+    /// `ldrex r0, [r1]` seguido de `b .` e executa o bloco: sem monitor, a tradução aborta e o
+    /// processo morre antes de a asserção ser lida.
+    ///
+    /// **Medido, e por isso ele fica ignorado em vez de verde**: em 24/09/2026 este teste matou o
+    /// processo com `assertion failed: conf.global_monitor != nullptr` e `signal: 6, SIGABRT`. O
+    /// conserto não é nosso — precisa de um patch no `dynarmic` 0.1.3 (dôr o campo
+    /// `global_monitor` ao `Config` público), e o crate não tem setter. Com o patch, tirar o
+    /// `#[ignore]` e este teste passa a ser a guarda.
+    #[ignore = "prova um defeito conhecido da dependência; ver o comentário acima"]
+    #[test]
+    fn a_instrucao_exclusiva_nao_derruba_o_processo() {
+        // `ldrex r0, [r1]` (0xE1910F9F) e `b .` (0xEAFFFFFE).
+        let code = [0xe191_0f9fu32.to_le_bytes(), 0xeaff_fffeu32.to_le_bytes()].concat();
+        let mut cpu = cpu_with(&code);
+        // r1 aponta para a memória de dados, para a leitura ter um endereço mapeado.
+        cpu.write_reg(Reg::R1, 0x1000);
+        assert_eq!(cpu.run(0, 2).unwrap(), StopReason::Budget);
+        assert_eq!(cpu.read_reg(Reg::R0), 0, "a memória começa zerada");
     }
 
     #[test]

@@ -45,6 +45,10 @@ Everything else — video, audio, controls — lives in the `config.ini`.
 ";
 
 fn main() -> ExitCode {
+    // **O `ZEEBX_LOG` vale como ponto de partida, e o arquivo ganha dele.** O `config.ini` é
+    // escolha explícita de quem o editou; a variável é o que serve a quem depura uma execução
+    // sem mexer em arquivo nenhum. Lido antes do arquivo para a ordem ser essa.
+    zeebx::registro::le_do_ambiente();
     let args: Vec<String> = std::env::args().skip(1).collect();
 
     if args.iter().any(|a| a == "--help" || a == "-h") {
@@ -145,6 +149,9 @@ fn sem_janela(mut console: Console, caminho: &std::path::Path) -> ExitCode {
     // desenha, e repetir o mesmo quadro encheria o cano de cópias idênticas.
     let mut visto = None;
     loop {
+        // O log do núcleo sai por aqui, uma vez por volta. Com o anel vazio — o caso comum, no
+        // nível padrão — isto é um cadeado e uma leitura.
+        zeebx::registro::despeja_no_stderr();
         match console.passo() {
             Fim::Segue => {}
             Fim::Acabou(motivo) => {
@@ -163,6 +170,11 @@ fn sem_janela(mut console: Console, caminho: &std::path::Path) -> ExitCode {
         let Some(sessao) = console.sessao_mut() else {
             return ExitCode::SUCCESS;
         };
+        // **O quadro da placa precisa ser trazido antes de sair daqui.** Com o readback adiado
+        // (`Session::materializa_quadro_gl`), a tela da CPU só recebe o quadro quando alguém o
+        // pede — e este laço é justamente quem pede: ele compara a tela consigo mesma para não
+        // repetir quadro e escreve os bytes no cano.
+        sessao.materializa_quadro_gl();
         let agora = {
             let tela = sessao.screen();
             (tela.serie(), tela.escritas())

@@ -517,8 +517,26 @@ pub fn extract_in(zip: &Path, cache: &Path) -> std::io::Result<PathBuf> {
     //
     // O erro de poda não derruba a abertura do jogo: o conteúdo já está extraído e utilizável, e
     // "não consegui apagar cache antigo" não é motivo para recusar quem só queria jogar.
-    if let Err(erro) = prune_cache(cache, Some(&extracted), CACHE_LIMIT_BYTES) {
-        eprintln!("Zeebx: não deu para podar o cache de extração em {}: {erro}", cache.display());
+    match prune_cache(cache, Some(&extracted), CACHE_LIMIT_BYTES) {
+        Ok(liberado) if liberado > 0 => crate::registro!(
+            crate::registro::Nivel::Informacao,
+            "loader",
+            "poda do cache de extração em {} liberou {} MiB",
+            cache.display(),
+            liberado / (1024 * 1024)
+        ),
+        Ok(_) => crate::registro!(
+            crate::registro::Nivel::Depuracao,
+            "loader",
+            "cache de extração em {} já estava dentro do teto",
+            cache.display()
+        ),
+        Err(erro) => crate::registro!(
+            crate::registro::Nivel::Aviso,
+            "loader",
+            "não deu para podar o cache de extração em {}: {erro}",
+            cache.display()
+        ),
     }
     Ok(extracted)
 }

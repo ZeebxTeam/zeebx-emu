@@ -527,6 +527,9 @@ impl<C: CpuBackend> Machine<C> {
 
     /// Métodos de `IBitmap`, despachados pelo nome do slot.
     pub(super) fn bitmap_call(&mut self, slot: u32) -> Result<Option<u32>, CpuError> {
+        // Blitar para a tela é desenhar por cima dela: o quadro do OpenGL tem de estar nela
+        // antes. Ver [`Machine::materializa_quadro_gl`].
+        self.materializa_quadro_gl();
         let Some(name) = Interface::Bitmap.method(slot) else {
             return Ok(None);
         };

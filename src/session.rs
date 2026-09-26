@@ -406,7 +406,20 @@ impl Session {
             }
             _ => path,
         };
+        crate::registro!(
+            crate::registro::Nivel::Depuracao,
+            "session",
+            "conteúdo {} resolvido para {}",
+            conteudo.display(),
+            path.display()
+        );
         let bytes = std::fs::read(path).map_err(StartError::Unreadable)?;
+        crate::registro!(
+            crate::registro::Nivel::Depuracao,
+            "session",
+            "{} bytes lidos; analisando o módulo",
+            bytes.len()
+        );
         let image = ModImage::parse(bytes).map_err(|e| StartError::NotAModule(e.to_string()))?;
         let extensoes = extensoes_de(path);
         let module = loader::load_with(&image, &extensoes)
@@ -432,6 +445,7 @@ impl Session {
         // A lista precisa existir antes de `run` e `create_applet`: a Z-Wheel a enumera no boot.
         machine.set_installed_applets(instalados.iter().cloned());
         // Antes de qualquer desenho: ver [`Machine::usa_placa`].
+        let tem_contexto = contexto.is_some();
         machine.usa_placa(placa, contexto);
         machine.configura_z_wheel(z_wheel);
         // A tela com que o console abre a Z-Wheel. Ver [`SPLASH_DA_Z_WHEEL`].
@@ -448,7 +462,11 @@ impl Session {
                 let _ = std::fs::create_dir_all(dir);
             }
             if let Err(erro) = machine.liga_serial(caminho) {
-                eprintln!("sem serial: {erro}");
+                crate::registro!(
+                    crate::registro::Nivel::Aviso,
+                    "session",
+                    "a captura de serial não abriu: {erro}"
+                );
             }
         }
         if let Some(portas) = portas {
@@ -472,6 +490,32 @@ impl Session {
             AppletResult::Stopped(stop) => return Err(StartError::Stopped(stop)),
             AppletResult::NoModule => return Err(StartError::NoApplet),
         };
+        let title = library::title_for(path);
+        // **Uma linha de INFO por sessão, com o que responde "o que está rodando e como".** É o
+        // par que faltava no relatório do core: o título dizia o jogo e nada dizia o rasterizador.
+        crate::registro!(
+            crate::registro::Nivel::Informacao,
+            "session",
+            "abriu {} (classe {clsid:#010x}) com o {} e {} applet(s) instalado(s)",
+            // O nome do **conteúdo pedido**, e não o `title`: num `.zip` o título da sessão sai
+            // da pasta do cache, que carrega tamanho e data e não diz nada a quem lê o log.
+            conteudo
+                .file_name()
+                .map(|nome| nome.to_string_lossy().into_owned())
+                .unwrap_or_else(|| conteudo.display().to_string()),
+            match placa {
+                true => "rasterizador de placa",
+                false => "rasterizador de processador",
+            },
+            instalados.len()
+        );
+        if placa && !tem_contexto {
+            crate::registro!(
+                crate::registro::Nivel::Aviso,
+                "session",
+                "pediram a placa sem contexto de GL: o desenho fica no processador"
+            );
+        }
         let clock_base = u64::from(machine.clock_ms());
         let window = Marca {
             real: Instant::now(),
@@ -484,7 +528,7 @@ impl Session {
             partida: Some((applet, clsid)),
             #[cfg(feature = "audio")]
             audio: None,
-            title: library::title_for(path),
+            title,
             classe: clsid,
             intermediario: None,
             started: Instant::now(),
@@ -731,6 +775,22 @@ impl Session {
     /// Bytes do heap do guest já entregues, e quantos objetos nossos estão vivos.
     pub fn memory(&self) -> (u32, usize) {
         (self.machine.heap_used(), self.machine.live_objects())
+    }
+
+    /// O retrato do heap do jogo: buracos, maior bloco, livre e usado.
+    ///
+    /// `memory()` diz **quanto** está em uso; este diz **como** o que sobra está repartido — e é
+    /// isso que separa "o heap encheu" de "o heap se despedaçou".
+    pub fn heap_retrato(&self) -> crate::brew::heap::Retrato {
+        self.machine.heap_retrato()
+    }
+
+    /// As alocações e as checagens que o heap recusou, com o tamanho pedido e quem pediu.
+    pub fn heap_recusas(&self) -> (Vec<(u32, u32)>, Vec<(u32, u32)>) {
+        (
+            self.machine.refused_allocations(),
+            self.machine.refused_availability_checks(),
+        )
     }
 
     /// O relógio do jogo, em milissegundos.
@@ -998,6 +1058,29 @@ impl Session {
         self.machine.file_root()
     }
 
+    /// Traz para a tela da CPU o quadro que o `eglSwapBuffers` deixou pendente.
+    ///
+    /// **Quem lê os pixels da tela precisa chamar isto antes.** O desenho 2D chama sozinho, e a
+    /// janela que apresenta a textura da placa não precisa dos pixels. Quem converte a tela para
+    /// bytes — o despejo de quadro, um frontend de fora, a análise da varredura — precisa, senão
+    /// recebe o quadro anterior. Ver [`crate::machine::Machine::present_gl`].
+    pub fn materializa_quadro_gl(&mut self) {
+        self.machine.materializa_quadro_gl();
+    }
+
+    /// Quantas trocas de buffer houve e quantas delas precisaram trazer o quadro para a CPU.
+    pub fn leituras_do_quadro_gl(&self) -> (u32, u32) {
+        (
+            self.machine.gl_swaps(),
+            self.machine.materializacoes_do_quadro_gl(),
+        )
+    }
+
+    /// Chamadas de estado enviadas à placa e quantas o espelho poupou.
+    pub fn estado_enviado_e_poupado(&self) -> (u64, u64) {
+        self.machine.estado_enviado_e_poupado()
+    }
+
     /// A tela, como está agora.
     pub fn screen(&self) -> &Framebuffer {
         self.intermediario
@@ -1058,7 +1141,7 @@ impl Session {
 
     /// O último quadro do rasterizador GL, quando há um. Serve para separar o que o 3D desenhou
     /// do que chegou à tela composto.
-    pub fn quadro_gl(&self) -> Option<Framebuffer> {
+    pub fn quadro_gl(&mut self) -> Option<Framebuffer> {
         self.machine.gl_frame()
     }
 
@@ -1105,6 +1188,15 @@ impl Session {
         u64::from(self.machine.gl_swaps())
     }
 
+    /// Quantos quadros o jogo desenhou na placa — **trocas de buffer ou `glClear`**.
+    ///
+    /// É diferente de [`Session::quadros_apresentados`], que conta só trocas: a Z-Wheel desenha o
+    /// palco num pbuffer e nunca troca buffer, e um contador de trocas diria que ela não desenha
+    /// nada. Quem pergunta "a placa desenhou neste quadro?" precisa deste.
+    pub fn quadros_da_placa(&self) -> u32 {
+        self.machine.quadros()
+    }
+
     /// Antialias (amostras por pixel) e filtro anisotrópico do 3D na placa; valem na hora.
     pub fn define_melhorias(&mut self, amostras: usize, anisotropico: usize) {
         self.machine.define_melhorias(amostras, anisotropico);
@@ -1129,6 +1221,17 @@ impl Session {
     /// Muda a resolução interna do 3D; vale a partir do próximo quadro.
     pub fn define_resolucao_interna(&mut self, escala: usize) {
         self.machine.define_resolucao_interna(escala);
+    }
+
+    /// Diz ao rasterizador de placa para descartar profundidade e estêncil depois do quadro.
+    pub fn define_descarte_de_tiles(&mut self, descartar: bool) {
+        self.machine.define_descarte_de_tiles(descartar);
+    }
+
+    /// Reduz a resolução interna do 3D no rasterizador de **processador**, desenhando numa
+    /// superfície menor e ampliando na apresentação. Ver [`Rasterizador::define_reducao`].
+    pub fn define_reducao(&mut self, reducao: usize) {
+        self.machine.define_reducao(reducao);
     }
 
     /// A proporção experimental do 3D, largura sobre altura; `None` é o 4:3 do console.
@@ -1636,6 +1739,20 @@ fn os_dois_rasterizadores_desenham_o_mesmo_quadro() {
                 Step::Running | Step::Ahead => {}
             }
         }
+        // O quadro do OpenGL pode estar pendente — ver [`Session::materializa_quadro_gl`]. Sem
+        // isto, o caminho de placa entregaria a tela anterior, e a comparação lá embaixo seria
+        // entre duas telas velhas: passaria sem comparar imagem nenhuma.
+        session.materializa_quadro_gl();
+        let (trocas, leituras) = session.leituras_do_quadro_gl();
+        let (enviadas, poupadas) = session.estado_enviado_e_poupado();
+        eprintln!(
+            "  {}: {trocas} troca(s) de buffer, {leituras} leitura(s) do quadro para a CPU, \
+{enviadas} estado(s) enviado(s) e {poupadas} poupado(s) pelo espelho",
+            match placa {
+                true => "placa",
+                false => "processador",
+            }
+        );
         let tela = session.screen();
         let (largura, altura) = (tela.width(), tela.height());
         let mut bytes = Vec::new();
@@ -1685,6 +1802,18 @@ fn os_dois_rasterizadores_desenham_o_mesmo_quadro() {
         pior = pior.max(d as u16);
     }
     let total = software.2.len() / 2;
+    // **Guarda contra passe vazio.** Se as duas telas estiverem apagadas, a comparação abaixo
+    // passa sem ter comparado imagem nenhuma — foi o que aconteceu quando o quadro da placa
+    // passou a ser adiado e este teste não materializava antes de ler.
+    let acesos = software
+        .2
+        .chunks_exact(2)
+        .filter(|p| p[0] != 0 || p[1] != 0)
+        .count();
+    assert!(
+        acesos > total / 100,
+        "o quadro saiu apagado ({acesos} de {total} pixel(is) aceso(s)): não há imagem para comparar"
+    );
     let percentual = diferentes as f64 * 100.0 / total as f64;
     let grosseiro = grosseiras as f64 * 100.0 / total as f64;
     let media = soma as f64 / total as f64;

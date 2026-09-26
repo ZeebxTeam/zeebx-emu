@@ -60,8 +60,18 @@ impl<C: CpuBackend> Machine<C> {
             // Nada a fazer aqui: a decodificação acontece no `GetBitmap`, e adiantá-la só
             // gastaria trabalho se o jogo desistisse no meio.
             (Interface::ForceFeed, "Write") => {
-                let count = a2 as usize;
+                // O tamanho é do jogo: conferido **antes** de alocar e **antes** de acumular, ou um
+                // pedido absurdo aborta o processo em vez de virar erro de API. O teto do que já
+                // foi entregue é conferido no mesmo passo: antes o excesso era detectado depois de
+                // a memória já estar gasta.
+                let count = tamanho_do_guest(a2 as usize)?;
                 if a1 != 0 && count > 0 {
+                    let ja_entregue = self.decoders.get(&decoder).map_or(0, |state| state.fed.len());
+                    if ja_entregue + count > MAX_DECODED_INPUT {
+                        return Err(CpuError(format!(
+                            "entrega de imagem passaria de {MAX_DECODED_INPUT} bytes: {ja_entregue} + {count}"
+                        )));
+                    }
                     let mut bytes = vec![0u8; count];
                     self.cpu.read_mem(a1, &mut bytes)?;
                     let state = self.decoders.entry(decoder).or_default();

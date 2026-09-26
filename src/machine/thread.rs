@@ -354,4 +354,9 @@ impl<C: CpuBackend> Machine<C> {
     pub fn heap_used(&self) -> u32 {
         self.heap.used()
     }
+
+    /// O retrato do heap do jogo — buracos, maior bloco, livre e usado.
+    pub fn heap_retrato(&self) -> crate::brew::heap::Retrato {
+        self.heap.retrato()
+    }
 }

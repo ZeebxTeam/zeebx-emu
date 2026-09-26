@@ -5,7 +5,6 @@ mod vitrine;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::time::Duration;
 
 use eframe::egui;
 
@@ -16,96 +15,19 @@ use crate::input::{self, Pad};
 use crate::loader::archive;
 use crate::ponte;
 use crate::session::Session;
+use crate::ui::calibracao::{Calibracao, Situacao};
+use crate::ui::entrada::{EntradaDoDesktop, SensorDaPorta};
+use crate::ui::partida::{self, Abertura, Partida, Saida};
 use crate::ui::i18n::Catalog;
 use crate::ui::library::Game;
 use crate::ui::settings::{Scaling, Settings};
 use crate::video::display::Framebuffer;
-
-/// Teto de tempo real que o jogo pode tomar num quadro da interface.
-///
-/// O orçamento normal **não** é fixo: é o tempo que passou desde o quadro anterior, que é
-/// exatamente o quanto o jogo precisa emular para acompanhar o relógio do mundo. Uma fatia
-/// fixa de 16 ms virava teto de velocidade, e um teto traiçoeiro: com a janela sincronizada
-/// ao monitor, bastava emulação mais desenho passarem de um retraço para o período dobrar
-/// para 33 ms — e o jogo ficava com 16 de cada 33, travado em 50% por mais folga que a
-/// máquina tivesse. Era o que a tela de seleção do Crash mostrava.
-///
-/// O teto existe só para o caso de o host não dar conta: sem ele, um quadro atrasado pede um
-/// orçamento maior, que atrasa mais o seguinte, e a janela para de responder.
-const MAX_SLICE: Duration = Duration::from_millis(100);
 
 /// A tela do Zeebo.
 const SCREEN: [usize; 2] = [640, 480];
 
 /// A imagem de quem não tem imagem nenhuma.
 const PLACEHOLDER: &[u8] = include_bytes!("../../assets/zeebx.png");
-
-/// O estado do aviso de calibração na janela do jogo.
-struct AvisoDeCalibracao {
-    aberto_em: std::time::Instant,
-    /// As últimas leituras, para dizer se o controle está parado.
-    recentes: std::collections::VecDeque<[f32; 3]>,
-    parado_desde: Option<std::time::Instant>,
-    concluido_em: Option<std::time::Instant>,
-}
-
-impl AvisoDeCalibracao {
-    /// Quanto a leitura pode variar e o controle ainda contar como parado, em g.
-    const TOLERANCIA: f32 = 0.05;
-    const LEITURAS: usize = 20;
-    /// A animação até ficar reto, e quanto o aviso fica depois dela.
-    const ASSENTA: Duration = Duration::from_millis(400);
-    const FICA: Duration = Duration::from_millis(1200);
-    /// Um aviso que nunca conclui não fica para sempre na tela.
-    const MAXIMO: Duration = Duration::from_secs(30);
-
-    fn novo(agora: std::time::Instant) -> Self {
-        Self {
-            aberto_em: agora,
-            recentes: Default::default(),
-            parado_desde: None,
-            concluido_em: None,
-        }
-    }
-
-    /// Guarda uma leitura e diz se o controle está parado.
-    fn amostra(&mut self, leitura: [f32; 3], agora: std::time::Instant) -> bool {
-        if self.recentes.len() == Self::LEITURAS {
-            self.recentes.pop_front();
-        }
-        self.recentes.push_back(leitura);
-        let parado = self.recentes.len() == Self::LEITURAS
-            && (0..3).all(|eixo| {
-                let (menor, maior) = self.recentes.iter().fold((f32::MAX, f32::MIN), |(a, b), l| {
-                    (a.min(l[eixo]), b.max(l[eixo]))
-                });
-                maior - menor < Self::TOLERANCIA
-            });
-        match (parado, self.parado_desde) {
-            (true, None) => self.parado_desde = Some(agora),
-            (false, _) => self.parado_desde = None,
-            _ => {}
-        }
-        parado
-    }
-
-    fn conclui(&mut self, agora: std::time::Instant) {
-        self.concluido_em.get_or_insert(agora);
-    }
-
-    fn progresso_da_conclusao(&self, agora: std::time::Instant) -> f32 {
-        self.concluido_em.map_or(0.0, |em| {
-            ((agora - em).as_secs_f32() / Self::ASSENTA.as_secs_f32()).clamp(0.0, 1.0)
-        })
-    }
-
-    fn expirou(&self, agora: std::time::Instant) -> bool {
-        agora - self.aberto_em > Self::MAXIMO
-            || self
-                .concluido_em
-                .is_some_and(|em| agora - em > Self::ASSENTA + Self::FICA)
-    }
-}
 
 /// Quantas leituras paradas a calibração do movimento junta: meio segundo a 100 por segundo.
 const AMOSTRAS_DA_CALIBRACAO: usize = 50;
@@ -170,24 +92,13 @@ pub struct App {
     /// O que dizer depois de mexer na trava diária do Zeeboids, se algo houver a dizer.
     sync_unlocked: Option<String>,
     /// O jogo em execução. Enquanto existe, ele tem uma janela só dele.
-    session: Option<Session>,
+    partida: Option<Partida>,
     /// A textura em que o quadro do console é enviado para a placa de vídeo.
     frame: Option<egui::TextureHandle>,
     /// A tela que está na [`App::frame`]: série, escritas e o filtro. Igual, não há o que subir.
     frame_chave: Option<(u64, u64, bool)>,
     /// O que deu errado na última tentativa de abrir um jogo.
     error: Option<String>,
-    paused: bool,
-    /// Quando o jogo rodou pela última vez, para saber quanto tempo real ele tem a recuperar.
-    last_step: std::time::Instant,
-    /// O controle do quadro anterior, por porta, para saber o que acabou de ser apertado.
-    ///
-    /// Só o aperto vira tecla do console: manter apertado não repete, que é como um toque se
-    /// comporta em menu.
-    pad_anterior: [Pad; crate::input::PORTAS],
-    /// Se o jogo em execução foi aberto pela Z-Wheel. Quando ele sai sozinho, a Z-Wheel volta,
-    /// como no console; aberto pela biblioteca, sair encerra.
-    aberto_pela_z_wheel: bool,
     /// O que abre a Z-Wheel: o configurado, ou a que estiver entre os jogos.
     z_wheel: Option<PathBuf>,
     /// Capas, nomes e descrições que a Z-Wheel traz dos jogos.
@@ -195,10 +106,6 @@ pub struct App {
     /// A escolha e a animação da biblioteca.
     vitrine: vitrine::Vitrine,
     teclado_apertado: HashSet<egui::Key>,
-    /// Os Wii Remotes: controles mapeáveis como os outros, com o acelerômetro deles.
-    wiimotes: crate::input::wiimote::Wiimotes,
-    /// Os sensores de movimento dos outros controles, que alimentam o Boomerang da porta.
-    sensores: crate::input::sensores::Sensores,
     /// A imagem do Boomerang na prévia dos controles.
     boomerang_textura: Option<egui::TextureHandle>,
     /// A calibração do movimento em andamento: a porta e as leituras juntadas até agora.
@@ -209,17 +116,13 @@ pub struct App {
     /// A última calibração foi recusada por não estar de face para cima.
     calibracao_recusada: bool,
     /// O aviso de calibração aberto na janela do jogo, e as calibrações da sessão já vistas.
-    aviso_calibracao: Option<AvisoDeCalibracao>,
-    calibracoes_vistas: (u32, u32),
-    teclas_entregues: HashSet<u32>,
+    calibracao: Calibracao,
     /// O que dizer sobre a última tentativa de exportar o log.
     log_status: Option<String>,
     /// A janela de log foi fechada nesta execução. Zera ao abrir outro jogo.
     log_dismissed: bool,
-    /// A presença no Discord e desde quando o que ela mostra começou: o ClassID do jogo aberto,
-    /// ou nenhum no menu, e o instante em milissegundos Unix.
-    presenca: discord::Presenca,
-    inicio_da_presenca: (Option<u32>, i64),
+    /// A presença no Discord, acompanhando o que a janela mostra.
+    presenca: discord::Acompanha,
     /// O resultado da última exportação de imagens para o Discord.
     discord_recado: Option<String>,
     /// A procura por versão nova em andamento, e o que ela respondeu.
@@ -231,15 +134,11 @@ pub struct App {
     aviso_de_abertura: bool,
     /// A caixa "não mostrar de novo" do aviso de abertura.
     aviso_nao_mostrar: bool,
-    /// Quando o relatório foi gravado em disco pela última vez.
-    ///
-    /// Ele é gravado sozinho, a cada poucos segundos, num lugar fixo. O botão de exportar abre
-    /// um diálogo, e diálogo é coisa que se esquece de confirmar: passei três idas e vindas
-    /// analisando um relatório velho porque o arquivo nunca tinha sido regravado. Um caminho
-    /// previsível e sempre atual vale mais do que um que o usuário escolhe.
-    log_gravado: Option<std::time::Instant>,
-    /// Os controles de verdade ligados no computador.
-    gamepads: gamepads::Gamepads,
+    /// O relatório da execução, gravado sozinho a cada poucos segundos. Ver
+    /// [`partida::Relatorio`].
+    relatorio: partida::Relatorio,
+    /// Os controles do host, os Wii Remotes e os sensores de movimento.
+    entrada: EntradaDoDesktop,
     /// Qual botão do Zeebo está esperando uma tecla, na tela de controles.
     capturing: Option<String>,
     /// O desenho do controle, e as texturas dele. Ficam vazios se o desenho não abrir: a tela
@@ -291,6 +190,19 @@ impl App {
         // O tema escuro é o que se espera de um emulador, e deixa a imagem do jogo no centro
         // sem uma moldura clara puxando o olho.
         context.egui_ctx.set_theme(egui::Theme::Dark);
+        // **O nível do registro antes de qualquer trabalho de abertura.** O `ZEEBX_LOG` vale como
+        // ponto de partida e a configuração ganha dele quando existe, que é a mesma precedência
+        // do core Libretro — um vocabulário, uma ordem.
+        crate::registro::le_do_ambiente();
+        match crate::registro::Ajuste::de_texto(&settings.debug.nivel_de_log) {
+            Some(ajuste) => ajuste.aplica(),
+            None => crate::registro!(
+                crate::registro::Nivel::Aviso,
+                "registro",
+                "`{}` não é nível de log; seguindo no padrão",
+                settings.debug.nivel_de_log
+            ),
+        }
 
         let games = settings
             .roms_dir
@@ -313,39 +225,30 @@ impl App {
             saves_confirmar: None,
             saves_recado: None,
             sync_unlocked: None,
-            session: None,
+            partida: None,
             frame: None,
             frame_chave: None,
             error: None,
-            paused: false,
-            last_step: std::time::Instant::now(),
-            pad_anterior: Default::default(),
-            aberto_pela_z_wheel: false,
             z_wheel: None,
             acervo: None,
             vitrine: Default::default(),
             teclado_apertado: HashSet::new(),
-            wiimotes: crate::input::wiimote::Wiimotes::inicia(),
-            sensores: crate::input::sensores::Sensores::inicia(),
             boomerang_textura: None,
             calibrando: None,
             liberacao_dos_sensores: Default::default(),
             calibracao_recusada: false,
-            aviso_calibracao: None,
-            calibracoes_vistas: (0, 0),
-            teclas_entregues: HashSet::new(),
+            calibracao: Calibracao::default(),
             log_status: None,
             log_dismissed: false,
             aviso_de_abertura,
             procura_de_atualizacao: None,
             atualizacao: None,
             aviso_de_atualizacao: false,
-            presenca: discord::Presenca::default(),
-            inicio_da_presenca: (None, agora_ms()),
+            presenca: discord::Acompanha::default(),
             discord_recado: None,
             aviso_nao_mostrar: false,
-            log_gravado: None,
-            gamepads: gamepads::Gamepads::default(),
+            relatorio: partida::Relatorio::default(),
+            entrada: EntradaDoDesktop::inicia(),
             porta_editada: 0,
             capturing: None,
             // Um desenho que não abre não pode impedir as configurações de abrir.
@@ -393,17 +296,7 @@ impl App {
     /// O caminho configurado vale primeiro; sem ele, uma Z-Wheel que esteja na pasta de ROMs
     /// serve do mesmo jeito. As texturas saem do cache porque a capa de cada jogo pode mudar.
     fn atualiza_z_wheel(&mut self) {
-        self.z_wheel = self
-            .settings
-            .z_wheel_path
-            .as_deref()
-            .and_then(library::z_wheel_em)
-            .or_else(|| {
-                self.games
-                    .iter()
-                    .find(|jogo| jogo.clsid == Some(crate::session::Z_WHEEL))
-                    .map(|jogo| jogo.path.clone())
-            });
+        self.z_wheel = library::z_wheel_de(self.settings.z_wheel_path.as_deref(), &self.games);
         self.acervo = self.z_wheel.as_deref().and_then(acervo::Acervo::carrega);
         self.art_cache.clear();
         self.vitrine.logos.clear();
@@ -510,55 +403,13 @@ impl App {
         changed
     }
 
-    /// Diz ao Discord o que está acontecendo. Barato de chamar a cada quadro: a presença só
-    /// manda alguma coisa quando o texto ou a imagem mudam.
+    /// Diz ao Discord o que está acontecendo. Ver [`discord::Acompanha`].
     fn atualiza_presenca(&mut self) {
-        let classe = self.session.as_ref().map(Session::classe);
-        if self.inicio_da_presenca.0 != classe {
-            self.inicio_da_presenca = (classe, agora_ms());
-        }
-        let atividade = self
-            .settings
-            .discord
-            .ativo
-            .then(|| self.atividade_do_discord());
-        self.presenca.define(atividade);
-    }
-
-    fn atividade_do_discord(&self) -> discord::Atividade {
-        let inicio_ms = self.inicio_da_presenca.1;
-        let icone = discord::CHAVE_DO_ICONE.to_string();
-        let menu = |chave: &str| discord::Atividade {
-            detalhes: self.catalog.get(chave).to_string(),
-            imagem: icone.clone(),
-            texto_da_imagem: "Zeebx".to_string(),
-            icone: None,
-            inicio_ms,
-        };
-        let Some(classe) = self.session.as_ref().map(Session::classe) else {
-            return menu("discord.menu");
-        };
-        if classe == crate::session::Z_WHEEL {
-            return menu("discord.z_wheel");
-        }
-        let titulo = self
-            .titulo_do_jogo_aberto()
-            .unwrap_or_else(|| self.catalog.get("library.unknown_title").to_string());
-        let chave = discord::chave_da_capa(classe);
-        let modelo = self.settings.discord.capas_url.trim();
-        let imagem = match modelo.is_empty() {
-            true => chave,
-            false => modelo
-                .replace("{clsid}", &format!("{classe:08x}"))
-                .replace("{chave}", &chave),
-        };
-        discord::Atividade {
-            detalhes: self.catalog.format("discord.playing", &[("name", &titulo)]),
-            imagem,
-            texto_da_imagem: titulo,
-            icone: Some((icone, "Zeebx".to_string())),
-            inicio_ms,
-        }
+        let classe = self.partida.as_ref().map(Partida::sessao).map(Session::classe);
+        let titulo = self.titulo_do_jogo_aberto();
+        let discord = &self.settings.discord;
+        self.presenca
+            .atualiza(discord.ativo, &self.catalog, classe, titulo, &discord.capas_url);
     }
 
     /// Grava o ícone e as capas no formato que o Developer Portal aceita, com o nome de arquivo
@@ -628,7 +479,7 @@ impl App {
     /// (`Zeebo-Extreme-Boia-Cross-21503726-1788761080`). O título certo sai do jogo na
     /// biblioteca pelo ClassID — da Z-Wheel quando ela descreve o jogo, do pacote quando não.
     fn titulo_do_jogo_aberto(&self) -> Option<String> {
-        let session = self.session.as_ref()?;
+        let session = self.partida.as_ref().map(Partida::sessao)?;
         let classe = session.classe();
         if let Some(jogo) = self.games.iter().find(|jogo| jogo.clsid == Some(classe)) {
             return Some(self.titulo_de(jogo));
@@ -638,11 +489,7 @@ impl App {
     }
 
     fn titulo_de(&self, jogo: &Game) -> String {
-        jogo.clsid
-            .and_then(|cls| self.acervo.as_ref()?.ficha(cls))
-            .and_then(|ficha| ficha.titulo(self.catalog.current()))
-            .map(str::to_string)
-            .unwrap_or_else(|| jogo.title.clone())
+        acervo::titulo_de(self.acervo.as_ref(), jogo, self.catalog.current())
     }
 
     /// O que o console vê em cada porta, a partir do que está configurado.
@@ -668,18 +515,28 @@ impl App {
         }
     }
 
+    /// Abre um jogo escolhido na janela principal — na lista ou no botão da Z-Wheel.
+    ///
+    /// Não foi a Z-Wheel quem pediu: quando ele sair sozinho, a janela fecha em vez de voltar
+    /// para ela.
+    fn abre_pela_biblioteca(&mut self, path: PathBuf) {
+        self.play(path);
+        if let Some(partida) = self.partida.as_mut() {
+            partida.aberta_pela_z_wheel = false;
+        }
+    }
+
     fn play(&mut self, path: PathBuf) {
         self.error = None;
         // As contagens de calibração são da sessão: a nova começa do zero.
-        self.calibracoes_vistas = (0, 0);
-        self.aviso_calibracao = None;
-        self.pad_anterior = Default::default();
+        self.calibracao.reinicia();
         self.teclado_apertado.clear();
-        self.teclas_entregues.clear();
+        if let Some(partida) = self.partida.as_mut() {
+            partida.esquece_entrada();
+        }
         self.frame = None;
-        self.paused = false;
         self.log_dismissed = false;
-        self.log_gravado = None;
+        self.relatorio.esquece();
         self.log_status = None;
         // A serial é ligada junto com o começo, e não depois: o construtor do applet roda
         // dentro do `start_with`, e o que ele faz ao nascer precisa estar na captura.
@@ -687,45 +544,21 @@ impl App {
             .settings
             .debug
             .log
-            .then(|| Self::caminho_da_serial(&library::title_for(&path)));
-        // Um jogo aberto pela Z-Wheel começa com a tela que ela deixou: ver
-        // [`Session::herda_tela`]. A própria Z-Wheel, reaberta, abre com a imagem dela.
-        let tela_anterior = self
-            .session
-            .as_ref()
-            .filter(|anterior| anterior.classe() == crate::session::Z_WHEEL)
-            .map(|anterior| anterior.screen().to_rgb565_bytes());
-        match Session::start_with(
-            &path,
-            self.portas_configuradas(),
-            serial.as_deref(),
-            self.settings.graphics.gpu_rasterizer,
-            self.gl.clone(),
-            self.settings.z_wheel,
-        ) {
-            Ok(mut session) => {
-                session.define_resolucao_interna(self.settings.graphics.resolucao_interna as usize);
-                session.define_proporcao(self.settings.graphics.proporcao.aspecto(16.0 / 9.0));
-                session.define_melhorias(
-                    self.settings.graphics.antialias as usize,
-                    self.settings.graphics.anisotropico as usize,
-                );
-                session.define_neblina(self.settings.graphics.neblina);
-                if let Some(tela) = tela_anterior.filter(|_| session.classe() != crate::session::Z_WHEEL) {
-                    session.herda_tela(&tela);
-                }
-                session.set_installed_applets(self.games.iter().filter_map(|game| {
-                    Some((game.clsid?, library::id_do_modulo(&game.path)?))
-                }));
-                // Ligar o som aqui é seguro **porque o jogo ainda não começou**: o `start` só
-                // prepara, e o `EVT_APP_START` sai na primeira volta do laço. Antes disso o
-                // jogo já tocava dentro do `start`, e o som saía com a tela vazia.
-                let audio = &self.settings.audio;
-                if let Some(err) = session.set_audio(audio.enabled, audio.volume) {
-                    eprintln!("sem som: {err}");
-                }
-                self.session = Some(session);
-            }
+            .then(|| partida::caminho_da_serial(&library::title_for(&path)));
+        let abertura = Abertura {
+            settings: &self.settings,
+            serial: serial.as_deref(),
+            gl: self.gl.clone(),
+            instalados: self
+                .games
+                .iter()
+                .filter_map(|game| Some((game.clsid?, library::id_do_modulo(&game.path)?)))
+                .collect(),
+        };
+        // A partida anterior só sai quando a nova existe: é dela a tela que um jogo aberto pela
+        // Z-Wheel herda, e uma abertura que falha deixa o jogo de antes rodando.
+        match Partida::abre(&path, abertura, self.partida.as_mut()) {
+            Ok(partida) => self.partida = Some(partida),
             Err(err) => {
                 self.error = Some(
                     self.catalog
@@ -750,8 +583,7 @@ impl App {
                 .on_disabled_hover_text(self.catalog.get("nav.z_wheel.missing"));
             if abrir.clicked() {
                 if let Some(caminho) = self.z_wheel.clone() {
-                    self.aberto_pela_z_wheel = false;
-                    self.play(caminho);
+                    self.abre_pela_biblioteca(caminho);
                 }
             }
             self.campo_da_busca(ui);
@@ -854,7 +686,7 @@ impl App {
             // Mexer nas portas com um jogo aberto vale na hora. Guardar e só aplicar na próxima
             // partida seria a configuração parecer que não pegou.
             let portas = self.portas_configuradas();
-            if let Some(session) = &mut self.session {
+            if let Some(session) = self.partida.as_mut().map(Partida::sessao_mut) {
                 session.set_portas(portas);
             }
         }
@@ -1101,7 +933,7 @@ impl App {
     /// imagem gira pelo ângulo que o Crash Nitro Kart usa para virar. Sai da gravidade e só vale
     /// com o controle quase parado — é o mesmo que os jogos fazem.
     fn boomerang_view(&mut self, ui: &mut egui::Ui) {
-        self.gamepads.poll();
+        self.entrada.gamepads.poll();
         ui.ctx().request_repaint();
         let porta = self.porta_editada;
         let pad = self.pad_of(ui.ctx(), porta);
@@ -1226,53 +1058,33 @@ impl App {
     /// some sozinho logo depois.
     fn aviso_de_calibracao(&mut self, ctx: &egui::Context, calibracao: (u32, u32)) {
         use crate::input::bindings::Aparelho;
-        let agora = std::time::Instant::now();
-        let (comecadas, terminadas) = calibracao;
-        let novas = (comecadas > self.calibracoes_vistas.0, terminadas > self.calibracoes_vistas.1);
-        self.calibracoes_vistas = calibracao;
-        let Some(porta) = self
+        let porta = self
             .settings
             .controls
             .ligadas()
             .find(|(_, jogador)| jogador.aparelho == Aparelho::Boomerang)
-            .map(|(indice, _)| indice)
+            .map(|(indice, _)| indice);
+        let leitura = porta.map(|porta| {
+            (self.movimento_da_porta(porta), self.movimento_bruto_da_porta(porta).is_some())
+        });
+        let ligado = self.settings.movimento.aviso_de_calibracao;
+        let agora = std::time::Instant::now();
+        let (Some(porta), Some(vista)) =
+            (porta, self.calibracao.quadro(calibracao, leitura, ligado, agora))
         else {
-            self.aviso_calibracao = None;
             return;
         };
-        if novas.0 && self.settings.movimento.aviso_de_calibracao {
-            self.aviso_calibracao = Some(AvisoDeCalibracao::novo(agora));
-        }
-        let movimento = self.movimento_da_porta(porta);
-        let com_sensor = self.movimento_bruto_da_porta(porta).is_some();
-        let Some(aviso) = &mut self.aviso_calibracao else {
-            return;
-        };
-        if novas.1 {
-            aviso.conclui(agora);
-        }
-        // Parado é só informação: quem diz que calibrou é o jogo. Concluir por estar parado dizia
-        // "calibrado" enquanto o Crash Nitro Kart ainda recusava as leituras.
-        let parado = aviso.amostra(movimento, agora);
-        if aviso.expirou(agora) {
-            self.aviso_calibracao = None;
-            return;
-        }
-        let [x, y, _] = movimento;
-        let no_plano = (x * x + y * y).sqrt();
-        let volante = x.atan2(y) * ((no_plano - 0.3) / 0.4).clamp(0.0, 1.0);
-        // Concluída, a inclinação vai a zero em uma animação curta: o modelo "assenta".
-        let giro = volante * (1.0 - aviso.progresso_da_conclusao(agora));
-        let concluido = aviso.concluido_em.is_some();
-        let titulo = match concluido {
+        let giro = vista.giro;
+        let titulo = match vista.concluido {
             true => self.tr("calibration.toast.done"),
             false => self.tr("calibration.toast.title"),
         };
-        let estado = match (com_sensor, parado, concluido) {
-            (_, _, true) => String::new(),
-            (false, _, _) => self.descreve_sensor(&self.sensor_da_porta(porta)),
-            (true, true, _) => self.tr("calibration.toast.still"),
-            (true, false, _) => self.tr("calibration.toast.moving"),
+        let parado = vista.situacao == Some(Situacao::Parado);
+        let estado = match vista.situacao {
+            None => String::new(),
+            Some(Situacao::SemSensor) => self.descreve_sensor(&self.sensor_da_porta(porta)),
+            Some(Situacao::Parado) => self.tr("calibration.toast.still"),
+            Some(Situacao::Mexendo) => self.tr("calibration.toast.moving"),
         };
         let textura = self.textura_do_boomerang(ctx);
         egui::Area::new(egui::Id::new("aviso-de-calibracao"))
@@ -1320,7 +1132,7 @@ impl App {
         // acontecia: o `poll` estava só no botão de procurar controles. O desenho ficava apagado
         // por mais que se apertasse, e o jogo — que consulta a cada quadro — era o único lugar
         // onde acender funcionava.
-        self.gamepads.poll();
+        self.entrada.gamepads.poll();
         // E o egui só repinta quando tem evento **dele**. Aperto de controle não é: sem este
         // pedido, a arte só mudaria quando o mouse se mexesse por cima dela.
         ui.ctx().request_repaint();
@@ -1384,7 +1196,7 @@ impl App {
 
         // Escolha do controle. O teclado nunca sai: quem liga um controle continua podendo
         // usar as teclas, e é o que se espera de um emulador.
-        let devices = self.gamepads.names();
+        let devices = self.entrada.gamepads.names();
         ui.horizontal(|ui| {
             ui.label(self.catalog.get("controls.device"));
             let current = self
@@ -1408,7 +1220,7 @@ impl App {
                             chosen = Some(Some(device.clone()));
                         }
                     }
-                    for indice in 0..self.wiimotes.quantos() {
+                    for indice in 0..self.entrada.wiimotes.quantos() {
                         let nome = crate::input::wiimote::Wiimotes::nome(indice);
                         if ui.selectable_label(false, &nome).clicked() {
                             chosen = Some(Some(nome));
@@ -1416,39 +1228,14 @@ impl App {
                     }
                 });
             if let Some(device) = chosen {
-                // Escolher um controle traz o mapeamento típico dele junto; ficar sem controle
-                // volta para o teclado puro. Nos dois casos o que estava configurado à mão se
-                // perde, e é por isso que a troca é um clique deliberado numa lista.
-                // Trocar o controle troca **o mapeamento**, não a porta: quem ela é e se está
-                // ligada foi decidido acima, e perder isso aqui seria a configuração se desfazer
-                // sozinha ao escolher um aparelho na lista.
-                let atual = self.settings.controls.player_mut(self.porta_editada);
-                let (ligada, aparelho) = (atual.ligada, atual.aparelho);
-                *atual = match device {
-                    // O Wii Remote não passa pelo gilrs, mas é um controle como os outros: o
-                    // mapeamento típico dele vem junto, e muda-se na tela como qualquer outro.
-                    Some(name) if crate::input::wiimote::Wiimotes::indice_do_nome(&name).is_some() => {
-                        crate::input::bindings::Player::with_wiimote(name)
-                    }
-                    Some(name) => crate::input::bindings::Player::with_gamepad(name),
-                    None => crate::input::bindings::Player::default(),
-                };
-                atual.ligada = ligada;
-                // **Um controle do host numa porta de teclado vira um controle para o console.**
-                // O `aparelho` é o que o console enumera, e uma porta marcada como teclado não
-                // entra na lista de joysticks que os jogos pedem: quem escolhia o segundo
-                // controle para a porta dois continuava sem ser visto como segundo jogador. As
-                // outras escolhas (Z-Pad, Boomerang) já são controle e ficam onde estão.
-                atual.aparelho = match (aparelho, &atual.device) {
-                    (crate::input::bindings::Aparelho::Teclado, Some(_)) => {
-                        crate::input::bindings::Aparelho::Controle
-                    }
-                    (outro, _) => outro,
-                };
+                self.settings
+                    .controls
+                    .player_mut(self.porta_editada)
+                    .troca_controle(device);
                 changed = true;
             }
             if ui.button(self.catalog.get("controls.rescan")).clicked() {
-                self.gamepads.poll();
+                self.entrada.gamepads.poll();
             }
         });
         if devices.is_empty() {
@@ -1463,10 +1250,8 @@ impl App {
                     .controls
                     .player(self.porta_editada)
                     .and_then(|player| player.device.clone());
-                *self.settings.controls.player_mut(self.porta_editada) = match device {
-                    Some(name) => crate::input::bindings::Player::with_gamepad(name),
-                    None => crate::input::bindings::Player::default(),
-                };
+                *self.settings.controls.player_mut(self.porta_editada) =
+                    crate::input::bindings::Player::padrao_do_controle(device);
                 changed = true;
             }
         });
@@ -1543,6 +1328,25 @@ impl App {
     /// tem "apertado", tem curso, e por isso a origem é uma só e ganha um sentido.
     fn axes_section(&mut self, ui: &mut egui::Ui) -> bool {
         let mut changed = false;
+
+        // O direcional espelhado nos eixos — o pedido do issue #39, e o mesmo ajuste do
+        // `zeebx_dpad_to_analog_p1`/`_p2` do core Libretro. **Por porta**, porque são dois
+        // jogadores: quem joga de manche no controle 1 não decide pelo dono do controle 2.
+        let rotulo = self.catalog.get("controls.dpad_to_analog").to_string();
+        let dica = self.catalog.get("controls.dpad_to_analog.hint").to_string();
+        changed |= ui
+            .checkbox(
+                &mut self
+                    .settings
+                    .controls
+                    .player_mut(self.porta_editada)
+                    .direcional_nos_eixos,
+                rotulo,
+            )
+            .on_hover_text(dica)
+            .changed();
+        ui.add_space(6.0);
+
         ui.label(self.catalog.get("controls.axes"));
         ui.weak(self.catalog.get("controls.axes.hint"));
 
@@ -1635,7 +1439,7 @@ impl App {
         });
         // Mesma razão do `controller_view`: sem drenar a fila do gilrs um aperto de controle
         // nunca aparece, e a captura aceitaria só teclado.
-        self.gamepads.poll();
+        self.entrada.gamepads.poll();
         ctx.request_repaint();
         let source = match key {
             Some(key) => Some(Source::key(key.name())),
@@ -1648,7 +1452,7 @@ impl App {
                 // O Wii Remote escolhido responde pelos botões dele; os outros, pelo gilrs.
                 match self.wiimote_da_porta(self.porta_editada) {
                     Some(wiimote) if device.is_some() => wiimote.primeira_fonte(),
-                    _ => self.gamepads.first_active(device.as_deref(), self.porta_editada),
+                    _ => self.entrada.gamepads.first_active(device.as_deref(), self.porta_editada),
                 }
             }
         };
@@ -1819,14 +1623,14 @@ impl App {
             ui.label(self.catalog.get("graphics.internal_resolution"));
             let atual = graphics.resolucao_interna.clamp(1, 6);
             egui::ComboBox::from_id_salt("resolucao-interna")
-                .selected_text(rotulo_da_resolucao(atual))
+                .selected_text(settings::rotulo_da_resolucao(atual))
                 .show_ui(ui, |ui| {
                     for fator in 1..=6u8 {
                         resolucao_mudou |= ui
                             .selectable_value(
                                 &mut graphics.resolucao_interna,
                                 fator,
-                                rotulo_da_resolucao(fator),
+                                settings::rotulo_da_resolucao(fator),
                             )
                             .changed();
                     }
@@ -1853,11 +1657,11 @@ impl App {
             ui.add_space(8.0);
             ui.label(self.catalog.get("graphics.antialias"));
             egui::ComboBox::from_id_salt("antialias")
-                .selected_text(rotulo_de_nivel(graphics.antialias, "MSAA", &desligado))
+                .selected_text(settings::rotulo_de_nivel(graphics.antialias, "MSAA", &desligado))
                 .show_ui(ui, |ui| {
                     for n in [1u8, 2, 4, 8] {
                         melhoria_mudou |= ui
-                            .selectable_value(&mut graphics.antialias, n, rotulo_de_nivel(n, "MSAA", &desligado))
+                            .selectable_value(&mut graphics.antialias, n, settings::rotulo_de_nivel(n, "MSAA", &desligado))
                             .changed();
                     }
                 });
@@ -1866,11 +1670,11 @@ impl App {
             ui.add_space(8.0);
             ui.label(self.catalog.get("graphics.anisotropic"));
             egui::ComboBox::from_id_salt("anisotropico")
-                .selected_text(rotulo_de_nivel(graphics.anisotropico, "AF", &desligado))
+                .selected_text(settings::rotulo_de_nivel(graphics.anisotropico, "AF", &desligado))
                 .show_ui(ui, |ui| {
                     for n in [1u8, 2, 4, 8, 16] {
                         melhoria_mudou |= ui
-                            .selectable_value(&mut graphics.anisotropico, n, rotulo_de_nivel(n, "AF", &desligado))
+                            .selectable_value(&mut graphics.anisotropico, n, settings::rotulo_de_nivel(n, "AF", &desligado))
                             .changed();
                     }
                 });
@@ -1878,27 +1682,27 @@ impl App {
         });
         if melhoria_mudou {
             let (amostras, nivel) = (graphics.antialias as usize, graphics.anisotropico as usize);
-            if let Some(session) = self.session.as_mut() {
+            if let Some(session) = self.partida.as_mut().map(Partida::sessao_mut) {
                 session.define_melhorias(amostras, nivel);
             }
         }
         // Vale na hora: o próximo desenho já sai com ou sem névoa.
         if neblina_mudou {
             let permitida = graphics.neblina;
-            if let Some(session) = self.session.as_mut() {
+            if let Some(session) = self.partida.as_mut().map(Partida::sessao_mut) {
                 session.define_neblina(permitida);
             }
         }
         // Vale na hora para o jogo aberto: o destino é refeito no próximo quadro.
         if proporcao_mudou {
             let aspecto = graphics.proporcao.aspecto(16.0 / 9.0);
-            if let Some(session) = self.session.as_mut() {
+            if let Some(session) = self.partida.as_mut().map(Partida::sessao_mut) {
                 session.define_proporcao(aspecto);
             }
         }
         if resolucao_mudou {
             let fator = graphics.resolucao_interna as usize;
-            if let Some(session) = self.session.as_mut() {
+            if let Some(session) = self.partida.as_mut().map(Partida::sessao_mut) {
                 session.define_resolucao_interna(fator);
             }
         }
@@ -1924,7 +1728,7 @@ impl App {
         // Mexer no volume com o jogo aberto tem que valer na hora, não só na próxima abertura.
         if changed {
             let (enabled, volume) = (audio.enabled, audio.volume);
-            if let Some(session) = &mut self.session {
+            if let Some(session) = self.partida.as_mut().map(Partida::sessao_mut) {
                 session.set_audio(enabled, volume);
             }
         }
@@ -1942,27 +1746,7 @@ impl App {
     /// A leitura toca o disco, então não vai no desenho do quadro: a janela redesenha muitas
     /// vezes por segundo e varrer o cache em cada uma seria varrer à toa.
     fn recarrega_saves(&mut self) {
-        // Os caches feitos antes de o manifesto existir não sabem o que veio do pacote. Antes de
-        // listar, reconstrói o manifesto de cada um a partir do zip — que continua na pasta de
-        // ROMs. Sem isso o jogo antigo simplesmente não apareceria na lista.
-        if let Some(roms) = self.settings.roms_dir.clone() {
-            for entrada in std::fs::read_dir(roms).into_iter().flatten().flatten() {
-                let caminho = entrada.path();
-                if caminho
-                    .extension()
-                    .is_some_and(|e| e.eq_ignore_ascii_case("zip"))
-                {
-                    let _ = archive::completar_manifesto(&caminho);
-                }
-            }
-        }
-        let jogos = crate::ui::saves::dos_jogos(&archive::cache_dir());
-        let aparelho = crate::ui::saves::do_aparelho(&archive::device_dir());
-        self.saves = jogos
-            .into_iter()
-            .map(|s| (false, s))
-            .chain(aparelho.into_iter().map(|s| (true, s)))
-            .collect();
+        self.saves = crate::ui::saves::todos(self.settings.roms_dir.as_deref());
         self.saves_confirmar = None;
     }
 
@@ -2152,7 +1936,7 @@ impl App {
             .with_title(self.catalog.get("debug.log.title"))
             .with_inner_size([640.0, 420.0])
             .with_min_inner_size([360.0, 200.0]);
-        let linhas = match &self.session {
+        let linhas = match self.partida.as_ref().map(Partida::sessao) {
             Some(session) => session.log(),
             None => Vec::new(),
         };
@@ -2201,54 +1985,17 @@ impl App {
         }
     }
 
-    /// Grava o log num arquivo escolhido pelo usuário e devolve o que dizer sobre isso.
-    /// Onde o relatório desta execução é gravado sozinho.
-    /// Onde a captura de serial daquele jogo é gravada, ao lado do relatório.
-    fn caminho_da_serial(titulo: &str) -> PathBuf {
-        let nome = match titulo.is_empty() {
-            true => "zeebx.serial.log".to_string(),
-            false => format!("{titulo}.serial.log"),
-        };
-        crate::ui::settings::config_dir()
-            .join("relatorios")
-            .join(nome)
-    }
-
+    /// Onde o relatório desta execução é gravado sozinho. Ver [`partida::Relatorio`].
     pub fn caminho_do_relatorio(&self) -> PathBuf {
-        let nome = match self.session.as_ref().map(Session::title) {
-            Some(title) if !title.is_empty() => format!("{title}.log"),
-            _ => "zeebx.log".to_string(),
-        };
-        crate::ui::settings::config_dir()
-            .join("relatorios")
-            .join(nome)
+        match self.partida.as_ref() {
+            Some(partida) => partida.caminho_do_relatorio(),
+            None => crate::ui::settings::config_dir().join("relatorios").join("zeebx.log"),
+        }
     }
 
-    /// Grava o relatório em disco, no máximo uma vez a cada [`Self::INTERVALO_DO_RELATORIO`].
-    ///
-    /// Sem isto o único jeito de ver o relatório de um jogo que **não termina** — e a Z-Wheel
-    /// não termina, ela repete a abertura — é abrir a janela de log e exportar à mão.
-    fn grava_relatorio(&mut self) {
-        let agora = std::time::Instant::now();
-        if self
-            .log_gravado
-            .is_some_and(|antes| agora - antes < Self::INTERVALO_DO_RELATORIO)
-        {
-            return;
-        }
-        self.log_gravado = Some(agora);
-        let Some(session) = &self.session else {
-            return;
-        };
-        let destino = self.caminho_do_relatorio();
-        if let Some(pai) = destino.parent() {
-            let _ = std::fs::create_dir_all(pai);
-        }
-        let _ = std::fs::write(&destino, session.log().join("\n") + "\n");
-    }
-
+    /// Grava o log num arquivo escolhido pelo usuário e devolve o que dizer sobre isso.
     fn export_log(&self, linhas: &[String]) -> String {
-        let sugestao = match self.session.as_ref().map(Session::title) {
+        let sugestao = match self.partida.as_ref().map(Partida::sessao).map(Session::title) {
             Some(title) if !title.is_empty() => format!("{title}.log"),
             _ => "zeebx.log".to_string(),
         };
@@ -2291,117 +2038,25 @@ impl App {
             close = self.playing_screen(ctx);
         });
         if close {
-            self.session = None;
+            self.partida = None;
             self.frame = None;
         }
     }
 
-    /// O estado de cada porta agora, montado a partir do mapeamento dela.
-    ///
-    /// Uma porta desligada não entra: o que sai daqui são os pares `(porta, controle)` das que
-    /// estão ligadas, e é o que a sessão entrega ao jogo.
+    /// O estado de cada porta ligada agora. Ver [`EntradaDoDesktop::pads`].
     fn pads_now(&mut self, ctx: &egui::Context) -> Vec<(usize, Pad)> {
-        self.gamepads.poll();
-        let portas: Vec<usize> = self
-            .settings
-            .controls
-            .ligadas()
-            .map(|(indice, _)| indice)
-            .collect();
-        portas
-            .into_iter()
-            .map(|porta| (porta, self.pad_of(ctx, porta)))
-            .collect()
+        let teclas = ctx.input(|input| input.keys_down.clone());
+        self.entrada.pads(&self.settings.controls, &teclas)
     }
 
-    /// O estado do controle de uma porta, montado a partir do mapeamento dela.
-    ///
-    /// O teclado e o controle são consultados juntos: quem tem os dois pode usar os dois, e é
-    /// isso que ter mais de uma origem por botão significa.
+    /// O estado do controle de uma porta. Ver [`EntradaDoDesktop::pad`].
     fn pad_of(&self, ctx: &egui::Context, porta: usize) -> Pad {
-        let Some(player) = self.settings.controls.player(porta) else {
-            return Pad::default();
-        };
-        let device = player.device.clone();
-        let keys: Vec<Source> = player
-            .buttons
-            .values()
-            .flatten()
-            .filter(|source| source.is_key())
-            .cloned()
-            .collect();
-        // Quais teclas estão apertadas sai numa consulta só: entrar no estado de entrada do
-        // egui uma vez por origem seria uma travada por botão, a cada quadro.
-        let pressed: Vec<Source> = ctx.input(|input| {
-            keys.into_iter()
-                .filter(|source| match source {
-                    Source::Key { name } => {
-                        egui::Key::from_name(name).is_some_and(|key| input.key_down(key))
-                    }
-                    _ => false,
-                })
-                .collect()
-        });
-        let gamepads = &self.gamepads;
-        // O Wii Remote não passa pelo gilrs: os botões dele são origens próprias (`WiiA`,
-        // `Wii1`…), lidas do estado que a thread dele mantém.
-        let wiimote = self.wiimote_da_porta(porta);
-        let mut pad = player.pad(
-            |source| {
-                pressed.contains(source)
-                    || gamepads.is_active(device.as_deref(), porta, source)
-                    || wiimote.is_some_and(|w| w.fonte_acionada(source))
-            },
-            |axis| gamepads.value(device.as_deref(), porta, axis),
-        );
-        // O Boomerang sem controle escolhido pega o Wii Remote da vez, e aí o mapeamento da
-        // porta é o de teclado, sem nenhum botão dele: os botões se somam por esta tabela, que é
-        // o mapeamento padrão do Wii Remote.
-        if let (None, Some(wiimote)) = (&device, wiimote) {
-            const DO_WIIMOTE: [(&str, &str); 9] = [
-                ("up", "up"),
-                ("down", "down"),
-                ("left", "left"),
-                ("right", "right"),
-                ("1", "b1"),
-                ("a", "b1"),
-                ("2", "b2"),
-                ("b", "b2"),
-                ("home", "back"),
-            ];
-            for (dele, nosso) in DO_WIIMOTE {
-                if wiimote.apertado(dele)
-                    && let Some(indice) = Pad::button_by_name(nosso)
-                {
-                    pad.press(indice, true);
-                }
-            }
-        }
-        pad
+        let teclas = ctx.input(|input| input.keys_down.clone());
+        self.entrada.pad(&self.settings.controls, porta, &teclas)
     }
 
-    /// O Wii Remote de uma porta: o escolhido na lista de controles, ou, numa porta de
-    /// Boomerang sem controle escolhido, o primeiro Wii Remote para o primeiro Boomerang e o
-    /// segundo para o segundo. Com outro controle escolhido, nenhum.
     fn wiimote_da_porta(&self, porta: usize) -> Option<crate::input::wiimote::EstadoWiimote> {
-        use crate::input::bindings::Aparelho;
-        use crate::input::wiimote::Wiimotes;
-        let jogador = self.settings.controls.player(porta)?;
-        if let Some(escolhido) = jogador.device.as_deref() {
-            return self.wiimotes.estado(Wiimotes::indice_do_nome(escolhido)?);
-        }
-        if jogador.aparelho != Aparelho::Boomerang {
-            return None;
-        }
-        let boomerangs: Vec<usize> = self
-            .settings
-            .controls
-            .ligadas()
-            .filter(|(_, jogador)| jogador.aparelho == Aparelho::Boomerang)
-            .map(|(indice, _)| indice)
-            .collect();
-        let ordem = boomerangs.iter().position(|&p| p == porta)?;
-        self.wiimotes.estado(ordem)
+        self.entrada.wiimote_da_porta(&self.settings.controls, porta)
     }
 
     /// O botão que libera os sensores de movimento, e o que aconteceu da última vez.
@@ -2464,156 +2119,47 @@ impl App {
 
     /// Em uma linha, de onde vem o movimento do Boomerang e se ele está chegando.
     fn descreve_sensor(&self, sensor: &SensorDaPorta) -> String {
-        let (chave, nome) = match sensor {
-            SensorDaPorta::Wiimote(w) if w.com_acelerometro => ("controls.boomerang.sensor", "Wii Remote"),
-            SensorDaPorta::Wiimote(_) => ("controls.boomerang.sensor_waiting", "Wii Remote"),
-            SensorDaPorta::Controle(s) if s.sem_permissao => ("controls.boomerang.sensor_denied", s.nome.as_str()),
-            SensorDaPorta::Controle(s) if s.com_leitura => ("controls.boomerang.sensor", s.nome.as_str()),
-            SensorDaPorta::Controle(s) => ("controls.boomerang.sensor_waiting", s.nome.as_str()),
-            SensorDaPorta::SemSensor(nome) => ("controls.boomerang.no_sensor", nome.as_str()),
-            SensorDaPorta::Nenhum => ("controls.boomerang.no_device", ""),
-        };
-        self.tr(chave).replace("{nome}", nome)
+        sensor.descreve(&self.catalog)
     }
 
-    /// O sensor de movimento que alimenta o Boomerang de uma porta.
-    ///
-    /// **É o do controle escolhido na porta**, seja ele qual for: um Wii Remote, um Pro
-    /// Controller, um DualShock. Antes, uma porta de Boomerang procurava sempre um Wii Remote, e
-    /// quem escolhia outro controle com sensor via o Boomerang parado. Sem controle escolhido,
-    /// vale o Wii Remote da vez — o primeiro para o primeiro Boomerang.
     fn sensor_da_porta(&self, porta: usize) -> SensorDaPorta {
-        use crate::input::wiimote::Wiimotes;
-        let Some(jogador) = self.settings.controls.player(porta) else {
-            return SensorDaPorta::Nenhum;
-        };
-        let escolhido = jogador.device.as_deref();
-        if escolhido.is_none_or(|nome| Wiimotes::indice_do_nome(nome).is_some()) {
-            return match self.wiimote_da_porta(porta) {
-                Some(wiimote) => SensorDaPorta::Wiimote(wiimote),
-                None => SensorDaPorta::Nenhum,
-            };
-        }
-        let Some((nome, vendor, product, ordem)) = self.gamepads.identidade(escolhido, porta) else {
-            return SensorDaPorta::Nenhum;
-        };
-        match self.sensores.do_controle(&nome, vendor, product, ordem) {
-            Some(sensor) => SensorDaPorta::Controle(sensor),
-            None => SensorDaPorta::SemSensor(escolhido.unwrap_or(&nome).to_string()),
-        }
+        self.entrada.sensor_da_porta(&self.settings.controls, porta)
     }
 
-    /// A aceleração que o Boomerang de uma porta sente. Sem sensor, parado de face para cima.
-    ///
-    /// **O comprimento do Boomerang é o X dele; o do Wii Remote é o Y.** O Crash Nitro Kart manda
-    /// segurar o Boomerang deitado, com as duas mãos e a face para o jogador, e virar como um
-    /// volante: a direção é o ângulo da gravidade entre X e Y. Com os eixos passando direto, o Wii
-    /// Remote seguro do mesmo jeito punha a gravidade no eixo errado, e o kart virava a esmo. A
-    /// face é a mesma nos dois, então o Z fica, e o X e o Y trocam de lugar.
-    ///
-    /// O sentido do X foi acertado na mão, no Crash Nitro Kart: com o X do Boomerang oposto ao Y
-    /// do Wii Remote, virar o volante para a direita levava o kart para a esquerda.
-    ///
-    /// Os controles da Nintendo também trocam X e Y. O `hid-nintendo` reporta o comprimento do
-    /// Pro Controller no Y: em pé, de frente para o jogador, a gravidade caía no X do Boomerang, e
-    /// a prévia girava noventa graus para a direita. E o sentido é o oposto do Wii Remote: com o
-    /// Y passando como veio, virar para a esquerda levava o kart para a direita. Os outros
-    /// controles passam direto até alguém medir.
     fn movimento_da_porta(&self, porta: usize) -> [f32; 3] {
-        let sensor = self.sensor_da_porta(porta);
-        let Some(bruto) = sensor.aceleracao() else {
-            return [0.0, 0.0, 1.0];
-        };
-        let [x, y, z] = self
-            .settings
-            .controls
-            .player(porta)
-            .map_or(bruto, |jogador| jogador.calibracao_movimento.aplica(bruto));
-        match sensor {
-            SensorDaPorta::Wiimote(_) => [y, x, z],
-            SensorDaPorta::Controle(s) if s.vendor == VENDOR_NINTENDO => [-y, x, z],
-            _ => [x, y, z],
-        }
+        self.entrada.movimento_da_porta(&self.settings.controls, porta)
     }
 
-    /// A aceleração que o sensor da porta mede, sem calibração.
     fn movimento_bruto_da_porta(&self, porta: usize) -> Option<[f32; 3]> {
-        self.sensor_da_porta(porta).aceleracao()
-    }
-
-    /// Combina as fontes antes de emitir transições: uma seta física pode estar
-    /// mapeada também no controle, mas continua sendo um único aperto BREW.
-    fn transicoes_de_teclas(
-        anteriores: &mut HashSet<u32>,
-        atuais: HashSet<u32>,
-    ) -> Vec<(u32, bool)> {
-        let mut eventos: Vec<_> = anteriores
-            .difference(&atuais)
-            .map(|&key| (key, false))
-            .collect();
-        eventos.extend(atuais.difference(anteriores).map(|&key| (key, true)));
-        eventos.sort_unstable();
-        *anteriores = atuais;
-        eventos
-    }
-
-    fn avks_ativos(teclado: &HashSet<egui::Key>, pads: &[Pad]) -> HashSet<u32> {
-        let mut keys: HashSet<_> = teclado
-            .iter()
-            .filter_map(|key| Self::avk_de(*key))
-            .collect();
-        for pad in pads {
-            keys.extend(
-                input::teclas_do_controle(&Pad::default(), pad)
-                    .into_iter()
-                    .filter_map(|(key, down)| down.then_some(key)),
-            );
-        }
-        keys
-    }
-
-    /// O código virtual do BREW de uma tecla da janela, quando ela tem um.
-    ///
-    /// `Esc` e `P` ficam de fora de propósito: são as duas da janela, encerrar e pausar.
-    fn avk_de(key: egui::Key) -> Option<u32> {
-        use egui::Key::*;
-        Some(match key {
-            ArrowUp => input::avk::UP,
-            ArrowDown => input::avk::DOWN,
-            ArrowLeft => input::avk::LEFT,
-            ArrowRight => input::avk::RIGHT,
-            Enter | Space => input::avk::CONFIRMA,
-            Backspace | Delete => input::avk::CLR,
-            Num0 | Num1 | Num2 | Num3 | Num4 | Num5 | Num6 | Num7 | Num8 | Num9 => {
-                input::avk::ZERO + (key as u32 - Num0 as u32)
-            }
-            _ => return None,
-        })
+        self.entrada.movimento_bruto_da_porta(&self.settings.controls, porta)
     }
 
     /// Roda e desenha o jogo na janela dele. Devolve se é hora de fechá-la.
-    /// De quanto em quanto tempo o relatório é regravado. Dois segundos é frequente o bastante
-    /// para acompanhar uma execução e raro o bastante para não pesar.
-    const INTERVALO_DO_RELATORIO: std::time::Duration = std::time::Duration::from_secs(2);
-
     fn playing_screen(&mut self, ctx: &egui::Context) -> bool {
-        let Some(calibracao) = self.session.as_ref().map(Session::calibracao) else {
+        let Some(calibracao) = self.partida.as_ref().map(Partida::sessao).map(Session::calibracao) else {
             return true;
         };
         // O aviso é uma área flutuante: pode ser declarado antes dos painéis sem tirar espaço
         // do quadro.
         self.aviso_de_calibracao(ctx, calibracao);
-        // A entrada é lida antes de pegar a sessão emprestada: montar o estado do controle
+        // A entrada é lida antes de pegar a partida emprestada: montar o estado do controle
         // precisa do mapeamento e dos controles ligados, que também vivem no `self`.
-        let pads = match self.paused {
+        let pausada = self.partida.as_ref().is_none_or(|partida| partida.pausada);
+        let pads = match pausada {
             true => None,
             false => Some(self.pads_now(ctx)),
         };
-        let mut teclas = Vec::new();
+        let movimentos: [[f32; 3]; crate::input::PORTAS] =
+            std::array::from_fn(|porta| self.movimento_da_porta(porta));
+        let limit = self.settings.graphics.speed_limit;
+        let Some(partida) = self.partida.as_mut() else {
+            return true;
+        };
         if let Some(pads) = &pads {
             // Guardamos teclas físicas: soltar 4 enquanto a seta continua apertada
             // não deve soltar o AVK que ambas representam. Repetições do SO não
             // acrescentam apertos; a repetição de navegação pertence ao guest.
+            let teclado = &mut self.teclado_apertado;
             ctx.input(|i| {
                 for event in &i.events {
                     if let egui::Event::Key {
@@ -2624,59 +2170,26 @@ impl App {
                     } = event
                     {
                         if *pressed {
-                            self.teclado_apertado.insert(*key);
+                            teclado.insert(*key);
                         } else {
-                            self.teclado_apertado.remove(key);
+                            teclado.remove(key);
                         }
-                        let atuais = Self::avks_ativos(&self.teclado_apertado, &self.pad_anterior);
-                        teclas.extend(Self::transicoes_de_teclas(
-                            &mut self.teclas_entregues,
-                            atuais,
-                        ));
+                        partida.teclado_mudou(teclado.iter().filter_map(|k| input::avk_de(*k)));
                     }
                 }
                 if !i.focused {
-                    self.teclado_apertado.clear();
+                    teclado.clear();
                 }
             });
-            self.pad_anterior = Default::default();
-            for (porta, pad) in pads {
-                self.pad_anterior[*porta] = *pad;
-            }
-            let atuais = Self::avks_ativos(&self.teclado_apertado, &self.pad_anterior);
-            teclas.extend(Self::transicoes_de_teclas(
-                &mut self.teclas_entregues,
-                atuais,
-            ));
+            partida.avanca(
+                pads,
+                movimentos,
+                self.teclado_apertado.iter().filter_map(|k| input::avk_de(*k)),
+                limit,
+            );
         }
-        let limit = self.settings.graphics.speed_limit;
-        let movimentos: [[f32; 3]; crate::input::PORTAS] =
-            std::array::from_fn(|porta| self.movimento_da_porta(porta));
-        let Some(session) = &mut self.session else {
-            return true;
-        };
-        if let Some(pads) = pads {
-            for (porta, pad) in pads {
-                session.set_port_pad(porta, pad);
-            }
-            for porta in 0..crate::input::PORTAS {
-                session.set_port_motion(porta, movimentos[porta]);
-            }
-            for (avk, apertada) in teclas {
-                session.set_key(avk, apertada);
-            }
-            // O orçamento é o tempo real que passou desde o quadro anterior. Com telas
-            // intermediárias à espera, uma vai à tela e o jogo não anda neste quadro.
-            let now = std::time::Instant::now();
-            let slice = (now - self.last_step).min(MAX_SLICE);
-            self.last_step = now;
-            if !session.mostra_quadro_intermediario() {
-                let _ = session.step(slice, limit);
-            }
-        }
-        // **O pedido de lançar vem antes da saída.** A Z-Wheel reaberta pede o jogo e sai na mesma
-        // volta; olhando a saída primeiro, a janela a reabria de novo e o jogo nunca abria.
-        if let Some(cls) = session.take_launch_request() {
+        // O pedido de lançar vem antes da saída: ver [`Partida::pedido_de_lancamento`].
+        if let Some(cls) = partida.pedido_de_lancamento() {
             let path = self
                 .games
                 .iter()
@@ -2684,28 +2197,28 @@ impl App {
                 .map(|game| game.path.clone());
             if let Some(path) = path {
                 self.play(path);
-                self.aberto_pela_z_wheel = true;
-                self.last_step = std::time::Instant::now();
-                return false;
-            }
-        }
-        // A Z-Wheel sai sozinha para abrir o jogo escolhido: reabri-la é o papel do console.
-        // Ver [`crate::session::Z_WHEEL`]. O mesmo quando o jogo que ela abriu fecha — pelo
-        // `ISHELL_CloseApplet` do menu dele, por exemplo: o console volta para a tela inicial.
-        let volta_para_a_z_wheel =
-            session.classe() == crate::session::Z_WHEEL || self.aberto_pela_z_wheel;
-        if volta_para_a_z_wheel && session.saiu_sozinho() {
-            if let Some(path) = self.z_wheel.clone() {
-                self.play(path);
-                self.last_step = std::time::Instant::now();
+                if let Some(partida) = self.partida.as_mut() {
+                    partida.aberta_pela_z_wheel = true;
+                    partida.reinicia_relogio();
+                }
                 return false;
             }
         }
         // Aberto pela biblioteca, o jogo que sai sozinho fecha a janela dele: a biblioteca é a
         // tela inicial de quem não passou pela Z-Wheel, e uma janela parada no último quadro não
-        // serve para nada. Uma falha continua na tela, com o motivo.
-        if session.saiu_sozinho() {
-            return true;
+        // serve para nada. Sem Z-Wheel configurada, a volta para ela também fecha.
+        match partida.saida() {
+            Saida::Segue => {}
+            Saida::ReabreZWheel if self.z_wheel.is_some() => {
+                if let Some(path) = self.z_wheel.clone() {
+                    self.play(path);
+                }
+                if let Some(partida) = self.partida.as_mut() {
+                    partida.reinicia_relogio();
+                }
+                return false;
+            }
+            Saida::ReabreZWheel | Saida::Fecha => return true,
         }
         // Sem barra superior, o teclado é o único caminho: `Esc` encerra e `P` pausa. Nenhuma
         // das duas colide com o controle do Zeebo, que usa setas, Z, X, C, V, Q, W, F, G, H,
@@ -2713,21 +2226,38 @@ impl App {
         let stop =
             ctx.input(|i| i.key_pressed(egui::Key::Escape) || i.viewport().close_requested());
         if ctx.input(|i| i.key_pressed(egui::Key::P)) {
-            self.paused = !self.paused;
+            if let Some(partida) = self.partida.as_mut() {
+                partida.pausada = !partida.pausada;
+            }
         }
         alterna_tela_cheia(ctx);
+        let Some(session) = self.partida.as_mut().map(Partida::sessao_mut) else {
+            return true;
+        };
 
         let smooth = self.settings.graphics.smooth;
-        // O quadro em RGB565, do jeito que a superfície do console o guarda: é o que o pintor
-        // de GL sobe direto para a placa.
-        let quadro_largura = session.screen().width() as i32;
-        let quadro_altura = session.screen().height() as i32;
-        let quadro_bytes = session.screen().to_rgb565_bytes();
         // Com GL não há por que converter o mesmo quadro de novo para textura do egui: seriam
         // duas conversões por repaint, e só uma delas iria para a tela.
         let pela_placa = self.settings.graphics.gpu_present
             && self.gl.is_some()
             && !self.gpu_falhou.load(std::sync::atomic::Ordering::Relaxed);
+        // **A tela da CPU só é lida quando ela é que vai à janela.** Com o quadro indo pela placa,
+        // os pixels da CPU não são usados — e buscá-los custaria, no caminho de placa, a leitura
+        // do quadro de volta a cada repaint, que é justamente o que a apresentação pela placa
+        // existe para evitar. Ver [`Session::materializa_quadro_gl`]: com o readback adiado, o
+        // quadro precisa ser materializado antes de qualquer conversão para bytes.
+        let (quadro_largura, quadro_altura, quadro_bytes) = match pela_placa {
+            true => (0, 0, Vec::new()),
+            false => {
+                session.materializa_quadro_gl();
+                let tela = session.screen();
+                (
+                    tela.width() as i32,
+                    tela.height() as i32,
+                    tela.to_rgb565_bytes(),
+                )
+            }
+        };
         if !pela_placa {
             // Subir a textura só quando a tela mudou: a janela repinta mais vezes que o jogo
             // desenha, e cada subida inteira custa uma conversão e uma ida à placa.
@@ -2751,7 +2281,7 @@ impl App {
         // quadro do jogo em vez de tapá-lo. Precisa ser declarado antes do painel central,
         // porque no egui quem pede espaço primeiro é quem o recebe.
         if self.settings.debug.overlay {
-            let debug = self.settings.debug;
+            let debug = self.settings.debug.clone();
             let sample = session.sample();
             let (heap, objetos) = session.memory();
             let clock = session.clock_ms();
@@ -2809,7 +2339,7 @@ impl App {
                 if self.settings.graphics.proporcao == crate::ui::settings::Proporcao::Janela {
                     let area = ui.available_size();
                     let aspecto = area.x / area.y.max(1.0);
-                    if let Some(session) = self.session.as_mut() {
+                    if let Some(session) = self.partida.as_mut().map(Partida::sessao_mut) {
                         session.define_proporcao(Some(aspecto));
                     }
                 }
@@ -2858,7 +2388,7 @@ impl App {
                                         Some(quadro) => pintor.desenha_textura(
                                             painter.gl(),
                                             quadro,
-                                            &info.viewport_in_pixels(),
+                                            info.viewport_in_pixels().into(),
                                             suave,
                                         ),
                                         None => pintor.desenha(
@@ -2866,7 +2396,7 @@ impl App {
                                             &bytes,
                                             largura,
                                             altura,
-                                            &info.viewport_in_pixels(),
+                                            info.viewport_in_pixels().into(),
                                             suave,
                                         ),
                                     }
@@ -2903,7 +2433,8 @@ impl App {
         // pedido vai também para a janela principal porque é dentro do quadro dela que esta
         // aqui é desenhada — pedir só para si mesma deixaria o jogo parado sempre que a
         // biblioteca estivesse ociosa.
-        if !stop && !self.paused && ended.is_none() {
+        let pausada = self.partida.as_ref().is_some_and(|partida| partida.pausada);
+        if !stop && !pausada && ended.is_none() {
             ctx.request_repaint();
             ctx.request_repaint_of(egui::ViewportId::ROOT);
         }
@@ -2943,8 +2474,13 @@ impl eframe::App for App {
         }
         self.acompanha_atualizacao(ctx);
         self.atualiza_presenca();
-        if self.session.is_some() {
-            self.grava_relatorio();
+        // O log do núcleo sai por aqui, uma vez por quadro. Com o anel vazio — que é o caso
+        // comum, com o nível padrão — isto é um cadeado e uma leitura.
+        crate::registro::despeja_no_stderr();
+        if self.partida.is_some() {
+            if let Some(partida) = &self.partida {
+                self.relatorio.grava(partida);
+            }
             self.game_window(ctx);
             // A janela de log acompanha o jogo: só existe enquanto há execução para registrar.
             if self.settings.debug.log && !self.log_dismissed {
@@ -2955,12 +2491,6 @@ impl eframe::App for App {
 }
 
 /// Agora, em milissegundos Unix — o relógio que o Discord usa para contar o tempo de jogo.
-fn agora_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as i64)
-}
-
 /// A luz de um botão apertado agora. Translúcida de propósito: ela acende o botão, não o
 /// substitui — o traço do desenho continua aparecendo por baixo.
 const LIT: [u8; 4] = [0x2f, 0xd6, 0x8a, 0xb4];
@@ -3107,28 +2637,6 @@ fn draw_controller(
     }
 }
 
-/// Envia o quadro do console para a textura, criando-a na primeira vez.
-/// O nome de um nível de melhoria: `desligado` no 1, e `4x MSAA` nos outros.
-fn rotulo_de_nivel(nivel: u8, sigla: &str, desligado: &str) -> String {
-    match nivel {
-        0 | 1 => desligado.to_string(),
-        n => format!("{n}x {sigla}"),
-    }
-}
-
-/// O nome de um fator de resolução interna, com o tamanho que ele dá e o vídeo mais próximo.
-fn rotulo_da_resolucao(fator: u8) -> String {
-    let (largura, altura) = (640 * u32::from(fator), 480 * u32::from(fator));
-    let referencia = match fator {
-        1 => "nativa",
-        2 => "~720p",
-        3 => "~1080p",
-        4 => "~1440p",
-        _ => "~4K",
-    };
-    format!("{fator}x · {largura}×{altura} · {referencia}")
-}
-
 fn upload(
     ctx: &egui::Context,
     handle: &mut Option<egui::TextureHandle>,
@@ -3156,59 +2664,13 @@ fn upload(
     }
 }
 
-/// O retângulo em que a imagem do console é desenhada dentro de `area`.
-///
-/// Separado da interface porque é a única parte com regra de verdade, e a única que dá para
-/// conferir sem abrir uma janela.
+/// O tamanho do quadro na área dada. Ver [`crate::ui::partida::enquadra`].
 fn placement(area: egui::Vec2, scaling: Scaling, keep_aspect: bool, aspecto: f32) -> egui::Vec2 {
-    let native = egui::vec2(SCREEN[1] as f32 * aspecto, SCREEN[1] as f32);
-    if area.x <= 0.0 || area.y <= 0.0 {
-        return native;
-    }
-    match (scaling, keep_aspect) {
-        (Scaling::Stretch, false) => area,
-        (Scaling::Stretch, true) | (Scaling::Fit, _) => {
-            let factor = (area.x / native.x).min(area.y / native.y);
-            native * factor
-        }
-        (Scaling::Integer, _) => {
-            // Nunca some: abaixo de uma vez o tamanho original, encolhe proporcional em vez de
-            // não caber, porque uma janela pequena não pode esconder o jogo.
-            let factor = (area.x / native.x).min(area.y / native.y);
-            match factor >= 1.0 {
-                true => native * factor.floor(),
-                false => native * factor,
-            }
-        }
-    }
+    egui::Vec2::from(partida::enquadra(area.into(), scaling, keep_aspect, aspecto))
 }
 
 #[cfg(test)]
 mod tests {
-
-    #[test]
-    fn teclado_e_controle_compartilham_um_aperto() {
-        use std::collections::HashSet;
-        // O `b1` do controle e o `Enter` do teclado mandam o mesmo `CONFIRMA`: é o par que
-        // compartilha um comando depois de o direcional ter saído da tradução.
-        let mut pad = Pad::default();
-        pad.press(Pad::button_by_name("b1").unwrap(), true);
-        let keyboard = HashSet::from([egui::Key::Enter]);
-        let mut delivered = HashSet::new();
-        let active = App::avks_ativos(&keyboard, &[pad]);
-        assert_eq!(
-            App::transicoes_de_teclas(&mut delivered, active.clone()),
-            vec![(crate::input::avk::CONFIRMA, true)]
-        );
-        assert!(App::transicoes_de_teclas(&mut delivered, active).is_empty());
-        // Soltar o teclado não solta um comando ainda mantido pelo controle.
-        let active = App::avks_ativos(&HashSet::new(), &[pad]);
-        assert!(App::transicoes_de_teclas(&mut delivered, active).is_empty());
-        assert_eq!(
-            App::transicoes_de_teclas(&mut delivered, HashSet::new()),
-            vec![(crate::input::avk::CONFIRMA, false)]
-        );
-    }
 
     /// Só a transição vira tecla: segurar o direcional não repete.
     #[test]
@@ -3253,51 +2715,8 @@ mod tests {
         );
     }
 
-    /// Os dígitos saem da ordem do `egui::Key`, e do `AVK_0` em diante. As duas listas são
-    /// contíguas hoje; se uma deixar de ser, é aqui que se descobre.
-    #[test]
-    fn digitos_viram_avk() {
-        use eframe::egui::Key;
-        assert_eq!(App::avk_de(Key::Num0), Some(crate::input::avk::ZERO));
-        assert_eq!(App::avk_de(Key::Num7), Some(crate::input::avk::ZERO + 7));
-        assert_eq!(App::avk_de(Key::Num9), Some(crate::input::avk::ZERO + 9));
-        assert_eq!(App::avk_de(Key::Backspace), Some(crate::input::avk::CLR));
-        assert_eq!(App::avk_de(Key::Escape), None);
-        assert_eq!(App::avk_de(Key::P), None);
-    }
     use super::*;
 
-    #[test]
-    fn a_ampliacao_inteira_so_usa_multiplos_exatos() {
-        // Numa janela de 1500x1100 cabem duas vezes a tela de 640x480, e não duas e pouco.
-        let size = placement(egui::vec2(1500.0, 1100.0), Scaling::Integer, true, 4.0 / 3.0);
-        assert_eq!(size, egui::vec2(1280.0, 960.0));
-    }
-
-    #[test]
-    fn a_ampliacao_inteira_encolhe_quando_nao_cabe_uma_vez() {
-        // Uma janela menor que a tela não pode esconder o jogo, então ali ela encolhe.
-        let size = placement(egui::vec2(320.0, 240.0), Scaling::Integer, true, 4.0 / 3.0);
-        assert_eq!(size, egui::vec2(320.0, 240.0));
-    }
-
-    #[test]
-    fn caber_na_janela_mantem_a_proporcao() {
-        // Janela larga demais: sobra borda dos lados, não estica.
-        let size = placement(egui::vec2(1920.0, 480.0), Scaling::Fit, true, 4.0 / 3.0);
-        assert_eq!(size, egui::vec2(640.0, 480.0));
-    }
-
-    #[test]
-    fn preencher_so_deforma_quando_a_proporcao_e_dispensada() {
-        let area = egui::vec2(1000.0, 500.0);
-        assert_eq!(placement(area, Scaling::Stretch, false, 4.0 / 3.0), area);
-        // Com a proporção mantida, "preencher" vira "caber".
-        assert_eq!(
-            placement(area, Scaling::Stretch, true, 4.0 / 3.0),
-            placement(area, Scaling::Fit, true, 4.0 / 3.0)
-        );
-    }
 }
 
 /// Instruções por segundo, na escala que couber.
@@ -3362,29 +2781,6 @@ fn desenhar_linha_do_tempo(ui: &mut egui::Ui, historia: &[(u32, u32)]) {
             })
             .collect();
         pintor.add(egui::Shape::line(linha, egui::Stroke::new(1.0_f32, cor)));
-    }
-}
-
-/// O VID da Nintendo, cujos controles têm o comprimento no Y. Ver [`App::movimento_da_porta`].
-const VENDOR_NINTENDO: u16 = 0x057e;
-
-/// De onde vem o movimento do Boomerang de uma porta. Ver [`App::sensor_da_porta`].
-enum SensorDaPorta {
-    Wiimote(crate::input::wiimote::EstadoWiimote),
-    Controle(crate::input::sensores::EstadoDoSensor),
-    /// Um controle escolhido que não tem sensor de movimento, pelo nome da lista.
-    SemSensor(String),
-    Nenhum,
-}
-
-impl SensorDaPorta {
-    /// A aceleração medida, quando o sensor já mandou alguma.
-    fn aceleracao(&self) -> Option<[f32; 3]> {
-        match self {
-            Self::Wiimote(wiimote) if wiimote.com_acelerometro => Some(wiimote.aceleracao),
-            Self::Controle(sensor) if sensor.com_leitura => Some(sensor.aceleracao),
-            _ => None,
-        }
     }
 }
 

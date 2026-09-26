@@ -109,6 +109,11 @@ impl Console {
     pub fn abre(&mut self, caminho: &Path) -> Result<(), String> {
         // A tela que a Z-Wheel deixou continua valendo enquanto o jogo não desenha a primeira
         // dele: no console a troca não passa por um quadro preto.
+        // O quadro pendente da sessão anterior entra antes de ela ser largada: sem isto, um jogo
+        // aberto logo depois de a Z-Wheel desenhar herdaria a tela de dois quadros atrás.
+        if let Some(anterior) = self.sessao.as_mut() {
+            anterior.materializa_quadro_gl();
+        }
         let tela_anterior = self
             .sessao
             .as_ref()

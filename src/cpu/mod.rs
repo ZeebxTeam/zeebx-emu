@@ -68,6 +68,16 @@ pub trait CpuBackend {
     /// duas execuções iguais deem o mesmo resultado.
     fn instructions(&self) -> u64;
 
+    /// Entradas no JIT, o tempo estimado dentro dele e quantas amostras sustentam a estimativa.
+    ///
+    /// `None` quando o backend não tem entrada de JIT a separar — o interpretador não tem. Quem
+    /// usa isto quer a diferença entre o tempo dentro do núcleo e o tempo no despacho; ver
+    /// [`crate::cpu::dynarmic::DynarmicCpu::run`]. **O terceiro número é a honestidade da
+    /// medida:** zero amostras significa que o relógio não foi ligado, e aí só a contagem vale.
+    fn relato_do_jit(&self) -> Option<(u64, u64, u64)> {
+        None
+    }
+
     /// Se o núcleo parou com o guest em modo Thumb.
     ///
     /// Serve para retomar um trecho interrompido: quem retoma passa o endereço com o bit 0

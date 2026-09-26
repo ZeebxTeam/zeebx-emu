@@ -149,6 +149,20 @@ pub fn z_wheel_em(caminho: &Path) -> Option<PathBuf> {
         .map(|jogo| jogo.path)
 }
 
+/// De onde abrir a Z-Wheel: o caminho configurado vale primeiro; sem ele, uma Z-Wheel que esteja
+/// entre os jogos da pasta de ROMs serve do mesmo jeito.
+///
+/// É a regra que as janelas usam para atender o pedido de voltar à Z-Wheel, e por isso mora aqui,
+/// e não em cada uma delas.
+pub fn z_wheel_de(configurada: Option<&Path>, jogos: &[Game]) -> Option<PathBuf> {
+    configurada.and_then(z_wheel_em).or_else(|| {
+        jogos
+            .iter()
+            .find(|jogo| jogo.clsid == Some(crate::session::Z_WHEEL))
+            .map(|jogo| jogo.path.clone())
+    })
+}
+
 /// Procura a Z-Wheel sem perguntar: primeiro entre os jogos da pasta de ROMs, depois ao lado
 /// dela, em `Downloads` e na pasta pessoal, em tudo que tenha "wheel" ou "tectoy" no nome.
 /// Olhar só esses nomes evita varrer o disco.
@@ -440,8 +454,60 @@ fn manifest_paths(mod_path: &Path) -> Vec<PathBuf> {
     candidates
 }
 
+/// Se o título tem todas as palavras da busca, em qualquer ordem e em qualquer parte.
+///
+/// Maiúsculas, acentos e pontuação não contam: "cnk" acha "C.N.K.", "joao" acha "João" e
+/// "extreme boia" acha "Zeebo Extreme Bóia Cross".
+pub fn casa_com_a_busca(titulo: &str, busca: &str) -> bool {
+    let titulo = sem_acento(titulo);
+    let compacto: String = titulo.split_whitespace().collect();
+    sem_acento(busca)
+        .split_whitespace()
+        .all(|palavra| titulo.contains(palavra) || compacto.contains(palavra))
+}
+
+/// O texto em minúsculas, sem acento, com a pontuação trocada por espaço e as siglas com ponto
+/// juntas ("C.N.K." vira "cnk").
+fn sem_acento(texto: &str) -> String {
+    let mut saida = String::with_capacity(texto.len());
+    for c in texto.chars().flat_map(char::to_lowercase) {
+        let c = match c {
+            'á' | 'à' | 'â' | 'ã' | 'ä' => 'a',
+            'é' | 'è' | 'ê' | 'ë' => 'e',
+            'í' | 'ì' | 'î' | 'ï' => 'i',
+            'ó' | 'ò' | 'ô' | 'õ' | 'ö' => 'o',
+            'ú' | 'ù' | 'û' | 'ü' => 'u',
+            'ç' => 'c',
+            'ñ' => 'n',
+            '.' | '\'' | '’' => continue,
+            c if c.is_alphanumeric() => c,
+            _ => ' ',
+        };
+        saida.push(c);
+    }
+    saida
+}
+
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_busca_ignora_caixa_acento_e_pontuacao() {
+        assert!(casa_com_a_busca("Zeebo Extreme Bóia Cross", "boia"));
+        assert!(casa_com_a_busca("Zeebo Extreme Bóia Cross", "EXTREME boia"));
+        assert!(casa_com_a_busca("Zeebo Extreme Bóia Cross", "cross zeebo"));
+        assert!(casa_com_a_busca("C.N.K. 3D", "cnk"));
+        assert!(casa_com_a_busca("Resident Evil 4", "resident evil"));
+        assert!(casa_com_a_busca("Double Dragon", "doubledragon"));
+        assert!(!casa_com_a_busca("Double Dragon", "rolima"));
+        assert!(!casa_com_a_busca("Zeebo Extreme Rolimã", "rolima boia"));
+    }
+
+    #[test]
+    fn a_busca_vazia_mostra_todos() {
+        assert!(casa_com_a_busca("Tênis", ""));
+        assert!(casa_com_a_busca("Tênis", "   "));
+    }
     use super::*;
 
     /// Monta uma árvore de arquivos vazios e devolve a raiz.

@@ -44,6 +44,30 @@ void main() {
 }
 "#;
 
+/// O retângulo da janela onde o quadro vai, em pixels físicos, contado **de baixo** — que é como o
+/// `glViewport` o quer.
+///
+/// É do pintor, e não do egui, porque quem pinta nem sempre tem egui na tela: o headless monta a
+/// área à mão, e a interface Qt a recebe do Qt Quick. O egui continua entrando pelo `From`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Viewport {
+    pub x: i32,
+    pub y_de_baixo: i32,
+    pub largura: i32,
+    pub altura: i32,
+}
+
+impl From<egui::epaint::ViewportInPixels> for Viewport {
+    fn from(vp: egui::epaint::ViewportInPixels) -> Self {
+        Self {
+            x: vp.left_px,
+            y_de_baixo: vp.from_bottom_px,
+            largura: vp.width_px,
+            altura: vp.height_px,
+        }
+    }
+}
+
 /// O programa e a textura que pintam o quadro.
 pub struct Pintor {
     program: glow::Program,
@@ -87,7 +111,7 @@ impl Pintor {
         bytes: &[u8],
         largura: i32,
         altura: i32,
-        vp: &egui::epaint::ViewportInPixels,
+        vp: Viewport,
         suave: bool,
     ) {
         self.desenha_impl(gl, bytes, largura, altura, None, vp, suave);
@@ -104,7 +128,7 @@ impl Pintor {
         largura: i32,
         altura: i32,
         chave: (u64, u64),
-        vp: &egui::epaint::ViewportInPixels,
+        vp: Viewport,
         suave: bool,
     ) {
         self.desenha_impl(gl, bytes, largura, altura, Some(chave), vp, suave);
@@ -117,7 +141,7 @@ impl Pintor {
         largura: i32,
         altura: i32,
         chave: Option<(u64, u64)>,
-        vp: &egui::epaint::ViewportInPixels,
+        vp: Viewport,
         suave: bool,
     ) {
         if largura <= 0 || altura <= 0 || bytes.len() < (largura * altura * 2) as usize {
@@ -192,7 +216,7 @@ impl Pintor {
         &mut self,
         gl: &glow::Context,
         quadro: crate::video::rasterizer::QuadroNaPlaca,
-        vp: &egui::epaint::ViewportInPixels,
+        vp: Viewport,
         suave: bool,
     ) {
         unsafe {
@@ -211,7 +235,7 @@ impl Pintor {
     }
 
     /// O triângulo com a textura ligada na unidade zero, e o estado devolvido ao egui.
-    unsafe fn pinta(&self, gl: &glow::Context, recorte: [f32; 2], vp: &egui::epaint::ViewportInPixels) {
+    unsafe fn pinta(&self, gl: &glow::Context, recorte: [f32; 2], vp: Viewport) {
         unsafe {
             if let Some(local) = gl.get_uniform_location(self.program, "quadro") {
                 gl.uniform_1_i32(Some(&local), 0);
@@ -219,11 +243,16 @@ impl Pintor {
             if let Some(local) = gl.get_uniform_location(self.program, "recorte") {
                 gl.uniform_2_f32(Some(&local), recorte[0], recorte[1]);
             }
-            gl.viewport(vp.left_px, vp.from_bottom_px, vp.width_px, vp.height_px);
+            gl.viewport(vp.x, vp.y_de_baixo, vp.largura, vp.altura);
             gl.bind_vertex_array(Some(self.vao));
             gl.draw_arrays(glow::TRIANGLES, 0, 3);
             // Devolver o estado que mexemos: o egui desenha o resto da interface depois de nós,
             // e um programa ou VAO deixado ligado aparece como interface sem textura.
+            //
+            // **Isto é o que quebra o cache do rasterizador quando ele desenha no mesmo contexto.**
+            // Ele liga programa, VAO e VBO uma vez e não a cada lote, e é ele quem tem de saber que
+            // outra pessoa pode mexer neles — ver `GpuState::devolve_o_contexto`: o cache é
+            // invalidado ali, a cada devolução, quando quem apresenta o quadro é o anfitrião.
             gl.bind_vertex_array(None);
             gl.use_program(None);
         }

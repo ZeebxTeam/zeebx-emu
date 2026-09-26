@@ -112,6 +112,13 @@ tinha como avisar.
 
 ## Quanto rendeu
 
+> **Os números desta seção são da era do Unicorn e não descrevem o emulador de hoje.** Eles
+> foram medidos com o backend que saiu da árvore, e a comparação entre as três linhas abaixo
+> continua válida como *história do que rendeu o quê* — a proporção entre as fatias, não. As
+> medidas atuais estão em
+> [`../OPTIMIZING_V0.3.0.md`](../OPTIMIZING_V0.3.0.md). Em particular, a frase "mesmo de graça o
+> Quake ficaria em ~52%" **não vale mais**: com o Dynarmic o Quake passa de 100%.
+
 Quake, 25 segundos virtuais, medido três vezes:
 
 | | tempo real | velocidade |
@@ -152,13 +159,14 @@ Eram 3.324 ms de leitura e 2.732 ms de comparação, e o custo aparecia onde nin
 `glDrawElements`, com 2.883 ms.
 
 O conserto é um **watchpoint de escrita** (`CpuBackend::watch_dirty`/`take_dirty`): o hook do
-unicorn liga um `bool` quando o guest escreve na faixa, e o `sync` sai em O(1) enquanto ele estiver
-limpo. Depois: leitura 105 ms, comparação 39 ms, `glDrawElements` **275 ms** — dez vezes menos —, e
+backend liga um `bool` quando o guest escreve na faixa, e o `sync` sai em O(1) enquanto ele estiver
+limpo. O mecanismo nasceu com os ganchos do Unicorn e **sobreviveu à troca**: o que mudou foi quem
+arma o sinalizador, não a ideia. Depois: leitura 105 ms, comparação 39 ms, `glDrawElements` **275 ms** — dez vezes menos —, e
 o total de API caiu de 16.345 ms para algo entre 12.550 e 13.500 ms.
 
 Duas coisas que essa medida ensinou, e que valem além deste caso:
 
-- **A escrita do host não passa pelos hooks do unicorn.** As implementações de API escrevem direto
+- **A escrita do host não passa pelos ganchos do backend.** As implementações de API escrevem direto
   na memória do guest, e é por elas que o 2D chega à superfície. A primeira versão do sinalizador
   ignorava isso: o custo sumiu e as capas da roda pararam de aparecer, com a diferença confinada à
   faixa do cilindro. Quem arma um watchpoint precisa marcá-lo também no `write_mem` do próprio
@@ -169,6 +177,10 @@ Duas coisas que essa medida ensinou, e que valem além deste caso:
   melhor e pixel a pixel idêntico) fica sem número: o efeito dele não sai do ruído.
 
 ## O teto que sobra
+
+> Esta seção inteira é da era do Unicorn: as duas conclusões abaixo — o custo por chamada de API
+> e o teto do núcleo — continuam sendo os alvos certos, mas **os números não**, e o segundo já foi
+> parcialmente resolvido (o `dynarmic` entrou, e o Quake saiu de 52% para 170%).
 
 Vale ter claro para não esperar do rasterizador o que ele não pode dar: **mesmo de graça**, o
 Quake ficaria em ~52%. Os 48 s de emulação mais despacho para 25 s virtuais já são o dobro do
@@ -185,8 +197,11 @@ Os dois próximos gargalos, em ordem:
    perfil de API do `--profile` mede isso, e nas três vezes em que um jogo pareceu preso no
    despacho a causa estava lá, não no trampolim.
 2. **O núcleo em si.** Aos ~86 MIPS efetivos, um jogo que use um quarto da capacidade do ARM11
-   do console já consome boa parte do nosso relógio só para executar instrução. É aqui que um
-   backend sobre `dynarmic` entraria — o `CpuBackend` existe para isso.
+   do console já consome boa parte do nosso relógio só para executar instrução. **Foi aqui que o
+   backend sobre `dynarmic` entrou** — o `CpuBackend` existia exatamente para isso, e a troca
+   valeu 2,3 vezes no ritmo do núcleo. Hoje o que resta nesta frente não é trocar de backend, e
+   sim o SMC: páginas que misturam código e dados saem da tabela direta e passam a ir por
+   callback em toda leitura e escrita.
 
 ## Números de calibração
 
