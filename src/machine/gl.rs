@@ -1052,6 +1052,14 @@ impl<C: CpuBackend> Machine<C> {
     pub(super) fn present_gl(&mut self) {
         self.gl.descarrega_o_desenho();
         self.gl_quadro_pendente = true;
+        // **O quadro na placa vale para a tela como ela está agora**, mesmo sem ter sido lido. É o
+        // que o [`Machine::quadro_na_placa`] compara, e quem apresenta pela placa nunca materializa
+        // — a textura é justamente o que dispensa a leitura. Marcado só na materialização, o
+        // quadro 3D nunca era dado como intacto nesse caminho: a janela caía na tela da CPU, que
+        // não recebera o quadro, e o jogo saía preto em toda janela que apresenta pela placa —
+        // medido com o Double Dragon, que desenha o título pelo OpenGL. Um desenho 2D depois
+        // disto materializa antes de escrever, e a escrita desfaz a marca, como deve.
+        self.escritas_do_quadro_gl = Some(self.screen().escritas());
         // **Só a placa adia.** No rasterizador de processador a leitura é uma conversão em
         // memória: não há espera a economizar, e o frontend lê a tela todo quadro de qualquer
         // jeito — adiar ali só criaria a chance de ele apresentar um quadro velho.

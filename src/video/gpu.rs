@@ -2107,6 +2107,19 @@ impl Rasterizador for GpuState {
 
     fn descarrega_o_desenho(&mut self) {
         self.descarrega();
+        // **O antialias é resolvido aqui, na troca, e não só na leitura.** A textura `cor` é o que
+        // a janela apresenta pela placa ([`GpuState::quadro_na_placa`]), e com MSAA a cena mora no
+        // framebuffer de amostras até o `resolve`. Antes da leitura adiada, ler o quadro a cada
+        // troca resolvia de carona; com a leitura adiada, quem apresenta pela placa nunca lê, e a
+        // textura ficava como estava — preta com o antialias ligado, enquanto a `zeebx sessao`,
+        // que lê, saía certa. O framebuffer do frontend não passa por aqui: ali
+        // quem apresenta é ele. O `resolve` deixa o destino ligado, e o contexto de quem apresenta
+        // volta ao estado que ele espera.
+        let com_amostras = self.quadro.as_ref().is_some_and(|d| d.multi.is_some());
+        if com_amostras && self.fbo_externo.is_none() && !self.placa.morreu() {
+            self.resolve();
+            self.devolve_o_contexto();
+        }
     }
 
     fn desenho_em_curso(&self) -> bool {
