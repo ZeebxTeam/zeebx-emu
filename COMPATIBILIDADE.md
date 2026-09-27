@@ -26,7 +26,7 @@ Versão considerada na análise: v0.2.1 (em desenvolvimento)
 | Alpine Racer | ✅ | Poucos problemas visuais e de som, mas completamente jogável |
 | Armageddon Squadron | ✅ | |
 | Bad Dudes vs. DragonNinja | ✅ | Procura baddudes.pkg e o pacote traz baddudes.zip |
-| Bejeweled Twist | ❌ | acesso inválido a 0x00000024, em 0x0003ab20 |
+| Bejeweled Twist | ✅ | |
 | Caveman Ninja | ✅ | Emulador de arcade embutido, com som |
 | Crash Bandicoot Nitro Kart 3D | ✅ |  |
 | Dark Seal | ✅ | Emulador de arcade embutido, com som |
