@@ -37,6 +37,9 @@ pub mod navegacao;
 // usam para abrir e rodar um jogo do mesmo jeito.
 pub mod partida;
 pub mod saves;
+// Sem gate: o nome, a pasta e o `.png` de um screenshot não precisam de janela, e o Android pode
+// ganhar o botão sem reescrever nada.
+pub mod screenshot;
 pub mod settings;
 
 #[cfg(feature = "desktop")]

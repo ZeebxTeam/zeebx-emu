@@ -61,6 +61,30 @@ pub mod qobject {
         fn escolhe_pasta_de_roms(self: Pin<&mut Configuracoes>);
 
         /// Aponta a Z-Wheel: o `.zip` ou o `.mod` com `pasta` falso, ou a pasta que a contenha.
+        /// A pasta dos screenshots de fato: a escolhida, ou a padrão.
+        #[qinvokable]
+        #[cxx_name = "pastaDeScreenshots"]
+        fn pasta_de_screenshots(self: &Configuracoes) -> QString;
+
+        #[qinvokable]
+        #[cxx_name = "escolhePastaDeScreenshots"]
+        fn escolhe_pasta_de_screenshots(self: Pin<&mut Configuracoes>);
+
+        /// Volta à pasta padrão dos screenshots.
+        #[qinvokable]
+        #[cxx_name = "usaPastaPadraoDeScreenshots"]
+        fn usa_pasta_padrao_de_screenshots(self: Pin<&mut Configuracoes>);
+
+        #[qinvokable]
+        #[cxx_name = "screenshotsNaPastaPadrao"]
+        fn screenshots_na_pasta_padrao(self: &Configuracoes) -> bool;
+
+        /// O endereço `file://` da pasta dos screenshots, criada se ainda não existe: o botão de
+        /// abrir precisa servir antes do primeiro screenshot.
+        #[qinvokable]
+        #[cxx_name = "enderecoDaPastaDeScreenshots"]
+        fn endereco_da_pasta_de_screenshots(self: &Configuracoes) -> QString;
+
         #[qinvokable]
         #[cxx_name = "escolheZWheel"]
         fn escolhe_z_wheel(self: Pin<&mut Configuracoes>, pasta: bool);
@@ -177,6 +201,30 @@ pub mod qobject {
         /// Começa a esperar uma origem para o botão; de novo no mesmo, desiste.
         #[qinvokable]
         fn captura(self: Pin<&mut Configuracoes>, botao: &QString);
+
+        /// A tecla do screenshot, pelo nome.
+        #[qinvokable]
+        #[cxx_name = "atalhoDeScreenshot"]
+        fn atalho_de_screenshot(self: &Configuracoes) -> QString;
+
+        /// Começa a esperar a tecla do screenshot; de novo, desiste. Só teclado.
+        #[qinvokable]
+        #[cxx_name = "capturaAtalho"]
+        fn captura_atalho(self: Pin<&mut Configuracoes>);
+
+        #[qinvokable]
+        #[cxx_name = "capturandoAtalho"]
+        fn capturando_atalho(self: &Configuracoes) -> bool;
+
+        /// Volta o screenshot ao F9.
+        #[qinvokable]
+        #[cxx_name = "restauraAtalho"]
+        fn restaura_atalho(self: Pin<&mut Configuracoes>);
+
+        /// Por que a última tecla capturada foi recusada, se foi: `atalho` diz se a captura era a
+        /// do screenshot ou a de um botão do Zeebo, porque cada uma mostra o motivo no seu lugar.
+        #[qinvokable]
+        fn recusa(self: &Configuracoes, atalho: bool) -> QString;
 
         #[qinvokable]
         #[cxx_name = "limpaBotao"]
@@ -335,8 +383,9 @@ use zeebx::ui::entrada::SensorDaPorta;
 
 use zeebx::library;
 use zeebx::ui::atualizacao::{self, Resposta};
+use zeebx::ui::screenshot;
 use zeebx::ui::settings::{
-    self, ModoDaBiblioteca, ModoDaJanela, Proporcao, Scaling, Settings, rotulo_da_resolucao,
+    self, Atalhos, ModoDaBiblioteca, ModoDaJanela, Proporcao, Scaling, Settings, rotulo_da_resolucao,
     rotulo_de_nivel,
 };
 
@@ -365,6 +414,11 @@ pub struct ConfiguracoesRust {
     porta_editada: i32,
     /// O botão esperando uma tecla ou um botão de controle.
     capturando: Option<String>,
+    /// O atalho do screenshot esperando uma tecla. Separado do `capturando` porque o
+    /// `le_controle` não pode dar a ele um botão de controle: o atalho é só de teclado.
+    capturando_atalho: bool,
+    /// A última tecla recusada: se era a captura do atalho, e o motivo já traduzido.
+    recusa: Option<(bool, String)>,
     /// As teclas apertadas na janela de configurações, para acender o desenho.
     teclas: HashSet<Key>,
     /// A calibração em andamento: a porta e as leituras paradas juntadas até agora.
@@ -609,6 +663,46 @@ impl qobject::Configuracoes {
         });
     }
 
+    pub fn pasta_de_screenshots(&self) -> QString {
+        nucleo::com(|nucleo| {
+            let pasta = screenshot::pasta(nucleo.settings.screenshots_dir.as_deref());
+            QString::from(&pasta.display().to_string())
+        })
+    }
+
+    pub fn escolhe_pasta_de_screenshots(mut self: Pin<&mut Self>) {
+        let Some(pasta) = rfd::FileDialog::new().pick_folder() else {
+            return;
+        };
+        nucleo::com(|nucleo| {
+            nucleo.settings.screenshots_dir = Some(pasta);
+            salva(&nucleo.settings);
+        });
+        self.as_mut().aplica(Efeito::default());
+    }
+
+    pub fn usa_pasta_padrao_de_screenshots(mut self: Pin<&mut Self>) {
+        nucleo::com(|nucleo| {
+            nucleo.settings.screenshots_dir = None;
+            salva(&nucleo.settings);
+        });
+        self.as_mut().aplica(Efeito::default());
+    }
+
+    pub fn screenshots_na_pasta_padrao(&self) -> bool {
+        nucleo::com(|nucleo| nucleo.settings.screenshots_dir.is_none())
+    }
+
+    pub fn endereco_da_pasta_de_screenshots(&self) -> QString {
+        nucleo::com(|nucleo| {
+            let pasta = screenshot::pasta(nucleo.settings.screenshots_dir.as_deref());
+            if let Err(erro) = std::fs::create_dir_all(&pasta) {
+                eprintln!("não deu para criar {}: {erro}", pasta.display());
+            }
+            QString::from(&screenshot::endereco_de(&pasta))
+        })
+    }
+
     pub fn escolhe_z_wheel(mut self: Pin<&mut Self>, pasta: bool) {
         let escolhida = match pasta {
             true => rfd::FileDialog::new().pick_folder(),
@@ -729,6 +823,23 @@ impl qobject::Configuracoes {
             self.as_mut().janela_principal_mudou();
         }
     }
+}
+
+/// A primeira porta e o botão do Zeebo em que a tecla está mapeada, se está. Todas as portas
+/// contam, e não só as ligadas: ligar uma porta depois não pode criar a colisão que a captura
+/// recusou.
+fn dono_da_tecla(settings: &Settings, tecla: Key) -> Option<(usize, &'static str)> {
+    (0..zeebx::input::PORTAS).find_map(|porta| {
+        let jogador = settings.controls.player(porta)?;
+        CONFIGURABLE
+            .iter()
+            .find(|botao| {
+                jogador.sources(botao).iter().any(|fonte| {
+                    matches!(fonte, Source::Key { name } if Key::from_name(name) == Some(tecla))
+                })
+            })
+            .map(|botao| (porta, *botao))
+    })
 }
 
 fn salva(settings: &Settings) {
@@ -874,6 +985,8 @@ impl qobject::Configuracoes {
     pub fn captura(mut self: Pin<&mut Self>, botao: &QString) {
         let botao = String::from(botao);
         let mut rust = self.as_mut().rust_mut();
+        rust.capturando_atalho = false;
+        rust.recusa = None;
         // Clicar de novo no mesmo botão desiste da captura.
         rust.capturando = match rust.capturando.as_deref() == Some(botao.as_str()) {
             true => None,
@@ -900,6 +1013,13 @@ impl qobject::Configuracoes {
         if !apertada {
             return;
         }
+        if std::mem::take(&mut rust.capturando_atalho) {
+            drop(rust);
+            if tecla != Key::Escape {
+                self.as_mut().define_atalho(tecla);
+            }
+            return;
+        }
         let Some(botao) = rust.capturando.take() else {
             return;
         };
@@ -907,15 +1027,78 @@ impl qobject::Configuracoes {
             return;
         }
         drop(rust);
-        // O teclado primeiro: é o que está debaixo da mão de quem está configurando.
-        nucleo::com(|nucleo| {
+        // A tecla do screenshot não vira botão: na janela do jogo o atalho ganha, e o botão
+        // pareceria mapeado sem responder.
+        let recusa = nucleo::com(|nucleo| {
+            if nucleo.e_atalho_de_screenshot(tecla) {
+                let texto = nucleo
+                    .catalogo
+                    .format("controls.shortcut.is_screenshot", &[("key", tecla.name())]);
+                return Some(texto);
+            }
+            // O teclado primeiro: é o que está debaixo da mão de quem está configurando.
             nucleo
                 .settings
                 .controls
                 .player_mut(porta)
                 .bind(&botao, Source::key(tecla.name()));
+            None
         });
+        self.as_mut().rust_mut().recusa = recusa.map(|texto| (false, texto));
         self.as_mut().controles_mudaram();
+    }
+
+    pub fn atalho_de_screenshot(&self) -> QString {
+        nucleo::com(|nucleo| QString::from(&nucleo.settings.atalhos.screenshot))
+    }
+
+    pub fn captura_atalho(mut self: Pin<&mut Self>) {
+        let mut rust = self.as_mut().rust_mut();
+        rust.capturando_atalho = !rust.capturando_atalho;
+        rust.capturando = None;
+        rust.recusa = None;
+    }
+
+    pub fn capturando_atalho(&self) -> bool {
+        self.rust().capturando_atalho
+    }
+
+    pub fn restaura_atalho(mut self: Pin<&mut Self>) {
+        let padrao = Key::from_name(Atalhos::SCREENSHOT_PADRAO).expect("o F9 é uma tecla");
+        self.as_mut().rust_mut().capturando_atalho = false;
+        self.as_mut().define_atalho(padrao);
+    }
+
+    pub fn recusa(&self, atalho: bool) -> QString {
+        match &self.rust().recusa {
+            Some((do_atalho, texto)) if *do_atalho == atalho => QString::from(texto),
+            _ => QString::default(),
+        }
+    }
+
+    /// Troca a tecla do screenshot, ou diz por que não: Esc, P e F11 são da janela do jogo, e
+    /// uma tecla que já é botão do Zeebo ficaria com dois donos. Recusar, e não trocar as duas de
+    /// lugar, porque a troca mexeria num mapeamento sem ninguém ver.
+    fn define_atalho(mut self: Pin<&mut Self>, tecla: Key) {
+        let recusa = nucleo::com(|nucleo| {
+            let catalogo = &nucleo.catalogo;
+            if matches!(tecla, Key::Escape | Key::P | Key::F11) {
+                return Some(catalogo.format("controls.shortcut.reserved", &[("key", tecla.name())]));
+            }
+            if let Some((porta, botao)) = dono_da_tecla(&nucleo.settings, tecla) {
+                let botao = catalogo.get(&format!("button.{botao}")).to_string();
+                let porta = (porta + 1).to_string();
+                return Some(catalogo.format(
+                    "controls.shortcut.taken",
+                    &[("key", tecla.name()), ("button", &botao), ("port", &porta)],
+                ));
+            }
+            nucleo.settings.atalhos.screenshot = tecla.name().to_string();
+            salva(&nucleo.settings);
+            None
+        });
+        self.as_mut().rust_mut().recusa = recusa.map(|texto| (true, texto));
+        self.as_mut().aplica(Efeito::default());
     }
 
     pub fn le_controle(mut self: Pin<&mut Self>) {

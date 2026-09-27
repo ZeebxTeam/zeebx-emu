@@ -52,6 +52,10 @@ pub mod qobject {
         #[qproperty(QString, aviso_estado, cxx_name = "avisoEstado")]
         #[qproperty(bool, aviso_parado, cxx_name = "avisoParado")]
         #[qproperty(f64, aviso_giro, cxx_name = "avisoGiro")]
+        #[qproperty(QString, screenshot_texto, cxx_name = "screenshotTexto")]
+        #[qproperty(bool, screenshot_falhou, cxx_name = "screenshotFalhou")]
+        #[qproperty(QString, screenshot_pasta, cxx_name = "screenshotPasta")]
+        #[qproperty(i32, screenshot_serie, cxx_name = "screenshotSerie")]
         type TelaDoJogo = super::TelaDoJogoRust;
 
         /// Uma volta: entrada, emulação e, se a tela mudou, um quadro novo.
@@ -69,6 +73,16 @@ pub mod qobject {
         /// Fecha o jogo aberto. A janela do jogo chama isto ao ser fechada.
         #[qinvokable]
         fn fecha(self: Pin<&mut Self>);
+
+        /// Se o `Qt::Key` é o atalho do screenshot. Ver `atalhos.screenshot`.
+        #[qinvokable]
+        #[cxx_name = "ehAtalhoDeScreenshot"]
+        fn eh_atalho_de_screenshot(self: &Self, codigo: i32) -> bool;
+
+        /// Grava o quadro que está na tela. `carimbo` é a hora local, pronta para o nome do
+        /// arquivo. O aviso chega depois, pela `screenshotSerie`.
+        #[qinvokable]
+        fn screenshot(self: Pin<&mut Self>, carimbo: &QString);
 
         /// Pausa ou retoma o jogo. Devolve se ficou pausado.
         #[qinvokable]
@@ -144,6 +158,12 @@ pub struct TelaDoJogoRust {
     aviso_estado: QString,
     aviso_parado: bool,
     aviso_giro: f64,
+    /// O aviso do último screenshot. A série muda a cada um, para o QML mostrar de novo mesmo
+    /// quando o texto é igual ao do anterior.
+    screenshot_texto: QString,
+    screenshot_falhou: bool,
+    screenshot_pasta: QString,
+    screenshot_serie: i32,
     /// A tela que foi para o `ItemDoQuadro` como imagem: série e escritas. Igual, não há o que
     /// subir. `None` quando o que está lá é a textura da placa, ou nada.
     chave: Option<(u64, u64)>,
@@ -269,6 +289,13 @@ impl qobject::TelaDoJogo {
         if *self.aviso_giro() != giro {
             self.as_mut().set_aviso_giro(giro);
         }
+        if let Some(aviso) = volta.screenshot {
+            self.as_mut().set_screenshot_texto(QString::from(&aviso.texto));
+            self.as_mut().set_screenshot_falhou(aviso.falhou);
+            self.as_mut().set_screenshot_pasta(QString::from(&aviso.pasta));
+            let serie = self.screenshot_serie().wrapping_add(1);
+            self.as_mut().set_screenshot_serie(serie);
+        }
         let parou = QString::from(&volta.parou);
         if self.parou() != &parou {
             self.as_mut().set_parou(parou);
@@ -284,6 +311,15 @@ impl qobject::TelaDoJogo {
         if let Some(tecla) = tecla_do_qt(codigo) {
             nucleo::com(|nucleo| nucleo.tecla(tecla, apertada));
         }
+    }
+
+    pub fn eh_atalho_de_screenshot(&self, codigo: i32) -> bool {
+        tecla_do_qt(codigo).is_some_and(|tecla| nucleo::com(|nucleo| nucleo.e_atalho_de_screenshot(tecla)))
+    }
+
+    pub fn screenshot(self: Pin<&mut Self>, carimbo: &QString) {
+        let carimbo = String::from(carimbo);
+        nucleo::com(|nucleo| nucleo.screenshot(&carimbo));
     }
 
     pub fn solta(self: Pin<&mut Self>) {

@@ -65,9 +65,15 @@ Window {
 
         // Esc fecha e P pausa, como na janela do egui. Nenhuma das duas colide com o controle do
         // Zeebo, que usa setas, Z, X, C, V, Q, W, F, G, H, Backspace e Enter. F11 e Alt+Enter
-        // alternam a tela cheia.
+        // alternam a tela cheia. O screenshot (F9 por padrão, trocável) é perguntado antes do
+        // jogo: um botão mapeado na mesma tecla não a recebe. Ver
+        // `docs/implementacao/22-screenshots.md`.
         Keys.onPressed: (evento) => {
-            if (evento.key === Qt.Key_Escape) {
+            if (tela.ehAtalhoDeScreenshot(evento.key)) {
+                // Segurar a tecla tira um screenshot, e não trinta.
+                if (!evento.isAutoRepeat)
+                    tela.screenshot(Qt.formatDateTime(new Date(), "yyyy-MM-dd HH-mm-ss"))
+            } else if (evento.key === Qt.Key_Escape) {
                 janela.close()
             } else if (evento.key === Qt.Key_P && !evento.isAutoRepeat) {
                 pausado.visible = tela.pausa()
@@ -80,7 +86,7 @@ Window {
             evento.accepted = true
         }
         Keys.onReleased: (evento) => {
-            if (!evento.isAutoRepeat) {
+            if (!evento.isAutoRepeat && !tela.ehAtalhoDeScreenshot(evento.key)) {
                 tecla(evento.key, false)
             }
             evento.accepted = true
@@ -150,6 +156,51 @@ Window {
                     color: tela.avisoParado ? "#d0d0d0" : "#ffb040"
                     text: tela.avisoEstado
                 }
+            }
+        }
+    }
+
+    // O aviso do screenshot, no canto de cima, por dois segundos. É o Qt que o desenha por cima
+    // do quadro, e por isso ele não entra no PNG, que vem do núcleo. Clicar abre a pasta do jogo.
+    Rectangle {
+        id: avisoDoScreenshot
+
+        anchors.right: tela.right
+        anchors.top: tela.top
+        anchors.margins: 16
+        width: textoDoScreenshot.implicitWidth + 24
+        height: textoDoScreenshot.implicitHeight + 16
+        visible: false
+        radius: 6
+        color: "#e6202020"
+        border.color: "#505050"
+
+        Text {
+            id: textoDoScreenshot
+
+            anchors.centerIn: parent
+            color: tela.screenshotFalhou ? "#ffb040" : "white"
+            text: tela.screenshotTexto
+        }
+
+        MouseArea {
+            anchors.fill: parent
+            cursorShape: Qt.PointingHandCursor
+            onClicked: Qt.openUrlExternally(tela.screenshotPasta)
+        }
+
+        Timer {
+            id: someODoScreenshot
+
+            interval: 2000
+            onTriggered: avisoDoScreenshot.visible = false
+        }
+
+        Connections {
+            target: tela
+            function onScreenshotSerieChanged() {
+                avisoDoScreenshot.visible = true
+                someODoScreenshot.restart()
             }
         }
     }

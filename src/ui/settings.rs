@@ -265,6 +265,10 @@ pub struct Settings {
     pub roms_dir: Option<PathBuf>,
     /// O pacote da Z-Wheel: abre pela barra de cima e empresta as capas à biblioteca.
     pub z_wheel_path: Option<PathBuf>,
+    /// Onde os screenshots são gravados. `None` é a pasta padrão, ver
+    /// [`crate::ui::screenshot::pasta_padrao`].
+    pub screenshots_dir: Option<PathBuf>,
+    pub atalhos: Atalhos,
     /// Como a biblioteca mostra os jogos.
     pub biblioteca: ModoDaBiblioteca,
     pub movimento: Movimento,
@@ -277,6 +281,28 @@ pub struct Settings {
     pub atualizacoes: Atualizacoes,
     /// A versão em que o aviso de abertura foi dispensado de vez. Outra versão mostra de novo.
     pub aviso_dispensado_na_versao: Option<String>,
+}
+
+/// As teclas da janela do jogo que se trocam, pelo nome de tecla do mapeamento (`F9`).
+///
+/// Esc, P e F11 continuam fixos na janela; é aqui que eles entram se um dia forem trocáveis. Ver
+/// `docs/implementacao/22-screenshots.md`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Atalhos {
+    pub screenshot: String,
+}
+
+impl Atalhos {
+    pub const SCREENSHOT_PADRAO: &str = "F9";
+}
+
+impl Default for Atalhos {
+    fn default() -> Self {
+        Self {
+            screenshot: Self::SCREENSHOT_PADRAO.to_string(),
+        }
+    }
 }
 
 /// A procura por versões novas. Ver [`crate::ui::atualizacao`].
@@ -427,6 +453,10 @@ mod tests {
             language: Some("pt-BR".into()),
             roms_dir: Some(PathBuf::from("/jogos/zeebo")),
             z_wheel_path: Some(PathBuf::from("/jogos/Z-Wheel.zip")),
+            screenshots_dir: Some(PathBuf::from("/imagens/zeebo")),
+            atalhos: Atalhos {
+                screenshot: "F12".into(),
+            },
             biblioteca: ModoDaBiblioteca::Slider,
             movimento: Movimento {
                 aviso_de_calibracao: false,
@@ -459,6 +489,16 @@ mod tests {
 
         assert_eq!(Settings::load_from(&path), settings);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Quem tem um `settings.json` de antes do screenshot ganha o F9 e a pasta padrão, sem
+    /// perder o resto.
+    #[test]
+    fn um_arquivo_de_antes_dos_atalhos_ganha_o_f9() {
+        let lido: Settings = serde_json::from_str(r#"{ "roms_dir": "/jogos" }"#).unwrap();
+        assert_eq!(lido.atalhos.screenshot, "F9");
+        assert_eq!(lido.screenshots_dir, None);
+        assert_eq!(lido.roms_dir, Some(PathBuf::from("/jogos")));
     }
 
     #[test]
