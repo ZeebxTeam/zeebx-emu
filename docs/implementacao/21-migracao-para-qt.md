@@ -20,6 +20,14 @@ marcada aqui como feita.
 | 8 — corte do eframe | segunda etapa feita: a feature `ui-qt` vem ligada, o Qt é a interface padrão e o egui fica em `zeebx egui`. O corte espera uma release com o Qt |
 | 9 — build e empacotamento | feita: o `release.yml` monta o AppImage, o NSIS e o `.dmg` com o Qt embutido, e o `.deb` com o Qt do sistema; o `ci.yml` instala o Qt nos seis alvos; o `qt.yml` faz o mesmo que a release e abre cada instalador antes de sair |
 
+**Os dois frontends foram separados depois da fase 9.** O Qt não é mais uma feature do standalone
+do egui: ele mora em `frontends/qt-standalone` (pacote `zeebx-standalone-qt`, binário `zeebx-qt`),
+e o egui voltou a ser o único conteúdo de `frontends/egui-standalone` (pacote
+`zeebx-standalone-egui`, binário `zeebx`), que antes se chamava `classical-standalone`. A feature
+`ui-qt`, o `zeebx qt` e o `zeebx egui` deixaram de existir. **O frontend Qt ficou como legado**:
+saiu do `ci.yml` e do `release.yml`, e só o `qt.yml`, à mão, ainda o compila. O texto das fases abaixo descreve
+o arranjo da época, com a feature.
+
 ## Onde o egui está de verdade
 
 O ponto de partida era a suposição de que o egui mora só em `src/ui/`. Não mora — e o que vaza é

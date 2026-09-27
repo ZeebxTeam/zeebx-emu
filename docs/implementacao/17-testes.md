@@ -223,7 +223,7 @@ errado do código.
 
 ```bash
 # vazão do núcleo ARM e custo de entrar no guest
-cargo run --release -p zeebx-classical-standalone -- bench-dynarmic <jogo.mod>
+cargo run --release -p zeebx-standalone-egui -- bench-dynarmic <jogo.mod>
 
 # um jogo sem janela, com o relatório completo e o resumo de chamadas
 cargo run --release -- run "roms/Quake.zip" --seconds=6

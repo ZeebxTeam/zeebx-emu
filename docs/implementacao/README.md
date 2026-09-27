@@ -40,7 +40,7 @@ Estas medições ficam no repositório justamente para não precisar adivinhar:
 
 ```bash
 # vazão do núcleo ARM recompilado
-cargo run --release -p zeebx-classical-standalone -- bench-dynarmic <jogo.mod>
+cargo run --release -p zeebx-standalone-egui -- bench-dynarmic <jogo.mod>
 
 # um jogo sem janela, com o resumo de chamadas de API no fim
 cargo run --release -- run caminho/para/jogo.mod --seconds=6 --trace

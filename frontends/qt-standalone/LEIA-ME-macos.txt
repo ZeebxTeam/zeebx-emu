@@ -1,0 +1,13 @@
+O macOS pode recusar o Zeebx na primeira abertura, com o aviso
+"Zeebx Qt.app is damaged and can't be opened. You should move it to the Trash."
+
+O aplicativo não está danificado. O sistema marca o que veio da internet
+e, como esta build ainda não é assinada pela Apple, o Gatekeeper usa essa frase.
+
+Arraste o Zeebx para a pasta Aplicativos e rode no Terminal:
+
+    xattr -dr com.apple.quarantine "/Applications/Zeebx Qt.app"
+
+Depois:
+
+    open "/Applications/Zeebx Qt.app"

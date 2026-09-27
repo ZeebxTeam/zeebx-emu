@@ -104,8 +104,8 @@ fn chaves_do_rust(pasta: &Path) -> Vec<(String, String)> {
 #[test]
 fn toda_chave_usada_pela_interface_existe_no_catalogo() {
     let raiz = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let mut chaves = chaves_do_qml(&raiz.join("frontends/classical-standalone/qml"));
-    chaves.extend(chaves_do_rust(&raiz.join("frontends/classical-standalone/src")));
+    let mut chaves = chaves_do_qml(&raiz.join("frontends/qt-standalone/qml"));
+    chaves.extend(chaves_do_rust(&raiz.join("frontends/qt-standalone/src")));
     chaves.extend(chaves_do_rust(&raiz.join("src/ui")));
     chaves.extend(chaves_do_rust(&raiz.join("frontends/android/src")));
     // Sem nada achado, o teste passaria por não olhar: a pasta mudou de lugar, ou a extração

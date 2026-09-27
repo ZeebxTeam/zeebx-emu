@@ -27,8 +27,8 @@ FERRAMENTAS = [
     ("python3", "Python 3 (unicorn/QEMU)", "python3"),
 ]
 
-# O Qt 6 da interface entra junto: os `-dev` para compilar, e os módulos QML e o plugin do Wayland
-# para a janela abrir depois. Sem o Qt, `--no-default-features` compila a interface do egui.
+# O Qt 6 do `qt-standalone` entra junto: os `-dev` para compilar, e os módulos QML e o plugin do
+# Wayland para a janela abrir depois. O `egui-standalone` não precisa dele.
 PACOTES = {
     "debian": "sudo apt install build-essential cmake ninja-build pkg-config python3 libclang-dev libglib2.0-dev"
     " qt6-base-dev qt6-base-dev-tools qt6-declarative-dev qt6-declarative-dev-tools qmake6 qt6-wayland"
@@ -130,7 +130,7 @@ def main():
     qt = versao_do_qt()
     qt_serve = qt is not None and tuple(int(n) for n in qt.split(".")[:2]) >= QT_MINIMO
     print(
-        f"  [{'ok ' if qt_serve else 'FALTA'}] Qt {qt or '6':<9} a interface (6.{QT_MINIMO[1]} ou mais novo)"
+        f"  [{'ok ' if qt_serve else 'FALTA'}] Qt {qt or '6':<9} o zeebx-qt (6.{QT_MINIMO[1]} ou mais novo)"
     )
     if not qt_serve:
         faltando.append("qt6")

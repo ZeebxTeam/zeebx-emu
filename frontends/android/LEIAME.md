@@ -3,7 +3,7 @@
 O núcleo é o mesmo. O que muda é quem o gira.
 
 A emulação — o BREW, a CPU, o rasterizador, o carregador — virou a biblioteca `zeebx`, e três
-coisas a consomem: o binário de desktop (`frontends/classical-standalone`, com a janela do egui e a linha de
+coisas a consomem: o binário de desktop (`frontends/egui-standalone`, com a janela do egui e a linha de
 comando), os testes, e o `.so` deste diretório. Nenhuma linha de emulação sabe em qual dos três
 está rodando.
 

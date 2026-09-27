@@ -1,7 +1,8 @@
 [workspace]
 members = [
     ".",
-    "frontends/classical-standalone",
+    "frontends/egui-standalone",
+    "frontends/qt-standalone",
     "frontends/libretro",
     "frontends/android",
     "frontends/headless",

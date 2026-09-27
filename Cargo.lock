@@ -5538,21 +5538,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "zeebx-classical-standalone"
-version = "0.3.0"
-dependencies = [
- "cxx",
- "cxx-qt",
- "cxx-qt-build",
- "cxx-qt-lib",
- "glow",
- "qt-build-utils",
- "rfd",
- "winresource",
- "zeebx",
-]
-
-[[package]]
 name = "zeebx-headless"
 version = "0.3.0"
 dependencies = [
@@ -5572,6 +5557,29 @@ version = "0.3.0"
 dependencies = [
  "cc",
  "glow",
+ "zeebx",
+]
+
+[[package]]
+name = "zeebx-standalone-egui"
+version = "0.3.0"
+dependencies = [
+ "winresource",
+ "zeebx",
+]
+
+[[package]]
+name = "zeebx-standalone-qt"
+version = "0.3.0"
+dependencies = [
+ "cxx",
+ "cxx-qt",
+ "cxx-qt-build",
+ "cxx-qt-lib",
+ "glow",
+ "qt-build-utils",
+ "rfd",
+ "winresource",
  "zeebx",
 ]
 
