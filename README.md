@@ -134,10 +134,11 @@ São dois formatos em cada um dos quatro sistemas, e o nome do arquivo diz qual 
 | `zeebx-headless-<sistema>.zip` | o binário sem interface, com o `config.ini` e o leia-me |
 | `zeebx-android-arm64-v8a.apk` | o aplicativo de Android |
 
-No macOS, a primeira abertura pode dizer que o `Zeebx.app` está damaged. O aplicativo não está:
-o Gatekeeper marca o que veio da internet, e esta build ainda não é assinada pela Apple. A imagem
-traz um `LEIA-ME.txt` ao lado do aplicativo. O comando é
-`xattr -dr com.apple.quarantine "/Applications/Zeebx.app"`, depois de arrastar para Aplicativos.
+No macOS, a primeira abertura avisa que a Apple não pôde verificar o Zeebx: esta build é assinada
+ad-hoc, e não pela Apple. Ela se libera em Ajustes do Sistema > Privacidade e Segurança > "Abrir
+Mesmo Assim", ou com `xattr -dr com.apple.quarantine "/Applications/Zeebx.app"` depois de arrastar
+para Aplicativos. A imagem traz um `LEIA-ME.txt` ao lado do aplicativo. Em Mac com chip da Apple,
+use o `macos-arm64`: o `macos-x86_64` roda pelo Rosetta, e foi nele que os jogos pararam na issue 53.
 
 A APK sai assinada com a **chave de depuração**, que é a que o Gradle gera sozinho: serve para
 instalar de lado (`adb install`), não para a Play Store — aquela pede a chave de publicação, que

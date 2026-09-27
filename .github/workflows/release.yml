@@ -96,11 +96,35 @@ jobs:
       # manifesto onde é chamado, e desde a 0.3.0 ela mora no pacote que produz o binário. Os
       # pacotes continuam saindo em `target/pacotes` da raiz, pelo `out-dir` de lá.
       - name: Pacotes
+        if: runner.os != 'macOS'
         working-directory: frontends/egui-standalone
         env:
           # O AppImage é montado sem FUSE no runner.
           APPIMAGE_EXTRACT_AND_RUN: "1"
         run: cargo packager --release --formats ${{ matrix.formatos }}
+
+      # **O `.app` inteiro sai assinado ad-hoc, e não só o binário.** O `cargo packager` sem
+      # identidade deixa o executável só com a assinatura que o linker põe (`linker-signed`) e o
+      # bundle sem `_CodeSignature`. No Apple Silicon, com a quarentena de quem baixou, o
+      # Gatekeeper chama isso de "danificado" e manda para o Lixo — foi o que a v0.3.0 fez num
+      # M4 (issue 53), e quem caiu nisso foi para o `.dmg` de Intel, que roda pelo Rosetta. Com o
+      # selo ad-hoc o aviso passa a ser o de desenvolvedor não verificado, que se libera em
+      # Ajustes > Privacidade e Segurança. O `.dmg` sai do `hdiutil` para levar o `.app` assinado,
+      # com o atalho para Aplicativos, como o do `cargo packager` levava.
+      - name: Imagem do macOS
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd frontends/egui-standalone && cargo packager --release --formats app)
+          app=target/pacotes/Zeebx.app
+          codesign --force --deep --sign - "$app"
+          codesign --verify --deep --strict "$app"
+          raiz=$(mktemp -d)
+          cp -R "$app" "$raiz/"
+          ln -s /Applications "$raiz/Applications"
+          hdiutil create -volname Zeebx -srcfolder "$raiz" -ov -format UDZO target/pacotes/Zeebx.dmg
+          rm -rf "$raiz"
 
       # O `cargo-packager` nomeia pelo produto e pela versão (`Zeebx_0.2.1_x64-setup.exe`), e o
       # nome não diz de qual sistema nem de qual formato o arquivo é. Numa release com oito
