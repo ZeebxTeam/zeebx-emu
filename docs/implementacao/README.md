@@ -32,6 +32,7 @@ função não está aqui.
 | [19-jit-arm-e-renderizadores.md](19-jit-arm-e-renderizadores.md) | Dynarmic, o gargalo dos renderizadores ARM e como validar sem alterar o tempo BREW |
 | [20-boomerang-e-wii-remote.md](20-boomerang-e-wii-remote.md) | O controle de movimento: o relatório do receptor lido no código dos jogos, e o Wii Remote no lugar dele |
 | [21-migracao-para-qt.md](21-migracao-para-qt.md) | Plano da troca do egui por Qt Quick com cxx-qt, e o que o núcleo empresta da janela |
+| [22-screenshots.md](22-screenshots.md) | O F9 da janela do jogo: que quadro sai, em que tamanho, onde grava, e a régua do RetroAchievements |
 
 ## Como medir
 
@@ -39,7 +40,7 @@ Estas medições ficam no repositório justamente para não precisar adivinhar:
 
 ```bash
 # vazão do núcleo ARM recompilado
-cargo run --release -p zeebx-classical-standalone -- bench-dynarmic <jogo.mod>
+cargo run --release -p zeebx-standalone-egui -- bench-dynarmic <jogo.mod>
 
 # um jogo sem janela, com o resumo de chamadas de API no fim
 cargo run --release -- run caminho/para/jogo.mod --seconds=6 --trace

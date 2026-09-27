@@ -1168,6 +1168,30 @@ impl Session {
         self.machine.quadro_grande()
     }
 
+    /// O quadro que a janela mostra, em RGB de oito bits por canal: largura, altura e os bytes.
+    ///
+    /// **O grande só quando é ele que está à mostra**, pela mesma pergunta do
+    /// [`Session::quadro_na_placa`]. O [`Session::quadro_grande`] sozinho lê a placa mesmo com um
+    /// HUD desenhado depois, e o print sairia sem o HUD. Fora disso vale a tela do console, em
+    /// 640×480. Com a placa, é GL: quem chama deixa o contexto do rasterizador corrente. Ver
+    /// `docs/implementacao/22-screenshots.md`.
+    pub fn captura(&mut self) -> (u32, u32, Vec<u8>) {
+        if self.quadro_na_placa().is_some()
+            && let Some((largura, altura, rgba)) = self.machine.quadro_grande_rgba()
+        {
+            // Sem o alfa: há jogo que limpa o fundo com alfa zero, e o print sairia transparente.
+            let rgb = rgba.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
+            return (largura as u32, altura as u32, rgb);
+        }
+        let tela = self.screen();
+        let rgb = tela
+            .to_argb()
+            .into_iter()
+            .flat_map(|p| [(p >> 16) as u8, (p >> 8) as u8, p as u8])
+            .collect();
+        (tela.width(), tela.height(), rgb)
+    }
+
     /// Liga a contagem de tempo real por método de API. Ver [`Session::perfil_de_api`].
     pub fn liga_perfil_de_api(&mut self) {
         self.machine.enable_api_profile();

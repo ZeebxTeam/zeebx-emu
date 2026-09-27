@@ -20,7 +20,8 @@ Cargo.toml          a biblioteca `zeebx` — o emulador inteiro, sem interface
 src/                BREW, CPU, vídeo, áudio, carregador, sessão, save state
 src/ui/             telas e estado compartilhados entre frontends (ver o aviso abaixo)
 frontends/
-  classical-standalone/   o binário `zeebx`: janela Qt (a do egui em `zeebx egui`) e linha de comando
+  egui-standalone/        o binário `zeebx`: janela do egui e linha de comando
+  qt-standalone/          legado: o binário `zeebx-qt`, em Qt Quick, fora do CI e da release
   headless/               sem interface, configurado por `config.ini`
   libretro/               o core do RetroArch
   android/                o aplicativo, sem uma linha de Java
@@ -54,15 +55,17 @@ na tag.
 
 ## Compilar e provar
 
-O standalone pede o **Qt 6** (6.4 ou mais novo): a feature `ui-qt` vem ligada, e o build acha o Qt
-pelo `qmake6`, pelo `qmake` ou pelo `QMAKE`. `python3 ferramentas/prepara_build.py` diz o que falta.
-A interface Qt e a migração estão em
+O desktop é o frontend do egui (`zeebx-standalone-egui`, binário `zeebx`). O do Qt
+(`zeebx-standalone-qt`, binário `zeebx-qt`) fica no repositório como legado, fora do CI e da release. Só o do Qt pede o **Qt 6** (6.4 ou
+mais novo), que o build acha pelo `qmake6`, pelo `qmake` ou pelo `QMAKE`.
+`python3 ferramentas/prepara_build.py` diz o que falta. A interface Qt está em
 [`docs/implementacao/21-migracao-para-qt.md`](docs/implementacao/21-migracao-para-qt.md).
 
 ```bash
-cargo build --release --locked -p zeebx-classical-standalone   # o binário `zeebx`
-cargo test  --release --locked -p zeebx -p zeebx-classical-standalone
-timeout 60 ./target/release/zeebx controles                    # sobe de verdade, sem tela
+cargo build --release --locked -p zeebx-standalone-egui     # o binário `zeebx`
+cargo build --release --locked -p zeebx-standalone-qt       # o binário `zeebx-qt`
+cargo test  --release --locked -p zeebx -p zeebx-standalone-egui -p zeebx-standalone-qt
+timeout 60 ./target/release/zeebx controles                 # sobe de verdade, sem tela
 
 cargo build --release --locked -p zeebx-headless -p zeebx-libretro
 python3 ferramentas/verifica_core.py target/release/libzeebx_libretro.so
@@ -93,13 +96,10 @@ export JAVA_HOME="$HOME/Android/jdk"
 
 **A tag é o único gatilho automático.** O `release.yml` dispara em `v0.0.0` e monta a release como
 rascunho. O `ci.yml`, o `libretro.yml`, o `headless.yml`, o `android.yml`, o `ios.yml` e o
-`qt.yml` são `workflow_dispatch`: o CI padrão já compila o standalone clássico e, quando
-aplicável, o Qt nas seis plataformas, enquanto `ios.yml` e `qt.yml` ficam disponíveis para
-builds específicos e para montar os instaladores antes da tag. Esses workflows não precisam
-rodar em cada push: seis runners por execução, ou até doze jobs quando o Qt entra em cena, é
-caro demais para gastar automaticamente, e quem decide é quem pede. A exceção é o
-`discord-issues.yml`, que não compila nada: avisa no Discord quando uma issue abre, fecha ou
-muda de responsável.
+`qt.yml` são `workflow_dispatch`: o CI padrão compila o frontend do egui nas seis plataformas. O do Qt é
+legado: não entra no CI nem na release, e só o `qt.yml`, à mão, ainda o compila. Doze jobs por execução é caro demais
+para gastar em cada push, e quem decide é quem pede. A exceção é o `discord-issues.yml`, que não
+compila nada: avisa no Discord quando uma issue abre, fecha ou muda de responsável.
 
 Se você mexeu em algo que só um deles cobre — o APK, o core num alvo ARM —, diga ao humano que
 vale disparar aquele workflow antes da tag. Você não consegue dispará-lo.

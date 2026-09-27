@@ -13,7 +13,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::mpsc::{Receiver, TryRecvError};
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::time::Instant;
 
 use zeebx::eframe::egui::Key;
@@ -31,6 +31,7 @@ use zeebx::video::icon::{self, Image};
 use zeebx::ui::entrada::EntradaDoDesktop;
 use zeebx::ui::i18n::{self, Catalog};
 use zeebx::ui::partida::{self, Abertura, Partida, Relatorio, Saida};
+use zeebx::ui::screenshot;
 use zeebx::ui::settings::{self, Proporcao, Settings};
 use zeebx::video::rasterizer::QuadroNaPlaca;
 use zeebx::video::display::Framebuffer;
@@ -75,7 +76,20 @@ pub struct Volta {
     pub parou: String,
     /// O aviso de calibração do Boomerang neste quadro, se há um. Ver [`zeebx::ui::calibracao`].
     pub aviso: Option<AvisoNaTela>,
+    /// Um screenshot terminou de gravar desde a volta anterior.
+    pub screenshot: Option<AvisoDeScreenshot>,
 }
+
+/// O que dizer de um screenshot que terminou, já traduzido.
+pub struct AvisoDeScreenshot {
+    pub texto: String,
+    pub falhou: bool,
+    /// O endereço `file://` da pasta do jogo, para o clique no aviso abri-la.
+    pub pasta: String,
+}
+
+/// O que a thread de gravação responde: o arquivo, ou o motivo da falha, e a pasta.
+type Gravacao = (Result<PathBuf, String>, PathBuf);
 
 /// O aviso de calibração já com os textos, como a janela o desenha.
 pub struct AvisoNaTela {
@@ -145,6 +159,8 @@ pub struct Nucleo {
     /// As teclas apertadas na janela do jogo, como `egui::Key`. Ver
     /// [`zeebx::ui::entrada::tecla_apertada`].
     teclas: HashSet<Key>,
+    /// Por onde as threads de gravação dos screenshots respondem. Ver [`Nucleo::screenshot`].
+    gravacoes: (Sender<Gravacao>, Receiver<Gravacao>),
 }
 
 impl Nucleo {
@@ -187,6 +203,7 @@ impl Nucleo {
             log_dispensado: false,
             calibracao: Calibracao::default(),
             teclas: HashSet::new(),
+            gravacoes: mpsc::channel(),
         };
         nucleo.procura_de_novo();
         // Na abertura, a pergunta ao GitHub, como no egui: a resposta chega pelo relógio da
@@ -599,13 +616,73 @@ impl Nucleo {
         self.teclas.clear();
     }
 
+    /// Se a tecla é a do screenshot. A janela do jogo pergunta antes de passá-la ao jogo: o
+    /// atalho ganha de um botão mapeado na mesma tecla.
+    pub fn e_atalho_de_screenshot(&self, tecla: Key) -> bool {
+        Key::from_name(&self.settings.atalhos.screenshot) == Some(tecla)
+    }
+
+    /// Grava o quadro que está na tela. `carimbo` é a hora local, que vem do Qt.
+    ///
+    /// A leitura é aqui, com o contexto corrente, porque a textura só se lê nele; o PNG vai para
+    /// uma thread, e a resposta chega pelo [`Nucleo::passo`]. Ver
+    /// `docs/implementacao/22-screenshots.md`.
+    pub fn screenshot(&mut self, carimbo: &str) {
+        let titulo = self.titulo().unwrap_or_default();
+        let com_placa = self.gl.is_some();
+        let Some(partida) = self.partida.as_mut() else {
+            return;
+        };
+        let (largura, altura, rgb) = no_contexto(com_placa, || partida.sessao_mut().captura());
+        let raiz = screenshot::pasta(self.settings.screenshots_dir.as_deref());
+        let pasta = raiz.join(screenshot::nome_seguro(&titulo));
+        let carimbo = carimbo.to_string();
+        let resposta = self.gravacoes.0.clone();
+        std::thread::spawn(move || {
+            let gravado = screenshot::grava(&raiz, &titulo, &carimbo, largura, altura, &rgb)
+                .map_err(|erro| erro.to_string());
+            match &gravado {
+                Ok(caminho) => eprintln!("screenshot: {}", caminho.display()),
+                Err(erro) => eprintln!("screenshot não gravado em {}: {erro}", pasta.display()),
+            }
+            let _ = resposta.send((gravado, pasta));
+        });
+    }
+
+    /// O aviso do screenshot que terminou de gravar, se algum terminou. Havendo vários, o último.
+    fn aviso_de_screenshot(&self) -> Option<AvisoDeScreenshot> {
+        let (gravado, pasta) = self.gravacoes.1.try_iter().last()?;
+        let endereco = screenshot::endereco_de(&pasta);
+        Some(match gravado {
+            // Só o nome do arquivo: a pasta é a do jogo, e o clique no aviso a abre.
+            Ok(caminho) => AvisoDeScreenshot {
+                texto: self.catalogo.format(
+                    "play.screenshot.saved",
+                    &[("file", &caminho.file_name().unwrap_or_default().to_string_lossy())],
+                ),
+                falhou: false,
+                pasta: endereco,
+            },
+            Err(motivo) => AvisoDeScreenshot {
+                texto: self.catalogo.format("play.screenshot.failed", &[("reason", &motivo)]),
+                falhou: true,
+                pasta: endereco,
+            },
+        })
+    }
+
     /// Uma volta: entrada, emulação, e o que o jogo pediu depois — lançar outro, voltar à Z-Wheel,
     /// fechar.
     ///
     /// `area` é o tamanho da tela do jogo na janela, para a proporção "da janela".
     pub fn passo(&mut self, area: [f32; 2]) -> Volta {
+        // Antes de tudo: o aviso tem de sair também na volta em que o jogo fechou.
+        let screenshot = self.aviso_de_screenshot();
         let Some(partida) = self.partida.as_mut() else {
-            return Volta::default();
+            return Volta {
+                screenshot,
+                ..Volta::default()
+            };
         };
         let pads = self.entrada.pads(&self.settings.controls, &self.teclas);
         let movimentos = self.entrada.movimentos(&self.settings.controls);
@@ -647,6 +724,7 @@ impl Nucleo {
                 self.fecha();
                 return Volta {
                     fechou: true,
+                    screenshot,
                     ..Volta::default()
                 };
             }
@@ -669,6 +747,7 @@ impl Nucleo {
             volta.parou = self.catalogo.format("play.failed", &[("reason", &motivo)]);
         }
         volta.aviso = self.aviso_de_calibracao();
+        volta.screenshot = screenshot;
         volta
     }
 

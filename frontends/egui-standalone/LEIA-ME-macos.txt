@@ -1,0 +1,19 @@
+O macOS pode recusar o Zeebx na primeira abertura, porque esta build ainda
+não é assinada pela Apple. O aplicativo não tem nada de errado.
+
+Arraste o Zeebx para a pasta Aplicativos e abra. Se aparecer
+"A Apple não pôde verificar se o Zeebx está livre de malware":
+
+    Ajustes do Sistema > Privacidade e Segurança > "Abrir Mesmo Assim"
+
+Se aparecer "Zeebx.app is damaged and can't be opened", ou se preferir o
+Terminal, rode:
+
+    xattr -dr com.apple.quarantine "/Applications/Zeebx.app"
+
+Depois:
+
+    open "/Applications/Zeebx.app"
+
+Nos Macs com chip da Apple (M1 ou posterior), use o arquivo macos-arm64.
+O macos-x86_64 é dos Macs com Intel.

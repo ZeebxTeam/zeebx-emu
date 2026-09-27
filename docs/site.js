@@ -290,22 +290,25 @@ const SISTEMA_DA_EXTENSAO = { exe: 'windows', dmg: 'macos', deb: 'linux', appima
 function classificar(nome) {
   const n = nome.toLowerCase();
   const formato = n.split('.').pop();
-  let tipo = 'outro', so = SISTEMA_DA_EXTENSAO[formato] || 'outro', arch = null, m;
+  let tipo = 'outro', so = SISTEMA_DA_EXTENSAO[formato] || 'outro', arch = null, interface_ = null, m;
 
   if ((m = n.match(/^zeebx_libretro-(.+)\.zip$/))) {
     tipo = 'libretro';
     if (m[1] === 'wasm') { so = 'web'; arch = 'wasm'; }
     else [so, arch] = sistemaEArquitetura(m[1]);
-  } else if ((m = n.match(/^zeebx-(standalone|headless)-(.+?)(?:-setup)?\.[a-z]+$/))) {
+  } else if ((m = n.match(/^zeebx-(standalone|headless)-(?:(egui|qt)-)?(.+?)(?:-setup)?\.[a-z]+$/))) {
+    // O desktop sai em dois frontends, `zeebx-standalone-egui-…` e `zeebx-standalone-qt-…`; o nome
+    // sem a interface é o das releases de antes da separação, que eram do egui.
     tipo = m[1] === 'standalone' ? 'app' : 'headless';
-    [so, arch] = sistemaEArquitetura(m[2]);
+    if (tipo === 'app' && so !== 'android') interface_ = m[2] || 'egui';
+    [so, arch] = sistemaEArquitetura(m[3]);
   } else if ((m = n.match(/^zeebx-android-(.+)\.apk$/))) {
     tipo = 'app'; so = 'android'; arch = ARQUITETURAS[m[1]] || m[1];
   } else if ((m = n.match(/^zeebx_[\d.]+_(.+?)(?:-setup)?\.(exe|dmg|deb|appimage)$/))) {
     tipo = 'app'; arch = ARQUITETURAS[m[1]] || m[1];
   }
 
-  return { tipo, so, arch, formato };
+  return { tipo, so, arch, formato, interface: interface_ };
 }
 
 function sistemaEArquitetura(s) {
@@ -341,7 +344,10 @@ function rotuloFormato(formato) {
 function descricao(a) {
   if (a.tipo === 'libretro') return t(a.so === 'web' ? 'desc.wasm' : 'desc.libretro');
   if (a.tipo === 'headless') return t('desc.headless');
-  if (a.tipo === 'app' && TEXTOS.pt[`desc.${a.formato}`]) return t(`desc.${a.formato}`);
+  if (a.tipo === 'app' && TEXTOS.pt[`desc.${a.formato}`]) {
+    const desc = t(`desc.${a.formato}`);
+    return a.interface ? `${desc} · ${a.interface === 'qt' ? 'Qt' : 'egui'}` : desc;
+  }
   return t('desc.outro');
 }
 

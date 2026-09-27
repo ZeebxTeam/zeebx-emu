@@ -1129,13 +1129,20 @@ impl<C: CpuBackend> Machine<C> {
 
     /// O quadro 3D na resolução interna, como superfície, para gravar sem janela.
     pub fn quadro_grande(&mut self) -> Option<Framebuffer> {
-        let (w, h, rgba) = self.gl.le_quadro_grande()?;
+        let (w, h, rgba) = self.quadro_grande_rgba()?;
         let mut quadro = Framebuffer::new(w as u32, h as u32);
         for (i, p) in rgba.chunks_exact(4).enumerate() {
             let cor = Rgb { r: p[0], g: p[1], b: p[2] };
             quadro.set_pixel((i % w) as i32, (i / w) as i32, cor);
         }
         Some(quadro)
+    }
+
+    /// O quadro 3D na resolução interna como a placa o tem: RGBA de oito bits, linhas de cima
+    /// para baixo. O [`Machine::quadro_grande`] o passa a RGB565, e isso tira bits que a placa já
+    /// tinha calculado; o screenshot quer os oito.
+    pub fn quadro_grande_rgba(&mut self) -> Option<(usize, usize, Vec<u8>)> {
+        self.gl.le_quadro_grande()
     }
 
     /// A resolução interna do rasterizador da placa. Ver [`Rasterizador::define_escala`].

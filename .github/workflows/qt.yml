@@ -1,6 +1,7 @@
-# A interface Qt: compila e testa o standalone com a feature `ui-qt` nos três sistemas. Nasceu
-# como o ponto 4 da fase 0 de `docs/implementacao/21-migracao-para-qt.md`; desde a fase 8, com a
-# feature, o Qt é a interface padrão, e a do egui fica em `zeebx egui`.
+# O frontend Qt (`frontends/qt-standalone`, binário `zeebx-qt`), **legado**: fora do `ci.yml` e do
+# `release.yml`, só este workflow, à mão, ainda o compila, testa e empacota nos
+# três sistemas. Nasceu como o ponto 4 da fase 0 de `docs/implementacao/21-migracao-para-qt.md`.
+# O frontend do egui (`frontends/egui-standalone`, binário `zeebx`) é outro pacote e não entra aqui.
 #
 # **Separado do `ci.yml` de propósito.** O `ci.yml` responde se o binário que vai para a release
 # sai; este responde se a migração para Qt é viável fora do Linux em que ela nasceu. Um Qt que não
@@ -29,7 +30,7 @@
 # versão passa a ser uma mudança deste arquivo, feita quando o patch novo estiver completo.
 #
 # **Os instaladores saem como artefatos da execução** (fase 9 do plano), com os mesmos passos do
-# `release.yml` e a mesma configuração, a do `Cargo.toml` do standalone: aqui eles se baixam na
+# `release.yml` e a mesma configuração, a do `Cargo.toml` do `qt-standalone`: aqui eles se baixam na
 # página da execução para testar antes de uma tag, e cada um é aberto numa tela virtual antes de
 # sair. O AppImage, o NSIS e o `.dmg` levam o próprio Qt; o `.deb` usa o do sistema, e por isso
 # tem um job à parte, compilado contra o Qt do Ubuntu 24.04.
@@ -60,22 +61,22 @@ jobs:
           # ou mais nova que a de onde foi montado, e a release o monta no 22.04 pelo mesmo motivo.
           - nome: linux-x86_64
             sistema: ubuntu-22.04
-            binario: target/release/zeebx
+            binario: target/release/zeebx-qt
             qt: "6.11.2"
             formato: appimage
           - nome: windows-x86_64
             sistema: windows-latest
-            binario: target/release/zeebx.exe
+            binario: target/release/zeebx-qt.exe
             qt: "6.10.3"
             formato: nsis
           - nome: macos-x86_64
             sistema: macos-15-intel
-            binario: target/release/zeebx
+            binario: target/release/zeebx-qt
             qt: "6.11.2"
             formato: app
           - nome: macos-arm64
             sistema: macos-latest
-            binario: target/release/zeebx
+            binario: target/release/zeebx-qt
             qt: "6.11.2"
             formato: app
     steps:
@@ -125,19 +126,18 @@ jobs:
         env:
           CARGO_PROFILE_DEV_DEBUG: "0"
           QMAKE: ${{ env.QT_ROOT_DIR }}/bin/qmake${{ runner.os == 'Windows' && '.exe' || '' }}
-        run: cargo build --release --locked -p zeebx-classical-standalone --features ui-qt
+        run: cargo build --release --locked -p zeebx-standalone-qt
 
-      # Os testes da ponte, e os do standalone de sempre, agora com o Qt linkado no binário de
-      # teste.
+      # Os testes da ponte, com o Qt linkado no binário de teste.
       - name: Testes
         shell: bash
         env:
           CARGO_PROFILE_DEV_DEBUG: "0"
           CARGO_PROFILE_TEST_DEBUG: "0"
           QMAKE: ${{ env.QT_ROOT_DIR }}/bin/qmake${{ runner.os == 'Windows' && '.exe' || '' }}
-        run: cargo test --release --locked -p zeebx-classical-standalone --features ui-qt
+        run: cargo test --release --locked -p zeebx-standalone-qt
 
-      # `controles` não abre janela, mas o binário com Qt linkado precisa achar as bibliotecas do
+      # `--version` não abre janela, mas o binário com Qt linkado precisa achar as bibliotecas do
       # Qt para chegar ao `main`: uma DLL ou um framework que não carrega falha aqui, antes de
       # qualquer linha nossa.
       - name: O binário abre (Linux)
@@ -145,20 +145,20 @@ jobs:
         shell: bash
         run: |
           ldd ${{ matrix.binario }} | grep -i qt
-          timeout 60 ${{ matrix.binario }} controles
+          timeout 60 ${{ matrix.binario }} --version
 
       - name: O binário abre (macOS)
         if: runner.os == 'macOS'
         shell: bash
         run: |
           otool -L ${{ matrix.binario }} | grep -i qt
-          perl -e 'alarm 60; exec @ARGV' ${{ matrix.binario }} controles
+          perl -e 'alarm 60; exec @ARGV' ${{ matrix.binario }} --version
 
       - name: O binário abre (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $prova = Start-Process -FilePath "${{ matrix.binario }}" -ArgumentList "controles" -PassThru -NoNewWindow
+          $prova = Start-Process -FilePath "${{ matrix.binario }}" -ArgumentList "--version" -PassThru -NoNewWindow
           if (-not $prova.WaitForExit(60000)) { $prova.Kill(); throw "o binario pendurou" }
           if ($prova.ExitCode -ne 0) { throw "o binario saiu com $($prova.ExitCode)" }
 
@@ -173,16 +173,16 @@ jobs:
       - name: AppImage
         if: runner.os == 'Linux'
         shell: bash
-        working-directory: frontends/classical-standalone
+        working-directory: frontends/qt-standalone
         env:
           QMAKE: ${{ env.QT_ROOT_DIR }}/bin/qmake
-          QML_SOURCES_PATHS: ${{ github.workspace }}/frontends/classical-standalone/qml
+          QML_SOURCES_PATHS: ${{ github.workspace }}/frontends/qt-standalone/qml
           EXTRA_PLATFORM_PLUGINS: libqwayland.so
           EXTRA_QT_MODULES: waylandcompositor
           APPIMAGE_EXTRACT_AND_RUN: "1"
         run: cargo packager --release --formats appimage
 
-      # O `windeployqt` junta numa pasta o que o `zeebx.exe` precisa do Qt — as DLLs, os plugins e
+      # O `windeployqt` junta numa pasta o que o `zeebx-qt.exe` precisa do Qt — as DLLs, os plugins e
       # os módulos QML que os arquivos de `qml/` importam —, e a configuração dos pacotes manda o
       # NSIS instalar a pasta ao lado do executável.
       - name: Instalador do Windows
@@ -192,9 +192,9 @@ jobs:
           QMAKE: ${{ env.QT_ROOT_DIR }}/bin/qmake.exe
         run: |
           windeployqt --release --no-translations \
-            --qmldir frontends/classical-standalone/qml \
-            --dir target/qt-implantado target/release/zeebx.exe
-          cd frontends/classical-standalone
+            --qmldir frontends/qt-standalone/qml \
+            --dir target/qt-implantado target/release/zeebx-qt.exe
+          cd frontends/qt-standalone
           cargo packager --release --formats nsis
 
       # O `cargo packager` monta o `.app`, e o `macdeployqt` põe dentro dele os frameworks, os
@@ -209,15 +209,15 @@ jobs:
           QMAKE: ${{ env.QT_ROOT_DIR }}/bin/qmake
         run: |
           set -euo pipefail
-          (cd frontends/classical-standalone && cargo packager --release --formats app)
-          app=target/pacotes/Zeebx.app
-          macdeployqt "$app" -qmldir="$GITHUB_WORKSPACE/frontends/classical-standalone/qml"
+          (cd frontends/qt-standalone && cargo packager --release --formats app)
+          app="target/pacotes/Zeebx Qt.app"
+          macdeployqt "$app" -qmldir="$GITHUB_WORKSPACE/frontends/qt-standalone/qml"
           codesign --force --deep --sign - "$app"
           codesign --verify --deep --strict "$app"
           raiz=$(mktemp -d)
           cp -R "$app" "$raiz/"
           ln -s /Applications "$raiz/Applications"
-          hdiutil create -volname Zeebx -srcfolder "$raiz" -ov -format UDZO target/pacotes/Zeebx.dmg
+          hdiutil create -volname "Zeebx Qt" -srcfolder "$raiz" -ov -format UDZO target/pacotes/Zeebx.dmg
           rm -rf "$raiz"
 
       - name: Nomear
@@ -293,7 +293,7 @@ jobs:
         run: cargo install cargo-packager --locked
 
       - name: Pacote
-        working-directory: frontends/classical-standalone
+        working-directory: frontends/qt-standalone
         env:
           QMAKE: /usr/bin/qmake6
         run: |
@@ -310,11 +310,11 @@ jobs:
               apt-get update -qq
               apt-get install -y -qq /p/zeebx-qt-linux-x86_64.deb
               apt-get install -y -qq xvfb xauth libgl1-mesa-dri > /dev/null
-              if ldd /usr/bin/zeebx | grep "not found"; then exit 1; fi
+              if ldd /usr/bin/zeebx-qt | grep "not found"; then exit 1; fi
               mkdir -p /tmp/cfg/zeebx
               set +e
               XDG_CONFIG_HOME=/tmp/cfg LANG=C.UTF-8 QT_FORCE_STDERR_LOGGING=1 \
-                timeout 15 xvfb-run -a zeebx > /tmp/abre.log 2>&1
+                timeout 15 xvfb-run -a zeebx-qt > /tmp/abre.log 2>&1
               saida=$?
               set -e
               cat /tmp/abre.log

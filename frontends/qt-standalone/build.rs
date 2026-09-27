@@ -14,7 +14,6 @@ fn main() {
             println!("cargo:warning=sem ícone no .exe: {erro}");
         }
     }
-    #[cfg(feature = "ui-qt")]
     interface_qt();
     println!("cargo:rerun-if-changed=../../assets/icones/zeebx.ico");
     println!("cargo:rerun-if-changed=build.rs");
@@ -22,7 +21,6 @@ fn main() {
 
 /// A ponte com o Qt: os `QObject`s escritos em Rust, a cola em C++ e o módulo QML. Ver
 /// `docs/implementacao/21-migracao-para-qt.md`.
-#[cfg(feature = "ui-qt")]
 fn interface_qt() {
     use cxx_qt_build::{CxxQtBuilder, QmlModule};
 

@@ -1,6 +1,6 @@
 [package]
-name = "zeebx-classical-standalone"
-version = "0.3.0"
+name = "zeebx-standalone-qt"
+version = "0.4.0"
 edition = "2024"
 license = "GPL-2.0-or-later"
 description = "O emulador definitivo de Zeebo!"
@@ -8,65 +8,52 @@ authors = ["ZeebxTeam"]
 repository = "https://github.com/ZeebxTeam/zeebx-emu"
 publish = false
 
-# **O nome do binário continua `zeebx`.** O pacote mudou de lugar e de nome; o que o usuário
-# digita, não. Trocar isso quebraria atalho, `.desktop`, script e a memória de quem já usa.
+# **Um frontend à parte, e não uma feature do `egui-standalone`.** Cada interface é um pacote, um
+# binário e um artefato: o `zeebx` continua sendo o do egui, e este é o `zeebx-qt`. Os dois
+# binários no mesmo `target/release` precisam de nomes diferentes.
 [[bin]]
-name = "zeebx"
+name = "zeebx-qt"
 path = "src/main.rs"
 
 [dependencies]
-# A janela do egui e tudo o que ela arrasta -- gilrs, rfd, Discord, glutin -- vêm pela feature
-# `desktop` do núcleo. Este crate não declara nenhuma delas: ele é a interface, e a interface é
-# a que o `desktop` já descreve.
+# O núcleo com a feature `desktop`: o áudio, a entrada e a sessão de jogo que o Qt reusa.
 zeebx = { path = "../..", features = ["desktop"] }
-# A interface Qt: docs/implementacao/21-migracao-para-qt.md. Fica atrás da feature `ui-qt`, ligada
-# por padrão, para nada disto chegar ao núcleo, que o core Libretro e o Android também consomem — e
-# para quem não tem o Qt 6 ainda compilar a interface do egui com `--no-default-features`, até ela
-# sair.
-cxx = { version = "1", optional = true }
-cxx-qt = { version = "0.10", optional = true }
-cxx-qt-lib = { version = "0.10", optional = true, features = ["qt_gui", "qt_qml"] }
+# A ponte com o Qt: docs/implementacao/21-migracao-para-qt.md.
+cxx = "1"
+cxx-qt = "0.10"
+cxx-qt-lib = { version = "0.10", features = ["qt_gui", "qt_qml"] }
 # O `Arc<glow::Context>` que a sessão recebe é o do `glow` que o núcleo usa: a mesma versão, o
 # mesmo tipo.
-glow = { version = "0.16", optional = true }
+glow = "0.16"
 # O seletor de pastas e de arquivos das configurações, o mesmo que o egui usa pelo núcleo: o `rfd`
 # não é reexportado de lá. Mesma versão e mesmas features, então a árvore não cresce.
-rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "async-std"], optional = true }
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "async-std"] }
 
-[features]
-# **A interface Qt é a padrão** (fase 8 do plano). O binário a abre, e a do egui fica em
-# `zeebx egui` por uma versão, para quem achar diferença ter como comparar; depois ela sai.
-default = ["ui-qt"]
-ui-qt = ["dep:cxx", "dep:cxx-qt", "dep:cxx-qt-lib", "dep:cxx-qt-build", "dep:qt-build-utils", "dep:glow", "dep:rfd"]
-
-# **Os instaladores vivem aqui, e não na raiz.** O `cargo packager` lê o manifesto do pacote que
-# produz o binário, e desde a 0.3.0 quem produz o `zeebx` é este crate. Os caminhos de ícone
-# sobem dois níveis porque o `assets/` continua na raiz do repositório -- ele é do projeto, não
-# deste frontend.
-# Os instaladores, gerados pelo `cargo packager --release`: `.deb` e AppImage no Linux, NSIS no
-# Windows, `.dmg` no macOS. O workflow `.github/workflows/release.yml` roda isto nos três sistemas
-# quando uma tag de versão é enviada.
+# Os instaladores do Qt, gerados pelo `cargo packager --release` rodado neste diretório: `.deb` e
+# AppImage no Linux, NSIS no Windows, `.dmg` no macOS. Nome, identificador e binário próprios, para
+# o Zeebx Qt instalar ao lado do Zeebx do egui sem um sobrescrever o outro. Os caminhos de ícone
+# sobem dois níveis porque o `assets/` continua na raiz do repositório.
 #
 # **O `cargo packager` não implanta o Qt**: cada sistema tem o passo dele no `release.yml` — o
 # `linuxdeploy-plugin-qt` no AppImage, o `windeployqt` no Windows, o `macdeployqt` no macOS — e o
 # `.deb` usa o Qt do sistema. Ver a fase 9 de `docs/implementacao/21-migracao-para-qt.md`.
 [package.metadata.packager]
-product-name = "Zeebx"
-identifier = "io.github.zeebxteam.zeebx"
+product-name = "Zeebx Qt"
+identifier = "io.github.zeebxteam.zeebx.qt"
 publisher = "ZeebxTeam"
 homepage = "https://github.com/ZeebxTeam/zeebx-emu"
 category = "Game"
 description = "O emulador definitivo de Zeebo!"
 out-dir = "../../target/pacotes"
-before-packaging-command = "cargo build --release --locked -p zeebx-classical-standalone"
+before-packaging-command = "cargo build --release --locked -p zeebx-standalone-qt"
 icons = ["../../assets/icones/zeebx-512.png", "../../assets/icones/zeebx.ico", "../../assets/icones/zeebx.icns"]
 # O Qt do Windows, que o `windeployqt` junta nesta pasta — as DLLs, os plugins e os módulos QML — e
-# o NSIS instala ao lado do `zeebx.exe`, com as subpastas. Só existe no Windows: nos outros sistemas
+# o NSIS instala ao lado do `zeebx-qt.exe`, com as subpastas. Só existe no Windows: nos outros sistemas
 # o caminho não casa com nada, e o `cargo packager` não inclui nada.
 resources = [{ src = "../../target/qt-implantado", target = "." }]
 
 [[package.metadata.packager.binaries]]
-path = "zeebx"
+path = "zeebx-qt"
 main = true
 
 [package.metadata.packager.deb]
@@ -130,7 +117,7 @@ minimum-system-version = "11.0"
 
 [build-dependencies]
 winresource = "0.1"
-cxx-qt-build = { version = "0.10", optional = true }
+cxx-qt-build = "0.10"
 # Só pelo `QResourceFile`, que dá apelido a um arquivo dos recursos do QML e que o cxx-qt-build não
 # reexporta: a imagem do Boomerang mora em `assets/`, dois níveis acima deste pacote.
-qt-build-utils = { version = "0.10", optional = true }
+qt-build-utils = "0.10"

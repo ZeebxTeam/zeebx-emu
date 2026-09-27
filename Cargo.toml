@@ -1,7 +1,8 @@
 [workspace]
 members = [
     ".",
-    "frontends/classical-standalone",
+    "frontends/egui-standalone",
+    "frontends/qt-standalone",
     "frontends/libretro",
     "frontends/android",
     "frontends/headless",
@@ -11,7 +12,7 @@ resolver = "3"
 
 [package]
 name = "zeebx"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 # O código do Zeebx é GPLv2 ou posterior. O backend de CPU padrão é o Dynarmic, para manter o
 # núcleo compatível com frontends GPLv3 como Qt 6.

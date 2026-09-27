@@ -194,7 +194,7 @@ para não depender do GTK no Linux. O `serde` e o `serde_json` guardam a configu
 O `build.rs` da raiz existia por um motivo só: linkar a `libatomic` que o `unicorn-engine-sys`
 precisava, e esse motivo **saiu da árvore com o Unicorn**. O que sobrou dele é o
 `cargo:rerun-if-changed` e o registro de que o ícone do `.exe` passou a ser compilado pelo
-`frontends/classical-standalone`, que é quem produz o executável. Quem tem um `build.rs` com
+`frontends/egui-standalone`, que é quem produz o executável. Quem tem um `build.rs` com
 trabalho de verdade hoje é o core Libretro, e por outro motivo: o shim de compatibilidade com
 glibc anterior a 2.34
 ([`frontends/libretro/src/r36s_compat.c`](frontends/libretro/src/r36s_compat.c)), que define

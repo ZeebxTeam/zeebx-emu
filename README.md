@@ -24,7 +24,8 @@ frontends/android/
 frontends/ios/
 frontends/headless/
 frontends/libretro/
-frontends/standalone-qt/
+frontends/egui-standalone/
+frontends/qt-standalone/
 
 E também ajuste o [.github/workflows/release.yml](release.yml) para apontar um alvo de build durante nosso CI, assim garante que o target seja fornecido junto durante a criação da release!
 
@@ -65,8 +66,10 @@ cargo build --release
 
 ### O que mais precisa estar instalado
 
-O standalone usa dependências nativas para `dynarmic`, áudio, janela e controles, e a interface é
-em **Qt 6** (6.4 ou mais novo). Debian, Ubuntu e derivados:
+O desktop tem dois frontends: `zeebx`, com a interface em egui (`frontends/egui-standalone`), e
+`zeebx-qt`, com a interface em **Qt 6** (`frontends/qt-standalone`, Qt 6.4 ou mais novo), que é
+legado: não sai mais no CI nem na release. Os dois usam dependências nativas para `dynarmic`,
+áudio, janela e controles; o Qt só o segundo pede. Debian, Ubuntu e derivados:
 
 ```bash
 sudo apt install build-essential cmake ninja-build pkg-config python3 clang libclang-dev \
@@ -77,11 +80,11 @@ sudo apt install build-essential cmake ninja-build pkg-config python3 clang libc
 ```
 
 No Arch: `qt6-base qt6-declarative qt6-wayland`. O build acha o Qt pelo `qmake6` ou pelo `qmake`;
-para usar outro, aponte `QMAKE` para ele. Sem o Qt, a interface antiga, em egui, ainda compila por
-uma versão:
+para usar outro, aponte `QMAKE` para ele.
 
 ```bash
-cargo build --release -p zeebx-classical-standalone --no-default-features
+cargo build --release -p zeebx-standalone-egui   # target/release/zeebx
+cargo build --release -p zeebx-standalone-qt     # target/release/zeebx-qt
 ```
 
 O core Libretro não linka a interface desktop nem bibliotecas de áudio/controle do host:
@@ -99,19 +102,20 @@ python3 ferramentas/prepara_build.py
 ### Instaladores e releases
 
 Os instaladores saem do [cargo-packager](https://github.com/crabnebula-dev/cargo-packager), com a
-configuração em `[package.metadata.packager]` no `Cargo.toml` do standalone, rodado de dentro de
-`frontends/classical-standalone/`. **Ele não implanta o Qt**: cada formato tem o passo dele, e o
+configuração em `[package.metadata.packager]` no `Cargo.toml` de cada frontend, rodado de dentro
+da pasta dele. No `frontends/egui-standalone/`, `cargo packager --release` basta. No
+`frontends/qt-standalone/` **ele não implanta o Qt**: cada formato tem o passo dele, e o
 [`release.yml`](.github/workflows/release.yml) é a receita completa.
 
 - **`.deb`**: usa o Qt do sistema, então precisa ser montado contra ele — no Ubuntu 24.04, com os
   pacotes acima: `cargo packager --release --formats deb`.
 - **AppImage**: leva o próprio Qt, pelo `linuxdeploy-plugin-qt`, com `QMAKE` apontando o Qt,
-  `QML_SOURCES_PATHS` para `frontends/classical-standalone/qml`, `EXTRA_PLATFORM_PLUGINS=libqwayland.so`
+  `QML_SOURCES_PATHS` para `frontends/qt-standalone/qml`, `EXTRA_PLATFORM_PLUGINS=libqwayland.so`
   e `EXTRA_QT_MODULES=waylandcompositor`. Monte num Ubuntu 22.04 com o Qt do `aqtinstall`, como o
   CI: no Arch, o `strip` do linuxdeploy não reconhece as bibliotecas do sistema, e o Qt de lá traz
   plugins com dependências que o linuxdeploy não acha.
-- **Windows**: `windeployqt --release --no-translations --qmldir frontends/classical-standalone/qml
-  --dir target/qt-implantado target/release/zeebx.exe`, e depois `--formats nsis`.
+- **Windows**: `windeployqt --release --no-translations --qmldir frontends/qt-standalone/qml
+  --dir target/qt-implantado target/release/zeebx-qt.exe`, e depois `--formats nsis`.
 - **macOS**: `--formats app`, `macdeployqt` no `.app`, a assinatura ad-hoc refeita com
   `codesign --force --deep --sign -`, e o `.dmg` pelo `hdiutil`.
 
@@ -125,18 +129,19 @@ São dois formatos em cada um dos quatro sistemas, e o nome do arquivo diz qual 
 
 | | |
 |---|---|
-| `zeebx-standalone-linux-x86_64.deb`, `.AppImage` | o emulador com a interface, para instalar |
-| `zeebx-standalone-windows-x86_64-setup.exe` | idem, no Windows |
-| `zeebx-standalone-macos-arm64.dmg`, `-x86_64.dmg` | idem, nos dois Macs |
+| `zeebx-standalone-egui-linux-x86_64.deb`, `.AppImage` | o emulador com a interface em egui, para instalar |
+| `zeebx-standalone-egui-windows-x86_64-setup.exe` | idem, no Windows |
+| `zeebx-standalone-egui-macos-arm64.dmg`, `-x86_64.dmg` | idem, nos dois Macs |
 | `zeebx-headless-<sistema>.zip` | o binário sem interface, com o `config.ini` e o leia-me |
 | `zeebx-android-arm64-v8a.apk` | o aplicativo de Android |
 | `zeebx-ios-simulator.zip` | o simulador e o leia-me |
 | `zeebx-ios.zip` | o IPA do AltStore clássico e o leia-me |
 
-No macOS, a primeira abertura pode dizer que o `Zeebx.app` está damaged. O aplicativo não está:
-o Gatekeeper marca o que veio da internet, e esta build ainda não é assinada pela Apple. A imagem
-traz um `LEIA-ME.txt` ao lado do aplicativo. O comando é
-`xattr -dr com.apple.quarantine "/Applications/Zeebx.app"`, depois de arrastar para Aplicativos.
+No macOS, a primeira abertura avisa que a Apple não pôde verificar o Zeebx: esta build é assinada
+ad-hoc, e não pela Apple. Ela se libera em Ajustes do Sistema > Privacidade e Segurança > "Abrir
+Mesmo Assim", ou com `xattr -dr com.apple.quarantine "/Applications/Zeebx.app"` depois de arrastar
+para Aplicativos. A imagem traz um `LEIA-ME.txt` ao lado do aplicativo. Em Mac com chip da Apple,
+use o `macos-arm64`: o `macos-x86_64` roda pelo Rosetta, e foi nele que os jogos pararam na issue 53.
 
 A APK sai assinada com a **chave de depuração**, que é a que o Gradle gera sozinho: serve para
 instalar de lado (`adb install`), não para a Play Store — aquela pede a chave de publicação, que

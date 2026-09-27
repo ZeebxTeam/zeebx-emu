@@ -184,6 +184,32 @@ ApplicationWindow {
                     text: janela.tr("common.folder_missing")
                 }
 
+                // A padrão mora em `~/.config`, que é escondida: por isso o caminho aparece mesmo
+                // sem escolha, e há o botão de abrir. Ver `docs/implementacao/22-screenshots.md`.
+                Titulo { text: janela.tr("settings.screenshots_folder") }
+                Dica { text: janela.tr("settings.screenshots_folder.hint") }
+                RowLayout {
+                    Label {
+                        Layout.fillWidth: true
+                        elide: Text.ElideMiddle
+                        font.family: "monospace"
+                        text: janela.depende([cfg.versao], cfg.pastaDeScreenshots())
+                    }
+                    Button {
+                        text: janela.tr("settings.browse")
+                        onClicked: cfg.escolhePastaDeScreenshots()
+                    }
+                    Button {
+                        visible: !janela.depende([cfg.versao], cfg.screenshotsNaPastaPadrao())
+                        text: janela.tr("settings.screenshots_folder.default")
+                        onClicked: cfg.usaPastaPadraoDeScreenshots()
+                    }
+                    Button {
+                        text: janela.tr("settings.screenshots_folder.open")
+                        onClicked: Qt.openUrlExternally(cfg.enderecoDaPastaDeScreenshots())
+                    }
+                }
+
                 Titulo { text: janela.tr("settings.language") }
                 Dica { text: janela.tr("settings.language.hint") }
                 ComboBox {
@@ -700,6 +726,15 @@ ApplicationWindow {
                             }
                         }
 
+                        Label {
+                            readonly property string motivo: janela.depende([cfg.versao, abaDeControles.tique], cfg.recusa(false))
+                            Layout.fillWidth: true
+                            visible: motivo !== ""
+                            wrapMode: Text.Wrap
+                            color: "#e0a030"
+                            text: motivo
+                        }
+
                         // Os eixos: um eixo não é um botão, tem curso, e por isso a origem é uma só
                         // e ganha um sentido. O valor ao vivo separa "não mapeado" de "mapeado no
                         // eixo errado": um manche que não chega aparece como um zero teimoso.
@@ -746,8 +781,45 @@ ApplicationWindow {
 
                         Dica {
                             Layout.topMargin: 12
-                            Layout.bottomMargin: 16
                             text: janela.tr("controls.players_note")
+                        }
+
+                        // Os atalhos da janela do jogo. A tecla vem pelo mesmo teclado desta aba;
+                        // a captura recusa o que já tem dono. Ver `docs/implementacao/22-screenshots.md`.
+                        Titulo { text: janela.tr("controls.shortcuts") }
+                        Dica { text: janela.tr("controls.shortcuts.hint") }
+                        RowLayout {
+                            readonly property bool esperando: janela.depende([abaDeControles.tique], cfg.capturandoAtalho())
+
+                            Label {
+                                Layout.preferredWidth: 180
+                                text: janela.tr("controls.shortcut.screenshot")
+                            }
+                            Label {
+                                Layout.preferredWidth: 80
+                                font.family: "monospace"
+                                text: janela.depende([cfg.versao], cfg.atalhoDeScreenshot())
+                            }
+                            Button {
+                                focusPolicy: Qt.NoFocus
+                                checkable: true
+                                checked: parent.esperando
+                                text: janela.tr(parent.esperando ? "controls.shortcut.waiting" : "controls.shortcut.change")
+                                onClicked: cfg.capturaAtalho()
+                            }
+                            Button {
+                                focusPolicy: Qt.NoFocus
+                                text: janela.tr("controls.shortcut.reset")
+                                onClicked: cfg.restauraAtalho()
+                            }
+                        }
+                        Label {
+                            readonly property string motivo: janela.depende([cfg.versao, abaDeControles.tique], cfg.recusa(true))
+                            Layout.fillWidth: true
+                            Layout.bottomMargin: 16
+                            wrapMode: Text.Wrap
+                            color: "#e0a030"
+                            text: motivo
                         }
                     }
                 }
