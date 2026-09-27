@@ -80,6 +80,12 @@ export JAVA_HOME="$HOME/Android/jdk"
 ./frontends/android/compilar.sh --apk
 ```
 
+**Switch** (o `.a` estático que o ROMBundler liga) mora em
+[`frontends/switch/compilar.sh`](frontends/switch/compilar.sh). O `cfg(zeebx_switch)` desse
+script é o que reduz o cache de código do dynarmic e aumenta o número de sons guardados. No
+Mac a imagem Docker `rombundler-switch` traz o devkitA64 e o rustc; o job `core-switch` do
+`libretro.yml` roda o mesmo script com `--local` dentro da imagem `devkitpro/devkita64`.
+
 ## O CI
 
 **A tag é o único gatilho automático.** O `release.yml` dispara em `v0.0.0` e monta a release como
