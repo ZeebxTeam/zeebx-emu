@@ -1575,7 +1575,7 @@ unsafe fn registra_opcoes_do_core() {
         // **Uma definição por porta**, e são duas porque o console tem duas (`input::PORTAS`).
         // Cada jogador liga a sua: quem joga de manche no Z-Pad 1 não obriga o dono do Z-Pad 2 a
         // jogar com o direcional virando eixo.
-        let definicoes: [RetroCoreOptionV2Definition; 19] = [
+        let definicoes: [RetroCoreOptionV2Definition; 20] = [
             RetroCoreOptionV2Definition {
                 key: c"zeebx_midi_backend".as_ptr(),
                 desc: c"Sintetizador MIDI (reinício)".as_ptr(),
@@ -1635,6 +1635,16 @@ unsafe fn registra_opcoes_do_core() {
                 category_key: c"audio".as_ptr(),
                 values: vozes_values,
                 default_value: c"128".as_ptr(),
+            },
+            RetroCoreOptionV2Definition {
+                key: c"zeebx_midi_efeitos".as_ptr(),
+                desc: c"Reverb e chorus do MIDI".as_ptr(),
+                desc_categorized: c"Reverb e chorus".as_ptr(),
+                info: c"O reverb e o chorus que a música MIDI pede, quando ela toca pelo banco de amostras. Quanto de efeito cada instrumento leva vem da própria música; desligado, as notas terminam secas. Vale da próxima música em diante.".as_ptr(),
+                info_categorized: c"Os efeitos que a música MIDI pede. Desligado, as notas terminam secas.".as_ptr(),
+                category_key: c"audio".as_ptr(),
+                values: lig_values,
+                default_value: c"enabled".as_ptr(),
             },
             RetroCoreOptionV2Definition {
                 key: c"zeebx_cache_de_som_mb".as_ptr(),
@@ -1792,7 +1802,7 @@ unsafe fn registra_opcoes_do_core() {
             "Banco SoundFont (reinício); {}",
             std::iter::once("auto".to_string()).chain(bancos).collect::<Vec<_>>().join("|")
         ));
-        let variaveis: [RetroVariable; 19] = [
+        let variaveis: [RetroVariable; 20] = [
             RetroVariable {
                 key: c"zeebx_midi_backend".as_ptr(),
                 value: c"Sintetizador MIDI (reinício); auto|timbres|soundfont".as_ptr(),
@@ -1816,6 +1826,10 @@ unsafe fn registra_opcoes_do_core() {
             RetroVariable {
                 key: c"zeebx_midi_vozes".as_ptr(),
                 value: c"Vozes do MIDI; 128|96|64|48".as_ptr(),
+            },
+            RetroVariable {
+                key: c"zeebx_midi_efeitos".as_ptr(),
+                value: c"Reverb e chorus do MIDI; enabled|disabled".as_ptr(),
             },
             RetroVariable {
                 key: c"zeebx_cache_de_som_mb".as_ptr(),
@@ -2237,6 +2251,12 @@ fn aplica_opcoes_quentes(estado: &mut Core) {
     };
     if let Some(vozes) = vozes {
         zeebx::audio::soundfont::define_vozes(vozes);
+    }
+    if let Some(efeitos) = unsafe { le_opcao(c"zeebx_midi_efeitos") }
+        .as_deref()
+        .and_then(ligado_de_texto)
+    {
+        zeebx::audio::soundfont::define_efeitos(efeitos);
     }
     let mib = if perfil_portatil {
         Some(8)

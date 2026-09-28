@@ -28,7 +28,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
@@ -97,6 +97,20 @@ static VOZES_ESCOLHIDAS: AtomicUsize = AtomicUsize::new(VOZES);
 /// recusado: quem pediu 512 quer o máximo, e falhar a síntese inteira por causa disso seria pior.
 pub fn define_vozes(vozes: usize) {
     VOZES_ESCOLHIDAS.store(vozes.clamp(8, 256), Ordering::Relaxed);
+}
+
+/// Se o reverb e o chorus do sintetizador rodam. Ligados por padrão.
+///
+/// **Quem dosa o efeito é a partitura, não o sintetizador.** O MIDI manda por canal quanto de
+/// reverb (CC91) e de chorus (CC93) cada instrumento leva; o `rustysynth` só fornece a unidade de
+/// efeito. Desligada, esses controles caem no vazio e toda nota termina seca, o que soa como
+/// liberação cortada. Fica a opção de desligar para quem preferir o som seco.
+static EFEITOS_ESCOLHIDOS: AtomicBool = AtomicBool::new(true);
+
+/// Liga ou desliga o reverb e o chorus da música MIDI daqui para a frente. A música é sintetizada
+/// quando o jogo a carrega, então a troca vale a partir do próximo jogo.
+pub fn define_efeitos(ligados: bool) {
+    EFEITOS_ESCOLHIDOS.store(ligados, Ordering::Relaxed);
 }
 
 /// O banco que o usuário escolheu na configuração ou na linha de comando. `None` é a busca
@@ -396,12 +410,10 @@ pub fn toca(banco: &Banco, bytes: &[u8], taxa: u32) -> Option<Sound> {
     let midi = rustysynth::MidiFile::new(&mut leitor).ok()?;
     let comprimento = midi.get_length().min(MAX_SEGUNDOS);
     let mut ajustes = rustysynth::SynthesizerSettings::new(taxa as i32);
-    // Perfil de síntese seco e eficiente:
     // 1. `block_size = 1024`: reduz em ~1,9x o overhead de blocos e sincronização do sequenciador.
-    // 2. `enable_reverb_and_chorus = false`: aproxima o áudio do comportamento seco nativo do
-    //    console / CMX e do TinySoundFont (que não implementa efeitos de reverberação/chorus).
+    // 2. Reverb e chorus: ver [`EFEITOS_ESCOLHIDOS`].
     ajustes.block_size = BLOCO;
-    ajustes.enable_reverb_and_chorus = false;
+    ajustes.enable_reverb_and_chorus = EFEITOS_ESCOLHIDOS.load(Ordering::Relaxed);
     // 3. `maximum_polyphony`: ver [`VOZES`] — o padrão de 64 rouba nota em trecho denso.
     ajustes.maximum_polyphony = VOZES_ESCOLHIDAS.load(Ordering::Relaxed);
     let mut sintetizador = rustysynth::Synthesizer::new(&banco.fonte, &ajustes).ok()?;

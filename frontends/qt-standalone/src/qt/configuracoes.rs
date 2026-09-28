@@ -491,6 +491,7 @@ fn booleano<'a>(settings: &'a mut Settings, chave: &str) -> Option<&'a mut bool>
         "graphics.neblina" => &mut settings.graphics.neblina,
         "graphics.gpu_rasterizer" => &mut settings.graphics.gpu_rasterizer,
         "audio.enabled" => &mut settings.audio.enabled,
+        "audio.midi_effects" => &mut settings.audio.midi_effects,
         "debug.overlay" => &mut settings.debug.overlay,
         "debug.speed" => &mut settings.debug.speed,
         "debug.clock" => &mut settings.debug.clock,

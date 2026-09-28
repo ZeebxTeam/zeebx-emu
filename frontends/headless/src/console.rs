@@ -128,6 +128,7 @@ impl Console {
                 .map(|jogador| jogador.aparelho)
         });
         zeebx::audio::soundfont::define_banco(self.settings.audio.soundfont.clone());
+        zeebx::audio::soundfont::define_efeitos(self.settings.audio.midi_effects);
         let g = &self.settings.graphics;
         let mut sessao = Session::start_with(
             caminho,

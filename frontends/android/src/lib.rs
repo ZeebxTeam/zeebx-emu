@@ -606,6 +606,7 @@ impl Emulador {
             }
         }
         zeebx::audio::soundfont::define_banco(self.settings.audio.soundfont.clone());
+        zeebx::audio::soundfont::define_efeitos(self.settings.audio.midi_effects);
         let graficos = self.settings.graphics.clone();
         // O 3D na placa vale só se houver placa: antes da primeira janela não há contexto, e a
         // sessão aberta sem ele cai no rasterizador de software sozinha.

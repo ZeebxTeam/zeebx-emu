@@ -1751,6 +1751,10 @@ impl App {
                 changed = true;
             }
         });
+        changed |= ui
+            .checkbox(&mut audio.midi_effects, self.catalog.get("audio.midi_effects"))
+            .changed();
+        ui.weak(self.catalog.get("audio.midi_effects.hint"));
         // Mexer no volume com o jogo aberto tem que valer na hora, não só na próxima abertura.
         if changed {
             let (enabled, volume) = (audio.enabled, audio.volume);

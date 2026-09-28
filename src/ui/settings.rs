@@ -251,6 +251,9 @@ pub struct Audio {
     /// Existe para quem tem o banco do firmware do console, ou outro de gosto, e não quer mexer
     /// na pasta do aparelho. Uma configuração salva antes dele abre com `None`.
     pub soundfont: Option<PathBuf>,
+    /// O reverb e o chorus que a partitura pede, quando ela toca pelo banco `.sf2`. Ver
+    /// [`crate::audio::soundfont::define_efeitos`].
+    pub midi_effects: bool,
 }
 
 impl Default for Audio {
@@ -259,6 +262,7 @@ impl Default for Audio {
             enabled: true,
             volume: 80,
             soundfont: None,
+            midi_effects: true,
         }
     }
 }

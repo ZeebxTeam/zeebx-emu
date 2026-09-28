@@ -61,6 +61,9 @@ pub mod soundfont {
     /// Sem banco não há o que configurar; existe para o frontend não precisar de `cfg`.
     pub fn define_banco(_caminho: Option<std::path::PathBuf>) {}
 
+    /// Sem banco não há o que configurar; existe para o frontend não precisar de `cfg`.
+    pub fn define_efeitos(_ligados: bool) {}
+
     pub fn relato(aparelho: &Path) -> String {
         let pasta = aparelho.join("soundfonts");
         format!(

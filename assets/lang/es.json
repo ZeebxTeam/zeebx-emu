@@ -10,6 +10,8 @@
   "audio.soundfont.auto": "Automático: el primer .sf2 de la carpeta soundfonts del sistema",
   "audio.soundfont.clear": "Usar el automático",
   "audio.soundfont.hint": "Un .sf2 con los instrumentos que tocan la música MIDI — el del firmware de la consola, si lo tienes, o cualquier banco General MIDI. Se aplica desde el próximo juego que abras.",
+  "audio.midi_effects": "Reverberación y chorus de la música MIDI",
+  "audio.midi_effects.hint": "Cuánto efecto lleva cada instrumento lo decide la propia música. Desactivado, las notas terminan secas. Se aplica desde el próximo juego que abras.",
   "audio.volume": "Volumen",
   "axis.rz": "RZ (stick derecho, vertical)",
   "axis.x": "X (stick izquierdo, horizontal)",

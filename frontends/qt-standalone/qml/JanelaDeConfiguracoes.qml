@@ -987,6 +987,12 @@ ApplicationWindow {
                         onClicked: cfg.usaSoundfontAutomatico()
                     }
                 }
+                Opcao {
+                    Layout.topMargin: 12
+                    chave: "audio.midi_effects"
+                    rotulo: "audio.midi_effects"
+                    dica: "audio.midi_effects.hint"
+                }
             }
         }
 

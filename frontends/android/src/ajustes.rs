@@ -387,6 +387,14 @@ impl Emulador {
             self.settings.audio.soundfont = None;
             mudou = true;
         }
+        mudou |= widgets::interruptor(
+            ui,
+            "efeitos_midi",
+            self.catalogo.get("audio.midi_effects"),
+            Some(self.catalogo.get("audio.midi_effects.hint")),
+            &mut self.dica,
+            &mut self.settings.audio.midi_effects,
+        );
 
         if mudou {
             let audio = self.settings.audio.clone();

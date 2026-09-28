@@ -610,6 +610,18 @@ A busca fica: o escolhido, depois o `ZEEBX_SOUNDFONT`, depois o primeiro `.sf2` 
 escolhido que sumiu vira aviso no registro, e a busca segue. O `ZEEBX_SOUNDFONT` era ignorado até
 aqui — só uma função que ninguém chamava o lia —, embora o aviso de "sem banco" mandasse usá-lo.
 
+#### Reverb e chorus: quem dosa é a partitura
+
+O banco tocava com `enable_reverb_and_chorus = false`, sob o argumento de que o console soa seco.
+Isso não foi medido, e o desligamento tinha um efeito colateral: a partitura manda por canal quanto
+de reverb (CC91) e de chorus (CC93) cada instrumento leva, e sem a unidade de efeito esses
+controles caíam no vazio. Toda nota terminava seca, o que soa como liberação cortada.
+
+Agora os efeitos ficam ligados por padrão, e cada frontend tem como desligar
+(`soundfont::define_efeitos`, que vale a partir do próximo jogo): Configurações › Áudio no Qt e
+no egui, Ajustes › Áudio no Android, `[audio] midi_effects` no headless e `zeebx_midi_efeitos` no
+Libretro.
+
 #### O custo de renderizar a música, e o defeito que ele revelou
 
 Medido com a mesma música (Double Dragon, 47,5 s), em `--release`, nesta máquina:
