@@ -73,7 +73,8 @@ A `Session` é um jogo em execução, do arquivo aos quadros. É o que a interfa
 ficam o freio de velocidade e a medição.
 
 Os frontends são pacotes próprios ao lado do núcleo, cada um com a sua janela e o seu laço de
-eventos: [`frontends/android`](frontends/android/LEIAME.md), sobre a `NativeActivity`, e
+eventos: [`frontends/android`](frontends/android/LEIAME.md), sobre a `NativeActivity`,
+[`frontends/ios`](frontends/ios/LEIAME.md), sobre a UIKit, e
 [`frontends/headless`](frontends/headless/LEIAME.md), sem interface nenhuma, para quem já tem um
 frontend seu e quer só a emulação por linha de comando com um `config.ini`. Nenhuma linha de
 emulação sabe em qual deles está rodando.

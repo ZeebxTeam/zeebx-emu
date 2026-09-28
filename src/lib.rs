@@ -1,6 +1,6 @@
 //! Núcleo reutilizável do Zeebx.
 //!
-//! O motor é compartilhado pelo desktop, Libretro, headless e Android.
+//! O motor é compartilhado pelo desktop, Libretro, headless, Android e iOS.
 
 pub mod audio;
 pub mod brew;

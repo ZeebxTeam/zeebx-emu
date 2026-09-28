@@ -48,3 +48,7 @@ frontends/android/apk/.gradle/
 frontends/android/apk/local.properties
 frontends/android/apk/app/src/main/jniLibs/
 frontends/switch/saida/
+
+# Xcode: estado local. O projeto em si (`project.pbxproj`) fica versionado.
+xcuserdata/
+*.xcuserstate

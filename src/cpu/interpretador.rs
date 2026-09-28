@@ -6,8 +6,8 @@
 //! [`CpuBackend`] — parada na faixa de vtables, bit 0 do endereço como modo Thumb, vigia de
 //! escrita que ignora o que o host gravou.
 //!
-//! Não foi medido contra o JIT. O desktop continua no `dynarmic`; isto só entra onde o JIT não
-//! tem arquitetura de destino.
+//! Não foi medido contra o JIT. O desktop continua no `dynarmic`; isto entra no `wasm32`, onde
+//! o bloco emitido não roda, e no iOS, onde o sistema não deixa o processo mapear código.
 
 use super::mem::GuestMemory;
 use super::{API_BASE, API_SIZE, RETURN_MAGIC, apara_semihosting};
