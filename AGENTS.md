@@ -20,8 +20,8 @@ Cargo.toml          a biblioteca `zeebx` — o emulador inteiro, sem interface
 src/                BREW, CPU, vídeo, áudio, carregador, sessão, save state
 src/ui/             telas e estado compartilhados entre frontends (ver o aviso abaixo)
 frontends/
-  egui-standalone/        o binário `zeebx`: janela do egui e linha de comando
-  qt-standalone/          legado: o binário `zeebx-qt`, em Qt Quick, fora do CI e da release
+  qt-standalone/          a interface principal: o binário `zeebx-qt`, em Qt Quick
+  egui-standalone/        legado: o binário `zeebx`, janela do egui e linha de comando
   headless/               sem interface, configurado por `config.ini`
   libretro/               o core do RetroArch
   android/                o aplicativo, sem uma linha de Java
@@ -54,9 +54,9 @@ na tag.
 
 ## Compilar e provar
 
-O desktop é o frontend do egui (`zeebx-standalone-egui`, binário `zeebx`). O do Qt
-(`zeebx-standalone-qt`, binário `zeebx-qt`) fica no repositório como legado, fora do CI e da release. Só o do Qt pede o **Qt 6** (6.4 ou
-mais novo), que o build acha pelo `qmake6`, pelo `qmake` ou pelo `QMAKE`.
+O desktop principal é o frontend Qt (`zeebx-standalone-qt`, binário `zeebx-qt`). O do egui
+(`zeebx-standalone-egui`, binário `zeebx`) é legado, e os dois compilam no CI e saem na release.
+Só o do Qt pede o **Qt 6** (6.4 ou mais novo), que o build acha pelo `qmake6`, pelo `qmake` ou pelo `QMAKE`.
 `python3 ferramentas/prepara_build.py` diz o que falta. A interface Qt está em
 [`docs/implementacao/21-migracao-para-qt.md`](docs/implementacao/21-migracao-para-qt.md).
 
@@ -93,8 +93,9 @@ Mac a imagem Docker `rombundler-switch` traz o devkitA64 e o rustc; o job `core-
 
 **A tag é o único gatilho automático.** O `release.yml` dispara em `v0.0.0` e monta a release como
 rascunho. O `ci.yml`, o `libretro.yml`, o `headless.yml`, o `android.yml` e o `qt.yml` são
-`workflow_dispatch`: o CI padrão compila o frontend do egui nas seis plataformas. O do Qt é
-legado: não entra no CI nem na release, e só o `qt.yml`, à mão, ainda o compila. Doze jobs por execução é caro demais
+`workflow_dispatch`: o CI padrão compila o frontend do egui nas seis plataformas e chama o
+`qt.yml`, que compila o do Qt e monta os instaladores dele. A release chama o mesmo `qt.yml`:
+os passos do Qt moram num lugar só. Onze jobs por execução é caro demais
 para gastar em cada push, e quem decide é quem pede. A exceção é o `discord-issues.yml`, que não
 compila nada: avisa no Discord quando uma issue abre, fecha ou muda de responsável.
 

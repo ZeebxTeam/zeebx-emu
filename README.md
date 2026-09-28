@@ -65,9 +65,9 @@ cargo build --release
 
 ### O que mais precisa estar instalado
 
-O desktop tem dois frontends: `zeebx`, com a interface em egui (`frontends/egui-standalone`), e
-`zeebx-qt`, com a interface em **Qt 6** (`frontends/qt-standalone`, Qt 6.4 ou mais novo), que é
-legado: não sai mais no CI nem na release. Os dois usam dependências nativas para `dynarmic`,
+O desktop tem dois frontends: `zeebx-qt`, com a interface em **Qt 6** (`frontends/qt-standalone`,
+Qt 6.4 ou mais novo), que é a principal, e `zeebx`, com a interface em egui
+(`frontends/egui-standalone`), legada. Os dois saem na release. Os dois usam dependências nativas para `dynarmic`,
 áudio, janela e controles; o Qt só o segundo pede. Debian, Ubuntu e derivados:
 
 ```bash
@@ -128,16 +128,17 @@ São dois formatos em cada um dos quatro sistemas, e o nome do arquivo diz qual 
 
 | | |
 |---|---|
-| `zeebx-standalone-egui-linux-x86_64.deb`, `.AppImage` | o emulador com a interface em egui, para instalar |
-| `zeebx-standalone-egui-windows-x86_64-setup.exe` | idem, no Windows |
-| `zeebx-standalone-egui-macos-arm64.dmg`, `-x86_64.dmg` | idem, nos dois Macs |
+| `zeebx-standalone-qt-linux-x86_64.deb`, `.AppImage` | o emulador com a interface em Qt, a principal, para instalar |
+| `zeebx-standalone-qt-windows-x86_64-setup.exe` | idem, no Windows |
+| `zeebx-standalone-qt-macos-arm64.dmg`, `-x86_64.dmg` | idem, nos dois Macs |
+| `zeebx-standalone-egui-…` | os mesmos formatos, com a interface em egui, legada |
 | `zeebx-headless-<sistema>.zip` | o binário sem interface, com o `config.ini` e o leia-me |
 | `zeebx-android-arm64-v8a.apk` | o aplicativo de Android |
 
 No macOS, a primeira abertura avisa que a Apple não pôde verificar o Zeebx: esta build é assinada
 ad-hoc, e não pela Apple. Ela se libera em Ajustes do Sistema > Privacidade e Segurança > "Abrir
 Mesmo Assim", ou com `xattr -dr com.apple.quarantine "/Applications/Zeebx.app"` depois de arrastar
-para Aplicativos. A imagem traz um `LEIA-ME.txt` ao lado do aplicativo. Em Mac com chip da Apple,
+para Aplicativos (o do Qt se chama `Zeebx Qt.app`). A imagem traz um `LEIA-ME.txt` ao lado do aplicativo. Em Mac com chip da Apple,
 use o `macos-arm64`: o `macos-x86_64` roda pelo Rosetta, e foi nele que os jogos pararam na issue 53.
 
 A APK sai assinada com a **chave de depuração**, que é a que o Gradle gera sozinho: serve para

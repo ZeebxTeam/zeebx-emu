@@ -1,6 +1,7 @@
-# Compila, testa e abre o frontend de desktop (`frontends/egui-standalone`, binário `zeebx`) nas
-# seis plataformas. O frontend Qt (`frontends/qt-standalone`) é legado e não entra aqui: só o
-# `qt.yml`, à mão, ainda o compila.
+# Compila, testa e abre os dois frontends de desktop. O Qt (`frontends/qt-standalone`, binário
+# `zeebx-qt`), a interface principal, vem do `qt.yml`, chamado pelo job `qt` lá embaixo: ele também
+# monta e abre os instaladores. O egui (`frontends/egui-standalone`, binário `zeebx`), legado,
+# compila no job `compila`, nas seis plataformas abaixo.
 #
 # O que este trabalho responde é "o binário sai, os testes passam e ele abre?", que o `release.yml`
 # **não** responde: ele roda em tag, empacota, e não pode segurar os instaladores por causa de um
@@ -15,8 +16,8 @@
 # C++20, que é justamente a combinação que cross-build faz sofrer (toolchain C++ e sysroot). Runner
 # ARM64 nativo existe para Linux, Windows e macOS, e sai mais barato que manter cross.
 #
-# Custo: cada alvo compila o QEMU e o JIT, uns 15 minutos por runner. Seis jobs por execução é
-# caro demais para gastar em cada push — por isso este trabalho **só roda à mão**, pela aba Actions.
+# Custo: cada alvo compila o QEMU e o JIT, uns 15 minutos por runner. Os seis jobs do egui e os
+# cinco do Qt por execução são caros demais para gastar em cada push — por isso este trabalho **só roda à mão**, pela aba Actions.
 
 name: ci
 
@@ -164,3 +165,7 @@ jobs:
           $prova = Start-Process -FilePath "$env:BINARIO" -ArgumentList "controles" -PassThru -NoNewWindow
           if (-not $prova.WaitForExit(60000)) { $prova.Kill(); throw "o binario pendurou" }
           if ($prova.ExitCode -ne 0) { throw "o binario saiu com $($prova.ExitCode)" }
+
+  # O Qt, com os instaladores, pelos mesmos passos da release. Ver o `qt.yml`.
+  qt:
+    uses: ./.github/workflows/qt.yml

@@ -6,7 +6,8 @@
 #
 # Os nomes dizem qual formato é qual:
 #
-#   zeebx-standalone-egui-linux-x86_64.deb   o emulador com a interface, para instalar
+#   zeebx-standalone-qt-linux-x86_64.deb     o emulador com a interface Qt, a principal, para instalar
+#   zeebx-standalone-egui-linux-x86_64.deb   o mesmo com a interface egui, legada
 #   zeebx-headless-linux-x86_64.zip          o binário sem interface, para quem tem frontend próprio
 #   zeebx-android-arm64-v8a.apk              o aplicativo de Android
 #   zeebx_libretro-linux-aarch64.zip         o core Libretro, com o `.info`, para RetroArch
@@ -41,7 +42,13 @@ permissions:
   contents: write
 
 jobs:
-  # O frontend do egui (`frontends/egui-standalone`, binário `zeebx`): `zeebx-standalone-egui-*`.
+  # O frontend Qt (`frontends/qt-standalone`, binário `zeebx-qt`), a interface principal:
+  # `zeebx-standalone-qt-*`. Os passos moram no `qt.yml`, que monta e abre cada instalador.
+  standalone-qt:
+    uses: ./.github/workflows/qt.yml
+
+  # O frontend do egui (`frontends/egui-standalone`, binário `zeebx`), legado:
+  # `zeebx-standalone-egui-*`.
   standalone-egui:
     name: standalone-egui ${{ matrix.nome }}
     runs-on: ${{ matrix.sistema }}
@@ -470,7 +477,7 @@ jobs:
           if-no-files-found: error
 
   release:
-    needs: [standalone-egui, headless, android, core, wasm]
+    needs: [standalone-qt, standalone-egui, headless, android, core, wasm]
     # Sai com o que deu certo: um sistema que falhou não segura os outros.
     #
     # A tag vem de dois lugares: do `push` de uma tag, e aí é o `github.ref_name`; ou do

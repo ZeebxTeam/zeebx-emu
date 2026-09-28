@@ -523,12 +523,16 @@ function processadorDoMac() {
 // do .deb porque roda em qualquer distribuição. No Windows ARM o instalador x86_64 serve, pela
 // emulação do próprio Windows, e por isso a arquitetura não é exigida ali. Linux ARM64 (um
 // Raspberry Pi, por exemplo) não tem emulador com interface, só o core: ele é a última opção.
+// O desktop sai em Qt, a interface principal, e em egui, a legada. Cada formato é pedido primeiro
+// em Qt; a regra sem interface fica logo atrás, para as releases de antes do Qt.
+const qtPrimeiro = (regra) => [{ ...regra, interface: 'qt' }, regra];
+
 const PREFERENCIA = {
-  windows: [{ tipo: 'app', formato: 'exe', mesmaArch: false }],
-  macos: [{ tipo: 'app', formato: 'dmg', mesmaArch: true }],
+  windows: qtPrimeiro({ tipo: 'app', formato: 'exe', mesmaArch: false }),
+  macos: qtPrimeiro({ tipo: 'app', formato: 'dmg', mesmaArch: true }),
   linux: [
-    { tipo: 'app', formato: 'appimage', mesmaArch: true },
-    { tipo: 'app', formato: 'deb', mesmaArch: true },
+    ...qtPrimeiro({ tipo: 'app', formato: 'appimage', mesmaArch: true }),
+    ...qtPrimeiro({ tipo: 'app', formato: 'deb', mesmaArch: true }),
     { tipo: 'libretro', formato: 'zip', mesmaArch: true },
   ],
   android: [{ tipo: 'app', formato: 'apk', mesmaArch: false }],
@@ -536,6 +540,7 @@ const PREFERENCIA = {
 
 function casa(a, regra, aparelho) {
   return a.so === aparelho.so && a.tipo === regra.tipo && a.formato === regra.formato
+    && (!regra.interface || a.interface === regra.interface)
     && (!regra.mesmaArch || !aparelho.arch || a.arch === aparelho.arch);
 }
 

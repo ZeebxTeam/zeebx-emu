@@ -1,11 +1,12 @@
-# O frontend Qt (`frontends/qt-standalone`, binário `zeebx-qt`), **legado**: fora do `ci.yml` e do
-# `release.yml`, só este workflow, à mão, ainda o compila, testa e empacota nos
-# três sistemas. Nasceu como o ponto 4 da fase 0 de `docs/implementacao/21-migracao-para-qt.md`.
-# O frontend do egui (`frontends/egui-standalone`, binário `zeebx`) é outro pacote e não entra aqui.
+# O frontend Qt (`frontends/qt-standalone`, binário `zeebx-qt`), **a interface principal**:
+# compila, testa, monta os instaladores nos três sistemas e abre cada um antes de sair. Roda à mão
+# pela aba Actions, e é chamado pelo `ci.yml` e pelo `release.yml` (`workflow_call`) — um lugar só
+# para os passos do Qt, em vez de três cópias que envelhecem cada uma de um jeito. O frontend do
+# egui (`frontends/egui-standalone`, binário `zeebx`) é outro pacote, legado, e compila nos jobs
+# próprios do `ci.yml` e do `release.yml`.
 #
-# **Separado do `ci.yml` de propósito.** O `ci.yml` responde se o binário que vai para a release
-# sai; este responde se a migração para Qt é viável fora do Linux em que ela nasceu. Um Qt que não
-# instala num runner não pode deixar vermelho o CI de quem só mexeu no motor.
+# Os pacotes saem como `zeebx-standalone-qt-<sistema>-<arquitetura>`, o nome que a página de
+# downloads (`docs/site.js`) reconhece como o desktop em Qt. O binário continua `zeebx-qt`.
 #
 # O Qt vem do `install-qt-action`, e não do sistema: o do `apt` do Ubuntu 24.04 é o 6.4.
 #
@@ -43,9 +44,10 @@ name: qt
 
 on:
   workflow_dispatch:
+  workflow_call:
 
 concurrency:
-  group: qt-${{ github.ref }}
+  group: qt-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -226,9 +228,9 @@ jobs:
           cd target/pacotes
           for arquivo in *; do
             case "$arquivo" in
-              *-setup.exe) novo="zeebx-qt-${{ matrix.nome }}-setup.exe" ;;
-              *.AppImage)  novo="zeebx-qt-${{ matrix.nome }}.AppImage" ;;
-              *.dmg)       novo="zeebx-qt-${{ matrix.nome }}.dmg" ;;
+              *-setup.exe) novo="zeebx-standalone-qt-${{ matrix.nome }}-setup.exe" ;;
+              *.AppImage)  novo="zeebx-standalone-qt-${{ matrix.nome }}.AppImage" ;;
+              *.dmg)       novo="zeebx-standalone-qt-${{ matrix.nome }}.dmg" ;;
               *)           continue ;;
             esac
             mv -- "$arquivo" "$novo"
@@ -250,7 +252,7 @@ jobs:
           unset LD_LIBRARY_PATH QT_PLUGIN_PATH QML2_IMPORT_PATH
           set +e
           XDG_CONFIG_HOME="$RUNNER_TEMP/cfg" timeout 15 xvfb-run -a \
-            target/pacotes/zeebx-qt-${{ matrix.nome }}.AppImage > abre.log 2>&1
+            target/pacotes/zeebx-standalone-qt-${{ matrix.nome }}.AppImage > abre.log 2>&1
           saida=$?
           set -e
           cat abre.log
@@ -259,8 +261,8 @@ jobs:
 
       - uses: actions/upload-artifact@v6
         with:
-          name: zeebx-qt-${{ matrix.nome }}
-          path: target/pacotes/zeebx-qt-*
+          name: zeebx-standalone-qt-${{ matrix.nome }}
+          path: target/pacotes/zeebx-standalone-qt-*
           if-no-files-found: error
           retention-days: 14
 
@@ -298,7 +300,7 @@ jobs:
           QMAKE: /usr/bin/qmake6
         run: |
           cargo packager --release --formats deb
-          mv ../../target/pacotes/*.deb ../../target/pacotes/zeebx-qt-linux-x86_64.deb
+          mv ../../target/pacotes/*.deb ../../target/pacotes/zeebx-standalone-qt-linux-x86_64.deb
 
       - name: Instala e abre
         run: |
@@ -308,7 +310,7 @@ jobs:
               set -e
               export DEBIAN_FRONTEND=noninteractive
               apt-get update -qq
-              apt-get install -y -qq /p/zeebx-qt-linux-x86_64.deb
+              apt-get install -y -qq /p/zeebx-standalone-qt-linux-x86_64.deb
               apt-get install -y -qq xvfb xauth libgl1-mesa-dri > /dev/null
               if ldd /usr/bin/zeebx-qt | grep "not found"; then exit 1; fi
               mkdir -p /tmp/cfg/zeebx
@@ -326,7 +328,7 @@ jobs:
 
       - uses: actions/upload-artifact@v6
         with:
-          name: zeebx-qt-linux-x86_64-deb
-          path: target/pacotes/zeebx-qt-linux-x86_64.deb
+          name: zeebx-standalone-qt-linux-x86_64-deb
+          path: target/pacotes/zeebx-standalone-qt-linux-x86_64.deb
           if-no-files-found: error
           retention-days: 14
