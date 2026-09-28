@@ -12,6 +12,7 @@
 #   zeebx-android-arm64-v8a.apk              o aplicativo de Android
 #   zeebx_libretro-linux-aarch64.zip         o core Libretro, com o `.info`, para RetroArch
 #   zeebx_libretro-wasm.zip                  o mesmo core em WebAssembly, para o ROMBundler
+#   zeebx_libretro-switch.zip                o core como `.a` estático, para o ROMBundler ligar no Switch
 #
 # O APK sai assinado com a chave de depuração, que é a que o Gradle gera sozinho. Serve para
 # instalar de lado (`adb install`), **não** para a Play Store: aquela pede a chave de publicação,
@@ -476,8 +477,59 @@ jobs:
           path: zeebx_libretro-wasm.zip
           if-no-files-found: error
 
+  # O devkitA64 não está no runner: o job roda na imagem do devkitPro, como o `core-switch` do
+  # `libretro.yml`. O `.a` não vai sozinho para o console: os `switch_jit_*` e
+  # `switch_spinlock_*` que o patch do dynarmic chama vêm do ROMBundler, na hora de ligar.
+  switch:
+    name: core-switch
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: devkitpro/devkita64:20260219
+    steps:
+      - name: Git e CMake
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates cmake curl git ninja-build pkg-config python3 zip
+
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: core-switch
+
+      - name: Compila o staticlib
+        run: ./frontends/switch/compilar.sh --local
+
+      - name: O arquivo é AArch64
+        run: |
+          tmp=$(mktemp -d)
+          ( cd "$tmp" && ar x "$GITHUB_WORKSPACE/frontends/switch/saida/libzeebx_libretro.a" )
+          ruim=$(aarch64-none-elf-objdump -f "$tmp"/*.o | grep 'file format' | grep -v elf64-littleaarch64 || true)
+          if [ -n "$ruim" ]; then
+            echo "o .a misturou objeto que não é AArch64"
+            echo "$ruim"
+            exit 1
+          fi
+
+      - name: Empacota o core
+        run: |
+          cd frontends/switch/saida
+          zip "$GITHUB_WORKSPACE/zeebx_libretro-switch.zip" libzeebx_libretro.a
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zeebx_libretro_switch
+          path: zeebx_libretro-switch.zip
+          if-no-files-found: error
+
   release:
-    needs: [standalone-qt, standalone-egui, headless, android, core, wasm]
+    needs: [standalone-qt, standalone-egui, headless, android, core, wasm, switch]
     # Sai com o que deu certo: um sistema que falhou não segura os outros.
     #
     # A tag vem de dois lugares: do `push` de uma tag, e aí é o `github.ref_name`; ou do

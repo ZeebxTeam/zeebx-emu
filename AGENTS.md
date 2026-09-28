@@ -87,7 +87,9 @@ export JAVA_HOME="$HOME/Android/jdk"
 [`frontends/switch/compilar.sh`](frontends/switch/compilar.sh). O `cfg(zeebx_switch)` desse
 script é o que reduz o cache de código do dynarmic e aumenta o número de sons guardados. No
 Mac a imagem Docker `rombundler-switch` traz o devkitA64 e o rustc; o job `core-switch` do
-`libretro.yml` roda o mesmo script com `--local` dentro da imagem `devkitpro/devkita64`.
+`libretro.yml` roda o mesmo script com `--local` dentro da imagem `devkitpro/devkita64`. A
+release faz o mesmo e publica `zeebx_libretro-switch.zip`. O `.a` não liga sozinho: os
+`switch_jit_*` e `switch_spinlock_*` que o patch do dynarmic chama vêm do ROMBundler.
 
 ## O CI
 

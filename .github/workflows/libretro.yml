@@ -186,7 +186,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     container:
-      image: devkitpro/devkita64:latest
+      # Tag datada, não `latest`: a imagem nova entra quando alguém muda esta linha.
+      image: devkitpro/devkita64:20260219
     steps:
       - name: Git e CMake
         run: |

@@ -21,12 +21,11 @@ if [[ ${#natives[@]} -eq 0 ]]; then
 	exit 0
 fi
 
-arts=()
-while IFS= read -r -d '' art; do
-	arts+=("${art}")
-done < <(find . -type f -name '*_libretro*.a' ! -path '*/out/*' -print0)
+# Only this target's staticlib. A search over the whole tree would also pick up
+# archives from other targets or a previous copy under frontends/switch/saida.
+arts=(target/aarch64-unknown-linux-gnu/release/libzeebx_libretro.a)
 
-if [[ ${#arts[@]} -eq 0 ]]; then
+if [[ ! -f "${arts[0]}" ]]; then
 	echo "bundle-native-libs: no libretro archive to extend" >&2
 	exit 1
 fi

@@ -49,5 +49,8 @@ void EmitSpinLockUnlock(oaknut::CodeGenerator& code, oaknut::XReg ptr) {
 """
 if old not in text:
     raise SystemExit("spin lock emit block not found")
-path.write_text(text.replace(old, new, 1))
+# O patch mexe nas fontes do crate em ~/.cargo/registry, que o build de desktop também usa.
+# Sem a guarda, um build AArch64 de desktop feito depois fica sem switch_spinlock_lock no link.
+guarded = "#if defined(ZEEBX_SWITCH_JIT)\n" + new + "#else\n" + old + "#endif\n"
+path.write_text(text.replace(old, guarded, 1))
 PY
