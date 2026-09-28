@@ -4,6 +4,12 @@ use super::*;
 
 /// Quantos sons decodificados o cache guarda antes de esquecer os que ninguém usa. Ver
 /// [`Machine::descarta_sons_sem_dono`].
+///
+/// No Switch, 64 entradas descartam uma trilha que ninguém está tocando e a próxima
+/// reprodução sintetiza de novo. O teto em bytes continua sendo o limite de memória.
+#[cfg(zeebx_switch)]
+const MAX_SONS_GUARDADOS: usize = 512;
+#[cfg(not(zeebx_switch))]
 const MAX_SONS_GUARDADOS: usize = 64;
 
 /// Quanto de PCM decodificado o cache guarda, em bytes, antes de esquecer os que ninguém usa.

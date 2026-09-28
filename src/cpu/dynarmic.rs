@@ -497,7 +497,14 @@ impl CpuBackend for DynarmicCpu {
         };
         let mut config = Jit::<Estado>::new_config();
         config.arch_ver(ArchVersion::V6K);
-        config.code_cache_size(64 * 1024 * 1024);
+        // 64 MiB cabe no desktop. No Switch esse bloco disputa o heap com o jogo
+        // e com a Mesa; 32 MiB ainda cobre o código traduzido do Double Dragon
+        // quando o título é aberto segurando R.
+        config.code_cache_size(if cfg!(zeebx_switch) {
+            32 * 1024 * 1024
+        } else {
+            64 * 1024 * 1024
+        });
         // Entrada = início da página no host, sem deslocamento absoluto nem bits de atributo.
         config.page_table_mask(0);
         unsafe { config.page_table(self.tabela.as_mut_ptr().cast()) };
