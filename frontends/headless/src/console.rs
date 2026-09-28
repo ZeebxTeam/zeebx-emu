@@ -127,6 +127,7 @@ impl Console {
                 .filter(|jogador| jogador.ligada)
                 .map(|jogador| jogador.aparelho)
         });
+        zeebx::audio::soundfont::define_banco(self.settings.audio.soundfont.clone());
         let g = &self.settings.graphics;
         let mut sessao = Session::start_with(
             caminho,

@@ -38,6 +38,8 @@ Options:
                    `[port1] controller` expects, and exit.
   --example        write a commented `config.ini` with the factory values to
                    standard output, and exit.
+  --soundfont=PATH the `.sf2` bank MIDI music plays with, overriding
+                   `[audio] soundfont`.
   --help           this.
   --version        the version.
 
@@ -71,19 +73,26 @@ fn main() -> ExitCode {
         .iter()
         .find_map(|a| a.strip_prefix("--config="))
         .map(PathBuf::from);
+    let banco = args
+        .iter()
+        .find_map(|a| a.strip_prefix("--soundfont="))
+        .map(PathBuf::from);
     // O que não começa com `--` é o jogo. Um só: abrir dois não quer dizer nada.
     let jogo = args.iter().find(|a| !a.starts_with("--")).map(PathBuf::from);
-    if let Some(desconhecida) = args
-        .iter()
-        .find(|a| a.starts_with("--") && !a.starts_with("--config="))
-    {
+    if let Some(desconhecida) = args.iter().find(|a| {
+        a.starts_with("--") && !a.starts_with("--config=") && !a.starts_with("--soundfont=")
+    }) {
         eprintln!("error: unknown option `{desconhecida}`. `--help` lists what exists.");
         return ExitCode::FAILURE;
     }
 
-    let lido = config::carrega(arquivo.as_deref());
+    let mut lido = config::carrega(arquivo.as_deref());
     for aviso in &lido.avisos {
         eprintln!("config: {aviso}");
+    }
+    // A linha de comando ganha do arquivo: é a escolha de quem chamou, agora.
+    if banco.is_some() {
+        lido.settings.audio.soundfont = banco;
     }
     let origem = lido.origem;
     let modo = lido.headless.video;

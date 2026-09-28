@@ -274,8 +274,10 @@ pub enum Onde {
     Biblioteca,
     /// As configurações.
     Ajustes,
-    /// O navegador de pastas, na pasta dada.
+    /// O navegador de pastas, na pasta dada, para escolher a de ROMs.
     Seletor(PathBuf),
+    /// O mesmo navegador, para escolher o banco `.sf2` da música MIDI.
+    SeletorDeBanco(PathBuf),
     /// Um jogo rodando.
     Jogo,
 }
@@ -603,6 +605,7 @@ impl Emulador {
                 log::warn!("nao migrou saves antigos: {erro}");
             }
         }
+        zeebx::audio::soundfont::define_banco(self.settings.audio.soundfont.clone());
         let graficos = self.settings.graphics.clone();
         // O 3D na placa vale só se houver placa: antes da primeira janela não há contexto, e a
         // sessão aberta sem ele cai no rasterizador de software sozinha.
@@ -689,6 +692,14 @@ impl Emulador {
                     _ => Onde::Ajustes,
                 }
             }
+            Onde::SeletorDeBanco(atual) => {
+                self.onde = match atual.parent() {
+                    Some(acima) if atual != &self.minha_pasta => {
+                        Onde::SeletorDeBanco(acima.to_path_buf())
+                    }
+                    _ => Onde::Ajustes,
+                }
+            }
             Onde::Ajustes => self.onde = Onde::Biblioteca,
             Onde::Biblioteca => {}
         }
@@ -701,6 +712,7 @@ impl Emulador {
             Onde::Jogo => self.jogo(ctx),
             Onde::Ajustes => self.ajustes(ctx),
             Onde::Seletor(atual) => self.seletor(ctx, &atual),
+            Onde::SeletorDeBanco(atual) => self.seletor_de_banco(ctx, &atual),
             Onde::Biblioteca => self.biblioteca(ctx),
         }
     }

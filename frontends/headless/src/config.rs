@@ -388,6 +388,13 @@ pub fn de_texto(texto: &str) -> Lido {
     let a: &mut Audio = &mut settings.audio;
     booleano(&mut ini, "audio", "enabled", &mut a.enabled, &mut avisos);
     oito(&mut ini, "audio", "volume", &mut a.volume, 0, 100, &mut avisos);
+    if let Some(v) = ini.pega("audio", "soundfont") {
+        let texto = sem_aspas(&v.texto);
+        a.soundfont = match texto.is_empty() || texto == "-" {
+            true => None,
+            false => Some(PathBuf::from(texto)),
+        };
+    }
 
     // ---- [dump] ---------------------------------------------------------------------
     if let Some(v) = ini.pega("dump", "format") {
@@ -707,7 +714,8 @@ mod testes {
              internal_resolution = 2\n\
              aspect = 16x9\n\
              [audio]\n\
-             volume = 42\n",
+             volume = 42\n\
+             soundfont = \"/bancos/firmware.sf2\"\n",
         );
         assert!(lido.avisos.is_empty(), "{:?}", lido.avisos);
         let g = &lido.settings.graphics;
@@ -720,6 +728,11 @@ mod testes {
         assert_eq!(g.resolucao_interna, 2);
         assert_eq!(g.proporcao, Proporcao::Larga16x9);
         assert_eq!(lido.settings.audio.volume, 42);
+        assert_eq!(
+            lido.settings.audio.soundfont.as_deref(),
+            Some(std::path::Path::new("/bancos/firmware.sf2"))
+        );
+        assert_eq!(de_texto("[audio]\nsoundfont = -\n").settings.audio.soundfont, None);
     }
 
     /// Citar a seção já liga a porta, e uma porta não citada fica como vem de fábrica.

@@ -359,6 +359,35 @@ impl Emulador {
             |valor| format!("{valor}%"),
         );
 
+        // O banco é aberto quando o jogo abre: a dica diz que a troca vale para o próximo.
+        widgets::secao(ui, self.catalogo.get("audio.soundfont"));
+        ui.weak(self.catalogo.get("audio.soundfont.hint"));
+        let banco = self.settings.audio.soundfont.clone();
+        let mostrado = match &banco {
+            Some(caminho) => caminho.display().to_string(),
+            None => self.catalogo.get("audio.soundfont.auto").to_string(),
+        };
+        if widgets::navega(ui, self.catalogo.get("settings.browse"), &mostrado) {
+            let inicio = banco
+                .as_deref()
+                .and_then(std::path::Path::parent)
+                .filter(|pasta| pasta.is_dir())
+                .map(std::path::Path::to_path_buf)
+                .unwrap_or_else(|| std::path::PathBuf::from("/sdcard"));
+            self.onde = Onde::SeletorDeBanco(inicio);
+        }
+        if banco.is_some()
+            && ui
+                .add_sized(
+                    [ui.available_width(), 52.0],
+                    egui::Button::new(self.catalogo.get("audio.soundfont.clear")),
+                )
+                .clicked()
+        {
+            self.settings.audio.soundfont = None;
+            mudou = true;
+        }
+
         if mudou {
             let audio = self.settings.audio.clone();
             if let Some(sessao) = &mut self.sessao {

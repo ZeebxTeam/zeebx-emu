@@ -115,6 +115,8 @@ impl Partida {
         anterior: Option<&mut Partida>,
     ) -> Result<Self, StartError> {
         let settings = abertura.settings;
+        // O banco é aberto quando a máquina nasce: escolhido agora, vale para este jogo.
+        crate::audio::soundfont::define_banco(settings.audio.soundfont.clone());
         let tela_anterior = anterior
             .map(Partida::sessao_mut)
             .filter(|sessao| sessao.classe() == Z_WHEEL)

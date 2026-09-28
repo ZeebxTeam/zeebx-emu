@@ -79,6 +79,25 @@ pub mod qobject {
         #[cxx_name = "screenshotsNaPastaPadrao"]
         fn screenshots_na_pasta_padrao(self: &Configuracoes) -> bool;
 
+        /// O banco `.sf2` da música MIDI como texto: o caminho escolhido, ou a frase da busca
+        /// automática.
+        #[qinvokable]
+        #[cxx_name = "soundfont"]
+        fn soundfont(self: &Configuracoes) -> QString;
+
+        #[qinvokable]
+        #[cxx_name = "escolheSoundfont"]
+        fn escolhe_soundfont(self: Pin<&mut Configuracoes>);
+
+        /// Volta à busca automática: o primeiro `.sf2` da pasta `soundfonts` do aparelho.
+        #[qinvokable]
+        #[cxx_name = "usaSoundfontAutomatico"]
+        fn usa_soundfont_automatico(self: Pin<&mut Configuracoes>);
+
+        #[qinvokable]
+        #[cxx_name = "soundfontAutomatico"]
+        fn soundfont_automatico(self: &Configuracoes) -> bool;
+
         /// O endereço `file://` da pasta dos screenshots, criada se ainda não existe: o botão de
         /// abrir precisa servir antes do primeiro screenshot.
         #[qinvokable]
@@ -691,6 +710,43 @@ impl qobject::Configuracoes {
 
     pub fn screenshots_na_pasta_padrao(&self) -> bool {
         nucleo::com(|nucleo| nucleo.settings.screenshots_dir.is_none())
+    }
+
+    pub fn soundfont(&self) -> QString {
+        nucleo::com(|nucleo| {
+            QString::from(&match &nucleo.settings.audio.soundfont {
+                Some(caminho) => caminho.display().to_string(),
+                None => nucleo.catalogo.get("audio.soundfont.auto").to_string(),
+            })
+        })
+    }
+
+    // O banco é aberto quando a máquina nasce: a troca vale a partir do próximo jogo, e a dica da
+    // tela diz isso. Não há o que aplicar ao jogo aberto.
+    pub fn escolhe_soundfont(mut self: Pin<&mut Self>) {
+        let Some(arquivo) = rfd::FileDialog::new()
+            .add_filter("SoundFont", &["sf2"])
+            .pick_file()
+        else {
+            return;
+        };
+        nucleo::com(|nucleo| {
+            nucleo.settings.audio.soundfont = Some(arquivo);
+            salva(&nucleo.settings);
+        });
+        self.as_mut().aplica(Efeito::default());
+    }
+
+    pub fn usa_soundfont_automatico(mut self: Pin<&mut Self>) {
+        nucleo::com(|nucleo| {
+            nucleo.settings.audio.soundfont = None;
+            salva(&nucleo.settings);
+        });
+        self.as_mut().aplica(Efeito::default());
+    }
+
+    pub fn soundfont_automatico(&self) -> bool {
+        nucleo::com(|nucleo| nucleo.settings.audio.soundfont.is_none())
     }
 
     pub fn endereco_da_pasta_de_screenshots(&self) -> QString {

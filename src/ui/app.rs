@@ -1725,6 +1725,32 @@ impl App {
                 )
                 .changed();
         });
+        // O banco é aberto quando a máquina nasce: a troca vale a partir do próximo jogo, e a dica
+        // diz isso.
+        ui.add_space(12.0);
+        ui.label(self.catalog.get("audio.soundfont"));
+        ui.weak(self.catalog.get("audio.soundfont.hint"));
+        ui.horizontal_wrapped(|ui| {
+            let mostrado = match &audio.soundfont {
+                Some(caminho) => caminho.display().to_string(),
+                None => self.catalog.get("audio.soundfont.auto").to_string(),
+            };
+            ui.monospace(mostrado);
+            if ui.button(self.catalog.get("settings.browse")).clicked()
+                && let Some(arquivo) = rfd::FileDialog::new()
+                    .add_filter("SoundFont", &["sf2"])
+                    .pick_file()
+            {
+                audio.soundfont = Some(arquivo);
+                changed = true;
+            }
+            if audio.soundfont.is_some()
+                && ui.button(self.catalog.get("audio.soundfont.clear")).clicked()
+            {
+                audio.soundfont = None;
+                changed = true;
+            }
+        });
         // Mexer no volume com o jogo aberto tem que valer na hora, não só na próxima abertura.
         if changed {
             let (enabled, volume) = (audio.enabled, audio.volume);

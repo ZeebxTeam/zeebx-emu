@@ -1308,6 +1308,24 @@ unsafe fn registra_opcoes_do_core() {
             label: c"SoundFont (.sf2)".as_ptr(),
         };
 
+        // Os bancos da pasta, lidos agora: a lista de uma opção do core é fixa, e um caminho livre
+        // não cabe nela. Ver `bancos_da_pasta_do_sistema`.
+        let mut banco_values = [RetroCoreOptionValue {
+            value: std::ptr::null(),
+            label: std::ptr::null(),
+        }; 128];
+        banco_values[0] = RetroCoreOptionValue {
+            value: c"auto".as_ptr(),
+            label: c"Automático (o primeiro .sf2 da pasta)".as_ptr(),
+        };
+        for (i, nome) in bancos_da_pasta_do_sistema().into_iter().take(126).enumerate() {
+            let nome = texto_c_permanente(&nome);
+            banco_values[i + 1] = RetroCoreOptionValue {
+                value: nome,
+                label: nome,
+            };
+        }
+
         let mut vol_values = [RetroCoreOptionValue {
             value: std::ptr::null(),
             label: std::ptr::null(),
@@ -1557,7 +1575,7 @@ unsafe fn registra_opcoes_do_core() {
         // **Uma definição por porta**, e são duas porque o console tem duas (`input::PORTAS`).
         // Cada jogador liga a sua: quem joga de manche no Z-Pad 1 não obriga o dono do Z-Pad 2 a
         // jogar com o direcional virando eixo.
-        let definicoes: [RetroCoreOptionV2Definition; 18] = [
+        let definicoes: [RetroCoreOptionV2Definition; 19] = [
             RetroCoreOptionV2Definition {
                 key: c"zeebx_midi_backend".as_ptr(),
                 desc: c"Sintetizador MIDI (reinício)".as_ptr(),
@@ -1566,6 +1584,16 @@ unsafe fn registra_opcoes_do_core() {
                 info_categorized: c"Auto usa SoundFont se presente; Tabela inicia instantaneamente sem carga pesada de SF2. Recarregue o jogo para aplicar.".as_ptr(),
                 category_key: c"audio".as_ptr(),
                 values: opt_values,
+                default_value: c"auto".as_ptr(),
+            },
+            RetroCoreOptionV2Definition {
+                key: c"zeebx_soundfont".as_ptr(),
+                desc: c"Banco SoundFont (reinício)".as_ptr(),
+                desc_categorized: c"Banco SoundFont (reinício)".as_ptr(),
+                info: c"Qual .sf2 toca a música MIDI. A lista é a pasta soundfonts do aparelho, dentro da pasta de sistema do RetroArch (o log diz o caminho); ponha lá o banco do firmware do console, se o tiver. Automático usa o primeiro em ordem alfabética. Recarregue o jogo para aplicar.".as_ptr(),
+                info_categorized: c"Qual .sf2 da pasta soundfonts do aparelho toca o MIDI. Recarregue o jogo para aplicar.".as_ptr(),
+                category_key: c"audio".as_ptr(),
+                values: banco_values,
                 default_value: c"auto".as_ptr(),
             },
             RetroCoreOptionV2Definition {
@@ -1752,10 +1780,26 @@ unsafe fn registra_opcoes_do_core() {
             );
         }
     } else {
-        static VARIAVEIS: [RetroVariable; 18] = [
+        // Não é `static` porque a opção do banco leva os nomes lidos agora. O frontend copia a
+        // lista na chamada, como faz com as definições da V2, que também moram na pilha.
+        //
+        // Um nome com `|` ou `;` quebraria o formato desta versão, e fica de fora.
+        let bancos: Vec<String> = bancos_da_pasta_do_sistema()
+            .into_iter()
+            .filter(|nome| !nome.contains(['|', ';']))
+            .collect();
+        let valor_do_banco = texto_c_permanente(&format!(
+            "Banco SoundFont (reinício); {}",
+            std::iter::once("auto".to_string()).chain(bancos).collect::<Vec<_>>().join("|")
+        ));
+        let variaveis: [RetroVariable; 19] = [
             RetroVariable {
                 key: c"zeebx_midi_backend".as_ptr(),
                 value: c"Sintetizador MIDI (reinício); auto|timbres|soundfont".as_ptr(),
+            },
+            RetroVariable {
+                key: c"zeebx_soundfont".as_ptr(),
+                value: valor_do_banco,
             },
             RetroVariable {
                 key: c"zeebx_volume".as_ptr(),
@@ -1831,10 +1875,47 @@ unsafe fn registra_opcoes_do_core() {
         unsafe {
             environ(
                 ENV_SET_VARIABLES,
-                VARIAVEIS.as_ptr() as *mut c_void,
+                variaveis.as_ptr() as *mut c_void,
             );
         }
     }
+}
+
+/// A pasta onde o core procura os bancos: `soundfonts`, dentro do aparelho, dentro da pasta de
+/// sistema. É a mesma que a busca automática usa ([`zeebx::audio::soundfont::pastas_padrao`]).
+fn pasta_de_bancos(sistema: &Path) -> PathBuf {
+    StoragePaths::for_frontend(sistema, Some(sistema))
+        .device
+        .join("soundfonts")
+}
+
+/// Os nomes dos `.sf2` da pasta de bancos, em ordem, para a opção `zeebx_soundfont`. Vazio quando
+/// o frontend não diz a pasta de sistema.
+fn bancos_da_pasta_do_sistema() -> Vec<String> {
+    let Some(sistema) = diretorio(ENV_GET_SYSTEM_DIRECTORY) else {
+        return Vec::new();
+    };
+    zeebx::audio::soundfont::candidatos_em(&[pasta_de_bancos(&sistema)])
+        .into_iter()
+        .filter_map(|caminho| caminho.file_name()?.to_str().map(str::to_owned))
+        .collect()
+}
+
+/// Um texto C que vive até o fim do processo.
+///
+/// As opções do core apontam para os textos; os fixos moram no binário, e os nomes de banco lidos
+/// da pasta precisam morar em algum lugar também. São poucos bytes, uma vez por carga do core.
+fn texto_c_permanente(texto: &str) -> *const c_char {
+    let texto = texto.replace('\0', "");
+    Box::leak(std::ffi::CString::new(texto).unwrap_or_default().into_boxed_c_str()).as_ptr()
+}
+
+/// O banco escolhido na opção `zeebx_soundfont`, dentro da `pasta` de bancos. `None` é o
+/// automático.
+fn banco_da_opcao(valor: Option<&str>, pasta: &Path) -> Option<PathBuf> {
+    valor
+        .filter(|nome| !nome.is_empty() && *nome != "auto")
+        .map(|nome| pasta.join(nome))
 }
 
 /// Consulta a política de síntese MIDI configurada no frontend RetroArch.
@@ -2490,6 +2571,10 @@ unsafe fn carrega(
     // da raiz de sistema que o frontend entregou: sem esta linha, quem instala o core não tem como
     // saber o caminho, e "o banco não funciona" fica indistinguível de "o arquivo está no lugar
     // errado".
+    zeebx::audio::soundfont::define_banco(banco_da_opcao(
+        unsafe { le_opcao(c"zeebx_soundfont") }.as_deref(),
+        &storage.device.join("soundfonts"),
+    ));
     log(&zeebx::audio::soundfont::relato(&storage.device));
 
     // **O perfil vem antes das opções que ele substitui.** "Portátil" existe porque dez botões
@@ -3566,6 +3651,26 @@ mod testes {
         assert_eq!(volume_de_texto("alto"), None);
         assert_eq!(volume_de_texto(""), None);
         assert_eq!(volume_de_texto("NaN"), None);
+    }
+
+    /// A opção do banco vira o caminho dentro da pasta de bancos do sistema, e "auto" (ou nada,
+    /// num frontend antigo) é a busca automática.
+    #[test]
+    fn a_opcao_do_banco_aponta_para_a_pasta_de_bancos() {
+        let sistema = Path::new("/retroarch/system");
+        let pasta = pasta_de_bancos(sistema);
+        // A mesma pasta que a carga do jogo usa: a do aparelho, mais `soundfonts`.
+        assert_eq!(
+            pasta,
+            StoragePaths::for_frontend(sistema, Some(sistema)).device.join("soundfonts")
+        );
+        assert!(pasta.starts_with(sistema));
+        assert_eq!(
+            banco_da_opcao(Some("firmware.sf2"), &pasta),
+            Some(pasta.join("firmware.sf2"))
+        );
+        assert_eq!(banco_da_opcao(Some("auto"), &pasta), None);
+        assert_eq!(banco_da_opcao(None, &pasta), None);
     }
 
     #[test]

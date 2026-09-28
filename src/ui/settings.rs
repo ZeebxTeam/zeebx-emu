@@ -245,6 +245,12 @@ pub struct Audio {
     pub enabled: bool,
     /// De 0 a 100.
     pub volume: u8,
+    /// O banco `.sf2` com que o MIDI toca. `None` é a busca automática: o primeiro `.sf2` da pasta
+    /// `soundfonts` do aparelho. Ver [`crate::audio::soundfont::primeiro_banco`].
+    ///
+    /// Existe para quem tem o banco do firmware do console, ou outro de gosto, e não quer mexer
+    /// na pasta do aparelho. Uma configuração salva antes dele abre com `None`.
+    pub soundfont: Option<PathBuf>,
 }
 
 impl Default for Audio {
@@ -252,6 +258,7 @@ impl Default for Audio {
         Self {
             enabled: true,
             volume: 80,
+            soundfont: None,
         }
     }
 }

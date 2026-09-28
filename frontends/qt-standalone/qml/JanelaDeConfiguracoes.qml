@@ -966,6 +966,27 @@ ApplicationWindow {
                         text: janela.v("audio.volume") + " — " + janela.tr("audio.volume")
                     }
                 }
+
+                // O banco é aberto quando o jogo abre: a dica diz que a troca vale para o próximo.
+                Titulo { text: janela.tr("audio.soundfont") }
+                Dica { text: janela.tr("audio.soundfont.hint") }
+                RowLayout {
+                    Label {
+                        Layout.fillWidth: true
+                        elide: Text.ElideMiddle
+                        font.family: "monospace"
+                        text: janela.depende([cfg.versao], cfg.soundfont())
+                    }
+                    Button {
+                        text: janela.tr("settings.browse")
+                        onClicked: cfg.escolheSoundfont()
+                    }
+                    Button {
+                        visible: !janela.depende([cfg.versao], cfg.soundfontAutomatico())
+                        text: janela.tr("audio.soundfont.clear")
+                        onClicked: cfg.usaSoundfontAutomatico()
+                    }
+                }
             }
         }
 

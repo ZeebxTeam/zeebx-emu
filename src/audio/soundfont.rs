@@ -99,6 +99,27 @@ pub fn define_vozes(vozes: usize) {
     VOZES_ESCOLHIDAS.store(vozes.clamp(8, 256), Ordering::Relaxed);
 }
 
+/// O banco que o usuário escolheu na configuração ou na linha de comando. `None` é a busca
+/// automática.
+///
+/// Global pelo mesmo motivo da taxa: o banco é aberto quando a máquina nasce, e o frontend
+/// define antes de abrir o jogo. Trocar vale a partir do próximo jogo.
+static BANCO_ESCOLHIDO: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// Escolhe o banco dos próximos jogos, ou volta à busca automática com `None`. Um caminho vazio
+/// conta como `None`: é o que um campo apagado na configuração entrega.
+pub fn define_banco(caminho: Option<PathBuf>) {
+    let caminho = caminho.filter(|c| !c.as_os_str().is_empty());
+    if let Ok(mut escolhido) = BANCO_ESCOLHIDO.lock() {
+        *escolhido = caminho;
+    }
+}
+
+/// O banco escolhido agora, se houver.
+pub fn banco_escolhido() -> Option<PathBuf> {
+    BANCO_ESCOLHIDO.lock().ok().and_then(|escolhido| escolhido.clone())
+}
+
 /// Quantas vozes o banco pode tocar ao mesmo tempo.
 ///
 /// O padrão do `rustysynth` é 64, e a trilha do Double Dragon usa até nove canais simultâneos com
@@ -187,8 +208,32 @@ fn bancos_em(base: &Path) -> Vec<PathBuf> {
     bancos
 }
 
-/// O primeiro banco que existir de verdade, entre os candidatos.
+/// O banco a usar: o escolhido, depois o do `ZEEBX_SOUNDFONT`, depois o primeiro `.sf2` das
+/// pastas de busca.
+///
+/// **Um banco escolhido que sumiu não emudece a música.** O arquivo pode ter mudado de lugar
+/// desde que foi escolhido; o registro diz qual, e a busca segue como se nada tivesse sido
+/// escolhido. Silêncio aqui seria "o banco não funciona" sem dizer por quê.
+///
+/// O `ZEEBX_SOUNDFONT` só entrava em [`candidatos`], que ninguém chamava fora das provas: a
+/// variável que o [`relato`] manda usar era ignorada.
 pub fn primeiro_banco(aparelho: &Path) -> Option<PathBuf> {
+    let variavel = std::env::var_os("ZEEBX_SOUNDFONT").map(PathBuf::from);
+    for (origem, caminho) in [("escolhido", banco_escolhido()), ("do ZEEBX_SOUNDFONT", variavel)] {
+        let Some(caminho) = caminho else {
+            continue;
+        };
+        if caminho.is_file() {
+            return Some(caminho);
+        }
+        crate::registro!(
+            crate::registro::Nivel::Aviso,
+            "soundfont",
+            "o banco {} não existe: {}; seguindo pela busca nas pastas",
+            origem,
+            caminho.display()
+        );
+    }
     primeiro_banco_em(&pastas_padrao(aparelho))
 }
 
@@ -874,6 +919,33 @@ mod tests {
             arco[0],
             palheta[0]
         );
+    }
+
+    /// O banco escolhido ganha da busca, e um escolhido que sumiu não emudece: a busca segue.
+    ///
+    /// Mexe no banco global e o devolve a `None` no fim; nenhuma outra prova chama
+    /// [`primeiro_banco`], que é quem o lê — elas usam [`primeiro_banco_em`].
+    #[test]
+    fn o_banco_escolhido_ganha_da_busca_e_um_que_sumiu_nao_emudece() {
+        let pasta = std::env::temp_dir().join("zeebx-banco-escolhido");
+        std::fs::create_dir_all(&pasta).unwrap();
+        let escolhido = pasta.join("firmware.sf2");
+        std::fs::write(&escolhido, b"RIFF").unwrap();
+        let aparelho = pasta.join("aparelho-sem-bancos");
+
+        define_banco(Some(escolhido.clone()));
+        assert_eq!(banco_escolhido(), Some(escolhido.clone()));
+        assert_eq!(primeiro_banco(&aparelho), Some(escolhido.clone()));
+
+        let sumiu = pasta.join("nao-existe.sf2");
+        define_banco(Some(sumiu.clone()));
+        assert_ne!(primeiro_banco(&aparelho), Some(sumiu));
+
+        // Um campo apagado na configuração chega como caminho vazio, e vale o automático.
+        define_banco(Some(PathBuf::new()));
+        assert_eq!(banco_escolhido(), None);
+        define_banco(None);
+        let _ = std::fs::remove_dir_all(&pasta);
     }
 
     #[test]

@@ -590,6 +590,26 @@ mais é um palpite, e palpite em caminho de arquivo se paga com "não funciona e
 compilação sem a feature também responde — dizendo que não tem o sintetizador —, porque silêncio
 aqui vira a mesma conclusão errada.
 
+#### Escolher o banco: o do firmware, quando alguém o tiver
+
+O console tem o banco dele no firmware, que ainda não lemos, e a diferença de instrumentos que se
+ouve contra o aparelho pode vir daí. Para quem tem o `.sf2` do firmware — ou só prefere outro banco
+— a escolha é por frontend, e vale a partir do próximo jogo aberto, porque o banco é aberto quando
+a máquina nasce (`soundfont::define_banco`):
+
+| frontend | onde se escolhe |
+|---|---|
+| Qt e egui | Configurações › Áudio, com "Procurar…" e "Usar o automático" |
+| Android | Ajustes › Áudio, pelo navegador de pastas do próprio app |
+| headless | `[audio] soundfont = CAMINHO` no `config.ini`, ou `--soundfont=CAMINHO` |
+| Libretro | a opção `zeebx_soundfont`, com os `.sf2` da pasta de bancos do aparelho |
+
+O Libretro lista em vez de pedir um caminho porque uma opção de core é uma lista fixa de valores.
+
+A busca fica: o escolhido, depois o `ZEEBX_SOUNDFONT`, depois o primeiro `.sf2` da pasta. Um
+escolhido que sumiu vira aviso no registro, e a busca segue. O `ZEEBX_SOUNDFONT` era ignorado até
+aqui — só uma função que ninguém chamava o lia —, embora o aviso de "sem banco" mandasse usá-lo.
+
 #### O custo de renderizar a música, e o defeito que ele revelou
 
 Medido com a mesma música (Double Dragon, 47,5 s), em `--release`, nesta máquina:
