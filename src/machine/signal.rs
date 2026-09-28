@@ -100,6 +100,7 @@ impl<C: CpuBackend> Machine<C> {
         self.poll_media()?;
         self.entrega_avisos_de_midia(budget)?;
         self.bombeia_fluxos_pcm(budget)?;
+        self.bombeia_buffers_vivos()?;
         let mut outcomes = Vec::new();
         // Ver [`Machine::notify_image`]. Um aviso que nasce dentro de outro tratador fica para
         // a volta seguinte, como no aparelho.

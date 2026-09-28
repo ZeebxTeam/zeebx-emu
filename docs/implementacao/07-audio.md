@@ -122,6 +122,23 @@ Quando o `data` passa mais de 4 KB do fim que o `RIFF` declara, vale o `RIFF`; u
 poucos bytes é arquivo editado com o `RIFF` desatualizado, e não corta nada. Enquanto os sons eram
 lidos no `Play`, esse buffer já tinha outro conteúdo e o defeito não aparecia.
 
+**Mas o `RIFF` é a leitura de um instante, e a Turma da Mônica escreve depois dele.** As falas do
+jogo são Ogg, decodificadas pelo próprio jogo (ele traz o Tremor) num buffer de 882.000 bytes cujo
+cabeçalho é de um molde: `RIFF` de 56.352 (0,638 s, o tamanho do `sfx_bal_all.wav`) e `data` do
+buffer inteiro. O `RIFF` nunca muda. No `Play` há uns 0,2 s decodificados, e o resto chega cerca de
+0,3 s à frente do que toca. Lida de uma vez e cortada no `RIFF`, a fala durava 0,638 s; o `DONE`
+chegava, e o jogo apagava o buffer e parava de decodificar — o som morria no começo.
+
+Por isso um WAVE cujo `data` passa do `RIFF` toca **lendo o buffer do jogo enquanto toca**
+(`Machine::abre_buffer_vivo`), e só cresce além do `RIFF` com o que for escrito ali **depois** do
+`Play`. O lixo do Super League já estava lá e não conta; a fala da Mônica, sim. O fim é projetado
+no do que já foi escrito mais 0,3 s, mas quem encerra a fala é o próprio jogo, com `Stop`: medido,
+a `prof_sel_mon_01` (4,71 s) recebe o `Stop` 4,72 s depois do `Play`.
+
+Esta página chegou a registrar o `sfx_bal_all.wav` como **prova** da regra do `RIFF` para esse
+buffer. Não era: o efeito de 0,63 s é só o molde do cabeçalho, e as falas que passam por ali têm
+até cinco segundos.
+
 Para conferir sem ouvir, o `zeebx sessao <zip> --dump-audio=A.wav` grava a mistura da sessão da
 janela, no ritmo do relógio virtual.
 

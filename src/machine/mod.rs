@@ -565,6 +565,57 @@ struct FluxoPcm {
     avisou_do_fim: bool,
 }
 
+/// Um WAVE entregue por memória que toca **lendo o buffer do jogo enquanto toca**. Ver
+/// [`Machine::bombeia_buffers_vivos`].
+///
+/// As posições são em bytes, contadas do começo do PCM.
+#[derive(Debug, Clone)]
+struct BufferVivo {
+    /// Onde o PCM começa, no guest.
+    pcm: u32,
+    taxa: u32,
+    canais: u16,
+    bits: u16,
+    /// Até onde o som vai, por ora: começa no fim do `RIFF` e cresce com o que o jogo escreve.
+    fim: u32,
+    /// Até onde o bloco `data` vai. O som não cresce além disto.
+    limite: u32,
+    /// O que havia no buffer do fim do `RIFF` até o `limite`, na hora do `Play`. É a régua do
+    /// crescimento: só conta o que o jogo escreveu **depois** do `Play`.
+    antes: Vec<u8>,
+    /// Onde `antes` começa.
+    base: u32,
+    inicio_us: u64,
+    /// Quantos bytes já foram entregues ao mixer.
+    enviados: u32,
+    /// Quando o buffer foi comparado com `antes` pela última vez.
+    varrido_us: u64,
+}
+
+impl BufferVivo {
+    /// Bytes por quadro: uma amostra de cada canal.
+    fn quadro(&self) -> u32 {
+        (u32::from(self.canais) * u32::from(self.bits / 8)).max(1)
+    }
+
+    /// Quanto tempo tocam `bytes` de PCM.
+    fn duracao_us(&self, bytes: u32) -> u64 {
+        u64::from(bytes / self.quadro()) * 1_000_000 / u64::from(self.taxa.max(1))
+    }
+}
+
+/// Quanto um buffer vivo espera, depois do fim do que o jogo escreveu, antes de dar o som por
+/// acabado.
+///
+/// O Tremor da Turma da Mônica escreve cerca de 0,3 s à frente do que toca, em pedaços de décimos
+/// de segundo; a folga cobre um pedaço atrasado sem deixar o `DONE` visivelmente tarde.
+const GRACA_DO_BUFFER_VIVO_US: u64 = 300_000;
+/// Quanto à frente do relógio as amostras de um buffer vivo vão para o mixer — o mesmo décimo de
+/// segundo dos fluxos de `ISource`, para a placa não esvaziar entre duas voltas.
+const ADIANTE_DO_BUFFER_VIVO_US: u64 = 100_000;
+/// De quanto em quanto tempo virtual o buffer é comparado com o que havia no `Play`.
+const INTERVALO_DE_VARREDURA_US: u64 = 20_000;
+
 /// Comandos e status de `IMedia`, de `inc/AEEIMedia.h` do SDK do BREW 4.0.2.
 const MM_CMD_PLAY: u32 = 4;
 const MM_STATUS_START: u32 = 1;
@@ -2532,6 +2583,8 @@ pub struct Machine<C: CpuBackend> {
     avisos_de_imagem: Vec<u32>,
     /// Os `IMedia` que tocam PCM gerado pelo jogo, por objeto. Ver [`FluxoPcm`].
     fluxos_pcm: HashMap<u32, FluxoPcm>,
+    /// Os `IMedia` que tocam um WAVE lendo o buffer do jogo. Ver [`BufferVivo`].
+    buffers_vivos: HashMap<u32, BufferVivo>,
     /// O buffer no guest onde o `ISource::Read` escreve as amostras.
     buffer_de_fluxo: u32,
     /// O bloco onde cada `AEEMediaCmdNotify` é montado na hora da entrega. Um só basta: os avisos
@@ -3119,6 +3172,7 @@ impl<C: CpuBackend> Machine<C> {
             avisos_de_midia: Vec::new(),
             avisos_de_imagem: Vec::new(),
             fluxos_pcm: HashMap::new(),
+            buffers_vivos: HashMap::new(),
             buffer_de_fluxo: 0,
             bloco_de_aviso_de_midia: 0,
             recursos_lidos: BTreeSet::new(),

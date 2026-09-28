@@ -138,6 +138,7 @@ impl<C: CpuBackend> Machine<C> {
                 if remaining == 0 {
                     self.media.remove(&this);
                     self.fluxos_pcm.remove(&this);
+                    self.buffers_vivos.remove(&this);
                     // Uma música em repetição seguia tocando depois de o objeto sumir.
                     if let Some(mixer) = &self.audio {
                         mixer.stop(this);
@@ -242,10 +243,10 @@ impl<C: CpuBackend> Machine<C> {
             // trata os dois status do mesmo jeito.
             (Interface::Media, "Stop") => {
                 let tocando = self.esta_tocando(this);
-                // **Quem cala a fala.** O #43 mostrava a voz morrendo em um segundo; depois da
-                // correção do `data` ela é decodificada inteira (dez segundos), então quem a
-                // encerra é a reprodução. Esta linha diz de quem foi a ordem: do jogo, por `Stop`,
-                // ou nossa, por fim de som — e quantos segundos de fato tocaram.
+                // **Quem cala a fala.** Na Turma da Mônica, quem encerra a fala é o jogo, por
+                // `Stop`, quando o decodificador dele chega ao fim — ver
+                // [`Machine::abre_buffer_vivo`]. Esta linha diz de quem foi a ordem: do jogo, por
+                // `Stop`, ou nossa, por fim de som — e quantos segundos de fato tocaram.
                 if tocando
                     && let Some(som) = self.media_sound(this)?
                 {
@@ -287,6 +288,7 @@ impl<C: CpuBackend> Machine<C> {
                 if let Some(fluxo) = self.fluxos_pcm.get_mut(&this) {
                     fluxo.tocando = false;
                 }
+                self.buffers_vivos.remove(&this);
                 if let Some(state) = self.media.get_mut(&this) {
                     state.state = MM_STATE_READY;
                     state.ends_us = 0;
@@ -717,51 +719,139 @@ impl<C: CpuBackend> Machine<C> {
         self.inicia_reproducao(this, true)
     }
 
-    /// Relê o buffer **se o que decodificamos ficou pequeno demais para o tamanho que veio**.
+    /// Toca o som de um objeto **lendo o buffer do jogo enquanto toca**, quando o cabeçalho não
+    /// decide sozinho onde ele acaba. Devolve `false` para seguir pelo caminho de sempre.
     ///
-    /// > **Não resolveu, e está medido.** A releitura roda, e o mesmo som continua decodificando
-    /// > 0,64 s: o corte não é a leitura do buffer, é o **cabeçalho do próprio WAV**, que declara
-    /// > menos do que o som tem. Fica aqui porque é inofensiva (buffer igual não decodifica de
-    /// > novo) e porque descreve a suspeita descartada, mas quem for atrás do defeito começa em
-    /// > [`crate::audio::wav::parse`], na escolha entre o tamanho do `RIFF` e o do bloco `data`.
+    /// **A fala da Turma da Mônica é decodificada enquanto toca.** O jogo traz o próprio
+    /// decodificador Vorbis (o Tremor) e escreve cada fala, de até cinco segundos, num buffer de
+    /// 882.000 bytes cujo cabeçalho é de um molde: `RIFF` de 56.352 (0,638 s) e `data` do tamanho do
+    /// buffer. No `Play` só há uns 0,2 s decodificados; o resto chega cerca de 0,3 s à frente do
+    /// que toca, e o `RIFF` nunca muda — medido em trinta segundos de jogo. Lido de uma vez e
+    /// cortado no `RIFF`, o som durava 0,638 s, o `DONE` chegava, e o jogo **apagava o buffer e
+    /// parava de decodificar**: a fala morria no começo.
     ///
-    /// O compromisso de [`Machine::resolve_midia`] — ler na volta seguinte do laço — não cobre o
-    /// caso da Turma da Mônica: ela enche o buffer aos poucos, em leituras de sete quilobytes, e a
-    /// volta seguinte pega **0,64 s de um som de dez segundos**: a fala morre aí. Medido com o
-    /// instrumento de mídia, 882.000 bytes de RIFF decodificados em 0,64 s, dezenove vezes.
-    ///
-    /// A releitura só acontece neste caso, e é o que a torna segura: quando o som decodificado
-    /// **não** é muito menor que o buffer, nada é relido — é o que preserva o jogo do comentário
-    /// lá de cima, que reusa o mesmo buffer de rascunho e veria o som errado. E a releitura passa
-    /// pelo mesmo cache por conteúdo: buffer igual não decodifica de novo.
-    fn rele_o_som_incompleto(&mut self, this: u32) -> Result<(), CpuError> {
-        let Some(state) = self.media.get(&this) else {
-            return Ok(());
+    /// Cortar no `data` não serve: no Zeebo F.C. Super League o `RIFF` está certo e o que vem
+    /// depois dele é lixo de memória, alto. O que separa os dois é o que o jogo faz **depois do
+    /// `Play`**: o som só cresce além do `RIFF` com o que for escrito ali depois de ele começar. O
+    /// lixo que já estava lá não conta.
+    fn abre_buffer_vivo(&mut self, this: u32) -> Result<bool, CpuError> {
+        self.buffers_vivos.remove(&this);
+        let Some(state) = self.media.get(&this).copied() else {
+            return Ok(false);
         };
         let (onde, tamanho) = state.buffer;
-        if onde == 0 || tamanho == 0 {
-            return Ok(());
-        }
-        let decodificado = match self.media_sound(this)? {
-            Some(som) => som.samples.len() * 2 * usize::from(som.channels.max(1)),
-            None => return Ok(()),
-        };
-        // Um quarto do buffer já denuncia a leitura parcial, e fica longe do caso em que o som
-        // ocupa o buffer inteiro com um cabeçalho.
-        if decodificado * 4 > tamanho as usize {
-            return Ok(());
+        // Um som em laço volta ao começo, e aí não há "o que foi escrito depois": fica com o
+        // caminho de sempre.
+        if onde == 0 || tamanho == 0 || state.repeat != 1 {
+            return Ok(false);
         }
         let bytes = self.read_bytes(onde, tamanho)?;
-        let carga = self.guarda_som(bytes);
+        let Some(aberto) = crate::audio::wav::pcm_aberto(&bytes) else {
+            return Ok(false);
+        };
+        let quadro = u32::from(aberto.channels) * u32::from(aberto.bits / 8);
+        let relativo = |n: usize| (n - aberto.inicio) as u32 / quadro * quadro;
+        let (fim, limite) = (relativo(aberto.fim_riff), relativo(aberto.fim_data));
+        let antes = aberto.inicio + fim as usize..aberto.inicio + limite as usize;
+        let now = self.now_us();
+        let vivo = BufferVivo {
+            pcm: onde + aberto.inicio as u32,
+            taxa: aberto.rate,
+            canais: aberto.channels,
+            bits: aberto.bits,
+            fim,
+            limite,
+            antes: bytes[antes].to_vec(),
+            base: fim,
+            inicio_us: now,
+            enviados: 0,
+            varrido_us: 0,
+        };
+        // Sem crescimento, acaba onde o `RIFF` diz, como antes: é o Super League.
+        let ends_us = now + vivo.duracao_us(fim);
+        let gain = state.gain();
         if let Some(state) = self.media.get_mut(&this) {
-            state.carga = carga;
+            state.state = MM_STATE_PLAY;
+            state.ends_us = ends_us;
+        }
+        if let Some(mixer) = &self.audio {
+            mixer.open_stream(this, vivo.taxa, vivo.canais, gain);
+        }
+        self.buffers_vivos.insert(this, vivo);
+        Ok(true)
+    }
+
+    /// Estende os buffers vivos com o que o jogo escreveu e entrega ao mixer o que o relógio já
+    /// deve. Ver [`Machine::abre_buffer_vivo`].
+    ///
+    /// **O fim do som é projetado, e não "quando o jogo parar".** A cada crescimento o `ends_us`
+    /// passa a ser o fim do que já foi escrito mais [`GRACA_DO_BUFFER_VIVO_US`]: é o que deixa o
+    /// `GetState` e o `DONE` funcionarem sem caminho próprio, e um save state carregado no meio da
+    /// fala — que não guarda este estado — ainda recebe o `DONE` na hora.
+    pub(super) fn bombeia_buffers_vivos(&mut self) -> Result<(), CpuError> {
+        if self.buffers_vivos.is_empty() {
+            return Ok(());
+        }
+        let now = self.now_us();
+        let ids: Vec<u32> = self.buffers_vivos.keys().copied().collect();
+        for this in ids {
+            match self.media.get(&this).map(|state| state.state) {
+                Some(MM_STATE_PLAY) => {}
+                Some(MM_STATE_PLAY_PAUSE) => continue,
+                _ => {
+                    self.buffers_vivos.remove(&this);
+                    continue;
+                }
+            }
+            let Some(mut vivo) = self.buffers_vivos.remove(&this) else {
+                continue;
+            };
+            let quadro = vivo.quadro();
+            // Varrer a cada volta do laço custava caro: o jogo dá milhares de voltas por segundo,
+            // e o Tremor escreve em pedaços de décimos de segundo.
+            if now >= vivo.varrido_us + INTERVALO_DE_VARREDURA_US && vivo.fim < vivo.limite {
+                vivo.varrido_us = now;
+                let janela = (vivo.taxa / 2 * quadro).max(quadro);
+                let ate = vivo.limite.min(vivo.fim.saturating_add(janela));
+                let agora = self.read_bytes(vivo.pcm + vivo.fim, ate - vivo.fim)?;
+                let de = (vivo.fim - vivo.base) as usize;
+                if let Some(escrito) = fim_escrito(&agora, &vivo.antes[de..de + agora.len()]) {
+                    vivo.fim = vivo
+                        .limite
+                        .min(vivo.fim + (escrito as u32).div_ceil(quadro) * quadro);
+                    let ends_us =
+                        vivo.inicio_us + vivo.duracao_us(vivo.fim) + GRACA_DO_BUFFER_VIVO_US;
+                    if let Some(state) = self.media.get_mut(&this) {
+                        state.ends_us = state.ends_us.max(ends_us);
+                    }
+                }
+            }
+            let devidos = (now.saturating_sub(vivo.inicio_us) + ADIANTE_DO_BUFFER_VIVO_US)
+                * u64::from(vivo.taxa)
+                / 1_000_000
+                * u64::from(quadro);
+            let alvo = u64::from(vivo.fim).min(devidos) as u32;
+            if alvo > vivo.enviados {
+                let bytes = self.read_bytes(vivo.pcm + vivo.enviados, alvo - vivo.enviados)?;
+                if let Some(mixer) = &self.audio {
+                    // PCM de 8 bits no WAVE é sem sinal; o de 16, com sinal.
+                    mixer.feed_stream(this, &pcm_para_f32(&bytes, vivo.bits, vivo.bits == 8));
+                }
+                vivo.enviados = alvo;
+            }
+            self.buffers_vivos.insert(this, vivo);
         }
         Ok(())
     }
 
     /// Começa a tocar o som já lido de um objeto.
     fn inicia_reproducao(&mut self, this: u32, avisa: bool) -> Result<u32, CpuError> {
-        self.rele_o_som_incompleto(this)?;
+        if self.abre_buffer_vivo(this)? {
+            if avisa {
+                self.notify_media(this, MM_CMD_PLAY, MM_STATUS_START)?;
+            }
+            return Ok(SUCCESS);
+        }
         // **Um `Play` sobre um som que ainda toca não avisa.** Avisar `DONE` aqui fazia um ciclo
         // nos jogos que tocam de novo dentro do tratador do aviso: o novo `Play` caía sobre o som
         // que acabara de começar, gerava outro aviso, e o som reiniciava a cada quadro — o áudio
@@ -1087,5 +1177,44 @@ pub(super) fn pcm_para_f32(bytes: &[u8], bits: u16, sem_sinal: bool) -> Vec<f32>
                 }
             })
             .collect(),
+    }
+}
+
+/// Até onde `agora` difere de `antes`: o índice logo depois do último byte mudado, ou `None` se
+/// nada mudou.
+///
+/// É a **última** diferença, e não a primeira sequência mudada: uma fala tem pausas, e o silêncio
+/// que o decodificador escreve sobre um buffer zerado não muda nada. Parar na primeira igualdade
+/// seguraria o som no meio da pausa.
+fn fim_escrito(agora: &[u8], antes: &[u8]) -> Option<usize> {
+    agora
+        .iter()
+        .zip(antes)
+        .rposition(|(a, b)| a != b)
+        .map(|i| i + 1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fim_escrito;
+
+    #[test]
+    fn nada_escrito_nao_cresce() {
+        assert_eq!(fim_escrito(&[0, 7, 0], &[0, 7, 0]), None);
+    }
+
+    /// O lixo que já estava lá é o `antes`, e por isso não conta — é o Super League.
+    #[test]
+    fn so_conta_o_que_mudou() {
+        assert_eq!(fim_escrito(&[9, 9, 9, 9], &[9, 9, 9, 9]), None);
+        assert_eq!(fim_escrito(&[9, 1, 9, 9], &[9, 9, 9, 9]), Some(2));
+    }
+
+    /// Uma pausa na fala escrita sobre zeros não para o crescimento.
+    #[test]
+    fn uma_pausa_no_meio_nao_segura_o_fim() {
+        let antes = [0u8; 8];
+        let agora = [5, 5, 0, 0, 0, 5, 0, 0];
+        assert_eq!(fim_escrito(&agora, &antes), Some(6));
     }
 }
