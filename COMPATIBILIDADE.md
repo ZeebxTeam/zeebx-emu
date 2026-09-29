@@ -3,9 +3,9 @@ Versão considerada na análise: v0.2.1 (em desenvolvimento)
 
 | Status | Legenda | Jogos | % |
 |---|---|---|---|
-| ✅ | (compatível) | 46 | 75,4% |
+| ✅ | (compatível) | 49 | 80,3% |
 | 🔄 | (roda com ressalvas) | 8 | 13,1% |
-| ❌ | (incompatível) | 7 | 11,5% |
+| ❌ | (incompatível) | 4 | 6,6% |
 
 
 # Observações:
@@ -50,7 +50,7 @@ Versão considerada na análise: v0.2.1 (em desenvolvimento)
 | Rally Master Pro | ✅ | |
 | Reckless Racing | 🔄 | Abre, porém com uma série de glitches nos modelos e texturas |
 | Resident Evil 4 - Zeebo Edition | ✅ | |
-| Ridge Racer | ❌ | Abertura e tela de título certas; no menu e na corrida a câmera aponta para trás da cena e só 2 de cada 27 desenhos passam do recorte |
+| Ridge Racer | ✅ | Joga; menus, painel da corrida e corrida |
 | Spin Master | ✅ | Emulador de arcade embutido, com som |
 | Street Hoop | ✅ | Emulador de arcade embutido, com som |
 | Super BurgerTime | ✅ | Emulador de arcade embutido, com som |
@@ -79,6 +79,6 @@ Versão considerada na análise: v0.2.1 (em desenvolvimento)
 | Zeebo Sports Volei | ✅ | |
 | Zeetris (Homebrew) | ✅ | |
 | Zenonia | ✅ | |
-| Zumas Revenge | ❌ | Quebra no começo, no mesmo desenho em superfície própria do Bejeweled Twist |
+| Zumas Revenge | ✅ | Joga |
 | Z-Wheel | 🔄 | Utilizável, porém ainda com muitos bugs, online não implementado |
 
