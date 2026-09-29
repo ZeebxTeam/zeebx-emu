@@ -111,7 +111,7 @@ jobs:
         env:
           # O AppImage é montado sem FUSE no runner.
           APPIMAGE_EXTRACT_AND_RUN: "1"
-        run: cargo packager --release --formats ${{ matrix.formatos }}
+        run: cargo packager -p zeebx-standalone-egui --release --formats ${{ matrix.formatos }}
 
       # **O `.app` inteiro sai assinado ad-hoc, e não só o binário.** O `cargo packager` sem
       # identidade deixa o executável só com a assinatura que o linker põe (`linker-signed`) e o
@@ -126,7 +126,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          (cd frontends/egui-standalone && cargo packager --release --formats app)
+          (cd frontends/egui-standalone && cargo packager -p zeebx-standalone-egui --release --formats app)
           app=target/pacotes/Zeebx.app
           codesign --force --deep --sign - "$app"
           codesign --verify --deep --strict "$app"

@@ -182,7 +182,7 @@ jobs:
           EXTRA_PLATFORM_PLUGINS: libqwayland.so
           EXTRA_QT_MODULES: waylandcompositor
           APPIMAGE_EXTRACT_AND_RUN: "1"
-        run: cargo packager --release --formats appimage
+        run: cargo packager -p zeebx-standalone-qt --release --formats appimage
 
       # O `windeployqt` junta numa pasta o que o `zeebx-qt.exe` precisa do Qt — as DLLs, os plugins e
       # os módulos QML que os arquivos de `qml/` importam —, e a configuração dos pacotes manda o
@@ -197,7 +197,7 @@ jobs:
             --qmldir frontends/qt-standalone/qml \
             --dir target/qt-implantado target/release/zeebx-qt.exe
           cd frontends/qt-standalone
-          cargo packager --release --formats nsis
+          cargo packager -p zeebx-standalone-qt --release --formats nsis
 
       # O `cargo packager` monta o `.app`, e o `macdeployqt` põe dentro dele os frameworks, os
       # plugins e os módulos QML. Ele altera os binários, e no ARM um binário alterado sem
@@ -211,7 +211,7 @@ jobs:
           QMAKE: ${{ env.QT_ROOT_DIR }}/bin/qmake
         run: |
           set -euo pipefail
-          (cd frontends/qt-standalone && cargo packager --release --formats app)
+          (cd frontends/qt-standalone && cargo packager -p zeebx-standalone-qt --release --formats app)
           app="target/pacotes/Zeebx Qt.app"
           macdeployqt "$app" -qmldir="$GITHUB_WORKSPACE/frontends/qt-standalone/qml"
           codesign --force --deep --sign - "$app"
@@ -299,7 +299,7 @@ jobs:
         env:
           QMAKE: /usr/bin/qmake6
         run: |
-          cargo packager --release --formats deb
+          cargo packager -p zeebx-standalone-qt --release --formats deb
           mv ../../target/pacotes/*.deb ../../target/pacotes/zeebx-standalone-qt-linux-x86_64.deb
 
       - name: Instala e abre
