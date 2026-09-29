@@ -410,21 +410,25 @@ impl<C: CpuBackend> Machine<C> {
             // nulo. Sem a interface, o caminho de desenho dele nunca começa.
             //
             // Os `DrawTex*` desenham um retângulo de textura em coordenadas de tela, sem passar
-            // pela matriz de modelo — é o que um jogo faz para compor o quadro numa textura. Aqui
-            // eles ainda respondem "consegui" sem desenhar: é o passo que faz o jogo **chegar** ao
-            // desenho, e o efeito dele é medido pela contagem de cores do relatório. O retângulo
-            // de verdade é o passo seguinte, e a referência para ele é o `gles_draw`.
+            // pela matriz de modelo. É o mesmo desenho do `IGLES11`: o Ridge Racer monta o menu e
+            // o HUD inteiros por aqui.
+            "DrawTexsOES" | "DrawTexiOES" | "DrawTexxOES" | "DrawTexsvOES" | "DrawTexivOES"
+            | "DrawTexxvOES" | "DrawTexfOES" | "DrawTexfvOES"
+                if iface == Interface::Gles11Ext =>
+            {
+                self.sync_egl_color_from_guest()?;
+                self.gles_draw_tex(name, 1)?;
+                SUCCESS
+            }
+            // A paleta de matrizes (`OES_matrix_palette`) ainda responde "consegui" sem efeito.
             "CurrentPaletteMatrixOES" | "LoadPaletteFromModelViewMatrixOES"
-            | "MatrixIndexPointerOES" | "WeightPointerOES" | "DrawTexsOES" | "DrawTexiOES"
-            | "DrawTexxOES" | "DrawTexsvOES" | "DrawTexivOES" | "DrawTexxvOES" | "DrawTexfOES"
-            | "DrawTexfvOES"
+            | "MatrixIndexPointerOES" | "WeightPointerOES"
                 if iface == Interface::Gles11Ext =>
             {
                 // O nome do método já aparece em "chamadas que mais pesaram"; aqui basta nomear a
                 // causa, porque as hipóteses são um conjunto de textos fixos.
                 self.assumptions.insert(concat!(
-                    "o jogo desenhou por uma extensão OES (IGLES11Ext), cujo ",
-                    "retângulo de textura ainda não desenhamos"
+                    "o jogo usou a paleta de matrizes (IGLES11Ext), que ainda não tem efeito"
                 ));
                 SUCCESS
             }

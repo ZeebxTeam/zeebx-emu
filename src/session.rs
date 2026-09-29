@@ -1292,6 +1292,14 @@ impl Session {
         self.machine.desenha_no_fbo(fbo);
     }
 
+    /// Avisa que a janela pintou no contexto de GL emprestado desde o último passo.
+    ///
+    /// Quem divide o contexto com o motor chama isto uma vez por quadro, antes de o jogo andar:
+    /// o que a janela mudou na placa deixa de ser o que o motor acha que está lá.
+    pub fn retoma_o_contexto(&mut self) {
+        self.machine.retoma_o_contexto();
+    }
+
     /// Fecha o quadro do lado da placa antes de o frontend apresentar o framebuffer dele.
     ///
     /// O par do [`Session::desenha_no_fbo`]: aquele pega o contexto no começo do quadro, este o

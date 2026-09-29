@@ -2151,6 +2151,21 @@ impl Rasterizador for GpuState {
     /// em silêncio: tela preta, com o áudio normal, nos portáteis de GLES.
     ///
     /// Uma vez por quadro, e não por lote: o ganho do `e6a436e` fica.
+    /// **Quando a janela pinta no mesmo contexto, o espelho não sabe mais o que está na placa.**
+    /// O `devolve_o_contexto` registra o que ele mesmo deixa, e isso vale até o `egui` pintar: ele
+    /// troca o viewport pelo da janela, liga a tesoura e liga a mistura de alfa pré-multiplicado.
+    /// O espelho seguia com os valores de antes e não os reenviava — o Ridge Racer desenhava num
+    /// canto da janela, com o fundo das texturas branco.
+    ///
+    /// É o par do [`GpuState::desenha_no_fbo`] do libretro, e custa o mesmo: uma vez por quadro
+    /// da janela, e não por lote.
+    fn retoma_o_contexto(&mut self) {
+        if self.placa.de_outro() {
+            self.esquece_o_espelho();
+            self.placa.esquece_o_ligado();
+        }
+    }
+
     fn devolve_ao_frontend(&mut self) {
         if self.fbo_externo.is_none() || self.placa.morreu() {
             return;
@@ -3875,6 +3890,58 @@ mod tests {
     /// (`src/ui/app.rs` entrega o contexto do `eframe` à sessão, e `src/ui/gpu.rs` o pinta). O que
     /// o `Pintor` faz no fim de cada pintura está copiado aqui: `use_program(None)` e
     /// `bind_vertex_array(None)`. O quadro dos dois lados tem de sair **igual**.
+    /// **O que a janela muda entre dois quadros volta a ser do motor.** O `egui` pinta no mesmo
+    /// contexto e deixa o viewport do tamanho da janela, a tesoura ligada e a mistura de alfa
+    /// pré-multiplicado. O espelho achava que viewport e mistura eram os do motor e não os
+    /// reenviava: o Ridge Racer saía num canto da janela, com caixas brancas no lugar da
+    /// transparência.
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn o_estado_que_a_janela_deixa_nao_vaza_para_o_quadro_seguinte() {
+        use glow::HasContext as _;
+
+        let (largura, altura) = (16, 16);
+        let Some((contexto, gl)) = placa_emprestada() else {
+            return;
+        };
+        let (Some(mut referencia), Some(mut com_janela)) = (
+            estado_emprestado(largura, altura, &gl),
+            estado_emprestado(largura, altura, &gl),
+        ) else {
+            return;
+        };
+        let _ = &contexto;
+        let medida = (largura, altura);
+
+        // A referência termina **antes** de a janela pintar: o contexto é um só, e o que a janela
+        // muda valeria para as duas.
+        primeiro_lote(&mut referencia, medida);
+        segundo_lote(&mut referencia);
+        primeiro_lote(&mut com_janela, medida);
+
+        // **O `egui` pinta aqui**, e é assim que ele deixa o contexto.
+        unsafe {
+            gl.viewport(0, 0, 4, 4);
+            gl.enable(glow::SCISSOR_TEST);
+            gl.scissor(0, 0, 4, 4);
+            gl.enable(glow::BLEND);
+            gl.blend_func_separate(
+                glow::ONE,
+                glow::ONE_MINUS_SRC_ALPHA,
+                glow::ONE_MINUS_DST_ALPHA,
+                glow::ONE,
+            );
+        }
+        com_janela.retoma_o_contexto();
+        segundo_lote(&mut com_janela);
+
+        assert_eq!(
+            com_janela.read_rect(0, 0, largura, altura),
+            referencia.read_rect(0, 0, largura, altura),
+            "o segundo lote desenhou com o viewport, a tesoura ou a mistura que a janela deixou"
+        );
+    }
+
     #[cfg(feature = "gpu")]
     #[test]
     fn o_pintor_no_mesmo_contexto_nao_apaga_o_desenho_do_jogo() {

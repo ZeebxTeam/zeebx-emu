@@ -260,6 +260,8 @@ impl Partida {
         let fatia = (agora - self.ultimo_passo).min(FATIA_MAXIMA);
         self.ultimo_passo = agora;
         if !self.sessao.mostra_quadro_intermediario() {
+            // O `egui` pintou no mesmo contexto desde o passo anterior.
+            self.sessao.retoma_o_contexto();
             let _ = self.sessao.step(fatia, limite_de_velocidade);
         }
     }

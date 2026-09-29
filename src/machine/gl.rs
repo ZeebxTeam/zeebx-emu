@@ -321,27 +321,7 @@ impl<C: CpuBackend> Machine<C> {
             //
             // `s` é inteiro de 16 bits, `i` de 32, `x` é ponto fixo 16.16 e `f` é float. Todas
             // desenham a mesma coisa; só muda como o número chega.
-            name if name.starts_with("DrawTex") => {
-                let vector = name.ends_with("vOES");
-                let scale = match name.as_bytes().get(7) {
-                    Some(b'x') => 1.0 / 65536.0,
-                    _ => 1.0,
-                };
-                let float = name.as_bytes().get(7) == Some(&b'f');
-                let mut values = [0f32; 5];
-                for (index, slot) in values.iter_mut().enumerate() {
-                    let raw = match vector {
-                        true => self.cpu.read_u32(a[0] + index as u32 * 4)?,
-                        false => self.arg(index + 1),
-                    };
-                    *slot = match float {
-                        true => f32::from_bits(raw),
-                        false => raw as i32 as f32 * scale,
-                    };
-                }
-                let [x, y, z, width, height] = values;
-                self.gl.draw_texture(x, y, z, width, height);
-            }
+            name if name.starts_with("DrawTex") => self.gles_draw_tex(name, base)?,
             // O modo e os parâmetros do `GL_COMBINE` são enums, e chegam inteiros mesmo pela
             // variante de ponto fixo ou de `float`; só as escalas são número. Ver `TexEnv`.
             "TexEnvx" | "TexEnvi" | "TexEnvf" if a[0] == gles::GL_TEXTURE_ENV => {
@@ -790,6 +770,35 @@ impl<C: CpuBackend> Machine<C> {
     }
 
     /// Monta os vértices a partir dos vetores do cliente e manda desenhar.
+    /// `glDrawTex{sixf}[v]OES`: um retângulo da textura, recortado pelo `GL_TEXTURE_CROP_RECT_OES`,
+    /// direto em coordenadas de tela.
+    ///
+    /// `base` é onde está o primeiro argumento: 1 quando o método é de um objeto (`IGLES11` e
+    /// `IGLES11Ext`, com o objeto em `r0`), 0 no GL legado. O `IGLES11Ext` respondia "consegui"
+    /// sem desenhar, e o Ridge Racer monta o menu e o HUD inteiros por ele: sobrava o fundo azul.
+    pub(super) fn gles_draw_tex(&mut self, name: &str, base: usize) -> Result<(), CpuError> {
+        let vector = name.ends_with("vOES");
+        let scale = match name.as_bytes().get(7) {
+            Some(b'x') => 1.0 / 65536.0,
+            _ => 1.0,
+        };
+        let float = name.as_bytes().get(7) == Some(&b'f');
+        let mut values = [0f32; 5];
+        for (index, slot) in values.iter_mut().enumerate() {
+            let raw = match vector {
+                true => self.cpu.read_u32(self.arg(base) + index as u32 * 4)?,
+                false => self.arg(base + index),
+            };
+            *slot = match float {
+                true => f32::from_bits(raw),
+                false => raw as i32 as f32 * scale,
+            };
+        }
+        let [x, y, z, width, height] = values;
+        self.gl.draw_texture(x, y, z, width, height);
+        Ok(())
+    }
+
     pub(super) fn gles_draw(&mut self, mode: u32, indices: &[u32]) -> Result<(), CpuError> {
         if !self.gl_vertices.em_uso() || indices.is_empty() {
             return Ok(());
@@ -1157,6 +1166,11 @@ impl<C: CpuBackend> Machine<C> {
     /// motor desenha no próprio e o quadro sai pelo `frame_rgb565`, como sempre.
     pub fn desenha_no_fbo(&mut self, fbo: Option<u32>) {
         self.gl.desenha_no_fbo(fbo);
+    }
+
+    /// A janela pintou no contexto emprestado. Ver [`Rasterizador::retoma_o_contexto`].
+    pub fn retoma_o_contexto(&mut self) {
+        self.gl.retoma_o_contexto();
     }
 
     /// O quadro acabou: o contexto volta ao frontend. Ver [`Rasterizador::devolve_ao_frontend`].
