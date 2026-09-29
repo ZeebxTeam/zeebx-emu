@@ -93,8 +93,8 @@ impl<C: CpuBackend> Machine<C> {
                     // não faz nada, e anunciar o que não existe faz o jogo chamar função que
                     // não está lá.
                     gles::GL_EXTENSIONS => {
-                        "GL_OES_draw_texture GL_ATI_imageon_misc GL_ATI_texture_compression_atitc \
-                         GL_ARB_vertex_buffer_object "
+                        "GL_OES_draw_texture GL_OES_query_matrix GL_ATI_imageon_misc \
+                         GL_ATI_texture_compression_atitc GL_ARB_vertex_buffer_object "
                     }
                     _ => "",
                 };
@@ -243,6 +243,12 @@ impl<C: CpuBackend> Machine<C> {
             }
 
             // --- Estado -----------------------------------------------------------------
+            // **Largura ou altura negativa é `GL_INVALID_VALUE`, e a chamada não muda nada.** O
+            // Quake 2 calcula o viewport da fase em ponto fixo 18.14 e a conta estoura a 640×480:
+            // pede `(0, 68, -179, -67)`. No aparelho o GL recusa e o viewport de antes, o da tela
+            // inteira, continua valendo; aceito, ele mandava o mundo inteiro para fora da tela e só
+            // o HUD aparecia.
+            "Viewport" if (a[2] as i32) < 0 || (a[3] as i32) < 0 => {}
             "Viewport" => self
                 .gl
                 .set_viewport(a[0] as i32, a[1] as i32, a[2] as i32, a[3] as i32),
@@ -538,6 +544,8 @@ impl<C: CpuBackend> Machine<C> {
             //
             // O Peggle desenha a folha de fontes inteira e aperta a tesoura para aparecer uma
             // letra só. Ignorada, a folha inteira ia para a tela por cima do jogo.
+            // Mesma regra do `Viewport`: tamanho negativo é recusado sem mudar o estado.
+            "Scissor" if (a[2] as i32) < 0 || (a[3] as i32) < 0 => {}
             "Scissor" => self
                 .gl
                 .set_scissor(a[0] as i32, a[1] as i32, a[2] as i32, a[3] as i32),

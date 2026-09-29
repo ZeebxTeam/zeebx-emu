@@ -2182,6 +2182,9 @@ impl Rasterizador for GpuState {
     fn set_matrix_mode(&mut self, mode: u32) {
         self.estado.set_matrix_mode(mode);
     }
+    fn matriz_do_topo(&self) -> Matrix {
+        self.estado.matriz_do_topo()
+    }
     fn load_identity(&mut self) {
         self.estado.load_identity();
     }

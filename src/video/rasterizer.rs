@@ -660,6 +660,8 @@ pub trait Rasterizador {
     fn mult_matrix(&mut self, m: Matrix);
     fn push_matrix(&mut self);
     fn pop_matrix(&mut self);
+    /// A matriz do topo da pilha ativa. Ver [`GlState::matriz_do_topo`].
+    fn matriz_do_topo(&self) -> Matrix;
 
     fn set_viewport(&mut self, x: i32, y: i32, width: i32, height: i32);
     fn set_scissor(&mut self, x: i32, y: i32, width: i32, height: i32);
@@ -892,6 +894,9 @@ impl Rasterizador for GlState {
     }
     fn pop_matrix(&mut self) {
         GlState::pop_matrix(self)
+    }
+    fn matriz_do_topo(&self) -> Matrix {
+        GlState::matriz_do_topo(self)
     }
     fn set_viewport(&mut self, x: i32, y: i32, width: i32, height: i32) {
         GlState::set_viewport(self, x, y, width, height)
@@ -1246,6 +1251,16 @@ impl GlState {
             transformed: Vec::new(),
             sujo: true,
         }
+    }
+
+    /// A matriz do topo da pilha ativa, como o `glQueryMatrixxOES` a devolve.
+    pub fn matriz_do_topo(&self) -> Matrix {
+        let pilha = match self.matrix_mode {
+            gles::GL_PROJECTION => &self.projection,
+            gles::GL_TEXTURE => &self.texture_matrix,
+            _ => &self.modelview,
+        };
+        *pilha.last().expect("pilha nunca fica vazia")
     }
 
     /// A pilha de matrizes ativa.
