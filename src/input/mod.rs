@@ -268,6 +268,46 @@ impl Pad {
         (valor + AXIS_CENTRO).clamp(AXIS_MIN, AXIS_MAX)
     }
 
+    /// Espelha o direcional nos eixos `X` e `Y`, para jogo que só lê o manche.
+    ///
+    /// **Não é o padrão, e a razão é medida.** No console o direcional é botão: quem consulta
+    /// estado o vê em `GetButtonInfo`, e quem só escuta o eixo não vê nada. Pôr o direcional nos
+    /// eixos foi o que `e705840` fez, e `4418fe9` desfez — o Zeeboids consulta **os dois canais**
+    /// toda volta (613 `GetNextButtonEvent` e 612 `GetPositionState` em vinte segundos) e passou a
+    /// andar duas casas por toque. Deixá-lo **só** nos eixos foi pior: soltar a direção manda o
+    /// eixo de volta ao centro, e quem lê variação lê essa volta como um passo no sentido contrário.
+    ///
+    /// Fica aqui, atrás de uma opção desligada por padrão, porque o defeito é **por jogo**: quem só
+    /// lê o manche passa a enxergar o direcional, e quem lê os dois canais segue como estava.
+    ///
+    /// Os botões **continuam apertados**: a opção acrescenta o eixo, não troca o canal. Quem lê os
+    /// dois é que anda duas casas, e é o caso que a opção existe para deixar desligada.
+    ///
+    /// Cima é valor **negativo** no `Y` interno: no console o eixo cresce para baixo, e é o valor
+    /// baixo que o jogo lê como cima — ver `cima_no_analogico_e_o_valor_baixo_no_console`.
+    pub fn espelha_o_direcional_nos_eixos(&mut self) {
+        // Os quatro sentidos, na ordem de [`DPAD`]: cima, baixo, esquerda, direita.
+        //
+        // **Soltar devolve o eixo ao centro**, e não o deixa onde estava: sem isso o manche
+        // ficaria empurrado para sempre depois do primeiro toque. É a mesma volta ao centro que o
+        // [`Pad::press`] anota como o risco da ideia — quem lê variação lê essa volta como um
+        // passo no sentido contrário.
+        //
+        // Os dois sentidos opostos apertados juntos dão centro, e não o último que chegou.
+        let vertical = match (self.is_down(DPAD[0]), self.is_down(DPAD[1])) {
+            (true, false) => -AXIS_CURSO,
+            (false, true) => AXIS_CURSO,
+            _ => 0,
+        };
+        let horizontal = match (self.is_down(DPAD[2]), self.is_down(DPAD[3])) {
+            (true, false) => -AXIS_CURSO,
+            (false, true) => AXIS_CURSO,
+            _ => 0,
+        };
+        self.set_axis(1, vertical);
+        self.set_axis(0, horizontal);
+    }
+
     /// Os botões que mudaram entre `self` e `next`, com o novo estado de cada um.
     pub fn changes(&self, next: &Pad) -> Vec<(usize, bool)> {
         (0..BUTTONS)
@@ -292,18 +332,11 @@ impl Pad {
     }
 }
 
-/// As teclas que o controle manda, comparando com o quadro anterior.
-///
-/// No console o direcional chega aos aplicativos como as quatro setas do BREW, e é com elas que a
-/// Z-Wheel navega: esquerda e direita giram a roda e trocam a aba da lista, cima e baixo passam as
-/// páginas. O analógico não entra aqui: a Z-Wheel lê a posição e faz a tradução dela sozinha
-/// (`0x44914` no módulo).
-///
-/// Fica fora da UI porque **todo frontend** precisa desta tradução: a janela do desktop e o core
-/// Libretro entregam o mesmo par de quadros e esperam as mesmas teclas.
 /// Converte uma tecla do frontend para o código virtual BREW correspondente.
 ///
 /// Fica no motor porque desktop, headless e Android precisam da mesma convenção.
+///
+/// `Esc` e `P` ficam de fora de propósito: na janela do desktop são encerrar e pausar.
 pub fn avk_de(key: egui::Key) -> Option<u32> {
     use egui::Key::*;
     Some(match key {
@@ -319,6 +352,53 @@ pub fn avk_de(key: egui::Key) -> Option<u32> {
     })
 }
 
+/// As teclas BREW que valem agora: as do teclado, já em AVK, somadas às que os controles apertam.
+///
+/// Uma seta física pode estar mapeada também no controle, e continua sendo um aperto só: por isso
+/// o resultado é um conjunto, e só a diferença entre dois deles vira evento ([`transicoes`]).
+pub fn avks_ativos(
+    teclado: impl IntoIterator<Item = u32>,
+    pads: &[Pad],
+) -> std::collections::HashSet<u32> {
+    let mut ativos: std::collections::HashSet<u32> = teclado.into_iter().collect();
+    for pad in pads {
+        ativos.extend(
+            teclas_do_controle(&Pad::default(), pad)
+                .into_iter()
+                .filter_map(|(key, down)| down.then_some(key)),
+        );
+    }
+    ativos
+}
+
+/// Os eventos de tecla que levam de `anteriores` a `atuais`, soltas antes de apertadas, e
+/// `anteriores` passa a ser `atuais`.
+///
+/// Guardar o conjunto entregue, e não cada fonte, é o que faz soltar o `4` enquanto a seta
+/// continua apertada não soltar o AVK que as duas representam.
+pub fn transicoes(
+    anteriores: &mut std::collections::HashSet<u32>,
+    atuais: std::collections::HashSet<u32>,
+) -> Vec<(u32, bool)> {
+    let mut eventos: Vec<_> = anteriores
+        .difference(&atuais)
+        .map(|&key| (key, false))
+        .collect();
+    eventos.extend(atuais.difference(anteriores).map(|&key| (key, true)));
+    eventos.sort_unstable();
+    *anteriores = atuais;
+    eventos
+}
+
+/// As teclas que o controle manda, comparando com o quadro anterior.
+///
+/// No console o direcional chega aos aplicativos como as quatro setas do BREW, e é com elas que a
+/// Z-Wheel navega: esquerda e direita giram a roda e trocam a aba da lista, cima e baixo passam as
+/// páginas. O analógico não entra aqui: a Z-Wheel lê a posição e faz a tradução dela sozinha
+/// (`0x44914` no módulo).
+///
+/// Fica fora da UI porque **todo frontend** precisa desta tradução: a janela do desktop e o core
+/// Libretro entregam o mesmo par de quadros e esperam as mesmas teclas.
 pub fn teclas_do_controle(antes: &Pad, agora: &Pad) -> Vec<(u32, bool)> {
     // Os dois botões de face seguem a ajuda da própria Z-Wheel (`assets/zeebo/pt/controls.html`):
     // "Sim (Botão 1)" escolhe e "Voltar (Botão 2)" cancela. Voltar é o `AVK_CLR`, medido: na tela
@@ -455,6 +535,38 @@ fn eixo_por_nome(nome: &str) -> Option<(usize, i32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn teclado_e_controle_compartilham_um_aperto() {
+        use std::collections::HashSet;
+        // O `b1` do controle e o `Enter` do teclado mandam o mesmo `CONFIRMA`: é o par que
+        // compartilha um comando depois de o direcional ter saído da tradução.
+        let mut pad = Pad::default();
+        pad.press(Pad::button_by_name("b1").unwrap(), true);
+        let teclado = [avk_de(egui::Key::Enter).unwrap()];
+        let mut entregues = HashSet::new();
+        let ativos = avks_ativos(teclado, &[pad]);
+        assert_eq!(transicoes(&mut entregues, ativos.clone()), vec![(avk::CONFIRMA, true)]);
+        assert!(transicoes(&mut entregues, ativos).is_empty());
+        // Soltar o teclado não solta um comando ainda mantido pelo controle.
+        let ativos = avks_ativos([], &[pad]);
+        assert!(transicoes(&mut entregues, ativos).is_empty());
+        assert_eq!(transicoes(&mut entregues, HashSet::new()), vec![(avk::CONFIRMA, false)]);
+    }
+
+    /// Os dígitos saem da ordem do `egui::Key`, e do `AVK_0` em diante. As duas listas são
+    /// contíguas hoje; se uma deixar de ser, é aqui que se descobre.
+    #[test]
+    fn digitos_viram_avk() {
+        use egui::Key;
+        assert_eq!(avk_de(Key::Num0), Some(avk::ZERO));
+        assert_eq!(avk_de(Key::Num7), Some(avk::ZERO + 7));
+        assert_eq!(avk_de(Key::Num9), Some(avk::ZERO + 9));
+        assert_eq!(avk_de(Key::Backspace), Some(avk::CLR));
+        assert_eq!(avk_de(Key::Escape), None);
+        assert_eq!(avk_de(Key::P), None);
+    }
+
 
     /// O botão 1 é o sul, e o UID dele é o que o arquivo do console rotula `Button_2`.
     ///
@@ -650,6 +762,61 @@ mod tests {
         // arcade varrem: um botão que não existe no aparelho não pode comer a vaga de um que
         // existe.
         assert!(lx >= 16, "o lx não ocupa vaga na faixa que o arcade lê");
+    }
+
+    /// A opção do issue #39: o direcional também escreve nos eixos, quando ligada.
+    #[test]
+    fn o_direcional_espelhado_poe_os_eixos_no_curso_e_nao_solta_o_botao() {
+        let mut pad = Pad::default();
+        assert_eq!(pad.axes, [0, 0, 0, 0], "o repouso é o zero interno");
+
+        // Cima: negativo no `Y`, porque no console o eixo cresce para baixo.
+        pad.press(DPAD[0], true);
+        pad.espelha_o_direcional_nos_eixos();
+        assert_eq!(pad.axes[1], -AXIS_CURSO);
+        assert_eq!(pad.eixo_do_console(1), AXIS_MIN, "cima é o valor baixo");
+        assert!(pad.is_down(DPAD[0]), "o botão continua apertado");
+
+        // Baixo, no mesmo `Pad`, para provar que um sentido desfaz o outro.
+        pad.press(DPAD[0], false);
+        pad.press(DPAD[1], true);
+        pad.espelha_o_direcional_nos_eixos();
+        assert_eq!(pad.axes[1], AXIS_CURSO);
+        assert_eq!(pad.eixo_do_console(1), AXIS_MAX);
+
+        // Direita e esquerda no `X`.
+        pad.press(DPAD[1], false);
+        pad.press(DPAD[3], true);
+        pad.espelha_o_direcional_nos_eixos();
+        assert_eq!(pad.axes[0], AXIS_CURSO);
+        pad.press(DPAD[3], false);
+        pad.press(DPAD[2], true);
+        pad.espelha_o_direcional_nos_eixos();
+        assert_eq!(pad.axes[0], -AXIS_CURSO);
+
+        // Soltar a direção **não** zera o eixo: quem zera é o quadro seguinte, quando o
+        // direcional já não está apertado — e é essa volta ao centro que o `Pad::press` anota.
+        pad.press(DPAD[2], false);
+        pad.espelha_o_direcional_nos_eixos();
+        pad.espelha_o_direcional_nos_eixos();
+        assert_eq!(pad.axes[0], 0);
+
+        // E os eixos que não são do manche esquerdo ficam intocados.
+        assert_eq!([pad.axes[2], pad.axes[3]], [0, 0]);
+    }
+
+    /// O direcional em repouso **centra** os eixos do manche esquerdo, e não toca nos do direito.
+    ///
+    /// A ordem importa em quem chama: o espelho escreve zero, então ele tem de rodar **antes** do
+    /// laço do analógico — senão o manche de verdade, parado no centro, seria apagado sem que
+    /// ninguém tivesse apertado nada.
+    #[test]
+    fn o_direcional_solto_centra_o_manche_esquerdo_e_nao_toca_no_direito() {
+        let mut pad = Pad::default();
+        pad.set_axis(2, AXIS_CURSO);
+        pad.espelha_o_direcional_nos_eixos();
+        assert_eq!([pad.axes[0], pad.axes[1]], [0, 0]);
+        assert_eq!(pad.axes[2], AXIS_CURSO, "o `Z` não é do direcional");
     }
 
     #[test]

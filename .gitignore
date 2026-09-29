@@ -22,6 +22,8 @@ cmake-build-*/
 
 # Rust
 /target/
+# O cxx-qt-build escreve a configuração do servidor de linguagem QML com o caminho desta máquina.
+.qmlls.ini
 
 # Saídas de depuração do `run` (--dump-heap) e o framebuffer exportado
 heap.bin
@@ -45,3 +47,8 @@ ref z-wheel2.png
 frontends/android/apk/.gradle/
 frontends/android/apk/local.properties
 frontends/android/apk/app/src/main/jniLibs/
+frontends/switch/saida/
+
+# Xcode: estado local. O projeto em si (`project.pbxproj`) fica versionado.
+xcuserdata/
+*.xcuserstate

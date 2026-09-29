@@ -132,6 +132,52 @@ impl Heap {
         let buraco = self.free_list.values().copied().max().unwrap_or(0);
         a_frente.max(buraco)
     }
+
+    /// **Como o heap está partido**, e não só quanto sobra.
+    ///
+    /// [`Heap::maior_bloco`] responde o que uma alocação consegue; este retrato responde *por que*
+    /// ela consegue o que consegue. A distância entre o total livre e o maior buraco é a medida da
+    /// fragmentação: com a fusão funcionando ela fica pequena mesmo depois de o jogo passar a vida
+    /// alocando e liberando blocos de tamanhos diferentes. É o número que distingue "o heap encheu"
+    /// de "o heap se despedaçou" — os dois sintomas que o jogo relata como falta de memória.
+    pub fn retrato(&self) -> Retrato {
+        let na_lista: u32 = self.free_list.values().sum();
+        Retrato {
+            buracos: self.free_list.len(),
+            maior_buraco: self.maior_bloco(),
+            livre: na_lista + self.end.saturating_sub(self.next),
+            usado: self.used(),
+            vivos: self.live.len(),
+            teto: self.end - self.base,
+        }
+    }
+}
+
+/// O estado da memória do guest num instante: o que a fragmentação precisa para ser um número.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Retrato {
+    /// Quantos buracos a lista de livres tem.
+    pub buracos: usize,
+    /// O maior bloco que uma alocação única obtém.
+    pub maior_buraco: u32,
+    /// Quanto há livre no total, somados os buracos e o que resta à frente.
+    pub livre: u32,
+    /// Quanto está entregue ao jogo.
+    pub usado: u32,
+    /// Quantos blocos vivos.
+    pub vivos: usize,
+    /// O tamanho da região.
+    pub teto: u32,
+}
+
+impl Retrato {
+    /// A parte do total livre que **não** serve para uma alocação única, em bytes.
+    ///
+    /// Zero quando existe um buraco do tamanho de tudo o que está livre. Quanto maior, mais
+    /// despedaçado está o heap.
+    pub fn perdido_em_buracos(&self) -> u32 {
+        self.livre.saturating_sub(self.maior_buraco)
+    }
 }
 
 
@@ -228,6 +274,43 @@ mod tests {
         assert_eq!(heap.maior_bloco(), 0x100, "resta o buraco do meio");
         assert_eq!(heap.alloc(0x108), None);
         let _ = (a, c);
+    }
+
+    /// **A fusão impede o heap de se despedaçar.**
+    ///
+    /// O padrão é o do relato do Treino Cerebral: blocos pequenos alocados e liberados entre dois
+    /// grandes. O teste **esgota o ponteiro de avanço antes de medir** — sem isso o espaço à frente
+    /// esconde a fragmentação, e o retrato parece saudável justamente quando não é.
+    #[test]
+    fn liberar_blocos_pequenos_devolve_uma_regiao_continua() {
+        let mut heap = Heap::new(0x1000_0000, 1 << 20);
+        let _primeiro = heap.alloc(64 * 1024).unwrap();
+        let pequenos: Vec<u32> = (0..64).map(|_| heap.alloc(4 * 1024).unwrap()).collect();
+        // Enche o que resta à frente: assim o único livre que sobra é o dos buracos do meio.
+        while heap.alloc(4 * 1024).is_some() {}
+        let antes = heap.retrato();
+        assert!(
+            antes.maior_buraco < 64 * 1024,
+            "o avanço ainda escondia espaço: o maior bloco é {}",
+            antes.maior_buraco
+        );
+        for p in &pequenos {
+            heap.free(*p);
+        }
+        let depois = heap.retrato();
+        assert!(
+            depois.maior_buraco >= 256 * 1024,
+            "os 64 blocos de 4 KiB deviam voltar a formar 256 KiB; o maior é {}",
+            depois.maior_buraco
+        );
+        assert_eq!(depois.buracos, 1, "e virar um buraco só");
+        // O que sobra à frente (menos de 4 KiB) não serve para nada grande, e é a única parte do
+        // livre que não está num buraco: a fragmentação fica abaixo disso.
+        assert!(
+            depois.perdido_em_buracos() < 8 * 1024,
+            "livre preso em buracos: {} bytes",
+            depois.perdido_em_buracos()
+        );
     }
 
     #[test]

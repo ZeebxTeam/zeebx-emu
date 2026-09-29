@@ -24,7 +24,9 @@ use glutin::context::{
     PossiblyCurrentGlContext, Version,
 };
 use glutin::display::{Display, DisplayApiPreference, GlDisplay};
-use glutin::surface::{GlSurface, Surface, SurfaceAttributesBuilder, WindowSurface};
+use glutin::surface::{
+    GlSurface, Surface, SurfaceAttributesBuilder, SwapInterval, WindowSurface,
+};
 use raw_window_handle::{
     AndroidDisplayHandle, AndroidNdkWindowHandle, RawDisplayHandle, RawWindowHandle,
 };
@@ -37,6 +39,9 @@ pub struct Placa {
     /// O mesmo `glow` que a sessão recebe quando o 3D roda na placa.
     pub gl: Arc<glow::Context>,
     pub pincel: egui_glow::Painter,
+    /// Intervalo de troca aplicado a superficie atual. None quer dizer que o driver recusou
+    /// controle explicito e deve continuar com a politica padrao dele.
+    intervalo: Option<bool>,
 }
 
 /// A superfície da janela de agora.
@@ -52,7 +57,7 @@ impl Placa {
     /// Precisa de uma janela **nesta** chamada porque o EGL escolhe a configuração pelo formato
     /// da superfície e porque um contexto só fica corrente com uma superfície; daí em diante a
     /// janela pode ir e vir à vontade.
-    pub fn nova(app: &AndroidApp) -> Result<(Self, Tela), String> {
+    pub fn nova(app: &AndroidApp, limitar: bool) -> Result<(Self, Tela), String> {
         let janela = app.native_window().ok_or("a atividade não tem janela")?;
         let largura = NonZeroU32::new(janela.width() as u32).ok_or("janela sem largura")?;
         let altura = NonZeroU32::new(janela.height() as u32).ok_or("janela sem altura")?;
@@ -87,6 +92,7 @@ impl Placa {
         let contexto = contexto
             .make_current(&superficie)
             .map_err(|erro| format!("o contexto não ficou corrente: {erro}"))?;
+        let intervalo = configura_vsync(&contexto, &superficie, limitar).then_some(limitar);
 
         let gl = Arc::new(unsafe {
             glow::Context::from_loader_function_cstr(|nome| display.get_proc_address(nome))
@@ -102,6 +108,7 @@ impl Placa {
                 contexto,
                 gl,
                 pincel,
+                intervalo,
             },
             Tela {
                 superficie,
@@ -111,7 +118,7 @@ impl Placa {
     }
 
     /// Faz a superfície da janela que a atividade acabou de criar, com o contexto que já existe.
-    pub fn refaz_a_tela(&self, app: &AndroidApp) -> Result<Tela, String> {
+    pub fn refaz_a_tela(&mut self, app: &AndroidApp, limitar: bool) -> Result<Tela, String> {
         let janela = app.native_window().ok_or("a atividade não tem janela")?;
         let largura = NonZeroU32::new(janela.width() as u32).ok_or("janela sem largura")?;
         let altura = NonZeroU32::new(janela.height() as u32).ok_or("janela sem altura")?;
@@ -123,6 +130,8 @@ impl Placa {
         self.contexto
             .make_current(&superficie)
             .map_err(|erro| format!("o contexto não ficou corrente: {erro}"))?;
+        self.intervalo =
+            configura_vsync(&self.contexto, &superficie, limitar).then_some(limitar);
         log::info!("tela refeita em {}x{}", largura.get(), altura.get());
         Ok(Tela {
             superficie,
@@ -152,7 +161,12 @@ impl Placa {
         primitivas: &[egui::ClippedPrimitive],
         texturas: &egui::TexturesDelta,
         pontos_por_pixel: f32,
+        limitar: bool,
     ) {
+        if self.intervalo.is_some_and(|atual| atual != limitar) {
+            self.intervalo =
+                configura_vsync(&self.contexto, &tela.superficie, limitar).then_some(limitar);
+        }
         self.pincel.clear(tela.tamanho, [0.0, 0.0, 0.0, 1.0]);
         self.pincel
             .paint_and_update_textures(tela.tamanho, pontos_por_pixel, primitivas, texturas);
@@ -168,6 +182,25 @@ impl Placa {
                 log::error!("o contexto não voltou a ser corrente: {erro}");
             }
         }
+    }
+}
+
+fn configura_vsync(
+    contexto: &PossiblyCurrentContext,
+    superficie: &Surface<WindowSurface>,
+    limitar: bool,
+) -> bool {
+    let intervalo = match limitar {
+        true => SwapInterval::Wait(NonZeroU32::new(1).expect("um e diferente de zero")),
+        false => SwapInterval::DontWait,
+    };
+    if let Err(erro) = superficie.set_swap_interval(contexto, intervalo) {
+        // Alguns drivers Android ignoram ou recusam a troca explicita. Nesse caso o swap ainda
+        // funciona com a politica padrao do EGL, portanto isto nao e motivo para perder a tela.
+        log::warn!("nao definiu o intervalo de troca EGL: {erro}");
+        false
+    } else {
+        true
     }
 }
 

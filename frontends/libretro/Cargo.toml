@@ -1,8 +1,8 @@
 [package]
 name = "zeebx-libretro"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
-license = "GPL-2.0-only"
+license = "GPL-2.0-or-later"
 description = "Core Libretro do emulador Zeebx"
 publish = false
 
@@ -22,3 +22,6 @@ crate-type = ["cdylib"]
 zeebx = { path = "../..", default-features = false, features = ["gl", "soundfont"] }
 # O mesmo `glow` que o motor usa: o contexto que o frontend entrega é montado com ele.
 glow = "0.16"
+
+[build-dependencies]
+cc = "1.0"

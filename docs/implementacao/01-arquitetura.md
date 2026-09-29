@@ -39,7 +39,7 @@ A árvore segue os subsistemas: uma pasta por assunto, e dentro dela um arquivo 
 | Arquivo | Papel |
 |---|---|
 | `cpu/mod.rs` | `CpuBackend`, a fronteira com o núcleo ARM: registradores, memória, `run` |
-| `cpu/unicorn.rs` | A implementação sobre o unicorn-engine, configurada como ARM1176 |
+| `cpu/dynarmic.rs` | A implementação sobre Dynarmic, configurada para ARMv6K |
 | `cpu/mem.rs` | O mapa de memória do guest, em regiões nomeadas |
 | `loader/mod.rs` | Monta o ambiente do módulo e chama `AEEMod_Load` |
 | `loader/modfile.rs` | Parser do `.mod` |
@@ -120,6 +120,6 @@ relógio real (2D).
 
 ## O emulador roda na linha da interface
 
-Não há thread separada. O núcleo do unicorn não atravessa linhas de execução, e o
-`Session::step` já devolve o controle a cada fatia de tempo real — que é o que mantém a janela
-viva enquanto o jogo corre. Uma thread traria sincronização sem trazer nada em troca.
+Não há thread separada. O `Session::step` já devolve o controle a cada fatia de tempo real — que é
+o que mantém a janela viva enquanto o jogo corre. Uma thread traria sincronização sem trazer nada em
+troca.

@@ -133,7 +133,13 @@ impl Emulador {
         let contagem = self
             .catalogo
             .format("library.count", &[("count", &self.jogos.len().to_string())]);
-        if widgets::navega(ui, self.catalogo.get("library.rescan"), &contagem) {
+        let pode_varrer = self.varredura.is_none();
+        if ui
+            .add_enabled_ui(pode_varrer, |ui| {
+                widgets::navega(ui, self.catalogo.get("library.rescan"), &contagem)
+            })
+            .inner
+        {
             self.recarrega();
         }
 
@@ -351,6 +357,43 @@ impl Emulador {
             &mut audio.volume,
             0..=100,
             |valor| format!("{valor}%"),
+        );
+
+        // O banco é aberto quando o jogo abre: a dica diz que a troca vale para o próximo.
+        widgets::secao(ui, self.catalogo.get("audio.soundfont"));
+        ui.weak(self.catalogo.get("audio.soundfont.hint"));
+        let banco = self.settings.audio.soundfont.clone();
+        let mostrado = match &banco {
+            Some(caminho) => caminho.display().to_string(),
+            None => self.catalogo.get("audio.soundfont.auto").to_string(),
+        };
+        if widgets::navega(ui, self.catalogo.get("settings.browse"), &mostrado) {
+            let inicio = banco
+                .as_deref()
+                .and_then(std::path::Path::parent)
+                .filter(|pasta| pasta.is_dir())
+                .map(std::path::Path::to_path_buf)
+                .unwrap_or_else(|| std::path::PathBuf::from("/sdcard"));
+            self.onde = Onde::SeletorDeBanco(inicio);
+        }
+        if banco.is_some()
+            && ui
+                .add_sized(
+                    [ui.available_width(), 52.0],
+                    egui::Button::new(self.catalogo.get("audio.soundfont.clear")),
+                )
+                .clicked()
+        {
+            self.settings.audio.soundfont = None;
+            mudou = true;
+        }
+        mudou |= widgets::interruptor(
+            ui,
+            "efeitos_midi",
+            self.catalogo.get("audio.midi_effects"),
+            Some(self.catalogo.get("audio.midi_effects.hint")),
+            &mut self.dica,
+            &mut self.settings.audio.midi_effects,
         );
 
         if mudou {

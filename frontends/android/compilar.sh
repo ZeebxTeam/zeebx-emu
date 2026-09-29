@@ -23,24 +23,6 @@ export ZEEBX_ANDROID_ABI ZEEBX_ANDROID_PLATFORM
 export CMAKE_TOOLCHAIN_FILE="$AQUI/ndk-toolchain.cmake"
 export CMAKE_MAKE_PROGRAM="$(command -v ninja)"
 
-NDK_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
-ALVO_RUST="aarch64-linux-android"
-
-# No bionic a pthread e a rt vivem dentro da libc: não existe libpthread.so nem librt.so. O
-# `unicorn-engine-sys` pede as duas por nome, sem olhar o sistema, então elas existem aqui como
-# arquivos vazios — o ligador acha o nome, não acha símbolo nenhum, e segue.
-VAZIAS="$RAIZ/target/android-libs-vazias"
-if [ ! -f "$VAZIAS/libpthread.a" ]; then
-  mkdir -p "$VAZIAS"
-  : > "$VAZIAS/vazio.c"
-  "$NDK_BIN/clang" --target="$ALVO_RUST${ZEEBX_ANDROID_PLATFORM#android-}" \
-    -c "$VAZIAS/vazio.c" -o "$VAZIAS/vazio.o"
-  for nome in pthread rt; do
-    "$NDK_BIN/llvm-ar" rcs "$VAZIAS/lib$nome.a" "$VAZIAS/vazio.o"
-  done
-fi
-export RUSTFLAGS="${RUSTFLAGS:-} -L native=$VAZIAS"
-
 cd "$RAIZ"
 JNI="$AQUI/apk/app/src/main/jniLibs"
 mkdir -p "$JNI"

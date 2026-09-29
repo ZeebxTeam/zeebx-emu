@@ -84,7 +84,7 @@ impl ModoDaJanela {
 ///
 /// Tudo desligado por padrão: é ferramenta de quem está caçando um problema, e informação
 /// sobre o quadro atrapalha quem só quer jogar.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DebugView {
     /// Liga o painel. Sem ele, nada do que está abaixo aparece.
@@ -99,6 +99,13 @@ pub struct DebugView {
     pub timeline: bool,
     /// A janela separada com o log da execução.
     pub log: bool,
+    /// Até que nível o **núcleo** registra: `aviso` (padrão), `informacao`, `depuracao`,
+    /// `erro`, `fatal` ou `desligado`. Ver [`crate::registro`].
+    ///
+    /// É texto e não um `enum` de propósito: o mesmo vocabulário vale no `config.ini` do
+    /// headless, na opção `zeebx_log` do core Libretro e na variável `ZEEBX_LOG`, e converter
+    /// num lugar só ([`crate::registro::Ajuste::de_texto`]) evita quatro tabelas que divergem.
+    pub nivel_de_log: String,
 }
 
 impl Default for DebugView {
@@ -110,6 +117,7 @@ impl Default for DebugView {
             memory: true,
             timeline: true,
             log: false,
+            nivel_de_log: "aviso".to_string(),
         }
     }
 }
@@ -237,6 +245,15 @@ pub struct Audio {
     pub enabled: bool,
     /// De 0 a 100.
     pub volume: u8,
+    /// O banco `.sf2` com que o MIDI toca. `None` é a busca automática: o primeiro `.sf2` da pasta
+    /// `soundfonts` do aparelho. Ver [`crate::audio::soundfont::primeiro_banco`].
+    ///
+    /// Existe para quem tem o banco do firmware do console, ou outro de gosto, e não quer mexer
+    /// na pasta do aparelho. Uma configuração salva antes dele abre com `None`.
+    pub soundfont: Option<PathBuf>,
+    /// O reverb e o chorus que a partitura pede, quando ela toca pelo banco `.sf2`. Ver
+    /// [`crate::audio::soundfont::define_efeitos`].
+    pub midi_effects: bool,
 }
 
 impl Default for Audio {
@@ -244,6 +261,8 @@ impl Default for Audio {
         Self {
             enabled: true,
             volume: 80,
+            soundfont: None,
+            midi_effects: true,
         }
     }
 }
@@ -257,6 +276,10 @@ pub struct Settings {
     pub roms_dir: Option<PathBuf>,
     /// O pacote da Z-Wheel: abre pela barra de cima e empresta as capas à biblioteca.
     pub z_wheel_path: Option<PathBuf>,
+    /// Onde os screenshots são gravados. `None` é a pasta padrão, ver
+    /// [`crate::ui::screenshot::pasta_padrao`].
+    pub screenshots_dir: Option<PathBuf>,
+    pub atalhos: Atalhos,
     /// Como a biblioteca mostra os jogos.
     pub biblioteca: ModoDaBiblioteca,
     pub movimento: Movimento,
@@ -269,6 +292,28 @@ pub struct Settings {
     pub atualizacoes: Atualizacoes,
     /// A versão em que o aviso de abertura foi dispensado de vez. Outra versão mostra de novo.
     pub aviso_dispensado_na_versao: Option<String>,
+}
+
+/// As teclas da janela do jogo que se trocam, pelo nome de tecla do mapeamento (`F9`).
+///
+/// Esc, P e F11 continuam fixos na janela; é aqui que eles entram se um dia forem trocáveis. Ver
+/// `docs/implementacao/22-screenshots.md`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Atalhos {
+    pub screenshot: String,
+}
+
+impl Atalhos {
+    pub const SCREENSHOT_PADRAO: &str = "F9";
+}
+
+impl Default for Atalhos {
+    fn default() -> Self {
+        Self {
+            screenshot: Self::SCREENSHOT_PADRAO.to_string(),
+        }
+    }
 }
 
 /// A procura por versões novas. Ver [`crate::ui::atualizacao`].
@@ -365,6 +410,27 @@ impl Settings {
     }
 }
 
+/// O rótulo de um fator de resolução interna: o fator, o tamanho e a referência de mercado.
+pub fn rotulo_da_resolucao(fator: u8) -> String {
+    let (largura, altura) = (640 * u32::from(fator), 480 * u32::from(fator));
+    let referencia = match fator {
+        1 => "nativa",
+        2 => "~720p",
+        3 => "~1080p",
+        4 => "~1440p",
+        _ => "~4K",
+    };
+    format!("{fator}x · {largura}×{altura} · {referencia}")
+}
+
+/// O rótulo de um nível de antialias ou de anisotrópico: 1 é desligado.
+pub fn rotulo_de_nivel(nivel: u8, sigla: &str, desligado: &str) -> String {
+    match nivel {
+        0 | 1 => desligado.to_string(),
+        n => format!("{n}x {sigla}"),
+    }
+}
+
 pub fn settings_path() -> PathBuf {
     config_dir().join(FILE_NAME)
 }
@@ -398,6 +464,10 @@ mod tests {
             language: Some("pt-BR".into()),
             roms_dir: Some(PathBuf::from("/jogos/zeebo")),
             z_wheel_path: Some(PathBuf::from("/jogos/Z-Wheel.zip")),
+            screenshots_dir: Some(PathBuf::from("/imagens/zeebo")),
+            atalhos: Atalhos {
+                screenshot: "F12".into(),
+            },
             biblioteca: ModoDaBiblioteca::Slider,
             movimento: Movimento {
                 aviso_de_calibracao: false,
@@ -430,6 +500,16 @@ mod tests {
 
         assert_eq!(Settings::load_from(&path), settings);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Quem tem um `settings.json` de antes do screenshot ganha o F9 e a pasta padrão, sem
+    /// perder o resto.
+    #[test]
+    fn um_arquivo_de_antes_dos_atalhos_ganha_o_f9() {
+        let lido: Settings = serde_json::from_str(r#"{ "roms_dir": "/jogos" }"#).unwrap();
+        assert_eq!(lido.atalhos.screenshot, "F9");
+        assert_eq!(lido.screenshots_dir, None);
+        assert_eq!(lido.roms_dir, Some(PathBuf::from("/jogos")));
     }
 
     #[test]

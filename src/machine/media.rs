@@ -4,7 +4,42 @@ use super::*;
 
 /// Quantos sons decodificados o cache guarda antes de esquecer os que ninguém usa. Ver
 /// [`Machine::descarta_sons_sem_dono`].
+///
+/// No Switch, 64 entradas descartam uma trilha que ninguém está tocando e a próxima
+/// reprodução sintetiza de novo. O teto em bytes continua sendo o limite de memória.
+#[cfg(zeebx_switch)]
+const MAX_SONS_GUARDADOS: usize = 512;
+#[cfg(not(zeebx_switch))]
 const MAX_SONS_GUARDADOS: usize = 64;
+
+/// Quanto de PCM decodificado o cache guarda, em bytes, antes de esquecer os que ninguém usa.
+///
+/// **Contar entradas não é contar memória, e a diferença cresceu.** Um efeito curto ocupa poucos
+/// quilobytes e uma trilha longa ocupa dezenas de megabytes: 64 entradas podem ser meio megabyte
+/// de efeitos ou mais de cem megabytes de música, e só o segundo caso importa. A trilha mais longa
+/// medida no Double Dragon tem 109 s, o que a 44.100 Hz em `f32` dá 19,3 MB — quatro delas
+/// guardadas passam de 77 MB.
+///
+/// O número cresceu de propósito junto com [`crate::audio::soundfont::TAXA_BANCO`]: sintetizar o
+/// banco a 44.100 em vez de 22.050 **dobra** o PCM de cada música. Num aparelho de mão o que
+/// sobra de RAM é pouco, e o custo de esquecer é uma re-síntese; o custo de não esquecer é o
+/// sistema matar o processo.
+const MAX_BYTES_DE_SOM: usize = 24 * 1024 * 1024;
+
+/// O teto escolhido agora, que começa em [`MAX_BYTES_DE_SOM`] e o frontend pode mudar.
+///
+/// Global pelo mesmo motivo da taxa do banco: o valor vale para o próximo descarte, e não para o
+/// nascimento da máquina. Ver `crate::audio::soundfont::define_taxa`.
+static TETO_ESCOLHIDO: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(MAX_BYTES_DE_SOM);
+
+/// Muda quanto de PCM decodificado o cache pode guardar, em bytes.
+///
+/// O piso de 1 MiB existe para que um valor pequeno demais não transforme o cache em "esquece
+/// tudo a cada som", que é pior que não ter cache: custaria uma re-síntese por efeito tocado.
+pub fn define_teto_do_cache_de_som(bytes: usize) {
+    TETO_ESCOLHIDO.store(bytes.max(1024 * 1024), std::sync::atomic::Ordering::Relaxed);
+}
 
 impl<C: CpuBackend> Machine<C> {
     /// `ISound` (`AEECLSID_SOUND` = `0x01001056`), de `inc/AEEISound.h`.
@@ -109,6 +144,7 @@ impl<C: CpuBackend> Machine<C> {
                 if remaining == 0 {
                     self.media.remove(&this);
                     self.fluxos_pcm.remove(&this);
+                    self.buffers_vivos.remove(&this);
                     // Uma música em repetição seguia tocando depois de o objeto sumir.
                     if let Some(mixer) = &self.audio {
                         mixer.stop(this);
@@ -213,9 +249,52 @@ impl<C: CpuBackend> Machine<C> {
             // trata os dois status do mesmo jeito.
             (Interface::Media, "Stop") => {
                 let tocando = self.esta_tocando(this);
+                // **Quem cala a fala.** Na Turma da Mônica, quem encerra a fala é o jogo, por
+                // `Stop`, quando o decodificador dele chega ao fim — ver
+                // [`Machine::abre_buffer_vivo`]. Esta linha diz de quem foi a ordem: do jogo, por
+                // `Stop`, ou nossa, por fim de som — e quantos segundos de fato tocaram.
+                if tocando
+                    && let Some(som) = self.media_sound(this)?
+                {
+                    let dur_s = som.samples.len() as f64
+                        / f64::from(som.channels.max(1))
+                        / f64::from(som.rate.max(1));
+                    // **Som de laço não tem fim, e por isso não tem "quanto falta".** O
+                    // `ends_us` dele é `u64::MAX`, e subtrair o relógio dava um número de doze
+                    // dígitos que parecia defeito nosso nas medições. A frase certa é a que se
+                    // pode ler.
+                    let em_laco = self
+                        .media
+                        .get(&this)
+                        .is_some_and(|estado| estado.ends_us == u64::MAX);
+                    let previsto = self
+                        .media
+                        .get(&this)
+                        .map(|estado| estado.ends_us.saturating_sub(self.now_us()) as f64 / 1e6)
+                        .unwrap_or(0.0);
+                    if em_laco {
+                        crate::registro!(
+                            crate::registro::Nivel::Informacao,
+                            "midia",
+                            "Stop {}: o jogo parou um som de {:.2}s que tocava em laço",
+                            this,
+                            dur_s
+                        );
+                    } else {
+                        crate::registro!(
+                            crate::registro::Nivel::Informacao,
+                            "midia",
+                            "Stop {}: o jogo parou um som de {:.2}s com {:.2}s ainda por tocar",
+                            this,
+                            dur_s,
+                            previsto.max(0.0)
+                        );
+                    }
+                }
                 if let Some(fluxo) = self.fluxos_pcm.get_mut(&this) {
                     fluxo.tocando = false;
                 }
+                self.buffers_vivos.remove(&this);
                 if let Some(state) = self.media.get_mut(&this) {
                     state.state = MM_STATE_READY;
                     state.ends_us = 0;
@@ -316,7 +395,7 @@ impl<C: CpuBackend> Machine<C> {
                 }
             }
             _ => {
-                self.bad_pointers.insert(format!(
+                self.anota_ponto_ruim(format!(
                     "uma mídia foi entregue como {class:#010x}, e só sabemos ler memória e arquivo"
                 ));
                 return Ok(Entrega::Nada);
@@ -390,6 +469,52 @@ impl<C: CpuBackend> Machine<C> {
         };
         if !self.cargas_de_midia.contains_key(&chave) {
             let carga = self.decodifica_som(&bytes);
+            // **A conta que o issue #43 pede, em uma linha por som.** O formato que chegou (pelos
+            // primeiros bytes), quantos bytes, e quantos segundos decodificamos de verdade. Se uma
+            // fala longa aparecer aqui com um segundo, o corte está aqui e não no jogo -- e é isso
+            // que separa "não decodifica" de "decodifica e é cortado".
+            crate::registro!(
+                crate::registro::Nivel::Informacao,
+                "midia",
+                "som: {} bytes, assinatura {:?}, RIFF diz {} e data diz {}, decodificado em {}",
+                bytes.len(),
+                String::from_utf8_lossy(&bytes[..bytes.len().min(4)]),
+                // **Os dois tamanhos que o parser tem de escolher entre si.** Um jogo escreve no
+                // `data` o buffer inteiro e no `RIFF` a verdade; a Turma da Mônica parece fazer o
+                // inverso, com o `RIFF` trazendo só o que já foi preenchido. Sem estes dois
+                // números lado a lado, a escolha do parser é indistinguível do defeito.
+                if bytes.len() >= 8 {
+                    u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) as usize + 8
+                } else {
+                    0
+                },
+                if bytes.len() >= 44 {
+                    (0..bytes.len().saturating_sub(8))
+                        .find(|&i| &bytes[i..i + 4] == b"data")
+                        .and_then(|i| bytes.get(i + 4..i + 8))
+                        .map(|t| u32::from_le_bytes([t[0], t[1], t[2], t[3]]) as usize)
+                        .unwrap_or(0)
+                } else {
+                    0
+                },
+                match &carga.som {
+                    // **Divide pelos canais, senão o estéreo sai dobrado.** As amostras vêm
+                    // entrelaçadas: um mp3 de dois canais tem o dobro de amostras do que de
+                    // quadros. Sem esta divisão, `menu_music.mp3` (15,67 s) aparecia com 31,19 s.
+                    Some(som) => format!(
+                        "{:.2}s a {} Hz, {} canal(is)",
+                        som.samples.len() as f64
+                            / f64::from(som.channels.max(1))
+                            / f64::from(som.rate.max(1)),
+                        som.rate,
+                        som.channels
+                    ),
+                    None => format!(
+                        "nada (só cronometrado: {} ms)",
+                        carga.silencio_us.map(|us| us / 1000).unwrap_or(0)
+                    ),
+                },
+            );
             self.cargas_de_midia.insert(chave, carga);
             self.descarta_sons_sem_dono(chave);
         }
@@ -404,7 +529,18 @@ impl<C: CpuBackend> Machine<C> {
     /// efeitos diferentes no mesmo buffer de 500 KB, e cada um virava uma entrada para sempre.
     /// Uma voz tocando não perde nada: o PCM dela está num `Arc` que o mixer também segura.
     fn descarta_sons_sem_dono(&mut self, nova: u64) {
-        if self.cargas_de_midia.len() <= MAX_SONS_GUARDADOS {
+        // **Os dois tetos, e não só o de entradas.** Ver [`MAX_BYTES_DE_SOM`]: sessenta e quatro
+        // efeitos curtos cabem de sobra, e quatro músicas longas sintetizadas pelo banco já não
+        // cabem. Quem estoura primeiro manda.
+        let bytes_guardados: usize = self
+            .cargas_de_midia
+            .values()
+            .filter_map(|carga| carga.som.as_ref())
+            .map(|som| som.samples.len() * std::mem::size_of::<f32>())
+            .sum();
+        let teto = TETO_ESCOLHIDO.load(std::sync::atomic::Ordering::Relaxed);
+        if self.cargas_de_midia.len() <= MAX_SONS_GUARDADOS && bytes_guardados <= teto
+        {
             return;
         }
         let em_uso: std::collections::HashSet<u64> =
@@ -425,7 +561,10 @@ impl<C: CpuBackend> Machine<C> {
             return None;
         }
         let banco = self.banco_de_som.as_ref()?;
-        crate::audio::soundfont::toca(banco, bytes, crate::audio::midi::RATE)
+        // **A taxa do banco não é a da tabela.** Ver [`crate::audio::soundfont::TAXA_BANCO`]: as
+        // amostras do `.sf2` são gravadas a 44,1 kHz, e sintetizar a 22,05 cortava o brilho delas
+        // antes que o misturador tivesse qualquer chance de reamostrar de volta.
+        crate::audio::soundfont::toca(banco, bytes, crate::audio::soundfont::taxa())
     }
 
     /// Sem a feature, o caminho é sempre o da tabela de timbres.
@@ -455,15 +594,28 @@ impl<C: CpuBackend> Machine<C> {
                         ));
                         Some(sound)
                     }
-                    None => match crate::audio::midi::decode(bytes) {
-                    Some(sound) => {
-                        self.assumptions.insert(concat!(
-                            "a música MIDI é sintetizada aqui, com timbre aproximado — ",
-                            "o banco de instrumentos do console está no firmware que ainda não lemos"
-                        ));
-                        Some(sound)
-                    }
-                    None => {
+                    None => match {
+                        let t_midi = std::time::Instant::now();
+                        let dec = crate::audio::midi::decode(bytes);
+                        if let Some(ref sound) = dec {
+                            let dur_s = sound.samples.len() as f64 / sound.rate.max(1) as f64;
+                            crate::registro!(
+                                crate::registro::Nivel::Informacao,
+                                "midi",
+                                "tabela de timbres: {} bytes de SMF -> {:.1}s de áudio sintetizados em {:.1}ms",
+                                bytes.len(),
+                                dur_s,
+                                t_midi.elapsed().as_secs_f64() * 1000.0
+                            );
+                            self.assumptions.insert(concat!(
+                                "a música MIDI é sintetizada aqui, com timbre aproximado — ",
+                                "o banco de instrumentos do console está no firmware que ainda não lemos"
+                            ));
+                        }
+                        dec
+                    } {
+                        Some(sound) => Some(sound),
+                        None => {
                     // Dizer *qual* formato chegou é o que permite saber o que implementar
                     // depois — e "não é um RIFF/WAVE" não diz. O que diz é a assinatura do
                     // próprio bloco: é assim que se soube que a trilha do Tekken 2 é MP3 sem
@@ -483,7 +635,7 @@ impl<C: CpuBackend> Machine<C> {
                         // **Os dois motivos**, e não só o do WAV: "não é um RIFF/WAVE" é
                         // verdade e não ajuda — a pergunta é o que o decodificador de música
                         // recusou. Foi vendo os dois que se descobriu o Ogg do Turma da Mônica.
-                        self.bad_pointers.insert(format!(
+                        self.anota_ponto_ruim(format!(
                             "som recusado ({formato}, {} bytes, {assinatura}): {sem_wav} / {porque}",
                             bytes.len()
                         ));
@@ -573,8 +725,139 @@ impl<C: CpuBackend> Machine<C> {
         self.inicia_reproducao(this, true)
     }
 
+    /// Toca o som de um objeto **lendo o buffer do jogo enquanto toca**, quando o cabeçalho não
+    /// decide sozinho onde ele acaba. Devolve `false` para seguir pelo caminho de sempre.
+    ///
+    /// **A fala da Turma da Mônica é decodificada enquanto toca.** O jogo traz o próprio
+    /// decodificador Vorbis (o Tremor) e escreve cada fala, de até cinco segundos, num buffer de
+    /// 882.000 bytes cujo cabeçalho é de um molde: `RIFF` de 56.352 (0,638 s) e `data` do tamanho do
+    /// buffer. No `Play` só há uns 0,2 s decodificados; o resto chega cerca de 0,3 s à frente do
+    /// que toca, e o `RIFF` nunca muda — medido em trinta segundos de jogo. Lido de uma vez e
+    /// cortado no `RIFF`, o som durava 0,638 s, o `DONE` chegava, e o jogo **apagava o buffer e
+    /// parava de decodificar**: a fala morria no começo.
+    ///
+    /// Cortar no `data` não serve: no Zeebo F.C. Super League o `RIFF` está certo e o que vem
+    /// depois dele é lixo de memória, alto. O que separa os dois é o que o jogo faz **depois do
+    /// `Play`**: o som só cresce além do `RIFF` com o que for escrito ali depois de ele começar. O
+    /// lixo que já estava lá não conta.
+    fn abre_buffer_vivo(&mut self, this: u32) -> Result<bool, CpuError> {
+        self.buffers_vivos.remove(&this);
+        let Some(state) = self.media.get(&this).copied() else {
+            return Ok(false);
+        };
+        let (onde, tamanho) = state.buffer;
+        // Um som em laço volta ao começo, e aí não há "o que foi escrito depois": fica com o
+        // caminho de sempre.
+        if onde == 0 || tamanho == 0 || state.repeat != 1 {
+            return Ok(false);
+        }
+        let bytes = self.read_bytes(onde, tamanho)?;
+        let Some(aberto) = crate::audio::wav::pcm_aberto(&bytes) else {
+            return Ok(false);
+        };
+        let quadro = u32::from(aberto.channels) * u32::from(aberto.bits / 8);
+        let relativo = |n: usize| (n - aberto.inicio) as u32 / quadro * quadro;
+        let (fim, limite) = (relativo(aberto.fim_riff), relativo(aberto.fim_data));
+        let antes = aberto.inicio + fim as usize..aberto.inicio + limite as usize;
+        let now = self.now_us();
+        let vivo = BufferVivo {
+            pcm: onde + aberto.inicio as u32,
+            taxa: aberto.rate,
+            canais: aberto.channels,
+            bits: aberto.bits,
+            fim,
+            limite,
+            antes: bytes[antes].to_vec(),
+            base: fim,
+            inicio_us: now,
+            enviados: 0,
+            varrido_us: 0,
+        };
+        // Sem crescimento, acaba onde o `RIFF` diz, como antes: é o Super League.
+        let ends_us = now + vivo.duracao_us(fim);
+        let gain = state.gain();
+        if let Some(state) = self.media.get_mut(&this) {
+            state.state = MM_STATE_PLAY;
+            state.ends_us = ends_us;
+        }
+        if let Some(mixer) = &self.audio {
+            mixer.open_stream(this, vivo.taxa, vivo.canais, gain);
+        }
+        self.buffers_vivos.insert(this, vivo);
+        Ok(true)
+    }
+
+    /// Estende os buffers vivos com o que o jogo escreveu e entrega ao mixer o que o relógio já
+    /// deve. Ver [`Machine::abre_buffer_vivo`].
+    ///
+    /// **O fim do som é projetado, e não "quando o jogo parar".** A cada crescimento o `ends_us`
+    /// passa a ser o fim do que já foi escrito mais [`GRACA_DO_BUFFER_VIVO_US`]: é o que deixa o
+    /// `GetState` e o `DONE` funcionarem sem caminho próprio, e um save state carregado no meio da
+    /// fala — que não guarda este estado — ainda recebe o `DONE` na hora.
+    pub(super) fn bombeia_buffers_vivos(&mut self) -> Result<(), CpuError> {
+        if self.buffers_vivos.is_empty() {
+            return Ok(());
+        }
+        let now = self.now_us();
+        let ids: Vec<u32> = self.buffers_vivos.keys().copied().collect();
+        for this in ids {
+            match self.media.get(&this).map(|state| state.state) {
+                Some(MM_STATE_PLAY) => {}
+                Some(MM_STATE_PLAY_PAUSE) => continue,
+                _ => {
+                    self.buffers_vivos.remove(&this);
+                    continue;
+                }
+            }
+            let Some(mut vivo) = self.buffers_vivos.remove(&this) else {
+                continue;
+            };
+            let quadro = vivo.quadro();
+            // Varrer a cada volta do laço custava caro: o jogo dá milhares de voltas por segundo,
+            // e o Tremor escreve em pedaços de décimos de segundo.
+            if now >= vivo.varrido_us + INTERVALO_DE_VARREDURA_US && vivo.fim < vivo.limite {
+                vivo.varrido_us = now;
+                let janela = (vivo.taxa / 2 * quadro).max(quadro);
+                let ate = vivo.limite.min(vivo.fim.saturating_add(janela));
+                let agora = self.read_bytes(vivo.pcm + vivo.fim, ate - vivo.fim)?;
+                let de = (vivo.fim - vivo.base) as usize;
+                if let Some(escrito) = fim_escrito(&agora, &vivo.antes[de..de + agora.len()]) {
+                    vivo.fim = vivo
+                        .limite
+                        .min(vivo.fim + (escrito as u32).div_ceil(quadro) * quadro);
+                    let ends_us =
+                        vivo.inicio_us + vivo.duracao_us(vivo.fim) + GRACA_DO_BUFFER_VIVO_US;
+                    if let Some(state) = self.media.get_mut(&this) {
+                        state.ends_us = state.ends_us.max(ends_us);
+                    }
+                }
+            }
+            let devidos = (now.saturating_sub(vivo.inicio_us) + ADIANTE_DO_BUFFER_VIVO_US)
+                * u64::from(vivo.taxa)
+                / 1_000_000
+                * u64::from(quadro);
+            let alvo = u64::from(vivo.fim).min(devidos) as u32;
+            if alvo > vivo.enviados {
+                let bytes = self.read_bytes(vivo.pcm + vivo.enviados, alvo - vivo.enviados)?;
+                if let Some(mixer) = &self.audio {
+                    // PCM de 8 bits no WAVE é sem sinal; o de 16, com sinal.
+                    mixer.feed_stream(this, &pcm_para_f32(&bytes, vivo.bits, vivo.bits == 8));
+                }
+                vivo.enviados = alvo;
+            }
+            self.buffers_vivos.insert(this, vivo);
+        }
+        Ok(())
+    }
+
     /// Começa a tocar o som já lido de um objeto.
     fn inicia_reproducao(&mut self, this: u32, avisa: bool) -> Result<u32, CpuError> {
+        if self.abre_buffer_vivo(this)? {
+            if avisa {
+                self.notify_media(this, MM_CMD_PLAY, MM_STATUS_START)?;
+            }
+            return Ok(SUCCESS);
+        }
         // **Um `Play` sobre um som que ainda toca não avisa.** Avisar `DONE` aqui fazia um ciclo
         // nos jogos que tocam de novo dentro do tratador do aviso: o novo `Play` caía sobre o som
         // que acabara de começar, gerava outro aviso, e o som reiniciava a cada quadro — o áudio
@@ -708,8 +991,7 @@ impl<C: CpuBackend> Machine<C> {
         let bruto = self.cpu.read_u32(pointer + 20)? & 0xff != 0;
         let spec = self.cpu.read_u32(pointer + 24)?;
         if fonte == 0 || spec == 0 || !bruto {
-            self.bad_pointers
-                .insert("um som veio de um ISource sem ser PCM cru, e só sabemos tocar PCM".into());
+            self.anota_ponto_ruim("um som veio de um ISource sem ser PCM cru, e só sabemos tocar PCM".into());
             return Ok(false);
         }
         let mut bytes = [0u8; 24];
@@ -720,7 +1002,7 @@ impl<C: CpuBackend> Machine<C> {
         let bits = u16_em(16);
         let sem_sinal = bytes[18] != 0;
         if canais == 0 || taxa == 0 || !matches!(bits, 8 | 16) {
-            self.bad_pointers.insert(format!(
+            self.anota_ponto_ruim(format!(
                 "PCM de {canais} canal(is), {taxa} Hz e {bits} bits, que não sabemos tocar"
             ));
             return Ok(false);
@@ -736,6 +1018,7 @@ impl<C: CpuBackend> Machine<C> {
                 inicio_us: 0,
                 quadros_lidos: 0,
                 tocando: false,
+                avisou_do_fim: false,
             },
         );
         Ok(true)
@@ -821,6 +1104,24 @@ impl<C: CpuBackend> Machine<C> {
                 };
                 let lidos = code as i32;
                 if lidos <= 0 {
+                    // **O ponto onde uma fala morre.** O fluxo não tem fim conhecido: quem o
+                    // encerra é o jogo, parando de fornecer amostras. A linha diz depois de quantos
+                    // segundos de áudio isso aconteceu e como o fluxo foi declarado.
+                    if let Some(fluxo) = self.fluxos_pcm.get_mut(&this)
+                        && !fluxo.avisou_do_fim
+                    {
+                        fluxo.avisou_do_fim = true;
+                        crate::registro!(
+                            crate::registro::Nivel::Informacao,
+                            "midia",
+                            "fluxo {}: o jogo parou de fornecer amostras em {:.2}s de áudio ({} Hz, {} canal(is), {} bits)",
+                            this,
+                            fluxo.quadros_lidos as f64 / f64::from(fluxo.taxa.max(1)),
+                            fluxo.taxa,
+                            fluxo.canais,
+                            fluxo.bits
+                        );
+                    }
                     break;
                 }
                 let lidos = (lidos as u32).min(pedido);
@@ -882,5 +1183,44 @@ pub(super) fn pcm_para_f32(bytes: &[u8], bits: u16, sem_sinal: bool) -> Vec<f32>
                 }
             })
             .collect(),
+    }
+}
+
+/// Até onde `agora` difere de `antes`: o índice logo depois do último byte mudado, ou `None` se
+/// nada mudou.
+///
+/// É a **última** diferença, e não a primeira sequência mudada: uma fala tem pausas, e o silêncio
+/// que o decodificador escreve sobre um buffer zerado não muda nada. Parar na primeira igualdade
+/// seguraria o som no meio da pausa.
+fn fim_escrito(agora: &[u8], antes: &[u8]) -> Option<usize> {
+    agora
+        .iter()
+        .zip(antes)
+        .rposition(|(a, b)| a != b)
+        .map(|i| i + 1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fim_escrito;
+
+    #[test]
+    fn nada_escrito_nao_cresce() {
+        assert_eq!(fim_escrito(&[0, 7, 0], &[0, 7, 0]), None);
+    }
+
+    /// O lixo que já estava lá é o `antes`, e por isso não conta — é o Super League.
+    #[test]
+    fn so_conta_o_que_mudou() {
+        assert_eq!(fim_escrito(&[9, 9, 9, 9], &[9, 9, 9, 9]), None);
+        assert_eq!(fim_escrito(&[9, 1, 9, 9], &[9, 9, 9, 9]), Some(2));
+    }
+
+    /// Uma pausa na fala escrita sobre zeros não para o crescimento.
+    #[test]
+    fn uma_pausa_no_meio_nao_segura_o_fim() {
+        let antes = [0u8; 8];
+        let agora = [5, 5, 0, 0, 0, 5, 0, 0];
+        assert_eq!(fim_escrito(&agora, &antes), Some(6));
     }
 }

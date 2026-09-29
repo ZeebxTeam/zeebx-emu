@@ -701,20 +701,191 @@ precisam ter vida estática; não apontar para `String` local. O `key` deve ser 
 versões para que o RetroArch preserve as escolhas. `retro_get_system_info` continua descrevendo só o
 core e as extensões (`mod|zip|7z`); não há opção de usuário ali.
 
-No código atual, `retro_set_environment` registra controladores e descritores de entrada, mas ainda
-não registra opções. O próprio plano antigo deixava `GET_CORE_OPTIONS_VERSION`/`SET_CORE_OPTIONS_V2`
-como futuro; a ABI e os structs necessários já estão no `frontends/libretro/include/libretro.h`.
+**Estado: implementado.** `retro_set_environment` registra controladores, descritores de entrada e
+as opções do core, por `SET_CORE_OPTIONS_V2` quando o frontend anuncia versão 2, e por
+`SET_VARIABLES` quando não anuncia. O `retro_run` consulta `GET_VARIABLE_UPDATE` (17) uma vez por
+quadro e relê **só** o que dá para aplicar sem recriar a sessão.
 
-### Primeira opção a implementar
-
-A opção útil e verificável é uma política de síntese MIDI:
+### Opções registradas hoje
 
 ```text
-key:     zeebx_midi_backend
+key:      zeebx_midi_backend
 category: audio
-values:  Auto | Tabela de timbres | SoundFont
-default: Auto
+values:   auto | timbres | soundfont
+default:  auto
+aplica:   ao recarregar o conteúdo (o rótulo diz "(reinício)")
+
+key:      zeebx_volume
+category: audio
+values:   100 | 90 | 80 | 70 | 60 | 50 | 40 | 30 | 20 | 10 | 0
+default:  100
+aplica:   na hora
+
+key:      zeebx_rasterizador
+category: video
+values:   auto | software
+default:  auto
+aplica:   ao recarregar o conteúdo
+
+key:      zeebx_resolucao_interna
+category: video
+values:   1 | 2 | 3 | 4
+default:  1
+aplica:   no quadro seguinte
+
+key:      zeebx_antialias
+category: video
+values:   1 | 2 | 4 | 8
+default:  1
+aplica:   na hora
+
+key:      zeebx_filtro_anisotropico
+category: video
+values:   1 | 2 | 4 | 8
+default:  1
+aplica:   na hora
+
+key:      zeebx_neblina
+category: video
+values:   enabled | disabled
+default:  enabled
+aplica:   na hora
 ```
+
+**`zeebx_rasterizador` é o único escape para um driver de GL que aceita o contexto e desenha
+errado.** Quando o driver falha de verdade o core já recua sozinho; quando ele aceita tudo e
+entrega imagem preta, do ponto de vista do core nada falhou, e sem esta opção o remédio seria
+trocar de frontend ou de aparelho.
+
+**A resolução interna é supersampling aqui, e não imagem maior.** O quadro entregue ao frontend
+continua 640×480 — é o que `retro_get_system_av_info` declara como `max_width`/`max_height`, e
+entregar mais que isso seria defeito. O desenho acontece em escala e a leitura reduz de volta, o
+que suaviza a borda do polígono. Na GUI do desktop a **mesma** chamada do motor tem outro efeito
+visível, porque lá o quadro grande vai para a janela por `Session::quadro_na_placa`, caminho que o
+core não usa. Copiar a descrição de lá para cá prometeria o que aqui não acontece.
+
+```text
+key:      zeebx_soundfont_taxa
+category: audio
+values:   44100 | 22050
+default:  44100
+aplica:   da próxima música em diante
+
+key:      zeebx_midi_vozes
+category: audio
+values:   128 | 96 | 64 | 48
+default:  128
+aplica:   da próxima música em diante
+
+key:      zeebx_cache_de_som_mb
+category: audio
+values:   24 | 48 | 16 | 8 | 4
+default:  24
+aplica:   do próximo descarte em diante
+```
+
+**Estas três são globais do motor, e não parâmetro de construção.** A política de sintetizador
+(`zeebx_midi_backend`) é parâmetro porque muda o que a máquina **é** quando nasce: o banco é aberto
+na construção. Taxa, vozes e teto de cache valem para a próxima música e para o próximo descarte —
+uma música já sintetizada não muda de taxa. Um parâmetro a mais em cinco assinaturas públicas para
+um valor que ninguém precisa no nascimento é custo sem troco, e o módulo do banco já guarda um
+global pelo mesmo motivo: o cache de bancos abertos.
+
+**O rótulo diz quando o efeito chega.** Nenhuma das três pede reinício, mas nenhuma vale na hora
+como o volume. Omitir isso faria o usuário concluir que a opção não funciona.
+
+```text
+key:      zeebx_perfil
+category: sistema
+values:   padrao | portatil
+default:  padrao
+aplica:   sintetizador MIDI ao recarregar; o resto sem recarregar
+```
+
+**"Portátil" existe porque dez botões soltos não é o que o RG40XX-H precisa.** Junta de uma vez o
+que a investigação em ARM fraco mediu como o que mais custa: tabela de timbres em vez de SoundFont,
+taxa e vozes do MIDI reduzidas, cache de som menor, sem supersampling no 3D.
+
+**Deliberadamente fica de fora:** volume e névoa, porque são gosto de quem joga e não custo de
+processador; e o rasterizador, porque forçar processador tiraria a placa de quem tem GPU capaz —
+a opção separada continua sendo o escape para quem precisa dela. Um preset que sacrifica o que não
+tem nada a ver com desempenho é o defeito clássico deste tipo de botão.
+
+Enquanto ativo, o perfil **ganha** das opções individuais que cobre — elas continuam visíveis no
+menu, mas ficam sem efeito. É a única forma de um preset funcionar sem a API ter um jeito de
+esconder opção.
+
+```text
+key:      zeebx_frameskip
+category: video
+values:   desligado | automatico | 1 | 2 | 3 | 4 | 5 | 6
+default:  desligado
+aplica:   na hora
+
+key:      zeebx_limite_fps
+category: sistema
+values:   60 | 30 | desligado
+default:  60
+aplica:   na hora
+```
+
+### Frameskip e limite de velocidade não são a mesma coisa
+
+**`zeebx_frameskip` economiza rasterização, não tempo de jogo.** `gles_draw` e `Clear` são
+chamados durante o despacho da API pelo CPU — não há fila de GPU separada como no Flycast. Quando
+um quadro é pulado, a lógica ARM continua; o que some é a leitura de vértices da memória do guest
+e o preenchimento de pixels. Fixo pula `N` quadros a cada `N+1`; Automático usa o mecanismo oficial
+`SET_AUDIO_BUFFER_STATUS_CALLBACK` (a `libretro.h` manda tentar pular quando
+`underrun_likely=true`) e pede 96 ms de folga de áudio, seis quadros a 60 Hz.
+
+`glReadPixels` é exceção de segurança: Crash Nitro Kart lê framebuffer de volta para a memória do
+guest. Depois da primeira leitura, frameskip se desliga para o resto da sessão e avisa — devolver o
+quadro anterior deixaria de ser perda visual e poderia mudar lógica. O primeiro `ReadPixels` ainda
+pode cair depois de um quadro pulado, porque não se sabe que ele virá antes de atender os `Draw*`
+anteriores; a proteção evita a corrupção repetida, não promete adivinhar o futuro.
+
+**`zeebx_limite_fps` limita velocidade real, não mexe no relógio virtual.** Existe porque o core
+Libretro usava `Session::run_frame`, que não tinha o freio `ahead_ms()` que o desktop já usava:
+Crash Nitro Kart foi medido a 1039% e Zeebo Extreme Rolima a 267% da velocidade do console quando
+o host sobra. Em 60, antes de avançar o próximo quadro, o core espera o relógio real alcançar o
+virtual; em 30, mantém a mesma lógica a 1x mas duplica a apresentação a cada dois quadros. Assim
+30 não é "avançar 33 ms por chamada" — isso poderia acelerar jogos, exatamente o defeito que a
+opção tenta evitar. Desligado preserva boost deliberado, útil para Need for Speed.
+
+**Áudio:** não há time-stretching/pitch-shifting. O mixer reamostra cada voz para a taxa da placa,
+fadeia underrun e descarta excesso para não acumular atraso; o core entrega amostras pela diferença
+do relógio virtual. No limitador normal, o sono vem **antes** de avançar o quadro seguinte: o áudio
+do quadro anterior toca enquanto o core espera, portanto não exige esticar áudio para manter 1x.
+Um salto anômalo do relógio nunca bloqueia mais de 50 ms numa chamada, para não congelar o frontend
+em carregamento.
+
+### Defeito encontrado nesta fase: categoria "vídeo" nunca registrada
+
+As cinco opções de vídeo da fase anterior declaravam `category_key: c"video"`, mas o arranjo
+`CATEGORIAS` só tinha `"audio"`. O frontend não trava com uma categoria que não bate — a opção só
+fica sem o agrupamento certo no menu — e por isso o defeito não apareceu em teste nenhum. Corrigido
+junto com a categoria `"sistema"` do perfil.
+
+### Como uma opção nova deve nascer
+
+Toda opção que dá para aplicar sem recriar a sessão entra em `aplica_opcoes_quentes`, e **não**
+num `if` próprio. O aviso de `GET_VARIABLE_UPDATE` é consumido na primeira pergunta: uma opção por
+`if` faria a primeira comer o aviso das outras, e o defeito apareceria como "às vezes não pega".
+
+A mesma função roda quando a sessão nasce e quando ela é trocada, para não haver duas cópias da
+aplicação — a que roda menos é a que fica errada sem ninguém ver.
+
+Opção ausente ou com valor estragado **mantém o que havia**, em vez de voltar ao padrão: um
+frontend antigo, que não conhece a chave, não pode desfazer a escolha de quem configurou.
+
+**Os valores são tokens, e o texto humano vai no `label`.** O valor é o que fica gravado no
+`.opt` do usuário e o que o `FromStr` reparseia: `Tabela de timbres`, com acento e espaços, é
+frágil nas duas pontas. No corpus dos doze cores libretro instalados nesta máquina, valor é sempre
+token estável (`enabled`, `disabled`, `auto`, `scph5500.bin`). O `FromStr` de `MidiBackend` aceita
+também as grafias antigas, então um `.opt` já gravado não quebra.
+
+**O reinício é marcado no rótulo** porque a API não tem campo para isso — é a convenção do
+ecossistema, em que `(Restart)` é a marca mais usada.
 
 `Auto` preserva o comportamento atual: usa `.sf2` quando encontrado e recua para a tabela quando
 não há banco ou o banco é inválido. `Tabela de timbres` evita a espera longa no RG40XX-H. `SoundFont`
@@ -1098,7 +1269,7 @@ supported_extensions = "mod|zip"
 categories = "Emulator"
 systemname = "Zeebo"
 manufacturer = "TecToy"
-licenses = "GPLv2"
+licenses = "GPLv2+"
 firmware_count = 0
 supports_no_game = "false"
 ```
@@ -1310,6 +1481,216 @@ O QEMU monta esse `.asm` com o `ml` do MSVC, que **só existe para x86 e x64** �
 MASM para ARM64. O `unicorn-engine` 2.1.5 é a última versão publicada, e o QEMU não tem o Windows
 ARM64 como host. Quando isso mudar — versão nova do unicorn, ou o `unicorn` virar opcional nesta
 plataforma, com o `dynarmic` sozinho —, basta tirar a marca de experimental do alvo.
+
+### Linux AArch64: a `glibc` do runner não é a de todo handheld
+
+**Medido em 2026-09-23, comparando o artefato do CI (`core-linux-aarch64`, `ubuntu-24.04-arm`)
+contra dois cartões físicos reais.**
+
+`ubuntu-24.04-arm` builda nativo, e "nativo" aqui quer dizer: o binário sai vinculado à `glibc` que
+o runner tem — não à `glibc` de quem vai rodar o core. Isso importa porque o alvo real deste
+projeto é aparelho de mão com firmware que não se atualiza sozinho, e a `glibc` dele pode ser bem
+mais velha que a de uma imagem de CI que segue o Ubuntu mais recente.
+
+| aparelho / origem | `glibc` | o core `core-linux-aarch64` de hoje carrega? |
+|---|---|---|
+| CI `ubuntu-24.04-arm` (o que builda) | exige até **2.34** no que produz | — |
+| RG40XX-H / muOS 2508 (Buildroot) | 2.38 | sim, por pouco (2.38 ≥ 2.34) |
+| R36S original / ArkOS AeUX (CFW `11072025`) | **2.30** | **não** — falta `GLIBC_2.34` |
+
+A exigência de `GLIBC_2.34` não vem de função nova. Vem de `pthread_create`, `pthread_join`,
+`pthread_mutex_trylock`, `dlopen`, `dlsym` e outras — funções antigas, mas que **mudaram de versão
+de símbolo** quando a `libpthread` foi fundida na própria `libc`, na `glibc` 2.34. Todo binário
+linkado num host com `glibc` ≥ 2.34 herda essa exigência para essas funções, ainda que elas
+existam desde muito antes.
+
+**A correção é onde se builda, não o código.** `cargo zigbuild`, usando o `zig` como *linker*, deixa
+escolher a `glibc` mínima explicitamente — `aarch64-unknown-linux-gnu.2.28`, por exemplo — e o
+binário sai vinculado a essa versão **independente da `glibc` do runner**. 2.28 fica abaixo dos 2.30
+do R36S, com uma margem para aparelhos mais antigos ainda. Ver o job `core-linux-aarch64` de
+`libretro.yml` para a mudança.
+
+### Android AArch64: o `linux-aarch64` da matriz não é o mesmo alvo
+
+**Achado em 2026-09-23, ao investigar se faltava CI para o core Libretro em Android.**
+
+A matriz de build tem `linux-aarch64` (`aarch64-unknown-linux-gnu`, `glibc`) e o workflow
+`android.yml` builda `frontends/android` (`aarch64-linux-android`, Bionic) — mas nenhum dos dois é
+"o core Libretro para Android". São alvos de C runtime **diferentes**: Bionic não é `glibc`, o
+*dynamic linker* é outro (`/system/bin/linker64`), e um `.so` `linux-aarch64` não passa do
+`dlopen` num RetroArch Android de verdade.
+
+`libretro.yml` não tem alvo Android na matriz — só `linux-x86_64`, `linux-aarch64`,
+`windows-x86_64/aarch64`, `macos-x86_64/arm64`. Quem quer o core Zeebx **dentro do RetroArch no
+Android** (celular, Retroid, tablet, ou um handheld Android) hoje não tem artefato de CI nenhum.
+`android.yml` resolve isso só para o app standalone Zeebx, que é outro frontend
+(`frontends/android`), não o core Libretro (`frontends/libretro`).
+
+**Falta um alvo `android-aarch64` em `libretro.yml`**, buildando só `-p zeebx-libretro --target
+aarch64-linux-android` (sem APK, o `.so` cru), reaproveitando a mesma infraestrutura de NDK que o
+`android.yml` já usa — mesma versão de NDK fixada, mesmo `cargo-ndk`. Testado à mão nesta máquina
+(NDK r27c): o build funciona, mas exige um contorno — o `cmake` do `unicorn`/`dynarmic` não acha o
+`clang-scan-deps` com nome simples, e resolve-se criando symlinks `<arquitetura>-clang-scan-deps`
+apontando para o `clang-scan-deps` do NDK, para as quatro arquiteturas Android. O run do
+`android.yml` em CI (`ubuntu-22.04`, NDK via `sdkmanager`) **não** bateu nesse problema — o
+contorno pode ser só desta instalação manual de NDK, e vale confirmar antes de portar para o job
+novo.
+
+### Nota de campo: cartão do R36S original investigado (2026-09-23)
+
+CFW `ArkOS AeUX` (`CFW_VERSION=11072025`), base Ubuntu 19.10, Cortex-A35, 1 GB RAM, `glibc 2.30`.
+RetroArch 1.21.0, instalação dupla (`retroarch` AArch64 + `retroarch32` armhf), 148 cores AArch64
+instalados. **Zeebo não está integrado**: existem ícones de tema prontos (Ozone, XMB) para um
+sistema "Zeebo - Zeebo", mas **não há** entrada `<system>` para `zeebo` no `es_systems.cfg` (126
+sistemas cadastrados, nenhum é Zeebo) nem core instalado. Contexto: o cartão será substituído por
+outra CFW em breve, então a integração completa (entrada no ES, core, RDB) fica para quando o
+aparelho tiver a CFW definitiva — mas o achado de `glibc` acima vale independente da CFW específica.
+
+### Auditoria da integração no ES (2026-09-23): o que funciona, e um risco real
+
+Depois de inserir `<system>zeebo</system>` em `es_systems.cfg` (mesmo padrão de sistema simples de
+core único, ex. `advision`), copiar uma ROM de teste para `/roms/zeebo/` e apontar o `<command>`
+para `~/.config/retroarch/cores/zeebx_libretro.so`, a auditoria encontrou:
+
+**Sem risco, conferido:**
+- `sudo` sem senha para o usuário `ark` (`ark ALL=NOPASSWD: ALL`, lido com a senha do host) — o
+  padrão `sudo perfmax ...; sudo perfnorm` que todo `<command>` usa funciona igual aos outros 126
+  sistemas já no cartão.
+- O bloco `<system>zeebo</system>` é XML bem formado isoladamente.
+- O `HiddenSystems` (`alg;wolf;easyrpg`) não inclui `zeebo` — aparece no menu normalmente.
+- O "XML quebrado" que uma validação estrita acusa (`2>&1` sem escapar `&`, na entrada `options`
+  já existente) é **defeito original do ArkOS**, não desta mudança — confirmado por md5 idêntico
+  contra um backup nunca tocado (`es_systems.cfg.rk3326`). O EmulationStation deles usa um parser
+  tolerante, e por isso funciona na prática.
+
+**Risco real, não corrigido — é do sistema, não do Zeebx:** existem três backups datados
+(`es_systems.cfg.update04302025.bak`, `.update05152025.bak`, `.update06302025.bak`) e um
+`es_systems.cfg.rk3326` **idêntico byte a byte** (mesmo md5) a `/usr/local/bin/es_systems.cfg`.
+Isso prova que o ArkOS tem um mecanismo de atualização que **substitui o arquivo inteiro** por um
+molde por modelo de aparelho. Rodar `Update.sh` (ou qualquer atualização) antes de trocar de CFW
+apaga a entrada do `zeebo` — o arquivo volta à versão de fábrica. Como o cartão será substituído
+por `dArkOSen` de qualquer forma, o risco prático é baixo, mas fica registrado: **não atualizar o
+sistema ArkOS neste cartão antes da reinstalação**, ou a integração precisa ser refeita.
+
+### Auditoria final da instalação do core (2026-09-23)
+
+Depois de instalar `zeebx_libretro.so` (`glibc 2.28`) e `zeebx_libretro.info` em
+`~/.config/retroarch/cores/` (dono `ark:ark`, permissão `755`/`644`), conferido o caminho de
+lançamento inteiro, do `<command>` do ES até o binário real:
+
+1. `/usr/local/bin/retroarch` **não é o binário** — é um script que resolve `emulator=$(basename
+   "$0")` (vira `"retroarch"`, porque é assim que o `<command>` chama) e termina invocando
+   `/opt/retroarch/bin/retroarch -c /home/ark/.config/retroarch/retroarch.cfg "$@"`. O comando
+   final que o zeebo dispara é:
+   ```
+   /opt/retroarch/bin/retroarch -c /home/ark/.config/retroarch/retroarch.cfg \
+     -L /home/ark/.config/retroarch/cores/zeebx_libretro.so <rom>
+   ```
+2. O mesmo script extrai o nome do core por regex (`cores/(.*)_libretro.so`) para checar uma lista
+   de bloqueio de netplay — `zeebx` não está na lista, segue direto.
+3. `nice -n -19` (prioridade alta) roda **sem** `sudo` na frente, mas é o mesmo padrão dos outros
+   126 sistemas já funcionais: o que permite isso para eles permite para o zeebo, sem risco novo.
+4. O `.info` segue a forma do `libretro-super` (conferido no comentário do próprio arquivo, contra
+   `desmume_libretro.info` instalado) — sem incompatibilidade de campo.
+
+Nada quebrado nessa cadeia. A única lacuna de verificação é a ausência de teste dinâmico
+(`dlopen` real via QEMU), por causa do disco apertado no momento — ver a seção da receita, acima.
+
+### Atualização (2026-09-23): o cartão do R36S vai trocar de CFW, e isso muda a prioridade
+
+**ArkOS está descontinuado.** O próprio repositório `AeolusUX/ArkOS-R3XS` (o que está no cartão,
+build `11072025`) diz: *"dArkOS has replaced ArkOS. ArkOS will no longer be maintained effective
+immediately."* O usuário vai instalar `djparentx/dArkOSen-R36S` no lugar.
+
+**`dArkOSen` é `dArkOS` — e `dArkOS` é Debian, não Ubuntu 19.10.** O README do próprio dArkOSen diz
+`Built from dArkOS_RG351MP_trixie_07262026` — **Debian 13 "trixie"**, a mesma distro do host deste
+projeto. O README do `dArkOS` confirma: *"this OS is based on the latest stable version of
+Debian"*, com build via `chroot` (`make <device_name>`) e suporte a userspace de 64 e 32 bits
+(`BUILD_ARMHF`), como o ArkOS antigo.
+
+Isso muda a conclusão da seção anterior: **o problema de `GLIBC_2.34` deixa de existir assim que o
+cartão trocar de CFW.** O Debian trixie do host já mostrou `glibc` até **2.41** disponível
+(`objdump -T /usr/aarch64-linux-gnu/lib/libc.so.6`); um `dArkOSen` de verdade na mesma base cobre
+os 2.34 do CI com folga. **Não há mais motivo para perseguir o build com `glibc` antiga
+(`cargo zigbuild` + `g++` cruzado) para este aparelho específico** — o esforço foi pausado depois
+de esbarrar num problema de PCH/módulos C++20 do `dynarmic` com o `g++` cruzado montado na mão, e
+não vale a pena resolver isso para um alvo que está prestes a desaparecer.
+
+| CFW | base | `glibc` medido/estimado | o core `core-linux-aarch64` de hoje carrega? |
+|---|---|---|---|
+| ArkOS AeUX `11072025` (no cartão, será substituído) | Ubuntu 19.10 | 2.30 | não |
+| **dArkOSen** (`dArkOS` Debian trixie, próxima CFW) | Debian 13 | ~2.40–2.41 | **sim, com folga** |
+| RG40XX-H / muOS 2508 | Buildroot | 2.38 | sim, por pouco |
+
+**Atualização (mesma sessão, mais tarde): o build com `glibc` antiga foi concluído com sucesso.**
+Ver a seção abaixo, "Receita funcional: `cargo zigbuild` com `glibc` mínima fixada". O core já está
+instalado neste cartão, com `glibc 2.28` — abaixo dos 2.30 do R36S, com folga.
+
+## Receita funcional: `cargo zigbuild` com `glibc` mínima fixada
+
+**Medido em 2026-09-23.** Depois de pausar o esforço (ver acima), o usuário pediu para insistir.
+A receita final que funcionou é mais simples do que o caminho para chegar nela: **não precisou do
+`g++` cruzado nem de nenhum patch de compilador** — só `cargo-zigbuild` e dois ajustes no `build.rs`
+vendorizado do `dynarmic`, aplicados por `[patch.crates-io]` **local**, sem tocar no `Cargo.toml`
+do projeto.
+
+```bash
+# zig via pip (ziglang), com um wrapper de uma linha para expor `zig` no PATH
+uv pip install ziglang
+printf '#!/bin/bash\nexec <venv>/bin/python-zig "$@"\n' > /tmp/zigbin/zig && chmod +x /tmp/zigbin/zig
+
+cargo install cargo-zigbuild --locked
+rustup target add aarch64-unknown-linux-gnu
+
+# copia local do dynarmic (crates.io), com dois defines a mais no build.rs:
+#   .define("DYNARMIC_USE_PRECOMPILED_HEADERS", "OFF")
+#   .define("FMT_MODULE", "OFF")
+# e as três libs vendorizadas linkadas como estáticas explícitas:
+#   cargo:rustc-link-lib=static=dynarmic / static=fmt / static=mcl
+
+PATH=/tmp/zigbin:$PATH cargo zigbuild --release -p zeebx-libretro \
+  --target aarch64-unknown-linux-gnu.2.28 \
+  --config 'patch.crates-io.dynarmic.path="/tmp/dynarmic-patched"'
+```
+
+**Os dois problemas que a receita contorna, e por quê:**
+
+1. **`DYNARMIC_USE_PRECOMPILED_HEADERS` (padrão `ON`) e `FMT_MODULE` (auto-detectado `ON` com
+   CMake+Ninja+GCC recente)** fazem o CMake tentar escanear dependências de módulo C++20
+   (`-x c++-module`) para montar um cabeçalho pré-compilado. O `zig c++` não reconhece essa
+   invocação. Nenhuma das duas opções é necessária para o `dynarmic` funcionar — são otimização de
+   build, não recurso usado.
+2. **`cargo:rustc-link-lib=dynarmic/fmt/mcl` sem o prefixo `static=`** faz o linker do `zig` (que,
+   ao contrário do `ld` normal, não recua para `.a` quando não acha `.so`) recusar a ligação — as
+   três só existem como biblioteca estática, porque é assim que o `cmake-rs` as builda por padrão
+   ao serem embutidas num crate Rust.
+
+**Resultado, conferido em `objdump`/`readelf`:**
+
+| checagem | resultado |
+|---|---|
+| `GLIBC` máximo exigido | **2.28** (abaixo dos 2.30 do R36S) |
+| bibliotecas dependidas | `libc`, `libm`, `libpthread`, `libdl` — formato pré-fusão da 2.34, coerente com o alvo |
+| `libstdc++` | linkada **estática** (`-static-libstdc++ -static-libgcc`), zero dependência da versão do sistema |
+| símbolos `retro_*` | as 25 exportações da ABI, todas presentes |
+| *features* do crate `zeebx` | `default-features = false, features = ["gl", "soundfont"]` — **fixado no `Cargo.toml` do `frontends/libretro`**, o mesmo que o CI usa; não depende de flag na linha de comando |
+
+**O que ficou sem verificar, e por quê:** não houve teste de carga real (`dlopen`) do binário
+aarch64 neste host x86_64 — exigiria QEMU em modo usuário, e o disco estava em 1,3 GB livre no
+momento, apertado demais para arriscar. A prova definitiva fica para o boot no aparelho real.
+
+**Generalização:** esta receita resolve o mesmo problema para qualquer alvo `linux-aarch64` cuja
+`glibc` real seja mais antiga que a do runner de CI — não é específica do R36S. Portar para
+`libretro.yml` significa trocar `cargo build` por `cargo zigbuild --target
+aarch64-unknown-linux-gnu.<versão>` no job `core-linux-aarch64`, com o `[patch]` do `dynarmic`
+aplicado via `.cargo/config.toml` do repositório (não mais por `--config` da linha de comando).
+
+## O que fica pronto e não precisa refazer
+
+A entrada `<system>zeebo</system>` em `es_systems.cfg`, a pasta `/roms/zeebo/` com uma ROM de teste,
+e agora **o próprio core instalado e funcional** (`glibc 2.28`) em
+`~/.config/retroarch/cores/zeebx_libretro.so` — tudo isso sobrevive à troca de CFW, porque
+`dArkOSen` é fork leve do `dArkOS` e mantém a mesma estrutura de EmulationStation + RetroArch.
 
 ## Estado dos itens, com a prova de cada um
 

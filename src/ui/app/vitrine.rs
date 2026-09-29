@@ -11,7 +11,9 @@ use std::time::{Duration, Instant};
 use eframe::egui;
 
 use crate::input::Pad;
+use crate::ui::acervo;
 use crate::ui::library::{self, Game};
+use crate::ui::navegacao::{self, Comando, Navegacao};
 use crate::ui::settings::ModoDaBiblioteca;
 use crate::video::icon::Image;
 
@@ -25,24 +27,8 @@ const CARD_ART_ALTURA: f32 = 145.0;
 /// Espaço reservado ao título, embaixo. Duas linhas.
 const CARD_TEXT: f32 = 36.0;
 
-/// Segurar uma direção repete a escolha depois desta espera, e neste ritmo.
-const REPETE_DEPOIS: Duration = Duration::from_millis(380);
-const REPETE_A_CADA: Duration = Duration::from_millis(110);
-/// Quanto o manche precisa sair do centro para valer como direção, no curso de ±128.
-const MANCHE: i32 = 72;
 /// De quanto em quanto a biblioteca lê o controle quando nada mais pede redesenho.
 const LEITURA_DO_CONTROLE: Duration = Duration::from_millis(33);
-
-/// O que a entrada pede à biblioteca.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Comando {
-    Cima,
-    Baixo,
-    Esquerda,
-    Direita,
-    Abrir,
-    ZWheel,
-}
 
 /// O estado da biblioteca que não é configuração: a escolha, a animação e as texturas dos logos.
 #[derive(Default)]
@@ -52,10 +38,8 @@ pub struct Vitrine {
     cursor: i64,
     /// Onde o slider está desenhado agora, correndo atrás do `cursor`.
     posicao: f32,
-    /// O que estava apertado no quadro anterior: `[cima, baixo, esquerda, direita, abrir, home]`.
-    antes: [bool; 6],
-    /// Desde quando a direção segurada está apertada, e quando ela repetiu pela última vez.
-    segurando: Option<(usize, Instant, Instant)>,
+    /// O controle e o teclado virando comandos. Ver [`crate::ui::navegacao`].
+    navegacao: Navegacao,
     /// A escolha mudou pela entrada neste quadro, e a grade precisa rolar até ela.
     rolar: bool,
     /// Acumula a roda do mouse até valer um passo no slider.
@@ -81,40 +65,6 @@ impl Vitrine {
     }
 }
 
-/// Se o título tem todas as palavras da busca, em qualquer ordem e em qualquer parte.
-///
-/// Maiúsculas, acentos e pontuação não contam: "cnk" acha "C.N.K.", "joao" acha "João" e
-/// "extreme boia" acha "Zeebo Extreme Bóia Cross".
-pub fn casa_com_a_busca(titulo: &str, busca: &str) -> bool {
-    let titulo = sem_acento(titulo);
-    let compacto: String = titulo.split_whitespace().collect();
-    sem_acento(busca)
-        .split_whitespace()
-        .all(|palavra| titulo.contains(palavra) || compacto.contains(palavra))
-}
-
-/// O texto em minúsculas, sem acento, com a pontuação trocada por espaço e as siglas com ponto
-/// juntas ("C.N.K." vira "cnk").
-fn sem_acento(texto: &str) -> String {
-    let mut saida = String::with_capacity(texto.len());
-    for c in texto.chars().flat_map(char::to_lowercase) {
-        let c = match c {
-            'á' | 'à' | 'â' | 'ã' | 'ä' => 'a',
-            'é' | 'è' | 'ê' | 'ë' => 'e',
-            'í' | 'ì' | 'î' | 'ï' => 'i',
-            'ó' | 'ò' | 'ô' | 'õ' | 'ö' => 'o',
-            'ú' | 'ù' | 'û' | 'ü' => 'u',
-            'ç' => 'c',
-            'ñ' => 'n',
-            '.' | '\'' | '’' => continue,
-            c if c.is_alphanumeric() => c,
-            _ => ' ',
-        };
-        saida.push(c);
-    }
-    saida
-}
-
 impl App {
     /// Os jogos que a lista mostra, em ordem de título: todos menos a Z-Wheel, que abre pela
     /// barra de cima, e os que a busca deixa. Cada item é `(título, índice em self.games)`.
@@ -122,7 +72,7 @@ impl App {
         let mut lista: Vec<(String, usize)> = (0..self.games.len())
             .filter(|&i| self.games[i].clsid != Some(crate::session::Z_WHEEL))
             .map(|i| (self.titulo_de(&self.games[i]), i))
-            .filter(|(titulo, _)| casa_com_a_busca(titulo, &self.vitrine.busca))
+            .filter(|(titulo, _)| library::casa_com_a_busca(titulo, &self.vitrine.busca))
             .collect();
         lista.sort_by_key(|(titulo, _)| titulo.to_lowercase());
         lista
@@ -205,8 +155,7 @@ impl App {
                 }
                 (Comando::ZWheel, _) => {
                     if let Some(caminho) = self.z_wheel.clone() {
-                        self.aberto_pela_z_wheel = false;
-                        self.play(caminho);
+                        self.abre_pela_biblioteca(caminho);
                         return;
                     }
                     0
@@ -231,8 +180,7 @@ impl App {
         };
         self.vitrine.rolar = false;
         if let Some(i) = escolhido.or(clicado) {
-            self.aberto_pela_z_wheel = false;
-            self.play(self.games[i].path.clone());
+            self.abre_pela_biblioteca(self.games[i].path.clone());
         }
     }
 
@@ -241,9 +189,8 @@ impl App {
     /// A biblioteca só escuta com a janela principal livre: com um jogo aberto o controle é
     /// dele, e com as configurações abertas ele pode estar sendo mapeado.
     fn comandos_da_biblioteca(&mut self, ctx: &egui::Context) -> Vec<Comando> {
-        if self.session.is_some() || self.settings_open || self.capturing.is_some() {
-            self.vitrine.antes = [true; 6];
-            self.vitrine.segurando = None;
+        if self.partida.is_some() || self.settings_open || self.capturing.is_some() {
+            self.vitrine.navegacao.silencia();
             return Vec::new();
         }
         ctx.request_repaint_after(LEITURA_DO_CONTROLE);
@@ -254,62 +201,18 @@ impl App {
             .campo_da_busca
             .is_some_and(|campo| ctx.memory(|m| m.has_focus(campo)));
         let pads: Vec<Pad> = self.pads_now(ctx).into_iter().map(|(_, pad)| pad).collect();
-        let botao = |nome: &str| {
-            Pad::button_by_name(nome).is_some_and(|i| pads.iter().any(|pad| pad.is_down(i)))
-        };
-        let eixo = |eixo: usize, sinal: i32| pads.iter().any(|pad| pad.axes[eixo] * sinal > MANCHE);
-        let (teclas, enter) = ctx.input(|i| {
+        let teclas = ctx.input(|i| {
             let k = |tecla| !escrevendo && i.key_down(tecla);
-            (
-                [
-                    k(egui::Key::ArrowUp),
-                    k(egui::Key::ArrowDown),
-                    k(egui::Key::ArrowLeft),
-                    k(egui::Key::ArrowRight),
-                ],
+            [
+                k(egui::Key::ArrowUp),
+                k(egui::Key::ArrowDown),
+                k(egui::Key::ArrowLeft),
+                k(egui::Key::ArrowRight),
                 k(egui::Key::Enter) || k(egui::Key::Space),
-            )
+            ]
         });
-        // Teclado, direcional e manche viram um estado só antes de detectar o aperto: uma seta
-        // mapeada também no controle continua sendo um passo, e não dois.
-        let agora = [
-            teclas[0] || botao("up") || eixo(1, -1),
-            teclas[1] || botao("down") || eixo(1, 1),
-            teclas[2] || botao("left") || eixo(0, -1),
-            teclas[3] || botao("right") || eixo(0, 1),
-            enter || botao("b1") || botao("start"),
-            botao("back"),
-        ];
-        const COMANDOS: [Comando; 6] = [
-            Comando::Cima,
-            Comando::Baixo,
-            Comando::Esquerda,
-            Comando::Direita,
-            Comando::Abrir,
-            Comando::ZWheel,
-        ];
-        let instante = Instant::now();
-        let mut comandos = Vec::new();
-        for (i, comando) in COMANDOS.iter().enumerate() {
-            if agora[i] && !self.vitrine.antes[i] {
-                comandos.push(*comando);
-                if i < 4 {
-                    self.vitrine.segurando = Some((i, instante, instante));
-                }
-            }
-        }
-        match self.vitrine.segurando {
-            Some((i, _, _)) if !agora[i] => self.vitrine.segurando = None,
-            Some((i, desde, ultima))
-                if instante - desde >= REPETE_DEPOIS && instante - ultima >= REPETE_A_CADA =>
-            {
-                comandos.push(COMANDOS[i]);
-                self.vitrine.segurando = Some((i, desde, instante));
-            }
-            _ => {}
-        }
-        self.vitrine.antes = agora;
-        comandos
+        let agora = navegacao::apertado(teclas, &pads);
+        self.vitrine.navegacao.comandos(agora, Instant::now())
     }
 
     /// A textura da caixa de um jogo, subida uma vez.
@@ -319,12 +222,10 @@ impl App {
             return textura.clone();
         }
         let ficha = game.clsid.and_then(|cls| self.acervo.as_ref()?.ficha(cls));
-        // A capa deixada ao lado do jogo é escolha de quem montou a pasta, e vale mais que a da
-        // Z-Wheel; a da Z-Wheel vale mais que o ícone do `.mif`.
-        let capa = ficha
-            .and_then(|ficha| ficha.capa.as_ref())
-            .filter(|_| library::cover(&game.path).is_none());
-        let textura = upload_art_of(ctx, game, capa, &self.placeholder);
+        // Uma vez por jogo: a textura fica no `art_cache`, e esta função não volta a ser chamada.
+        let ao_lado = acervo::capa_ao_lado(game);
+        let imagem = acervo::imagem_do_jogo(game, ficha, self.placeholder.as_ref(), ao_lado);
+        let textura = imagem.map(|imagem| upload_art_of(ctx, game, imagem));
         self.art_cache.insert(game.path.clone(), textura.clone());
         textura
     }
@@ -658,27 +559,13 @@ fn sobe(
     ctx.load_texture(nome, cor, opcoes)
 }
 
-/// Manda a imagem de um jogo para a placa de vídeo, caindo na reserva quando ele não tem uma.
-fn upload_art_of(
-    ctx: &egui::Context,
-    game: &Game,
-    capa: Option<&Image>,
-    placeholder: &Option<Image>,
-) -> Option<egui::TextureHandle> {
-    let image = capa.or(game.art.as_ref()).or(placeholder.as_ref())?;
-    // Um ícone de 26 pixels aparece ampliado quatro vezes: interpolar viraria um borrão, e o
-    // bloco quadrado é o que o console mostrava. Uma imagem grande já entra reduzida, e aí a
-    // interpolação é que evita o serrilhado.
-    let options = match image.width < CARD_ART as usize && image.height < CARD_ART_ALTURA as usize {
+/// Manda a imagem de um jogo para a placa de vídeo.
+fn upload_art_of(ctx: &egui::Context, game: &Game, image: &Image) -> egui::TextureHandle {
+    let options = match acervo::amplia_sem_interpolar(image, [CARD_ART, CARD_ART_ALTURA]) {
         true => egui::TextureOptions::NEAREST,
         false => egui::TextureOptions::LINEAR,
     };
-    Some(sobe(
-        ctx,
-        &format!("capa-{}", game.path.display()),
-        image,
-        options,
-    ))
+    sobe(ctx, &format!("capa-{}", game.path.display()), image, options)
 }
 
 /// Um cartão da grade: a imagem do jogo, o título embaixo, e o clique que o abre. O escolhido
@@ -764,23 +651,5 @@ mod tests {
         assert_eq!(vitrine.indice(5), 4);
         vitrine.cursor = 7;
         assert_eq!(vitrine.indice(5), 2);
-    }
-
-    #[test]
-    fn a_busca_ignora_caixa_acento_e_pontuacao() {
-        assert!(casa_com_a_busca("Zeebo Extreme Bóia Cross", "boia"));
-        assert!(casa_com_a_busca("Zeebo Extreme Bóia Cross", "EXTREME boia"));
-        assert!(casa_com_a_busca("Zeebo Extreme Bóia Cross", "cross zeebo"));
-        assert!(casa_com_a_busca("C.N.K. 3D", "cnk"));
-        assert!(casa_com_a_busca("Resident Evil 4", "resident evil"));
-        assert!(casa_com_a_busca("Double Dragon", "doubledragon"));
-        assert!(!casa_com_a_busca("Double Dragon", "rolima"));
-        assert!(!casa_com_a_busca("Zeebo Extreme Rolimã", "rolima boia"));
-    }
-
-    #[test]
-    fn a_busca_vazia_mostra_todos() {
-        assert!(casa_com_a_busca("Tênis", ""));
-        assert!(casa_com_a_busca("Tênis", "   "));
     }
 }

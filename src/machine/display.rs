@@ -7,6 +7,9 @@ impl<C: CpuBackend> Machine<C> {
     /// nomes vem dos headers do SDK, então um método fora de ordem viraria erro de compilação
     /// aqui em vez de desenho errado lá.
     pub(super) fn display_call(&mut self, slot: u32) -> Result<Option<u32>, CpuError> {
+        // **O quadro do OpenGL vem antes do 2D.** Um HUD desenhado por cima de uma tela que
+        // ainda não recebeu a cena apagaria a cena — ver [`Machine::materializa_quadro_gl`].
+        self.materializa_quadro_gl();
         let Some(name) = Interface::Display.method(slot) else {
             return Ok(None);
         };
@@ -376,6 +379,9 @@ impl<C: CpuBackend> Machine<C> {
     /// O estado (cor de traço, cor de preenchimento, se preenche ou não, translação) fica no
     /// host; as primitivas viram operações no framebuffer.
     pub(super) fn graphics_call(&mut self, slot: u32) -> Result<Option<u32>, CpuError> {
+        // **O quadro do OpenGL vem antes do 2D.** Um HUD desenhado por cima de uma tela que
+        // ainda não recebeu a cena apagaria a cena — ver [`Machine::materializa_quadro_gl`].
+        self.materializa_quadro_gl();
         let Some(name) = Interface::Graphics.method(slot) else {
             return Ok(None);
         };
@@ -438,7 +444,9 @@ impl<C: CpuBackend> Machine<C> {
                 let (x, y) = self.read_point(a1)?;
                 let (x, y) = self.translated(x, y);
                 let color = self.graphics.stroke;
-                self.with_target(|fb| fb.set_pixel(x, y, color))?;
+                self.with_target_or_foreign(x, y, 1, 1, AEE_RO_TRANSPARENT, |fb, ox, oy| {
+                    fb.set_pixel(x + ox, y + oy, color)
+                })?;
                 SUCCESS
             }
             // int DrawLine(IGraphics *, AEELine *) — AEELine é { int16 sx, sy, ex, ey }.
@@ -449,7 +457,13 @@ impl<C: CpuBackend> Machine<C> {
                 let (sx, sy) = self.translated(read(0), read(2));
                 let (ex, ey) = self.translated(read(4), read(6));
                 let color = self.graphics.stroke;
-                self.with_target(|fb| fb.draw_line(sx, sy, ex, ey, color))?;
+                let x = sx.min(ex);
+                let y = sy.min(ey);
+                let largura = (sx.max(ex) - x + 1) as u32;
+                let altura = (sy.max(ey) - y + 1) as u32;
+                self.with_target_or_foreign(x, y, largura, altura, AEE_RO_TRANSPARENT, |fb, ox, oy| {
+                    fb.draw_line(sx + ox, sy + oy, ex + ox, ey + oy, color)
+                })?;
                 SUCCESS
             }
             "DrawRect" | "ClearRect" => {
@@ -466,14 +480,42 @@ impl<C: CpuBackend> Machine<C> {
                 // preenchimento e sempre desenha a borda.
                 if name == "ClearRect" {
                     let background = self.graphics.background;
-                    self.with_target(|fb| fb.fill_rect(rect, background))?;
+                    self.with_target_or_foreign(
+                        rect.x as i32,
+                        rect.y as i32,
+                        rect.width.max(0) as u32,
+                        rect.height.max(0) as u32,
+                        AEE_RO_COPY,
+                        |fb, ox, oy| {
+                            fb.fill_rect(
+                                Rect {
+                                    x: rect.x + ox as i16,
+                                    y: rect.y + oy as i16,
+                                    ..rect
+                                },
+                                background,
+                            )
+                        },
+                    )?;
                 } else {
-                    self.with_target(|fb| {
-                        if filled {
-                            fb.fill_rect(rect, fill);
-                        }
-                        fb.draw_frame(rect, stroke);
-                    })?;
+                    self.with_target_or_foreign(
+                        rect.x as i32,
+                        rect.y as i32,
+                        rect.width.max(0) as u32,
+                        rect.height.max(0) as u32,
+                        AEE_RO_TRANSPARENT,
+                        |fb, ox, oy| {
+                            let rect = Rect {
+                                x: rect.x + ox as i16,
+                                y: rect.y + oy as i16,
+                                ..rect
+                            };
+                            if filled {
+                                fb.fill_rect(rect, fill);
+                            }
+                            fb.draw_frame(rect, stroke);
+                        },
+                    )?;
                 }
                 SUCCESS
             }
@@ -489,12 +531,20 @@ impl<C: CpuBackend> Machine<C> {
                     self.graphics.fill,
                     self.graphics.fill_mode,
                 );
-                self.with_target(|fb| {
-                    if filled {
-                        fb.fill_circle(cx, cy, radius, fill);
-                    }
-                    fb.draw_circle(cx, cy, radius, stroke);
-                })?;
+                let tamanho = (radius.max(0) * 2 + 1) as u32;
+                self.with_target_or_foreign(
+                    cx - radius,
+                    cy - radius,
+                    tamanho,
+                    tamanho,
+                    AEE_RO_TRANSPARENT,
+                    |fb, ox, oy| {
+                        if filled {
+                            fb.fill_circle(cx + ox, cy + oy, radius, fill);
+                        }
+                        fb.draw_circle(cx + ox, cy + oy, radius, stroke);
+                    },
+                )?;
                 SUCCESS
             }
             // AEETriangle é { int16 x0, y0, x1, y1, x2, y2 }.
@@ -543,8 +593,15 @@ impl<C: CpuBackend> Machine<C> {
                 }
                 alvo
             }
+            "SetClip" => {
+                // O Bejeweled Twist passa uma estrutura de 16 bytes: um campo de estado seguido
+                // por um `AEERect`. Ler desde o início transforma esse estado em coordenada e
+                // corrompe o fluxo ainda na carga.
+                self.clip = self.read_rect(a1 + 4)?;
+                SUCCESS
+            }
             // Sem efeito para nós: já desenhamos direto na superfície.
-            "Update" | "EnableDoubleBuffer" | "SetPaintMode" | "SetClip" | "SetViewport"
+            "Update" | "EnableDoubleBuffer" | "SetPaintMode" | "GetClip" | "SetViewport"
             | "SetAlgorithmHint" | "SetStrokeStyle" | "Pan" => SUCCESS,
             _ => return Ok(None),
         };
@@ -566,7 +623,21 @@ impl<C: CpuBackend> Machine<C> {
             self.graphics.fill_mode && closed,
         );
         let points = points.to_vec();
-        self.with_target(move |fb| {
+        let (mut x0, mut y0, mut x1, mut y1) = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
+        for &(x, y) in &points {
+            x0 = x0.min(x);
+            y0 = y0.min(y);
+            x1 = x1.max(x);
+            y1 = y1.max(y);
+        }
+        self.with_target_or_foreign(
+            x0,
+            y0,
+            (x1 - x0 + 1) as u32,
+            (y1 - y0 + 1) as u32,
+            AEE_RO_TRANSPARENT,
+            move |fb, ox, oy| {
+            let points: Vec<_> = points.iter().map(|&(x, y)| (x + ox, y + oy)).collect();
             if filled {
                 fb.fill_polygon(&points, fill);
             }
@@ -592,6 +663,70 @@ impl<C: CpuBackend> Machine<C> {
         if let Some(fb) = self.bitmaps.get_mut(&target) {
             draw(fb);
         }
+        Ok(())
+    }
+
+    /// Desenha direto quando o alvo é nosso; quando é uma superfície do jogo, enfileira uma
+    /// superfície temporária para o `BltIn` estrangeiro compor na fronteira segura.
+    pub(super) fn with_target_or_foreign(
+        &mut self,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+        rop: u32,
+        draw: impl FnOnce(&mut Framebuffer, i32, i32),
+    ) -> Result<(), CpuError> {
+        if width == 0 || height == 0 {
+            return Ok(());
+        }
+        let target = self.target()?;
+        if let Some(fb) = self.bitmaps.get_mut(&target) {
+            draw(fb, 0, 0);
+            return Ok(());
+        }
+
+        let (mut x, mut y, mut width, mut height) = (x, y, width, height);
+        if let Some(clip) = self.clip {
+            let x0 = x.max(clip.x as i32);
+            let y0 = y.max(clip.y as i32);
+            let x1 = (x + width as i32).min(clip.x as i32 + clip.width as i32);
+            let y1 = (y + height as i32).min(clip.y as i32 + clip.height as i32);
+            if x0 >= x1 || y0 >= y1 {
+                return Ok(());
+            }
+            x = x0;
+            y = y0;
+            width = (x1 - x0) as u32;
+            height = (y1 - y0) as u32;
+        }
+
+        let source = self.new_object(Interface::Bitmap)?;
+        if source == 0 {
+            return Ok(());
+        }
+        let mut fb = Framebuffer::new(width, height);
+        fb.fill_rect_native(
+            Rect {
+                x: 0,
+                y: 0,
+                width: width.min(i16::MAX as u32) as i16,
+                height: height.min(i16::MAX as u32) as i16,
+            },
+            TRANSPARENT_KEY,
+        );
+        draw(&mut fb, -x, -y);
+        self.bitmaps.insert(source, fb);
+        self.transparency.insert(source, TRANSPARENT_KEY);
+        self.pending_surface_blits.push(PendingSurfaceBlit {
+            source,
+            target,
+            x,
+            y,
+            width,
+            height,
+            rop,
+        });
         Ok(())
     }
 

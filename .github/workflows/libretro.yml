@@ -11,7 +11,8 @@
 #
 # Cada alvo roda no seu próprio runner: AArch64 Linux e Windows em runner ARM64 nativo, porque
 # cross-build de `unicorn` (QEMU em C) e `dynarmic` (C++20 com CMake) exigiria toolchain e sysroot
-# que ninguém quer manter só para empacotar.
+# que ninguém quer manter só para empacotar. O Switch é a exceção: o `.a` sai da imagem
+# `devkitpro/devkita64`, pelo `frontends/switch/compilar.sh`.
 
 name: libretro
 
@@ -76,7 +77,7 @@ jobs:
             biblioteca: target/release/libzeebx_libretro.dylib
             pacote: zeebx_libretro.dylib
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -151,3 +152,75 @@ jobs:
         with:
           name: zeebx_libretro_${{ matrix.nome }}
           path: pacote/
+
+  # Biblioteca estática para o ROMBundler / RetroArch web ligar como SIDE_MODULE. A std é
+  # recompilada com panic=abort (precisa de rust-src): o módulo principal não exporta unwind.
+  wasm:
+    name: core-wasm
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-emscripten
+          components: rust-src
+
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: "6.0.8"
+
+      - name: Compila o side module
+        run: ./ferramentas/compilar_wasm.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zeebx_libretro_emscripten
+          path: target/wasm/
+
+  # Biblioteca estática para o ROMBundler ligar no Horizon. O devkitA64 não está no runner:
+  # o job inteiro roda na imagem oficial, e o `compilar.sh --local` aplica o cfg, o patch do
+  # JIT e o empacotamento do dynarmic no `.a`.
+  switch:
+    name: core-switch
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      # Tag datada, não `latest`: a imagem nova entra quando alguém muda esta linha.
+      image: devkitpro/devkita64:20260219
+    steps:
+      - name: Git e CMake
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates cmake curl git ninja-build pkg-config python3
+
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: libretro-switch
+
+      - name: Compila o staticlib
+        run: ./frontends/switch/compilar.sh --local
+
+      - name: O arquivo é AArch64
+        run: |
+          tmp=$(mktemp -d)
+          ( cd "$tmp" && ar x "$GITHUB_WORKSPACE/frontends/switch/saida/libzeebx_libretro.a" )
+          ruim=$(aarch64-none-elf-objdump -f "$tmp"/*.o | grep 'file format' | grep -v elf64-littleaarch64 || true)
+          if [ -n "$ruim" ]; then
+            echo "o .a misturou objeto que não é AArch64"
+            echo "$ruim"
+            exit 1
+          fi
+          echo "libzeebx_libretro.a é ELF AArch64"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zeebx_libretro_switch
+          path: frontends/switch/saida/libzeebx_libretro.a

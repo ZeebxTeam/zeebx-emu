@@ -20,10 +20,12 @@ Cargo.toml          a biblioteca `zeebx` — o emulador inteiro, sem interface
 src/                BREW, CPU, vídeo, áudio, carregador, sessão, save state
 src/ui/             telas e estado compartilhados entre frontends (ver o aviso abaixo)
 frontends/
-  classical-standalone/   o binário `zeebx`: janela do egui e linha de comando
+  qt-standalone/          a interface principal: o binário `zeebx-qt`, em Qt Quick
+  egui-standalone/        legado: o binário `zeebx`, janela do egui e linha de comando
   headless/               sem interface, configurado por `config.ini`
   libretro/               o core do RetroArch
   android/                o aplicativo, sem uma linha de Java
+  ios/                    o aplicativo de iOS: UIKit por cima de uma biblioteca estática
 ferramentas/        scripts Python: catálogo, varredura, instalação do core
 docs/               documentação; `patch-notes/` guarda as notas de cada versão
 assets/             ícones, fontes e `lang/` — os idiomas de fábrica
@@ -37,12 +39,11 @@ Só `ui::app`, `ui::window`, `ui::atualizacao` e `ui::discord` são janela de ve
 
 | Feature | O que traz | Quem usa |
 |---|---|---|
-| `desktop` | eframe, gilrs, minifb, rfd, Discord, glutin — implica `gpu`, `audio`, `soundfont`, `unicorn` | standalone, headless |
+| `desktop` | eframe, gilrs, minifb, rfd, Discord, glutin — implica `gpu`, `audio`, `soundfont` | standalone, headless |
 | `audio` | só o `cpal`, que no Android fala com o Oboe | Android, e o `desktop` |
 | `gl` | o desenho na placa; **não puxa nada de host** | core, Android, e o `desktop` |
 | `gpu` | criar contexto próprio (glutin) — implica `gl` | desktop |
 | `soundfont` | MIDI por banco de amostras (rustysynth, Rust puro) | core e desktop |
-| `unicorn` | o backend QEMU da CPU | desktop |
 
 **A regra da casa: o core Libretro não linka biblioteca de host.** Sem janela, sem placa de som,
 sem controle. Quem entrega vídeo, áudio e entrada é o frontend. O `libretro.yml` cobra isso com
@@ -54,10 +55,17 @@ na tag.
 
 ## Compilar e provar
 
+O desktop principal é o frontend Qt (`zeebx-standalone-qt`, binário `zeebx-qt`). O do egui
+(`zeebx-standalone-egui`, binário `zeebx`) é legado, e os dois compilam no CI e saem na release.
+Só o do Qt pede o **Qt 6** (6.4 ou mais novo), que o build acha pelo `qmake6`, pelo `qmake` ou pelo `QMAKE`.
+`python3 ferramentas/prepara_build.py` diz o que falta. A interface Qt está em
+[`docs/implementacao/21-migracao-para-qt.md`](docs/implementacao/21-migracao-para-qt.md).
+
 ```bash
-cargo build --release --locked -p zeebx-classical-standalone   # o binário `zeebx`
-cargo test  --release --locked -p zeebx -p zeebx-classical-standalone
-timeout 60 ./target/release/zeebx controles                    # sobe de verdade, sem tela
+cargo build --release --locked -p zeebx-standalone-egui     # o binário `zeebx`
+cargo build --release --locked -p zeebx-standalone-qt       # o binário `zeebx-qt`
+cargo test  --release --locked -p zeebx -p zeebx-standalone-egui -p zeebx-standalone-qt
+timeout 60 ./target/release/zeebx controles                 # sobe de verdade, sem tela
 
 cargo build --release --locked -p zeebx-headless -p zeebx-libretro
 python3 ferramentas/verifica_core.py target/release/libzeebx_libretro.so
@@ -76,11 +84,31 @@ export JAVA_HOME="$HOME/Android/jdk"
 ./frontends/android/compilar.sh --apk
 ```
 
+**Switch** (o `.a` estático que o ROMBundler liga) mora em
+[`frontends/switch/compilar.sh`](frontends/switch/compilar.sh). O `cfg(zeebx_switch)` desse
+script é o que reduz o cache de código do dynarmic e aumenta o número de sons guardados. No
+Mac a imagem Docker `rombundler-switch` traz o devkitA64 e o rustc; o job `core-switch` do
+`libretro.yml` roda o mesmo script com `--local` dentro da imagem `devkitpro/devkita64`. A
+release faz o mesmo e publica `zeebx_libretro-switch.zip`. O `.a` não liga sozinho: os
+`switch_jit_*` e `switch_spinlock_*` que o patch do dynarmic chama vêm do ROMBundler.
+
+**iOS** precisa de um Mac com Xcode e dos alvos `aarch64-apple-ios` e
+`aarch64-apple-ios-sim` no rustup. O passo a passo está em
+[`frontends/ios/LEIAME.md`](frontends/ios/LEIAME.md):
+
+```bash
+./frontends/ios/compilar.sh --app
+```
+
 ## O CI
 
 **A tag é o único gatilho automático.** O `release.yml` dispara em `v0.0.0` e monta a release como
-rascunho. O `ci.yml`, o `libretro.yml`, o `headless.yml` e o `android.yml` são `workflow_dispatch`:
-seis runners por execução é caro demais para gastar em cada push, e quem decide é quem pede.
+rascunho. O `ci.yml`, o `libretro.yml`, o `headless.yml`, o `android.yml`, o `ios.yml` e o
+`qt.yml` são `workflow_dispatch`: o CI padrão compila o frontend do egui nas seis plataformas e
+chama o `qt.yml`, que compila o do Qt e monta os instaladores dele. A release chama o mesmo `qt.yml`:
+os passos do Qt moram num lugar só. Onze jobs por execução é caro demais
+para gastar em cada push, e quem decide é quem pede. A exceção é o `discord-issues.yml`, que não
+compila nada: avisa no Discord quando uma issue abre, fecha ou muda de responsável.
 
 Se você mexeu em algo que só um deles cobre — o APK, o core num alvo ARM —, diga ao humano que
 vale disparar aquele workflow antes da tag. Você não consegue dispará-lo.
@@ -91,9 +119,9 @@ vale disparar aquele workflow antes da tag. Você não consegue dispará-lo.
 - **O `.so` do core e o `zeebx_libretro.info` andam em par.** Um `.info` velho ao lado de um core
   novo faz o scan do RetroArch marcar `??` em tudo. E os campos de capacidade do `.info` têm de
   casar com o que a ABI faz.
-- **A licença é GPL-2.0-only**, porque o `unicorn-engine` é GPLv2 e vai compilado dentro do
-  binário. Isso **exclui** qualquer dependência LGPLv3 ou GPLv3 — Qt 6, por exemplo. Antes de
-  propor uma biblioteca nova, cheque a licença dela.
+- **O código do Zeebx é GPL-2.0-or-later**. O backend de CPU padrão é o Dynarmic, para que
+  frontends GPLv3 como Qt 6 possam linkar o núcleo sem carregar uma dependência GPLv2-only. Antes
+  de propor uma biblioteca nova, cheque a licença dela e as features do binário que vai linká-la.
 - **O `Cargo.lock` é versionado** e o CI usa `--locked`. Membro novo no workspace entra no lock,
   no mesmo commit.
 

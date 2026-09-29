@@ -21,6 +21,7 @@
 mod ajustes;
 mod biblioteca;
 mod entrada;
+mod estado;
 mod jogo;
 mod seletor;
 mod sistema;
@@ -36,6 +37,7 @@ use android_activity::{AndroidApp, InputStatus, MainEvent, PollEvent, WindowMana
 
 use zeebx::input::Pad;
 use zeebx::session::Session;
+use zeebx::storage::StoragePaths;
 use zeebx::ui::i18n::Catalog;
 use zeebx::ui::library::{self, Game};
 use zeebx::ui::settings::Settings;
@@ -54,6 +56,13 @@ fn android_main(app: AndroidApp) {
             .with_max_level(log::LevelFilter::Info)
             .with_tag("Zeebx"),
     );
+    // **O registro do núcleo tem um destino no Android.** Até aqui ele era o único frontend que
+    // não drenava o anel: o desktop imprime no `stderr`, o core manda pelo `retro_log`, o headless
+    // imprime — e o Android não tinha onde. Aqui o destino é o `log`, que o `android_logger`
+    // acabou de instalar e que sai em `logcat` com a etiqueta e a gravidade certas.
+    //
+    // O nível começa no padrão do núcleo (`Aviso`); a variável `ZEEBX_LOG` vale se existir.
+    zeebx::registro::le_do_ambiente();
 
     // Um pânico do Rust escreve no stderr, e o Android joga o stderr fora: sem isto o
     // aplicativo morre sem deixar uma linha no `logcat`. O gancho manda a mensagem e o lugar
@@ -109,6 +118,23 @@ fn android_main(app: AndroidApp) {
     gira(app, &mut emulador);
 }
 
+/// Manda para o `logcat` o que o núcleo registrou desde a última volta.
+///
+/// A gravidade é preservada: um aviso do núcleo sai como `WARN` no `logcat`, e não como `INFO`
+/// como tudo o mais. É o que faz `adb logcat *:W` mostrar o que interessa sem o resto.
+fn despeja_o_registro() {
+    use zeebx::registro::Nivel;
+    for linha in zeebx::registro::drena() {
+        let texto = format!("[{}] {}: {}", linha.nivel.etiqueta(), linha.alvo, linha.texto);
+        match linha.nivel {
+            Nivel::Depuracao => log::debug!("{texto}"),
+            Nivel::Informacao => log::info!("{texto}"),
+            Nivel::Aviso => log::warn!("{texto}"),
+            Nivel::Erro | Nivel::Fatal => log::error!("{texto}"),
+        }
+    }
+}
+
 /// O laço: colhe eventos, deixa o jogo andar, desenha, repete.
 fn gira(app: AndroidApp, emulador: &mut Emulador) {
     let ctx = egui::Context::default();
@@ -129,6 +155,9 @@ fn gira(app: AndroidApp, emulador: &mut Emulador) {
     let comeco = Instant::now();
 
     while !sair {
+        // O registro do núcleo sai por aqui, uma vez por volta do laço. Com o anel vazio — o
+        // caso comum, no nível padrão — isto é um cadeado e uma leitura.
+        despeja_o_registro();
         // Com janela, o laço gira o mais rápido que a troca de buffers deixar; sem ela, não há
         // o que desenhar e esperar é o certo — é o que mantém o aplicativo parado em segundo
         // plano em vez de queimar bateria.
@@ -139,11 +168,12 @@ fn gira(app: AndroidApp, emulador: &mut Emulador) {
 
         app.poll_events(espera, |evento| match evento {
             PollEvent::Main(MainEvent::InitWindow { .. }) => {
-                let feita = match &placa {
+                let limitar = emulador.settings.graphics.speed_limit;
+                let feita = match placa.as_mut() {
                     // A segunda janela em diante reaproveita o contexto: é o que mantém vivos
                     // os objetos de GL que a sessão criou.
-                    Some(placa) => placa.refaz_a_tela(&app),
-                    None => Placa::nova(&app).map(|(nova, primeira)| {
+                    Some(placa) => placa.refaz_a_tela(&app, limitar),
+                    None => Placa::nova(&app, limitar).map(|(nova, primeira)| {
                         emulador.gl = Some(nova.gl.clone());
                         placa = Some(nova);
                         primeira
@@ -225,7 +255,13 @@ fn gira(app: AndroidApp, emulador: &mut Emulador) {
 
         let saida = ctx.run(cru, |ctx| emulador.desenha(ctx));
         let primitivas = ctx.tessellate(saida.shapes, saida.pixels_per_point);
-        placa.pinta(tela, &primitivas, &saida.textures_delta, saida.pixels_per_point);
+        placa.pinta(
+            tela,
+            &primitivas,
+            &saida.textures_delta,
+            saida.pixels_per_point,
+            emulador.settings.graphics.speed_limit,
+        );
     }
 
     log::info!("Zeebx encerrando");
@@ -238,8 +274,10 @@ pub enum Onde {
     Biblioteca,
     /// As configurações.
     Ajustes,
-    /// O navegador de pastas, na pasta dada.
+    /// O navegador de pastas, na pasta dada, para escolher a de ROMs.
     Seletor(PathBuf),
+    /// O mesmo navegador, para escolher o banco `.sf2` da música MIDI.
+    SeletorDeBanco(PathBuf),
     /// Um jogo rodando.
     Jogo,
 }
@@ -260,6 +298,11 @@ pub struct Emulador {
     /// A pasta privada do aplicativo. Sempre legível, sem permissão nenhuma — é o atalho que
     /// funciona mesmo quando o "acesso a todos os arquivos" não foi concedido.
     minha_pasta: PathBuf,
+    /// Raiz privada do aplicativo. Os save states ficam aqui, separados das ROMs escolhidas pelo
+    /// usuário: atualizar/trocar a coleção não apaga o ponto em que cada jogo estava.
+    estados_raiz: PathBuf,
+    /// Cache, sistema compartilhado e saves persistentes fornecidos explicitamente ao núcleo.
+    storage: StoragePaths,
     /// A ponte para a atividade: é por ela que se pergunta e se pede a permissão.
     app: AndroidApp,
     /// O contexto de GL da tela, quando ela já subiu. É o que a sessão usa para preencher o 3D
@@ -272,6 +315,17 @@ pub struct Emulador {
     /// Os jogos da pasta escolhida, com título e capa, lidos pelo mesmo `library::scan` do
     /// desktop.
     jogos: Vec<Game>,
+    /// Resultado de uma varredura em segundo plano. Enquanto existe, a lista antiga continua
+    /// utilizavel e a interface nao trava lendo ZIPs/MIFs.
+    varredura: Option<
+        std::sync::mpsc::Receiver<(PathBuf, Vec<Game>, Vec<(u32, String)>)>,
+    >,
+    /// Títulos normalizados uma vez por varredura, para a busca não refazer lowercase por frame.
+    titulos_busca: Vec<String>,
+    /// Índices que a busca atual deixou passar.
+    filtrados: Vec<usize>,
+    /// Applets conhecidos pela biblioteca, preparados fora da linha de UI para o boot da Z-Wheel.
+    instalados: Vec<(u32, String)>,
     /// O filtro da busca.
     busca: String,
     /// Qual cartão o direcional está apontando, entre os que a busca deixou passar.
@@ -312,6 +366,16 @@ pub struct Emulador {
     confirmando: bool,
     /// O jogo está parado por escolha, e não por falha.
     pausado: bool,
+    /// Identidade BLAKE3 do arquivo que abriu a sessão, a mesma regra do armazenamento do núcleo.
+    estado_id: Option<String>,
+    /// Os cinco slots persistentes do jogo atual.
+    estados: [Option<estado::Slot>; estado::SLOTS],
+    /// Miniaturas já convertidas/subidas ao egui, por slot.
+    miniaturas_estado: HashMap<usize, egui::TextureHandle>,
+    /// Slot ocupado que pediu uma segunda confirmação antes de ser substituído.
+    estado_sobrescrever: Option<usize>,
+    /// Resultado da última operação, mostrado no menu sem fechar a janela.
+    estado_mensagem: Option<String>,
     /// Por que o último jogo não abriu, quando não abriu.
     erro: Option<String>,
     ultimo: Instant,
@@ -325,6 +389,17 @@ impl Emulador {
         minha_pasta: PathBuf,
         app: AndroidApp,
     ) -> Self {
+        let estados_raiz = minha_pasta
+            .parent()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| minha_pasta.clone());
+        // Mantem cache e aparelho nos caminhos historicos de Android
+        // (files/.config/zeebx), mas liga o overlay persistente em saves/.
+        let storage_base = estados_raiz.join(".config");
+        let storage = StoragePaths::for_frontend(&storage_base, Some(&storage_base));
+        if let Err(erro) = storage.create_dirs() {
+            log::error!("nao criou o armazenamento persistente: {erro}");
+        }
         let mut settings = Settings::load_from(&arquivo);
         // Sem pasta escolhida ainda: o padrão, se ele existir, senão o diretório do aplicativo,
         // que sempre existe e nunca pede permissão.
@@ -352,6 +427,8 @@ impl Emulador {
             aba: ajustes::Aba::Geral,
             dica: None,
             minha_pasta,
+            estados_raiz,
+            storage,
             app,
             gl: None,
             pintor: Default::default(),
@@ -359,6 +436,10 @@ impl Emulador {
             settings,
             catalogo,
             jogos: Vec::new(),
+            varredura: None,
+            titulos_busca: Vec::new(),
+            filtrados: Vec::new(),
+            instalados: Vec::new(),
             busca: String::new(),
             selecionado: 0,
             rolar: false,
@@ -372,6 +453,11 @@ impl Emulador {
             pad: Pad::default(),
             confirmando: false,
             pausado: false,
+            estado_id: None,
+            estados: std::array::from_fn(|_| None),
+            miniaturas_estado: HashMap::new(),
+            estado_sobrescrever: None,
+            estado_mensagem: None,
             erro: None,
             ultimo: Instant::now(),
         };
@@ -384,17 +470,97 @@ impl Emulador {
         self.catalogo.get(chave)
     }
 
-    /// Relê a pasta escolhida. As capas em cache morrem junto: a lista mudou.
+    /// Relê a pasta escolhida sem bloquear a linha que desenha a interface.
     fn recarrega(&mut self) {
         let pasta = self.roms();
-        self.jogos = match pasta.as_os_str().is_empty() {
-            true => Vec::new(),
-            false => library::scan(&pasta),
+        if pasta.as_os_str().is_empty() {
+            self.varredura = None;
+            self.aplica_jogos(pasta, Vec::new(), Vec::new());
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let pasta_da_thread = pasta.clone();
+        match std::thread::Builder::new()
+            .name("zeebx-library".to_string())
+            .spawn(move || {
+                let jogos = library::scan(&pasta_da_thread);
+                let instalados = jogos
+                    .iter()
+                    .filter_map(|jogo| {
+                        Some((jogo.clsid?, library::id_do_modulo(&jogo.path)?))
+                    })
+                    .collect();
+                let _ = tx.send((pasta_da_thread, jogos, instalados));
+            })
+        {
+            Ok(_) => self.varredura = Some(rx),
+            Err(erro) => {
+                log::error!("nao iniciou a varredura da biblioteca: {erro}");
+                self.varredura = None;
+            }
+        }
+    }
+
+    /// Publica uma varredura concluída, ignorando resultado de uma pasta que já deixou de valer.
+    fn conclui_recarrega(&mut self) {
+        let resultado = match self.varredura.as_ref() {
+            Some(rx) => match rx.try_recv() {
+                Ok(resultado) => Some(Ok(resultado)),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(Err(())),
+                Err(std::sync::mpsc::TryRecvError::Empty) => None,
+            },
+            None => None,
         };
+        match resultado {
+            Some(Ok((pasta, jogos, instalados))) => {
+                self.varredura = None;
+                if pasta == self.roms() {
+                    self.aplica_jogos(pasta, jogos, instalados);
+                }
+            }
+            Some(Err(())) => {
+                self.varredura = None;
+                log::error!("a varredura da biblioteca terminou sem resultado");
+            }
+            None => {}
+        }
+    }
+
+    fn aplica_jogos(
+        &mut self,
+        pasta: PathBuf,
+        jogos: Vec<Game>,
+        instalados: Vec<(u32, String)>,
+    ) {
+        self.jogos = jogos;
+        self.instalados = instalados;
+        self.titulos_busca = self
+            .jogos
+            .iter()
+            .map(|jogo| jogo.title.to_lowercase())
+            .collect();
+        self.atualiza_filtro();
         self.capas.clear();
         self.selecionado = 0;
         self.rolar = true;
         log::info!("{} jogos em {}", self.jogos.len(), pasta.display());
+    }
+
+    fn atualiza_filtro(&mut self) {
+        let busca = self.busca.trim().to_lowercase();
+        self.filtrados.clear();
+        self.filtrados.extend(
+            self.titulos_busca
+                .iter()
+                .enumerate()
+                .filter(|(_, titulo)| busca.is_empty() || titulo.contains(&busca))
+                .map(|(indice, _)| indice),
+        );
+        if self.filtrados.is_empty() {
+            self.selecionado = 0;
+        } else {
+            self.selecionado = self.selecionado.min(self.filtrados.len() - 1);
+        }
     }
 
     /// A pasta escolhida agora. Vazia quando nenhuma foi escolhida ainda.
@@ -412,17 +578,48 @@ impl Emulador {
     /// Abre um jogo, com os ajustes de gráficos e som que estão valendo.
     fn abre(&mut self, caminho: &std::path::Path) {
         self.erro = None;
+        let content = match self.storage.content_id(caminho) {
+            Ok(id) => id,
+            Err(erro) => {
+                let motivo = erro.to_string();
+                log::error!("nao identificou o conteudo: {motivo}");
+                self.erro = Some(
+                    self.catalogo
+                        .format("play.failed", &[("reason", &motivo)]),
+                );
+                return;
+            }
+        };
+        let estado_id = Some(content.as_str().to_string());
+        match self
+            .storage
+            .migrate_legacy_package_writes(caminho, &content)
+        {
+            Ok(bytes) if bytes > 0 => {
+                log::info!("migrou {bytes} bytes de saves antigos para o overlay");
+            }
+            Ok(_) => {}
+            Err(erro) => {
+                // A copia antiga continua no cache e o VFS ainda consegue le-la. Falhar a
+                // migracao nao deve impedir o jogo de abrir.
+                log::warn!("nao migrou saves antigos: {erro}");
+            }
+        }
+        zeebx::audio::soundfont::define_banco(self.settings.audio.soundfont.clone());
+        zeebx::audio::soundfont::define_efeitos(self.settings.audio.midi_effects);
         let graficos = self.settings.graphics.clone();
         // O 3D na placa vale só se houver placa: antes da primeira janela não há contexto, e a
         // sessão aberta sem ele cai no rasterizador de software sozinha.
         let na_placa = graficos.gpu_rasterizer && self.gl.is_some();
-        match Session::start_with(
+        match Session::start_with_storage_installed(
             caminho,
             zeebx::PORTAS_PADRAO,
             None,
             na_placa,
             self.gl.clone().filter(|_| na_placa),
             self.settings.z_wheel,
+            &self.storage,
+            &self.instalados,
         ) {
             Ok(mut sessao) => {
                 log::info!("abriu {}", sessao.title());
@@ -433,10 +630,6 @@ impl Emulador {
                     graficos.anisotropico as usize,
                 );
                 sessao.define_neblina(graficos.neblina);
-                // Os jogos instalados: é como um jogo aberto pela Z-Wheel acha o vizinho.
-                sessao.set_installed_applets(self.jogos.iter().filter_map(|jogo| {
-                    Some((jogo.clsid?, library::id_do_modulo(&jogo.path)?))
-                }));
                 // Ligar o som aqui é seguro **porque o jogo ainda não começou**: o `start_with`
                 // só prepara, e o `EVT_APP_START` sai na primeira volta do laço.
                 let audio = self.settings.audio.clone();
@@ -444,6 +637,15 @@ impl Emulador {
                     log::error!("sem som: {erro}");
                 }
                 self.sessao = Some(sessao);
+                self.estado_id = estado_id;
+                self.estados = self
+                    .estado_id
+                    .as_deref()
+                    .map(|id| estado::lista(&self.estados_raiz, id))
+                    .unwrap_or_else(|| std::array::from_fn(|_| None));
+                self.miniaturas_estado.clear();
+                self.estado_sobrescrever = None;
+                self.estado_mensagem = None;
                 self.pausado = false;
                 self.confirmando = false;
                 self.onde = Onde::Jogo;
@@ -465,6 +667,11 @@ impl Emulador {
         self.textura = None;
         self.quadro = None;
         self.quadro_565 = None;
+        self.estado_id = None;
+        self.estados = std::array::from_fn(|_| None);
+        self.miniaturas_estado.clear();
+        self.estado_sobrescrever = None;
+        self.estado_mensagem = None;
         self.confirmando = false;
         self.pausado = false;
         self.pad = Pad::default();
@@ -486,6 +693,14 @@ impl Emulador {
                     _ => Onde::Ajustes,
                 }
             }
+            Onde::SeletorDeBanco(atual) => {
+                self.onde = match atual.parent() {
+                    Some(acima) if atual != &self.minha_pasta => {
+                        Onde::SeletorDeBanco(acima.to_path_buf())
+                    }
+                    _ => Onde::Ajustes,
+                }
+            }
             Onde::Ajustes => self.onde = Onde::Biblioteca,
             Onde::Biblioteca => {}
         }
@@ -493,10 +708,12 @@ impl Emulador {
 
     /// Qual das telas está no ar.
     fn desenha(&mut self, ctx: &egui::Context) {
+        self.conclui_recarrega();
         match self.onde.clone() {
             Onde::Jogo => self.jogo(ctx),
             Onde::Ajustes => self.ajustes(ctx),
             Onde::Seletor(atual) => self.seletor(ctx, &atual),
+            Onde::SeletorDeBanco(atual) => self.seletor_de_banco(ctx, &atual),
             Onde::Biblioteca => self.biblioteca(ctx),
         }
     }

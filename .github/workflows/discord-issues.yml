@@ -1,0 +1,96 @@
+# Avisa no Discord quando uma issue abre, fecha, reabre ou muda de responsável.
+#
+# O objetivo é que ninguém comece uma funcionalidade que outra pessoa já pegou: a issue atribuída
+# é o registro de quem está fazendo o quê, e o canal é onde todo mundo vê isso sem abrir o GitHub.
+#
+# **Isto é uma exceção à regra de que só a tag dispara workflow sozinha.** A regra existe por
+# causa dos seis runners de build; aqui é um `curl` num ubuntu, que termina em segundos.
+#
+# **O webhook fica no segredo `DISCORD_WEBHOOK_ISSUES`** (Settings > Secrets and variables >
+# Actions). Quem tem a URL posta no canal, então ela não pode aparecer no repositório. Sem o
+# segredo o job não roda, em vez de falhar em cada issue -- é o caso de quem faz fork.
+#
+# **Os campos da issue entram por `env` e o JSON é montado pelo `jq`.** Título e nome de usuário
+# são texto de qualquer pessoa; interpolados com `${{ }}` direto no shell, um título com aspas ou
+# `$(...)` viraria comando.
+
+name: discord-issues
+
+on:
+  issues:
+    types: [opened, reopened, closed, assigned, unassigned]
+
+permissions: {}
+
+jobs:
+  avisar:
+    name: avisar no Discord
+    runs-on: ubuntu-latest
+    env:
+      WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_ISSUES }}
+    steps:
+      - name: enviar
+        if: env.WEBHOOK != ''
+        env:
+          ACAO: ${{ github.event.action }}
+          MOTIVO: ${{ github.event.issue.state_reason }}
+          NUMERO: ${{ github.event.issue.number }}
+          TITULO: ${{ github.event.issue.title }}
+          URL: ${{ github.event.issue.html_url }}
+          QUEM: ${{ github.event.sender.login }}
+          AVATAR: ${{ github.event.sender.avatar_url }}
+          ALVO: ${{ github.event.assignee.login }}
+          RESPONSAVEIS: ${{ join(github.event.issue.assignees.*.login, ', ') }}
+          ROTULOS: ${{ join(github.event.issue.labels.*.name, ', ') }}
+        run: |
+          # Cor no formato decimal que o Discord espera: verde abre, roxo conclui, cinza descarta,
+          # azul é atribuição, laranja é quando a issue fica sem alguém que estava nela.
+          case "$ACAO" in
+            opened)     texto="abriu a issue";                           cor=3066993 ;;
+            reopened)   texto="reabriu a issue";                         cor=3066993 ;;
+            closed)
+              if [ "$MOTIVO" = "not_planned" ]; then
+                texto="fechou a issue como não planejada";               cor=9807270
+              else
+                texto="fechou a issue como concluída";                   cor=10181046
+              fi ;;
+            assigned)
+              if [ "$ALVO" = "$QUEM" ]; then
+                texto="assumiu a issue"
+              else
+                texto="atribuiu a issue a **$ALVO**"
+              fi;                                                        cor=3447003 ;;
+            unassigned)
+              if [ "$ALVO" = "$QUEM" ]; then
+                texto="largou a issue"
+              else
+                texto="tirou **$ALVO** da issue"
+              fi;                                                        cor=15105570 ;;
+          esac
+
+          jq -n \
+            --arg titulo "#$NUMERO $TITULO" \
+            --arg url "$URL" \
+            --arg quem "$QUEM" \
+            --arg avatar "$AVATAR" \
+            --arg texto "$texto" \
+            --argjson cor "$cor" \
+            --arg responsaveis "${RESPONSAVEIS:-ninguém}" \
+            --arg rotulos "$ROTULOS" \
+            '{
+              username: "Zeebx Issues",
+              allowed_mentions: { parse: [] },
+              embeds: [{
+                title: ($titulo | .[0:256]),
+                url: $url,
+                color: $cor,
+                author: { name: $quem, icon_url: $avatar, url: ("https://github.com/" + $quem) },
+                description: ("**" + $quem + "** " + $texto),
+                fields: (
+                  [{ name: "Responsáveis", value: $responsaveis, inline: true }]
+                  + (if $rotulos == "" then [] else [{ name: "Rótulos", value: $rotulos, inline: true }] end)
+                )
+              }]
+            }' > payload.json
+
+          curl --fail-with-body -sS -H "Content-Type: application/json" -d @payload.json "$WEBHOOK"

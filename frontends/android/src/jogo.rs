@@ -12,6 +12,7 @@ use zeebx::ui::gpu;
 use zeebx::ui::settings::{Proporcao, Scaling};
 
 use crate::Emulador;
+use crate::estado;
 use zeebx::session::FATIA_MAXIMA;
 
 impl Emulador {
@@ -131,7 +132,12 @@ impl Emulador {
         // quadro em vez de tapá-lo. Precisa ser declarado antes do painel central, porque no
         // egui quem pede espaço primeiro é quem o recebe.
         if let Some((amostra, memoria, relogio, historia)) = painel {
-            let debug = self.settings.debug;
+            // **Clonado, e não movido.** O `DebugView` ganhou um campo de texto (`nivel_de_log`,
+            // o nível do registro do núcleo), e por isso deixou de ser `Copy`. O `clone` é de uma
+            // struct de meia dúzia de campos por volta de desenho do painel — e o painel só existe
+            // quando ligado. Este erro só apareceu na CI do Android: o pacote nem compila fora de
+            // um alvo Android, então `cargo check` no desktop não o vê.
+            let debug = self.settings.debug.clone();
             let escuro = egui::Frame::NONE
                 .fill(egui::Color32::from_black_alpha(200))
                 .inner_margin(egui::Margin::symmetric(8, 2));
@@ -203,9 +209,9 @@ impl Emulador {
                             let Some(pintor) = guarda.as_mut() else {
                                 return;
                             };
-                            let vp = info.viewport_in_pixels();
+                            let vp = gpu::Viewport::from(info.viewport_in_pixels());
                             match quadro_gl {
-                                Some(quadro) => pintor.desenha_textura(gl, quadro, &vp, suave),
+                                Some(quadro) => pintor.desenha_textura(gl, quadro, vp, suave),
                                 None => {
                                     if let Some((chave, bytes)) = &quadro_2d {
                                         pintor.desenha_quadro(
@@ -214,7 +220,7 @@ impl Emulador {
                                             lg,
                                             at,
                                             *chave,
-                                            &vp,
+                                            vp,
                                             suave,
                                         );
                                     }
@@ -253,24 +259,159 @@ impl Emulador {
         let mut fechar = false;
         let mut continuar = false;
         let mut alterna_pausa = false;
+        let mut salvar_slot = None;
+        let mut carregar_slot = None;
+        let mut armar_sobrescrita = None;
         let pausado = self.pausado;
+        for (slot, salvo) in self.estados.iter().enumerate() {
+            let Some(miniatura) = salvo.as_ref().and_then(|salvo| salvo.miniatura.as_ref()) else {
+                continue;
+            };
+            if !self.miniaturas_estado.contains_key(&slot) {
+                let textura = textura_de_estado(ctx, slot, miniatura);
+                self.miniaturas_estado.insert(slot, textura);
+            }
+        }
+        let miniaturas: [Option<egui::TextureId>; estado::SLOTS] =
+            std::array::from_fn(|slot| self.miniaturas_estado.get(&slot).map(|t| t.id()));
+        let linhas: Vec<(String, String, bool)> = self
+            .estados
+            .iter()
+            .enumerate()
+            .map(|(slot, salvo)| {
+                let numero = (slot + 1).to_string();
+                let titulo = self
+                    .catalogo
+                    .format("play.state.slot", &[("slot", &numero)]);
+                let status = salvo.as_ref().map_or_else(
+                    || self.tr("play.state.empty").to_string(),
+                    |salvo| {
+                        let tamanho = estado::tamanho(salvo.bytes);
+                        self.catalogo
+                            .format("play.state.used", &[("size", &tamanho)])
+                    },
+                );
+                (titulo, status, salvo.is_some())
+            })
+            .collect();
+        let estados_disponiveis = self.estado_id.is_some();
+        let confirmando_slot = self.estado_sobrescrever;
         let titulo = self.tr("play.close.title").to_string();
         let aviso = self.tr("play.close.warning").to_string();
+        let estados_titulo = self.tr("play.state.title").to_string();
+        let salvar_rotulo = self.tr("play.state.save").to_string();
+        let substituir_rotulo = self.tr("play.state.overwrite").to_string();
+        let confirmar_rotulo = self.tr("play.state.confirm").to_string();
+        let substituir_aviso = self.tr("play.state.overwrite.hint").to_string();
+        let carregar_rotulo = self.tr("play.state.load").to_string();
+        let indisponivel = self.tr("play.state.unavailable").to_string();
         let continuar_rotulo = self.tr("play.continue").to_string();
         let pausa_rotulo = match pausado {
             true => self.tr("play.resume").to_string(),
             false => self.tr("play.pause").to_string(),
         };
         let parar_rotulo = self.tr("play.stop").to_string();
+        let mensagem = self.estado_mensagem.clone();
 
         egui::Window::new(titulo)
             .collapsible(false)
             .resizable(false)
+            .default_width(580.0)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(ctx, |ui| {
                 ui.add_space(4.0);
                 ui.label(aviso);
-                ui.add_space(12.0);
+                ui.add_space(8.0);
+                ui.separator();
+                ui.heading(&estados_titulo);
+                if !estados_disponiveis {
+                    ui.label(&indisponivel);
+                }
+                if let Some(mensagem) = &mensagem {
+                    ui.label(mensagem);
+                }
+                ui.add_space(4.0);
+
+                egui::ScrollArea::vertical()
+                    // Em 960x544, a regra de escala do frontend deixa cerca de 340 pontos de
+                    // altura. Duas linhas visíveis e rolagem cabem junto do título e dos botões
+                    // de sair; 300 pontos aqui empurrariam metade da janela para fora da tela.
+                    .max_height(170.0)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        for (slot, (titulo, status, ocupado)) in linhas.iter().enumerate() {
+                            ui.group(|ui| {
+                                ui.set_min_width(540.0);
+                                ui.horizontal(|ui| {
+                                    let tamanho = egui::vec2(96.0, 72.0);
+                                    match miniaturas[slot] {
+                                        Some(id) => {
+                                            ui.add(
+                                                egui::Image::new((id, tamanho))
+                                                    .fit_to_exact_size(tamanho),
+                                            );
+                                        }
+                                        None => {
+                                            let (rect, _) =
+                                                ui.allocate_exact_size(tamanho, egui::Sense::hover());
+                                            ui.painter().rect_filled(
+                                                rect,
+                                                4.0,
+                                                egui::Color32::from_gray(18),
+                                            );
+                                        }
+                                    }
+
+                                    ui.vertical(|ui| {
+                                        ui.strong(titulo);
+                                        ui.label(status);
+                                        if confirmando_slot == Some(slot) {
+                                            ui.small(&substituir_aviso);
+                                        }
+                                    });
+
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            let load = ui.add_enabled(
+                                                estados_disponiveis && *ocupado,
+                                                egui::Button::new(&carregar_rotulo)
+                                                    .min_size(egui::vec2(88.0, 44.0)),
+                                            );
+                                            if load.clicked() {
+                                                carregar_slot = Some(slot);
+                                            }
+
+                                            let rotulo =
+                                                match (*ocupado, confirmando_slot == Some(slot)) {
+                                                    (_, true) => &confirmar_rotulo,
+                                                    (true, false) => &substituir_rotulo,
+                                                    (false, false) => &salvar_rotulo,
+                                                };
+                                            if ui
+                                                .add_enabled(
+                                                    estados_disponiveis,
+                                                    egui::Button::new(rotulo)
+                                                        .min_size(egui::vec2(120.0, 44.0)),
+                                                )
+                                                .clicked()
+                                            {
+                                                if *ocupado && confirmando_slot != Some(slot) {
+                                                    armar_sobrescrita = Some(slot);
+                                                } else {
+                                                    salvar_slot = Some(slot);
+                                                }
+                                            }
+                                        },
+                                    );
+                                });
+                            });
+                            ui.add_space(4.0);
+                        }
+                    });
+
+                ui.separator();
+                ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     let seguir =
                         ui.add_sized([150.0, 48.0], egui::Button::new(&continuar_rotulo));
@@ -290,18 +431,108 @@ impl Emulador {
                 ui.add_space(4.0);
             });
 
+        if let Some(slot) = armar_sobrescrita {
+            self.estado_sobrescrever = Some(slot);
+        }
+        if let Some(slot) = salvar_slot {
+            let resultado = match (self.estado_id.as_deref(), self.sessao.as_mut()) {
+                (Some(id), Some(sessao)) => {
+                    estado::salva(&self.estados_raiz, id, slot, sessao)
+                }
+                _ => Err("save state indisponível".to_string()),
+            };
+            match resultado {
+                Ok(salvo) => {
+                    self.estados[slot] = Some(salvo);
+                    self.miniaturas_estado.remove(&slot);
+                    self.estado_sobrescrever = None;
+                    let numero = (slot + 1).to_string();
+                    self.estado_mensagem = Some(
+                        self.catalogo
+                            .format("play.state.saved", &[("slot", &numero)]),
+                    );
+                    log::info!("save state gravado no slot {}", slot + 1);
+                }
+                Err(erro) => {
+                    log::error!("save state: {erro}");
+                    self.estado_mensagem = Some(
+                        self.catalogo
+                            .format("play.state.error", &[("reason", &erro)]),
+                    );
+                }
+            }
+        }
+        if let Some(slot) = carregar_slot {
+            let resultado = match (self.estado_id.as_deref(), self.sessao.as_mut()) {
+                (Some(id), Some(sessao)) => {
+                    estado::carrega(&self.estados_raiz, id, slot, sessao)
+                }
+                _ => Err("save state indisponível".to_string()),
+            };
+            match resultado {
+                Ok(_) => {
+                    log::info!("save state carregado do slot {}", slot + 1);
+                    // O estado do console voltou; a entrada física, porém, é o que está apertado
+                    // agora, não o que estava apertado no instante salvo. Zerar evita que o botão
+                    // usado para confirmar o Load entre no primeiro quadro restaurado.
+                    self.pad = Default::default();
+                    if let Some(sessao) = self.sessao.as_mut() {
+                        sessao.set_port_pad(0, self.pad);
+                    }
+                    self.textura = None;
+                    self.quadro = None;
+                    self.quadro_565 = None;
+                    self.confirmando = false;
+                    self.pausado = false;
+                    self.estado_sobrescrever = None;
+                    self.ultimo = Instant::now();
+                    return;
+                }
+                Err(erro) => {
+                    log::error!("load state: {erro}");
+                    self.estado_mensagem = Some(
+                        self.catalogo
+                            .format("play.state.error", &[("reason", &erro)]),
+                    );
+                }
+            }
+        }
+
         if continuar {
             self.confirmando = false;
             self.pausado = false;
+            self.estado_sobrescrever = None;
         }
         if alterna_pausa {
             self.pausado = !pausado;
             self.confirmando = false;
+            self.estado_sobrescrever = None;
         }
         if fechar {
             self.fecha();
         }
     }
+}
+
+fn textura_de_estado(
+    ctx: &egui::Context,
+    slot: usize,
+    miniatura: &estado::Miniatura,
+) -> egui::TextureHandle {
+    let mut rgba = Vec::with_capacity(miniatura.largura * miniatura.altura * 4);
+    for pixel in miniatura.rgb565.chunks_exact(2) {
+        let cor = zeebx::video::display::Rgb::from_rgb565(u16::from_le_bytes([
+            pixel[0], pixel[1],
+        ]));
+        rgba.extend_from_slice(&[cor.r, cor.g, cor.b, 255]);
+    }
+    let imagem =
+        egui::ColorImage::from_rgba_unmultiplied([miniatura.largura, miniatura.altura], &rgba);
+    ctx.load_texture(
+        format!("save-state-{slot}"),
+        imagem,
+        egui::TextureOptions::LINEAR,
+    )
 }
 
 /// Que tamanho o quadro ocupa na área disponível.

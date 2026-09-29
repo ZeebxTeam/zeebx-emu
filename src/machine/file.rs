@@ -317,7 +317,9 @@ impl<C: CpuBackend> Machine<C> {
             // foi pedido enquanto houver arquivo. Insistindo só até o fim de verdade, o pacote do
             // Iron Sight — 16 MB lidos em pedaços grandes — para de chegar cortado.
             "Read" => {
-                let count = a2 as usize;
+                // O tamanho vem do jogo: conferido antes de alocar, ou um pedido absurdo derruba o
+                // processo em vez de virar erro de API.
+                let count = tamanho_do_guest(a2 as usize)?;
                 let mut buffer = vec![0u8; count];
                 let read = match self.open_files.get_mut(&this) {
                     Some(open) => {
@@ -558,6 +560,11 @@ impl<C: CpuBackend> Machine<C> {
                 entries
                     .flatten()
                     .filter(|entry| entry.path().is_dir() == want_dirs)
+                    // **O manifesto do pacote não é do jogo.** Ele é um arquivo *nosso*, escrito na
+                    // pasta que o guest enxerga como raiz, e um jogo que enumere a própria pasta
+                    // não pode ver nele um arquivo que o console não tem. Ver
+                    // [`crate::loader::archive::MANIFESTO`].
+                    .filter(|entry| entry.file_name() != crate::loader::archive::MANIFESTO)
                     .filter_map(|entry| entry.file_name().into_string().ok()),
             );
         }

@@ -9,8 +9,11 @@
 //! silenciosa: cada requisição entra no relatório, e o [`crate::machine::Machine`] pode ser
 //! criado sem ela.
 
+#[cfg(not(target_os = "emscripten"))]
 use std::io::{Read, Write};
+#[cfg(not(target_os = "emscripten"))]
 use std::net::TcpStream;
+#[cfg(not(target_os = "emscripten"))]
 use std::time::Duration;
 
 /// Quanto esperar por conexão e por resposta.
@@ -18,9 +21,11 @@ use std::time::Duration;
 /// Cinco segundos é curto para um servidor de verdade e é justamente o que se quer: o emulador
 /// não pode parar porque o outro lado não responde. O jogo já tem o próprio tempo limite, e
 /// falhar rápido devolve a ele o controle.
+#[cfg(not(target_os = "emscripten"))]
 const ESPERA: Duration = Duration::from_secs(5);
 
 /// Teto de resposta que aceitamos guardar.
+#[cfg(not(target_os = "emscripten"))]
 const MAX_RESPOSTA: usize = 1 << 20;
 
 /// O que voltou do servidor.
@@ -66,39 +71,52 @@ pub fn separa(url: &str) -> Result<(String, u16, String), String> {
 /// — mudando a configuração do emulador, e não remendando o binário do jogo em memória. Serve
 /// também para testar sem privilégio, já que a porta 80 pede root.
 pub fn post(url: &str, corpo: &[u8], desvio: Option<&str>) -> Result<Resposta, String> {
-    let (maquina, porta, caminho) = separa(url)?;
-    let alvo = match desvio {
-        Some(d) if d.contains(':') => d.to_string(),
-        Some(d) => format!("{d}:{porta}"),
-        None => format!("{maquina}:{porta}"),
-    };
-    let endereco = std::net::ToSocketAddrs::to_socket_addrs(&alvo)
-        .map_err(|e| format!("não resolvi {alvo}: {e}"))?
-        .next()
-        .ok_or_else(|| format!("{alvo} não resolveu para endereço nenhum"))?;
+    // O side module do ROMBundler resolve símbolos no módulo principal, e ele não exporta
+    // `getaddrinfo`. Chamar `ToSocketAddrs` aqui faz o `dlopen` falhar antes do jogo abrir.
+    #[cfg(target_os = "emscripten")]
+    {
+        let _ = (url, corpo, desvio);
+        return Err(
+            "rede HTTP não está disponível neste WebAssembly: o módulo principal não exporta getaddrinfo"
+                .to_string(),
+        );
+    }
+    #[cfg(not(target_os = "emscripten"))]
+    {
+        let (maquina, porta, caminho) = separa(url)?;
+        let alvo = match desvio {
+            Some(d) if d.contains(':') => d.to_string(),
+            Some(d) => format!("{d}:{porta}"),
+            None => format!("{maquina}:{porta}"),
+        };
+        let endereco = std::net::ToSocketAddrs::to_socket_addrs(&alvo)
+            .map_err(|e| format!("não resolvi {alvo}: {e}"))?
+            .next()
+            .ok_or_else(|| format!("{alvo} não resolveu para endereço nenhum"))?;
 
-    let mut fluxo =
-        TcpStream::connect_timeout(&endereco, ESPERA).map_err(|e| format!("{alvo}: {e}"))?;
-    fluxo.set_read_timeout(Some(ESPERA)).ok();
-    fluxo.set_write_timeout(Some(ESPERA)).ok();
+        let mut fluxo =
+            TcpStream::connect_timeout(&endereco, ESPERA).map_err(|e| format!("{alvo}: {e}"))?;
+        fluxo.set_read_timeout(Some(ESPERA)).ok();
+        fluxo.set_write_timeout(Some(ESPERA)).ok();
 
-    let cabecalho = format!(
-        "POST {caminho} HTTP/1.1\r\nHost: {maquina}\r\nContent-Type: application/octet-stream\r\n\
+        let cabecalho = format!(
+            "POST {caminho} HTTP/1.1\r\nHost: {maquina}\r\nContent-Type: application/octet-stream\r\n\
          Content-Length: {}\r\nConnection: close\r\n\r\n",
-        corpo.len()
-    );
-    fluxo
-        .write_all(cabecalho.as_bytes())
-        .and_then(|()| fluxo.write_all(corpo))
-        .and_then(|()| fluxo.flush())
-        .map_err(|e| format!("ao enviar para {alvo}: {e}"))?;
+            corpo.len()
+        );
+        fluxo
+            .write_all(cabecalho.as_bytes())
+            .and_then(|()| fluxo.write_all(corpo))
+            .and_then(|()| fluxo.flush())
+            .map_err(|e| format!("ao enviar para {alvo}: {e}"))?;
 
-    let mut bruto = Vec::new();
-    fluxo
-        .take(MAX_RESPOSTA as u64)
-        .read_to_end(&mut bruto)
-        .map_err(|e| format!("ao ler de {alvo}: {e}"))?;
-    separa_resposta(&bruto)
+        let mut bruto = Vec::new();
+        fluxo
+            .take(MAX_RESPOSTA as u64)
+            .read_to_end(&mut bruto)
+            .map_err(|e| format!("ao ler de {alvo}: {e}"))?;
+        separa_resposta(&bruto)
+    }
 }
 
 /// Separa a resposta HTTP em status e corpo.

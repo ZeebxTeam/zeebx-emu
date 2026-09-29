@@ -1,0 +1,131 @@
+<!doctype html>
+<!--
+  A página de downloads do Zeebx, servida pelo GitHub Pages a partir desta pasta.
+
+  Não tem build nem lista de arquivos escrita à mão: o `site.js` lê as releases pela API do GitHub
+  no navegador de quem visita. Uma versão nova aparece aqui sozinha quando a release é publicada
+  (rascunho não aparece: a API não mostra rascunho para quem não é do projeto).
+
+  O `.nojekyll` ao lado desliga o Jekyll. Sem ele, o Pages tentaria converter os `.md` desta pasta,
+  e as chaves duplas que alguns deles têm (em `libretro/`) são lidas como Liquid e quebram o build.
+-->
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Zeebx — emulador do Zeebo</title>
+<meta name="description" content="Zeebx, emulador livre do Zeebo para Windows, macOS, Linux, Android e RetroArch. Baixe a versão mais recente.">
+<meta property="og:title" content="Zeebx — emulador do Zeebo">
+<meta property="og:description" content="Emulador livre do Zeebo para Windows, macOS, Linux, Android e RetroArch.">
+<meta property="og:image" content="logo.png">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#000000">
+<link rel="icon" href="logo.png">
+<link rel="stylesheet" href="estilo.css">
+</head>
+<body>
+
+<header class="topo">
+  <div class="largura topo-linha">
+    <a class="marca" href="./">
+      <span class="marca-icone"><img src="logo.png" alt="" width="28" height="28"></span>
+      <span>Zeebx</span>
+    </a>
+    <nav class="menu">
+      <a href="#baixar" data-t="nav.baixar">Baixar</a>
+      <a href="#versoes" data-t="nav.versoes">Versões</a>
+      <a href="https://github.com/ZeebxTeam/zeebx-emu">GitHub</a>
+      <a href="https://discord.gg/D96HjsKTPa">Discord</a>
+      <select id="idioma" aria-label="Idioma / Language">
+        <option value="pt">Português</option>
+        <option value="en">English</option>
+        <option value="es">Español</option>
+      </select>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <section class="largura hero">
+    <div class="hero-texto">
+      <h1 data-t="hero.titulo">Emulador de Zeebo de Código Aberto</h1>
+      <p data-t="hero.sub">O Zeebx é um emulador livre do Zeebo, o console que a TecToy lançou em 2009 no Brasil e no México.</p>
+      <p class="hero-links">
+        <a href="https://github.com/ZeebxTeam/zeebx-emu/blob/master/COMPATIBILIDADE.md" data-t="hero.compat">Lista de compatibilidade</a>
+        <a href="https://github.com/ZeebxTeam/zeebx-emu#readme" data-t="hero.codigo">Código-fonte</a>
+      </p>
+    </div>
+    <div class="cartao recomendado" id="recomendado" aria-live="polite">
+      <p class="rec-rotulo" data-t="rec.carregando">Procurando a versão mais recente…</p>
+      <span class="botao grande esqueleto" aria-hidden="true">&nbsp;</span>
+    </div>
+  </section>
+
+  <section class="largura qual">
+    <h2 data-t="qual.titulo">Qual arquivo eu baixo?</h2>
+    <div class="qual-grade">
+      <div class="cartao">
+        <h3 data-t="tipo.app">Emulador</h3>
+        <p data-t="qual.app">O programa completo, com janela, biblioteca de jogos e configuração de controles. É o que a maioria das pessoas quer.</p>
+      </div>
+      <div class="cartao">
+        <h3 data-t="tipo.libretro">Core RetroArch</h3>
+        <p data-t="qual.libretro">Para quem já joga pelo RetroArch. O .zip traz o core e o .info, que vão juntos na pasta de cores.</p>
+      </div>
+      <div class="cartao">
+        <h3 data-t="tipo.headless">Headless</h3>
+        <p data-t="qual.headless">Sem interface, configurado por config.ini. Para quem monta o próprio frontend.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="largura" id="baixar">
+    <div class="secao-cabeca">
+      <h2 data-t="lista.titulo">Todos os arquivos</h2>
+      <label class="versao-escolha">
+        <span data-t="lista.versao">Versão</span>
+        <select id="versao" disabled></select>
+      </label>
+    </div>
+
+    <div class="filtros">
+      <input type="search" id="busca" autocomplete="off" data-t-placeholder="lista.busca" placeholder="Buscar: windows, apk, retroarch, arm64…">
+      <div class="chips" id="filtro-so" role="group" data-t-aria="filtro.sistema" aria-label="Sistema"></div>
+      <div class="chips" id="filtro-tipo" role="group" data-t-aria="filtro.tipo" aria-label="Tipo"></div>
+    </div>
+
+    <p class="contagem" id="contagem" aria-live="polite"></p>
+    <div id="lista"></div>
+
+    <details class="cartao notas" id="notas" hidden>
+      <summary></summary>
+      <div class="notas-corpo"></div>
+    </details>
+  </section>
+
+  <section class="largura" id="versoes">
+    <div class="secao-cabeca">
+      <h2 data-t="versoes.titulo">Arquivo de versões</h2>
+    </div>
+    <p class="secao-sub" data-t="versoes.sub">Todas as versões publicadas, da mais nova para a mais antiga.</p>
+    <ol class="historico" id="historico"></ol>
+  </section>
+
+  <section class="largura" id="contribuidores" hidden>
+    <div class="secao-cabeca">
+      <h2 data-t="contrib.titulo">Quem faz o Zeebx</h2>
+      <a href="https://github.com/ZeebxTeam/zeebx-emu/graphs/contributors" data-t="contrib.github">Ver no GitHub</a>
+    </div>
+    <ul class="pessoas" id="pessoas"></ul>
+  </section>
+</main>
+
+<footer class="rodape">
+  <div class="largura">
+    <p data-t="rodape">O Zeebx é software livre, sob a GPL-2.0-or-later. Zeebo é marca de seus donos; este projeto não tem ligação com a TecToy nem com a Qualcomm.</p>
+  </div>
+</footer>
+
+<script src="site.js"></script>
+</body>
+</html>

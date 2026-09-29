@@ -38,16 +38,18 @@ const REFRESH_PERIOD: std::time::Duration = std::time::Duration::from_millis(8);
 /// que o jogo mandou tocar, e 44100 cobre a maior taxa que os jogos usam.
 const RECORD_RATE: u32 = 44_100;
 
-/// Teto de instruções registradas pelo `--code`, para não encher a memória do host.
-const TRACE_STEPS: usize = 200_000;
-
-/// Quantos blocos o `--profile` mostra.
+/// Quantas entradas o perfil de sessão mostra.
 const PROFILE_LINES: usize = 20;
 
 /// Quantas linhas do log por semihosting o relatório mostra.
 const SEMIHOSTING_LINES: usize = 40;
 
 fn main() -> ExitCode {
+    // **O nível do registro entra aqui também.** A janela o lê ao abrir (`ui::app`), e os comandos
+    // de linha de comando não o liam: `ZEEBX_LOG=informacao` era ignorado em `run`, `bench` e
+    // `sessao`, e as linhas de instrumento -- todas de `Informacao` -- não apareciam. Foi assim que
+    // duas medidas minhas saíram vazias antes de eu perceber.
+    zeebx::registro::le_do_ambiente();
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("info") if args.len() == 2 => report(info(&args[1])),
@@ -66,10 +68,6 @@ fn main() -> ExitCode {
                 .find_map(|a| a.strip_prefix("--frames="))
                 .and_then(|n| n.parse().ok())
                 .unwrap_or(MAX_ROUNDS);
-            let watch = args
-                .iter()
-                .find_map(|a| a.strip_prefix("--watch="))
-                .and_then(|n| u32::from_str_radix(n.trim_start_matches("0x"), 16).ok());
             // `--sonda=0xCLSID[,0xCLSID...]` atende classes desconhecidas com um objeto de
             // observação, em vez de recusá-las, e diz no fim o que o jogo chamou nele.
             let probe: Vec<u32> = args
@@ -118,11 +116,6 @@ fn main() -> ExitCode {
                 .find_map(|a| a.strip_prefix("--dump-audio="))
                 .map(str::to_owned);
             let window = args.iter().any(|a| a == "--window");
-            let profile = args.iter().any(|a| a == "--profile");
-            let wall = args
-                .iter()
-                .find_map(|a| a.strip_prefix("--wall="))
-                .and_then(|n| n.parse::<u64>().ok());
             let keys = args
                 .iter()
                 .find_map(|a| a.strip_prefix("--keys="))
@@ -142,12 +135,6 @@ fn main() -> ExitCode {
                 (None, true) => None,
                 (None, false) => Some(DEFAULT_SECONDS),
             };
-            let trace_range = args.iter().find_map(|a| {
-                let spec = a.strip_prefix("--code=")?;
-                let (begin, end) = spec.split_once(':')?;
-                let parse = |t: &str| u32::from_str_radix(t.trim_start_matches("0x"), 16).ok();
-                Some((parse(begin)?, parse(end)?))
-            });
             report(run(
                 &args[1],
                 Options {
@@ -155,7 +142,6 @@ fn main() -> ExitCode {
                     trace_filter,
                     rounds,
                     seconds,
-                    watch,
                     serial,
                     dump_heap,
                     dump_surfaces,
@@ -163,11 +149,8 @@ fn main() -> ExitCode {
                     probe_answers,
                     window,
                     keys,
-                    trace_range,
                     dump_gl,
                     dump_audio,
-                    profile,
-                    wall,
                     network: !args.iter().any(|a| a == "--sem-rede"),
                     network_to: args
                         .iter()
@@ -200,8 +183,6 @@ fn main() -> ExitCode {
                 },
             ))
         }
-        // O JIT entra primeiro como bancada, não como backend implícito da interface. Assim a
-        // mesma ROM pode ser comparada com o Unicorn sem esconder uma regressão de compatibilidade.
         // O que o emulador enxerga de controle, para quando a entrada não responde e não dá
         // para saber se o problema é o aparelho, o nome salvo ou o mapeamento.
         Some("controles") => {
@@ -512,18 +493,18 @@ fn main() -> ExitCode {
             eprintln!(
                 "     zeebx run <arquivo.mod> [--window] [--seconds=N] [--keys=ms:tecla,...]
                              [--dump-gl=DIR] [--dump-audio=ARQUIVO.wav]
-                             [--trace[=trecho]] [--watch=0xADDR] [--serial=CAMINHO] [--dump-heap]
+                             [--trace[=trecho]] [--serial=CAMINHO] [--dump-heap]
                              [--dump-surfaces=DIR]
-                             [--code=0xINI:0xFIM] [--frames=N]
-                             [--profile] [--wall=SEGUNDOS] [--sonda=0xCLSID,...]
+                             [--frames=N] [--sonda=0xCLSID,...]
                              [--sem-rede] [--servidor=MAQUINA[:PORTA]] [--ponte]
                              [--portas=controle|teclado|nenhum,...] [--teclas=ms:nome,...]"
             );
             eprintln!(
-                "     zeebx sessao <arquivo.zip> [--seconds=N] [--keys=ms:botão,...] [--dump=QUADRO.bmp] [--fotos=ms,...] [--placa] [--serial=CAMINHO] [--fabrica] [--sem-fim-de-vida] [--sem-transicoes] [--escala=N] [--msaa=N] [--aniso=N] [--perfil[=MS]] [--boomerang] [--movimento=ms:x:y:z,...] [--wiimote] [--proporcao=16:9] [--portas=controle,controle]  (a sessão da janela, sem janela)"
+                "     zeebx sessao <arquivo.zip> [--seconds=N] [--keys=ms:botão,...] [--dump=QUADRO.bmp] [--fotos=ms,...] [--placa] [--serial=CAMINHO] [--fabrica] [--sem-fim-de-vida] [--sem-transicoes] [--escala=N] [--msaa=N] [--aniso=N] [--perfil[=MS]] [--boomerang] [--movimento=ms:x:y:z,...] [--wiimote] [--proporcao=16:9]
+                             [--portas=controle,controle] [--dpad-nos-eixos]  (a sessão da janela, sem janela)"
             );
             eprintln!(
-                "     zeebx bench <arquivo.mod|zip> [--seconds=N] [--keys=ms:tecla,...] [--dump=QUADRO.bmp] [--teclas=ms:nome,...] [--instalados=0xCLSID[:id],...] [--dump-surfaces=DIR]  (Dynarmic, sem janela)"
+                "     zeebx bench <arquivo.mod|zip> [--seconds=N] [--keys=ms:tecla,...] [--dump=QUADRO.bmp] [--teclas=ms:nome,...] [--instalados=0xCLSID[:id],...] [--dump-surfaces=DIR] [--dpad-nos-eixos]  (Dynarmic, sem janela)"
             );
             ExitCode::FAILURE
         }
@@ -609,7 +590,6 @@ struct Options {
     trace_filter: Option<String>,
     rounds: u32,
     seconds: Option<u32>,
-    watch: Option<u32>,
     /// Caminho da captura de serial, com `--serial=CAMINHO`.
     serial: Option<std::path::PathBuf>,
     dump_heap: bool,
@@ -619,11 +599,8 @@ struct Options {
     probe_answers: Vec<(u32, u32, u32)>,
     window: bool,
     keys: input::Script,
-    trace_range: Option<(u32, u32)>,
     dump_gl: Option<String>,
     dump_audio: Option<String>,
-    profile: bool,
-    wall: Option<u64>,
     /// Se o jogo pode falar com a rede. Ligada por padrão; o `--sem-rede` desliga.
     network: bool,
     /// Para onde desviar as conexões, com `--servidor=MAQUINA[:PORTA]`.
@@ -717,7 +694,6 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
         trace_filter,
         rounds,
         seconds,
-        watch,
         serial,
         dump_heap,
         dump_surfaces,
@@ -725,11 +701,8 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
         probe_answers,
         window,
         keys,
-        trace_range,
         dump_gl,
         dump_audio,
-        profile,
-        wall,
         network,
         network_to,
         bridge,
@@ -787,11 +760,6 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
     println!("arquivos:  {}", machine.file_root().display());
     machine.set_tracing(tracing);
     machine.set_trace_filter(trace_filter);
-    // Rastreio de código: mostra o caminho que a execução realmente tomou numa faixa.
-    if let Some((begin, end)) = trace_range {
-        machine.cpu_mut().trace_code(begin, end, TRACE_STEPS)?;
-    }
-    // Watchpoint de depuração: registra toda escrita na palavra pedida, com o PC de origem.
     if !probe.is_empty() {
         machine.probe_classes(&probe);
     }
@@ -807,23 +775,9 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
     if bridge {
         machine.set_bridge(true);
     }
-    if profile {
-        machine.cpu_mut().enable_profile();
-        machine.enable_api_profile();
-    }
-    if let Some(segundos) = wall {
-        machine
-            .cpu_mut()
-            .set_wall_limit(std::time::Duration::from_secs(segundos));
-    }
     if let Some(caminho) = &serial {
         machine.liga_serial(caminho)?;
         println!("serial:    {}", caminho.display());
-    }
-    if let Some(addr) = watch {
-        // Faixa generosa de propósito: um `stm`/`strd` dispara o hook com o endereço inicial
-        // do bloco, então vigiar só a palavra perde a escrita que a cobre por dentro.
-        machine.cpu_mut().watch(addr.saturating_sub(64), 128)?;
     }
     let outcome = machine.run(INSTRUCTION_BUDGET)?;
 
@@ -872,7 +826,6 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
                                     &teclas,
                                     dump_gl.as_deref(),
                                     dump_audio.as_deref(),
-                                    profile,
                                 )?;
                             }
                         }
@@ -887,11 +840,8 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
             None => println!("applet:    nenhum .mif encontrado ao lado do módulo"),
         }
     }
-    // Sem laço de quadros não houve quem imprimisse o perfil nem despejasse a memória, e é o
-    // caso em que os dois mais servem: o jogo gastou o orçamento antes de existir.
-    if profile && !rodou_quadros {
-        mostra_perfil(&machine);
-    }
+    // Sem laço de quadros não houve quem despejasse a memória, e é justamente quando o jogo
+    // gastou o orçamento antes de existir que esse retrato mais ajuda.
     if dump_heap && !rodou_quadros {
         despeja_memoria(&machine)?;
     }
@@ -906,46 +856,37 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
         despeja_superficies(&machine, dir)?;
     }
 
-    if trace_range.is_some() {
-        let steps = machine.cpu().steps();
-        println!("código:    {} instrução(ões) na faixa", steps.len());
-        for (address, r0, lr) in steps.iter() {
-            println!("  {address:#010x}  r0={r0:#x} lr={lr:#x}");
-        }
-    }
-    if watch.is_some() {
-        let writes = machine.cpu().writes();
-        let current = machine
-            .dump(watch.unwrap_or(0), 4)
-            .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-            .unwrap_or(0);
-        println!(
-            "watch:     {} acesso(s), valor atual {current:#x}",
-            writes.len()
-        );
-        // Todas, não as últimas N: cortar a lista esconde justamente as escritas do
-        // construtor, que são as primeiras — e foi assim que uma investigação concluiu que um
-        // campo "nunca era escrito" quando ele era, logo no começo.
-        for w in writes.iter() {
-            // Um valor negativo marca uma leitura, e o módulo é o tamanho lida.
-            if w.value < 0 {
-                println!(
-                    "  {:#010x} lido ({} bytes) (pc {:#010x}, lr {:#010x})",
-                    w.addr, -w.value, w.pc, w.lr
-                );
-            } else {
-                println!(
-                    "  {:#010x} = {:#x} (pc {:#010x}, lr {:#010x})",
-                    w.addr, w.value, w.pc, w.lr
-                );
-            }
-        }
-    }
+    let (heap, objetos) = (machine.heap_used(), machine.live_objects());
+    println!("heap:      {heap} bytes em uso, {objetos} objetos vivos");
+    // **Quanto sobra não diz como sobra.** Um heap com 30 MB livres em 400 buracos não entrega
+    // uma alocação de 2 MB, e o jogo relata isso como falta de memória; a linha abaixo é o que
+    // separa os dois casos no relatório.
+    let retrato = machine.heap_retrato();
     println!(
-        "heap:      {} bytes em uso, {} objetos vivos",
-        machine.heap_used(),
-        machine.live_objects()
+        "           {} buraco(s), maior livre {} de {} livres ({}% do livre preso em buracos), {} blocos vivos de {}",
+        retrato.buracos,
+        retrato.maior_buraco,
+        retrato.livre,
+        u64::from(retrato.perdido_em_buracos()) * 100 / u64::from(retrato.livre.max(1)),
+        retrato.vivos,
+        retrato.teto,
     );
+    let recusas = machine.refused_allocations();
+    if let Some((tamanho, lr)) = recusas.first() {
+        println!(
+            "recusado:  {} pedido(s) de malloc sem lugar; o primeiro: {} bytes, pedido em {lr:#010x}",
+            recusas.len(),
+            tamanho
+        );
+    }
+    let checagens = machine.refused_availability_checks();
+    if let Some((tamanho, lr)) = checagens.first() {
+        println!(
+            "recusado:  {} pergunta(s) de memória disponível respondidas com \"não cabe\"; a primeira: {} bytes em {lr:#010x}",
+            checagens.len(),
+            tamanho
+        );
+    }
     if !machine.suspicious_objects().is_empty() {
         println!(
             "atenção:   {} chamadas com ponteiro `this` inesperado",
@@ -1172,12 +1113,10 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Mede uma ROM inteira no Dynarmic, sem janela e sem trocar o backend normal do emulador.
+/// Mede uma ROM inteira no backend padrão, sem janela.
 ///
-/// Esta não é uma segunda implementação do comando `run`: é uma bancada estreita para a
-/// pergunta que motivou o JIT — quantos milissegundos virtuais o ARM recompilado consegue
-/// entregar por segundo de parede? Quando os números e os quadros concordarem com o Unicorn,
-/// o backend poderá subir para a sessão e a interface.
+/// Esta não é uma segunda implementação do comando `run`: é uma bancada estreita para medir
+/// quantos milissegundos virtuais o ARM recompilado consegue entregar por segundo de parede.
 fn bench_dynarmic(
     path: &str,
     seconds: u32,
@@ -1237,6 +1176,8 @@ fn bench_dynarmic(
     };
     let mut fotos: std::collections::VecDeque<u32> = std::collections::VecDeque::new();
     let mut numero_da_foto = 0;
+    // Ver o comentário do mesmo interruptor no laço: é o `zeebx_dpad_to_analog_p1` do núcleo.
+    let dpad_nos_eixos = std::env::args().any(|arg| arg == "--dpad-nos-eixos");
     while machine.clock_ms() < until && !machine.is_idle() {
         while pendentes
             .front()
@@ -1260,6 +1201,12 @@ fn bench_dynarmic(
                 };
                 std::fs::write(nome, machine.screen().to_bmp())?;
             }
+        }
+        // `--dpad-nos-eixos` é o mesmo que a opção do núcleo faz a cada quadro, para medir o issue
+        // #39 sem janela. **Antes** do roteiro, de propósito: um passo de eixo do roteiro é um
+        // manche de verdade, e quem tem a última palavra é ele — ver o espelho no `Player::pad`.
+        if dpad_nos_eixos {
+            pad.espelha_o_direcional_nos_eixos();
         }
         keys.apply(machine.clock_ms(), &mut pad);
         machine.set_pad(pad);
@@ -1303,6 +1250,52 @@ fn bench_dynarmic(
         for (name, count) in media {
             println!("  {count:>4}x {name}");
         }
+    }
+    // **O registro do núcleo, que na janela vai para o log do frontend.** No harness ele é o motivo
+    // de existir: é por estas linhas que se lê o que o motor decidiu -- o som entregue e a duração
+    // decodificada, o fluxo que o jogo para de alimentar, e quem calou cada som. Sem elas, medir
+    // isso exigia abrir o RetroArch, e com ele a navegação de alguém.
+    //
+    // O nível entra por `ZEEBX_LOG` (`aviso` é o padrão): as linhas de instrumento são
+    // `informacao`, e sem a variável elas não aparecem.
+    let registro = zeebx::registro::drena();
+    if !registro.is_empty() {
+        println!("registro:");
+        for linha in registro {
+            println!("  [{}] {}: {}", linha.nivel.etiqueta(), linha.alvo, linha.texto);
+        }
+    }
+    // **Dizer o que se perdeu.** Um instrumento que descarta linhas em silêncio mente por omissão:
+    // foi assim que uma medição relatou "zero sons decodificados" com 123 sons pedidos no registro.
+    let descartes = zeebx::registro::descartes();
+    if descartes > 0 {
+        println!("registro:  {descartes} linha(s) foram descartadas pelo anel antes de serem lidas");
+    }
+    // As chamadas de entrada dizem se o jogo chega a consultar o controle e por qual canal: o de
+    // eventos de botão (`GetNextButtonEvent`) ou o de posição (`GetPositionState`). É a pergunta
+    // que decide se espelhar o direcional nos eixos muda alguma coisa para este jogo.
+    let entrada: Vec<_> = machine
+        .call_log()
+        .into_iter()
+        .filter(|(name, _)| {
+            name.contains("Position") || name.contains("Button") || name.contains("HID")
+        })
+        .collect();
+    if !entrada.is_empty() {
+        println!("entrada:");
+        for (name, count) in entrada {
+            println!("  {count:>4}x {name}");
+        }
+    }
+    // A contagem de chamadas diz que o jogo **pergunta**; esta diz que a resposta **chegou**. Sem
+    // ela, um port de arcade que consulta o eixo todo quadro parece igual com o direcional solto e
+    // apertado — e é o número que prova o espelho do direcional (issue #39).
+    let deslocados = machine.leituras_com_eixo_deslocado();
+    if deslocados > 0 {
+        // **Quais** eixos, e não só quantos: `X` e `Y` são do manche esquerdo, `Z` e `RZ` do
+        // direito. É o que responde "o direcional chegou no manche que o jogo lê?".
+        let nomes = machine.eixos_vistos_deslocados().join(", ");
+        println!("eixo:      {deslocados} leitura(s) fora do centro, em {nomes}");
     }
     if let Some(path) = dump {
         std::fs::write(path, machine.screen().to_bmp())?;
@@ -1387,6 +1380,7 @@ fn sessao_sem_janela(
     let mut gravado_ms = 0u64;
     let mut fotos: std::collections::VecDeque<u32> = instantes.iter().copied().collect();
     let mut numero = 0;
+    let dpad_nos_eixos = std::env::args().any(|arg| arg == "--dpad-nos-eixos");
     while session.clock_ms() < fim {
         if let (Some(desde), None) = (perfil, perfil_ligado_em) {
             if session.clock_ms() >= desde {
@@ -1400,6 +1394,11 @@ fn sessao_sem_janela(
         }
         let antes = pad;
         if !reaberta {
+            // O mesmo interruptor do `bench`, e pelo mesmo motivo: medir o issue #39 na sessão
+            // sem janela. Antes do roteiro, para o passo de eixo do roteiro vencer.
+            if dpad_nos_eixos {
+                pad.espelha_o_direcional_nos_eixos();
+            }
             keys.apply(session.clock_ms(), &mut pad);
         } else {
             pad = input::Pad::default();
@@ -1542,10 +1541,56 @@ fn sessao_sem_janela(
     println!("tempo:     {} ms virtuais", session.clock_ms());
     let (heap, objetos) = session.memory();
     println!("heap:      {heap} bytes em uso, {objetos} objetos vivos");
+    // **Quanto sobra não diz como sobra.** Um heap com 30 MB livres em 400 buracos não entrega uma
+    // alocação de 2 MB, e o jogo relata isso como falta de memória: as duas linhas abaixo são o que
+    // separa "encheu" de "se despedaçou" no relatório.
+    let retrato = session.heap_retrato();
+    println!(
+        "           {} buraco(s), maior livre {} de {} livres ({}% do livre preso em buracos), {} blocos vivos de {}",
+        retrato.buracos,
+        retrato.maior_buraco,
+        retrato.livre,
+        u64::from(retrato.perdido_em_buracos()) * 100 / u64::from(retrato.livre.max(1)),
+        retrato.vivos,
+        retrato.teto,
+    );
+    let (recusas, checagens) = session.heap_recusas();
+    if let Some((tamanho, lr)) = recusas.first() {
+        println!(
+            "recusado:  {} pedido(s) de malloc sem lugar; o primeiro: {} bytes, pedido em {lr:#010x}",
+            recusas.len(),
+            tamanho
+        );
+    }
+    if let Some((tamanho, lr)) = checagens.first() {
+        println!(
+            "recusado:  {} pergunta(s) de memória disponível respondidas com \"não cabe\"; a primeira: {} bytes em {lr:#010x}",
+            checagens.len(),
+            tamanho
+        );
+    }
     if let (Some((caminho, _)), false) = (&gravacao, gravado.is_empty()) {
         std::fs::write(caminho, audio::to_wav(&gravado, RECORD_RATE))?;
         let pico = gravado.iter().fold(0.0f32, |m, s| m.max(s.abs()));
         println!("áudio:     {caminho} (pico {pico:.3})");
+    }
+    // **O registro do núcleo, com o som junto.** Esta função é a única que grava o áudio misturado
+    // em WAV, então é aqui que os dois se encontram: o WAV diz *o que* tocou, o registro diz *por
+    // quê* -- o som entregue e a duração decodificada, o fluxo que o jogo para de alimentar, e quem
+    // calou cada som. Separá-los foi o que me fez perseguir uma voz cortada sem saber se ela tinha
+    // sido cortada.
+    let registro = zeebx::registro::drena();
+    if !registro.is_empty() {
+        println!("registro:");
+        for linha in registro {
+            println!("  [{}] {}: {}", linha.nivel.etiqueta(), linha.alvo, linha.texto);
+        }
+    }
+    // **Dizer o que se perdeu.** Um instrumento que descarta linhas em silêncio mente por omissão:
+    // foi assim que uma medição relatou "zero sons decodificados" com 123 sons pedidos no registro.
+    let descartes = zeebx::registro::descartes();
+    if descartes > 0 {
+        println!("registro:  {descartes} linha(s) foram descartadas pelo anel antes de serem lidas");
     }
     if let Some((desde, inicio, instrucoes_antes)) = perfil_ligado_em {
         let real = inicio.elapsed();
@@ -1626,42 +1671,6 @@ fn despeja_superficies<C: cpu::CpuBackend>(
     Ok(())
 }
 
-/// Onde o tempo foi gasto: primeiro o que o emulador gastou atendendo o jogo, depois os blocos
-/// de código do guest que mais executaram.
-///
-/// Fica em função própria porque **o perfil interessa mesmo quando o jogo não chega a começar**.
-/// O Need For Speed queima os 500 milhões de instruções dentro do `CreateInstance`, e enquanto
-/// esta impressão vivia só no laço de quadros o `--profile` dele saía vazio — justamente no caso
-/// em que a pergunta "onde?" é a única que importa.
-fn mostra_perfil(machine: &Machine<BackendPadrao>) {
-    let api = machine.api_profile();
-    let total_api: u64 = api.iter().map(|(_, ns)| ns).sum();
-    if total_api > 0 {
-        println!(
-            "perfil da API: {} ms no total, do emulador atendendo o jogo",
-            total_api / 1_000_000
-        );
-        for (nome, ns) in api.iter().take(PROFILE_LINES) {
-            println!(
-                "  {:5.1}%  {:>8} ms  {nome}",
-                *ns as f64 / total_api as f64 * 100.0,
-                ns / 1_000_000
-            );
-        }
-    }
-    let linhas = machine.cpu().profile();
-    let total: u64 = linhas.iter().map(|&(_, n)| n).sum();
-    println!("perfil:    {} blocos distintos executados", linhas.len());
-    // Onde o jogo gasta o tempo é sempre um punhado de laços; vinte linhas cobrem com folga, e o
-    // resto é cauda.
-    for &(addr, n) in linhas.iter().take(PROFILE_LINES) {
-        println!(
-            "  {addr:#010x}  {:5.1}%  {n:>12} instrução(ões)",
-            n as f64 / total.max(1) as f64 * 100.0
-        );
-    }
-}
-
 /// Escreve o desfecho e, quando ele é uma falha de memória, os registradores e a pilha.
 ///
 /// Sem os registradores, "acesso inválido a 0x00000000" diz que alguma coisa era nula e não diz
@@ -1727,7 +1736,6 @@ fn run_frames(
     teclas: &[(u32, u32)],
     dump_gl: Option<&str>,
     dump_audio: Option<&str>,
-    profile: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Com janela, o som sai pela placa; sem ela, o que se quer é despejar quadros, e um fluxo
     // de áudio aberto só atrapalharia.
@@ -1825,12 +1833,6 @@ fn run_frames(
         if deadline.is_some_and(|limit| machine.clock_ms() >= limit) {
             break;
         }
-        // O teto de tempo real encerra a execução inteira: recomeçar a fatia seguinte só
-        // gastaria mais relógio para parar de novo no primeiro bloco.
-        if machine.cpu().wall_expired() {
-            println!("           teto de tempo real atingido");
-            break;
-        }
         // O roteiro entra por cima do teclado: assim dá para conferir a entrada sem janela e,
         // com ela, ver o que o roteiro faz.
         keys.apply(machine.clock_ms(), &mut pad);
@@ -1889,9 +1891,6 @@ fn run_frames(
         machine.clock_ms(),
         machine.armed_timers()
     );
-    if profile {
-        mostra_perfil(machine);
-    }
     println!(
         "           {} milhões de instruções em {turns} volta(s) do laço",
         machine.instructions() / 1_000_000,

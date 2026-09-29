@@ -22,16 +22,24 @@ impl<C: CpuBackend> Machine<C> {
             (Some(n), width) if width > 0 => (width as u32, n * width as u32),
             _ => (info.width, 0),
         };
+        let src_x = blit.src_x.max(0) as u32;
+        let src_y = blit.src_y.max(0) as u32;
+        let largura = blit.width.min(frame_width.saturating_sub(src_x));
+        let altura = blit.height.min(info.height.saturating_sub(src_y));
+        if largura == 0 || altura == 0 {
+            return Ok(());
+        }
 
         // A origem é uma superfície nossa, criada só para esta chamada.
         let source = self.new_object(Interface::Bitmap)?;
         if source == 0 {
             return Ok(());
         }
-        let mut surface = Framebuffer::new(frame_width, info.height);
-        for row in 0..info.height {
-            for column in 0..frame_width {
-                let index = (row * info.width + column + offset) as usize;
+        let mut surface = Framebuffer::new(largura, altura);
+        for row in 0..altura {
+            for column in 0..largura {
+                let index =
+                    ((row + src_y) * info.width + column + src_x + offset) as usize;
                 let opaque = info.opaque.get(index).copied().unwrap_or(true);
                 let pixel = match (opaque, info.pixels.get(index)) {
                     (true, Some(&pixel)) => pixel,
@@ -44,15 +52,15 @@ impl<C: CpuBackend> Machine<C> {
         }
         self.bitmaps.insert(source, surface);
         self.transparency.insert(source, TRANSPARENT_KEY);
-        self.expose_dib(source)?;
+        self.publica_origem_888(source, &info, largura, altura, src_x + offset, src_y)?;
 
         let vtable = self.cpu.read_u32(blit.target)?;
         let blt_in = self.cpu.read_u32(vtable + BITMAP_BLT_IN_SLOT * 4)?;
         // BltIn(po, xDst, yDst, dx, dy, pSrc, xSrc, ySrc, rop)
         let outcome = self.call_guest_with_stack(
             blt_in,
-            [blit.target, blit.x as u32, blit.y as u32, frame_width],
-            &[info.height, source, 0, 0, AEE_RO_TRANSPARENT],
+            [blit.target, blit.x as u32, blit.y as u32, largura],
+            &[altura, source, 0, 0, blit.rop],
             budget,
         )?;
         if !matches!(outcome, Outcome::Returned { code: 0 }) {
@@ -71,6 +79,132 @@ impl<C: CpuBackend> Machine<C> {
         self.solta_dib(source);
         self.cpu.unwatch_dirty(source);
         self.transparency.remove(&source);
+        Ok(())
+    }
+
+    /// Compoe uma superfície temporária nossa numa superfície do jogo pelo `BltIn` dela.
+    pub(super) fn blit_surface_into_foreign(
+        &mut self,
+        blit: PendingSurfaceBlit,
+        budget: u64,
+    ) -> Result<(), CpuError> {
+        self.publica_framebuffer_888(blit.source)?;
+
+        let vtable = self.cpu.read_u32(blit.target)?;
+        let blt_in = self.cpu.read_u32(vtable + BITMAP_BLT_IN_SLOT * 4)?;
+        let outcome = self.call_guest_with_stack(
+            blt_in,
+            [blit.target, blit.x as u32, blit.y as u32, blit.width],
+            &[blit.height, blit.source, 0, 0, blit.rop],
+            budget,
+        )?;
+        if !matches!(outcome, Outcome::Returned { code: 0 }) {
+            self.assumptions
+                .insert("o BltIn de uma superfície do jogo recusou uma primitiva 2D");
+        }
+
+        self.objects.release(blit.source);
+        self.bitmaps.remove(&blit.source);
+        self.solta_dib(blit.source);
+        self.cpu.unwatch_dirty(blit.source);
+        self.transparency.remove(&blit.source);
+        Ok(())
+    }
+
+    /// Publica o `IDIB` da origem de um `BltIn` estrangeiro em 888: 24 bits por pixel, ou 32
+    /// com o alfa no quarto byte quando a imagem tem transparência.
+    ///
+    /// **Não pode ser o nosso 565.** O `BltIn` do Bejeweled Twist (0x139d8) só aceita
+    /// `nColorScheme` 0, que ele lê como paleta de 8 bits, ou 24; qualquer outro valor desiste
+    /// sem criar a superfície de origem, e o primeiro blit dela saltava para o endereço zero
+    /// (0x32c1c) ou lia 0x24. É o formato em que o decodificador do BREW entrega a imagem.
+    ///
+    /// A ordem é B, G, R, A — o `0x00RRGGBB` do BREW em little-endian. Conferido na conversão
+    /// dele para 565 (0x23798): o byte 2 vai para o vermelho e o byte 0 para o azul. Expandir o
+    /// nosso 565 não perde nada: o jogo converte de volta para o formato da tela.
+    fn publica_origem_888(
+        &mut self,
+        source: u32,
+        info: &DecodedImage,
+        largura: u32,
+        altura: u32,
+        offset_x: u32,
+        offset_y: u32,
+    ) -> Result<(), CpuError> {
+        let total = (info.width * info.height) as usize;
+        let com_alfa = !info.alfa.is_empty() || info.opaque.iter().take(total).any(|&o| !o);
+        let canais: usize = if com_alfa { 4 } else { 3 };
+        let mut bytes = Vec::with_capacity(largura as usize * altura as usize * canais);
+        for row in 0..altura {
+            for column in 0..largura {
+                let index = ((row + offset_y) * info.width + column + offset_x) as usize;
+                let cor = Rgb::from_rgb565(info.pixels.get(index).copied().unwrap_or(0));
+                bytes.extend_from_slice(&[cor.b, cor.g, cor.r]);
+                if com_alfa {
+                    let opaco = info.opaque.get(index).copied().unwrap_or(true);
+                    let alfa = match info.alfa.get(index) {
+                        Some(&alfa) => alfa,
+                        None if opaco => 0xff,
+                        None => 0,
+                    };
+                    bytes.push(alfa);
+                }
+            }
+        }
+        let Some((buffer, capacidade)) = self.reserva_superficie(bytes.len() as u32) else {
+            return Ok(());
+        };
+        self.cpu.write_mem(buffer, &bytes)?;
+        // Registrado como o `IDIB` de um decodificador: o `expose_dib` do `QueryInterface` não
+        // o reescreve em 565, e o `solta_dib` da limpeza devolve o buffer.
+        self.dib_do_decodificador.insert(source, (buffer, capacidade));
+        let passo = largura as usize * canais;
+        self.cpu.write_u32(source + 4, 0)?; // pPaletteMap
+        self.cpu.write_u32(source + 8, buffer)?; // pBmp
+        self.cpu.write_u32(source + 12, 0)?; // pRGB
+        self.cpu
+            .write_u32(source + 16, to_rgbval(Rgb::from_rgb565(TRANSPARENT_KEY)))?; // ncTransparent
+        self.cpu.write_mem(source + 20, &(largura as u16).to_le_bytes())?;
+        self.cpu.write_mem(source + 22, &(altura as u16).to_le_bytes())?;
+        self.cpu.write_mem(source + 24, &(passo as i16).to_le_bytes())?;
+        self.cpu.write_mem(source + 26, &0u16.to_le_bytes())?; // cntRGB
+        self.cpu
+            .write_mem(source + 28, &[(canais * 8) as u8, IDIB_COLORSCHEME_888])?;
+        self.cpu.write_mem(source + 30, &[0u8; 6])?;
+        Ok(())
+    }
+
+    /// Publica um framebuffer temporário como `IDIB` 888 para o `BltIn` do jogo.
+    fn publica_framebuffer_888(&mut self, source: u32) -> Result<(), CpuError> {
+        let Some(fb) = self.bitmaps.get(&source) else {
+            return Ok(());
+        };
+        let (largura, altura) = (fb.width(), fb.height());
+        let mut bytes = Vec::with_capacity(largura as usize * altura as usize * 3);
+        for row in 0..altura {
+            for column in 0..largura {
+                let cor = Rgb::from_rgb565(fb.get_pixel(column as i32, row as i32));
+                bytes.extend_from_slice(&[cor.b, cor.g, cor.r]);
+            }
+        }
+        let Some((buffer, capacidade)) = self.reserva_superficie(bytes.len() as u32) else {
+            return Ok(());
+        };
+        self.cpu.write_mem(buffer, &bytes)?;
+        self.dib_do_decodificador.insert(source, (buffer, capacidade));
+        let passo = largura as usize * 3;
+        self.cpu.write_u32(source + 4, 0)?; // pPaletteMap
+        self.cpu.write_u32(source + 8, buffer)?; // pBmp
+        self.cpu.write_u32(source + 12, 0)?; // pRGB
+        self.cpu
+            .write_u32(source + 16, to_rgbval(Rgb::from_rgb565(TRANSPARENT_KEY)))?; // ncTransparent
+        self.cpu.write_mem(source + 20, &(largura as u16).to_le_bytes())?;
+        self.cpu.write_mem(source + 22, &(altura as u16).to_le_bytes())?;
+        self.cpu.write_mem(source + 24, &(passo as i16).to_le_bytes())?;
+        self.cpu.write_mem(source + 26, &0u16.to_le_bytes())?; // cntRGB
+        self.cpu
+            .write_mem(source + 28, &[24, IDIB_COLORSCHEME_888])?;
+        self.cpu.write_mem(source + 30, &[0u8; 6])?;
         Ok(())
     }
 
@@ -115,7 +249,7 @@ impl<C: CpuBackend> Machine<C> {
             // `mov r0, #0x14; bx lr` — devolve `ECLASSNOTSUPPORT` sempre. Nessa superfície o
             // único método de desenho implementado de verdade é o `BltIn`.
             self.assumptions
-                .insert("uma superfície do jogo não expõe IDIB; o desenho nela ainda se perde");
+                .insert("uma superfície do jogo não expõe IDIB; o desenho nela passa pelo BltIn quando possível");
             return Ok(());
         }
 
@@ -393,6 +527,9 @@ impl<C: CpuBackend> Machine<C> {
 
     /// Métodos de `IBitmap`, despachados pelo nome do slot.
     pub(super) fn bitmap_call(&mut self, slot: u32) -> Result<Option<u32>, CpuError> {
+        // Blitar para a tela é desenhar por cima dela: o quadro do OpenGL tem de estar nela
+        // antes. Ver [`Machine::materializa_quadro_gl`].
+        self.materializa_quadro_gl();
         let Some(name) = Interface::Bitmap.method(slot) else {
             return Ok(None);
         };

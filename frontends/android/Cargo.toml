@@ -1,8 +1,8 @@
 [package]
 name = "zeebx-android"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
-license = "GPL-2.0-only"
+license = "GPL-2.0-or-later"
 description = "O frontend de Android do Zeebx"
 publish = false
 
@@ -13,9 +13,11 @@ name = "zeebx_android"
 crate-type = ["cdylib"]
 
 [dependencies]
-# `audio` e nada mais: é o `cpal`, que no Android fala com o Oboe. Sem ele o `set_audio` da
-# sessão não existe e o aparelho fica mudo -- e sem compilar.
-zeebx = { path = "../..", default-features = false, features = ["audio", "gl"] }
+# `audio` é o `cpal`, que no Android fala com o Oboe. Sem ele o `set_audio` da sessão não existe
+# e o aparelho fica mudo -- e sem compilar. `soundfont` é o MIDI tocado com um `.sf2` escolhido
+# nos ajustes: o `rustysynth` é Rust puro, e o banco só ocupa memória (cerca de 64 MiB para um de
+# 32 MB) quando há um.
+zeebx = { path = "../..", default-features = false, features = ["audio", "gl", "soundfont"] }
 
 # **Não há eframe aqui, e isso é a razão de este arquivo existir.** O eframe gira o laço pelo
 # winit, e o winit joga fora todo botão de controle: ele traduz os códigos de tecla do Android

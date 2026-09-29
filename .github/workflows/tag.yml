@@ -33,7 +33,7 @@ jobs:
     steps:
       # As tags vêm junto: sem elas toda versão pareceria nova, e o passo abaixo tentaria criar
       # uma tag que já existe em todo push.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 

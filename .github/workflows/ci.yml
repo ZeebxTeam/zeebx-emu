@@ -1,4 +1,7 @@
-# Compila, testa e abre o emulador standalone (a interface desktop) nas seis plataformas.
+# Compila, testa e abre os dois frontends de desktop. O Qt (`frontends/qt-standalone`, binário
+# `zeebx-qt`), a interface principal, vem do `qt.yml`, chamado pelo job `qt` lá embaixo: ele também
+# monta e abre os instaladores. O egui (`frontends/egui-standalone`, binário `zeebx`), legado,
+# compila no job `compila`, nas seis plataformas abaixo.
 #
 # O que este trabalho responde é "o binário sai, os testes passam e ele abre?", que o `release.yml`
 # **não** responde: ele roda em tag, empacota, e não pode segurar os instaladores por causa de um
@@ -13,8 +16,8 @@
 # C++20, que é justamente a combinação que cross-build faz sofrer (toolchain C++ e sysroot). Runner
 # ARM64 nativo existe para Linux, Windows e macOS, e sai mais barato que manter cross.
 #
-# Custo: cada alvo compila o QEMU e o JIT, uns 15 minutos por runner. Seis runners por execução é
-# caro demais para gastar em cada push — por isso este trabalho **só roda à mão**, pela aba Actions.
+# Custo: cada alvo compila o QEMU e o JIT, uns 15 minutos por runner. Os seis jobs do egui e os
+# cinco do Qt por execução são caros demais para gastar em cada push — por isso este trabalho **só roda à mão**, pela aba Actions.
 
 name: ci
 
@@ -37,6 +40,8 @@ jobs:
     # Um alvo que ficou pendurado não pode queimar a cota da conta: seis horas de espera viram uma
     # hora de falha.
     timeout-minutes: 60
+    env:
+      BINARIO: target/release/zeebx${{ matrix.exe }}
     strategy:
       fail-fast: false
       matrix:
@@ -52,15 +57,15 @@ jobs:
           - alvo: linux-x86_64
             nome: linux-x86_64
             sistema: ubuntu-24.04
-            binario: target/release/zeebx
+            exe: ""
           - alvo: linux-aarch64
             nome: linux-aarch64
             sistema: ubuntu-24.04-arm
-            binario: target/release/zeebx
+            exe: ""
           - alvo: windows-x86_64
             nome: windows-x86_64
             sistema: windows-latest
-            binario: target/release/zeebx.exe
+            exe: .exe
           - alvo: windows-aarch64
             nome: windows-aarch64
             sistema: windows-11-arm
@@ -68,17 +73,17 @@ jobs:
             # monta um `.asm` com o `ml` do MSVC, que só existe para x86 e x64). O alvo compila assim
             # mesmo: o `unicorn-engine` sai do grafo por dependência condicional de alvo e o motor usa o
             # `dynarmic`, que recompila os blocos A32. Ver `src/cpu/mod.rs`, `BackendPadrao`.
-            binario: target/release/zeebx.exe
+            exe: .exe
           - alvo: macos-x86_64
             nome: macos-x86_64
             sistema: macos-15-intel
-            binario: target/release/zeebx
+            exe: ""
           - alvo: macos-arm64
             nome: macos-arm64
             sistema: macos-latest
-            binario: target/release/zeebx
+            exe: ""
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -103,30 +108,33 @@ jobs:
 
       # Sem debuginfo a árvore passa de mais de 5 GiB para algumas centenas de MB — o mesmo motivo
       # que fez o build local encher o disco.
-      # O pacote da raiz é só biblioteca desde a 0.3.0: quem produz o `zeebx` é o
-      # `frontends/classical-standalone`, e sem nomeá-lo não sai binário nenhum para provar.
+      # O pacote da raiz é só biblioteca desde a 0.3.0: quem produz o binário é o frontend, e sem
+      # nomeá-lo não sai binário nenhum para provar.
       - name: Compila
+        shell: bash
         env:
           CARGO_PROFILE_DEV_DEBUG: "0"
-        run: cargo build --release --locked -p zeebx-classical-standalone
+        run: cargo build --release --locked -p zeebx-standalone-egui
 
       - name: Testes
+        shell: bash
         env:
           CARGO_PROFILE_DEV_DEBUG: "0"
           CARGO_PROFILE_TEST_DEBUG: "0"
-        run: cargo test --release --locked -p zeebx -p zeebx-classical-standalone
+        run: cargo test --release --locked -p zeebx -p zeebx-standalone-egui
 
       - name: O binário existe
         shell: bash
-        run: ls -la ${{ matrix.binario }}
+        run: ls -la "$BINARIO"
 
-      # O CI também é uma bancada de teste para quem não quer compilar. Cada alvo entrega seu
-      # executável separado; o core Libretro é publicado pelo workflow libretro.yml.
+      # O CI também é uma bancada de teste para quem não quer compilar. Cada alvo entrega o seu
+      # executável, `zeebx-standalone-egui-*`. O core Libretro é publicado pelo workflow
+      # libretro.yml.
       - name: Entrega o standalone
         uses: actions/upload-artifact@v4
         with:
-          name: zeebx-standalone-${{ matrix.nome }}
-          path: ${{ matrix.binario }}
+          name: zeebx-standalone-egui-${{ matrix.nome }}
+          path: ${{ env.BINARIO }}
           if-no-files-found: error
           retention-days: 14
 
@@ -137,23 +145,27 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          file ${{ matrix.binario }}
-          ldd ${{ matrix.binario }} | head -20
-          timeout 60 ${{ matrix.binario }} controles
+          file "$BINARIO"
+          ldd "$BINARIO" | head -20
+          timeout 60 "$BINARIO" controles
 
       - name: O binário abre (macOS)
         if: runner.os == 'macOS'
         shell: bash
         run: |
-          file ${{ matrix.binario }}
-          otool -L ${{ matrix.binario }} | head -20
+          file "$BINARIO"
+          otool -L "$BINARIO" | head -20
           # O macOS não traz o `timeout` do GNU; o `perl` traz o alarme, e existe em toda imagem.
-          perl -e 'alarm 60; exec @ARGV' ${{ matrix.binario }} controles
+          perl -e 'alarm 60; exec @ARGV' "$BINARIO" controles
 
       - name: O binário abre (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $prova = Start-Process -FilePath "${{ matrix.binario }}" -ArgumentList "controles" -PassThru -NoNewWindow
+          $prova = Start-Process -FilePath "$env:BINARIO" -ArgumentList "controles" -PassThru -NoNewWindow
           if (-not $prova.WaitForExit(60000)) { $prova.Kill(); throw "o binario pendurou" }
           if ($prova.ExitCode -ne 0) { throw "o binario saiu com $($prova.ExitCode)" }
+
+  # O Qt, com os instaladores, pelos mesmos passos da release. Ver o `qt.yml`.
+  qt:
+    uses: ./.github/workflows/qt.yml

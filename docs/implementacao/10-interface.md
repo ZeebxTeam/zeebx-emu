@@ -198,9 +198,5 @@ zeebx run jogo.mod --seconds=6 --trace  # roda sem janela e resume as chamadas
 | `--dump-audio=A.wav` | a mistura de áudio |
 | `--keys=ROTEIRO` | entrada sem janela |
 | `--window` | a janela antiga, de `minifb` |
-| `--watch=ENDEREÇO` | quem escreveu e quem leu uma faixa de memória |
 | `zeebx sessao <zip> --boomerang --movimento=ms:x:y:z` | a sessão da janela com um Boomerang roteirizado |
 | `zeebx wiimote` | o Wii Remote ao vivo |
-
-O `--watch` é a ferramenta para "quem deveria ter preenchido este campo?": quando o jogo quebra
-num ponteiro nulo, ele diz se alguém chegou a escrever ali — e de qual instrução partiu a escrita.

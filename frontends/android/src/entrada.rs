@@ -7,9 +7,10 @@
 //! que chega é o que o Android mandou: `Keycode::ButtonA`, `Axis::X`, o gatilho, o "voltar".
 //!
 //! O mapa de botões é o mesmo que o desktop dá a um controle moderno
-//! ([`zeebx::input::bindings::Player::with_gamepad`]): sul no `b1`, leste no `b2`, oeste no
-//! `b3`, norte no `b4`, os gatilhos superiores no `zl`/`zr` e o Start no `back` — o controle do
-//! Zeebo não tem Start, quem ocupa o lugar dele é o HOME.
+//! ([`zeebx::input::bindings::Player::with_gamepad`]), e casa por **posição** — no aparelho o 1
+//! fica embaixo, o 2 à esquerda, o 3 no topo e o 4 à direita (issue #41): sul no `b1`, oeste no
+//! `b2`, norte no `b3`, leste no `b4`, os gatilhos superiores no `zl`/`zr` e o Start no `back` —
+//! o controle do Zeebo não tem Start, quem ocupa o lugar dele é o HOME.
 
 use android_activity::input::{
     Axis, InputEvent, KeyAction, Keycode, MotionAction, Source, ToolType,

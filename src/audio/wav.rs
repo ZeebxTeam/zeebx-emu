@@ -153,26 +153,68 @@ impl std::fmt::Display for WavError {
 }
 
 /// Lê um RIFF/WAVE de PCM.
+///
 /// Quanto o bloco `data` pode passar do fim que o `RIFF` declara antes de valer o `RIFF`.
 const FOLGA_DO_RIFF: usize = 4096;
 
-pub fn parse(data: &[u8]) -> Result<Sound, WavError> {
+/// Um WAVE de PCM em que o bloco `data` passa muito do fim que o `RIFF` declara, com as posições
+/// em bytes contadas do começo do buffer.
+///
+/// É o caso em que o cabeçalho não decide sozinho onde o som acaba. No Zeebo F.C. Super League o
+/// `RIFF` está certo e o que vem depois é lixo; na Turma da Mônica o `RIFF` é de um molde e a fala
+/// continua depois dele, **escrita enquanto toca**. Quem separa os dois é o que o jogo faz com o
+/// buffer depois do `Play` — ver `Machine::bombeia_buffers_vivos`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PcmAberto {
+    pub channels: u16,
+    pub rate: u32,
+    pub bits: u16,
+    /// Onde começa o PCM.
+    pub inicio: usize,
+    /// Onde o `RIFF` diz que o som acaba.
+    pub fim_riff: usize,
+    /// Onde o bloco `data` acaba, limitado ao buffer.
+    pub fim_data: usize,
+}
+
+/// O [`PcmAberto`] de um buffer, ou `None` quando o cabeçalho basta — outro formato, ou um `data`
+/// que não passa do `RIFF` mais que a folga.
+pub fn pcm_aberto(data: &[u8]) -> Option<PcmAberto> {
+    let estrutura = estrutura(data).ok()?;
+    let (tag, channels, rate, _, bits) = estrutura.format?;
+    let (inicio, fim_data) = estrutura.data?;
+    let passa_do_riff =
+        estrutura.fim_do_riff >= 44 && fim_data > estrutura.fim_do_riff + FOLGA_DO_RIFF;
+    (tag == FORMAT_PCM && matches!(bits, 8 | 16) && channels > 0 && rate > 0 && passa_do_riff)
+        .then_some(PcmAberto {
+            channels,
+            rate,
+            bits,
+            inicio,
+            fim_riff: estrutura.fim_do_riff.max(inicio),
+            fim_data,
+        })
+}
+
+/// Os blocos de um RIFF/WAVE, sem interpretar o PCM.
+struct Estrutura {
+    /// `(formato, canais, taxa, alinhamento de bloco, bits)`.
+    format: Option<(u16, u16, u32, u16, u16)>,
+    /// Onde o bloco `data` começa e acaba, limitado ao buffer.
+    data: Option<(usize, usize)>,
+    fim_do_riff: usize,
+}
+
+fn estrutura(data: &[u8]) -> Result<Estrutura, WavError> {
     if data.len() < 12 || &data[0..4] != b"RIFF" || &data[8..12] != b"WAVE" {
         return Err(WavError::NotWave);
     }
-    // **O arquivo acaba onde o RIFF diz, e não onde o buffer acaba.** O Zeebo F.C. Super League
-    // monta cada som num buffer de rascunho de 500 KB e escreve no bloco `data` o tamanho do
-    // buffer inteiro, mas o `RIFF` com o tamanho de verdade (14 KB). Seguir o `data` tocava onze
-    // segundos: o efeito e depois lixo de memória, alto, por cima da música. Um `RIFF` que não cabe
-    // num cabeçalho — zero, ou maior que o buffer, como o de quem grava em fluxo — não limita nada.
-    //
-    // Só vale quando o `data` passa **muito** do fim declarado: um arquivo editado com um bloco a
-    // mais e o `RIFF` desatualizado erra por poucos bytes, e cortá-lo perderia o fim do som.
     let fim_do_riff = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize + 8;
-    // `(formato, canais, taxa, alinhamento de bloco, bits)`.
-    let mut format: Option<(u16, u16, u32, u16, u16)> = None;
-    let mut payload: Option<&[u8]> = None;
-
+    let mut estrutura = Estrutura {
+        format: None,
+        data: None,
+        fim_do_riff,
+    };
     // Os blocos vêm em sequência, cada um com identificador e tamanho. Um bloco de tamanho
     // ímpar é seguido de um byte de alinhamento que não conta no tamanho.
     let mut at = 12usize;
@@ -190,23 +232,41 @@ pub fn parse(data: &[u8]) -> Result<Sound, WavError> {
                     data[body + 6],
                     data[body + 7],
                 ]);
-                format = Some((read16(0), read16(2), rate, read16(12), read16(14)));
+                estrutura.format = Some((read16(0), read16(2), rate, read16(12), read16(14)));
             }
-            b"data" => {
-                let end = match fim_do_riff >= 44 && end > fim_do_riff + FOLGA_DO_RIFF {
-                    true => fim_do_riff.max(body),
-                    false => end,
-                };
-                payload = Some(&data[body..end]);
-            }
+            b"data" => estrutura.data = Some((body, end)),
             _ => {}
         }
         at = body + len as usize + (len as usize & 1);
     }
+    Ok(estrutura)
+}
 
-    let (Some((tag, channels, rate, align, bits)), Some(payload)) = (format, payload) else {
+pub fn parse(data: &[u8]) -> Result<Sound, WavError> {
+    // **O arquivo acaba onde o RIFF diz, e não onde o buffer acaba.** O Zeebo F.C. Super League
+    // monta cada som num buffer de rascunho de 500 KB e escreve no bloco `data` o tamanho do
+    // buffer inteiro, mas o `RIFF` com o tamanho de verdade (14 KB). Seguir o `data` tocava onze
+    // segundos: o efeito e depois lixo de memória, alto, por cima da música. Um `RIFF` que não cabe
+    // num cabeçalho — zero, ou maior que o buffer, como o de quem grava em fluxo — não limita nada.
+    //
+    // Só vale quando o `data` passa **muito** do fim declarado: um arquivo editado com um bloco a
+    // mais e o `RIFF` desatualizado erra por poucos bytes, e cortá-lo perderia o fim do som.
+    //
+    // Esta é a leitura de um instante. Quando o jogo continua escrevendo depois do `RIFF` enquanto
+    // o som toca — a fala da Turma da Mônica —, quem estende o som é a reprodução, e não o
+    // parser: ver [`pcm_aberto`].
+    let estrutura = estrutura(data)?;
+    let (Some((tag, channels, rate, align, bits)), Some((body, end))) =
+        (estrutura.format, estrutura.data)
+    else {
         return Err(WavError::Incomplete);
     };
+    let fim_do_riff = estrutura.fim_do_riff;
+    let end = match fim_do_riff >= 44 && end > fim_do_riff + FOLGA_DO_RIFF {
+        true => fim_do_riff.max(body),
+        false => end,
+    };
+    let payload = &data[body..end];
     if tag == FORMAT_IMA_ADPCM {
         return Ok(Sound {
             rate: rate.max(1),
@@ -279,17 +339,50 @@ mod tests {
     }
 
     /// O som ocupa o começo de um buffer maior, o `data` diz o tamanho do buffer e o `RIFF` diz o
-    /// do som: vale o `RIFF`, e o lixo depois dele não toca.
+    /// do som: vale o `RIFF`, e o lixo depois dele não toca. É o buffer de rascunho do Zeebo F.C.
+    /// Super League.
+    ///
+    /// **O `sfx_bal_all.wav` da Turma da Mônica não confirma esta regra**, embora já tenha sido
+    /// citado como prova. O buffer de 882.000 bytes dela é um molde com o cabeçalho desse efeito
+    /// (`RIFF` de 56.352), e por ele passam as falas, de até cinco segundos, decodificadas enquanto
+    /// tocam. O `RIFF` do molde nunca muda — medido em trinta segundos de jogo. Quem estende o som
+    /// além dele é a reprodução: ver [`pcm_aberto`].
     #[test]
     fn o_riff_limita_um_data_maior_que_o_som() {
+        assert_eq!(parse(&buffer_de_rascunho()).unwrap().frames(), 2);
+    }
+
+    /// Dois quadros de som, o `RIFF` dizendo isso e o `data` dizendo 10.000 bytes de buffer.
+    fn buffer_de_rascunho() -> Vec<u8> {
         let som = build(FORMAT_PCM, 1, 22050, 16, &[0x10, 0x00, 0x20, 0x00]);
         let mut buffer = som.clone();
-        let data_em = buffer.len() - 4 - 4;
-        buffer[data_em..data_em + 4].copy_from_slice(&1000u32.to_le_bytes());
         buffer.extend(std::iter::repeat(0x7f).take(9996));
         let data_em = som.len() - 4 - 4;
         buffer[data_em..data_em + 4].copy_from_slice(&10_000u32.to_le_bytes());
-        assert_eq!(parse(&buffer).unwrap().frames(), 2);
+        buffer
+    }
+
+    /// O buffer em que o cabeçalho não decide sozinho é reconhecido, com as três posições.
+    #[test]
+    fn o_pcm_aberto_diz_onde_cada_cabecalho_acaba() {
+        let buffer = buffer_de_rascunho();
+        let aberto = pcm_aberto(&buffer).expect("o data passa do RIFF");
+        assert_eq!((aberto.rate, aberto.channels, aberto.bits), (22050, 1, 16));
+        assert_eq!(aberto.inicio, 44);
+        assert_eq!(aberto.fim_riff, 48);
+        assert_eq!(aberto.fim_data, buffer.len());
+    }
+
+    /// Um WAVE comum, e um com o `RIFF` só um pouco atrás do `data`, não são abertos: o
+    /// cabeçalho basta.
+    #[test]
+    fn um_wave_comum_nao_e_aberto() {
+        let som = build(FORMAT_PCM, 1, 22050, 16, &[0; 4000]);
+        assert_eq!(pcm_aberto(&som), None);
+        let mut editado = som.clone();
+        editado[4..8].copy_from_slice(&((som.len() - 8 - 100) as u32).to_le_bytes());
+        assert_eq!(pcm_aberto(&editado), None);
+        assert_eq!(pcm_aberto(b"RIFF\0\0\0\0WAVE"), None);
     }
 
     #[test]

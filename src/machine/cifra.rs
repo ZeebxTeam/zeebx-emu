@@ -241,7 +241,7 @@ impl<C: CpuBackend> Machine<C> {
 
         let mut data = state.pending.clone();
         if count > 0 {
-            let mut bytes = vec![0u8; count];
+            let mut bytes = vec![0u8; tamanho_do_guest(count)?];
             self.cpu.read_mem(input, &mut bytes)?;
             data.extend_from_slice(&bytes);
         }

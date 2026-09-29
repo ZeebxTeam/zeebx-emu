@@ -132,6 +132,31 @@ fn do_jogo(raiz: &Path, titulo: &str) -> Option<Save> {
     Save::de(titulo.to_string(), itens)
 }
 
+/// Todos os saves, os dos jogos antes dos do aparelho, com `true` nos do aparelho.
+///
+/// Os caches feitos antes de o manifesto existir não sabem o que veio do pacote. Antes de listar,
+/// reconstrói o manifesto de cada um a partir do zip — que continua na pasta de ROMs. Sem isso o
+/// jogo antigo simplesmente não apareceria na lista.
+///
+/// Toca o disco: é para chamar ao abrir a lista e depois de cada exclusão, e não a cada quadro.
+pub fn todos(roms: Option<&Path>) -> Vec<(bool, Save)> {
+    if let Some(roms) = roms {
+        for entrada in std::fs::read_dir(roms).into_iter().flatten().flatten() {
+            let caminho = entrada.path();
+            if caminho.extension().is_some_and(|e| e.eq_ignore_ascii_case("zip")) {
+                let _ = crate::loader::archive::completar_manifesto(&caminho);
+            }
+        }
+    }
+    let jogos = dos_jogos(&crate::loader::archive::cache_dir());
+    let aparelho = do_aparelho(&crate::loader::archive::device_dir());
+    jogos
+        .into_iter()
+        .map(|save| (false, save))
+        .chain(aparelho.into_iter().map(|save| (true, save)))
+        .collect()
+}
+
 /// Os saves de todos os jogos do cache.
 ///
 /// O nome que aparece é o da pasta do cache — `Zeeboids-6518125-1788761080` —, com a numeração

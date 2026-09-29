@@ -1,5 +1,5 @@
 # Invólucro do toolchain do NDK, para as dependências que compilam C e C++ pelo CMake — o
-# unicorn e o dynarmic.
+# dynarmic.
 #
 # O `cmake-rs` monta a linha de comando sozinho: ele já põe `CMAKE_SYSTEM_NAME=Android` e
 # `--target=aarch64-linux-android35` nas flags, mas não diz a ABI ao toolchain do NDK. Sem ela

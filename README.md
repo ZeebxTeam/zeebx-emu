@@ -21,9 +21,11 @@ Não abra PR para a branch master, visto que é onde organizamos e concentramos 
 
 Para novos targets de frontend, siga sempre a regrinha de mantê-lo dentro da pasta "frontends", exemplo:
 frontends/android/
+frontends/ios/
 frontends/headless/
 frontends/libretro/
-frontends/standalone-qt/
+frontends/egui-standalone/
+frontends/qt-standalone/
 
 E também ajuste o [.github/workflows/release.yml](release.yml) para apontar um alvo de build durante nosso CI, assim garante que o target seja fornecido junto durante a criação da release!
 
@@ -64,12 +66,25 @@ cargo build --release
 
 ### O que mais precisa estar instalado
 
-O standalone usa dependências nativas para `unicorn-engine`, `dynarmic`, áudio, janela e controles.
-Debian, Ubuntu e derivados:
+O desktop tem dois frontends: `zeebx-qt`, com a interface em **Qt 6** (`frontends/qt-standalone`,
+Qt 6.4 ou mais novo), que é a principal, e `zeebx`, com a interface em egui
+(`frontends/egui-standalone`), legada. Os dois saem na release. Os dois usam dependências nativas para `dynarmic`,
+áudio, janela e controles; o Qt só o segundo pede. Debian, Ubuntu e derivados:
 
 ```bash
 sudo apt install build-essential cmake ninja-build pkg-config python3 clang libclang-dev \
-    libglib2.0-dev libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+    libglib2.0-dev libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev \
+    qt6-base-dev qt6-base-dev-tools qt6-declarative-dev qt6-declarative-dev-tools qmake6 \
+    qt6-wayland qml6-module-qtquick qml6-module-qtquick-controls qml6-module-qtquick-layouts \
+    qml6-module-qtquick-templates qml6-module-qtquick-window qml6-module-qtqml-workerscript
+```
+
+No Arch: `qt6-base qt6-declarative qt6-wayland`. O build acha o Qt pelo `qmake6` ou pelo `qmake`;
+para usar outro, aponte `QMAKE` para ele.
+
+```bash
+cargo build --release -p zeebx-standalone-egui   # target/release/zeebx
+cargo build --release -p zeebx-standalone-qt     # target/release/zeebx-qt
 ```
 
 O core Libretro não linka a interface desktop nem bibliotecas de áudio/controle do host:
@@ -87,17 +102,24 @@ python3 ferramentas/prepara_build.py
 ### Instaladores e releases
 
 Os instaladores saem do [cargo-packager](https://github.com/crabnebula-dev/cargo-packager), com a
-configuração em `[package.metadata.packager]` no `Cargo.toml`:
+configuração em `[package.metadata.packager]` no `Cargo.toml` de cada frontend, rodado de dentro
+da pasta dele. No `frontends/egui-standalone/`, `cargo packager --release` basta. No
+`frontends/qt-standalone/` **ele não implanta o Qt**: cada formato tem o passo dele, e o
+[`release.yml`](.github/workflows/release.yml) é a receita completa.
 
-```bash
-cargo install cargo-packager --locked
-cargo packager --release --formats deb,appimage   # Linux
-cargo packager --release --formats nsis           # Windows
-cargo packager --release --formats dmg            # macOS
-```
+- **`.deb`**: usa o Qt do sistema, então precisa ser montado contra ele — no Ubuntu 24.04, com os
+  pacotes acima: `cargo packager --release --formats deb`.
+- **AppImage**: leva o próprio Qt, pelo `linuxdeploy-plugin-qt`, com `QMAKE` apontando o Qt,
+  `QML_SOURCES_PATHS` para `frontends/qt-standalone/qml`, `EXTRA_PLATFORM_PLUGINS=libqwayland.so`
+  e `EXTRA_QT_MODULES=waylandcompositor`. Monte num Ubuntu 22.04 com o Qt do `aqtinstall`, como o
+  CI: no Arch, o `strip` do linuxdeploy não reconhece as bibliotecas do sistema, e o Qt de lá traz
+  plugins com dependências que o linuxdeploy não acha.
+- **Windows**: `windeployqt --release --no-translations --qmldir frontends/qt-standalone/qml
+  --dir target/qt-implantado target/release/zeebx-qt.exe`, e depois `--formats nsis`.
+- **macOS**: `--formats app`, `macdeployqt` no `.app`, a assinatura ad-hoc refeita com
+  `codesign --force --deep --sign -`, e o `.dmg` pelo `hdiutil`.
 
-Os arquivos ficam em `target/pacotes/`. No Arch, o AppImage precisa de `NO_STRIP=1`: o `strip` do
-linuxdeploy não reconhece as bibliotecas do sistema.
+Os arquivos ficam em `target/pacotes/`.
 
 Uma tag de versão (`v0.1.0` ou `0.1.0`) enviada ao GitHub dispara o
 [`release.yml`](.github/workflows/release.yml), que monta a release como rascunho, com o título
@@ -107,17 +129,39 @@ São dois formatos em cada um dos quatro sistemas, e o nome do arquivo diz qual 
 
 | | |
 |---|---|
-| `zeebx-standalone-linux-x86_64.deb`, `.AppImage` | o emulador com a interface, para instalar |
-| `zeebx-standalone-windows-x86_64-setup.exe` | idem, no Windows |
-| `zeebx-standalone-macos-arm64.dmg`, `-x86_64.dmg` | idem, nos dois Macs |
+| `zeebx-standalone-qt-linux-x86_64.deb`, `.AppImage` | o emulador com a interface em Qt, a principal, para instalar |
+| `zeebx-standalone-qt-windows-x86_64-setup.exe` | idem, no Windows |
+| `zeebx-standalone-qt-macos-arm64.dmg`, `-x86_64.dmg` | idem, nos dois Macs |
+| `zeebx-standalone-egui-…` | os mesmos formatos, com a interface em egui, legada |
 | `zeebx-headless-<sistema>.zip` | o binário sem interface, com o `config.ini` e o leia-me |
 | `zeebx-android-arm64-v8a.apk` | o aplicativo de Android |
+| `zeebx-ios-simulator.zip` | o simulador e o leia-me |
+| `zeebx-ios.zip` | o IPA do AltStore clássico e o leia-me |
+
+No macOS, a primeira abertura avisa que a Apple não pôde verificar o Zeebx: esta build é assinada
+ad-hoc, e não pela Apple. Ela se libera em Ajustes do Sistema > Privacidade e Segurança > "Abrir
+Mesmo Assim", ou com `xattr -dr com.apple.quarantine "/Applications/Zeebx.app"` depois de arrastar
+para Aplicativos (o do Qt se chama `Zeebx Qt.app`). A imagem traz um `LEIA-ME.txt` ao lado do aplicativo. Em Mac com chip da Apple,
+use o `macos-arm64`: o `macos-x86_64` roda pelo Rosetta, e foi nele que os jogos pararam na issue 53.
 
 A APK sai assinada com a **chave de depuração**, que é a que o Gradle gera sozinho: serve para
 instalar de lado (`adb install`), não para a Play Store — aquela pede a chave de publicação, que
 não pode morar num repositório público. O mesmo
 [`compilar.sh`](frontends/android/compilar.sh) que se usa na máquina é o que roda no CI; ele
 aceita o `ANDROID_SDK_ROOT` que os runners exportam e o `gradle` que estiver no caminho.
+
+O iOS sai de um Mac com Xcode. O núcleo vira uma biblioteca estática e o Xcode monta o `.app`:
+
+```bash
+./frontends/ios/compilar.sh --app
+```
+
+O simulador é arm64. No aparelho o mesmo script com `--app-aparelho` pede um time de
+desenvolvimento (`DEVELOPMENT_TEAM`) para instalar direto; sem ele, o `.app` sai sem assinatura
+e o `--pacote` o coloca, como `zeebx-ios.ipa`, dentro de `zeebx-ios.zip`, para o AltStore clássico
+assinar com um Apple ID. Cada zip traz o seu `LEIA-ME.txt`: o do simulador e o do aparelho. O iOS não deixa o
+processo mapear código executável, então nesse alvo o núcleo é o interpretador, não o Dynarmic.
+Ver [`frontends/ios/LEIAME.md`](frontends/ios/LEIAME.md).
 
 ## Usando
 
@@ -190,7 +234,7 @@ O repositório não distribui jogos. Coloque os seus em `roms/`, que é ignorada
 
 ## Licença
 
-GPL-2.0, o texto completo em [LICENSE](LICENSE).
+GPL-2.0-or-later, o texto completo da GPLv2 em [LICENSE](LICENSE).
 
 
 ## Menções

@@ -1,0 +1,165 @@
+diff -ruN a/externals/oaknut/include/oaknut/code_block.hpp b/externals/oaknut/include/oaknut/code_block.hpp
+--- a/externals/oaknut/include/oaknut/code_block.hpp	2026-09-27 00:45:37
++++ b/externals/oaknut/include/oaknut/code_block.hpp	2026-09-27 00:45:55
+@@ -23,6 +23,16 @@
+ 
+ namespace oaknut {
+ 
++#if defined(ZEEBX_SWITCH_JIT)
++extern "C" {
++void *switch_jit_create(std::size_t size, void **rx);
++void switch_jit_destroy(void *rw);
++void switch_jit_writable(void *rw);
++void switch_jit_executable(void *rw);
++void switch_jit_flush(void *rx, std::size_t size);
++}
++#endif
++
+ class CodeBlock {
+ public:
+     explicit CodeBlock(std::size_t size)
+@@ -40,6 +50,12 @@
+         m_memory = (std::uint32_t*)mmap(nullptr, size, PROT_MPROTECT(PROT_READ | PROT_WRITE | PROT_EXEC), MAP_ANON | MAP_PRIVATE, -1, 0);
+ #elif defined(__OpenBSD__)
+         m_memory = (std::uint32_t*)mmap(nullptr, size, PROT_READ | PROT_EXEC, MAP_ANON | MAP_PRIVATE, -1, 0);
++#elif defined(ZEEBX_SWITCH_JIT)
++        {
++            void* rx = nullptr;
++            m_memory = (std::uint32_t*)switch_jit_create(size, &rx);
++            m_exec = (std::uint32_t*)rx;
++        }
+ #else
+         m_memory = (std::uint32_t*)mmap(nullptr, size, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_ANON | MAP_PRIVATE, -1, 0);
+ #endif
+@@ -55,6 +71,8 @@
+ 
+ #if defined(_WIN32)
+         VirtualFree((void*)m_memory, 0, MEM_RELEASE);
++#elif defined(ZEEBX_SWITCH_JIT)
++        switch_jit_destroy(m_memory);
+ #else
+         munmap(m_memory, m_size);
+ #endif
+@@ -70,9 +88,25 @@
+         return m_memory;
+     }
+ 
++    std::uint32_t* wptr() const
++    {
++        return m_memory;
++    }
++
++    std::uint32_t* xptr() const
++    {
++#if defined(ZEEBX_SWITCH_JIT)
++        return m_exec != nullptr ? m_exec : m_memory;
++#else
++        return m_memory;
++#endif
++    }
++
+     void protect()
+     {
+-#if defined(__APPLE__) && !TARGET_OS_IPHONE
++#if defined(ZEEBX_SWITCH_JIT)
++        switch_jit_executable(m_memory);
++#elif defined(__APPLE__) && !TARGET_OS_IPHONE
+         pthread_jit_write_protect_np(1);
+ #elif defined(__APPLE__) || defined(__NetBSD__) || defined(__OpenBSD__)
+         mprotect(m_memory, m_size, PROT_READ | PROT_EXEC);
+@@ -81,7 +115,9 @@
+ 
+     void unprotect()
+     {
+-#if defined(__APPLE__) && !TARGET_OS_IPHONE
++#if defined(ZEEBX_SWITCH_JIT)
++        switch_jit_writable(m_memory);
++#elif defined(__APPLE__) && !TARGET_OS_IPHONE
+         pthread_jit_write_protect_np(0);
+ #elif defined(__APPLE__) || defined(__NetBSD__) || defined(__OpenBSD__)
+         mprotect(m_memory, m_size, PROT_READ | PROT_WRITE);
+@@ -90,7 +126,9 @@
+ 
+     void invalidate(std::uint32_t* mem, std::size_t size)
+     {
+-#if defined(__APPLE__)
++#if defined(ZEEBX_SWITCH_JIT)
++        switch_jit_flush(mem, size);
++#elif defined(__APPLE__)
+         sys_icache_invalidate(mem, size);
+ #elif defined(_WIN32)
+         FlushInstructionCache(GetCurrentProcess(), mem, size);
+@@ -132,11 +170,18 @@
+ 
+     void invalidate_all()
+     {
++#if defined(ZEEBX_SWITCH_JIT)
++        invalidate(m_exec != nullptr ? m_exec : m_memory, m_size);
++#else
+         invalidate(m_memory, m_size);
++#endif
+     }
+ 
+ protected:
+-    std::uint32_t* m_memory;
++    std::uint32_t* m_memory = nullptr;
++#if defined(ZEEBX_SWITCH_JIT)
++    std::uint32_t* m_exec = nullptr;
++#endif
+     std::size_t m_size = 0;
+ };
+ 
+diff -ruN a/src/dynarmic/backend/arm64/address_space.cpp b/src/dynarmic/backend/arm64/address_space.cpp
+--- a/src/dynarmic/backend/arm64/address_space.cpp	2026-09-27 00:45:38
++++ b/src/dynarmic/backend/arm64/address_space.cpp	2026-09-27 00:45:55
+@@ -23,7 +23,7 @@
+ AddressSpace::AddressSpace(size_t code_cache_size)
+         : code_cache_size(code_cache_size)
+         , mem(code_cache_size)
+-        , code(mem.ptr(), mem.ptr())
++        , code(mem.wptr(), mem.xptr())
+         , fastmem_manager(exception_handler) {
+     ASSERT_MSG(code_cache_size <= 128 * 1024 * 1024, "code_cache_size > 128 MiB not currently supported");
+ 
+@@ -98,8 +98,9 @@
+ }
+ 
+ void AddressSpace::DumpDisassembly() const {
+-    for (u32* ptr = mem.ptr(); ptr < code.xptr<u32*>(); ptr++) {
+-        std::printf("%s", Common::DisassembleAArch64(*ptr, mcl::bit_cast<u64>(ptr)).c_str());
++    u32* x = mem.xptr();
++    for (u32* w = mem.wptr(); x < code.xptr<u32*>(); ++w, ++x) {
++        std::printf("%s", Common::DisassembleAArch64(*w, mcl::bit_cast<u64>(x)).c_str());
+     }
+ }
+ 
+@@ -136,7 +137,7 @@
+     using namespace oaknut::util;
+ 
+     for (auto [ptr_offset, target] : block_info.relocations) {
+-        CodeGenerator c{mem.ptr(), mem.ptr()};
++        CodeGenerator c{mem.wptr(), mem.xptr()};
+         c.set_xptr(reinterpret_cast<u32*>(block_info.entry_point + ptr_offset));
+ 
+         switch (target) {
+@@ -276,7 +277,7 @@
+     using namespace oaknut::util;
+ 
+     for (auto [ptr_offset, type] : block_relocations_list) {
+-        CodeGenerator c{mem.ptr(), mem.ptr()};
++        CodeGenerator c{mem.wptr(), mem.xptr()};
+         c.set_xptr(reinterpret_cast<u32*>(entry_point + ptr_offset));
+ 
+         switch (type) {
+diff -ruN a/src/dynarmic/common/spin_lock_arm64.cpp b/src/dynarmic/common/spin_lock_arm64.cpp
+--- a/src/dynarmic/common/spin_lock_arm64.cpp	2026-09-27 00:45:38
++++ b/src/dynarmic/common/spin_lock_arm64.cpp	2026-09-27 00:45:55
+@@ -54,7 +54,7 @@
+ 
+ SpinLockImpl::SpinLockImpl()
+         : mem{4096}
+-        , code{mem.ptr(), mem.ptr()} {}
++        , code{mem.wptr(), mem.xptr()} {}
+ 
+ void SpinLockImpl::Initialize() {
+     mem.unprotect();

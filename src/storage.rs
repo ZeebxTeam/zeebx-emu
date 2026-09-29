@@ -5,6 +5,7 @@
 //! estrutura. Por enquanto os caminhos são nativos; o adaptador `StorageFs` futuro trocará o
 //! transporte, sem mudar este layout lógico.
 
+use std::collections::HashSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
@@ -119,6 +120,217 @@ impl StoragePaths {
     pub fn metadata_for(&self, content: &ContentId) -> PathBuf {
         self.metadata.join(format!("{}.json", content.as_str()))
     }
+
+    /// Copia para o overlay os arquivos que uma versao antiga gravou dentro do cache do pacote.
+    ///
+    /// O manifesto da extracao e a fonte de verdade: o que veio do pacote e ignorado; o que
+    /// apareceu depois, dentro da raiz do modulo, e copiado. A origem nunca e apagada e um
+    /// arquivo que ja existe no overlay nunca e sobrescrito.
+    pub fn migrate_legacy_package_writes(
+        &self,
+        package: &Path,
+        content: &ContentId,
+    ) -> std::io::Result<u64> {
+        if !self.overlay {
+            return Ok(0);
+        }
+        let ext = package.extension().and_then(|e| e.to_str());
+        if !matches!(ext, Some("zip" | "7z")) {
+            return Ok(0);
+        }
+        let Some(module) = crate::loader::archive::find_module(package) else {
+            return Ok(0);
+        };
+        let mut copied = 0u64;
+        let Ok(entries) = std::fs::read_dir(&self.cache) else {
+            return Ok(0);
+        };
+        let mut candidates: Vec<PathBuf> = entries
+            .flatten()
+            .filter(|entry| {
+                entry.path().is_dir()
+                    && entry
+                        .file_name()
+                        .to_string_lossy()
+                        .ends_with(content.as_str())
+            })
+            .map(|entry| entry.path())
+            .collect();
+        if let Ok(legacy) = crate::loader::archive::legacy_cache_in(package, &self.cache) {
+            if legacy.is_dir() && !candidates.contains(&legacy) {
+                candidates.push(legacy);
+            }
+        }
+
+        for cache_root in candidates {
+            let manifest_path = cache_root.join(crate::loader::archive::MANIFESTO);
+            let had_manifest = manifest_path.is_file();
+            if !had_manifest {
+                crate::loader::archive::escrever_manifesto(package, &cache_root)?;
+            }
+            let Ok(manifest) = std::fs::read_to_string(&manifest_path) else {
+                continue;
+            };
+            // Se o manifesto acabou de ser reconstruido, sua data e posterior a qualquer save
+            // legado e portanto nao serve como atalho. Nesse caso forca comparacao byte a byte.
+            let manifest_modified = had_manifest
+                .then(|| {
+                    std::fs::metadata(&manifest_path)
+                        .and_then(|meta| meta.modified())
+                        .ok()
+                })
+                .flatten();
+            let package_entries: HashSet<String> = manifest
+                .lines()
+                .filter(|line| !line.is_empty())
+                .map(str::to_string)
+                .collect();
+            let module_path = cache_root.join(&module);
+            let Some(module_root) = module_path.parent().filter(|parent| parent.is_dir()) else {
+                continue;
+            };
+            let save_root = self.save_for(content);
+            migrate_unknown_tree(
+                module_root,
+                module_root,
+                &cache_root,
+                &save_root,
+                &package_entries,
+                package,
+                manifest_modified,
+                &mut copied,
+            )?;
+        }
+        Ok(copied)
+    }
+}
+
+fn migrate_unknown_tree(
+    dir: &Path,
+    module_root: &Path,
+    cache_root: &Path,
+    save_root: &Path,
+    package_entries: &HashSet<String>,
+    package: &Path,
+    manifest_modified: Option<std::time::SystemTime>,
+    copied: &mut u64,
+) -> std::io::Result<()> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Ok(());
+    };
+    for entry in entries.flatten() {
+        if entry.file_name() == crate::loader::archive::MANIFESTO {
+            continue;
+        }
+        let path = entry.path();
+        let metadata = match std::fs::symlink_metadata(&path) {
+            Ok(metadata) if !metadata.file_type().is_symlink() => metadata,
+            _ => continue,
+        };
+        let relative_cache = match path.strip_prefix(cache_root) {
+            Ok(relative) => relative.to_string_lossy().replace('\\', "/"),
+            Err(_) => continue,
+        };
+        let dir_prefix = format!("{relative_cache}/");
+        let in_package = package_entries.contains(&relative_cache)
+            || (metadata.is_dir()
+                && (package_entries.contains(&dir_prefix)
+                    || package_entries
+                        .iter()
+                        .any(|entry| entry.starts_with(&dir_prefix))));
+
+        if metadata.is_dir() {
+            if in_package {
+                migrate_unknown_tree(
+                    &path,
+                    module_root,
+                    cache_root,
+                    save_root,
+                    package_entries,
+                    package,
+                    manifest_modified,
+                    copied,
+                )?;
+            } else {
+                copy_unknown_tree(&path, module_root, save_root, copied)?;
+            }
+        } else if !in_package {
+            copy_unknown_file(&path, module_root, save_root, copied)?;
+        } else {
+            let destination = path
+                .strip_prefix(module_root)
+                .ok()
+                .map(|relative| save_root.join(relative));
+            if destination.as_ref().is_some_and(|path| path.exists()) {
+                continue;
+            }
+            // O manifesto e escrito somente depois de a extracao terminar. Um arquivo do pacote
+            // mais novo (ou indistinguivel pela resolucao do timestamp) pode ter sido alterado
+            // pelo jogo; nesse caso comparamos com os bytes originais antes de decidir.
+            let possibly_modified = match (metadata.modified().ok(), manifest_modified) {
+                (Some(file), Some(manifest)) => file >= manifest,
+                _ => true,
+            };
+            if possibly_modified
+                && !crate::loader::archive::entrada_igual_ao_arquivo(
+                    package,
+                    &relative_cache,
+                    &path,
+                )?
+            {
+                copy_unknown_file(&path, module_root, save_root, copied)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn copy_unknown_tree(
+    dir: &Path,
+    module_root: &Path,
+    save_root: &Path,
+    copied: &mut u64,
+) -> std::io::Result<()> {
+    let Ok(relative) = dir.strip_prefix(module_root) else {
+        return Ok(());
+    };
+    std::fs::create_dir_all(save_root.join(relative))?;
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Ok(());
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let metadata = match std::fs::symlink_metadata(&path) {
+            Ok(metadata) if !metadata.file_type().is_symlink() => metadata,
+            _ => continue,
+        };
+        if metadata.is_dir() {
+            copy_unknown_tree(&path, module_root, save_root, copied)?;
+        } else {
+            copy_unknown_file(&path, module_root, save_root, copied)?;
+        }
+    }
+    Ok(())
+}
+
+fn copy_unknown_file(
+    source: &Path,
+    module_root: &Path,
+    save_root: &Path,
+    copied: &mut u64,
+) -> std::io::Result<()> {
+    let Ok(relative) = source.strip_prefix(module_root) else {
+        return Ok(());
+    };
+    let destination = save_root.join(relative);
+    if destination.exists() {
+        return Ok(());
+    }
+    if let Some(parent) = destination.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    *copied += std::fs::copy(source, destination)?;
+    Ok(())
 }
 
 /// Hash BLAKE3 completo de bytes que definem um conteúdo.
@@ -158,6 +370,7 @@ impl ContentId {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
 
     #[test]
     fn perfil_separa_aparelho_e_cache_no_sistema_e_saves_no_jogo() {
@@ -209,5 +422,110 @@ mod tests {
         assert_eq!(one, two);
         assert_ne!(one, other);
         assert_eq!(ContentId::parse(one.as_str()), Some(one));
+    }
+
+    #[test]
+    fn migra_save_legado_do_cache_sem_copiar_o_pacote() {
+        let root = crate::scratch::TempDir::new("zeebx-storage-migrate");
+        let package = root.join("jogo.zip");
+        let file = std::fs::File::create(&package).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        let options: zip::write::FileOptions<()> =
+            zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        for (name, data) in [
+            ("mod/123/jogo.mod", b"mod".as_slice()),
+            ("mod/123/recurso.dat", b"pacote".as_slice()),
+            ("mod/123/udata/base.dat", b"base".as_slice()),
+            ("mod/123/udata/seed.sav", b"0000".as_slice()),
+        ] {
+            writer.start_file(name, options).unwrap();
+            writer.write_all(data).unwrap();
+        }
+        writer.finish().unwrap();
+
+        let paths = StoragePaths::for_frontend(root.join("save"), Some(root.join("system")));
+        paths.create_dirs().unwrap();
+        let module = crate::loader::archive::extract_in(&package, &paths.cache).unwrap();
+        let module_root = module.parent().unwrap();
+        std::fs::write(module_root.join("udata/save.dat"), b"progresso").unwrap();
+        // Alguns jogos, como RE4 e Double Dragon, trazem um save semente no pacote e o
+        // sobrescrevem depois. Mesmo continuando no manifesto, os bytes diferentes sao save.
+        std::fs::write(module_root.join("udata/seed.sav"), b"1111").unwrap();
+        std::fs::create_dir_all(module_root.join("perfil")).unwrap();
+        std::fs::write(module_root.join("perfil/opcoes.bin"), b"opcoes").unwrap();
+
+        let content = paths.content_id(&package).unwrap();
+        let copied = paths
+            .migrate_legacy_package_writes(&package, &content)
+            .unwrap();
+        let save = paths.save_for(&content);
+        assert_eq!(
+            std::fs::read(save.join("udata/save.dat")).unwrap(),
+            b"progresso"
+        );
+        assert_eq!(
+            std::fs::read(save.join("perfil/opcoes.bin")).unwrap(),
+            b"opcoes"
+        );
+        assert_eq!(std::fs::read(save.join("udata/seed.sav")).unwrap(), b"1111");
+        assert!(!save.join("recurso.dat").exists());
+        assert!(!save.join("udata/base.dat").exists());
+        assert_eq!(
+            copied,
+            b"progresso".len() as u64 + b"opcoes".len() as u64 + b"1111".len() as u64
+        );
+
+        // Uma segunda migracao nunca pisa no overlay ja estabelecido.
+        std::fs::write(save.join("udata/save.dat"), b"novo").unwrap();
+        assert_eq!(
+            paths
+                .migrate_legacy_package_writes(&package, &content)
+                .unwrap(),
+            0
+        );
+        assert_eq!(std::fs::read(save.join("udata/save.dat")).unwrap(), b"novo");
+    }
+
+    #[test]
+    fn migra_o_cache_com_nome_antigo_e_reconstroi_o_manifesto() {
+        let root = crate::scratch::TempDir::new("zeebx-storage-migrate-legacy");
+        let package = root.join("velho.zip");
+        let file = std::fs::File::create(&package).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        let options: zip::write::FileOptions<()> =
+            zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        for (name, data) in [
+            ("mod/7/jogo.mod", b"mod".as_slice()),
+            ("mod/7/recurso.bin", b"pacote".as_slice()),
+        ] {
+            writer.start_file(name, options).unwrap();
+            writer.write_all(data).unwrap();
+        }
+        writer.finish().unwrap();
+
+        let paths = StoragePaths::for_frontend(root.join("save"), Some(root.join("system")));
+        paths.create_dirs().unwrap();
+        let module = crate::loader::archive::extract_in(&package, &paths.cache).unwrap();
+        let relative = module.strip_prefix(&paths.cache).unwrap();
+        let first = relative.components().next().unwrap().as_os_str();
+        let strong = paths.cache.join(first);
+        let legacy = crate::loader::archive::legacy_cache_in(&package, &paths.cache).unwrap();
+        std::fs::rename(&strong, &legacy).unwrap();
+        std::fs::remove_file(legacy.join(crate::loader::archive::MANIFESTO)).unwrap();
+        std::fs::write(legacy.join("mod/7/progresso.sav"), b"legado").unwrap();
+
+        let content = paths.content_id(&package).unwrap();
+        assert_eq!(
+            paths
+                .migrate_legacy_package_writes(&package, &content)
+                .unwrap(),
+            b"legado".len() as u64
+        );
+        assert_eq!(
+            std::fs::read(paths.save_for(&content).join("progresso.sav")).unwrap(),
+            b"legado"
+        );
+        assert!(legacy.join(crate::loader::archive::MANIFESTO).is_file());
+        assert!(legacy.join("mod/7/progresso.sav").is_file());
     }
 }

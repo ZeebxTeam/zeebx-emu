@@ -9,6 +9,57 @@ use crate::session::Sample;
 use crate::ui::i18n::Catalog;
 use crate::ui::settings::DebugView;
 
+/// Os textos do painel, já traduzidos, cada um só se a opção dele estiver ligada.
+///
+/// É a parte do painel que não depende de toolkit: o [`painel`] do egui e a janela Qt escrevem
+/// os mesmos números com as mesmas palavras.
+pub struct Textos {
+    pub velocidade: Option<String>,
+    pub relogio: Option<String>,
+    pub memoria: Option<String>,
+}
+
+impl Textos {
+    pub fn novos(
+        catalogo: &Catalog,
+        debug: &DebugView,
+        amostra: Sample,
+        memoria: (u32, usize),
+        relogio_ms: u32,
+    ) -> Self {
+        let (heap, objetos) = memoria;
+        Self {
+            velocidade: debug.speed.then(|| {
+                catalogo.format(
+                    "debug.speed.value",
+                    &[
+                        ("percent", &amostra.speed.to_string()),
+                        ("fps", &amostra.fps.to_string()),
+                    ],
+                )
+            }),
+            relogio: debug.clock.then(|| {
+                catalogo.format(
+                    "debug.clock.value",
+                    &[
+                        ("mips", &instrucoes_legiveis(amostra.ips)),
+                        ("clock", &format!("{:.1}s", relogio_ms as f32 / 1000.0)),
+                    ],
+                )
+            }),
+            memoria: debug.memory.then(|| {
+                catalogo.format(
+                    "debug.memory.value",
+                    &[
+                        ("heap", &bytes_legiveis(heap)),
+                        ("objects", &objetos.to_string()),
+                    ],
+                )
+            }),
+        }
+    }
+}
+
 /// Desenha a linha do painel no `ui` dado.
 ///
 /// `historia` são as amostras recentes como `(velocidade, quadros)`, da mais antiga para a mais
@@ -22,36 +73,18 @@ pub fn painel(
     relogio_ms: u32,
     historia: &[(u32, u32)],
 ) {
-    let (heap, objetos) = memoria;
+    let textos = Textos::novos(catalogo, &debug, amostra, memoria, relogio_ms);
     ui.horizontal(|ui| {
-        if debug.speed {
-            ui.monospace(catalogo.format(
-                "debug.speed.value",
-                &[
-                    ("percent", &amostra.speed.to_string()),
-                    ("fps", &amostra.fps.to_string()),
-                ],
-            ));
+        if let Some(texto) = textos.velocidade {
+            ui.monospace(texto);
             ui.separator();
         }
-        if debug.clock {
-            ui.monospace(catalogo.format(
-                "debug.clock.value",
-                &[
-                    ("mips", &instrucoes_legiveis(amostra.ips)),
-                    ("clock", &format!("{:.1}s", relogio_ms as f32 / 1000.0)),
-                ],
-            ));
+        if let Some(texto) = textos.relogio {
+            ui.monospace(texto);
             ui.separator();
         }
-        if debug.memory {
-            ui.monospace(catalogo.format(
-                "debug.memory.value",
-                &[
-                    ("heap", &bytes_legiveis(heap)),
-                    ("objects", &objetos.to_string()),
-                ],
-            ));
+        if let Some(texto) = textos.memoria {
+            ui.monospace(texto);
         }
         // O gráfico só entra se couber inteiro. Numa tela de mão os três números já tomam a
         // faixa, e um gráfico espremido não vira gráfico menor: ele é desenhado do mesmo

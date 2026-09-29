@@ -3,7 +3,7 @@
 O núcleo é o mesmo. O que muda é quem o gira.
 
 A emulação — o BREW, a CPU, o rasterizador, o carregador — virou a biblioteca `zeebx`, e três
-coisas a consomem: o binário de desktop (`frontends/classical-standalone`, com a janela do egui e a linha de
+coisas a consomem: o binário de desktop (`frontends/egui-standalone`, com a janela do egui e a linha de
 comando), os testes, e o `.so` deste diretório. Nenhuma linha de emulação sabe em qual dos três
 está rodando.
 
@@ -138,17 +138,12 @@ Os caminhos são ajustáveis por ambiente: `ANDROID_SDK_HOME`, `ANDROID_NDK_VERS
 
 ## Duas pedras no caminho, e por que elas existem
 
-**O CMake não achava o NDK.** O `unicorn` e o `dynarmic` compilam C e C++ por CMake, e o
+**O CMake não achava o NDK.** O `dynarmic` compila C++ por CMake, e o
 `cmake-rs` monta a linha de comando sozinho: ele põe `CMAKE_SYSTEM_NAME=Android` e
 `--target=aarch64-linux-android35` nas flags, mas não diz a ABI ao toolchain do NDK. Sem ela o
 NDK assume `armeabi-v7a` e acrescenta `-march=armv7-a`, que o clang recusa junto de um alvo
 aarch64 — e o build morre no teste do compilador, antes de qualquer código nosso. O
 `ndk-toolchain.cmake` daqui fixa a ABI e a API antes de ler o toolchain do NDK.
-
-**`-lpthread` não existe.** No bionic a pthread e a rt vivem dentro da libc; não há
-`libpthread.so` nem `librt.so`. O `unicorn-engine-sys` pede as duas por nome, sem olhar o
-sistema. O `compilar.sh` gera arquivos vazios com esses nomes em `target/android-libs-vazias` e
-os põe no caminho do ligador: ele acha o nome, não acha símbolo nenhum, e segue.
 
 ## O que ainda não está aqui
 

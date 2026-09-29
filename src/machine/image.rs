@@ -60,8 +60,18 @@ impl<C: CpuBackend> Machine<C> {
             // Nada a fazer aqui: a decodificação acontece no `GetBitmap`, e adiantá-la só
             // gastaria trabalho se o jogo desistisse no meio.
             (Interface::ForceFeed, "Write") => {
-                let count = a2 as usize;
+                // O tamanho é do jogo: conferido **antes** de alocar e **antes** de acumular, ou um
+                // pedido absurdo aborta o processo em vez de virar erro de API. O teto do que já
+                // foi entregue é conferido no mesmo passo: antes o excesso era detectado depois de
+                // a memória já estar gasta.
+                let count = tamanho_do_guest(a2 as usize)?;
                 if a1 != 0 && count > 0 {
+                    let ja_entregue = self.decoders.get(&decoder).map_or(0, |state| state.fed.len());
+                    if ja_entregue + count > MAX_DECODED_INPUT {
+                        return Err(CpuError(format!(
+                            "entrega de imagem passaria de {MAX_DECODED_INPUT} bytes: {ja_entregue} + {count}"
+                        )));
+                    }
                     let mut bytes = vec![0u8; count];
                     self.cpu.read_mem(a1, &mut bytes)?;
                     let state = self.decoders.entry(decoder).or_default();
@@ -138,6 +148,12 @@ impl<C: CpuBackend> Machine<C> {
     /// para uma textura `GL_RGB` (3) ou `GL_RGBA`. Com o nosso RGB565 ele copiava dois bytes por
     /// pixel achando que eram quatro, e os logos saíam como quadrados brancos.
     ///
+    /// O `nColorScheme` do RGBA também é 888, e não `IDIB_COLORSCHEME_NONE`: no `AEEIDIB.h` o
+    /// zero quer dizer **paleta**. O `BltIn` do Bejeweled Twist (0x139d8) decide por ele — zero
+    /// vai para a conversão de 8 bits indexados, 24 vai para a de truecolor, que olha o `nDepth`
+    /// e só com 32 cria a superfície de alfa. Publicado com zero, o RGBA era lido como índices de
+    /// paleta, a superfície de origem saía sem formato e o blit caía num ponteiro nulo.
+    ///
     /// A nossa cópia em RGB565 continua no mapa de superfícies para os blits; este buffer não
     /// entra na sincronização.
     pub(super) fn publica_dib_do_png(&mut self, bitmap: u32, png: &[u8]) -> Result<(), CpuError> {
@@ -152,14 +168,13 @@ impl<C: CpuBackend> Machine<C> {
         self.cpu.write_mem(buffer, &bytes)?;
         self.dib_do_decodificador.insert(bitmap, (buffer, capacidade));
         let passo = largura as usize * canais;
-        let (profundidade, esquema) = match canais {
-            4 => (32u8, 0u8),
-            _ => (24u8, IDIB_COLORSCHEME_888),
-        };
+        let profundidade = if canais == 4 { 32u8 } else { 24u8 };
+        let esquema = IDIB_COLORSCHEME_888;
         self.cpu.write_u32(bitmap + 4, 0)?; // pPaletteMap
         self.cpu.write_u32(bitmap + 8, buffer)?; // pBmp
         self.cpu.write_u32(bitmap + 12, 0)?; // pRGB
-        self.cpu.write_u32(bitmap + 16, 0)?; // ncTransparent
+        self.cpu
+            .write_u32(bitmap + 16, to_rgbval(Rgb::from_rgb565(TRANSPARENT_KEY)))?; // ncTransparent
         self.cpu.write_mem(bitmap + 20, &(largura as u16).to_le_bytes())?;
         self.cpu.write_mem(bitmap + 22, &(altura as u16).to_le_bytes())?;
         self.cpu.write_mem(bitmap + 24, &(passo as i16).to_le_bytes())?;
@@ -303,6 +318,7 @@ impl<C: CpuBackend> Machine<C> {
                     self.recortes_de_imagem.remove(&this);
                     // O endereço volta a ser de outro objeto, que não pode herdar o callback.
                     self.image_notify.remove(&this);
+                    self.avisos_de_imagem.retain(|&imagem| imagem != this);
                     if let Some(info) = self.image_info.remove(&this) {
                         self.heap.free(info);
                     }
@@ -368,6 +384,10 @@ impl<C: CpuBackend> Machine<C> {
                     if self.images.contains_key(&this) {
                         self.notify_image(this)?;
                     }
+                } else {
+                    // Sem função, o `Notify` cancela: o aviso que ainda estava na fila não sai.
+                    self.image_notify.remove(&this);
+                    self.avisos_de_imagem.retain(|&imagem| imagem != this);
                 }
                 SUCCESS
             }
@@ -398,9 +418,37 @@ impl<C: CpuBackend> Machine<C> {
     ///
     /// A imagem já está pronta quando o stream chega — não há decodificação em segundo plano
     /// aqui —, mas o jogo espera a notificação para seguir carregando.
+    ///
+    /// **O aviso sai na volta do laço de eventos, e não na saída do `SetStream`** — como no
+    /// BREW, que entrega pelo laço depois de o tratador do jogo devolver o controle. O Bejeweled
+    /// Twist conta com essa ordem: registra o `Notify`, chama `SetStream` e, ainda no mesmo
+    /// tratador, pede o `GetInfo` e guarda o tamanho no objeto que espelha a imagem (0x68010).
+    /// Só no aviso ele desenha a imagem na superfície e a espelha (0x7c530), com a largura
+    /// guardada. Entregue na saída do `SetStream`, o aviso chegava antes do `GetInfo`: os 81
+    /// espelhos feitos até o menu rodavam com largura zero, e toda meia-peça da interface — a ponta
+    /// direita dos botões, a metade direita dos anéis do menu — aparecia sem espelhar, igual à
+    /// esquerda.
+    ///
+    /// **A fila guarda só a imagem; o aviso é montado na entrega.** Até lá o jogo pode soltar a
+    /// imagem ou trocar o callback, e no BREW soltar a imagem cancela o aviso. Guardar o aviso
+    /// pronto entregava ao tratador um objeto morto e o `AEEImageInfo` que o `Release` já tinha
+    /// devolvido ao heap: no Bejeweled Twist, apertar "Jogar" levava o jogo a um ponteiro de
+    /// lixo, e ele parava lendo 0x006f0092 em 0x1c780.
     pub(super) fn notify_image(&mut self, image: u32) -> Result<(), CpuError> {
+        if self.image_notify.contains_key(&image) && !self.avisos_de_imagem.contains(&image) {
+            self.avisos_de_imagem.push(image);
+        }
+        Ok(())
+    }
+
+    /// Entrega o aviso de uma imagem da fila, se ela ainda tem quem o espere.
+    pub(super) fn entrega_aviso_de_imagem(
+        &mut self,
+        image: u32,
+        budget: u64,
+    ) -> Result<Option<Outcome>, CpuError> {
         let Some(&callback) = self.image_notify.get(&image) else {
-            return Ok(());
+            return Ok(None);
         };
         let decoded = self.images.get(&image).cloned();
         // `AEEImageInfo` tem 10 bytes; alocamos 12 para manter o alinhamento. Um bloco por
@@ -428,11 +476,12 @@ impl<C: CpuBackend> Machine<C> {
             }
         }
         let error = if decoded.is_some() { SUCCESS } else { EFAILED };
-        self.pending_calls.push(GuestCall {
-            function: callback.function,
-            args: [callback.context, image, info, error],
-        });
-        Ok(())
+        let outcome = self.call_guest(
+            callback.function,
+            [callback.context, image, info, error],
+            budget,
+        )?;
+        Ok(Some(outcome))
     }
 
     /// `IPARM_*` de `inc/AEEIImage.h`. Só respondemos aos que mudam o desenho.
@@ -532,18 +581,48 @@ impl<C: CpuBackend> Machine<C> {
             return Ok(());
         }
         let target = self.target()?;
+        let recorte = self.recortes_de_imagem.get(&image).copied().unwrap_or_default();
         if !self.bitmaps.contains_key(&target) {
+            let Some(info) = self.images.get(&image) else {
+                return Ok(());
+            };
+            let frame_width = match (frame, info.frame_width) {
+                (Some(_), width) if width > 0 => width as i32,
+                _ => info.width as i32,
+            };
+            let (src_x, src_y) = (recorte.x.max(0), recorte.y.max(0));
+            let (largura, altura) = recorte.tamanho.unwrap_or((i32::MAX, i32::MAX));
+            let mut first_column = 0;
+            let mut last_column = largura.min(frame_width - src_x);
+            let mut first_row = 0;
+            let mut last_row = altura.min(info.height as i32 - src_y);
+            if let Some(clip) = self.clip {
+                first_column = first_column.max(clip.x as i32 - x);
+                last_column = last_column.min(clip.x as i32 + clip.width as i32 - x);
+                first_row = first_row.max(clip.y as i32 - y);
+                last_row = last_row.min(clip.y as i32 + clip.height as i32 - y);
+            }
+            if first_column >= last_column || first_row >= last_row {
+                return Ok(());
+            }
             self.pending_blits.push(PendingBlit {
                 image,
                 target,
-                x,
-                y,
+                x: x + first_column,
+                y: y + first_row,
+                src_x: src_x + first_column,
+                src_y: src_y + first_row,
+                width: (last_column - first_column) as u32,
+                height: (last_row - first_row) as u32,
+                rop: match recorte.transparente {
+                    true => AEE_RO_TRANSPARENT,
+                    false => AEE_RO_COPY,
+                },
                 frame,
             });
             return Ok(());
         }
         let clip = self.clip;
-        let recorte = self.recortes_de_imagem.get(&image).copied().unwrap_or_default();
         // **A imagem não é copiada para ser lida.** Ler o mapa de imagens e escrever no de
         // superfícies são campos diferentes do `self`, e separá-los aqui é o que deixa o
         // empréstimo passar sem cópia.

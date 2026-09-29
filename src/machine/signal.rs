@@ -13,7 +13,8 @@ impl<C: CpuBackend> Machine<C> {
         self.poll_media()?;
         let idle = self.pending_calls.is_empty()
             && self.pending_probes.is_empty()
-            && self.pending_blits.is_empty();
+            && self.pending_blits.is_empty()
+            && self.pending_surface_blits.is_empty();
         if idle || self.nesting >= MAX_NESTING {
             return Ok(());
         }
@@ -25,6 +26,9 @@ impl<C: CpuBackend> Machine<C> {
             }
             for blit in std::mem::take(&mut self.pending_blits) {
                 self.blit_into_foreign(blit, budget)?;
+            }
+            for blit in std::mem::take(&mut self.pending_surface_blits) {
+                self.blit_surface_into_foreign(blit, budget)?;
             }
             let pending = std::mem::take(&mut self.pending_calls);
             if pending.is_empty() {
@@ -96,8 +100,14 @@ impl<C: CpuBackend> Machine<C> {
         self.poll_media()?;
         self.entrega_avisos_de_midia(budget)?;
         self.bombeia_fluxos_pcm(budget)?;
-        let pending = std::mem::take(&mut self.pending_signals);
+        self.bombeia_buffers_vivos()?;
         let mut outcomes = Vec::new();
+        // Ver [`Machine::notify_image`]. Um aviso que nasce dentro de outro tratador fica para
+        // a volta seguinte, como no aparelho.
+        for imagem in std::mem::take(&mut self.avisos_de_imagem) {
+            outcomes.extend(self.entrega_aviso_de_imagem(imagem, budget)?);
+        }
+        let pending = std::mem::take(&mut self.pending_signals);
         for callback in pending {
             if callback.function == 0 {
                 continue;

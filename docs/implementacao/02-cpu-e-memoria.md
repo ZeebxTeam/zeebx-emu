@@ -3,11 +3,11 @@
 ## O núcleo
 
 `CpuBackend` (`cpu/mod.rs`) é a fronteira: ler e escrever registradores e memória, e um
-`run(pc, orçamento) -> StopReason`. A implementação é o **unicorn-engine 2.1.5** configurado como
-**ARM1176** (`cpu/unicorn.rs`) — o núcleo do MSM7201A é um ARM11, e pedir o modelo certo evita
-que o jogo tropece numa instrução que o console tinha.
+`run(pc, orçamento) -> StopReason`. A implementação é o **Dynarmic** (`cpu/dynarmic.rs`),
+configurado para ARMv6K/A32 e Thumb — o núcleo do MSM7201A é um ARM11, e pedir uma arquitetura
+compatível evita que o jogo tropece numa instrução que o console tinha.
 
-A interface existe para o resto do emulador não depender do unicorn. Ela é fina de propósito:
+A interface existe para o resto do emulador não depender do backend concreto. Ela é fina de propósito:
 tudo o que passa por ela são registradores, blocos de bytes e um motivo de parada.
 
 ### Motivos de parada
@@ -26,18 +26,18 @@ interessa.
 
 ### Contagem de instruções
 
-Vem de um hook por **bloco de tradução**, não por instrução: é ordens de grandeza mais barato e
-dá o mesmo número, porque no ARM toda instrução tem quatro bytes.
+Vem dos blocos recompilados pelo Dynarmic. É o relógio virtual do emulador: o tempo que o jogo
+enxerga vem daqui, e não do host, para que duas execuções iguais deem o mesmo resultado.
 
 ### Vazão
 
-Medida, não estimada — `cargo test --release cpu::unicorn::speed -- --ignored --nocapture`:
+Medida, não estimada — a bancada principal é `zeebx bench-dynarmic <jogo>`:
 
 | | |
 |---|---|
-| Instruções por segundo | ~200–540 M/s |
-| Custo de entrar no guest | ~1,4 µs |
-| Teto de instruções ligado (hook por instrução do unicorn) | ~25% mais lento |
+| Instruções por segundo | varia por jogo e host; medir com a bancada antes de afirmar |
+| Custo de entrar no guest | amortizado pelos blocos recompilados |
+| Teto de instruções ligado | cobrado pelo backend sem hook por instrução |
 
 Esses números existem para responder a pergunta "o emulador está lento ou o jogo faz muita
 conta?" sem investigação. **Nas vezes em que um jogo pareceu travado, o núcleo nunca foi o
@@ -71,9 +71,8 @@ Quake feito por fãs, depende disso ao carregar a primeira fase: o `start.bsp` t
 texturas faltando, o motor põe no lugar a textura de reserva `r_notexture_mip`, e esse port
 nunca a cria. O nome dela é lido do endereço zero, e parar a execução ali deixava o jogo preso no
 menu. Aqui a faixa abaixo do módulo devolve zeros. Escrever nela continua sendo falha, e executar
-também — nos dois núcleos a região é marcada sem execução, e no Unicorn o `FETCH_PROT` e o
-`WRITE_PROT` viram falha de memória como os acessos fora do mapa. Um salto para o endereço zero
-continua aparecendo no relatório como antes.
+também — a região é marcada sem execução, e um salto para o endereço zero continua aparecendo no
+relatório como antes.
 
 **64 MB de heap.** O Quake mede a memória livre antes de carregar os `.pak` e desiste com "Not
 enough free memory" se ela for pequena. O console tem 128 MB; o número aqui é escolha nossa, só
@@ -87,8 +86,7 @@ do nosso lado tornaria isso impossível. As consequências disso estão em
 ## O processador roda em modo usuário
 
 Um applet BREW não é privilegiado, e há código que **confere isso e muda de caminho**. Ficava
-como defeito nosso enquanto o `CPSR` não era escrito: o unicorn começa em modo privilegiado, e
-quem consultasse o modo tomava o ramo errado.
+como defeito nosso enquanto o `CPSR` não era escrito: quem consultasse o modo tomava o ramo errado.
 
 O motor 3D da Superscape que o Kingdom Hearts traz como extensão é o caso, e ele diz na cara
 qual é o modo esperado:

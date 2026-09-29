@@ -1,8 +1,8 @@
 //! Um contexto de OpenGL **fora de tela**, para o rasterizador na placa.
 //!
 //! O núcleo do emulador não tem janela. No caminho `run` da linha de comando não existe nenhuma,
-//! e é justamente ali que a medição é feita — o `--profile` e a comparação das superfícies. Um
-//! backend de GPU que só funcionasse com janela seria um backend que não se pode medir.
+//! e é justamente ali que a comparação das superfícies é feita. Um backend de GPU que só
+//! funcionasse com janela seria um backend que não se pode medir.
 //!
 //! Por isso o contexto é próprio e independente do que o `eframe` cria para a interface. Além de
 //! dar um caminho só para os dois modos, ele evita acoplar o núcleo à thread de render e ao

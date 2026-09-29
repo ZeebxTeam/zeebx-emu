@@ -324,10 +324,11 @@ mod tests {
         assert_eq!(at(373.0, 620.0), Some("down"));
         assert_eq!(at(230.0, 498.0), Some("left"));
         assert_eq!(at(520.0, 498.0), Some("right"));
-        assert_eq!(at(1246.0, 367.0), Some("b4"));
-        assert_eq!(at(1373.0, 465.0), Some("b2"));
+        // O losango, na numeração do aparelho: 1 embaixo, 2 à esquerda, 3 no topo, 4 à direita.
+        assert_eq!(at(1246.0, 367.0), Some("b3"));
+        assert_eq!(at(1373.0, 465.0), Some("b4"));
         assert_eq!(at(1246.0, 565.0), Some("b1"));
-        assert_eq!(at(1119.0, 465.0), Some("b3"));
+        assert_eq!(at(1119.0, 465.0), Some("b2"));
         assert_eq!(at(619.0, 715.0), Some("lthumb"));
         assert_eq!(at(995.0, 715.0), Some("rthumb"));
         // O botão do meio é o HOME; o console não tem Start.

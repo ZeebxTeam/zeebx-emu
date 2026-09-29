@@ -1,0 +1,56 @@
+zeetris-infuse
+estado: roda
+tela: 22462 cor(es), dominante 0x0000
+classes que o jogo pediu e não temos:
+  0x0106e415
+classes pedidas:
+  0x01001001  (1x)
+  0x01001003  (7x)
+  0x01014bc3  (1x)
+  0x01014bc4  (1x)
+  0x0106c411  (1x)
+  0x0106e415  (1x)
+chamadas ao sistema de arquivos:
+  open falhou: /media/rafaelfrequiao/8C5F-19E51/zeebo/ROMs/data/intro.mp3 (No such file or directory (os error 2))
+  OpenFile "data/intro.mp3"  (0x3d106c 0x1 0xf0003008) -> 0
+  EnumInit "data"  (0x3d105c 0x0 0xf0003008) -> 0
+  EnumNext  (0x200fff2c 0xf000302c 0xf0003008) -> 0
+  Release  (0x200fff2c 0xf000302c 0xf0003004) -> 0
+  open falhou: /media/rafaelfrequiao/8C5F-19E51/zeebo/ROMs/data/musica.mp3 (No such file or directory (os error 2))
+  OpenFile "data/musica.mp3"  (0x3d107c 0x1 0xf0003008) -> 0
+  EnumInit "data"  (0x3d105c 0x0 0xf0003008) -> 0
+  EnumNext  (0x200fff2c 0xf000302c 0xf0003008) -> 0
+  Release  (0x200fff2c 0xf000302c 0xf0003004) -> 0
+  open falhou: /media/rafaelfrequiao/8C5F-19E51/zeebo/ROMs/data/mover.wav (No such file or directory (os error 2))
+  OpenFile "data/mover.wav"  (0x3d108c 0x1 0xf0003008) -> 0
+  EnumInit "data"  (0x3d105c 0x0 0xf0003008) -> 0
+  EnumNext  (0x200fff2c 0xf000302c 0xf0003008) -> 0
+  Release  (0x200fff2c 0xf000302c 0xf0003004) -> 0
+  open falhou: /media/rafaelfrequiao/8C5F-19E51/zeebo/ROMs/data/inverter.wav (No such file or directory (os error 2))
+  OpenFile "data/inverter.wav"  (0x3d109c 0x1 0xf0003008) -> 0
+  EnumInit "data"  (0x3d105c 0x0 0xf0003008) -> 0
+  EnumNext  (0x200fff2c 0xf000302c 0xf0003008) -> 0
+  Release  (0x200fff2c 0xf000302c 0xf0003004) -> 0
+  open falhou: /media/rafaelfrequiao/8C5F-19E51/zeebo/ROMs/data/quebrar.wav (No such file or directory (os error 2))
+  OpenFile "data/quebrar.wav"  (0x3d10b0 0x1 0xf0003008) -> 0
+  EnumInit "data"  (0x3d105c 0x0 0xf0003008) -> 0
+  EnumNext  (0x200fff2c 0xf000302c 0xf0003008) -> 0
+  Release  (0x200fff2c 0xf000302c 0xf0003004) -> 0
+  open falhou: /media/rafaelfrequiao/8C5F-19E51/zeebo/ROMs/data/start.wav (No such file or directory (os error 2))
+  OpenFile "data/start.wav"  (0x3d10c4 0x1 0xf0003008) -> 0
+  EnumInit "data"  (0x3d105c 0x0 0xf0003008) -> 0
+  EnumNext  (0x200fff2c 0xf000302c 0xf0003008) -> 0
+  Release  (0x200fff2c 0xf000302c 0xf0003004) -> 0
+  open falhou: /media/rafaelfrequiao/8C5F-19E51/zeebo/ROMs/data/combo.wav (No such file or directory (os error 2))
+  OpenFile "data/combo.wav"  (0x3d10d4 0x1 0xf0003008) -> 0
+  EnumInit "data"  (0x3d105c 0x0 0xf0003008) -> 0
+  EnumNext  (0x200fff2c 0xf000302c 0xf0003008) -> 0
+  Release  (0x200fff2c 0xf000302c 0xf0003004) -> 0
+arquivos não encontrados:
+  data/combo.wav
+  data/intro.mp3
+  data/inverter.wav
+  data/mover.wav
+  data/musica.mp3
+  data/quebrar.wav
+  data/start.wav

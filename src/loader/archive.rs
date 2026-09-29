@@ -147,8 +147,7 @@ pub fn fonte_do_sistema_em(cache: &Path, device: &Path) -> Option<PathBuf> {
 /// listava "texto na tela (ainda sem fonte para desenhar)".
 ///
 /// **Não é a causa da tela branca dele.** Medido: com a fonte instalada, o quadro do Double Dragon
-/// no core continua branco e uniforme. O que falta ali é outra coisa, no caminho Dynarmic/`Session`,
-/// porque o mesmo jogo desenha pelo caminho Unicorn da linha de comando.
+/// continuava branco e uniforme. O que faltava ali era outra coisa no caminho de execução.
 ///
 /// Extrai **só** o arquivo da fonte: não vale materializar o pacote inteiro por causa de 190 KB.
 pub fn instala_fonte_do_pacote(pacote: &Path, device: &Path) -> Option<PathBuf> {
@@ -317,6 +316,48 @@ pub fn find_manifest(pacote: &Path, module: &str) -> Option<Vec<u8>> {
     (dados.len() as u64 <= MAX_MANIFEST_BYTES).then_some(dados)
 }
 
+/// Diz se um arquivo extraído ainda é byte a byte igual à entrada original do pacote.
+///
+/// Serve à migração de frontends que antigamente deixavam o jogo escrever dentro do cache:
+/// alguns títulos trazem um save "semente" no próprio ZIP e depois o sobrescrevem. Nesse caso o
+/// manifesto sozinho não distingue conteúdo do pacote de progresso do jogador.
+pub fn entrada_igual_ao_arquivo(
+    pacote: &Path,
+    nome: &str,
+    arquivo: &Path,
+) -> std::io::Result<bool> {
+    let meta = std::fs::metadata(arquivo)?;
+    if sete_z::eh_sete_z(pacote) {
+        let dados = sete_z::ler(pacote, nome, MAX_FILE_BYTES)
+            .ok_or_else(|| std::io::Error::other("não leu a entrada do 7z"))?;
+        if dados.len() as u64 != meta.len() {
+            return Ok(false);
+        }
+        return Ok(std::fs::read(arquivo)? == dados);
+    }
+
+    let origem = std::fs::File::open(pacote)?;
+    let mut zip = zip::ZipArchive::new(origem).map_err(std::io::Error::other)?;
+    validate_archive(&mut zip, ARCHIVE_LIMITS)?;
+    let mut entrada = zip.by_name(nome).map_err(std::io::Error::other)?;
+    if entrada.size() != meta.len() {
+        return Ok(false);
+    }
+    let mut atual = std::fs::File::open(arquivo)?;
+    let mut a = [0u8; 64 * 1024];
+    let mut b = [0u8; 64 * 1024];
+    loop {
+        let la = entrada.read(&mut a)?;
+        let lb = atual.read(&mut b)?;
+        if la != lb || a[..la] != b[..lb] {
+            return Ok(false);
+        }
+        if la == 0 {
+            return Ok(true);
+        }
+    }
+}
+
 /// Escolhe o `.mif` do título entre os nomes do pacote.
 ///
 /// Vale o que combina com o identificador do módulo; sem combinação, o primeiro serve — o mesmo
@@ -464,6 +505,39 @@ pub fn extract_in(zip: &Path, cache: &Path) -> std::io::Result<PathBuf> {
         let _ = std::fs::remove_dir_all(&partial);
     }
     result?;
+    // **A poda acontece aqui, e antes não acontecia em lugar nenhum.** O teto existia desde que o
+    // cache existe (ver [`CACHE_LIMIT_BYTES`]), mas `prune_cache` só era chamado pelos testes: no
+    // uso real a pasta crescia sem fim, um jogo aberto de cada vez, e quem abriu um acervo inteiro
+    // ficou com a extração de todos eles para sempre. Medido numa instalação de uso normal, 143 MB
+    // parados.
+    //
+    // O momento é este e não a abertura: podar só depois de **acrescentar** algo é o que torna o
+    // custo proporcional ao crescimento. Reaproveitar uma extração que já existe (o caminho comum,
+    // logo acima) não aumenta o cache e não precisa varrer a pasta.
+    //
+    // O erro de poda não derruba a abertura do jogo: o conteúdo já está extraído e utilizável, e
+    // "não consegui apagar cache antigo" não é motivo para recusar quem só queria jogar.
+    match prune_cache(cache, Some(&extracted), CACHE_LIMIT_BYTES) {
+        Ok(liberado) if liberado > 0 => crate::registro!(
+            crate::registro::Nivel::Informacao,
+            "loader",
+            "poda do cache de extração em {} liberou {} MiB",
+            cache.display(),
+            liberado / (1024 * 1024)
+        ),
+        Ok(_) => crate::registro!(
+            crate::registro::Nivel::Depuracao,
+            "loader",
+            "cache de extração em {} já estava dentro do teto",
+            cache.display()
+        ),
+        Err(erro) => crate::registro!(
+            crate::registro::Nivel::Aviso,
+            "loader",
+            "não deu para podar o cache de extração em {}: {erro}",
+            cache.display()
+        ),
+    }
     Ok(extracted)
 }
 
@@ -615,6 +689,11 @@ fn legacy_fingerprint(zip: &Path) -> std::io::Result<String> {
         .map(|duration| duration.as_secs())
         .unwrap_or(0);
     Ok(format!("{}-{}-{stamp}", cache_label(zip), meta.len()))
+}
+
+/// Caminho exato do cache anterior ao hash de conteúdo, para migrações de frontends.
+pub(crate) fn legacy_cache_in(zip: &Path, cache: &Path) -> std::io::Result<PathBuf> {
+    Ok(cache.join(legacy_fingerprint(zip)?))
 }
 
 #[cfg(test)]

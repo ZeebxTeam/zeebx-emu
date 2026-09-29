@@ -54,6 +54,98 @@ pub struct Atividade {
     pub inicio_ms: i64,
 }
 
+/// A presença acompanhando o que a interface mostra: o menu, a Z-Wheel ou o jogo aberto.
+///
+/// Saiu do `App` do egui para a interface Qt mostrar o mesmo no Discord. Guarda desde quando a
+/// atividade atual começou — o relógio do perfil recomeça quando o jogo muda, e só aí.
+pub struct Acompanha {
+    presenca: Presenca,
+    /// O ClassID do jogo aberto, ou nenhum no menu, e o instante em milissegundos Unix.
+    inicio: (Option<u32>, i64),
+}
+
+impl Default for Acompanha {
+    fn default() -> Self {
+        Self {
+            presenca: Presenca::default(),
+            inicio: (None, agora_ms()),
+        }
+    }
+}
+
+impl Acompanha {
+    /// Diz ao Discord o que está acontecendo. Barato de chamar a cada quadro: a presença só manda
+    /// alguma coisa quando o texto ou a imagem mudam.
+    ///
+    /// `classe` é o ClassID do jogo aberto; `titulo`, o nome com que a biblioteca o mostra.
+    pub fn atualiza(
+        &mut self,
+        ativo: bool,
+        catalogo: &crate::ui::i18n::Catalog,
+        classe: Option<u32>,
+        titulo: Option<String>,
+        capas_url: &str,
+    ) {
+        if self.inicio.0 != classe {
+            self.inicio = (classe, agora_ms());
+        }
+        let atividade = ativo.then(|| atividade(catalogo, classe, titulo, capas_url, self.inicio.1));
+        self.presenca.define(atividade);
+    }
+
+    /// Se o Discord respondeu e a presença está sendo mostrada.
+    pub fn conectado(&self) -> bool {
+        self.presenca.conectado()
+    }
+}
+
+/// O que mostrar no perfil: no menu, na Z-Wheel, ou jogando `titulo`.
+fn atividade(
+    catalogo: &crate::ui::i18n::Catalog,
+    classe: Option<u32>,
+    titulo: Option<String>,
+    capas_url: &str,
+    inicio_ms: i64,
+) -> Atividade {
+    let icone = CHAVE_DO_ICONE.to_string();
+    let menu = |chave: &str| Atividade {
+        detalhes: catalogo.get(chave).to_string(),
+        imagem: icone.clone(),
+        texto_da_imagem: "Zeebx".to_string(),
+        icone: None,
+        inicio_ms,
+    };
+    let Some(classe) = classe else {
+        return menu("discord.menu");
+    };
+    if classe == crate::session::Z_WHEEL {
+        return menu("discord.z_wheel");
+    }
+    let titulo = titulo.unwrap_or_else(|| catalogo.get("library.unknown_title").to_string());
+    let chave = chave_da_capa(classe);
+    let modelo = capas_url.trim();
+    let imagem = match modelo.is_empty() {
+        true => chave,
+        false => modelo
+            .replace("{clsid}", &format!("{classe:08x}"))
+            .replace("{chave}", &chave),
+    };
+    Atividade {
+        detalhes: catalogo.format("discord.playing", &[("name", &titulo)]),
+        imagem,
+        texto_da_imagem: titulo,
+        icone: Some((icone, "Zeebx".to_string())),
+        inicio_ms,
+    }
+}
+
+/// O instante atual em milissegundos Unix, que é o que o Discord quer no início da atividade.
+pub fn agora_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as i64)
+}
+
 enum Pedido {
     Mostra(String, Option<Atividade>),
     Encerra,

@@ -8,7 +8,13 @@
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use crate::cpu::dynarmic::DynarmicCpu;
+/// No desktop e no core nativo a sessão recompila os blocos. No `wasm32` o bloco emitido não
+/// roda no navegador. No iOS o sistema recusa a página executável que o Dynarmic aloca — o
+/// simulador também é `TARGET_OS_IPHONE`. Nos dois, o interpretador ocupa o mesmo lugar.
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
+use crate::cpu::dynarmic::DynarmicCpu as CpuDaSessao;
+#[cfg(any(target_arch = "wasm32", target_os = "ios"))]
+use crate::cpu::interpretador::Interpretador as CpuDaSessao;
 use crate::input::Pad;
 use crate::library;
 use crate::loader;
@@ -101,8 +107,9 @@ pub enum Step {
 pub struct Session {
     /// O mesmo agendador BREW usado pela bancada e pela linha de comando, com o núcleo que
     /// recompila os blocos ARM do módulo. O Kingdom Hearts desenha a intro no seu próprio
-    /// rasterizador ARM; deixá-lo no Unicorn aqui anulava o ganho medido no `bench`.
-    machine: Machine<DynarmicCpu>,
+    /// rasterizador ARM; por isso a sessão usa o JIT diretamente. No `wasm32` esse lugar é o
+    /// interpretador.
+    machine: Machine<CpuDaSessao>,
     /// O applet criado e ainda **não** iniciado, com o ClassID dele.
     ///
     /// O `EVT_APP_START` é despachado na primeira volta do laço, não aqui. Rodá-lo dentro do
@@ -275,7 +282,27 @@ impl Session {
         storage: &StoragePaths,
         instalados: &[(u32, String)],
     ) -> Result<Self, StartError> {
-        Self::start_inner_with_storage(
+        Self::start_software_with_storage_installed_policy(
+            path,
+            portas,
+            z_wheel,
+            storage,
+            instalados,
+            crate::audio::MidiBackend::Auto,
+        )
+    }
+
+    /// Variante software recebendo explicitamente a política MIDI.
+    #[allow(dead_code)]
+    pub fn start_software_with_storage_installed_policy(
+        path: &Path,
+        portas: [Option<crate::input::bindings::Aparelho>; crate::input::PORTAS],
+        z_wheel: crate::config::ZWheel,
+        storage: &StoragePaths,
+        instalados: &[(u32, String)],
+        midi_policy: crate::audio::MidiBackend,
+    ) -> Result<Self, StartError> {
+        Self::start_inner_with_storage_policy(
             path,
             Some(portas),
             None,
@@ -284,6 +311,33 @@ impl Session {
             z_wheel,
             storage,
             instalados,
+            midi_policy,
+        )
+    }
+
+    /// Variante com aceleração por hardware recebendo explicitamente a política MIDI.
+    #[allow(dead_code)]
+    pub fn start_with_storage_installed_policy(
+        path: &Path,
+        portas: [Option<crate::input::bindings::Aparelho>; crate::input::PORTAS],
+        serial: Option<&Path>,
+        placa: bool,
+        contexto: Option<std::sync::Arc<glow::Context>>,
+        z_wheel: crate::config::ZWheel,
+        storage: &StoragePaths,
+        instalados: &[(u32, String)],
+        midi_policy: crate::audio::MidiBackend,
+    ) -> Result<Self, StartError> {
+        Self::start_inner_with_storage_policy(
+            path,
+            Some(portas),
+            serial,
+            placa,
+            contexto,
+            z_wheel,
+            storage,
+            instalados,
+            midi_policy,
         )
     }
 
@@ -316,6 +370,30 @@ impl Session {
         storage: &StoragePaths,
         instalados: &[(u32, String)],
     ) -> Result<Self, StartError> {
+        Self::start_inner_with_storage_policy(
+            path,
+            portas,
+            serial,
+            placa,
+            contexto,
+            z_wheel,
+            storage,
+            instalados,
+            crate::audio::MidiBackend::Auto,
+        )
+    }
+
+    fn start_inner_with_storage_policy(
+        path: &Path,
+        portas: Option<[Option<crate::input::bindings::Aparelho>; crate::input::PORTAS]>,
+        serial: Option<&Path>,
+        placa: bool,
+        contexto: Option<std::sync::Arc<glow::Context>>,
+        z_wheel: crate::config::ZWheel,
+        storage: &StoragePaths,
+        instalados: &[(u32, String)],
+        midi_policy: crate::audio::MidiBackend,
+    ) -> Result<Self, StartError> {
         // Caminho escolhido no frontend, antes de extrair: é ele que identifica o conteúdo.
         let conteudo = path;
         let extracted;
@@ -328,7 +406,20 @@ impl Session {
             }
             _ => path,
         };
+        crate::registro!(
+            crate::registro::Nivel::Depuracao,
+            "session",
+            "conteúdo {} resolvido para {}",
+            conteudo.display(),
+            path.display()
+        );
         let bytes = std::fs::read(path).map_err(StartError::Unreadable)?;
+        crate::registro!(
+            crate::registro::Nivel::Depuracao,
+            "session",
+            "{} bytes lidos; analisando o módulo",
+            bytes.len()
+        );
         let image = ModImage::parse(bytes).map_err(|e| StartError::NotAModule(e.to_string()))?;
         let extensoes = extensoes_de(path);
         let module = loader::load_with(&image, &extensoes)
@@ -349,11 +440,12 @@ impl Session {
             }
             false => None,
         };
-        let cpu = DynarmicCpu::new().map_err(|e| StartError::NotLoadable(e.to_string()))?;
-        let mut machine = Machine::new_with_storage(cpu, module, root, storage, save_root);
+        let cpu = CpuDaSessao::new().map_err(|e| StartError::NotLoadable(e.to_string()))?;
+        let mut machine = Machine::new_with_storage_policy(cpu, module, root, storage, save_root, midi_policy);
         // A lista precisa existir antes de `run` e `create_applet`: a Z-Wheel a enumera no boot.
         machine.set_installed_applets(instalados.iter().cloned());
         // Antes de qualquer desenho: ver [`Machine::usa_placa`].
+        let tem_contexto = contexto.is_some();
         machine.usa_placa(placa, contexto);
         machine.configura_z_wheel(z_wheel);
         // A tela com que o console abre a Z-Wheel. Ver [`SPLASH_DA_Z_WHEEL`].
@@ -370,7 +462,11 @@ impl Session {
                 let _ = std::fs::create_dir_all(dir);
             }
             if let Err(erro) = machine.liga_serial(caminho) {
-                eprintln!("sem serial: {erro}");
+                crate::registro!(
+                    crate::registro::Nivel::Aviso,
+                    "session",
+                    "a captura de serial não abriu: {erro}"
+                );
             }
         }
         if let Some(portas) = portas {
@@ -394,6 +490,32 @@ impl Session {
             AppletResult::Stopped(stop) => return Err(StartError::Stopped(stop)),
             AppletResult::NoModule => return Err(StartError::NoApplet),
         };
+        let title = library::title_for(path);
+        // **Uma linha de INFO por sessão, com o que responde "o que está rodando e como".** É o
+        // par que faltava no relatório do core: o título dizia o jogo e nada dizia o rasterizador.
+        crate::registro!(
+            crate::registro::Nivel::Informacao,
+            "session",
+            "abriu {} (classe {clsid:#010x}) com o {} e {} applet(s) instalado(s)",
+            // O nome do **conteúdo pedido**, e não o `title`: num `.zip` o título da sessão sai
+            // da pasta do cache, que carrega tamanho e data e não diz nada a quem lê o log.
+            conteudo
+                .file_name()
+                .map(|nome| nome.to_string_lossy().into_owned())
+                .unwrap_or_else(|| conteudo.display().to_string()),
+            match placa {
+                true => "rasterizador de placa",
+                false => "rasterizador de processador",
+            },
+            instalados.len()
+        );
+        if placa && !tem_contexto {
+            crate::registro!(
+                crate::registro::Nivel::Aviso,
+                "session",
+                "pediram a placa sem contexto de GL: o desenho fica no processador"
+            );
+        }
         let clock_base = u64::from(machine.clock_ms());
         let window = Marca {
             real: Instant::now(),
@@ -406,7 +528,7 @@ impl Session {
             partida: Some((applet, clsid)),
             #[cfg(feature = "audio")]
             audio: None,
-            title: library::title_for(path),
+            title,
             classe: clsid,
             intermediario: None,
             started: Instant::now(),
@@ -464,9 +586,24 @@ impl Session {
     /// É a unidade que um frontend repete: o tempo do jogo anda pelo relógio virtual, e nenhuma
     /// decisão depende de quão rápido o host executa. [`Session::step`] continua sendo o caminho
     /// da janela, que precisa devolver o controle ao sistema operacional de tempos em tempos.
-    pub fn run_frame(&mut self) -> Step {
+    pub fn run_frame(&mut self, limita_velocidade: bool) -> Step {
         if self.stopped.is_some() {
             return Step::Stopped;
+        }
+        if limita_velocidade {
+            // O desktop faz o mesmo freio devolvendo `Step::Ahead` para a janela. O Libretro não
+            // tem uma volta assíncrona que possa receber "volte depois": `retro_run` tem de
+            // devolver um quadro nesta chamada. Dormir **antes** de avançar é a tradução correta
+            // do mesmo contrato: o áudio do quadro anterior toca enquanto espera, e o próximo
+            // quadro só nasce quando o relógio real alcançou o virtual.
+            //
+            // Cinquenta ms é teto defensivo contra um salto anômalo do relógio virtual durante
+            // carregamento. No caso normal o adiantamento é um período (16–17 ms); sem o teto
+            // uma ROM que se adiantasse segundos congelaria o frontend numa chamada só.
+            let espera = self.ahead_ms().min(50);
+            if espera > 0 {
+                std::thread::sleep(Duration::from_millis(espera));
+            }
         }
         let inicio = u64::from(self.machine.clock_ms());
         for _ in 0..MAX_STEPS_PER_FRAME {
@@ -638,6 +775,22 @@ impl Session {
     /// Bytes do heap do guest já entregues, e quantos objetos nossos estão vivos.
     pub fn memory(&self) -> (u32, usize) {
         (self.machine.heap_used(), self.machine.live_objects())
+    }
+
+    /// O retrato do heap do jogo: buracos, maior bloco, livre e usado.
+    ///
+    /// `memory()` diz **quanto** está em uso; este diz **como** o que sobra está repartido — e é
+    /// isso que separa "o heap encheu" de "o heap se despedaçou".
+    pub fn heap_retrato(&self) -> crate::brew::heap::Retrato {
+        self.machine.heap_retrato()
+    }
+
+    /// As alocações e as checagens que o heap recusou, com o tamanho pedido e quem pediu.
+    pub fn heap_recusas(&self) -> (Vec<(u32, u32)>, Vec<(u32, u32)>) {
+        (
+            self.machine.refused_allocations(),
+            self.machine.refused_availability_checks(),
+        )
     }
 
     /// O relógio do jogo, em milissegundos.
@@ -860,7 +1013,32 @@ impl Session {
 
     /// Põe de volta um estado gravado por [`Session::grava_estado`].
     pub fn restaura_estado(&mut self, arquivo: &[u8]) -> Result<(), crate::save_state::Erro> {
-        self.machine.restaura_estado(arquivo)
+        self.machine.restaura_estado(arquivo)?;
+
+        // O save state guarda o relógio do console, não os relógios do host. Se mantivermos
+        // started/clock_base do instante anterior ao Load, o limitador compara o relógio
+        // restaurado com uma linha do tempo que já não existe: voltar dez minutos pode parecer
+        // dez minutos atrasado; avançar para um estado mais novo pode parecer adiantado e travar
+        // em Step::Ahead. A nova âncora começa exatamente no instante virtual restaurado.
+        let agora = Instant::now();
+        let clock_ms = u64::from(self.machine.clock_ms());
+        self.started = agora;
+        self.clock_base = clock_ms;
+        self.window = Marca {
+            real: agora,
+            clock_ms,
+            instructions: self.machine.instructions(),
+            frames: self.machine.quadros(),
+        };
+        self.sample = Sample::default();
+        self.history.clear();
+
+        // Estas duas peças vivem na Session, não na Machine: ambas descrevem o que o host
+        // estava mostrando depois do ponto salvo. A máquina restaurada volta a ser a fonte da
+        // verdade no próximo quadro.
+        self.intermediario = None;
+        self.stopped = None;
+        Ok(())
     }
 
     /// Se dá para gravar agora. Ver [`crate::machine::Machine::pode_salvar`].
@@ -878,6 +1056,29 @@ impl Session {
     /// O frontend precisa dela para podar o cache sem apagar o jogo em execução.
     pub fn content_root(&self) -> &Path {
         self.machine.file_root()
+    }
+
+    /// Traz para a tela da CPU o quadro que o `eglSwapBuffers` deixou pendente.
+    ///
+    /// **Quem lê os pixels da tela precisa chamar isto antes.** O desenho 2D chama sozinho, e a
+    /// janela que apresenta a textura da placa não precisa dos pixels. Quem converte a tela para
+    /// bytes — o despejo de quadro, um frontend de fora, a análise da varredura — precisa, senão
+    /// recebe o quadro anterior. Ver [`crate::machine::Machine::present_gl`].
+    pub fn materializa_quadro_gl(&mut self) {
+        self.machine.materializa_quadro_gl();
+    }
+
+    /// Quantas trocas de buffer houve e quantas delas precisaram trazer o quadro para a CPU.
+    pub fn leituras_do_quadro_gl(&self) -> (u32, u32) {
+        (
+            self.machine.gl_swaps(),
+            self.machine.materializacoes_do_quadro_gl(),
+        )
+    }
+
+    /// Chamadas de estado enviadas à placa e quantas o espelho poupou.
+    pub fn estado_enviado_e_poupado(&self) -> (u64, u64) {
+        self.machine.estado_enviado_e_poupado()
     }
 
     /// A tela, como está agora.
@@ -940,7 +1141,7 @@ impl Session {
 
     /// O último quadro do rasterizador GL, quando há um. Serve para separar o que o 3D desenhou
     /// do que chegou à tela composto.
-    pub fn quadro_gl(&self) -> Option<Framebuffer> {
+    pub fn quadro_gl(&mut self) -> Option<Framebuffer> {
         self.machine.gl_frame()
     }
 
@@ -967,6 +1168,30 @@ impl Session {
         self.machine.quadro_grande()
     }
 
+    /// O quadro que a janela mostra, em RGB de oito bits por canal: largura, altura e os bytes.
+    ///
+    /// **O grande só quando é ele que está à mostra**, pela mesma pergunta do
+    /// [`Session::quadro_na_placa`]. O [`Session::quadro_grande`] sozinho lê a placa mesmo com um
+    /// HUD desenhado depois, e o print sairia sem o HUD. Fora disso vale a tela do console, em
+    /// 640×480. Com a placa, é GL: quem chama deixa o contexto do rasterizador corrente. Ver
+    /// `docs/implementacao/22-screenshots.md`.
+    pub fn captura(&mut self) -> (u32, u32, Vec<u8>) {
+        if self.quadro_na_placa().is_some()
+            && let Some((largura, altura, rgba)) = self.machine.quadro_grande_rgba()
+        {
+            // Sem o alfa: há jogo que limpa o fundo com alfa zero, e o print sairia transparente.
+            let rgb = rgba.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
+            return (largura as u32, altura as u32, rgb);
+        }
+        let tela = self.screen();
+        let rgb = tela
+            .to_argb()
+            .into_iter()
+            .flat_map(|p| [(p >> 16) as u8, (p >> 8) as u8, p as u8])
+            .collect();
+        (tela.width(), tela.height(), rgb)
+    }
+
     /// Liga a contagem de tempo real por método de API. Ver [`Session::perfil_de_api`].
     pub fn liga_perfil_de_api(&mut self) {
         self.machine.enable_api_profile();
@@ -987,6 +1212,15 @@ impl Session {
         u64::from(self.machine.gl_swaps())
     }
 
+    /// Quantos quadros o jogo desenhou na placa — **trocas de buffer ou `glClear`**.
+    ///
+    /// É diferente de [`Session::quadros_apresentados`], que conta só trocas: a Z-Wheel desenha o
+    /// palco num pbuffer e nunca troca buffer, e um contador de trocas diria que ela não desenha
+    /// nada. Quem pergunta "a placa desenhou neste quadro?" precisa deste.
+    pub fn quadros_da_placa(&self) -> u32 {
+        self.machine.quadros()
+    }
+
     /// Antialias (amostras por pixel) e filtro anisotrópico do 3D na placa; valem na hora.
     pub fn define_melhorias(&mut self, amostras: usize, anisotropico: usize) {
         self.machine.define_melhorias(amostras, anisotropico);
@@ -997,9 +1231,31 @@ impl Session {
         self.machine.define_neblina(permitida);
     }
 
+    /// Se o quadro de agora deve pular o desenho 3D e a limpeza de tela. Ver
+    /// [`crate::machine::Machine::define_pula_desenho`].
+    pub fn define_pula_desenho(&mut self, pula: bool) {
+        self.machine.define_pula_desenho(pula);
+    }
+
+    /// Se o jogo já usou `glReadPixels` e, por segurança, desabilitou frameskip de rasterização.
+    pub fn leu_pixels(&self) -> bool {
+        self.machine.leu_pixels()
+    }
+
     /// Muda a resolução interna do 3D; vale a partir do próximo quadro.
     pub fn define_resolucao_interna(&mut self, escala: usize) {
         self.machine.define_resolucao_interna(escala);
+    }
+
+    /// Diz ao rasterizador de placa para descartar profundidade e estêncil depois do quadro.
+    pub fn define_descarte_de_tiles(&mut self, descartar: bool) {
+        self.machine.define_descarte_de_tiles(descartar);
+    }
+
+    /// Reduz a resolução interna do 3D no rasterizador de **processador**, desenhando numa
+    /// superfície menor e ampliando na apresentação. Ver [`Rasterizador::define_reducao`].
+    pub fn define_reducao(&mut self, reducao: usize) {
+        self.machine.define_reducao(reducao);
     }
 
     /// A proporção experimental do 3D, largura sobre altura; `None` é o 4:3 do console.
@@ -1070,11 +1326,11 @@ impl Session {
     ///
     /// Existe para o perfil de tempo por método: ligar o cronômetro por chamada é coisa que se faz
     /// **antes** do laço, e a varredura precisa fazer isso de fora da sessão.
-    pub(crate) fn machine_mut(&mut self) -> &mut Machine<DynarmicCpu> {
+    pub(crate) fn machine_mut(&mut self) -> &mut Machine<CpuDaSessao> {
         &mut self.machine
     }
 
-    pub(crate) fn machine(&self) -> &Machine<DynarmicCpu> {
+    pub(crate) fn machine(&self) -> &Machine<CpuDaSessao> {
         &self.machine
     }
 
@@ -1091,6 +1347,88 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sessao_minima_para_save_state() -> Session {
+        let mut mem = crate::cpu::mem::GuestMemory::new();
+        let mut codigo = 0xe12f_ff1eu32.to_le_bytes().to_vec(); // bx lr
+        codigo.resize(0x1000, 0);
+        mem.map("code", 0, codigo, true).unwrap();
+        mem.map_zeroed("data", 0x1000, 0x1000).unwrap();
+        mem.map_zeroed("stack", loader::STACK_BASE, loader::STACK_SIZE)
+            .unwrap();
+        let modulo = loader::LoadedModule {
+            mem,
+            entry: 0,
+            shell: loader::OBJECT_BASE,
+            helpers: 0,
+            out_module: loader::OBJECT_BASE,
+            extensions: Vec::new(),
+        };
+        let mut cpu = CpuDaSessao::new().unwrap();
+        crate::cpu::CpuBackend::reset(&mut cpu, &modulo.mem).unwrap();
+        let machine = Machine::new(
+            cpu,
+            modulo,
+            std::env::temp_dir().join("zeebx-session-state-clock"),
+        );
+        let agora = Instant::now();
+        let clock_ms = u64::from(machine.clock_ms());
+        let window = Marca {
+            real: agora,
+            clock_ms,
+            instructions: machine.instructions(),
+            frames: machine.quadros(),
+        };
+        Session {
+            machine,
+            partida: None,
+            #[cfg(feature = "audio")]
+            audio: None,
+            title: "teste".to_string(),
+            classe: 0,
+            intermediario: None,
+            started: agora,
+            clock_base: clock_ms,
+            stopped: None,
+            window,
+            sample: Sample::default(),
+            history: std::collections::VecDeque::new(),
+        }
+    }
+
+    #[test]
+    fn restaurar_estado_reancora_o_relogio_real_da_sessao() {
+        let mut sessao = sessao_minima_para_save_state();
+        let estado = sessao.grava_estado();
+
+        // Simula uma sessão que continuou muito tempo depois do ponto salvo. Estas peças são do
+        // host e não entram no arquivo ZBXS; se sobreviverem ao Load, o limitador compara duas
+        // linhas do tempo diferentes e pode acelerar ou segurar o jogo indevidamente.
+        sessao.started = Instant::now() - Duration::from_secs(30);
+        sessao.clock_base = 123_456;
+        sessao.window.real = Instant::now() - Duration::from_secs(5);
+        sessao.window.clock_ms = 987_654;
+        sessao.sample = Sample {
+            speed: 321,
+            fps: 99,
+            ips: 123,
+        };
+        sessao.history.push_back(sessao.sample);
+        sessao.intermediario = Some(Framebuffer::new(2, 2));
+        sessao.stopped = Some(Outcome::Budget);
+
+        sessao.restaura_estado(&estado).unwrap();
+
+        assert_eq!(sessao.clock_base, u64::from(sessao.machine.clock_ms()));
+        assert_eq!(sessao.ahead_ms(), 0, "o estado restaurado não pode nascer adiantado");
+        assert!(sessao.atraso_ms() < 100, "o estado restaurado nasceu artificialmente atrasado");
+        assert!(sessao.history.is_empty());
+        assert_eq!(sessao.sample.speed, 0);
+        assert_eq!(sessao.sample.fps, 0);
+        assert_eq!(sessao.sample.ips, 0);
+        assert!(sessao.intermediario.is_none());
+        assert!(sessao.stopped.is_none());
+    }
 
 /// **O motor desenha no framebuffer que o frontend entrega, e o teste prova isso.**
 ///
@@ -1425,6 +1763,20 @@ fn os_dois_rasterizadores_desenham_o_mesmo_quadro() {
                 Step::Running | Step::Ahead => {}
             }
         }
+        // O quadro do OpenGL pode estar pendente — ver [`Session::materializa_quadro_gl`]. Sem
+        // isto, o caminho de placa entregaria a tela anterior, e a comparação lá embaixo seria
+        // entre duas telas velhas: passaria sem comparar imagem nenhuma.
+        session.materializa_quadro_gl();
+        let (trocas, leituras) = session.leituras_do_quadro_gl();
+        let (enviadas, poupadas) = session.estado_enviado_e_poupado();
+        eprintln!(
+            "  {}: {trocas} troca(s) de buffer, {leituras} leitura(s) do quadro para a CPU, \
+{enviadas} estado(s) enviado(s) e {poupadas} poupado(s) pelo espelho",
+            match placa {
+                true => "placa",
+                false => "processador",
+            }
+        );
         let tela = session.screen();
         let (largura, altura) = (tela.width(), tela.height());
         let mut bytes = Vec::new();
@@ -1474,6 +1826,18 @@ fn os_dois_rasterizadores_desenham_o_mesmo_quadro() {
         pior = pior.max(d as u16);
     }
     let total = software.2.len() / 2;
+    // **Guarda contra passe vazio.** Se as duas telas estiverem apagadas, a comparação abaixo
+    // passa sem ter comparado imagem nenhuma — foi o que aconteceu quando o quadro da placa
+    // passou a ser adiado e este teste não materializava antes de ler.
+    let acesos = software
+        .2
+        .chunks_exact(2)
+        .filter(|p| p[0] != 0 || p[1] != 0)
+        .count();
+    assert!(
+        acesos > total / 100,
+        "o quadro saiu apagado ({acesos} de {total} pixel(is) aceso(s)): não há imagem para comparar"
+    );
     let percentual = diferentes as f64 * 100.0 / total as f64;
     let grosseiro = grosseiras as f64 * 100.0 / total as f64;
     let media = soma as f64 / total as f64;

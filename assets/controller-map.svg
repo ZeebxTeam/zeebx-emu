@@ -19,11 +19,14 @@
     <rect id="left" x="202" y="436" width="102" height="124" rx="28"/>
     <rect id="right" x="442" y="436" width="102" height="124" rx="28"/>
 
-    <!-- Botões de ação, no losango. -->
-    <circle id="b4" cx="1246" cy="367" r="58"/>
-    <circle id="b2" cx="1373" cy="465" r="57"/>
+    <!-- Botões de ação, no losango. **A numeração é a do aparelho**, e ela não é a ordem em que
+         os olhos leem: 1 fica embaixo, 2 à esquerda, 3 no topo e 4 à direita — conferido nas
+         imagens oficiais do controle. Estava trocado aqui (o 2 à direita, o 3 à esquerda, o 4 no
+         topo), e o emulador desenhava uma coisa enquanto o núcleo mapeava outra: issue #41. -->
+    <circle id="b3" cx="1246" cy="367" r="58"/>
+    <circle id="b4" cx="1373" cy="465" r="57"/>
     <circle id="b1" cx="1246" cy="565" r="58"/>
-    <circle id="b3" cx="1119" cy="465" r="56"/>
+    <circle id="b2" cx="1119" cy="465" r="56"/>
 
     <!-- Analógicos. -->
     <circle id="lthumb" cx="619" cy="715" r="126"/>

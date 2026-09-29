@@ -27,76 +27,94 @@ const ALTURA_DA_CAPA: f32 = 104.0;
 impl Emulador {
     /// A tela inicial: a barra de cima, a busca e a grade.
     pub(crate) fn biblioteca(&mut self, ctx: &egui::Context) {
-        let filtrados = self.filtrados();
-        let abrir_escolhido = self.direcional(ctx, filtrados.len());
-
+        let abrir_escolhido = self.direcional(ctx, self.filtrados.len());
         self.barra(ctx);
         self.avisos(ctx);
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            if self.jogos.is_empty() {
-                self.biblioteca_vazia(ui);
-                return;
-            }
-            if filtrados.is_empty() {
+        if self.jogos.is_empty() {
+            let varrendo = self.varredura.is_some();
+            egui::CentralPanel::default().show(ctx, |ui| {
+                if varrendo {
+                    ui.add_space(40.0);
+                    ui.vertical_centered(|ui| {
+                        ui.spinner();
+                        ui.add_space(8.0);
+                        ui.label(self.tr("library.scanning"));
+                    });
+                } else {
+                    self.biblioteca_vazia(ui);
+                }
+            });
+            return;
+        }
+
+        if self.filtrados.is_empty() {
+            let mensagem = self
+                .catalogo
+                .format("library.no_match", &[("query", &self.busca)]);
+            egui::CentralPanel::default().show(ctx, |ui| {
                 ui.add_space(32.0);
                 ui.vertical_centered(|ui| {
-                    ui.label(
-                        self.catalogo
-                            .format("library.no_match", &[("query", &self.busca)]),
-                    );
+                    ui.label(mensagem);
                 });
-                return;
-            }
-
-            let mut abrir = None;
-            let escolhido = self.selecionado.min(filtrados.len() - 1);
-            let rolar = std::mem::take(&mut self.rolar);
-            let jogos = &self.jogos;
-            let capas = &mut self.capas;
-            let mut colunas_vistas = 0usize;
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                ui.add_space(4.0);
-                // Quantas colunas cabem, nunca menos de duas: numa tela estreita um cartão por
-                // linha vira lista, e a grade deixa de ser grade.
-                let colunas = ((ui.available_width() / LARGURA_DO_CARTAO).floor() as usize).max(2);
-                colunas_vistas = colunas;
-                let largura = (ui.available_width()
-                    - ui.spacing().item_spacing.x * (colunas as f32 - 1.0))
-                    / colunas as f32;
-                egui::Grid::new("grade")
-                    .num_columns(colunas)
-                    .spacing(ui.spacing().item_spacing)
-                    .show(ui, |ui| {
-                        for (posicao, &indice) in filtrados.iter().enumerate() {
-                            let jogo = &jogos[indice];
-                            let marcado = posicao == escolhido;
-                            let rect = cartao(ui, jogo, capas, largura, marcado);
-                            if rect.1 {
-                                abrir = Some(jogo.path.clone());
-                            }
-                            // Trazer o escolhido para a área visível é o que faz o direcional
-                            // funcionar numa lista maior que a tela.
-                            if marcado && rolar {
-                                ui.scroll_to_rect(rect.0, Some(egui::Align::Center));
-                            }
-                            if (posicao + 1) % colunas == 0 {
-                                ui.end_row();
-                            }
-                        }
-                    });
-                ui.add_space(12.0);
             });
-            self.colunas = colunas_vistas.max(1);
-            if abrir_escolhido {
-                abrir = filtrados
-                    .get(escolhido)
-                    .map(|&indice| jogos[indice].path.clone());
-            }
-            if let Some(caminho) = abrir {
-                self.abre(&caminho);
-            }
-        });
+            return;
+        }
+
+        let escolhido = self.selecionado.min(self.filtrados.len() - 1);
+        let rolar = std::mem::take(&mut self.rolar);
+        let escolhido_por_controle = self
+            .filtrados
+            .get(escolhido)
+            .copied()
+            .filter(|_| abrir_escolhido);
+        let mut abrir = None;
+        let mut colunas_vistas = 0usize;
+        {
+            let jogos = &self.jogos;
+            let filtrados = &self.filtrados;
+            let capas = &mut self.capas;
+            egui::CentralPanel::default().show(ctx, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    ui.add_space(4.0);
+                    // Quantas colunas cabem, nunca menos de duas: numa tela estreita um cartão por
+                    // linha vira lista, e a grade deixa de ser grade.
+                    let colunas =
+                        ((ui.available_width() / LARGURA_DO_CARTAO).floor() as usize).max(2);
+                    colunas_vistas = colunas;
+                    let largura = (ui.available_width()
+                        - ui.spacing().item_spacing.x * (colunas as f32 - 1.0))
+                        / colunas as f32;
+                    egui::Grid::new("grade")
+                        .num_columns(colunas)
+                        .spacing(ui.spacing().item_spacing)
+                        .show(ui, |ui| {
+                            for (posicao, &indice) in filtrados.iter().enumerate() {
+                                let jogo = &jogos[indice];
+                                let marcado = posicao == escolhido;
+                                let rect = cartao(ui, jogo, capas, largura, marcado);
+                                if rect.1 {
+                                    abrir = Some(jogo.path.clone());
+                                }
+                                if marcado && rolar {
+                                    ui.scroll_to_rect(rect.0, Some(egui::Align::Center));
+                                }
+                                if (posicao + 1) % colunas == 0 {
+                                    ui.end_row();
+                                }
+                            }
+                        });
+                    ui.add_space(12.0);
+                });
+            });
+        }
+        self.colunas = colunas_vistas.max(1);
+        if let Some(indice) = escolhido_por_controle {
+            abrir = Some(self.jogos[indice].path.clone());
+        }
+        if let Some(caminho) = abrir {
+            self.abre(&caminho);
+        }
     }
 
     /// O direcional andando pela grade. Devolve se o botão de abrir foi apertado.
@@ -159,6 +177,9 @@ impl Emulador {
 
     /// A barra de cima: o nome, a contagem, a busca e o caminho para os ajustes.
     fn barra(&mut self, ctx: &egui::Context) {
+        let mut recarregar = false;
+        let mut busca_mudou = false;
+        let varrendo = self.varredura.is_some();
         egui::TopBottomPanel::top("barra").show(ctx, |ui| {
             ui.add_space(8.0);
             ui.horizontal(|ui| {
@@ -166,7 +187,7 @@ impl Emulador {
                 ui.add_space(10.0);
 
                 let total = self.jogos.len();
-                let mostrados = self.filtrados().len();
+                let mostrados = self.filtrados.len();
                 let contagem = match mostrados == total {
                     true => self
                         .catalogo
@@ -184,6 +205,14 @@ impl Emulador {
                         .small()
                         .color(ui.visuals().weak_text_color()),
                 );
+                if varrendo {
+                    ui.spinner();
+                    ui.label(
+                        egui::RichText::new(self.tr("library.scanning"))
+                            .small()
+                            .color(ui.visuals().weak_text_color()),
+                    );
+                }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let ajustes = ui.add_sized(
@@ -198,10 +227,14 @@ impl Emulador {
                         self.onde = Onde::Ajustes;
                     }
                     if ui
-                        .add_sized([ALVO, ALVO], egui::Button::new(egui::RichText::new("⟳").size(22.0)))
+                        .add_enabled(
+                            !varrendo,
+                            egui::Button::new(egui::RichText::new("⟳").size(22.0))
+                                .min_size(egui::vec2(ALVO, ALVO)),
+                        )
                         .clicked()
                     {
-                        self.recarrega();
+                        recarregar = true;
                     }
                     ui.add_space(4.0);
                     // A busca fica com o que sobra da linha: é o campo que mais serve numa
@@ -212,13 +245,20 @@ impl Emulador {
                         .margin(egui::Margin::symmetric(12, 10))
                         .hint_text("🔎  Buscar");
                     if ui.add(campo).changed() {
-                        self.selecionado = 0;
-                        self.rolar = true;
+                        busca_mudou = true;
                     }
                 });
             });
             ui.add_space(8.0);
         });
+        if busca_mudou {
+            self.selecionado = 0;
+            self.rolar = true;
+            self.atualiza_filtro();
+        }
+        if recarregar {
+            self.recarrega();
+        }
     }
 
     /// O que precisa ser dito antes da grade: a permissão que falta, e o último jogo que não
@@ -287,19 +327,6 @@ impl Emulador {
         });
     }
 
-    /// Os jogos que passam pela busca, por índice.
-    ///
-    /// Índices, e não cópias: um `Game` carrega a capa inteira em memória, e clonar a lista a
-    /// cada quadro seria copiar alguns megabytes sessenta vezes por segundo.
-    fn filtrados(&self) -> Vec<usize> {
-        let busca = self.busca.trim().to_lowercase();
-        self.jogos
-            .iter()
-            .enumerate()
-            .filter(|(_, jogo)| busca.is_empty() || jogo.title.to_lowercase().contains(&busca))
-            .map(|(indice, _)| indice)
-            .collect()
-    }
 }
 
 /// Um cartão. Devolve onde ele ficou e se foi escolhido.

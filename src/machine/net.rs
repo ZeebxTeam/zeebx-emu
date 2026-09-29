@@ -339,11 +339,16 @@ impl<C: CpuBackend> Machine<C> {
     /// não entregamos nada: melhor o jogo ver "não veio resposta" do que ver memória que ele vai
     /// recusar. O que trafega não muda em nenhum dos dois casos.
     pub(super) fn deliver_response(&mut self, objeto: u32) -> Result<(), CpuError> {
-        // A ponte é opcional e vem desligada. Ela mexe na memória do jogo, e uma entrega errada
-        // não falha na hora: ela corrompe e quebra adiante, como aconteceu — o vetor guarda
-        // objetos `ttdString`, com o comprimento em `[0]` e o texto em `[4]`, e entregar texto
-        // cru fez o destrutor liberar lixo. Enquanto isso não estiver certo, o padrão é não
-        // entregar: o jogo vê "não veio resposta", que é um estado que ele sabe tratar.
+        // A ponte **vem ligada**, e desliga-se pelo `ZEEBX_SEM_PONTE` (ver a construção do campo
+        // `bridge` em `machine::mod`). O comentário aqui dizia o contrário — "é opcional e vem
+        // desligada" — e essa frase descrevia uma versão anterior: quem lesse só este ponto
+        // concluiria que a entrega está desativada por omissão, que é o oposto do que acontece.
+        //
+        // O cuidado que motivou a frase continua válido, e por isso ela não foi só apagada: a
+        // ponte mexe na memória do jogo, e uma entrega errada não falha na hora — ela corrompe e
+        // quebra adiante, como já aconteceu. O vetor guarda objetos `ttdString`, com o comprimento
+        // em `[0]` e o texto em `[4]`, e entregar texto cru fez o destrutor liberar lixo. Com a
+        // ponte desligada o jogo vê "não veio resposta", que é um estado que ele sabe tratar.
         if !self.bridge {
             return Ok(());
         }

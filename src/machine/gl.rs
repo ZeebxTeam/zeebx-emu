@@ -145,8 +145,11 @@ impl<C: CpuBackend> Machine<C> {
                 };
                 // `data` nulo é pedido legítimo: reserva o tamanho e deixa o conteúdo por
                 // definir. O `glBufferSubData` vem depois preencher.
+                // O tamanho é do jogo: `glBufferData(alvo, 0x7fffffff, NULL, uso)` pede 2 GiB
+                // numa linha que cabe no guest, e o `vec!` correspondente aborta o processo. O
+                // teto é o mesmo das leituras, e pelo mesmo motivo.
                 let conteudo = if dados == 0 {
-                    vec![0u8; tamanho as usize]
+                    vec![0u8; tamanho_do_guest(tamanho as usize)?]
                 } else {
                     self.read_bytes(dados, tamanho)?
                 };
@@ -255,7 +258,11 @@ impl<C: CpuBackend> Machine<C> {
                 if a[0] & gles::GL_COLOR_BUFFER_BIT != 0 {
                     self.gl_clears = self.gl_clears.saturating_add(1);
                 }
-                self.gl.clear(a[0])
+                // A contagem de limpezas conta mesmo pulando — é diagnóstico do jogo, não do
+                // quadro que a tela mostrou. O que pula é só o preenchimento de verdade.
+                if !self.pula_desenho || self.gl_leitura_de_pixels {
+                    self.gl.clear(a[0]);
+                }
             }
             "ClearColorx" | "ClearColor" => {
                 let c = std::array::from_fn(|i| number(a[i]));
@@ -504,7 +511,7 @@ impl<C: CpuBackend> Machine<C> {
             "DrawElements" => {
                 let (mode, count, kind, list) = (a[0], a[1], a[2], a[3]);
                 // A lista inteira num pedido só, pelo mesmo motivo do `read_array`: cada
-                // travessia para o unicorn custa mais que os dois bytes que ela traz.
+                // travessia para o backend custa mais que os dois bytes que ela traz.
                 let largura = if kind == gles::GL_UNSIGNED_BYTE { 1 } else { 2 };
                 // Com um buffer de índices ligado, `list` é deslocamento dentro dele — e aqui
                 // vale a ligação **corrente**, ao contrário dos vetores de vértice.
@@ -594,7 +601,7 @@ impl<C: CpuBackend> Machine<C> {
         address: u32,
         fixed_point: bool,
     ) -> Result<rasterizer::Matrix, CpuError> {
-        // Os dezesseis de uma vez: eram dezesseis travessias para o unicorn a cada
+        // Os dezesseis de uma vez: eram dezesseis travessias para o backend a cada
         // `LoadMatrix`/`MultMatrix`, e a matriz é contígua por definição. Se qualquer parte
         // dela estiver fora do mapa, a leitura falha — como falhava antes, no primeiro
         // componente ruim.
@@ -632,7 +639,7 @@ impl<C: CpuBackend> Machine<C> {
             let bytes = self.read_bytes(pixels, size)?;
             let Some(decoded) = paltex::decode(&bytes, width as usize, height as usize, palette)
             else {
-                self.bad_pointers.insert(format!(
+                self.anota_ponto_ruim(format!(
                     "textura paletizada {format:#x} sem paleta completa"
                 ));
                 return Ok(());
@@ -648,8 +655,7 @@ impl<C: CpuBackend> Machine<C> {
             gles::GL_ATC_RGB_AMD => false,
             gles::GL_ATC_RGBA_EXPLICIT_ALPHA_AMD => true,
             _ => {
-                self.bad_pointers
-                    .insert(format!("textura comprimida no formato {format:#x}"));
+                self.anota_ponto_ruim(format!("textura comprimida no formato {format:#x}"));
                 return Ok(());
             }
         };
@@ -698,6 +704,10 @@ impl<C: CpuBackend> Machine<C> {
         if width == 0 || height == 0 || destino == 0 {
             return Ok(());
         }
+        // A partir daqui frameskip não pode mais pular draw/clear: este jogo observa o
+        // framebuffer, e entregar a imagem anterior deixa de ser perda visual e vira dado errado
+        // na memória do guest.
+        self.gl_leitura_de_pixels = true;
         let pixels = self.gl.read_rect(x, y, width, height);
         let bytes: Vec<u8> = match (format, kind) {
             (gles::GL_RGBA, gles::GL_UNSIGNED_BYTE) => pixels.concat(),
@@ -711,7 +721,7 @@ impl<C: CpuBackend> Machine<C> {
                 })
                 .collect(),
             _ => {
-                self.bad_pointers.insert(format!(
+                self.anota_ponto_ruim(format!(
                     "ReadPixels no formato {format:#x}/{kind:#x}, que não sabemos escrever"
                 ));
                 return Ok(());
@@ -772,7 +782,7 @@ impl<C: CpuBackend> Machine<C> {
 
         let name = self.gl.bound_texture();
         if let Err(Some((tw, th))) = self.gl.sub_image(name, x, y, width, height, &novos) {
-            self.bad_pointers.insert(format!(
+            self.anota_ponto_ruim(format!(
                 "TexSubImage2D de {width}x{height} em ({x},{y}) não cabe numa textura {tw}x{th}"
             ));
         }
@@ -782,6 +792,13 @@ impl<C: CpuBackend> Machine<C> {
     /// Monta os vértices a partir dos vetores do cliente e manda desenhar.
     pub(super) fn gles_draw(&mut self, mode: u32, indices: &[u32]) -> Result<(), CpuError> {
         if !self.gl_vertices.em_uso() || indices.is_empty() {
+            return Ok(());
+        }
+        // **O quadro pulado sai daqui, antes de qualquer leitura de memória do guest.** É o que
+        // faz o pulo economizar de verdade: sem isto, o custo caro — atravessar a FFI do unicorn
+        // para trazer cada vértice — aconteceria do mesmo jeito, e só a rasterização sumiria. O
+        // jogo não vê diferença nenhuma: hardware real também não avisa se o pixel chegou à tela.
+        if self.pula_desenho && !self.gl_leitura_de_pixels {
             return Ok(());
         }
         let base = self.gl.current_color();
@@ -857,8 +874,8 @@ impl<C: CpuBackend> Machine<C> {
     /// Lê um elemento de um vetor do cliente, completando os componentes que faltam.
     /// Lê de uma vez o trecho do array que os índices cobrem, e decodifica dali.
     ///
-    /// O caminho por componente atravessa a FFI do unicorn para copiar quatro bytes, e o
-    /// unicorn procura a região antes de copiar: **57 ns**, contra **0,3 ns** quando os mesmos
+    /// O caminho por componente atravessa o backend para copiar quatro bytes, e ele procura a
+    /// região antes de copiar: **57 ns**, contra **0,3 ns** quando os mesmos
     /// quatro bytes vêm de um `read_mem` de um quilobyte. No Quake são 6,6 milhões de vértices
     /// em 15 segundos virtuais, cada um com posição e coordenada de textura — e isso era
     /// **3,2 s dos 3,6 s** que as draw calls custavam, contra 400 ms do rasterizador de fato.
@@ -1019,11 +1036,65 @@ impl<C: CpuBackend> Machine<C> {
         }
     }
 
-    /// Copia o quadro do OpenGL para a tela.
+    /// Fecha o quadro no `eglSwapBuffers`.
     ///
-    /// É o que o `eglSwapBuffers` faz no console: o buffer de trás vira o da frente. Aqui a
-    /// tela é o framebuffer RGB565 que já sabemos exportar.
+    /// **Pinta a fila e não lê o resultado.** São duas coisas diferentes, e separá-las é o ganho:
+    ///
+    /// - pintar a fila é a **rasterização** do quadro, e ela não tem como ser adiada — é o trabalho
+    ///   que o jogo pediu;
+    /// - ler o quadro de volta para a memória da CPU existe para o **desenho 2D por cima** e para
+    ///   quando o guest pede os pixels. Um jogo de 3D puro não faz nenhuma das duas coisas, e no
+    ///   portátil essa leitura obriga a GPU de tiles a terminar e devolver o quadro a cada troca.
+    ///
+    /// Então o quadro fica **pendente**, e [`Machine::materializa_quadro_gl`] o traz quando alguém
+    /// precisar de verdade. Quem decide é o caminho de desenho: qualquer chamada de 2D materializa
+    /// antes de escrever, porque escrever por cima de um quadro velho apagaria a cena.
     pub(super) fn present_gl(&mut self) {
+        self.gl.descarrega_o_desenho();
+        self.gl_quadro_pendente = true;
+        // **O quadro na placa vale para a tela como ela está agora**, mesmo sem ter sido lido. É o
+        // que o [`Machine::quadro_na_placa`] compara, e quem apresenta pela placa nunca materializa
+        // — a textura é justamente o que dispensa a leitura. Marcado só na materialização, o
+        // quadro 3D nunca era dado como intacto nesse caminho: a janela caía na tela da CPU, que
+        // não recebera o quadro, e o jogo saía preto em toda janela que apresenta pela placa —
+        // medido com o Double Dragon, que desenha o título pelo OpenGL. Um desenho 2D depois
+        // disto materializa antes de escrever, e a escrita desfaz a marca, como deve.
+        self.escritas_do_quadro_gl = Some(self.screen().escritas());
+        // **Só a placa adia.** No rasterizador de processador a leitura é uma conversão em
+        // memória: não há espera a economizar, e o frontend lê a tela todo quadro de qualquer
+        // jeito — adiar ali só criaria a chance de ele apresentar um quadro velho.
+        if !self.gl.quadro_espera_pela_placa() {
+            self.materializa_quadro_gl();
+        }
+    }
+
+    /// Chamadas de estado enviadas à placa e quantas o espelho poupou. Ver
+    /// [`crate::video::gpu::Espelho`].
+    pub fn estado_enviado_e_poupado(&self) -> (u64, u64) {
+        self.gl.estado_enviado_e_poupado()
+    }
+
+    /// Quantas vezes o quadro da placa foi trazido para a tela da CPU nesta sessão.
+    ///
+    /// Comparado com [`Machine::gl_swaps`] diz o quanto o adiamento rendeu: cada troca de buffer
+    /// sem materialização é uma leitura de quadro que **não** aconteceu. Serve de número de
+    /// conferência no portátil, onde a leitura é a cara: ver [`Machine::present_gl`].
+    pub fn materializacoes_do_quadro_gl(&self) -> u32 {
+        self.gl_materializacoes
+    }
+
+    /// Traz para a tela da CPU o quadro que o `eglSwapBuffers` deixou pendente.
+    ///
+    /// Chamado por todo caminho que **lê ou escreve** a tela do console: as três interfaces de
+    /// desenho 2D, a leitura de pixels e o despejo de diagnóstico. Não é chamado pela janela nem
+    /// pelo core quando eles apresentam a textura da placa — esses não querem os pixels, querem a
+    /// textura, e o readback existia para eles por engano.
+    pub fn materializa_quadro_gl(&mut self) {
+        if !self.gl_quadro_pendente {
+            return;
+        }
+        self.gl_quadro_pendente = false;
+        self.gl_materializacoes = self.gl_materializacoes.saturating_add(1);
         // A tela pode ser a superfície do "device bitmap", quando o jogo pediu uma — é ela que
         // vale, e não o framebuffer de reserva.
         let (width, height) = {
@@ -1032,13 +1103,16 @@ impl<C: CpuBackend> Machine<C> {
         };
         // O quadro vai direto para o buffer do anterior, em RGB565: sem o vetor de `u16` e a volta
         // para bytes, e sem conversão nenhuma quando nada foi desenhado desde o último.
-        let mut bytes = std::mem::take(&mut self.gl_last_frame);
-        self.gl.frame_rgb565(width, height, &mut bytes);
+        let mut words = std::mem::take(&mut self.gl_last_frame_words);
+        self.gl.frame_rgb565_words(width, height, &mut words);
         match self.bitmaps.get_mut(&self.device_bitmap) {
-            Some(surface) => surface.load_rgb565_bytes(&bytes),
-            None => self.screen.load_rgb565_bytes(&bytes),
+            Some(surface) => surface.load_rgb565_words(&words),
+            None => self.screen.load_rgb565_words(&words),
         }
-        self.gl_last_frame = bytes;
+        self.gl_last_frame_words = words;
+        // **A marca é do instante em que a tela ficou igual ao quadro 3D**, e é por isso que ela
+        // vem aqui e não na troca de buffer: `quadro_na_placa` compara esta contagem com a de
+        // agora para saber se algum 2D desenhou por cima depois disso.
         self.escritas_do_quadro_gl = Some(self.screen().escritas());
     }
 
@@ -1055,13 +1129,20 @@ impl<C: CpuBackend> Machine<C> {
 
     /// O quadro 3D na resolução interna, como superfície, para gravar sem janela.
     pub fn quadro_grande(&mut self) -> Option<Framebuffer> {
-        let (w, h, rgba) = self.gl.le_quadro_grande()?;
+        let (w, h, rgba) = self.quadro_grande_rgba()?;
         let mut quadro = Framebuffer::new(w as u32, h as u32);
         for (i, p) in rgba.chunks_exact(4).enumerate() {
             let cor = Rgb { r: p[0], g: p[1], b: p[2] };
             quadro.set_pixel((i % w) as i32, (i / w) as i32, cor);
         }
         Some(quadro)
+    }
+
+    /// O quadro 3D na resolução interna como a placa o tem: RGBA de oito bits, linhas de cima
+    /// para baixo. O [`Machine::quadro_grande`] o passa a RGB565, e isso tira bits que a placa já
+    /// tinha calculado; o screenshot quer os oito.
+    pub fn quadro_grande_rgba(&mut self) -> Option<(usize, usize, Vec<u8>)> {
+        self.gl.le_quadro_grande()
     }
 
     /// A resolução interna do rasterizador da placa. Ver [`Rasterizador::define_escala`].
@@ -1076,6 +1157,18 @@ impl<C: CpuBackend> Machine<C> {
     /// motor desenha no próprio e o quadro sai pelo `frame_rgb565`, como sempre.
     pub fn desenha_no_fbo(&mut self, fbo: Option<u32>) {
         self.gl.desenha_no_fbo(fbo);
+    }
+
+    /// Diz ao rasterizador de placa para descartar profundidade e estêncil depois do quadro.
+    /// Ver [`Rasterizador::define_descarte_de_tiles`].
+    pub fn define_descarte_de_tiles(&mut self, descartar: bool) {
+        self.gl.define_descarte_de_tiles(descartar);
+    }
+
+    /// Reduz a resolução interna do 3D no rasterizador de processador. Ver
+    /// [`Rasterizador::define_reducao`].
+    pub fn define_reducao(&mut self, reducao: usize) {
+        self.gl.define_reducao(reducao);
     }
 
     /// A proporção experimental do 3D. Ver [`Rasterizador::define_proporcao`].
@@ -1094,6 +1187,19 @@ impl<C: CpuBackend> Machine<C> {
     /// [`rasterizer::Rasterizador::define_neblina`].
     pub fn define_neblina(&mut self, permitida: bool) {
         self.gl.define_neblina(permitida);
+    }
+
+    /// Se o quadro de agora deve pular o desenho — ver o campo `pula_desenho`.
+    ///
+    /// Chamado uma vez por quadro, antes do jogo rodar: a decisão vale para todo `gles_draw` e
+    /// `Clear` que acontecerem enquanto o CPU emula este quadro, e é reavaliada no próximo.
+    pub fn define_pula_desenho(&mut self, pula: bool) {
+        self.pula_desenho = pula;
+    }
+
+    /// Se o jogo leu pixels do framebuffer e portanto desabilitou frameskip de rasterização.
+    pub fn leu_pixels(&self) -> bool {
+        self.gl_leitura_de_pixels
     }
 
     /// Devolve ao dono o estado de GL que o rasterizador mexeu. Ver

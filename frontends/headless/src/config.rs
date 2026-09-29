@@ -12,6 +12,7 @@
 use std::path::PathBuf;
 
 use zeebx::input::bindings::{Aparelho, AxisSource, Controls, Player, Source};
+use zeebx::registro::Ajuste;
 use zeebx::ui::settings::{Audio, Graphics, ModoDaJanela, Proporcao, Scaling, Settings};
 
 use crate::ini::{Ini, Valor, sem_aspas};
@@ -229,12 +230,23 @@ fn secao_da_porta(indice: usize, player: &Player) -> String {
         "# O que o console enxerga ligado: gamepad (o Dragon), zpad, keyboard ou boomerang.".to_string(),
         format!("device = {}", nome_do_aparelho(player.aparelho)),
         "# Qual controle do host alimenta esta porta. `--controllers` lista os nomes que o".to_string(),
-        "# sistema dá a eles. Sem esta linha, a porta fica só no teclado.".to_string(),
+        "# sistema dá a eles. Sem esta linha, a porta fica só no teclado; com ela, os botões".to_string(),
+        "# abaixo ganham também os do controle, e a linha que você mudar vale como escrita.".to_string(),
     ];
     match &player.device {
         Some(nome) => linhas.push(format!("controller = \"{nome}\"")),
         None => linhas.push("# controller = \"Xbox Wireless Controller\"".to_string()),
     }
+    linhas.push(
+        "# O direcional também empurra o manche esquerdo, para jogo que só escuta o eixo.".to_string(),
+    );
+    linhas.push(
+        "# **Desligado por padrão**: quem lê os dois canais anda duas casas por toque.".to_string(),
+    );
+    linhas.push(format!(
+        "dpad_to_analog = {}",
+        sim_ou_nao(player.direcional_nos_eixos)
+    ));
     linhas.push(String::new());
 
     // Na ordem em que a interface os mostra, e não na alfabética do mapa: `up, down, left,
@@ -247,15 +259,15 @@ fn secao_da_porta(indice: usize, player: &Player) -> String {
 
     // Os eixos ficam comentados porque **é isso que o padrão é**: sem um controle escolhido, o
     // console não tem eixo analógico nenhum, e escrevê-los aqui mudaria o comportamento em vez
-    // de descrevê-lo. Assim que a linha `controle` existir, eles entram sozinhos.
+    // de descrevê-lo. Assim que a linha `controller` existir, eles entram sozinhos.
     linhas.push(
         "# Os quatro eixos analógicos do console, cada um vindo de um eixo do controle do host."
             .to_string(),
     );
     linhas.push(
-        "# Eles só existem com um `controle` escolhido, e aí entram sozinhos nestes valores —".to_string(),
+        "# Eles só existem com um `controller` escolhido, e aí entram sozinhos nestes valores —".to_string(),
     );
-    linhas.push("# as linhas abaixo servem para mudá-los. `:invertido` vira o sentido, e uma".to_string());
+    linhas.push("# as linhas abaixo servem para mudá-los. `:inverted` vira o sentido, e uma".to_string());
     linhas.push("# linha vazia desliga o eixo.".to_string());
     // Na ordem do console — x, y, z, rz —, e não na alfabética do mapa: `x` e `y` são um
     // manche, `z` e `rz` são o outro, e lê-los fora de par não quer dizer nada.
@@ -377,6 +389,14 @@ pub fn de_texto(texto: &str) -> Lido {
     let a: &mut Audio = &mut settings.audio;
     booleano(&mut ini, "audio", "enabled", &mut a.enabled, &mut avisos);
     oito(&mut ini, "audio", "volume", &mut a.volume, 0, 100, &mut avisos);
+    booleano(&mut ini, "audio", "midi_effects", &mut a.midi_effects, &mut avisos);
+    if let Some(v) = ini.pega("audio", "soundfont") {
+        let texto = sem_aspas(&v.texto);
+        a.soundfont = match texto.is_empty() || texto == "-" {
+            true => None,
+            false => Some(PathBuf::from(texto)),
+        };
+    }
 
     // ---- [dump] ---------------------------------------------------------------------
     if let Some(v) = ini.pega("dump", "format") {
@@ -424,6 +444,29 @@ pub fn de_texto(texto: &str) -> Lido {
             Err(_) => avisa(&mut avisos, &v, "seconds expects a number"),
         }
     }
+    if let Some(v) = ini.pega("system", "log") {
+        let texto = sem_aspas(&v.texto);
+        match Ajuste::de_texto(texto) {
+            Some(ajuste) => {
+                ajuste.aplica();
+                // **O nome canônico, e não o texto que veio.** O `config.ini` fala inglês
+                // (`log = warn`) e o ajuste guardado é em português (`aviso`): guardar o texto cru
+                // deixava o mesmo nível com duas formas, e o `config.ini` de fábrica passava a
+                // descrever um padrão que não era o do emulador. Ver [`Nivel::nome`].
+                settings.debug.nivel_de_log = match ajuste {
+                    Ajuste::Desligado => "desligado".to_string(),
+                    Ajuste::Ate(nivel) => nivel.nome().to_string(),
+                };
+            }
+            // Um nível escrito errado não pode ser aceito em silêncio: quem depura precisa saber
+            // que a linha não fez nada, em vez de concluir que o log é que está quebrado.
+            None => avisa(
+                &mut avisos,
+                &v,
+                "`log` expects off, fatal, error, warn, info or debug",
+            ),
+        }
+    }
     booleano(&mut ini, "system", "exit_with_game", &mut headless.sair_com_o_jogo, &mut avisos);
     booleano(&mut ini, "system", "z_wheel_end_of_life", &mut settings.z_wheel.fim_de_vida, &mut avisos);
 
@@ -468,9 +511,29 @@ fn nomes_de_porta() -> Vec<String> {
 
 /// Uma porta: que aparelho o console vê, qual controle do host a alimenta, e o mapeamento.
 fn le_porta(ini: &mut Ini, secao: &str, player: &mut Player, avisos: &mut Vec<String>) {
+    // O controle vem **antes** de tudo, porque escolhê-lo troca o mapeamento inteiro pelo típico
+    // dele — o mesmo que a tela de controles do desktop faz. Enquanto ele só trazia os eixos, os
+    // botões ficavam no teclado de fábrica, e sem janela não há teclado: o manche andava e
+    // nenhum botão respondia, que os usuários contavam como "o controle não é reconhecido".
+    // Lido primeiro, o resto da seção ajusta por cima dele.
+    if let Some(v) = ini.pega(secao, "controller") {
+        let nome = sem_aspas(&v.texto);
+        player.troca_controle(match nome.is_empty() {
+            true => None,
+            false => Some(nome.to_string()),
+        });
+    }
+
     let mut ligada = player.ligada;
     booleano(ini, secao, "enabled", &mut ligada, avisos);
     player.ligada = ligada;
+
+    // O direcional espelhado nos eixos: o mesmo ajuste da caixa na tela de controles do desktop
+    // e do `zeebx_dpad_to_analog_pN` do núcleo. Sem esta linha o frontend sem janela não teria
+    // como ligá-lo — o `Controls` chegaria com o padrão e ninguém saberia por quê.
+    let mut espelha = player.direcional_nos_eixos;
+    booleano(ini, secao, "dpad_to_analog", &mut espelha, avisos);
+    player.direcional_nos_eixos = espelha;
 
     if let Some(v) = ini.pega(secao, "device") {
         match v.texto.to_lowercase().as_str() {
@@ -483,42 +546,41 @@ fn le_porta(ini: &mut Ini, secao: &str, player: &mut Player, avisos: &mut Vec<St
             )),
         }
     }
-    if let Some(v) = ini.pega(secao, "controller") {
-        let nome = sem_aspas(&v.texto);
-        // Um controle escolhido pelo nome ganha os eixos padrão junto: sem eles o manche fica
-        // mudo, e quem escreveu só o nome não teria como adivinhar que faltava mais.
-        player.device = match nome.is_empty() {
-            true => None,
-            false => Some(nome.to_string()),
-        };
-        if player.device.is_some() && player.axes.is_empty() {
-            player.axes = Player::default_axes();
-        }
-    }
-
     // Os botões. Uma chave por botão do console, com as origens separadas por vírgula. Escrever
     // a chave **substitui** o padrão daquele botão: quem redefine `b1` quer o que escreveu, não
     // o que escreveu mais o `Z` de fábrica.
+    let fabrica = Player::default();
     for botao in zeebx::input::bindings::CONFIGURABLE {
         let Some(v) = ini.pega(secao, botao) else {
             continue;
         };
-        player.clear(botao);
-        if sem_aspas(&v.texto).trim().is_empty() {
+        let mut origens = Vec::new();
+        if !sem_aspas(&v.texto).trim().is_empty() {
+            for pedaco in v.texto.split(',') {
+                match origem(pedaco.trim()) {
+                    Some(source) => origens.push(source),
+                    None => avisa(avisos, &v, &format!(
+                        "`{}` is not a source; use key:NAME, button:NAME or axis:NAME+",
+                        pedaco.trim()
+                    )),
+                }
+            }
+        }
+        // A exceção: com um controle escolhido, uma linha igual ao teclado de fábrica **não**
+        // substitui nada. É a linha que o arquivo gerado escreve para todo botão, e todo
+        // `config.ini` já distribuído a tem; valendo como substituição, ela apagaria o botão do
+        // controle que o `controller` acabou de trazer. Quem quer mesmo só o teclado num botão
+        // com controle escolhido escreve as teclas noutra ordem ou noutro conjunto.
+        if player.device.is_some() && origens == fabrica.sources(botao) {
             continue;
         }
-        for pedaco in v.texto.split(',') {
-            match origem(pedaco.trim()) {
-                Some(source) => player.bind(botao, source),
-                None => avisa(avisos, &v, &format!(
-                    "`{}` is not a source; use key:NAME, button:NAME or axis:NAME+",
-                    pedaco.trim()
-                )),
-            }
+        player.clear(botao);
+        for source in origens {
+            player.bind(botao, source);
         }
     }
 
-    // Os eixos analógicos do console. `eixo_x = LeftStickX` ou `eixo_y = LeftStickY:invertido`.
+    // Os eixos analógicos do console. `axis_x = LeftStickX` ou `axis_y = LeftStickY:inverted`.
     for eixo in zeebx::input::AXIS_NAMES {
         let chave = format!("axis_{eixo}");
         let Some(v) = ini.pega(secao, &chave) else {
@@ -666,7 +728,9 @@ mod testes {
              internal_resolution = 2\n\
              aspect = 16x9\n\
              [audio]\n\
-             volume = 42\n",
+             volume = 42\n\
+             soundfont = \"/bancos/firmware.sf2\"\n\
+             midi_effects = false\n",
         );
         assert!(lido.avisos.is_empty(), "{:?}", lido.avisos);
         let g = &lido.settings.graphics;
@@ -679,6 +743,12 @@ mod testes {
         assert_eq!(g.resolucao_interna, 2);
         assert_eq!(g.proporcao, Proporcao::Larga16x9);
         assert_eq!(lido.settings.audio.volume, 42);
+        assert_eq!(
+            lido.settings.audio.soundfont.as_deref(),
+            Some(std::path::Path::new("/bancos/firmware.sf2"))
+        );
+        assert_eq!(de_texto("[audio]\nsoundfont = -\n").settings.audio.soundfont, None);
+        assert!(!lido.settings.audio.midi_effects);
     }
 
     /// Citar a seção já liga a porta, e uma porta não citada fica como vem de fábrica.
@@ -690,6 +760,24 @@ mod testes {
         let segunda = portas.player(1).unwrap();
         assert!(segunda.ligada);
         assert_eq!(segunda.aparelho, Aparelho::Teclado);
+    }
+
+    /// O direcional nos eixos sai do `config.ini` como qualquer outra chave da porta — e a
+    /// porta que não escreve fica com o padrão, que é desligado.
+    #[test]
+    fn o_direcional_nos_eixos_vem_do_ini_e_o_padrao_e_desligado() {
+        let lido = de_texto("[port1]\ndpad_to_analog = yes\n");
+        assert!(lido.avisos.is_empty(), "{:?}", lido.avisos);
+        assert!(lido.settings.controls.player(0).unwrap().direcional_nos_eixos);
+        assert!(
+            !lido.settings.controls.player(1).unwrap().direcional_nos_eixos,
+            "a segunda porta não escreveu, e o padrão é desligado"
+        );
+
+        // E o valor de fábrica que o gerador escreve volta como o padrão do emulador: é o que
+        // cobra o teste que compara o arquivo completo com `de_texto("")`.
+        let padrao = de_texto("[port1]\ndpad_to_analog = false\n");
+        assert!(!padrao.settings.controls.player(0).unwrap().direcional_nos_eixos);
     }
 
     /// Escrever um botão substitui o padrão dele, e só dele.
@@ -763,6 +851,39 @@ mod testes {
         let porta = lido.settings.controls.player(0).unwrap();
         assert_eq!(porta.device.as_deref(), Some("Pad #2"));
         assert_eq!(porta.axes, Player::default_axes());
+    }
+
+    /// O caminho de quem joga: pega o arquivo gerado, descomenta o `controller` e mais nada.
+    /// Os botões do controle têm de responder — sem janela não há teclado, e um `b1` só com
+    /// `key:Z` deixa o controle mudo fora do manche.
+    #[test]
+    fn o_controle_escolhido_no_arquivo_gerado_aciona_os_botoes() {
+        let texto = modelo().replacen(
+            "# controller = \"Xbox Wireless Controller\"",
+            "controller = \"Xbox Wireless Controller\"",
+            1,
+        );
+        let lido = de_texto(&texto);
+        let porta = lido.settings.controls.player(0).unwrap();
+        assert_eq!(porta.device.as_deref(), Some("Xbox Wireless Controller"));
+        for botao in zeebx::input::bindings::CONFIGURABLE {
+            assert!(
+                porta.sources(botao).iter().any(|s| matches!(s, Source::Button { .. } | Source::Axis { .. })),
+                "`{botao}` não tem origem no controle: {:?}",
+                porta.sources(botao)
+            );
+        }
+    }
+
+    /// Com controle escolhido, uma linha que não é a de fábrica continua valendo como escrita:
+    /// a exceção do arquivo gerado não pode engolir um mapeamento de verdade.
+    #[test]
+    fn com_controle_a_linha_mudada_substitui_o_padrao() {
+        let lido = de_texto("[port1]\ncontroller = \"Pad\"\nb1 = button:East\nb2 = key:X, key:Space\n");
+        let porta = lido.settings.controls.player(0).unwrap();
+        assert_eq!(porta.sources("b1"), [Source::button("East")]);
+        assert_eq!(porta.sources("b2"), [Source::key("X"), Source::key("Space")]);
+        assert!(porta.sources("up").contains(&Source::button("DPadUp")));
     }
 
     /// O exemplo que o `--exemplo` imprime tem de ser um arquivo que o leitor aceita sem

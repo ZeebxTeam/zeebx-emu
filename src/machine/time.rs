@@ -65,6 +65,8 @@ impl<C: CpuBackend> Machine<C> {
             || !self.pending_threads.is_empty()
             || !self.pending_probes.is_empty()
             || !self.pending_blits.is_empty()
+            || !self.pending_surface_blits.is_empty()
+            || !self.avisos_de_imagem.is_empty()
             || !self.pending_signals.is_empty();
         if busy {
             return;
@@ -138,6 +140,8 @@ impl<C: CpuBackend> Machine<C> {
             && self.pending_threads.is_empty()
             && self.pending_probes.is_empty()
             && self.pending_blits.is_empty()
+            && self.pending_surface_blits.is_empty()
+            && self.avisos_de_imagem.is_empty()
             && self.pending_signals.is_empty()
             // **Um jogo que registrou interesse em entrada está esperando o jogador.** Chamar isso
             // de ocioso encerrava a sessão no meio da tela de título: o Crash Nitro Kart parava

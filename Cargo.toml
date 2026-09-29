@@ -1,20 +1,23 @@
 [workspace]
 members = [
     ".",
-    "frontends/classical-standalone",
+    "frontends/egui-standalone",
+    "frontends/qt-standalone",
     "frontends/libretro",
     "frontends/android",
     "frontends/headless",
+    "frontends/ios",
 ]
 resolver = "3"
 
 [package]
 name = "zeebx"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
-# GPLv2 porque o unicorn-engine é GPLv2 e vai compilado dentro do binário. Ver LICENSE.
+# O código do Zeebx é GPLv2 ou posterior. O backend de CPU padrão é o Dynarmic, para manter o
+# núcleo compatível com frontends GPLv3 como Qt 6.
 authors = ["ZeebxTeam"]
-license = "GPL-2.0-only"
+license = "GPL-2.0-or-later"
 repository = "https://github.com/ZeebxTeam/zeebx-emu"
 description = "O emulador definitivo de Zeebo!"
 
@@ -36,7 +39,6 @@ desktop = [
     # O banco de amostras para o MIDI é Rust puro e sem dependência de host, então entra por
     # padrão: sem um `.sf2` instalado ele nem é carregado, e sem ele a música é a mesma de antes.
     "soundfont",
-    "unicorn",
     "dep:discord-rich-presence",
     "dep:eframe",
     "dep:gilrs",
@@ -44,6 +46,7 @@ desktop = [
     "dep:minifb",
     "dep:raw-window-handle",
     "dep:rfd",
+    "dep:ureq",
 ]
 # Criação de contexto OpenGL fora de tela para o rasterizador na placa sem janela.
 # O desenho na placa: o backend de OpenGL do motor. **Não puxa nada de host** — o `glow` é só o
@@ -69,10 +72,6 @@ soundfont = ["dep:rustysynth"]
 # janela. Aqui entra o `glutin`, que linka EGL/GLX — motivo pelo qual o core não usa esta feature:
 # um core não pode depender de biblioteca de interface do host.
 gpu = ["gl", "dep:glutin", "dep:raw-window-handle"]
-# Backend de referência do standalone. O core Libretro não o habilita: usa Dynarmic e não leva
-# o QEMU/unicorn-engine nem libatomic para os handhelds Linux AArch64.
-unicorn = ["dep:unicorn-engine"]
-
 # O binário é a interface desktop: sem a feature ele nem é construído.
 [dependencies]
 # Tipos de interface compartilhados pelo desktop e pelo frontend Android; não abre janela sozinho.
@@ -98,10 +97,9 @@ png = "0.18.1"
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "async-std"], optional = true }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
-# JIT ARM alternativo ao TCG do Unicorn. Fica opt-in enquanto os dois backends são
-# comparados jogo a jogo; o KH precisa dele porque a extensão 3D roda o próprio
-# rasterizador ARM por milhões de pixels.
-dynarmic = "0.1.3"
+# O cliente HTTP da tela de atualização. Só o desktop chama: o core não tem essa tela, e o
+# `ring` que o `ureq` puxa não compila para `wasm32-unknown-emscripten`.
+ureq = { version = "3", optional = true }
 # Só leitura de zip: `deflate` cobre o que os empacotadores usam.
 zip = { version = "2", default-features = false, features = ["deflate"] }
 # Identidade estável de conteúdo/caches. Tamanho+mtime pode colidir ou mudar numa cópia idêntica.
@@ -110,7 +108,7 @@ resvg = { version = "0.48.1", default-features = false }
 # O `AEECLSID_SQLMGR` do console é SQLite de verdade: os `.db` que a Z-Wheel traz no pacote
 # começam com "SQLite format 3", e as consultas dela usam `INSERT OR REPLACE`, `COLLATE NOCASE`
 # e JOIN. Reimplementar isso seria reinventar mal. A build é embutida para não depender de
-# biblioteca do sistema, e a toolchain C já é necessária por causa do unicorn.
+# biblioteca do sistema.
 rusqlite = { version = "0.37", features = ["bundled"] }
 # Rasterização de glifo para o `IDISPLAY_DrawText`. Já vinha na árvore por causa do `eframe`,
 # então usá-la direto não acrescenta build nenhuma — e escrever um interpretador de TrueType
@@ -122,26 +120,27 @@ zune-jpeg = { version = "0.5.15", default-features = false, features = ["std"] }
 # Action Hero 3D, Need For Speed, zeetris e a Z-Wheel. Um decodificador de Layer III é Huffman,
 # requantização, IMDCT e banco de síntese, e escrever isso sem uma referência para comparar dá
 # som que toca e sai errado. O symphonia é Rust puro (sem build C) e MPL-2.0, que se combina com
-# o GPLv2 daqui. Só o MP3 entra: o resto dos codecs fica fora.
+# a licença GPLv2+ daqui. Só o MP3 entra: o resto dos codecs fica fora.
 # `mp3` é a música da maioria dos jogos; `ogg`/`vorbis` é a de quem entrega Opus/Vorbis —
 # o Turma da Mônica tem **86 sons** em Ogg, e sem a feature o jogo roda em silêncio absoluto
 # (medido: pico 0,000 no relatório da varredura). É o mesmo decodificador, com duas caixas a mais.
 symphonia = { version = "0.5.5", default-features = false, features = ["mp1", "mp2", "mp3", "ogg", "vorbis"] }
 discord-rich-presence = { version = "1.1", optional = true }
-ureq = "3"
 sevenz-rust2 = "0.23.0"
 # Síntese por banco de amostras, ver a feature `soundfont`. MIT e Rust puro: nada de C, nada de
 # biblioteca de host, e por isso pode entrar no core Libretro.
 rustysynth = { version = "1.3.6", optional = true }
 
-# Tudo o que existe **só onde o unicorn compila**, como as dependências de sistema abaixo.
+# O `dynarmic` recompila A32 para o código nativo do host. O Kingdom Hearts precisa dele
+# porque a extensão 3D roda o próprio rasterizador ARM por milhões de pixels. Dois alvos ficam
+# de fora, e nos dois o núcleo é o interpretador em `src/cpu/interpretador.rs`:
 #
-# O `unicorn-engine` traz o QEMU em C, e o QEMU do Windows monta `setjmp-wrapper-win32.asm` com o
-# `ml` do MSVC — que só existe para x86 e x64. Não há montador MASM para ARM64, então naquele alvo
-# o `unicorn-engine-sys` nem chega a compilar (o `ml` não é encontrado). Onde ele falta, o motor
-# usa o `dynarmic`, que recompila os blocos A32 e sustenta o mesmo contrato de `CpuBackend`.
-[target.'cfg(not(all(target_os = "windows", target_arch = "aarch64")))'.dependencies]
-unicorn-engine = { version = "2.1.5", optional = true }
+# - no `wasm32` não há para onde recompilar — o navegador não executa o bloco que o JIT emitiria;
+# - no iOS o sistema recusa a página executável que o alocador pede. O oaknut, no
+#   `TARGET_OS_IPHONE`, mapeia a página como executável e depois troca a proteção com `mprotect`,
+#   e isso é privilégio do sistema — o simulador também é iPhone OS.
+[target.'cfg(not(any(target_arch = "wasm32", target_os = "ios")))'.dependencies]
+dynarmic = "0.1.3"
 
 # O `ioctl` que lê a escala dos sensores de movimento em `/dev/input`. Já vinha na árvore por
 # várias dependências, então não acrescenta build nenhuma.

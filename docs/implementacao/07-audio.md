@@ -122,6 +122,23 @@ Quando o `data` passa mais de 4 KB do fim que o `RIFF` declara, vale o `RIFF`; u
 poucos bytes é arquivo editado com o `RIFF` desatualizado, e não corta nada. Enquanto os sons eram
 lidos no `Play`, esse buffer já tinha outro conteúdo e o defeito não aparecia.
 
+**Mas o `RIFF` é a leitura de um instante, e a Turma da Mônica escreve depois dele.** As falas do
+jogo são Ogg, decodificadas pelo próprio jogo (ele traz o Tremor) num buffer de 882.000 bytes cujo
+cabeçalho é de um molde: `RIFF` de 56.352 (0,638 s, o tamanho do `sfx_bal_all.wav`) e `data` do
+buffer inteiro. O `RIFF` nunca muda. No `Play` há uns 0,2 s decodificados, e o resto chega cerca de
+0,3 s à frente do que toca. Lida de uma vez e cortada no `RIFF`, a fala durava 0,638 s; o `DONE`
+chegava, e o jogo apagava o buffer e parava de decodificar — o som morria no começo.
+
+Por isso um WAVE cujo `data` passa do `RIFF` toca **lendo o buffer do jogo enquanto toca**
+(`Machine::abre_buffer_vivo`), e só cresce além do `RIFF` com o que for escrito ali **depois** do
+`Play`. O lixo do Super League já estava lá e não conta; a fala da Mônica, sim. O fim é projetado
+no do que já foi escrito mais 0,3 s, mas quem encerra a fala é o próprio jogo, com `Stop`: medido,
+a `prof_sel_mon_01` (4,71 s) recebe o `Stop` 4,72 s depois do `Play`.
+
+Esta página chegou a registrar o `sfx_bal_all.wav` como **prova** da regra do `RIFF` para esse
+buffer. Não era: o efeito de 0,63 s é só o molde do cabeçalho, e as falas que passam por ali têm
+até cinco segundos.
+
 Para conferir sem ouvir, o `zeebx sessao <zip> --dump-audio=A.wav` grava a mistura da sessão da
 janela, no ritmo do relógio virtual.
 
@@ -332,10 +349,11 @@ ligado em `tools/game_probe.cpp`**. O `frontends/standalone/main.cpp` constrói 
 ele, então cai no sintetizador tosco — que é *mais escuro* ainda (rolloff 880 Hz). Quem comparar
 pelo standalone não está ouvindo soundfont nenhum; o binário com o banco é o `game_probe`.
 
-**Licença: o código do Zeebulator não serve.** Ele é **GPLv3** e o Zeebx é **GPL-2.0-only**; as
-duas não se combinam. O que serve é o que está sob licença própria: o **TinySoundFont** (MIT), o
-`rustysynth` (MIT, Rust puro) e o próprio banco GeneralUser GS (licença permissiva, embora o texto
-admita origem desconhecida de parte das amostras). O `oxisynth` é LGPL-2.1 e fica de fora.
+**Licença: o código do Zeebulator agora combina com a licença do projeto.** Ele é **GPLv3** e o
+Zeebx é **GPL-2.0-or-later**. O caminho comum continua usando o que está sob licença própria: o
+**TinySoundFont** (MIT), o `rustysynth` (MIT, Rust puro) e o próprio banco GeneralUser GS (licença
+permissiva, embora o texto admita origem desconhecida de parte das amostras). O `oxisynth` é
+LGPL-2.1 e fica de fora.
 
 **O custo, medido:** o banco tem **10,3×** o tamanho da árvore inteira do Zeebulator, pede
 **+64 MiB de RSS** na carga (o `tsf` converte tudo para `float`) e levaria o `.so` do core de
@@ -462,9 +480,8 @@ A tabela de timbres chegou ao limite do que uma soma de harmônicos alcança. O 
 **material de amostra**, e para isso entrou um sintetizador de SoundFont: `rustysynth`, MIT e Rust
 puro.
 
-**Por que `rustysynth` e não o código do Zeebulator.** O Zeebulator é **GPLv3** e o Zeebx é
-`GPL-2.0-only`; as duas licenças não se combinam, então nada dele pode ser copiado — nem o
-invólucro em volta do TinySoundFont. O `rustysynth` é MIT, então pode.
+**Por que `rustysynth` e não o código do Zeebulator.** Mesmo com a licença compatível, o caminho
+comum continua usando `rustysynth`, porque ele é MIT, Rust puro e serve para todos os builds.
 
 **Por que o banco não vem embutido.** São 32 MB (o GeneralUser GS mede 32.319.396 B) e a carga pede
 +64 MiB de RSS, porque as amostras viram `float`. Embutido, o `.so` do core iria de 15,6 MB para
@@ -572,6 +589,38 @@ A escolha de **avisar** em vez de acrescentar mais um diretório de busca é del
 mais é um palpite, e palpite em caminho de arquivo se paga com "não funciona e não diz por quê". A
 compilação sem a feature também responde — dizendo que não tem o sintetizador —, porque silêncio
 aqui vira a mesma conclusão errada.
+
+#### Escolher o banco: o do firmware, quando alguém o tiver
+
+O console tem o banco dele no firmware, que ainda não lemos, e a diferença de instrumentos que se
+ouve contra o aparelho pode vir daí. Para quem tem o `.sf2` do firmware — ou só prefere outro banco
+— a escolha é por frontend, e vale a partir do próximo jogo aberto, porque o banco é aberto quando
+a máquina nasce (`soundfont::define_banco`):
+
+| frontend | onde se escolhe |
+|---|---|
+| Qt e egui | Configurações › Áudio, com "Procurar…" e "Usar o automático" |
+| Android | Ajustes › Áudio, pelo navegador de pastas do próprio app |
+| headless | `[audio] soundfont = CAMINHO` no `config.ini`, ou `--soundfont=CAMINHO` |
+| Libretro | a opção `zeebx_soundfont`, com os `.sf2` da pasta de bancos do aparelho |
+
+O Libretro lista em vez de pedir um caminho porque uma opção de core é uma lista fixa de valores.
+
+A busca fica: o escolhido, depois o `ZEEBX_SOUNDFONT`, depois o primeiro `.sf2` da pasta. Um
+escolhido que sumiu vira aviso no registro, e a busca segue. O `ZEEBX_SOUNDFONT` era ignorado até
+aqui — só uma função que ninguém chamava o lia —, embora o aviso de "sem banco" mandasse usá-lo.
+
+#### Reverb e chorus: quem dosa é a partitura
+
+O banco tocava com `enable_reverb_and_chorus = false`, sob o argumento de que o console soa seco.
+Isso não foi medido, e o desligamento tinha um efeito colateral: a partitura manda por canal quanto
+de reverb (CC91) e de chorus (CC93) cada instrumento leva, e sem a unidade de efeito esses
+controles caíam no vazio. Toda nota terminava seca, o que soa como liberação cortada.
+
+Agora os efeitos ficam ligados por padrão, e cada frontend tem como desligar
+(`soundfont::define_efeitos`, que vale a partir do próximo jogo): Configurações › Áudio no Qt e
+no egui, Ajustes › Áudio no Android, `[audio] midi_effects` no headless e `zeebx_midi_efeitos` no
+Libretro.
 
 #### O custo de renderizar a música, e o defeito que ele revelou
 

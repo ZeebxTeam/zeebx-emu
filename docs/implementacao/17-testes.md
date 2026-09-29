@@ -29,9 +29,9 @@ cargo test recorte
 cargo test --release -- --ignored --nocapture
 ```
 
-São 308 funções de teste, todas junto do código que testam, e 5 marcadas com `#[ignore]`.
-Elas ficam de fora porque **tempo não é resultado reproduzível**: quatro medem a vazão do núcleo
-ARM (`cpu::unicorn::speed`) e uma olha o cache de saves do sistema de arquivos de verdade.
+São centenas de funções de teste, todas junto do código que testam, e algumas marcadas com
+`#[ignore]`. Elas ficam de fora porque **tempo não é resultado reproduzível** ou porque olham o
+cache de saves do sistema de arquivos de verdade.
 
 O `--nocapture` mostra o que os testes imprimem. Sem ele, `cargo test` engole a saída de quem
 passou — e nas varreduras é justamente a saída que interessa.
@@ -223,7 +223,7 @@ errado do código.
 
 ```bash
 # vazão do núcleo ARM e custo de entrar no guest
-cargo test --release cpu::unicorn::speed -- --ignored --nocapture
+cargo run --release -p zeebx-standalone-egui -- bench-dynarmic <jogo.mod>
 
 # um jogo sem janela, com o relatório completo e o resumo de chamadas
 cargo run --release -- run "roms/Quake.zip" --seconds=6

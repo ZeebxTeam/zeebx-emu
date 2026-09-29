@@ -798,7 +798,7 @@ pub fn decode(data: &[u8]) -> Option<crate::audio::wav::Sound> {
     if samples.iter().all(|s| *s == 0.0) {
         return None;
     }
-    normaliza(&mut samples);
+    aplica_ganho_fixo(&mut samples);
     Some(crate::audio::wav::Sound {
         rate: RATE,
         channels: 1,
@@ -903,19 +903,44 @@ fn toca_voz(voz: &Voz, samples: &mut [f32], tabelas: &[Tabela]) {
     }
 }
 
-/// Deixa o pico em 0,8, sem cortar.
+/// O ganho fixo da tabela de timbres, aplicado à soma crua das vozes.
 ///
-/// Somar dezenas de vozes passa de 1,0 com facilidade, e o que passa de 1,0 **corta** — vira
-/// distorção no misturador, que é o defeito mais fácil de confundir com "o sintetizador é ruim".
-/// Escalar a música inteira preserva a proporção entre as vozes.
-pub(crate) fn normaliza(samples: &mut [f32]) {
-    let pico = samples.iter().fold(0.0f32, |a, s| a.max(s.abs()));
-    if pico <= 0.0 {
-        return;
-    }
-    let fator = 0.8 / pico;
+/// A função que o aplica chamava-se `normaliza`, e o nome passou a mentir quando a política mudou:
+/// ela não normaliza mais nada. Agora é `aplica_ganho_fixo`, que é o que ela faz.
+///
+/// **É o número que a medição pediu, e substitui a normalização por pico.** A soma crua das vozes
+/// desta tabela sai bem acima de 1,0 — medido nas doze trilhas reais do Double Dragon, o pico
+/// bruto vai de 3,09 (o jingle curto) a 8,75 (a música mais densa). Escalar cada música pelo
+/// **próprio** pico, como se fazia antes, punha todas em 0,8 e com isso apagava exatamente essa
+/// diferença: o jingle de quatro segundos saía do misturador tão alto quanto a trilha de combate,
+/// e mais alto que ela em energia média (RMS 0,220 contra 0,158).
+///
+/// Com ganho fixo os picos passam a 0,28–0,79 e a diferença volta. O número é 0,09 porque é o que
+/// iguala a **energia média** dos dois caminhos: a 0,09 a tabela mede RMS médio 0,101 nas doze
+/// trilhas, e o banco de amostras mede 0,101 nas mesmas doze. Assim trocar o sintetizador no menu
+/// muda o timbre, e não o volume.
+const GANHO_TABELA: f32 = 0.09;
+
+/// O teto do pico depois da soma, igual ao do caminho do banco.
+const TETO: f32 = 0.95;
+
+/// Aplica o ganho fixo e, só se ainda assim passar do teto, desce o excesso.
+///
+/// **Ganho fixo, e não normalização — essa é a correção.** Normalizar iguala o pico de toda
+/// música e apaga a diferença de intensidade entre elas; aqui uma música baixa continua baixa.
+/// O limitador existe só para o caso extremo: o que passa de 1,0 **corta**, e corte é distorção no
+/// misturador — o defeito mais fácil de confundir com "o sintetizador é ruim". Quando ele atua,
+/// escala a música inteira, o que preserva a proporção entre as vozes dela.
+pub(crate) fn aplica_ganho_fixo(samples: &mut [f32]) {
     for amostra in samples.iter_mut() {
-        *amostra *= fator;
+        *amostra *= GANHO_TABELA;
+    }
+    let pico = samples.iter().fold(0.0f32, |a, s| a.max(s.abs()));
+    if pico > TETO {
+        let fator = TETO / pico;
+        for amostra in samples.iter_mut() {
+            *amostra *= fator;
+        }
     }
 }
 
@@ -1224,7 +1249,10 @@ mod tests {
             (soma / n as f32).abs()
         };
         let certo = correlacao(440.0);
-        assert!(certo > 0.05, "nota quase muda: {certo}");
+        // O limiar acompanha [`GANHO_TABELA`]: com ganho fixo uma nota sozinha não é mais
+        // esticada até o teto, então o que se cobra aqui é que ela **exista**, e a prova de que
+        // ela é a nota certa continua sendo a comparação com os semitons vizinhos, logo abaixo.
+        assert!(certo > 0.01, "nota quase muda: {certo}");
         assert!(
             certo > correlacao(466.16) * 3.0,
             "440 Hz ({certo}) não se destacou do semitom vizinho ({})",
@@ -1248,6 +1276,30 @@ mod tests {
         assert!((de(60) - 261.63).abs() < 0.01, "{}", de(60));
     }
 
+    /// Música baixa continua baixa: o ganho é fixo, e o limitador **não** sobe nada.
+    ///
+    /// É a prova do defeito que a política antiga tinha. Normalizando pelo pico, duas músicas de
+    /// intensidades diferentes saíam com o mesmo pico, e o jogo perdia a diferença entre elas —
+    /// medido nas trilhas reais do Double Dragon, o jingle curto saía com mais energia média que a
+    /// música de combate. Aqui a de força 40 tem de continuar mais baixa que a de força 127.
+    #[test]
+    fn o_ganho_e_fixo_e_nao_iguala_musicas_de_intensidades_diferentes() {
+        let musica = |forca: u8| {
+            let trilha = [
+                0x00, 0x90, 60, forca, //
+                96, 0x80, 60, 0x40, //
+                0x00, 0xff, 0x2f, 0x00,
+            ];
+            let som = decode(&smf(96, &trilha)).expect("é música");
+            som.samples.iter().fold(0.0f32, |a, s| a.max(s.abs()))
+        };
+        let fraca = musica(40);
+        let forte = musica(127);
+        assert!(fraca < forte * 0.6, "fraca {fraca} não ficou abaixo da forte {forte}");
+        assert!(fraca > 0.0, "a fraca sumiu: {fraca}");
+        assert!(forte <= TETO, "a forte estourou: {forte}");
+    }
+
     /// A percussão sai como ruído: som de verdade, e sem altura definida.
     #[test]
     fn a_percussao_soa_sem_altura() {
@@ -1259,7 +1311,9 @@ mod tests {
         ];
         let som = decode(&smf(96, &trilha)).expect("percussão é música");
         let pico = som.samples.iter().fold(0.0f32, |a, s| a.max(s.abs()));
-        assert!(pico > 0.5, "percussão quase muda: {pico}");
+        // O limiar acompanha [`GANHO_TABELA`]: desde que o ganho é fixo, e não normalização por
+        // pico, uma batida sozinha **não** sobe até o teto — ela vale o que vale.
+        assert!(pico > 0.03, "percussão quase muda: {pico}");
     }
 
     /// Nota sem `Note Off` não fica soando para sempre.
@@ -1282,8 +1336,13 @@ mod tests {
         assert!(ultimas.iter().all(|s| s.abs() < 1e-6));
     }
 
-    /// O pico fica em 0,8: acima de 1,0 o misturador cortaria, e corte soa como sintetizador
-    /// ruim sem ser.
+    /// O pico não passa do teto: acima de 1,0 o misturador cortaria, e corte soa como
+    /// sintetizador ruim sem ser.
+    ///
+    /// **O que se cobra aqui mudou junto com a política de ganho.** Antes o pico era *exatamente*
+    /// 0,8 porque cada música era normalizada pelo próprio pico; agora o ganho é fixo
+    /// ([`GANHO_TABELA`]) e o limitador só entra quando a soma ainda assim passa de [`TETO`].
+    /// Trinta notas na força máxima são justamente esse caso extremo.
     #[test]
     fn muitas_vozes_juntas_nao_estouram() {
         let mut trilha = Vec::new();
@@ -1293,7 +1352,8 @@ mod tests {
         trilha.extend([96, 0xff, 0x2f, 0x00]);
         let som = decode(&smf(96, &trilha)).expect("é música");
         let pico = som.samples.iter().fold(0.0f32, |a, s| a.max(s.abs()));
-        assert!((0.79..=0.81).contains(&pico), "pico {pico}");
+        assert!(pico <= TETO, "estourou: {pico}");
+        assert!(pico > 0.1, "ficou quase mudo: {pico}");
     }
 
     /// Energia de uma faixa, por um passa-baixa de um polo — grave quando `alta` é falso, e o

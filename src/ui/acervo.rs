@@ -62,6 +62,46 @@ fn escolhe<'a>(mapa: &'a HashMap<String, String>, idioma: &str) -> Option<&'a st
         .map(String::as_str)
 }
 
+/// O nome com que um jogo aparece: o oficial da Z-Wheel no idioma da interface, quando ela conhece
+/// o jogo, e o da pasta ou do pacote no resto.
+pub fn titulo_de(acervo: Option<&Acervo>, jogo: &crate::library::Game, idioma: &str) -> String {
+    jogo.clsid
+        .and_then(|classe| acervo?.ficha(classe))
+        .and_then(|ficha| ficha.titulo(idioma))
+        .map(str::to_string)
+        .unwrap_or_else(|| jogo.title.clone())
+}
+
+/// A imagem de um jogo na biblioteca, caindo na `reserva` quando ele não tem nenhuma.
+///
+/// A capa deixada ao lado do jogo é escolha de quem montou a pasta, e vale mais que a da Z-Wheel;
+/// a da Z-Wheel vale mais que o ícone do `.mif`. A capa ao lado já está no `jogo.art`, quando
+/// existe; `capa_ao_lado` diz se ela existe, e vem de quem chama — é o [`capa_ao_lado`], que lê o
+/// disco, e quem desenha a lista toda precisa guardar a resposta em vez de perguntar a cada quadro.
+pub fn imagem_do_jogo<'a>(
+    jogo: &'a crate::library::Game,
+    ficha: Option<&'a Ficha>,
+    reserva: Option<&'a Image>,
+    capa_ao_lado: bool,
+) -> Option<&'a Image> {
+    let capa = ficha.and_then(|ficha| ficha.capa.as_ref()).filter(|_| !capa_ao_lado);
+    capa.or(jogo.art.as_ref()).or(reserva)
+}
+
+/// Se há uma capa deixada ao lado do jogo. Lê o disco.
+pub fn capa_ao_lado(jogo: &crate::library::Game) -> bool {
+    crate::library::cover(&jogo.path).is_some()
+}
+
+/// Se a imagem é ampliada sem interpolar num quadro deste tamanho.
+///
+/// Um ícone de 26 pixels aparece ampliado quatro vezes: interpolar viraria um borrão, e o bloco
+/// quadrado é o que o console mostrava. Uma imagem grande já entra reduzida, e aí a interpolação é
+/// que evita o serrilhado.
+pub fn amplia_sem_interpolar(imagem: &Image, quadro: [f32; 2]) -> bool {
+    (imagem.width as f32) < quadro[0] && (imagem.height as f32) < quadro[1]
+}
+
 /// As fichas de todos os jogos que a Z-Wheel conhece, pelo ClassID.
 #[derive(Debug, Default)]
 pub struct Acervo {

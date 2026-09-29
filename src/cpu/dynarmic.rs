@@ -1,7 +1,5 @@
 //! Backend ARM sobre Dynarmic.
 //!
-//! O Unicorn usa o TCG do QEMU; ele é robusto, mas o renderer ARM que o Kingdom Hearts traz
-//! em `swv21brew.mod` executa centenas de milhões de instruções por poucos segundos de jogo.
 //! Dynarmic recompila os blocos A32 para o código nativo do host. Este arquivo mantém a mesma
 //! fronteira do [`CpuBackend`]: os endereços não mapeados das vtables BREW continuam sendo a
 //! parada que devolve o controle ao despachante Rust.
@@ -25,8 +23,8 @@ const MODO_USUARIO: u32 = 0x10;
 /// O bit `T` do `CPSR`: ligado, o núcleo busca instruções Thumb.
 const CPSR_THUMB: u32 = 1 << 5;
 
-/// Limite defensivo da string recebida por `SYS_WRITE0`. É o mesmo contrato do backend
-/// Unicorn: uma string sem terminador não pode prender o host em uma leitura sem fim.
+/// Limite defensivo da string recebida por `SYS_WRITE0`: uma string sem terminador não pode
+/// prender o host em uma leitura sem fim.
 const MAX_SEMIHOSTING_STRING: u32 = 4096;
 
 /// Granularidade que o Dynarmic usa para indexar código recompilado.
@@ -111,6 +109,25 @@ struct Estado {
     instrucoes: Cell<u64>,
     limite: Cell<u64>,
     parada: Cell<Parada>,
+    /// Quantas vezes o host entrou no JIT, e quanto tempo ficou lá dentro.
+    ///
+    /// **É o número que separa o guest do despacho.** Cada chamada de API é uma saída e uma
+    /// reentrada, então o que sobra do relógio depois de descontar o tempo passado dentro do
+    /// `jit.run` é, quase todo, trampolim mais corpo do método. Sem esta conta o custo por
+    /// chamada de API é desconhecido — e foi tratando um número da era do Unicorn como atual que
+    /// a revisão externa errou. Ver [`CpuBackend::relato_do_jit`].
+    ///
+    /// Ficam aqui, e não no `DynarmicCpu`, porque o empréstimo do `Jit` está vivo durante toda a
+    /// `run`: um `Cell` no estado atravessa o empréstimo imutável sem brigar com ele.
+    ///
+    /// **Contar é de graça; cronometrar não é.** Medido: um par de `Instant::now()` por entrada
+    /// custava **40% do relógio** nesta máquina (o `Instant::now` daqui é chamada de sistema, não
+    /// o caminho rápido do vDSO), e são 1,3 milhão de entradas num Quake de quinze segundos. Por
+    /// isso a contagem é sempre ligada — uma soma num `Cell` — e o relógio é **amostrado** e só
+    /// quando alguém pede o perfil de custo. Ver [`liga_medicao_do_jit`].
+    entradas_no_jit: Cell<u64>,
+    nanos_no_jit: Cell<u64>,
+    amostras_no_jit: Cell<u64>,
     jit: Cell<*mut Jit<Estado>>,
     /// A tabela de páginas do Dynarmic: `PAGINAS` ponteiros, o início de cada página no host, ou
     /// nulo para a página que precisa passar pelas callbacks. Ver [`DynarmicCpu::tabela`].
@@ -244,7 +261,7 @@ impl Callbacks for Estado {
     extern "C" fn call_svc(cb: &mut CallbackImpl<Self>, swi: u32) {
         // `SVC #0xAB` é o semihosting ARM que Peggle e Zuma usam para log. Não é uma
         // interrupção BREW: depois de atendê-la a execução continua na instrução seguinte.
-        // Reconhecemos as duas operações de saída que o Unicorn já suporta e devolvemos zero
+        // Reconhecemos as duas operações de saída que os jogos observados usam e devolvemos zero
         // nas outras, como o monitor ARM faz para a maioria das consultas inofensivas.
         if swi == 0xab {
             let jit = unsafe { &mut *cb.jit.get() };
@@ -306,6 +323,9 @@ impl Callbacks for Estado {
         }
     }
 }
+
+/// De quantas em quantas entradas no JIT o relógio é lido, quando a medição está ligada.
+const AMOSTRA_DO_JIT: u64 = 64;
 
 /// Recompilador A32. Fica separado do backend padrão até a equivalência ser estabelecida jogo
 /// a jogo; criar a CPU não aloca o JIT, porque o mapa do guest só existe em `reset`.
@@ -399,6 +419,18 @@ impl DynarmicCpu {
         };
         jit.marca_codigo_sujo(addr, len);
         let paginas = std::mem::take(&mut *jit.codigo_sujo.borrow_mut());
+        // **Quantas páginas de código caíram por escrita do host.** É o número que responde se
+        // leitura/escrita em página já executada é evento raro (nada a fazer) ou caminho quente
+        // (candidato a leitura direta com armadilha de escrita). Sem ele, o custo do SMC é
+        // invisível no perfil: aparece diluído no despacho, como "alguma chamada de API".
+        if !paginas.is_empty() {
+            crate::registro!(
+                crate::registro::Nivel::Depuracao,
+                "cpu",
+                "escrita em {addr:#010x}+{len} invalidou {} página(s) de código",
+                paginas.len()
+            );
+        }
         for pagina in paginas {
             jit.invalidate_cache_range(pagina * PAGE, PAGE as usize);
         }
@@ -408,8 +440,8 @@ impl DynarmicCpu {
 impl CpuBackend for DynarmicCpu {
     fn reset(&mut self, mem: &GuestMemory) -> Result<(), CpuError> {
         // `GuestMemory` é deliberadamente construído uma vez antes da execução. Copiar o mapa
-        // para a memória que as callbacks possuem mantém a mesma semântica do Unicorn: a API
-        // Rust e o ARM enxergam os mesmos bytes a partir daqui.
+        // para a memória que as callbacks possuem mantém o contrato do backend: a API Rust e o
+        // ARM enxergam os mesmos bytes a partir daqui.
         let mut copia = GuestMemory::new();
         for regiao in mem.regions() {
             copia
@@ -429,6 +461,21 @@ impl CpuBackend for DynarmicCpu {
         for pagina in 0..PAGINAS as u32 {
             self.tabela[pagina as usize] = ponteiro_da_pagina(&copia, pagina);
         }
+        // Quantas páginas dos 32 bits do guest têm acesso direto e quantas ficaram na callback.
+        // É o primeiro número a olhar quando se discute custo de memória do JIT: a diferença
+        // entre as duas colunas é o que passa pelo Rust a cada leitura e escrita.
+        let diretas = self
+            .tabela
+            .iter()
+            .filter(|ponteiro| !ponteiro.is_null())
+            .count();
+        crate::registro!(
+            crate::registro::Nivel::Depuracao,
+            "cpu",
+            "tabela de páginas: {diretas} de {} com acesso direto ({} region(oes))",
+            PAGINAS,
+            copia.regions().len()
+        );
         self.memoria = Rc::new(RefCell::new(copia));
         self.semihosting.borrow_mut().clear();
         let estado = Estado {
@@ -442,12 +489,22 @@ impl CpuBackend for DynarmicCpu {
             instrucoes: Cell::new(0),
             limite: Cell::new(0),
             parada: Cell::new(Parada::Nenhuma),
+            entradas_no_jit: Cell::new(0),
+            nanos_no_jit: Cell::new(0),
+            amostras_no_jit: Cell::new(0),
             jit: Cell::new(std::ptr::null_mut()),
             tabela: self.tabela.as_mut_ptr(),
         };
         let mut config = Jit::<Estado>::new_config();
         config.arch_ver(ArchVersion::V6K);
-        config.code_cache_size(64 * 1024 * 1024);
+        // 64 MiB cabe no desktop. No Switch esse bloco disputa o heap com o jogo
+        // e com a Mesa; 32 MiB ainda cobre o código traduzido do Double Dragon
+        // quando o título é aberto segurando R.
+        config.code_cache_size(if cfg!(zeebx_switch) {
+            32 * 1024 * 1024
+        } else {
+            64 * 1024 * 1024
+        });
         // Entrada = início da página no host, sem deslocamento absoluto nem bits de atributo.
         config.page_table_mask(0);
         unsafe { config.page_table(self.tabela.as_mut_ptr().cast()) };
@@ -473,6 +530,19 @@ impl CpuBackend for DynarmicCpu {
         self.jit().map_or(0, |jit| jit.instrucoes.get())
     }
 
+    fn relato_do_jit(&self) -> Option<(u64, u64, u64)> {
+        self.jit().ok().map(|jit| {
+            let entradas = jit.entradas_no_jit.get();
+            let amostras = jit.amostras_no_jit.get();
+            // A média amostrada vale para todas as entradas: nenhuma delas é especial.
+            let nanos = match amostras {
+                0 => 0,
+                n => jit.nanos_no_jit.get() / n * entradas,
+            };
+            (entradas, nanos, amostras)
+        })
+    }
+
     fn set_instructions(&mut self, valor: u64) {
         if let Ok(jit) = self.jit_mut() {
             jit.instrucoes.set(valor);
@@ -493,7 +563,7 @@ impl CpuBackend for DynarmicCpu {
         self.jit().is_ok_and(|jit| jit.get_cpsr() & CPSR_THUMB != 0)
     }
 
-    /// A vigia de escrita, como a do Unicorn: só escrita **do guest** liga o sinalizador.
+    /// A vigia de escrita: só escrita **do guest** liga o sinalizador.
     ///
     /// Sem ela o contrato padrão responde "sempre sujo", e cada chamada que desenha importava
     /// todas as superfícies inteiras. No Pac-Mania, 100 mil `IIMAGE_Draw` somavam 22 segundos
@@ -573,14 +643,22 @@ impl CpuBackend for DynarmicCpu {
         Ok(())
     }
 
+    fn fill_mem(&mut self, addr: u32, valor: u8, len: u32) -> Result<(), CpuError> {
+        self.memoria
+            .borrow_mut()
+            .fill(addr, valor, len)
+            .map_err(|e| CpuError(e.to_string()))?;
+        self.invalida_codigo_escrito(addr, len);
+        Ok(())
+    }
+
     fn run(&mut self, pc: u32, max_instructions: u64) -> Result<StopReason, CpuError> {
         let jit = self.jit_mut()?;
         // **O bit 0 do endereço é o modo, não parte do endereço.** O despachante retoma no `lr`
         // do jeito que ele veio, e o `lr` de uma chamada feita de código Thumb traz o bit 0
-        // ligado — é a convenção de interworking do ARM, e o Unicorn a aplica sozinho no
-        // `emu_start`. Aqui ela precisa ser explícita: escrevendo o endereço cru, o Zenonia,
-        // que é todo Thumb, voltava de cada API um byte adiante e o núcleo parava numa
-        // "instrução" montada com metade de duas.
+        // ligado — é a convenção de interworking do ARM. Aqui ela precisa ser explícita:
+        // escrevendo o endereço cru, o Zenonia, que é todo Thumb, voltava de cada API um byte
+        // adiante e o núcleo parava numa "instrução" montada com metade de duas.
         let cpsr = jit.get_cpsr();
         match pc & 1 {
             1 => jit.set_cpsr(cpsr | CPSR_THUMB),
@@ -594,7 +672,28 @@ impl CpuBackend for DynarmicCpu {
         jit.parada.set(Parada::Nenhuma);
         jit.limite
             .set(jit.instrucoes.get().saturating_add(max_instructions));
+        // O relógio em volta do `jit.run`, e só dele: tudo o que se passa aqui dentro é execução
+        // do guest (mais as callbacks de memória, que o próprio JIT chama). O que fica de fora é
+        // o despacho — e é aí que o trampolim vive.
+        //
+        // **Amostrado de propósito, e ligado sempre.** O `Instant::now` desta máquina é chamada de
+        // sistema, e um par por entrada custou 40% do relógio. Uma entrada em cada `AMOSTRA` mede
+        // o mesmo por 1/64 do preço — cerca de 0,6% do relógio, medido —, e por isso a partilha
+        // sai em todo relatório em vez de depender de alguém lembrar de ligá-la. A média
+        // amostrada é multiplicada pelo contador depois.
+        let entrada = jit.entradas_no_jit.get();
+        let cronometrar = entrada % AMOSTRA_DO_JIT == 0;
+        let comeco = cronometrar.then(std::time::Instant::now);
         let _ = unsafe { jit.run() };
+        if let Some(comeco) = comeco {
+            jit.nanos_no_jit.set(
+                jit.nanos_no_jit
+                    .get()
+                    .saturating_add(comeco.elapsed().as_nanos() as u64),
+            );
+            jit.amostras_no_jit.set(jit.amostras_no_jit.get().saturating_add(1));
+        }
+        jit.entradas_no_jit.set(entrada.saturating_add(1));
         // Não há invalidação para páginas de dados: só código previamente executado chega aqui.
         // É seguro mexer no cache depois de o JIT devolver o controle, nunca da callback.
         let paginas = std::mem::take(&mut *jit.codigo_sujo.borrow_mut());
@@ -662,6 +761,35 @@ mod tests {
         let mut cpu = cpu_with(&code); // mov r0, #0x37 ; b .
         assert_eq!(cpu.run(0, 1).unwrap(), StopReason::Budget);
         assert_eq!(cpu.read_reg(Reg::R0), 0x37);
+    }
+
+    /// **Uma instrução exclusiva não pode derrubar o processo.**
+    ///
+    /// O emissor x64 do Dynarmic exige um `global_monitor` **no momento da tradução** de
+    /// LDREX/STREX: `EmitExclusiveReadMemory` faz `ASSERT(conf.global_monitor != nullptr)` e depois
+    /// o desreferencia (`emit_x64_memory.cpp.inc`). O invólucro nunca preencheu esse campo, e o
+    /// crate 0.1.3 não tem setter (`a32.rs` faz `unsafe { std::mem::zeroed() }` com um `todo`), ou
+    /// seja: o campo nasce nulo. Nada rebaixa essas instruções quando o monitor falta.
+    ///
+    /// 40 dos 62 `.mod` do acervo contêm esse padrão em algum lugar. O teste monta
+    /// `ldrex r0, [r1]` seguido de `b .` e executa o bloco: sem monitor, a tradução aborta e o
+    /// processo morre antes de a asserção ser lida.
+    ///
+    /// **Medido, e por isso ele fica ignorado em vez de verde**: em 24/09/2026 este teste matou o
+    /// processo com `assertion failed: conf.global_monitor != nullptr` e `signal: 6, SIGABRT`. O
+    /// conserto não é nosso — precisa de um patch no `dynarmic` 0.1.3 (dôr o campo
+    /// `global_monitor` ao `Config` público), e o crate não tem setter. Com o patch, tirar o
+    /// `#[ignore]` e este teste passa a ser a guarda.
+    #[ignore = "prova um defeito conhecido da dependência; ver o comentário acima"]
+    #[test]
+    fn a_instrucao_exclusiva_nao_derruba_o_processo() {
+        // `ldrex r0, [r1]` (0xE1910F9F) e `b .` (0xEAFFFFFE).
+        let code = [0xe191_0f9fu32.to_le_bytes(), 0xeaff_fffeu32.to_le_bytes()].concat();
+        let mut cpu = cpu_with(&code);
+        // r1 aponta para a memória de dados, para a leitura ter um endereço mapeado.
+        cpu.write_reg(Reg::R1, 0x1000);
+        assert_eq!(cpu.run(0, 2).unwrap(), StopReason::Budget);
+        assert_eq!(cpu.read_reg(Reg::R0), 0, "a memória começa zerada");
     }
 
     #[test]
@@ -756,50 +884,5 @@ mod tests {
         cpu.write_reg(Reg::Lr, RETURN_MAGIC);
         assert_eq!(cpu.run(0, 10).unwrap(), StopReason::Returned);
         assert_eq!(cpu.read_reg(Reg::R0), 2);
-    }
-}
-
-impl DynarmicCpu {
-    /// **Os ganchos de depuração do unicorn, recusados explicitamente.**
-    ///
-    /// `trace_code`, `watch`, `set_wall_limit`, `enable_profile`, `steps`, `writes`, `profile` e
-    /// `wall_expired` são do unicorn: ele para a execução onde se pede. O dynarmic recompila
-    /// blocos, e não oferece esses ganchos. Este bloco existe para o binário **compilar** onde o
-    /// unicorn não existe — o Windows ARM64, onde o QEMU nem monta —, e para a recusa ser dita em
-    /// voz alta em vez de virar silêncio: um `--trace` que não mostra nada e não explica por quê
-    /// custa mais caro do que um erro claro.
-    ///
-    /// As leituras devolvem vazio porque não têm o que devolver; quem pergunta por elas com uma
-    /// faixa ou um endereço recebe o erro acima antes.
-    fn sem_unicorn(&self) -> CpuError {
-        CpuError("este gancho de depuração precisa do backend unicorn, que não existe neste alvo".to_string())
-    }
-
-    pub fn trace_code(&mut self, _begin: u32, _end: u32, _limite: usize) -> Result<(), CpuError> {
-        Err(self.sem_unicorn())
-    }
-
-    pub fn watch(&mut self, _base: u32, _tamanho: u32) -> Result<(), CpuError> {
-        Err(self.sem_unicorn())
-    }
-
-    pub fn set_wall_limit(&mut self, _limite: std::time::Duration) {}
-
-    pub fn enable_profile(&mut self) {}
-
-    pub fn wall_expired(&self) -> bool {
-        false
-    }
-
-    pub fn steps(&self) -> Vec<(u32, u32, u32)> {
-        Vec::new()
-    }
-
-    pub fn writes(&self) -> Vec<super::Write> {
-        Vec::new()
-    }
-
-    pub fn profile(&self) -> Vec<(u32, u64)> {
-        Vec::new()
     }
 }

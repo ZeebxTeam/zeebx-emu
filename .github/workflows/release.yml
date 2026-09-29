@@ -6,10 +6,15 @@
 #
 # Os nomes dizem qual formato é qual:
 #
-#   zeebx-standalone-linux-x86_64.deb        o emulador com a interface, para instalar
+#   zeebx-standalone-qt-linux-x86_64.deb     o emulador com a interface Qt, a principal, para instalar
+#   zeebx-standalone-egui-linux-x86_64.deb   o mesmo com a interface egui, legada
 #   zeebx-headless-linux-x86_64.zip          o binário sem interface, para quem tem frontend próprio
 #   zeebx-android-arm64-v8a.apk              o aplicativo de Android
+#   zeebx-ios-simulator.zip                  o aplicativo de iOS, para o simulador, com o leia-me
+#   zeebx-ios.zip                            o IPA para o AltStore clássico, com o leia-me
 #   zeebx_libretro-linux-aarch64.zip         o core Libretro, com o `.info`, para RetroArch
+#   zeebx_libretro-wasm.zip                  o mesmo core em WebAssembly, para o ROMBundler
+#   zeebx_libretro-switch.zip                o core como `.a` estático, para o ROMBundler ligar no Switch
 #
 # O APK sai assinado com a chave de depuração, que é a que o Gradle gera sozinho. Serve para
 # instalar de lado (`adb install`), **não** para a Play Store: aquela pede a chave de publicação,
@@ -40,8 +45,15 @@ permissions:
   contents: write
 
 jobs:
-  standalone:
-    name: standalone ${{ matrix.nome }}
+  # O frontend Qt (`frontends/qt-standalone`, binário `zeebx-qt`), a interface principal:
+  # `zeebx-standalone-qt-*`. Os passos moram no `qt.yml`, que monta e abre cada instalador.
+  standalone-qt:
+    uses: ./.github/workflows/qt.yml
+
+  # O frontend do egui (`frontends/egui-standalone`, binário `zeebx`), legado:
+  # `zeebx-standalone-egui-*`.
+  standalone-egui:
+    name: standalone-egui ${{ matrix.nome }}
     runs-on: ${{ matrix.sistema }}
     strategy:
       fail-fast: false
@@ -60,25 +72,25 @@ jobs:
             sistema: macos-15-intel
             formatos: dmg
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.nome }}
+          key: egui-${{ matrix.nome }}-${{ matrix.sistema }}
 
       - name: Dependências do Linux
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake pkg-config libasound2-dev libudev-dev \
-            libxkbcommon-dev libwayland-dev libgl1-mesa-dev libx11-dev libxcursor-dev \
-            libxrandr-dev libxi-dev libfuse2
+          sudo apt-get install -y cmake ninja-build pkg-config python3 libclang-dev \
+            libglib2.0-dev libasound2-dev libudev-dev libxkbcommon-dev libwayland-dev \
+            libgl1-mesa-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev libfuse2
 
       - name: Dependências do macOS
         if: runner.os == 'macOS'
-        run: brew install cmake || true
+        run: brew install cmake ninja pkg-config || true
 
       - name: cargo-packager
         run: cargo install cargo-packager --locked
@@ -88,17 +100,41 @@ jobs:
       # compilado neste job, e testá-lo num job próprio seria pagar a compilação duas vezes.
       - name: Testes
         continue-on-error: true
-        run: cargo test --release --locked -p zeebx -p zeebx-classical-standalone -p zeebx-headless
+        run: cargo test --release --locked -p zeebx -p zeebx-standalone-egui -p zeebx-headless
 
       # **Roda no diretório do frontend, e não na raiz.** O `cargo packager` lê a configuração do
       # manifesto onde é chamado, e desde a 0.3.0 ela mora no pacote que produz o binário. Os
       # pacotes continuam saindo em `target/pacotes` da raiz, pelo `out-dir` de lá.
       - name: Pacotes
-        working-directory: frontends/classical-standalone
+        if: runner.os != 'macOS'
+        working-directory: frontends/egui-standalone
         env:
           # O AppImage é montado sem FUSE no runner.
           APPIMAGE_EXTRACT_AND_RUN: "1"
         run: cargo packager --release --formats ${{ matrix.formatos }}
+
+      # **O `.app` inteiro sai assinado ad-hoc, e não só o binário.** O `cargo packager` sem
+      # identidade deixa o executável só com a assinatura que o linker põe (`linker-signed`) e o
+      # bundle sem `_CodeSignature`. No Apple Silicon, com a quarentena de quem baixou, o
+      # Gatekeeper chama isso de "danificado" e manda para o Lixo — foi o que a v0.3.0 fez num
+      # M4 (issue 53), e quem caiu nisso foi para o `.dmg` de Intel, que roda pelo Rosetta. Com o
+      # selo ad-hoc o aviso passa a ser o de desenvolvedor não verificado, que se libera em
+      # Ajustes > Privacidade e Segurança. O `.dmg` sai do `hdiutil` para levar o `.app` assinado,
+      # com o atalho para Aplicativos, como o do `cargo packager` levava.
+      - name: Imagem do macOS
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd frontends/egui-standalone && cargo packager --release --formats app)
+          app=target/pacotes/Zeebx.app
+          codesign --force --deep --sign - "$app"
+          codesign --verify --deep --strict "$app"
+          raiz=$(mktemp -d)
+          cp -R "$app" "$raiz/"
+          ln -s /Applications "$raiz/Applications"
+          hdiutil create -volname Zeebx -srcfolder "$raiz" -ov -format UDZO target/pacotes/Zeebx.dmg
+          rm -rf "$raiz"
 
       # O `cargo-packager` nomeia pelo produto e pela versão (`Zeebx_0.2.1_x64-setup.exe`), e o
       # nome não diz de qual sistema nem de qual formato o arquivo é. Numa release com oito
@@ -110,19 +146,39 @@ jobs:
           cd target/pacotes
           for arquivo in *; do
             case "$arquivo" in
-              *-setup.exe) novo="zeebx-standalone-${{ matrix.nome }}-setup.exe" ;;
-              *.deb)       novo="zeebx-standalone-${{ matrix.nome }}.deb" ;;
-              *.AppImage)  novo="zeebx-standalone-${{ matrix.nome }}.AppImage" ;;
-              *.dmg)       novo="zeebx-standalone-${{ matrix.nome }}.dmg" ;;
+              *-setup.exe) novo="zeebx-standalone-egui-${{ matrix.nome }}-setup.exe" ;;
+              *.deb)       novo="zeebx-standalone-egui-${{ matrix.nome }}.deb" ;;
+              *.AppImage)  novo="zeebx-standalone-egui-${{ matrix.nome }}.AppImage" ;;
+              *.dmg)       novo="zeebx-standalone-egui-${{ matrix.nome }}.dmg" ;;
               *)           continue ;;
             esac
             mv -- "$arquivo" "$novo"
             echo "$arquivo -> $novo"
           done
 
+      # O Gatekeeper marca o que veio da internet e, sem assinatura da Apple, abre com
+      # "Zeebx.app is damaged". O aviso some com `xattr -dr com.apple.quarantine`. A nota
+      # entra na imagem, ao lado do aplicativo, para quem abre o `.dmg` ler antes de arrastar.
+      - name: Nota do Gatekeeper
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          dmg=$(echo target/pacotes/*.dmg)
+          tmp=$(mktemp -d)
+          mnt="$tmp/mnt"
+          mkdir -p "$mnt"
+          hdiutil convert "$dmg" -format UDRW -o "$tmp/rw"
+          hdiutil attach "$tmp/rw.dmg" -mountpoint "$mnt" -nobrowse
+          cp frontends/egui-standalone/LEIA-ME-macos.txt "$mnt/LEIA-ME.txt"
+          sync
+          hdiutil detach "$mnt"
+          rm -f "$dmg"
+          hdiutil convert "$tmp/rw.dmg" -format UDZO -o "${dmg%.dmg}"
+          rm -rf "$tmp"
+
       - uses: actions/upload-artifact@v4
         with:
-          name: zeebx-standalone-${{ matrix.nome }}
+          name: zeebx-standalone-egui-${{ matrix.nome }}
           path: |
             target/pacotes/*.deb
             target/pacotes/*.AppImage
@@ -146,7 +202,7 @@ jobs:
           - nome: macos-x86_64
             sistema: macos-15-intel
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -216,7 +272,7 @@ jobs:
           - abi: arm64-v8a
             alvo: aarch64-linux-android
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -271,6 +327,45 @@ jobs:
           path: frontends/android/apk/app/build/outputs/apk/debug/zeebx-android-${{ matrix.abi }}.apk
           if-no-files-found: error
 
+  ios:
+    name: ios
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ios
+
+      # O script é o mesmo da máquina. `--app` monta o simulador; `--app-aparelho` fecha o link
+      # do aparelho sem certificado — instalar no telefone pede DEVELOPMENT_TEAM, que não mora
+      # no repositório.
+      - name: Simulador
+        run: frontends/ios/compilar.sh --app
+
+      - name: Aparelho
+        run: frontends/ios/compilar.sh --app-aparelho
+
+      - name: Empacota
+        run: frontends/ios/compilar.sh --pacote
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zeebx-ios-simulator
+          path: frontends/ios/build/zeebx-ios-simulator.zip
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zeebx-ios
+          path: frontends/ios/build/zeebx-ios.zip
+          if-no-files-found: error
+
   core:
     name: core-${{ matrix.nome }}
     runs-on: ${{ matrix.sistema }}
@@ -303,7 +398,7 @@ jobs:
             biblioteca: target/release/libzeebx_libretro.dylib
             arquivo: zeebx_libretro.dylib
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -385,8 +480,97 @@ jobs:
           name: zeebx_libretro_${{ matrix.nome }}
           path: zeebx_libretro-${{ matrix.nome }}.zip
 
+  # O side module que o ROMBundler faz dlopen. O Emscripten é o 6.0.8 dessa página: um
+  # módulo de outra versão não carrega.
+  wasm:
+    name: core-wasm
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-emscripten
+          components: rust-src
+
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: "6.0.8"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: core-wasm
+
+      - name: Compila o side module
+        run: ./ferramentas/compilar_wasm.sh
+
+      - name: Empacota o core
+        run: |
+          mkdir -p pacote
+          cp target/wasm/zeebx_libretro_emscripten.wasm pacote/
+          cp frontends/libretro/zeebx_libretro.info pacote/
+          grep -q '^database = "Mobile - Zeebo"' pacote/zeebx_libretro.info
+          cd pacote && zip -r "../zeebx_libretro-wasm.zip" .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zeebx_libretro_wasm
+          path: zeebx_libretro-wasm.zip
+          if-no-files-found: error
+
+  # O devkitA64 não está no runner: o job roda na imagem do devkitPro, como o `core-switch` do
+  # `libretro.yml`. O `.a` não vai sozinho para o console: os `switch_jit_*` e
+  # `switch_spinlock_*` que o patch do dynarmic chama vêm do ROMBundler, na hora de ligar.
+  switch:
+    name: core-switch
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: devkitpro/devkita64:20260219
+    steps:
+      - name: Git e CMake
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates cmake curl git ninja-build pkg-config python3 zip
+
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: core-switch
+
+      - name: Compila o staticlib
+        run: ./frontends/switch/compilar.sh --local
+
+      - name: O arquivo é AArch64
+        run: |
+          tmp=$(mktemp -d)
+          ( cd "$tmp" && ar x "$GITHUB_WORKSPACE/frontends/switch/saida/libzeebx_libretro.a" )
+          ruim=$(aarch64-none-elf-objdump -f "$tmp"/*.o | grep 'file format' | grep -v elf64-littleaarch64 || true)
+          if [ -n "$ruim" ]; then
+            echo "o .a misturou objeto que não é AArch64"
+            echo "$ruim"
+            exit 1
+          fi
+
+      - name: Empacota o core
+        run: |
+          cd frontends/switch/saida
+          zip "$GITHUB_WORKSPACE/zeebx_libretro-switch.zip" libzeebx_libretro.a
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zeebx_libretro_switch
+          path: zeebx_libretro-switch.zip
+          if-no-files-found: error
+
   release:
-    needs: [standalone, headless, android, core]
+    needs: [standalone-qt, standalone-egui, headless, android, ios, core, wasm, switch]
     # Sai com o que deu certo: um sistema que falhou não segura os outros.
     #
     # A tag vem de dois lugares: do `push` de uma tag, e aí é o `github.ref_name`; ou do
@@ -396,20 +580,24 @@ jobs:
     steps:
       # O repositório entra por causa das notas: o corpo da release sai de um arquivo versionado,
       # e sem `checkout` este job só tem os artefatos baixados.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: actions/download-artifact@v4
         with:
           path: pacotes
           merge-multiple: true
 
-      # **O texto da release é o que vocês escreveram, não a lista de commits.** Cada versão deixa
-      # o seu em `docs/patch-notes/`, em linguagem de quem joga; era isso que ia para a página da
-      # release na mão, e o `generate_release_notes` do GitHub entregava outra coisa -- um resumo
-      # de commits que ninguém quer ler.
+      # **O texto da release é o que vocês escreveram, e a lista gerada vem depois dele.** Cada
+      # versão deixa a sua nota em `docs/patch-notes/`, em linguagem de quem joga; era isso que ia
+      # para a página da release na mão.
       #
-      # Sem o arquivo, a lista de commits volta a valer: é melhor que uma release muda, e serve de
-      # aviso de que a nota faltou.
+      # Os dois convivem, e não é truque nosso: a API do GitHub diz que, com `generate_release_notes`
+      # ligado, um `body` enviado junto é **posto na frente** das notas geradas. Sai a nota, e
+      # embaixo o "What's Changed", o "New Contributors" e o "Full Changelog" -- que é o crédito a
+      # quem contribuiu pela primeira vez, e um arquivo escrito à mão não tem como saber disso.
+      #
+      # Sem o arquivo, sobra só a lista gerada: é melhor que uma release muda, e serve de aviso de
+      # que a nota faltou.
       - name: As notas da versão
         id: notas
         shell: bash
@@ -429,7 +617,7 @@ jobs:
           name: ${{ inputs.versao || github.ref_name }}
           tag_name: ${{ inputs.versao || github.ref_name }}
           draft: true
-          # Um dos dois, nunca os dois: com o arquivo, ele é o corpo; sem ele, o GitHub gera.
+          # Os dois sempre: a nota vira o começo do corpo, e o GitHub acrescenta o resto.
           body_path: ${{ steps.notas.outputs.caminho }}
-          generate_release_notes: ${{ steps.notas.outputs.caminho == '' }}
+          generate_release_notes: true
           files: pacotes/*
