@@ -10,6 +10,8 @@ pub trait ArgSource {
     fn next_word(&mut self) -> u32;
     /// String terminada em zero no endereço dado.
     fn read_cstring(&mut self, addr: u32) -> String;
+    /// String de `AECHAR` (UTF-16) terminada em zero no endereço dado: o `%s` do `WSPRINTF`.
+    fn read_wide_string(&mut self, addr: u32) -> String;
 }
 
 /// Flags, largura e precisão de um especificador.
@@ -62,6 +64,18 @@ impl Spec {
 
 /// Aplica `fmt` consumindo argumentos de `args`.
 pub fn format(fmt: &str, args: &mut impl ArgSource) -> String {
+    format_com(fmt, args, false)
+}
+
+/// O `WSPRINTF`: o mesmo formato, mas o `%s` é uma string de `AECHAR`.
+///
+/// Lido como string de C, o `%s` parava no zero do segundo byte da primeira letra: o menu do
+/// Prey Evil formata `L"- %s -"` com os nomes dos episódios, e cada item saía com uma letra só.
+pub fn format_largo(fmt: &str, args: &mut impl ArgSource) -> String {
+    format_com(fmt, args, true)
+}
+
+fn format_com(fmt: &str, args: &mut impl ArgSource, largo: bool) -> String {
     let mut out = String::new();
     let mut chars = fmt.chars().peekable();
 
@@ -185,7 +199,10 @@ pub fn format(fmt: &str, args: &mut impl ArgSource) -> String {
             }
             Some('s') => {
                 let addr = args.next_word();
-                let mut text = args.read_cstring(addr);
+                let mut text = match largo {
+                    true => args.read_wide_string(addr),
+                    false => args.read_cstring(addr),
+                };
                 // Na string a precisão é teto, não piso: ela corta.
                 if let Some(limit) = f.precision {
                     text = text.chars().take(limit).collect();
@@ -227,6 +244,12 @@ mod tests {
                 .find(|&&(a, _)| a == addr)
                 .map(|&(_, s)| s.to_string())
                 .unwrap_or_default()
+        }
+
+        // O falso guarda as strings já decodificadas; o que o teste do largo cobra é **qual**
+        // leitura o `%s` escolhe, e por isso a larga devolve a mesma string marcada.
+        fn read_wide_string(&mut self, addr: u32) -> String {
+            format!("L:{}", self.read_cstring(addr))
         }
     }
 
@@ -295,4 +318,13 @@ mod tests {
         let mut args = fake(&[9], &[]);
         assert_eq!(format("%q %d", &mut args), "%q 9");
     }
+
+    #[test]
+    fn no_formato_largo_o_s_le_aechar() {
+        let mut args = fake(&[0x100], &[(0x100, "Escavação")]);
+        assert_eq!(format_largo("- %s -", &mut args), "- L:Escavação -");
+        let mut args = fake(&[0x100], &[(0x100, "Escavação")]);
+        assert_eq!(format("- %s -", &mut args), "- Escavação -");
+    }
+
 }

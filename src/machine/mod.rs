@@ -2239,6 +2239,24 @@ impl<C: CpuBackend> ArgSource for GuestArgs<'_, C> {
     fn read_cstring(&mut self, addr: u32) -> String {
         self.cpu.read_cstring(addr, MAX_STRING)
     }
+
+    fn read_wide_string(&mut self, addr: u32) -> String {
+        let mut unidades = Vec::new();
+        for i in 0..MAX_STRING as u32 {
+            let Ok(bytes) = self.cpu.read_u32(addr.wrapping_add(i * 2) & !3) else {
+                break;
+            };
+            let unidade = match (addr.wrapping_add(i * 2)) & 2 {
+                0 => bytes as u16,
+                _ => (bytes >> 16) as u16,
+            };
+            if unidade == 0 {
+                break;
+            }
+            unidades.push(unidade);
+        }
+        String::from_utf16_lossy(&unidades)
+    }
 }
 
 pub struct Machine<C: CpuBackend> {
