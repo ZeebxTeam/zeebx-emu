@@ -3,9 +3,9 @@ Versão considerada na análise: v0.2.1 (em desenvolvimento)
 
 | Status | Legenda | Jogos | % |
 |---|---|---|---|
-| ✅ | (compatível) | 50 | 82,0% |
+| ✅ | (compatível) | 51 | 83,6% |
 | 🔄 | (roda com ressalvas) | 9 | 14,8% |
-| ❌ | (incompatível) | 2 | 3,3% |
+| ❌ | (incompatível) | 1 | 1,6% |
 
 
 # Observações:
@@ -43,7 +43,7 @@ Versão considerada na análise: v0.2.1 (em desenvolvimento)
 | Pac-Mania | ✅ | |
 | Peggle | 🔄 | Roda, porém os gráficos, cores e sons estão totalmente quebrados |
 | Powerboat Challenge | ✅ | Joga; menus, seleção de personagem e ilha, e o save de opções persiste |
-| Prey 2 Evil | ❌ | Roda, lê os dados, porém a tela fica preta. Avançando com o 1, é possível ter gameplay, mas a HUD está completamente quebrada |
+| Prey 2 Evil | ✅ | Joga; menus, história e fase |
 | Quake | 🔄 | Podem existir crashes in-game ou lagging |
 | Quake 2 | 🔄 | Entra nas fases, com mundo, arma e HUD; ainda pouco jogado |
 | Raging Thunder 2 | ✅ | |
