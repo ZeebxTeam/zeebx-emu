@@ -3,9 +3,9 @@ Versão considerada na análise: v0.2.1 (em desenvolvimento)
 
 | Status | Legenda | Jogos | % |
 |---|---|---|---|
-| ✅ | (compatível) | 49 | 80,3% |
+| ✅ | (compatível) | 50 | 82,0% |
 | 🔄 | (roda com ressalvas) | 8 | 13,1% |
-| ❌ | (incompatível) | 4 | 6,6% |
+| ❌ | (incompatível) | 3 | 4,9% |
 
 
 # Observações:
@@ -42,7 +42,7 @@ Versão considerada na análise: v0.2.1 (em desenvolvimento)
 | Need For Speed - Carbon - Domine a Cidade | ✅ | |
 | Pac-Mania | ✅ | |
 | Peggle | 🔄 | Roda, porém os gráficos, cores e sons estão totalmente quebrados |
-| Powerboat Challenge | ❌ | Chega ao menu de idioma e prende na tela de carregamento |
+| Powerboat Challenge | ✅ | Joga; menus, seleção de personagem e ilha, e o save de opções persiste |
 | Prey 2 Evil | ❌ | Roda, lê os dados, porém a tela fica preta. Avançando com o 1, é possível ter gameplay, mas a HUD está completamente quebrada |
 | Quake | 🔄 | Podem existir crashes in-game ou lagging |
 | Quake 2 | ❌ | Menus funcionam; quebra ao iniciar a fase |
