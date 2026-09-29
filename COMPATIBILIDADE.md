@@ -4,8 +4,8 @@ Versão considerada na análise: v0.2.1 (em desenvolvimento)
 | Status | Legenda | Jogos | % |
 |---|---|---|---|
 | ✅ | (compatível) | 50 | 82,0% |
-| 🔄 | (roda com ressalvas) | 8 | 13,1% |
-| ❌ | (incompatível) | 3 | 4,9% |
+| 🔄 | (roda com ressalvas) | 9 | 14,8% |
+| ❌ | (incompatível) | 2 | 3,3% |
 
 
 # Observações:
@@ -45,7 +45,7 @@ Versão considerada na análise: v0.2.1 (em desenvolvimento)
 | Powerboat Challenge | ✅ | Joga; menus, seleção de personagem e ilha, e o save de opções persiste |
 | Prey 2 Evil | ❌ | Roda, lê os dados, porém a tela fica preta. Avançando com o 1, é possível ter gameplay, mas a HUD está completamente quebrada |
 | Quake | 🔄 | Podem existir crashes in-game ou lagging |
-| Quake 2 | ❌ | Menus funcionam; quebra ao iniciar a fase |
+| Quake 2 | 🔄 | Entra nas fases, com mundo, arma e HUD; ainda pouco jogado |
 | Raging Thunder 2 | ✅ | |
 | Rally Master Pro | ✅ | |
 | Reckless Racing | 🔄 | Abre, porém com uma série de glitches nos modelos e texturas |
