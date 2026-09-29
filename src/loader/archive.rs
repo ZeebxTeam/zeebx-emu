@@ -555,7 +555,8 @@ pub const MANIFESTO: &str = ".zeebx-pacote";
 ///
 /// `manter` é um caminho **dentro** da extração em uso — o `.mod`, por exemplo. A entrada que o
 /// contém nunca é removida, nem que sozinha estoure o teto: apagar o jogo em execução seria pior
-/// que o disco cheio. As outras saem da mais antiga para a mais nova, pela data de modificação.
+/// que o disco cheio. As outras saem da mais antiga para a mais nova, pela data de modificação,
+/// menos as que guardam save (ver [`crate::ui::saves::pode_ter_save`]).
 ///
 /// Devolve quantos bytes foram liberados.
 pub fn prune_cache(cache: &Path, manter: Option<&Path>, limite: u64) -> std::io::Result<u64> {
@@ -570,6 +571,16 @@ pub fn prune_cache(cache: &Path, manter: Option<&Path>, limite: u64) -> std::io:
             continue;
         }
         if manter.is_some_and(|manter| manter.starts_with(&caminho)) {
+            continue;
+        }
+        // **O save mora aqui dentro.** No desktop (`StoragePaths::from_root`, sem overlay) o jogo
+        // grava no meio da própria extração, e apagar a pasta levava o progresso junto — foi o
+        // que a poda fez assim que passou a rodar de verdade. Uma extração que o jogo tocou fica,
+        // mesmo estourando o teto; a que sobrou de uma extração interrompida pode sair.
+        let parcial = caminho
+            .extension()
+            .is_some_and(|e| e.to_string_lossy().starts_with("partial-"));
+        if !parcial && crate::ui::saves::pode_ter_save(&caminho) {
             continue;
         }
         let idade = entrada
@@ -793,19 +804,27 @@ mod tests {
         let cache = raiz.join("cache");
         let antigo = cache.join("jogo-antigo");
         let em_uso = cache.join("jogo-em-uso");
-        for (pasta, tamanho) in [(&antigo, 4096usize), (&em_uso, 4096usize)] {
+        let com_save = cache.join("jogo-com-save");
+        let sem_manifesto = cache.join("jogo-sem-manifesto");
+        for pasta in [&antigo, &em_uso, &com_save, &sem_manifesto] {
             std::fs::create_dir_all(pasta).unwrap();
-            std::fs::write(pasta.join("dados.bin"), vec![0u8; tamanho]).unwrap();
+            std::fs::write(pasta.join("dados.bin"), vec![0u8; 4096]).unwrap();
         }
+        for pasta in [&antigo, &com_save] {
+            std::fs::write(pasta.join(MANIFESTO), "dados.bin\n").unwrap();
+        }
+        std::fs::write(com_save.join("progresso.db"), b"fase 7").unwrap();
         let modulo = em_uso.join("mod/1/jogo.mod");
         std::fs::create_dir_all(modulo.parent().unwrap()).unwrap();
         std::fs::write(&modulo, b"mod").unwrap();
 
-        // Teto zero: só o jogo em uso sobrevive.
+        // Teto zero: sai só o que é pacote puro; o jogo em uso e os saves ficam.
         let liberado = prune_cache(&cache, Some(&modulo), 0).unwrap();
         assert!(liberado > 0, "deveria ter liberado espaço");
         assert!(!antigo.exists(), "a extração antiga sai");
         assert!(modulo.is_file(), "a extração em uso fica");
+        assert!(com_save.join("progresso.db").is_file(), "a extração com save fica");
+        assert!(sem_manifesto.exists(), "sem manifesto não dá para saber, então fica");
 
         // Sem nada acima do teto, ninguém é tocado.
         assert_eq!(prune_cache(&cache, Some(&modulo), u64::MAX).unwrap(), 0);

@@ -132,6 +132,19 @@ fn do_jogo(raiz: &Path, titulo: &str) -> Option<Save> {
     Save::de(titulo.to_string(), itens)
 }
 
+/// Se a extração em `raiz` guarda algo que o jogo escreveu — ou se não dá para saber.
+///
+/// Sem manifesto a resposta é `true`: um cache antigo pode ter save, e quem pergunta é a poda,
+/// que apagaria a pasta inteira.
+pub fn pode_ter_save(raiz: &Path) -> bool {
+    let Some(pacote) = do_pacote(raiz) else {
+        return true;
+    };
+    let mut itens = Vec::new();
+    junta(raiz, &pacote, "", &mut itens);
+    !itens.is_empty()
+}
+
 /// Todos os saves, os dos jogos antes dos do aparelho, com `true` nos do aparelho.
 ///
 /// Os caches feitos antes de o manifesto existir não sabem o que veio do pacote. Antes de listar,
