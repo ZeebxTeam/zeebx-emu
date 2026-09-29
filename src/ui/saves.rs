@@ -113,8 +113,12 @@ fn junta(
         }
         let caminho = format!("{prefixo}{nome}");
         let pasta = entrada.path().is_dir();
-        // O zip lista pastas com barra no fim; arquivos, sem.
-        let conhecido = pacote.contains(&caminho) || pacote.contains(&format!("{caminho}/"));
+        // O zip lista pastas com barra no fim; arquivos, sem. E nem todo zip lista as pastas: o
+        // do Crash só traz `mod/274214/cnk2.mod`, e sem olhar o prefixo a pasta `mod` inteira
+        // passava por save — apagá-lo levava o jogo junto.
+        let prefixo_da_pasta = format!("{caminho}/");
+        let conhecido = pacote.contains(&caminho)
+            || (pasta && pacote.iter().any(|entrada| entrada.starts_with(&prefixo_da_pasta)));
         match (conhecido, pasta) {
             (true, true) => junta(&entrada.path(), pacote, &format!("{caminho}/"), achados),
             (true, false) => {}
@@ -123,11 +127,16 @@ fn junta(
     }
 }
 
-/// O que um jogo escreveu na pasta dele: o que não veio no pacote.
-fn do_jogo(raiz: &Path, titulo: &str) -> Option<Save> {
+/// O que um jogo escreveu na pasta da extração: o que não veio no pacote.
+fn escritos(raiz: &Path) -> Option<Vec<PathBuf>> {
     let pacote = do_pacote(raiz)?;
     let mut itens: Vec<PathBuf> = Vec::new();
     junta(raiz, &pacote, "", &mut itens);
+    Some(itens)
+}
+
+fn do_jogo(raiz: &Path, titulo: &str) -> Option<Save> {
+    let mut itens = escritos(raiz)?;
     itens.sort();
     Save::de(titulo.to_string(), itens)
 }
@@ -161,7 +170,8 @@ pub fn todos(roms: Option<&Path>) -> Vec<(bool, Save)> {
             }
         }
     }
-    let jogos = dos_jogos(&crate::loader::archive::cache_dir());
+    let perfil = crate::storage::StoragePaths::from_root(crate::config::config_dir());
+    let jogos = dos_jogos_no_perfil(&perfil);
     let aparelho = do_aparelho(&crate::loader::archive::device_dir());
     jogos
         .into_iter()
@@ -175,31 +185,106 @@ pub fn todos(roms: Option<&Path>) -> Vec<(bool, Save)> {
 /// O nome que aparece é o da pasta do cache — `Zeeboids-6518125-1788761080` —, com a numeração
 /// tirada: é o título que o jogador reconhece.
 pub fn dos_jogos(cache: &Path) -> Vec<Save> {
+    let mut achados = do_cache(cache, &std::collections::HashSet::new());
+    achados.sort_by(|a, b| a.titulo.cmp(&b.titulo));
+    achados
+}
+
+/// As extrações do cache, menos as dos conteúdos em `pular`.
+fn do_cache(cache: &Path, pular: &std::collections::HashSet<String>) -> Vec<Save> {
     let Ok(entradas) = std::fs::read_dir(cache) else {
         return Vec::new();
     };
-    let mut achados: Vec<Save> = entradas
+    entradas
         .flatten()
         .filter(|e| e.path().is_dir())
         .filter_map(|e| {
             let nome = e.file_name().to_string_lossy().into_owned();
+            if pular.iter().any(|id| nome.ends_with(id.as_str())) {
+                return None;
+            }
             do_jogo(&e.path(), &titulo_de(&nome))
         })
-        .collect();
+        .collect()
+}
+
+/// As extrações de um conteúdo no cache: a pasta se chama `<rótulo>-<id>`.
+fn extracoes_de(cache: &Path, id: &str) -> Vec<PathBuf> {
+    std::fs::read_dir(cache)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.path().is_dir() && e.file_name().to_string_lossy().ends_with(id))
+        .map(|e| e.path())
+        .collect()
+}
+
+/// O nome a mostrar para o overlay de um conteúdo.
+///
+/// O que a sessão gravou em `metadata/<id>.titulo`; sem ele, o rótulo da extração; sem nenhum
+/// dos dois, o começo do hash, que ao menos separa uma entrada da outra.
+fn titulo_do_conteudo(perfil: &crate::storage::StoragePaths, id: &str) -> String {
+    let gravado = std::fs::read_to_string(perfil.metadata.join(format!("{id}.titulo")))
+        .ok()
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty());
+    gravado
+        .or_else(|| {
+            extracoes_de(&perfil.cache, id)
+                .first()
+                .and_then(|p| p.file_name())
+                .map(|n| titulo_de(&n.to_string_lossy()))
+        })
+        .unwrap_or_else(|| id.chars().take(12).collect())
+}
+
+/// Os saves dos jogos de um perfil.
+///
+/// Cada pasta de `saves/` é o overlay de um conteúdo, e tudo nela é save. O que uma versão
+/// antiga gravou dentro da extração do mesmo conteúdo entra **junto**: o VFS ainda lê essa cópia
+/// quando o overlay não tem o arquivo, então apagar só o overlay traria o save antigo de volta.
+/// As extrações sem overlay continuam listadas como antes.
+pub fn dos_jogos_no_perfil(perfil: &crate::storage::StoragePaths) -> Vec<Save> {
+    let mut com_overlay = std::collections::HashSet::new();
+    let mut achados: Vec<Save> = Vec::new();
+    for entrada in std::fs::read_dir(&perfil.saves).into_iter().flatten().flatten() {
+        if !entrada.path().is_dir() {
+            continue;
+        }
+        let id = entrada.file_name().to_string_lossy().into_owned();
+        let mut itens: Vec<PathBuf> = std::fs::read_dir(entrada.path())
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .collect();
+        for extracao in extracoes_de(&perfil.cache, &id) {
+            itens.extend(escritos(&extracao).unwrap_or_default());
+        }
+        itens.sort();
+        achados.extend(Save::de(titulo_do_conteudo(perfil, &id), itens));
+        com_overlay.insert(id);
+    }
+    achados.extend(do_cache(&perfil.cache, &com_overlay));
     achados.sort_by(|a, b| a.titulo.cmp(&b.titulo));
     achados
 }
 
 /// O título sem a numeração que o cache acrescenta.
 ///
-/// `Zeeboids-6518125-1788761080` vira `Zeeboids`. Os dois números do fim são o identificador do
-/// pacote e o carimbo de tempo; nenhum dos dois diz nada a quem está olhando a lista.
+/// `Zeeboids-6518125-1788761080` vira `Zeeboids`, e `Zeeboids-<hash>` também. Os números do fim
+/// são o identificador do pacote e o carimbo de tempo, ou o hash do conteúdo; nada disso diz algo
+/// a quem está olhando a lista.
 fn titulo_de(pasta: &str) -> String {
     let mut partes: Vec<&str> = pasta.split('-').collect();
     while partes.len() > 1
         && partes
             .last()
-            .is_some_and(|p| p.chars().all(|c| c.is_ascii_digit()))
+            .is_some_and(|p| {
+                // Numeração do cache antigo, ou o hash BLAKE3 do atual.
+                p.chars().all(|c| c.is_ascii_digit())
+                    || (p.len() == 64 && p.chars().all(|c| c.is_ascii_hexdigit()))
+            })
     {
         partes.pop();
     }
@@ -320,6 +405,23 @@ mod tests {
         assert_eq!(saves[0].arquivos, 1);
     }
 
+    /// Zip sem entrada de pasta: a pasta `mod` é do pacote porque há arquivo dele lá dentro.
+    #[test]
+    fn manifesto_sem_pastas_nao_faz_do_pacote_um_save() {
+        let raiz = temporario("sem-pastas");
+        cache_com_jogo(&raiz);
+        let jogo = raiz.join("Zeeboids-6518125-1788761080");
+        let linhas: Vec<String> = ["zeeboids.mod", "zeeboids.sig", "resources.pakz"]
+            .iter()
+            .map(|n| format!("mod/274/{n}"))
+            .collect();
+        std::fs::write(jogo.join(crate::loader::archive::MANIFESTO), linhas.join("\n")).unwrap();
+        let saves = dos_jogos(&raiz);
+        assert_eq!(saves.len(), 1);
+        assert_eq!(saves[0].itens.len(), 1, "{:?}", saves[0].itens);
+        assert!(saves[0].itens[0].ends_with("zeeboiddata"));
+    }
+
     #[test]
     fn apagar_tira_o_save_e_deixa_o_pacote() {
         let raiz = temporario("apagar");
@@ -339,6 +441,42 @@ mod tests {
         let saves = dos_jogos(&raiz);
         apagar(&saves[0]).unwrap();
         apagar(&saves[0]).unwrap();
+    }
+
+    /// O overlay e a cópia antiga na extração do mesmo conteúdo são **um** save: apagar só um
+    /// deixaria o VFS ler o outro.
+    #[test]
+    fn o_overlay_e_a_copia_antiga_sao_um_save_so() {
+        let raiz = temporario("perfil");
+        let perfil = crate::storage::StoragePaths::from_root(raiz.to_path_buf());
+        let id = "ab".repeat(32);
+        cache_com_jogo(&perfil.cache);
+        std::fs::rename(
+            perfil.cache.join("Zeeboids-6518125-1788761080"),
+            perfil.cache.join(format!("Zeeboids-{id}")),
+        )
+        .unwrap();
+        let overlay = perfil.saves.join(&id);
+        std::fs::create_dir_all(&overlay).unwrap();
+        std::fs::write(overlay.join("progresso.db"), b"fase 7").unwrap();
+
+        let saves = dos_jogos_no_perfil(&perfil);
+        assert_eq!(saves.len(), 1, "{saves:?}");
+        assert_eq!(saves[0].titulo, "Zeeboids");
+        assert_eq!(saves[0].itens.len(), 2, "o overlay e o zeeboiddata antigo");
+
+        std::fs::create_dir_all(&perfil.metadata).unwrap();
+        std::fs::write(perfil.metadata.join(format!("{id}.titulo")), "Zeeboids (BR)").unwrap();
+        assert_eq!(dos_jogos_no_perfil(&perfil)[0].titulo, "Zeeboids (BR)");
+
+        apagar(&saves[0]).unwrap();
+        assert!(dos_jogos_no_perfil(&perfil).is_empty());
+        let pacote = perfil.cache.join(format!("Zeeboids-{id}/mod/274/zeeboids.mod"));
+        assert!(pacote.is_file(), "o pacote fica");
+        assert!(
+            !pode_ter_save(&perfil.cache.join(format!("Zeeboids-{id}"))),
+            "sem a cópia antiga, a poda pode levar a extração"
+        );
     }
 
     #[test]
@@ -366,6 +504,7 @@ mod tests {
         );
         // Sem numeração, fica como está.
         assert_eq!(titulo_de("Quake"), "Quake");
+        assert_eq!(titulo_de(&format!("Zeeboids-{}", "0f".repeat(32))), "Zeeboids");
     }
 
     /// Só para olhar: lista o cache de verdade desta máquina.

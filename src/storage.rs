@@ -30,8 +30,9 @@ pub struct StoragePaths {
     pub metadata: PathBuf,
     /// Se o perfil usa overlay gravável por título.
     ///
-    /// Falso no desktop histórico, onde o jogo grava ao lado do `.mod`; verdadeiro quando o
-    /// frontend delimita a raiz de saves e o pacote precisa ficar intacto.
+    /// Verdadeiro em todo perfil que o motor monta: o pacote fica intacto e o save sobrevive a
+    /// podar ou reextrair o cache. Falso só quando alguém monta o perfil à mão, sem overlay, e aí
+    /// o jogo grava ao lado do `.mod`.
     pub overlay: bool,
 }
 
@@ -48,9 +49,9 @@ impl StoragePaths {
             saves: root.join("saves"),
             metadata: root.join("metadata"),
             root,
-            // O desktop histórico grava dentro do próprio jogo; só um frontend que delimita a
-            // raiz pede overlay.
-            overlay: false,
+            // O desktop gravava dentro da extração, no cache, e a poda do cache levava o save
+            // junto. O overlay põe o save em `saves/<conteúdo>/`, como nos outros frontends.
+            overlay: true,
         }
     }
 
@@ -410,8 +411,10 @@ mod tests {
     }
 
     #[test]
-    fn o_desktop_historico_nao_usa_overlay() {
-        assert!(!StoragePaths::from_root("/config/zeebx").overlay);
+    fn o_desktop_usa_overlay_fora_do_cache() {
+        let paths = StoragePaths::from_root("/config/zeebx");
+        assert!(paths.overlay);
+        assert!(!paths.saves.starts_with(&paths.cache));
     }
 
     #[test]
