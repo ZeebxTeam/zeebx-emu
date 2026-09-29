@@ -1633,6 +1633,25 @@ fn decode_png(bytes: &[u8]) -> Option<DecodedImage> {
 ///
 /// É o formato em que o decodificador de PNG do BREW entrega o `IDIB`. Tons de cinza viram RGB,
 /// com ou sem alfa, e a paleta é expandida.
+/// Os bytes do DIB que o decodificador do BREW entrega: PNG pelo caminho próprio, e o resto
+/// (JPEG, BMP) pelo despachante por assinatura, em RGB quando não há alfa.
+///
+/// **O JPEG também sai em 24 bits.** O Zuma's Revenge decodifica os fundos em JPEG e converte o
+/// DIB para 565 por conta própria, lendo três bytes por pixel. Sem este caminho o JPEG ficava com
+/// o DIB de 16 bits do bitmap genérico, e cada linha do fundo saía como listras.
+fn decode_dib_bytes(bytes: &[u8]) -> Option<(u32, u32, usize, Vec<u8>)> {
+    if let Some(png) = decode_png_bytes(bytes) {
+        return Some(png);
+    }
+    let imagem = crate::video::icon::decode(bytes).ok()?;
+    let (largura, altura) = (imagem.width as u32, imagem.height as u32);
+    if imagem.rgba.chunks_exact(4).all(|p| p[3] == u8::MAX) {
+        let rgb = imagem.rgba.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
+        return Some((largura, altura, 3, rgb));
+    }
+    Some((largura, altura, 4, imagem.rgba))
+}
+
 fn decode_png_bytes(bytes: &[u8]) -> Option<(u32, u32, usize, Vec<u8>)> {
     let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
     decoder.set_transformations(
@@ -2780,6 +2799,12 @@ pub struct Machine<C: CpuBackend> {
     /// O retângulo de recorte de `IDisplay`. `None` é a superfície inteira, que é o padrão do
     /// BREW e o que vale antes do primeiro `SetClipRect`.
     clip: Option<Rect>,
+    /// O recorte do `IGraphics`, que é outro objeto e tem o seu. Vale em `clip` só durante uma
+    /// chamada de `IGraphics` — ver [`Machine::graphics_call`].
+    ///
+    /// Fora do save state de propósito: o jogo que usa `IGraphics` refaz o recorte a cada
+    /// quadro, e gravá-lo mudaria o formato por um quadro de diferença.
+    clip_graficos: Option<Rect>,
     /// A tela, para quando ainda não existe device bitmap.
     screen: Framebuffer,
     /// Cores ativas do `IDisplay`, indexadas pelo `AEEClrItem` (`CLR_USER_TEXT` = 1 em diante).
@@ -3187,7 +3212,13 @@ impl<C: CpuBackend> Machine<C> {
             missing_apis: BTreeSet::new(),
             falhas_engolidas: BTreeSet::new(),
             ignored_gl: BTreeSet::new(),
-            unpack_alignment: 4,
+            // **Um, e não os 4 da especificação.** O Peggle sobe as faixas de 2 pixels de largura
+            // dos painéis em `GL_RGB` com as linhas coladas (6 bytes), sem chamar `PixelStorei`, e
+            // roda assim no aparelho: lá o efeito é o de alinhamento 1. Com 4, cada linha
+            // escorregava 2 bytes e as faixas esticadas viravam listras coloridas nos jogos da
+            // PopCap. Quem precisa de outro valor o pede: o Powerboat Challenge pede 1, e é essa
+            // chamada que o `PixelStorei` honra.
+            unpack_alignment: 1,
             web_response: Vec::new(),
             streams: HashMap::new(),
             sounds: HashMap::new(),
@@ -3255,6 +3286,7 @@ impl<C: CpuBackend> Machine<C> {
             device_bitmap: 0,
             display_target: 0,
             clip: None,
+            clip_graficos: None,
             screen: Framebuffer::new(SCREEN_WIDTH as u32, SCREEN_HEIGHT as u32),
             colors: default_colors(),
             pending_text: Vec::new(),

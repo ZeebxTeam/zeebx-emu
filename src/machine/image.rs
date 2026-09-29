@@ -157,9 +157,15 @@ impl<C: CpuBackend> Machine<C> {
     /// A nossa cópia em RGB565 continua no mapa de superfícies para os blits; este buffer não
     /// entra na sincronização.
     pub(super) fn publica_dib_do_png(&mut self, bitmap: u32, png: &[u8]) -> Result<(), CpuError> {
-        let Some((largura, altura, canais, bytes)) = decode_png_bytes(png) else {
+        let Some((largura, altura, canais, mut bytes)) = decode_dib_bytes(png) else {
             return Ok(());
         };
+        // **Azul no primeiro byte.** O 888 do BREW é `0x00RRGGBB` em little-endian, e o jogo que
+        // sobe o DIB para o GL troca os canais por conta própria. O Peggle faz isso: com R,G,B
+        // aqui, a troca dele deixava o logo azul e o céu cor-de-rosa em vez de laranja e roxo.
+        for pixel in bytes.chunks_exact_mut(canais) {
+            pixel.swap(0, 2);
+        }
         // Um buffer publicado antes por outro caminho não serve mais: o formato é outro.
         self.solta_dib(bitmap);
         let Some((buffer, capacidade)) = self.reserva_superficie(bytes.len() as u32) else {
