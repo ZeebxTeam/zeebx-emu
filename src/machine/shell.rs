@@ -27,8 +27,14 @@ impl<C: CpuBackend> Machine<C> {
                 // acumular dois — é o que o BREW faz, e o que o jogo espera ao rearmar dentro
                 // do próprio callback.
                 self.timers.retain(|timer| timer.callback != callback);
+                // **O prazo é `int32`, e negativo quer dizer "já venceu".** O laço de quadro de
+                // um jogo arma "duração do quadro menos o que já gastou"; o Powerboat Challenge,
+                // depois de carregar a fase inteira num quadro só, pede -2 ms. Lido sem sinal,
+                // isso era um prazo de 49 dias, o timer nunca vencia e o jogo ficava para
+                // sempre na tela de carregamento.
+                let espera = (a1 as i32).max(0) as u32;
                 self.timers.push(Timer {
-                    deadline_ms: self.now_ms().saturating_add(a1),
+                    deadline_ms: self.now_ms().saturating_add(espera),
                     callback,
                 });
                 SUCCESS
@@ -700,6 +706,7 @@ impl<C: CpuBackend> Machine<C> {
             }
             AEECLSID_TYPEFACE => Interface::Typeface,
             AEECLSID_MD5 => Interface::Hash,
+            AEECLSID_MD5CTX => Interface::HashCtx,
             AEECLSID_CIPHER_FACTORY => Interface::CipherFactory,
             AEECLSID_MEDIA | AEECLSID_MEDIAMIDI | AEECLSID_MEDIAMP3 | AEECLSID_MEDIAMIDIOUTMSG
             | AEECLSID_MEDIAADPCM

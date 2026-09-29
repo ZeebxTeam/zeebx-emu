@@ -65,6 +65,52 @@ impl<C: CpuBackend> Machine<C> {
                 }
                 SUCCESS
             }
+            // int Init(IHashCTX *, void *pCtx, int nCtxSize)
+            "Init" if iface == Interface::HashCtx => {
+                let (ctx, tamanho) = (self.arg(1), self.arg(2));
+                if ctx == 0 || tamanho < TAMANHO_DO_MD5_CTX {
+                    return Ok(Some(EBADPARM));
+                }
+                self.grava_md5_ctx(ctx, &crate::brew::crypto::Md5::new())?;
+                SUCCESS
+            }
+            // int Update(IHashCTX *, void *pCtx, int nCtxSize, const byte *pData, int nLen)
+            "Update" if iface == Interface::HashCtx => {
+                let (ctx, tamanho, dados, quantos) =
+                    (self.arg(1), self.arg(2), self.arg(3), self.arg(4));
+                if ctx == 0 || tamanho < TAMANHO_DO_MD5_CTX {
+                    return Ok(Some(EBADPARM));
+                }
+                let mut md5 = self.le_md5_ctx(ctx)?;
+                if quantos != 0 {
+                    md5.update(&self.read_bytes(dados, quantos)?);
+                }
+                self.grava_md5_ctx(ctx, &md5)?;
+                SUCCESS
+            }
+            // int GetResult(IHashCTX *, void *pCtx, int nCtxSize, byte *pResult, int *pnLen)
+            //
+            // Escreve até `*pnLen` bytes do resumo e devolve dezesseis no tamanho, como o
+            // `GetDigest` do `IHash`.
+            "GetResult" if iface == Interface::HashCtx => {
+                let (ctx, tamanho, destino, pn) =
+                    (self.arg(1), self.arg(2), self.arg(3), self.arg(4));
+                if ctx == 0 || tamanho < TAMANHO_DO_MD5_CTX {
+                    return Ok(Some(EBADPARM));
+                }
+                let resumo = self.le_md5_ctx(ctx)?.finish();
+                let cabe = match pn {
+                    0 => resumo.len(),
+                    p => (self.cpu.read_u32(p).unwrap_or(0) as usize).min(resumo.len()),
+                };
+                if destino != 0 {
+                    self.cpu.write_mem(destino, &resumo[..cabe])?;
+                }
+                if pn != 0 {
+                    self.cpu.write_u32(pn, resumo.len() as u32)?;
+                }
+                SUCCESS
+            }
             // void IHASH_Reset(IHash *) — recomeça o resumo do zero.
             "Reset" => {
                 self.hashes.insert(this, HashState::default());
@@ -314,5 +360,39 @@ impl<C: CpuBackend> Machine<C> {
                     .map(|k| format!("chave {} iv {}", hex(&k), hex(&c.iv)))
             })
             .collect()
+    }
+}
+
+/// O tamanho do `MD5_CTX`: estado (16), contagem de bytes (8) e o bloco pendente (64).
+const TAMANHO_DO_MD5_CTX: u32 = 88;
+
+impl<C: CpuBackend> Machine<C> {
+    /// O MD5 guardado no contexto do jogo, no layout do `MD5_CTX`.
+    ///
+    /// **O estado mora na memória do guest, e não aqui**: o `IHashCTX` existe justamente para o
+    /// chamador ter o contexto, e é assim que ele sobrevive a um save state sem estado escondido.
+    pub(super) fn le_md5_ctx(&self, ctx: u32) -> Result<crate::brew::crypto::Md5, CpuError> {
+        let bytes = self.read_bytes(ctx, TAMANHO_DO_MD5_CTX)?;
+        let palavra = |i: usize| u32::from_le_bytes(bytes[i..i + 4].try_into().expect("4 bytes"));
+        let estado = [palavra(0), palavra(4), palavra(8), palavra(12)];
+        let total = u64::from_le_bytes(bytes[16..24].try_into().expect("8 bytes"));
+        let pendente = (total % 64) as usize;
+        let mut md5 = crate::brew::crypto::Md5::new();
+        // Um contexto que o jogo nunca iniciou não tem como dar erro de formato: o resto do bloco
+        // é sempre menor que 64 pela conta acima.
+        let _ = md5.restaura_estado(estado, &bytes[24..24 + pendente], total);
+        Ok(md5)
+    }
+
+    pub(super) fn grava_md5_ctx(&mut self, ctx: u32, md5: &crate::brew::crypto::Md5) -> Result<(), CpuError> {
+        let (estado, pendente, total) = md5.estado();
+        let mut bytes = Vec::with_capacity(TAMANHO_DO_MD5_CTX as usize);
+        for palavra in estado {
+            bytes.extend_from_slice(&palavra.to_le_bytes());
+        }
+        bytes.extend_from_slice(&total.to_le_bytes());
+        bytes.extend_from_slice(pendente);
+        bytes.resize(TAMANHO_DO_MD5_CTX as usize, 0);
+        self.cpu.write_mem(ctx, &bytes)
     }
 }

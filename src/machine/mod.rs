@@ -632,14 +632,19 @@ const MM_STATE_PLAY_PAUSE: u32 = 5;
 
 /// Classes do firmware que não temos e que o jogo usa **sem conferir** se existem.
 ///
-/// O Powerboat Challenge cria a `0x01001039`, guarda o ponteiro e chama um método dela sem olhar
-/// o retorno: com a recusa honesta — que é o que o BREW responde para classe que não existe — ele
-/// saltava para o endereço zero antes do menu de idioma. Um objeto que responde sucesso a tudo o
-/// deixa seguir, e o que ele chamar nele aparece no relatório da sonda.
+/// Um objeto que responde sucesso a tudo deixa o jogo seguir, e o que ele chamar nele aparece no
+/// relatório da sonda. A `0x01001039` do Powerboat Challenge saiu daqui quando o uso mostrou o
+/// que ela é: ver [`AEECLSID_MD5CTX`].
+const CLASSES_POR_OBSERVACAO: &[u32] = &[];
+
+/// A `0x01001039`: MD5 no formato `IHashCTX`, com o contexto na memória do jogo.
 ///
-/// A classe em si continua sendo do firmware do console, que ainda não lemos (ver
-/// [`15-o-que-falta-da-nand.md`](../../docs/implementacao/15-o-que-falta-da-nand.md)).
-const CLASSES_POR_OBSERVACAO: &[u32] = &[0x0100_1039];
+/// **O número não veio do SDK, veio do uso.** O Powerboat Challenge passa um contexto de 0x58
+/// bytes — o tamanho exato de um `MD5_CTX`: quatro palavras de estado, oito bytes de contagem e
+/// um bloco de 64 — e compara 16 bytes de resultado com o fim do arquivo de opções. Atendida pelo
+/// objeto que responde sucesso a tudo, ela nunca calculava nada: o resumo gravado era lixo, e o
+/// jogo apagava o save a cada abertura como "estragado".
+const AEECLSID_MD5CTX: u32 = 0x0100_1039;
 
 /// `AEECLSID_QEGL`, do `AEECLSID_QEGL.bid` do SDK: o objeto que dá acesso ao EGL e ao OpenGL
 /// ES pelas interfaces novas do BREW. É por ele que o Quake tenta primeiro.
@@ -3879,6 +3884,7 @@ impl<C: CpuBackend> Machine<C> {
             },
             (Interface::Web, _)
             | (Interface::Hash, _)
+            | (Interface::HashCtx, _)
             | (Interface::CipherFactory, _)
             | (Interface::Cipher, _) => match self.crypto_call(iface, slot)? {
                 Some(result) => result,
