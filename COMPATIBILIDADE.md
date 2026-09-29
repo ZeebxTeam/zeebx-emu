@@ -3,9 +3,9 @@ Versão considerada na análise: v0.2.1 (em desenvolvimento)
 
 | Status | Legenda | Jogos | % |
 |---|---|---|---|
-| ✅ | (compatível) | 51 | 83,6% |
-| 🔄 | (roda com ressalvas) | 9 | 14,8% |
-| ❌ | (incompatível) | 1 | 1,6% |
+| ✅ | (compatível) | 50 | 83,3% |
+| 🔄 | (roda com ressalvas) | 9 | 15,0% |
+| ❌ | (incompatível) | 1 | 1,7% |
 
 
 # Observações:
@@ -54,7 +54,6 @@ Versão considerada na análise: v0.2.1 (em desenvolvimento)
 | Spin Master | ✅ | Emulador de arcade embutido, com som |
 | Street Hoop | ✅ | Emulador de arcade embutido, com som |
 | Super BurgerTime | ✅ | Emulador de arcade embutido, com som |
-| Super Mario 64 (Port) | ✅ | |
 | Tekken 2 | ✅ | |
 | Tork and Kral - A Prehistorik Adventure | ✅ | |
 | Toy Raid | 🔄 | Jogável, porém com glitches visuais |
