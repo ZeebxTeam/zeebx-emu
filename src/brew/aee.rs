@@ -503,7 +503,7 @@ impl Interface {
     /// as duas coisas precisam concordar — daí a lista existir num lugar só, com teste que
     /// confere a correspondência. Quando elas divergiram, um objeto recebeu a vtable de outra
     /// interface e a chamada foi parar no método errado, com sintoma a quilômetros da causa.
-    pub const ALL: [Interface; 54] = [
+    pub const ALL: [Interface; 62] = [
         Self::Shell,
         Self::Module,
         Self::Applet,
@@ -558,6 +558,14 @@ impl Interface {
         Self::Control,
         Self::Transform,
         Self::Canvas,
+        Self::Font,
+        Self::Gles11Ext,
+        Self::Gles10Ext,
+        Self::EglGetPowerLevel,
+        Self::EglOesSwapInterval,
+        Self::EglGetColorBuffer,
+        Self::Gles11ExtPak,
+        Self::Joystick,
     ];
 
     /// Nome usado nos logs — casa com a nomenclatura do SDK.
@@ -824,6 +832,24 @@ pub fn describe(addr: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **Toda interface que o trampolim conhece tem vtable.** As oito que vieram depois do
+    /// `Canvas` entraram no `from_index` e não aqui: a vtable delas caía depois do fim da região,
+    /// numa página zerada, e o objeto entregue ao jogo tinha todos os métodos em zero. O Ridge
+    /// Racer, que antes recebia "classe não suportada" do `IGLES11Ext` e seguia sem ele, passou a
+    /// saltar para o endereço zero ao entrar no menu.
+    #[test]
+    fn toda_interface_do_trampolim_esta_na_lista_das_vtables() {
+        for indice in 0..=u8::MAX as u32 {
+            if let Some(iface) = Interface::from_index(indice) {
+                assert!(
+                    Interface::ALL.contains(&iface),
+                    "{} (índice {indice}) não está em Interface::ALL e fica sem vtable",
+                    iface.name()
+                );
+            }
+        }
+    }
 
     #[test]
     fn codifica_e_decodifica_ida_e_volta() {
