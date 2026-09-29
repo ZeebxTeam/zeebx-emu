@@ -1159,6 +1159,11 @@ impl<C: CpuBackend> Machine<C> {
         self.gl.desenha_no_fbo(fbo);
     }
 
+    /// O quadro acabou: o contexto volta ao frontend. Ver [`Rasterizador::devolve_ao_frontend`].
+    pub fn devolve_ao_frontend(&mut self) {
+        self.gl.devolve_ao_frontend();
+    }
+
     /// Diz ao rasterizador de placa para descartar profundidade e estêncil depois do quadro.
     /// Ver [`Rasterizador::define_descarte_de_tiles`].
     pub fn define_descarte_de_tiles(&mut self, descartar: bool) {

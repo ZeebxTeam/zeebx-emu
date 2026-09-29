@@ -1292,6 +1292,14 @@ impl Session {
         self.machine.desenha_no_fbo(fbo);
     }
 
+    /// Fecha o quadro do lado da placa antes de o frontend apresentar o framebuffer dele.
+    ///
+    /// O par do [`Session::desenha_no_fbo`]: aquele pega o contexto no começo do quadro, este o
+    /// devolve no fim, sem os objetos do motor ligados.
+    pub fn devolve_ao_frontend(&mut self) {
+        self.machine.devolve_ao_frontend();
+    }
+
     pub fn define_proporcao(&mut self, aspecto: Option<f32>) {
         self.machine.define_proporcao(aspecto);
     }
