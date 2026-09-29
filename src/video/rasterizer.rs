@@ -2159,9 +2159,14 @@ impl GlState {
                     self.triangle([clip[0], window[0], window[1]], &mut batch);
                 }
             }
-            // Pontos e linhas não aparecem nos jogos do console, que desenham tudo com
-            // triângulos; deixá-los sem tratamento é melhor que rasterizá-los errado.
-            gles::GL_POINTS | gles::GL_LINES | gles::GL_LINE_LOOP | gles::GL_LINE_STRIP => {}
+            gles::GL_LINES | gles::GL_LINE_LOOP | gles::GL_LINE_STRIP => {
+                let ccw = self.front_face != gles::GL_CW;
+                for tri in linhas_em_triangulos(mode, &clip, self.viewport, ccw).chunks_exact(3) {
+                    self.triangle([tri[0], tri[1], tri[2]], &mut batch);
+                }
+            }
+            // Pontos continuam sem tratamento: nenhum jogo medido os usa.
+            gles::GL_POINTS => {}
             _ => {}
         }
         self.enqueue(&mut batch);
@@ -3163,6 +3168,70 @@ fn gira_normal(m: &[[f32; 3]; 3], v: [f32; 3]) -> [f32; 3] {
     std::array::from_fn(|i| m[i][0] * v[0] + m[i][1] * v[1] + m[i][2] * v[2])
 }
 
+/// Troca cada segmento de `GL_LINES`, `GL_LINE_STRIP` ou `GL_LINE_LOOP` por um retângulo de um
+/// pixel de largura, em dois triângulos soltos, no espaço de recorte.
+///
+/// **Linha vira triângulo para seguir o mesmo caminho de tudo**: recorte, textura, névoa e
+/// mistura saem iguais aos de um triângulo, nos dois rasterizadores, sem uma segunda rotina de
+/// preenchimento para manter em par. O Peggle pinta o degradê do fundo do menu com uma linha
+/// horizontal por pixel; sem elas, o meio da tela ficava preto atrás do logo.
+///
+/// A largura é a de `glLineWidth` padrão, um pixel da viewport. Os triângulos saem na volta
+/// anti-horária da tela quando `ccw`, para que o descarte por face não leve a linha embora.
+pub(crate) fn linhas_em_triangulos(
+    mode: u32,
+    clip: &[Vertex],
+    viewport: (i32, i32, i32, i32),
+    ccw: bool,
+) -> Vec<Vertex> {
+    let n = clip.len();
+    let pares: Vec<(usize, usize)> = match mode {
+        gles::GL_LINES => (0..n / 2).map(|i| (2 * i, 2 * i + 1)).collect(),
+        gles::GL_LINE_STRIP => (1..n).map(|i| (i - 1, i)).collect(),
+        gles::GL_LINE_LOOP if n >= 2 => (1..n).map(|i| (i - 1, i)).chain([(n - 1, 0)]).collect(),
+        _ => Vec::new(),
+    };
+    let (vw, vh) = (viewport.2.max(1) as f32, viewport.3.max(1) as f32);
+    let perto = |v: &Vertex| v.position[2] + v.position[3] >= 0.0;
+    let mut saida = Vec::with_capacity(pares.len() * 6);
+    for (i, j) in pares {
+        let (mut a, mut b) = (clip[i], clip[j]);
+        match (perto(&a), perto(&b)) {
+            (false, false) => continue,
+            (true, false) => b = clip_near(a, b),
+            (false, true) => a = clip_near(b, a),
+            (true, true) => {}
+        }
+        let (aw, bw) = (a.position[3], b.position[3]);
+        if aw <= 0.0 || bw <= 0.0 {
+            continue;
+        }
+        // A direção em pixels, e não em NDC: numa viewport 640x480 os dois eixos têm escalas
+        // diferentes, e a perpendicular em NDC sairia torta.
+        let dx = (b.position[0] / bw - a.position[0] / aw) * vw / 2.0;
+        let dy = (b.position[1] / bw - a.position[1] / aw) * vh / 2.0;
+        let comprimento = (dx * dx + dy * dy).sqrt();
+        if comprimento == 0.0 {
+            continue;
+        }
+        // Meio pixel para cada lado, convertido de volta para NDC.
+        let (ox, oy) = (-dy / comprimento / vw, dx / comprimento / vh);
+        let desloca = |v: Vertex, sinal: f32| {
+            let mut v = v;
+            v.position[0] += sinal * ox * v.position[3];
+            v.position[1] += sinal * oy * v.position[3];
+            v
+        };
+        let (a0, a1, b0, b1) = (desloca(a, 1.0), desloca(a, -1.0), desloca(b, 1.0), desloca(b, -1.0));
+        // `a1 → b1 → b0` gira no sentido de `(dx, dy)` para `(ox, oy)`, que é anti-horário.
+        match ccw {
+            true => saida.extend([a1, b1, b0, a1, b0, a0]),
+            false => saida.extend([a1, b0, b1, a1, a0, b0]),
+        }
+    }
+    saida
+}
+
 fn clip_near(a: Vertex, b: Vertex) -> Vertex {
     let (da, db) = (a.position[2] + a.position[3], b.position[2] + b.position[3]);
     let t = da / (da - db);
@@ -3222,6 +3291,31 @@ fn unpack(color: [u8; 4]) -> [f32; 4] {
 
 #[cfg(test)]
 mod tests {
+
+    /// **Uma linha horizontal pinta uma fileira, e só uma.** É o que o degradê do menu do Peggle
+    /// pede: uma linha por pixel, lado a lado. Com duas fileiras por linha, a de cima cobriria a
+    /// de baixo; com nenhuma, o fundo ficava preto — que era o caso antes das linhas existirem.
+    #[test]
+    fn linha_horizontal_pinta_uma_fileira() {
+        let mut state = super::GlState::new(8, 4);
+        let vermelho = |x: f32, y: f32| super::Vertex {
+            position: [x, y, 0.0, 1.0],
+            color: [1.0, 0.0, 0.0, 1.0],
+            ..Default::default()
+        };
+        // O centro da fileira 1 de 4 em NDC: (1,5 / 4) * 2 - 1.
+        state.draw(super::gles::GL_LINES, &[vermelho(-1.0, -0.25), vermelho(1.0, -0.25)]);
+        let quadro = state.present(8, 4);
+        let pintados: Vec<usize> = (0..4)
+            .filter(|&linha| quadro[linha * 8..linha * 8 + 8].iter().any(|&p| p == 0xf800))
+            .collect();
+        assert_eq!(pintados.len(), 1, "fileiras pintadas: {pintados:?}");
+        let linha = pintados[0];
+        assert!(
+            quadro[linha * 8..linha * 8 + 8].iter().all(|&p| p == 0xf800),
+            "a fileira tem de sair inteira"
+        );
+    }
 
     /// **A redução da resolução interna**, e o caso que a teria deixado sem efeito.
     ///

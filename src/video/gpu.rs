@@ -30,7 +30,7 @@ type ContextoProprio = Contexto;
 type ContextoProprio = ();
 use super::gles;
 use super::rasterizer::{
-    GlState, Matrix, QuadroNaPlaca, Rasterizador, TexEnv, Texture as TexturaSalva,
+    GlState, Matrix, linhas_em_triangulos, QuadroNaPlaca, Rasterizador, TexEnv, Texture as TexturaSalva,
     UnidadeDeTextura, Vertex,
 };
 use glow::{self, HasContext};
@@ -2552,12 +2552,17 @@ impl Rasterizador for GpuState {
     }
 
     fn draw(&mut self, mode: u32, vertices: &[Vertex]) {
-        // Pontos e linhas não aparecem nos jogos do console, e o rasterizador de software também
-        // os deixa sem tratamento. Desenhá-los aqui divergiria dele sem ganho nenhum.
+        // Linhas viram triângulos soltos pela mesma conta do rasterizador de software — ver
+        // [`linhas_em_triangulos`]. Pontos continuam sem tratamento, lá e aqui.
+        let linhas = matches!(
+            mode,
+            gles::GL_LINES | gles::GL_LINE_STRIP | gles::GL_LINE_LOOP
+        );
         let modo = match mode {
             gles::GL_TRIANGLES => glow::TRIANGLES,
             gles::GL_TRIANGLE_STRIP => glow::TRIANGLE_STRIP,
             gles::GL_TRIANGLE_FAN => glow::TRIANGLE_FAN,
+            _ if linhas => glow::TRIANGLES,
             _ => return,
         };
         self.estado.etapa_de_vertice(vertices);
@@ -2585,7 +2590,16 @@ impl Rasterizador for GpuState {
         }
         let mut soltos = std::mem::take(&mut self.soltos);
         soltos.clear();
-        soltos.extend(self.estado.transformados().iter().map(|v| {
+        let de_linhas = linhas.then(|| {
+            linhas_em_triangulos(
+                mode,
+                self.estado.transformados(),
+                self.estado.viewport,
+                self.estado.front_face != gles::GL_CW,
+            )
+        });
+        let origem = de_linhas.as_deref().unwrap_or(self.estado.transformados());
+        soltos.extend(origem.iter().map(|v| {
             let [px, py, pz, pw] = v.position;
             Vertex {
                 position: [px * k, py, pz, pw],
