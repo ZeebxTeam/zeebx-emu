@@ -234,7 +234,16 @@ O repositório não distribui jogos. Coloque os seus em `roms/`, que é ignorada
 
 ## Licença
 
-GPL-2.0-or-later, o texto completo da GPLv2 em [LICENSE](LICENSE).
+O código do Zeebx é **GPL-2.0-or-later**: o texto da GPLv2 está em [LICENSE](LICENSE).
+
+**Os binários que saem na release são distribuídos sob a GPLv3**, com o texto em
+[LICENSE-GPL3](LICENSE-GPL3). Isso não é uma troca de licença: todos eles ligam bibliotecas que
+são só Apache-2.0 (`ab_glyph`, `sevenz-rust2`, `zopfli`, `cpal`, `winit`…), e a Apache-2.0 combina
+com a GPLv3 mas não com a GPLv2. O "or later" é o que permite essa combinação. O frontend Qt já
+seria GPLv3 de qualquer forma, pelo Qt (ver
+[21-migracao-para-qt.md](docs/implementacao/21-migracao-para-qt.md)).
+
+Quem quiser o Zeebx sob a GPLv2 pode compilar o código, mas não com essas dependências.
 
 
 ## Menções

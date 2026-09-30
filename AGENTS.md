@@ -122,6 +122,8 @@ vale disparar aquele workflow antes da tag. Você não consegue dispará-lo.
 - **O código do Zeebx é GPL-2.0-or-later**. O backend de CPU padrão é o Dynarmic, para que
   frontends GPLv3 como Qt 6 possam linkar o núcleo sem carregar uma dependência GPLv2-only. Antes
   de propor uma biblioteca nova, cheque a licença dela e as features do binário que vai linká-la.
+  **Os binários já são GPLv3 na prática**: todos ligam crates que são só Apache-2.0, que não
+  combinam com a GPLv2. Por isso uma dependência GPL-2.0-only não entra em binário nenhum.
 - **O `Cargo.lock` é versionado** e o CI usa `--locked`. Membro novo no workspace entra no lock,
   no mesmo commit.
 
