@@ -1969,6 +1969,8 @@ impl<C: CpuBackend> Machine<C> {
                     canais: menor(2, "canais")?,
                     bits: menor(3, "bits")?,
                     sem_sinal: meta[4] != 0,
+                    // Não vai no save: um fluxo restaurado volta a pedir pelo relógio, sem bloco.
+                    bloco: 0,
                     inicio_us: u64::from(meta[6]) | (u64::from(meta[7]) << 32),
                     quadros_lidos: u64::from(meta[8]) | (u64::from(meta[9]) << 32),
                     tocando: meta[5] != 0,
@@ -3762,6 +3764,7 @@ mod tests {
                 canais: 2,
                 bits: 16,
                 sem_sinal: false,
+                bloco: 0,
                 inicio_us: 0x1_0000_0005,
                 quadros_lidos: 0x2_0000_0007,
                 tocando: true,

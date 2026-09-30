@@ -1007,6 +1007,11 @@ impl<C: CpuBackend> Machine<C> {
             ));
             return Ok(false);
         }
+        let por_quadro = u32::from(canais) * u32::from(bits / 8);
+        let bloco = match self.cpu.read_u32(pointer + 32)? {
+            b if b >= por_quadro && b <= MAX_LEITURA_PCM => b - b % por_quadro,
+            _ => 0,
+        };
         self.fluxos_pcm.insert(
             this,
             FluxoPcm {
@@ -1015,6 +1020,7 @@ impl<C: CpuBackend> Machine<C> {
                 canais,
                 bits,
                 sem_sinal,
+                bloco,
                 inicio_us: 0,
                 quadros_lidos: 0,
                 tocando: false,
@@ -1093,7 +1099,15 @@ impl<C: CpuBackend> Machine<C> {
                 if faltam == 0 {
                     break;
                 }
-                let pedido = (faltam * u64::from(por_quadro)).min(u64::from(MAX_LEITURA_PCM)) as u32;
+                // **Em blocos de `dwBufferSize`, como o BREW pede.** O mixer do Prey 2 Evil pede
+                // `n/4` bytes de ADPCM a cada voz e trata `4 × lidos < n` como fim do som: com os
+                // 734 bytes de 1/60 s a 22050 Hz, toda leitura ímpar de pares rebobinava a voz e
+                // um trecho de 33 ms tocava em laço. O Caveman Ninja declara 732 bytes, quase o
+                // que já se pedia; o Prey declara 6144.
+                let pedido = match fluxo.bloco {
+                    0 => (faltam * u64::from(por_quadro)).min(u64::from(MAX_LEITURA_PCM)) as u32,
+                    bloco => bloco,
+                };
                 let pedido = pedido - pedido % por_quadro;
                 if pedido == 0 {
                     break;

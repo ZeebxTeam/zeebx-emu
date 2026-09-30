@@ -552,6 +552,9 @@ struct FluxoPcm {
     canais: u16,
     bits: u16,
     sem_sinal: bool,
+    /// O `dwBufferSize` do `AEEMediaDataEx`: o tamanho de cada `Read`, em bytes, múltiplo do
+    /// quadro. Zero quando o jogo não disse, ou disse algo que não cabe no buffer de leitura.
+    bloco: u32,
     /// Quando o `Play` começou, no relógio virtual, e quantos quadros já foram pedidos desde
     /// então. A diferença entre o que o relógio manda e o que já veio é o que falta pedir.
     inicio_us: u64,
