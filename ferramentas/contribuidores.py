@@ -28,10 +28,14 @@ def contribuidores() -> list[dict]:
         return [c for c in json.load(resposta) if c["type"] == "User"]
 
 
+# O formato é o do all-contributors, e não por gosto: a tabela do GitHub dimensiona cada coluna
+# pelo que há nela, e sem a largura fixa um nome comprido deixa as colunas desiguais. Na prévia do
+# editor fica bonito de qualquer jeito; na página do repositório, não.
 def tabela(pessoas: list[dict]) -> str:
+    largura = f"{100 / POR_LINHA:.2f}%"
     celulas = [
-        f'<td align="center"><a href="{p["html_url"]}">'
-        f'<img src="{p["avatar_url"]}&s=128" width="64" height="64" alt=""><br>'
+        f'<td align="center" valign="top" width="{largura}"><a href="{p["html_url"]}">'
+        f'<img src="{p["avatar_url"]}&s=100" width="100px;" alt="{p["login"]}"/><br />'
         f'<sub><b>{p["login"]}</b></sub></a></td>'
         for p in pessoas
     ]
