@@ -1328,6 +1328,11 @@ pub const COLLECTION: &[&str] = &[
 /// `DECLARE_IBASE`, e os métodos próprios começam no 2.
 pub const HASH: &[&str] = &["AddRef", "Release", "Update", "GetDigest", "Reset"];
 
+/// Métodos de `IHashCTX` (6 slots): o resumo com o **contexto na memória do chamador**. Cada
+/// método recebe o contexto e o tamanho dele; o objeto não guarda nada. Ordem lida do uso no
+/// Powerboat Challenge, que chama o 3 com o contexto, o 4 com os dados e o 5 com a saída.
+pub const HASH_CTX: &[&str] = &["AddRef", "Release", "QueryInterface", "Init", "Update", "GetResult"];
+
 /// Métodos de `ICipherFactory` (6 slots), de `INHERIT_ICipherFactory` em
 /// `inc/AEEICipherFactory.h`.
 pub const CIPHER_FACTORY: &[&str] = &[

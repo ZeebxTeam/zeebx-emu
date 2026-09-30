@@ -784,7 +784,18 @@ impl<C: CpuBackend> Machine<C> {
                 if addr == 0 {
                     return Ok(Some(ENOMEMORY));
                 }
-                self.bitmaps.insert(addr, Framebuffer::new(width, height));
+                // **Nasce com a cor transparente, e não preto.** O Toy Raid monta cada sprite
+                // virado num par de bitmaps compatíveis: `BltIn` transparente do atlas para o
+                // primeiro, cópia espelhada pelo `IDIB` para o segundo, e `BitBlt` transparente
+                // do segundo na tela. O fundo que sobra do primeiro vai junto, e tem de ser a
+                // chave: nascido preto, cada helicóptero virado para a direita, avião e explosão
+                // saía dentro de um retângulo preto.
+                let mut novo = Framebuffer::new(width, height);
+                novo.fill_rect_native(
+                    Rect { x: 0, y: 0, width: width as i16, height: height as i16 },
+                    TRANSPARENT_KEY,
+                );
+                self.bitmaps.insert(addr, novo);
                 // **O bitmap compatível já nasce `IDIB`, com os campos públicos preenchidos.** O
                 // Zenonia cria o canvas 320x240 assim e lê `cx`, `cy` e `pBmp` direto da struct,
                 // sem `QueryInterface` nenhum. Com os campos zerados o canvas tinha tamanho zero:

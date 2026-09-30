@@ -438,7 +438,7 @@ impl<C: CpuBackend> Machine<C> {
             // gramática do `snprintf`, com origem e destino em UTF-16.
             "wsprintf" => {
                 let fmt = self.read_aechar(a2)?;
-                let text = self.format_from(3, &fmt);
+                let text = self.format_largo_from(3, &fmt);
                 self.write_aechar(a0, &text, a1 as usize / 2)?;
                 SUCCESS
             }
@@ -909,6 +909,23 @@ impl<C: CpuBackend> Machine<C> {
         let (low, high) = fmath::to_words(value);
         self.cpu.write_reg(Reg::R1, high);
         low
+    }
+
+    /// Como [`Machine::format_from`], com o `%s` lendo `AECHAR`: o do `WSPRINTF`.
+    pub(super) fn format_largo_from(&self, first: usize, fmt: &str) -> String {
+        let words = [
+            self.cpu.read_reg(Reg::R0),
+            self.cpu.read_reg(Reg::R1),
+            self.cpu.read_reg(Reg::R2),
+            self.cpu.read_reg(Reg::R3),
+        ];
+        let mut source = GuestArgs {
+            words: words[first..].to_vec(),
+            index: 0,
+            stack: self.cpu.read_reg(Reg::Sp),
+            cpu: &self.cpu,
+        };
+        cformat::format_largo(fmt, &mut source)
     }
 
     /// Formata uma string do guest tomando os variádicos a partir do registrador `first`.

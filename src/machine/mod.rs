@@ -552,6 +552,9 @@ struct FluxoPcm {
     canais: u16,
     bits: u16,
     sem_sinal: bool,
+    /// O `dwBufferSize` do `AEEMediaDataEx`: o tamanho de cada `Read`, em bytes, múltiplo do
+    /// quadro. Zero quando o jogo não disse, ou disse algo que não cabe no buffer de leitura.
+    bloco: u32,
     /// Quando o `Play` começou, no relógio virtual, e quantos quadros já foram pedidos desde
     /// então. A diferença entre o que o relógio manda e o que já veio é o que falta pedir.
     inicio_us: u64,
@@ -632,14 +635,19 @@ const MM_STATE_PLAY_PAUSE: u32 = 5;
 
 /// Classes do firmware que não temos e que o jogo usa **sem conferir** se existem.
 ///
-/// O Powerboat Challenge cria a `0x01001039`, guarda o ponteiro e chama um método dela sem olhar
-/// o retorno: com a recusa honesta — que é o que o BREW responde para classe que não existe — ele
-/// saltava para o endereço zero antes do menu de idioma. Um objeto que responde sucesso a tudo o
-/// deixa seguir, e o que ele chamar nele aparece no relatório da sonda.
+/// Um objeto que responde sucesso a tudo deixa o jogo seguir, e o que ele chamar nele aparece no
+/// relatório da sonda. A `0x01001039` do Powerboat Challenge saiu daqui quando o uso mostrou o
+/// que ela é: ver [`AEECLSID_MD5CTX`].
+const CLASSES_POR_OBSERVACAO: &[u32] = &[];
+
+/// A `0x01001039`: MD5 no formato `IHashCTX`, com o contexto na memória do jogo.
 ///
-/// A classe em si continua sendo do firmware do console, que ainda não lemos (ver
-/// [`15-o-que-falta-da-nand.md`](../../docs/implementacao/15-o-que-falta-da-nand.md)).
-const CLASSES_POR_OBSERVACAO: &[u32] = &[0x0100_1039];
+/// **O número não veio do SDK, veio do uso.** O Powerboat Challenge passa um contexto de 0x58
+/// bytes — o tamanho exato de um `MD5_CTX`: quatro palavras de estado, oito bytes de contagem e
+/// um bloco de 64 — e compara 16 bytes de resultado com o fim do arquivo de opções. Atendida pelo
+/// objeto que responde sucesso a tudo, ela nunca calculava nada: o resumo gravado era lixo, e o
+/// jogo apagava o save a cada abertura como "estragado".
+const AEECLSID_MD5CTX: u32 = 0x0100_1039;
 
 /// `AEECLSID_QEGL`, do `AEECLSID_QEGL.bid` do SDK: o objeto que dá acesso ao EGL e ao OpenGL
 /// ES pelas interfaces novas do BREW. É por ele que o Quake tenta primeiro.
@@ -1628,6 +1636,25 @@ fn decode_png(bytes: &[u8]) -> Option<DecodedImage> {
 ///
 /// É o formato em que o decodificador de PNG do BREW entrega o `IDIB`. Tons de cinza viram RGB,
 /// com ou sem alfa, e a paleta é expandida.
+/// Os bytes do DIB que o decodificador do BREW entrega: PNG pelo caminho próprio, e o resto
+/// (JPEG, BMP) pelo despachante por assinatura, em RGB quando não há alfa.
+///
+/// **O JPEG também sai em 24 bits.** O Zuma's Revenge decodifica os fundos em JPEG e converte o
+/// DIB para 565 por conta própria, lendo três bytes por pixel. Sem este caminho o JPEG ficava com
+/// o DIB de 16 bits do bitmap genérico, e cada linha do fundo saía como listras.
+fn decode_dib_bytes(bytes: &[u8]) -> Option<(u32, u32, usize, Vec<u8>)> {
+    if let Some(png) = decode_png_bytes(bytes) {
+        return Some(png);
+    }
+    let imagem = crate::video::icon::decode(bytes).ok()?;
+    let (largura, altura) = (imagem.width as u32, imagem.height as u32);
+    if imagem.rgba.chunks_exact(4).all(|p| p[3] == u8::MAX) {
+        let rgb = imagem.rgba.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
+        return Some((largura, altura, 3, rgb));
+    }
+    Some((largura, altura, 4, imagem.rgba))
+}
+
 fn decode_png_bytes(bytes: &[u8]) -> Option<(u32, u32, usize, Vec<u8>)> {
     let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
     decoder.set_transformations(
@@ -2234,6 +2261,24 @@ impl<C: CpuBackend> ArgSource for GuestArgs<'_, C> {
     fn read_cstring(&mut self, addr: u32) -> String {
         self.cpu.read_cstring(addr, MAX_STRING)
     }
+
+    fn read_wide_string(&mut self, addr: u32) -> String {
+        let mut unidades = Vec::new();
+        for i in 0..MAX_STRING as u32 {
+            let Ok(bytes) = self.cpu.read_u32(addr.wrapping_add(i * 2) & !3) else {
+                break;
+            };
+            let unidade = match (addr.wrapping_add(i * 2)) & 2 {
+                0 => bytes as u16,
+                _ => (bytes >> 16) as u16,
+            };
+            if unidade == 0 {
+                break;
+            }
+            unidades.push(unidade);
+        }
+        String::from_utf16_lossy(&unidades)
+    }
 }
 
 pub struct Machine<C: CpuBackend> {
@@ -2702,6 +2747,10 @@ pub struct Machine<C: CpuBackend> {
     /// A thread em execução, se houver — retomar uma thread de dentro dela mesma seria
     /// reentrância, não concorrência.
     current_thread: Option<u32>,
+    /// O bloco da heap onde estava o `sp` da última vez, como `(início, tamanho)`: a pilha que o
+    /// jogo alocou para si. Guardado porque achá-lo percorre a heap inteira, e o `sp` quase
+    /// nunca muda de bloco. Ver [`Machine::gasta_a_pilha`].
+    pilha_na_heap: Option<(u32, u32)>,
     /// Buffer de pixels no guest de cada superfície exposta como `IDIB`.
     dib_buffers: HashMap<u32, u32>,
     /// Quantos bytes o buffer publicado de cada `IDIB` tem.
@@ -2757,6 +2806,12 @@ pub struct Machine<C: CpuBackend> {
     /// O retângulo de recorte de `IDisplay`. `None` é a superfície inteira, que é o padrão do
     /// BREW e o que vale antes do primeiro `SetClipRect`.
     clip: Option<Rect>,
+    /// O recorte do `IGraphics`, que é outro objeto e tem o seu. Vale em `clip` só durante uma
+    /// chamada de `IGraphics` — ver [`Machine::graphics_call`].
+    ///
+    /// Fora do save state de propósito: o jogo que usa `IGraphics` refaz o recorte a cada
+    /// quadro, e gravá-lo mudaria o formato por um quadro de diferença.
+    clip_graficos: Option<Rect>,
     /// A tela, para quando ainda não existe device bitmap.
     screen: Framebuffer,
     /// Cores ativas do `IDisplay`, indexadas pelo `AEEClrItem` (`CLR_USER_TEXT` = 1 em diante).
@@ -3164,7 +3219,13 @@ impl<C: CpuBackend> Machine<C> {
             missing_apis: BTreeSet::new(),
             falhas_engolidas: BTreeSet::new(),
             ignored_gl: BTreeSet::new(),
-            unpack_alignment: 4,
+            // **Um, e não os 4 da especificação.** O Peggle sobe as faixas de 2 pixels de largura
+            // dos painéis em `GL_RGB` com as linhas coladas (6 bytes), sem chamar `PixelStorei`, e
+            // roda assim no aparelho: lá o efeito é o de alinhamento 1. Com 4, cada linha
+            // escorregava 2 bytes e as faixas esticadas viravam listras coloridas nos jogos da
+            // PopCap. Quem precisa de outro valor o pede: o Powerboat Challenge pede 1, e é essa
+            // chamada que o `PixelStorei` honra.
+            unpack_alignment: 1,
             web_response: Vec::new(),
             streams: HashMap::new(),
             sounds: HashMap::new(),
@@ -3217,6 +3278,7 @@ impl<C: CpuBackend> Machine<C> {
             pending_threads: Vec::new(),
             stalled: None,
             current_thread: None,
+            pilha_na_heap: None,
             dib_buffers: HashMap::new(),
             dib_capacity: HashMap::new(),
             dib_herdados: HashSet::new(),
@@ -3232,6 +3294,7 @@ impl<C: CpuBackend> Machine<C> {
             device_bitmap: 0,
             display_target: 0,
             clip: None,
+            clip_graficos: None,
             screen: Framebuffer::new(SCREEN_WIDTH as u32, SCREEN_HEIGHT as u32),
             colors: default_colors(),
             pending_text: Vec::new(),
@@ -3573,7 +3636,57 @@ impl<C: CpuBackend> Machine<C> {
         if let Some(line) = entry.and_then(|i| self.trace.get_mut(i)) {
             line.push_str(&format!(" -> {result:#x}"));
         }
+        self.gasta_a_pilha();
         Ok(Some(result))
+    }
+
+    /// Suja a pilha abaixo do `sp`, como a implementação de verdade da chamada a teria sujado.
+    ///
+    /// **No aparelho, o BREW roda na pilha do jogo; aqui, não.** Todo `MALLOC`, `FREE` ou
+    /// `OpenFile` do Zeebo empilha quadros abaixo do `sp` de quem chamou, e apaga o que tinha
+    /// sobrado ali. O nosso atendimento é Rust e não encosta na pilha do guest, então o resto de
+    /// uma chamada anterior sobrevive — e há jogo que, sem saber, depende de ele sumir.
+    ///
+    /// O Iron Sight é o caso medido. O laço dos prédios da fase pede `building0.pof` até
+    /// `building49.pof`, e nenhum existe no `dataTall.bar`: o jogo conta com o carregador
+    /// devolvendo 0. O leitor de chunks (`0x9b860`) é montado na pilha, não acha o arquivo e zera
+    /// o stream, mas quem o usa (`0x8bae8`) só confere se o chunk corrente é `3DOB` — campo que o
+    /// construtor não inicializa. Sobrava ali o `3DOB` do `.pof` anterior, lido no mesmo endereço
+    /// de pilha, e o jogo seguia com o stream nulo até saltar para o endereço zero. O `MALLOC`
+    /// chamado logo antes, a `0x20` bytes do topo do quadro, alcança o campo com `0x4c` bytes de
+    /// pilha; os 256 daqui cobrem isso com folga.
+    ///
+    /// Só dentro de uma pilha que sabemos onde começa — a principal ou um bloco vivo da heap —,
+    /// porque abaixo do piso mora outra coisa. O Iron Sight não usa `IThread`: ele aloca 64 KB
+    /// com `MALLOC` e aponta o `sp` para lá por conta própria, e a pilha de uma `IThread` também
+    /// é bloco da heap, então o mesmo critério serve às duas.
+    fn gasta_a_pilha(&mut self) {
+        /// Quanto a chamada de verdade teria usado de pilha. Não medido no aparelho: é a folga
+        /// sobre os `0x4c` bytes que o Iron Sight precisa.
+        const GASTO: u32 = 256;
+        let sp = self.cpu.read_reg(Reg::Sp);
+        let principal = loader::STACK_BASE..=loader::STACK_BASE + loader::STACK_SIZE as u32;
+        let piso = if principal.contains(&sp) {
+            Some(loader::STACK_BASE)
+        } else {
+            // A resposta guardada só vale se o bloco continua vivo, do mesmo tamanho, e o `sp`
+            // ainda está nele.
+            let guardada = self.pilha_na_heap.filter(|&(inicio, tamanho)| {
+                self.heap.size_of(inicio) == Some(tamanho)
+                    && (inicio..=inicio + tamanho).contains(&sp)
+            });
+            if guardada.is_none() {
+                // O topo é exclusivo no bloco, mas é o `sp` inicial de uma pilha: procura-se
+                // pelo último byte abaixo dele.
+                self.pilha_na_heap = self.heap.bloco_que_contem(sp.wrapping_sub(1));
+            }
+            self.pilha_na_heap.map(|(inicio, _)| inicio)
+        };
+        if let Some(piso) = piso
+            && sp.wrapping_sub(GASTO) >= piso
+        {
+            let _ = self.cpu.fill_mem(sp - GASTO, 0, GASTO);
+        }
     }
 
     /// Quantos nanossegundos custa uma leitura de `Instant::now()` nesta máquina.
@@ -3879,6 +3992,7 @@ impl<C: CpuBackend> Machine<C> {
             },
             (Interface::Web, _)
             | (Interface::Hash, _)
+            | (Interface::HashCtx, _)
             | (Interface::CipherFactory, _)
             | (Interface::Cipher, _) => match self.crypto_call(iface, slot)? {
                 Some(result) => result,

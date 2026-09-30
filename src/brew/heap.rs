@@ -74,6 +74,17 @@ impl Heap {
         self.live.get(&ptr).copied()
     }
 
+    /// O bloco vivo que contém `addr`, como `(início, tamanho)`.
+    ///
+    /// Percorre todos os blocos: é para quem guarda a resposta, como a busca da pilha que o
+    /// jogo alocou para si, e não para cada acesso.
+    pub fn bloco_que_contem(&self, addr: u32) -> Option<(u32, u32)> {
+        self.live
+            .iter()
+            .find(|&(&inicio, &tamanho)| (inicio..inicio + tamanho).contains(&addr))
+            .map(|(&inicio, &tamanho)| (inicio, tamanho))
+    }
+
     /// Devolve um bloco. Retorna o tamanho liberado, ou `None` se o ponteiro não estava vivo
     /// — inclusive o ponteiro nulo, que `FREE` aceita sem fazer nada.
     ///
@@ -248,6 +259,22 @@ impl crate::save_state::Guardavel for Heap {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **O bloco que contém um endereço é achado pelo meio dele, e some quando é devolvido.**
+    ///
+    /// É o que acha a pilha que o Iron Sight alocou para si, a partir do `sp`: um bloco
+    /// devolvido que ainda fosse achado faria o emulador sujar memória que já é de outro.
+    #[test]
+    fn o_bloco_que_contem_um_endereco_e_achado_pelo_meio() {
+        let mut heap = Heap::new(0x1000, 0x1000);
+        let a = heap.alloc(0x40).unwrap();
+        let b = heap.alloc(0x100).unwrap();
+        assert_eq!(heap.bloco_que_contem(b + 0x80), Some((b, 0x100)));
+        assert_eq!(heap.bloco_que_contem(a), Some((a, 0x40)));
+        assert_eq!(heap.bloco_que_contem(b + 0x100), None, "o fim do bloco é exclusivo");
+        heap.free(b);
+        assert_eq!(heap.bloco_que_contem(b + 0x80), None);
+    }
 
     /// **"Quanto há livre" para uma alocação única é o maior bloco contíguo.**
     ///

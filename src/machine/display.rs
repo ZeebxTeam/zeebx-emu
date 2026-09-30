@@ -379,6 +379,18 @@ impl<C: CpuBackend> Machine<C> {
     /// O estado (cor de traço, cor de preenchimento, se preenche ou não, translação) fica no
     /// host; as primitivas viram operações no framebuffer.
     pub(super) fn graphics_call(&mut self, slot: u32) -> Result<Option<u32>, CpuError> {
+        // **O `IGraphics` tem o seu recorte, e o `IDisplay` o dele.** Os dois dividiam o `clip`:
+        // o Zuma's Revenge põe no `IGraphics` o recorte da tela (640 de largura) e depois
+        // desenha por `IImage` o fundo de 726x360 numa superfície dele. O recorte vazado cortava
+        // o blit em 640, o motor do jogo dimensionava a superfície por ele, e a cópia para a
+        // textura, que anda 726 pixels por linha, embaralhava o fundo em listras.
+        let recorte_do_display = std::mem::replace(&mut self.clip, self.clip_graficos);
+        let resultado = self.graphics_call_no_recorte(slot);
+        self.clip_graficos = std::mem::replace(&mut self.clip, recorte_do_display);
+        resultado
+    }
+
+    fn graphics_call_no_recorte(&mut self, slot: u32) -> Result<Option<u32>, CpuError> {
         // **O quadro do OpenGL vem antes do 2D.** Um HUD desenhado por cima de uma tela que
         // ainda não recebeu a cena apagaria a cena — ver [`Machine::materializa_quadro_gl`].
         self.materializa_quadro_gl();

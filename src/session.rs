@@ -357,6 +357,25 @@ impl Session {
         instalados: &[(u32, String)],
     ) -> Result<Self, StartError> {
         let storage = StoragePaths::from_root(crate::config::config_dir());
+        // Até a 0.4.0 o desktop gravava o save dentro da extração, no cache. Copiar para o
+        // overlay tira o save do alcance da poda; a origem fica, e o overlay nunca é sobrescrito.
+        // Falhar aqui não impede o jogo: o VFS ainda lê a cópia antiga quando o overlay não tem.
+        if let Ok(id) = storage.content_id(path) {
+            match storage.migrate_legacy_package_writes(path, &id) {
+                Ok(bytes) if bytes > 0 => crate::registro!(
+                    crate::registro::Nivel::Informacao,
+                    "session",
+                    "{bytes} bytes de saves antigos copiados do cache para {}",
+                    storage.save_for(&id).display()
+                ),
+                Ok(_) => {}
+                Err(erro) => crate::registro!(
+                    crate::registro::Nivel::Aviso,
+                    "session",
+                    "não deu para copiar os saves antigos do cache: {erro}"
+                ),
+            }
+        }
         Self::start_inner_with_storage(path, portas, serial, placa, contexto, z_wheel, &storage, instalados)
     }
 
@@ -436,6 +455,7 @@ impl Session {
                 let id = storage
                     .content_id(conteudo)
                     .map_err(|e| StartError::Unreadable(e))?;
+                grava_titulo(storage, &id, conteudo);
                 Some(storage.save_for(&id))
             }
             false => None,
@@ -1272,6 +1292,22 @@ impl Session {
         self.machine.desenha_no_fbo(fbo);
     }
 
+    /// Avisa que a janela pintou no contexto de GL emprestado desde o último passo.
+    ///
+    /// Quem divide o contexto com o motor chama isto uma vez por quadro, antes de o jogo andar:
+    /// o que a janela mudou na placa deixa de ser o que o motor acha que está lá.
+    pub fn retoma_o_contexto(&mut self) {
+        self.machine.retoma_o_contexto();
+    }
+
+    /// Fecha o quadro do lado da placa antes de o frontend apresentar o framebuffer dele.
+    ///
+    /// O par do [`Session::desenha_no_fbo`]: aquele pega o contexto no começo do quadro, este o
+    /// devolve no fim, sem os objetos do motor ligados.
+    pub fn devolve_ao_frontend(&mut self) {
+        self.machine.devolve_ao_frontend();
+    }
+
     pub fn define_proporcao(&mut self, aspecto: Option<f32>) {
         self.machine.define_proporcao(aspecto);
     }
@@ -1886,6 +1922,23 @@ fn os_dois_rasterizadores_desenham_o_mesmo_quadro() {
         assert!(!err.to_string().is_empty());
         let _ = std::fs::remove_file(&path);
     }
+}
+
+/// Guarda o nome do arquivo escolhido ao lado do overlay, para a lista de saves.
+///
+/// A pasta do overlay se chama pelo hash, que não diz nada a quem vai apagar um save, e o
+/// `.mod` solto nem tem extração no cache de onde tirar um rótulo. Não sobrescreve: o primeiro
+/// nome vale, e é um arquivo a menos para escrever a cada abertura.
+fn grava_titulo(storage: &StoragePaths, id: &crate::storage::ContentId, conteudo: &Path) {
+    let destino = storage.metadata.join(format!("{}.titulo", id.as_str()));
+    if destino.exists() {
+        return;
+    }
+    let Some(titulo) = conteudo.file_stem().map(|s| s.to_string_lossy().into_owned()) else {
+        return;
+    };
+    let _ = std::fs::create_dir_all(&storage.metadata);
+    let _ = std::fs::write(destino, titulo);
 }
 
 /// Lê os módulos de extensão que acompanham um `.mod` e os deixa prontos para o carregador.

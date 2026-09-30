@@ -2276,7 +2276,13 @@ impl App {
         // do quadro de volta a cada repaint, que é justamente o que a apresentação pela placa
         // existe para evitar. Ver [`Session::materializa_quadro_gl`]: com o readback adiado, o
         // quadro precisa ser materializado antes de qualquer conversão para bytes.
-        let (quadro_largura, quadro_altura, quadro_bytes) = match pela_placa {
+        //
+        // **Mas só quando o quadro grande está à mostra.** Um jogo que desenha só em 2D (o
+        // Bejeweled Twist, pelo `IDisplay`) ou um HUD 2D por cima do 3D deixam o
+        // [`Session::quadro_na_placa`] vazio, e aí o que vai à tela é a da CPU — pular a leitura
+        // mandava zero bytes ao pintor, e a janela ficava preta.
+        let na_placa = pela_placa.then(|| session.quadro_na_placa()).flatten();
+        let (quadro_largura, quadro_altura, quadro_bytes) = match na_placa.is_some() {
             true => (0, 0, Vec::new()),
             false => {
                 session.materializa_quadro_gl();
@@ -2298,8 +2304,6 @@ impl App {
                 self.frame_chave = Some(chave);
             }
         }
-        // O quadro 3D grande só vai pela placa, e só quando é ele que está na tela.
-        let na_placa = pela_placa.then(|| session.quadro_na_placa()).flatten();
         // O que vai na tela sai da sessão agora, antes de desenhar: o empréstimo do jogo não
         // pode atravessar os fechos da interface, que precisam do `self` inteiro.
         //

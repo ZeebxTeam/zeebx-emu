@@ -30,8 +30,8 @@ type ContextoProprio = Contexto;
 type ContextoProprio = ();
 use super::gles;
 use super::rasterizer::{
-    GlState, Matrix, QuadroNaPlaca, Rasterizador, TexEnv, Texture as TexturaSalva,
-    UnidadeDeTextura, Vertex,
+    GlState, Matrix, linhas_em_triangulos, QuadroNaPlaca, Rasterizador, TexEnv, Texture as TexturaSalva,
+    UnidadeDeTextura, UV_PADRAO, Vertex,
 };
 use glow::{self, HasContext};
 use std::collections::HashMap;
@@ -1760,9 +1760,9 @@ fn uniforme_vec3(
 fn poe_em(destino: &mut Vec<f32>, v: &Vertex) {
     destino.extend_from_slice(&v.position);
     destino.extend_from_slice(&v.color);
-    destino.extend_from_slice(&v.uv);
+    destino.extend_from_slice(&v.uv[..2]);
     destino.push(v.fog);
-    destino.extend_from_slice(&v.uv1);
+    destino.extend_from_slice(&v.uv1[..2]);
 }
 
 /// Os bytes de um vetor de `f32`, para o `buffer_data`.
@@ -2143,8 +2143,47 @@ impl Rasterizador for GpuState {
         self.fbo_externo = fbo;
     }
 
+    /// **O VAO do core não pode ficar ligado quando o frontend desenha.** O `e6a436e` parou de
+    /// desligar programa e VAO a cada lote, e no caminho do libretro o quadro acabava com os
+    /// nossos ligados. O driver `gl` do RetroArch sobre GLES não liga VAO próprio: os ponteiros de
+    /// atributo dele caíam no nosso VAO, e com VAO diferente de zero o GLES 3 recusa os vértices
+    /// que vêm da memória do processador (`GL_INVALID_OPERATION`). O desenho do FBO na tela falhava
+    /// em silêncio: tela preta, com o áudio normal, nos portáteis de GLES.
+    ///
+    /// Uma vez por quadro, e não por lote: o ganho do `e6a436e` fica.
+    /// **Quando a janela pinta no mesmo contexto, o espelho não sabe mais o que está na placa.**
+    /// O `devolve_o_contexto` registra o que ele mesmo deixa, e isso vale até o `egui` pintar: ele
+    /// troca o viewport pelo da janela, liga a tesoura e liga a mistura de alfa pré-multiplicado.
+    /// O espelho seguia com os valores de antes e não os reenviava — o Ridge Racer desenhava num
+    /// canto da janela, com o fundo das texturas branco.
+    ///
+    /// É o par do [`GpuState::desenha_no_fbo`] do libretro, e custa o mesmo: uma vez por quadro
+    /// da janela, e não por lote.
+    fn retoma_o_contexto(&mut self) {
+        if self.placa.de_outro() {
+            self.esquece_o_espelho();
+            self.placa.esquece_o_ligado();
+        }
+    }
+
+    fn devolve_ao_frontend(&mut self) {
+        if self.fbo_externo.is_none() || self.placa.morreu() {
+            return;
+        }
+        let gl = &self.gl;
+        unsafe {
+            gl.bind_vertex_array(None);
+            gl.use_program(None);
+            gl.bind_buffer(glow::ARRAY_BUFFER, None);
+        }
+        self.placa.esquece_o_ligado();
+    }
+
     fn set_matrix_mode(&mut self, mode: u32) {
         self.estado.set_matrix_mode(mode);
+    }
+    fn matriz_do_topo(&self) -> Matrix {
+        self.estado.matriz_do_topo()
     }
     fn load_identity(&mut self) {
         self.estado.load_identity();
@@ -2513,12 +2552,17 @@ impl Rasterizador for GpuState {
     }
 
     fn draw(&mut self, mode: u32, vertices: &[Vertex]) {
-        // Pontos e linhas não aparecem nos jogos do console, e o rasterizador de software também
-        // os deixa sem tratamento. Desenhá-los aqui divergiria dele sem ganho nenhum.
+        // Linhas viram triângulos soltos pela mesma conta do rasterizador de software — ver
+        // [`linhas_em_triangulos`]. Pontos continuam sem tratamento, lá e aqui.
+        let linhas = matches!(
+            mode,
+            gles::GL_LINES | gles::GL_LINE_STRIP | gles::GL_LINE_LOOP
+        );
         let modo = match mode {
             gles::GL_TRIANGLES => glow::TRIANGLES,
             gles::GL_TRIANGLE_STRIP => glow::TRIANGLE_STRIP,
             gles::GL_TRIANGLE_FAN => glow::TRIANGLE_FAN,
+            _ if linhas => glow::TRIANGLES,
             _ => return,
         };
         self.estado.etapa_de_vertice(vertices);
@@ -2546,7 +2590,16 @@ impl Rasterizador for GpuState {
         }
         let mut soltos = std::mem::take(&mut self.soltos);
         soltos.clear();
-        soltos.extend(self.estado.transformados().iter().map(|v| {
+        let de_linhas = linhas.then(|| {
+            linhas_em_triangulos(
+                mode,
+                self.estado.transformados(),
+                self.estado.viewport,
+                self.estado.front_face != gles::GL_CW,
+            )
+        });
+        let origem = de_linhas.as_deref().unwrap_or(self.estado.transformados());
+        soltos.extend(origem.iter().map(|v| {
             let [px, py, pz, pw] = v.position;
             Vertex {
                 position: [px * k, py, pz, pw],
@@ -2615,7 +2668,7 @@ impl Rasterizador for GpuState {
         for ([sx, sy], uv) in cantos {
             let v = Vertex {
                 normal: [0.0, 0.0, 1.0],
-                uv1: [0.0; 2],
+                uv1: UV_PADRAO,
                 fog: 1.0,
                 position: [
                     ((sx - vx as f32) / vw as f32) * 2.0 - 1.0,
@@ -2624,7 +2677,7 @@ impl Rasterizador for GpuState {
                     1.0,
                 ],
                 color: cor,
-                uv,
+                uv: [uv[0], uv[1], 0.0, 1.0],
             };
             self.poe(&v);
         }
@@ -2892,9 +2945,9 @@ impl Rasterizador for GpuState {
             self.poe(&Vertex {
                 position: [px, py, 0.0, 1.0],
                 color: [1.0; 4],
-                uv,
+                uv: [uv[0], uv[1], 0.0, 1.0],
                 normal: [0.0, 0.0, 1.0],
-                uv1: [0.0; 2],
+                uv1: UV_PADRAO,
                 fog: 1.0,
             });
         }
@@ -3178,8 +3231,8 @@ mod tests {
             let canto = |x: f32, y: f32| Vertex {
                 position: [x, y, 0.0, 1.0],
                 color: [1.0, 0.0, 0.0, 1.0],
-                uv: [0.0, 0.0],
-                uv1: [0.0; 2],
+                uv: UV_PADRAO,
+                uv1: UV_PADRAO,
                 normal: [0.0, 0.0, 1.0],
                 fog: 1.0,
             };
@@ -3228,8 +3281,8 @@ mod tests {
             let canto = |x: f32, y: f32| Vertex {
                 position: [x, y, 0.0, 1.0],
                 color: [1.0, 0.0, 0.0, 1.0],
-                uv: [0.0, 0.0],
-                uv1: [0.0; 2],
+                uv: UV_PADRAO,
+                uv1: UV_PADRAO,
                 normal: [0.0, 0.0, 1.0],
                 fog: 1.0,
             };
@@ -3301,8 +3354,8 @@ mod tests {
             let canto = |x: f32, y: f32| Vertex {
                 position: [x, y, 0.0, 1.0],
                 color: [1.0, 0.0, 0.0, 1.0],
-                uv: [0.0, 0.0],
-                uv1: [0.0; 2],
+                uv: UV_PADRAO,
+                uv1: UV_PADRAO,
                 normal: [0.0, 0.0, 1.0],
                 fog: 1.0,
             };
@@ -3369,8 +3422,8 @@ mod tests {
             let canto = |x: f32, y: f32| Vertex {
                 position: [x, y, 0.0, 1.0],
                 color: [1.0, 0.0, 0.0, 1.0],
-                uv: [0.0, 0.0],
-                uv1: [0.0; 2],
+                uv: UV_PADRAO,
+                uv1: UV_PADRAO,
                 normal: [0.0, 0.0, 1.0],
                 fog: 1.0,
             };
@@ -3418,8 +3471,8 @@ mod tests {
         let canto = |x: f32, y: f32| Vertex {
             position: [x, y, 0.0, 1.0],
             color: [1.0, 0.0, 0.0, 1.0],
-            uv: [0.0, 0.0],
-            uv1: [0.0; 2],
+            uv: UV_PADRAO,
+            uv1: UV_PADRAO,
             normal: [0.0, 0.0, 1.0],
                 fog: 1.0,
         };
@@ -3487,8 +3540,8 @@ mod tests {
         let canto = |x: f32, y: f32| Vertex {
             position: [x, y, -1.0, 1.0],
             color: [0.0, 1.0, 0.0, 1.0],
-            uv: [0.0, 0.0],
-            uv1: [0.0; 2],
+            uv: UV_PADRAO,
+            uv1: UV_PADRAO,
             normal: [0.0, 0.0, 1.0],
             fog: 1.0,
         };
@@ -3529,8 +3582,8 @@ mod tests {
             let canto = |x: f32, y: f32| Vertex {
                 position: [x, y, 0.0, 1.0],
                 color: [0.0, 1.0, 0.0, 1.0],
-                uv: [0.0, 0.0],
-                uv1: [0.0; 2],
+                uv: UV_PADRAO,
+                uv1: UV_PADRAO,
                 normal: [0.0, 0.0, 1.0],
                 fog: 1.0,
             };
@@ -3574,8 +3627,8 @@ mod tests {
             let canto = |x: f32, y: f32| Vertex {
                 position: [x, y, 1.5, 1.0],
                 color: [0.0, 0.0, 1.0, 1.0],
-                uv: [0.0, 0.0],
-                uv1: [0.0; 2],
+                uv: UV_PADRAO,
+                uv1: UV_PADRAO,
                 normal: [0.0, 0.0, 1.0],
                 fog: 1.0,
             };
@@ -3624,8 +3677,8 @@ mod tests {
                     let canto = |x: f32, y: f32| Vertex {
                         position: [x, y, 0.0, 1.0],
                         color: [1.0, 1.0, 1.0, 1.0],
-                        uv: [0.0, 0.0],
-                        uv1: [0.0; 2],
+                        uv: UV_PADRAO,
+                        uv1: UV_PADRAO,
                         normal: [0.0, 0.0, 1.0],
                 fog: 1.0,
                     };
@@ -3820,8 +3873,8 @@ mod tests {
         let vertice = |(x, y): (f32, f32)| Vertex {
             position: [x, y, 0.0, 1.0],
             color: cor,
-            uv: [0.0, 0.0],
-            uv1: [0.0; 2],
+            uv: UV_PADRAO,
+            uv1: UV_PADRAO,
             normal: [0.0, 0.0, 1.0],
             fog: 1.0,
         };
@@ -3854,6 +3907,58 @@ mod tests {
     /// (`src/ui/app.rs` entrega o contexto do `eframe` à sessão, e `src/ui/gpu.rs` o pinta). O que
     /// o `Pintor` faz no fim de cada pintura está copiado aqui: `use_program(None)` e
     /// `bind_vertex_array(None)`. O quadro dos dois lados tem de sair **igual**.
+    /// **O que a janela muda entre dois quadros volta a ser do motor.** O `egui` pinta no mesmo
+    /// contexto e deixa o viewport do tamanho da janela, a tesoura ligada e a mistura de alfa
+    /// pré-multiplicado. O espelho achava que viewport e mistura eram os do motor e não os
+    /// reenviava: o Ridge Racer saía num canto da janela, com caixas brancas no lugar da
+    /// transparência.
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn o_estado_que_a_janela_deixa_nao_vaza_para_o_quadro_seguinte() {
+        use glow::HasContext as _;
+
+        let (largura, altura) = (16, 16);
+        let Some((contexto, gl)) = placa_emprestada() else {
+            return;
+        };
+        let (Some(mut referencia), Some(mut com_janela)) = (
+            estado_emprestado(largura, altura, &gl),
+            estado_emprestado(largura, altura, &gl),
+        ) else {
+            return;
+        };
+        let _ = &contexto;
+        let medida = (largura, altura);
+
+        // A referência termina **antes** de a janela pintar: o contexto é um só, e o que a janela
+        // muda valeria para as duas.
+        primeiro_lote(&mut referencia, medida);
+        segundo_lote(&mut referencia);
+        primeiro_lote(&mut com_janela, medida);
+
+        // **O `egui` pinta aqui**, e é assim que ele deixa o contexto.
+        unsafe {
+            gl.viewport(0, 0, 4, 4);
+            gl.enable(glow::SCISSOR_TEST);
+            gl.scissor(0, 0, 4, 4);
+            gl.enable(glow::BLEND);
+            gl.blend_func_separate(
+                glow::ONE,
+                glow::ONE_MINUS_SRC_ALPHA,
+                glow::ONE_MINUS_DST_ALPHA,
+                glow::ONE,
+            );
+        }
+        com_janela.retoma_o_contexto();
+        segundo_lote(&mut com_janela);
+
+        assert_eq!(
+            com_janela.read_rect(0, 0, largura, altura),
+            referencia.read_rect(0, 0, largura, altura),
+            "o segundo lote desenhou com o viewport, a tesoura ou a mistura que a janela deixou"
+        );
+    }
+
     #[cfg(feature = "gpu")]
     #[test]
     fn o_pintor_no_mesmo_contexto_nao_apaga_o_desenho_do_jogo() {
@@ -3899,6 +4004,72 @@ mod tests {
             "o segundo lote desenhou com o programa que o egui deixou: o cache dos objetos ligados \
              sobreviveu a outra pessoa usar o contexto"
         );
+    }
+
+    /// **No fim do quadro do libretro, nada do motor fica ligado.** O RetroArch desenha o FBO na
+    /// tela com o mesmo contexto, e no GLES o VAO do motor ligado derrubava esse desenho: tela
+    /// preta com áudio nos portáteis. Ver [`GpuState::devolve_ao_frontend`].
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn o_fim_do_quadro_devolve_o_contexto_sem_nada_do_motor_ligado() {
+        use glow::HasContext as _;
+
+        let (largura, altura) = (16, 16);
+        let Some((contexto, gl)) = placa_emprestada() else {
+            return;
+        };
+        let Some(mut estado) = estado_emprestado(largura, altura, &gl) else {
+            return;
+        };
+        let _ = &contexto;
+        // O FBO do "frontend", como o `get_current_framebuffer` entregaria.
+        let fbo = unsafe {
+            let textura = gl.create_texture().unwrap();
+            gl.bind_texture(glow::TEXTURE_2D, Some(textura));
+            gl.tex_image_2d(
+                glow::TEXTURE_2D,
+                0,
+                glow::RGBA as i32,
+                largura as i32,
+                altura as i32,
+                0,
+                glow::RGBA,
+                glow::UNSIGNED_BYTE,
+                glow::PixelUnpackData::Slice(None),
+            );
+            let fbo = gl.create_framebuffer().unwrap();
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
+            gl.framebuffer_texture_2d(
+                glow::FRAMEBUFFER,
+                glow::COLOR_ATTACHMENT0,
+                glow::TEXTURE_2D,
+                Some(textura),
+                0,
+            );
+            fbo
+        };
+        let ligados = || unsafe {
+            [
+                gl.get_parameter_i32(glow::VERTEX_ARRAY_BINDING),
+                gl.get_parameter_i32(glow::CURRENT_PROGRAM),
+                gl.get_parameter_i32(glow::ARRAY_BUFFER_BINDING),
+            ]
+        };
+
+        estado.desenha_no_fbo(Some(fbo.0.get()));
+        primeiro_lote(&mut estado, (largura, altura));
+        assert_ne!(
+            ligados(),
+            [0, 0, 0],
+            "o teste não discrimina: depois do lote o motor deveria estar com os seus ligados"
+        );
+        estado.devolve_ao_frontend();
+        assert_eq!(ligados(), [0, 0, 0], "VAO, programa e VBO do motor ficaram ligados");
+
+        // O quadro seguinte religa o que precisa e desenha.
+        estado.desenha_no_fbo(Some(fbo.0.get()));
+        segundo_lote(&mut estado);
+        assert_ne!(ligados(), [0, 0, 0], "o quadro seguinte não religou os objetos do motor");
     }
 
     /// **A placa que morreu no meio do quadro não recebe desenho novo.**

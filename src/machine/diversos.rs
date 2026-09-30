@@ -276,21 +276,32 @@ impl<C: CpuBackend> Machine<C> {
             }
             // `int QueryMatrixxOES(pMe, AEEGLfixed *mantissa, AEEGLint *exponent, bitfield *ret)`
             //
-            // A matriz corrente em ponto fixo, como o GLES a representa: um `fixed` por elemento e
-            // o expoente de cada um. **Respondemos a identidade**, e é honesto: o ponto fixo da
-            // nossa matriz vive na etapa de vértice, e converter de volta introduziria erro onde o
-            // jogo espera exatamente o que ele mandou. Nenhum jogo do acervo lê esta matriz para
-            // desenhar — o Prey Evil a pede para saber se a extensão existe.
+            // A matriz corrente em ponto fixo, como o GLES a representa: um `fixed` 16.16 por
+            // elemento, na ordem de colunas do `glLoadMatrix`, e o expoente de cada um — zero,
+            // porque a mantissa já é o valor.
+            //
+            // **O Quake 2 desenha com ela.** O `R_SetupGL` monta a câmera e lê a modelview de
+            // volta por aqui (no PC era o `glGetFloatv(GL_MODELVIEW_MATRIX)`), para recortar o
+            // mundo. A identidade que respondíamos só servia a quem pergunta se a extensão existe,
+            // como o Prey Evil. O `ret` é o bitfield do GL: zero diz "todos os elementos valem".
             "QueryMatrixxOES" if iface == Interface::Gles10Ext => {
-                let (mantissa, expoente) = (self.arg(1), self.arg(2));
-                for i in 0..16u32 {
-                    let identidade = u32::from(i % 5 == 0) * (1 << 16);
+                let (mantissa, expoente, status) = (self.arg(1), self.arg(2), self.arg(3));
+                let matriz = self.gl.matriz_do_topo();
+                for (i, valor) in matriz.iter().enumerate() {
+                    let i = i as u32;
                     if mantissa != 0 {
-                        self.cpu.write_u32(mantissa + i * 4, identidade)?;
+                        let fixo = (f64::from(*valor) * 65536.0)
+                            .round()
+                            .clamp(f64::from(i32::MIN), f64::from(i32::MAX))
+                            as i32;
+                        self.cpu.write_u32(mantissa + i * 4, fixo as u32)?;
                     }
                     if expoente != 0 {
                         self.cpu.write_u32(expoente + i * 4, 0)?;
                     }
+                }
+                if status != 0 {
+                    self.cpu.write_u32(status, 0)?;
                 }
                 SUCCESS
             }
@@ -410,21 +421,25 @@ impl<C: CpuBackend> Machine<C> {
             // nulo. Sem a interface, o caminho de desenho dele nunca começa.
             //
             // Os `DrawTex*` desenham um retângulo de textura em coordenadas de tela, sem passar
-            // pela matriz de modelo — é o que um jogo faz para compor o quadro numa textura. Aqui
-            // eles ainda respondem "consegui" sem desenhar: é o passo que faz o jogo **chegar** ao
-            // desenho, e o efeito dele é medido pela contagem de cores do relatório. O retângulo
-            // de verdade é o passo seguinte, e a referência para ele é o `gles_draw`.
+            // pela matriz de modelo. É o mesmo desenho do `IGLES11`: o Ridge Racer monta o menu e
+            // o HUD inteiros por aqui.
+            "DrawTexsOES" | "DrawTexiOES" | "DrawTexxOES" | "DrawTexsvOES" | "DrawTexivOES"
+            | "DrawTexxvOES" | "DrawTexfOES" | "DrawTexfvOES"
+                if iface == Interface::Gles11Ext =>
+            {
+                self.sync_egl_color_from_guest()?;
+                self.gles_draw_tex(name, 1)?;
+                SUCCESS
+            }
+            // A paleta de matrizes (`OES_matrix_palette`) ainda responde "consegui" sem efeito.
             "CurrentPaletteMatrixOES" | "LoadPaletteFromModelViewMatrixOES"
-            | "MatrixIndexPointerOES" | "WeightPointerOES" | "DrawTexsOES" | "DrawTexiOES"
-            | "DrawTexxOES" | "DrawTexsvOES" | "DrawTexivOES" | "DrawTexxvOES" | "DrawTexfOES"
-            | "DrawTexfvOES"
+            | "MatrixIndexPointerOES" | "WeightPointerOES"
                 if iface == Interface::Gles11Ext =>
             {
                 // O nome do método já aparece em "chamadas que mais pesaram"; aqui basta nomear a
                 // causa, porque as hipóteses são um conjunto de textos fixos.
                 self.assumptions.insert(concat!(
-                    "o jogo desenhou por uma extensão OES (IGLES11Ext), cujo ",
-                    "retângulo de textura ainda não desenhamos"
+                    "o jogo usou a paleta de matrizes (IGLES11Ext), que ainda não tem efeito"
                 ));
                 SUCCESS
             }

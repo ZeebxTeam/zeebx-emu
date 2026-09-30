@@ -3048,6 +3048,11 @@ pub extern "C" fn retro_run() {
                 estado.quadros_apos_parar = 0;
             }
         }
+        // Antes de o frontend apresentar: ele desenha o FBO no mesmo contexto, e o VAO do motor
+        // ligado derrubava esse desenho no GLES. Ver `Rasterizador::devolve_ao_frontend`.
+        if placa().is_some() {
+            estado.session.devolve_ao_frontend();
+        }
         // Vídeo: o framebuffer do console, no formato negociado.
         let tela = estado.session.screen();
         let (largura, altura) = (tela.width(), tela.height());

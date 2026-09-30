@@ -93,8 +93,8 @@ impl<C: CpuBackend> Machine<C> {
                     // não faz nada, e anunciar o que não existe faz o jogo chamar função que
                     // não está lá.
                     gles::GL_EXTENSIONS => {
-                        "GL_OES_draw_texture GL_ATI_imageon_misc GL_ATI_texture_compression_atitc \
-                         GL_ARB_vertex_buffer_object "
+                        "GL_OES_draw_texture GL_OES_query_matrix GL_ATI_imageon_misc \
+                         GL_ATI_texture_compression_atitc GL_ARB_vertex_buffer_object "
                     }
                     _ => "",
                 };
@@ -243,6 +243,12 @@ impl<C: CpuBackend> Machine<C> {
             }
 
             // --- Estado -----------------------------------------------------------------
+            // **Largura ou altura negativa é `GL_INVALID_VALUE`, e a chamada não muda nada.** O
+            // Quake 2 calcula o viewport da fase em ponto fixo 18.14 e a conta estoura a 640×480:
+            // pede `(0, 68, -179, -67)`. No aparelho o GL recusa e o viewport de antes, o da tela
+            // inteira, continua valendo; aceito, ele mandava o mundo inteiro para fora da tela e só
+            // o HUD aparecia.
+            "Viewport" if (a[2] as i32) < 0 || (a[3] as i32) < 0 => {}
             "Viewport" => self
                 .gl
                 .set_viewport(a[0] as i32, a[1] as i32, a[2] as i32, a[3] as i32),
@@ -321,27 +327,7 @@ impl<C: CpuBackend> Machine<C> {
             //
             // `s` é inteiro de 16 bits, `i` de 32, `x` é ponto fixo 16.16 e `f` é float. Todas
             // desenham a mesma coisa; só muda como o número chega.
-            name if name.starts_with("DrawTex") => {
-                let vector = name.ends_with("vOES");
-                let scale = match name.as_bytes().get(7) {
-                    Some(b'x') => 1.0 / 65536.0,
-                    _ => 1.0,
-                };
-                let float = name.as_bytes().get(7) == Some(&b'f');
-                let mut values = [0f32; 5];
-                for (index, slot) in values.iter_mut().enumerate() {
-                    let raw = match vector {
-                        true => self.cpu.read_u32(a[0] + index as u32 * 4)?,
-                        false => self.arg(index + 1),
-                    };
-                    *slot = match float {
-                        true => f32::from_bits(raw),
-                        false => raw as i32 as f32 * scale,
-                    };
-                }
-                let [x, y, z, width, height] = values;
-                self.gl.draw_texture(x, y, z, width, height);
-            }
+            name if name.starts_with("DrawTex") => self.gles_draw_tex(name, base)?,
             // O modo e os parâmetros do `GL_COMBINE` são enums, e chegam inteiros mesmo pela
             // variante de ponto fixo ou de `float`; só as escalas são número. Ver `TexEnv`.
             "TexEnvx" | "TexEnvi" | "TexEnvf" if a[0] == gles::GL_TEXTURE_ENV => {
@@ -558,6 +544,8 @@ impl<C: CpuBackend> Machine<C> {
             //
             // O Peggle desenha a folha de fontes inteira e aperta a tesoura para aparecer uma
             // letra só. Ignorada, a folha inteira ia para a tela por cima do jogo.
+            // Mesma regra do `Viewport`: tamanho negativo é recusado sem mudar o estado.
+            "Scissor" if (a[2] as i32) < 0 || (a[3] as i32) < 0 => {}
             "Scissor" => self
                 .gl
                 .set_scissor(a[0] as i32, a[1] as i32, a[2] as i32, a[3] as i32),
@@ -790,6 +778,35 @@ impl<C: CpuBackend> Machine<C> {
     }
 
     /// Monta os vértices a partir dos vetores do cliente e manda desenhar.
+    /// `glDrawTex{sixf}[v]OES`: um retângulo da textura, recortado pelo `GL_TEXTURE_CROP_RECT_OES`,
+    /// direto em coordenadas de tela.
+    ///
+    /// `base` é onde está o primeiro argumento: 1 quando o método é de um objeto (`IGLES11` e
+    /// `IGLES11Ext`, com o objeto em `r0`), 0 no GL legado. O `IGLES11Ext` respondia "consegui"
+    /// sem desenhar, e o Ridge Racer monta o menu e o HUD inteiros por ele: sobrava o fundo azul.
+    pub(super) fn gles_draw_tex(&mut self, name: &str, base: usize) -> Result<(), CpuError> {
+        let vector = name.ends_with("vOES");
+        let scale = match name.as_bytes().get(7) {
+            Some(b'x') => 1.0 / 65536.0,
+            _ => 1.0,
+        };
+        let float = name.as_bytes().get(7) == Some(&b'f');
+        let mut values = [0f32; 5];
+        for (index, slot) in values.iter_mut().enumerate() {
+            let raw = match vector {
+                true => self.cpu.read_u32(self.arg(base) + index as u32 * 4)?,
+                false => self.arg(base + index),
+            };
+            *slot = match float {
+                true => f32::from_bits(raw),
+                false => raw as i32 as f32 * scale,
+            };
+        }
+        let [x, y, z, width, height] = values;
+        self.gl.draw_texture(x, y, z, width, height);
+        Ok(())
+    }
+
     pub(super) fn gles_draw(&mut self, mode: u32, indices: &[u32]) -> Result<(), CpuError> {
         if !self.gl_vertices.em_uso() || indices.is_empty() {
             return Ok(());
@@ -813,12 +830,12 @@ impl<C: CpuBackend> Machine<C> {
         let uvs = self
             .gl_texcoords
             .em_uso()
-            .then(|| self.read_array(self.gl_texcoords, indices, [0.0; 4]))
+            .then(|| self.read_array(self.gl_texcoords, indices, rasterizer::UV_PADRAO))
             .transpose()?;
         let uvs1 = self
             .gl_texcoords1
             .em_uso()
-            .then(|| self.read_array(self.gl_texcoords1, indices, [0.0; 4]))
+            .then(|| self.read_array(self.gl_texcoords1, indices, rasterizer::UV_PADRAO))
             .transpose()?;
         let normais = self
             .gl_normals
@@ -829,8 +846,8 @@ impl<C: CpuBackend> Machine<C> {
             .map(|i| Vertex {
                 position: posicoes[i],
                 color: cores.as_ref().map_or(base, |c| c[i]),
-                uv: uvs.as_ref().map_or([0.0; 2], |t| [t[i][0], t[i][1]]),
-                uv1: uvs1.as_ref().map_or([0.0; 2], |t| [t[i][0], t[i][1]]),
+                uv: uvs.as_ref().map_or(rasterizer::UV_PADRAO, |t| t[i]),
+                uv1: uvs1.as_ref().map_or(rasterizer::UV_PADRAO, |t| t[i]),
                 normal: normais
                     .as_ref()
                     .map_or(self.gl_normal_atual, |n| [n[i][0], n[i][1], n[i][2]]),
@@ -1157,6 +1174,16 @@ impl<C: CpuBackend> Machine<C> {
     /// motor desenha no próprio e o quadro sai pelo `frame_rgb565`, como sempre.
     pub fn desenha_no_fbo(&mut self, fbo: Option<u32>) {
         self.gl.desenha_no_fbo(fbo);
+    }
+
+    /// A janela pintou no contexto emprestado. Ver [`Rasterizador::retoma_o_contexto`].
+    pub fn retoma_o_contexto(&mut self) {
+        self.gl.retoma_o_contexto();
+    }
+
+    /// O quadro acabou: o contexto volta ao frontend. Ver [`Rasterizador::devolve_ao_frontend`].
+    pub fn devolve_ao_frontend(&mut self) {
+        self.gl.devolve_ao_frontend();
     }
 
     /// Diz ao rasterizador de placa para descartar profundidade e estêncil depois do quadro.

@@ -117,9 +117,14 @@ pub fn ortho(l: f32, r: f32, b: f32, t: f32, n: f32, f: f32) -> Matrix {
 pub struct Vertex {
     pub position: [f32; 4],
     pub color: [f32; 4],
-    pub uv: [f32; 2],
+    /// A coordenada de textura `(s, t, r, q)`. São quatro porque a matriz de textura mistura
+    /// todas: o Reckless Racing manda a posição do vértice como coordenada de três componentes
+    /// e deixa a matriz tirar `s` e `t` do `x` e do `z` — com só dois, o `z` sumia, o `t` ficava
+    /// constante e a sombra saía em listras. Depois da etapa de vértice, `s` e `t` já vêm
+    /// divididos por `q`, e só eles interessam aos rasterizadores.
+    pub uv: [f32; 4],
     /// A coordenada de textura da unidade 1. Ver [`UnidadeDeTextura`].
-    pub uv1: [f32; 2],
+    pub uv1: [f32; 4],
     /// A normal em coordenadas de objeto, para a iluminação. O padrão do OpenGL é `(0, 0, 1)`.
     pub normal: [f32; 3],
     /// Quanto da cor do fragmento sobra depois da névoa: 1 é cena limpa, 0 é névoa cheia.
@@ -130,13 +135,16 @@ pub struct Vertex {
     pub fog: f32,
 }
 
+/// A coordenada de textura de quem não manda uma: `(0, 0, 0, 1)`, o padrão do OpenGL.
+pub const UV_PADRAO: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
+
 impl Default for Vertex {
     fn default() -> Self {
         Self {
             position: [0.0, 0.0, 0.0, 1.0],
             color: [1.0; 4],
-            uv: [0.0; 2],
-            uv1: [0.0; 2],
+            uv: UV_PADRAO,
+            uv1: UV_PADRAO,
             normal: [0.0, 0.0, 1.0],
             fog: 1.0,
         }
@@ -660,6 +668,8 @@ pub trait Rasterizador {
     fn mult_matrix(&mut self, m: Matrix);
     fn push_matrix(&mut self);
     fn pop_matrix(&mut self);
+    /// A matriz do topo da pilha ativa. Ver [`GlState::matriz_do_topo`].
+    fn matriz_do_topo(&self) -> Matrix;
 
     fn set_viewport(&mut self, x: i32, y: i32, width: i32, height: i32);
     fn set_scissor(&mut self, x: i32, y: i32, width: i32, height: i32);
@@ -746,6 +756,15 @@ pub trait Rasterizador {
     /// **No software não há o que fazer**: ele desenha em memória, e o quadro sai pelo
     /// [`Self::frame_rgb565`] de sempre. É o que permite ao mesmo motor servir aos dois caminhos.
     fn desenha_no_fbo(&mut self, _fbo: Option<u32>) {}
+
+    /// O contexto volta ao motor depois de a janela pintar nele. Ver
+    /// [`GpuState`](crate::video::gpu::GpuState). No software não há contexto.
+    fn retoma_o_contexto(&mut self) {}
+
+    /// O quadro acabou e o contexto volta ao frontend, que desenha o FBO na tela com ele.
+    ///
+    /// Ver [`GpuState`](crate::video::gpu::GpuState). No software não há contexto a devolver.
+    fn devolve_ao_frontend(&mut self) {}
 
     /// Se trazer o quadro para a memória da CPU custa uma **espera pela placa**.
     ///
@@ -883,6 +902,9 @@ impl Rasterizador for GlState {
     }
     fn pop_matrix(&mut self) {
         GlState::pop_matrix(self)
+    }
+    fn matriz_do_topo(&self) -> Matrix {
+        GlState::matriz_do_topo(self)
     }
     fn set_viewport(&mut self, x: i32, y: i32, width: i32, height: i32) {
         GlState::set_viewport(self, x, y, width, height)
@@ -1070,6 +1092,11 @@ pub struct GlState {
     pub(crate) modelview: Vec<Matrix>,
     pub(crate) projection: Vec<Matrix>,
     pub(crate) texture_matrix: Vec<Matrix>,
+    /// A pilha de matriz de textura da unidade 1. **O OpenGL tem uma por unidade**, escolhida
+    /// pelo `glActiveTexture`, e com uma só a matriz da unidade 1 caía por cima da da unidade 0.
+    /// O Reckless Racing projeta a sombra dos carros pela unidade 0 e o mapa de sombra da pista
+    /// pela 1, cada uma com a sua matriz, e as duas partem da posição do vértice.
+    pub(crate) texture_matrix1: Vec<Matrix>,
 
     pub(crate) viewport: (i32, i32, i32, i32),
     /// O `glScissor`, já com o `y` contado do topo, e só quando o `GL_SCISSOR_TEST` está ligado.
@@ -1200,6 +1227,7 @@ impl GlState {
             modelview: vec![IDENTITY],
             projection: vec![IDENTITY],
             texture_matrix: vec![IDENTITY],
+            texture_matrix1: vec![IDENTITY],
             viewport: (0, 0, width as i32, height as i32),
             tesoura: None,
             tesoura_crua: (0, 0, width as i32, height as i32),
@@ -1239,10 +1267,22 @@ impl GlState {
         }
     }
 
+    /// A matriz do topo da pilha ativa, como o `glQueryMatrixxOES` a devolve.
+    pub fn matriz_do_topo(&self) -> Matrix {
+        let pilha = match self.matrix_mode {
+            gles::GL_PROJECTION => &self.projection,
+            gles::GL_TEXTURE if self.active_unit == 1 => &self.texture_matrix1,
+            gles::GL_TEXTURE => &self.texture_matrix,
+            _ => &self.modelview,
+        };
+        *pilha.last().expect("pilha nunca fica vazia")
+    }
+
     /// A pilha de matrizes ativa.
     fn stack(&mut self) -> &mut Vec<Matrix> {
         match self.matrix_mode {
             gles::GL_PROJECTION => &mut self.projection,
+            gles::GL_TEXTURE if self.active_unit == 1 => &mut self.texture_matrix1,
             gles::GL_TEXTURE => &mut self.texture_matrix,
             _ => &mut self.modelview,
         }
@@ -2059,6 +2099,7 @@ impl GlState {
         // volta para a faixa `0..1`. Sem ela, o `GL_REPEAT` dava a volta na textura a cada
         // pixel, e a quadra e a arquibancada saíam como confete das cores certas.
         let texture_matrix = *self.texture_matrix.last().expect("pilha nunca fica vazia");
+        let texture_matrix1 = *self.texture_matrix1.last().expect("pilha nunca fica vazia");
         // A iluminação acontece em **coordenadas de olho**, que é onde as posições das luzes
         // foram guardadas: daí precisarmos da modelview separada, e não só do produto com a
         // projeção. As normais vão por outra matriz — ver [`matriz_de_normais`].
@@ -2071,8 +2112,11 @@ impl GlState {
         clip.extend(vertices.iter().map(|v| {
             // `q` é o quarto componente da coordenada de textura; a divisão por ele é o
             // que permite projeção na textura, e vale 1 no caso comum.
-            let [s, t, _, q] = transform(&texture_matrix, [v.uv[0], v.uv[1], 0.0, 1.0]);
-            let scale = if q == 0.0 { 1.0 } else { 1.0 / q };
+            let projeta = |matriz: &Matrix, uv: [f32; 4]| {
+                let [s, t, r, q] = transform(matriz, uv);
+                let scale = if q == 0.0 { 1.0 } else { 1.0 / q };
+                [s * scale, t * scale, r, 1.0]
+            };
             // A névoa e a iluminação querem a mesma coisa: o vértice em coordenadas de olho.
             // Com uma das duas ligada a conta sai uma vez e serve às duas.
             let olho = (iluminando || neblina.ligada && neblina.permitida)
@@ -2092,7 +2136,8 @@ impl GlState {
             };
             Vertex {
                 position: transform(&mvp, v.position),
-                uv: [s * scale, t * scale],
+                uv: projeta(&texture_matrix, v.uv),
+                uv1: projeta(&texture_matrix1, v.uv1),
                 color,
                 fog,
                 ..*v
@@ -2135,9 +2180,14 @@ impl GlState {
                     self.triangle([clip[0], window[0], window[1]], &mut batch);
                 }
             }
-            // Pontos e linhas não aparecem nos jogos do console, que desenham tudo com
-            // triângulos; deixá-los sem tratamento é melhor que rasterizá-los errado.
-            gles::GL_POINTS | gles::GL_LINES | gles::GL_LINE_LOOP | gles::GL_LINE_STRIP => {}
+            gles::GL_LINES | gles::GL_LINE_LOOP | gles::GL_LINE_STRIP => {
+                let ccw = self.front_face != gles::GL_CW;
+                for tri in linhas_em_triangulos(mode, &clip, self.viewport, ccw).chunks_exact(3) {
+                    self.triangle([tri[0], tri[1], tri[2]], &mut batch);
+                }
+            }
+            // Pontos continuam sem tratamento: nenhum jogo medido os usa.
+            gles::GL_POINTS => {}
             _ => {}
         }
         self.enqueue(&mut batch);
@@ -2191,7 +2241,7 @@ impl GlState {
             .iter()
             .map(|&([sx, sy], uv)| Vertex {
                 normal: [0.0, 0.0, 1.0],
-                uv1: [0.0; 2],
+                uv1: UV_PADRAO,
                 fog: 1.0,
                 position: [
                     ((sx - vx as f32) / vw as f32) * 2.0 - 1.0,
@@ -2200,7 +2250,7 @@ impl GlState {
                     1.0,
                 ],
                 color,
-                uv,
+                uv: [uv[0], uv[1], 0.0, 1.0],
             })
             .collect();
 
@@ -2918,9 +2968,14 @@ fn fill_band(tri: &Prepared, uniforms: &Uniforms, band: &mut Band) {
             if bary[0] < 0.0 || bary[1] < 0.0 || bary[2] < 0.0 {
                 continue;
             }
-            let z = bary[0] * tri.screen[0][2]
-                + bary[1] * tri.screen[1][2]
-                + bary[2] * tri.screen[2][2];
+            // **A partir do primeiro vértice, e não pela soma dos três pesos.** Os pesos vêm
+            // acumulados ao longo da linha e somam 1 ± ε, e ε muda de um triângulo para o
+            // outro: com z constante, `b·z` saía um pouco acima de z num triângulo e abaixo no
+            // outro. O NFS Carbon desenha o logo da EA em camadas no mesmo z com `GL_LEQUAL`, e
+            // metade de cada quadrilátero era reprovada. Pelas diferenças, z constante é exato.
+            let z = tri.screen[0][2]
+                + bary[1] * (tri.screen[1][2] - tri.screen[0][2])
+                + bary[2] * (tri.screen[2][2] - tri.screen[0][2]);
             let index = row + x as usize;
 
             let inv_w = bary[0] * tri.screen[0][3]
@@ -3139,6 +3194,70 @@ fn gira_normal(m: &[[f32; 3]; 3], v: [f32; 3]) -> [f32; 3] {
     std::array::from_fn(|i| m[i][0] * v[0] + m[i][1] * v[1] + m[i][2] * v[2])
 }
 
+/// Troca cada segmento de `GL_LINES`, `GL_LINE_STRIP` ou `GL_LINE_LOOP` por um retângulo de um
+/// pixel de largura, em dois triângulos soltos, no espaço de recorte.
+///
+/// **Linha vira triângulo para seguir o mesmo caminho de tudo**: recorte, textura, névoa e
+/// mistura saem iguais aos de um triângulo, nos dois rasterizadores, sem uma segunda rotina de
+/// preenchimento para manter em par. O Peggle pinta o degradê do fundo do menu com uma linha
+/// horizontal por pixel; sem elas, o meio da tela ficava preto atrás do logo.
+///
+/// A largura é a de `glLineWidth` padrão, um pixel da viewport. Os triângulos saem na volta
+/// anti-horária da tela quando `ccw`, para que o descarte por face não leve a linha embora.
+pub(crate) fn linhas_em_triangulos(
+    mode: u32,
+    clip: &[Vertex],
+    viewport: (i32, i32, i32, i32),
+    ccw: bool,
+) -> Vec<Vertex> {
+    let n = clip.len();
+    let pares: Vec<(usize, usize)> = match mode {
+        gles::GL_LINES => (0..n / 2).map(|i| (2 * i, 2 * i + 1)).collect(),
+        gles::GL_LINE_STRIP => (1..n).map(|i| (i - 1, i)).collect(),
+        gles::GL_LINE_LOOP if n >= 2 => (1..n).map(|i| (i - 1, i)).chain([(n - 1, 0)]).collect(),
+        _ => Vec::new(),
+    };
+    let (vw, vh) = (viewport.2.max(1) as f32, viewport.3.max(1) as f32);
+    let perto = |v: &Vertex| v.position[2] + v.position[3] >= 0.0;
+    let mut saida = Vec::with_capacity(pares.len() * 6);
+    for (i, j) in pares {
+        let (mut a, mut b) = (clip[i], clip[j]);
+        match (perto(&a), perto(&b)) {
+            (false, false) => continue,
+            (true, false) => b = clip_near(a, b),
+            (false, true) => a = clip_near(b, a),
+            (true, true) => {}
+        }
+        let (aw, bw) = (a.position[3], b.position[3]);
+        if aw <= 0.0 || bw <= 0.0 {
+            continue;
+        }
+        // A direção em pixels, e não em NDC: numa viewport 640x480 os dois eixos têm escalas
+        // diferentes, e a perpendicular em NDC sairia torta.
+        let dx = (b.position[0] / bw - a.position[0] / aw) * vw / 2.0;
+        let dy = (b.position[1] / bw - a.position[1] / aw) * vh / 2.0;
+        let comprimento = (dx * dx + dy * dy).sqrt();
+        if comprimento == 0.0 {
+            continue;
+        }
+        // Meio pixel para cada lado, convertido de volta para NDC.
+        let (ox, oy) = (-dy / comprimento / vw, dx / comprimento / vh);
+        let desloca = |v: Vertex, sinal: f32| {
+            let mut v = v;
+            v.position[0] += sinal * ox * v.position[3];
+            v.position[1] += sinal * oy * v.position[3];
+            v
+        };
+        let (a0, a1, b0, b1) = (desloca(a, 1.0), desloca(a, -1.0), desloca(b, 1.0), desloca(b, -1.0));
+        // `a1 → b1 → b0` gira no sentido de `(dx, dy)` para `(ox, oy)`, que é anti-horário.
+        match ccw {
+            true => saida.extend([a1, b1, b0, a1, b0, a0]),
+            false => saida.extend([a1, b0, b1, a1, a0, b0]),
+        }
+    }
+    saida
+}
+
 fn clip_near(a: Vertex, b: Vertex) -> Vertex {
     let (da, db) = (a.position[2] + a.position[3], b.position[2] + b.position[3]);
     let t = da / (da - db);
@@ -3198,6 +3317,31 @@ fn unpack(color: [u8; 4]) -> [f32; 4] {
 
 #[cfg(test)]
 mod tests {
+
+    /// **Uma linha horizontal pinta uma fileira, e só uma.** É o que o degradê do menu do Peggle
+    /// pede: uma linha por pixel, lado a lado. Com duas fileiras por linha, a de cima cobriria a
+    /// de baixo; com nenhuma, o fundo ficava preto — que era o caso antes das linhas existirem.
+    #[test]
+    fn linha_horizontal_pinta_uma_fileira() {
+        let mut state = super::GlState::new(8, 4);
+        let vermelho = |x: f32, y: f32| super::Vertex {
+            position: [x, y, 0.0, 1.0],
+            color: [1.0, 0.0, 0.0, 1.0],
+            ..Default::default()
+        };
+        // O centro da fileira 1 de 4 em NDC: (1,5 / 4) * 2 - 1.
+        state.draw(super::gles::GL_LINES, &[vermelho(-1.0, -0.25), vermelho(1.0, -0.25)]);
+        let quadro = state.present(8, 4);
+        let pintados: Vec<usize> = (0..4)
+            .filter(|&linha| quadro[linha * 8..linha * 8 + 8].iter().any(|&p| p == 0xf800))
+            .collect();
+        assert_eq!(pintados.len(), 1, "fileiras pintadas: {pintados:?}");
+        let linha = pintados[0];
+        assert!(
+            quadro[linha * 8..linha * 8 + 8].iter().all(|&p| p == 0xf800),
+            "a fileira tem de sair inteira"
+        );
+    }
 
     /// **A redução da resolução interna**, e o caso que a teria deixado sem efeito.
     ///
@@ -3299,9 +3443,9 @@ mod tests {
             let vertex = |x: f32, y: f32| Vertex {
                 position: [x, y, 0.0, 1.0],
                 uv: if vertical {
-                    [0.0, (y + 1.0) * 0.5]
+                    [0.0, (y + 1.0) * 0.5, 0.0, 1.0]
                 } else {
-                    [(x + 1.0) * 0.5, 0.0]
+                    [(x + 1.0) * 0.5, 0.0, 0.0, 1.0]
                 },
                 ..Default::default()
             };
@@ -3452,7 +3596,7 @@ mod tests {
         let v = |x: f32, y: f32| Vertex {
             position: [x, y, 0.0, 1.0],
             color,
-            uv: [0.0; 2],
+            uv: UV_PADRAO,
             ..Default::default()
         };
         estado.draw(
@@ -3626,7 +3770,7 @@ mod tests {
         let vertex = |x: f32, y: f32| Vertex {
             position: [x, y, z, 1.0],
             color,
-            uv: [0.0; 2],
+            uv: UV_PADRAO,
             ..Default::default()
         };
         state.draw(
@@ -3738,6 +3882,49 @@ mod tests {
         assert_eq!(pixels(&mut state)[8 * 4 + 4], [0, 0, 255, 255]);
     }
 
+    /// Camadas no mesmo z com `GL_LEQUAL` passam inteiras, nos dois triângulos de cada faixa.
+    ///
+    /// É como o NFS Carbon monta o logo da EA: um quadrilátero por cima do outro, de tamanhos
+    /// diferentes, todos em z = 3,8e-6. Com o z somado pelos três pesos, o arredondamento de um
+    /// triângulo passava do z gravado pelo outro e metade de cada camada sumia na diagonal.
+    #[test]
+    fn camadas_no_mesmo_z_passam_inteiras_com_lequal() {
+        let lado = 64;
+        let mut state = GlState::new(lado, lado);
+        state.set_capability(gles::GL_DEPTH_TEST, true);
+        state.set_depth_func(gles::GL_LEQUAL);
+        state.clear(gles::GL_COLOR_BUFFER_BIT | gles::GL_DEPTH_BUFFER_BIT);
+        let z = 3.814_697_3e-6;
+        let faixa = |state: &mut GlState, x0: f32, y0: f32, x1: f32, y1: f32, color: [f32; 4]| {
+            let v = |x: f32, y: f32| Vertex {
+                position: [x, y, z, 1.0],
+                color,
+                ..Default::default()
+            };
+            state.draw(
+                gles::GL_TRIANGLE_STRIP,
+                &[v(x0, y1), v(x0, y0), v(x1, y1), v(x1, y0)],
+            );
+        };
+        let verde = [-0.8127374, -0.7875298, 0.8354998, 0.9214745];
+        let azul = [-0.4027808, -0.3878969, 0.5765068, 0.6939483];
+        faixa(&mut state, -1.0, -1.0, 1.0, 1.0, [1.0, 0.0, 0.0, 1.0]);
+        faixa(&mut state, verde[0], verde[1], verde[2], verde[3], [0.0, 1.0, 0.0, 1.0]);
+        faixa(&mut state, azul[0], azul[1], azul[2], azul[3], [0.0, 0.0, 1.0, 1.0]);
+        // Quantos centros de pixel caem dentro de cada retângulo: é o que cada camada tem de
+        // cobrir, e nenhum dos cantos cai exatamente num centro.
+        let dentro = |r: [f32; 4]| {
+            let centro = |i: usize| (i as f32 + 0.5) / lado as f32 * 2.0 - 1.0;
+            let conta = |a: f32, b: f32| (0..lado).filter(|&i| (a..b).contains(&centro(i))).count();
+            conta(r[0], r[2]) * conta(r[1], r[3])
+        };
+        let quadro = pixels(&mut state);
+        let verdes = quadro.iter().filter(|p| **p == [0, 255, 0, 255]).count();
+        let azuis = quadro.iter().filter(|p| **p == [0, 0, 255, 255]).count();
+        assert_eq!(azuis, dentro(azul), "o azul perdeu pixels para quem estava embaixo");
+        assert_eq!(verdes, dentro(verde) - dentro(azul), "o verde perdeu pixels para o vermelho");
+    }
+
     /// O `y` do `glViewport` conta de baixo para cima, e o quadro é guardado de cima para baixo.
     ///
     /// Uma viewport em `y = 0` com metade da altura é a metade **de baixo** da imagem. Tratar o
@@ -3803,7 +3990,7 @@ mod tests {
             let vertex = |x: f32, y: f32| Vertex {
                 position: [x, y, 0.0, 1.0],
                 color: [1.0; 4],
-                uv: [0.0; 2],
+                uv: UV_PADRAO,
                 ..Default::default()
             };
             // Em coordenadas do OpenGL, com o Y para cima, esta ordem é anti-horária.
@@ -3844,7 +4031,7 @@ mod tests {
         let vertex = |x: f32, y: f32, z: f32, w: f32| Vertex {
             position: [x, y, z, w],
             color: [1.0; 4],
-            uv: [0.0; 2],
+            uv: UV_PADRAO,
             ..Default::default()
         };
         // Anti-horário em coordenadas do OpenGL; o terceiro vértice está atrás da câmera.
@@ -3872,7 +4059,7 @@ mod tests {
         let vertex = |x: f32, y: f32| Vertex {
             position: [x, y, -1.0, 0.001],
             color: [1.0; 4],
-            uv: [0.0; 2],
+            uv: UV_PADRAO,
             ..Default::default()
         };
         let tri = [
@@ -3913,7 +4100,7 @@ mod tests {
         let vertex = |x: f32, y: f32| Vertex {
             position: [x, y, 0.0, 1.0],
             color: [1.0; 4],
-            uv: [32767.0 * 0.25, 0.0],
+            uv: [32767.0 * 0.25, 0.0, 0.0, 1.0],
             ..Default::default()
         };
         state.clear(gles::GL_COLOR_BUFFER_BIT);
@@ -3922,6 +4109,47 @@ mod tests {
             &[vertex(-1.0, -1.0), vertex(1.0, -1.0), vertex(0.0, 1.0)],
         );
         assert_eq!(pixels(&mut state)[2 * 4 + 2], [255, 0, 0, 255]);
+    }
+
+    /// **Cada unidade tem a sua matriz de textura, e ela usa os quatro componentes.** É o
+    /// desenho da sombra do Reckless Racing: a posição do vértice vai como coordenada de três
+    /// componentes nas duas unidades, e cada matriz tira `s` e `t` do `x` e do `z`. Com uma pilha
+    /// só, a matriz da unidade 1 caía por cima da 0; sem o `r`, o `t` ficava constante e a
+    /// sombra saía como listras verticais cobrindo os carros.
+    #[test]
+    fn cada_unidade_projeta_a_coordenada_pela_sua_matriz() {
+        let mut state = GlState::new(4, 4);
+        // Unidade 0: s = x, t = z. Unidade 1: s = x / 2, t = -z / 2 + 0.5.
+        let xz = [
+            1.0, 0.0, 0.0, 0.0, //
+            0.0, 0.0, 0.0, 0.0, //
+            0.0, 1.0, 0.0, 0.0, //
+            0.0, 0.0, 0.0, 1.0,
+        ];
+        let meio = [
+            0.5, 0.0, 0.0, 0.0, //
+            0.0, 0.0, 0.0, 0.0, //
+            0.0, -0.5, 0.0, 0.0, //
+            0.0, 0.5, 0.0, 1.0,
+        ];
+        state.set_matrix_mode(gles::GL_TEXTURE);
+        state.set_active_texture(gles::GL_TEXTURE0);
+        state.load_matrix(xz);
+        state.set_active_texture(gles::GL_TEXTURE0 + 1);
+        state.load_matrix(meio);
+        state.set_active_texture(gles::GL_TEXTURE0);
+        state.set_matrix_mode(gles::GL_MODELVIEW);
+
+        let posicao = [0.25, -3.0, 0.75, 1.0];
+        let vertice = Vertex {
+            uv: posicao,
+            uv1: posicao,
+            ..Default::default()
+        };
+        state.etapa_de_vertice(&[vertice]);
+        let saiu = state.transformados()[0];
+        assert_eq!([saiu.uv[0], saiu.uv[1]], [0.25, 0.75]);
+        assert_eq!([saiu.uv1[0], saiu.uv1[1]], [0.125, 0.125]);
     }
 
     #[test]
@@ -4040,9 +4268,15 @@ impl crate::save_state::Guardavel for GlState {
             valores.iter().map(|v| v.to_bits()).collect()
         };
 
-        // As três pilhas de matriz, cada uma com a contagem na frente.
+        // As pilhas de matriz, cada uma com a contagem na frente. A de textura da unidade 1 vem
+        // por último, e é opcional na leitura: os saves de antes dela têm só as três primeiras.
         let mut matrizes = vec![self.matrix_mode];
-        for pilha in [&self.modelview, &self.projection, &self.texture_matrix] {
+        for pilha in [
+            &self.modelview,
+            &self.projection,
+            &self.texture_matrix,
+            &self.texture_matrix1,
+        ] {
             matrizes.push(pilha.len() as u32);
             for matriz in pilha {
                 matrizes.extend(floats(matriz));
@@ -4230,7 +4464,11 @@ impl crate::save_state::Guardavel for GlState {
         let matrix_mode = matrizes[cursor];
         cursor += 1;
         let mut pilhas: Vec<Vec<Matrix>> = Vec::new();
-        for _ in 0..3 {
+        for indice in 0..4 {
+            if indice == 3 && matrizes.len() == cursor {
+                pilhas.push(vec![IDENTITY]);
+                break;
+            }
             if matrizes.len() < cursor + 1 {
                 return Err(faltando("gl.matrizes"));
             }
@@ -4262,6 +4500,7 @@ impl crate::save_state::Guardavel for GlState {
         self.modelview = pilhas.remove(0);
         self.projection = pilhas.remove(0);
         self.texture_matrix = pilhas.remove(0);
+        self.texture_matrix1 = pilhas.remove(0);
 
         self.viewport = (
             onde[0] as i32,
@@ -4675,6 +4914,29 @@ mod testes_do_estado_de_gl {
     use super::*;
     use crate::save_state::{Guardavel, Leitor, Secoes};
 
+    /// **Um save de antes da matriz de textura da unidade 1 continua abrindo.** Ele tem só três
+    /// pilhas em `gl.matrizes`; a quarta volta como identidade, que é o que o jogo tinha.
+    #[test]
+    fn save_sem_a_matriz_da_unidade_1_abre_com_identidade() {
+        let mut antes = GlState::new(640, 480);
+        antes.texture_matrix1.push([0.75; 16]);
+        let mut secoes = Secoes::nova();
+        antes.grava(&mut secoes);
+        let tres_pilhas: Vec<u32> = std::iter::once(gles::GL_MODELVIEW)
+            .chain((0..3).flat_map(|_| {
+                std::iter::once(1).chain(IDENTITY.iter().map(|v| v.to_bits()))
+            }))
+            .collect();
+        secoes.poe_u32s("gl.matrizes", tres_pilhas);
+        let arquivo = secoes.fecha();
+        let leitor = Leitor::abre(&arquivo).expect("abriu");
+
+        let mut depois = GlState::new(640, 480);
+        depois.texture_matrix1.push([0.5; 16]);
+        depois.restaura(&leitor).expect("restaurou");
+        assert_eq!(depois.texture_matrix1, vec![IDENTITY]);
+    }
+
     /// **O estado de GL vai e volta**, campo por campo.
     ///
     /// Cada seção é conferida pelo tamanho na leitura; este teste confere os **valores**, que é o
@@ -4687,6 +4949,7 @@ mod testes_do_estado_de_gl {
         antes.modelview.push([1.5; 16]);
         antes.projection.push([-2.25; 16]);
         antes.texture_matrix.push([0.5; 16]);
+        antes.texture_matrix1.push([0.75; 16]);
         antes.viewport = (1, 2, 640, 480);
         antes.tesoura = Some((3, 4, 100, 200));
         antes.tesoura_crua = (5, 6, 7, 8);
@@ -4760,6 +5023,7 @@ mod testes_do_estado_de_gl {
             ("modelview", &depois.modelview, [1.5f32; 16]),
             ("projection", &depois.projection, [-2.25f32; 16]),
             ("texture_matrix", &depois.texture_matrix, [0.5f32; 16]),
+            ("texture_matrix1", &depois.texture_matrix1, [0.75f32; 16]),
         ] {
             assert_eq!(pilha.len(), 2, "o tamanho da pilha {nome}");
             assert_eq!(
