@@ -43,7 +43,7 @@ Versão considerada na análise: v0.4.1 (em desenvolvimento)
 | Pac-Mania | ✅ | |
 | Peggle | ✅ | |
 | Powerboat Challenge | ✅ | Joga; menus, seleção de personagem e ilha, e o save de opções persiste |
-| Prey 2 Evil | ✅ | Joga; menus, história e fase. Problemas no audio |
+| Prey 2 Evil | ✅ | Joga; menus, história e fase. |
 | Quake | 🔄 | Desempenho pendente de correcao e audio bugando |
 | Quake 2 | 🔄 | Desempenho pendente de correcao |
 | Raging Thunder 2 | ✅ | |
