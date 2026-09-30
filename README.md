@@ -268,7 +268,7 @@ Quem quiser o Zeebx sob a GPLv2 pode compilar o código, mas não com essas depe
 
 ## Quem faz o Zeebx
 
-Todo mundo que já mandou código para o Zeebx. A lista completa está na
+Todo mundo que já contribuiu com código para o Zeebx. A lista completa está na
 [aba de contribuidores](https://github.com/ZeebxTeam/zeebx-emu/graphs/contributors) do GitHub.
 
 <!-- contribuidores -->
