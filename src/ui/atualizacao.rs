@@ -1,8 +1,11 @@
 //! Procura uma versão nova nas releases do GitHub.
 //!
-//! A pergunta é uma só — `releases/latest` — e a resposta chega numa thread, para a janela não
-//! esperar a rede. A tag pode vir como `0.1.0` ou `v0.1.0`; rascunhos e pré-lançamentos o próprio
-//! GitHub deixa de fora do `latest`.
+//! A pergunta é a lista de releases, e a resposta chega numa thread, para a janela não esperar a
+//! rede. A tag pode vir como `0.1.0` ou `v0.1.0`.
+//!
+//! **Não é `releases/latest`.** Todas as releases do Zeebx saem como pré-lançamento, e o GitHub
+//! deixa pré-lançamentos de fora do `latest`: a resposta era 404, que virava "em dia", e ninguém
+//! nunca foi avisado de versão nova. Da lista, sai a maior versão que não é rascunho.
 
 use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
@@ -47,10 +50,9 @@ pub fn procura() -> Receiver<Resposta> {
 }
 
 fn consulta() -> Result<Option<Lancamento>, String> {
-    let url = format!("https://api.github.com/repos/{REPOSITORIO}/releases/latest");
+    let url = format!("https://api.github.com/repos/{REPOSITORIO}/releases?per_page=20");
     let agente = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(15)))
-        // Um 404 é resposta, não erro: é o que vem enquanto não há release nenhuma.
         .http_status_as_error(false)
         .build()
         .new_agent();
@@ -60,10 +62,11 @@ fn consulta() -> Result<Option<Lancamento>, String> {
         .header("Accept", "application/vnd.github+json")
         .call()
         .map_err(|erro| erro.to_string())?;
-    match resposta.status().as_u16() {
-        200 => {}
-        404 => return Ok(None),
-        codigo => return Err(format!("o GitHub respondeu {codigo}")),
+    // Sem release nenhuma a lista vem vazia, com 200. Um 404 aqui é repositório errado, e tem de
+    // aparecer como falha, não como "em dia".
+    let codigo = resposta.status().as_u16();
+    if codigo != 200 {
+        return Err(format!("o GitHub respondeu {codigo}"));
     }
     let texto = resposta
         .body_mut()
@@ -73,21 +76,25 @@ fn consulta() -> Result<Option<Lancamento>, String> {
     Ok(escolhe(&json, VERSAO_ATUAL))
 }
 
-/// A release do JSON, se ela for mais nova que `atual`.
+/// A maior release da lista, se ela for mais nova que `atual`. Pré-lançamento conta: é como todas
+/// as versões do Zeebx saem. Rascunho não conta — a API só os mostra a quem tem acesso de escrita,
+/// mas o filtro não custa nada.
 fn escolhe(json: &serde_json::Value, atual: &str) -> Option<Lancamento> {
-    if json["draft"].as_bool() == Some(true) || json["prerelease"].as_bool() == Some(true) {
+    let maior = json
+        .as_array()?
+        .iter()
+        .filter(|release| release["draft"].as_bool() != Some(true))
+        .filter_map(|release| Some((sem_v(release["tag_name"].as_str()?), release)))
+        .max_by_key(|(versao, _)| numeros(versao))?;
+    let (versao, release) = maior;
+    if !mais_nova(versao, atual) {
         return None;
     }
-    let tag = json["tag_name"].as_str()?;
-    let versao = sem_v(tag).to_string();
-    if !mais_nova(&versao, atual) {
-        return None;
-    }
-    let pagina = json["html_url"]
+    let pagina = release["html_url"]
         .as_str()
         .map(str::to_string)
-        .unwrap_or_else(|| format!("https://github.com/{REPOSITORIO}/releases/latest"));
-    Some(Lancamento { versao, pagina })
+        .unwrap_or_else(|| format!("https://github.com/{REPOSITORIO}/releases/tag/{versao}"));
+    Some(Lancamento { versao: versao.to_string(), pagina })
 }
 
 fn sem_v(tag: &str) -> &str {
@@ -134,24 +141,40 @@ mod tests {
         assert!(!mais_nova("0.0.9", "0.1.0"));
     }
 
+    fn release(tag: &str, rascunho: bool, pre: bool) -> serde_json::Value {
+        serde_json::json!({
+            "tag_name": tag,
+            "html_url": format!("https://github.com/{REPOSITORIO}/releases/tag/{tag}"),
+            "draft": rascunho,
+            "prerelease": pre,
+        })
+    }
+
     #[test]
-    fn so_aceita_release_publicada_e_mais_nova() {
-        let json = |tag: &str, pre: bool| {
-            serde_json::json!({
-                "tag_name": tag,
-                "html_url": format!("https://github.com/{REPOSITORIO}/releases/tag/{tag}"),
-                "draft": false,
-                "prerelease": pre,
-            })
-        };
+    fn escolhe_a_maior_da_lista_mesmo_em_pre_lancamento() {
+        // A ordem da API é por data, não por versão: a maior pode não vir primeiro.
+        let lista = serde_json::json!([
+            release("v0.4.0", false, true),
+            release("v0.4.1", false, true),
+            release("v0.3.0", false, true),
+        ]);
         assert_eq!(
-            escolhe(&json("v0.2.0", false), "0.1.0"),
+            escolhe(&lista, "0.4.0"),
             Some(Lancamento {
-                versao: "0.2.0".into(),
-                pagina: format!("https://github.com/{REPOSITORIO}/releases/tag/v0.2.0"),
+                versao: "0.4.1".into(),
+                pagina: format!("https://github.com/{REPOSITORIO}/releases/tag/v0.4.1"),
             })
         );
-        assert_eq!(escolhe(&json("0.1.0", false), "0.1.0"), None);
-        assert_eq!(escolhe(&json("v0.3.0", true), "0.1.0"), None);
+        assert_eq!(escolhe(&lista, "0.4.1"), None);
+    }
+
+    #[test]
+    fn ignora_rascunho_e_lista_vazia() {
+        let lista = serde_json::json!([
+            release("v0.5.0", true, false),
+            release("v0.4.1", false, true),
+        ]);
+        assert_eq!(escolhe(&lista, "0.4.1"), None);
+        assert_eq!(escolhe(&serde_json::json!([]), "0.1.0"), None);
     }
 }
