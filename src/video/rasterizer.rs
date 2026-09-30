@@ -2968,9 +2968,14 @@ fn fill_band(tri: &Prepared, uniforms: &Uniforms, band: &mut Band) {
             if bary[0] < 0.0 || bary[1] < 0.0 || bary[2] < 0.0 {
                 continue;
             }
-            let z = bary[0] * tri.screen[0][2]
-                + bary[1] * tri.screen[1][2]
-                + bary[2] * tri.screen[2][2];
+            // **A partir do primeiro vértice, e não pela soma dos três pesos.** Os pesos vêm
+            // acumulados ao longo da linha e somam 1 ± ε, e ε muda de um triângulo para o
+            // outro: com z constante, `b·z` saía um pouco acima de z num triângulo e abaixo no
+            // outro. O NFS Carbon desenha o logo da EA em camadas no mesmo z com `GL_LEQUAL`, e
+            // metade de cada quadrilátero era reprovada. Pelas diferenças, z constante é exato.
+            let z = tri.screen[0][2]
+                + bary[1] * (tri.screen[1][2] - tri.screen[0][2])
+                + bary[2] * (tri.screen[2][2] - tri.screen[0][2]);
             let index = row + x as usize;
 
             let inv_w = bary[0] * tri.screen[0][3]
@@ -3875,6 +3880,49 @@ mod tests {
         assert_eq!(pixels(&mut state)[8 * 4 + 4], [255, 0, 0, 255]);
         quad(&mut state, -0.5, [0.0, 0.0, 1.0, 1.0]);
         assert_eq!(pixels(&mut state)[8 * 4 + 4], [0, 0, 255, 255]);
+    }
+
+    /// Camadas no mesmo z com `GL_LEQUAL` passam inteiras, nos dois triângulos de cada faixa.
+    ///
+    /// É como o NFS Carbon monta o logo da EA: um quadrilátero por cima do outro, de tamanhos
+    /// diferentes, todos em z = 3,8e-6. Com o z somado pelos três pesos, o arredondamento de um
+    /// triângulo passava do z gravado pelo outro e metade de cada camada sumia na diagonal.
+    #[test]
+    fn camadas_no_mesmo_z_passam_inteiras_com_lequal() {
+        let lado = 64;
+        let mut state = GlState::new(lado, lado);
+        state.set_capability(gles::GL_DEPTH_TEST, true);
+        state.set_depth_func(gles::GL_LEQUAL);
+        state.clear(gles::GL_COLOR_BUFFER_BIT | gles::GL_DEPTH_BUFFER_BIT);
+        let z = 3.814_697_3e-6;
+        let faixa = |state: &mut GlState, x0: f32, y0: f32, x1: f32, y1: f32, color: [f32; 4]| {
+            let v = |x: f32, y: f32| Vertex {
+                position: [x, y, z, 1.0],
+                color,
+                ..Default::default()
+            };
+            state.draw(
+                gles::GL_TRIANGLE_STRIP,
+                &[v(x0, y1), v(x0, y0), v(x1, y1), v(x1, y0)],
+            );
+        };
+        let verde = [-0.8127374, -0.7875298, 0.8354998, 0.9214745];
+        let azul = [-0.4027808, -0.3878969, 0.5765068, 0.6939483];
+        faixa(&mut state, -1.0, -1.0, 1.0, 1.0, [1.0, 0.0, 0.0, 1.0]);
+        faixa(&mut state, verde[0], verde[1], verde[2], verde[3], [0.0, 1.0, 0.0, 1.0]);
+        faixa(&mut state, azul[0], azul[1], azul[2], azul[3], [0.0, 0.0, 1.0, 1.0]);
+        // Quantos centros de pixel caem dentro de cada retângulo: é o que cada camada tem de
+        // cobrir, e nenhum dos cantos cai exatamente num centro.
+        let dentro = |r: [f32; 4]| {
+            let centro = |i: usize| (i as f32 + 0.5) / lado as f32 * 2.0 - 1.0;
+            let conta = |a: f32, b: f32| (0..lado).filter(|&i| (a..b).contains(&centro(i))).count();
+            conta(r[0], r[2]) * conta(r[1], r[3])
+        };
+        let quadro = pixels(&mut state);
+        let verdes = quadro.iter().filter(|p| **p == [0, 255, 0, 255]).count();
+        let azuis = quadro.iter().filter(|p| **p == [0, 0, 255, 255]).count();
+        assert_eq!(azuis, dentro(azul), "o azul perdeu pixels para quem estava embaixo");
+        assert_eq!(verdes, dentro(verde) - dentro(azul), "o verde perdeu pixels para o vermelho");
     }
 
     /// O `y` do `glViewport` conta de baixo para cima, e o quadro é guardado de cima para baixo.
