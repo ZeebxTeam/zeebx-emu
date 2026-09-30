@@ -156,6 +156,7 @@ ApplicationWindow {
                 const texto = avisos.deAtualizacao()
                 if (texto !== "") {
                     novaVersao.texto = texto
+                    novaVersao.pagina = avisos.paginaDaAtualizacao()
                     novaVersao.open()
                 }
             }
@@ -425,37 +426,97 @@ ApplicationWindow {
         onClosed: avisos.dispensaAbertura(naoMostrar.checked)
     }
 
-    // O aviso de versão nova, se a procura ao abrir achou uma.
+    // O aviso de versão nova, se a procura ao abrir achou uma. Nas cópias que se trocam sozinhas
+    // (AppImage, instalador do Windows, `.app`) é também onde a instalação anda: a etapa é lida a
+    // cada volta do relógio acima, enquanto o diálogo está aberto.
     Dialog {
         id: novaVersao
 
         property string texto: ""
+        // Guardada na abertura: o `onClosed` dispensa o aviso, e depois disso o núcleo não diz
+        // mais qual é a página. Se o diálogo fechasse antes do `onClicked`, o botão abria "".
+        property string pagina: ""
+        readonly property bool sozinho: avisos.atualizaSozinho()
+        // 0 nenhuma, 1 baixando, 2 instalando, 3 pronta, 4 falhou. Ver `etapaDaAtualizacao`.
+        property int etapa: 0
+        property real fracao: -1
+        property string andamento: ""
+        readonly property bool ocupado: etapa === 1 || etapa === 2
+
+        function acompanha() {
+            etapa = avisos.etapaDaAtualizacao()
+            fracao = avisos.fracaoDaAtualizacao()
+            andamento = avisos.textoDaAtualizacao()
+        }
 
         anchors.centerIn: parent
         width: Math.min(460, principal.width - 32)
         modal: true
         title: principal.tr("update.title")
+        // No meio do download, clicar fora ou apertar Esc não fecha: a instalação seguiria sem
+        // ninguém ver, e o emulador fecharia sozinho no Windows.
+        closePolicy: ocupado ? Popup.NoAutoClose : Popup.CloseOnEscape
 
-        Label {
-            width: parent.width
-            wrapMode: Text.Wrap
-            text: novaVersao.texto
+        Timer {
+            interval: 100
+            repeat: true
+            running: novaVersao.visible
+            onTriggered: novaVersao.acompanha()
         }
 
-        footer: DialogButtonBox {
-            Button {
-                text: principal.tr("update.download")
-                onClicked: {
-                    Qt.openUrlExternally(avisos.paginaDaAtualizacao())
-                    novaVersao.close()
+        ColumnLayout {
+            width: parent.width
+            spacing: 12
+
+            Label {
+                Layout.fillWidth: true
+                wrapMode: Text.Wrap
+                text: novaVersao.etapa === 0 ? novaVersao.texto : novaVersao.andamento
+            }
+
+            ProgressBar {
+                Layout.fillWidth: true
+                visible: novaVersao.ocupado
+                indeterminate: novaVersao.etapa === 2 || novaVersao.fracao < 0
+                value: Math.max(0, novaVersao.fracao)
+            }
+
+            RowLayout {
+                Layout.alignment: Qt.AlignRight
+                visible: !novaVersao.ocupado
+
+                Button {
+                    visible: novaVersao.sozinho && novaVersao.etapa === 0
+                    text: principal.tr("update.install")
+                    onClicked: {
+                        avisos.instalaAtualizacao()
+                        novaVersao.acompanha()
+                    }
+                }
+                Button {
+                    visible: novaVersao.etapa === 3
+                    text: principal.tr("update.restart")
+                    onClicked: avisos.reiniciaNaVersaoNova()
+                }
+                Button {
+                    // Sem troca sozinha, ou se ela falhou, o caminho é a página da release.
+                    visible: novaVersao.etapa === 0 || novaVersao.etapa === 4
+                    text: principal.tr(novaVersao.sozinho && novaVersao.etapa === 0
+                                       ? "update.release_page" : "update.download")
+                    onClicked: {
+                        Qt.openUrlExternally(novaVersao.pagina)
+                        if (!novaVersao.sozinho || novaVersao.etapa === 4)
+                            novaVersao.close()
+                    }
+                }
+                Button {
+                    text: principal.tr("update.later")
+                    onClicked: novaVersao.close()
                 }
             }
-            Button {
-                text: principal.tr("update.later")
-                DialogButtonBox.buttonRole: DialogButtonBox.RejectRole
-            }
         }
 
+        onOpened: acompanha()
         onClosed: avisos.dispensaAtualizacao()
     }
 }

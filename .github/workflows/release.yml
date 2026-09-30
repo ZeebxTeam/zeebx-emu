@@ -49,6 +49,8 @@ jobs:
   # `zeebx-standalone-qt-*`. Os passos moram no `qt.yml`, que monta e abre cada instalador.
   standalone-qt:
     uses: ./.github/workflows/qt.yml
+    # Pelo `ZEEBX_ATUALIZADOR_CHAVE`, que assina os pacotes para o atualizador.
+    secrets: inherit
 
   # O frontend do egui (`frontends/egui-standalone`, binário `zeebx`), legado:
   # `zeebx-standalone-egui-*`.
@@ -176,6 +178,34 @@ jobs:
           hdiutil convert "$tmp/rw.dmg" -format UDZO -o "${dmg%.dmg}"
           rm -rf "$tmp"
 
+      # O atualizador do emulador só instala o que confere com a chave pública embutida nele
+      # (`CHAVE_PUBLICA` em `src/ui/atualizacao.rs`). Cada pacote que se troca sozinho ganha um
+      # `.sig` ao lado, e o job `release` junta tudo no `latest-egui.json` com o
+      # `ferramentas/manifesto_de_atualizacao.py`. Sem o segredo — num fork, ou no `ci.yml` — os
+      # pacotes saem sem `.sig`, e a release só avisa, com a página, como antes.
+      - name: Assinar para o atualizador
+        shell: bash
+        env:
+          CARGO_PACKAGER_SIGN_PRIVATE_KEY: ${{ secrets.ZEEBX_ATUALIZADOR_CHAVE }}
+          CARGO_PACKAGER_SIGN_PRIVATE_KEY_PASSWORD: ""
+        run: |
+          set -euo pipefail
+          if [ -z "$CARGO_PACKAGER_SIGN_PRIVATE_KEY" ]; then
+            echo "::warning::sem o segredo ZEEBX_ATUALIZADOR_CHAVE: os pacotes saem sem assinatura"
+            exit 0
+          fi
+          cd target/pacotes
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            # O atualizador desembrulha o `.tar.gz` pulando o primeiro nível: a raiz tem de ser o
+            # `.app`, já com a assinatura ad-hoc. Sem o `COPYFILE_DISABLE` o tar do macOS mete
+            # arquivos `._*` do AppleDouble dentro do bundle.
+            COPYFILE_DISABLE=1 tar -czf "zeebx-standalone-egui-${{ matrix.nome }}.app.tar.gz" "Zeebx.app"
+          fi
+          for pacote in *.AppImage *-setup.exe *.app.tar.gz; do
+            [ -f "$pacote" ] || continue
+            cargo packager signer sign "$pacote"
+          done
+
       - uses: actions/upload-artifact@v4
         with:
           name: zeebx-standalone-egui-${{ matrix.nome }}
@@ -184,6 +214,8 @@ jobs:
             target/pacotes/*.AppImage
             target/pacotes/*-setup.exe
             target/pacotes/*.dmg
+            target/pacotes/*.app.tar.gz
+            target/pacotes/*.sig
           if-no-files-found: error
 
   headless:
@@ -633,6 +665,11 @@ jobs:
             fi
           done
           echo "não há nota para $tag em docs/patch-notes/; a release sai com a lista de commits"
+
+      # Os `latest-qt.json` e `latest-egui.json` que o atualizador de cada frontend lê nesta
+      # release. Os `.sig` entram neles e saem da pasta.
+      - name: Os manifestos do atualizador
+        run: python3 ferramentas/manifesto_de_atualizacao.py pacotes "${{ inputs.versao || github.ref_name }}"
 
       - uses: softprops/action-gh-release@v2
         with:

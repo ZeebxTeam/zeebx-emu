@@ -322,11 +322,14 @@ impl Default for Atalhos {
 pub struct Atualizacoes {
     /// Perguntar ao GitHub na abertura.
     pub ao_abrir: bool,
+    /// Se uma release marcada como pré-lançamento conta como versão nova. **Ligado de fábrica**:
+    /// até a 0.4.1 todas as releases saíram assim, e desligado ninguém seria avisado de nada.
+    pub pre_lancamentos: bool,
 }
 
 impl Default for Atualizacoes {
     fn default() -> Self {
-        Self { ao_abrir: true }
+        Self { ao_abrir: true, pre_lancamentos: true }
     }
 }
 
@@ -493,7 +496,7 @@ mod tests {
                 ativo: false,
                 capas_url: "https://exemplo/{chave}.png".into(),
             },
-            atualizacoes: Atualizacoes { ao_abrir: false },
+            atualizacoes: Atualizacoes { ao_abrir: false, pre_lancamentos: false },
             aviso_dispensado_na_versao: Some("0.1.0".into()),
         };
         settings.save_to(&path).unwrap();

@@ -289,6 +289,10 @@ ApplicationWindow {
                     chave: "atualizacoes.ao_abrir"
                     rotulo: "settings.updates.on_start"
                 }
+                Opcao {
+                    chave: "atualizacoes.pre_lancamentos"
+                    rotulo: "settings.updates.prereleases"
+                }
                 RowLayout {
                     Button {
                         text: janela.tr("settings.updates.check")
@@ -300,9 +304,12 @@ ApplicationWindow {
                     }
                     Button {
                         readonly property string pagina: janela.depende([janela.tique], cfg.paginaDaAtualizacao())
+                        readonly property bool sozinho: cfg.atualizaSozinho()
                         visible: pagina !== ""
-                        text: janela.tr("update.download")
-                        onClicked: Qt.openUrlExternally(pagina)
+                        // Quem troca sozinho volta ao aviso da janela principal, que é onde o
+                        // andamento da instalação aparece.
+                        text: janela.tr(sozinho ? "update.install" : "update.download")
+                        onClicked: sozinho ? cfg.mostraAvisoDeAtualizacao() : Qt.openUrlExternally(pagina)
                     }
                 }
 

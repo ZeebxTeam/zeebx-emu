@@ -145,6 +145,17 @@ pub mod qobject {
         #[cxx_name = "paginaDaAtualizacao"]
         fn pagina_da_atualizacao(self: &Configuracoes) -> QString;
 
+        /// Esta cópia baixa e instala a versão nova sozinha (AppImage, instalador do Windows,
+        /// `.app`), em vez de só abrir a página.
+        #[qinvokable]
+        #[cxx_name = "atualizaSozinho"]
+        fn atualiza_sozinho(self: &Configuracoes) -> bool;
+
+        /// Traz de volta, na janela principal, o aviso da versão nova: é lá que a instalação anda.
+        #[qinvokable]
+        #[cxx_name = "mostraAvisoDeAtualizacao"]
+        fn mostra_aviso_de_atualizacao(self: &Configuracoes);
+
         #[qinvokable]
         #[cxx_name = "discordConectado"]
         fn discord_conectado(self: &Configuracoes) -> bool;
@@ -485,6 +496,7 @@ fn booleano<'a>(settings: &'a mut Settings, chave: &str) -> Option<&'a mut bool>
         "z_wheel.transicoes_sempre" => &mut settings.z_wheel.transicoes_sempre,
         "discord.ativo" => &mut settings.discord.ativo,
         "atualizacoes.ao_abrir" => &mut settings.atualizacoes.ao_abrir,
+        "atualizacoes.pre_lancamentos" => &mut settings.atualizacoes.pre_lancamentos,
         "graphics.smooth" => &mut settings.graphics.smooth,
         "graphics.keep_aspect" => &mut settings.graphics.keep_aspect,
         "graphics.speed_limit" => &mut settings.graphics.speed_limit,
@@ -830,6 +842,14 @@ impl qobject::Configuracoes {
             Some(Resposta::Nova(lancamento)) => QString::from(&lancamento.pagina),
             _ => QString::default(),
         })
+    }
+
+    pub fn atualiza_sozinho(&self) -> bool {
+        atualizacao::Instalacao::desta().troca_sozinha()
+    }
+
+    pub fn mostra_aviso_de_atualizacao(&self) {
+        nucleo::com(|nucleo| nucleo.reabre_aviso_de_atualizacao());
     }
 
     pub fn discord_conectado(&self) -> bool {

@@ -18,7 +18,7 @@ path = "src/main.rs"
 # A janela do egui e tudo o que ela arrasta -- gilrs, rfd, Discord, glutin -- vêm pela feature
 # `desktop` do núcleo. Este crate não declara nenhuma delas: ele é a interface, e a interface é
 # a que o `desktop` já descreve.
-zeebx = { path = "../..", features = ["desktop"] }
+zeebx = { path = "../..", features = ["atualizador"] }
 
 # **Os instaladores vivem aqui, e não na raiz.** O `cargo packager` lê o manifesto do pacote que
 # produz o binário, e desde a 0.3.0 quem produz o `zeebx` é este crate. Os caminhos de ícone

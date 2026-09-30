@@ -259,6 +259,34 @@ jobs:
           [ "$saida" = 124 ] || { echo "o AppImage saiu com $saida antes do tempo"; exit 1; }
           if grep -iE "is not installed|could not load|failed to load" abre.log; then exit 1; fi
 
+      # O atualizador do emulador só instala o que confere com a chave pública embutida nele
+      # (`CHAVE_PUBLICA` em `src/ui/atualizacao.rs`). Cada pacote que se troca sozinho ganha um
+      # `.sig` ao lado, e o job `release` junta tudo no `latest-qt.json` com o
+      # `ferramentas/manifesto_de_atualizacao.py`. Sem o segredo — num fork, ou chamado pelo
+      # `ci.yml` — os pacotes saem sem `.sig`, e a release só avisa, com a página, como antes.
+      - name: Assinar para o atualizador
+        shell: bash
+        env:
+          CARGO_PACKAGER_SIGN_PRIVATE_KEY: ${{ secrets.ZEEBX_ATUALIZADOR_CHAVE }}
+          CARGO_PACKAGER_SIGN_PRIVATE_KEY_PASSWORD: ""
+        run: |
+          set -euo pipefail
+          if [ -z "$CARGO_PACKAGER_SIGN_PRIVATE_KEY" ]; then
+            echo "::warning::sem o segredo ZEEBX_ATUALIZADOR_CHAVE: os pacotes saem sem assinatura"
+            exit 0
+          fi
+          cd target/pacotes
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            # O atualizador desembrulha o `.tar.gz` pulando o primeiro nível: a raiz tem de ser o
+            # `.app`, já com o Qt do `macdeployqt` e a assinatura ad-hoc. Sem o `COPYFILE_DISABLE`
+            # o tar do macOS mete arquivos `._*` do AppleDouble dentro do bundle.
+            COPYFILE_DISABLE=1 tar -czf "zeebx-standalone-qt-${{ matrix.nome }}.app.tar.gz" "Zeebx Qt.app"
+          fi
+          for pacote in *.AppImage *-setup.exe *.app.tar.gz; do
+            [ -f "$pacote" ] || continue
+            cargo packager signer sign "$pacote"
+          done
+
       - uses: actions/upload-artifact@v6
         with:
           name: zeebx-standalone-qt-${{ matrix.nome }}

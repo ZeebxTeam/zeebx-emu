@@ -150,6 +150,8 @@ pub struct Nucleo {
     pub atualizacao: Option<atualizacao::Resposta>,
     /// Uma versão nova chegou e o aviso dela ainda não foi dispensado.
     aviso_de_atualizacao: bool,
+    /// A versão nova sendo baixada e instalada. O aviso mostra o andamento.
+    pub instalacao_de_atualizacao: Option<atualizacao::Atualizacao>,
     /// O relatório da execução, gravado sozinho. Ver [`Relatorio`].
     relatorio: Relatorio,
     /// A janela de log foi fechada nesta execução. Zera ao abrir outro jogo: fechar dispensa o log
@@ -199,6 +201,7 @@ impl Nucleo {
             procura_de_atualizacao: None,
             atualizacao: None,
             aviso_de_atualizacao: false,
+            instalacao_de_atualizacao: None,
             relatorio: Relatorio::default(),
             log_dispensado: false,
             calibracao: Calibracao::default(),
@@ -208,7 +211,7 @@ impl Nucleo {
         nucleo.procura_de_novo();
         // Na abertura, a pergunta ao GitHub, como no egui: a resposta chega pelo relógio da
         // biblioteca, e o aviso espera o de abertura sair da frente.
-        if nucleo.settings.atualizacoes.ao_abrir {
+        if nucleo.settings.atualizacoes.ao_abrir && atualizacao::Instalacao::desta().avisa() {
             nucleo.procura_atualizacao();
         }
         nucleo
@@ -297,6 +300,28 @@ impl Nucleo {
         self.aviso_de_atualizacao = false;
     }
 
+    /// Mostra de novo o aviso da versão nova, se há uma: é por ele que a instalação anda.
+    pub fn reabre_aviso_de_atualizacao(&mut self) {
+        self.aviso_de_atualizacao = matches!(self.atualizacao, Some(atualizacao::Resposta::Nova(_)));
+    }
+
+    /// Começa a baixar e instalar a versão nova avisada. Uma instalação em andamento não é
+    /// começada de novo.
+    pub fn instala_atualizacao(&mut self) {
+        let em_andamento = self.instalacao_de_atualizacao.as_ref().is_some_and(|a| !a.terminou());
+        if let (Some(atualizacao::Resposta::Nova(lancamento)), false) = (&self.atualizacao, em_andamento) {
+            self.instalacao_de_atualizacao = Some(atualizacao::instala(lancamento, "latest-qt.json"));
+        }
+    }
+
+    /// Guarda as configurações e troca esta execução pela versão instalada.
+    pub fn reinicia_na_versao_nova(&self) -> ! {
+        if let Err(erro) = self.settings.save() {
+            eprintln!("não deu para guardar as configurações: {erro}");
+        }
+        atualizacao::reinicia()
+    }
+
     /// O que o jogo aberto escreveu, e as queixas do emulador sobre ele.
     pub fn log(&self) -> Vec<String> {
         self.partida.as_ref().map(|p| p.sessao().log()).unwrap_or_default()
@@ -310,7 +335,8 @@ impl Nucleo {
     /// Pergunta ao GitHub se há versão nova. A resposta chega pelo [`Nucleo::a_cada_quadro`].
     pub fn procura_atualizacao(&mut self) {
         self.atualizacao = None;
-        self.procura_de_atualizacao = Some(atualizacao::procura());
+        let pre = self.settings.atualizacoes.pre_lancamentos;
+        self.procura_de_atualizacao = Some(atualizacao::procura(pre));
     }
 
     pub fn procurando_atualizacao(&self) -> bool {

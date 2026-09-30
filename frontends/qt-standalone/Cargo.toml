@@ -17,7 +17,7 @@ path = "src/main.rs"
 
 [dependencies]
 # O núcleo com a feature `desktop`: o áudio, a entrada e a sessão de jogo que o Qt reusa.
-zeebx = { path = "../..", features = ["desktop"] }
+zeebx = { path = "../..", features = ["atualizador"] }
 # A ponte com o Qt: docs/implementacao/21-migracao-para-qt.md.
 cxx = "1"
 cxx-qt = "0.10"

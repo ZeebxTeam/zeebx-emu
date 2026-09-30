@@ -130,6 +130,8 @@ pub struct App {
     atualizacao: Option<atualizacao::Resposta>,
     /// O aviso de versão nova está na tela.
     aviso_de_atualizacao: bool,
+    /// A versão nova sendo baixada e instalada, com o aviso mostrando o andamento.
+    instalacao_de_atualizacao: Option<atualizacao::Atualizacao>,
     /// O aviso de abertura ainda está na tela.
     aviso_de_abertura: bool,
     /// A caixa "não mostrar de novo" do aviso de abertura.
@@ -244,6 +246,7 @@ impl App {
             procura_de_atualizacao: None,
             atualizacao: None,
             aviso_de_atualizacao: false,
+            instalacao_de_atualizacao: None,
             presenca: discord::Acompanha::default(),
             discord_recado: None,
             aviso_nao_mostrar: false,
@@ -265,8 +268,9 @@ impl App {
             gpu_falhou: Default::default(),
         };
         app.atualiza_z_wheel();
-        if app.settings.atualizacoes.ao_abrir {
-            app.procura_de_atualizacao = Some(atualizacao::procura());
+        if app.settings.atualizacoes.ao_abrir && atualizacao::Instalacao::desta().avisa() {
+            let pre = app.settings.atualizacoes.pre_lancamentos;
+            app.procura_de_atualizacao = Some(atualizacao::procura(pre));
         }
         app
     }
@@ -332,27 +336,89 @@ impl App {
             self.aviso_de_atualizacao = false;
             return;
         };
+        let andamento = self.instalacao_de_atualizacao.as_ref().map(|a| (a.andamento(), a.fracao()));
+        if matches!(
+            andamento,
+            Some((atualizacao::Andamento::Baixando { .. } | atualizacao::Andamento::Instalando, _))
+        ) {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+        let troca_sozinha = atualizacao::Instalacao::desta().troca_sozinha();
         let mut fechar = false;
+        let mut instalar = false;
+        let mut reiniciar = false;
         let resposta = egui::Modal::new(egui::Id::new("aviso-de-atualizacao")).show(ctx, |ui| {
             ui.set_max_width(420.0);
             ui.heading(self.catalog.get("update.title"));
             ui.add_space(8.0);
-            ui.label(self.catalog.format(
-                "update.available",
-                &[("new", &lancamento.versao), ("current", atualizacao::VERSAO_ATUAL)],
-            ));
-            ui.add_space(12.0);
-            ui.horizontal(|ui| {
-                if ui.button(self.catalog.get("update.download")).clicked() {
-                    ctx.open_url(egui::OpenUrl::new_tab(&lancamento.pagina));
-                    fechar = true;
+            let versoes = [("new", lancamento.versao.as_str()), ("current", atualizacao::VERSAO_ATUAL)];
+            match &andamento {
+                None => {
+                    ui.label(self.catalog.format("update.available", &versoes));
+                    ui.add_space(12.0);
+                    ui.horizontal(|ui| {
+                        if troca_sozinha && ui.button(self.catalog.get("update.install")).clicked() {
+                            instalar = true;
+                        }
+                        let pagina = if troca_sozinha { "update.release_page" } else { "update.download" };
+                        if ui.button(self.catalog.get(pagina)).clicked() {
+                            ctx.open_url(egui::OpenUrl::new_tab(&lancamento.pagina));
+                            fechar = !troca_sozinha;
+                        }
+                        if ui.button(self.catalog.get("update.later")).clicked() {
+                            fechar = true;
+                        }
+                    });
                 }
-                if ui.button(self.catalog.get("update.later")).clicked() {
-                    fechar = true;
+                Some((atualizacao::Andamento::Baixando { .. }, fracao)) => {
+                    ui.label(self.catalog.get("update.downloading"));
+                    let barra = match fracao {
+                        Some(f) => egui::ProgressBar::new(*f).show_percentage(),
+                        None => egui::ProgressBar::new(0.0).animate(true),
+                    };
+                    ui.add(barra);
                 }
-            });
+                Some((atualizacao::Andamento::Instalando, _)) => {
+                    ui.label(self.catalog.get("update.installing"));
+                    ui.add(egui::ProgressBar::new(1.0).animate(true));
+                }
+                Some((atualizacao::Andamento::Pronta, _)) => {
+                    ui.label(self.catalog.format("update.ready", &versoes));
+                    ui.add_space(12.0);
+                    ui.horizontal(|ui| {
+                        if ui.button(self.catalog.get("update.restart")).clicked() {
+                            reiniciar = true;
+                        }
+                        if ui.button(self.catalog.get("update.later")).clicked() {
+                            fechar = true;
+                        }
+                    });
+                }
+                Some((atualizacao::Andamento::Falhou(motivo), _)) => {
+                    ui.label(self.catalog.format("update.failed", &[("reason", motivo)]));
+                    ui.add_space(12.0);
+                    ui.horizontal(|ui| {
+                        if ui.button(self.catalog.get("update.download")).clicked() {
+                            ctx.open_url(egui::OpenUrl::new_tab(&lancamento.pagina));
+                            fechar = true;
+                        }
+                        if ui.button(self.catalog.get("update.later")).clicked() {
+                            fechar = true;
+                        }
+                    });
+                }
+            }
         });
-        if fechar || resposta.should_close() {
+        if instalar {
+            self.instalacao_de_atualizacao = Some(atualizacao::instala(&lancamento, "latest-egui.json"));
+        }
+        if reiniciar {
+            self.save();
+            atualizacao::reinicia();
+        }
+        // Clicar fora não fecha no meio do download: a instalação seguiria sem ninguém ver.
+        let ocupado = self.instalacao_de_atualizacao.as_ref().is_some_and(|a| !a.terminou());
+        if fechar || (resposta.should_close() && !ocupado) {
             self.aviso_de_atualizacao = false;
         }
     }
@@ -370,6 +436,12 @@ impl App {
                 self.catalog.get("settings.updates.on_start"),
             )
             .changed();
+        changed |= ui
+            .checkbox(
+                &mut self.settings.atualizacoes.pre_lancamentos,
+                self.catalog.get("settings.updates.prereleases"),
+            )
+            .changed();
         ui.horizontal(|ui| {
             let procurando = self.procura_de_atualizacao.is_some();
             if ui
@@ -377,7 +449,8 @@ impl App {
                 .clicked()
             {
                 self.atualizacao = None;
-                self.procura_de_atualizacao = Some(atualizacao::procura());
+                let pre = self.settings.atualizacoes.pre_lancamentos;
+                self.procura_de_atualizacao = Some(atualizacao::procura(pre));
             }
             let estado = match (&self.atualizacao, procurando) {
                 (_, true) => self.catalog.get("settings.updates.checking").to_string(),
@@ -395,7 +468,12 @@ impl App {
             };
             ui.label(estado);
             if let Some(atualizacao::Resposta::Nova(lancamento)) = &self.atualizacao {
-                if ui.button(self.catalog.get("update.download")).clicked() {
+                // Quem troca sozinho abre o aviso, que é onde o andamento aparece.
+                if atualizacao::Instalacao::desta().troca_sozinha() {
+                    if ui.button(self.catalog.get("update.install")).clicked() {
+                        self.aviso_de_atualizacao = true;
+                    }
+                } else if ui.button(self.catalog.get("update.download")).clicked() {
                     ui.ctx().open_url(egui::OpenUrl::new_tab(&lancamento.pagina));
                 }
             }

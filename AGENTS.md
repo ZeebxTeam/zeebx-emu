@@ -124,6 +124,12 @@ vale disparar aquele workflow antes da tag. Você não consegue dispará-lo.
   de propor uma biblioteca nova, cheque a licença dela e as features do binário que vai linká-la.
   **Os binários já são GPLv3 na prática**: todos ligam crates que são só Apache-2.0, que não
   combinam com a GPLv2. Por isso uma dependência GPL-2.0-only não entra em binário nenhum.
+- **A `CHAVE_PUBLICA` de `src/ui/atualizacao.rs` e o segredo `ZEEBX_ATUALIZADOR_CHAVE` do GitHub
+  andam em par.** O segredo assina os pacotes da release; a chave embutida é o que o emulador
+  aceita. Trocar um sem o outro faz toda atualização automática ser recusada — e quem já tem a
+  versão velha instalada só sai dela baixando à mão.
+- **O `THIRD-PARTY-NOTICES.txt` acompanha o `Cargo.lock`.** Mudou dependência, rode
+  `python3 ferramentas/avisos_de_terceiros.py` e commite junto; a release confere.
 - **O `Cargo.lock` é versionado** e o CI usa `--locked`. Membro novo no workspace entra no lock,
   no mesmo commit.
 

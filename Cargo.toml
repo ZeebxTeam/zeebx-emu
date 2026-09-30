@@ -73,6 +73,10 @@ soundfont = ["dep:rustysynth"]
 # janela. Aqui entra o `glutin`, que linka EGL/GLX — motivo pelo qual o core não usa esta feature:
 # um core não pode depender de biblioteca de interface do host.
 gpu = ["gl", "dep:glutin", "dep:raw-window-handle"]
+# Baixar e instalar a versão nova sozinho: só os dois frontends desktop, que são os que saem em
+# instalador (AppImage, NSIS, `.app`). Separada do `desktop` porque o headless também o usa, e ele
+# sai num zip que ninguém instala. Traz o `reqwest`, que não pode chegar ao core Libretro.
+atualizador = ["desktop", "dep:cargo-packager-updater"]
 # O binário é a interface desktop: sem a feature ele nem é construído.
 [dependencies]
 # Tipos de interface compartilhados pelo desktop e pelo frontend Android; não abre janela sozinho.
@@ -131,6 +135,9 @@ sevenz-rust2 = "0.23.0"
 # Síntese por banco de amostras, ver a feature `soundfont`. MIT e Rust puro: nada de C, nada de
 # biblioteca de host, e por isso pode entrar no core Libretro.
 rustysynth = { version = "1.3.6", optional = true }
+# O que baixa, confere a assinatura minisign e instala a versão nova. É do mesmo projeto que o
+# `cargo packager`, e entende os pacotes que ele gera. MIT ou Apache-2.0.
+cargo-packager-updater = { version = "0.2.3", optional = true }
 
 # O `dynarmic` recompila A32 para o código nativo do host. O Kingdom Hearts precisa dele
 # porque a extensão 3D roda o próprio rasterizador ARM por milhões de pixels. Dois alvos ficam

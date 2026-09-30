@@ -75,6 +75,35 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "dispensaAtualizacao"]
         fn dispensa_atualizacao(self: &Avisos);
+
+        /// Esta cópia baixa e instala a versão nova sozinha, em vez de só abrir a página.
+        #[qinvokable]
+        #[cxx_name = "atualizaSozinho"]
+        fn atualiza_sozinho(self: &Avisos) -> bool;
+
+        #[qinvokable]
+        #[cxx_name = "instalaAtualizacao"]
+        fn instala_atualizacao(self: &Avisos);
+
+        /// Em que pé está a instalação: 0 nenhuma, 1 baixando, 2 instalando, 3 pronta, 4 falhou.
+        #[qinvokable]
+        #[cxx_name = "etapaDaAtualizacao"]
+        fn etapa_da_atualizacao(self: &Avisos) -> i32;
+
+        /// De 0 a 1 enquanto baixa; -1 se o tamanho não é conhecido.
+        #[qinvokable]
+        #[cxx_name = "fracaoDaAtualizacao"]
+        fn fracao_da_atualizacao(self: &Avisos) -> f64;
+
+        /// O texto da etapa: "Baixando…", "Instalado, reinicie…", ou o motivo da falha.
+        #[qinvokable]
+        #[cxx_name = "textoDaAtualizacao"]
+        fn texto_da_atualizacao(self: &Avisos) -> QString;
+
+        /// Guarda as configurações e abre a versão instalada. Não volta.
+        #[qinvokable]
+        #[cxx_name = "reiniciaNaVersaoNova"]
+        fn reinicia_na_versao_nova(self: &Avisos);
     }
 
     extern "RustQt" {
@@ -218,6 +247,60 @@ impl qobject::Avisos {
 
     pub fn dispensa_atualizacao(&self) {
         nucleo::com(|nucleo| nucleo.dispensa_aviso_de_atualizacao());
+    }
+
+    pub fn atualiza_sozinho(&self) -> bool {
+        atualizacao::Instalacao::desta().troca_sozinha()
+    }
+
+    pub fn instala_atualizacao(&self) {
+        nucleo::com(|nucleo| nucleo.instala_atualizacao());
+    }
+
+    pub fn etapa_da_atualizacao(&self) -> i32 {
+        nucleo::com(|nucleo| match nucleo.instalacao_de_atualizacao.as_ref().map(|a| a.andamento()) {
+            None => 0,
+            Some(atualizacao::Andamento::Baixando { .. }) => 1,
+            Some(atualizacao::Andamento::Instalando) => 2,
+            Some(atualizacao::Andamento::Pronta) => 3,
+            Some(atualizacao::Andamento::Falhou(_)) => 4,
+        })
+    }
+
+    pub fn fracao_da_atualizacao(&self) -> f64 {
+        nucleo::com(|nucleo| {
+            let fracao = nucleo.instalacao_de_atualizacao.as_ref().and_then(|a| a.fracao());
+            fracao.map_or(-1.0, f64::from)
+        })
+    }
+
+    pub fn texto_da_atualizacao(&self) -> QString {
+        nucleo::com(|nucleo| {
+            let Some(instalacao) = &nucleo.instalacao_de_atualizacao else {
+                return QString::default();
+            };
+            let versao = match &nucleo.atualizacao {
+                Some(atualizacao::Resposta::Nova(lancamento)) => lancamento.versao.as_str(),
+                _ => "",
+            };
+            let catalogo = &nucleo.catalogo;
+            let texto = match instalacao.andamento() {
+                atualizacao::Andamento::Baixando { .. } => catalogo.get("update.downloading").to_string(),
+                atualizacao::Andamento::Instalando => catalogo.get("update.installing").to_string(),
+                atualizacao::Andamento::Pronta => catalogo.format(
+                    "update.ready",
+                    &[("new", versao), ("current", atualizacao::VERSAO_ATUAL)],
+                ),
+                atualizacao::Andamento::Falhou(motivo) => {
+                    catalogo.format("update.failed", &[("reason", &motivo)])
+                }
+            };
+            QString::from(&texto)
+        })
+    }
+
+    pub fn reinicia_na_versao_nova(&self) {
+        nucleo::com(|nucleo| nucleo.reinicia_na_versao_nova())
     }
 }
 
