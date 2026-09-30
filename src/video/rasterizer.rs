@@ -117,9 +117,14 @@ pub fn ortho(l: f32, r: f32, b: f32, t: f32, n: f32, f: f32) -> Matrix {
 pub struct Vertex {
     pub position: [f32; 4],
     pub color: [f32; 4],
-    pub uv: [f32; 2],
+    /// A coordenada de textura `(s, t, r, q)`. São quatro porque a matriz de textura mistura
+    /// todas: o Reckless Racing manda a posição do vértice como coordenada de três componentes
+    /// e deixa a matriz tirar `s` e `t` do `x` e do `z` — com só dois, o `z` sumia, o `t` ficava
+    /// constante e a sombra saía em listras. Depois da etapa de vértice, `s` e `t` já vêm
+    /// divididos por `q`, e só eles interessam aos rasterizadores.
+    pub uv: [f32; 4],
     /// A coordenada de textura da unidade 1. Ver [`UnidadeDeTextura`].
-    pub uv1: [f32; 2],
+    pub uv1: [f32; 4],
     /// A normal em coordenadas de objeto, para a iluminação. O padrão do OpenGL é `(0, 0, 1)`.
     pub normal: [f32; 3],
     /// Quanto da cor do fragmento sobra depois da névoa: 1 é cena limpa, 0 é névoa cheia.
@@ -130,13 +135,16 @@ pub struct Vertex {
     pub fog: f32,
 }
 
+/// A coordenada de textura de quem não manda uma: `(0, 0, 0, 1)`, o padrão do OpenGL.
+pub const UV_PADRAO: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
+
 impl Default for Vertex {
     fn default() -> Self {
         Self {
             position: [0.0, 0.0, 0.0, 1.0],
             color: [1.0; 4],
-            uv: [0.0; 2],
-            uv1: [0.0; 2],
+            uv: UV_PADRAO,
+            uv1: UV_PADRAO,
             normal: [0.0, 0.0, 1.0],
             fog: 1.0,
         }
@@ -1084,6 +1092,11 @@ pub struct GlState {
     pub(crate) modelview: Vec<Matrix>,
     pub(crate) projection: Vec<Matrix>,
     pub(crate) texture_matrix: Vec<Matrix>,
+    /// A pilha de matriz de textura da unidade 1. **O OpenGL tem uma por unidade**, escolhida
+    /// pelo `glActiveTexture`, e com uma só a matriz da unidade 1 caía por cima da da unidade 0.
+    /// O Reckless Racing projeta a sombra dos carros pela unidade 0 e o mapa de sombra da pista
+    /// pela 1, cada uma com a sua matriz, e as duas partem da posição do vértice.
+    pub(crate) texture_matrix1: Vec<Matrix>,
 
     pub(crate) viewport: (i32, i32, i32, i32),
     /// O `glScissor`, já com o `y` contado do topo, e só quando o `GL_SCISSOR_TEST` está ligado.
@@ -1214,6 +1227,7 @@ impl GlState {
             modelview: vec![IDENTITY],
             projection: vec![IDENTITY],
             texture_matrix: vec![IDENTITY],
+            texture_matrix1: vec![IDENTITY],
             viewport: (0, 0, width as i32, height as i32),
             tesoura: None,
             tesoura_crua: (0, 0, width as i32, height as i32),
@@ -1257,6 +1271,7 @@ impl GlState {
     pub fn matriz_do_topo(&self) -> Matrix {
         let pilha = match self.matrix_mode {
             gles::GL_PROJECTION => &self.projection,
+            gles::GL_TEXTURE if self.active_unit == 1 => &self.texture_matrix1,
             gles::GL_TEXTURE => &self.texture_matrix,
             _ => &self.modelview,
         };
@@ -1267,6 +1282,7 @@ impl GlState {
     fn stack(&mut self) -> &mut Vec<Matrix> {
         match self.matrix_mode {
             gles::GL_PROJECTION => &mut self.projection,
+            gles::GL_TEXTURE if self.active_unit == 1 => &mut self.texture_matrix1,
             gles::GL_TEXTURE => &mut self.texture_matrix,
             _ => &mut self.modelview,
         }
@@ -2083,6 +2099,7 @@ impl GlState {
         // volta para a faixa `0..1`. Sem ela, o `GL_REPEAT` dava a volta na textura a cada
         // pixel, e a quadra e a arquibancada saíam como confete das cores certas.
         let texture_matrix = *self.texture_matrix.last().expect("pilha nunca fica vazia");
+        let texture_matrix1 = *self.texture_matrix1.last().expect("pilha nunca fica vazia");
         // A iluminação acontece em **coordenadas de olho**, que é onde as posições das luzes
         // foram guardadas: daí precisarmos da modelview separada, e não só do produto com a
         // projeção. As normais vão por outra matriz — ver [`matriz_de_normais`].
@@ -2095,8 +2112,11 @@ impl GlState {
         clip.extend(vertices.iter().map(|v| {
             // `q` é o quarto componente da coordenada de textura; a divisão por ele é o
             // que permite projeção na textura, e vale 1 no caso comum.
-            let [s, t, _, q] = transform(&texture_matrix, [v.uv[0], v.uv[1], 0.0, 1.0]);
-            let scale = if q == 0.0 { 1.0 } else { 1.0 / q };
+            let projeta = |matriz: &Matrix, uv: [f32; 4]| {
+                let [s, t, r, q] = transform(matriz, uv);
+                let scale = if q == 0.0 { 1.0 } else { 1.0 / q };
+                [s * scale, t * scale, r, 1.0]
+            };
             // A névoa e a iluminação querem a mesma coisa: o vértice em coordenadas de olho.
             // Com uma das duas ligada a conta sai uma vez e serve às duas.
             let olho = (iluminando || neblina.ligada && neblina.permitida)
@@ -2116,7 +2136,8 @@ impl GlState {
             };
             Vertex {
                 position: transform(&mvp, v.position),
-                uv: [s * scale, t * scale],
+                uv: projeta(&texture_matrix, v.uv),
+                uv1: projeta(&texture_matrix1, v.uv1),
                 color,
                 fog,
                 ..*v
@@ -2220,7 +2241,7 @@ impl GlState {
             .iter()
             .map(|&([sx, sy], uv)| Vertex {
                 normal: [0.0, 0.0, 1.0],
-                uv1: [0.0; 2],
+                uv1: UV_PADRAO,
                 fog: 1.0,
                 position: [
                     ((sx - vx as f32) / vw as f32) * 2.0 - 1.0,
@@ -2229,7 +2250,7 @@ impl GlState {
                     1.0,
                 ],
                 color,
-                uv,
+                uv: [uv[0], uv[1], 0.0, 1.0],
             })
             .collect();
 
@@ -3417,9 +3438,9 @@ mod tests {
             let vertex = |x: f32, y: f32| Vertex {
                 position: [x, y, 0.0, 1.0],
                 uv: if vertical {
-                    [0.0, (y + 1.0) * 0.5]
+                    [0.0, (y + 1.0) * 0.5, 0.0, 1.0]
                 } else {
-                    [(x + 1.0) * 0.5, 0.0]
+                    [(x + 1.0) * 0.5, 0.0, 0.0, 1.0]
                 },
                 ..Default::default()
             };
@@ -3570,7 +3591,7 @@ mod tests {
         let v = |x: f32, y: f32| Vertex {
             position: [x, y, 0.0, 1.0],
             color,
-            uv: [0.0; 2],
+            uv: UV_PADRAO,
             ..Default::default()
         };
         estado.draw(
@@ -3744,7 +3765,7 @@ mod tests {
         let vertex = |x: f32, y: f32| Vertex {
             position: [x, y, z, 1.0],
             color,
-            uv: [0.0; 2],
+            uv: UV_PADRAO,
             ..Default::default()
         };
         state.draw(
@@ -3921,7 +3942,7 @@ mod tests {
             let vertex = |x: f32, y: f32| Vertex {
                 position: [x, y, 0.0, 1.0],
                 color: [1.0; 4],
-                uv: [0.0; 2],
+                uv: UV_PADRAO,
                 ..Default::default()
             };
             // Em coordenadas do OpenGL, com o Y para cima, esta ordem é anti-horária.
@@ -3962,7 +3983,7 @@ mod tests {
         let vertex = |x: f32, y: f32, z: f32, w: f32| Vertex {
             position: [x, y, z, w],
             color: [1.0; 4],
-            uv: [0.0; 2],
+            uv: UV_PADRAO,
             ..Default::default()
         };
         // Anti-horário em coordenadas do OpenGL; o terceiro vértice está atrás da câmera.
@@ -3990,7 +4011,7 @@ mod tests {
         let vertex = |x: f32, y: f32| Vertex {
             position: [x, y, -1.0, 0.001],
             color: [1.0; 4],
-            uv: [0.0; 2],
+            uv: UV_PADRAO,
             ..Default::default()
         };
         let tri = [
@@ -4031,7 +4052,7 @@ mod tests {
         let vertex = |x: f32, y: f32| Vertex {
             position: [x, y, 0.0, 1.0],
             color: [1.0; 4],
-            uv: [32767.0 * 0.25, 0.0],
+            uv: [32767.0 * 0.25, 0.0, 0.0, 1.0],
             ..Default::default()
         };
         state.clear(gles::GL_COLOR_BUFFER_BIT);
@@ -4040,6 +4061,47 @@ mod tests {
             &[vertex(-1.0, -1.0), vertex(1.0, -1.0), vertex(0.0, 1.0)],
         );
         assert_eq!(pixels(&mut state)[2 * 4 + 2], [255, 0, 0, 255]);
+    }
+
+    /// **Cada unidade tem a sua matriz de textura, e ela usa os quatro componentes.** É o
+    /// desenho da sombra do Reckless Racing: a posição do vértice vai como coordenada de três
+    /// componentes nas duas unidades, e cada matriz tira `s` e `t` do `x` e do `z`. Com uma pilha
+    /// só, a matriz da unidade 1 caía por cima da 0; sem o `r`, o `t` ficava constante e a
+    /// sombra saía como listras verticais cobrindo os carros.
+    #[test]
+    fn cada_unidade_projeta_a_coordenada_pela_sua_matriz() {
+        let mut state = GlState::new(4, 4);
+        // Unidade 0: s = x, t = z. Unidade 1: s = x / 2, t = -z / 2 + 0.5.
+        let xz = [
+            1.0, 0.0, 0.0, 0.0, //
+            0.0, 0.0, 0.0, 0.0, //
+            0.0, 1.0, 0.0, 0.0, //
+            0.0, 0.0, 0.0, 1.0,
+        ];
+        let meio = [
+            0.5, 0.0, 0.0, 0.0, //
+            0.0, 0.0, 0.0, 0.0, //
+            0.0, -0.5, 0.0, 0.0, //
+            0.0, 0.5, 0.0, 1.0,
+        ];
+        state.set_matrix_mode(gles::GL_TEXTURE);
+        state.set_active_texture(gles::GL_TEXTURE0);
+        state.load_matrix(xz);
+        state.set_active_texture(gles::GL_TEXTURE0 + 1);
+        state.load_matrix(meio);
+        state.set_active_texture(gles::GL_TEXTURE0);
+        state.set_matrix_mode(gles::GL_MODELVIEW);
+
+        let posicao = [0.25, -3.0, 0.75, 1.0];
+        let vertice = Vertex {
+            uv: posicao,
+            uv1: posicao,
+            ..Default::default()
+        };
+        state.etapa_de_vertice(&[vertice]);
+        let saiu = state.transformados()[0];
+        assert_eq!([saiu.uv[0], saiu.uv[1]], [0.25, 0.75]);
+        assert_eq!([saiu.uv1[0], saiu.uv1[1]], [0.125, 0.125]);
     }
 
     #[test]
@@ -4158,9 +4220,15 @@ impl crate::save_state::Guardavel for GlState {
             valores.iter().map(|v| v.to_bits()).collect()
         };
 
-        // As três pilhas de matriz, cada uma com a contagem na frente.
+        // As pilhas de matriz, cada uma com a contagem na frente. A de textura da unidade 1 vem
+        // por último, e é opcional na leitura: os saves de antes dela têm só as três primeiras.
         let mut matrizes = vec![self.matrix_mode];
-        for pilha in [&self.modelview, &self.projection, &self.texture_matrix] {
+        for pilha in [
+            &self.modelview,
+            &self.projection,
+            &self.texture_matrix,
+            &self.texture_matrix1,
+        ] {
             matrizes.push(pilha.len() as u32);
             for matriz in pilha {
                 matrizes.extend(floats(matriz));
@@ -4348,7 +4416,11 @@ impl crate::save_state::Guardavel for GlState {
         let matrix_mode = matrizes[cursor];
         cursor += 1;
         let mut pilhas: Vec<Vec<Matrix>> = Vec::new();
-        for _ in 0..3 {
+        for indice in 0..4 {
+            if indice == 3 && matrizes.len() == cursor {
+                pilhas.push(vec![IDENTITY]);
+                break;
+            }
             if matrizes.len() < cursor + 1 {
                 return Err(faltando("gl.matrizes"));
             }
@@ -4380,6 +4452,7 @@ impl crate::save_state::Guardavel for GlState {
         self.modelview = pilhas.remove(0);
         self.projection = pilhas.remove(0);
         self.texture_matrix = pilhas.remove(0);
+        self.texture_matrix1 = pilhas.remove(0);
 
         self.viewport = (
             onde[0] as i32,
@@ -4793,6 +4866,29 @@ mod testes_do_estado_de_gl {
     use super::*;
     use crate::save_state::{Guardavel, Leitor, Secoes};
 
+    /// **Um save de antes da matriz de textura da unidade 1 continua abrindo.** Ele tem só três
+    /// pilhas em `gl.matrizes`; a quarta volta como identidade, que é o que o jogo tinha.
+    #[test]
+    fn save_sem_a_matriz_da_unidade_1_abre_com_identidade() {
+        let mut antes = GlState::new(640, 480);
+        antes.texture_matrix1.push([0.75; 16]);
+        let mut secoes = Secoes::nova();
+        antes.grava(&mut secoes);
+        let tres_pilhas: Vec<u32> = std::iter::once(gles::GL_MODELVIEW)
+            .chain((0..3).flat_map(|_| {
+                std::iter::once(1).chain(IDENTITY.iter().map(|v| v.to_bits()))
+            }))
+            .collect();
+        secoes.poe_u32s("gl.matrizes", tres_pilhas);
+        let arquivo = secoes.fecha();
+        let leitor = Leitor::abre(&arquivo).expect("abriu");
+
+        let mut depois = GlState::new(640, 480);
+        depois.texture_matrix1.push([0.5; 16]);
+        depois.restaura(&leitor).expect("restaurou");
+        assert_eq!(depois.texture_matrix1, vec![IDENTITY]);
+    }
+
     /// **O estado de GL vai e volta**, campo por campo.
     ///
     /// Cada seção é conferida pelo tamanho na leitura; este teste confere os **valores**, que é o
@@ -4805,6 +4901,7 @@ mod testes_do_estado_de_gl {
         antes.modelview.push([1.5; 16]);
         antes.projection.push([-2.25; 16]);
         antes.texture_matrix.push([0.5; 16]);
+        antes.texture_matrix1.push([0.75; 16]);
         antes.viewport = (1, 2, 640, 480);
         antes.tesoura = Some((3, 4, 100, 200));
         antes.tesoura_crua = (5, 6, 7, 8);
@@ -4878,6 +4975,7 @@ mod testes_do_estado_de_gl {
             ("modelview", &depois.modelview, [1.5f32; 16]),
             ("projection", &depois.projection, [-2.25f32; 16]),
             ("texture_matrix", &depois.texture_matrix, [0.5f32; 16]),
+            ("texture_matrix1", &depois.texture_matrix1, [0.75f32; 16]),
         ] {
             assert_eq!(pilha.len(), 2, "o tamanho da pilha {nome}");
             assert_eq!(

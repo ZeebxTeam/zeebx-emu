@@ -830,12 +830,12 @@ impl<C: CpuBackend> Machine<C> {
         let uvs = self
             .gl_texcoords
             .em_uso()
-            .then(|| self.read_array(self.gl_texcoords, indices, [0.0; 4]))
+            .then(|| self.read_array(self.gl_texcoords, indices, rasterizer::UV_PADRAO))
             .transpose()?;
         let uvs1 = self
             .gl_texcoords1
             .em_uso()
-            .then(|| self.read_array(self.gl_texcoords1, indices, [0.0; 4]))
+            .then(|| self.read_array(self.gl_texcoords1, indices, rasterizer::UV_PADRAO))
             .transpose()?;
         let normais = self
             .gl_normals
@@ -846,8 +846,8 @@ impl<C: CpuBackend> Machine<C> {
             .map(|i| Vertex {
                 position: posicoes[i],
                 color: cores.as_ref().map_or(base, |c| c[i]),
-                uv: uvs.as_ref().map_or([0.0; 2], |t| [t[i][0], t[i][1]]),
-                uv1: uvs1.as_ref().map_or([0.0; 2], |t| [t[i][0], t[i][1]]),
+                uv: uvs.as_ref().map_or(rasterizer::UV_PADRAO, |t| t[i]),
+                uv1: uvs1.as_ref().map_or(rasterizer::UV_PADRAO, |t| t[i]),
                 normal: normais
                     .as_ref()
                     .map_or(self.gl_normal_atual, |n| [n[i][0], n[i][1], n[i][2]]),

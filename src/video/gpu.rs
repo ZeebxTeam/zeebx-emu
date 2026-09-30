@@ -31,7 +31,7 @@ type ContextoProprio = ();
 use super::gles;
 use super::rasterizer::{
     GlState, Matrix, linhas_em_triangulos, QuadroNaPlaca, Rasterizador, TexEnv, Texture as TexturaSalva,
-    UnidadeDeTextura, Vertex,
+    UnidadeDeTextura, UV_PADRAO, Vertex,
 };
 use glow::{self, HasContext};
 use std::collections::HashMap;
@@ -1760,9 +1760,9 @@ fn uniforme_vec3(
 fn poe_em(destino: &mut Vec<f32>, v: &Vertex) {
     destino.extend_from_slice(&v.position);
     destino.extend_from_slice(&v.color);
-    destino.extend_from_slice(&v.uv);
+    destino.extend_from_slice(&v.uv[..2]);
     destino.push(v.fog);
-    destino.extend_from_slice(&v.uv1);
+    destino.extend_from_slice(&v.uv1[..2]);
 }
 
 /// Os bytes de um vetor de `f32`, para o `buffer_data`.
@@ -2668,7 +2668,7 @@ impl Rasterizador for GpuState {
         for ([sx, sy], uv) in cantos {
             let v = Vertex {
                 normal: [0.0, 0.0, 1.0],
-                uv1: [0.0; 2],
+                uv1: UV_PADRAO,
                 fog: 1.0,
                 position: [
                     ((sx - vx as f32) / vw as f32) * 2.0 - 1.0,
@@ -2677,7 +2677,7 @@ impl Rasterizador for GpuState {
                     1.0,
                 ],
                 color: cor,
-                uv,
+                uv: [uv[0], uv[1], 0.0, 1.0],
             };
             self.poe(&v);
         }
@@ -2945,9 +2945,9 @@ impl Rasterizador for GpuState {
             self.poe(&Vertex {
                 position: [px, py, 0.0, 1.0],
                 color: [1.0; 4],
-                uv,
+                uv: [uv[0], uv[1], 0.0, 1.0],
                 normal: [0.0, 0.0, 1.0],
-                uv1: [0.0; 2],
+                uv1: UV_PADRAO,
                 fog: 1.0,
             });
         }
@@ -3231,8 +3231,8 @@ mod tests {
             let canto = |x: f32, y: f32| Vertex {
                 position: [x, y, 0.0, 1.0],
                 color: [1.0, 0.0, 0.0, 1.0],
-                uv: [0.0, 0.0],
-                uv1: [0.0; 2],
+                uv: UV_PADRAO,
+                uv1: UV_PADRAO,
                 normal: [0.0, 0.0, 1.0],
                 fog: 1.0,
             };
@@ -3281,8 +3281,8 @@ mod tests {
             let canto = |x: f32, y: f32| Vertex {
                 position: [x, y, 0.0, 1.0],
                 color: [1.0, 0.0, 0.0, 1.0],
-                uv: [0.0, 0.0],
-                uv1: [0.0; 2],
+                uv: UV_PADRAO,
+                uv1: UV_PADRAO,
                 normal: [0.0, 0.0, 1.0],
                 fog: 1.0,
             };
@@ -3354,8 +3354,8 @@ mod tests {
             let canto = |x: f32, y: f32| Vertex {
                 position: [x, y, 0.0, 1.0],
                 color: [1.0, 0.0, 0.0, 1.0],
-                uv: [0.0, 0.0],
-                uv1: [0.0; 2],
+                uv: UV_PADRAO,
+                uv1: UV_PADRAO,
                 normal: [0.0, 0.0, 1.0],
                 fog: 1.0,
             };
@@ -3422,8 +3422,8 @@ mod tests {
             let canto = |x: f32, y: f32| Vertex {
                 position: [x, y, 0.0, 1.0],
                 color: [1.0, 0.0, 0.0, 1.0],
-                uv: [0.0, 0.0],
-                uv1: [0.0; 2],
+                uv: UV_PADRAO,
+                uv1: UV_PADRAO,
                 normal: [0.0, 0.0, 1.0],
                 fog: 1.0,
             };
@@ -3471,8 +3471,8 @@ mod tests {
         let canto = |x: f32, y: f32| Vertex {
             position: [x, y, 0.0, 1.0],
             color: [1.0, 0.0, 0.0, 1.0],
-            uv: [0.0, 0.0],
-            uv1: [0.0; 2],
+            uv: UV_PADRAO,
+            uv1: UV_PADRAO,
             normal: [0.0, 0.0, 1.0],
                 fog: 1.0,
         };
@@ -3540,8 +3540,8 @@ mod tests {
         let canto = |x: f32, y: f32| Vertex {
             position: [x, y, -1.0, 1.0],
             color: [0.0, 1.0, 0.0, 1.0],
-            uv: [0.0, 0.0],
-            uv1: [0.0; 2],
+            uv: UV_PADRAO,
+            uv1: UV_PADRAO,
             normal: [0.0, 0.0, 1.0],
             fog: 1.0,
         };
@@ -3582,8 +3582,8 @@ mod tests {
             let canto = |x: f32, y: f32| Vertex {
                 position: [x, y, 0.0, 1.0],
                 color: [0.0, 1.0, 0.0, 1.0],
-                uv: [0.0, 0.0],
-                uv1: [0.0; 2],
+                uv: UV_PADRAO,
+                uv1: UV_PADRAO,
                 normal: [0.0, 0.0, 1.0],
                 fog: 1.0,
             };
@@ -3627,8 +3627,8 @@ mod tests {
             let canto = |x: f32, y: f32| Vertex {
                 position: [x, y, 1.5, 1.0],
                 color: [0.0, 0.0, 1.0, 1.0],
-                uv: [0.0, 0.0],
-                uv1: [0.0; 2],
+                uv: UV_PADRAO,
+                uv1: UV_PADRAO,
                 normal: [0.0, 0.0, 1.0],
                 fog: 1.0,
             };
@@ -3677,8 +3677,8 @@ mod tests {
                     let canto = |x: f32, y: f32| Vertex {
                         position: [x, y, 0.0, 1.0],
                         color: [1.0, 1.0, 1.0, 1.0],
-                        uv: [0.0, 0.0],
-                        uv1: [0.0; 2],
+                        uv: UV_PADRAO,
+                        uv1: UV_PADRAO,
                         normal: [0.0, 0.0, 1.0],
                 fog: 1.0,
                     };
@@ -3873,8 +3873,8 @@ mod tests {
         let vertice = |(x, y): (f32, f32)| Vertex {
             position: [x, y, 0.0, 1.0],
             color: cor,
-            uv: [0.0, 0.0],
-            uv1: [0.0; 2],
+            uv: UV_PADRAO,
+            uv1: UV_PADRAO,
             normal: [0.0, 0.0, 1.0],
             fog: 1.0,
         };
