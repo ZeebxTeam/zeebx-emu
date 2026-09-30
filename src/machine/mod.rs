@@ -2744,6 +2744,10 @@ pub struct Machine<C: CpuBackend> {
     /// A thread em execução, se houver — retomar uma thread de dentro dela mesma seria
     /// reentrância, não concorrência.
     current_thread: Option<u32>,
+    /// O bloco da heap onde estava o `sp` da última vez, como `(início, tamanho)`: a pilha que o
+    /// jogo alocou para si. Guardado porque achá-lo percorre a heap inteira, e o `sp` quase
+    /// nunca muda de bloco. Ver [`Machine::gasta_a_pilha`].
+    pilha_na_heap: Option<(u32, u32)>,
     /// Buffer de pixels no guest de cada superfície exposta como `IDIB`.
     dib_buffers: HashMap<u32, u32>,
     /// Quantos bytes o buffer publicado de cada `IDIB` tem.
@@ -3271,6 +3275,7 @@ impl<C: CpuBackend> Machine<C> {
             pending_threads: Vec::new(),
             stalled: None,
             current_thread: None,
+            pilha_na_heap: None,
             dib_buffers: HashMap::new(),
             dib_capacity: HashMap::new(),
             dib_herdados: HashSet::new(),
@@ -3628,7 +3633,57 @@ impl<C: CpuBackend> Machine<C> {
         if let Some(line) = entry.and_then(|i| self.trace.get_mut(i)) {
             line.push_str(&format!(" -> {result:#x}"));
         }
+        self.gasta_a_pilha();
         Ok(Some(result))
+    }
+
+    /// Suja a pilha abaixo do `sp`, como a implementação de verdade da chamada a teria sujado.
+    ///
+    /// **No aparelho, o BREW roda na pilha do jogo; aqui, não.** Todo `MALLOC`, `FREE` ou
+    /// `OpenFile` do Zeebo empilha quadros abaixo do `sp` de quem chamou, e apaga o que tinha
+    /// sobrado ali. O nosso atendimento é Rust e não encosta na pilha do guest, então o resto de
+    /// uma chamada anterior sobrevive — e há jogo que, sem saber, depende de ele sumir.
+    ///
+    /// O Iron Sight é o caso medido. O laço dos prédios da fase pede `building0.pof` até
+    /// `building49.pof`, e nenhum existe no `dataTall.bar`: o jogo conta com o carregador
+    /// devolvendo 0. O leitor de chunks (`0x9b860`) é montado na pilha, não acha o arquivo e zera
+    /// o stream, mas quem o usa (`0x8bae8`) só confere se o chunk corrente é `3DOB` — campo que o
+    /// construtor não inicializa. Sobrava ali o `3DOB` do `.pof` anterior, lido no mesmo endereço
+    /// de pilha, e o jogo seguia com o stream nulo até saltar para o endereço zero. O `MALLOC`
+    /// chamado logo antes, a `0x20` bytes do topo do quadro, alcança o campo com `0x4c` bytes de
+    /// pilha; os 256 daqui cobrem isso com folga.
+    ///
+    /// Só dentro de uma pilha que sabemos onde começa — a principal ou um bloco vivo da heap —,
+    /// porque abaixo do piso mora outra coisa. O Iron Sight não usa `IThread`: ele aloca 64 KB
+    /// com `MALLOC` e aponta o `sp` para lá por conta própria, e a pilha de uma `IThread` também
+    /// é bloco da heap, então o mesmo critério serve às duas.
+    fn gasta_a_pilha(&mut self) {
+        /// Quanto a chamada de verdade teria usado de pilha. Não medido no aparelho: é a folga
+        /// sobre os `0x4c` bytes que o Iron Sight precisa.
+        const GASTO: u32 = 256;
+        let sp = self.cpu.read_reg(Reg::Sp);
+        let principal = loader::STACK_BASE..=loader::STACK_BASE + loader::STACK_SIZE as u32;
+        let piso = if principal.contains(&sp) {
+            Some(loader::STACK_BASE)
+        } else {
+            // A resposta guardada só vale se o bloco continua vivo, do mesmo tamanho, e o `sp`
+            // ainda está nele.
+            let guardada = self.pilha_na_heap.filter(|&(inicio, tamanho)| {
+                self.heap.size_of(inicio) == Some(tamanho)
+                    && (inicio..=inicio + tamanho).contains(&sp)
+            });
+            if guardada.is_none() {
+                // O topo é exclusivo no bloco, mas é o `sp` inicial de uma pilha: procura-se
+                // pelo último byte abaixo dele.
+                self.pilha_na_heap = self.heap.bloco_que_contem(sp.wrapping_sub(1));
+            }
+            self.pilha_na_heap.map(|(inicio, _)| inicio)
+        };
+        if let Some(piso) = piso
+            && sp.wrapping_sub(GASTO) >= piso
+        {
+            let _ = self.cpu.fill_mem(sp - GASTO, 0, GASTO);
+        }
     }
 
     /// Quantos nanossegundos custa uma leitura de `Instant::now()` nesta máquina.
