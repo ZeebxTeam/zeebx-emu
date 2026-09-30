@@ -1,10 +1,10 @@
 # Status geral
-Versão considerada na análise: v0.2.1 (em desenvolvimento)
+Versão considerada na análise: v0.4.1 (em desenvolvimento)
 
 | Status | Legenda | Jogos | % |
 |---|---|---|---|
-| ✅ | (compatível) | 50 | 83,3% |
-| 🔄 | (roda com ressalvas) | 9 | 15,0% |
+| ✅ | (compatível) | 56 | 93,3% |
+| 🔄 | (roda com ressalvas) | 3 | 5,0% |
 | ❌ | (incompatível) | 1 | 1,7% |
 
 
@@ -33,22 +33,22 @@ Versão considerada na análise: v0.2.1 (em desenvolvimento)
 | Disney All Star Cards | ✅ | Joga |
 | Double Dragon | ✅ | |
 | FIFA 09 | ✅ | |
-| Galaxy on Fire | 🔄 | Jogável, porém com tela de Pause e Menu quebrados após alguns minutos de jogatina, porém se mantém jogável |
+| Galaxy on Fire | ✅ | |
 | Heavy Barrel | ✅ | Emulador de arcade embutido, com som |
-| Heavy Weapon | 🔄 | Jogável, porém com as cores erradas |
-| Iron Sight | 🔄 | Menus e campanha funcionam; quebra ao carregar a fase, sem achar os recursos no pacote dele |
+| Heavy Weapon | ✅ | |
+| Iron Sight | ✅ | |
 | Karnovs Revenge | ✅ | Emulador de arcade embutido, com som |
 | Magical Drop 3 | ✅ | Emulador de arcade embutido, com som |
 | Need For Speed - Carbon - Domine a Cidade | ✅ | |
 | Pac-Mania | ✅ | |
-| Peggle | 🔄 | Roda, porém os gráficos, cores e sons estão totalmente quebrados |
+| Peggle | ✅ | |
 | Powerboat Challenge | ✅ | Joga; menus, seleção de personagem e ilha, e o save de opções persiste |
 | Prey 2 Evil | ✅ | Joga; menus, história e fase |
-| Quake | 🔄 | Podem existir crashes in-game ou lagging |
-| Quake 2 | 🔄 | Entra nas fases, com mundo, arma e HUD; ainda pouco jogado |
+| Quake | 🔄 | Desempenho pendente de correcao e audio bugando |
+| Quake 2 | 🔄 | Desempenho pendente de correcao |
 | Raging Thunder 2 | ✅ | |
 | Rally Master Pro | ✅ | |
-| Reckless Racing | 🔄 | Abre, porém com uma série de glitches nos modelos e texturas |
+| Reckless Racing | ✅ | |
 | Resident Evil 4 - Zeebo Edition | ✅ | |
 | Ridge Racer | ✅ | Joga; menus, painel da corrida e corrida |
 | Spin Master | ✅ | Emulador de arcade embutido, com som |
@@ -56,7 +56,7 @@ Versão considerada na análise: v0.2.1 (em desenvolvimento)
 | Super BurgerTime | ✅ | Emulador de arcade embutido, com som |
 | Tekken 2 | ✅ | |
 | Tork and Kral - A Prehistorik Adventure | ✅ | |
-| Toy Raid | 🔄 | Jogável, porém com glitches visuais |
+| Toy Raid | ✅ | |
 | Treino Cerebral | ✅ | |
 | Turma da Monica em Vamos Brincar Vol. 1 | ✅ | Abre, navega os menus e chega à escolha de nome |
 | Ultimate Chess 3D | ✅ | |
