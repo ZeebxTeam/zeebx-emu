@@ -37,6 +37,14 @@ description = "O emulador definitivo de Zeebo!"
 out-dir = "../../target/pacotes"
 before-packaging-command = "cargo build --release --locked -p zeebx-standalone-egui"
 icons = ["../../assets/icones/zeebx-512.png", "../../assets/icones/zeebx.ico", "../../assets/icones/zeebx.icns"]
+# O texto das licenças vai em todo instalador, numa pasta `licenses` ao lado do programa (no `.deb`,
+# em `/usr/lib/<binário>/licenses`; no macOS, em `Contents/Resources/licenses`). Ver o
+# `ferramentas/avisos_de_terceiros.py`.
+resources = [
+    { src = "../../LICENSE", target = "licenses/LICENSE" },
+    { src = "../../LICENSE-GPL3", target = "licenses/LICENSE-GPL3" },
+    { src = "../../THIRD-PARTY-NOTICES.txt", target = "licenses/THIRD-PARTY-NOTICES.txt" },
+]
 
 [[package.metadata.packager.binaries]]
 path = "zeebx"

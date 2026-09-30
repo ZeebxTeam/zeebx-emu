@@ -20,6 +20,7 @@ authors = ["ZeebxTeam"]
 license = "GPL-2.0-or-later"
 repository = "https://github.com/ZeebxTeam/zeebx-emu"
 description = "O emulador definitivo de Zeebo!"
+publish = false
 
 # O núcleo também é consumido pelos frontends Android, headless e Libretro.
 [lib]

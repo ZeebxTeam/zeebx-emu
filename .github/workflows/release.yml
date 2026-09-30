@@ -236,6 +236,7 @@ jobs:
         run: |
           mkdir -p entrega
           cp frontends/headless/config.ini frontends/headless/LEIAME.md entrega/
+          mkdir -p entrega/licenses && cp LICENSE LICENSE-GPL3 THIRD-PARTY-NOTICES.txt entrega/licenses/
           if [ "$RUNNER_OS" = "Windows" ]; then
             cp target/release/zeebx-headless.exe entrega/
           else
@@ -460,6 +461,7 @@ jobs:
           mkdir -p pacote
           cp "${{ matrix.biblioteca }}" "pacote/${{ matrix.arquivo }}"
           cp frontends/libretro/zeebx_libretro.info pacote/
+          mkdir -p pacote/licenses && cp LICENSE LICENSE-GPL3 THIRD-PARTY-NOTICES.txt pacote/licenses/
           grep -q '^database = "Mobile - Zeebo"' pacote/zeebx_libretro.info
           cd pacote && zip -r "../zeebx_libretro-${{ matrix.nome }}.zip" .
 
@@ -470,6 +472,8 @@ jobs:
           New-Item -ItemType Directory -Force -Path pacote | Out-Null
           Copy-Item "${{ matrix.biblioteca }}" "pacote/${{ matrix.arquivo }}"
           Copy-Item "frontends/libretro/zeebx_libretro.info" "pacote/"
+          New-Item -ItemType Directory -Force -Path pacote/licenses | Out-Null
+          Copy-Item LICENSE, LICENSE-GPL3, THIRD-PARTY-NOTICES.txt pacote/licenses/
           if (-not (Select-String -Path "pacote/zeebx_libretro.info" -Pattern '^database = "Mobile - Zeebo"')) {
             throw "o .info nao aponta para a base 'Mobile - Zeebo'"
           }
@@ -509,6 +513,7 @@ jobs:
           mkdir -p pacote
           cp target/wasm/zeebx_libretro_emscripten.wasm pacote/
           cp frontends/libretro/zeebx_libretro.info pacote/
+          mkdir -p pacote/licenses && cp LICENSE LICENSE-GPL3 THIRD-PARTY-NOTICES.txt pacote/licenses/
           grep -q '^database = "Mobile - Zeebo"' pacote/zeebx_libretro.info
           cd pacote && zip -r "../zeebx_libretro-wasm.zip" .
 
@@ -560,8 +565,9 @@ jobs:
 
       - name: Empacota o core
         run: |
+          mkdir -p frontends/switch/saida/licenses && cp LICENSE LICENSE-GPL3 THIRD-PARTY-NOTICES.txt frontends/switch/saida/licenses/
           cd frontends/switch/saida
-          zip "$GITHUB_WORKSPACE/zeebx_libretro-switch.zip" libzeebx_libretro.a
+          zip -r "$GITHUB_WORKSPACE/zeebx_libretro-switch.zip" libzeebx_libretro.a licenses
 
       - uses: actions/upload-artifact@v4
         with:
@@ -569,8 +575,24 @@ jobs:
           path: zeebx_libretro-switch.zip
           if-no-files-found: error
 
+  # O `THIRD-PARTY-NOTICES.txt` que vai em todos os pacotes é versionado, e não gerado em cada job:
+  # o contêiner do Switch e o runner do Windows não teriam de instalar o `cargo about`. O preço é
+  # ele poder envelhecer com um `cargo update`, e é isto que pega: a release não sai com avisos
+  # de licença de dependências que já não são as que o binário leva.
+  licencas:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      # A versão casa com a `VERSAO_DO_CARGO_ABOUT` do script: outra formata diferente.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about@0.9.2
+      - name: Os avisos de terceiros estão em dia
+        run: python3 ferramentas/avisos_de_terceiros.py --confere
+
   release:
-    needs: [standalone-qt, standalone-egui, headless, android, ios, core, wasm, switch]
+    needs: [standalone-qt, standalone-egui, headless, android, ios, core, wasm, switch, licencas]
     # Sai com o que deu certo: um sistema que falhou não segura os outros.
     #
     # A tag vem de dois lugares: do `push` de uma tag, e aí é o `github.ref_name`; ou do

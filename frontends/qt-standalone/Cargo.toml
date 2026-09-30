@@ -50,7 +50,15 @@ icons = ["../../assets/icones/zeebx-512.png", "../../assets/icones/zeebx.ico", "
 # O Qt do Windows, que o `windeployqt` junta nesta pasta — as DLLs, os plugins e os módulos QML — e
 # o NSIS instala ao lado do `zeebx-qt.exe`, com as subpastas. Só existe no Windows: nos outros sistemas
 # o caminho não casa com nada, e o `cargo packager` não inclui nada.
-resources = [{ src = "../../target/qt-implantado", target = "." }]
+# O texto das licenças vai em todo instalador, numa pasta `licenses` ao lado do programa (no `.deb`,
+# em `/usr/lib/<binário>/licenses`; no macOS, em `Contents/Resources/licenses`). Ver o
+# `ferramentas/avisos_de_terceiros.py`.
+resources = [
+    { src = "../../target/qt-implantado", target = "." },
+    { src = "../../LICENSE", target = "licenses/LICENSE" },
+    { src = "../../LICENSE-GPL3", target = "licenses/LICENSE-GPL3" },
+    { src = "../../THIRD-PARTY-NOTICES.txt", target = "licenses/THIRD-PARTY-NOTICES.txt" },
+]
 
 [[package.metadata.packager.binaries]]
 path = "zeebx-qt"
