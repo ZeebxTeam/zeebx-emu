@@ -14,6 +14,26 @@ Em desenvolvimento. Hoje 56 dos 62 títulos de teste passam do carregamento e de
 
 [GitHub: https://github.com/ZeebxTeam](https://github.com/ZeebxTeam)
 
+## Instalação
+
+As versões prontas ficam nas [releases](https://github.com/ZeebxTeam/zeebx-emu/releases): o
+instalador do Windows, o `.dmg` do macOS, o `.deb` e o AppImage do Linux, a APK do Android e o core
+Libretro. A tabela de qual arquivo é qual está em [Instaladores e releases](#instaladores-e-releases).
+
+No **macOS** e no **Linux** dá para instalar pelo [Homebrew](https://brew.sh), com o
+[tap do projeto](https://github.com/ZeebxTeam/homebrew-tap):
+
+```bash
+brew install --cask zeebxteam/tap/zeebx-qt
+```
+
+No macOS vai para Aplicativos (pede o macOS 13 ou mais novo); no Linux, o AppImage vai para
+`~/Applications/zeebx-qt.AppImage`. A interface antiga, em egui, é o cask `zeebxteam/tap/zeebx`.
+
+O emulador se atualiza sozinho no AppImage, no instalador do Windows e no `.app` do macOS: quando
+sai uma versão nova, ele avisa e oferece "Atualizar agora". Nas configurações, em Atualizações, dá
+para desligar a procura ao abrir e escolher se as versões de pré-lançamento contam.
+
 # Notas para Colaboradores
 
 Por favor, ao abrir uma PR, sempre aponte para a branch development ou a branch correspondente ao ajuste que está sendo feito.
@@ -246,7 +266,31 @@ seria GPLv3 de qualquer forma, pelo Qt (ver
 Quem quiser o Zeebx sob a GPLv2 pode compilar o código, mas não com essas dependências.
 
 
+## Quem faz o Zeebx
+
+A mesma lista do [site](https://zeebxteam.github.io/zeebx-emu/), tirada da
+[aba de contribuidores](https://github.com/ZeebxTeam/zeebx-emu/graphs/contributors) do GitHub.
+Para refazer quando entra gente nova: `python3 ferramentas/contribuidores.py`.
+
+<!-- contribuidores -->
+<table>
+  <tr>
+    <td align="center"><a href="https://github.com/rebquaker"><img src="https://avatars.githubusercontent.com/u/329117678?v=4&s=128" width="64" height="64" alt=""><br><sub><b>rebquaker</b></sub></a></td>
+    <td align="center"><a href="https://github.com/requeijaum"><img src="https://avatars.githubusercontent.com/u/5564635?v=4&s=128" width="64" height="64" alt=""><br><sub><b>requeijaum</b></sub></a></td>
+    <td align="center"><a href="https://github.com/Meowni2"><img src="https://avatars.githubusercontent.com/u/330453534?v=4&s=128" width="64" height="64" alt=""><br><sub><b>Meowni2</b></sub></a></td>
+    <td align="center"><a href="https://github.com/humbertodias"><img src="https://avatars.githubusercontent.com/u/9255997?v=4&s=128" width="64" height="64" alt=""><br><sub><b>humbertodias</b></sub></a></td>
+    <td align="center"><a href="https://github.com/J0aoSiqueira"><img src="https://avatars.githubusercontent.com/u/107425883?v=4&s=128" width="64" height="64" alt=""><br><sub><b>J0aoSiqueira</b></sub></a></td>
+    <td align="center"><a href="https://github.com/maskofsin"><img src="https://avatars.githubusercontent.com/u/171617836?v=4&s=128" width="64" height="64" alt=""><br><sub><b>maskofsin</b></sub></a></td>
+  </tr>
+</table>
+<!-- /contribuidores -->
+
 ## Menções
 
 - **tripleoxygen** — engenharia reversa de hardware e firmware do Zeebo, e o material público
   que torna este projeto possível :)
+- **[Requeijaum](https://github.com/requeijaum)** — grande suporte ao entendimento de boa parte do
+  BREW e resolução de bugs
+- Os grupos **Zeebo Clube** (Facebook) e **Zeebo Eterno** (Telegram), pelas comparações com o
+  console real que trazem fidelidade ao projeto, e toda a comunidade Zeebo que vem apoiando,
+  testando e dando feedback desde o início <3
