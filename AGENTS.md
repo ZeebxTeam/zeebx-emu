@@ -148,6 +148,12 @@ prefixo de conventional commit no histórico recente. O corpo explica a razão, 
 **Português no código e na documentação; inglês onde o usuário estrangeiro lê** — as opções e
 mensagens do headless, as chaves do `config.ini`, os arquivos de `assets/lang/`.
 
+## A lista de contribuidores do README
+
+A tabela "Quem faz o Zeebx" do README é escrita, e não buscada: o README não roda nada. Ela sai
+de `python3 ferramentas/contribuidores.py`, que lê a mesma API do site (`docs/site.js`) e reescreve
+o trecho entre os marcadores `<!-- contribuidores -->`. Refaça quando entrar gente nova.
+
 ## Notas de versão
 
 Cada versão deixa a sua em [`docs/patch-notes/`](docs/patch-notes/), escrita para quem usa o
