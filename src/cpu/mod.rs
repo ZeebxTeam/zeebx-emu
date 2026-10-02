@@ -165,6 +165,17 @@ pub trait CpuBackend {
         Ok(())
     }
 
+    /// Zera `len` bytes da pilha do guest **sem** invalidar código do JIT.
+    ///
+    /// Só para a sujeira de pilha (ver `Machine::gasta_a_pilha`): o intervalo está confinado à
+    /// pilha do jogo, onde nunca há código compilado, e sujar em toda chamada de API com a
+    /// invalidação junto custava 30% da velocidade no Crash Nitro Kart em corrida (de 385% para
+    /// 296% no `bench`, medido) — quase tudo no `jit_mut` e nos empréstimos da marcação, que
+    /// aqui sempre sai vazia. Fora da pilha, use o [`Self::fill_mem`], que invalida.
+    fn suja_pilha(&mut self, addr: u32, len: u32) -> Result<(), CpuError> {
+        self.fill_mem(addr, 0, len)
+    }
+
     fn read_u32(&self, addr: u32) -> Result<u32, CpuError> {
         let mut buf = [0u8; 4];
         self.read_mem(addr, &mut buf)?;
