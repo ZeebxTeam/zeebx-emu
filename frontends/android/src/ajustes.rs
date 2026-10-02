@@ -453,7 +453,7 @@ impl Emulador {
             15..=100,
             |v| format!("{v}%"),
         );
-        let arrumadas = match toque.posicoes.is_empty() {
+        let arrumadas = match toque.posicoes.is_empty() && toque.tamanhos.is_empty() {
             true => catalogo.get("touch.layout.default"),
             false => catalogo.get("touch.layout.custom"),
         };

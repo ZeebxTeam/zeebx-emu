@@ -403,10 +403,13 @@ pub struct ControlesNaTela {
     pub escala: u8,
     /// Em porcento. Opaco de fábrica não: a peça fica por cima do jogo.
     pub opacidade: u8,
-    /// Onde o usuário pôs cada peça, pelo [`crate::input::toque::Peca::nome`], em **fração** da
+    /// Onde o usuário pôs cada peça, pela [`crate::input::toque::Peca::chave`], em **fração** da
     /// tela. Fração, e não ponto, porque o mesmo arquivo pode ir de um celular para um tablet. A
     /// peça que não está aqui fica no lugar de fábrica, e "restaurar" é esvaziar o mapa.
     pub posicoes: std::collections::BTreeMap<String, [f32; 2]>,
+    /// O tamanho de cada peça, em porcento, por cima da [`Self::escala`]. Mesma chave das
+    /// posições; a peça que não está aqui fica em 100.
+    pub tamanhos: std::collections::BTreeMap<String, u8>,
 }
 
 impl Default for ControlesNaTela {
@@ -416,6 +419,7 @@ impl Default for ControlesNaTela {
             escala: 100,
             opacidade: 55,
             posicoes: Default::default(),
+            tamanhos: Default::default(),
         }
     }
 }
@@ -531,7 +535,8 @@ mod tests {
                 modo: ModoDosControlesNaTela::Nunca,
                 escala: 130,
                 opacidade: 80,
-                posicoes: [("b1".to_string(), [0.75, 0.5])].into(),
+                posicoes: [("botoes".to_string(), [0.75, 0.5])].into(),
+                tamanhos: [("dpad".to_string(), 140)].into(),
             },
             graphics: Graphics {
                 scaling: Scaling::Fit,

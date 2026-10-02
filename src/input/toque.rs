@@ -42,19 +42,33 @@ impl Peca {
         Self::Home,
     ];
 
-    /// A chave da peça nas posições gravadas. Não muda nunca: é o que está no `settings.json`.
-    pub fn nome(self) -> &'static str {
+    /// A chave da peça nas posições e nos tamanhos gravados. Não muda nunca: é o que está no
+    /// `settings.json`.
+    ///
+    /// **Os quatro botões de face têm uma chave só**, `botoes`: no editor eles são um grupo, que
+    /// se arrasta e se redimensiona inteiro. Separados, arrumar o losango pedia quatro arrastos
+    /// alinhados à mão, e ele nunca voltava a ser um losango.
+    pub fn chave(self) -> &'static str {
         match self {
             Self::Direcional => "dpad",
             Self::MancheEsquerdo => "lstick",
             Self::MancheDireito => "rstick",
-            Self::B1 => "b1",
-            Self::B2 => "b2",
-            Self::B3 => "b3",
-            Self::B4 => "b4",
+            Self::B1 | Self::B2 | Self::B3 | Self::B4 => "botoes",
             Self::Zl => "zl",
             Self::Zr => "zr",
             Self::Home => "home",
+        }
+    }
+
+    /// Onde o botão fica no losango, em raios a partir do centro dele. A posição é a do
+    /// controle: o 1 embaixo, o 2 à esquerda, o 3 em cima e o 4 à direita (issue #41).
+    fn no_losango(self) -> Option<[f32; 2]> {
+        match self {
+            Self::B1 => Some([0.0, 1.0]),
+            Self::B2 => Some([-1.0, 0.0]),
+            Self::B3 => Some([0.0, -1.0]),
+            Self::B4 => Some([1.0, 0.0]),
+            _ => None,
         }
     }
 
@@ -184,12 +198,9 @@ fn lugar_de_fabrica(peca: Peca, tela: [f32; 2], escala: f32) -> [f32; 2] {
             losango[0] - passo - botao - VAO * escala - meio[0],
             altura - MARGEM - meio[1],
         ],
-        // A posição dos botões é a do controle: o 1 embaixo, o 2 à esquerda, o 3 em cima e o 4
-        // à direita (issue #41).
-        Peca::B1 => [losango[0], losango[1] + passo],
-        Peca::B2 => [losango[0] - passo, losango[1]],
-        Peca::B3 => [losango[0], losango[1] - passo],
-        Peca::B4 => [losango[0] + passo, losango[1]],
+        // Dos botões, o lugar de fábrica é o do centro do losango; cada um sai dali em
+        // [`monta`], que é quem sabe o tamanho do grupo.
+        Peca::B1 | Peca::B2 | Peca::B3 | Peca::B4 => losango,
         Peca::Zl => [MARGEM + meio[0], MARGEM + meio[1]],
         Peca::Zr => [largura - MARGEM - meio[0], MARGEM + meio[1]],
         // Em cima, no meio: embaixo é onde os manches moram.
@@ -197,30 +208,57 @@ fn lugar_de_fabrica(peca: Peca, tela: [f32; 2], escala: f32) -> [f32; 2] {
     }
 }
 
+/// O menor e o maior tamanho de uma peça no editor, em porcento. Abaixo da metade o botão fica
+/// menor que o alvo de toque que o Android pede; acima do dobro, o direcional sozinho passa de um
+/// terço da altura de um celular deitado.
+pub const TAMANHO_MINIMO: u8 = 50;
+pub const TAMANHO_MAXIMO: u8 = 200;
+
 /// Põe as peças numa tela do tamanho dado.
 ///
-/// `escala` é em porcento do tamanho de fábrica. `posicoes` é o que o usuário arrastou, pelo
-/// [`Peca::nome`], em fração da tela; a peça que não está ali fica no lugar de fábrica. Qualquer
-/// que seja a posição gravada, a peça termina inteira dentro da tela: um arquivo feito num tablet
-/// e aberto num celular não pode deixar um botão para fora.
-pub fn monta(tela: [f32; 2], escala: u8, posicoes: &BTreeMap<String, [f32; 2]>) -> Vec<Elemento> {
+/// `escala` é em porcento do tamanho de fábrica, e vale para todas. `tamanhos` é o de cada peça,
+/// pela [`Peca::chave`], em porcento, por cima da `escala`; a peça que não está ali fica em 100.
+/// `posicoes` é o que o usuário arrastou, em fração da tela; a peça que não está ali fica no
+/// lugar de fábrica. Qualquer que seja a posição gravada, a peça termina inteira dentro da tela:
+/// um arquivo feito num tablet e aberto num celular não pode deixar um botão para fora.
+pub fn monta(
+    tela: [f32; 2],
+    escala: u8,
+    posicoes: &BTreeMap<String, [f32; 2]>,
+    tamanhos: &BTreeMap<String, u8>,
+) -> Vec<Elemento> {
     let escala = f32::from(escala.max(1)) / 100.0;
     Peca::TODAS
         .iter()
         .map(|&peca| {
-            let meio = peca.meio().map(|v| v * escala);
-            let centro = match posicoes.get(peca.nome()) {
+            // O lugar de fábrica é contado com a escala geral, e não com a da peça: crescer o
+            // direcional não pode empurrar os manches de lugar.
+            let propria = tamanhos
+                .get(peca.chave())
+                .map_or(100, |t| (*t).clamp(TAMANHO_MINIMO, TAMANHO_MAXIMO));
+            let tamanho = escala * f32::from(propria) / 100.0;
+            let meio = peca.meio().map(|v| v * tamanho);
+            let centro = match posicoes.get(peca.chave()) {
                 Some(&[fx, fy]) => [fx * tela[0], fy * tela[1]],
                 None => lugar_de_fabrica(peca, tela, escala),
             };
-            Elemento {
-                peca,
-                centro: [
+            let centro = match peca.no_losango() {
+                // Do botão, o centro gravado é o do losango, e quem tem de caber é o losango
+                // inteiro: prender cada botão por si o deformaria contra a borda.
+                Some([dx, dy]) => {
+                    let passo = RAIO_DO_LOSANGO * tamanho;
+                    let alcance = [passo + meio[0], passo + meio[1]];
+                    [
+                        prende(centro[0], alcance[0], tela[0]) + dx * passo,
+                        prende(centro[1], alcance[1], tela[1]) + dy * passo,
+                    ]
+                }
+                None => [
                     prende(centro[0], meio[0], tela[0]),
                     prende(centro[1], meio[1], tela[1]),
                 ],
-                meio,
-            }
+            };
+            Elemento { peca, centro, meio }
         })
         .collect()
 }
@@ -325,6 +363,23 @@ pub fn manche(elemento: &Elemento, dedo: [f32; 2]) -> [f32; 2] {
     [x / corte, y / corte]
 }
 
+/// O centro do que o editor arrasta quando pega a peça: o do losango, para um botão de face, e o
+/// da própria peça para o resto. É o ponto que se grava em [`fracao`].
+pub fn centro_do_grupo(elementos: &[Elemento], peca: Peca) -> Option<[f32; 2]> {
+    let grupo: Vec<_> = elementos
+        .iter()
+        .filter(|e| e.peca.chave() == peca.chave())
+        .collect();
+    if grupo.is_empty() {
+        return None;
+    }
+    let n = grupo.len() as f32;
+    Some([
+        grupo.iter().map(|e| e.centro[0]).sum::<f32>() / n,
+        grupo.iter().map(|e| e.centro[1]).sum::<f32>() / n,
+    ])
+}
+
 /// A peça que está debaixo de um ponto, para o editor saber qual o dedo pegou. Sem folga: no
 /// editor ninguém está jogando, e a folga faria pegar a peça vizinha.
 pub fn debaixo(elementos: &[Elemento], ponto: [f32; 2]) -> Option<Peca> {
@@ -344,7 +399,7 @@ mod tests {
     const TELA: [f32; 2] = [915.0, 412.0];
 
     fn fabrica() -> Vec<Elemento> {
-        monta(TELA, 100, &BTreeMap::new())
+        monta(TELA, 100, &BTreeMap::new(), &BTreeMap::new())
     }
 
     fn centro(elementos: &[Elemento], peca: Peca) -> [f32; 2] {
@@ -371,7 +426,7 @@ mod tests {
     #[test]
     fn as_pecas_de_fabrica_cabem_e_nao_se_tocam() {
         for tela in [TELA, [1024.0, 768.0], [640.0, 360.0]] {
-            let elementos = monta(tela, 100, &BTreeMap::new());
+            let elementos = monta(tela, 100, &BTreeMap::new(), &BTreeMap::new());
             for (i, a) in elementos.iter().enumerate() {
                 assert!(a.centro[0] - a.meio[0] >= 0.0 && a.centro[0] + a.meio[0] <= tela[0]);
                 assert!(a.centro[1] - a.meio[1] >= 0.0 && a.centro[1] + a.meio[1] <= tela[1]);
@@ -446,10 +501,12 @@ mod tests {
     #[test]
     fn a_posicao_gravada_e_fracao_e_a_peca_fica_dentro() {
         let mut posicoes = BTreeMap::new();
-        posicoes.insert("b1".to_string(), [0.5, 0.5]);
+        posicoes.insert("botoes".to_string(), [0.5, 0.5]);
         posicoes.insert("zl".to_string(), [0.0, 0.0]);
-        let elementos = monta(TELA, 100, &posicoes);
-        assert_eq!(centro(&elementos, Peca::B1), [457.5, 206.0]);
+        let elementos = monta(TELA, 100, &posicoes, &BTreeMap::new());
+        // O grupo inteiro foi para o meio: o 1 fica um raio abaixo do centro.
+        assert_eq!(centro(&elementos, Peca::B1), [457.5, 268.0]);
+        assert_eq!(centro_do_grupo(&elementos, Peca::B3), Some([457.5, 206.0]));
         // Gravado no canto, desenhado encostado nele.
         assert_eq!(centro(&elementos, Peca::Zl), [44.0, 22.0]);
         assert_eq!(fracao([457.5, 206.0], TELA), [0.5, 0.5]);
@@ -460,9 +517,44 @@ mod tests {
         let normal = fabrica();
         let [x, y] = centro(&normal, Peca::B1);
         assert_eq!(botoes(&normal, [[x + 40.0, y]]), 0);
-        let maior = monta(TELA, 150, &BTreeMap::new());
+        let maior = monta(TELA, 150, &BTreeMap::new(), &BTreeMap::new());
         let [x, y] = centro(&maior, Peca::B1);
         assert_eq!(botoes(&maior, [[x + 40.0, y]]), bit(0));
+    }
+
+    #[test]
+    fn o_tamanho_de_uma_peca_nao_mexe_nas_outras_e_tem_limite() {
+        let mut tamanhos = BTreeMap::new();
+        tamanhos.insert("botoes".to_string(), 150);
+        tamanhos.insert("dpad".to_string(), 10);
+        let elementos = monta(TELA, 100, &BTreeMap::new(), &tamanhos);
+        let meio = |peca| elementos.iter().find(|e| e.peca == peca).unwrap().meio;
+        assert_eq!(meio(Peca::B1), [45.0, 45.0]);
+        assert_eq!(meio(Peca::B2), [45.0, 45.0]);
+        assert_eq!(meio(Peca::Zl), [44.0, 22.0]);
+        // Gravado abaixo do mínimo, desenhado no mínimo.
+        assert_eq!(meio(Peca::Direcional), [36.0, 36.0]);
+        // O losango cresce junto, mas o direcional, que é de outra chave, não saiu do lugar.
+        let [x, _] = centro(&elementos, Peca::B4);
+        let [cx, _] = centro_do_grupo(&elementos, Peca::B4).unwrap();
+        assert_eq!(x - cx, 93.0);
+        assert_eq!(
+            centro(&elementos, Peca::Direcional),
+            centro(&fabrica(), Peca::Direcional)
+        );
+        // E a escala geral multiplica a da peça.
+        let maior = monta(TELA, 150, &BTreeMap::new(), &tamanhos);
+        assert_eq!(maior.iter().find(|e| e.peca == Peca::B1).unwrap().meio, [67.5, 67.5]);
+    }
+
+    #[test]
+    fn o_losango_inteiro_cabe_mesmo_gravado_no_canto() {
+        let mut posicoes = BTreeMap::new();
+        posicoes.insert("botoes".to_string(), [1.0, 1.0]);
+        let elementos = monta(TELA, 100, &posicoes, &BTreeMap::new());
+        // O 4 encosta na borda direita e o 1 na de baixo; o losango continua um losango.
+        assert_eq!(centro(&elementos, Peca::B4), [TELA[0] - 30.0, TELA[1] - 92.0]);
+        assert_eq!(centro(&elementos, Peca::B1), [TELA[0] - 92.0, TELA[1] - 30.0]);
     }
 
     #[test]

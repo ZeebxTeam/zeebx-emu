@@ -379,6 +379,8 @@ pub struct Emulador {
     sobreposicao: toque::Sobreposicao,
     /// A peça que o editor está arrastando, e onde o dedo a pegou em relação ao centro dela.
     arrastando: Option<(zeebx::input::toque::Peca, egui::Vec2)>,
+    /// A peça escolhida no editor, a que a barra de tamanho cresce e encolhe.
+    escolhida: Option<zeebx::input::toque::Peca>,
     /// O "voltar" foi apertado com um jogo aberto: a pergunta está na tela.
     confirmando: bool,
     /// O jogo está parado por escolha, e não por falha.
@@ -470,6 +472,7 @@ impl Emulador {
             pad: Pad::default(),
             sobreposicao: Default::default(),
             arrastando: None,
+            escolhida: None,
             confirmando: false,
             pausado: false,
             estado_id: None,
@@ -723,6 +726,7 @@ impl Emulador {
             Onde::Ajustes => self.onde = Onde::Biblioteca,
             Onde::EditaToque => {
                 self.arrastando = None;
+                self.escolhida = None;
                 self.onde = Onde::Ajustes;
             }
             Onde::Biblioteca => {}

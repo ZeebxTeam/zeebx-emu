@@ -162,7 +162,8 @@ fn desenha(
         let centro = egui::pos2(elemento.centro[0], elemento.centro[1]);
         let [mx, my] = elemento.meio;
         let caixa = egui::Rect::from_center_size(centro, egui::vec2(2.0 * mx, 2.0 * my));
-        let realce = match destaque == Some(elemento.peca) {
+        // O destaque vale para o grupo inteiro: escolher o 3 acende os quatro.
+        let realce = match destaque.is_some_and(|d| d.chave() == elemento.peca.chave()) {
             true => egui::Stroke::new(3.0_f32, egui::Color32::from_rgb(255, 200, 0)),
             false => borda,
         };
@@ -287,7 +288,8 @@ impl Emulador {
             self.sobreposicao.elementos.clear();
             return;
         }
-        self.sobreposicao.elementos = toque::monta(tamanho(ctx), ajustes.escala, &ajustes.posicoes);
+        self.sobreposicao.elementos =
+            toque::monta(tamanho(ctx), ajustes.escala, &ajustes.posicoes, &ajustes.tamanhos);
         let pincel = ctx.layer_painter(egui::LayerId::new(
             egui::Order::Foreground,
             egui::Id::new("controles-na-tela"),
@@ -302,7 +304,13 @@ impl Emulador {
         );
     }
 
-    /// A tela de mudar as peças de lugar: arrasta-se com o dedo, e grava ao soltar.
+    /// A tela de mudar as peças de lugar e de tamanho.
+    ///
+    /// Arrastar uma peça a muda de lugar; tocar nela, ou arrastá-la, a escolhe, e a barra do meio
+    /// cresce e encolhe a escolhida. Grava ao soltar e a cada passo do tamanho.
+    ///
+    /// O tamanho é por botões, e não por pinça: o egui recebe o dedo como um ponteiro só (ver
+    /// [`crate::entrada`]), e uma pinça pediria um caminho de toque à parte só para esta tela.
     pub(crate) fn edita_toque(&mut self, ctx: &egui::Context) {
         let tela = tamanho(ctx);
         let fundo = egui::Frame::NONE.fill(egui::Color32::from_rgb(16, 16, 20));
@@ -316,7 +324,7 @@ impl Emulador {
                 egui::Rect::from_center_size(area.center(), egui::vec2(altura * 4.0 / 3.0, altura));
             ui.painter().rect_filled(quadro, 0.0, egui::Color32::from_rgb(34, 38, 48));
             ui.painter().text(
-                quadro.center(),
+                quadro.center() - egui::vec2(0.0, 70.0),
                 egui::Align2::CENTER_CENTER,
                 self.catalogo.get("touch.editor.hint"),
                 egui::FontId::proportional(18.0),
@@ -324,20 +332,32 @@ impl Emulador {
             );
 
             let ajustes = &mut self.settings.controles_na_tela;
-            let resposta = ui.interact(area, egui::Id::new("editor-de-toque"), egui::Sense::drag());
-            let elementos = toque::monta(tela, ajustes.escala, &ajustes.posicoes);
+            let resposta =
+                ui.interact(area, egui::Id::new("editor-de-toque"), egui::Sense::click_and_drag());
+            let elementos =
+                toque::monta(tela, ajustes.escala, &ajustes.posicoes, &ajustes.tamanhos);
 
+            // Um toque escolhe a peça; no vazio, desfaz a escolha.
+            if resposta.clicked()
+                && let Some(dedo) = resposta.interact_pointer_pos()
+            {
+                self.escolhida = toque::debaixo(&elementos, [dedo.x, dedo.y]);
+            }
             if resposta.drag_started() {
                 // A peça é a que estava debaixo do dedo **quando ele encostou**: o arrasto só
                 // começa depois de alguns pontos de movimento, e aí o dedo já pode ter saído dela.
                 let origem = ctx.input(|i| i.pointer.press_origin());
                 self.arrastando = origem.and_then(|origem| {
                     let peca = toque::debaixo(&elementos, [origem.x, origem.y])?;
-                    let elemento = elementos.iter().find(|e| e.peca == peca)?;
+                    // O centro é o do grupo: pegar o 3 arrasta o losango inteiro.
+                    let [x, y] = toque::centro_do_grupo(&elementos, peca)?;
                     // Guarda onde, dentro da peça, o dedo pegou: sem isto ela pularia para
                     // centrar no dedo.
-                    Some((peca, egui::pos2(elemento.centro[0], elemento.centro[1]) - origem))
+                    Some((peca, egui::pos2(x, y) - origem))
                 });
+                if let Some((peca, _)) = self.arrastando {
+                    self.escolhida = Some(peca);
+                }
             }
             if resposta.dragged()
                 && let (Some((peca, desvio)), Some(dedo)) =
@@ -346,7 +366,7 @@ impl Emulador {
                 let centro = dedo + desvio;
                 ajustes
                     .posicoes
-                    .insert(peca.nome().to_string(), toque::fracao([centro.x, centro.y], tela));
+                    .insert(peca.chave().to_string(), toque::fracao([centro.x, centro.y], tela));
             }
             if resposta.drag_stopped() && self.arrastando.take().is_some() {
                 gravar = true;
@@ -354,39 +374,92 @@ impl Emulador {
 
             // No editor as peças aparecem mesmo com a opacidade lá embaixo: ninguém arrasta o que
             // não enxerga.
-            let elementos = toque::monta(tela, ajustes.escala, &ajustes.posicoes);
+            let elementos =
+                toque::monta(tela, ajustes.escala, &ajustes.posicoes, &ajustes.tamanhos);
             desenha(
                 ui.painter(),
                 &elementos,
                 0,
                 [0.0; 4],
                 ajustes.opacidade.max(70),
-                self.arrastando.map(|(peca, _)| peca),
+                self.escolhida,
             );
         });
 
-        // A barra fica numa área por cima do painel: assim os botões dela ganham do arrasto.
+        // A barra fica no meio, numa área por cima do painel: assim os botões dela ganham do
+        // arrasto. No meio porque é o único lugar que nenhuma peça ocupa de fábrica — em cima
+        // ela tapava o HOME, e no editor ele não podia ser pego.
         egui::Area::new(egui::Id::new("barra-do-editor"))
             .order(egui::Order::Foreground)
-            .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 12.0))
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
             .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    let restaurar = egui::Button::new(self.catalogo.get("touch.editor.reset"))
-                        .min_size(egui::vec2(0.0, ALVO));
-                    if ui.add(restaurar).clicked() {
-                        self.settings.controles_na_tela.posicoes.clear();
-                        gravar = true;
+                ui.vertical_centered(|ui| {
+                    if let Some(peca) = self.escolhida {
+                        gravar |= self.barra_de_tamanho(ui, peca);
+                        ui.add_space(8.0);
                     }
-                    let pronto = egui::Button::new(self.catalogo.get("touch.editor.done"))
-                        .min_size(egui::vec2(0.0, ALVO));
-                    if ui.add(pronto).clicked() {
-                        self.onde = Onde::Ajustes;
-                    }
+                    ui.horizontal(|ui| {
+                        let restaurar = egui::Button::new(self.catalogo.get("touch.editor.reset"))
+                            .min_size(egui::vec2(0.0, ALVO));
+                        if ui.add(restaurar).clicked() {
+                            let ajustes = &mut self.settings.controles_na_tela;
+                            ajustes.posicoes.clear();
+                            ajustes.tamanhos.clear();
+                            gravar = true;
+                        }
+                        let pronto = egui::Button::new(self.catalogo.get("touch.editor.done"))
+                            .min_size(egui::vec2(0.0, ALVO));
+                        if ui.add(pronto).clicked() {
+                            self.escolhida = None;
+                            self.onde = Onde::Ajustes;
+                        }
+                    });
                 });
             });
 
         if gravar {
             self.salva();
         }
+    }
+
+    /// "−  Direcional 120%  +": o tamanho da peça escolhida, em passos de 10%. Diz se mudou.
+    fn barra_de_tamanho(&mut self, ui: &mut egui::Ui, peca: Peca) -> bool {
+        const PASSO: u8 = 10;
+        let nome = match peca {
+            Peca::Direcional => self.catalogo.get("touch.piece.dpad"),
+            Peca::MancheEsquerdo => self.catalogo.get("touch.piece.lstick"),
+            Peca::MancheDireito => self.catalogo.get("touch.piece.rstick"),
+            Peca::B1 | Peca::B2 | Peca::B3 | Peca::B4 => self.catalogo.get("touch.piece.buttons"),
+            outra => outra.rotulo(),
+        }
+        .to_string();
+        let tamanhos = &mut self.settings.controles_na_tela.tamanhos;
+        let atual = tamanhos.get(peca.chave()).copied().unwrap_or(100);
+        let mut novo = atual;
+        ui.horizontal(|ui| {
+            let botao = |texto| egui::Button::new(texto).min_size(egui::vec2(ALVO, ALVO));
+            if ui
+                .add_enabled(atual > toque::TAMANHO_MINIMO, botao("−"))
+                .clicked()
+            {
+                novo = atual.saturating_sub(PASSO).max(toque::TAMANHO_MINIMO);
+            }
+            ui.label(egui::RichText::new(format!("{nome}  {atual}%")).strong());
+            if ui
+                .add_enabled(atual < toque::TAMANHO_MAXIMO, botao("+"))
+                .clicked()
+            {
+                novo = atual.saturating_add(PASSO).min(toque::TAMANHO_MAXIMO);
+            }
+        });
+        if novo == atual {
+            return false;
+        }
+        // O 100 não se grava: é o que a ausência já diz, e o arquivo fica só com o que mudou.
+        match novo {
+            100 => tamanhos.remove(peca.chave()),
+            _ => tamanhos.insert(peca.chave().to_string(), novo),
+        };
+        true
     }
 }
