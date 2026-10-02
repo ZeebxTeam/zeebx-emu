@@ -28,14 +28,41 @@ ApplicationWindow {
     // O jogo pedido na linha de comando, se houve: abre direto, sem passar pela lista.
     required property string jogoInicial
 
-    width: 960
-    height: 720
+    width: larguraGuardada > 0 ? larguraGuardada : 960
+    height: alturaGuardada > 0 ? alturaGuardada : 720
     minimumWidth: 480
     minimumHeight: 360
     title: "Zeebx"
 
+    // O tamanho em que a janela foi fechada é o tamanho em que ela abre. Chamadas de
+    // função não têm sinal de mudança: avaliam uma vez, na montagem, que é quando valem.
+    readonly property real larguraGuardada: biblioteca.larguraDaJanela()
+    readonly property real alturaGuardada: biblioteca.alturaDaJanela()
+
+    // E o contrário: arrasta, a janela guarda. Em tela cheia ou maximizada, o tamanho é o da
+    // tela, e não escolha do usuário — aí não se guarda.
+    function guardaTamanho() {
+        if (visibility === Window.Windowed)
+            biblioteca.guardaTamanhoDaJanela(width, height)
+    }
+
+    // Arrastar a borda passa por dezenas de tamanhos por segundo, e cada um escreveria o
+    // `settings.json` inteiro. A gravação espera a mão parar.
+    onWidthChanged: filaDaGravacao.restart()
+    onHeightChanged: filaDaGravacao.restart()
+
+    Timer {
+        id: filaDaGravacao
+        interval: 500
+        onTriggered: principal.guardaTamanho()
+    }
+
     // Fechar a biblioteca encerra tudo, com ou sem jogo aberto — como no egui.
-    onClosing: Qt.quit()
+    onClosing: {
+        filaDaGravacao.stop()
+        principal.guardaTamanho()
+        Qt.quit()
+    }
 
     Component.onCompleted: {
         aplicaModo()
