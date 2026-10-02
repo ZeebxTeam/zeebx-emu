@@ -34,6 +34,13 @@ impl Emulador {
             self.ultimo = Instant::now();
             let mut pad = self.pad;
             pad.buttons |= self.sobreposicao.botoes;
+            // O eixo da tela só vale onde o manche físico está parado: os dois juntos não se
+            // somam, porque meio curso de cada um não é um curso inteiro de nenhum.
+            for (eixo, toque) in pad.axes.iter_mut().zip(self.sobreposicao.eixos) {
+                if *eixo == 0 {
+                    *eixo = (toque * zeebx::input::AXIS_CURSO as f32).round() as i32;
+                }
+            }
             sessao.set_port_pad(0, pad);
             if sessao.step(passou, self.settings.graphics.speed_limit) == Step::Stopped {
                 let motivo = sessao.stopped_reason().unwrap_or_default();

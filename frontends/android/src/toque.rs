@@ -24,6 +24,15 @@ pub struct Sobreposicao {
     pub botoes: u32,
     /// O último aperto veio de um controle físico. No modo automático, isso esconde as peças.
     pub controle_fisico: bool,
+    /// O dedo que segura cada manche, pelo id que o Android dá a ele, na ordem de [`MANCHES`].
+    ///
+    /// Os botões não guardam estado — o que está apertado é só função de onde os dedos estão.
+    /// O manche guarda: o dedo que encostou nele é dele até levantar, ver
+    /// [`toque::pega_manche`]. E o id, e não a posição na lista, porque a posição de um dedo muda
+    /// quando outro levanta.
+    manches: [Option<i32>; 2],
+    /// Onde os manches estão, de `-1` a `1`, na ordem de [`zeebx::input::Pad::axes`].
+    pub eixos: [f32; 4],
     /// As peças como ficaram no último desenho.
     ///
     /// O toque usa estas, e não uma conta nova: o evento chega antes de o quadro ser desenhado, e
@@ -44,13 +53,15 @@ impl Sobreposicao {
     /// Chegou um aperto de controle físico: no modo automático, as peças saem da frente.
     pub fn viu_controle(&mut self) {
         self.controle_fisico = true;
-        self.botoes = 0;
+        self.solta();
     }
 
     /// Solta tudo. Para quando o toque deixa de ir para o jogo — a pergunta do "voltar" abriu, o
     /// aplicativo perdeu o foco — com um dedo ainda em cima de uma peça.
     pub fn solta(&mut self) {
         self.botoes = 0;
+        self.manches = [None; 2];
+        self.eixos = [0.0; 4];
     }
 
     /// Um evento de toque, com todos os dedos que estão na tela.
@@ -59,29 +70,71 @@ impl Sobreposicao {
         // avisa que quer jogar pela tela.
         self.controle_fisico = false;
 
-        // O dedo que está subindo ainda vem na lista deste evento. Ele sai da conta, senão o
-        // botão só soltaria no próximo movimento de outro dedo.
-        let subindo = match movimento.action() {
-            MotionAction::Up | MotionAction::PointerUp => Some(movimento.pointer_index()),
-            MotionAction::Cancel => {
-                self.botoes = 0;
-                return;
+        let acao = movimento.action();
+        if matches!(acao, MotionAction::Cancel) {
+            self.solta();
+            return;
+        }
+        let da_acao = movimento.pointer_index();
+
+        // Um dedo que acabou de encostar pode pegar um manche, se ninguém o segura ainda.
+        if matches!(acao, MotionAction::Down | MotionAction::PointerDown) {
+            let dedo = movimento.pointer_at_index(da_acao);
+            let ponto = [
+                dedo.axis_value(Axis::X) / pixels_por_ponto,
+                dedo.axis_value(Axis::Y) / pixels_por_ponto,
+            ];
+            if let Some(peca) = toque::pega_manche(&self.elementos, ponto)
+                && let Some(vaga) = MANCHES.iter().position(|&m| m == peca)
+                && self.manches[vaga].is_none()
+            {
+                self.manches[vaga] = Some(dedo.pointer_id());
             }
-            _ => None,
-        };
-        let dedos = movimento
-            .pointers()
-            .filter(|dedo| Some(dedo.pointer_index()) != subindo)
-            .filter(|dedo| dedo.tool_type() != ToolType::Palm)
-            .map(|dedo| {
-                [
-                    dedo.axis_value(Axis::X) / pixels_por_ponto,
-                    dedo.axis_value(Axis::Y) / pixels_por_ponto,
-                ]
-            });
-        self.botoes = toque::botoes(&self.elementos, dedos);
+        }
+
+        // O dedo que está subindo ainda vem na lista deste evento. Ele sai da conta, senão o
+        // botão só soltaria no próximo movimento de outro dedo, e solta o manche que segurava.
+        let subindo = matches!(acao, MotionAction::Up | MotionAction::PointerUp).then_some(da_acao);
+        self.eixos = [0.0; 4];
+        let mut livres = Vec::new();
+        for dedo in movimento.pointers() {
+            let id = dedo.pointer_id();
+            if Some(dedo.pointer_index()) == subindo {
+                for manche in &mut self.manches {
+                    if *manche == Some(id) {
+                        *manche = None;
+                    }
+                }
+                continue;
+            }
+            if dedo.tool_type() == ToolType::Palm {
+                continue;
+            }
+            let ponto = [
+                dedo.axis_value(Axis::X) / pixels_por_ponto,
+                dedo.axis_value(Axis::Y) / pixels_por_ponto,
+            ];
+            let Some(vaga) = self.manches.iter().position(|&m| m == Some(id)) else {
+                livres.push(ponto);
+                continue;
+            };
+            let peca = MANCHES[vaga];
+            if let (Some(elemento), Some([horizontal, vertical])) = (
+                self.elementos.iter().find(|e| e.peca == peca),
+                peca.eixos(),
+            ) {
+                let [x, y] = toque::manche(elemento, ponto);
+                self.eixos[horizontal] = x;
+                self.eixos[vertical] = y;
+            }
+        }
+        // O dedo de um manche não aperta botão, nem quando passa por cima de um.
+        self.botoes = toque::botoes(&self.elementos, livres);
     }
 }
+
+/// Os manches, na ordem das vagas de [`Sobreposicao::manches`].
+const MANCHES: [Peca; 2] = [Peca::MancheEsquerdo, Peca::MancheDireito];
 
 /// O tamanho da tela em pontos, no formato do núcleo.
 fn tamanho(ctx: &egui::Context) -> [f32; 2] {
@@ -89,12 +142,13 @@ fn tamanho(ctx: &egui::Context) -> [f32; 2] {
     [tela.width(), tela.height()]
 }
 
-/// Desenha as peças. `apertados` acende as que estão apertadas; `destaque` é a que o editor
-/// está arrastando.
+/// Desenha as peças. `apertados` acende as que estão apertadas, `eixos` põe a bolinha de cada
+/// manche no lugar; `destaque` é a que o editor está arrastando.
 fn desenha(
     pincel: &egui::Painter,
     elementos: &[Elemento],
     apertados: u32,
+    eixos: [f32; 4],
     opacidade: u8,
     destaque: Option<Peca>,
 ) {
@@ -114,6 +168,23 @@ fn desenha(
         };
 
         match elemento.peca {
+            Peca::MancheEsquerdo | Peca::MancheDireito => {
+                // A base e a bolinha. Encostada na borda, a bolinha ainda fica inteira dentro da
+                // base: o deslocamento máximo é o raio da base menos o dela.
+                let [horizontal, vertical] = elemento.peca.eixos().unwrap_or([0, 1]);
+                let deslocamento = egui::vec2(eixos[horizontal], eixos[vertical]);
+                let bolinha = mx * 0.45;
+                let em_uso = deslocamento != egui::Vec2::ZERO;
+                pincel.circle_filled(centro, mx, fundo);
+                pincel.circle_stroke(centro, mx, realce);
+                let cor = match em_uso {
+                    true => aceso,
+                    false => egui::Color32::from_rgba_unmultiplied(200, 200, 210, alfa / 2),
+                };
+                let onde = centro + deslocamento * (mx - bolinha);
+                pincel.circle_filled(onde, bolinha, cor);
+                pincel.circle_stroke(onde, bolinha, borda);
+            }
             Peca::Direcional => {
                 // Uma cruz só, como a do controle, com cada braço aceso por si: as diagonais
                 // acendem dois.
@@ -225,6 +296,7 @@ impl Emulador {
             &pincel,
             &self.sobreposicao.elementos,
             self.sobreposicao.botoes,
+            self.sobreposicao.eixos,
             ajustes.opacidade,
             None,
         );
@@ -287,6 +359,7 @@ impl Emulador {
                 ui.painter(),
                 &elementos,
                 0,
+                [0.0; 4],
                 ajustes.opacidade.max(70),
                 self.arrastando.map(|(peca, _)| peca),
             );

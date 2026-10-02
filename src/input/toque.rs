@@ -15,6 +15,10 @@ use super::DPAD;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Peca {
     Direcional,
+    /// O manche esquerdo, nos eixos `X` e `Y`.
+    MancheEsquerdo,
+    /// O manche direito, nos eixos `Z` e `RZ`.
+    MancheDireito,
     B1,
     B2,
     B3,
@@ -25,8 +29,10 @@ pub enum Peca {
 }
 
 impl Peca {
-    pub const TODAS: [Self; 8] = [
+    pub const TODAS: [Self; 10] = [
         Self::Direcional,
+        Self::MancheEsquerdo,
+        Self::MancheDireito,
         Self::B1,
         Self::B2,
         Self::B3,
@@ -40,6 +46,8 @@ impl Peca {
     pub fn nome(self) -> &'static str {
         match self {
             Self::Direcional => "dpad",
+            Self::MancheEsquerdo => "lstick",
+            Self::MancheDireito => "rstick",
             Self::B1 => "b1",
             Self::B2 => "b2",
             Self::B3 => "b3",
@@ -53,7 +61,7 @@ impl Peca {
     /// O que vai escrito na peça — o mesmo que está impresso no controle do Zeebo.
     pub fn rotulo(self) -> &'static str {
         match self {
-            Self::Direcional => "",
+            Self::Direcional | Self::MancheEsquerdo | Self::MancheDireito => "",
             Self::B1 => "1",
             Self::B2 => "2",
             Self::B3 => "3",
@@ -65,13 +73,13 @@ impl Peca {
     }
 
     /// O botão do [`super::Pad`] que a peça aperta. O direcional aperta quatro, e por isso não
-    /// tem um só.
+    /// tem um só; os manches não apertam botão nenhum.
     ///
     /// Os índices são os mesmos que o frontend do Android dá ao controle físico: o ZL e o ZR são
     /// os "superiores" de cada lado, e o HOME ocupa o `Back` — ver [`super::BUTTON_UIDS`].
     pub fn indice(self) -> Option<usize> {
         match self {
-            Self::Direcional => None,
+            Self::Direcional | Self::MancheEsquerdo | Self::MancheDireito => None,
             Self::B1 => Some(0),
             Self::B2 => Some(1),
             Self::B3 => Some(2),
@@ -79,6 +87,16 @@ impl Peca {
             Self::Zl => Some(6),
             Self::Zr => Some(4),
             Self::Home => Some(9),
+        }
+    }
+
+    /// Os dois eixos do [`super::Pad`] que o manche move, horizontal e vertical. Na ordem de
+    /// [`super::Pad::axes`]: `X`, `Y`, `Z`, `RZ`.
+    pub fn eixos(self) -> Option<[usize; 2]> {
+        match self {
+            Self::MancheEsquerdo => Some([0, 1]),
+            Self::MancheDireito => Some([2, 3]),
+            _ => None,
         }
     }
 
@@ -94,6 +112,7 @@ impl Peca {
     fn meio(self) -> [f32; 2] {
         match self {
             Self::Direcional => [72.0, 72.0],
+            Self::MancheEsquerdo | Self::MancheDireito => [50.0, 50.0],
             Self::B1 | Self::B2 | Self::B3 | Self::B4 => [30.0, 30.0],
             Self::Zl | Self::Zr => [44.0, 22.0],
             Self::Home => [30.0, 18.0],
@@ -107,6 +126,9 @@ const MARGEM: f32 = 28.0;
 /// A distância do centro do losango de botões até o centro de cada um.
 const RAIO_DO_LOSANGO: f32 = 62.0;
 
+/// O vão entre peças vizinhas no lugar de fábrica.
+const VAO: f32 = 16.0;
+
 /// Quanto além do desenho o toque ainda vale. O polegar escorrega durante o jogo, e um botão que
 /// só obedece dentro do círculo pintado parece falhar.
 const FOLGA: f32 = 1.15;
@@ -117,6 +139,10 @@ const FOLGA_DO_DIRECIONAL: f32 = 1.35;
 /// Perto do centro do direcional nenhuma direção vale. Sem isto, o polegar parado em cima dele
 /// trocaria de direção a cada tremida.
 const CENTRO_MORTO: f32 = 0.2;
+
+/// Abaixo disto, em fração do raio, o manche está no centro. É a mesma zona morta do manche
+/// físico: o polegar parado em cima dele nunca está parado de verdade.
+const ZONA_MORTA_DO_MANCHE: f32 = 0.12;
 
 /// `sen(22,5°)`: com ele cada direção vale num setor de 135°, e as quatro juntas cortam o círculo
 /// em oito fatias de 45° — quatro retas e quatro diagonais, como num direcional de verdade.
@@ -143,8 +169,21 @@ fn lugar_de_fabrica(peca: Peca, tela: [f32; 2], escala: f32) -> [f32; 2] {
         altura - MARGEM - (RAIO_DO_LOSANGO + 30.0) * escala,
     ];
     let passo = RAIO_DO_LOSANGO * escala;
+    let direcional = Peca::Direcional.meio()[0] * escala;
+    let botao = Peca::B2.meio()[0] * escala;
     match peca {
         Peca::Direcional => [MARGEM + meio[0], altura - MARGEM - meio[1]],
+        // Os manches embaixo, para dentro do direcional e do losango, como no controle: o
+        // direcional e os botões ficam no alcance natural do polegar, e o manche um pouco abaixo
+        // e para o centro.
+        Peca::MancheEsquerdo => [
+            MARGEM + 2.0 * direcional + VAO * escala + meio[0],
+            altura - MARGEM - meio[1],
+        ],
+        Peca::MancheDireito => [
+            losango[0] - passo - botao - VAO * escala - meio[0],
+            altura - MARGEM - meio[1],
+        ],
         // A posição dos botões é a do controle: o 1 embaixo, o 2 à esquerda, o 3 em cima e o 4
         // à direita (issue #41).
         Peca::B1 => [losango[0], losango[1] + passo],
@@ -153,7 +192,8 @@ fn lugar_de_fabrica(peca: Peca, tela: [f32; 2], escala: f32) -> [f32; 2] {
         Peca::B4 => [losango[0] + passo, losango[1]],
         Peca::Zl => [MARGEM + meio[0], MARGEM + meio[1]],
         Peca::Zr => [largura - MARGEM - meio[0], MARGEM + meio[1]],
-        Peca::Home => [largura / 2.0, altura - MARGEM / 2.0 - meio[1]],
+        // Em cima, no meio: embaixo é onde os manches moram.
+        Peca::Home => [largura / 2.0, MARGEM / 2.0 + meio[1]],
     }
 }
 
@@ -222,6 +262,7 @@ fn aperta(elemento: &Elemento, dedo: [f32; 2]) -> u32 {
     let dy = dedo[1] - elemento.centro[1];
     let [mx, my] = elemento.meio;
     match elemento.peca {
+        Peca::MancheEsquerdo | Peca::MancheDireito => 0,
         Peca::Direcional => {
             let distancia = dx.hypot(dy);
             if distancia > mx * FOLGA_DO_DIRECIONAL || distancia < mx * CENTRO_MORTO {
@@ -252,6 +293,36 @@ fn aperta(elemento: &Elemento, dedo: [f32; 2]) -> u32 {
             }
         }
     }
+}
+
+/// O manche em que um dedo que acabou de encostar pegou, se pegou em algum.
+///
+/// É só na descida que se pergunta: daí em diante o dedo é do manche até levantar, saia ele do
+/// círculo ou não. Sem isso, empurrar com força até a borda faria o dedo sair da peça e o manche
+/// voltar ao centro no meio da curva.
+pub fn pega_manche(elementos: &[Elemento], dedo: [f32; 2]) -> Option<Peca> {
+    elementos.iter().find_map(|elemento| {
+        elemento.peca.eixos()?;
+        let dx = dedo[0] - elemento.centro[0];
+        let dy = dedo[1] - elemento.centro[1];
+        (dx.hypot(dy) <= elemento.meio[0] * FOLGA).then_some(elemento.peca)
+    })
+}
+
+/// Onde o dedo põe o manche: horizontal e vertical, de `-1` a `1`, com o `y` crescendo para
+/// baixo — que é também o sentido do eixo interno do [`super::Pad`], onde cima é negativo.
+///
+/// Fora do círculo, o manche fica na borda, na direção do dedo.
+pub fn manche(elemento: &Elemento, dedo: [f32; 2]) -> [f32; 2] {
+    let raio = elemento.meio[0].max(1.0);
+    let x = (dedo[0] - elemento.centro[0]) / raio;
+    let y = (dedo[1] - elemento.centro[1]) / raio;
+    let tamanho = x.hypot(y);
+    if tamanho < ZONA_MORTA_DO_MANCHE {
+        return [0.0, 0.0];
+    }
+    let corte = tamanho.max(1.0);
+    [x / corte, y / corte]
 }
 
 /// A peça que está debaixo de um ponto, para o editor saber qual o dedo pegou. Sem folga: no
@@ -339,6 +410,32 @@ mod tests {
             botoes(&elementos, [[x, y - 50.0], b1]),
             bit(DPAD[0]) | bit(0)
         );
+    }
+
+    #[test]
+    fn o_manche_segue_o_dedo_e_para_na_borda() {
+        let elementos = fabrica();
+        let esquerdo = *elementos.iter().find(|e| e.peca == Peca::MancheEsquerdo).unwrap();
+        let [x, y] = esquerdo.centro;
+        assert_eq!(manche(&esquerdo, [x, y]), [0.0, 0.0]);
+        assert_eq!(manche(&esquerdo, [x + 25.0, y]), [0.5, 0.0]);
+        // Cima é negativo, como no eixo do console.
+        assert_eq!(manche(&esquerdo, [x, y - 50.0]), [0.0, -1.0]);
+        assert_eq!(manche(&esquerdo, [x, y + 300.0]), [0.0, 1.0]);
+        let [dx, dy] = manche(&esquerdo, [x + 100.0, y - 100.0]);
+        assert!((dx.hypot(dy) - 1.0).abs() < 1e-5 && dx > 0.0 && dy < 0.0);
+        // Tremida no centro não move nada.
+        assert_eq!(manche(&esquerdo, [x + 4.0, y]), [0.0, 0.0]);
+    }
+
+    #[test]
+    fn so_o_manche_pega_o_dedo_e_ele_nao_aperta_botao() {
+        let elementos = fabrica();
+        let direito = centro(&elementos, Peca::MancheDireito);
+        assert_eq!(pega_manche(&elementos, direito), Some(Peca::MancheDireito));
+        assert_eq!(pega_manche(&elementos, centro(&elementos, Peca::B1)), None);
+        assert_eq!(botoes(&elementos, [direito]), 0);
+        assert_eq!(Peca::MancheDireito.eixos(), Some([2, 3]));
     }
 
     #[test]
