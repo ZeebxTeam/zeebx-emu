@@ -32,6 +32,10 @@ impl Emulador {
             let passou = self.ultimo.elapsed().min(FATIA_MAXIMA);
             self.ultimo = Instant::now();
             sessao.set_port_pad(0, self.pad);
+            // O `egui` pintou no mesmo contexto desde o passo anterior, e o espelho de estado
+            // da placa não sabe: sem avisar, o jogo desenharia com o viewport, a tesoura e a
+            // mistura que a janela deixou. Ver `Session::retoma_o_contexto`.
+            sessao.retoma_o_contexto();
             if sessao.step(passou, self.settings.graphics.speed_limit) == Step::Stopped {
                 let motivo = sessao.stopped_reason().unwrap_or_default();
                 let normal = sessao.saiu_normalmente();
