@@ -235,6 +235,11 @@ impl Console {
         // Uma tela intermediária à espera vai à tela primeiro, e o jogo não anda nesta volta.
         self.adiantado = false;
         if !sessao.mostra_quadro_intermediario() {
+            // Com janela, ela pintou no mesmo contexto desde a volta anterior, e o espelho de
+            // estado da placa não sabe: sem avisar, o jogo desenharia com o viewport, a tesoura
+            // e a mistura que ela deixou. Sem janela o contexto é próprio e isto não faz nada.
+            // Ver `Session::retoma_o_contexto`.
+            sessao.retoma_o_contexto();
             match sessao.step(fatia, limite) {
                 Step::Stopped => return Fim::Acabou(sessao.stopped_reason().unwrap_or_default()),
                 Step::Ahead => self.adiantado = true,
