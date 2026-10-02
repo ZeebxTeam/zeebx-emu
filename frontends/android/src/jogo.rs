@@ -32,7 +32,7 @@ impl Emulador {
             // quanto o jogo precisa emular para acompanhar o relógio do mundo.
             let passou = self.ultimo.elapsed().min(FATIA_MAXIMA);
             self.ultimo = Instant::now();
-            let mut pad = self.pad;
+let mut pad = self.pad;
             pad.buttons |= self.sobreposicao.botoes;
             // O eixo da tela só vale onde o manche físico está parado: os dois juntos não se
             // somam, porque meio curso de cada um não é um curso inteiro de nenhum.
@@ -42,6 +42,10 @@ impl Emulador {
                 }
             }
             sessao.set_port_pad(0, pad);
+            // O `egui` pintou no mesmo contexto desde o passo anterior, e o espelho de estado
+            // da placa não sabe: sem avisar, o jogo desenharia com o viewport, a tesoura e a
+            // mistura que a janela deixou. Ver `Session::retoma_o_contexto`.
+            sessao.retoma_o_contexto();
             if sessao.step(passou, self.settings.graphics.speed_limit) == Step::Stopped {
                 let motivo = sessao.stopped_reason().unwrap_or_default();
                 let normal = sessao.saiu_normalmente();
