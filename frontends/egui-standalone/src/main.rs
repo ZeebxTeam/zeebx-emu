@@ -541,18 +541,17 @@ fn window_icon() -> Option<zeebx::eframe::egui::IconData> {
 }
 
 fn launch() -> ExitCode {
+    // O tamanho guardado vale no modo janela; maximizada ou em tela cheia, a tela manda.
+    let graficos = ui::settings::Settings::load().graphics;
     let mut viewport = zeebx::eframe::egui::ViewportBuilder::default()
-        .with_inner_size([960.0, 720.0])
+        .with_inner_size(graficos.tamanho_da_janela.unwrap_or([960.0, 720.0]))
         .with_min_inner_size([480.0, 360.0])
         .with_title("Zeebx")
         // No Wayland não existe ícone em pixels: o compositor casa este `app_id` com o
         // `zeebx.desktop` instalado e tira o ícone de lá. Sem ele, a janela fica com o
         // genérico do sistema. Precisa ser igual ao nome do arquivo `.desktop`.
         .with_app_id(APP_ID);
-    viewport = ui::settings::Settings::load()
-        .graphics
-        .janela
-        .no_construtor(viewport);
+    viewport = graficos.janela.no_construtor(viewport);
     if let Some(icon) = window_icon() {
         viewport = viewport.with_icon(icon);
     }
