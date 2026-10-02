@@ -18,6 +18,8 @@ use android_activity::input::{
 
 use zeebx::input::{self, AXIS_CURSO, Pad};
 
+use crate::toque::Sobreposicao;
+
 /// Abaixo disto o manche está parado. O manche de um aparelho de mão nunca volta exatamente ao
 /// centro, e sem zona morta o personagem anda sozinho.
 const ZONA_MORTA: f32 = 0.12;
@@ -81,15 +83,28 @@ impl Entrada {
 
     /// Recebe um evento da fila nativa e o distribui: o controle vai para o [`Pad`], o dedo e as
     /// teclas de navegação vão para a lista do egui.
-    pub fn recebe(&mut self, evento: &InputEvent, pad: &mut Pad) {
+    ///
+    /// Com a `sobreposicao` presente — um jogo na tela, e os controles na tela ligados —, o dedo
+    /// vai para ela, e não para o egui.
+    pub fn recebe(
+        &mut self,
+        evento: &InputEvent,
+        pad: &mut Pad,
+        sobreposicao: Option<&mut Sobreposicao>,
+    ) {
         match evento {
-            InputEvent::KeyEvent(tecla) => self.tecla(tecla, pad),
-            InputEvent::MotionEvent(movimento) => self.movimento(movimento, pad),
+            InputEvent::KeyEvent(tecla) => self.tecla(tecla, pad, sobreposicao),
+            InputEvent::MotionEvent(movimento) => self.movimento(movimento, pad, sobreposicao),
             _ => {}
         }
     }
 
-    fn tecla(&mut self, tecla: &android_activity::input::KeyEvent, pad: &mut Pad) {
+    fn tecla(
+        &mut self,
+        tecla: &android_activity::input::KeyEvent,
+        pad: &mut Pad,
+        sobreposicao: Option<&mut Sobreposicao>,
+    ) {
         let apertada = match tecla.action() {
             KeyAction::Down => true,
             KeyAction::Up => false,
@@ -136,6 +151,9 @@ impl Entrada {
         };
         if let Some(indice) = botao {
             pad.press(indice, apertada);
+            if let Some(sobreposicao) = sobreposicao {
+                sobreposicao.viu_controle();
+            }
         }
 
         // O mesmo botão também navega a interface: num aparelho de mão a biblioteca é
@@ -194,13 +212,29 @@ impl Entrada {
         });
     }
 
-    fn movimento(&mut self, movimento: &android_activity::input::MotionEvent, pad: &mut Pad) {
+    fn movimento(
+        &mut self,
+        movimento: &android_activity::input::MotionEvent,
+        pad: &mut Pad,
+        sobreposicao: Option<&mut Sobreposicao>,
+    ) {
         let fonte = movimento.source();
         if matches!(fonte, Source::Joystick | Source::Gamepad | Source::Dpad) {
             self.manche(movimento, pad);
+            // Só conta como controle físico o manche que saiu do centro: há controle que manda
+            // eixo parado sem ninguém mexer, e isso esconderia as peças de quem joga pela tela.
+            if let Some(sobreposicao) = sobreposicao
+                && (pad.axes.iter().any(|eixo| *eixo != 0)
+                    || input::DPAD.iter().any(|&direcao| pad.is_down(direcao)))
+            {
+                sobreposicao.viu_controle();
+            }
             return;
         }
-        self.toque(movimento);
+        match sobreposicao {
+            Some(sobreposicao) => sobreposicao.toque(movimento, self.pixels_por_ponto),
+            None => self.toque(movimento),
+        }
     }
 
     /// Os eixos do manche e o direcional que alguns controles reportam como "chapéu".

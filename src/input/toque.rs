@@ -1,0 +1,377 @@
+//! Os controles desenhados na tela de um celular: onde fica cada peça e o que o dedo aperta.
+//!
+//! Mora no núcleo, e não no frontend do Android, por duas razões. O pacote do Android só compila
+//! para o Android, e a conta de qual botão o dedo acertou é a parte que vale testar; e o iOS vai
+//! precisar da mesma conta. O desenho e a leitura do evento de toque ficam com cada frontend.
+//!
+//! Tudo aqui é em **pontos** da interface, com a origem no canto de cima à esquerda e o `y`
+//! crescendo para baixo — o mesmo espaço do egui.
+
+use std::collections::BTreeMap;
+
+use super::DPAD;
+
+/// Uma peça da sobreposição.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Peca {
+    Direcional,
+    B1,
+    B2,
+    B3,
+    B4,
+    Zl,
+    Zr,
+    Home,
+}
+
+impl Peca {
+    pub const TODAS: [Self; 8] = [
+        Self::Direcional,
+        Self::B1,
+        Self::B2,
+        Self::B3,
+        Self::B4,
+        Self::Zl,
+        Self::Zr,
+        Self::Home,
+    ];
+
+    /// A chave da peça nas posições gravadas. Não muda nunca: é o que está no `settings.json`.
+    pub fn nome(self) -> &'static str {
+        match self {
+            Self::Direcional => "dpad",
+            Self::B1 => "b1",
+            Self::B2 => "b2",
+            Self::B3 => "b3",
+            Self::B4 => "b4",
+            Self::Zl => "zl",
+            Self::Zr => "zr",
+            Self::Home => "home",
+        }
+    }
+
+    /// O que vai escrito na peça — o mesmo que está impresso no controle do Zeebo.
+    pub fn rotulo(self) -> &'static str {
+        match self {
+            Self::Direcional => "",
+            Self::B1 => "1",
+            Self::B2 => "2",
+            Self::B3 => "3",
+            Self::B4 => "4",
+            Self::Zl => "ZL",
+            Self::Zr => "ZR",
+            Self::Home => "HOME",
+        }
+    }
+
+    /// O botão do [`super::Pad`] que a peça aperta. O direcional aperta quatro, e por isso não
+    /// tem um só.
+    ///
+    /// Os índices são os mesmos que o frontend do Android dá ao controle físico: o ZL e o ZR são
+    /// os "superiores" de cada lado, e o HOME ocupa o `Back` — ver [`super::BUTTON_UIDS`].
+    pub fn indice(self) -> Option<usize> {
+        match self {
+            Self::Direcional => None,
+            Self::B1 => Some(0),
+            Self::B2 => Some(1),
+            Self::B3 => Some(2),
+            Self::B4 => Some(3),
+            Self::Zl => Some(6),
+            Self::Zr => Some(4),
+            Self::Home => Some(9),
+        }
+    }
+
+    /// Redonda ou pílula. Os gatilhos são pílulas, como no controle.
+    pub fn redonda(self) -> bool {
+        !matches!(self, Self::Zl | Self::Zr)
+    }
+
+    /// Metade da largura e da altura, em pontos, no tamanho de fábrica.
+    ///
+    /// Os botões de face têm 60 pontos de diâmetro, acima dos 48 que o Android pede para um alvo
+    /// de toque: no jogo o polegar não olha para onde vai.
+    fn meio(self) -> [f32; 2] {
+        match self {
+            Self::Direcional => [72.0, 72.0],
+            Self::B1 | Self::B2 | Self::B3 | Self::B4 => [30.0, 30.0],
+            Self::Zl | Self::Zr => [44.0, 22.0],
+            Self::Home => [30.0, 18.0],
+        }
+    }
+}
+
+/// Quanto da borda fica livre em volta das peças, no lugar de fábrica.
+const MARGEM: f32 = 28.0;
+
+/// A distância do centro do losango de botões até o centro de cada um.
+const RAIO_DO_LOSANGO: f32 = 62.0;
+
+/// Quanto além do desenho o toque ainda vale. O polegar escorrega durante o jogo, e um botão que
+/// só obedece dentro do círculo pintado parece falhar.
+const FOLGA: f32 = 1.15;
+
+/// No direcional a folga é maior: é a peça que o dedo segura arrastando.
+const FOLGA_DO_DIRECIONAL: f32 = 1.35;
+
+/// Perto do centro do direcional nenhuma direção vale. Sem isto, o polegar parado em cima dele
+/// trocaria de direção a cada tremida.
+const CENTRO_MORTO: f32 = 0.2;
+
+/// `sen(22,5°)`: com ele cada direção vale num setor de 135°, e as quatro juntas cortam o círculo
+/// em oito fatias de 45° — quatro retas e quatro diagonais, como num direcional de verdade.
+const LIMIAR_DA_DIAGONAL: f32 = 0.382_683_43;
+
+/// Uma peça posta na tela.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Elemento {
+    pub peca: Peca,
+    pub centro: [f32; 2],
+    /// Metade da largura e da altura, já na escala escolhida.
+    pub meio: [f32; 2],
+}
+
+/// Onde cada peça fica de fábrica, em pontos, numa tela do tamanho dado.
+///
+/// O lugar de fábrica é dito **a partir das bordas**, e não em fração da tela: o losango dos
+/// botões precisa continuar um losango num celular comprido e num tablet quase quadrado.
+fn lugar_de_fabrica(peca: Peca, tela: [f32; 2], escala: f32) -> [f32; 2] {
+    let [largura, altura] = tela;
+    let meio = peca.meio().map(|v| v * escala);
+    let losango = [
+        largura - MARGEM - (RAIO_DO_LOSANGO + 30.0) * escala,
+        altura - MARGEM - (RAIO_DO_LOSANGO + 30.0) * escala,
+    ];
+    let passo = RAIO_DO_LOSANGO * escala;
+    match peca {
+        Peca::Direcional => [MARGEM + meio[0], altura - MARGEM - meio[1]],
+        // A posição dos botões é a do controle: o 1 embaixo, o 2 à esquerda, o 3 em cima e o 4
+        // à direita (issue #41).
+        Peca::B1 => [losango[0], losango[1] + passo],
+        Peca::B2 => [losango[0] - passo, losango[1]],
+        Peca::B3 => [losango[0], losango[1] - passo],
+        Peca::B4 => [losango[0] + passo, losango[1]],
+        Peca::Zl => [MARGEM + meio[0], MARGEM + meio[1]],
+        Peca::Zr => [largura - MARGEM - meio[0], MARGEM + meio[1]],
+        Peca::Home => [largura / 2.0, altura - MARGEM / 2.0 - meio[1]],
+    }
+}
+
+/// Põe as peças numa tela do tamanho dado.
+///
+/// `escala` é em porcento do tamanho de fábrica. `posicoes` é o que o usuário arrastou, pelo
+/// [`Peca::nome`], em fração da tela; a peça que não está ali fica no lugar de fábrica. Qualquer
+/// que seja a posição gravada, a peça termina inteira dentro da tela: um arquivo feito num tablet
+/// e aberto num celular não pode deixar um botão para fora.
+pub fn monta(tela: [f32; 2], escala: u8, posicoes: &BTreeMap<String, [f32; 2]>) -> Vec<Elemento> {
+    let escala = f32::from(escala.max(1)) / 100.0;
+    Peca::TODAS
+        .iter()
+        .map(|&peca| {
+            let meio = peca.meio().map(|v| v * escala);
+            let centro = match posicoes.get(peca.nome()) {
+                Some(&[fx, fy]) => [fx * tela[0], fy * tela[1]],
+                None => lugar_de_fabrica(peca, tela, escala),
+            };
+            Elemento {
+                peca,
+                centro: [
+                    prende(centro[0], meio[0], tela[0]),
+                    prende(centro[1], meio[1], tela[1]),
+                ],
+                meio,
+            }
+        })
+        .collect()
+}
+
+/// Prende uma coordenada para a peça caber; se a tela for menor que a peça, ela fica no meio.
+fn prende(valor: f32, meio: f32, limite: f32) -> f32 {
+    match limite > 2.0 * meio {
+        true => valor.clamp(meio, limite - meio),
+        false => limite / 2.0,
+    }
+}
+
+/// O inverso de [`monta`] para uma peça: de um centro em pontos à fração que se grava.
+pub fn fracao(centro: [f32; 2], tela: [f32; 2]) -> [f32; 2] {
+    [
+        (centro[0] / tela[0].max(1.0)).clamp(0.0, 1.0),
+        (centro[1] / tela[1].max(1.0)).clamp(0.0, 1.0),
+    ]
+}
+
+/// Os botões que os dedos apertam, um bit por índice do [`super::Pad`].
+///
+/// Não guarda estado entre chamadas: o Android manda, em todo evento de toque, a posição de
+/// todos os dedos na tela, e o que está apertado é só função de onde eles estão. Assim o dedo que
+/// escorrega de um botão para o vizinho troca o aperto sem precisar levantar.
+pub fn botoes(elementos: &[Elemento], dedos: impl IntoIterator<Item = [f32; 2]>) -> u32 {
+    let mut bits = 0;
+    for dedo in dedos {
+        for elemento in elementos {
+            bits |= aperta(elemento, dedo);
+        }
+    }
+    bits
+}
+
+/// Uma peça e um dedo: o que ele aperta nela.
+fn aperta(elemento: &Elemento, dedo: [f32; 2]) -> u32 {
+    let dx = dedo[0] - elemento.centro[0];
+    let dy = dedo[1] - elemento.centro[1];
+    let [mx, my] = elemento.meio;
+    match elemento.peca {
+        Peca::Direcional => {
+            let distancia = dx.hypot(dy);
+            if distancia > mx * FOLGA_DO_DIRECIONAL || distancia < mx * CENTRO_MORTO {
+                return 0;
+            }
+            let limite = distancia * LIMIAR_DA_DIAGONAL;
+            let [cima, baixo, esquerda, direita] = DPAD;
+            [
+                (dy < -limite, cima),
+                (dy > limite, baixo),
+                (dx < -limite, esquerda),
+                (dx > limite, direita),
+            ]
+            .into_iter()
+            .filter(|(vale, _)| *vale)
+            .fold(0, |bits, (_, indice)| bits | 1 << indice)
+        }
+        peca => {
+            let dentro = match peca.redonda() {
+                // Uma elipse, que é o círculo quando os dois meios são iguais — o HOME é mais
+                // largo que alto.
+                true => (dx / (mx * FOLGA)).powi(2) + (dy / (my * FOLGA)).powi(2) <= 1.0,
+                false => dx.abs() <= mx * FOLGA && dy.abs() <= my * FOLGA,
+            };
+            match (dentro, peca.indice()) {
+                (true, Some(indice)) => 1 << indice,
+                _ => 0,
+            }
+        }
+    }
+}
+
+/// A peça que está debaixo de um ponto, para o editor saber qual o dedo pegou. Sem folga: no
+/// editor ninguém está jogando, e a folga faria pegar a peça vizinha.
+pub fn debaixo(elementos: &[Elemento], ponto: [f32; 2]) -> Option<Peca> {
+    // De trás para a frente: quem foi desenhado por último está por cima.
+    elementos.iter().rev().find_map(|elemento| {
+        let dx = (ponto[0] - elemento.centro[0]).abs();
+        let dy = (ponto[1] - elemento.centro[1]).abs();
+        (dx <= elemento.meio[0] && dy <= elemento.meio[1]).then_some(elemento.peca)
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Um celular comum deitado: 20:9, em pontos.
+    const TELA: [f32; 2] = [915.0, 412.0];
+
+    fn fabrica() -> Vec<Elemento> {
+        monta(TELA, 100, &BTreeMap::new())
+    }
+
+    fn centro(elementos: &[Elemento], peca: Peca) -> [f32; 2] {
+        elementos.iter().find(|e| e.peca == peca).unwrap().centro
+    }
+
+    fn bit(indice: usize) -> u32 {
+        1 << indice
+    }
+
+    #[test]
+    fn cada_botao_aperta_o_seu_indice() {
+        let elementos = fabrica();
+        for peca in Peca::TODAS {
+            let Some(indice) = peca.indice() else { continue };
+            assert_eq!(
+                botoes(&elementos, [centro(&elementos, peca)]),
+                bit(indice),
+                "{peca:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn as_pecas_de_fabrica_cabem_e_nao_se_tocam() {
+        for tela in [TELA, [1024.0, 768.0], [640.0, 360.0]] {
+            let elementos = monta(tela, 100, &BTreeMap::new());
+            for (i, a) in elementos.iter().enumerate() {
+                assert!(a.centro[0] - a.meio[0] >= 0.0 && a.centro[0] + a.meio[0] <= tela[0]);
+                assert!(a.centro[1] - a.meio[1] >= 0.0 && a.centro[1] + a.meio[1] <= tela[1]);
+                for b in &elementos[i + 1..] {
+                    let separadas = (a.centro[0] - b.centro[0]).abs() >= a.meio[0] + b.meio[0]
+                        || (a.centro[1] - b.centro[1]).abs() >= a.meio[1] + b.meio[1];
+                    assert!(separadas, "{:?} e {:?} em {tela:?}", a.peca, b.peca);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn o_direcional_tem_oito_direcoes_e_um_centro_morto() {
+        let elementos = fabrica();
+        let [x, y] = centro(&elementos, Peca::Direcional);
+        let [cima, baixo, esquerda, direita] = DPAD;
+        assert_eq!(botoes(&elementos, [[x, y]]), 0);
+        assert_eq!(botoes(&elementos, [[x, y - 50.0]]), bit(cima));
+        assert_eq!(botoes(&elementos, [[x - 50.0, y]]), bit(esquerda));
+        assert_eq!(botoes(&elementos, [[x + 35.0, y + 35.0]]), bit(baixo) | bit(direita));
+        // A 20° da horizontal ainda é reta: a diagonal só começa nos 22,5°.
+        let (s, c) = 20f32.to_radians().sin_cos();
+        assert_eq!(botoes(&elementos, [[x + 50.0 * c, y - 50.0 * s]]), bit(direita));
+        // Fora do desenho, mas dentro da folga, ainda vale.
+        assert_eq!(botoes(&elementos, [[x, y + 90.0]]), bit(baixo));
+        assert_eq!(botoes(&elementos, [[x, y + 110.0]]), 0);
+    }
+
+    #[test]
+    fn dois_dedos_somam() {
+        let elementos = fabrica();
+        let [x, y] = centro(&elementos, Peca::Direcional);
+        let b1 = centro(&elementos, Peca::B1);
+        assert_eq!(
+            botoes(&elementos, [[x, y - 50.0], b1]),
+            bit(DPAD[0]) | bit(0)
+        );
+    }
+
+    #[test]
+    fn longe_de_tudo_nao_aperta_nada() {
+        assert_eq!(botoes(&fabrica(), [[TELA[0] / 2.0, TELA[1] / 3.0]]), 0);
+    }
+
+    #[test]
+    fn a_posicao_gravada_e_fracao_e_a_peca_fica_dentro() {
+        let mut posicoes = BTreeMap::new();
+        posicoes.insert("b1".to_string(), [0.5, 0.5]);
+        posicoes.insert("zl".to_string(), [0.0, 0.0]);
+        let elementos = monta(TELA, 100, &posicoes);
+        assert_eq!(centro(&elementos, Peca::B1), [457.5, 206.0]);
+        // Gravado no canto, desenhado encostado nele.
+        assert_eq!(centro(&elementos, Peca::Zl), [44.0, 22.0]);
+        assert_eq!(fracao([457.5, 206.0], TELA), [0.5, 0.5]);
+    }
+
+    #[test]
+    fn a_escala_aumenta_a_peca_e_o_alcance() {
+        let normal = fabrica();
+        let [x, y] = centro(&normal, Peca::B1);
+        assert_eq!(botoes(&normal, [[x + 40.0, y]]), 0);
+        let maior = monta(TELA, 150, &BTreeMap::new());
+        let [x, y] = centro(&maior, Peca::B1);
+        assert_eq!(botoes(&maior, [[x + 40.0, y]]), bit(0));
+    }
+
+    #[test]
+    fn o_editor_pega_a_peca_debaixo_do_dedo() {
+        let elementos = fabrica();
+        assert_eq!(debaixo(&elementos, centro(&elementos, Peca::Zr)), Some(Peca::Zr));
+        assert_eq!(debaixo(&elementos, [TELA[0] / 2.0, TELA[1] / 3.0]), None);
+    }
+}

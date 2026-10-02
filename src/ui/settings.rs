@@ -283,6 +283,7 @@ pub struct Settings {
     /// Como a biblioteca mostra os jogos.
     pub biblioteca: ModoDaBiblioteca,
     pub movimento: Movimento,
+    pub controles_na_tela: ControlesNaTela,
     pub graphics: Graphics,
     pub debug: DebugView,
     pub audio: Audio,
@@ -364,6 +365,57 @@ impl Default for Movimento {
     fn default() -> Self {
         Self {
             aviso_de_calibracao: true,
+        }
+    }
+}
+
+/// Quando os controles desenhados na tela aparecem.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModoDosControlesNaTela {
+    /// Aparecem até chegar um aperto de controle físico, e voltam no próximo toque na tela. É o
+    /// padrão porque serve aos dois jeitos de jogar sem pedir que ninguém escolha.
+    #[default]
+    Automatico,
+    Sempre,
+    Nunca,
+}
+
+impl ModoDosControlesNaTela {
+    pub const TODOS: [Self; 3] = [Self::Automatico, Self::Sempre, Self::Nunca];
+
+    pub fn chave(self) -> &'static str {
+        match self {
+            Self::Automatico => "touch.mode.auto",
+            Self::Sempre => "touch.mode.always",
+            Self::Nunca => "touch.mode.never",
+        }
+    }
+}
+
+/// Os controles desenhados na tela de um celular. Só o Android os desenha; os outros frontends
+/// carregam e gravam de volta sem mexer. Ver [`crate::input::toque`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ControlesNaTela {
+    pub modo: ModoDosControlesNaTela,
+    /// O tamanho das peças, em porcento do de fábrica.
+    pub escala: u8,
+    /// Em porcento. Opaco de fábrica não: a peça fica por cima do jogo.
+    pub opacidade: u8,
+    /// Onde o usuário pôs cada peça, pelo [`crate::input::toque::Peca::nome`], em **fração** da
+    /// tela. Fração, e não ponto, porque o mesmo arquivo pode ir de um celular para um tablet. A
+    /// peça que não está aqui fica no lugar de fábrica, e "restaurar" é esvaziar o mapa.
+    pub posicoes: std::collections::BTreeMap<String, [f32; 2]>,
+}
+
+impl Default for ControlesNaTela {
+    fn default() -> Self {
+        Self {
+            modo: ModoDosControlesNaTela::default(),
+            escala: 100,
+            opacidade: 55,
+            posicoes: Default::default(),
         }
     }
 }
@@ -474,6 +526,12 @@ mod tests {
             biblioteca: ModoDaBiblioteca::Slider,
             movimento: Movimento {
                 aviso_de_calibracao: false,
+            },
+            controles_na_tela: ControlesNaTela {
+                modo: ModoDosControlesNaTela::Nunca,
+                escala: 130,
+                opacidade: 80,
+                posicoes: [("b1".to_string(), [0.75, 0.5])].into(),
             },
             graphics: Graphics {
                 scaling: Scaling::Fit,

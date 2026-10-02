@@ -27,6 +27,7 @@ mod seletor;
 mod sistema;
 mod tela;
 mod tema;
+mod toque;
 mod widgets;
 
 use std::collections::HashMap;
@@ -40,7 +41,7 @@ use zeebx::session::Session;
 use zeebx::storage::StoragePaths;
 use zeebx::ui::i18n::Catalog;
 use zeebx::ui::library::{self, Game};
-use zeebx::ui::settings::Settings;
+use zeebx::ui::settings::{ModoDosControlesNaTela, Settings};
 
 use entrada::Entrada;
 use tela::{Placa, Tela};
@@ -203,6 +204,7 @@ fn gira(app: AndroidApp, emulador: &mut Emulador) {
                 // controle. Se mantivermos o estado, a direção fica presa quando a atividade
                 // volta. No console, perder o aparelho equivale a soltar tudo.
                 emulador.pad = Pad::default();
+                emulador.sobreposicao.solta();
                 visivel = false
             }
             PollEvent::Main(MainEvent::Destroy) => sair = true,
@@ -214,12 +216,21 @@ fn gira(app: AndroidApp, emulador: &mut Emulador) {
         }
 
         entrada.comeca_quadro();
+        // O dedo vai para os controles na tela só com o jogo rodando de fato. Com a pergunta do
+        // "voltar" aberta ele tem de alcançar os botões dela, que são do egui.
+        let no_jogo = emulador.onde == Onde::Jogo
+            && !emulador.confirmando
+            && emulador.settings.controles_na_tela.modo != ModoDosControlesNaTela::Nunca;
+        if !no_jogo {
+            emulador.sobreposicao.solta();
+        }
         if let Ok(mut fila) = app.input_events_iter() {
             // O iterador entrega um evento por chamada e quer a resposta na hora: `Handled`
             // diz ao Android que o evento morre aqui — é isso que impede o "voltar" de fechar
             // a atividade por baixo de nós.
             while fila.next(|evento| {
-                entrada.recebe(evento, &mut emulador.pad);
+                let sobreposicao = no_jogo.then_some(&mut emulador.sobreposicao);
+                entrada.recebe(evento, &mut emulador.pad, sobreposicao);
                 InputStatus::Handled
             }) {}
         }
@@ -280,6 +291,8 @@ pub enum Onde {
     SeletorDeBanco(PathBuf),
     /// Um jogo rodando.
     Jogo,
+    /// O editor dos controles na tela.
+    EditaToque,
 }
 
 /// O aplicativo inteiro: o que está na tela e o que sustenta cada tela.
@@ -362,6 +375,10 @@ pub struct Emulador {
     quadro_565: Option<(u64, u64, std::sync::Arc<[u8]>)>,
     /// Os botões apertados agora, alimentados pela fila nativa.
     pad: Pad,
+    /// Os controles desenhados na tela, e os botões que os dedos apertam neles.
+    sobreposicao: toque::Sobreposicao,
+    /// A peça que o editor está arrastando, e onde o dedo a pegou em relação ao centro dela.
+    arrastando: Option<(zeebx::input::toque::Peca, egui::Vec2)>,
     /// O "voltar" foi apertado com um jogo aberto: a pergunta está na tela.
     confirmando: bool,
     /// O jogo está parado por escolha, e não por falha.
@@ -451,6 +468,8 @@ impl Emulador {
             foco_da_barra: None,
             quadro_565: None,
             pad: Pad::default(),
+            sobreposicao: Default::default(),
+            arrastando: None,
             confirmando: false,
             pausado: false,
             estado_id: None,
@@ -702,6 +721,10 @@ impl Emulador {
                 }
             }
             Onde::Ajustes => self.onde = Onde::Biblioteca,
+            Onde::EditaToque => {
+                self.arrastando = None;
+                self.onde = Onde::Ajustes;
+            }
             Onde::Biblioteca => {}
         }
     }
@@ -712,6 +735,7 @@ impl Emulador {
         match self.onde.clone() {
             Onde::Jogo => self.jogo(ctx),
             Onde::Ajustes => self.ajustes(ctx),
+            Onde::EditaToque => self.edita_toque(ctx),
             Onde::Seletor(atual) => self.seletor(ctx, &atual),
             Onde::SeletorDeBanco(atual) => self.seletor_de_banco(ctx, &atual),
             Onde::Biblioteca => self.biblioteca(ctx),

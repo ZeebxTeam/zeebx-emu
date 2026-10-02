@@ -7,9 +7,10 @@
 //! paisagem a largura é o que sobra — e cada opção é uma faixa da largura inteira.
 //!
 //! O que ficou de fora ficou por não existir aqui: as opções de janela não valem numa tela só,
-//! e os controles, o Discord e as atualizações ainda não estão ligados neste frontend.
+//! e o mapeamento dos controles, o Discord e as atualizações ainda não estão ligados neste
+//! frontend. A seção "Controles" daqui é a dos controles desenhados na tela.
 
-use zeebx::ui::settings::{Proporcao, Scaling};
+use zeebx::ui::settings::{ModoDosControlesNaTela, Proporcao, Scaling};
 
 use crate::tema::ALVO;
 use crate::{Emulador, Onde, sistema, widgets};
@@ -20,15 +21,17 @@ pub enum Aba {
     Geral,
     Graficos,
     Audio,
+    Controles,
     Depuracao,
     Sobre,
 }
 
 impl Aba {
-    const TODAS: [Self; 5] = [
+    const TODAS: [Self; 6] = [
         Self::Geral,
         Self::Graficos,
         Self::Audio,
+        Self::Controles,
         Self::Depuracao,
         Self::Sobre,
     ];
@@ -39,6 +42,7 @@ impl Aba {
             Self::Geral => "settings.tab.general",
             Self::Graficos => "settings.tab.graphics",
             Self::Audio => "settings.tab.audio",
+            Self::Controles => "settings.tab.controls",
             Self::Depuracao => "settings.tab.debug",
             Self::Sobre => "settings.tab.about",
         }
@@ -50,6 +54,7 @@ impl Aba {
             Self::Geral => "⛭",
             Self::Graficos => "🖵",
             Self::Audio => "🔊",
+            Self::Controles => "🎮",
             Self::Depuracao => "⏱",
             Self::Sobre => "ℹ",
         }
@@ -103,6 +108,7 @@ impl Emulador {
                     Aba::Geral => self.aba_geral(ui),
                     Aba::Graficos => self.aba_graficos(ui),
                     Aba::Audio => self.aba_audio(ui),
+                    Aba::Controles => self.aba_controles(ui),
                     Aba::Depuracao => self.aba_depuracao(ui),
                     Aba::Sobre => self.aba_sobre(ui),
                 };
@@ -403,6 +409,56 @@ impl Emulador {
                     log::error!("sem som: {erro}");
                 }
             }
+        }
+        mudou
+    }
+
+    /// Os controles desenhados na tela: quando aparecem, o tamanho, a transparência e onde ficam.
+    fn aba_controles(&mut self, ui: &mut egui::Ui) -> bool {
+        let catalogo = &self.catalogo;
+        let toque = &mut self.settings.controles_na_tela;
+        let dica = &mut self.dica;
+        let modos: Vec<(ModoDosControlesNaTela, String)> = ModoDosControlesNaTela::TODOS
+            .iter()
+            .map(|modo| (*modo, catalogo.get(modo.chave()).to_string()))
+            .collect();
+        let mut mudou = widgets::segmentado(
+            ui,
+            "touch_mode",
+            catalogo.get("touch.mode"),
+            Some(catalogo.get("touch.mode.hint")),
+            dica,
+            &mut toque.modo,
+            &modos,
+        );
+        // Tamanho e posição valem também no "nunca": quem desliga para jogar com controle pode
+        // deixar tudo arrumado para a próxima vez sem controle.
+        mudou |= widgets::deslizante(
+            ui,
+            "touch_scale",
+            catalogo.get("touch.scale"),
+            None,
+            dica,
+            &mut toque.escala,
+            50..=200,
+            |v| format!("{v}%"),
+        );
+        mudou |= widgets::deslizante(
+            ui,
+            "touch_opacity",
+            catalogo.get("touch.opacity"),
+            None,
+            dica,
+            &mut toque.opacidade,
+            15..=100,
+            |v| format!("{v}%"),
+        );
+        let arrumadas = match toque.posicoes.is_empty() {
+            true => catalogo.get("touch.layout.default"),
+            false => catalogo.get("touch.layout.custom"),
+        };
+        if widgets::navega(ui, catalogo.get("touch.layout"), arrumadas) {
+            self.onde = Onde::EditaToque;
         }
         mudou
     }

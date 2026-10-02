@@ -1,8 +1,9 @@
 //! O jogo rodando.
 //!
-//! Num aparelho de mão o controle é físico, e botão na tela só rouba espaço: o quadro ocupa
-//! tudo, e quem sai é o "voltar" do Android. O que aparece por cima é o painel de depuração,
-//! ligado nas configurações — e ele é o [`zeebx::ui::depuracao::painel`], o mesmo do desktop.
+//! O quadro ocupa tudo, e quem sai é o "voltar" do Android. O que aparece por cima são os
+//! controles na tela ([`crate::toque`]), para quem joga sem controle físico, e o painel de
+//! depuração, ligado nas configurações — que é o [`zeebx::ui::depuracao::painel`], o mesmo do
+//! desktop.
 
 use std::time::Instant;
 
@@ -31,7 +32,9 @@ impl Emulador {
             // quanto o jogo precisa emular para acompanhar o relógio do mundo.
             let passou = self.ultimo.elapsed().min(FATIA_MAXIMA);
             self.ultimo = Instant::now();
-            sessao.set_port_pad(0, self.pad);
+            let mut pad = self.pad;
+            pad.buttons |= self.sobreposicao.botoes;
+            sessao.set_port_pad(0, pad);
             if sessao.step(passou, self.settings.graphics.speed_limit) == Step::Stopped {
                 let motivo = sessao.stopped_reason().unwrap_or_default();
                 let normal = sessao.saiu_normalmente();
@@ -238,6 +241,8 @@ impl Emulador {
                 });
             }
         });
+
+        self.desenha_sobreposicao(ctx);
 
         if self.confirmando {
             self.pergunta(ctx);
