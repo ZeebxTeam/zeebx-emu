@@ -408,6 +408,13 @@ fn main() -> ExitCode {
                 .unwrap_or_default();
             let placa = args.iter().any(|a| a == "--placa");
             let serial = args.iter().find_map(|a| a.strip_prefix("--serial="));
+            // Como no `run`: o filtro sozinho não liga nada, e ligar sem filtro mostra tudo.
+// Antes este ramo nem lia a opção, e o `--trace` do uso do `sessao` não fazia nada.
+            let tracing = args.iter().any(|a| a.starts_with("--trace"));
+            let trace_filter = args
+                .iter()
+                .find_map(|a| a.strip_prefix("--trace="))
+                .map(str::to_owned);
             // Sem nada, valem as preferências da Z-Wheel gravadas; `--fabrica` usa a cfg do pacote
             // como veio, e os outros dois trocam uma opção só.
             let mut z_wheel = match args.iter().any(|a| a == "--fabrica") {
@@ -482,7 +489,7 @@ fn main() -> ExitCode {
             };
             report(sessao_sem_janela(
                 &args[1], seconds, dump, &keys, &fotos, placa, serial, z_wheel, escala, melhorias,
-                perfil, boomerang, portas,
+                perfil, boomerang, portas, tracing, trace_filter,
             ))
         }
         // Sem argumento nenhum, o que se quer é o emulador, não a ajuda.
@@ -1331,6 +1338,8 @@ fn sessao_sem_janela(
     perfil: Option<u32>,
     boomerang: Option<Vec<(u32, [f32; 3])>>,
     portas_pedidas: Option<[Option<bindings::Aparelho>; input::PORTAS]>,
+    tracing: bool,
+    trace_filter: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let serial = serial.map(std::path::Path::new);
     let settings = ui::settings::Settings::load();
@@ -1361,6 +1370,8 @@ fn sessao_sem_janela(
     session.define_resolucao_interna(escala);
     session.define_proporcao(proporcao_da_linha());
     session.define_melhorias(melhorias.0, melhorias.1);
+    session.set_tracing(tracing);
+    session.set_trace_filter(trace_filter);
     let mut perfil_ligado_em: Option<(u32, std::time::Instant, u64)> = None;
     session.set_installed_applets(
         games
@@ -1620,6 +1631,12 @@ fn sessao_sem_janela(
     }
     for linha in session.log() {
         println!("{linha}");
+    }
+    if tracing {
+        println!("rastreamento:");
+        for line in session.trace() {
+            println!("  {line}");
+        }
     }
     Ok(())
 }
