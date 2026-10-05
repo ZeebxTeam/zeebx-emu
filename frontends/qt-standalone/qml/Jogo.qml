@@ -19,8 +19,8 @@ Window {
         return valor
     }
 
-    width: larguraGuardada > 0 ? larguraGuardada : 960
-    height: alturaGuardada > 0 ? alturaGuardada : 760
+    width: larguraGuardada > 0 ? larguraGuardada : 640
+    height: alturaGuardada > 0 ? alturaGuardada : 512
     minimumWidth: 320
     minimumHeight: 240
     visible: false
