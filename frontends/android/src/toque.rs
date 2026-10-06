@@ -284,7 +284,9 @@ impl Emulador {
     /// para ficar por cima dele.
     pub(crate) fn desenha_sobreposicao(&mut self, ctx: &egui::Context) {
         let ajustes = &self.settings.controles_na_tela;
-        if !self.sobreposicao.visivel(ajustes) {
+        // Com a pergunta do "voltar" aberta o jogo está parado, e as peças, na camada da frente,
+        // ficariam por cima da caixa e comeriam o toque dos botões dela.
+        if self.confirmando || !self.sobreposicao.visivel(ajustes) {
             self.sobreposicao.elementos.clear();
             return;
         }
