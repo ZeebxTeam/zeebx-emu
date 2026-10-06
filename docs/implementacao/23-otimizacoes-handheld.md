@@ -68,10 +68,16 @@ continuam subindo RGBA8 (decodificação direta para 16-bit fica para depois). L
 implementação: o interno do 4444/5551 muda entre desktop (`RGBA4`/`RGB5_A1`) e GLES
 (0x8D64/0x8D65) — o desktop recusava em silêncio e a textura saía preta.
 
-**1.4 PGO no `.so` + duelo thin vs fat.** Sem mudar fonte: build instrumentado
-(`-Cprofile-generate`), treino no aparelho (abertura do Quake via `sessao`), `llvm-profdata
-merge`, rebuild (`-Cprofile-use`) — o paralelo do PGO do guest deles. Comparar LTO thin vs
-fat (frente 11 pendente do OPTIMIZING). Critério: ganho percentual na bancada de 0.3.
+**1.4 PGO no `.so` + duelo thin vs fat.** Duelo medido no desktop (62 s virtuais: Double
+Dragon, Crash, Quake): thin 1/3/16 s, fat 2/3/17 s, PGO com treino local 2/4/16 s — tudo
+dentro do ruído, então fica o thin (o fat ainda custa 9 min de build e só emagrece 4 MB).
+Nada disso responde no aparelho (é no A35 de cache pequeno que layout conta), então o treino
+de verdade fica pendente dos handhelds. O que ficou pronto é o mecanismo, validado de ponta
+a ponta com o toolchain da casa (`llvm-tools-preview`): build com
+`RUSTFLAGS="-Cprofile-generate=/tmp/pgo-raw"`, treino (`sessao` do Quake gerou 36 MB de
+`.profraw`), `llvm-profdata merge` e rebuild com `-Cprofile-use`. Receita do treino no
+aparelho: mesmo roteiro da bancada 0.3, dez minutos de jogo real, juntar os `.profraw` e
+rebuildar o `.so` — sem commitar perfil nem mudar `Cargo.toml` (só `RUSTFLAGS`).
 
 ## Fase 2 — só com a bancada apontando o limite
 
