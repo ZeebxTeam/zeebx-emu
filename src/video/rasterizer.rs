@@ -731,6 +731,10 @@ pub trait Rasterizador {
         width: usize,
         height: usize,
         pixels: Vec<[u8; 4]>,
+        // O tipo com que o jogo mandou os texels (`GL_UNSIGNED_BYTE`,
+        // `GL_UNSIGNED_SHORT_5_6_5` e cia). A placa usa para subir nativo 16-bit quando dá;
+        // o processador ignora, porque a cópia dele é sempre RGBA8.
+        kind: u32,
     );
     fn sub_image(
         &mut self,
@@ -1036,8 +1040,9 @@ impl Rasterizador for GlState {
         width: usize,
         height: usize,
         pixels: Vec<[u8; 4]>,
+        kind: u32,
     ) {
-        GlState::upload_level(self, name, level, width, height, pixels)
+        GlState::upload_level(self, name, level, width, height, pixels, kind)
     }
     fn sub_image(
         &mut self,
@@ -1999,6 +2004,8 @@ impl GlState {
         width: usize,
         height: usize,
         pixels: Vec<[u8; 4]>,
+        // Ignorado: a cópia do processador é sempre RGBA8. Ver o `kind` do trait.
+        _kind: u32,
     ) {
         self.flush();
         let texture = self.textures.entry(name).or_default();

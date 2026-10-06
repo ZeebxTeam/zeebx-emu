@@ -635,9 +635,15 @@ impl<C: CpuBackend> Machine<C> {
             let name = self.gl.bound_texture();
             // A paletizada traz a cadeia inteira num bloco só, e o `level` dela conta os
             // mipmaps em vez de nomeá-los; o decodificador devolve o nível base.
-            self.conta_envio(decoded.len());
-            self.gl
-                .upload_level(name, 0, width as usize, height as usize, decoded);
+            self.conta_envio(decoded.len(), gles::GL_UNSIGNED_BYTE);
+            self.gl.upload_level(
+                name,
+                0,
+                width as usize,
+                height as usize,
+                decoded,
+                gles::GL_UNSIGNED_BYTE,
+            );
             return Ok(());
         }
         let explicit_alpha = match format {
@@ -655,9 +661,15 @@ impl<C: CpuBackend> Machine<C> {
         let decoded = atc::decode(&bytes, width as usize, height as usize, explicit_alpha);
 
         let name = self.gl.bound_texture();
-        self.conta_envio(decoded.len());
-        self.gl
-            .upload_level(name, level, width as usize, height as usize, decoded);
+        self.conta_envio(decoded.len(), gles::GL_UNSIGNED_BYTE);
+        self.gl.upload_level(
+            name,
+            level,
+            width as usize,
+            height as usize,
+            decoded,
+            gles::GL_UNSIGNED_BYTE,
+        );
         Ok(())
     }
 
@@ -677,9 +689,17 @@ impl<C: CpuBackend> Machine<C> {
         // Os parâmetros de repetição e filtro sobrevivem a uma nova imagem: no OpenGL eles são
         // do nome da textura, não do conteúdo, e o jogo costuma defini-los uma vez só.
         let name = self.gl.bound_texture();
-        self.conta_envio(decoded.len());
-        self.gl
-            .upload_level(name, level, width as usize, height as usize, decoded);
+        self.conta_envio(decoded.len(), kind);
+        // O tipo original vai junto: 5-6-5, 4-4-4-4 e 5-5-5-1 sobem nativos na placa, e o
+        // resto sobe RGBA8 como sempre. Ver o `kind` de `upload_level`.
+        self.gl.upload_level(
+            name,
+            level,
+            width as usize,
+            height as usize,
+            decoded,
+            kind,
+        );
         Ok(())
     }
 
@@ -777,7 +797,8 @@ impl<C: CpuBackend> Machine<C> {
 
         let name = self.gl.bound_texture();
         match self.gl.sub_image(name, x, y, width, height, &novos) {
-            Ok(()) => self.conta_envio(novos.len()),
+            // A parcial não carrega o tipo — ver o `kind` de `conta_envio`.
+            Ok(()) => self.conta_envio(novos.len(), gles::GL_UNSIGNED_BYTE),
             Err(Some((tw, th))) => {
                 self.anota_ponto_ruim(format!(
                     "TexSubImage2D de {width}x{height} em ({x},{y}) não cabe numa textura {tw}x{th}"
@@ -788,15 +809,22 @@ impl<C: CpuBackend> Machine<C> {
         Ok(())
     }
 
-    /// Conta uma subida de textura na telemetria: uma chamada e os bytes decodificados.
+    /// Conta uma subida de textura na telemetria: uma chamada, os bytes decodificados e,
+    /// quando o tipo é nativo 16-bit, os bytes que de fato subiram.
     ///
-    /// `texels` é quantos `[u8; 4]` subiram — o que chega à placa hoje é sempre RGBA8, então
-    /// cada um vale quatro bytes, venha de `TexImage2D`, `TexSubImage2D` ou comprimida.
-    fn conta_envio(&mut self, texels: usize) {
+    /// `texels` é quantos `[u8; 4]` o decodificador entregou. A parcial (`TexSubImage2D`)
+    /// não sabe o formato da textura, que mora na placa: ela conta como RGBA8, e a diferença
+    /// aparece no total da sessão, nunca na taxa.
+    fn conta_envio(&mut self, texels: usize, kind: u32) {
         self.tm_envios = self.tm_envios.saturating_add(1);
         self.tm_bytes_enviados = self
             .tm_bytes_enviados
             .saturating_add(texels as u64 * 4);
+        if crate::video::gles::eh_compacto(kind) {
+            self.tm_bytes_compactos = self
+                .tm_bytes_compactos
+                .saturating_add(texels as u64 * 2);
+        }
     }
 
     /// Monta os vértices a partir dos vetores do cliente e manda desenhar.

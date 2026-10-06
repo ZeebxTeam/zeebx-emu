@@ -33,6 +33,8 @@ pub struct Telemetria {
     pub envios: u64,
     /// Bytes decodificados que subiram nessas subidas.
     pub bytes_enviados: u64,
+    /// Dos bytes acima, quantos subiram em texels nativos de 16 bits em vez de RGBA8.
+    pub bytes_compactos: u64,
     /// Programas de placa ligados (um por construção do rasterizador de placa).
     pub programas: u64,
 }
@@ -196,6 +198,7 @@ impl<C: CpuBackend> Machine<C> {
             bytes_lidos: self.tm_bytes_lidos,
             envios: self.tm_envios,
             bytes_enviados: self.tm_bytes_enviados,
+            bytes_compactos: self.tm_bytes_compactos,
             programas: self.tm_programas,
         }
     }

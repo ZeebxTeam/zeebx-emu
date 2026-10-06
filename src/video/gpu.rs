@@ -58,10 +58,100 @@ struct Textura {
     /// O maior nível de mipmap já enviado. Um filtro que peça mipmap sem a cadeia completa
     /// desenha preto no OpenGL — então, quando só existe o nível zero, o filtro é rebaixado.
     maior_nivel: u32,
+    /// Como os texels estão guardados na placa. `None` é RGBA8; `Some(kind)` é o tipo com
+    /// que o jogo mandou (5-6-5, 4-4-4-4 ou 5-5-5-1), e as subidas parciais têm de combinar.
+    compacto: Option<u32>,
     crop: [i32; 4],
     filtro: u32,
     filtro_min: u32,
     wrap: [u32; 2],
+}
+
+/// O trio (interno, formato, tipo) com que um tipo compacto sobe. `None` é RGBA8 de sempre.
+///
+/// Só os três tipos nativos de 16 bits — ver `gles::eh_compacto`, que é a outra metade desta
+/// decisão: o resto — comprimido, paletizado, 8-bit — continua subindo RGBA8, porque ali não
+/// há texel nativo para preservar.
+///
+/// Os dois RGBA o `glow` não define para o GLES, então vão os valores do GLES2 (formatos
+/// internos com tamanho, obrigatórios para textura): `GL_RGBA4444` é 0x8D64 e `GL_RGBA5551`
+/// é 0x8D65. No desktop valem os nomes de lá (`RGBA4`, `RGB5_A1`) — ver `formato_compacto`.
+const INTERNO_RGBA4444: i32 = 0x8D64;
+const INTERNO_RGBA5551: i32 = 0x8D65;
+
+fn formato_compacto(kind: u32, embutido: bool) -> Option<(i32, u32, u32)> {
+    match gles::eh_compacto(kind) {
+        false => None,
+        true => Some(match kind {
+            gles::GL_UNSIGNED_SHORT_5_6_5 => {
+                (glow::RGB565 as i32, glow::RGB, glow::UNSIGNED_SHORT_5_6_5)
+            }
+            // O interno do 4444/5551 muda de nome entre desktop e GLES, e cada lado só
+            // aceita o seu: o desktop recusava o 0x8D64 com erro silencioso e a textura
+            // saía preta (o chão do Crash). O `embutido` é o do contexto em uso.
+            gles::GL_UNSIGNED_SHORT_4_4_4_4 => match embutido {
+                true => (
+                    INTERNO_RGBA4444,
+                    glow::RGBA,
+                    glow::UNSIGNED_SHORT_4_4_4_4,
+                ),
+                false => (
+                    glow::RGBA4 as i32,
+                    glow::RGBA,
+                    glow::UNSIGNED_SHORT_4_4_4_4,
+                ),
+            },
+            // O `_` é o 5-5-5-1: o `eh_compacto` acima já filtrou o resto, e o `match`
+            // precisa do braço para compilar.
+            _ => match embutido {
+                true => (
+                    INTERNO_RGBA5551,
+                    glow::RGBA,
+                    glow::UNSIGNED_SHORT_5_5_5_1,
+                ),
+                false => (
+                    glow::RGB5_A1 as i32,
+                    glow::RGBA,
+                    glow::UNSIGNED_SHORT_5_5_5_1,
+                ),
+            },
+        }),
+    }
+}
+
+/// Empacota um canal de 8 bits nos `bits` do 16-bit, invertendo o `expand` da decodificação.
+///
+/// A volta é exata para todo valor que veio de um texel nativo — provado por teste exaustivo
+/// em `volta_dos_canais_e_exata`: o arredondamento dos dois lados se cancela.
+fn empacota(canal: u8, bits: u32) -> u16 {
+    let max = (1u16 << bits) - 1;
+    ((u16::from(canal) * max + 127) / 255).min(max)
+}
+
+/// RGBA8 de volta aos dois bytes nativos, na ordem do host. `kind` é um dos três compactos.
+fn compacta(pixels: &[[u8; 4]], kind: u32) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(pixels.len() * 2);
+    for &[r, g, b, a] in pixels {
+        let v = match kind {
+            gles::GL_UNSIGNED_SHORT_5_6_5 => {
+                (empacota(r, 5) << 11) | (empacota(g, 6) << 5) | empacota(b, 5)
+            }
+            gles::GL_UNSIGNED_SHORT_4_4_4_4 => {
+                (empacota(r, 4) << 12)
+                    | (empacota(g, 4) << 8)
+                    | (empacota(b, 4) << 4)
+                    | empacota(a, 4)
+            }
+            _ => {
+                (empacota(r, 5) << 11)
+                    | (empacota(g, 5) << 6)
+                    | (empacota(b, 5) << 1)
+                    | u16::from(a >= 128)
+            }
+        };
+        bytes.extend_from_slice(&v.to_le_bytes());
+    }
+    bytes
 }
 
 /// O estado do preenchimento, anotado das chamadas e aplicado uma vez por draw.
@@ -1050,6 +1140,9 @@ impl GpuState {
                     largura: salva.width,
                     altura: salva.height,
                     maior_nivel,
+                    // O restore recria em RGBA8 a partir dos pixels guardados, que são RGBA8:
+                    // o jogo volta a subir nativo no próximo nível que carregar, como sempre.
+                    compacto: None,
                     crop: salva.crop,
                     filtro: salva.filter,
                     filtro_min: salva.min_filter,
@@ -2675,9 +2768,21 @@ impl Rasterizador for GpuState {
         width: usize,
         height: usize,
         pixels: Vec<[u8; 4]>,
+        kind: u32,
     ) {
         self.descarrega();
-        let bytes: Vec<u8> = pixels.iter().flatten().copied().collect();
+        // Nativo 16-bit sobe nativo: metade dos bytes e metade da VRAM, com os mesmos texels
+        // que o jogo mandou. O resto sobe RGBA8, como sempre.
+        let formato = formato_compacto(kind, self.gl.version().is_embedded);
+        let (interno, formato_gl, tipo, bytes) = match formato {
+            Some((interno, formato, tipo)) => (interno, formato, tipo, compacta(&pixels, kind)),
+            None => (
+                glow::RGBA8 as i32,
+                glow::RGBA,
+                glow::UNSIGNED_BYTE,
+                pixels.iter().flatten().copied().collect(),
+            ),
+        };
         let gl = &self.gl;
         let objeto = match self.texturas.get(&name) {
             Some(t) => t.objeto,
@@ -2693,6 +2798,9 @@ impl Rasterizador for GpuState {
                         largura: width,
                         altura: height,
                         maior_nivel: 0,
+                        // A ficha guarda o tipo do jogo, e não o trio: é ele que a parcial
+                        // usa para combinar com o inteiro.
+                        compacto: formato.map(|_| kind),
                         crop: [0; 4],
                         filtro: gles::GL_LINEAR,
                         filtro_min: gles::GL_LINEAR,
@@ -2702,18 +2810,23 @@ impl Rasterizador for GpuState {
                 objeto
             }
         };
+        // Cada subida redefine o formato — é o que o `tex_image_2d` faz —, então a ficha
+        // acompanha a chamada, e não a criação.
+        if let Some(t) = self.texturas.get_mut(&name) {
+            t.compacto = formato.map(|_| kind);
+        }
         unsafe {
             gl.bind_texture(glow::TEXTURE_2D, Some(objeto));
             gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
             gl.tex_image_2d(
                 glow::TEXTURE_2D,
                 level as i32,
-                glow::RGBA8 as i32,
+                interno,
                 width as i32,
                 height as i32,
                 0,
-                glow::RGBA,
-                glow::UNSIGNED_BYTE,
+                formato_gl,
+                tipo,
                 glow::PixelUnpackData::Slice(Some(&bytes)),
             );
         }
@@ -2727,7 +2840,8 @@ impl Rasterizador for GpuState {
         if let Some(t) = self.texturas.get(&name) {
             self.parametros(t);
         }
-        self.estado.upload_level(name, level, width, height, pixels);
+        self.estado
+            .upload_level(name, level, width, height, pixels, gles::GL_UNSIGNED_BYTE);
     }
 
     fn sub_image(
@@ -2743,7 +2857,23 @@ impl Rasterizador for GpuState {
         let resultado = self.estado.sub_image(name, x, y, width, height, pixels);
         if resultado.is_ok() {
             if let Some(t) = self.texturas.get(&name) {
-                let bytes: Vec<u8> = pixels.iter().flatten().copied().collect();
+                // O parcial combina com o inteiro: texels no formato em que a textura vive,
+                // ou o driver lê metade dos bytes que devia. A ficha só guarda tipos que o
+                // `formato_compacto` aceita — o `unwrap_or` abaixo nunca dispara, e existe
+                // porque a ficha é dado, não prova.
+                let embutido = self.gl.version().is_embedded;
+                let (formato, tipo, bytes) = match t.compacto.and_then(|k| formato_compacto(k, embutido)) {
+                    Some((_, formato, tipo)) => (
+                        formato,
+                        tipo,
+                        compacta(pixels, t.compacto.unwrap_or(gles::GL_UNSIGNED_BYTE)),
+                    ),
+                    None => (
+                        glow::RGBA,
+                        glow::UNSIGNED_BYTE,
+                        pixels.iter().flatten().copied().collect(),
+                    ),
+                };
                 unsafe {
                     let gl = &self.gl;
                     gl.bind_texture(glow::TEXTURE_2D, Some(t.objeto));
@@ -2755,8 +2885,8 @@ impl Rasterizador for GpuState {
                         y as i32,
                         width as i32,
                         height as i32,
-                        glow::RGBA,
-                        glow::UNSIGNED_BYTE,
+                        formato,
+                        tipo,
                         glow::PixelUnpackData::Slice(Some(&bytes)),
                     );
                 }
@@ -3442,11 +3572,11 @@ mod tests {
         // cancelada antes de rodá-lo.
         gpu.set_active_texture(gles::GL_TEXTURE0);
         gpu.bind_texture(10);
-        gpu.upload_level(10, 0, 1, 1, vec![[255, 0, 0, 255]]);
+        gpu.upload_level(10, 0, 1, 1, vec![[255, 0, 0, 255]], gles::GL_UNSIGNED_BYTE);
         gpu.set_capability(gles::GL_TEXTURE_2D, true);
         gpu.set_active_texture(gles::GL_TEXTURE0 + 1);
         gpu.bind_texture(20);
-        gpu.upload_level(20, 0, 1, 1, vec![[0, 255, 0, 255]]);
+        gpu.upload_level(20, 0, 1, 1, vec![[0, 255, 0, 255]], gles::GL_UNSIGNED_BYTE);
         gpu.set_capability(gles::GL_TEXTURE_2D, true);
 
         let mut secoes = crate::save_state::Secoes::nova();
@@ -3486,6 +3616,51 @@ mod tests {
         let i = (y * largura + x) * 2;
         let v = u16::from_le_bytes([quadro[i], quadro[i + 1]]);
         ((v >> 11) & 31, (v >> 5) & 63, v & 31)
+    }
+
+    /// `empacota` inverte o `expande_canal` da decodificação para todo valor nativo.
+    ///
+    /// Sem a volta exata, subir 565 nativo mudaria os texels no caminho — e a prova compara
+    /// contra o `expande_canal`, que é a definição de "certo" aqui. A prova ponta a ponta é
+    /// o comparativo de fotos do `sessao`: mesma sessão com e sem compacto tem de sair igual.
+    #[test]
+    fn volta_dos_canais_e_exata() {
+        for bits in [1u32, 4, 5, 6] {
+            let max = (1u16 << bits) - 1;
+            for v in 0..=max {
+                let expandido = match bits {
+                    // O alfa de 1 bit só existe como 0 e 255 na decodificação.
+                    1 => (v * 255) as u8,
+                    _ => crate::machine::expande_canal(v, bits),
+                };
+                assert_eq!(
+                    empacota(expandido, bits),
+                    v,
+                    "canal {v} de {bits} bits não voltou"
+                );
+            }
+        }
+    }
+
+    /// Cada formato compacto sobe sem erro de GL no contexto em uso.
+    ///
+    /// Sonda, não prova de imagem: um `internalformat` que o driver não aceita falha em
+    /// silêncio no `tex_image_2d` e a textura sai preta — foi assim que o Crash perdeu o
+    /// chão. Quem roda a suíte num driver diferente valida os três de novo.
+    #[test]
+    fn formatos_compactos_sobem_sem_erro() {
+        let Some((mut gpu, _)) = par(16, 16) else {
+            return;
+        };
+        for kind in [
+            gles::GL_UNSIGNED_SHORT_5_6_5,
+            gles::GL_UNSIGNED_SHORT_4_4_4_4,
+            gles::GL_UNSIGNED_SHORT_5_5_5_1,
+        ] {
+            gpu.upload_level(10, 0, 2, 2, vec![[255, 0, 0, 255]; 4], kind);
+            let erro = unsafe { gpu.gl.get_error() };
+            assert_eq!(erro, glow::NO_ERROR, "tipo {kind:#x} recusado");
+        }
     }
 
     /// Um triângulo que cobre o canto superior esquerdo, para pegar orientação e preenchimento.

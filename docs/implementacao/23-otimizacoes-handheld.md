@@ -59,11 +59,14 @@ ampliar corta ~44% do trabalho de fragmento — a maior alavanca do port (pixels
 parte do trabalho da GPU a 640×480). HUD em resolução cheia sobre o 3D reduzido, em vez de
 forçar tudo a 640×480 + readback. Opt-in nas configurações + opção do core; padrão 1,0.
 
-**1.3 Texturas 16-bit até a GPU.** Hoje tudo vira RGBA8 na CPU (`src/video/atc.rs`,
-`src/video/paltex.rs`) e sobe RGBA8 (`upload_level`). Manter 565/4444/5551 nativos e
-decodificar comprimidos direto para 16-bit: metade do upload e da memória (num aparelho de
-1 GB, memória conta mesmo quando banda não é o limite — a ressalva do port). Critério: bytes
-enviados por quadro na telemetria de 0.1.
+**1.3 Texturas 16-bit até a GPU.** Os tipos nativos (565/4444/5551) sobem nativos em vez
+de RGBA8: metade do upload e da VRAM, com volta exata provada por teste exaustivo
+(`volta_dos_canais_e_exata`) e fotos iguais a menos de 1 LSB (`formatos_compactos_sobem_sem_erro`
+garante que o driver aceita os três). Medido: Crash 19 MB → 9,5 MB em 16-bit; Quake 15,6 MB
+→ 6,3 MB. A telemetria conta os bytes compactos em separado. Comprimidos e paletizados
+continuam subindo RGBA8 (decodificação direta para 16-bit fica para depois). Lição de
+implementação: o interno do 4444/5551 muda entre desktop (`RGBA4`/`RGB5_A1`) e GLES
+(0x8D64/0x8D65) — o desktop recusava em silêncio e a textura saía preta.
 
 **1.4 PGO no `.so` + duelo thin vs fat.** Sem mudar fonte: build instrumentado
 (`-Cprofile-generate`), treino no aparelho (abertura do Quake via `sessao`), `llvm-profdata

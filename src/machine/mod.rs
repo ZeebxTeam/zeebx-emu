@@ -238,14 +238,17 @@ fn bytes_per_texel(format: u32, kind: u32) -> u32 {
     }
 }
 
+/// Espalha um canal de `bits` por toda a faixa de 8: é o que faz 0b11111 virar 255 e não 248.
+///
+/// É `pub(crate)` porque o empacotamento da placa (`compacta`, em `video/gpu.rs`) é o inverso
+/// exato disto — e a prova da volta mora lá, contra esta definição.
+pub(crate) fn expande_canal(value: u16, bits: u32) -> u8 {
+    let max = (1u16 << bits) - 1;
+    ((value as u32 * 255 + max as u32 / 2) / max as u32) as u8
+}
+
 /// Converte os texels para RGBA de 8 bits, o formato único do rasterizador.
 fn decode_texels(bytes: &[u8], format: u32, kind: u32, count: usize) -> Vec<[u8; 4]> {
-    // Repetir os cinco bits mais altos nos três de baixo espalha o valor por toda a faixa: é o
-    // que faz 0b11111 virar 255 e não 248.
-    let expand = |value: u16, bits: u32| -> u8 {
-        let max = (1u16 << bits) - 1;
-        ((value as u32 * 255 + max as u32 / 2) / max as u32) as u8
-    };
     let size = bytes_per_texel(format, kind) as usize;
     (0..count)
         .map(|i| {
@@ -257,27 +260,27 @@ fn decode_texels(bytes: &[u8], format: u32, kind: u32, count: usize) -> Vec<[u8;
                 gles::GL_UNSIGNED_SHORT_5_6_5 => {
                     let v = u16::from_le_bytes([bytes[at], bytes[at + 1]]);
                     [
-                        expand(v >> 11, 5),
-                        expand((v >> 5) & 0x3f, 6),
-                        expand(v & 0x1f, 5),
+                        expande_canal(v >> 11, 5),
+                        expande_canal((v >> 5) & 0x3f, 6),
+                        expande_canal(v & 0x1f, 5),
                         255,
                     ]
                 }
                 gles::GL_UNSIGNED_SHORT_4_4_4_4 => {
                     let v = u16::from_le_bytes([bytes[at], bytes[at + 1]]);
                     [
-                        expand(v >> 12, 4),
-                        expand((v >> 8) & 0xf, 4),
-                        expand((v >> 4) & 0xf, 4),
-                        expand(v & 0xf, 4),
+                        expande_canal(v >> 12, 4),
+                        expande_canal((v >> 8) & 0xf, 4),
+                        expande_canal((v >> 4) & 0xf, 4),
+                        expande_canal(v & 0xf, 4),
                     ]
                 }
                 gles::GL_UNSIGNED_SHORT_5_5_5_1 => {
                     let v = u16::from_le_bytes([bytes[at], bytes[at + 1]]);
                     [
-                        expand(v >> 11, 5),
-                        expand((v >> 6) & 0x1f, 5),
-                        expand((v >> 1) & 0x1f, 5),
+                        expande_canal(v >> 11, 5),
+                        expande_canal((v >> 6) & 0x1f, 5),
+                        expande_canal((v >> 1) & 0x1f, 5),
                         if v & 1 != 0 { 255 } else { 0 },
                     ]
                 }
@@ -2692,6 +2695,8 @@ pub struct Machine<C: CpuBackend> {
     /// Subidas de textura (comprimida ou não), e quantos bytes decodificados subiram.
     tm_envios: u64,
     tm_bytes_enviados: u64,
+    /// Dos bytes acima, quantos subiram em texels nativos de 16 bits em vez de RGBA8.
+    tm_bytes_compactos: u64,
     /// Programas de placa ligados — um por construção bem-sucedida do rasterizador de placa.
     tm_programas: u64,
     /// Onde o binário do programa da placa dorme entre sessões.
@@ -3306,6 +3311,7 @@ impl<C: CpuBackend> Machine<C> {
             tm_bytes_lidos: 0,
             tm_envios: 0,
             tm_bytes_enviados: 0,
+            tm_bytes_compactos: 0,
             gles_next_name: 0,
             gles_object: 0,
             egl_surface: 0,

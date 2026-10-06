@@ -1511,7 +1511,7 @@ fn sessao_sem_janela(
                     .unwrap_or(0);
                 let amostra = session.sample();
                 println!(
-                    "tele:      {}s v: {} fps {}% | +{}/s desenhos +{}/s vértices ({} pulados) | +{}/s leituras +{}/s KiB lidos | +{}/s subidas +{}/s KiB enviados | +{}/s quadros de áudio | {} programas",
+                    "tele:      {}s v: {} fps {}% | +{}/s desenhos +{}/s vértices ({} pulados) | +{}/s leituras +{}/s KiB lidos | +{}/s subidas +{}/s KiB enviados (+{}/s KiB em 16-bit) | +{}/s quadros de áudio | {} programas",
                     segundo,
                     amostra.fps,
                     amostra.speed,
@@ -1522,6 +1522,7 @@ fn sessao_sem_janela(
                     agora.bytes_lidos.saturating_sub(tele_segundo.bytes_lidos) / 1024 / u64::from(vaos),
                     agora.envios.saturating_sub(tele_segundo.envios) / u64::from(vaos),
                     agora.bytes_enviados.saturating_sub(tele_segundo.bytes_enviados) / 1024 / u64::from(vaos),
+                    agora.bytes_compactos.saturating_sub(tele_segundo.bytes_compactos) / 1024 / u64::from(vaos),
                     audio.saturating_sub(audio_segundo) / u64::from(vaos),
                     agora.programas,
                 );
@@ -1671,7 +1672,7 @@ fn sessao_sem_janela(
     let tele = session.telemetria();
     let reais = inicio_real.elapsed().as_secs().max(1);
     println!(
-        "telemetria: {} desenhos ({} vértices, {} pulados), {} leituras ({} KiB), {} subidas ({} KiB), {} programas; {} quadros em {}s reais ({} fps médios)",
+        "telemetria: {} desenhos ({} vértices, {} pulados), {} leituras ({} KiB), {} subidas ({} KiB, {} KiB em 16-bit), {} programas; {} quadros em {}s reais ({} fps médios)",
         tele.desenhos,
         tele.vertices,
         tele.pulados,
@@ -1679,6 +1680,7 @@ fn sessao_sem_janela(
         tele.bytes_lidos / 1024,
         tele.envios,
         tele.bytes_enviados / 1024,
+        tele.bytes_compactos / 1024,
         tele.programas,
         session.quadros_apresentados(),
         reais,

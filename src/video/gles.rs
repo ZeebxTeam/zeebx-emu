@@ -283,6 +283,15 @@ pub const GL_UNSIGNED_SHORT_4_4_4_4: u32 = 0x8033;
 pub const GL_UNSIGNED_SHORT_5_5_5_1: u32 = 0x8034;
 pub const GL_UNSIGNED_SHORT_5_6_5: u32 = 0x8363;
 
+/// Se texels deste tipo sobem nativos de 16 bits na placa em vez de RGBA8. Ver o
+/// `formato_compacto` de `video/gpu.rs`, que é a outra metade desta decisão.
+pub fn eh_compacto(kind: u32) -> bool {
+    matches!(
+        kind,
+        GL_UNSIGNED_SHORT_5_6_5 | GL_UNSIGNED_SHORT_4_4_4_4 | GL_UNSIGNED_SHORT_5_5_5_1
+    )
+}
+
 /// Faces e orientação.
 pub const GL_FRONT: u32 = 0x0404;
 pub const GL_BACK: u32 = 0x0405;
