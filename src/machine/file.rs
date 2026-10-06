@@ -450,6 +450,21 @@ impl<C: CpuBackend> Machine<C> {
             return Ok(0);
         };
         let path = alvo.path;
+        // Só a escrita entra no registro: é o que diz em que momento o jogo grava o save, e
+        // leitura há às centenas por corrida. Pela issue #70, em que o progresso do Ridge Racer
+        // some e não se sabia nem se o jogo chegava a gravar.
+        if !matches!(intent, crate::brew::vfs::OpenIntent::Read) {
+            crate::registro!(
+                crate::registro::Nivel::Informacao,
+                "arquivo",
+                "{guest_path} aberto para escrita em {}{}",
+                path.display(),
+                match alvo.copy_from.is_some() {
+                    true => ", copiado do pacote",
+                    false => "",
+                }
+            );
+        }
         // O pacote nunca é alterado: a primeira escrita copia o recurso para o overlay.
         if let Some(origem) = alvo.copy_from {
             if let Some(parent) = path.parent() {

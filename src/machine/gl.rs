@@ -1068,6 +1068,7 @@ impl<C: CpuBackend> Machine<C> {
     /// antes de escrever, porque escrever por cima de um quadro velho apagaria a cena.
     pub(super) fn present_gl(&mut self) {
         self.gl.descarrega_o_desenho();
+        self.gl.fecha_quadro();
         self.gl_quadro_pendente = true;
         // **O quadro na placa vale para a tela como ela está agora**, mesmo sem ter sido lido. É o
         // que o [`Machine::quadro_na_placa`] compara, e quem apresenta pela placa nunca materializa

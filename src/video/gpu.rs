@@ -543,7 +543,29 @@ pub struct GpuState {
     /// Chamadas de estado enviadas e poupadas pelo espelho, para conferência.
     envios_de_estado: std::cell::Cell<u64>,
     poupancas_de_estado: std::cell::Cell<u64>,
+    /// O que vai para o relatório periódico do log. Ver [`GpuState::fecha_quadro`].
+    medida: Medida,
 }
+
+/// Contagens de uma janela de [`QUADROS_POR_RELATORIO`] quadros.
+///
+/// Existe pela issue #70: o Ridge Racer oscila entre 10 e 25 quadros por segundo depois da
+/// segunda volta numa RTX 4090 no Windows, e aqui (AMD, Mesa) ficou em 30,3 do começo ao fim. Sem
+/// a placa do relato, o que resta é o log de quem tem: se texturas ou envios crescem com o tempo,
+/// aparece aqui; se ficam parados enquanto o tempo real por quadro sobe, o peso está no driver.
+#[derive(Default)]
+struct Medida {
+    quadros: u32,
+    bytes_enviados: u64,
+    lotes: u64,
+    inicio: Option<std::time::Instant>,
+    ultimo: Option<std::time::Instant>,
+    pior_quadro: std::time::Duration,
+}
+
+/// 300 quadros são 10 s no ritmo de 30 do console: espaçado o bastante para não encher o anel do
+/// log, curto o bastante para separar a primeira volta da segunda.
+const QUADROS_POR_RELATORIO: u32 = 300;
 
 struct Destino {
     fbo: glow::Framebuffer,
@@ -662,6 +684,7 @@ impl GpuState {
             espelho: std::cell::Cell::new(Espelho::default()),
             envios_de_estado: std::cell::Cell::new(0),
             poupancas_de_estado: std::cell::Cell::new(0),
+            medida: Medida::default(),
             reduzido: None,
             amostras: 1,
             anisotropia: 1.0,
@@ -1080,6 +1103,48 @@ impl GpuState {
         self.espelho.set(m);
     }
 
+    /// Conta o quadro e, a cada [`QUADROS_POR_RELATORIO`], escreve no log o que a placa guarda e
+    /// recebeu. Ver [`Medida`].
+    fn fecha_quadro(&mut self) {
+        let agora = std::time::Instant::now();
+        let m = &mut self.medida;
+        let inicio = *m.inicio.get_or_insert(agora);
+        if let Some(ultimo) = m.ultimo.replace(agora) {
+            m.pior_quadro = m.pior_quadro.max(agora - ultimo);
+        }
+        m.quadros += 1;
+        if m.quadros < QUADROS_POR_RELATORIO {
+            return;
+        }
+        // Os níveis menores somam um terço ao maior; a conta ignora isso de propósito, porque o que
+        // interessa é a tendência entre relatórios, e não o número absoluto.
+        let bytes_vivos: usize = self
+            .texturas
+            .values()
+            .map(|t| t.largura * t.altura * 4)
+            .sum();
+        let segundos = (agora - inicio).as_secs_f64();
+        crate::registro!(
+            crate::registro::Nivel::Informacao,
+            "gl",
+            "placa: {} quadros em {:.1} s reais ({:.1} por segundo, pior {} ms), {} texturas vivas \
+({:.1} MB), {:.2} MB enviados e {} lotes na janela",
+            m.quadros,
+            segundos,
+            m.quadros as f64 / segundos.max(f64::EPSILON),
+            m.pior_quadro.as_millis(),
+            self.texturas.len(),
+            bytes_vivos as f64 / 1_048_576.0,
+            m.bytes_enviados as f64 / 1_048_576.0,
+            m.lotes,
+        );
+        self.medida = Medida {
+            inicio: Some(agora),
+            ultimo: Some(agora),
+            ..Medida::default()
+        };
+    }
+
     /// Quantas chamadas de estado o espelho enviou e quantas poupou.
     pub fn estado_enviado_e_poupado(&self) -> (u64, u64) {
         (
@@ -1269,6 +1334,7 @@ impl GpuState {
         if quantos == 0 {
             return;
         }
+        self.medida.lotes += 1;
         // **A placa pode morrer no meio do quadro.** O aviso do frontend não espera o `retro_run`
         // terminar, e desenhar depois dele é chamar funções de GL que já não existem. O que estava
         // na placa fica — o quadro sai do que já foi desenhado —, e a sessão nasce de novo no
@@ -2464,6 +2530,7 @@ impl Rasterizador for GpuState {
     ) {
         self.descarrega();
         let bytes: Vec<u8> = pixels.iter().flatten().copied().collect();
+        self.medida.bytes_enviados += bytes.len() as u64;
         let gl = &self.gl;
         let objeto = match self.texturas.get(&name) {
             Some(t) => t.objeto,
@@ -2530,6 +2597,7 @@ impl Rasterizador for GpuState {
         if resultado.is_ok() {
             if let Some(t) = self.texturas.get(&name) {
                 let bytes: Vec<u8> = pixels.iter().flatten().copied().collect();
+                self.medida.bytes_enviados += bytes.len() as u64;
                 unsafe {
                     let gl = &self.gl;
                     gl.bind_texture(glow::TEXTURE_2D, Some(t.objeto));
@@ -2729,6 +2797,10 @@ impl Rasterizador for GpuState {
 
     fn quadro_espera_pela_placa(&self) -> bool {
         true
+    }
+
+    fn fecha_quadro(&mut self) {
+        GpuState::fecha_quadro(self)
     }
 
     fn estado_enviado_e_poupado(&self) -> (u64, u64) {
