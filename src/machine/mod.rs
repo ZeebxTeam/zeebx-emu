@@ -2694,6 +2694,11 @@ pub struct Machine<C: CpuBackend> {
     tm_bytes_enviados: u64,
     /// Programas de placa ligados — um por construção bem-sucedida do rasterizador de placa.
     tm_programas: u64,
+    /// Onde o binário do programa da placa dorme entre sessões.
+    ///
+    /// É `<cache>/sombreadores/`: descartável e local ao aparelho — perder é recompilar uma
+    /// vez, como no port de referência. `None` desliga o cache (testes).
+    sombreadores: Option<std::path::PathBuf>,
     /// Último nome de textura ou buffer entregue pelo OpenGL ES.
     gles_next_name: u32,
     /// O objeto `IGLES11`, criado sob demanda pelo `QueryInterface` do EGL.
@@ -2888,9 +2893,13 @@ fn placa_pedida(padrao: bool) -> bool {
 ///
 /// Devolve junto se um programa de placa foi ligado — é o que alimenta o contador da
 /// telemetria sem que ninguém precise adivinhar qual variante subiu.
-fn rasterizador(largura: usize, altura: usize) -> (Box<dyn Rasterizador>, bool) {
+fn rasterizador(
+    largura: usize,
+    altura: usize,
+    cache: Option<&std::path::Path>,
+) -> (Box<dyn Rasterizador>, bool) {
     match placa_pedida(false) {
-        true => na_placa(largura, altura, None),
+        true => na_placa(largura, altura, None, cache),
         false => (
             Box::new(GlState::new(largura, altura)) as Box<dyn Rasterizador>,
             false,
@@ -2907,13 +2916,14 @@ fn na_placa(
     largura: usize,
     altura: usize,
     contexto: Option<std::sync::Arc<glow::Context>>,
+    cache: Option<&std::path::Path>,
 ) -> (Box<dyn Rasterizador>, bool) {
     // Com a feature `gl`, o rasterizador de placa existe — e ele **não** cria contexto: quem
     // chama entrega o dele. Sem ela, o software é a única rota, que é o caso do core quando o
     // frontend não oferece contexto.
     #[cfg(feature = "gl")]
     {
-        match crate::video::gpu::GpuState::novo(largura, altura, contexto) {
+        match crate::video::gpu::GpuState::novo(largura, altura, contexto, cache) {
             Ok(gpu) => {
                 crate::registro!(
                     crate::registro::Nivel::Informacao,
@@ -2952,8 +2962,9 @@ impl<C: CpuBackend> Machine<C> {
         contexto: Option<std::sync::Arc<glow::Context>>,
     ) {
         let (largura, altura) = self.gl.frame_size();
+        let cache = self.sombreadores.clone();
         let (raster, ligou) = match placa_pedida(sim) {
-            true => na_placa(largura, altura, contexto),
+            true => na_placa(largura, altura, contexto, cache.as_deref()),
             false => (
                 Box::new(GlState::new(largura, altura)) as Box<dyn Rasterizador>,
                 false,
@@ -3087,8 +3098,9 @@ impl<C: CpuBackend> Machine<C> {
         let aparelho: std::path::PathBuf = storage.device.clone();
         // O programa da placa é ligado aqui dentro, quando a placa sobe: contar agora é o que
         // põe o custo da primeira compilação na telemetria da sessão.
+        let sombreadores = storage.cache.join("sombreadores");
         let (gl, programa_ligado) =
-            rasterizador(SCREEN_WIDTH as usize, SCREEN_HEIGHT as usize);
+            rasterizador(SCREEN_WIDTH as usize, SCREEN_HEIGHT as usize, Some(&sombreadores));
         let heap = Heap::new(loader::HEAP_BASE, loader::HEAP_SIZE);
         // Os objetos ficam depois dos ponteiros que o carregador já reservou no começo da
         // região, para não sobrescrevê-los.
@@ -3305,6 +3317,7 @@ impl<C: CpuBackend> Machine<C> {
             gl_quadro_pendente: false,
             gl_materializacoes: 0,
             tm_programas: u64::from(programa_ligado),
+            sombreadores: Some(sombreadores),
             gl,
             gl_vertices: ArrayPointer::default(),
             gl_colors: ArrayPointer::default(),

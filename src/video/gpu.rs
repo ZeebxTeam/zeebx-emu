@@ -568,6 +568,15 @@ impl Destino {
 }
 
 impl GpuState {
+    /// Se a placa ainda pode receber chamadas do driver.
+    ///
+    /// O aviso de contexto morto pode chegar no meio do quadro, de outra thread. Depois dele,
+    /// nenhum caminho deste estado pode criar, apagar, ler nem desenhar: os ponteiros de função
+    /// guardados morreram com o contexto. A sessão é trocada no quadro seguinte.
+    fn placa_viva(&self) -> bool {
+        !self.placa.morreu()
+    }
+
     /// Monta o programa sobre um contexto, ou diz por que não deu.
     ///
     /// `emprestado` é o contexto da janela, quando há uma. **Receber em vez de criar não é
@@ -577,10 +586,15 @@ impl GpuState {
     ///
     /// Sem janela — o `run` da linha de comando, onde a medição é feita — não há o que emprestar
     /// e abrimos o pbuffer.
+    ///
+    /// `cache` é onde o binário do programa dorme entre sessões (`<cache>/sombreadores/`):
+    /// compilar e ligar custa dezenas de milissegundos na placa fraca, e carregar o binário
+    /// do driver custa ~2 ms. `None` desliga (testes, e quem não tem onde guardar).
     pub fn novo(
         largura: usize,
         altura: usize,
         emprestado: Option<std::sync::Arc<glow::Context>>,
+        cache: Option<&std::path::Path>,
     ) -> Result<Self, String> {
         #[allow(unused_variables)]
         let (proprio, gl, emprestado) = match emprestado {
@@ -602,7 +616,7 @@ impl GpuState {
             }
         };
         let (programa, vao, vbo, ponte) = unsafe {
-            let programa = compila(&gl)?;
+            let programa = programa_pronto(&gl, cache)?;
             let vao = gl.create_vertex_array()?;
             let vbo = gl.create_buffer()?;
             let ponte = gl.create_texture()?;
@@ -712,6 +726,9 @@ impl GpuState {
     }
 
     fn destino(&mut self) {
+        if !self.placa_viva() {
+            return;
+        }
         let medida = self.estado.frame_size();
         let (escala, amostras, extra) = (self.escala, self.amostras, self.extra());
         if self.quadro.as_ref().is_some_and(|d| {
@@ -860,6 +877,9 @@ impl GpuState {
 
     /// Resolve o antialias: as amostras do framebuffer de desenho viram a `cor`.
     fn resolve(&self) {
+        if !self.placa_viva() {
+            return;
+        }
         let Some(destino) = self.quadro.as_ref() else {
             return;
         };
@@ -942,6 +962,9 @@ impl GpuState {
 
     /// Refaz os objetos de textura da placa a partir da copia autoritativa do estado GL.
     fn recria_texturas_restauradas(&mut self) {
+        if !self.placa_viva() {
+            return;
+        }
         let gl = self.gl.clone();
         for (_, textura) in self.texturas.drain() {
             unsafe { gl.delete_texture(textura.objeto) };
@@ -1392,6 +1415,9 @@ impl GpuState {
     /// `glReadPixels`, a cópia para a tela —, e ler o quadro grande seria mover o quadrado do fator
     /// em bytes para jogar quase tudo fora.
     fn liga_para_leitura(&mut self) {
+        if !self.placa_viva() {
+            return;
+        }
         self.destino();
         // O framebuffer do frontend não passa pelo nosso resolve. No caminho interno, resolve
         // MSAA antes de ler.
@@ -1470,6 +1496,9 @@ impl GpuState {
     /// linha 0 no topo. Devolve `false` quando leu em RGBA: no GLES a leitura em 5-6-5 não é
     /// garantida, e ali fica o formato que sempre vale.
     fn le_quadro_rgb565(&mut self, largura: usize, altura: usize) -> bool {
+        if !self.placa_viva() {
+            return false;
+        }
         if self.gl.version().is_embedded {
             self.le_quadro(largura, altura);
             return false;
@@ -1498,6 +1527,13 @@ impl GpuState {
 
     /// Lê o quadro da placa para `self.pixels`, em RGBA, com a linha 0 no topo.
     fn le_quadro(&mut self, largura: usize, altura: usize) {
+        // Placa morta: nem esta leitura toca nela. É o caminho do GLES dos portáteis, onde o
+        // `read_pixels` em 565 não é garantido e se cai aqui. Ver [`GpuState::frame_rgb565`].
+        if !self.placa_viva() {
+            self.pixels.clear();
+            self.pixels.resize(largura * altura * 4, 0);
+            return;
+        }
         self.liga_para_leitura();
         self.pixels.clear();
         self.pixels.resize(largura * altura * 4, 0);
@@ -2029,17 +2065,159 @@ void main() {
 }
 "#;
 
+/// Os dois cabeçalhos que a compilação tenta, na ordem. Ver [`liga_programa`].
+const CABECALHOS: [&str; 2] = [
+    "#version 330 core\n",
+    "#version 300 es\nprecision highp float;\n",
+];
+
+/// FNV-1a de 64 bits.
+///
+/// Hash estável entre processos para nomear o binário em disco — o `RandomState` do `HashMap`
+/// muda a cada execução, e uma chave que muda sozinha é um cache que nunca acerta. Sem
+/// dependência nova para o que dez linhas fazem.
+fn fnv64(partes: &[&[u8]]) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for parte in partes {
+        for &b in parte.iter() {
+            hash ^= u64::from(b);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+    }
+    hash
+}
+
+/// O programa, vindo do cache do driver quando dá, compilado na hora quando não.
+///
+/// A chave é o hash das fontes **com o cabeçalho que funcionou** mais as cordas de versão e
+/// renderer do driver — o binário é dele, e um binário de outro driver é lixo que ele mesmo
+/// recusa (o status do link diz não, e cai na compilação). Perder o arquivo também é cair na
+/// compilação: o cache é descartável, e descartável que quebra não é cache.
+unsafe fn programa_pronto(
+    gl: &glow::Context,
+    cache: Option<&std::path::Path>,
+) -> Result<glow::Program, String> {
+    unsafe {
+        // Tentar os dois cabeçalhos no carregamento, porque na hora de guardar só se sabe
+        // qual funcionou — e duas leituras de arquivo que não existem custam nada.
+        if let Some(dir) = cache {
+            let versao = gl.get_parameter_string(glow::VERSION);
+            let placa = gl.get_parameter_string(glow::RENDERER);
+            for cabecalho in CABECALHOS {
+                let chave = fnv64(&[
+                    cabecalho.as_bytes(),
+                    VERTICE.as_bytes(),
+                    FRAGMENTO.as_bytes(),
+                    versao.as_bytes(),
+                    placa.as_bytes(),
+                ]);
+                if let Some(programa) = carrega_programa(gl, dir, chave) {
+                    crate::registro!(
+                        crate::registro::Nivel::Informacao,
+                        "gl",
+                        "programa da placa veio do cache ({chave:016x})"
+                    );
+                    return Ok(programa);
+                }
+            }
+        }
+        let (programa, cabecalho) = compila(gl)?;
+        if let Some(dir) = cache {
+            let (versao, placa) = (
+                gl.get_parameter_string(glow::VERSION),
+                gl.get_parameter_string(glow::RENDERER),
+            );
+            let chave = fnv64(&[
+                cabecalho.as_bytes(),
+                VERTICE.as_bytes(),
+                FRAGMENTO.as_bytes(),
+                versao.as_bytes(),
+                placa.as_bytes(),
+            ]);
+            guarda_programa(gl, dir, chave, programa);
+        }
+        Ok(programa)
+    }
+}
+
+/// Traz o binário do disco para um programa novo. `None` é "compila na hora": arquivo
+/// ausente, ilegível, curto demais ou recusado pelo driver caem todos aqui.
+unsafe fn carrega_programa(
+    gl: &glow::Context,
+    dir: &std::path::Path,
+    chave: u64,
+) -> Option<glow::Program> {
+    unsafe {
+        let bytes = std::fs::read(dir.join(format!("zeebx-{chave:016x}.bin"))).ok()?;
+        let (formato, binario) = bytes.split_at_checked(4)?;
+        let formato = u32::from_le_bytes(formato.try_into().ok()?);
+        let programa = gl.create_program().ok()?;
+        gl.program_binary_retrievable_hint(programa, true);
+        gl.program_binary(
+            programa,
+            &glow::ProgramBinary {
+                buffer: binario.to_vec(),
+                format: formato,
+            },
+        );
+        match gl.get_program_link_status(programa) {
+            true => Some(programa),
+            // **Apaga o programa recusado e drena o erro.** Um programa que não ligou
+            // continua ocupando o nome — e o `GetError` é pegajoso: sem drenar, o
+            // `get_program_binary` da compilação seguinte leria o erro velho desta
+            // binária recusada e devolveria `None` para um programa bom, quebrando o
+            // cache de forma permanente (toda sessão recompilaria e nunca salvaria).
+            false => {
+                gl.delete_program(programa);
+                while gl.get_error() != glow::NO_ERROR {}
+                None
+            }
+        }
+    }
+}
+
+/// Guarda o binário que o driver devolveu. Melhor esforço: sem ele a próxima sessão compila
+/// de novo, e sessão que não abre por causa de cache é defeito, não otimização.
+unsafe fn guarda_programa(
+    gl: &glow::Context,
+    dir: &std::path::Path,
+    chave: u64,
+    programa: glow::Program,
+) {
+    unsafe {
+        let _ = std::fs::create_dir_all(dir);
+        let Some(binario) = gl.get_program_binary(programa) else {
+            return;
+        };
+        let mut bytes = binario.format.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&binario.buffer);
+        if std::fs::write(dir.join(format!("zeebx-{chave:016x}.bin")), bytes).is_ok() {
+            crate::registro!(
+                crate::registro::Nivel::Informacao,
+                "gl",
+                "programa da placa guardado no cache ({chave:016x}, {} bytes)",
+                binario.buffer.len()
+            );
+        }
+    }
+}
+
 /// Compila o par de shaders, tentando GLSL 3.30 e caindo para ES 3.00.
-unsafe fn compila(gl: &glow::Context) -> Result<glow::Program, String> {
-    ["#version 330 core\n", "#version 300 es\nprecision highp float;\n"]
+///
+/// Devolve junto o cabeçalho que funcionou: é ele que entra na chave do cache, e tentar
+/// adivinhar depois seria ler a mente do driver.
+unsafe fn compila(gl: &glow::Context) -> Result<(glow::Program, &'static str), String> {
+    CABECALHOS
         .into_iter()
-        .find_map(|cabecalho| unsafe { liga_programa(gl, cabecalho) }.ok())
+        .find_map(|cabecalho| unsafe { liga_programa(gl, cabecalho) }.ok().map(|p| (p, cabecalho)))
         .ok_or_else(|| "nenhuma versão de GLSL aceita".to_string())
 }
 
 unsafe fn liga_programa(gl: &glow::Context, cabecalho: &str) -> Result<glow::Program, String> {
     unsafe {
         let programa = gl.create_program()?;
+        // Sem isto o driver pode não devolver binário depois — e sem binário não há cache.
+        gl.program_binary_retrievable_hint(programa, true);
         let mut shaders = Vec::new();
         for (tipo, fonte) in [
             (glow::VERTEX_SHADER, VERTICE),
@@ -2245,6 +2423,9 @@ impl Rasterizador for GpuState {
 
     fn clear(&mut self, mask: u32) {
         self.descarrega();
+        if !self.placa_viva() {
+            return;
+        }
         self.destino();
         // **O `clear` do rasterizador de software ignora as máscaras**: ele preenche os vetores
         // direto. O `glClear` respeita `glDepthMask`, `glStencilMask` e `glColorMask`, então elas
@@ -2634,6 +2815,9 @@ impl Rasterizador for GpuState {
 
     fn draw_texture(&mut self, x: f32, y: f32, z: f32, width: f32, height: f32) {
         self.descarrega();
+        if !self.placa_viva() {
+            return;
+        }
         let ligada = self.fill.textura_ligada;
         let Some(t) = self.texturas.get(&ligada) else {
             return;
@@ -2701,6 +2885,9 @@ impl Rasterizador for GpuState {
     /// resultado sai espelhado de volta.
     fn read_rect(&mut self, x: i32, y: i32, width: usize, height: usize) -> Vec<[u8; 4]> {
         self.descarrega();
+        if !self.placa_viva() {
+            return Vec::new();
+        }
         if width == 0 || height == 0 {
             return Vec::new();
         }
@@ -2860,6 +3047,9 @@ impl Rasterizador for GpuState {
 
     fn import_rgb565_changes(&mut self, width: usize, height: usize, old: &[u8], new: &[u8]) {
         self.descarrega();
+        if !self.placa_viva() {
+            return;
+        }
         let (sw, sh) = self.surface();
         if width == 0 || height == 0 || old.len() != width * height * 2 || new.len() != old.len() {
             return;
@@ -2976,6 +3166,9 @@ impl Rasterizador for GpuState {
             return;
         }
         self.descarrega();
+        if !self.placa_viva() {
+            return;
+        }
         // O teto é o maior anexo que a placa aceita: um fator acima dele não criaria o destino.
         let maximo = unsafe {
             self.gl
@@ -2994,6 +3187,9 @@ impl Rasterizador for GpuState {
 
     fn le_quadro_grande(&mut self) -> Option<(usize, usize, Vec<u8>)> {
         self.descarrega();
+        if !self.placa_viva() {
+            return None;
+        }
         let extra = self.extra();
         if self.escala <= 1 && extra == 0 {
             return None;
@@ -3020,6 +3216,9 @@ impl Rasterizador for GpuState {
 
     fn define_proporcao(&mut self, aspecto: Option<f32>) {
         self.descarrega();
+        if !self.placa_viva() {
+            return;
+        }
         // Mais estreito que o nativo não abre nada; o teto evita um anexo absurdo.
         let aspecto = aspecto.filter(|a| a.is_finite()).map(|a| a.clamp(4.0 / 3.0, 3.6));
         if aspecto != self.proporcao {
@@ -3035,6 +3234,9 @@ impl Rasterizador for GpuState {
             return;
         }
         self.descarrega();
+        if !self.placa_viva() {
+            return;
+        }
         let maximo = unsafe { self.gl.get_parameter_i32(glow::MAX_SAMPLES) }.max(1) as usize;
         // Potências de dois são o que as placas oferecem; 1 é desligado.
         let pedido = match amostras {
@@ -3049,6 +3251,9 @@ impl Rasterizador for GpuState {
 
     fn define_anisotropico(&mut self, nivel: usize) {
         self.descarrega();
+        if !self.placa_viva() {
+            return;
+        }
         let tem = self.gl.supported_extensions().iter().any(|e| {
             e == "GL_EXT_texture_filter_anisotropic" || e == "GL_ARB_texture_filter_anisotropic"
         });
@@ -3139,7 +3344,7 @@ mod tests {
     /// Sem contexto não há o que comparar, e exigir uma placa de quem roda a suíte seria pedir
     /// que ela falhasse em máquina sem EGL. Os testes daqui relatam e passam nesse caso.
     fn par(largura: usize, altura: usize) -> Option<(GpuState, GlState)> {
-        match GpuState::novo(largura, altura, None) {
+        match GpuState::novo(largura, altura, None, None) {
             Ok(gpu) => Some((gpu, GlState::new(largura, altura))),
             Err(motivo) => {
                 println!("sem placa nesta máquina: {motivo}");
@@ -3411,7 +3616,7 @@ mod tests {
         let Some((mut nativa, mut sw)) = par(largura, altura) else {
             return;
         };
-        let Ok(mut grande) = GpuState::novo(largura, altura, None) else {
+        let Ok(mut grande) = GpuState::novo(largura, altura, None, None) else {
             return;
         };
         grande.define_escala(2);
@@ -3457,7 +3662,7 @@ mod tests {
     #[test]
     fn com_antialias_a_diagonal_mistura_as_cores() {
         let (largura, altura) = (16, 16);
-        let Ok(mut gpu) = GpuState::novo(largura, altura, None) else {
+        let Ok(mut gpu) = GpuState::novo(largura, altura, None, None) else {
             return;
         };
         gpu.define_antialias(4);
@@ -3514,7 +3719,7 @@ mod tests {
     #[test]
     fn na_proporcao_larga_a_tesoura_do_jogo_nao_come_os_lados() {
         let (largura, altura) = (64, 48);
-        let Ok(mut gpu) = GpuState::novo(largura, altura, None) else {
+        let Ok(mut gpu) = GpuState::novo(largura, altura, None, None) else {
             println!("sem placa nesta máquina");
             return;
         };
@@ -3858,7 +4063,7 @@ mod tests {
         altura: usize,
         gl: &std::sync::Arc<glow::Context>,
     ) -> Option<GpuState> {
-        match GpuState::novo(largura, altura, Some(gl.clone())) {
+        match GpuState::novo(largura, altura, Some(gl.clone()), None) {
             Ok(estado) => Some(estado),
             Err(motivo) => {
                 println!("sem estado de placa: {motivo}");
@@ -4113,15 +4318,127 @@ mod tests {
         let antes = com_a_morta.read_rect(0, 0, largura, altura);
         a_placa_morreu(endereco_da_placa(&gl));
         segundo_lote(&mut com_a_morta);
+        // Depois do aviso não há mais leitura no driver: o quadro daquela volta foi abandonado,
+        // e a sessão nasce de novo no quadro seguinte. O que se cobra aqui é que nada tenha sido
+        // desenhado nem lido depois do aviso — a leitura volta vazia e o lote foi descartado, e
+        // não submetido.
         let depois = com_a_morta.read_rect(0, 0, largura, altura);
-        assert_eq!(
-            depois,
-            antes,
-            "a placa morta continuou desenhando: o estado não foi invalidado no aviso"
+        assert!(
+            depois.is_empty(),
+            "a leitura depois do aviso tocou no driver morto em vez de voltar vazia"
+        );
+        assert!(
+            com_a_morta.lote.is_empty(),
+            "a placa morta continuou juntando desenho: o lote devia ter sido descartado"
+        );
+        assert!(
+            !antes.is_empty(),
+            "a cena do teste não discrimina: a leitura antes do aviso devia ter pixels"
         );
 
         // A marca é do processo todo: limpa, senão o teste seguinte herdaria uma placa morta.
         a_placa_nasceu(endereco_da_placa(&gl));
+    }
+
+    /// **A placa morta não prepara leitura nem aloca destino.**
+    ///
+    /// O aviso do frontend pode chegar antes de qualquer leitura do quadro. O que se cobra é que
+    /// preparar a leitura não crie textura, framebuffer nem alvo reduzido depois do aviso.
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn a_placa_morta_nao_prepara_leitura_nem_aloca_reduzido() {
+        let (largura, altura) = (16, 16);
+        let Some((contexto, gl)) = placa_emprestada() else {
+            return;
+        };
+        let Some(mut estado) = estado_emprestado(largura, altura, &gl) else {
+            return;
+        };
+        let _ = &contexto;
+        estado.escala = 2;
+        a_placa_morreu(endereco_da_placa(&gl));
+        estado.liga_para_leitura();
+        let tocou = estado.quadro.is_some() || estado.reduzido.is_some();
+        a_placa_nasceu(endereco_da_placa(&gl));
+        assert!(
+            !tocou,
+            "preparar a leitura depois do aviso criou destino na placa morta"
+        );
+    }
+
+    /// **A placa morta não lê pixels novos.**
+    ///
+    /// Depois do aviso, a leitura do jogo não pode chamar o driver: o quadro daquela volta foi
+    /// abandonado, e a sessão nasce de novo no quadro seguinte.
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn a_placa_morta_nao_le_pixels_novos() {
+        let (largura, altura) = (16, 16);
+        let Some((contexto, gl)) = placa_emprestada() else {
+            return;
+        };
+        let Some(mut estado) = estado_emprestado(largura, altura, &gl) else {
+            return;
+        };
+        let _ = &contexto;
+        primeiro_lote(&mut estado, (largura, altura));
+        a_placa_morreu(endereco_da_placa(&gl));
+        let saida = estado.read_rect(0, 0, largura, altura);
+        a_placa_nasceu(endereco_da_placa(&gl));
+        assert!(
+            saida.is_empty(),
+            "a leitura depois do aviso voltou com {} pixels da placa morta",
+            saida.len()
+        );
+    }
+
+    /// **A placa morta não limpa nem cria destino.**
+    ///
+    /// O `clear` do jogo depois do aviso não pode alocar o destino nem chamar o driver.
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn a_placa_morta_nao_limpa_nem_cria_destino() {
+        let (largura, altura) = (16, 16);
+        let Some((contexto, gl)) = placa_emprestada() else {
+            return;
+        };
+        let Some(mut estado) = estado_emprestado(largura, altura, &gl) else {
+            return;
+        };
+        let _ = &contexto;
+        a_placa_morreu(endereco_da_placa(&gl));
+        estado.clear(gles::GL_COLOR_BUFFER_BIT);
+        let criou = estado.quadro.is_some();
+        a_placa_nasceu(endereco_da_placa(&gl));
+        assert!(
+            !criou,
+            "o clear depois do aviso criou destino na placa morta"
+        );
+    }
+
+    /// **A placa morta não muda a escala.**
+    ///
+    /// Trocar a resolução interna depois do aviso consultaria o driver morto para saber o teto.
+    /// A sessão dessa placa vai ser trocada, então a escala fica como estava.
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn a_placa_morta_nao_muda_a_escala() {
+        let (largura, altura) = (16, 16);
+        let Some((contexto, gl)) = placa_emprestada() else {
+            return;
+        };
+        let Some(mut estado) = estado_emprestado(largura, altura, &gl) else {
+            return;
+        };
+        let _ = &contexto;
+        a_placa_morreu(endereco_da_placa(&gl));
+        estado.define_escala(2);
+        let escala = estado.escala;
+        a_placa_nasceu(endereco_da_placa(&gl));
+        assert_eq!(
+            escala, 1,
+            "a escala mudou para {escala} com a placa morta"
+        );
     }
 }
 
