@@ -813,12 +813,68 @@ impl GpuState {
     /// religava o nosso. Como o curto é o que roda em todo quadro depois do primeiro, o desenho
     /// ficava no nosso framebuffer, o frontend apresentava o dele — tela preta — e a placa
     /// trabalhava o mesmo tanto. O sintoma foi exatamente esse: **placa ocupada e nada na tela**.
+    ///
+    /// Com redução, o alvo é sempre o nosso anexo pequeno — mesmo com framebuffer de fora. A
+    /// viewport reduzida num FBO do tamanho do console desenharia um selo num canto com o resto
+    /// velho em volta; o anexo pequeno vai inteiro ao frontend no fim do quadro (ver
+    /// [`GpuState::devolve_ao_frontend`]).
     fn alvo_do_desenho(&self) -> Option<glow::Framebuffer> {
+        if self.reducao > 1 {
+            return self.quadro.as_ref().map(Destino::desenho);
+        }
         match self.fbo_externo {
             // `0` é o framebuffer que já está ligado; o frontend é quem manda nele.
             Some(0) => None,
             Some(id) => std::num::NonZeroU32::new(id).map(glow::NativeFramebuffer),
             None => self.quadro.as_ref().map(Destino::desenho),
+        }
+    }
+
+    /// Amplia o anexo pequeno para o framebuffer do frontend, no fim do quadro com redução.
+    ///
+    /// Só existe porque com redução o desenho vai para o nosso anexo (ver
+    /// [`GpuState::alvo_do_desenho`]): sem esta cópia o frontend apresentaria o que estivesse
+    /// no FBO dele, que não é o quadro de agora. Um blit linear por quadro é o preço — menor
+    /// que os fragmentos poupados, que é a conta inteira da redução.
+    ///
+    /// Método próprio, e não do trait: só a placa tem anexo e frontend.
+    fn amplia_para_o_frontend(&mut self) {
+        let destino = match self.quadro.as_ref() {
+            Some(d) => (d.fbo, d.escala, d.reducao.max(1), d.extra),
+            None => return,
+        };
+        self.resolve();
+        let gl = &self.gl;
+        unsafe {
+            gl.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(destino.0));
+            let alvo = match self.fbo_externo {
+                Some(0) => None,
+                Some(id) => std::num::NonZeroU32::new(id).map(glow::NativeFramebuffer),
+                None => return,
+            };
+            gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, alvo);
+            gl.disable(glow::SCISSOR_TEST);
+            self.esquece_a_tesoura();
+            // A fonte é o anexo pequeno; o destino é o console inteiro, que é o tamanho do
+            // FBO do frontend. Nas contas, `usize` primeiro para a divisão não truncar cedo.
+            let (fw, fh) = self.estado.frame_size();
+            let (largura, altura) = (
+                (fw + 2 * destino.3) * destino.1 / destino.2,
+                fh * destino.1 / destino.2,
+            );
+            gl.blit_framebuffer(
+                0,
+                0,
+                largura as i32,
+                altura as i32,
+                0,
+                0,
+                fw as i32,
+                fh as i32,
+                glow::COLOR_BUFFER_BIT,
+                glow::LINEAR,
+            );
+            gl.bind_framebuffer(glow::FRAMEBUFFER, alvo);
         }
     }
 
@@ -1540,15 +1596,16 @@ impl GpuState {
         }
         self.destino();
         // O framebuffer do frontend não passa pelo nosso resolve. No caminho interno, resolve
-        // MSAA antes de ler.
-        if self.fbo_externo.is_none() {
+        // MSAA antes de ler. Com redução o desenho está no nosso anexo mesmo com framebuffer
+        // de fora, então o resolve vale ali também — ler o multissample sem resolver é preto.
+        if self.fbo_externo.is_none() || self.reducao > 1 {
             self.resolve();
         }
         let extra = self.quadro.as_ref().map_or(0, |d| d.extra) as i32;
-        // Leitura direta só quando o anexo tem o tamanho do console: fator líquido 1 e sem
-        // lados. `escala <= reducao` não vale — com escala 1 e redução 2 o anexo tem metade
-        // do console, e ler direto entregaria um quarto do quadro.
-        if self.escala == self.reducao.max(1) && extra == 0 {
+        // Leitura direta só no caso comum: fator líquido 1, sem redução e sem lados. Com
+        // redução o desenho está no nosso anexo mesmo com framebuffer de fora (ver
+        // [`GpuState::alvo_do_desenho`]), e ler o de fora entregaria o quadro anterior.
+        if self.escala <= 1 && self.reducao <= 1 && extra == 0 {
             let fbo = match self.fbo_externo {
                 Some(_) => self.alvo_do_desenho(),
                 None => self.quadro.as_ref().map(|d| d.fbo),
@@ -2474,6 +2531,12 @@ impl Rasterizador for GpuState {
         if self.fbo_externo.is_none() || self.placa.morreu() {
             return;
         }
+        // Com redução, o desenho está no nosso anexo pequeno: amplia para o framebuffer do
+        // frontend antes de soltar, ou ele apresentaria o quadro anterior. O FBO do frontend
+        // tem o tamanho do console (o `av_info` do core é 640×480 fixo).
+        if self.reducao > 1 {
+            self.amplia_para_o_frontend();
+        }
         let gl = &self.gl;
         unsafe {
             gl.bind_vertex_array(None);
@@ -2855,41 +2918,41 @@ impl Rasterizador for GpuState {
     ) -> Result<(), Option<(u32, u32)>> {
         self.descarrega();
         let resultado = self.estado.sub_image(name, x, y, width, height, pixels);
-        if resultado.is_ok() {
-            if let Some(t) = self.texturas.get(&name) {
-                // O parcial combina com o inteiro: texels no formato em que a textura vive,
-                // ou o driver lê metade dos bytes que devia. A ficha só guarda tipos que o
-                // `formato_compacto` aceita — o `unwrap_or` abaixo nunca dispara, e existe
-                // porque a ficha é dado, não prova.
-                let embutido = self.gl.version().is_embedded;
-                let (formato, tipo, bytes) = match t.compacto.and_then(|k| formato_compacto(k, embutido)) {
-                    Some((_, formato, tipo)) => (
-                        formato,
-                        tipo,
-                        compacta(pixels, t.compacto.unwrap_or(gles::GL_UNSIGNED_BYTE)),
-                    ),
-                    None => (
-                        glow::RGBA,
-                        glow::UNSIGNED_BYTE,
-                        pixels.iter().flatten().copied().collect(),
-                    ),
-                };
-                unsafe {
-                    let gl = &self.gl;
-                    gl.bind_texture(glow::TEXTURE_2D, Some(t.objeto));
-                    gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
-                    gl.tex_sub_image_2d(
-                        glow::TEXTURE_2D,
-                        0,
-                        x as i32,
-                        y as i32,
-                        width as i32,
-                        height as i32,
-                        formato,
-                        tipo,
-                        glow::PixelUnpackData::Slice(Some(&bytes)),
-                    );
-                }
+        if resultado.is_ok()
+            && let Some(t) = self.texturas.get(&name)
+        {
+            // O parcial combina com o inteiro: texels no formato em que a textura vive,
+            // ou o driver lê metade dos bytes que devia. A ficha só guarda tipos que o
+            // `formato_compacto` aceita — o `unwrap_or` abaixo nunca dispara, e existe
+            // porque a ficha é dado, não prova.
+            let embutido = self.gl.version().is_embedded;
+            let (formato, tipo, bytes) = match t.compacto.and_then(|k| formato_compacto(k, embutido)) {
+                Some((_, formato, tipo)) => (
+                    formato,
+                    tipo,
+                    compacta(pixels, t.compacto.unwrap_or(gles::GL_UNSIGNED_BYTE)),
+                ),
+                None => (
+                    glow::RGBA,
+                    glow::UNSIGNED_BYTE,
+                    pixels.iter().flatten().copied().collect(),
+                ),
+            };
+            unsafe {
+                let gl = &self.gl;
+                gl.bind_texture(glow::TEXTURE_2D, Some(t.objeto));
+                gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
+                gl.tex_sub_image_2d(
+                    glow::TEXTURE_2D,
+                    0,
+                    x as i32,
+                    y as i32,
+                    width as i32,
+                    height as i32,
+                    formato,
+                    tipo,
+                    glow::PixelUnpackData::Slice(Some(&bytes)),
+                );
             }
         }
         resultado
@@ -4579,6 +4642,102 @@ mod tests {
         estado.desenha_no_fbo(Some(fbo.0.get()));
         segundo_lote(&mut estado);
         assert_ne!(ligados(), [0, 0, 0], "o quadro seguinte não religou os objetos do motor");
+    }
+
+    /// Com redução e framebuffer de fora, o frontend recebe o quadro ampliado.
+    ///
+    /// Sem o blit do fim do quadro, a viewport pequena desenharia um selo num canto do FBO
+    /// do frontend com o resto velho em volta — e a leitura do jogo viria do anexo vazio.
+    /// A prova desenha o triângulo vermelho, devolve e lê o FBO "do frontend": o miolo tem
+    /// de ser vermelho e o canto oposto, azul.
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn com_reducao_o_frontend_recebe_o_quadro_ampliado() {
+        use glow::HasContext as _;
+
+        let (largura, altura) = (16, 16);
+        let Some((contexto, gl)) = placa_emprestada() else {
+            return;
+        };
+        let Some(mut estado) = estado_emprestado(largura, altura, &gl) else {
+            return;
+        };
+        let _ = &contexto;
+        // O FBO do "frontend", no tamanho do console, como o `get_current_framebuffer`
+        // entregaria.
+        let fbo = unsafe {
+            let textura = gl.create_texture().unwrap();
+            gl.bind_texture(glow::TEXTURE_2D, Some(textura));
+            gl.tex_image_2d(
+                glow::TEXTURE_2D,
+                0,
+                glow::RGBA as i32,
+                largura as i32,
+                altura as i32,
+                0,
+                glow::RGBA,
+                glow::UNSIGNED_BYTE,
+                glow::PixelUnpackData::Slice(None),
+            );
+            let fbo = gl.create_framebuffer().unwrap();
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
+            gl.framebuffer_texture_2d(
+                glow::FRAMEBUFFER,
+                glow::COLOR_ATTACHMENT0,
+                glow::TEXTURE_2D,
+                Some(textura),
+                0,
+            );
+            // Verde de propósito: se o blit não acontecer, é ele que a leitura encontra.
+            gl.clear_color(0.0, 1.0, 0.0, 1.0);
+            gl.clear(glow::COLOR_BUFFER_BIT);
+            fbo
+        };
+        estado.desenha_no_fbo(Some(fbo.0.get()));
+        estado.define_reducao(2);
+        if estado.reducao != 2 {
+            println!("placa sem blit confiável: a redução fica desligada");
+            return;
+        }
+        estado.set_viewport(0, 0, largura as i32, altura as i32);
+        estado.set_clear_color([0.0, 0.0, 1.0, 1.0]);
+        estado.clear(gles::GL_COLOR_BUFFER_BIT);
+        let canto = |x: f32, y: f32| Vertex {
+            position: [x, y, 0.0, 1.0],
+            color: [1.0, 0.0, 0.0, 1.0],
+            uv: UV_PADRAO,
+            uv1: UV_PADRAO,
+            normal: [0.0, 0.0, 1.0],
+            fog: 1.0,
+        };
+        estado.draw(
+            gles::GL_TRIANGLES,
+            &[canto(-1.0, 1.0), canto(-1.0, -1.0), canto(1.0, 1.0)],
+        );
+        estado.descarrega();
+        estado.devolve_ao_frontend();
+        let quadro: Vec<u8> = unsafe {
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
+            let mut bytes = vec![0u8; largura * altura * 4];
+            gl.read_pixels(
+                0,
+                0,
+                largura as i32,
+                altura as i32,
+                glow::RGBA,
+                glow::UNSIGNED_BYTE,
+                glow::PixelPackData::Slice(Some(&mut bytes)),
+            );
+            bytes
+        };
+        // Longe da diagonal, para a ampliação linear não misturar: miolo vermelho e canto
+        // azul, no FBO do frontend, em 16×16.
+        let pixel = |x: usize, y: usize| {
+            let i = (y * largura + x) * 4;
+            (quadro[i], quadro[i + 1], quadro[i + 2])
+        };
+        assert_eq!(pixel(2, 2), (255, 0, 0), "o triângulo não chegou ao frontend");
+        assert_eq!(pixel(13, 13), (0, 0, 255), "o fundo não chegou ao frontend");
     }
 
     /// **A placa que morreu no meio do quadro não recebe desenho novo.**
