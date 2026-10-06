@@ -731,6 +731,10 @@ pub trait Rasterizador {
         width: usize,
         height: usize,
         pixels: Vec<[u8; 4]>,
+        // O tipo com que o jogo mandou os texels (`GL_UNSIGNED_BYTE`,
+        // `GL_UNSIGNED_SHORT_5_6_5` e cia). A placa usa para subir nativo 16-bit quando dá;
+        // o processador ignora, porque a cópia dele é sempre RGBA8.
+        kind: u32,
     );
     fn sub_image(
         &mut self,
@@ -769,9 +773,9 @@ pub trait Rasterizador {
     /// Se trazer o quadro para a memória da CPU custa uma **espera pela placa**.
     ///
     /// Reduz a resolução interna do 3D, desenhando numa superfície menor e ampliando na
-    /// apresentação. **Só o rasterizador de processador faz isto**: ver
-    /// [`GlState::define_reducao`]. Na placa não há o que fazer — ali o preenchimento a 640×480
-    /// não satura a GPU, e reduzir só estragaria a imagem.
+    /// apresentação. O processador implementa em [`GlState::define_reducao`]; a placa, no
+    /// `GpuState`: ali o anexo encolhe e a leitura amplia por blit linear, e a apresentação
+    /// direta estica a textura.
     fn define_reducao(&mut self, _reducao: usize) {}
 
     /// Chamadas de estado enviadas à placa e quantas o espelho poupou. Zero no software.
@@ -1036,8 +1040,9 @@ impl Rasterizador for GlState {
         width: usize,
         height: usize,
         pixels: Vec<[u8; 4]>,
+        kind: u32,
     ) {
-        GlState::upload_level(self, name, level, width, height, pixels)
+        GlState::upload_level(self, name, level, width, height, pixels, kind)
     }
     fn sub_image(
         &mut self,
@@ -1999,6 +2004,8 @@ impl GlState {
         width: usize,
         height: usize,
         pixels: Vec<[u8; 4]>,
+        // Ignorado: a cópia do processador é sempre RGBA8. Ver o `kind` do trait.
+        _kind: u32,
     ) {
         self.flush();
         let texture = self.textures.entry(name).or_default();

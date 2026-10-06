@@ -1101,6 +1101,14 @@ impl Session {
         self.machine.estado_enviado_e_poupado()
     }
 
+    /// O retrato acumulado do vídeo nesta sessão: desenhos, leituras e subidas.
+    ///
+    /// É a matéria-prima da telemetria por segundo do handheld (`--telemetria` do `sessao`):
+    /// contadores sempre ligados, de soma de inteiro, sem relógio.
+    pub fn telemetria(&self) -> crate::machine::Telemetria {
+        self.machine.telemetria()
+    }
+
     /// A tela, como está agora.
     pub fn screen(&self) -> &Framebuffer {
         self.intermediario
@@ -1220,6 +1228,14 @@ impl Session {
     /// Quanto tempo real cada método de API custou, do mais caro para o mais barato, em ns.
     pub fn perfil_de_api(&self) -> Vec<(String, u64)> {
         self.machine.api_profile()
+    }
+
+    /// Quantas vezes cada método de API foi chamado. Ver [`Session::perfil_de_api`].
+    ///
+    /// É daqui que sai a estatística de emissores de draw da telemetria: filtrar os métodos
+    /// de desenho e ordenar por contagem diz quem emite e quem repete geometria e estado.
+    pub fn chamadas_de_api(&self) -> Vec<(String, u64)> {
+        self.machine.call_log()
     }
 
     /// Quantas instruções ARM o jogo já executou.

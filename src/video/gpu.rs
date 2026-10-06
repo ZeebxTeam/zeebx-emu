@@ -58,10 +58,100 @@ struct Textura {
     /// O maior nível de mipmap já enviado. Um filtro que peça mipmap sem a cadeia completa
     /// desenha preto no OpenGL — então, quando só existe o nível zero, o filtro é rebaixado.
     maior_nivel: u32,
+    /// Como os texels estão guardados na placa. `None` é RGBA8; `Some(kind)` é o tipo com
+    /// que o jogo mandou (5-6-5, 4-4-4-4 ou 5-5-5-1), e as subidas parciais têm de combinar.
+    compacto: Option<u32>,
     crop: [i32; 4],
     filtro: u32,
     filtro_min: u32,
     wrap: [u32; 2],
+}
+
+/// O trio (interno, formato, tipo) com que um tipo compacto sobe. `None` é RGBA8 de sempre.
+///
+/// Só os três tipos nativos de 16 bits — ver `gles::eh_compacto`, que é a outra metade desta
+/// decisão: o resto — comprimido, paletizado, 8-bit — continua subindo RGBA8, porque ali não
+/// há texel nativo para preservar.
+///
+/// Os dois RGBA o `glow` não define para o GLES, então vão os valores do GLES2 (formatos
+/// internos com tamanho, obrigatórios para textura): `GL_RGBA4444` é 0x8D64 e `GL_RGBA5551`
+/// é 0x8D65. No desktop valem os nomes de lá (`RGBA4`, `RGB5_A1`) — ver `formato_compacto`.
+const INTERNO_RGBA4444: i32 = 0x8D64;
+const INTERNO_RGBA5551: i32 = 0x8D65;
+
+fn formato_compacto(kind: u32, embutido: bool) -> Option<(i32, u32, u32)> {
+    match gles::eh_compacto(kind) {
+        false => None,
+        true => Some(match kind {
+            gles::GL_UNSIGNED_SHORT_5_6_5 => {
+                (glow::RGB565 as i32, glow::RGB, glow::UNSIGNED_SHORT_5_6_5)
+            }
+            // O interno do 4444/5551 muda de nome entre desktop e GLES, e cada lado só
+            // aceita o seu: o desktop recusava o 0x8D64 com erro silencioso e a textura
+            // saía preta (o chão do Crash). O `embutido` é o do contexto em uso.
+            gles::GL_UNSIGNED_SHORT_4_4_4_4 => match embutido {
+                true => (
+                    INTERNO_RGBA4444,
+                    glow::RGBA,
+                    glow::UNSIGNED_SHORT_4_4_4_4,
+                ),
+                false => (
+                    glow::RGBA4 as i32,
+                    glow::RGBA,
+                    glow::UNSIGNED_SHORT_4_4_4_4,
+                ),
+            },
+            // O `_` é o 5-5-5-1: o `eh_compacto` acima já filtrou o resto, e o `match`
+            // precisa do braço para compilar.
+            _ => match embutido {
+                true => (
+                    INTERNO_RGBA5551,
+                    glow::RGBA,
+                    glow::UNSIGNED_SHORT_5_5_5_1,
+                ),
+                false => (
+                    glow::RGB5_A1 as i32,
+                    glow::RGBA,
+                    glow::UNSIGNED_SHORT_5_5_5_1,
+                ),
+            },
+        }),
+    }
+}
+
+/// Empacota um canal de 8 bits nos `bits` do 16-bit, invertendo o `expand` da decodificação.
+///
+/// A volta é exata para todo valor que veio de um texel nativo — provado por teste exaustivo
+/// em `volta_dos_canais_e_exata`: o arredondamento dos dois lados se cancela.
+fn empacota(canal: u8, bits: u32) -> u16 {
+    let max = (1u16 << bits) - 1;
+    ((u16::from(canal) * max + 127) / 255).min(max)
+}
+
+/// RGBA8 de volta aos dois bytes nativos, na ordem do host. `kind` é um dos três compactos.
+fn compacta(pixels: &[[u8; 4]], kind: u32) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(pixels.len() * 2);
+    for &[r, g, b, a] in pixels {
+        let v = match kind {
+            gles::GL_UNSIGNED_SHORT_5_6_5 => {
+                (empacota(r, 5) << 11) | (empacota(g, 6) << 5) | empacota(b, 5)
+            }
+            gles::GL_UNSIGNED_SHORT_4_4_4_4 => {
+                (empacota(r, 4) << 12)
+                    | (empacota(g, 4) << 8)
+                    | (empacota(b, 4) << 4)
+                    | empacota(a, 4)
+            }
+            _ => {
+                (empacota(r, 5) << 11)
+                    | (empacota(g, 5) << 6)
+                    | (empacota(b, 5) << 1)
+                    | u16::from(a >= 128)
+            }
+        };
+        bytes.extend_from_slice(&v.to_le_bytes());
+    }
+    bytes
 }
 
 /// O estado do preenchimento, anotado das chamadas e aplicado uma vez por draw.
@@ -514,6 +604,11 @@ pub struct GpuState {
     sujo: bool,
     /// A resolução interna, em múltiplos do quadro do console. Ver [`Rasterizador::define_escala`].
     escala: usize,
+    /// O divisor da resolução interna do 3D. Ver [`Rasterizador::define_reducao`].
+    ///
+    /// 1 é desligado; 2 desenha em 320×240 e amplia na leitura ou na apresentação. O tamanho
+    /// do anexo é `medida * escala / reducao`, e a viewport e a tesoura vão na mesma razão.
+    reducao: usize,
     /// O quadro reduzido ao tamanho do console, de onde saem as leituras quando `escala > 1`.
     reduzido: Option<(glow::Framebuffer, glow::Texture, (usize, usize))>,
     /// Amostras por pixel do antialias (MSAA); 1 é desligado. Ver [`Rasterizador::define_antialias`].
@@ -549,9 +644,10 @@ struct Destino {
     fbo: glow::Framebuffer,
     cor: glow::Texture,
     profundidade: glow::Renderbuffer,
-    /// Em pixels do console; o anexo tem `(medida.0 + 2 * extra, medida.1) * escala`.
+    /// Em pixels do console; o anexo tem `(medida.0 + 2 * extra, medida.1) * escala / reducao`.
     medida: (usize, usize),
     escala: usize,
+    reducao: usize,
     /// As colunas a mais de cada lado, em pixels do console, para a proporção larga.
     extra: usize,
     amostras: usize,
@@ -568,6 +664,15 @@ impl Destino {
 }
 
 impl GpuState {
+    /// Se a placa ainda pode receber chamadas do driver.
+    ///
+    /// O aviso de contexto morto pode chegar no meio do quadro, de outra thread. Depois dele,
+    /// nenhum caminho deste estado pode criar, apagar, ler nem desenhar: os ponteiros de função
+    /// guardados morreram com o contexto. A sessão é trocada no quadro seguinte.
+    fn placa_viva(&self) -> bool {
+        !self.placa.morreu()
+    }
+
     /// Monta o programa sobre um contexto, ou diz por que não deu.
     ///
     /// `emprestado` é o contexto da janela, quando há uma. **Receber em vez de criar não é
@@ -577,10 +682,15 @@ impl GpuState {
     ///
     /// Sem janela — o `run` da linha de comando, onde a medição é feita — não há o que emprestar
     /// e abrimos o pbuffer.
+    ///
+    /// `cache` é onde o binário do programa dorme entre sessões (`<cache>/sombreadores/`):
+    /// compilar e ligar custa dezenas de milissegundos na placa fraca, e carregar o binário
+    /// do driver custa ~2 ms. `None` desliga (testes, e quem não tem onde guardar).
     pub fn novo(
         largura: usize,
         altura: usize,
         emprestado: Option<std::sync::Arc<glow::Context>>,
+        cache: Option<&std::path::Path>,
     ) -> Result<Self, String> {
         #[allow(unused_variables)]
         let (proprio, gl, emprestado) = match emprestado {
@@ -602,7 +712,7 @@ impl GpuState {
             }
         };
         let (programa, vao, vbo, ponte) = unsafe {
-            let programa = compila(&gl)?;
+            let programa = programa_pronto(&gl, cache)?;
             let vao = gl.create_vertex_array()?;
             let vbo = gl.create_buffer()?;
             let ponte = gl.create_texture()?;
@@ -656,6 +766,7 @@ impl GpuState {
             pixels: Vec::new(),
             sujo: true,
             escala: 1,
+            reducao: 1,
             proporcao: None,
             em_perspectiva: false,
             fbo_externo: None,
@@ -702,7 +813,15 @@ impl GpuState {
     /// religava o nosso. Como o curto é o que roda em todo quadro depois do primeiro, o desenho
     /// ficava no nosso framebuffer, o frontend apresentava o dele — tela preta — e a placa
     /// trabalhava o mesmo tanto. O sintoma foi exatamente esse: **placa ocupada e nada na tela**.
+    ///
+    /// Com redução, o alvo é sempre o nosso anexo pequeno — mesmo com framebuffer de fora. A
+    /// viewport reduzida num FBO do tamanho do console desenharia um selo num canto com o resto
+    /// velho em volta; o anexo pequeno vai inteiro ao frontend no fim do quadro (ver
+    /// [`GpuState::devolve_ao_frontend`]).
     fn alvo_do_desenho(&self) -> Option<glow::Framebuffer> {
+        if self.reducao > 1 {
+            return self.quadro.as_ref().map(Destino::desenho);
+        }
         match self.fbo_externo {
             // `0` é o framebuffer que já está ligado; o frontend é quem manda nele.
             Some(0) => None,
@@ -711,11 +830,67 @@ impl GpuState {
         }
     }
 
+    /// Amplia o anexo pequeno para o framebuffer do frontend, no fim do quadro com redução.
+    ///
+    /// Só existe porque com redução o desenho vai para o nosso anexo (ver
+    /// [`GpuState::alvo_do_desenho`]): sem esta cópia o frontend apresentaria o que estivesse
+    /// no FBO dele, que não é o quadro de agora. Um blit linear por quadro é o preço — menor
+    /// que os fragmentos poupados, que é a conta inteira da redução.
+    ///
+    /// Método próprio, e não do trait: só a placa tem anexo e frontend.
+    fn amplia_para_o_frontend(&mut self) {
+        let destino = match self.quadro.as_ref() {
+            Some(d) => (d.fbo, d.escala, d.reducao.max(1), d.extra),
+            None => return,
+        };
+        self.resolve();
+        let gl = &self.gl;
+        unsafe {
+            gl.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(destino.0));
+            let alvo = match self.fbo_externo {
+                Some(0) => None,
+                Some(id) => std::num::NonZeroU32::new(id).map(glow::NativeFramebuffer),
+                None => return,
+            };
+            gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, alvo);
+            gl.disable(glow::SCISSOR_TEST);
+            self.esquece_a_tesoura();
+            // A fonte é o anexo pequeno; o destino é o console inteiro, que é o tamanho do
+            // FBO do frontend. Nas contas, `usize` primeiro para a divisão não truncar cedo.
+            let (fw, fh) = self.estado.frame_size();
+            let (largura, altura) = (
+                (fw + 2 * destino.3) * destino.1 / destino.2,
+                fh * destino.1 / destino.2,
+            );
+            gl.blit_framebuffer(
+                0,
+                0,
+                largura as i32,
+                altura as i32,
+                0,
+                0,
+                fw as i32,
+                fh as i32,
+                glow::COLOR_BUFFER_BIT,
+                glow::LINEAR,
+            );
+            gl.bind_framebuffer(glow::FRAMEBUFFER, alvo);
+        }
+    }
+
     fn destino(&mut self) {
+        if !self.placa_viva() {
+            return;
+        }
         let medida = self.estado.frame_size();
-        let (escala, amostras, extra) = (self.escala, self.amostras, self.extra());
+        let (escala, reducao, amostras, extra) =
+            (self.escala, self.reducao.max(1), self.amostras, self.extra());
         if self.quadro.as_ref().is_some_and(|d| {
-            d.medida == medida && d.escala == escala && d.amostras == amostras && d.extra == extra
+            d.medida == medida
+                && d.escala == escala
+                && d.reducao == reducao
+                && d.amostras == amostras
+                && d.extra == extra
         }) {
             let alvo = self.alvo_do_desenho();
             unsafe { self.gl.bind_framebuffer(glow::FRAMEBUFFER, alvo) };
@@ -727,8 +902,8 @@ impl GpuState {
                 solta_destino(gl, antigo);
             }
             let (largura, altura) = (
-                ((medida.0 + 2 * extra) * escala) as i32,
-                (medida.1 * escala) as i32,
+                (((medida.0 + 2 * extra) * escala) / reducao) as i32,
+                ((medida.1 * escala) / reducao) as i32,
             );
             let cor = gl.create_texture().expect("textura de cor");
             gl.bind_texture(glow::TEXTURE_2D, Some(cor));
@@ -845,6 +1020,7 @@ impl GpuState {
                 profundidade,
                 medida,
                 escala,
+                reducao,
                 extra,
                 amostras,
                 multi,
@@ -860,6 +1036,9 @@ impl GpuState {
 
     /// Resolve o antialias: as amostras do framebuffer de desenho viram a `cor`.
     fn resolve(&self) {
+        if !self.placa_viva() {
+            return;
+        }
         let Some(destino) = self.quadro.as_ref() else {
             return;
         };
@@ -942,6 +1121,9 @@ impl GpuState {
 
     /// Refaz os objetos de textura da placa a partir da copia autoritativa do estado GL.
     fn recria_texturas_restauradas(&mut self) {
+        if !self.placa_viva() {
+            return;
+        }
         let gl = self.gl.clone();
         for (_, textura) in self.texturas.drain() {
             unsafe { gl.delete_texture(textura.objeto) };
@@ -1014,6 +1196,9 @@ impl GpuState {
                     largura: salva.width,
                     altura: salva.height,
                     maior_nivel,
+                    // O restore recria em RGBA8 a partir dos pixels guardados, que são RGBA8:
+                    // o jogo volta a subir nativo no próximo nível que carregar, como sempre.
+                    compacto: None,
                     crop: salva.crop,
                     filtro: salva.filter,
                     filtro_min: salva.min_filter,
@@ -1113,9 +1298,17 @@ impl GpuState {
         let mut e_n = 0u64;
         let mut p_n = 0u64;
         unsafe {
-            // A viewport vem em pixels do console; o anexo é `escala` vezes maior.
-            let n = self.escala as i32;
-            let viewport = (x * n, y * n, w.max(0) * n, h.max(0) * n);
+            // A viewport vem em pixels do console; o anexo é `escala / reducao` vezes maior.
+            // A divisão trunca: com os fatores permitidos (1, 2, 4 sobre 640×480) a conta é
+            // exata, e numa viewport arbitrária o erro é de menos de um pixel do anexo.
+            let (fator_cima, fator_baixo) = (self.escala as i32, self.reducao.max(1) as i32);
+            let na_escala = |v: i32| v * fator_cima / fator_baixo;
+            let viewport = (
+                na_escala(x),
+                na_escala(y),
+                na_escala(w.max(0)),
+                na_escala(h.max(0)),
+            );
             if Espelho::mudou(&mut m.viewport, viewport, &mut e_n, &mut p_n) {
                 gl.viewport(viewport.0, viewport.1, viewport.2, viewport.3);
             }
@@ -1134,14 +1327,19 @@ impl GpuState {
                 gl.enable(glow::DEPTH_CLAMP);
             }
             // O `glScissor` do jogo vem em pixels do console, com o `y` de baixo para cima —
-            // a mesma convenção da viewport —, e o anexo é `escala` vezes maior. Ver
+            // a mesma convenção da viewport —, e o anexo é `escala / reducao` vezes maior. Ver
             // [`tesoura_no_anexo`].
             if Espelho::mudou(&mut m.tesoura_ligada, e.tesoura_ligada, &mut e_n, &mut p_n) {
                 liga(gl, glow::SCISSOR_TEST, e.tesoura_ligada);
             }
             if e.tesoura_ligada {
                 let (sx, sy, sw, sh) = tesoura_no_anexo(e.tesoura, self.estado.surface(), extra);
-                let tesoura = (sx * n, sy * n, sw.max(0) * n, sh.max(0) * n);
+                let tesoura = (
+                    na_escala(sx),
+                    na_escala(sy),
+                    na_escala(sw.max(0)),
+                    na_escala(sh.max(0)),
+                );
                 if Espelho::mudou(&mut m.tesoura, tesoura, &mut e_n, &mut p_n) {
                     gl.scissor(tesoura.0, tesoura.1, tesoura.2, tesoura.3);
                 }
@@ -1387,19 +1585,27 @@ impl GpuState {
 
     /// Deixa ligado, para leitura, um framebuffer com o quadro no tamanho do console.
     ///
-    /// Com `escala` 1 é o próprio destino. Acima disso o quadro grande é reduzido na placa, com
-    /// filtro linear, antes de qualquer leitura: é o que o jogo vê — o `GetColorBufferQUALCOMM`, o
-    /// `glReadPixels`, a cópia para a tela —, e ler o quadro grande seria mover o quadrado do fator
-    /// em bytes para jogar quase tudo fora.
+    /// Com `escala` acima de 1 o quadro grande é reduzido na placa, com filtro linear, antes
+    /// de qualquer leitura; com `reducao` acima de 1 o quadro pequeno é ampliado do mesmo
+    /// jeito: é o que o jogo vê — o `GetColorBufferQUALCOMM`, o `glReadPixels`, a cópia para
+    /// a tela —, e ler o anexo cru seria mover o tamanho errado para jogar fora ou esticar na
+    /// CPU.
     fn liga_para_leitura(&mut self) {
+        if !self.placa_viva() {
+            return;
+        }
         self.destino();
         // O framebuffer do frontend não passa pelo nosso resolve. No caminho interno, resolve
-        // MSAA antes de ler.
-        if self.fbo_externo.is_none() {
+        // MSAA antes de ler. Com redução o desenho está no nosso anexo mesmo com framebuffer
+        // de fora, então o resolve vale ali também — ler o multissample sem resolver é preto.
+        if self.fbo_externo.is_none() || self.reducao > 1 {
             self.resolve();
         }
         let extra = self.quadro.as_ref().map_or(0, |d| d.extra) as i32;
-        if self.escala <= 1 && extra == 0 {
+        // Leitura direta só no caso comum: fator líquido 1, sem redução e sem lados. Com
+        // redução o desenho está no nosso anexo mesmo com framebuffer de fora (ver
+        // [`GpuState::alvo_do_desenho`]), e ler o de fora entregaria o quadro anterior.
+        if self.escala <= 1 && self.reducao <= 1 && extra == 0 {
             let fbo = match self.fbo_externo {
                 Some(_) => self.alvo_do_desenho(),
                 None => self.quadro.as_ref().map(|d| d.fbo),
@@ -1409,7 +1615,10 @@ impl GpuState {
         }
         let medida = self.estado.frame_size();
         let (fw, fh) = (medida.0 as i32, medida.1 as i32);
-        let n = self.escala as i32;
+        // O anexo tem `escala / reducao` vezes o console: a fonte do blit é o centro dele, e
+        // o destino é o console inteiro, nas duas direções.
+        let (s, r) = (self.escala as i32, self.reducao.max(1) as i32);
+        let no_anexo = |v: i32| v * s / r;
         let gl = &self.gl;
         unsafe {
             if self.reduzido.as_ref().is_none_or(|r| r.2 != medida) {
@@ -1451,10 +1660,10 @@ impl GpuState {
             // Na proporção larga, o jogo lê só o centro: é ali que está a imagem de 640×480 que
             // ele desenhou, e os lados são nossos.
             gl.blit_framebuffer(
-                extra * n,
+                no_anexo(extra),
                 0,
-                (extra + fw) * n,
-                fh * n,
+                no_anexo(extra + fw),
+                no_anexo(fh),
                 0,
                 0,
                 fw,
@@ -1470,6 +1679,9 @@ impl GpuState {
     /// linha 0 no topo. Devolve `false` quando leu em RGBA: no GLES a leitura em 5-6-5 não é
     /// garantida, e ali fica o formato que sempre vale.
     fn le_quadro_rgb565(&mut self, largura: usize, altura: usize) -> bool {
+        if !self.placa_viva() {
+            return false;
+        }
         if self.gl.version().is_embedded {
             self.le_quadro(largura, altura);
             return false;
@@ -1498,6 +1710,13 @@ impl GpuState {
 
     /// Lê o quadro da placa para `self.pixels`, em RGBA, com a linha 0 no topo.
     fn le_quadro(&mut self, largura: usize, altura: usize) {
+        // Placa morta: nem esta leitura toca nela. É o caminho do GLES dos portáteis, onde o
+        // `read_pixels` em 565 não é garantido e se cai aqui. Ver [`GpuState::frame_rgb565`].
+        if !self.placa_viva() {
+            self.pixels.clear();
+            self.pixels.resize(largura * altura * 4, 0);
+            return;
+        }
         self.liga_para_leitura();
         self.pixels.clear();
         self.pixels.resize(largura * altura * 4, 0);
@@ -2029,17 +2248,159 @@ void main() {
 }
 "#;
 
+/// Os dois cabeçalhos que a compilação tenta, na ordem. Ver [`liga_programa`].
+const CABECALHOS: [&str; 2] = [
+    "#version 330 core\n",
+    "#version 300 es\nprecision highp float;\n",
+];
+
+/// FNV-1a de 64 bits.
+///
+/// Hash estável entre processos para nomear o binário em disco — o `RandomState` do `HashMap`
+/// muda a cada execução, e uma chave que muda sozinha é um cache que nunca acerta. Sem
+/// dependência nova para o que dez linhas fazem.
+fn fnv64(partes: &[&[u8]]) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for parte in partes {
+        for &b in parte.iter() {
+            hash ^= u64::from(b);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+    }
+    hash
+}
+
+/// O programa, vindo do cache do driver quando dá, compilado na hora quando não.
+///
+/// A chave é o hash das fontes **com o cabeçalho que funcionou** mais as cordas de versão e
+/// renderer do driver — o binário é dele, e um binário de outro driver é lixo que ele mesmo
+/// recusa (o status do link diz não, e cai na compilação). Perder o arquivo também é cair na
+/// compilação: o cache é descartável, e descartável que quebra não é cache.
+unsafe fn programa_pronto(
+    gl: &glow::Context,
+    cache: Option<&std::path::Path>,
+) -> Result<glow::Program, String> {
+    unsafe {
+        // Tentar os dois cabeçalhos no carregamento, porque na hora de guardar só se sabe
+        // qual funcionou — e duas leituras de arquivo que não existem custam nada.
+        if let Some(dir) = cache {
+            let versao = gl.get_parameter_string(glow::VERSION);
+            let placa = gl.get_parameter_string(glow::RENDERER);
+            for cabecalho in CABECALHOS {
+                let chave = fnv64(&[
+                    cabecalho.as_bytes(),
+                    VERTICE.as_bytes(),
+                    FRAGMENTO.as_bytes(),
+                    versao.as_bytes(),
+                    placa.as_bytes(),
+                ]);
+                if let Some(programa) = carrega_programa(gl, dir, chave) {
+                    crate::registro!(
+                        crate::registro::Nivel::Informacao,
+                        "gl",
+                        "programa da placa veio do cache ({chave:016x})"
+                    );
+                    return Ok(programa);
+                }
+            }
+        }
+        let (programa, cabecalho) = compila(gl)?;
+        if let Some(dir) = cache {
+            let (versao, placa) = (
+                gl.get_parameter_string(glow::VERSION),
+                gl.get_parameter_string(glow::RENDERER),
+            );
+            let chave = fnv64(&[
+                cabecalho.as_bytes(),
+                VERTICE.as_bytes(),
+                FRAGMENTO.as_bytes(),
+                versao.as_bytes(),
+                placa.as_bytes(),
+            ]);
+            guarda_programa(gl, dir, chave, programa);
+        }
+        Ok(programa)
+    }
+}
+
+/// Traz o binário do disco para um programa novo. `None` é "compila na hora": arquivo
+/// ausente, ilegível, curto demais ou recusado pelo driver caem todos aqui.
+unsafe fn carrega_programa(
+    gl: &glow::Context,
+    dir: &std::path::Path,
+    chave: u64,
+) -> Option<glow::Program> {
+    unsafe {
+        let bytes = std::fs::read(dir.join(format!("zeebx-{chave:016x}.bin"))).ok()?;
+        let (formato, binario) = bytes.split_at_checked(4)?;
+        let formato = u32::from_le_bytes(formato.try_into().ok()?);
+        let programa = gl.create_program().ok()?;
+        gl.program_binary_retrievable_hint(programa, true);
+        gl.program_binary(
+            programa,
+            &glow::ProgramBinary {
+                buffer: binario.to_vec(),
+                format: formato,
+            },
+        );
+        match gl.get_program_link_status(programa) {
+            true => Some(programa),
+            // **Apaga o programa recusado e drena o erro.** Um programa que não ligou
+            // continua ocupando o nome — e o `GetError` é pegajoso: sem drenar, o
+            // `get_program_binary` da compilação seguinte leria o erro velho desta
+            // binária recusada e devolveria `None` para um programa bom, quebrando o
+            // cache de forma permanente (toda sessão recompilaria e nunca salvaria).
+            false => {
+                gl.delete_program(programa);
+                while gl.get_error() != glow::NO_ERROR {}
+                None
+            }
+        }
+    }
+}
+
+/// Guarda o binário que o driver devolveu. Melhor esforço: sem ele a próxima sessão compila
+/// de novo, e sessão que não abre por causa de cache é defeito, não otimização.
+unsafe fn guarda_programa(
+    gl: &glow::Context,
+    dir: &std::path::Path,
+    chave: u64,
+    programa: glow::Program,
+) {
+    unsafe {
+        let _ = std::fs::create_dir_all(dir);
+        let Some(binario) = gl.get_program_binary(programa) else {
+            return;
+        };
+        let mut bytes = binario.format.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&binario.buffer);
+        if std::fs::write(dir.join(format!("zeebx-{chave:016x}.bin")), bytes).is_ok() {
+            crate::registro!(
+                crate::registro::Nivel::Informacao,
+                "gl",
+                "programa da placa guardado no cache ({chave:016x}, {} bytes)",
+                binario.buffer.len()
+            );
+        }
+    }
+}
+
 /// Compila o par de shaders, tentando GLSL 3.30 e caindo para ES 3.00.
-unsafe fn compila(gl: &glow::Context) -> Result<glow::Program, String> {
-    ["#version 330 core\n", "#version 300 es\nprecision highp float;\n"]
+///
+/// Devolve junto o cabeçalho que funcionou: é ele que entra na chave do cache, e tentar
+/// adivinhar depois seria ler a mente do driver.
+unsafe fn compila(gl: &glow::Context) -> Result<(glow::Program, &'static str), String> {
+    CABECALHOS
         .into_iter()
-        .find_map(|cabecalho| unsafe { liga_programa(gl, cabecalho) }.ok())
+        .find_map(|cabecalho| unsafe { liga_programa(gl, cabecalho) }.ok().map(|p| (p, cabecalho)))
         .ok_or_else(|| "nenhuma versão de GLSL aceita".to_string())
 }
 
 unsafe fn liga_programa(gl: &glow::Context, cabecalho: &str) -> Result<glow::Program, String> {
     unsafe {
         let programa = gl.create_program()?;
+        // Sem isto o driver pode não devolver binário depois — e sem binário não há cache.
+        gl.program_binary_retrievable_hint(programa, true);
         let mut shaders = Vec::new();
         for (tipo, fonte) in [
             (glow::VERTEX_SHADER, VERTICE),
@@ -2170,6 +2531,12 @@ impl Rasterizador for GpuState {
         if self.fbo_externo.is_none() || self.placa.morreu() {
             return;
         }
+        // Com redução, o desenho está no nosso anexo pequeno: amplia para o framebuffer do
+        // frontend antes de soltar, ou ele apresentaria o quadro anterior. O FBO do frontend
+        // tem o tamanho do console (o `av_info` do core é 640×480 fixo).
+        if self.reducao > 1 {
+            self.amplia_para_o_frontend();
+        }
         let gl = &self.gl;
         unsafe {
             gl.bind_vertex_array(None);
@@ -2245,6 +2612,9 @@ impl Rasterizador for GpuState {
 
     fn clear(&mut self, mask: u32) {
         self.descarrega();
+        if !self.placa_viva() {
+            return;
+        }
         self.destino();
         // **O `clear` do rasterizador de software ignora as máscaras**: ele preenche os vetores
         // direto. O `glClear` respeita `glDepthMask`, `glStencilMask` e `glColorMask`, então elas
@@ -2461,9 +2831,21 @@ impl Rasterizador for GpuState {
         width: usize,
         height: usize,
         pixels: Vec<[u8; 4]>,
+        kind: u32,
     ) {
         self.descarrega();
-        let bytes: Vec<u8> = pixels.iter().flatten().copied().collect();
+        // Nativo 16-bit sobe nativo: metade dos bytes e metade da VRAM, com os mesmos texels
+        // que o jogo mandou. O resto sobe RGBA8, como sempre.
+        let formato = formato_compacto(kind, self.gl.version().is_embedded);
+        let (interno, formato_gl, tipo, bytes) = match formato {
+            Some((interno, formato, tipo)) => (interno, formato, tipo, compacta(&pixels, kind)),
+            None => (
+                glow::RGBA8 as i32,
+                glow::RGBA,
+                glow::UNSIGNED_BYTE,
+                pixels.iter().flatten().copied().collect(),
+            ),
+        };
         let gl = &self.gl;
         let objeto = match self.texturas.get(&name) {
             Some(t) => t.objeto,
@@ -2479,6 +2861,9 @@ impl Rasterizador for GpuState {
                         largura: width,
                         altura: height,
                         maior_nivel: 0,
+                        // A ficha guarda o tipo do jogo, e não o trio: é ele que a parcial
+                        // usa para combinar com o inteiro.
+                        compacto: formato.map(|_| kind),
                         crop: [0; 4],
                         filtro: gles::GL_LINEAR,
                         filtro_min: gles::GL_LINEAR,
@@ -2488,18 +2873,23 @@ impl Rasterizador for GpuState {
                 objeto
             }
         };
+        // Cada subida redefine o formato — é o que o `tex_image_2d` faz —, então a ficha
+        // acompanha a chamada, e não a criação.
+        if let Some(t) = self.texturas.get_mut(&name) {
+            t.compacto = formato.map(|_| kind);
+        }
         unsafe {
             gl.bind_texture(glow::TEXTURE_2D, Some(objeto));
             gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
             gl.tex_image_2d(
                 glow::TEXTURE_2D,
                 level as i32,
-                glow::RGBA8 as i32,
+                interno,
                 width as i32,
                 height as i32,
                 0,
-                glow::RGBA,
-                glow::UNSIGNED_BYTE,
+                formato_gl,
+                tipo,
                 glow::PixelUnpackData::Slice(Some(&bytes)),
             );
         }
@@ -2513,7 +2903,8 @@ impl Rasterizador for GpuState {
         if let Some(t) = self.texturas.get(&name) {
             self.parametros(t);
         }
-        self.estado.upload_level(name, level, width, height, pixels);
+        self.estado
+            .upload_level(name, level, width, height, pixels, gles::GL_UNSIGNED_BYTE);
     }
 
     fn sub_image(
@@ -2527,25 +2918,41 @@ impl Rasterizador for GpuState {
     ) -> Result<(), Option<(u32, u32)>> {
         self.descarrega();
         let resultado = self.estado.sub_image(name, x, y, width, height, pixels);
-        if resultado.is_ok() {
-            if let Some(t) = self.texturas.get(&name) {
-                let bytes: Vec<u8> = pixels.iter().flatten().copied().collect();
-                unsafe {
-                    let gl = &self.gl;
-                    gl.bind_texture(glow::TEXTURE_2D, Some(t.objeto));
-                    gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
-                    gl.tex_sub_image_2d(
-                        glow::TEXTURE_2D,
-                        0,
-                        x as i32,
-                        y as i32,
-                        width as i32,
-                        height as i32,
-                        glow::RGBA,
-                        glow::UNSIGNED_BYTE,
-                        glow::PixelUnpackData::Slice(Some(&bytes)),
-                    );
-                }
+        if resultado.is_ok()
+            && let Some(t) = self.texturas.get(&name)
+        {
+            // O parcial combina com o inteiro: texels no formato em que a textura vive,
+            // ou o driver lê metade dos bytes que devia. A ficha só guarda tipos que o
+            // `formato_compacto` aceita — o `unwrap_or` abaixo nunca dispara, e existe
+            // porque a ficha é dado, não prova.
+            let embutido = self.gl.version().is_embedded;
+            let (formato, tipo, bytes) = match t.compacto.and_then(|k| formato_compacto(k, embutido)) {
+                Some((_, formato, tipo)) => (
+                    formato,
+                    tipo,
+                    compacta(pixels, t.compacto.unwrap_or(gles::GL_UNSIGNED_BYTE)),
+                ),
+                None => (
+                    glow::RGBA,
+                    glow::UNSIGNED_BYTE,
+                    pixels.iter().flatten().copied().collect(),
+                ),
+            };
+            unsafe {
+                let gl = &self.gl;
+                gl.bind_texture(glow::TEXTURE_2D, Some(t.objeto));
+                gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
+                gl.tex_sub_image_2d(
+                    glow::TEXTURE_2D,
+                    0,
+                    x as i32,
+                    y as i32,
+                    width as i32,
+                    height as i32,
+                    formato,
+                    tipo,
+                    glow::PixelUnpackData::Slice(Some(&bytes)),
+                );
             }
         }
         resultado
@@ -2634,6 +3041,9 @@ impl Rasterizador for GpuState {
 
     fn draw_texture(&mut self, x: f32, y: f32, z: f32, width: f32, height: f32) {
         self.descarrega();
+        if !self.placa_viva() {
+            return;
+        }
         let ligada = self.fill.textura_ligada;
         let Some(t) = self.texturas.get(&ligada) else {
             return;
@@ -2701,6 +3111,9 @@ impl Rasterizador for GpuState {
     /// resultado sai espelhado de volta.
     fn read_rect(&mut self, x: i32, y: i32, width: usize, height: usize) -> Vec<[u8; 4]> {
         self.descarrega();
+        if !self.placa_viva() {
+            return Vec::new();
+        }
         if width == 0 || height == 0 {
             return Vec::new();
         }
@@ -2860,6 +3273,9 @@ impl Rasterizador for GpuState {
 
     fn import_rgb565_changes(&mut self, width: usize, height: usize, old: &[u8], new: &[u8]) {
         self.descarrega();
+        if !self.placa_viva() {
+            return;
+        }
         let (sw, sh) = self.surface();
         if width == 0 || height == 0 || old.len() != width * height * 2 || new.len() != old.len() {
             return;
@@ -2976,6 +3392,9 @@ impl Rasterizador for GpuState {
             return;
         }
         self.descarrega();
+        if !self.placa_viva() {
+            return;
+        }
         // O teto é o maior anexo que a placa aceita: um fator acima dele não criaria o destino.
         let maximo = unsafe {
             self.gl
@@ -2992,16 +3411,53 @@ impl Rasterizador for GpuState {
         }
     }
 
+    fn define_reducao(&mut self, reducao: usize) {
+        // Sem blit confiável não há ampliação do quadro pequeno, e a redução é justamente
+        // isso: o desenho menor ampliado antes de qualquer leitura ou apresentação. Ficar
+        // em 1x é a resposta certa — ver [`Rasterizador::define_escala`].
+        if !self.blit_confiavel {
+            return;
+        }
+        self.descarrega();
+        if !self.placa_viva() {
+            return;
+        }
+        // Os mesmos valores do processador: 1 desliga, e acima de 4 o anexo vira selo.
+        let nova = match reducao {
+            0 | 1 => 1,
+            n => n.min(4),
+        };
+        if nova != self.reducao {
+            self.reducao = nova;
+            self.sujo = true;
+            crate::registro!(
+                crate::registro::Nivel::Informacao,
+                "gl",
+                "resolução interna do 3D na placa reduzida a 1/{nova} do quadro"
+            );
+        }
+    }
+
     fn le_quadro_grande(&mut self) -> Option<(usize, usize, Vec<u8>)> {
         self.descarrega();
+        if !self.placa_viva() {
+            return None;
+        }
         let extra = self.extra();
-        if self.escala <= 1 && extra == 0 {
+        // Só há "quadro grande" quando o anexo passa do console: fator líquido acima de 1.
+        // Com redução o anexo é menor, e o console sai pelo caminho da leitura — devolver o
+        // anexo pequeno como "grande" mostraria a miniatura no lugar da foto.
+        if self.escala <= self.reducao.max(1) && extra == 0 {
             return None;
         }
         self.destino();
         self.resolve();
         let (sw, sh) = self.estado.surface();
-        let (w, h) = ((sw + 2 * extra) * self.escala, sh * self.escala);
+        let r = self.reducao.max(1);
+        let (w, h) = (
+            ((sw + 2 * extra) * self.escala) / r,
+            (sh * self.escala) / r,
+        );
         let mut bytes = vec![0u8; w * h * 4];
         unsafe {
             self.gl.read_pixels(
@@ -3020,6 +3476,9 @@ impl Rasterizador for GpuState {
 
     fn define_proporcao(&mut self, aspecto: Option<f32>) {
         self.descarrega();
+        if !self.placa_viva() {
+            return;
+        }
         // Mais estreito que o nativo não abre nada; o teto evita um anexo absurdo.
         let aspecto = aspecto.filter(|a| a.is_finite()).map(|a| a.clamp(4.0 / 3.0, 3.6));
         if aspecto != self.proporcao {
@@ -3035,6 +3494,9 @@ impl Rasterizador for GpuState {
             return;
         }
         self.descarrega();
+        if !self.placa_viva() {
+            return;
+        }
         let maximo = unsafe { self.gl.get_parameter_i32(glow::MAX_SAMPLES) }.max(1) as usize;
         // Potências de dois são o que as placas oferecem; 1 é desligado.
         let pedido = match amostras {
@@ -3049,6 +3511,9 @@ impl Rasterizador for GpuState {
 
     fn define_anisotropico(&mut self, nivel: usize) {
         self.descarrega();
+        if !self.placa_viva() {
+            return;
+        }
         let tem = self.gl.supported_extensions().iter().any(|e| {
             e == "GL_EXT_texture_filter_anisotropic" || e == "GL_ARB_texture_filter_anisotropic"
         });
@@ -3075,7 +3540,11 @@ impl Rasterizador for GpuState {
 
     fn quadro_na_placa(&self) -> Option<QuadroNaPlaca> {
         let destino = self.quadro.as_ref()?;
-        if destino.escala <= 1 && destino.extra == 0 {
+        // O atalho vale quando o anexo difere do console, para mais ou para menos: com
+        // redução a textura pequena é ampliada por quem apresenta, sem volta à CPU — que é
+        // justamente a economia. Só o fator líquido 1 dispensa o atalho, como antes. O recorte
+        // e a proporção são frações, e valem iguais no anexo pequeno.
+        if destino.escala == destino.reducao.max(1) && destino.extra == 0 {
             return None;
         }
         let (fw, fh) = destino.medida;
@@ -3139,7 +3608,7 @@ mod tests {
     /// Sem contexto não há o que comparar, e exigir uma placa de quem roda a suíte seria pedir
     /// que ela falhasse em máquina sem EGL. Os testes daqui relatam e passam nesse caso.
     fn par(largura: usize, altura: usize) -> Option<(GpuState, GlState)> {
-        match GpuState::novo(largura, altura, None) {
+        match GpuState::novo(largura, altura, None, None) {
             Ok(gpu) => Some((gpu, GlState::new(largura, altura))),
             Err(motivo) => {
                 println!("sem placa nesta máquina: {motivo}");
@@ -3166,11 +3635,11 @@ mod tests {
         // cancelada antes de rodá-lo.
         gpu.set_active_texture(gles::GL_TEXTURE0);
         gpu.bind_texture(10);
-        gpu.upload_level(10, 0, 1, 1, vec![[255, 0, 0, 255]]);
+        gpu.upload_level(10, 0, 1, 1, vec![[255, 0, 0, 255]], gles::GL_UNSIGNED_BYTE);
         gpu.set_capability(gles::GL_TEXTURE_2D, true);
         gpu.set_active_texture(gles::GL_TEXTURE0 + 1);
         gpu.bind_texture(20);
-        gpu.upload_level(20, 0, 1, 1, vec![[0, 255, 0, 255]]);
+        gpu.upload_level(20, 0, 1, 1, vec![[0, 255, 0, 255]], gles::GL_UNSIGNED_BYTE);
         gpu.set_capability(gles::GL_TEXTURE_2D, true);
 
         let mut secoes = crate::save_state::Secoes::nova();
@@ -3210,6 +3679,51 @@ mod tests {
         let i = (y * largura + x) * 2;
         let v = u16::from_le_bytes([quadro[i], quadro[i + 1]]);
         ((v >> 11) & 31, (v >> 5) & 63, v & 31)
+    }
+
+    /// `empacota` inverte o `expande_canal` da decodificação para todo valor nativo.
+    ///
+    /// Sem a volta exata, subir 565 nativo mudaria os texels no caminho — e a prova compara
+    /// contra o `expande_canal`, que é a definição de "certo" aqui. A prova ponta a ponta é
+    /// o comparativo de fotos do `sessao`: mesma sessão com e sem compacto tem de sair igual.
+    #[test]
+    fn volta_dos_canais_e_exata() {
+        for bits in [1u32, 4, 5, 6] {
+            let max = (1u16 << bits) - 1;
+            for v in 0..=max {
+                let expandido = match bits {
+                    // O alfa de 1 bit só existe como 0 e 255 na decodificação.
+                    1 => (v * 255) as u8,
+                    _ => crate::machine::expande_canal(v, bits),
+                };
+                assert_eq!(
+                    empacota(expandido, bits),
+                    v,
+                    "canal {v} de {bits} bits não voltou"
+                );
+            }
+        }
+    }
+
+    /// Cada formato compacto sobe sem erro de GL no contexto em uso.
+    ///
+    /// Sonda, não prova de imagem: um `internalformat` que o driver não aceita falha em
+    /// silêncio no `tex_image_2d` e a textura sai preta — foi assim que o Crash perdeu o
+    /// chão. Quem roda a suíte num driver diferente valida os três de novo.
+    #[test]
+    fn formatos_compactos_sobem_sem_erro() {
+        let Some((mut gpu, _)) = par(16, 16) else {
+            return;
+        };
+        for kind in [
+            gles::GL_UNSIGNED_SHORT_5_6_5,
+            gles::GL_UNSIGNED_SHORT_4_4_4_4,
+            gles::GL_UNSIGNED_SHORT_5_5_5_1,
+        ] {
+            gpu.upload_level(10, 0, 2, 2, vec![[255, 0, 0, 255]; 4], kind);
+            let erro = unsafe { gpu.gl.get_error() };
+            assert_eq!(erro, glow::NO_ERROR, "tipo {kind:#x} recusado");
+        }
     }
 
     /// Um triângulo que cobre o canto superior esquerdo, para pegar orientação e preenchimento.
@@ -3411,7 +3925,7 @@ mod tests {
         let Some((mut nativa, mut sw)) = par(largura, altura) else {
             return;
         };
-        let Ok(mut grande) = GpuState::novo(largura, altura, None) else {
+        let Ok(mut grande) = GpuState::novo(largura, altura, None, None) else {
             return;
         };
         grande.define_escala(2);
@@ -3449,6 +3963,64 @@ mod tests {
         assert!(nativa.quadro_na_placa().is_none(), "na escala 1 a janela usa a tela de sempre");
     }
 
+    /// Com redução, o anexo encolhe e a leitura amplia de volta ao tamanho do console.
+    ///
+    /// O espelho do teste da escala: desenha o mesmo triângulo num anexo de 8×8, lê em 16×16
+    /// e confere o miolo dos dois lados da diagonal — longe dela, para a ampliação linear não
+    /// misturar. A textura direta tem de valer, com o mesmo recorte cheio: é ela que a janela
+    /// estica, sem volta à CPU.
+    #[test]
+    fn com_reducao_a_leitura_amplia_ao_tamanho_do_console() {
+        let (largura, altura) = (16, 16);
+        let Some((mut nativa, mut sw)) = par(largura, altura) else {
+            return;
+        };
+        let Ok(mut pequena) = GpuState::novo(largura, altura, None, None) else {
+            return;
+        };
+        pequena.define_reducao(2);
+        if pequena.reducao != 2 {
+            println!("placa sem blit confiável: a redução fica desligada");
+            return;
+        }
+        let cena = |r: &mut dyn Rasterizador| {
+            r.set_viewport(0, 0, largura as i32, altura as i32);
+            r.set_clear_color([0.0, 0.0, 1.0, 1.0]);
+            r.clear(gles::GL_COLOR_BUFFER_BIT);
+            let canto = |x: f32, y: f32| Vertex {
+                position: [x, y, 0.0, 1.0],
+                color: [1.0, 0.0, 0.0, 1.0],
+                uv: UV_PADRAO,
+                uv1: UV_PADRAO,
+                normal: [0.0, 0.0, 1.0],
+                fog: 1.0,
+            };
+            r.draw(
+                gles::GL_TRIANGLES,
+                &[canto(-1.0, 1.0), canto(-1.0, -1.0), canto(1.0, 1.0)],
+            );
+        };
+        let (a, _) = ambos(&mut nativa, &mut sw, largura, altura, cena);
+        cena(&mut pequena);
+        let mut b = Vec::new();
+        pequena.frame_rgb565(largura, altura, &mut b);
+        assert_eq!(b.len(), a.len(), "a leitura sai no tamanho do console");
+        assert_eq!(
+            pixel(&b, largura, 2, 2),
+            pixel(&a, largura, 2, 2),
+            "miolo vermelho com redução 2"
+        );
+        assert_eq!(
+            pixel(&b, largura, 13, 13),
+            pixel(&a, largura, 13, 13),
+            "miolo azul com redução 2"
+        );
+        let quadro = pequena
+            .quadro_na_placa()
+            .expect("textura pequena para a janela esticar");
+        assert_eq!(quadro.recorte, [1.0, 1.0]);
+    }
+
     /// Com antialias a borda do triângulo mistura as duas cores, e o miolo fica como estava.
     ///
     /// O desenho vai para um framebuffer de várias amostras e é resolvido antes da leitura. Na
@@ -3457,7 +4029,7 @@ mod tests {
     #[test]
     fn com_antialias_a_diagonal_mistura_as_cores() {
         let (largura, altura) = (16, 16);
-        let Ok(mut gpu) = GpuState::novo(largura, altura, None) else {
+        let Ok(mut gpu) = GpuState::novo(largura, altura, None, None) else {
             return;
         };
         gpu.define_antialias(4);
@@ -3514,7 +4086,7 @@ mod tests {
     #[test]
     fn na_proporcao_larga_a_tesoura_do_jogo_nao_come_os_lados() {
         let (largura, altura) = (64, 48);
-        let Ok(mut gpu) = GpuState::novo(largura, altura, None) else {
+        let Ok(mut gpu) = GpuState::novo(largura, altura, None, None) else {
             println!("sem placa nesta máquina");
             return;
         };
@@ -3858,7 +4430,7 @@ mod tests {
         altura: usize,
         gl: &std::sync::Arc<glow::Context>,
     ) -> Option<GpuState> {
-        match GpuState::novo(largura, altura, Some(gl.clone())) {
+        match GpuState::novo(largura, altura, Some(gl.clone()), None) {
             Ok(estado) => Some(estado),
             Err(motivo) => {
                 println!("sem estado de placa: {motivo}");
@@ -4072,6 +4644,102 @@ mod tests {
         assert_ne!(ligados(), [0, 0, 0], "o quadro seguinte não religou os objetos do motor");
     }
 
+    /// Com redução e framebuffer de fora, o frontend recebe o quadro ampliado.
+    ///
+    /// Sem o blit do fim do quadro, a viewport pequena desenharia um selo num canto do FBO
+    /// do frontend com o resto velho em volta — e a leitura do jogo viria do anexo vazio.
+    /// A prova desenha o triângulo vermelho, devolve e lê o FBO "do frontend": o miolo tem
+    /// de ser vermelho e o canto oposto, azul.
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn com_reducao_o_frontend_recebe_o_quadro_ampliado() {
+        use glow::HasContext as _;
+
+        let (largura, altura) = (16, 16);
+        let Some((contexto, gl)) = placa_emprestada() else {
+            return;
+        };
+        let Some(mut estado) = estado_emprestado(largura, altura, &gl) else {
+            return;
+        };
+        let _ = &contexto;
+        // O FBO do "frontend", no tamanho do console, como o `get_current_framebuffer`
+        // entregaria.
+        let fbo = unsafe {
+            let textura = gl.create_texture().unwrap();
+            gl.bind_texture(glow::TEXTURE_2D, Some(textura));
+            gl.tex_image_2d(
+                glow::TEXTURE_2D,
+                0,
+                glow::RGBA as i32,
+                largura as i32,
+                altura as i32,
+                0,
+                glow::RGBA,
+                glow::UNSIGNED_BYTE,
+                glow::PixelUnpackData::Slice(None),
+            );
+            let fbo = gl.create_framebuffer().unwrap();
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
+            gl.framebuffer_texture_2d(
+                glow::FRAMEBUFFER,
+                glow::COLOR_ATTACHMENT0,
+                glow::TEXTURE_2D,
+                Some(textura),
+                0,
+            );
+            // Verde de propósito: se o blit não acontecer, é ele que a leitura encontra.
+            gl.clear_color(0.0, 1.0, 0.0, 1.0);
+            gl.clear(glow::COLOR_BUFFER_BIT);
+            fbo
+        };
+        estado.desenha_no_fbo(Some(fbo.0.get()));
+        estado.define_reducao(2);
+        if estado.reducao != 2 {
+            println!("placa sem blit confiável: a redução fica desligada");
+            return;
+        }
+        estado.set_viewport(0, 0, largura as i32, altura as i32);
+        estado.set_clear_color([0.0, 0.0, 1.0, 1.0]);
+        estado.clear(gles::GL_COLOR_BUFFER_BIT);
+        let canto = |x: f32, y: f32| Vertex {
+            position: [x, y, 0.0, 1.0],
+            color: [1.0, 0.0, 0.0, 1.0],
+            uv: UV_PADRAO,
+            uv1: UV_PADRAO,
+            normal: [0.0, 0.0, 1.0],
+            fog: 1.0,
+        };
+        estado.draw(
+            gles::GL_TRIANGLES,
+            &[canto(-1.0, 1.0), canto(-1.0, -1.0), canto(1.0, 1.0)],
+        );
+        estado.descarrega();
+        estado.devolve_ao_frontend();
+        let quadro: Vec<u8> = unsafe {
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
+            let mut bytes = vec![0u8; largura * altura * 4];
+            gl.read_pixels(
+                0,
+                0,
+                largura as i32,
+                altura as i32,
+                glow::RGBA,
+                glow::UNSIGNED_BYTE,
+                glow::PixelPackData::Slice(Some(&mut bytes)),
+            );
+            bytes
+        };
+        // Longe da diagonal, para a ampliação linear não misturar: miolo vermelho e canto
+        // azul, no FBO do frontend, em 16×16.
+        let pixel = |x: usize, y: usize| {
+            let i = (y * largura + x) * 4;
+            (quadro[i], quadro[i + 1], quadro[i + 2])
+        };
+        assert_eq!(pixel(2, 2), (255, 0, 0), "o triângulo não chegou ao frontend");
+        assert_eq!(pixel(13, 13), (0, 0, 255), "o fundo não chegou ao frontend");
+    }
+
     /// **A placa que morreu no meio do quadro não recebe desenho novo.**
     ///
     /// O aviso de que o contexto acabou chega de fora do emulador e **não espera** o `retro_run`
@@ -4113,15 +4781,127 @@ mod tests {
         let antes = com_a_morta.read_rect(0, 0, largura, altura);
         a_placa_morreu(endereco_da_placa(&gl));
         segundo_lote(&mut com_a_morta);
+        // Depois do aviso não há mais leitura no driver: o quadro daquela volta foi abandonado,
+        // e a sessão nasce de novo no quadro seguinte. O que se cobra aqui é que nada tenha sido
+        // desenhado nem lido depois do aviso — a leitura volta vazia e o lote foi descartado, e
+        // não submetido.
         let depois = com_a_morta.read_rect(0, 0, largura, altura);
-        assert_eq!(
-            depois,
-            antes,
-            "a placa morta continuou desenhando: o estado não foi invalidado no aviso"
+        assert!(
+            depois.is_empty(),
+            "a leitura depois do aviso tocou no driver morto em vez de voltar vazia"
+        );
+        assert!(
+            com_a_morta.lote.is_empty(),
+            "a placa morta continuou juntando desenho: o lote devia ter sido descartado"
+        );
+        assert!(
+            !antes.is_empty(),
+            "a cena do teste não discrimina: a leitura antes do aviso devia ter pixels"
         );
 
         // A marca é do processo todo: limpa, senão o teste seguinte herdaria uma placa morta.
         a_placa_nasceu(endereco_da_placa(&gl));
+    }
+
+    /// **A placa morta não prepara leitura nem aloca destino.**
+    ///
+    /// O aviso do frontend pode chegar antes de qualquer leitura do quadro. O que se cobra é que
+    /// preparar a leitura não crie textura, framebuffer nem alvo reduzido depois do aviso.
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn a_placa_morta_nao_prepara_leitura_nem_aloca_reduzido() {
+        let (largura, altura) = (16, 16);
+        let Some((contexto, gl)) = placa_emprestada() else {
+            return;
+        };
+        let Some(mut estado) = estado_emprestado(largura, altura, &gl) else {
+            return;
+        };
+        let _ = &contexto;
+        estado.escala = 2;
+        a_placa_morreu(endereco_da_placa(&gl));
+        estado.liga_para_leitura();
+        let tocou = estado.quadro.is_some() || estado.reduzido.is_some();
+        a_placa_nasceu(endereco_da_placa(&gl));
+        assert!(
+            !tocou,
+            "preparar a leitura depois do aviso criou destino na placa morta"
+        );
+    }
+
+    /// **A placa morta não lê pixels novos.**
+    ///
+    /// Depois do aviso, a leitura do jogo não pode chamar o driver: o quadro daquela volta foi
+    /// abandonado, e a sessão nasce de novo no quadro seguinte.
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn a_placa_morta_nao_le_pixels_novos() {
+        let (largura, altura) = (16, 16);
+        let Some((contexto, gl)) = placa_emprestada() else {
+            return;
+        };
+        let Some(mut estado) = estado_emprestado(largura, altura, &gl) else {
+            return;
+        };
+        let _ = &contexto;
+        primeiro_lote(&mut estado, (largura, altura));
+        a_placa_morreu(endereco_da_placa(&gl));
+        let saida = estado.read_rect(0, 0, largura, altura);
+        a_placa_nasceu(endereco_da_placa(&gl));
+        assert!(
+            saida.is_empty(),
+            "a leitura depois do aviso voltou com {} pixels da placa morta",
+            saida.len()
+        );
+    }
+
+    /// **A placa morta não limpa nem cria destino.**
+    ///
+    /// O `clear` do jogo depois do aviso não pode alocar o destino nem chamar o driver.
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn a_placa_morta_nao_limpa_nem_cria_destino() {
+        let (largura, altura) = (16, 16);
+        let Some((contexto, gl)) = placa_emprestada() else {
+            return;
+        };
+        let Some(mut estado) = estado_emprestado(largura, altura, &gl) else {
+            return;
+        };
+        let _ = &contexto;
+        a_placa_morreu(endereco_da_placa(&gl));
+        estado.clear(gles::GL_COLOR_BUFFER_BIT);
+        let criou = estado.quadro.is_some();
+        a_placa_nasceu(endereco_da_placa(&gl));
+        assert!(
+            !criou,
+            "o clear depois do aviso criou destino na placa morta"
+        );
+    }
+
+    /// **A placa morta não muda a escala.**
+    ///
+    /// Trocar a resolução interna depois do aviso consultaria o driver morto para saber o teto.
+    /// A sessão dessa placa vai ser trocada, então a escala fica como estava.
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn a_placa_morta_nao_muda_a_escala() {
+        let (largura, altura) = (16, 16);
+        let Some((contexto, gl)) = placa_emprestada() else {
+            return;
+        };
+        let Some(mut estado) = estado_emprestado(largura, altura, &gl) else {
+            return;
+        };
+        let _ = &contexto;
+        a_placa_morreu(endereco_da_placa(&gl));
+        estado.define_escala(2);
+        let escala = estado.escala;
+        a_placa_nasceu(endereco_da_placa(&gl));
+        assert_eq!(
+            escala, 1,
+            "a escala mudou para {escala} com a placa morta"
+        );
     }
 }
 

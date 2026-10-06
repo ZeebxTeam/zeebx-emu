@@ -33,6 +33,7 @@ função não está aqui.
 | [20-boomerang-e-wii-remote.md](20-boomerang-e-wii-remote.md) | O controle de movimento: o relatório do receptor lido no código dos jogos, e o Wii Remote no lugar dele |
 | [21-migracao-para-qt.md](21-migracao-para-qt.md) | Plano da troca do egui por Qt Quick com cxx-qt, e o que o núcleo empresta da janela |
 | [22-screenshots.md](22-screenshots.md) | O F9 da janela do jogo: que quadro sai, em que tamanho, onde grava, e a régua do RetroAchievements |
+| [23-otimizacoes-handheld.md](23-otimizacoes-handheld.md) | O plano por fases para RK3326/H700 (Mali-G31): telemetria, bancada e as técnicas do port de Halo CE |
 
 ## Como medir
 

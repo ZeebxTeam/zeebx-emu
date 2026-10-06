@@ -12,6 +12,33 @@ const TETO_DE_PONTEIROS_RUINS: usize = 512;
 /// Quantas linhas diferentes do log do jogo ficam guardadas. Ver [`Machine::record_debug`].
 const MAX_LINHAS_DO_JOGO: usize = 2000;
 
+/// O retrato acumulado do que o guest pediu ao vídeo: desenhos, leituras e subidas.
+///
+/// É a matéria-prima da telemetria por segundo do handheld — contadores sempre ligados, de
+/// soma de inteiro, sem relógio. O preço do instrumento aqui é zero mensurável; o relógio,
+/// que é chamada de sistema, continua amostrado (ver [`Machine::enable_api_profile`]).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Telemetria {
+    /// Desenhos que chegaram ao rasterizador (DrawArrays, DrawElements e DrawTexOES).
+    pub desenhos: u64,
+    /// Vértices que esses desenhos levaram (um DrawTexOES conta 4, o retângulo).
+    pub vertices: u64,
+    /// Desenhos que o frameskip pulou antes de qualquer leitura.
+    pub pulados: u64,
+    /// Leituras de pixels que o guest pediu.
+    pub leituras: u64,
+    /// Bytes entregues ao guest nessas leituras.
+    pub bytes_lidos: u64,
+    /// Subidas de textura (comprimida ou não).
+    pub envios: u64,
+    /// Bytes decodificados que subiram nessas subidas.
+    pub bytes_enviados: u64,
+    /// Dos bytes acima, quantos subiram em texels nativos de 16 bits em vez de RGBA8.
+    pub bytes_compactos: u64,
+    /// Programas de placa ligados (um por construção do rasterizador de placa).
+    pub programas: u64,
+}
+
 impl<C: CpuBackend> Machine<C> {
     /// Liga o registro de todas as chamadas, na ordem.
     pub fn set_tracing(&mut self, on: bool) {
@@ -159,6 +186,21 @@ impl<C: CpuBackend> Machine<C> {
             .collect();
         linhas.sort_unstable_by_key(|linha| std::cmp::Reverse(linha.1));
         linhas
+    }
+
+    /// O retrato acumulado do vídeo nesta sessão. Ver [`Telemetria`].
+    pub fn telemetria(&self) -> Telemetria {
+        Telemetria {
+            desenhos: self.tm_desenhos,
+            vertices: self.tm_vertices,
+            pulados: self.tm_pulados,
+            leituras: self.tm_leituras,
+            bytes_lidos: self.tm_bytes_lidos,
+            envios: self.tm_envios,
+            bytes_enviados: self.tm_bytes_enviados,
+            bytes_compactos: self.tm_bytes_compactos,
+            programas: self.tm_programas,
+        }
     }
 
     /// Põe um corpo de rede na captura de serial, em texto quando dá e em hexadecimal quando
