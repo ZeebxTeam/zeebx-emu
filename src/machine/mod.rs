@@ -3685,7 +3685,8 @@ impl<C: CpuBackend> Machine<C> {
         if let Some(piso) = piso
             && sp.wrapping_sub(GASTO) >= piso
         {
-            let _ = self.cpu.fill_mem(sp - GASTO, 0, GASTO);
+            // Sem invalidar o JIT: pilha não vira código (ver `CpuBackend::suja_pilha`).
+            let _ = self.cpu.suja_pilha(sp - GASTO, GASTO);
         }
     }
 

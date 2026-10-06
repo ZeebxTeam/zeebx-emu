@@ -129,6 +129,13 @@ pub struct Graphics {
     pub janela: ModoDaJanela,
     /// Como a janela do jogo abre.
     pub janela_do_jogo: ModoDaJanela,
+    /// O tamanho em que a janela principal estava quando foi fechada, em pontos.
+    ///
+    /// `None` é o padrão de fábrica (960×720). Só vale em modo janela: maximizada ou em tela
+    /// cheia, o tamanho da tela não é escolha do usuário e não é guardado.
+    pub tamanho_da_janela: Option<[f32; 2]>,
+    /// O mesmo, para a janela do jogo.
+    pub tamanho_da_janela_do_jogo: Option<[f32; 2]>,
     pub scaling: Scaling,
     /// Interpolar ao ampliar. Desligado, o pixel do console aparece como bloco.
     pub smooth: bool,
@@ -221,6 +228,8 @@ impl Default for Graphics {
         Self {
             janela: ModoDaJanela::Maximizada,
             janela_do_jogo: ModoDaJanela::Maximizada,
+            tamanho_da_janela: None,
+            tamanho_da_janela_do_jogo: None,
             scaling: Scaling::default(),
             smooth: false,
             keep_aspect: true,
@@ -565,6 +574,28 @@ mod tests {
         settings.save_to(&path).unwrap();
 
         assert_eq!(Settings::load_from(&path), settings);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Quem tem um `settings.json` de antes do tamanho de janela ganha `None` nos dois
+    /// campos novos, e o que foi guardado volta igual do disco.
+    #[test]
+    fn o_tamanho_da_janela_vai_e_volta_e_falta_nas_versoes_antigas() {
+        let dir = std::env::temp_dir().join("zeebx-testes-janela");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+
+        let antigo: Settings =
+            serde_json::from_str(r#"{ "graphics": { "janela": "maximizada" } }"#).unwrap();
+        assert_eq!(antigo.graphics.tamanho_da_janela, None);
+        assert_eq!(antigo.graphics.tamanho_da_janela_do_jogo, None);
+
+        let mut novo = Settings::default();
+        novo.graphics.tamanho_da_janela = Some([1280.0, 800.0]);
+        novo.graphics.tamanho_da_janela_do_jogo = Some([640.0, 512.0]);
+        novo.save_to(&path).unwrap();
+        assert_eq!(Settings::load_from(&path), novo);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

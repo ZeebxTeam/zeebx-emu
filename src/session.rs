@@ -1262,6 +1262,23 @@ impl Session {
         self.machine.leu_pixels()
     }
 
+    /// Liga o registro de todas as chamadas do jogo, na ordem. Ver
+    /// [`crate::machine::Machine::set_tracing`].
+    pub fn set_tracing(&mut self, on: bool) {
+        self.machine.set_tracing(on);
+    }
+
+    /// Restringe o rastreamento às chamadas cujo nome contém `part`. Ver
+    /// [`crate::machine::Machine::set_trace_filter`].
+    pub fn set_trace_filter(&mut self, part: Option<String>) {
+        self.machine.set_trace_filter(part);
+    }
+
+    /// As chamadas registradas, na ordem. Ver [`crate::machine::Machine::trace`].
+    pub fn trace(&self) -> &[String] {
+        self.machine.trace()
+    }
+
     /// Muda a resolução interna do 3D; vale a partir do próximo quadro.
     pub fn define_resolucao_interna(&mut self, escala: usize) {
         self.machine.define_resolucao_interna(escala);

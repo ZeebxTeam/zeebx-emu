@@ -27,6 +27,11 @@ pub struct Headless {
     /// Título da janela. Um frontend que gerencia janelas costuma casar pelo título.
     pub titulo: String,
     /// O tamanho com que a janela abre, quando ela não é cheia.
+///
+/// É só de abertura, e de propósito: o `config.ini` é editado à mão, e escrever o tamanho
+/// de volta a cada resize seria brigar com quem o escreveu (ver `cria`, que nunca troca um
+/// arquivo que já existe). Quem quer a janela lembrando o tamanho usa um frontend desktop,
+/// que guarda em `graphics.tamanho_da_janela` no `settings.json` — ver a issue #74.
     pub tamanho: (u32, u32),
     /// Esperar o retraço da tela para trocar o quadro. Desligado, a janela corre solta.
     pub vsync: bool,

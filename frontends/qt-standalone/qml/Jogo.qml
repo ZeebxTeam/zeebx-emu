@@ -19,13 +19,31 @@ Window {
         return valor
     }
 
-    width: 960
-    height: 760
+    width: larguraGuardada > 0 ? larguraGuardada : 640
+    height: alturaGuardada > 0 ? alturaGuardada : 512
     minimumWidth: 320
     minimumHeight: 240
     visible: false
     color: "black"
     title: "Zeebx — " + tela.estado
+
+    // Como na principal: o tamanho em que fechar é o tamanho em que reabrir.
+    readonly property real larguraGuardada: tela.larguraDaJanela()
+    readonly property real alturaGuardada: tela.alturaDaJanela()
+
+    function guardaTamanho() {
+        if (visibility === Window.Windowed)
+            tela.guardaTamanhoDaJanela(width, height)
+    }
+
+    onWidthChanged: filaDaGravacao.restart()
+    onHeightChanged: filaDaGravacao.restart()
+
+    Timer {
+        id: filaDaGravacao
+        interval: 500
+        onTriggered: janela.guardaTamanho()
+    }
 
     // A janela reaparece a cada jogo aberto: é a hora de ler o título dele.
     onVisibleChanged: if (visible) tela.atualiza()
@@ -51,7 +69,11 @@ Window {
     function alternaTelaCheia() {
         visibility = visibility === Window.FullScreen ? Window.Windowed : Window.FullScreen
     }
-    onClosing: tela.fecha()
+    onClosing: {
+        filaDaGravacao.stop()
+        janela.guardaTamanho()
+        tela.fecha()
+    }
     onActiveChanged: if (!active) tela.solta()
 
     TelaDoJogo {

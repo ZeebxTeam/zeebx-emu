@@ -98,6 +98,23 @@ pub mod qobject {
         #[cxx_name = "modoDaJanela"]
         fn modo_da_janela(self: &Self) -> i32;
 
+        /// A largura em que a janela do jogo estava quando foi fechada, em pontos, ou zero
+        /// sem tamanho guardado. Ver `graphics.tamanho_da_janela_do_jogo`.
+        #[qinvokable]
+        #[cxx_name = "larguraDaJanela"]
+        fn largura_da_janela(self: &Self) -> f64;
+
+        /// A altura em que a janela do jogo estava quando foi fechada, em pontos, ou zero
+        /// sem tamanho guardado. Ver `graphics.tamanho_da_janela_do_jogo`.
+        #[qinvokable]
+        #[cxx_name = "alturaDaJanela"]
+        fn altura_da_janela(self: &Self) -> f64;
+
+        /// Guarda o tamanho atual da janela do jogo. Como na principal: depois de um tempo
+        /// sem mudar de tamanho, e ao fechar. Ver `graphics.tamanho_da_janela_do_jogo`.
+        #[qinvokable]
+        #[cxx_name = "guardaTamanhoDaJanela"]
+        fn guarda_tamanho_da_janela(self: &Self, largura: f64, altura: f64);
 
         /// O jogo saiu sozinho e não há para onde voltar: a janela fecha, como a do egui.
         #[qsignal]
@@ -350,6 +367,35 @@ impl qobject::TelaDoJogo {
         nucleo::com(|nucleo| modo(nucleo.settings.graphics.janela_do_jogo))
     }
 
+    pub fn largura_da_janela(&self) -> f64 {
+        nucleo::com(|nucleo| {
+            nucleo
+                .settings
+                .graphics
+                .tamanho_da_janela_do_jogo
+                .map_or(0.0, |[largura, _]| largura as f64)
+        })
+    }
+
+    pub fn altura_da_janela(&self) -> f64 {
+        nucleo::com(|nucleo| {
+            nucleo
+                .settings
+                .graphics
+                .tamanho_da_janela_do_jogo
+                .map_or(0.0, |[_, altura]| altura as f64)
+        })
+    }
+
+    pub fn guarda_tamanho_da_janela(&self, largura: f64, altura: f64) {
+        nucleo::com(|nucleo| {
+            nucleo.settings.graphics.tamanho_da_janela_do_jogo =
+                (largura > 0.0 && altura > 0.0).then_some([largura as f32, altura as f32]);
+            if let Err(erro) = nucleo.settings.save() {
+                eprintln!("não deu para guardar as configurações: {erro}");
+            }
+        })
+    }
 }
 
 /// O `QImage` construído sobre bytes próprios exige linhas alinhadas a quatro bytes. Uma
