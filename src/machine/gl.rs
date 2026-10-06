@@ -635,6 +635,7 @@ impl<C: CpuBackend> Machine<C> {
             let name = self.gl.bound_texture();
             // A paletizada traz a cadeia inteira num bloco só, e o `level` dela conta os
             // mipmaps em vez de nomeá-los; o decodificador devolve o nível base.
+            self.conta_envio(decoded.len());
             self.gl
                 .upload_level(name, 0, width as usize, height as usize, decoded);
             return Ok(());
@@ -654,6 +655,7 @@ impl<C: CpuBackend> Machine<C> {
         let decoded = atc::decode(&bytes, width as usize, height as usize, explicit_alpha);
 
         let name = self.gl.bound_texture();
+        self.conta_envio(decoded.len());
         self.gl
             .upload_level(name, level, width as usize, height as usize, decoded);
         Ok(())
@@ -675,6 +677,7 @@ impl<C: CpuBackend> Machine<C> {
         // Os parâmetros de repetição e filtro sobrevivem a uma nova imagem: no OpenGL eles são
         // do nome da textura, não do conteúdo, e o jogo costuma defini-los uma vez só.
         let name = self.gl.bound_texture();
+        self.conta_envio(decoded.len());
         self.gl
             .upload_level(name, level, width as usize, height as usize, decoded);
         Ok(())
@@ -716,6 +719,10 @@ impl<C: CpuBackend> Machine<C> {
             }
         };
         self.cpu.write_mem(destino, &bytes)?;
+        self.tm_leituras = self.tm_leituras.saturating_add(1);
+        self.tm_bytes_lidos = self
+            .tm_bytes_lidos
+            .saturating_add(bytes.len() as u64);
         Ok(())
     }
 
@@ -769,12 +776,27 @@ impl<C: CpuBackend> Machine<C> {
         let novos = decode_texels(&bytes, format, kind, texels);
 
         let name = self.gl.bound_texture();
-        if let Err(Some((tw, th))) = self.gl.sub_image(name, x, y, width, height, &novos) {
-            self.anota_ponto_ruim(format!(
-                "TexSubImage2D de {width}x{height} em ({x},{y}) não cabe numa textura {tw}x{th}"
-            ));
+        match self.gl.sub_image(name, x, y, width, height, &novos) {
+            Ok(()) => self.conta_envio(novos.len()),
+            Err(Some((tw, th))) => {
+                self.anota_ponto_ruim(format!(
+                    "TexSubImage2D de {width}x{height} em ({x},{y}) não cabe numa textura {tw}x{th}"
+                ));
+            }
+            Err(None) => {}
         }
         Ok(())
+    }
+
+    /// Conta uma subida de textura na telemetria: uma chamada e os bytes decodificados.
+    ///
+    /// `texels` é quantos `[u8; 4]` subiram — o que chega à placa hoje é sempre RGBA8, então
+    /// cada um vale quatro bytes, venha de `TexImage2D`, `TexSubImage2D` ou comprimida.
+    fn conta_envio(&mut self, texels: usize) {
+        self.tm_envios = self.tm_envios.saturating_add(1);
+        self.tm_bytes_enviados = self
+            .tm_bytes_enviados
+            .saturating_add(texels as u64 * 4);
     }
 
     /// Monta os vértices a partir dos vetores do cliente e manda desenhar.
@@ -804,6 +826,10 @@ impl<C: CpuBackend> Machine<C> {
         }
         let [x, y, z, width, height] = values;
         self.gl.draw_texture(x, y, z, width, height);
+        // Um retângulo de tela: conta como um desenho de quatro vértices, que é o que ele é
+        // quando vira triângulos.
+        self.tm_desenhos = self.tm_desenhos.saturating_add(1);
+        self.tm_vertices = self.tm_vertices.saturating_add(4);
         Ok(())
     }
 
@@ -816,6 +842,7 @@ impl<C: CpuBackend> Machine<C> {
         // para trazer cada vértice — aconteceria do mesmo jeito, e só a rasterização sumiria. O
         // jogo não vê diferença nenhuma: hardware real também não avisa se o pixel chegou à tela.
         if self.pula_desenho && !self.gl_leitura_de_pixels {
+            self.tm_pulados = self.tm_pulados.saturating_add(1);
             return Ok(());
         }
         let base = self.gl.current_color();
@@ -857,6 +884,10 @@ impl<C: CpuBackend> Machine<C> {
             })
             .collect();
         self.gl.draw(mode, &vertices);
+        self.tm_desenhos = self.tm_desenhos.saturating_add(1);
+        self.tm_vertices = self
+            .tm_vertices
+            .saturating_add(vertices.len() as u64);
         Ok(())
     }
 

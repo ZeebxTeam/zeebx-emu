@@ -286,6 +286,10 @@ struct State {
     master: f32,
     muted: bool,
     rate: u32,
+    /// Quadros já misturados por [`Mixer::render`]: a matéria-prima da telemetria de áudio.
+    /// Contado aqui dentro porque o cadeado já está na mão — fora dele seria um segundo
+    /// cadeado por chamada só para contar.
+    rendered: u64,
 }
 
 /// O mixer, compartilhado entre o emulador e a linha de execução de áudio.
@@ -482,6 +486,11 @@ impl Mixer {
         out
     }
 
+    /// Quantos quadros de áudio já foram misturados. Ver o campo `rendered` de `State`.
+    pub fn rendered(&self) -> u64 {
+        self.state.lock().map(|state| state.rendered).unwrap_or(0)
+    }
+
     /// Preenche `out` com a mistura das vozes. `channels` é quantos canais a placa quer.
     fn fill(&self, out: &mut [f32], channels: usize) {
         out.fill(0.0);
@@ -490,6 +499,7 @@ impl Mixer {
         let Ok(mut state) = self.state.lock() else {
             return;
         };
+        state.rendered = state.rendered.saturating_add(frames as u64);
         let master = match state.muted {
             true => 0.0,
             false => state.master,

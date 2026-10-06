@@ -449,6 +449,16 @@ fn main() -> ExitCode {
                     .strip_prefix("--perfil=")
                     .and_then(|n| n.parse::<u32>().ok()),
             });
+            // `--telemetria` imprime uma linha por segundo virtual com o que o guest pediu ao
+            // vídeo e ao som; `--hitch[=MS]` registra os passos mais lentos que MS (50 sem
+            // valor). Os contadores são sempre ligados e baratos — as linhas é que são opt-in.
+            let telemetria = args.iter().any(|a| a == "--telemetria");
+            let hitch = args.iter().find_map(|a| match a.as_str() {
+                "--hitch" => Some(50),
+                outro => outro
+                    .strip_prefix("--hitch=")
+                    .and_then(|n| n.parse::<u64>().ok()),
+            });
             // `--boomerang` põe um Boomerang na porta um; `--movimento=ms:x:y:z,...` diz a
             // aceleração dele a partir de cada instante, em g.
             let movimento: Vec<(u32, [f32; 3])> = args
@@ -489,7 +499,7 @@ fn main() -> ExitCode {
             };
             report(sessao_sem_janela(
                 &args[1], seconds, dump, &keys, &fotos, placa, serial, z_wheel, escala, melhorias,
-                perfil, boomerang, portas, tracing, trace_filter,
+                perfil, boomerang, portas, tracing, trace_filter, telemetria, hitch,
             ))
         }
         // Sem argumento nenhum, o que se quer é o emulador, não a ajuda.
@@ -507,7 +517,7 @@ fn main() -> ExitCode {
                              [--portas=controle|teclado|nenhum,...] [--teclas=ms:nome,...]"
             );
             eprintln!(
-                "     zeebx sessao <arquivo.zip> [--seconds=N] [--keys=ms:botão,...] [--dump=QUADRO.bmp] [--fotos=ms,...] [--placa] [--serial=CAMINHO] [--fabrica] [--sem-fim-de-vida] [--sem-transicoes] [--escala=N] [--msaa=N] [--aniso=N] [--perfil[=MS]] [--boomerang] [--movimento=ms:x:y:z,...] [--wiimote] [--proporcao=16:9]
+                "     zeebx sessao <arquivo.zip> [--seconds=N] [--keys=ms:botão,...] [--dump=QUADRO.bmp] [--fotos=ms,...] [--placa] [--serial=CAMINHO] [--fabrica] [--sem-fim-de-vida] [--sem-transicoes] [--escala=N] [--msaa=N] [--aniso=N] [--perfil[=MS]] [--telemetria] [--hitch[=MS]] [--boomerang] [--movimento=ms:x:y:z,...] [--wiimote] [--proporcao=16:9]
                              [--portas=controle,controle] [--dpad-nos-eixos]  (a sessão da janela, sem janela)"
             );
             eprintln!(
@@ -1340,6 +1350,8 @@ fn sessao_sem_janela(
     portas_pedidas: Option<[Option<bindings::Aparelho>; input::PORTAS]>,
     tracing: bool,
     trace_filter: Option<String>,
+    telemetria: bool,
+    hitch_ms: Option<u64>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let serial = serial.map(std::path::Path::new);
     let settings = ui::settings::Settings::load();
@@ -1391,6 +1403,13 @@ fn sessao_sem_janela(
     let mut fotos: std::collections::VecDeque<u32> = instantes.iter().copied().collect();
     let mut numero = 0;
     let dpad_nos_eixos = std::env::args().any(|arg| arg == "--dpad-nos-eixos");
+    // A telemetria trabalha com deltas: o retrato no último segundo fechado, no último hitch
+    // e os quadros e o áudio de então. Uma leitura de relógio por volta de 16 ms é ruído perto
+    // do passo — a regra do 1/64 vale para o laço interno, não para este.
+    let mut tele_segundo = session.telemetria();
+    let mut tele_hitch = tele_segundo;
+    let mut audio_segundo = 0u64;
+    let mut segundo_virtual = 0u32;
     while session.clock_ms() < fim {
         if let (Some(desde), None) = (perfil, perfil_ligado_em) {
             if session.clock_ms() >= desde {
@@ -1442,10 +1461,67 @@ fn sessao_sem_janela(
             fotos.push_back(session.clock_ms().saturating_add(500));
             fotos.make_contiguous().sort_unstable();
         }
-        let parou = matches!(
-            session.step(std::time::Duration::from_millis(16), false),
-            session::Step::Stopped
-        );
+        let parou = {
+            let antes = std::time::Instant::now();
+            let parou = matches!(
+                session.step(std::time::Duration::from_millis(16), false),
+                session::Step::Stopped
+            );
+            let demorou = antes.elapsed();
+            // O hitch diz **o que o passo fez**, não só quanto demorou: os deltas desde o
+            // hitch anterior contam desenhos, subidas e leituras, e é isso que separa "o jogo
+            // pediu muito" de "a placa demorou".
+            if let Some(teto) = hitch_ms {
+                if demorou.as_millis() >= teto as u128 {
+                    let agora = session.telemetria();
+                    println!(
+                        "hitch:     {} ms reais aos {} ms virtuais (+{} desenhos, +{} vértices, +{} subidas/+{} KiB, +{} leituras/+{} KiB, {} programas)",
+                        demorou.as_millis(),
+                        session.clock_ms(),
+                        agora.desenhos.saturating_sub(tele_hitch.desenhos),
+                        agora.vertices.saturating_sub(tele_hitch.vertices),
+                        agora.envios.saturating_sub(tele_hitch.envios),
+                        agora.bytes_enviados.saturating_sub(tele_hitch.bytes_enviados) / 1024,
+                        agora.leituras.saturating_sub(tele_hitch.leituras),
+                        agora.bytes_lidos.saturating_sub(tele_hitch.bytes_lidos) / 1024,
+                        agora.programas,
+                    );
+                    tele_hitch = agora;
+                }
+            }
+            // Uma linha por segundo virtual, com as taxas do trecho — o `HALO_FPS_LOG` do port
+            // de referência. O relógio virtual pode pular mais de um segundo por volta numa
+            // máquina rápida; a linha cobre o vão inteiro, e as taxas dividem por ele.
+            let segundo = session.clock_ms() / 1000;
+            if telemetria && segundo > segundo_virtual {
+                let vaos = segundo.saturating_sub(segundo_virtual).max(1);
+                let agora = session.telemetria();
+                let audio = gravacao
+                    .as_ref()
+                    .map(|(_, mixer)| mixer.rendered())
+                    .unwrap_or(0);
+                let amostra = session.sample();
+                println!(
+                    "tele:      {}s v: {} fps {}% | +{}/s desenhos +{}/s vértices ({} pulados) | +{}/s leituras +{}/s KiB lidos | +{}/s subidas +{}/s KiB enviados | +{}/s quadros de áudio | {} programas",
+                    segundo,
+                    amostra.fps,
+                    amostra.speed,
+                    agora.desenhos.saturating_sub(tele_segundo.desenhos) / u64::from(vaos),
+                    agora.vertices.saturating_sub(tele_segundo.vertices) / u64::from(vaos),
+                    agora.pulados.saturating_sub(tele_segundo.pulados),
+                    agora.leituras.saturating_sub(tele_segundo.leituras) / u64::from(vaos),
+                    agora.bytes_lidos.saturating_sub(tele_segundo.bytes_lidos) / 1024 / u64::from(vaos),
+                    agora.envios.saturating_sub(tele_segundo.envios) / u64::from(vaos),
+                    agora.bytes_enviados.saturating_sub(tele_segundo.bytes_enviados) / 1024 / u64::from(vaos),
+                    audio.saturating_sub(audio_segundo) / u64::from(vaos),
+                    agora.programas,
+                );
+                segundo_virtual = segundo;
+                tele_segundo = agora;
+                audio_segundo = audio;
+            }
+            parou
+        };
         if let Some((_, mixer)) = &gravacao {
             let agora = u64::from(session.clock_ms());
             let quadros = (agora.saturating_sub(gravado_ms) * u64::from(RECORD_RATE)) / 1000;
@@ -1578,6 +1654,49 @@ fn sessao_sem_janela(
             checagens.len(),
             tamanho
         );
+    }
+    // **O resumo da telemetria sai sempre.** Os contadores são somas de inteiro sem relógio,
+    // então o custo de tê-los é zero mensurável — e um relatório de bancada sem draws, leituras
+    // e subidas não diz onde o quadro foi parar.
+    let tele = session.telemetria();
+    let reais = inicio_real.elapsed().as_secs().max(1);
+    println!(
+        "telemetria: {} desenhos ({} vértices, {} pulados), {} leituras ({} KiB), {} subidas ({} KiB), {} programas; {} quadros em {}s reais ({} fps médios)",
+        tele.desenhos,
+        tele.vertices,
+        tele.pulados,
+        tele.leituras,
+        tele.bytes_lidos / 1024,
+        tele.envios,
+        tele.bytes_enviados / 1024,
+        tele.programas,
+        session.quadros_apresentados(),
+        reais,
+        session.quadros_apresentados() / reais,
+    );
+    // Quem emite os draws, do mais falante para o mais quieto — o `HALO_DEBUG_DRAW_CALLERS`
+    // do port de referência. Só com `--telemetria`: o `call_log` guarda todas as chamadas, e
+    // listá-las é relatório, não laço quente, mas a linha por segundo já basta para acompanhar.
+    if telemetria {
+        let mut emissores: Vec<(String, u64)> = session
+            .chamadas_de_api()
+            .into_iter()
+            .filter(|(nome, _)| {
+                const DESENHO: [&str; 6] = [
+                    "DrawArrays",
+                    "DrawElements",
+                    "DrawTex",
+                    "TexImage",
+                    "TexSubImage",
+                    "ReadPixels",
+                ];
+                DESENHO.iter().any(|parte| nome.contains(parte))
+            })
+            .collect();
+        emissores.sort_unstable_by_key(|(_, vezes)| std::cmp::Reverse(*vezes));
+        for (nome, vezes) in emissores.iter().take(8) {
+            println!("emissor:   {vezes:>10}  {nome}");
+        }
     }
     if let (Some((caminho, _)), false) = (&gravacao, gravado.is_empty()) {
         std::fs::write(caminho, audio::to_wav(&gravado, RECORD_RATE))?;

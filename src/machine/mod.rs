@@ -44,6 +44,7 @@ mod media;
 /// O teto do cache de sons decodificados, em bytes — reexportado porque quem o ajusta é o
 /// frontend, e o módulo que o guarda é interno.
 pub use media::define_teto_do_cache_de_som;
+pub use diagnostico::Telemetria;
 mod net;
 mod probe;
 mod shell;
@@ -2676,6 +2677,23 @@ pub struct Machine<C: CpuBackend> {
     egl_swaps: u32,
     /// Quantos `glClear` limparam a cor. Ver [`Machine::gl_swaps`].
     gl_clears: u32,
+    /// Desenhos do guest que chegaram ao rasterizador, e quantos vértices levaram.
+    ///
+    /// **Sempre ligado, e barato de propósito**: somas de inteiro por desenho, sem relógio —
+    /// é a matéria-prima da telemetria por segundo do handheld. Ver [`Machine::telemetria`].
+    tm_desenhos: u64,
+    tm_vertices: u64,
+    /// Desenhos que o frameskip pulou antes de qualquer leitura. Ver
+    /// [`Machine::define_pula_desenho`].
+    tm_pulados: u64,
+    /// Leituras de pixels que o guest pediu, e quantos bytes foram entregues a ele.
+    tm_leituras: u64,
+    tm_bytes_lidos: u64,
+    /// Subidas de textura (comprimida ou não), e quantos bytes decodificados subiram.
+    tm_envios: u64,
+    tm_bytes_enviados: u64,
+    /// Programas de placa ligados — um por construção bem-sucedida do rasterizador de placa.
+    tm_programas: u64,
     /// Último nome de textura ou buffer entregue pelo OpenGL ES.
     gles_next_name: u32,
     /// O objeto `IGLES11`, criado sob demanda pelo `QueryInterface` do EGL.
@@ -2867,10 +2885,16 @@ fn placa_pedida(padrao: bool) -> bool {
 ///
 /// Aqui não há contexto para emprestar: quem constrói a máquina direto é a linha de comando, que
 /// não tem janela. O caminho com janela troca depois, já com o contexto dela.
-fn rasterizador(largura: usize, altura: usize) -> Box<dyn Rasterizador> {
+///
+/// Devolve junto se um programa de placa foi ligado — é o que alimenta o contador da
+/// telemetria sem que ninguém precise adivinhar qual variante subiu.
+fn rasterizador(largura: usize, altura: usize) -> (Box<dyn Rasterizador>, bool) {
     match placa_pedida(false) {
         true => na_placa(largura, altura, None),
-        false => Box::new(GlState::new(largura, altura)),
+        false => (
+            Box::new(GlState::new(largura, altura)) as Box<dyn Rasterizador>,
+            false,
+        ),
     }
 }
 
@@ -2883,7 +2907,7 @@ fn na_placa(
     largura: usize,
     altura: usize,
     contexto: Option<std::sync::Arc<glow::Context>>,
-) -> Box<dyn Rasterizador> {
+) -> (Box<dyn Rasterizador>, bool) {
     // Com a feature `gl`, o rasterizador de placa existe — e ele **não** cria contexto: quem
     // chama entrega o dele. Sem ela, o software é a única rota, que é o caso do core quando o
     // frontend não oferece contexto.
@@ -2896,7 +2920,7 @@ fn na_placa(
                     "gl",
                     "rasterizador de placa criado em {largura}x{altura}"
                 );
-                return Box::new(gpu);
+                return (Box::new(gpu), true);
             }
             // **Aviso, e não informação.** Cair para software não é detalhe de configuração: é
             // o desenho ficando mais lento e diferente, e é a primeira coisa a olhar quando
@@ -2911,7 +2935,7 @@ fn na_placa(
         }
     }
     let _ = contexto;
-    Box::new(GlState::new(largura, altura))
+    (Box::new(GlState::new(largura, altura)), false)
 }
 
 impl<C: CpuBackend> Machine<C> {
@@ -2928,10 +2952,17 @@ impl<C: CpuBackend> Machine<C> {
         contexto: Option<std::sync::Arc<glow::Context>>,
     ) {
         let (largura, altura) = self.gl.frame_size();
-        self.gl = match placa_pedida(sim) {
+        let (raster, ligou) = match placa_pedida(sim) {
             true => na_placa(largura, altura, contexto),
-            false => Box::new(GlState::new(largura, altura)),
+            false => (
+                Box::new(GlState::new(largura, altura)) as Box<dyn Rasterizador>,
+                false,
+            ),
         };
+        if ligou {
+            self.tm_programas = self.tm_programas.saturating_add(1);
+        }
+        self.gl = raster;
     }
 
     /// Começa a contar os `IDISPLAY_Update` de uma volta do laço.
@@ -3054,6 +3085,10 @@ impl<C: CpuBackend> Machine<C> {
     ) -> Self {
         let raiz: std::path::PathBuf = root.into();
         let aparelho: std::path::PathBuf = storage.device.clone();
+        // O programa da placa é ligado aqui dentro, quando a placa sobe: contar agora é o que
+        // põe o custo da primeira compilação na telemetria da sessão.
+        let (gl, programa_ligado) =
+            rasterizador(SCREEN_WIDTH as usize, SCREEN_HEIGHT as usize);
         let heap = Heap::new(loader::HEAP_BASE, loader::HEAP_SIZE);
         // Os objetos ficam depois dos ponteiros que o carregador já reservou no começo da
         // região, para não sobrescrevê-los.
@@ -3252,6 +3287,13 @@ impl<C: CpuBackend> Machine<C> {
             egl_next_handle: EGL_HANDLE_BASE,
             egl_swaps: 0,
             gl_clears: 0,
+            tm_desenhos: 0,
+            tm_vertices: 0,
+            tm_pulados: 0,
+            tm_leituras: 0,
+            tm_bytes_lidos: 0,
+            tm_envios: 0,
+            tm_bytes_enviados: 0,
             gles_next_name: 0,
             gles_object: 0,
             egl_surface: 0,
@@ -3262,7 +3304,8 @@ impl<C: CpuBackend> Machine<C> {
             gl_last_frame_words: Vec::new(),
             gl_quadro_pendente: false,
             gl_materializacoes: 0,
-            gl: rasterizador(SCREEN_WIDTH as usize, SCREEN_HEIGHT as usize),
+            tm_programas: u64::from(programa_ligado),
+            gl,
             gl_vertices: ArrayPointer::default(),
             gl_colors: ArrayPointer::default(),
             gl_texcoords: ArrayPointer::default(),
