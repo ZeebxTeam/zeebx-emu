@@ -233,13 +233,23 @@ ApplicationWindow {
             }
 
             Button {
+                id: botaoZWheel
+
                 focusPolicy: Qt.NoFocus
                 text: "▶ " + tr("nav.z_wheel")
                 enabled: principal.depende([configuracoes.cfg.versao], biblioteca.temZWheel())
                 onClicked: principal.mostra(biblioteca.abreZWheel())
-                ToolTip.visible: hovered
-                ToolTip.delay: 500
-                ToolTip.text: tr(enabled ? "nav.z_wheel.hint" : "nav.z_wheel.missing")
+                // O teto de largura é o dos cartões (GradeDaBiblioteca.qml:133): sem ele, a dica
+                // comprida saía numa linha só, mais larga que a tela.
+                ToolTip {
+                    visible: botaoZWheel.hovered
+                    delay: 500
+                    width: Math.min(implicitWidth, 320)
+                    contentItem: Label {
+                        wrapMode: Text.Wrap
+                        text: tr(botaoZWheel.enabled ? "nav.z_wheel.hint" : "nav.z_wheel.missing")
+                    }
+                }
             }
 
             // A busca: filtra a lista pelo nome, sem ligar para acentos. Esc limpa; o Enter joga
@@ -259,12 +269,20 @@ ApplicationWindow {
                 }
                 Keys.onReturnPressed: if (!principal.sobreposta) principal.mostra(biblioteca.abre(principal.escolhido()))
                 Keys.onEnterPressed: if (!principal.sobreposta) principal.mostra(biblioteca.abre(principal.escolhido()))
-                ToolTip.visible: hovered
-                ToolTip.delay: 500
-                ToolTip.text: tr("nav.search.hint")
+                ToolTip {
+                    visible: busca.hovered
+                    delay: 500
+                    width: Math.min(implicitWidth, 320)
+                    contentItem: Label {
+                        wrapMode: Text.Wrap
+                        text: tr("nav.search.hint")
+                    }
+                }
             }
 
             ToolButton {
+                id: botaoLimpaBusca
+
                 focusPolicy: Qt.NoFocus
                 text: "✕"
                 visible: busca.text !== ""
@@ -273,8 +291,14 @@ ApplicationWindow {
                     busca.text = ""
                     principal.vista.forceActiveFocus()
                 }
-                ToolTip.visible: hovered
-                ToolTip.text: tr("nav.search.clear")
+                ToolTip {
+                    visible: botaoLimpaBusca.hovered
+                    width: Math.min(implicitWidth, 320)
+                    contentItem: Label {
+                        wrapMode: Text.Wrap
+                        text: tr("nav.search.clear")
+                    }
+                }
             }
 
             Item {
@@ -297,12 +321,20 @@ ApplicationWindow {
             // próprio banco. Testar rede com isso custa um dia por tentativa, então o botão recua
             // a data em um dia.
             Button {
+                id: botaoLiberaSync
+
                 focusPolicy: Qt.NoFocus
                 text: tr("nav.unlock_sync")
                 onClicked: recado.text = biblioteca.liberaSincronizacao()
-                ToolTip.visible: hovered
-                ToolTip.delay: 500
-                ToolTip.text: tr("nav.unlock_sync.hint")
+                ToolTip {
+                    visible: botaoLiberaSync.hovered
+                    delay: 500
+                    width: Math.min(implicitWidth, 320)
+                    contentItem: Label {
+                        wrapMode: Text.Wrap
+                        text: tr("nav.unlock_sync.hint")
+                    }
+                }
             }
         }
 
