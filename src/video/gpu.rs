@@ -514,6 +514,11 @@ pub struct GpuState {
     sujo: bool,
     /// A resolução interna, em múltiplos do quadro do console. Ver [`Rasterizador::define_escala`].
     escala: usize,
+    /// O divisor da resolução interna do 3D. Ver [`Rasterizador::define_reducao`].
+    ///
+    /// 1 é desligado; 2 desenha em 320×240 e amplia na leitura ou na apresentação. O tamanho
+    /// do anexo é `medida * escala / reducao`, e a viewport e a tesoura vão na mesma razão.
+    reducao: usize,
     /// O quadro reduzido ao tamanho do console, de onde saem as leituras quando `escala > 1`.
     reduzido: Option<(glow::Framebuffer, glow::Texture, (usize, usize))>,
     /// Amostras por pixel do antialias (MSAA); 1 é desligado. Ver [`Rasterizador::define_antialias`].
@@ -549,9 +554,10 @@ struct Destino {
     fbo: glow::Framebuffer,
     cor: glow::Texture,
     profundidade: glow::Renderbuffer,
-    /// Em pixels do console; o anexo tem `(medida.0 + 2 * extra, medida.1) * escala`.
+    /// Em pixels do console; o anexo tem `(medida.0 + 2 * extra, medida.1) * escala / reducao`.
     medida: (usize, usize),
     escala: usize,
+    reducao: usize,
     /// As colunas a mais de cada lado, em pixels do console, para a proporção larga.
     extra: usize,
     amostras: usize,
@@ -670,6 +676,7 @@ impl GpuState {
             pixels: Vec::new(),
             sujo: true,
             escala: 1,
+            reducao: 1,
             proporcao: None,
             em_perspectiva: false,
             fbo_externo: None,
@@ -730,9 +737,14 @@ impl GpuState {
             return;
         }
         let medida = self.estado.frame_size();
-        let (escala, amostras, extra) = (self.escala, self.amostras, self.extra());
+        let (escala, reducao, amostras, extra) =
+            (self.escala, self.reducao.max(1), self.amostras, self.extra());
         if self.quadro.as_ref().is_some_and(|d| {
-            d.medida == medida && d.escala == escala && d.amostras == amostras && d.extra == extra
+            d.medida == medida
+                && d.escala == escala
+                && d.reducao == reducao
+                && d.amostras == amostras
+                && d.extra == extra
         }) {
             let alvo = self.alvo_do_desenho();
             unsafe { self.gl.bind_framebuffer(glow::FRAMEBUFFER, alvo) };
@@ -744,8 +756,8 @@ impl GpuState {
                 solta_destino(gl, antigo);
             }
             let (largura, altura) = (
-                ((medida.0 + 2 * extra) * escala) as i32,
-                (medida.1 * escala) as i32,
+                (((medida.0 + 2 * extra) * escala) / reducao) as i32,
+                ((medida.1 * escala) / reducao) as i32,
             );
             let cor = gl.create_texture().expect("textura de cor");
             gl.bind_texture(glow::TEXTURE_2D, Some(cor));
@@ -862,6 +874,7 @@ impl GpuState {
                 profundidade,
                 medida,
                 escala,
+                reducao,
                 extra,
                 amostras,
                 multi,
@@ -1136,9 +1149,17 @@ impl GpuState {
         let mut e_n = 0u64;
         let mut p_n = 0u64;
         unsafe {
-            // A viewport vem em pixels do console; o anexo é `escala` vezes maior.
-            let n = self.escala as i32;
-            let viewport = (x * n, y * n, w.max(0) * n, h.max(0) * n);
+            // A viewport vem em pixels do console; o anexo é `escala / reducao` vezes maior.
+            // A divisão trunca: com os fatores permitidos (1, 2, 4 sobre 640×480) a conta é
+            // exata, e numa viewport arbitrária o erro é de menos de um pixel do anexo.
+            let (fator_cima, fator_baixo) = (self.escala as i32, self.reducao.max(1) as i32);
+            let na_escala = |v: i32| v * fator_cima / fator_baixo;
+            let viewport = (
+                na_escala(x),
+                na_escala(y),
+                na_escala(w.max(0)),
+                na_escala(h.max(0)),
+            );
             if Espelho::mudou(&mut m.viewport, viewport, &mut e_n, &mut p_n) {
                 gl.viewport(viewport.0, viewport.1, viewport.2, viewport.3);
             }
@@ -1157,14 +1178,19 @@ impl GpuState {
                 gl.enable(glow::DEPTH_CLAMP);
             }
             // O `glScissor` do jogo vem em pixels do console, com o `y` de baixo para cima —
-            // a mesma convenção da viewport —, e o anexo é `escala` vezes maior. Ver
+            // a mesma convenção da viewport —, e o anexo é `escala / reducao` vezes maior. Ver
             // [`tesoura_no_anexo`].
             if Espelho::mudou(&mut m.tesoura_ligada, e.tesoura_ligada, &mut e_n, &mut p_n) {
                 liga(gl, glow::SCISSOR_TEST, e.tesoura_ligada);
             }
             if e.tesoura_ligada {
                 let (sx, sy, sw, sh) = tesoura_no_anexo(e.tesoura, self.estado.surface(), extra);
-                let tesoura = (sx * n, sy * n, sw.max(0) * n, sh.max(0) * n);
+                let tesoura = (
+                    na_escala(sx),
+                    na_escala(sy),
+                    na_escala(sw.max(0)),
+                    na_escala(sh.max(0)),
+                );
                 if Espelho::mudou(&mut m.tesoura, tesoura, &mut e_n, &mut p_n) {
                     gl.scissor(tesoura.0, tesoura.1, tesoura.2, tesoura.3);
                 }
@@ -1410,10 +1436,11 @@ impl GpuState {
 
     /// Deixa ligado, para leitura, um framebuffer com o quadro no tamanho do console.
     ///
-    /// Com `escala` 1 é o próprio destino. Acima disso o quadro grande é reduzido na placa, com
-    /// filtro linear, antes de qualquer leitura: é o que o jogo vê — o `GetColorBufferQUALCOMM`, o
-    /// `glReadPixels`, a cópia para a tela —, e ler o quadro grande seria mover o quadrado do fator
-    /// em bytes para jogar quase tudo fora.
+    /// Com `escala` acima de 1 o quadro grande é reduzido na placa, com filtro linear, antes
+    /// de qualquer leitura; com `reducao` acima de 1 o quadro pequeno é ampliado do mesmo
+    /// jeito: é o que o jogo vê — o `GetColorBufferQUALCOMM`, o `glReadPixels`, a cópia para
+    /// a tela —, e ler o anexo cru seria mover o tamanho errado para jogar fora ou esticar na
+    /// CPU.
     fn liga_para_leitura(&mut self) {
         if !self.placa_viva() {
             return;
@@ -1425,7 +1452,10 @@ impl GpuState {
             self.resolve();
         }
         let extra = self.quadro.as_ref().map_or(0, |d| d.extra) as i32;
-        if self.escala <= 1 && extra == 0 {
+        // Leitura direta só quando o anexo tem o tamanho do console: fator líquido 1 e sem
+        // lados. `escala <= reducao` não vale — com escala 1 e redução 2 o anexo tem metade
+        // do console, e ler direto entregaria um quarto do quadro.
+        if self.escala == self.reducao.max(1) && extra == 0 {
             let fbo = match self.fbo_externo {
                 Some(_) => self.alvo_do_desenho(),
                 None => self.quadro.as_ref().map(|d| d.fbo),
@@ -1435,7 +1465,10 @@ impl GpuState {
         }
         let medida = self.estado.frame_size();
         let (fw, fh) = (medida.0 as i32, medida.1 as i32);
-        let n = self.escala as i32;
+        // O anexo tem `escala / reducao` vezes o console: a fonte do blit é o centro dele, e
+        // o destino é o console inteiro, nas duas direções.
+        let (s, r) = (self.escala as i32, self.reducao.max(1) as i32);
+        let no_anexo = |v: i32| v * s / r;
         let gl = &self.gl;
         unsafe {
             if self.reduzido.as_ref().is_none_or(|r| r.2 != medida) {
@@ -1477,10 +1510,10 @@ impl GpuState {
             // Na proporção larga, o jogo lê só o centro: é ali que está a imagem de 640×480 que
             // ele desenhou, e os lados são nossos.
             gl.blit_framebuffer(
-                extra * n,
+                no_anexo(extra),
                 0,
-                (extra + fw) * n,
-                fh * n,
+                no_anexo(extra + fw),
+                no_anexo(fh),
                 0,
                 0,
                 fw,
@@ -3185,19 +3218,53 @@ impl Rasterizador for GpuState {
         }
     }
 
+    fn define_reducao(&mut self, reducao: usize) {
+        // Sem blit confiável não há ampliação do quadro pequeno, e a redução é justamente
+        // isso: o desenho menor ampliado antes de qualquer leitura ou apresentação. Ficar
+        // em 1x é a resposta certa — ver [`Rasterizador::define_escala`].
+        if !self.blit_confiavel {
+            return;
+        }
+        self.descarrega();
+        if !self.placa_viva() {
+            return;
+        }
+        // Os mesmos valores do processador: 1 desliga, e acima de 4 o anexo vira selo.
+        let nova = match reducao {
+            0 | 1 => 1,
+            n => n.min(4),
+        };
+        if nova != self.reducao {
+            self.reducao = nova;
+            self.sujo = true;
+            crate::registro!(
+                crate::registro::Nivel::Informacao,
+                "gl",
+                "resolução interna do 3D na placa reduzida a 1/{nova} do quadro"
+            );
+        }
+    }
+
     fn le_quadro_grande(&mut self) -> Option<(usize, usize, Vec<u8>)> {
         self.descarrega();
         if !self.placa_viva() {
             return None;
         }
         let extra = self.extra();
-        if self.escala <= 1 && extra == 0 {
+        // Só há "quadro grande" quando o anexo passa do console: fator líquido acima de 1.
+        // Com redução o anexo é menor, e o console sai pelo caminho da leitura — devolver o
+        // anexo pequeno como "grande" mostraria a miniatura no lugar da foto.
+        if self.escala <= self.reducao.max(1) && extra == 0 {
             return None;
         }
         self.destino();
         self.resolve();
         let (sw, sh) = self.estado.surface();
-        let (w, h) = ((sw + 2 * extra) * self.escala, sh * self.escala);
+        let r = self.reducao.max(1);
+        let (w, h) = (
+            ((sw + 2 * extra) * self.escala) / r,
+            (sh * self.escala) / r,
+        );
         let mut bytes = vec![0u8; w * h * 4];
         unsafe {
             self.gl.read_pixels(
@@ -3280,7 +3347,11 @@ impl Rasterizador for GpuState {
 
     fn quadro_na_placa(&self) -> Option<QuadroNaPlaca> {
         let destino = self.quadro.as_ref()?;
-        if destino.escala <= 1 && destino.extra == 0 {
+        // O atalho vale quando o anexo difere do console, para mais ou para menos: com
+        // redução a textura pequena é ampliada por quem apresenta, sem volta à CPU — que é
+        // justamente a economia. Só o fator líquido 1 dispensa o atalho, como antes. O recorte
+        // e a proporção são frações, e valem iguais no anexo pequeno.
+        if destino.escala == destino.reducao.max(1) && destino.extra == 0 {
             return None;
         }
         let (fw, fh) = destino.medida;
@@ -3652,6 +3723,64 @@ mod tests {
         let quadro = grande.quadro_na_placa().expect("textura grande para a janela");
         assert_eq!(quadro.recorte, [1.0, 1.0]);
         assert!(nativa.quadro_na_placa().is_none(), "na escala 1 a janela usa a tela de sempre");
+    }
+
+    /// Com redução, o anexo encolhe e a leitura amplia de volta ao tamanho do console.
+    ///
+    /// O espelho do teste da escala: desenha o mesmo triângulo num anexo de 8×8, lê em 16×16
+    /// e confere o miolo dos dois lados da diagonal — longe dela, para a ampliação linear não
+    /// misturar. A textura direta tem de valer, com o mesmo recorte cheio: é ela que a janela
+    /// estica, sem volta à CPU.
+    #[test]
+    fn com_reducao_a_leitura_amplia_ao_tamanho_do_console() {
+        let (largura, altura) = (16, 16);
+        let Some((mut nativa, mut sw)) = par(largura, altura) else {
+            return;
+        };
+        let Ok(mut pequena) = GpuState::novo(largura, altura, None, None) else {
+            return;
+        };
+        pequena.define_reducao(2);
+        if pequena.reducao != 2 {
+            println!("placa sem blit confiável: a redução fica desligada");
+            return;
+        }
+        let cena = |r: &mut dyn Rasterizador| {
+            r.set_viewport(0, 0, largura as i32, altura as i32);
+            r.set_clear_color([0.0, 0.0, 1.0, 1.0]);
+            r.clear(gles::GL_COLOR_BUFFER_BIT);
+            let canto = |x: f32, y: f32| Vertex {
+                position: [x, y, 0.0, 1.0],
+                color: [1.0, 0.0, 0.0, 1.0],
+                uv: UV_PADRAO,
+                uv1: UV_PADRAO,
+                normal: [0.0, 0.0, 1.0],
+                fog: 1.0,
+            };
+            r.draw(
+                gles::GL_TRIANGLES,
+                &[canto(-1.0, 1.0), canto(-1.0, -1.0), canto(1.0, 1.0)],
+            );
+        };
+        let (a, _) = ambos(&mut nativa, &mut sw, largura, altura, cena);
+        cena(&mut pequena);
+        let mut b = Vec::new();
+        pequena.frame_rgb565(largura, altura, &mut b);
+        assert_eq!(b.len(), a.len(), "a leitura sai no tamanho do console");
+        assert_eq!(
+            pixel(&b, largura, 2, 2),
+            pixel(&a, largura, 2, 2),
+            "miolo vermelho com redução 2"
+        );
+        assert_eq!(
+            pixel(&b, largura, 13, 13),
+            pixel(&a, largura, 13, 13),
+            "miolo azul com redução 2"
+        );
+        let quadro = pequena
+            .quadro_na_placa()
+            .expect("textura pequena para a janela esticar");
+        assert_eq!(quadro.recorte, [1.0, 1.0]);
     }
 
     /// Com antialias a borda do triângulo mistura as duas cores, e o miolo fica como estava.

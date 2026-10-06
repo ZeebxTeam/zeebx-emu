@@ -769,9 +769,9 @@ pub trait Rasterizador {
     /// Se trazer o quadro para a memória da CPU custa uma **espera pela placa**.
     ///
     /// Reduz a resolução interna do 3D, desenhando numa superfície menor e ampliando na
-    /// apresentação. **Só o rasterizador de processador faz isto**: ver
-    /// [`GlState::define_reducao`]. Na placa não há o que fazer — ali o preenchimento a 640×480
-    /// não satura a GPU, e reduzir só estragaria a imagem.
+    /// apresentação. O processador implementa em [`GlState::define_reducao`]; a placa, no
+    /// `GpuState`: ali o anexo encolhe e a leitura amplia por blit linear, e a apresentação
+    /// direta estica a textura.
     fn define_reducao(&mut self, _reducao: usize) {}
 
     /// Chamadas de estado enviadas à placa e quantas o espelho poupou. Zero no software.

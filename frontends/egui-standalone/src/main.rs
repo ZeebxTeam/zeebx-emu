@@ -435,6 +435,13 @@ fn main() -> ExitCode {
                 .find_map(|a| a.strip_prefix("--escala="))
                 .and_then(|n| n.parse::<usize>().ok())
                 .unwrap_or(1);
+            // `--reducao=N` desenha o 3D a 1/N do quadro (2 ou 4) e amplia na apresentação:
+            // a alavanca da bancada de handheld, que no core já existe como opção.
+            let reducao = args
+                .iter()
+                .find_map(|a| a.strip_prefix("--reducao="))
+                .and_then(|n| n.parse::<usize>().ok())
+                .unwrap_or(1);
             let numero = |prefixo: &str| {
                 args.iter()
                     .find_map(|a| a.strip_prefix(prefixo))
@@ -498,8 +505,8 @@ fn main() -> ExitCode {
                 None => None,
             };
             report(sessao_sem_janela(
-                &args[1], seconds, dump, &keys, &fotos, placa, serial, z_wheel, escala, melhorias,
-                perfil, boomerang, portas, tracing, trace_filter, telemetria, hitch,
+                &args[1], seconds, dump, &keys, &fotos, placa, serial, z_wheel, escala, reducao,
+                melhorias, perfil, boomerang, portas, tracing, trace_filter, telemetria, hitch,
             ))
         }
         // Sem argumento nenhum, o que se quer é o emulador, não a ajuda.
@@ -517,7 +524,7 @@ fn main() -> ExitCode {
                              [--portas=controle|teclado|nenhum,...] [--teclas=ms:nome,...]"
             );
             eprintln!(
-                "     zeebx sessao <arquivo.zip> [--seconds=N] [--keys=ms:botão,...] [--dump=QUADRO.bmp] [--fotos=ms,...] [--placa] [--serial=CAMINHO] [--fabrica] [--sem-fim-de-vida] [--sem-transicoes] [--escala=N] [--msaa=N] [--aniso=N] [--perfil[=MS]] [--telemetria] [--hitch[=MS]] [--boomerang] [--movimento=ms:x:y:z,...] [--wiimote] [--proporcao=16:9]
+                "     zeebx sessao <arquivo.zip> [--seconds=N] [--keys=ms:botão,...] [--dump=QUADRO.bmp] [--fotos=ms,...] [--placa] [--serial=CAMINHO] [--fabrica] [--sem-fim-de-vida] [--sem-transicoes] [--escala=N] [--reducao=N] [--msaa=N] [--aniso=N] [--perfil[=MS]] [--telemetria] [--hitch[=MS]] [--boomerang] [--movimento=ms:x:y:z,...] [--wiimote] [--proporcao=16:9]
                              [--portas=controle,controle] [--dpad-nos-eixos]  (a sessão da janela, sem janela)"
             );
             eprintln!(
@@ -1344,6 +1351,7 @@ fn sessao_sem_janela(
     serial: Option<&str>,
     z_wheel: ui::settings::ZWheel,
     escala: usize,
+    reducao: usize,
     melhorias: (usize, usize),
     perfil: Option<u32>,
     boomerang: Option<Vec<(u32, [f32; 3])>>,
@@ -1380,6 +1388,7 @@ fn sessao_sem_janela(
     )
     .map_err(|err| format!("{err:?}"))?;
     session.define_resolucao_interna(escala);
+    session.define_reducao(reducao);
     session.define_proporcao(proporcao_da_linha());
     session.define_melhorias(melhorias.0, melhorias.1);
     session.set_tracing(tracing);
@@ -1593,6 +1602,7 @@ fn sessao_sem_janela(
             )
             .map_err(|err| format!("{err:?}"))?;
             session.define_resolucao_interna(escala);
+            session.define_reducao(reducao);
             session.define_proporcao(proporcao_da_linha());
             session.define_melhorias(melhorias.0, melhorias.1);
             session.set_installed_applets(

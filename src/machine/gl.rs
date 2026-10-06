@@ -1223,7 +1223,7 @@ impl<C: CpuBackend> Machine<C> {
         self.gl.define_descarte_de_tiles(descartar);
     }
 
-    /// Reduz a resolução interna do 3D no rasterizador de processador. Ver
+    /// Reduz a resolução interna do 3D no rasterizador em uso. Ver
     /// [`Rasterizador::define_reducao`].
     pub fn define_reducao(&mut self, reducao: usize) {
         self.gl.define_reducao(reducao);
