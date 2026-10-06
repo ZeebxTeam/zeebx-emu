@@ -1682,10 +1682,11 @@ fn sessao_sem_janela(
             .chamadas_de_api()
             .into_iter()
             .filter(|(nome, _)| {
-                const DESENHO: [&str; 6] = [
+                const DESENHO: [&str; 7] = [
                     "DrawArrays",
                     "DrawElements",
                     "DrawTex",
+                    "DrawText",
                     "TexImage",
                     "TexSubImage",
                     "ReadPixels",

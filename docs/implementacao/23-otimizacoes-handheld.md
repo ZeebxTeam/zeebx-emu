@@ -113,6 +113,33 @@ pinar clocks no código não dá a partir do core (vira documentação); bibliot
 no core o `ldd` do `libretro.yml` barra; dependência GPL-2.0-only não entra (binários são
 GPLv3 na prática).
 
+## Roteiro da bancada (0.3) — validado localmente, números do aparelho pendentes
+
+Quatro jogos, roteiro determinístico de toques (`b1` a cada 2500 ms a partir de 5000 ms),
+caminho de software (determinístico em qualquer lugar, inclusive via SSH no aparelho):
+
+```bash
+KEYS=$(python3 -c "print(','.join(f'{t}:b1:200' for t in range(5000,32000,2500)))")
+zeebx sessao "<jogo>.zip" --seconds=32 --keys="$KEYS" --telemetria   # Double Dragon, Crash
+zeebx sessao "<jogo>.zip" --seconds=62 --keys="$KEYS" --telemetria   # Quake, NFS Carbon
+```
+
+Validação local (binário debug, desktop Mesa, software — **não** são números de handheld,
+servem só para provar que o roteiro é determinístico e a telemetria fecha):
+
+| Jogo | Desenhos | Vértices | Subidas | Maior emissor |
+|---|---|---|---|---|
+| Double Dragon (2 rodadas) | 9732, idêntico | 1878562, idêntico | 10 (4800 KiB) | `IGL::glDrawArrays` |
+| Crash Nitro Kart 3D | 25166 | 1143165 | 111 (19507 KiB) | `IGL::glDrawElements` |
+| Quake | 1808143 | 30895914 | 962 (15791 KiB) | `IGLES11::DrawArrays` |
+| NFS Carbon | 49851 | 1535477 | 451 (16670 KiB) | `IGL::glDrawArrays` |
+
+Dois fatos que o roteiro já mostra: jogos diferentes usam interfaces diferentes (`IGL` vs
+`IGLES11` — os contadores pegam todas, porque o gancho é no `gles_draw`); e o Quake emite
+~29 mil draws/s de leque face a face, que é o candidato natural da ordenação (2.3). Cada
+roteiro precisa de validação de fluxo no aparelho (chegar ao gameplay representativo), com
+temperatura e clocks anotados, antes de qualquer comparação entre passos.
+
 ## Regras da casa
 
 Docs e commits em português, frase declarativa, sem prefixo de conventional commit;
