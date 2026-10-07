@@ -53,7 +53,9 @@ pub mod soundfont {
     pub const TAXA_BANCO: u32 = 44_100;
 
     /// Sem banco não há o que configurar; existe para o frontend não precisar de `cfg`.
-    pub fn define_taxa(_taxa: u32) {}
+    pub fn define_taxa(_taxa: u32) -> bool {
+        true
+    }
 
     /// Sem banco não há o que configurar; existe para o frontend não precisar de `cfg`.
     pub fn define_vozes(_vozes: usize) {}
