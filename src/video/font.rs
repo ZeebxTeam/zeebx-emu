@@ -8,6 +8,11 @@
 //! Z-Wheel empacota uma `tectoy.ttf` de 191 KB, e é a fonte com que a loja foi desenhada. Então
 //! a regra é: **usar a fonte que veio com o jogo**. Quando não há nenhuma, continua sem texto —
 //! e o relatório diz isso, em vez de desenhar com uma fonte que não é a dele.
+//!
+//! Métricas já quantizadas (`ceil` na subida e na caixa, `round` na cobertura): é o equivalente
+//! ao `roundf` do Infuse, e não há sintoma de desalinhamento nas issues — por isso não há aqui
+//! caminho de textura persistente de menu. Se um texto de menu desalinhar, o ponto de partida
+//! é este arquivo mais a medida por glifo, antes de qualquer cache.
 
 use ab_glyph::{Font as _, FontVec, PxScale, ScaleFont as _};
 

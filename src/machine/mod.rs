@@ -44,6 +44,7 @@ mod media;
 /// O teto do cache de sons decodificados, em bytes — reexportado porque quem o ajusta é o
 /// frontend, e o módulo que o guarda é interno.
 pub use media::define_teto_do_cache_de_som;
+pub use diagnostico::Telemetria;
 mod net;
 mod probe;
 mod shell;
@@ -237,14 +238,17 @@ fn bytes_per_texel(format: u32, kind: u32) -> u32 {
     }
 }
 
+/// Espalha um canal de `bits` por toda a faixa de 8: é o que faz 0b11111 virar 255 e não 248.
+///
+/// É `pub(crate)` porque o empacotamento da placa (`compacta`, em `video/gpu.rs`) é o inverso
+/// exato disto — e a prova da volta mora lá, contra esta definição.
+pub(crate) fn expande_canal(value: u16, bits: u32) -> u8 {
+    let max = (1u16 << bits) - 1;
+    ((value as u32 * 255 + max as u32 / 2) / max as u32) as u8
+}
+
 /// Converte os texels para RGBA de 8 bits, o formato único do rasterizador.
 fn decode_texels(bytes: &[u8], format: u32, kind: u32, count: usize) -> Vec<[u8; 4]> {
-    // Repetir os cinco bits mais altos nos três de baixo espalha o valor por toda a faixa: é o
-    // que faz 0b11111 virar 255 e não 248.
-    let expand = |value: u16, bits: u32| -> u8 {
-        let max = (1u16 << bits) - 1;
-        ((value as u32 * 255 + max as u32 / 2) / max as u32) as u8
-    };
     let size = bytes_per_texel(format, kind) as usize;
     (0..count)
         .map(|i| {
@@ -256,27 +260,27 @@ fn decode_texels(bytes: &[u8], format: u32, kind: u32, count: usize) -> Vec<[u8;
                 gles::GL_UNSIGNED_SHORT_5_6_5 => {
                     let v = u16::from_le_bytes([bytes[at], bytes[at + 1]]);
                     [
-                        expand(v >> 11, 5),
-                        expand((v >> 5) & 0x3f, 6),
-                        expand(v & 0x1f, 5),
+                        expande_canal(v >> 11, 5),
+                        expande_canal((v >> 5) & 0x3f, 6),
+                        expande_canal(v & 0x1f, 5),
                         255,
                     ]
                 }
                 gles::GL_UNSIGNED_SHORT_4_4_4_4 => {
                     let v = u16::from_le_bytes([bytes[at], bytes[at + 1]]);
                     [
-                        expand(v >> 12, 4),
-                        expand((v >> 8) & 0xf, 4),
-                        expand((v >> 4) & 0xf, 4),
-                        expand(v & 0xf, 4),
+                        expande_canal(v >> 12, 4),
+                        expande_canal((v >> 8) & 0xf, 4),
+                        expande_canal((v >> 4) & 0xf, 4),
+                        expande_canal(v & 0xf, 4),
                     ]
                 }
                 gles::GL_UNSIGNED_SHORT_5_5_5_1 => {
                     let v = u16::from_le_bytes([bytes[at], bytes[at + 1]]);
                     [
-                        expand(v >> 11, 5),
-                        expand((v >> 6) & 0x1f, 5),
-                        expand((v >> 1) & 0x1f, 5),
+                        expande_canal(v >> 11, 5),
+                        expande_canal((v >> 6) & 0x1f, 5),
+                        expande_canal((v >> 1) & 0x1f, 5),
                         if v & 1 != 0 { 255 } else { 0 },
                     ]
                 }
@@ -2676,6 +2680,30 @@ pub struct Machine<C: CpuBackend> {
     egl_swaps: u32,
     /// Quantos `glClear` limparam a cor. Ver [`Machine::gl_swaps`].
     gl_clears: u32,
+    /// Desenhos do guest que chegaram ao rasterizador, e quantos vértices levaram.
+    ///
+    /// **Sempre ligado, e barato de propósito**: somas de inteiro por desenho, sem relógio —
+    /// é a matéria-prima da telemetria por segundo do handheld. Ver [`Machine::telemetria`].
+    tm_desenhos: u64,
+    tm_vertices: u64,
+    /// Desenhos que o frameskip pulou antes de qualquer leitura. Ver
+    /// [`Machine::define_pula_desenho`].
+    tm_pulados: u64,
+    /// Leituras de pixels que o guest pediu, e quantos bytes foram entregues a ele.
+    tm_leituras: u64,
+    tm_bytes_lidos: u64,
+    /// Subidas de textura (comprimida ou não), e quantos bytes decodificados subiram.
+    tm_envios: u64,
+    tm_bytes_enviados: u64,
+    /// Dos bytes acima, quantos subiram em texels nativos de 16 bits em vez de RGBA8.
+    tm_bytes_compactos: u64,
+    /// Programas de placa ligados — um por construção bem-sucedida do rasterizador de placa.
+    tm_programas: u64,
+    /// Onde o binário do programa da placa dorme entre sessões.
+    ///
+    /// É `<cache>/sombreadores/`: descartável e local ao aparelho — perder é recompilar uma
+    /// vez, como no port de referência. `None` desliga o cache (testes).
+    sombreadores: Option<std::path::PathBuf>,
     /// Último nome de textura ou buffer entregue pelo OpenGL ES.
     gles_next_name: u32,
     /// O objeto `IGLES11`, criado sob demanda pelo `QueryInterface` do EGL.
@@ -2867,10 +2895,20 @@ fn placa_pedida(padrao: bool) -> bool {
 ///
 /// Aqui não há contexto para emprestar: quem constrói a máquina direto é a linha de comando, que
 /// não tem janela. O caminho com janela troca depois, já com o contexto dela.
-fn rasterizador(largura: usize, altura: usize) -> Box<dyn Rasterizador> {
+///
+/// Devolve junto se um programa de placa foi ligado — é o que alimenta o contador da
+/// telemetria sem que ninguém precise adivinhar qual variante subiu.
+fn rasterizador(
+    largura: usize,
+    altura: usize,
+    cache: Option<&std::path::Path>,
+) -> (Box<dyn Rasterizador>, bool) {
     match placa_pedida(false) {
-        true => na_placa(largura, altura, None),
-        false => Box::new(GlState::new(largura, altura)),
+        true => na_placa(largura, altura, None, cache),
+        false => (
+            Box::new(GlState::new(largura, altura)) as Box<dyn Rasterizador>,
+            false,
+        ),
     }
 }
 
@@ -2883,20 +2921,21 @@ fn na_placa(
     largura: usize,
     altura: usize,
     contexto: Option<std::sync::Arc<glow::Context>>,
-) -> Box<dyn Rasterizador> {
+    cache: Option<&std::path::Path>,
+) -> (Box<dyn Rasterizador>, bool) {
     // Com a feature `gl`, o rasterizador de placa existe — e ele **não** cria contexto: quem
     // chama entrega o dele. Sem ela, o software é a única rota, que é o caso do core quando o
     // frontend não oferece contexto.
     #[cfg(feature = "gl")]
     {
-        match crate::video::gpu::GpuState::novo(largura, altura, contexto) {
+        match crate::video::gpu::GpuState::novo(largura, altura, contexto, cache) {
             Ok(gpu) => {
                 crate::registro!(
                     crate::registro::Nivel::Informacao,
                     "gl",
                     "rasterizador de placa criado em {largura}x{altura}"
                 );
-                return Box::new(gpu);
+                return (Box::new(gpu), true);
             }
             // **Aviso, e não informação.** Cair para software não é detalhe de configuração: é
             // o desenho ficando mais lento e diferente, e é a primeira coisa a olhar quando
@@ -2911,7 +2950,7 @@ fn na_placa(
         }
     }
     let _ = contexto;
-    Box::new(GlState::new(largura, altura))
+    (Box::new(GlState::new(largura, altura)), false)
 }
 
 impl<C: CpuBackend> Machine<C> {
@@ -2928,10 +2967,18 @@ impl<C: CpuBackend> Machine<C> {
         contexto: Option<std::sync::Arc<glow::Context>>,
     ) {
         let (largura, altura) = self.gl.frame_size();
-        self.gl = match placa_pedida(sim) {
-            true => na_placa(largura, altura, contexto),
-            false => Box::new(GlState::new(largura, altura)),
+        let cache = self.sombreadores.clone();
+        let (raster, ligou) = match placa_pedida(sim) {
+            true => na_placa(largura, altura, contexto, cache.as_deref()),
+            false => (
+                Box::new(GlState::new(largura, altura)) as Box<dyn Rasterizador>,
+                false,
+            ),
         };
+        if ligou {
+            self.tm_programas = self.tm_programas.saturating_add(1);
+        }
+        self.gl = raster;
     }
 
     /// Começa a contar os `IDISPLAY_Update` de uma volta do laço.
@@ -3054,6 +3101,11 @@ impl<C: CpuBackend> Machine<C> {
     ) -> Self {
         let raiz: std::path::PathBuf = root.into();
         let aparelho: std::path::PathBuf = storage.device.clone();
+        // O programa da placa é ligado aqui dentro, quando a placa sobe: contar agora é o que
+        // põe o custo da primeira compilação na telemetria da sessão.
+        let sombreadores = storage.cache.join("sombreadores");
+        let (gl, programa_ligado) =
+            rasterizador(SCREEN_WIDTH as usize, SCREEN_HEIGHT as usize, Some(&sombreadores));
         let heap = Heap::new(loader::HEAP_BASE, loader::HEAP_SIZE);
         // Os objetos ficam depois dos ponteiros que o carregador já reservou no começo da
         // região, para não sobrescrevê-los.
@@ -3252,6 +3304,14 @@ impl<C: CpuBackend> Machine<C> {
             egl_next_handle: EGL_HANDLE_BASE,
             egl_swaps: 0,
             gl_clears: 0,
+            tm_desenhos: 0,
+            tm_vertices: 0,
+            tm_pulados: 0,
+            tm_leituras: 0,
+            tm_bytes_lidos: 0,
+            tm_envios: 0,
+            tm_bytes_enviados: 0,
+            tm_bytes_compactos: 0,
             gles_next_name: 0,
             gles_object: 0,
             egl_surface: 0,
@@ -3262,7 +3322,9 @@ impl<C: CpuBackend> Machine<C> {
             gl_last_frame_words: Vec::new(),
             gl_quadro_pendente: false,
             gl_materializacoes: 0,
-            gl: rasterizador(SCREEN_WIDTH as usize, SCREEN_HEIGHT as usize),
+            tm_programas: u64::from(programa_ligado),
+            sombreadores: Some(sombreadores),
+            gl,
             gl_vertices: ArrayPointer::default(),
             gl_colors: ArrayPointer::default(),
             gl_texcoords: ArrayPointer::default(),

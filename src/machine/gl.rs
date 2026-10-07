@@ -635,8 +635,15 @@ impl<C: CpuBackend> Machine<C> {
             let name = self.gl.bound_texture();
             // A paletizada traz a cadeia inteira num bloco só, e o `level` dela conta os
             // mipmaps em vez de nomeá-los; o decodificador devolve o nível base.
-            self.gl
-                .upload_level(name, 0, width as usize, height as usize, decoded);
+            self.conta_envio(decoded.len(), gles::GL_UNSIGNED_BYTE);
+            self.gl.upload_level(
+                name,
+                0,
+                width as usize,
+                height as usize,
+                decoded,
+                gles::GL_UNSIGNED_BYTE,
+            );
             return Ok(());
         }
         let explicit_alpha = match format {
@@ -654,8 +661,15 @@ impl<C: CpuBackend> Machine<C> {
         let decoded = atc::decode(&bytes, width as usize, height as usize, explicit_alpha);
 
         let name = self.gl.bound_texture();
-        self.gl
-            .upload_level(name, level, width as usize, height as usize, decoded);
+        self.conta_envio(decoded.len(), gles::GL_UNSIGNED_BYTE);
+        self.gl.upload_level(
+            name,
+            level,
+            width as usize,
+            height as usize,
+            decoded,
+            gles::GL_UNSIGNED_BYTE,
+        );
         Ok(())
     }
 
@@ -675,8 +689,17 @@ impl<C: CpuBackend> Machine<C> {
         // Os parâmetros de repetição e filtro sobrevivem a uma nova imagem: no OpenGL eles são
         // do nome da textura, não do conteúdo, e o jogo costuma defini-los uma vez só.
         let name = self.gl.bound_texture();
-        self.gl
-            .upload_level(name, level, width as usize, height as usize, decoded);
+        self.conta_envio(decoded.len(), kind);
+        // O tipo original vai junto: 5-6-5, 4-4-4-4 e 5-5-5-1 sobem nativos na placa, e o
+        // resto sobe RGBA8 como sempre. Ver o `kind` de `upload_level`.
+        self.gl.upload_level(
+            name,
+            level,
+            width as usize,
+            height as usize,
+            decoded,
+            kind,
+        );
         Ok(())
     }
 
@@ -716,6 +739,10 @@ impl<C: CpuBackend> Machine<C> {
             }
         };
         self.cpu.write_mem(destino, &bytes)?;
+        self.tm_leituras = self.tm_leituras.saturating_add(1);
+        self.tm_bytes_lidos = self
+            .tm_bytes_lidos
+            .saturating_add(bytes.len() as u64);
         Ok(())
     }
 
@@ -769,12 +796,35 @@ impl<C: CpuBackend> Machine<C> {
         let novos = decode_texels(&bytes, format, kind, texels);
 
         let name = self.gl.bound_texture();
-        if let Err(Some((tw, th))) = self.gl.sub_image(name, x, y, width, height, &novos) {
-            self.anota_ponto_ruim(format!(
-                "TexSubImage2D de {width}x{height} em ({x},{y}) não cabe numa textura {tw}x{th}"
-            ));
+        match self.gl.sub_image(name, x, y, width, height, &novos) {
+            // A parcial não carrega o tipo — ver o `kind` de `conta_envio`.
+            Ok(()) => self.conta_envio(novos.len(), gles::GL_UNSIGNED_BYTE),
+            Err(Some((tw, th))) => {
+                self.anota_ponto_ruim(format!(
+                    "TexSubImage2D de {width}x{height} em ({x},{y}) não cabe numa textura {tw}x{th}"
+                ));
+            }
+            Err(None) => {}
         }
         Ok(())
+    }
+
+    /// Conta uma subida de textura na telemetria: uma chamada, os bytes decodificados e,
+    /// quando o tipo é nativo 16-bit, os bytes que de fato subiram.
+    ///
+    /// `texels` é quantos `[u8; 4]` o decodificador entregou. A parcial (`TexSubImage2D`)
+    /// não sabe o formato da textura, que mora na placa: ela conta como RGBA8, e a diferença
+    /// aparece no total da sessão, nunca na taxa.
+    fn conta_envio(&mut self, texels: usize, kind: u32) {
+        self.tm_envios = self.tm_envios.saturating_add(1);
+        self.tm_bytes_enviados = self
+            .tm_bytes_enviados
+            .saturating_add(texels as u64 * 4);
+        if crate::video::gles::eh_compacto(kind) {
+            self.tm_bytes_compactos = self
+                .tm_bytes_compactos
+                .saturating_add(texels as u64 * 2);
+        }
     }
 
     /// Monta os vértices a partir dos vetores do cliente e manda desenhar.
@@ -804,6 +854,10 @@ impl<C: CpuBackend> Machine<C> {
         }
         let [x, y, z, width, height] = values;
         self.gl.draw_texture(x, y, z, width, height);
+        // Um retângulo de tela: conta como um desenho de quatro vértices, que é o que ele é
+        // quando vira triângulos.
+        self.tm_desenhos = self.tm_desenhos.saturating_add(1);
+        self.tm_vertices = self.tm_vertices.saturating_add(4);
         Ok(())
     }
 
@@ -816,6 +870,7 @@ impl<C: CpuBackend> Machine<C> {
         // para trazer cada vértice — aconteceria do mesmo jeito, e só a rasterização sumiria. O
         // jogo não vê diferença nenhuma: hardware real também não avisa se o pixel chegou à tela.
         if self.pula_desenho && !self.gl_leitura_de_pixels {
+            self.tm_pulados = self.tm_pulados.saturating_add(1);
             return Ok(());
         }
         let base = self.gl.current_color();
@@ -857,6 +912,10 @@ impl<C: CpuBackend> Machine<C> {
             })
             .collect();
         self.gl.draw(mode, &vertices);
+        self.tm_desenhos = self.tm_desenhos.saturating_add(1);
+        self.tm_vertices = self
+            .tm_vertices
+            .saturating_add(vertices.len() as u64);
         Ok(())
     }
 
@@ -1192,7 +1251,7 @@ impl<C: CpuBackend> Machine<C> {
         self.gl.define_descarte_de_tiles(descartar);
     }
 
-    /// Reduz a resolução interna do 3D no rasterizador de processador. Ver
+    /// Reduz a resolução interna do 3D no rasterizador em uso. Ver
     /// [`Rasterizador::define_reducao`].
     pub fn define_reducao(&mut self, reducao: usize) {
         self.gl.define_reducao(reducao);

@@ -22,15 +22,17 @@
 //! O timbre é o que **não** dá para verificar assim, e é justamente a parte que é palpite. Fica
 //! registrado como hipótese em uso no relatório.
 
-/// Taxa em que a música é sintetizada.
+/// Taxa em que a música é sintetizada pela tabela de timbres.
 ///
 /// 22.050 Hz é a taxa das próprias trilhas dos jogos e metade da placa: o misturador reamostra
 /// de qualquer jeito, e sintetizar em 44.100 dobraria o custo e a memória para agudo que não
 /// existe na partitura.
 ///
-/// É a **mesma** taxa para a tabela de timbres e para o banco de amostras: o misturador reamostra
-/// para a taxa da placa de qualquer forma, e manter as duas no mesmo número faz a comparação entre
-/// elas ser de timbre, e não de taxa.
+/// É **só** a taxa da tabela: o banco de amostras tem a sua própria, que começa em 44.100 Hz
+/// (ver [`crate::audio::soundfont::TAXA_BANCO`]) e o frontend pode mudar. Manter as duas em
+/// números diferentes é de propósito — cada caminho preserva o que o seu material tem —, e a
+/// comparação entre eles continua sendo de timbre porque o misturador reamostra os dois para a
+/// taxa da placa de qualquer forma.
 pub const RATE: u32 = 22_050;
 
 /// Teto de duração sintetizada, em segundos.

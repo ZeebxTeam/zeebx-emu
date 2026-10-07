@@ -26,7 +26,6 @@
 //! primeiro, e depois o perfil do desktop. `ZEEBX_SOUNDFONT` aponta um arquivo direto, para
 //! experimentar sem instalar nada.
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -76,10 +75,21 @@ static TAXA_ESCOLHIDA: AtomicU32 = AtomicU32::new(TAXA_BANCO);
 /// Muda a taxa em que o banco será sintetizado daqui para a frente.
 ///
 /// Valores fora de 8.000–48.000 são ignorados: o `rustysynth` recusa fora de 16.000–192.000, e uma
-/// taxa absurda vinda de um `.opt` editado à mão não pode derrubar o som.
-pub fn define_taxa(taxa: u32) {
+/// taxa absurda vinda de um `.opt` editado à mão não pode derrubar o som. Ignorar calado seria
+/// deixar o arquivo estragado invisível, então o valor recusado sai no registro.
+///
+/// Devolve `false` quando ignorou, para quem chama poder reagir sem ler o global de volta.
+pub fn define_taxa(taxa: u32) -> bool {
     if (8_000..=48_000).contains(&taxa) {
         TAXA_ESCOLHIDA.store(taxa, Ordering::Relaxed);
+        true
+    } else {
+        crate::registro!(
+            crate::registro::Nivel::Aviso,
+            "soundfont",
+            "taxa {taxa} Hz fora da faixa 8.000–48.000; mantida a anterior",
+        );
+        false
     }
 }
 
@@ -313,7 +323,7 @@ fn tamanho_do_smpl(bytes: &[u8]) -> Option<u32> {
 /// Um banco carregado.
 ///
 /// Caro de construir (32 MB de amostras convertidas para `float`) e barato de reusar, então fica
-/// guardado por caminho: um jogo que toca doze músicas carrega o banco uma vez.
+/// guardado: um só por vez — ver [`abre`].
 pub struct Banco {
     /// `Arc` porque o `Synthesizer` do `rustysynth` pede a fonte por `Arc`: uma voz nova por
     /// música, e o banco de 32 MB não é copiado junto.
@@ -368,21 +378,25 @@ impl Banco {
     }
 }
 
-/// O banco já carregado, por caminho. Um só na prática; o mapa tolera que o caminho mude.
-static CACHE: OnceLock<Mutex<HashMap<PathBuf, Arc<Banco>>>> = OnceLock::new();
+/// O banco já carregado. Um só por vez: cada banco custa dezenas de megabytes, e guardar um
+/// por caminho acumularia RAM a cada troca — no portátil, trocar de banco duas vezes estourava.
+/// Um jogo que toca doze músicas carrega o banco uma vez, que é o caso que importa.
+static CACHE: OnceLock<Mutex<Option<(PathBuf, Arc<Banco>)>>> = OnceLock::new();
 
 /// Carrega o banco de `caminho`, reusando o que já estiver em memória.
 pub fn abre(caminho: &Path) -> Option<Arc<Banco>> {
-    let guarda = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut mapa = guarda.lock().ok()?;
-    if let Some(banco) = mapa.get(caminho) {
-        crate::registro!(
-            crate::registro::Nivel::Depuracao,
-            "soundfont",
-            "banco {} reutilizado do cache",
-            caminho.display()
-        );
-        return Some(banco.clone());
+    let guarda = CACHE.get_or_init(|| Mutex::new(None));
+    let mut slot = guarda.lock().ok()?;
+    if let Some((atual, banco)) = slot.as_ref() {
+        if atual == caminho {
+            crate::registro!(
+                crate::registro::Nivel::Depuracao,
+                "soundfont",
+                "banco {} reutilizado do cache",
+                caminho.display()
+            );
+            return Some(banco.clone());
+        }
     }
     let comeco = Instant::now();
     let banco = Arc::new(Banco::carrega(caminho)?);
@@ -396,7 +410,7 @@ pub fn abre(caminho: &Path) -> Option<Arc<Banco>> {
         banco.presets(),
         comeco.elapsed().as_millis()
     );
-    mapa.insert(caminho.to_path_buf(), banco.clone());
+    *slot = Some((caminho.to_path_buf(), banco.clone()));
     Some(banco)
 }
 
@@ -552,6 +566,20 @@ mod tests {
         define_vozes(48);
         assert_eq!(VOZES_ESCOLHIDAS.load(Ordering::Relaxed), 48);
         define_vozes(VOZES);
+    }
+
+    /// **Taxa absurda é recusada com `false`, sem mutar nada.**
+    ///
+    /// Ignorar é o comportamento certo — ver o teste acima —, mas calar é defeito: um `.opt`
+    /// editado à mão com a taxa estragada deixava a música diferente sem dizer por quê. O `false`
+    /// é o sinal para quem chama; o aviso sai no registro.
+    ///
+    /// O teste só passa valores recusados de propósito: passar um aceito mutaria o global
+    /// compartilhado com o teste acima, que roda em paralelo e espera outro valor ali.
+    #[test]
+    fn a_taxa_absurda_e_recusada_sem_mutar_nada() {
+        assert!(!define_taxa(1), "taxa 1 Hz devia ser recusada");
+        assert!(!define_taxa(999_999), "taxa 999999 Hz devia ser recusada");
     }
 
     /// O banco de teste, do harness de comparação que vive fora do repositório.
@@ -780,6 +808,29 @@ mod tests {
         bloco(b"RIFF", &sfbk)
     }
 
+
+    /// **O cache do banco não acumula bancos.**
+    ///
+    /// Cada banco custa dezenas de megabytes em memória. Abrir um segundo banco tem de largar o
+    /// primeiro, senão trocar de banco no portátil é vazar RAM até estourar.
+    #[test]
+    fn o_cache_do_banco_evita_acumular_bancos() {
+        let a = std::env::temp_dir().join("zeebx-banco-cache-a.sf2");
+        let b = std::env::temp_dir().join("zeebx-banco-cache-b.sf2");
+        std::fs::write(&a, banco_minimo()).expect("escreve o banco a");
+        std::fs::write(&b, banco_minimo()).expect("escreve o banco b");
+        let banco_a = abre(&a).expect("o banco a abre");
+        let _banco_b = abre(&b).expect("o banco b abre");
+        // Reabrir o primeiro depois de trocar tem de recarregar, e não devolver o mesmo `Arc`:
+        // com o anterior ainda guardado, a troca não largou nada.
+        let banco_a_de_novo = abre(&a).expect("o banco a reabre");
+        assert!(
+            !std::sync::Arc::ptr_eq(&banco_a, &banco_a_de_novo),
+            "trocar de banco devia ter evictado o anterior do cache"
+        );
+        let _ = std::fs::remove_file(&a);
+        let _ = std::fs::remove_file(&b);
+    }
 
     /// **Um banco corrompido não pode derrubar o jogo.** Ele é um arquivo que o usuário baixa e
     /// copia à mão: um download truncado ou um `.sf2` de outro formato é cenário real, não

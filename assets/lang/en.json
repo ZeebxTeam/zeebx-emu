@@ -9,7 +9,7 @@
   "audio.soundfont": "Instrument bank for MIDI music (SoundFont)",
   "audio.soundfont.auto": "Automatic: the first .sf2 in the system's soundfonts folder",
   "audio.soundfont.clear": "Use automatic",
-  "audio.soundfont.hint": "A .sf2 with the instruments MIDI music plays with — the console firmware's own, if you have it, or any General MIDI bank. Takes effect from the next game you open.",
+  "audio.soundfont.hint": "A .sf2 with the instruments MIDI music plays with — the console firmware's own, if you have it, or any General MIDI bank. Takes effect from the next game you open. With no .sf2 at all, music plays from the built-in timbre table.",
   "audio.midi_effects": "MIDI music reverb and chorus",
   "audio.midi_effects.hint": "How much effect each instrument gets comes from the music itself. Off, notes end dry. Takes effect from the next game you open.",
   "audio.volume": "Volume",

@@ -2943,6 +2943,7 @@ mod tests {
             2,
             1,
             vec![[255, 0, 0, 255], [0, 0, 255, 255]],
+            crate::video::gles::GL_UNSIGNED_BYTE,
         );
 
         let arquivo = antes.grava_estado();

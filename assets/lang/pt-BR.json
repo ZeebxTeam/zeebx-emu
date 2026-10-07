@@ -9,7 +9,7 @@
   "audio.soundfont": "Banco de instrumentos da música MIDI (SoundFont)",
   "audio.soundfont.auto": "Automático: o primeiro .sf2 da pasta soundfonts do aparelho",
   "audio.soundfont.clear": "Usar o automático",
-  "audio.soundfont.hint": "Um .sf2 com os instrumentos que tocam as músicas MIDI — o do firmware do console, se você o tiver, ou qualquer banco General MIDI. Vale a partir do próximo jogo aberto.",
+  "audio.soundfont.hint": "Um .sf2 com os instrumentos que tocam as músicas MIDI — o do firmware do console, se você o tiver, ou qualquer banco General MIDI. Vale a partir do próximo jogo aberto. Sem nenhum .sf2, a música toca pela tabela de timbres.",
   "audio.midi_effects": "Reverb e chorus da música MIDI",
   "audio.midi_effects.hint": "O quanto de efeito cada instrumento leva vem da própria música. Desligado, as notas terminam secas. Vale a partir do próximo jogo aberto.",
   "audio.volume": "Volume",

@@ -246,6 +246,16 @@ impl TexEnv {
                 out[3] = primaria[3] * texel[3];
                 out
             }
+            // O `GL_BLEND` mistura a cor primária com a cor constante do ambiente, usando o
+            // texel como peso — modo que o Infuse atende (`002254`) e aqui caía no `MODULATE`.
+            gles::GL_BLEND => {
+                let mut out = primaria;
+                for c in 0..3 {
+                    out[c] = primaria[c] * (1.0 - texel[c]) + self.cor[c] * texel[c];
+                }
+                out[3] = primaria[3] * texel[3];
+                out
+            }
             gles::GL_COMBINE => self.combina(anterior, primaria_, texel),
             // `GL_MODULATE` é o padrão e o que os jogos usam quase sempre.
             _ => std::array::from_fn(|c| primaria[c] * texel[c]),
@@ -731,6 +741,10 @@ pub trait Rasterizador {
         width: usize,
         height: usize,
         pixels: Vec<[u8; 4]>,
+        // O tipo com que o jogo mandou os texels (`GL_UNSIGNED_BYTE`,
+        // `GL_UNSIGNED_SHORT_5_6_5` e cia). A placa usa para subir nativo 16-bit quando dá;
+        // o processador ignora, porque a cópia dele é sempre RGBA8.
+        kind: u32,
     );
     fn sub_image(
         &mut self,
@@ -769,9 +783,9 @@ pub trait Rasterizador {
     /// Se trazer o quadro para a memória da CPU custa uma **espera pela placa**.
     ///
     /// Reduz a resolução interna do 3D, desenhando numa superfície menor e ampliando na
-    /// apresentação. **Só o rasterizador de processador faz isto**: ver
-    /// [`GlState::define_reducao`]. Na placa não há o que fazer — ali o preenchimento a 640×480
-    /// não satura a GPU, e reduzir só estragaria a imagem.
+    /// apresentação. O processador implementa em [`GlState::define_reducao`]; a placa, no
+    /// `GpuState`: ali o anexo encolhe e a leitura amplia por blit linear, e a apresentação
+    /// direta estica a textura.
     fn define_reducao(&mut self, _reducao: usize) {}
 
     /// Chamadas de estado enviadas à placa e quantas o espelho poupou. Zero no software.
@@ -1036,8 +1050,9 @@ impl Rasterizador for GlState {
         width: usize,
         height: usize,
         pixels: Vec<[u8; 4]>,
+        kind: u32,
     ) {
-        GlState::upload_level(self, name, level, width, height, pixels)
+        GlState::upload_level(self, name, level, width, height, pixels, kind)
     }
     fn sub_image(
         &mut self,
@@ -1999,6 +2014,8 @@ impl GlState {
         width: usize,
         height: usize,
         pixels: Vec<[u8; 4]>,
+        // Ignorado: a cópia do processador é sempre RGBA8. Ver o `kind` do trait.
+        _kind: u32,
     ) {
         self.flush();
         let texture = self.textures.entry(name).or_default();
@@ -3726,6 +3743,19 @@ mod tests {
         env.define(gles::GL_OPERAND0_ALPHA, gles::GL_SRC_COLOR, 0.0);
         let texel = [0.2, 0.4, 0.6, 0.8];
         assert_eq!(env.aplica([0.0; 4], texel), texel);
+    }
+
+    /// O `GL_BLEND` mistura a primária com a cor constante, pesadas pelo texel — modo que o
+    /// Infuse atende e aqui caía no `GL_MODULATE`.
+    #[test]
+    fn o_blend_mistura_primaria_e_constante_pelo_texel() {
+        let mut env = TexEnv::com_modo(gles::GL_BLEND);
+        env.cor = [0.0, 0.0, 1.0, 1.0];
+        // Vermelho some na metade do texel cinza, azul entra nela; alfa multiplica.
+        assert_eq!(
+            env.aplica([1.0, 0.0, 0.0, 1.0], [0.5, 0.5, 0.5, 0.5]),
+            [0.5, 0.0, 0.5, 0.5]
+        );
     }
 
     /// A unidade 1 do QX: `ADD_SIGNED` da textura de cor com o que saiu da unidade 0 (o `DOT3`
