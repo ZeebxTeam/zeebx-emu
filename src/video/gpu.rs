@@ -451,7 +451,7 @@ pub fn endereco_da_placa(gl: &glow::Context) -> usize {
 /// chegar **sem** o `context_destroy`, quando o contexto se perdeu por fora ("resources should
 /// just be recreated without any attempt to free old resources").
 pub fn a_placa_morreu(endereco: usize) {
-    PLACA_MORTA.store(endereco, std::sync::atomic::Ordering::Relaxed);
+    PLACA_MORTA.store(endereco, std::sync::atomic::Ordering::Release);
 }
 
 /// A placa em `endereco` nasceu de novo: se a marca de óbito era da placa anterior **naquele mesmo
@@ -463,8 +463,8 @@ pub fn a_placa_nasceu(endereco: usize) {
     let _ = PLACA_MORTA.compare_exchange(
         endereco,
         0,
-        std::sync::atomic::Ordering::Relaxed,
-        std::sync::atomic::Ordering::Relaxed,
+        std::sync::atomic::Ordering::AcqRel,
+        std::sync::atomic::Ordering::Acquire,
     );
 }
 
@@ -520,7 +520,7 @@ impl Placa {
     ///
     /// Contexto próprio nunca morre antes do dono: quem o fecharia é este mesmo estado, no `Drop`.
     fn morreu(&self) -> bool {
-        self.de_outro && self.endereco == PLACA_MORTA.load(std::sync::atomic::Ordering::Relaxed)
+        self.de_outro && self.endereco == PLACA_MORTA.load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// Se os nomes de GL deste estado podem ser apagados.

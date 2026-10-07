@@ -272,7 +272,7 @@ fn pede_o_contexto_de_placa() {
 /// cumpre — sem `get_proc_address`, sem contexto — não pode deixar o emulador sem imagem: o
 /// caminho de software é o medido e o que já funcionava.
 fn liga_a_placa(estado: &mut Core) {
-    if estado.placa_ligada || !CONTEXTO_PRONTO.load(std::sync::atomic::Ordering::Relaxed) {
+    if estado.placa_ligada || !CONTEXTO_PRONTO.load(std::sync::atomic::Ordering::Acquire) {
         return;
     }
     // Tenta **uma vez**: um contexto que não veio não vem no quadro seguinte, e insistir a cada
@@ -377,8 +377,8 @@ unsafe extern "C" fn contexto_pronto() {
         }
         *guarda = None;
     }
-    CONTEXTO_PRONTO.store(true, std::sync::atomic::Ordering::Relaxed);
-    PERDEU_A_PLACA.store(true, std::sync::atomic::Ordering::Relaxed);
+    CONTEXTO_PRONTO.store(true, std::sync::atomic::Ordering::Release);
+    PERDEU_A_PLACA.store(true, std::sync::atomic::Ordering::Release);
 }
 
 /// O frontend avisa que o contexto deixou de valer.
@@ -418,8 +418,8 @@ unsafe extern "C" fn contexto_perdido() {
         }
         *guarda = None;
     }
-    CONTEXTO_PRONTO.store(false, std::sync::atomic::Ordering::Relaxed);
-    PERDEU_A_PLACA.store(true, std::sync::atomic::Ordering::Relaxed);
+    CONTEXTO_PRONTO.store(false, std::sync::atomic::Ordering::Release);
+    PERDEU_A_PLACA.store(true, std::sync::atomic::Ordering::Release);
 }
 
 /// Se o frontend avisou que a placa de agora deixou de valer, ou que uma placa nova está pronta.
@@ -2055,7 +2055,7 @@ static AUDIO_ESTOURO_PROVAVEL: std::sync::atomic::AtomicBool = std::sync::atomic
 unsafe extern "C" fn audio_buffer_status(active: bool, _occupancy: u32, underrun_likely: bool) {
     // Sem áudio no frontend não há buffer para proteger. Guardar um `true` velho nesse caso faria
     // Automático pular desenho para sempre depois que o usuário desliga e liga o áudio no menu.
-    AUDIO_ESTOURO_PROVAVEL.store(active && underrun_likely, std::sync::atomic::Ordering::Relaxed);
+    AUDIO_ESTOURO_PROVAVEL.store(active && underrun_likely, std::sync::atomic::Ordering::Release);
 }
 
 /// Pede ao frontend para avisar sobre o buffer de áudio, e mais folga nele para o aviso chegar a
@@ -2114,7 +2114,7 @@ fn retira_callback_de_audio() {
             &padrao as *const u32 as *mut c_void,
         );
     }
-    AUDIO_ESTOURO_PROVAVEL.store(false, std::sync::atomic::Ordering::Relaxed);
+    AUDIO_ESTOURO_PROVAVEL.store(false, std::sync::atomic::Ordering::Release);
 }
 
 /// Se o texto da opção de perfil pede o perfil Portátil.
@@ -2411,8 +2411,8 @@ fn limpa_estado_do_frontend() {
     if let Ok(mut oferta) = OFERTA_DE_PLACA.lock() {
         *oferta = None;
     }
-    CONTEXTO_PRONTO.store(false, std::sync::atomic::Ordering::Relaxed);
-    PERDEU_A_PLACA.store(false, std::sync::atomic::Ordering::Relaxed);
+    CONTEXTO_PRONTO.store(false, std::sync::atomic::Ordering::Release);
+    PERDEU_A_PLACA.store(false, std::sync::atomic::Ordering::Release);
 }
 
 /// `retro_deinit`.
