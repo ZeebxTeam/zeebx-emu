@@ -246,6 +246,16 @@ impl TexEnv {
                 out[3] = primaria[3] * texel[3];
                 out
             }
+            // O `GL_BLEND` mistura a cor primária com a cor constante do ambiente, usando o
+            // texel como peso — modo que o Infuse atende (`002254`) e aqui caía no `MODULATE`.
+            gles::GL_BLEND => {
+                let mut out = primaria;
+                for c in 0..3 {
+                    out[c] = primaria[c] * (1.0 - texel[c]) + self.cor[c] * texel[c];
+                }
+                out[3] = primaria[3] * texel[3];
+                out
+            }
             gles::GL_COMBINE => self.combina(anterior, primaria_, texel),
             // `GL_MODULATE` é o padrão e o que os jogos usam quase sempre.
             _ => std::array::from_fn(|c| primaria[c] * texel[c]),
@@ -3733,6 +3743,19 @@ mod tests {
         env.define(gles::GL_OPERAND0_ALPHA, gles::GL_SRC_COLOR, 0.0);
         let texel = [0.2, 0.4, 0.6, 0.8];
         assert_eq!(env.aplica([0.0; 4], texel), texel);
+    }
+
+    /// O `GL_BLEND` mistura a primária com a cor constante, pesadas pelo texel — modo que o
+    /// Infuse atende e aqui caía no `GL_MODULATE`.
+    #[test]
+    fn o_blend_mistura_primaria_e_constante_pelo_texel() {
+        let mut env = TexEnv::com_modo(gles::GL_BLEND);
+        env.cor = [0.0, 0.0, 1.0, 1.0];
+        // Vermelho some na metade do texel cinza, azul entra nela; alfa multiplica.
+        assert_eq!(
+            env.aplica([1.0, 0.0, 0.0, 1.0], [0.5, 0.5, 0.5, 0.5]),
+            [0.5, 0.0, 0.5, 0.5]
+        );
     }
 
     /// A unidade 1 do QX: `ADD_SIGNED` da textura de cor com o que saiu da unidade 0 (o `DOT3`

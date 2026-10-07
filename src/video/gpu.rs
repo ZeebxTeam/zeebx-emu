@@ -2002,6 +2002,7 @@ fn codigo_env(modo: u32) -> i32 {
         gles::GL_DECAL => 1,
         gles::GL_ADD => 2,
         gles::GL_COMBINE => 4,
+        gles::GL_BLEND => 5,
         _ => 3,
     }
 }
@@ -2041,6 +2042,12 @@ fn envia_env(
     // O nome do modo sai pronto: ele é mandado a cada desenho, e o resto só no `GL_COMBINE`.
     let modo = if sufixo.is_empty() { "env" } else { "env1" };
     uniforme_i32(gl, u, programa, modo, codigo_env(env.modo));
+    // A constante também serve ao `GL_BLEND`, e só a ele fora do `GL_COMBINE`: sem ela aqui,
+    // o BLEND misturava com zero e tudo saía preto.
+    if env.modo == gles::GL_BLEND {
+        uniforme_vec4(gl, u, programa, &format!("cor_env{sufixo}"), env.cor);
+        return;
+    }
     if env.modo != gles::GL_COMBINE {
         return;
     }
@@ -2214,6 +2221,12 @@ vec4 unidade(int modo, int crgb, int calfa, int srgb[3], int orgb[3], int salfa[
     }
     if (modo == 2) {
         return vec4(min(anterior.rgb + texel.rgb, vec3(1.0)), anterior.a * texel.a);
+    }
+    // O `GL_BLEND`: a primária some na proporção do texel e a constante do ambiente entra
+    // nela. Ver `TexEnv::aplica` no processador, que faz a mesma conta.
+    if (modo == 5) {
+        return vec4(anterior.rgb * (1.0 - texel.rgb) + constante.rgb * texel.rgb,
+                    anterior.a * texel.a);
     }
     return anterior * texel;
 }
@@ -3724,6 +3737,61 @@ mod tests {
             let erro = unsafe { gpu.gl.get_error() };
             assert_eq!(erro, glow::NO_ERROR, "tipo {kind:#x} recusado");
         }
+    }
+
+    /// O `GL_BLEND` na placa casa com o do processador.
+    ///
+    /// Textura branca opaca com constante azul: pelo BLEND sai azul; pelo `MODULATE` que
+    /// caía antes, sairia o vermelho do vértice. A conta fracionária está provada no
+    /// `o_blend_mistura_primaria_e_constante_pelo_texel`, do processador.
+    #[test]
+    fn o_blend_na_placa_casa_com_o_do_processador() {
+        let (largura, altura) = (16, 16);
+        let Some((mut gpu, mut sw)) = par(largura, altura) else {
+            return;
+        };
+        let cena = |r: &mut dyn Rasterizador| {
+            r.set_viewport(0, 0, largura as i32, altura as i32);
+            r.set_clear_color([0.0, 0.0, 0.0, 1.0]);
+            r.clear(gles::GL_COLOR_BUFFER_BIT);
+            r.bind_texture(10);
+            r.upload_level(
+                10,
+                0,
+                1,
+                1,
+                vec![[255, 255, 255, 255]],
+                gles::GL_UNSIGNED_BYTE,
+            );
+            r.set_capability(gles::GL_TEXTURE_2D, true);
+            r.set_texture_env(gles::GL_BLEND);
+            r.set_texture_env_color([0.0, 0.0, 1.0, 1.0]);
+            let canto = |x: f32, y: f32| Vertex {
+                position: [x, y, 0.0, 1.0],
+                color: [1.0, 0.0, 0.0, 1.0],
+                uv: [0.0, 0.0, 0.0, 1.0],
+                uv1: UV_PADRAO,
+                normal: [0.0, 0.0, 1.0],
+                fog: 1.0,
+            };
+            r.draw(
+                gles::GL_TRIANGLES,
+                &[canto(-1.0, 1.0), canto(-1.0, -1.0), canto(1.0, 1.0)],
+            );
+        };
+        let (a, b) = ambos(&mut gpu, &mut sw, largura, altura, cena);
+        assert_eq!(
+            pixel(&b, largura, 2, 2),
+            (0, 0, 31),
+            "o software devia pintar de azul pelo BLEND"
+        );
+        assert_eq!(
+            pixel(&a, largura, 2, 2),
+            pixel(&b, largura, 2, 2),
+            "placa {:?} contra software {:?} no BLEND",
+            pixel(&a, largura, 2, 2),
+            pixel(&b, largura, 2, 2)
+        );
     }
 
     /// Um triângulo que cobre o canto superior esquerdo, para pegar orientação e preenchimento.
