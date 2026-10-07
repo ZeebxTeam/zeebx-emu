@@ -8,6 +8,11 @@
 //! Escrito à mão em vez de vir de uma dependência porque é um cabeçalho de doze bytes e uma
 //! lista de blocos. Um formato que ainda não sabemos ler é **recusado com nome**, e não
 //! decodificado por acaso: é o nome que diz o que implementar depois.
+//!
+//! Censo de formatos (outubro de 2026, 62 ROMs do acervo: soltos mais `RIFF` embutidos nos
+//! `.mod`): só PCM (44 arquivos) e IMA-ADPCM (29) — nenhum IEEE-float, A-law, μ-law ou
+//! MS-ADPCM. É por isso que só esses dois existem aqui; se um `NotPcm(tag)` aparecer na
+//! natureza, a lista do `dr_mp3.h`/`dr_wav.h` do Infuse é o checklist do que fazer.
 
 /// `WAVE_FORMAT_PCM` e `WAVE_FORMAT_IMA_ADPCM`, do cabeçalho de formato do RIFF.
 const FORMAT_PCM: u16 = 1;
