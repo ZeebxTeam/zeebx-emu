@@ -798,6 +798,11 @@ mod tests {
     /// conserto não é nosso — precisa de um patch no `dynarmic` 0.1.3 (dôr o campo
     /// `global_monitor` ao `Config` público), e o crate não tem setter. Com o patch, tirar o
     /// `#[ignore]` e este teste passa a ser a guarda.
+    ///
+    /// Caçada de outubro de 2026: 62 ROMs do acervo com 20 s virtuais cada (menus, com toques),
+    /// nenhuma morte por sinal — o gatilho do relatório Infuse (morte real de ROM) não
+    /// disparou, então o fork segue parado. A caçada cobre menus; código de fase que nunca
+    /// abriu não passou pelo tradutor.
     #[ignore = "prova um defeito conhecido da dependência; ver o comentário acima"]
     #[test]
     fn a_instrucao_exclusiva_nao_derruba_o_processo() {
