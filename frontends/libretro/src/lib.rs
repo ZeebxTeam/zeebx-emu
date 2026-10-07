@@ -1718,10 +1718,10 @@ unsafe fn registra_opcoes_do_core() {
             },
             RetroCoreOptionV2Definition {
                 key: c"zeebx_frameskip".as_ptr(),
-                desc: c"Pular quadros".as_ptr(),
-                desc_categorized: c"Pular quadros".as_ptr(),
-                info: c"Pula o desenho 3D de alguns quadros para aliviar processador fraco, sem mudar a velocidade do jogo — a lógica roda igual, só o desenho some por um instante. Fixo pula sempre a mesma proporção; Automático só pula quando o frontend avisa que o áudio está prestes a estourar. Vale na hora.".as_ptr(),
-                info_categorized: c"Pula o desenho para aliviar processador fraco, sem mudar a velocidade do jogo. Vale na hora.".as_ptr(),
+                desc: c"Pular quadros 3D".as_ptr(),
+                desc_categorized: c"Pular quadros 3D".as_ptr(),
+                info: c"Pula o desenho 3D de alguns quadros para aliviar processador fraco, sem mudar a velocidade do jogo — a lógica roda igual, só o desenho some por um instante. Fixo pula sempre a mesma proporção; Automático só pula quando o frontend avisa que o áudio está prestes a estourar. Só vale para o 3D: jogo 2D puro não economiza nada com o fixo — para ele, use o limite de 30 FPS. Vale na hora.".as_ptr(),
+                info_categorized: c"Pula o desenho 3D para aliviar processador fraco, sem mudar a velocidade do jogo. Só 3D; para 2D use 30 FPS. Vale na hora.".as_ptr(),
                 category_key: c"video".as_ptr(),
                 values: frameskip_values,
                 default_value: c"desligado".as_ptr(),
@@ -2005,6 +2005,25 @@ impl Frameskip {
             "desligado" => Some(Self::Desligado),
             "automatico" => Some(Self::Automatico),
             outro => outro.parse::<u32>().ok().filter(|&n| (1..=6).contains(&n)).map(Self::Fixo),
+        }
+    }
+
+    /// Diz se o quadro de agora pula o desenho e avança a fase do contador.
+    ///
+    /// É a mesma conta que o `retro_run` fazia embutida: extraída para que a sequência do fixo
+    /// tenha prova própria. `estouro` é o aviso do frontend no modo automático.
+    fn decide(&self, contador: &mut u32, estouro: bool) -> bool {
+        match *self {
+            Self::Desligado => {
+                *contador = 0;
+                false
+            }
+            Self::Fixo(n) => {
+                let pula = *contador != 0;
+                *contador = (*contador + 1) % (n + 1);
+                pula
+            }
+            Self::Automatico => estouro,
         }
     }
 }
@@ -2863,21 +2882,8 @@ pub extern "C" fn retro_run() {
             aviso("Zeebx: frameskip de rasterização foi desativado neste jogo porque ele usa glReadPixels");
             estado.frameskip_leitura_pixels_avisada = true;
         }
-        let pula_por_frameskip = match estado.frameskip {
-            Frameskip::Desligado => {
-                estado.frameskip_contador = 0;
-                false
-            }
-            Frameskip::Fixo(n) => {
-                let pula = estado.frameskip_contador != 0;
-                estado.frameskip_contador = (estado.frameskip_contador + 1) % (n + 1);
-                pula
-            }
-            // A própria `libretro.h` diz o que fazer com o aviso: **é** a decisão, não uma dica.
-            Frameskip::Automatico => {
-                AUDIO_ESTOURO_PROVAVEL.load(std::sync::atomic::Ordering::Relaxed)
-            }
-        };
+        let estouro = AUDIO_ESTOURO_PROVAVEL.load(std::sync::atomic::Ordering::Acquire);
+        let pula_por_frameskip = estado.frameskip.decide(&mut estado.frameskip_contador, estouro);
         // 30 FPS **não desacelera a lógica**: o freio de velocidade continua em 1x, e só a
         // apresentação duplica um quadro a cada dois. É o oposto de alterar o período virtual
         // de vsync — aquilo faria o jogo avançar 33 ms por chamada e poderia acelerá-lo.
@@ -2910,7 +2916,7 @@ pub extern "C" fn retro_run() {
         // existe depois que o frontend chama o `context_reset`, que acontece depois do
         // `retro_load_game`: este é o primeiro lugar em que ele pode estar pronto. Recriar a sessão
         // custa um reinício que ninguém vê — nenhum quadro foi entregue ainda.
-        let perdeu = PERDEU_A_PLACA.swap(false, std::sync::atomic::Ordering::Relaxed);
+        let perdeu = PERDEU_A_PLACA.swap(false, std::sync::atomic::Ordering::AcqRel);
         let estava_na_placa = perdeu && estado.placa_ligada;
         if perdeu {
             estado.placa_ligada = false;
@@ -3595,6 +3601,32 @@ mod testes {
         assert_eq!(Frameskip::de_texto("0"), None);
         assert_eq!(Frameskip::de_texto("nao-existe"), None);
         assert_eq!(Frameskip::de_texto(""), None);
+    }
+
+    /// O fixo pula a sequência certa: `Fixo(2)` desenha um e pula dois, sempre na mesma fase.
+    ///
+    /// É o modo que o portátil usa (`frameskip = 2`), então a sequência tem prova própria: um
+    /// off-by-one aqui some com um terço dos quadros sem mudar a lógica.
+    #[test]
+    fn o_frameskip_fixo_pula_a_sequencia_certa() {
+        let mut contador = 0;
+        let dois = Frameskip::Fixo(2);
+        assert!(!dois.decide(&mut contador, false));
+        assert!(dois.decide(&mut contador, false));
+        assert!(dois.decide(&mut contador, false));
+        assert!(!dois.decide(&mut contador, false));
+
+        let mut contador = 0;
+        let um = Frameskip::Fixo(1);
+        assert!(!um.decide(&mut contador, false));
+        assert!(um.decide(&mut contador, false));
+        assert!(!um.decide(&mut contador, false));
+
+        let mut contador = 4;
+        assert!(!Frameskip::Desligado.decide(&mut contador, true));
+        assert_eq!(contador, 0, "desligado zera a fase todo quadro");
+        assert!(Frameskip::Automatico.decide(&mut contador, true));
+        assert!(!Frameskip::Automatico.decide(&mut contador, false));
     }
 
     /// O perfil só é Portátil com o texto certo, e tudo o mais — inclusive ausência — é Padrão.
