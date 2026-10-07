@@ -506,6 +506,9 @@ impl CpuBackend for DynarmicCpu {
             64 * 1024 * 1024
         });
         // Entrada = início da página no host, sem deslocamento absoluto nem bits de atributo.
+        // É o "fastmem parcial" que já temos: a binding A32 do 0.1.3 não expõe `fastmem_pointer`
+        // (só `page_table` e `fastmem_exclusive`), então o fastmem total cai no mesmo fork do
+        // `global_monitor` — ver o teste ignorado do LDREX.
         config.page_table_mask(0);
         unsafe { config.page_table(self.tabela.as_mut_ptr().cast()) };
         let mut jit = Box::new(config.init(estado));

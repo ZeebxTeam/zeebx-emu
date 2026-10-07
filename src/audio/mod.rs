@@ -756,7 +756,69 @@ mod tests {
         })
     }
 
-    /// Um mixer sem placa, para testar a mistura sem depender de áudio no host.
+    /// Medição linear contra cúbica na reamostragem 11025 → 44100, sem mudar produto.
+    ///
+    /// O relatório Infuse sugere uma opção de resample HQ (FIR polifásico); antes dela, a
+    /// pergunta é quanto a linear atual erra. Sinal com harmônicos (fundamental + 3
+    /// sobretons), ideal analítico conhecido, erro RMS relativo dos dois interpoladores
+    /// (Hermite cúbica com vizinhos grampeados nas bordas, como o `sample` faz).
+    ///
+    /// Se a cúbica ganhar folgado, ela vira opção; se empatar, o item fecha aqui.
+    #[test]
+    fn medida_linear_contra_cubica_na_reamostragem() {
+        let fonte_hz = 11025.0f64;
+        let alvo_hz = 44100.0f64;
+        let parcial = |t: f64, f: f64, a: f64| a * (2.0 * std::f64::consts::PI * f * t).sin();
+        let ideal = |t: f64| {
+            parcial(t, 440.0, 1.0)
+                + parcial(t, 880.0, 0.5)
+                + parcial(t, 1760.0, 0.25)
+                + parcial(t, 3520.0, 0.125)
+        };
+        let segundos = 1.0;
+        let fonte: Vec<f32> = (0..(fonte_hz * segundos) as usize)
+            .map(|i| ideal(i as f64 / fonte_hz) as f32)
+            .collect();
+        let at = |i: isize| -> f32 {
+            fonte
+                .get(i.clamp(0, fonte.len() as isize - 1) as usize)
+                .copied()
+                .unwrap_or(0.0)
+        };
+        let (mut e_lin, mut e_cub, mut n) = (0.0f64, 0.0f64, 0u64);
+        let total = (alvo_hz * segundos) as usize;
+        for j in 0..total {
+            let t = j as f64 / alvo_hz;
+            let pos = t * fonte_hz;
+            let i = pos.floor() as isize;
+            let f = (pos - pos.floor()) as f32;
+            let (x0, x1, x2, x3) = (at(i - 1), at(i), at(i + 1), at(i + 2));
+            let lin = x1 + (x2 - x1) * f;
+            let m1 = 0.5 * (x2 - x0);
+            let m2 = 0.5 * (x3 - x1);
+            let f2 = f * f;
+            let f3 = f2 * f;
+            let cub = (2.0 * f3 - 3.0 * f2 + 1.0) * x1
+                + (f3 - 2.0 * f2 + f) * m1
+                + (-2.0 * f3 + 3.0 * f2) * x2
+                + (f3 - f2) * m2;
+            let certo = ideal(t) as f32;
+            e_lin += (lin - certo) as f64 * (lin - certo) as f64;
+            e_cub += (cub - certo) as f64 * (cub - certo) as f64;
+            n += 1;
+        }
+        let (e_lin, e_cub) = ((e_lin / n as f64).sqrt(), (e_cub / n as f64).sqrt());
+        // Registrar os números no próprio teste é de propósito: a decisão sai daqui, e quem
+        // reler sabe de onde ela veio. Medido: linear 0,035, cúbica 0,018 — a cúbica ganha
+        // 1,9x sobre erros já 29 dB abaixo do sinal, inaudível no material de jogo (efeitos
+        // de 8 bits, músicas de 22050 Hz). Por isso não há opção HQ: o ganho não paga o
+        // encanamento (voz, configurações, duas interfaces, opção do core).
+        println!("linear RMS {e_lin:.6}, cubica RMS {e_cub:.6}");
+        assert!(
+            e_cub < e_lin,
+            "cúbica devia errar menos que a linear: {e_cub:.6} contra {e_lin:.6}"
+        );
+    }    /// Um mixer sem placa, para testar a mistura sem depender de áudio no host.
     fn mixer(rate: u32) -> Mixer {
         Mixer::new(rate, 1.0, false)
     }
