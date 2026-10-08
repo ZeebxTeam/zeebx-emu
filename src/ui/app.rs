@@ -2349,7 +2349,9 @@ impl App {
                 pads,
                 movimentos,
                 self.teclado_apertado.iter().filter_map(|k| input::avk_de(*k)),
-                limit,
+                // F10 segurado é turbo: sem freio, rápido quanto o host der — o mesmo que o
+                // "Desligado" do limite do core. Não chega ao jogo: `avk_de` não mapeia F10.
+                limit && !self.teclado_apertado.contains(&egui::Key::F10),
             );
         }
         // O pedido de lançar vem antes da saída: ver [`Partida::pedido_de_lancamento`].
