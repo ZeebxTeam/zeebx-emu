@@ -104,6 +104,11 @@ pub mod qobject {
         #[cxx_name = "enderecoDaPastaDeScreenshots"]
         fn endereco_da_pasta_de_screenshots(self: &Configuracoes) -> QString;
 
+        /// O endereço `file://` da pasta das sessões gravadas, criada se ainda não existe.
+        #[qinvokable]
+        #[cxx_name = "enderecoDaPastaDeSessoes"]
+        fn endereco_da_pasta_de_sessoes(self: &Configuracoes) -> QString;
+
         #[qinvokable]
         #[cxx_name = "escolheZWheel"]
         fn escolhe_z_wheel(self: Pin<&mut Configuracoes>, pasta: bool);
@@ -413,6 +418,7 @@ use zeebx::ui::entrada::SensorDaPorta;
 
 use zeebx::library;
 use zeebx::ui::atualizacao::{self, Resposta};
+use zeebx::ui::partida;
 use zeebx::ui::screenshot;
 use zeebx::ui::settings::{
     self, Atalhos, ModoDaBiblioteca, ModoDaJanela, Proporcao, Scaling, Settings, rotulo_da_resolucao,
@@ -510,6 +516,7 @@ fn booleano<'a>(settings: &'a mut Settings, chave: &str) -> Option<&'a mut bool>
         "debug.memory" => &mut settings.debug.memory,
         "debug.timeline" => &mut settings.debug.timeline,
         "debug.log" => &mut settings.debug.log,
+        "debug.gravar_sessao" => &mut settings.debug.gravar_sessao,
         "movimento.aviso_de_calibracao" => &mut settings.movimento.aviso_de_calibracao,
         _ => return None,
     })
@@ -770,6 +777,14 @@ impl qobject::Configuracoes {
             }
             QString::from(&screenshot::endereco_de(&pasta))
         })
+    }
+
+    pub fn endereco_da_pasta_de_sessoes(&self) -> QString {
+        let pasta = partida::pasta_de_sessoes();
+        if let Err(erro) = std::fs::create_dir_all(&pasta) {
+            eprintln!("não deu para criar {}: {erro}", pasta.display());
+        }
+        QString::from(&screenshot::endereco_de(&pasta))
     }
 
     pub fn escolhe_z_wheel(mut self: Pin<&mut Self>, pasta: bool) {

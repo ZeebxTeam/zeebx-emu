@@ -198,21 +198,197 @@ pub fn nivel() -> Nivel {
     }
 }
 
-/// Se uma mensagem deste nível seria registrada.
+/// Se uma mensagem deste nível seria registrada — no anel ou no arquivo da sessão.
 ///
 /// É o teste barato que a macro [`registro!`] faz antes de montar o texto — e é o único custo
 /// de uma mensagem filtrada.
 pub fn ligado(nivel_da_mensagem: Nivel) -> bool {
+    vai_para_o_anel(nivel_da_mensagem) || vai_para_o_arquivo(nivel_da_mensagem)
+}
+
+fn vai_para_o_anel(nivel_da_mensagem: Nivel) -> bool {
     !DESLIGADO.load(Ordering::Relaxed) && nivel_da_mensagem.passa(nivel())
 }
 
-/// Põe uma linha no anel.
+fn vai_para_o_arquivo(nivel_da_mensagem: Nivel) -> bool {
+    GRAVANDO.load(Ordering::Relaxed) && nivel_da_mensagem.passa(NIVEL_DO_ARQUIVO)
+}
+
+/// Até que nível o arquivo da sessão grava, seja qual for o nível do anel.
 ///
-/// Não escreve em lugar nenhum: quem mostra é o frontend, chamando [`drena`] num ponto seguro
-/// — no Libretro, dentro do `retro_run`, porque o log do frontend não pode ser chamado de
-/// qualquer lugar.
+/// **Independente do anel de propósito.** O arquivo é para quem vai deixar o jogo aberto meia hora
+/// e mandar o resultado: com o padrão `Aviso` ele sairia quase vazio, e as linhas `placa:` e
+/// `arquivo:` que medem vazamento e gravação são de `Informacao`. `Depuracao` fica de fora porque
+/// há jogo que fala mil linhas por quadro — meia hora disso é um arquivo que ninguém abre.
+const NIVEL_DO_ARQUIVO: Nivel = Nivel::Informacao;
+
+/// Se há um arquivo de sessão aberto. Separado do cadeado para o teste de [`ligado`] continuar
+/// sendo uma leitura atômica.
+static GRAVANDO: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// O arquivo da sessão em gravação, e o número que o identifica.
+///
+/// O número existe porque a Z-Wheel abre o jogo seguinte **antes** de soltar a partida dela: sem
+/// ele, o fim da partida velha fecharia o arquivo da nova.
+static ARQUIVO: Mutex<Option<(u64, std::io::LineWriter<std::fs::File>)>> = Mutex::new(None);
+static PROXIMO_ARQUIVO: AtomicU64 = AtomicU64::new(1);
+
+/// Passa a gravar em `caminho`, começando por `cabecalho`. Devolve o número desta gravação, que
+/// [`para_de_gravar`] confere.
+///
+/// Um arquivo que já estava aberto é encerrado antes, com uma linha dizendo para onde a sessão
+/// seguiu. Cada linha vai para o disco na hora (`LineWriter`): o que interessa neste arquivo é
+/// justamente o que veio antes de o processo morrer, e um buffer guardaria isso na memória.
+pub fn grava_em(caminho: &std::path::Path, cabecalho: &str) -> std::io::Result<u64> {
+    use std::io::Write;
+    if let Some(pai) = caminho.parent() {
+        std::fs::create_dir_all(pai)?;
+    }
+    let mut arquivo = std::io::LineWriter::new(std::fs::File::create(caminho)?);
+    arquivo.write_all(cabecalho.as_bytes())?;
+    let numero = PROXIMO_ARQUIVO.fetch_add(1, Ordering::Relaxed);
+    instala_gancho_de_panico();
+    let mut atual = ARQUIVO.lock().unwrap_or_else(|envenenado| envenenado.into_inner());
+    if let Some((_, mut anterior)) = atual.take() {
+        let _ = writeln!(
+            anterior,
+            "[{}] INFO registro: a sessão seguiu em {}",
+            carimbo(std::time::SystemTime::now()),
+            caminho.display()
+        );
+    }
+    *atual = Some((numero, arquivo));
+    GRAVANDO.store(true, Ordering::Relaxed);
+    Ok(numero)
+}
+
+/// Escreve um bloco no arquivo da sessão, como veio, sem carimbo nem nível. É para o relatório
+/// do fim, que já tem a sua forma.
+pub fn grava_bloco(numero: u64, texto: &str) {
+    use std::io::Write;
+    let mut atual = ARQUIVO.lock().unwrap_or_else(|envenenado| envenenado.into_inner());
+    if let Some((_, arquivo)) = atual.as_mut().filter(|(n, _)| *n == numero) {
+        let _ = arquivo.write_all(texto.as_bytes());
+    }
+}
+
+/// Encerra a gravação `numero` com uma última linha. Se outra gravação já a substituiu, não faz
+/// nada.
+pub fn para_de_gravar(numero: u64, ultima: &str) {
+    use std::io::Write;
+    let mut atual = ARQUIVO.lock().unwrap_or_else(|envenenado| envenenado.into_inner());
+    if !atual.as_ref().is_some_and(|(n, _)| *n == numero) {
+        return;
+    }
+    if let Some((_, mut arquivo)) = atual.take() {
+        let _ = writeln!(
+            arquivo,
+            "[{}] INFO registro: {ultima}",
+            carimbo(std::time::SystemTime::now())
+        );
+        let _ = arquivo.flush();
+    }
+    GRAVANDO.store(false, Ordering::Relaxed);
+}
+
+/// Põe uma linha no arquivo da sessão, se houver um.
+fn grava_linha(nivel: Nivel, alvo: &str, texto: &str) {
+    use std::io::Write;
+    // Um cadeado envenenado não cala o arquivo: o pânico que o envenenou é justamente o que se
+    // quer ver gravado depois dele.
+    let mut atual = ARQUIVO.lock().unwrap_or_else(|envenenado| envenenado.into_inner());
+    if let Some((_, arquivo)) = atual.as_mut() {
+        let _ = writeln!(
+            arquivo,
+            "[{}] {:<5} {alvo}: {texto}",
+            carimbo(std::time::SystemTime::now()),
+            nivel.etiqueta()
+        );
+    }
+}
+
+/// Grava o pânico no arquivo da sessão antes de deixar o gancho anterior fazer o de sempre.
+///
+/// Sem isto, um pânico no núcleo deixava o arquivo terminar no meio da corrida, sem dizer por
+/// quê. O `try_lock` é de propósito: se o pânico nasceu com o cadeado do arquivo na mão, esperar
+/// por ele travaria o processo em vez de deixá-lo cair.
+///
+/// Um crash nativo — acesso inválido no driver de vídeo, no dynarmic — não passa por aqui, e não
+/// há como pegá-lo sem um tratador de sinal que brigaria com o do dynarmic. Para esse caso, o
+/// arquivo sem a linha de encerramento no fim é a própria evidência.
+fn instala_gancho_de_panico() {
+    static UMA_VEZ: std::sync::Once = std::sync::Once::new();
+    UMA_VEZ.call_once(|| {
+        let anterior = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if GRAVANDO.load(Ordering::Relaxed) {
+                if let Ok(mut atual) = ARQUIVO.try_lock() {
+                    if let Some((_, arquivo)) = atual.as_mut() {
+                        use std::io::Write;
+                        let pilha = std::backtrace::Backtrace::force_capture();
+                        let _ = writeln!(
+                            arquivo,
+                            "[{}] FATAL panico: {info}\n{pilha}",
+                            carimbo(std::time::SystemTime::now())
+                        );
+                        let _ = arquivo.flush();
+                    }
+                }
+            }
+            anterior(info);
+        }));
+    });
+}
+
+/// `aaaa-mm-dd hh:mm:ss UTC`.
+pub fn carimbo(instante: std::time::SystemTime) -> String {
+    let (data, [h, m, s]) = data_e_hora_utc(instante);
+    format!("{data} {h:02}:{m:02}:{s:02} UTC")
+}
+
+/// `aaaa-mm-dd_hh-mm-ss`, para nome de arquivo: sem `:`, que o Windows recusa, e em ordem que
+/// a listagem da pasta já deixa cronológica.
+pub fn carimbo_de_arquivo(instante: std::time::SystemTime) -> String {
+    let (data, [h, m, s]) = data_e_hora_utc(instante);
+    format!("{data}_{h:02}-{m:02}-{s:02}")
+}
+
+/// A data em `aaaa-mm-dd` e a hora, em UTC.
+///
+/// Feito à mão para não trazer uma biblioteca de datas por duas linhas: é o `civil_from_days` de
+/// Howard Hinnant, que vale para todo o calendário gregoriano proléptico.
+fn data_e_hora_utc(instante: std::time::SystemTime) -> (String, [u64; 3]) {
+    let segundos = instante
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let (dias, resto) = ((segundos / 86_400) as i64, segundos % 86_400);
+    let z = dias + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let dia = doy - (153 * mp + 2) / 5 + 1;
+    let mes = if mp < 10 { mp + 3 } else { mp - 9 };
+    let ano = yoe + era * 400 + i64::from(mes <= 2);
+    (
+        format!("{ano:04}-{mes:02}-{dia:02}"),
+        [resto / 3600, resto % 3600 / 60, resto % 60],
+    )
+}
+
+/// Põe uma linha no anel e, se houver gravação de sessão, no arquivo.
+///
+/// O anel não escreve em lugar nenhum: quem mostra é o frontend, chamando [`drena`] num ponto
+/// seguro — no Libretro, dentro do `retro_run`, porque o log do frontend não pode ser chamado de
+/// qualquer lugar. O arquivo, ao contrário, é escrito aqui mesmo, na hora: a linha que importa é
+/// a última antes de o processo cair, e ela não pode esperar o frontend drenar.
 pub fn escreve(nivel: Nivel, alvo: &str, texto: &str) {
-    if !ligado(nivel) {
+    if vai_para_o_arquivo(nivel) {
+        grava_linha(nivel, alvo, texto);
+    }
+    if !vai_para_o_anel(nivel) {
         return;
     }
     let linha = Linha {
@@ -531,6 +707,62 @@ mod tests {
         );
         // Segunda chamada sem nada pendente: não pode entrar em pânico nem inventar linha.
         despeja_no_stderr();
+    }
+
+    #[test]
+    fn o_carimbo_e_a_data_utc_certa() {
+        let em = |segundos: u64| std::time::UNIX_EPOCH + std::time::Duration::from_secs(segundos);
+        assert_eq!(carimbo(em(0)), "1970-01-01 00:00:00 UTC");
+        // 29 de fevereiro de um ano bissexto, e o último segundo do dia.
+        assert_eq!(carimbo(em(951_868_799)), "2000-02-29 23:59:59 UTC");
+        assert_eq!(carimbo(em(1_791_464_405)), "2026-10-08 13:00:05 UTC");
+        assert_eq!(carimbo_de_arquivo(em(1_791_464_405)), "2026-10-08_13-00-05");
+    }
+
+    /// O arquivo grava do `Informacao` para cima mesmo com o anel em `Fatal`, e o fim de uma
+    /// gravação que já foi substituída não fecha a que está em curso.
+    #[test]
+    fn o_arquivo_da_sessao_grava_independente_do_anel() {
+        let _sozinho = sozinho();
+        limpa();
+        define_nivel(Nivel::Fatal);
+        let pasta = std::env::temp_dir().join(format!("zeebx-registro-{}", std::process::id()));
+        let primeiro = pasta.join("primeiro.log");
+        let segundo = pasta.join("segundo.log");
+
+        let um = grava_em(&primeiro, "CABEÇALHO\n").unwrap();
+        escreve(Nivel::Informacao, "teste-do-arquivo", "entra no arquivo");
+        escreve(Nivel::Depuracao, "teste-do-arquivo", "fica de fora");
+        assert!(
+            !drena().iter().any(|l| l.alvo == "teste-do-arquivo"),
+            "o anel continua no nível dele"
+        );
+        let dois = grava_em(&segundo, "OUTRO\n").unwrap();
+        para_de_gravar(um, "não devia fechar o segundo");
+        escreve(Nivel::Erro, "teste-do-arquivo", "no segundo");
+        para_de_gravar(dois, "sessão encerrada");
+        assert!(!ligado(Nivel::Erro), "sem arquivo, o anel em fatal não aceita erro");
+
+        // Procura as linhas em vez de contá-las: outras provas da suíte escrevem no registro ao
+        // mesmo tempo, e o que elas dizem também cai no arquivo.
+        let lido = std::fs::read_to_string(&primeiro).unwrap();
+        assert!(lido.starts_with("CABEÇALHO\n"));
+        let entrou = lido
+            .lines()
+            .find(|l| l.contains("teste-do-arquivo: entra no arquivo"))
+            .expect("a linha de informação tem de estar no arquivo");
+        assert!(entrou.starts_with('[') && entrou.contains(" UTC] INFO  teste-do-arquivo"));
+        assert!(!lido.contains("fica de fora"));
+        assert!(lido.trim_end().ends_with(&format!("a sessão seguiu em {}", segundo.display())));
+        assert!(!lido.contains("não devia fechar"));
+
+        let lido = std::fs::read_to_string(&segundo).unwrap();
+        assert!(lido.starts_with("OUTRO\n"));
+        assert!(lido.contains("ERROR teste-do-arquivo: no segundo"));
+        assert!(lido.trim_end().ends_with("sessão encerrada"));
+
+        let _ = std::fs::remove_dir_all(&pasta);
+        define_nivel(Nivel::Aviso);
     }
 
     /// A mensagem filtrada não entra no anel: é o que sustenta o argumento de custo.
