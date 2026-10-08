@@ -792,6 +792,11 @@ impl Session {
         self.history.iter()
     }
 
+    /// Chamadas de API atendidas desde que o jogo abriu.
+    pub fn api_calls(&self) -> u64 {
+        self.machine.api_calls()
+    }
+
     /// Bytes do heap do guest já entregues, e quantos objetos nossos estão vivos.
     pub fn memory(&self) -> (u32, usize) {
         (self.machine.heap_used(), self.machine.live_objects())
@@ -1150,7 +1155,9 @@ impl Session {
             Outcome::Exception { pc } => format!("exceção do núcleo ARM em {pc:#010x}"),
             Outcome::Budget => "o jogo passou do orçamento de instruções".to_string(),
             Outcome::CallLimit { calls } => {
-                format!("teto de {calls} chamadas de API atingido — provável laço de repetição")
+                format!(
+                    "{calls} chamadas de API sem devolver a vez — provável laço de repetição"
+                )
             }
         })
     }

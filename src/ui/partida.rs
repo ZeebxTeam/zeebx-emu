@@ -70,6 +70,9 @@ struct Diario {
     proxima_saude: Instant,
     /// A parada do jogo já foi registrada: ela continua valendo a cada volta, e uma linha basta.
     parada_registrada: bool,
+    /// As chamadas de API na linha de saúde anterior, para a taxa da janela.
+    chamadas_antes: u64,
+    saude_antes: Instant,
 }
 
 /// A memória do processo inteiro em bytes: residente e comprometida (privada).
@@ -317,6 +320,8 @@ impl Partida {
                 inicio: Instant::now(),
                 proxima_saude: Instant::now() + INTERVALO_DA_SAUDE,
                 parada_registrada: false,
+                chamadas_antes: 0,
+                saude_antes: Instant::now(),
             }),
         })
     }
@@ -366,6 +371,14 @@ impl Partida {
             return;
         }
         diario.proxima_saude = agora + INTERVALO_DA_SAUDE;
+        // Por segundo real, como as outras taxas da linha. O total vai junto porque foi ele, e
+        // não a taxa, que esbarrava no teto antigo de 200 milhões (issue #70).
+        let chamadas = self.sessao.api_calls();
+        let janela = (agora - diario.saude_antes).as_secs_f64().max(0.001);
+        let chamadas_por_segundo =
+            chamadas.saturating_sub(diario.chamadas_antes) as f64 / janela;
+        diario.chamadas_antes = chamadas;
+        diario.saude_antes = agora;
         let amostra = self.sessao.sample();
         let heap = self.sessao.heap_retrato();
         let (_, objetos) = self.sessao.memory();
@@ -383,13 +396,16 @@ impl Partida {
             "saude",
             &format!(
                 "{} min de sessão, {:.1} s no relógio do jogo; velocidade {}%, {} quadros/s, \
-                 {:.1} M instruções/s; {processo}; heap do jogo {:.1} de {:.1} MB em {} blocos, \
+                 {:.1} M instruções/s, {:.0} mil chamadas de API/s ({:.1} M no total); \
+                 {processo}; heap do jogo {:.1} de {:.1} MB em {} blocos, \
                  maior buraco {:.1} MB; {objetos} objetos BREW vivos",
                 diario.inicio.elapsed().as_secs() / 60,
                 f64::from(self.sessao.clock_ms()) / 1000.0,
                 amostra.speed,
                 amostra.fps,
                 amostra.ips as f64 / 1e6,
+                chamadas_por_segundo / 1e3,
+                chamadas as f64 / 1e6,
                 mb(u64::from(heap.usado)),
                 mb(u64::from(heap.teto)),
                 heap.vivos,
