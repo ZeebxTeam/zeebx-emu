@@ -60,7 +60,18 @@ static JOGOS: &[Jogo] = &[
 /// exemplo), **nenhum** remendo daquele jogo entra — meio remendo é o pior dos mundos, porque
 /// o jogo roda diferente do original e do remendado. O que não pegou sai no registro, e o
 /// jogo segue sem remendo.
+///
+/// `ZEEBX_PATCH=0` desliga tudo: é o interruptor de emergência para um remendo que se
+/// comporte mal numa versão não testada, e segue a mesma convenção do `ZEEBX_GPU`.
 pub fn aplica_para(classe: Option<u32>, mut bytes: Vec<u8>) -> Vec<u8> {
+    if matches!(std::env::var("ZEEBX_PATCH").as_deref(), Ok("0")) {
+        crate::registro!(
+            crate::registro::Nivel::Depuracao,
+            "patch",
+            "remendos desligados pelo ambiente (ZEEBX_PATCH=0)"
+        );
+        return bytes;
+    }
     let classe = match classe {
         Some(c) => c,
         None => return bytes,
