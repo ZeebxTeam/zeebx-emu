@@ -54,7 +54,7 @@ static JOGOS: &[Jogo] = &[
     },
 ];
 
-/// Aplica os remendos do jogo aos bytes do módulo, e devolve quantos pegaram.
+/// Aplica os remendos do jogo aos bytes do módulo, devolvendo os bytes remendados.
 ///
 /// Tudo-ou-nada por jogo: se qualquer esperado não confere (outra versão do módulo, por
 /// exemplo), **nenhum** remendo daquele jogo entra — meio remendo é o pior dos mundos, porque
@@ -95,6 +95,10 @@ pub fn aplica_para(classe: Option<u32>, mut bytes: Vec<u8>) -> Vec<u8> {
         return bytes;
     }
     for r in jogo.remendos {
+        // Esperado e novo têm de ter o mesmo tamanho: a tabela é estática e revisada, e
+        // este `debug_assert` é a rede contra um erro de digitação que escreveria além
+        // da região conferida.
+        debug_assert_eq!(r.esperado.len(), r.novo.len());
         bytes[r.deslocamento..r.deslocamento + r.novo.len()].copy_from_slice(r.novo);
     }
     crate::registro!(
