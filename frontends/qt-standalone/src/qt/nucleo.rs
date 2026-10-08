@@ -716,6 +716,8 @@ impl Nucleo {
         let limite = self.settings.graphics.speed_limit;
         // A proporção "da janela" acompanha o tamanho dela; o destino só é refeito quando as
         // colunas a mais mudam. É GL, então vai com o contexto corrente.
+        // F10 segurado é turbo, como na janela do egui: sem freio (ver `Partida::avanca`).
+        let limite = limite && !self.teclas.contains(&Key::F10);
         let da_janela = (self.settings.graphics.proporcao == Proporcao::Janela)
             .then(|| area[0] / area[1].max(1.0));
         let contexto = self.gl.clone();

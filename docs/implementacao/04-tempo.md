@@ -8,7 +8,10 @@ agora_us = clock_us + instruções_executadas / 528
 
 528 é o clock do ARM11 do MSM7201A em MHz. O tempo do jogo, então, **anda com o trabalho que ele
 faz** — não com o relógio do host. Isso torna a execução repetível: o mesmo jogo, com a mesma
-entrada, produz a mesma sequência de quadros, esteja o host ocupado ou não.
+entrada, produz a mesma sequência de quadros, esteja o host ocupado ou não. E é por isso que não
+há controle de clock do guest (nem over, nem under): sem orçamento de ciclos por quadro, mudar o
+divisor não corta trabalho, só recarimba o tempo — ver "Por que não há overclock" em
+[19-jit-arm-e-renderizadores.md](19-jit-arm-e-renderizadores.md).
 
 `clock_us` é a parcela que **adiantamos**, e ela existe por dois motivos.
 

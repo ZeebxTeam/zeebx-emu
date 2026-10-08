@@ -56,6 +56,11 @@ pub mod qobject {
         #[qinvokable]
         fn opcoes(self: &Configuracoes, chave: &QString) -> QStringList;
 
+        /// As entradas confirmadas da base de remendos, uma por linha ("nome (classe): motivo").
+        /// A interface mostra estas; o liga/desliga por jogo vem depois.
+        #[qinvokable]
+        fn remendos(self: &Configuracoes) -> QStringList;
+
         #[qinvokable]
         #[cxx_name = "escolhePastaDeRoms"]
         fn escolhe_pasta_de_roms(self: Pin<&mut Configuracoes>);
@@ -510,6 +515,7 @@ fn booleano<'a>(settings: &'a mut Settings, chave: &str) -> Option<&'a mut bool>
         "graphics.gpu_rasterizer" => &mut settings.graphics.gpu_rasterizer,
         "audio.enabled" => &mut settings.audio.enabled,
         "audio.midi_effects" => &mut settings.audio.midi_effects,
+        "patches.ligados" => &mut settings.patches.ligados,
         "debug.overlay" => &mut settings.debug.overlay,
         "debug.speed" => &mut settings.debug.speed,
         "debug.clock" => &mut settings.debug.clock,
@@ -739,6 +745,14 @@ impl qobject::Configuracoes {
                 None => nucleo.catalogo.get("audio.soundfont.auto").to_string(),
             })
         })
+    }
+
+    pub fn remendos(&self) -> QStringList {
+        lista_de_textos(
+            zeebx::patch::entradas()
+                .map(|e| format!("{} (classe {:#x}): {}", e.nome, e.classe, e.motivo))
+                .collect(),
+        )
     }
 
     // O banco é aberto quando a máquina nasce: a troca vale a partir do próximo jogo, e a dica da

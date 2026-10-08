@@ -51,3 +51,17 @@ impl Default for ZWheel {
         }
     }
 }
+
+/// Os remendos de ritmo por jogo. Ver [`crate::patch`].
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Patches {
+    /// Liga os remendos da base (hoje, o do RE4). Desligar volta ao binário intacto.
+    pub ligados: bool,
+}
+
+impl Default for Patches {
+    fn default() -> Self {
+        Self { ligados: true }
+    }
+}
