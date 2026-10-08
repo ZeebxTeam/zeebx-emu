@@ -284,5 +284,8 @@
   "welcome.development": "The emulator is still in development. Some games and features may have issues, such as crashes or graphics and sound glitches.",
   "welcome.dismiss": "Got it",
   "welcome.dont_show": "Don't show again until the next version",
-  "welcome.title": "Welcome to Zeebx"
+  "welcome.title": "Welcome to Zeebx",
+  "settings.patches": "Per-game pacing patches",
+  "settings.patches.hint": "Applies the patch database when loading each game (today, Resident Evil 4's minimum wait). Game files never change. Turning off restores the intact binary.",
+  "settings.patches.enable": "Enable patches"
 }

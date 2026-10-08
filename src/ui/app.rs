@@ -535,6 +535,31 @@ impl App {
         });
     }
 
+    /// Os remendos de ritmo por jogo: o interruptor global e o que ele liga.
+    ///
+    /// A lista mostra as entradas confirmadas da base (ver [`crate::patch`]); o liga/desliga
+    /// por jogo vem depois, quando houver o que escolher entre elas.
+    fn secao_de_patches(&mut self, ui: &mut egui::Ui) -> bool {
+        let mut changed = false;
+        ui.label(self.tr("settings.patches"));
+        ui.weak(self.tr("settings.patches.hint"));
+        changed |= ui
+            .checkbox(
+                &mut self.settings.patches.ligados,
+                self.catalog.get("settings.patches.enable"),
+            )
+            .changed();
+        ui.add_enabled_ui(self.settings.patches.ligados, |ui| {
+            for entrada in crate::patch::entradas() {
+                ui.monospace(format!(
+                    "{} (classe {:#x}): {}",
+                    entrada.nome, entrada.classe, entrada.motivo
+                ));
+            }
+        });
+        changed
+    }
+
     fn secao_do_discord(&mut self, ui: &mut egui::Ui) -> bool {
         let mut changed = false;
         ui.label(self.tr("settings.discord"));
@@ -918,6 +943,9 @@ impl App {
             )
             .changed();
         ui.weak(self.tr("settings.z_wheel_transitions.hint"));
+
+        ui.add_space(16.0);
+        changed |= self.secao_de_patches(ui);
 
         ui.add_space(16.0);
         changed |= self.secao_do_discord(ui);

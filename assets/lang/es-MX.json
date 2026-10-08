@@ -284,5 +284,8 @@
   "welcome.development": "El emulador aún está en desarrollo. Algunos juegos y funciones pueden tener problemas, como bloqueos o fallos de gráficos y sonido.",
   "welcome.dismiss": "Entendido",
   "welcome.dont_show": "No volver a mostrar hasta la siguiente versión",
-  "welcome.title": "Bienvenido a Zeebx"
+  "welcome.title": "Bienvenido a Zeebx",
+  "settings.patches": "Parches de ritmo por juego",
+  "settings.patches.hint": "Aplica la base de parches al cargar cada juego (hoy, la espera mínima de Resident Evil 4). Los archivos no cambian. Apagar vuelve al binario intacto.",
+  "settings.patches.enable": "Activar los parches"
 }

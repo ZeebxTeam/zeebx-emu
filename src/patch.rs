@@ -54,6 +54,24 @@ static JOGOS: &[Jogo] = &[
     },
 ];
 
+/// Uma entrada da base, para a interface listar o que o interruptor liga.
+#[derive(Debug, Clone, Copy)]
+pub struct Entrada {
+    pub classe: u32,
+    pub nome: &'static str,
+    pub motivo: &'static str,
+}
+
+/// As entradas, na ordem da base. A interface mostra estas; o liga/desliga por jogo vem
+/// depois, quando houver o que escolher entre elas.
+pub fn entradas() -> impl ExactSizeIterator<Item = Entrada> {
+    JOGOS.iter().map(|j| Entrada {
+        classe: j.classe,
+        nome: j.nome,
+        motivo: j.motivo,
+    })
+}
+
 /// Aplica os remendos do jogo aos bytes do módulo, devolvendo os bytes remendados.
 ///
 /// Tudo-ou-nada por jogo: se qualquer esperado não confere (outra versão do módulo, por
@@ -61,14 +79,17 @@ static JOGOS: &[Jogo] = &[
 /// o jogo roda diferente do original e do remendado. O que não pegou sai no registro, e o
 /// jogo segue sem remendo.
 ///
-/// `ZEEBX_PATCH=0` desliga tudo: é o interruptor de emergência para um remendo que se
-/// comporte mal numa versão não testada, e segue a mesma convenção do `ZEEBX_GPU`.
-pub fn aplica_para(classe: Option<u32>, mut bytes: Vec<u8>) -> Vec<u8> {
-    if matches!(std::env::var("ZEEBX_PATCH").as_deref(), Ok("0")) {
+/// `ligados` é o interruptor da interface; `ZEEBX_PATCH=0` desliga tudo: é o interruptor de
+/// emergência para um remendo que se comporte mal numa versão não testada, e segue a mesma
+/// convenção do `ZEEBX_GPU`.
+pub fn aplica_para(classe: Option<u32>, mut bytes: Vec<u8>, ligados: bool) -> Vec<u8> {
+    if !ligados
+        || matches!(std::env::var("ZEEBX_PATCH").as_deref(), Ok("0"))
+    {
         crate::registro!(
             crate::registro::Nivel::Depuracao,
             "patch",
-            "remendos desligados pelo ambiente (ZEEBX_PATCH=0)"
+            "remendos desligados (interface ou ZEEBX_PATCH=0)"
         );
         return bytes;
     }
@@ -126,7 +147,7 @@ mod tests {
 
     #[test]
     fn o_remendo_do_re4_troca_os_dois_10_por_1() {
-        let remendado = aplica_para(Some(0x0108af6c), modulo_re4());
+        let remendado = aplica_para(Some(0x0108af6c), modulo_re4(), true);
         assert_eq!(remendado[179136], 0x01);
         assert_eq!(remendado[179144], 0x01);
     }
@@ -135,21 +156,39 @@ mod tests {
     fn bytes_diferentes_anulam_o_jogo_inteiro() {
         let mut bytes = modulo_re4();
         bytes[179144] = 0x05;
-        let saida = aplica_para(Some(0x0108af6c), bytes.clone());
+        let saida = aplica_para(Some(0x0108af6c), bytes.clone(), true);
         assert_eq!(saida, bytes, "um esperado furado não pode aplicar o outro");
     }
 
     #[test]
     fn classe_desconhecida_passa_direto() {
         let bytes = modulo_re4();
-        let saida = aplica_para(Some(1), bytes.clone());
+        let saida = aplica_para(Some(1), bytes.clone(), true);
         assert_eq!(saida, bytes);
     }
 
     #[test]
     fn sem_classe_passa_direto() {
         let bytes = modulo_re4();
-        let saida = aplica_para(None, bytes.clone());
+        let saida = aplica_para(None, bytes.clone(), true);
         assert_eq!(saida, bytes);
+    }
+
+    #[test]
+    fn desligado_passa_direto() {
+        let bytes = modulo_re4();
+        let saida = aplica_para(Some(0x0108af6c), bytes.clone(), false);
+        assert_eq!(saida, bytes, "com o interruptor desligado nada entra");
+    }
+
+    #[test]
+    fn a_base_lista_a_entrada_do_re4() {
+        let entradas: Vec<Entrada> = entradas().collect();
+        assert!(
+            entradas
+                .iter()
+                .any(|e| e.classe == 0x0108af6c && e.nome == "Resident Evil 4"),
+            "a interface lista o que o interruptor liga"
+        );
     }
 }

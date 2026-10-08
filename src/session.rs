@@ -183,8 +183,9 @@ impl Session {
         placa: bool,
         contexto: Option<std::sync::Arc<glow::Context>>,
         z_wheel: crate::config::ZWheel,
+        patches: bool,
     ) -> Result<Self, StartError> {
-        Self::start_inner(path, Some(portas), serial, placa, contexto, z_wheel, &[])
+        Self::start_inner(path, Some(portas), serial, placa, contexto, z_wheel, patches, &[])
     }
 
     /// Como [`Session::start_with`], mas instala os módulos antes do boot do guest.
@@ -198,9 +199,10 @@ impl Session {
         placa: bool,
         contexto: Option<std::sync::Arc<glow::Context>>,
         z_wheel: crate::config::ZWheel,
+        patches: bool,
         instalados: &[(u32, String)],
     ) -> Result<Self, StartError> {
-        Self::start_inner(path, Some(portas), serial, placa, contexto, z_wheel, instalados)
+        Self::start_inner(path, Some(portas), serial, placa, contexto, z_wheel, patches, instalados)
     }
 
     /// Como [`Session::start_with`], mas recebe a raiz persistente explicitamente.
@@ -215,6 +217,7 @@ impl Session {
         placa: bool,
         contexto: Option<std::sync::Arc<glow::Context>>,
         z_wheel: crate::config::ZWheel,
+        patches: bool,
         storage: &StoragePaths,
     ) -> Result<Self, StartError> {
         Self::start_inner_with_storage(
@@ -224,6 +227,7 @@ impl Session {
             placa,
             contexto,
             z_wheel,
+            patches,
             storage,
             &[],
         )
@@ -241,6 +245,7 @@ impl Session {
         placa: bool,
         contexto: Option<std::sync::Arc<glow::Context>>,
         z_wheel: crate::config::ZWheel,
+        patches: bool,
         storage: &StoragePaths,
         instalados: &[(u32, String)],
     ) -> Result<Self, StartError> {
@@ -251,6 +256,7 @@ impl Session {
             placa,
             contexto,
             z_wheel,
+            patches,
             storage,
             instalados,
         )
@@ -268,9 +274,10 @@ impl Session {
         path: &Path,
         portas: [Option<crate::input::bindings::Aparelho>; crate::input::PORTAS],
         z_wheel: crate::config::ZWheel,
+        patches: bool,
         storage: &StoragePaths,
     ) -> Result<Self, StartError> {
-        Self::start_inner_with_storage(path, Some(portas), None, false, None, z_wheel, storage, &[])
+        Self::start_inner_with_storage(path, Some(portas), None, false, None, z_wheel, patches, storage, &[])
     }
 
     /// Variante software de [`Session::start_software_with_storage`] com a biblioteca conhecida.
@@ -279,6 +286,7 @@ impl Session {
         path: &Path,
         portas: [Option<crate::input::bindings::Aparelho>; crate::input::PORTAS],
         z_wheel: crate::config::ZWheel,
+        patches: bool,
         storage: &StoragePaths,
         instalados: &[(u32, String)],
     ) -> Result<Self, StartError> {
@@ -286,6 +294,7 @@ impl Session {
             path,
             portas,
             z_wheel,
+            patches,
             storage,
             instalados,
             crate::audio::MidiBackend::Auto,
@@ -298,6 +307,7 @@ impl Session {
         path: &Path,
         portas: [Option<crate::input::bindings::Aparelho>; crate::input::PORTAS],
         z_wheel: crate::config::ZWheel,
+        patches: bool,
         storage: &StoragePaths,
         instalados: &[(u32, String)],
         midi_policy: crate::audio::MidiBackend,
@@ -309,6 +319,7 @@ impl Session {
             false,
             None,
             z_wheel,
+            patches,
             storage,
             instalados,
             midi_policy,
@@ -324,6 +335,7 @@ impl Session {
         placa: bool,
         contexto: Option<std::sync::Arc<glow::Context>>,
         z_wheel: crate::config::ZWheel,
+        patches: bool,
         storage: &StoragePaths,
         instalados: &[(u32, String)],
         midi_policy: crate::audio::MidiBackend,
@@ -335,6 +347,7 @@ impl Session {
             placa,
             contexto,
             z_wheel,
+            patches,
             storage,
             instalados,
             midi_policy,
@@ -354,6 +367,7 @@ impl Session {
         placa: bool,
         contexto: Option<std::sync::Arc<glow::Context>>,
         z_wheel: crate::config::ZWheel,
+        patches: bool,
         instalados: &[(u32, String)],
     ) -> Result<Self, StartError> {
         let storage = StoragePaths::from_root(crate::config::config_dir());
@@ -376,7 +390,7 @@ impl Session {
                 ),
             }
         }
-        Self::start_inner_with_storage(path, portas, serial, placa, contexto, z_wheel, &storage, instalados)
+        Self::start_inner_with_storage(path, portas, serial, placa, contexto, z_wheel, patches, &storage, instalados)
     }
 
     fn start_inner_with_storage(
@@ -386,6 +400,7 @@ impl Session {
         placa: bool,
         contexto: Option<std::sync::Arc<glow::Context>>,
         z_wheel: crate::config::ZWheel,
+        patches: bool,
         storage: &StoragePaths,
         instalados: &[(u32, String)],
     ) -> Result<Self, StartError> {
@@ -396,6 +411,7 @@ impl Session {
             placa,
             contexto,
             z_wheel,
+            patches,
             storage,
             instalados,
             crate::audio::MidiBackend::Auto,
@@ -409,6 +425,7 @@ impl Session {
         placa: bool,
         contexto: Option<std::sync::Arc<glow::Context>>,
         z_wheel: crate::config::ZWheel,
+        patches: bool,
         storage: &StoragePaths,
         instalados: &[(u32, String)],
         midi_policy: crate::audio::MidiBackend,
@@ -441,7 +458,7 @@ impl Session {
         );
         // Os remendos de ritmo entram nos bytes lidos, antes da análise: o arquivo do
         // jogador não muda, e o que não confere não é remendado. Ver [`crate::patch`].
-        let bytes = crate::patch::aplica_para(library::applet_clsid(path), bytes);
+        let bytes = crate::patch::aplica_para(library::applet_clsid(path), bytes, patches);
         let image = ModImage::parse(bytes).map_err(|e| StartError::NotAModule(e.to_string()))?;
         let extensoes = extensoes_de(path);
         let module = loader::load_with(&image, &extensoes)
@@ -1565,6 +1582,7 @@ fn o_motor_desenha_no_framebuffer_do_frontend() {
         true,
         Some(gl.clone()),
         Default::default(),
+        true,
     )
     .expect("a sessão de placa abriu");
     session.machine_mut().desenha_no_fbo(Some(fbo.0.get()));
@@ -1709,6 +1727,7 @@ fn o_estado_da_placa_continua_o_mesmo_desenho() {
         true,
         Some(gl.clone()),
         Default::default(),
+        true,
     )
     .expect("a sessão de placa abriu");
     session.machine_mut().desenha_no_fbo(Some(fbo.0.get()));
@@ -1814,6 +1833,7 @@ fn os_dois_rasterizadores_desenham_o_mesmo_quadro() {
             placa,
             contexto,
             Default::default(),
+            true,
         )
         .ok()?;
         let base = session.clock_ms();
@@ -1930,6 +1950,7 @@ fn os_dois_rasterizadores_desenham_o_mesmo_quadro() {
             false,
             None,
             Default::default(),
+            true,
             &[],
         );
         assert!(matches!(err, Err(StartError::Unreadable(_))));
@@ -1942,7 +1963,7 @@ fn os_dois_rasterizadores_desenham_o_mesmo_quadro() {
         // legível, porque é ele que a interface mostra.
         let path = std::env::temp_dir().join("zeebx-teste-lixo.mod");
         std::fs::write(&path, b"isto nao e um modulo").unwrap();
-        let Err(err) = Session::start_inner(&path, None, None, false, None, Default::default(), &[])
+        let Err(err) = Session::start_inner(&path, None, None, false, None, Default::default(), true, &[])
         else {
             panic!("um arquivo de lixo não podia virar uma sessão");
         };

@@ -1575,7 +1575,7 @@ unsafe fn registra_opcoes_do_core() {
         // **Uma definição por porta**, e são duas porque o console tem duas (`input::PORTAS`).
         // Cada jogador liga a sua: quem joga de manche no Z-Pad 1 não obriga o dono do Z-Pad 2 a
         // jogar com o direcional virando eixo.
-        let definicoes: [RetroCoreOptionV2Definition; 20] = [
+            let definicoes: [RetroCoreOptionV2Definition; 21] = [
             RetroCoreOptionV2Definition {
                 key: c"zeebx_midi_backend".as_ptr(),
                 desc: c"Sintetizador MIDI (reinício)".as_ptr(),
@@ -1737,6 +1737,16 @@ unsafe fn registra_opcoes_do_core() {
                 default_value: c"desligado".as_ptr(),
             },
             RetroCoreOptionV2Definition {
+                key: c"zeebx_speedhacks".as_ptr(),
+                desc: c"Remendos de ritmo".as_ptr(),
+                desc_categorized: c"Remendos de ritmo".as_ptr(),
+                info: c"Aplica os remendos de ritmo da base ao carregar o jogo (hoje, a espera mínima do Resident Evil 4, de 10 ms para 1 ms). O arquivo do jogador não muda, e o que não confere não é remendado. Desligue para medir o módulo intacto. Vale na carga: recarregue o jogo.".as_ptr(),
+                info_categorized: c"Remendos de ritmo ao carregar. Desligue para medir intacto. Vale na carga.".as_ptr(),
+                category_key: c"sistema".as_ptr(),
+                values: lig_values,
+                default_value: c"enabled".as_ptr(),
+            },
+            RetroCoreOptionV2Definition {
                 key: c"zeebx_log".as_ptr(),
                 desc: c"Log do núcleo".as_ptr(),
                 desc_categorized: c"Log do núcleo".as_ptr(),
@@ -1802,7 +1812,7 @@ unsafe fn registra_opcoes_do_core() {
             "Banco SoundFont (reinício); {}",
             std::iter::once("auto".to_string()).chain(bancos).collect::<Vec<_>>().join("|")
         ));
-        let variaveis: [RetroVariable; 20] = [
+            let variaveis: [RetroVariable; 21] = [
             RetroVariable {
                 key: c"zeebx_midi_backend".as_ptr(),
                 value: c"Sintetizador MIDI (reinício); auto|timbres|soundfont".as_ptr(),
@@ -1866,6 +1876,10 @@ unsafe fn registra_opcoes_do_core() {
             RetroVariable {
                 key: c"zeebx_descarte_de_tiles".as_ptr(),
                 value: c"Descartar tiles (experimental); desligado|ligado".as_ptr(),
+            },
+            RetroVariable {
+                key: c"zeebx_speedhacks".as_ptr(),
+                value: c"Remendos de ritmo; enabled|disabled".as_ptr(),
             },
             RetroVariable {
                 key: c"zeebx_log".as_ptr(),
@@ -1978,6 +1992,16 @@ unsafe fn le_opcao(chave: &CStr) -> Option<String> {
 /// valor estragado não pode virar silêncio sem aviso — quem chama mantém o que já tinha.
 unsafe fn le_opcao_volume() -> Option<f32> {
     volume_de_texto(&unsafe { le_opcao(c"zeebx_volume") }?)
+}
+
+/// Se os remendos de ritmo entram ao carregar: a opção, ligada por padrão.
+///
+/// Ausência (frontend antigo sem a chave) é ligado: o comportamento de fábrica não muda por
+/// falta de opção.
+fn patches_ligados() -> bool {
+    unsafe { le_opcao(c"zeebx_speedhacks") }
+        .as_deref()
+        .is_none_or(|texto| texto.trim() != "disabled")
 }
 
 /// Lê um número inteiro de uma opção, preso à faixa que o motor aceita.
@@ -2628,6 +2652,7 @@ unsafe fn carrega(
         std::path::Path::new(caminho),
         portas,
         ZWheel::default(),
+        patches_ligados(),
         storage,
         &instalados,
         midi_backend,
@@ -2776,6 +2801,9 @@ fn troca_para(estado: &mut Core, caminho: &Path, aberto_pela_z_wheel: bool) -> R
     // o jogo voltando para ela. Sem isto a primeira troca devolveria o desenho ao processador, e o
     // sintoma seria "o render em hardware funciona até o primeiro jogo".
     let instalados = instalados_da_biblioteca(&estado.jogos);
+    // Os remendos entram na construção: lê a cada troca porque a Z-Wheel abre jogos sem
+    // recarregar o core, e a opção vale na carga de cada um.
+    let patches = patches_ligados();
     let mut session = match placa() {
         Some(contexto) => Session::start_with_storage_installed_policy(
             caminho,
@@ -2784,6 +2812,7 @@ fn troca_para(estado: &mut Core, caminho: &Path, aberto_pela_z_wheel: bool) -> R
             true,
             Some(contexto),
             ZWheel::default(),
+            patches,
             &estado.storage,
             &instalados,
             estado.midi_backend,
@@ -2792,6 +2821,7 @@ fn troca_para(estado: &mut Core, caminho: &Path, aberto_pela_z_wheel: bool) -> R
             caminho,
             estado.portas,
             ZWheel::default(),
+            patches,
             &estado.storage,
             &instalados,
             estado.midi_backend,
