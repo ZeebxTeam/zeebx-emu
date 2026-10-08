@@ -439,6 +439,9 @@ impl Session {
             "{} bytes lidos; analisando o módulo",
             bytes.len()
         );
+        // Os remendos de ritmo entram nos bytes lidos, antes da análise: o arquivo do
+        // jogador não muda, e o que não confere não é remendado. Ver [`crate::patch`].
+        let bytes = crate::patch::aplica_para(library::applet_clsid(path), bytes);
         let image = ModImage::parse(bytes).map_err(|e| StartError::NotAModule(e.to_string()))?;
         let extensoes = extensoes_de(path);
         let module = loader::load_with(&image, &extensoes)
