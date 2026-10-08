@@ -197,7 +197,7 @@ Medido: no Crash Nitro Kart, MSAA 4x suaviza visivelmente o contorno dos modelos
 em 640×480 o anisotrópico quase não muda a imagem (diferença média de 0,2 nível): as texturas dele
 vêm sem mipmaps, e sem cadeia o filtro tem pouco a fazer.
 
-## Por que não há "overclock" da CPU emulada
+## Por que não há "overclock" da CPU emulada — nem "underclock"
 
 O relógio virtual anda com as instruções executadas (528 por microssegundo, o ARM11 do console), e
 o desenho em GL não custa tempo virtual. Medido no Need for Speed, na corrida: ~60 quadros por
@@ -205,6 +205,15 @@ segundo virtual a 100% e a 200% de CPU — o jogo já bate no teto do retraço d
 deixava lento no aparelho era a GPU, que aqui não é emulada. Uma opção de CPU mais rápida foi
 experimentada e retirada por não mudar nada. O que limita a fluidez no emulador é o host conseguir
 manter a velocidade real (50 s virtuais em ~44 s reais no `sessao`, sem janela).
+
+O underclock (menos instruções por microssegundo, como o controle de clock dos cores de PS1)
+cai pelo mesmo motivo, na direção oposta: aqui não existe orçamento de ciclos por quadro — o jogo
+executa até apresentar, e o trabalho por quadro é determinado por ele. Cortar o divisor não corta
+trabalho do host; só recarimba o tempo. Jogo de quantum fixo não muda nada; jogo por delta de
+tempo dá passos maiores (mais rápido, não mais leve). E ainda quebraria dois contratos: os
+save-states guardam prazos absolutos (taxa nova os desloca) e o freio `Ahead`/`run_frame` passaria
+a dormir pelo motivo errado. O que alivia host fraco do lado da CPU continua sendo gastar menos
+por quadro (laço de espera pulado, JIT, chamadas) — nunca fingir um clock menor.
 
 ## Desempenho: o Quake em câmera lenta
 
