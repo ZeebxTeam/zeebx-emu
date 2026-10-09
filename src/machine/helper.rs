@@ -813,21 +813,33 @@ impl<C: CpuBackend> Machine<C> {
                 };
                 let text = cformat::format(&fmt, &mut source);
                 self.write_cstring_limited(a0, &text, limit)?;
-                text.len() as u32
+                bytes_latin1(&text)
             }
             // int snprintf(char *dst, int nSize, const char *fmt, ...)
+            //
+            // **O do BREW conta o terminador**, ao contrário do C99: devolve os bytes escritos no
+            // buffer com o zero, e com `dst` nulo o tamanho que o resultado precisaria, também
+            // com o zero. O Need For Speed monta a resposta das telas da carreira com
+            // `p += snprintf(p, n, "%s=", nome) - 1` e cada item com `"%d%c"` e o separador
+            // `0x7f`. Devolvendo o comprimento do C, cada vetor perdia o `=` e os separadores:
+            // `aCarNames=A\x7fB` chegava como `aCarNamesAB`, a tela de escolher carro abria com
+            // o nome em lixo e os atributos vazios, e a carreira não andava (issue #35).
             "snprintf" => {
                 let fmt = self.cpu.read_cstring(a2, MAX_STRING);
                 let text = self.format_from(3, &fmt);
                 self.write_cstring_limited(a0, &text, a1 as usize)?;
-                text.len() as u32
+                let com_o_zero = bytes_latin1(&text) + 1;
+                match a0 {
+                    0 => com_o_zero,
+                    _ => com_o_zero.min(a1),
+                }
             }
             // `sprintf(char *dst, const char *fmt, ...)`: os variádicos começam em `r2`.
             "sprintf" => {
                 let fmt = self.cpu.read_cstring(a1, MAX_STRING);
                 let text = self.format_from(2, &fmt);
                 self.write_cstring(a0, &text)?;
-                text.len() as u32
+                bytes_latin1(&text)
             }
             "dbgprintf" => {
                 let fmt = self.cpu.read_cstring(a0, MAX_STRING);
@@ -1011,6 +1023,16 @@ impl<C: CpuBackend> Machine<C> {
             ))
         })
     }
+}
+
+/// Quantos bytes o texto ocupa na memória do jogo, que é onde o `printf` conta.
+///
+/// O `String` do formatador guarda cada caractere acima de `0x7f` em dois bytes de UTF-8, e na
+/// memória ele volta a ser um byte só (ver [`crate::cpu::latin1_encode`]). O `len()` contava os
+/// de UTF-8: os textos do Need For Speed são UTF-8 dentro do Latin-1, e "ARMAZÉM" voltava dois
+/// bytes mais longo do que tinha sido escrito.
+fn bytes_latin1(texto: &str) -> u32 {
+    texto.chars().count() as u32
 }
 
 /// `MAKEPATH`: o diretório, uma barra só, e o arquivo.
