@@ -1602,6 +1602,10 @@ impl GpuState {
             gl.disable(glow::DEPTH_TEST);
             gl.disable(glow::CULL_FACE);
             gl.disable(glow::STENCIL_TEST);
+            // O espelho abaixo diz que a tesoura ficou desligada, e ela precisa ficar mesmo: com
+            // ela ligada no GL, o desenho seguinte sem tesoura não reenvia nada e sai recortado
+            // pelo retângulo do anterior. Era o Peggle na placa, sem fundo nenhum.
+            gl.disable(glow::SCISSOR_TEST);
             if !gl.version().is_embedded {
                 gl.disable(glow::DEPTH_CLAMP);
             }
@@ -2539,6 +2543,16 @@ impl Rasterizador for GpuState {
                     Ok(objeto) => objeto,
                     Err(_) => return,
                 };
+                // **Os parâmetros vêm de antes da imagem.** O jogo costuma ligar o nome, pedir
+                // filtro e repetição e só então mandar a imagem; até aqui a textura não existia
+                // na placa, e o `set_texture_parameter` só guardava no estado do software. Nascer
+                // com `GL_LINEAR` fixo jogava fora o `GL_NEAREST` que o Treino Cerebral pede, e o
+                // bilinear marcava a junta de cada peça dos botões. É o mesmo que a restauração
+                // de estado faz em `recria_texturas_restauradas`.
+                let (filtro, filtro_min, wrap, crop) = match self.estado.textures.get(&name) {
+                    Some(t) => (t.filter, t.min_filter, t.wrap, t.crop),
+                    None => (gles::GL_LINEAR, gles::GL_LINEAR, [gles::GL_REPEAT; 2], [0; 4]),
+                };
                 self.texturas.insert(
                     name,
                     Textura {
@@ -2546,10 +2560,10 @@ impl Rasterizador for GpuState {
                         largura: width,
                         altura: height,
                         maior_nivel: 0,
-                        crop: [0; 4],
-                        filtro: gles::GL_LINEAR,
-                        filtro_min: gles::GL_LINEAR,
-                        wrap: [gles::GL_REPEAT; 2],
+                        crop,
+                        filtro,
+                        filtro_min,
+                        wrap,
                     },
                 );
                 objeto
@@ -4029,6 +4043,69 @@ mod tests {
             referencia.read_rect(0, 0, largura, altura),
             "o segundo lote desenhou com o viewport, a tesoura ou a mistura que a janela deixou"
         );
+    }
+
+    /// **O filtro pedido antes da imagem vale para a textura que a imagem cria.**
+    ///
+    /// A ordem comum é gerar o nome, ligar, definir os parâmetros e só então mandar a imagem. A
+    /// placa só guardava os parâmetros de texturas que já existiam nela, e a textura nascia no
+    /// `upload_level` com `GL_LINEAR`: o Treino Cerebral pede `GL_NEAREST` para os botões e as
+    /// caixas, montados de peças lado a lado, e o bilinear puxava o vizinho do atlas para a
+    /// junta de cada peça — as linhas claras a cada poucos pixels.
+    #[test]
+    fn o_filtro_pedido_antes_da_imagem_vale_para_a_textura() {
+        let Some((mut gpu, _)) = par(4, 4) else {
+            return;
+        };
+        gpu.bind_texture(7);
+        gpu.set_texture_parameter(gles::GL_TEXTURE_MAG_FILTER, gles::GL_NEAREST);
+        gpu.set_texture_parameter(gles::GL_TEXTURE_MIN_FILTER, gles::GL_NEAREST);
+        gpu.set_texture_parameter(gles::GL_TEXTURE_WRAP_S, gles::GL_CLAMP_TO_EDGE);
+        gpu.upload_level(7, 0, 2, 2, vec![[255; 4]; 4]);
+
+        let t = &gpu.texturas[&7];
+        assert_eq!(t.filtro, gles::GL_NEAREST, "ampliação");
+        assert_eq!(t.filtro_min, gles::GL_NEAREST, "redução");
+        assert_eq!(t.wrap[0], gles::GL_CLAMP_TO_EDGE, "repetição em s");
+    }
+
+    /// **A tesoura que o jogo desliga sai do GL também, com o contexto emprestado.**
+    ///
+    /// O Peggle recorta quase todo desenho com `glScissor` e desliga a tesoura para o fundo. O
+    /// `devolve_o_contexto` dizia ao espelho que tinha deixado a tesoura desligada, sem desligá-la:
+    /// o fundo não reenviava nada e saía recortado pelo retângulo do último sprite. Na placa, o
+    /// menu e o cenário da fase não apareciam, e as telas anteriores ficavam por baixo.
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn a_tesoura_desligada_pelo_jogo_nao_recorta_o_lote_seguinte() {
+        let (largura, altura) = (16, 16);
+        let Some((contexto, gl)) = placa_emprestada() else {
+            return;
+        };
+        let Some(mut r) = estado_emprestado(largura, altura, &gl) else {
+            return;
+        };
+        let _ = &contexto;
+        primeiro_lote(&mut r, (largura, altura));
+
+        // Um sprite recortado num canto de 4×4, e o lote fecha: o contexto volta ao anfitrião.
+        r.set_capability(gles::GL_SCISSOR_TEST, true);
+        r.set_scissor(0, 0, 4, 4);
+        segundo_lote(&mut r);
+
+        // O fundo, sem tesoura, cobre a tela inteira.
+        r.set_capability(gles::GL_SCISSOR_TEST, false);
+        let azul = [0.0, 0.0, 1.0, 1.0];
+        triangulo(&mut r, azul, [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0)]);
+        triangulo(&mut r, azul, [(1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)]);
+        r.descarrega_o_desenho();
+
+        let fora_do_azul = r
+            .read_rect(0, 0, largura, altura)
+            .iter()
+            .filter(|p| **p != [0, 0, 255, 255])
+            .count();
+        assert_eq!(fora_do_azul, 0, "o fundo saiu recortado pela tesoura do sprite anterior");
     }
 
     #[cfg(feature = "gpu")]
