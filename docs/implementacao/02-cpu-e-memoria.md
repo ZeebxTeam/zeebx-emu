@@ -125,6 +125,20 @@ lá. A chamada nem sai da CPU.
 ponteiro que avança. A contabilidade fica toda no host — nenhum cabeçalho é escrito na memória do
 jogo.
 
+**Mas depois de cada bloco do `MALLOC` há pelo menos um byte, e ele é uma quebra de linha**
+(`FOLGA_DO_BLOCO`, em `machine/thread.rs`). O Um Jogo de Ovos lê cada cena num bloco do tamanho
+exato do arquivo, e o analisador dela, antes de medir um token, olha o byte seguinte ao fim do
+arquivo: se for zero, recusa o token. Com os blocos colados e o enchimento zerado, era zero, e a
+cena do chefe 1 saía com "Error loading cutscene" uma vez para cada um dos 747 caracteres do
+`b1i.cut`; a fase do chefe nunca começava. O tokenizador do jogo, rodado isolado sobre as onze
+cenas reais, recusa todas com zero ali e lê todas com qualquer outro byte.
+
+O valor não é indiferente. O Alpine Racer também lê além do fim de um buffer de texto, até o
+primeiro separador: com `0xaa` na folga, ele anexava dois `ª` a um campo; com quebra de linha (ou
+espaço), a sequência de chamadas dele é a mesma de quando ali havia zero. A quebra de linha ainda
+detém quem lê até o fim da linha. No aparelho o Ovos funciona, então ali esse byte não é zero; o
+formato do heap da Qualcomm não foi conferido.
+
 **O bloco devolvido se funde com os vizinhos livres, e isso não é refinamento.** Sem fundir, cada
 `FREE` vira um buraco isolado e a fragmentação aparece rápido numa sessão longa: o Treino Cerebral
 troca de tela centenas de vezes, nenhum dos pedaços volta a formar região grande, e o mega que a
