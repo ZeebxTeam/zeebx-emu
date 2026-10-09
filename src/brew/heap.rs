@@ -1,7 +1,9 @@
 //! Alocador do heap do guest.
 //!
 //! Serve o `MALLOC`/`FREE` do BREW. A contabilidade fica toda no host — nenhum cabeçalho é
-//! escrito na memória do guest — porque o jogo nunca inspeciona a estrutura interna do heap.
+//! escrito na memória do guest — porque o jogo nunca inspeciona a estrutura interna do heap. Ele
+//! lê, sim, além do fim do que pediu: por isso o `MALLOC` pede aqui um byte a mais e o preenche
+//! (`FOLGA_DO_BLOCO`, em `machine/thread.rs`).
 
 use std::collections::{BTreeMap, HashMap};
 
