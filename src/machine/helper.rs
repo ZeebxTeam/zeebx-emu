@@ -489,13 +489,34 @@ impl<C: CpuBackend> Machine<C> {
                 TRUE
             }
             // `boolean wstrtoutf8(const AECHAR *pszIn, int nLen, byte *pDest, int nSizeBytes)`
+            //
+            // **UTF-8 de verdade, e o zero só quando cabe.** O FIFA 09 tira a inicial do jogador
+            // convertendo um caractere para um buffer de um byte: reservando lugar para o zero,
+            // a inicial saía vazia, e o HUD não mostrava "K. Chafni" — só os de nome único, como
+            // "Chris". E isto escrevia pelo `write_cstring_limited`, que é Latin-1: o "ô" de
+            // "Chantôme" virava um byte solto. Um caractere que não cabe inteiro fica de fora,
+            // para não deixar meia sequência no fim.
             "wstrtoutf8" => {
                 let mut units = self.read_aechar_units(a0)?;
                 if (a1 as i32) >= 0 {
                     units.truncate(a1 as usize);
                 }
-                let text = String::from_utf16_lossy(&units);
-                self.write_cstring_limited(a2, &text, self.cpu.read_reg(Reg::R3) as usize)?;
+                let cabe = self.cpu.read_reg(Reg::R3) as usize;
+                let mut bytes = Vec::with_capacity(cabe);
+                for c in String::from_utf16_lossy(&units).chars() {
+                    let mut buffer = [0u8; 4];
+                    let utf8 = c.encode_utf8(&mut buffer).as_bytes();
+                    if bytes.len() + utf8.len() > cabe {
+                        break;
+                    }
+                    bytes.extend_from_slice(utf8);
+                }
+                if bytes.len() < cabe {
+                    bytes.push(0);
+                }
+                if a2 != 0 && !bytes.is_empty() {
+                    self.cpu.write_mem(a2, &bytes)?;
+                }
                 TRUE
             }
 
