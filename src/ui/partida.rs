@@ -28,6 +28,117 @@ pub fn caminho_da_serial(titulo: &str) -> PathBuf {
     crate::config::config_dir().join("relatorios").join(nome)
 }
 
+/// A pasta das sessões gravadas. Ver [`caminho_da_sessao`].
+pub fn pasta_de_sessoes() -> PathBuf {
+    crate::config::config_dir().join("session_logs")
+}
+
+/// Onde a sessão de `titulo` que começa em `inicio` é gravada: `aaaa-mm-dd_hh-mm-ss_nome.log`.
+///
+/// Um arquivo por execução, e não um por jogo como o [`Relatorio`]: o problema que este arquivo
+/// existe para pegar aparece depois de meia hora, e a execução seguinte não pode apagá-lo.
+pub fn caminho_da_sessao(titulo: &str, inicio: std::time::SystemTime) -> PathBuf {
+    let mut nome = String::new();
+    for letra in titulo.chars().flat_map(char::to_lowercase) {
+        match letra.is_alphanumeric() {
+            true => nome.push(letra),
+            false if !nome.is_empty() && !nome.ends_with('-') => nome.push('-'),
+            false => {}
+        }
+    }
+    let nome = match nome.trim_end_matches('-') {
+        "" => "zeebx",
+        nome => nome,
+    };
+    pasta_de_sessoes().join(format!(
+        "{}_{nome}.log",
+        crate::registro::carimbo_de_arquivo(inicio)
+    ))
+}
+
+/// De quanto em quanto tempo a sessão gravada registra a saúde do processo.
+///
+/// Dez segundos casam com o relatório da placa (300 quadros): numa sessão de meia hora são 180
+/// linhas, o bastante para ver uma curva subir sem afogar o resto.
+const INTERVALO_DA_SAUDE: Duration = Duration::from_secs(10);
+
+/// A gravação da sessão de uma partida. Ver [`crate::registro::grava_em`].
+struct Diario {
+    /// O número da gravação no registro.
+    numero: u64,
+    inicio: Instant,
+    proxima_saude: Instant,
+    /// A parada do jogo já foi registrada: ela continua valendo a cada volta, e uma linha basta.
+    parada_registrada: bool,
+    /// As chamadas de API na linha de saúde anterior, para a taxa da janela.
+    chamadas_antes: u64,
+    saude_antes: Instant,
+}
+
+/// A memória do processo inteiro em bytes: residente e comprometida (privada).
+///
+/// É o número que separa vazamento nosso — do emulador, do driver — de vazamento do jogo, que
+/// fica dentro do heap do guest e aparece no [`crate::brew::heap::Retrato`]. A residente sozinha
+/// engana, porque o sistema a encolhe quando falta memória; a comprometida só cresce se alguém
+/// pediu e não devolveu.
+fn memoria_do_processo() -> Option<(u64, u64)> {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        let status = std::fs::read_to_string("/proc/self/status").ok()?;
+        let campo = |nome: &str| {
+            status
+                .lines()
+                .find_map(|linha| linha.strip_prefix(nome))
+                .and_then(|resto| resto.split_whitespace().next()?.parse::<u64>().ok())
+                .map(|kb| kb * 1024)
+        };
+        Some((campo("VmRSS:")?, campo("VmData:")?))
+    }
+    #[cfg(windows)]
+    {
+        #[repr(C)]
+        #[derive(Default)]
+        struct ProcessMemoryCounters {
+            cb: u32,
+            page_fault_count: u32,
+            peak_working_set_size: usize,
+            working_set_size: usize,
+            quota_peak_paged_pool_usage: usize,
+            quota_paged_pool_usage: usize,
+            quota_peak_non_paged_pool_usage: usize,
+            quota_non_paged_pool_usage: usize,
+            pagefile_usage: usize,
+            peak_pagefile_usage: usize,
+        }
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn GetCurrentProcess() -> isize;
+            fn K32GetProcessMemoryInfo(
+                processo: isize,
+                contadores: *mut ProcessMemoryCounters,
+                tamanho: u32,
+            ) -> i32;
+        }
+        let mut contadores = ProcessMemoryCounters {
+            cb: std::mem::size_of::<ProcessMemoryCounters>() as u32,
+            ..Default::default()
+        };
+        // SAFETY: a estrutura é a `PROCESS_MEMORY_COUNTERS` do Windows, com o `cb` preenchido, e
+        // o pseudo-identificador do processo atual não precisa ser fechado.
+        let ok = unsafe {
+            K32GetProcessMemoryInfo(GetCurrentProcess(), &mut contadores, contadores.cb)
+        };
+        (ok != 0).then_some((
+            contadores.working_set_size as u64,
+            contadores.pagefile_usage as u64,
+        ))
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android", windows)))]
+    {
+        None
+    }
+}
+
 /// O relatório de uma execução, gravado sozinho num lugar fixo.
 ///
 /// Sem isto o único jeito de ver o relatório de um jogo que **não termina** — e a Z-Wheel não
@@ -99,6 +210,8 @@ pub struct Partida {
     /// Se o jogo foi aberto pela Z-Wheel. Quando ele sai sozinho, a Z-Wheel volta, como no
     /// console; aberto pela biblioteca, sair encerra.
     pub aberta_pela_z_wheel: bool,
+    /// A gravação da sessão em arquivo, quando a opção está ligada.
+    diario: Option<Diario>,
 }
 
 impl Partida {
@@ -112,9 +225,19 @@ impl Partida {
     pub fn abre(
         caminho: &Path,
         abertura: Abertura<'_>,
-        anterior: Option<&mut Partida>,
+        mut anterior: Option<&mut Partida>,
     ) -> Result<Self, StartError> {
         let settings = abertura.settings;
+        // A gravação começa antes da sessão: o que dá errado no carregamento é das coisas que
+        // mais se quer ver. A anterior fecha primeiro, com o relatório dela, senão o começo deste
+        // jogo cairia no arquivo do outro.
+        if let Some(anterior) = anterior.as_deref_mut() {
+            anterior.encerra_diario("a sessão terminou: outro jogo foi aberto");
+        }
+        let numero = match settings.debug.gravar_sessao {
+            true => comeca_diario(caminho, &abertura),
+            false => None,
+        };
         // O banco é aberto quando a máquina nasce: escolhido agora, vale para este jogo.
         crate::audio::soundfont::define_banco(settings.audio.soundfont.clone());
         crate::audio::soundfont::define_efeitos(settings.audio.midi_effects);
@@ -132,14 +255,39 @@ impl Partida {
                 .filter(|jogador| jogador.ligada)
                 .map(|jogador| jogador.aparelho)
         });
-        let mut sessao = Session::start_with(
+        let sessao = Session::start_with(
             caminho,
             portas,
             abertura.serial,
             settings.graphics.gpu_rasterizer,
             abertura.gl,
             settings.z_wheel,
-        )?;
+        );
+        let mut sessao = match sessao {
+            Ok(sessao) => sessao,
+            Err(erro) => {
+                if let Some(numero) = numero {
+                    crate::registro::escreve(
+                        crate::registro::Nivel::Erro,
+                        "sessao",
+                        &format!("o jogo não abriu: {erro}"),
+                    );
+                    crate::registro::para_de_gravar(numero, "sessão encerrada: o jogo não abriu");
+                }
+                return Err(erro);
+            }
+        };
+        if numero.is_some() {
+            crate::registro::escreve(
+                crate::registro::Nivel::Informacao,
+                "sessao",
+                &format!(
+                    "aberto: \"{}\", applet {:#010x}",
+                    crate::library::sem_impressao_digital(sessao.title()),
+                    sessao.classe()
+                ),
+            );
+        }
         sessao.define_resolucao_interna(settings.graphics.resolucao_interna as usize);
         sessao.define_proporcao(settings.graphics.proporcao.aspecto(16.0 / 9.0));
         sessao.define_melhorias(
@@ -167,7 +315,103 @@ impl Partida {
             ultimo_passo: Instant::now(),
             pausada: false,
             aberta_pela_z_wheel: false,
+            diario: numero.map(|numero| Diario {
+                numero,
+                inicio: Instant::now(),
+                proxima_saude: Instant::now() + INTERVALO_DA_SAUDE,
+                parada_registrada: false,
+                chamadas_antes: 0,
+                saude_antes: Instant::now(),
+            }),
         })
+    }
+
+    /// Fecha a gravação desta partida, com o relatório do emulador antes da última linha.
+    ///
+    /// O relatório vai no fim, e não aos poucos, porque é cumulativo: APIs que faltaram, acessos
+    /// inválidos, o log agrupado do jogo. O retrato no fechamento é o que tem tudo.
+    fn encerra_diario(&mut self, motivo: &str) {
+        let Some(diario) = self.diario.take() else {
+            return;
+        };
+        let relatorio = self.sessao.log();
+        if !relatorio.is_empty() {
+            crate::registro::grava_bloco(
+                diario.numero,
+                &format!(
+                    "\n——— relatório do emulador no fim da sessão ———\n{}\n———\n\n",
+                    relatorio.join("\n")
+                ),
+            );
+        }
+        let minutos = diario.inicio.elapsed().as_secs_f64() / 60.0;
+        crate::registro::para_de_gravar(
+            diario.numero,
+            &format!("{motivo}, depois de {minutos:.1} min"),
+        );
+    }
+
+    /// A linha de saúde da sessão gravada, e a parada do jogo quando ela acontece.
+    fn acompanha_diario(&mut self) {
+        let Some(diario) = self.diario.as_mut() else {
+            return;
+        };
+        if !diario.parada_registrada {
+            if let Some(motivo) = self.sessao.stopped_reason() {
+                diario.parada_registrada = true;
+                crate::registro::escreve(
+                    crate::registro::Nivel::Erro,
+                    "sessao",
+                    &format!("o jogo parou: {motivo}"),
+                );
+            }
+        }
+        let agora = Instant::now();
+        if agora < diario.proxima_saude {
+            return;
+        }
+        diario.proxima_saude = agora + INTERVALO_DA_SAUDE;
+        // Por segundo real, como as outras taxas da linha. O total vai junto porque foi ele, e
+        // não a taxa, que esbarrava no teto antigo de 200 milhões (issue #70).
+        let chamadas = self.sessao.api_calls();
+        let janela = (agora - diario.saude_antes).as_secs_f64().max(0.001);
+        let chamadas_por_segundo =
+            chamadas.saturating_sub(diario.chamadas_antes) as f64 / janela;
+        diario.chamadas_antes = chamadas;
+        diario.saude_antes = agora;
+        let amostra = self.sessao.sample();
+        let heap = self.sessao.heap_retrato();
+        let (_, objetos) = self.sessao.memory();
+        let mb = |bytes: u64| bytes as f64 / (1024.0 * 1024.0);
+        let processo = match memoria_do_processo() {
+            Some((residente, comprometida)) => format!(
+                "processo {:.1} MB residentes e {:.1} MB comprometidos",
+                mb(residente),
+                mb(comprometida)
+            ),
+            None => "memória do processo indisponível neste sistema".to_string(),
+        };
+        crate::registro::escreve(
+            crate::registro::Nivel::Informacao,
+            "saude",
+            &format!(
+                "{} min de sessão, {:.1} s no relógio do jogo; velocidade {}%, {} quadros/s, \
+                 {:.1} M instruções/s, {:.0} mil chamadas de API/s ({:.1} M no total); \
+                 {processo}; heap do jogo {:.1} de {:.1} MB em {} blocos, \
+                 maior buraco {:.1} MB; {objetos} objetos BREW vivos",
+                diario.inicio.elapsed().as_secs() / 60,
+                f64::from(self.sessao.clock_ms()) / 1000.0,
+                amostra.speed,
+                amostra.fps,
+                amostra.ips as f64 / 1e6,
+                chamadas_por_segundo / 1e3,
+                chamadas as f64 / 1e6,
+                mb(u64::from(heap.usado)),
+                mb(u64::from(heap.teto)),
+                heap.vivos,
+                mb(u64::from(heap.maior_buraco)),
+            ),
+        );
     }
 
     /// Onde o relatório desta execução é gravado sozinho. Ver [`Relatorio`].
@@ -264,6 +508,7 @@ impl Partida {
             self.sessao.retoma_o_contexto();
             let _ = self.sessao.step(fatia, limite_de_velocidade);
         }
+        self.acompanha_diario();
     }
 
     /// O ClassID que o jogo pediu para lançar, se pediu. Consome o pedido.
@@ -287,6 +532,71 @@ impl Partida {
         match self.sessao.classe() == Z_WHEEL || self.aberta_pela_z_wheel {
             true => Saida::ReabreZWheel,
             false => Saida::Fecha,
+        }
+    }
+}
+
+impl Drop for Partida {
+    fn drop(&mut self) {
+        self.encerra_diario("sessão encerrada normalmente");
+    }
+}
+
+/// Abre o arquivo da sessão com o cabeçalho. `None` quando não deu: a gravação é instrumento, e
+/// não abrir o arquivo não é motivo para não abrir o jogo.
+fn comeca_diario(caminho: &Path, abertura: &Abertura<'_>) -> Option<u64> {
+    let settings = abertura.settings;
+    let inicio = std::time::SystemTime::now();
+    let titulo = crate::library::sem_impressao_digital(&crate::library::title_for(caminho));
+    let destino = caminho_da_sessao(&titulo, inicio);
+    let id = crate::library::id_do_modulo(caminho).unwrap_or_else(|| "?".to_string());
+    let applet = match crate::library::applet_clsid(caminho) {
+        Some(classe) => format!("{classe:#010x}"),
+        None => "na primeira linha depois de abrir".to_string(),
+    };
+    let graficos = &settings.graphics;
+    let rasterizador = match (graficos.gpu_rasterizer, abertura.gl.is_some()) {
+        (true, true) => "placa",
+        (true, false) => "placa pedida, mas sem contexto de GL: software",
+        (false, _) => "software",
+    };
+    let cabecalho = format!(
+        "Zeebx — registro da sessão\n\
+         Jogo:          {titulo}\n\
+         ID:            módulo {id}, applet {applet}\n\
+         Pacote:        {}\n\
+         Início:        {}\n\
+         Emulador:      Zeebx {} ({}/{})\n\
+         Vídeo:         rasterizador {rasterizador}, resolução interna {}x, antialias {}x, \
+         anisotrópico {}x\n\
+         Áudio:         {}, volume {}\n\
+         Registro:      deste arquivo, de INFO para cima; da janela de log, de {} para cima\n\
+         Saúde:         uma linha `saude:` a cada {} s, e `placa:` a cada 300 quadros\n\
+         Encerramento:  a última linha diz como a sessão terminou. Sem ela, o processo morreu\n\
+         \x20              sem aviso: crash nativo, fechado à força ou queda de energia.\n\
+         {}\n",
+        caminho.display(),
+        crate::registro::carimbo(inicio),
+        env!("CARGO_PKG_VERSION"),
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        graficos.resolucao_interna,
+        graficos.antialias,
+        graficos.anisotropico,
+        match settings.audio.enabled {
+            true => "ligado",
+            false => "desligado",
+        },
+        settings.audio.volume,
+        settings.debug.nivel_de_log,
+        INTERVALO_DA_SAUDE.as_secs(),
+        "=".repeat(96),
+    );
+    match crate::registro::grava_em(&destino, &cabecalho) {
+        Ok(numero) => Some(numero),
+        Err(erro) => {
+            eprintln!("não deu para gravar a sessão em {}: {erro}", destino.display());
+            None
         }
     }
 }

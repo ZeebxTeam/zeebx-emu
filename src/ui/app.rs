@@ -1574,6 +1574,20 @@ impl App {
             .checkbox(&mut debug.log, self.catalog.get("debug.log"))
             .changed();
         ui.weak(self.catalog.get("debug.log.hint"));
+        ui.add_space(8.0);
+        changed |= ui
+            .checkbox(&mut debug.gravar_sessao, self.catalog.get("debug.gravar_sessao"))
+            .changed();
+        ui.weak(self.catalog.get("debug.gravar_sessao.hint"));
+        if ui.button(self.catalog.get("debug.gravar_sessao.open")).clicked() {
+            let pasta = crate::ui::partida::pasta_de_sessoes();
+            if let Err(erro) = std::fs::create_dir_all(&pasta) {
+                eprintln!("não deu para criar {}: {erro}", pasta.display());
+            }
+            ui.ctx().open_url(egui::OpenUrl::new_tab(
+                crate::ui::screenshot::endereco_de(&pasta),
+            ));
+        }
         changed
     }
 

@@ -316,9 +316,18 @@ pub fn title_for(mod_path: &Path) -> String {
 /// O nome de uma pasta de extração sem a impressão digital do pacote.
 ///
 /// `Zeebo-Extreme-Boia-Cross-21503726-1788761080` vira `Zeebo Extreme Boia Cross`: os dois
-/// números do fim são tamanho e data do `.zip`, e os hífens tomaram o lugar dos espaços.
+/// números do fim são tamanho e data do `.zip`, e os hífens tomaram o lugar dos espaços. A chave
+/// de hoje é o digest BLAKE3 do conteúdo, 64 dígitos hexadecimais
+/// (`Crash-Bandicoot-Nitro-Kart-3D-0c9aef…`), e sai do mesmo jeito.
 pub fn sem_impressao_digital(nome: &str) -> String {
     let mut partes: Vec<&str> = nome.split('-').collect();
+    if partes.len() > 1
+        && partes
+            .last()
+            .is_some_and(|p| p.len() == 64 && p.bytes().all(|b| b.is_ascii_hexdigit()))
+    {
+        partes.pop();
+    }
     for _ in 0..2 {
         if partes.len() > 1 && partes.last().is_some_and(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())) {
             partes.pop();
@@ -509,6 +518,21 @@ mod tests {
         assert!(casa_com_a_busca("Tênis", "   "));
     }
     use super::*;
+
+    #[test]
+    fn o_digest_do_cache_sai_do_titulo() {
+        let digest = "0c9aef377a62f6211acb6e1dd1d79ce97c39d5fa2a3db82d36fcf25de2f2222f";
+        assert_eq!(
+            sem_impressao_digital(&format!("Crash-Bandicoot-Nitro-Kart-3D-{digest}")),
+            "Crash Bandicoot Nitro Kart 3D"
+        );
+        assert_eq!(
+            sem_impressao_digital("Zeebo-Extreme-Boia-Cross-21503726-1788761080"),
+            "Zeebo Extreme Boia Cross"
+        );
+        // Um nome que é só o digest continua sendo o que há.
+        assert_eq!(sem_impressao_digital(digest), digest);
+    }
 
     /// Monta uma árvore de arquivos vazios e devolve a raiz.
     fn tree(name: &str, files: &[&str]) -> PathBuf {

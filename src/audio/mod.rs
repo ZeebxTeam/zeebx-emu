@@ -650,8 +650,10 @@ impl Output {
                 device.build_output_stream(
                     &stream_config,
                     move |out: &mut [f32], _| {
-                        // A placa pediu: conta os quadros e, uma vez por segundo, diz que continua
-                        // viva. Ver [`PLACA_QUADROS`].
+                        // A placa pediu: conta os quadros e, a cada dez segundos, diz que continua
+                        // viva. Ver [`PLACA_QUADROS`]. Era uma vez por segundo, e numa sessão
+                        // gravada de 7 min isso deu 438 das 544 linhas do arquivo; dez segundos
+                        // ainda mostram quando o fluxo para, e casam com a linha `saude:`.
                         {
                             use std::sync::atomic::Ordering;
                             let quadros = (out.len() / channels.max(1)) as u64;
@@ -659,7 +661,7 @@ impl Output {
                                 PLACA_QUADROS.fetch_add(quadros, Ordering::Relaxed) + quadros;
                             let inicio = *PLACA_RELOGIO.get_or_init(std::time::Instant::now);
                             let agora = inicio.elapsed().as_millis() as u64;
-                            if agora >= PLACA_ULTIMO_MS.load(Ordering::Relaxed) + 1_000 {
+                            if agora >= PLACA_ULTIMO_MS.load(Ordering::Relaxed) + 10_000 {
                                 PLACA_ULTIMO_MS.store(agora, Ordering::Relaxed);
                                 crate::registro!(
                                     crate::registro::Nivel::Informacao,

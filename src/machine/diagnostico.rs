@@ -434,4 +434,9 @@ impl<C: CpuBackend> Machine<C> {
     pub fn live_objects(&self) -> usize {
         self.objects.live_count()
     }
+
+    /// Chamadas de API atendidas desde que o jogo abriu.
+    pub fn api_calls(&self) -> u64 {
+        self.calls_total
+    }
 }

@@ -99,6 +99,9 @@ pub struct DebugView {
     pub timeline: bool,
     /// A janela separada com o log da execução.
     pub log: bool,
+    /// Grava cada execução num arquivo próprio, com carimbo de hora em cada linha. Ver
+    /// [`crate::ui::partida::caminho_da_sessao`].
+    pub gravar_sessao: bool,
     /// Até que nível o **núcleo** registra: `aviso` (padrão), `informacao`, `depuracao`,
     /// `erro`, `fatal` ou `desligado`. Ver [`crate::registro`].
     ///
@@ -117,6 +120,7 @@ impl Default for DebugView {
             memory: true,
             timeline: true,
             log: false,
+            gravar_sessao: false,
             nivel_de_log: "aviso".to_string(),
         }
     }

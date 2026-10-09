@@ -1729,7 +1729,7 @@ fn describe_outcome(outcome: &Outcome) {
         Outcome::Exception { pc } => println!("exceção do núcleo ARM em pc {pc:#010x}"),
         Outcome::Budget => println!("orçamento de instruções esgotado"),
         Outcome::CallLimit { calls } => {
-            println!("teto de {calls} chamadas de API atingido — provável laço de repetição")
+            println!("{calls} chamadas de API sem devolver a vez — provável laço de repetição")
         }
     }
 }

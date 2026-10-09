@@ -1038,6 +1038,17 @@ ApplicationWindow {
                     rotulo: "debug.log"
                     dica: "debug.log.hint"
                 }
+                Opcao {
+                    Layout.topMargin: 8
+                    chave: "debug.gravar_sessao"
+                    rotulo: "debug.gravar_sessao"
+                    dica: "debug.gravar_sessao.hint"
+                }
+                Button {
+                    Layout.leftMargin: 24
+                    text: janela.tr("debug.gravar_sessao.open")
+                    onClicked: Qt.openUrlExternally(cfg.enderecoDaPastaDeSessoes())
+                }
             }
         }
 
