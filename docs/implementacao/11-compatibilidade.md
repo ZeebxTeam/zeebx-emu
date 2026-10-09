@@ -373,6 +373,60 @@ For Speed. Enquanto o perfil só existia no laço, "orçamento esgotado" não ti
 Ainda em aberto: o vídeo de abertura sai com triângulos pretos e rasgados, e falta uma referência
 do console para saber o que é esperado ali.
 
+**Da corrida à carreira: o `snprintf` do BREW conta o terminador — corrigido (issue #35).** Depois
+das corridas de introdução, a tela de escolher carro abria com o nome em lixo, as barras de
+velocidade, aceleração e manejo vazias e o carro sem textura, e não havia como seguir. As telas da
+carreira são Flash (o Apt da EA) e pedem os dados ao jogo por `LoadVariables`; o jogo responde
+com uma string `nome=valor&...`, e cada vetor com os itens separados por `0x7f`. Ele monta essa
+string assim:
+
+```
+p += snprintf(p, n, "%s=", "aCarNames") - 1;   // e cada item com "%d%c" ou "%s%c", 0x7f
+```
+
+O `- 1` só fecha se o `snprintf` contar o terminador, e o do BREW conta: devolve os bytes escritos
+com o zero, e com o buffer nulo o tamanho necessário, também com o zero. O nosso devolvia o
+comprimento do C99, e cada item caía em cima do `=` e do separador anterior. O que chegava à
+tela era `aTerritoryNamesPEDREIRA...` e `aTerritoryIDs0123456789101112...`: nenhum vetor com o
+nome certo, e os números colados num só. É também por isso que o relatório pedia `large_portrait_.big` e
+`spline_-1.big`, e a seleção de evento pedia `Career.GetEvents?iTerritoryID=` vazio.
+
+A semântica do BREW veio do resumo da página do `SNPRINTF` na referência do Brew MP 1.0.2, que não
+está mais no ar; a prova é o jogo: com a correção, os vetores chegam inteiros e as telas de
+escolher carro, carro da gangue, mapa e eventos abrem preenchidas. O `vsnprintf` ficou como
+estava: é da mesma família na referência, mas nenhum jogo medido mostrou o que ele espera.
+
+Vieram junto dois defeitos do mesmo formatador:
+
+- **Os `printf` contavam bytes de UTF-8.** O texto do jogo é UTF-8 lido como Latin-1 (herança do
+  PSP), e o `String` do formatador guarda cada byte acima de `0x7f` em dois. "ARMAZÉM" voltava
+  dois bytes mais longo do que tinha sido escrito. Agora contam os bytes da memória do jogo.
+- **O `%S` não existia.** É a string de `AECHAR` no `SPRINTF`. Ele saía como veio e não consumia
+  argumento, e o `%d` seguinte imprimia o ponteiro: o mapa dizia "vença 286973016 corridas na
+  região %S".
+
+O caminho de achar isso também fica registrado. Sem save e sem piloto, chegar à tela custava
+vencer a primeira corrida. O `config.ini` de depuração que a EA deixou no pacote
+(`mod/nfsresources/config.ini`) aceita `TutorialCompleted=True`, que pula o prólogo e leva à
+carreira em trinta segundos, já com o mesmo defeito. E o log do próprio jogo — `AptTrace`, `<< AIP
+>>`, `No LV handler found` — sai pelo `vsprintf`, e não pelo `dbgprintf`: para lê-lo é preciso
+olhar o que o `vsprintf` escreve.
+
+### Um Jogo de Ovos: o chefe 1 não começava — corrigido
+
+Terminada a fase 1-5, o jogo carrega a cena de entrada do chefe (`res/cutscenes/b1i.cut`, dentro
+do `data.pap`) e para ali. Quem diz por quê é o próprio jogo: ele grava um `app.log` no diretório
+de save, e lá estavam 747 linhas de `[Error] Error loading cutscene` no mesmo milissegundo.
+
+Os arquivos da cena existem todos, e o texto dela está bem formado. O defeito é um byte que o jogo
+lê fora do que alocou: ele carrega a cena com `MALLOC(tamanho)` exato, e o analisador
+(`0x5337c` no arquivo) olha o byte seguinte ao fim antes de medir cada token. Com zero ali, recusa
+o token, e o laço que o chama (`0x5392c`) imprime o erro e anda um caractere. O nosso heap entregava
+zero nesse byte. A correção e a medida estão no [02](02-cpu-e-memoria.md#heap-e-objetos).
+
+Para achar a função, a base do módulo é `-0x9c`: as strings do `game.mod` são referenciadas como
+`deslocamento no arquivo - 0x9c`, e não há ponteiro absoluto para elas.
+
 ### Crash Nitro Kart: o cenário que surgia de perto era a viewport — corrigido
 
 O relato era de distância de desenho: um vazio à frente até o kart atravessar, e então o trecho
