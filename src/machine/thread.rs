@@ -2,6 +2,21 @@
 
 use super::*;
 
+/// O que fica nos bytes entre o fim do que o jogo pediu ao `MALLOC` e o próximo bloco.
+///
+/// Todo bloco ganha pelo menos um desses bytes. O Um Jogo de Ovos carrega cada cena com
+/// `MALLOC(tamanho)` exato e o analisador dela lê o byte **depois** do fim: se for zero, recusa
+/// todo token, imprime "Error loading cutscene" uma vez por caractere e a fase do chefe não
+/// começa. No aparelho esse byte não é zero — o jogo saiu assim —, e no nosso heap, com os
+/// blocos colados e o enchimento zerado, era.
+///
+/// **Por que quebra de linha, e não um padrão qualquer.** O Alpine Racer também lê além do fim
+/// de um buffer de texto, mas o dele para no primeiro separador: com `0xaa`, ele anexava dois
+/// `ª` a um campo antes de parar. Com `\n` (e com espaço), a sequência de chamadas dele nos
+/// primeiros sete segundos é a mesma de quando ali havia zero. Entre os dois, a quebra de linha
+/// também detém quem lê até o fim da linha. O formato do heap do aparelho não foi conferido.
+pub(super) const FOLGA_DO_BLOCO: u8 = b'\n';
+
 impl<C: CpuBackend> Machine<C> {
     /// `IThread` (`AEECLSID_THREAD` = `0x01001017`), de `sdk/inc/AEEThread.h`.
     ///
@@ -327,7 +342,8 @@ impl<C: CpuBackend> Machine<C> {
     pub(super) fn malloc(&mut self, size: u32) -> Result<u32, CpuError> {
         let zero = size & ALLOC_NO_ZMEM == 0;
         let size = size & !ALLOC_NO_ZMEM;
-        let Some(addr) = self.heap.alloc(size) else {
+        // Um byte a mais, que vira a folga depois do bloco: ver `FOLGA_DO_BLOCO`.
+        let Some(addr) = self.heap.alloc(size.saturating_add(1)) else {
             // Registrado: uma recusa silenciosa vira "o jogo não funciona" sem pista nenhuma no
             // relatório. `lr` diz quem pediu.
             self.alocacoes_recusadas
@@ -338,6 +354,9 @@ impl<C: CpuBackend> Machine<C> {
         if zero && size > 0 {
             self.cpu.write_mem(addr, &vec![0u8; size as usize])?;
         }
+        let bloco = self.heap.size_of(addr).unwrap_or(size);
+        self.cpu
+            .write_mem(addr + size, &vec![FOLGA_DO_BLOCO; (bloco - size) as usize])?;
         Ok(addr)
     }
 
