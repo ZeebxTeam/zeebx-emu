@@ -427,6 +427,36 @@ zero nesse byte. A correção e a medida estão no [02](02-cpu-e-memoria.md#heap
 Para achar a função, a base do módulo é `-0x9c`: as strings do `game.mod` são referenciadas como
 `deslocamento no arquivo - 0x9c`, e não há ponteiro absoluto para elas.
 
+### Peggle e Treino Cerebral na placa: a tesoura que ficava ligada — corrigido (issue #10)
+
+No Peggle, com o 3D na placa, as telas não se apagavam: o menu e o "PLAY" continuavam visíveis
+durante a fase, e o fundo da fase nunca aparecia. No software, tudo certo. O Peggle recorta quase
+todo desenho com `glScissor` e desliga a tesoura para os fundos. Com o contexto emprestado da
+janela, o `devolve_o_contexto` roda a cada lote, registra no espelho de estado que a tesoura ficou
+desligada e **não a desligava** no GL. O fundo, sem tesoura, não reenviava nada, e saía recortado
+pelo retângulo do último sprite. Medido sem janela, com o contexto fora de tela: forçar a tesoura
+a ser reaplicada a cada lote já punha o fundo de volta.
+
+O Treino Cerebral perdia peças pelo mesmo caminho, nos trechos que usam tesoura: a doutora na tela
+de regras, o "TREINO" do logotipo e a fileira de bolas de seleção no minijogo "Bolas".
+
+### Treino Cerebral na placa: as linhas a cada poucos pixels — corrigido (issue #10)
+
+Os botões e os balões do Treino são montados de peças estreitas lado a lado, e na placa cada junta
+saía como uma linha clara, em 1x e em 3x. O jogo pede `GL_NEAREST` para essas texturas, mas pede
+**antes** de mandar a imagem, e a placa só guardava parâmetros de texturas que já existiam nela:
+a textura nascia no `upload_level` com `GL_LINEAR`, e o bilinear puxava para a junta o vizinho do
+atlas. Forçar `CLAMP_TO_EDGE` não mudava nada; forçar `GL_NEAREST` limpava as linhas. Agora a
+textura nasce com o filtro, a repetição e o recorte que o estado do software já guardava.
+
+### FIFA 09: o nome do jogador sumia do HUD — corrigido (issue #12)
+
+O HUD mostra "inicial. sobrenome". O jogo tira a inicial convertendo **um** caractere para um
+buffer de **um** byte com `wstrtoutf8`, e o nosso reservava lugar para o terminador: a inicial
+saía vazia e o nome não aparecia. Só os jogadores de nome único, como "Chris", apareciam. A função
+também escrevia em Latin-1, e não em UTF-8: o "ô" de "Chantôme" virava um byte solto. Agora ela
+escreve UTF-8, um caractere só entra se couber inteiro, e o zero só vai quando sobra lugar.
+
 ### Crash Nitro Kart: o cenário que surgia de perto era a viewport — corrigido
 
 O relato era de distância de desenho: um vazio à frente até o kart atravessar, e então o trecho
