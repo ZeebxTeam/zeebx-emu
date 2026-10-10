@@ -17,6 +17,7 @@ pub mod save_state;
 pub mod session;
 pub mod storage;
 pub mod ui;
+pub mod velocidade;
 pub mod video;
 
 /// O `eframe` que o núcleo usa, reexportado para quem monta a janela.
