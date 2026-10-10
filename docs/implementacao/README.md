@@ -33,6 +33,7 @@ função não está aqui.
 | [20-boomerang-e-wii-remote.md](20-boomerang-e-wii-remote.md) | O controle de movimento: o relatório do receptor lido no código dos jogos, e o Wii Remote no lugar dele |
 | [21-migracao-para-qt.md](21-migracao-para-qt.md) | Plano da troca do egui por Qt Quick com cxx-qt, e o que o núcleo empresta da janela |
 | [22-screenshots.md](22-screenshots.md) | O F9 da janela do jogo: que quadro sai, em que tamanho, onde grava, e a régua do RetroAchievements |
+| [24-velocidade.md](24-velocidade.md) | Limite de quadros, frameskip, fast-forward, turbo e rewind: o ritmo do jogo contra o relógio do mundo |
 
 ## Como medir
 
