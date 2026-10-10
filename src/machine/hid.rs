@@ -372,6 +372,13 @@ impl<C: CpuBackend> Machine<C> {
         self.set_port_pad(0, pad);
     }
 
+    /// O controle que o jogo vê agora numa porta. Só para os testes da sessão, que precisam ver
+    /// o turbo por cima do controle cru.
+    #[cfg(test)]
+    pub(crate) fn pad_da_porta(&self, porta: usize) -> Pad {
+        self.pads[porta]
+    }
+
     /// O mesmo, para uma porta escolhida.
     pub fn set_port_pad(&mut self, porta: usize, pad: Pad) {
         if porta >= input::PORTAS || pad == self.pads[porta] {
