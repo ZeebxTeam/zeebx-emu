@@ -1347,6 +1347,9 @@ struct OpenFile {
     /// Onde o arquivo aberto mora no host. Nem sempre é o que o `guest_path` resolve: a
     /// `tectoy.cfg` sem fim de vida é uma cópia no perfil do aparelho.
     caminho: std::path::PathBuf,
+    /// Se foi aberto para escrita. É o que impede o rewind de marcar um ponto no meio de uma
+    /// gravação: ver [`Machine::tem_arquivo_para_escrita`].
+    escrita: bool,
 }
 
 /// Um callback do guest: a função e o contexto que ela recebe.
