@@ -13,6 +13,10 @@ use std::time::{Duration, Instant};
 use crate::input::{self, Pad, PORTAS};
 use crate::session::{FATIA_MAXIMA, Session, StartError, Z_WHEEL};
 use crate::ui::settings::{Scaling, Settings};
+use crate::input::bindings::Controls;
+use crate::velocidade::rewind::{AjustesDoRewind, ControleDoRewind, Leitura};
+use crate::velocidade::turbo::TurboDaPorta;
+use crate::velocidade::{Avanco, Interruptor, ModoDoAtalho, Ritmo};
 
 /// De quanto em quanto tempo o relatório é regravado. Dois segundos é frequente o bastante para
 /// acompanhar uma execução e raro o bastante para não pesar.
@@ -212,6 +216,22 @@ pub struct Partida {
     pub aberta_pela_z_wheel: bool,
     /// A gravação da sessão em arquivo, quando a opção está ligada.
     diario: Option<Diario>,
+    /// O atalho do fast-forward, que se segura ou se alterna. Ver [`Partida::le_o_avanco`].
+    avanco: Interruptor,
+    /// Se o fast-forward valeu na última volta.
+    avancando: bool,
+    /// O turbo de cada porta: o estado do modo de alternar. Ver [`crate::velocidade::turbo`].
+    turbos: [TurboDaPorta; PORTAS],
+    /// Os pontos de retorno e o atalho do rewind. Ver [`Partida::le_o_rewind`].
+    rewind: ControleDoRewind,
+}
+
+/// O que o turbo precisa saber numa volta: a tecla de turbo de cada porta, o mapeamento de onde
+/// saem o modo e o botão padrão de cada jogador, e o ritmo.
+pub struct TurboDaVolta<'a> {
+    pub apertado: [bool; PORTAS],
+    pub controles: &'a Controls,
+    pub toques_por_segundo: u8,
 }
 
 impl Partida {
@@ -299,6 +319,9 @@ impl Partida {
             sessao.herda_tela(&tela);
         }
         sessao.set_installed_applets(abertura.instalados);
+        // A janela transforma o controle em tecla BREW (ver [`Partida::avanca`]): o turbo tem de
+        // pulsar a tecla também.
+        sessao.turbo_nas_teclas(true);
         // Ligar o som aqui é seguro **porque o jogo ainda não começou**: o `start` só prepara, e
         // o `EVT_APP_START` sai na primeira volta do laço. Antes disso o jogo já tocava dentro do
         // `start`, e o som saía com a tela vazia. Sem a feature `audio` — o core Libretro, que
@@ -315,6 +338,10 @@ impl Partida {
             ultimo_passo: Instant::now(),
             pausada: false,
             aberta_pela_z_wheel: false,
+            avanco: Interruptor::default(),
+            avancando: false,
+            turbos: Default::default(),
+            rewind: ControleDoRewind::default(),
             diario: numero.map(|numero| Diario {
                 numero,
                 inicio: Instant::now(),
@@ -440,6 +467,55 @@ impl Partida {
         self.teclas_entregues.clear();
         self.teclas_pendentes.clear();
         self.pausada = false;
+        self.avanco.desliga();
+        self.avancando = false;
+        for turbo in &mut self.turbos {
+            turbo.desliga();
+        }
+        self.rewind.solta();
+    }
+
+    /// Lê o atalho do rewind desta volta. Vem **antes** do [`Partida::le_o_avanco`] e do
+    /// [`Partida::avanca`]: voltando, o jogo não anda e o fast-forward fica suspenso. Ver
+    /// [`ControleDoRewind::le`].
+    pub fn le_o_rewind(&mut self, apertado: bool, ajustes: &AjustesDoRewind) {
+        let leitura = self.rewind.le(&mut self.sessao, apertado, self.pausada, ajustes);
+        if leitura == Leitura::Soltou {
+            self.reinicia_relogio();
+        }
+    }
+
+    /// O que a janela escreve por cima do jogo enquanto ele volta: `Some(true)` quando não há mais
+    /// ponto nenhum.
+    pub fn indicador_do_rewind(&self) -> Option<bool> {
+        self.rewind.indicador()
+    }
+
+    /// Esquece os pontos de retorno: um save state carregado é outra linha do tempo.
+    pub fn esquece_os_pontos(&mut self) {
+        self.rewind.esquece_os_pontos();
+    }
+
+    /// Se algum jogador está com o turbo de alternar ligado: a janela diz "Turbo" na tela.
+    pub fn turbo_ligado(&self) -> bool {
+        self.turbos.iter().any(TurboDaPorta::ligado)
+    }
+
+    /// Lê o atalho do fast-forward desta volta e diz se ele vale. Pausado, não vale: a pausa é
+    /// pausa, e o alternar ligado fica esperando a volta do jogo.
+    pub fn le_o_avanco(&mut self, apertado: bool, modo: ModoDoAtalho) -> bool {
+        let ligado = self.avanco.atualiza(apertado, modo);
+        self.avancando = ligado && !self.pausada && !self.rewind.voltando();
+        self.avancando
+    }
+
+    /// O que a janela escreve por cima do jogo enquanto ele avança, ou nada. `virgula` é o
+    /// separador decimal do idioma. Ver [`crate::velocidade::rotulo_do_avanco`].
+    pub fn indicador_do_avanco(&self, avanco: &Avanco, virgula: bool) -> Option<String> {
+        self.avancando.then(|| {
+            let alcancada = self.sessao.sample().speed as f32 / 100.0;
+            crate::velocidade::rotulo_do_avanco(avanco.proporcao(), alcancada, virgula)
+        })
     }
 
     /// Recomeça a contagem de tempo real: o que passou até aqui não é para o jogo recuperar.
@@ -471,9 +547,10 @@ impl Partida {
         pads: &[(usize, Pad)],
         movimentos: [[f32; 3]; PORTAS],
         teclado: impl IntoIterator<Item = u32>,
-        limite_de_velocidade: bool,
+        ritmo: &Ritmo,
+        turbo: &TurboDaVolta<'_>,
     ) {
-        if self.pausada {
+        if self.pausada || self.rewind.voltando() {
             return;
         }
         self.pad_anterior = Default::default();
@@ -486,6 +563,23 @@ impl Partida {
 
         for &(porta, pad) in pads {
             self.sessao.set_port_pad(porta, pad);
+        }
+        // Quais botões pulsam sai daqui; quando eles estão apertados, da sessão, pelo relógio do
+        // jogo. Uma porta sem controle nesta volta fica sem turbo.
+        self.sessao.define_toques_do_turbo(turbo.toques_por_segundo);
+        for porta in 0..PORTAS {
+            let pad = pads.iter().find(|(p, _)| *p == porta).map(|(_, pad)| *pad);
+            let jogador = turbo.controles.player(porta);
+            let pulsando = match (pad, jogador) {
+                (Some(pad), Some(jogador)) => self.turbos[porta].pulsando(
+                    jogador.turbo,
+                    &jogador.botao_do_turbo,
+                    &pad,
+                    turbo.apertado[porta],
+                ),
+                _ => 0,
+            };
+            self.sessao.define_turbo(porta, pulsando);
         }
         for (porta, movimento) in movimentos.into_iter().enumerate() {
             self.sessao.set_port_motion(porta, movimento);
@@ -506,7 +600,8 @@ impl Partida {
         if !self.sessao.mostra_quadro_intermediario() {
             // O `egui` pintou no mesmo contexto desde o passo anterior.
             self.sessao.retoma_o_contexto();
-            let _ = self.sessao.step(fatia, limite_de_velocidade);
+            let _ = self.sessao.anda(fatia, ritmo);
+            self.rewind.acompanha(&mut self.sessao);
         }
         self.acompanha_diario();
     }
