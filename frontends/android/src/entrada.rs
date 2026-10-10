@@ -62,6 +62,43 @@ pub struct Entrada {
     setas: [bool; 4],
     /// Quantos pixels cabem num ponto do egui.
     pixels_por_ponto: f32,
+    /// Os botões do controle físico apertados agora, pelo nome que o desktop dá a eles
+    /// (`South`, `LeftTrigger`): é como os atalhos de botão se guardam. Ver [`nome_do_botao`].
+    pub fisicos: std::collections::HashSet<&'static str>,
+    /// O botão físico que desceu nesta rodada, para a captura de um atalho. É um pulso.
+    pub ultimo_fisico: Option<&'static str>,
+}
+
+/// Os botões do controle físico: o código do Android, o nome que o desktop dá ao mesmo botão
+/// (o do `gilrs`, ver `zeebx::input::gamepads`) e o índice do [`Pad`] que ele aperta.
+///
+/// **O nome é o do desktop de propósito**: um atalho gravado como `Source::button("LeftThumb")`
+/// vale nos dois frontends, e o mesmo `settings.json` pode ir de um para o outro.
+const FISICOS: [(Keycode, &str, usize); 13] = [
+    (Keycode::ButtonA, "South", 0),
+    (Keycode::ButtonB, "East", 1),
+    (Keycode::ButtonX, "West", 2),
+    (Keycode::ButtonY, "North", 3),
+    (Keycode::ButtonL1, "LeftTrigger", 6),
+    (Keycode::ButtonR1, "RightTrigger", 4),
+    (Keycode::ButtonL2, "LeftTrigger2", 5),
+    (Keycode::ButtonR2, "RightTrigger2", 7),
+    (Keycode::ButtonThumbl, "LeftThumb", 10),
+    (Keycode::ButtonThumbr, "RightThumb", 8),
+    (Keycode::ButtonStart, "Start", 9),
+    (Keycode::ButtonSelect, "Select", 9),
+    (Keycode::ButtonMode, "Mode", 11),
+];
+
+/// O nome de um botão físico, como o desktop o chama.
+fn nome_do_botao(codigo: Keycode) -> Option<&'static str> {
+    FISICOS.iter().find(|(c, _, _)| *c == codigo).map(|(_, nome, _)| *nome)
+}
+
+/// O índice do [`Pad`] que o botão físico de nome `nome` aperta. É o que deixa tirar do jogo um
+/// botão que virou atalho.
+pub fn indice_do_botao(nome: &str) -> Option<usize> {
+    FISICOS.iter().find(|(_, n, _)| *n == nome).map(|(_, _, indice)| *indice)
 }
 
 impl Entrada {
@@ -77,6 +114,7 @@ impl Entrada {
         self.eventos.clear();
         self.voltar = false;
         self.voltar_da_interface = false;
+        self.ultimo_fisico = None;
         // O `setas` **não** se limpa aqui: ele é o estado das direções, e não um pulso do quadro.
         // Zerá-lo faria toda rodada emitir a mesma seta de novo, com o direcional parado.
     }
@@ -112,6 +150,18 @@ impl Entrada {
             _ => return,
         };
         let codigo = tecla.key_code();
+        if let Some(nome) = nome_do_botao(codigo) {
+            match apertada {
+                true => {
+                    if self.fisicos.insert(nome) {
+                        self.ultimo_fisico = Some(nome);
+                    }
+                }
+                false => {
+                    self.fisicos.remove(nome);
+                }
+            }
+        }
 
         if codigo == Keycode::Back {
             // Só a borda de descida: segurar o botão não deve abrir dois diálogos.
