@@ -8,6 +8,10 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::input::bindings::Source;
+use crate::velocidade::rewind::AjustesDoRewind;
+use crate::velocidade::{Avanco, Frameskip, LimiteFps, Ritmo};
+
 const FILE_NAME: &str = "settings.json";
 
 /// Reexportado para preservar a API desktop durante a migração para configuração neutra.
@@ -145,9 +149,13 @@ pub struct Graphics {
     pub smooth: bool,
     /// Manter os 4:3 da tela do Zeebo.
     pub keep_aspect: bool,
-    /// Segurar o emulador no ritmo do console. Desligado, ele corre o quanto o host aguenta e
-    /// os jogos ficam acelerados.
-    pub speed_limit: bool,
+    /// O `speed_limit` de antes do limite de quadros, **só para ler** um arquivo antigo.
+    ///
+    /// Desligado virava [`crate::velocidade::LimiteFps::Desligado`]; ver
+    /// [`Settings::load_from`]. Nunca é gravado: o arquivo novo diz o mesmo em
+    /// [`Velocidade::limite_fps`].
+    #[serde(rename = "speed_limit", skip_serializing)]
+    pub limite_antigo: Option<bool>,
     /// Pôr o quadro na tela pelo GL da janela, em vez de mandá-lo como textura do egui.
     ///
     /// Pela placa o quadro sobe em RGB565, que é o formato em que ele já está, e quem amplia é
@@ -237,7 +245,7 @@ impl Default for Graphics {
             scaling: Scaling::default(),
             smooth: false,
             keep_aspect: true,
-            speed_limit: true,
+            limite_antigo: None,
             gpu_present: true,
             // Desligado por padrão: é um rasterizador novo, e a revisão jogo a jogo é de quem
             // usa. Nos dois títulos medidos ele ganha, mas isso não é licença para trocar o
@@ -298,6 +306,7 @@ pub struct Settings {
     pub movimento: Movimento,
     pub controles_na_tela: ControlesNaTela,
     pub graphics: Graphics,
+    pub velocidade: Velocidade,
     pub debug: DebugView,
     pub audio: Audio,
     pub controls: crate::input::bindings::Controls,
@@ -316,16 +325,45 @@ pub struct Settings {
 #[serde(default)]
 pub struct Atalhos {
     pub screenshot: String,
+    /// O fast-forward: tecla ou botão de controle, de qualquer controle ligado. Ver
+    /// [`crate::velocidade::Avanco`].
+    ///
+    /// **Uma lista, e de `Source`**, ao contrário do screenshot: quem joga com controle precisa
+    /// de um botão, e o mapeamento dos botões do jogo já sabe guardar um. Um botão que está aqui
+    /// não chega ao jogo — ver [`Atalhos::reservadas`].
+    pub avancar: Vec<Source>,
+    /// O rewind, que se segura: tecla ou botão, como o [`Atalhos::avancar`]. Ver
+    /// [`crate::velocidade::rewind`].
+    pub voltar: Vec<Source>,
 }
 
 impl Atalhos {
     pub const SCREENSHOT_PADRAO: &str = "F9";
+    /// F10 segurado é o fast-forward desde o primeiro desenho dele, no PR #83; quem já se
+    /// acostumou não perde o hábito.
+    pub const AVANCAR_PADRAO: &str = "F10";
+    /// O Backspace, que seria a escolha óbvia, já é o `AVK_CLR` do jogo.
+    pub const VOLTAR_PADRAO: &str = "F8";
+
+    pub fn avancar_padrao() -> Vec<Source> {
+        vec![Source::key(Self::AVANCAR_PADRAO)]
+    }
+
+    /// As origens que são de atalho e por isso não chegam ao jogo.
+    ///
+    /// Um botão de controle ligado a um atalho e também a um botão do Zeebo faria as duas coisas
+    /// ao mesmo tempo: avançar e, digamos, pular. O atalho ganha, e o editor avisa do conflito.
+    pub fn reservadas(&self) -> impl Iterator<Item = &Source> {
+        self.avancar.iter().chain(&self.voltar)
+    }
 }
 
 impl Default for Atalhos {
     fn default() -> Self {
         Self {
             screenshot: Self::SCREENSHOT_PADRAO.to_string(),
+            avancar: Self::avancar_padrao(),
+            voltar: vec![Source::key(Self::VOLTAR_PADRAO)],
         }
     }
 }
@@ -423,6 +461,11 @@ pub struct ControlesNaTela {
     /// O tamanho de cada peça, em porcento, por cima da [`Self::escala`]. Mesma chave das
     /// posições; a peça que não está aqui fica em 100.
     pub tamanhos: std::collections::BTreeMap<String, u8>,
+    /// Mostrar as peças de atalho. O turbo e o rewind, além disso, só aparecem com a função em
+    /// uso — ver [`ControlesNaTela::mostra`].
+    pub mostrar_avancar: bool,
+    pub mostrar_voltar: bool,
+    pub mostrar_turbo: bool,
 }
 
 impl Default for ControlesNaTela {
@@ -433,6 +476,31 @@ impl Default for ControlesNaTela {
             opacidade: 55,
             posicoes: Default::default(),
             tamanhos: Default::default(),
+            mostrar_avancar: true,
+            mostrar_voltar: true,
+            mostrar_turbo: true,
+        }
+    }
+}
+
+impl ControlesNaTela {
+    /// Se a peça aparece na tela.
+    ///
+    /// **O turbo e o rewind só aparecem com a função em uso**: o rewind vem desligado, e quem
+    /// nunca o ligou não ganha um botão que não faz nada. O fast-forward não tem ajuste de ligar,
+    /// só a velocidade, e por isso aparece sempre — no celular não existe F10, e sem a peça ele
+    /// ficaria escondido de quem não procura nos ajustes. Cada um se esconde pela chave dele.
+    pub fn mostra(&self, peca: crate::input::toque::Peca, settings: &Settings) -> bool {
+        use crate::input::toque::Peca;
+        match peca {
+            Peca::Avancar => self.mostrar_avancar,
+            Peca::Voltar => self.mostrar_voltar && settings.velocidade.rewind.ligado,
+            Peca::Turbo => {
+                let modo = settings.controls.player(0).map(|jogador| jogador.turbo);
+                self.mostrar_turbo
+                    && modo.is_some_and(|modo| modo != crate::velocidade::turbo::ModoDoTurbo::Desligado)
+            }
+            _ => true,
         }
     }
 }
@@ -446,6 +514,46 @@ pub enum ModoDaBiblioteca {
     Grade,
     /// Um jogo por vez, no jeito da Z-Wheel: o rolo de logos em cima e as caixas passando.
     Slider,
+}
+
+/// O ritmo do jogo: o limite de quadros e o pulo de desenho. Ver [`crate::velocidade`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Velocidade {
+    pub limite_fps: LimiteFps,
+    pub frameskip: Frameskip,
+    pub avanco: Avanco,
+    /// Quantos toques por segundo o turbo dá, no relógio do jogo. Um só para todos os jogadores:
+    /// o modo e o botão é que são de cada um. Ver [`crate::velocidade::turbo`].
+    pub turbo_por_segundo: u8,
+    pub rewind: AjustesDoRewind,
+}
+
+impl Default for Velocidade {
+    fn default() -> Self {
+        Self {
+            limite_fps: LimiteFps::default(),
+            frameskip: Frameskip::default(),
+            avanco: Avanco::default(),
+            turbo_por_segundo: crate::velocidade::turbo::TOQUES_PADRAO,
+            rewind: AjustesDoRewind::default(),
+        }
+    }
+}
+
+impl Velocidade {
+    /// O ritmo destas escolhas, para entregar à sessão.
+    pub fn ritmo(&self) -> Ritmo {
+        Ritmo::das_escolhas(self.limite_fps, self.frameskip)
+    }
+
+    /// O ritmo de agora: o das escolhas, ou o do fast-forward por cima dele.
+    pub fn ritmo_com(&self, avancando: bool) -> Ritmo {
+        match avancando {
+            true => self.ritmo().acelerado(&self.avanco),
+            false => self.ritmo(),
+        }
+    }
 }
 
 /// Reexportado pela UI para não quebrar preferências serializadas e chamadas desktop.
@@ -462,7 +570,18 @@ impl Settings {
         // Um arquivo de uma versão anterior não traz o que ela não conhecia, e o padrão de um
         // campo novo nem sempre é o vazio.
         settings.controls.adopt();
+        settings.adota_o_limite_antigo();
         settings
+    }
+
+    /// O `speed_limit` desligado de um arquivo antigo vira o limite de quadros desligado.
+    ///
+    /// Ligado não muda nada: era o padrão, e o padrão do limite novo é o mesmo freio. O campo
+    /// antigo some na leitura, e a próxima gravação já sai sem ele.
+    fn adota_o_limite_antigo(&mut self) {
+        if self.graphics.limite_antigo.take() == Some(false) {
+            self.velocidade.limite_fps = LimiteFps::Desligado;
+        }
     }
 
     pub fn load() -> Self {
@@ -493,6 +612,20 @@ pub fn rotulo_da_resolucao(fator: u8) -> String {
         _ => "~4K",
     };
     format!("{fator}x · {largura}×{altura} · {referencia}")
+}
+
+/// O rótulo de uma escolha de pulo de desenho: "Desligado", "Automático", ou quantos quadros são
+/// desenhados no fixo — "1 de 3" diz mais a quem joga que o `n` da conta.
+pub fn rotulo_do_frameskip(frameskip: Frameskip, catalogo: &crate::ui::i18n::Catalog) -> String {
+    match frameskip {
+        Frameskip::Desligado => catalogo.get("common.off").to_string(),
+        Frameskip::Automatico => catalogo.get("speed.frameskip.auto").to_string(),
+        Frameskip::Fixo(n) => format!(
+            "{} 1/{}",
+            catalogo.get("speed.frameskip.fixed"),
+            u32::from(n) + 1
+        ),
+    }
 }
 
 /// O rótulo de um nível de antialias ou de anisotrópico: 1 é desligado.
@@ -539,6 +672,8 @@ mod tests {
             screenshots_dir: Some(PathBuf::from("/imagens/zeebo")),
             atalhos: Atalhos {
                 screenshot: "F12".into(),
+                avancar: vec![Source::key("F7"), Source::button("LeftThumb")],
+                voltar: vec![Source::button("RightThumb")],
             },
             biblioteca: ModoDaBiblioteca::Slider,
             movimento: Movimento {
@@ -550,10 +685,28 @@ mod tests {
                 opacidade: 80,
                 posicoes: [("botoes".to_string(), [0.75, 0.5])].into(),
                 tamanhos: [("dpad".to_string(), 140)].into(),
+                mostrar_avancar: false,
+                mostrar_voltar: true,
+                mostrar_turbo: false,
             },
             graphics: Graphics {
                 scaling: Scaling::Fit,
                 ..Graphics::default()
+            },
+            velocidade: Velocidade {
+                limite_fps: LimiteFps::Trinta,
+                frameskip: Frameskip::Fixo(2),
+                avanco: Avanco {
+                    proporcao: 0,
+                    modo: crate::velocidade::ModoDoAtalho::Alternar,
+                    sem_som: true,
+                },
+                turbo_por_segundo: 15,
+                rewind: AjustesDoRewind {
+                    ligado: true,
+                    intervalo_ms: 2000,
+                    memoria_mb: 512,
+                },
             },
             debug: DebugView {
                 overlay: true,
@@ -609,8 +762,35 @@ mod tests {
     fn um_arquivo_de_antes_dos_atalhos_ganha_o_f9() {
         let lido: Settings = serde_json::from_str(r#"{ "roms_dir": "/jogos" }"#).unwrap();
         assert_eq!(lido.atalhos.screenshot, "F9");
+        assert_eq!(lido.atalhos.avancar, [Source::key("F10")]);
         assert_eq!(lido.screenshots_dir, None);
         assert_eq!(lido.roms_dir, Some(PathBuf::from("/jogos")));
+        // Um arquivo que já tinha o F9 trocado, de antes do fast-forward, ganha o F10 também.
+        let trocado: Settings =
+            serde_json::from_str(r#"{ "atalhos": { "screenshot": "F12" } }"#).unwrap();
+        assert_eq!(trocado.atalhos.screenshot, "F12");
+        assert_eq!(trocado.atalhos.avancar, [Source::key("F10")]);
+    }
+
+    /// O `speed_limit` desligado de antes do limite de quadros continua desligado, e o campo
+    /// antigo não volta a ser gravado.
+    #[test]
+    fn o_speed_limit_antigo_vira_o_limite_de_quadros() {
+        let dir = std::env::temp_dir().join("zeebx-testes-speed-limit");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+
+        std::fs::write(&path, r#"{"graphics": {"speed_limit": false, "smooth": true}}"#).unwrap();
+        let lido = Settings::load_from(&path);
+        assert_eq!(lido.velocidade.limite_fps, LimiteFps::Desligado);
+        assert!(lido.graphics.smooth);
+        assert_eq!(lido.graphics.limite_antigo, None);
+        lido.save_to(&path).unwrap();
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("speed_limit"));
+
+        std::fs::write(&path, r#"{"graphics": {"speed_limit": true}}"#).unwrap();
+        assert_eq!(Settings::load_from(&path).velocidade.limite_fps, LimiteFps::Sessenta);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
