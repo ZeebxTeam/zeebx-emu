@@ -10,16 +10,86 @@
 //! e o mapeamento dos controles, o Discord e as atualizações ainda não estão ligados neste
 //! frontend. A seção "Controles" daqui é a dos controles desenhados na tela.
 
-use zeebx::ui::settings::{ModoDosControlesNaTela, Proporcao, Scaling};
+use zeebx::input::bindings::Source;
+use zeebx::ui::settings::{self, ModoDosControlesNaTela, Proporcao, Scaling, Settings};
+use zeebx::velocidade::turbo::{self, ModoDoTurbo};
+use zeebx::velocidade::rewind::AjustesDoRewind;
+use zeebx::velocidade::{Avanco, Frameskip, LimiteFps, ModoDoAtalho};
 
 use crate::tema::ALVO;
 use crate::{Emulador, Onde, sistema, widgets};
+
+/// Um atalho que o controle físico pode acionar: os dois da sessão e a tecla de turbo do jogador
+/// 1. O nome do botão é o do desktop — ver `crate::entrada::FISICOS`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AtalhoFisico {
+    Avancar,
+    Voltar,
+    Turbo,
+}
+
+impl AtalhoFisico {
+    const TODOS: [Self; 3] = [Self::Avancar, Self::Voltar, Self::Turbo];
+
+    fn chave(self) -> &'static str {
+        match self {
+            Self::Avancar => "controls.shortcut.fast_forward",
+            Self::Voltar => "controls.shortcut.rewind",
+            Self::Turbo => "button.turbo",
+        }
+    }
+
+    fn origens(self, settings: &Settings) -> Vec<Source> {
+        match self {
+            Self::Avancar => settings.atalhos.avancar.clone(),
+            Self::Voltar => settings.atalhos.voltar.clone(),
+            Self::Turbo => settings
+                .controls
+                .player(0)
+                .map(|jogador| jogador.sources(turbo::BOTAO_DO_TURBO).to_vec())
+                .unwrap_or_default(),
+        }
+    }
+
+    fn origens_mut(self, settings: &mut Settings) -> &mut Vec<Source> {
+        match self {
+            Self::Avancar => &mut settings.atalhos.avancar,
+            Self::Voltar => &mut settings.atalhos.voltar,
+            Self::Turbo => settings
+                .controls
+                .player_mut(0)
+                .buttons
+                .entry(turbo::BOTAO_DO_TURBO.to_string())
+                .or_default(),
+        }
+    }
+}
+
+impl Emulador {
+    /// Um botão do controle físico desceu: com uma captura aberta, ele vira o atalho.
+    ///
+    /// **Só os botões ficam**, as teclas gravadas (o F10 do desktop) continuam no arquivo: o mesmo
+    /// `settings.json` pode ir do celular para o computador. O botão que confirmou a captura
+    /// também chega ao egui como "Enter" na mesma rodada, e reabriria a captura que acabou de
+    /// fechar: o `capturado_agora` faz a aba ignorar o clique desta rodada.
+    pub(crate) fn capturou_botao(&mut self, nome: &'static str) {
+        let Some(qual) = self.capturando.take() else {
+            return;
+        };
+        let origens = qual.origens_mut(&mut self.settings);
+        origens.retain(|fonte| fonte.is_key());
+        origens.push(Source::button(nome));
+        self.capturado_agora = true;
+        self.salva();
+    }
+}
 
 /// As seções, na mesma ordem das abas do desktop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Aba {
     Geral,
     Graficos,
+    Velocidade,
     Audio,
     Controles,
     Depuracao,
@@ -27,9 +97,10 @@ pub enum Aba {
 }
 
 impl Aba {
-    const TODAS: [Self; 6] = [
+    const TODAS: [Self; 7] = [
         Self::Geral,
         Self::Graficos,
+        Self::Velocidade,
         Self::Audio,
         Self::Controles,
         Self::Depuracao,
@@ -41,6 +112,7 @@ impl Aba {
         match self {
             Self::Geral => "settings.tab.general",
             Self::Graficos => "settings.tab.graphics",
+            Self::Velocidade => "settings.tab.speed",
             Self::Audio => "settings.tab.audio",
             Self::Controles => "settings.tab.controls",
             Self::Depuracao => "settings.tab.debug",
@@ -53,6 +125,7 @@ impl Aba {
         match self {
             Self::Geral => "⛭",
             Self::Graficos => "🖵",
+            Self::Velocidade => "»",
             Self::Audio => "🔊",
             Self::Controles => "🎮",
             Self::Depuracao => "⏱",
@@ -107,6 +180,7 @@ impl Emulador {
                 let mudou = match self.aba {
                     Aba::Geral => self.aba_geral(ui),
                     Aba::Graficos => self.aba_graficos(ui),
+                    Aba::Velocidade => self.aba_velocidade(ui),
                     Aba::Audio => self.aba_audio(ui),
                     Aba::Controles => self.aba_controles(ui),
                     Aba::Depuracao => self.aba_depuracao(ui),
@@ -186,6 +260,126 @@ impl Emulador {
         mudou
     }
 
+    /// O ritmo do jogo contra o relógio do mundo. Ver `docs/implementacao/24-velocidade.md`.
+    fn aba_velocidade(&mut self, ui: &mut egui::Ui) -> bool {
+        let catalogo = &self.catalogo;
+        let velocidade = &mut self.settings.velocidade;
+        let dica = &mut self.dica;
+        let mut mudou = false;
+
+        let limites: Vec<(LimiteFps, String)> = LimiteFps::TODOS
+            .iter()
+            .map(|limite| (*limite, catalogo.get(limite.chave()).to_string()))
+            .collect();
+        mudou |= widgets::segmentado(
+            ui,
+            "fps_limit",
+            catalogo.get("speed.fps_limit"),
+            Some(catalogo.get("speed.fps_limit.hint")),
+            dica,
+            &mut velocidade.limite_fps,
+            &limites,
+        );
+        let pulos: Vec<(Frameskip, String)> = Frameskip::todos()
+            .into_iter()
+            .map(|pulo| (pulo, settings::rotulo_do_frameskip(pulo, catalogo)))
+            .collect();
+        mudou |= widgets::segmentado(
+            ui,
+            "frameskip",
+            catalogo.get("speed.frameskip"),
+            Some(catalogo.get("speed.frameskip.hint")),
+            dica,
+            &mut velocidade.frameskip,
+            &pulos,
+        );
+
+        widgets::secao(ui, catalogo.get("speed.ff"));
+        let proporcoes: Vec<(u8, String)> = Avanco::escolhas()
+            .into_iter()
+            .map(|n| match n {
+                0 => (n, catalogo.get("speed.ff.unlimited").to_string()),
+                n => (n, format!("{n}x")),
+            })
+            .collect();
+        mudou |= widgets::segmentado(
+            ui,
+            "ff_ratio",
+            catalogo.get("speed.ff.ratio"),
+            Some(catalogo.get("speed.ff.hint")),
+            dica,
+            &mut velocidade.avanco.proporcao,
+            &proporcoes,
+        );
+        let modos: Vec<(ModoDoAtalho, String)> = ModoDoAtalho::TODOS
+            .iter()
+            .map(|modo| (*modo, catalogo.get(modo.chave()).to_string()))
+            .collect();
+        mudou |= widgets::segmentado(
+            ui,
+            "ff_mode",
+            catalogo.get("speed.ff.mode"),
+            None,
+            dica,
+            &mut velocidade.avanco.modo,
+            &modos,
+        );
+        mudou |= widgets::interruptor(
+            ui,
+            "ff_mute",
+            catalogo.get("speed.ff.mute"),
+            Some(catalogo.get("speed.ff.mute.hint")),
+            dica,
+            &mut velocidade.avanco.sem_som,
+        );
+
+        widgets::secao(ui, catalogo.get("speed.rewind"));
+        mudou |= widgets::interruptor(
+            ui,
+            "rewind_on",
+            catalogo.get("speed.rewind.on"),
+            Some(catalogo.get("speed.rewind.on.hint")),
+            dica,
+            &mut velocidade.rewind.ligado,
+        );
+        let ligado = velocidade.rewind.ligado;
+        ui.add_enabled_ui(ligado, |ui| {
+            let intervalos: Vec<(u32, String)> = AjustesDoRewind::INTERVALOS_MS
+                .iter()
+                .map(|&ms| {
+                    let texto = match ms % 1000 {
+                        0 => catalogo.format("speed.rewind.every_s", &[("n", &(ms / 1000).to_string())]),
+                        _ => catalogo.format("speed.rewind.every_ms", &[("n", &ms.to_string())]),
+                    };
+                    (ms, texto)
+                })
+                .collect();
+            mudou |= widgets::segmentado(
+                ui,
+                "rewind_interval",
+                catalogo.get("speed.rewind.interval"),
+                None,
+                dica,
+                &mut velocidade.rewind.intervalo_ms,
+                &intervalos,
+            );
+            let memorias: Vec<(u32, String)> = AjustesDoRewind::MEMORIAS_MB
+                .iter()
+                .map(|&mb| (mb, format!("{mb} MB")))
+                .collect();
+            mudou |= widgets::segmentado(
+                ui,
+                "rewind_memory",
+                catalogo.get("speed.rewind.memory"),
+                Some(catalogo.get("speed.rewind.memory.hint")),
+                dica,
+                &mut velocidade.rewind.memoria_mb,
+                &memorias,
+            );
+        });
+        mudou
+    }
+
     /// O que muda o desenho do jogo.
     fn aba_graficos(&mut self, ui: &mut egui::Ui) -> bool {
         // Os três campos vêm separados de propósito: o catálogo é lido, os gráficos são
@@ -195,15 +389,6 @@ impl Emulador {
         let graficos = &mut self.settings.graphics;
         let dica = &mut self.dica;
         let mut mudou = false;
-
-        mudou |= widgets::interruptor(
-            ui,
-            "speed_limit",
-            catalogo.get("graphics.speed_limit"),
-            Some(catalogo.get("graphics.speed_limit.hint")),
-            dica,
-            &mut graficos.speed_limit,
-        );
 
         // Sem título de seção antes de um segmentado: a própria faixa dele já traz o nome e o
         // `?`, e os dois juntos eram a mesma palavra duas vezes.
@@ -459,6 +644,101 @@ impl Emulador {
         };
         if widgets::navega(ui, catalogo.get("touch.layout"), arrumadas) {
             self.onde = Onde::EditaToque;
+        }
+        // As peças de atalho, uma chave cada: o turbo e o rewind, além disso, só aparecem com a
+        // função em uso. Ver `ControlesNaTela::mostra`.
+        for (chave, rotulo, valor) in [
+            ("touch_show_ff", "touch.show.ff", &mut toque.mostrar_avancar),
+            ("touch_show_rewind", "touch.show.rewind", &mut toque.mostrar_voltar),
+            ("touch_show_turbo", "touch.show.turbo", &mut toque.mostrar_turbo),
+        ] {
+            mudou |= widgets::interruptor(ui, chave, catalogo.get(rotulo), None, dica, valor);
+        }
+
+        // O turbo do jogador 1, o único que o Android tem. Ver `zeebx::velocidade::turbo`.
+        widgets::secao(ui, catalogo.get("turbo"));
+        let jogador = self.settings.controls.player_mut(0);
+        let modos: Vec<(ModoDoTurbo, String)> = ModoDoTurbo::TODOS
+            .iter()
+            .map(|modo| (*modo, catalogo.get(modo.chave()).to_string()))
+            .collect();
+        mudou |= widgets::segmentado(
+            ui,
+            "turbo_mode",
+            catalogo.get("turbo.mode"),
+            Some(catalogo.get("turbo.hint.touch")),
+            dica,
+            &mut jogador.turbo,
+            &modos,
+        );
+        let botoes: Vec<(&str, String)> = turbo::PULSAVEIS
+            .iter()
+            .map(|botao| (*botao, catalogo.get(&format!("button.{botao}")).to_string()))
+            .collect();
+        let mut botao = turbo::PULSAVEIS
+            .iter()
+            .copied()
+            .find(|b| *b == jogador.botao_do_turbo)
+            .unwrap_or(turbo::BOTAO_PADRAO);
+        if widgets::segmentado(
+            ui,
+            "turbo_button",
+            catalogo.get("turbo.button"),
+            None,
+            dica,
+            &mut botao,
+            &botoes,
+        ) {
+            jogador.botao_do_turbo = botao.to_string();
+            mudou = true;
+        }
+        mudou |= widgets::deslizante(
+            ui,
+            "turbo_rate",
+            catalogo.get("turbo.rate"),
+            None,
+            dica,
+            &mut self.settings.velocidade.turbo_por_segundo,
+            turbo::TOQUES_MENOS..=turbo::TOQUES_MAIS,
+            |n| catalogo.format("turbo.rate.value", &[("n", &n.to_string())]),
+        );
+
+        // Os atalhos pelo controle físico: no celular não existe F10. Tocar numa linha espera o
+        // próximo botão do controle; tocar de novo desiste. Ver [`Emulador::capturou_botao`].
+        widgets::secao(ui, catalogo.get("settings.tab.shortcuts"));
+        let capturado_agora = std::mem::take(&mut self.capturado_agora);
+        for qual in AtalhoFisico::TODOS {
+            let valor = match self.capturando == Some(qual) {
+                true => catalogo.get("touch.shortcut.waiting").to_string(),
+                false => {
+                    let origens = qual.origens(&self.settings);
+                    let botoes: Vec<String> = origens
+                        .iter()
+                        .filter(|fonte| !fonte.is_key())
+                        .map(Source::label)
+                        .collect();
+                    match botoes.is_empty() {
+                        true => catalogo.get("controls.unbound").to_string(),
+                        false => botoes.join(", "),
+                    }
+                }
+            };
+            if widgets::navega(ui, catalogo.get(qual.chave()), &valor) && !capturado_agora {
+                self.capturando = match self.capturando == Some(qual) {
+                    true => None,
+                    false => Some(qual),
+                };
+            }
+        }
+        if ui
+            .add_sized([ui.available_width(), ALVO], egui::Button::new(catalogo.get("touch.shortcut.clear")))
+            .clicked()
+        {
+            for qual in AtalhoFisico::TODOS {
+                qual.origens_mut(&mut self.settings).retain(|fonte| fonte.is_key());
+            }
+            self.capturando = None;
+            mudou = true;
         }
         mudou
     }
