@@ -125,3 +125,11 @@ observar.
 O algoritmo é heapsort: ordena no lugar e faz `n log n` comparações. Como **cada comparação custa
 uma entrada no guest**, o número delas é o que importa; uma ordenação por inserção seria simples
 e quadrática, e um vetor grande custaria caro.
+
+## Acima e abaixo da velocidade do console
+
+O freio que compara o relógio virtual com o do mundo aceita uma proporção: o fast-forward é o
+mesmo freio a 3x, e o limite desligado é sem freio. Trocar de proporção reancora a comparação —
+sem isso, soltar o fast-forward deixava o jogo "adiantado" por tudo o que ele ganhou. O save state
+grava também o `clock_us`, o tempo pulado, que antes ficava de fora e fazia o relógio restaurado
+nascer no "agora". Ver [24-velocidade.md](24-velocidade.md).
