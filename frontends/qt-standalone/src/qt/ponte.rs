@@ -56,6 +56,7 @@ pub mod qobject {
         #[qproperty(bool, screenshot_falhou, cxx_name = "screenshotFalhou")]
         #[qproperty(QString, screenshot_pasta, cxx_name = "screenshotPasta")]
         #[qproperty(i32, screenshot_serie, cxx_name = "screenshotSerie")]
+        #[qproperty(QString, indicadores)]
         type TelaDoJogo = super::TelaDoJogoRust;
 
         /// Uma volta: entrada, emulação e, se a tela mudou, um quadro novo.
@@ -181,6 +182,8 @@ pub struct TelaDoJogoRust {
     screenshot_falhou: bool,
     screenshot_pasta: QString,
     screenshot_serie: i32,
+    /// O "▶▶ 3x" do fast-forward e o "Turbo"; vazio esconde.
+    indicadores: QString,
     /// A tela que foi para o `ItemDoQuadro` como imagem: série e escritas. Igual, não há o que
     /// subir. `None` quando o que está lá é a textura da placa, ou nada.
     chave: Option<(u64, u64)>,
@@ -312,6 +315,10 @@ impl qobject::TelaDoJogo {
             self.as_mut().set_screenshot_pasta(QString::from(&aviso.pasta));
             let serie = self.screenshot_serie().wrapping_add(1);
             self.as_mut().set_screenshot_serie(serie);
+        }
+        let indicadores = QString::from(&volta.indicadores);
+        if self.indicadores() != &indicadores {
+            self.as_mut().set_indicadores(indicadores);
         }
         let parou = QString::from(&volta.parou);
         if self.parou() != &parou {
