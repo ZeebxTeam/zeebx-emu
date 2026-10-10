@@ -22,6 +22,7 @@ use crate::loader::archive;
 use crate::loader::modfile::ModImage;
 use crate::machine::{AppletResult, Machine, Outcome};
 use crate::storage::StoragePaths;
+use crate::velocidade::{ContadorDePulo, Pulo, Ritmo};
 use crate::video::display::Framebuffer;
 
 /// Maior fatia de tempo real que os frontends podem pedir em uma volta.
@@ -49,6 +50,15 @@ const QUADROS_POR_VOLTA: u32 = 4;
 
 /// O atraso a partir do qual o jogo recupera quadros: um quadro de 60 Hz.
 const ATRASO_PARA_RECUPERAR_MS: u64 = 17;
+
+/// A fatia de tempo real que uma volta sem freio — ou acima de 1x — pode gastar emulando.
+///
+/// **Sem este teto a janela desaba.** O orçamento que o frontend passa é o tempo real desde a
+/// volta anterior; uma volta que o gastasse inteiro passaria do retraço, a seguinte receberia o
+/// dobro, e em poucas voltas a janela estaria no teto de [`FATIA_MAXIMA`], a 10 quadros por
+/// segundo. Doze milissegundos deixam quatro para a janela desenhar num retraço de 60 Hz. O número
+/// é a conta do retraço, **não** uma medição: o quanto a janela de fato precisa não foi medido.
+const FATIA_SEM_FREIO: Duration = Duration::from_millis(12);
 
 /// Milissegundos de um quadro a 60 Hz: o passo que um frontend Libretro avança por chamada.
 const FRAME_MS: u64 = 16;
@@ -130,6 +140,15 @@ pub struct Session {
     /// mede se o jogo está adiantado.
     started: Instant,
     clock_base: u64,
+    /// A proporção com que [`Session::started`] e [`Session::clock_base`] foram ancorados.
+    /// `None` é sem freio. Trocar de proporção **reancora**: ver [`Session::ajusta_proporcao`].
+    proporcao: Option<f32>,
+    /// O pulo de desenho do quadro em curso. Ver [`PuloDaSessao`].
+    pulo: PuloDaSessao,
+    /// A velocidade que o som segue. Ver [`Session::acompanha_o_som`].
+    som_do_avanco: SomDoAvanco,
+    /// O turbo: o controle cru de cada porta e os botões que pulsam. Ver [`Session::pulsa`].
+    turbo: TurboDaSessao,
     stopped: Option<Outcome>,
     /// Começo da janela de medição: o instante real, o relógio virtual, as instruções e os
     /// quadros de então. Tudo que o painel de depuração mostra sai da diferença entre duas
@@ -140,6 +159,116 @@ pub struct Session {
     /// As amostras recentes, para o gráfico. A mais nova no fim.
     history: std::collections::VecDeque<Sample>,
 }
+
+/// O pulo de desenho como a sessão o decide: uma vez por quadro, no começo dele.
+///
+/// **No começo, e não a cada volta.** Um quadro pode atravessar duas voltas da janela — a fatia
+/// acaba antes do `eglSwapBuffers` —, e decidir de novo no meio dele desenharia metade da cena.
+/// Por isso a decisão guarda o número da troca de buffer em que foi tomada, e só a troca seguinte
+/// abre a próxima.
+#[derive(Debug, Clone, Copy, Default)]
+struct PuloDaSessao {
+    contador: ContadorDePulo,
+    /// O `gl_swaps` em que a decisão em vigor foi tomada.
+    decidido_em: Option<u32>,
+    /// A decisão em vigor.
+    atual: Pulo,
+    /// Quanto tempo real levou o último quadro pulado, e o último desenhado.
+    ///
+    /// **Separados, porque um quadro pulado custa uma fração do desenhado**, e é isso que a
+    /// previsão do automático pergunta: "pulando este, ainda cabe um desenhado na fatia?". Com
+    /// uma medida só, a do último quadro desenhado, a previsão nunca via sobra num jogo pesado —
+    /// medido no Rolima, o sem limite ficava em 3,95x, abaixo dos 8,27x do 10x.
+    duracao_pulado: Duration,
+    duracao_desenhado: Duration,
+}
+
+/// Quantos quadros uma volta pode rodar com a proporção dada.
+///
+/// A 1x é o [`QUADROS_POR_VOLTA`] de sempre, para alcançar o relógio. Acima, cresce na mesma
+/// proporção: a 10x, uma volta precisa de dez quadros só para andar em dia. Sem freio, quem
+/// limita é a fatia.
+fn teto_de_quadros(proporcao: Option<f32>) -> u32 {
+    match proporcao {
+        Some(proporcao) => (QUADROS_POR_VOLTA as f32 * proporcao.max(1.0)).ceil() as u32,
+        None => u32::MAX,
+    }
+}
+
+/// O turbo como a sessão o aplica. Ver [`crate::velocidade::turbo`].
+#[derive(Debug, Clone, Copy)]
+struct TurboDaSessao {
+    /// O controle de cada porta como o frontend o entregou, antes do turbo.
+    cru: [Pad; crate::input::PORTAS],
+    /// O cru da última vez que as teclas foram conferidas: o que mudou desde então, o frontend
+    /// já transformou em tecla.
+    cru_visto: [Pad; crate::input::PORTAS],
+    /// Os botões que pulsam em cada porta.
+    pulsando: [u32; crate::input::PORTAS],
+    toques: u8,
+    /// Se o frontend transforma o controle em tecla BREW. Ver [`Session::turbo_nas_teclas`].
+    nas_teclas: bool,
+    /// As teclas que a sessão afirmou por cima do frontend, por bit do botão, e o valor de cada.
+    afirmadas: [u32; crate::input::PORTAS],
+    valores: [u32; crate::input::PORTAS],
+}
+
+impl Default for TurboDaSessao {
+    fn default() -> Self {
+        Self {
+            cru: Default::default(),
+            cru_visto: Default::default(),
+            pulsando: [0; crate::input::PORTAS],
+            toques: crate::velocidade::turbo::TOQUES_PADRAO,
+            nas_teclas: false,
+            afirmadas: [0; crate::input::PORTAS],
+            valores: [0; crate::input::PORTAS],
+        }
+    }
+}
+
+/// Os botões que também chegam ao jogo como tecla BREW, e a tecla de cada um. É a mesma tabela de
+/// [`crate::input::teclas_do_controle`], menos o direcional, que nunca pulsa.
+const BOTOES_COM_TECLA: [(&str, u32); 2] = [
+    ("b1", crate::input::avk::CONFIRMA),
+    ("b2", crate::input::avk::CLR),
+];
+
+/// O que o som do fast-forward precisa lembrar entre duas voltas. Ver
+/// [`Session::acompanha_o_som`].
+#[derive(Debug, Clone, Copy)]
+struct SomDoAvanco {
+    /// O instante real e o relógio virtual da volta anterior.
+    ultima: Option<(Instant, u64)>,
+    /// A velocidade alcançada, em média.
+    media: f64,
+    /// O último ritmo e o último abafado entregues ao mixer.
+    enviado: Option<(f32, bool)>,
+    /// Calado pelo rewind. Ver [`Session::cala`].
+    calado: bool,
+    /// Se o ritmo da última volta pedia silêncio — o "sem som" do fast-forward.
+    abafado_pelo_ritmo: bool,
+}
+
+impl Default for SomDoAvanco {
+    fn default() -> Self {
+        Self {
+            ultima: None,
+            media: 1.0,
+            enviado: None,
+            calado: false,
+            abafado_pelo_ritmo: false,
+        }
+    }
+}
+
+/// A constante de tempo da média da velocidade que o som segue, em segundos. Meio segundo é o
+/// mesmo [`SPEED_WINDOW_MS`] que o painel usa: curto para acompanhar a troca de cena, longo para
+/// não tremer. Não foi afinado de ouvido.
+const MEDIA_DO_SOM_S: f64 = 0.5;
+
+/// Acima disto, o tempo entre duas voltas é buraco, e não velocidade.
+const LACUNA_DO_SOM_S: f64 = 0.25;
 
 /// Uma leitura dos contadores num instante.
 #[derive(Debug, Clone, Copy)]
@@ -553,6 +682,10 @@ impl Session {
             intermediario: None,
             started: Instant::now(),
             clock_base,
+            proporcao: Some(1.0),
+            pulo: PuloDaSessao::default(),
+            som_do_avanco: SomDoAvanco::default(),
+            turbo: TurboDaSessao::default(),
             stopped: None,
             window,
             sample: Sample::default(),
@@ -565,16 +698,101 @@ impl Session {
     /// O teto de tempo real é o que mantém a interface viva: uma volta do laço do jogo pode ser
     /// uma fatia minúscula de instruções, e devolver o controle regularmente é o que permite
     /// redesenhar e atender o teclado enquanto o jogo roda.
+    ///
+    /// É o [`Session::anda`] com o ritmo de sempre: a velocidade do console, ou sem freio.
     pub fn step(&mut self, budget: Duration, speed_limit: bool) -> Step {
+        let ritmo = match speed_limit {
+            true => Ritmo::CONSOLE,
+            false => Ritmo::SEM_FREIO,
+        };
+        self.anda(budget, &ritmo)
+    }
+
+    /// O [`Session::step`] com o ritmo inteiro: a proporção, o pulo de desenho e a meia
+    /// apresentação. Ver [`crate::velocidade`].
+    ///
+    /// **Uma volta pode rodar vários quadros, e só o último vai para a tela.** É o que deixa o
+    /// jogo alcançar o relógio quando a janela fica abaixo do retraço, e é o que deixa ele correr
+    /// acima de 1x: a 3x, uma volta de 16 ms reais precisa de três quadros do jogo.
+    pub fn anda(&mut self, budget: Duration, ritmo: &Ritmo) -> Step {
+        let passo = self.anda_sem_som(budget, ritmo);
+        self.acompanha_o_som(ritmo);
+        passo
+    }
+
+    /// O som acompanha a velocidade que o jogo **alcançou**, e não a pedida.
+    ///
+    /// Com o avanço em 10x e o host chegando a 4x, um passo de 10 deixaria o som duas vezes e meia
+    /// na frente do jogo: os efeitos acabariam antes do `Stop` dele, e a fila dos fluxos secaria
+    /// aos estalos. A velocidade medida, numa média de meio segundo, mantém os dois juntos; ela
+    /// oscila de quadro leve para quadro pesado, e a média é o que impede a altura de tremer.
+    ///
+    /// A 1x o som fica em exatamente 1: a medida oscila em torno disso, e seguir a oscilação
+    /// desafinaria a música de quem nem está avançando.
+    fn acompanha_o_som(&mut self, ritmo: &Ritmo) {
+        let agora = Instant::now();
+        let relogio = u64::from(self.machine.clock_ms());
+        let som = &mut self.som_do_avanco;
+        let alvo = match ritmo.proporcao {
+            Some(1.0) => {
+                som.media = 1.0;
+                som.ultima = None;
+                1.0
+            }
+            _ => {
+                if let Some((antes, relogio_antes)) = som.ultima {
+                    let dt = (agora - antes).as_secs_f64();
+                    // Um buraco grande — pausa, janela arrastada — não é velocidade: só recomeça
+                    // a medida, sem puxar a média para baixo.
+                    if dt > 0.0 && dt <= LACUNA_DO_SOM_S {
+                        let instante = relogio.saturating_sub(relogio_antes) as f64 / 1000.0 / dt;
+                        let peso = dt / (MEDIA_DO_SOM_S + dt);
+                        som.media += (instante - som.media) * peso;
+                    }
+                }
+                som.ultima = Some((agora, relogio));
+                som.media.clamp(0.25, f64::from(crate::velocidade::Avanco::MAIOR) + 2.0)
+            }
+        };
+        som.abafado_pelo_ritmo = ritmo.abafa_o_som;
+        let pedido = (alvo as f32, ritmo.abafa_o_som || som.calado);
+        // Meio por cento de diferença não se ouve, e poupa o cadeado da linha de áudio.
+        let muda = som.enviado.is_none_or(|(enviado, abafado)| {
+            abafado != pedido.1 || (enviado - pedido.0).abs() > enviado * 0.005
+        });
+        if !muda {
+            return;
+        }
+        som.enviado = Some(pedido);
+        #[cfg(feature = "audio")]
+        if let Some(audio) = &self.audio {
+            audio.mixer().define_avanco(pedido.0, pedido.1);
+        }
+    }
+
+    /// O [`Session::anda`] sem o acompanhamento do som.
+    fn anda_sem_som(&mut self, budget: Duration, ritmo: &Ritmo) -> Step {
         if self.stopped.is_some() {
             return Step::Stopped;
         }
         self.sample_speed();
-        let deadline = Instant::now() + budget;
+        self.ajusta_proporcao(ritmo.proporcao);
+        let inicio = Instant::now();
+        // Até 1x vale o orçamento que o frontend deu, como sempre valeu: a volta só o gasta
+        // inteiro quando está atrasada. Acima disso — ou sem freio — ela o gastaria sempre.
+        let fatia = match ritmo.proporcao {
+            Some(proporcao) if proporcao <= 1.0 => budget,
+            _ => budget.min(FATIA_SEM_FREIO),
+        };
+        let deadline = inicio + fatia;
+        let teto = teto_de_quadros(ritmo.proporcao);
         let mut before = self.machine.gl_swaps();
         let mut quadros = 0;
+        let mut comeco_do_quadro = inicio;
+        let mut desenhou = false;
+        self.decide_pulo(ritmo, quadros, teto, deadline, desenhou);
         loop {
-            if speed_limit && self.ahead_ms() > 0 {
+            if ritmo.proporcao.is_some() && self.ahead_ms() > 0 {
                 return Step::Ahead;
             }
             match self.advance_once() {
@@ -585,20 +803,99 @@ impl Session {
                     // retraço —, o jogo andava na mesma proporção, liso e lento: o Quake rodava
                     // em câmera lenta sem engasgar. Atrasado, ele roda mais quadros nesta volta, e
                     // só o último vai para a tela.
+                    //
+                    // Sem freio vale o mesmo, até a fatia acabar. Antes ele voltava no primeiro
+                    // quadro, e o "sem freio" da janela ficava preso ao retraço do monitor.
                     quadros += 1;
-                    let recupera = speed_limit
-                        && quadros < QUADROS_POR_VOLTA
-                        && Instant::now() < deadline
-                        && self.atraso_ms() > ATRASO_PARA_RECUPERAR_MS;
-                    if !recupera {
+                    let agora = Instant::now();
+                    match self.pulo.atual.algum() {
+                        true => self.pulo.duracao_pulado = agora - comeco_do_quadro,
+                        false => {
+                            self.pulo.duracao_desenhado = agora - comeco_do_quadro;
+                            desenhou = true;
+                        }
+                    }
+                    comeco_do_quadro = agora;
+                    before = self.machine.gl_swaps();
+                    let continua = quadros < teto
+                        && agora < deadline
+                        && match ritmo.proporcao {
+                            Some(_) => self.atraso_ms() > ATRASO_PARA_RECUPERAR_MS,
+                            None => true,
+                        };
+                    self.decide_pulo(ritmo, quadros, teto, deadline, desenhou);
+                    if !continua {
                         return Step::Presented;
                     }
-                    before = self.machine.gl_swaps();
                 }
                 None if Instant::now() >= deadline => return Step::Running,
                 None => {}
             }
         }
+    }
+
+    /// Decide se o quadro que vai começar é desenhado. Ver [`PuloDaSessao`].
+    ///
+    /// O automático pula o quadro que **sobra**: o que não precisa ir à tela.
+    ///
+    /// **Um quadro desenhado por volta basta.** Depois dele, pular os seguintes deixa na tela o
+    /// que ele desenhou, uns quadros mais velho, e é isso que o fast-forward mostra. Antes dele,
+    /// um quadro só sobra se, pulado, ainda deixar tempo para um desenhado na fatia — e, com
+    /// freio, se o jogo continuar atrasado depois dele e a volta não tiver batido no teto.
+    ///
+    /// As duas metades foram medidas. Pular tudo o que não batia no teto levava o Rolima a 8,27x
+    /// a 10x, mas o último quadro da volta saía pulado quase sempre, e a tela parava. Pular só o
+    /// que deixava caber um desenhado mantinha a tela, e derrubava o mesmo 10x para 4,11x.
+    /// O que sobra de erro não quebra nada: um quadro desenhado à toa custa o que sempre custou.
+    fn decide_pulo(
+        &mut self,
+        ritmo: &Ritmo,
+        quadros: u32,
+        teto: u32,
+        deadline: Instant,
+        desenhou: bool,
+    ) {
+        let trocas = self.machine.gl_swaps();
+        if self.pulo.decidido_em == Some(trocas) {
+            return;
+        }
+        let cabe_outro =
+            Instant::now() + self.pulo.duracao_pulado + self.pulo.duracao_desenhado < deadline;
+        let sobra = (desenhou || cabe_outro)
+            && match ritmo.proporcao {
+                Some(_) => {
+                    quadros + 1 < teto
+                        && self.atraso_ms() > ATRASO_PARA_RECUPERAR_MS + FRAME_MS
+                }
+                None => true,
+            };
+        let pulo = self.pulo.contador.decide(ritmo, sobra);
+        self.pulo.decidido_em = Some(trocas);
+        self.pulo.atual = pulo;
+        // O jogo que lê a tela de volta não pula nunca: ver [`crate::velocidade::Frameskip`].
+        self.machine
+            .define_pula_desenho(pulo.algum() && !self.machine.leu_pixels());
+    }
+
+    /// Ancora de novo o relógio quando a proporção muda.
+    ///
+    /// **Sem isto, soltar o fast-forward congelava o jogo.** A 3x o relógio virtual corre na
+    /// frente do real; medido de volta a 1x desde a mesma âncora, ele aparece adiantado por tudo o
+    /// que ganhou, e o freio o segura em [`Step::Ahead`] até o mundo alcançar — o mesmo que já
+    /// acontecia ao religar o limite depois de um tempo sem ele. A âncora nova começa no instante
+    /// de agora, e o que passou não é cobrado de ninguém.
+    fn ajusta_proporcao(&mut self, proporcao: Option<f32>) {
+        if self.proporcao == proporcao {
+            return;
+        }
+        self.proporcao = proporcao;
+        self.ancora();
+    }
+
+    /// O instante real de agora passa a corresponder ao relógio virtual de agora.
+    fn ancora(&mut self) {
+        self.started = Instant::now();
+        self.clock_base = u64::from(self.machine.clock_ms());
     }
 
     /// Avança **um quadro virtual**, sem consultar o relógio de parede.
@@ -610,6 +907,7 @@ impl Session {
         if self.stopped.is_some() {
             return Step::Stopped;
         }
+        self.ajusta_proporcao(limita_velocidade.then_some(1.0));
         if limita_velocidade {
             // O desktop faz o mesmo freio devolvendo `Step::Ahead` para a janela. O Libretro não
             // tem uma volta assíncrona que possa receber "volte depois": `retro_run` tem de
@@ -646,14 +944,25 @@ impl Session {
     /// Um atraso maior que [`ATRASO_MAXIMO_MS`] é perdoado aqui mesmo: o começo da medição anda
     /// para a frente até sobrar só o máximo.
     fn atraso_ms(&mut self) -> u64 {
-        let jogo = u64::from(self.machine.clock_ms()).saturating_sub(self.clock_base);
-        let real = self.started.elapsed().as_millis() as u64;
-        let atraso = real.saturating_sub(jogo);
+        let atraso = (-self.adiantamento_ms()).max(0) as u64;
         if atraso > ATRASO_MAXIMO_MS {
-            self.started += Duration::from_millis(atraso - ATRASO_MAXIMO_MS);
+            // O perdão anda com a âncora real, e a 3x cada milissegundo real vale três do jogo.
+            let proporcao = f64::from(self.proporcao.unwrap_or(1.0));
+            let perdao = (atraso - ATRASO_MAXIMO_MS) as f64 / proporcao;
+            self.started += Duration::from_secs_f64(perdao / 1000.0);
             return ATRASO_MAXIMO_MS;
         }
         atraso
+    }
+
+    /// Quanto o jogo está adiantado (positivo) ou atrasado (negativo) desde a âncora, pela
+    /// proporção em vigor. Ver [`crate::velocidade::adiantamento_ms`].
+    fn adiantamento_ms(&self) -> i64 {
+        crate::velocidade::adiantamento_ms(
+            u64::from(self.machine.clock_ms()).saturating_sub(self.clock_base),
+            self.started.elapsed().as_millis() as u64,
+            self.proporcao,
+        )
     }
 
     /// A partida do jogo: o `EVT_APP_START` entregue ao applet, **uma vez**.
@@ -682,6 +991,7 @@ impl Session {
 
     /// Uma volta do laço de eventos. `Some` quando há desfecho, `None` para continuar.
     fn advance_once(&mut self) -> Option<Step> {
+        self.pulsa();
         // Telas intermediárias da volta anterior ainda não mostradas: a janela as mostra antes
         // de o jogo andar. Ver [`Session::mostra_quadro_intermediario`].
         if self.machine.tem_quadros_do_update() {
@@ -746,9 +1056,7 @@ impl Session {
     /// tempo que o jogo *mede* —, e sem esse freio o emulador termina antes da hora: o Crash
     /// rodava doze segundos de jogo em um e meio de relógio real.
     fn ahead_ms(&self) -> u64 {
-        u64::from(self.machine.clock_ms())
-            .saturating_sub(self.clock_base)
-            .saturating_sub(self.started.elapsed().as_millis() as u64)
+        self.adiantamento_ms().max(0) as u64
     }
 
     /// Fecha a janela de medição quando ela vence e guarda a velocidade do trecho.
@@ -976,6 +1284,8 @@ impl Session {
         }
         match crate::audio::Output::open(level, false) {
             Ok(output) => {
+                // A saída nova nasce em 1x e audível: o que foi entregue à anterior não vale.
+                self.som_do_avanco.enviado = None;
                 self.machine.set_audio(Some(output.mixer()));
                 self.audio = Some(output);
                 None
@@ -984,9 +1294,104 @@ impl Session {
         }
     }
 
-    /// O controle de uma porta.
+    /// O controle de uma porta, como o jogador o segura. O turbo, se houver, entra por cima: ver
+    /// [`Session::define_turbo`].
     pub fn set_port_pad(&mut self, porta: usize, pad: Pad) {
-        self.machine.set_port_pad(porta, pad);
+        let Some(cru) = self.turbo.cru.get_mut(porta) else {
+            return;
+        };
+        *cru = pad;
+        self.pulsa_a_porta(porta, false);
+    }
+
+    /// Os botões que pulsam numa porta, como máscara do [`Pad`]. Zero desliga o turbo dela.
+    ///
+    /// Quem decide **quais** botões é o frontend, pelo modo de cada jogador
+    /// ([`crate::velocidade::turbo::TurboDaPorta`]); quem decide **quando** eles estão apertados é
+    /// a sessão, pelo relógio do jogo, antes de cada volta do laço de eventos.
+    pub fn define_turbo(&mut self, porta: usize, pulsando: u32) {
+        let Some(mascara) = self.turbo.pulsando.get_mut(porta) else {
+            return;
+        };
+        if std::mem::replace(mascara, pulsando) != pulsando {
+            // Na hora, e não na próxima volta do laço: um turbo solto na fase "apertado" deixaria
+            // o botão apertado até lá, e o [`Session::pulsa`] nem olha a porta sem turbo.
+            self.pulsa_a_porta(porta, false);
+        }
+    }
+
+    /// Quantos toques por segundo o turbo dá, no relógio do jogo.
+    pub fn define_toques_do_turbo(&mut self, toques: u8) {
+        self.turbo.toques = toques;
+    }
+
+    /// Diz que o frontend transforma o controle em tecla BREW — o confirmar (`0xe064`) do botão
+    /// 1, o `AVK_CLR` do 2 —, como a janela do desktop faz e o core Libretro não.
+    ///
+    /// **Só então a sessão mexe nas teclas.** O turbo pulsa o estado do controle, e um jogo que lê
+    /// o botão 1 pelo `EVT_KEY` não veria pulso nenhum. Com o frontend entregando a tecla do
+    /// estado cru, a sessão afirma por cima a tecla dos botões que pulsam, e devolve ao cru quando
+    /// eles param. Sem o frontend entregando, não há o que corrigir — e afirmar seria inventar uma
+    /// tecla que o frontend nunca solta.
+    pub fn turbo_nas_teclas(&mut self, ligado: bool) {
+        self.turbo.nas_teclas = ligado;
+    }
+
+    /// Aplica a fase do turbo a todas as portas. Chamado antes de cada volta do laço de eventos,
+    /// que é a menor unidade em que o relógio do jogo anda.
+    fn pulsa(&mut self) {
+        for porta in 0..crate::input::PORTAS {
+            if self.turbo.pulsando[porta] != 0 || self.turbo.afirmadas[porta] != 0 {
+                self.pulsa_a_porta(porta, true);
+            }
+        }
+    }
+
+    /// Entrega o controle da porta com o turbo por cima, e — com `teclas` — corrige as teclas BREW
+    /// dos botões que pulsam. As teclas só se corrigem dentro do laço, depois de o frontend ter
+    /// entregue as dele para esta volta: ver [`Session::turbo_nas_teclas`].
+    fn pulsa_a_porta(&mut self, porta: usize, teclas: bool) {
+        let fase = crate::velocidade::turbo::fase_apertada(self.machine.clock_ms(), self.turbo.toques);
+        let turbo = &mut self.turbo;
+        let pulsando = turbo.pulsando[porta];
+        let cru = turbo.cru[porta];
+        let efetivo = crate::velocidade::turbo::modula(cru, pulsando, fase);
+        self.machine.set_port_pad(porta, efetivo);
+        if !teclas || !turbo.nas_teclas {
+            return;
+        }
+        let visto = std::mem::replace(&mut turbo.cru_visto[porta], cru);
+        for (nome, tecla) in BOTOES_COM_TECLA {
+            let Some(indice) = Pad::button_by_name(nome) else {
+                continue;
+            };
+            let bit = 1u32 << indice;
+            let cru_apertado = cru.is_down(indice);
+            // O que o jogo tem agora: o que a sessão afirmou, a menos que o frontend tenha
+            // entregue uma tecla nova desde então — a do cru, que passa a valer.
+            let mudou_no_frontend = visto.is_down(indice) != cru_apertado;
+            let atual = match turbo.afirmadas[porta] & bit != 0 && !mudou_no_frontend {
+                true => turbo.valores[porta] & bit != 0,
+                false => cru_apertado,
+            };
+            let desejado = match pulsando & bit != 0 {
+                true => fase,
+                false => cru_apertado,
+            };
+            if desejado != atual {
+                self.machine.set_key(tecla, desejado);
+            }
+            match pulsando & bit != 0 {
+                true => {
+                    turbo.afirmadas[porta] |= bit;
+                    match desejado {
+                        true => turbo.valores[porta] |= bit,
+                        false => turbo.valores[porta] &= !bit,
+                    }
+                }
+                false => turbo.afirmadas[porta] &= !bit,
+            }
+        }
     }
 
     /// As calibrações do movimento que o jogo começou e terminou. Ver
@@ -1045,10 +1450,9 @@ impl Session {
         // restaurado com uma linha do tempo que já não existe: voltar dez minutos pode parecer
         // dez minutos atrasado; avançar para um estado mais novo pode parecer adiantado e travar
         // em Step::Ahead. A nova âncora começa exatamente no instante virtual restaurado.
-        let agora = Instant::now();
-        let clock_ms = u64::from(self.machine.clock_ms());
-        self.started = agora;
-        self.clock_base = clock_ms;
+        self.ancora();
+        let agora = self.started;
+        let clock_ms = self.clock_base;
         self.window = Marca {
             real: agora,
             clock_ms,
@@ -1063,12 +1467,47 @@ impl Session {
         // verdade no próximo quadro.
         self.intermediario = None;
         self.stopped = None;
+        // O contador de trocas de buffer voltou junto com a máquina: a decisão de pulo guardada
+        // é de um quadro que, para ela, ainda não aconteceu.
+        self.pulo.decidido_em = None;
         Ok(())
     }
 
     /// Se dá para gravar agora. Ver [`crate::machine::Machine::pode_salvar`].
     pub fn pode_salvar(&mut self) -> Result<(), String> {
         self.machine.pode_salvar()
+    }
+
+    /// Se dá para marcar um ponto do rewind agora: o que o [`Session::pode_salvar`] pede, e
+    /// nenhum arquivo aberto para escrita. Ver [`crate::machine::Machine::tem_arquivo_para_escrita`].
+    pub fn pode_marcar_ponto(&mut self) -> Result<(), String> {
+        self.machine.pode_salvar()?;
+        match self.machine.tem_arquivo_para_escrita() {
+            true => Err("há um arquivo aberto para escrita".to_string()),
+            false => Ok(()),
+        }
+    }
+
+    /// Recomeça a medida contra o relógio do mundo: o tempo real que passou até aqui não é para o
+    /// jogo correr atrás. É o que o fim do rewind pede — o jogo ficou parado enquanto ele voltava.
+    pub fn recomeca_o_relogio(&mut self) {
+        self.ancora();
+    }
+
+    /// Cala o som, à parte do fast-forward: o rewind volta pontos sem o jogo andar, e o que a
+    /// placa toca nesse meio tempo é o resto do ponto anterior.
+    pub fn cala(&mut self, calado: bool) {
+        if self.som_do_avanco.calado == calado {
+            return;
+        }
+        self.som_do_avanco.calado = calado;
+        let ritmo = self.som_do_avanco.enviado.map_or(1.0, |(ritmo, _)| ritmo);
+        let abafado = calado || self.som_do_avanco.abafado_pelo_ritmo;
+        self.som_do_avanco.enviado = Some((ritmo, abafado));
+        #[cfg(feature = "audio")]
+        if let Some(audio) = &self.audio {
+            audio.mixer().define_avanco(ritmo, abafado);
+        }
     }
 
     /// Assinatura do conteúdo da tela, para o frontend evitar reenvio de quadro repetido.
@@ -1405,10 +1844,11 @@ impl Session {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    fn sessao_minima_para_save_state() -> Session {
+    /// Uma sessão sem jogo, com memória mínima: o bastante para gravar e restaurar estado.
+    pub(crate) fn sessao_minima_para_save_state() -> Session {
         let mut mem = crate::cpu::mem::GuestMemory::new();
         let mut codigo = 0xe12f_ff1eu32.to_le_bytes().to_vec(); // bx lr
         codigo.resize(0x1000, 0);
@@ -1449,6 +1889,10 @@ mod tests {
             intermediario: None,
             started: agora,
             clock_base: clock_ms,
+            proporcao: Some(1.0),
+            pulo: PuloDaSessao::default(),
+            som_do_avanco: SomDoAvanco::default(),
+            turbo: TurboDaSessao::default(),
             stopped: None,
             window,
             sample: Sample::default(),
@@ -1488,6 +1932,67 @@ mod tests {
         assert_eq!(sessao.sample.ips, 0);
         assert!(sessao.intermediario.is_none());
         assert!(sessao.stopped.is_none());
+    }
+
+    /// Trocar de proporção recomeça a medição: soltar o fast-forward não pode deixar o jogo
+    /// "adiantado" por tudo o que ele ganhou, nem ligá-lo cobrar um atraso que não existia.
+    #[test]
+    fn trocar_a_proporcao_reancora_o_relogio() {
+        let mut sessao = sessao_minima_para_save_state();
+        // Trinta segundos reais sem o jogo andar: a 1x, isso é atraso.
+        sessao.started = Instant::now() - Duration::from_secs(30);
+        assert!(sessao.adiantamento_ms() < -29_000);
+
+        sessao.ajusta_proporcao(Some(3.0));
+        assert_eq!(sessao.proporcao, Some(3.0));
+        assert_eq!(sessao.ahead_ms(), 0);
+        assert!(sessao.atraso_ms() < 100);
+
+        // Sem freio não há meta: nem adiantado, nem atrasado.
+        sessao.ajusta_proporcao(None);
+        sessao.clock_base = 0;
+        sessao.started = Instant::now() - Duration::from_secs(30);
+        assert_eq!(sessao.adiantamento_ms(), 0);
+
+        // A mesma proporção não reancora: a medição continua de onde estava.
+        sessao.ajusta_proporcao(Some(1.0));
+        let antes = sessao.started;
+        sessao.ajusta_proporcao(Some(1.0));
+        assert_eq!(sessao.started, antes);
+    }
+
+    /// O turbo entra por cima do controle cru, na fase do relógio do jogo, e sai quando a máscara
+    /// zera — sem mexer no que o jogador segura.
+    #[test]
+    fn o_turbo_pulsa_por_cima_do_controle_cru() {
+        let mut sessao = sessao_minima_para_save_state();
+        let b1 = Pad::button_by_name("b1").unwrap();
+        let up = Pad::button_by_name("up").unwrap();
+        let mut cru = Pad::default();
+        cru.press(up, true);
+
+        sessao.define_turbo(0, 1 << b1);
+        sessao.set_port_pad(0, cru);
+        // O relógio da máquina nova está no começo de um período: a fase é "apertado".
+        assert!(crate::velocidade::turbo::fase_apertada(sessao.machine.clock_ms(), 10));
+        let visto = sessao.machine.pad_da_porta(0);
+        assert!(visto.is_down(b1), "o botão que pulsa está apertado nesta fase");
+        assert!(visto.is_down(up), "o que o jogador segura continua");
+
+        sessao.define_turbo(0, 0);
+        let visto = sessao.machine.pad_da_porta(0);
+        assert!(!visto.is_down(b1), "sem turbo, volta ao cru");
+        assert!(visto.is_down(up));
+    }
+
+    #[test]
+    fn o_teto_de_quadros_cresce_com_a_proporcao() {
+        assert_eq!(teto_de_quadros(Some(1.0)), QUADROS_POR_VOLTA);
+        // Abaixo de 1x não encolhe: recuperar atraso continua precisando dos mesmos quadros.
+        assert_eq!(teto_de_quadros(Some(0.5)), QUADROS_POR_VOLTA);
+        assert_eq!(teto_de_quadros(Some(3.0)), 3 * QUADROS_POR_VOLTA);
+        assert_eq!(teto_de_quadros(Some(2.5)), 10);
+        assert_eq!(teto_de_quadros(None), u32::MAX);
     }
 
 /// **O motor desenha no framebuffer que o frontend entrega, e o teste prova isso.**

@@ -22,6 +22,8 @@ pub struct Sobreposicao {
     /// somado ao controle físico, e não escrito por cima dele: tirar o dedo da tela não pode
     /// soltar um botão que está apertado no controle.
     pub botoes: u32,
+    /// As peças de atalho que os dedos seguram: o turbo, o fast-forward e o rewind.
+    pub atalhos: toque::Atalhos,
     /// O último aperto veio de um controle físico. No modo automático, isso esconde as peças.
     pub controle_fisico: bool,
     /// O dedo que segura cada manche, pelo id que o Android dá a ele, na ordem de [`MANCHES`].
@@ -60,6 +62,7 @@ impl Sobreposicao {
     /// aplicativo perdeu o foco — com um dedo ainda em cima de uma peça.
     pub fn solta(&mut self) {
         self.botoes = 0;
+        self.atalhos = toque::Atalhos::default();
         self.manches = [None; 2];
         self.eixos = [0.0; 4];
     }
@@ -129,6 +132,7 @@ impl Sobreposicao {
             }
         }
         // O dedo de um manche não aperta botão, nem quando passa por cima de um.
+        self.atalhos = toque::atalhos(&self.elementos, livres.iter().copied());
         self.botoes = toque::botoes(&self.elementos, livres);
     }
 }
@@ -148,6 +152,7 @@ fn desenha(
     pincel: &egui::Painter,
     elementos: &[Elemento],
     apertados: u32,
+    atalhos: toque::Atalhos,
     eixos: [f32; 4],
     opacidade: u8,
     destaque: Option<Peca>,
@@ -246,9 +251,14 @@ fn desenha(
                 }
             }
             peca => {
-                let apertado = peca
-                    .indice()
-                    .is_some_and(|indice| apertados & (1 << indice) != 0);
+                let apertado = match peca {
+                    Peca::Turbo => atalhos.turbo,
+                    Peca::Avancar => atalhos.avancar,
+                    Peca::Voltar => atalhos.voltar,
+                    _ => peca
+                        .indice()
+                        .is_some_and(|indice| apertados & (1 << indice) != 0),
+                };
                 let cor = match apertado {
                     true => aceso,
                     false => fundo,
@@ -290,8 +300,11 @@ impl Emulador {
             self.sobreposicao.elementos.clear();
             return;
         }
-        self.sobreposicao.elementos =
+        let mut elementos =
             toque::monta(tamanho(ctx), ajustes.escala, &ajustes.posicoes, &ajustes.tamanhos);
+        // As peças de atalho só com a função em uso: ver `ControlesNaTela::mostra`.
+        elementos.retain(|elemento| ajustes.mostra(elemento.peca, &self.settings));
+        self.sobreposicao.elementos = elementos;
         let pincel = ctx.layer_painter(egui::LayerId::new(
             egui::Order::Foreground,
             egui::Id::new("controles-na-tela"),
@@ -300,6 +313,7 @@ impl Emulador {
             &pincel,
             &self.sobreposicao.elementos,
             self.sobreposicao.botoes,
+            self.sobreposicao.atalhos,
             self.sobreposicao.eixos,
             ajustes.opacidade,
             None,
@@ -333,11 +347,18 @@ impl Emulador {
                 egui::Color32::from_gray(150),
             );
 
+            // No editor só as peças que o jogo mostra: arrumar um botão que não aparece não ajuda
+            // ninguém. Ver `ControlesNaTela::mostra`.
+            let visiveis: Vec<Peca> = Peca::TODAS
+                .into_iter()
+                .filter(|&peca| self.settings.controles_na_tela.mostra(peca, &self.settings))
+                .collect();
             let ajustes = &mut self.settings.controles_na_tela;
             let resposta =
                 ui.interact(area, egui::Id::new("editor-de-toque"), egui::Sense::click_and_drag());
-            let elementos =
+            let mut elementos =
                 toque::monta(tela, ajustes.escala, &ajustes.posicoes, &ajustes.tamanhos);
+            elementos.retain(|elemento| visiveis.contains(&elemento.peca));
 
             // Um toque escolhe a peça; no vazio, desfaz a escolha.
             if resposta.clicked()
@@ -376,12 +397,14 @@ impl Emulador {
 
             // No editor as peças aparecem mesmo com a opacidade lá embaixo: ninguém arrasta o que
             // não enxerga.
-            let elementos =
+            let mut elementos =
                 toque::monta(tela, ajustes.escala, &ajustes.posicoes, &ajustes.tamanhos);
+            elementos.retain(|elemento| visiveis.contains(&elemento.peca));
             desenha(
                 ui.painter(),
                 &elementos,
                 0,
+                toque::Atalhos::default(),
                 [0.0; 4],
                 ajustes.opacidade.max(70),
                 self.escolhida,

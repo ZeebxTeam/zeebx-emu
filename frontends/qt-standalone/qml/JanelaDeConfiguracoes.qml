@@ -143,7 +143,9 @@ ApplicationWindow {
 
         TabButton { text: janela.tr("settings.tab.general") }
         TabButton { text: janela.tr("settings.tab.controls") }
+        TabButton { text: janela.tr("settings.tab.shortcuts") }
         TabButton { text: janela.tr("settings.tab.graphics") }
+        TabButton { text: janela.tr("settings.tab.speed") }
         TabButton { text: janela.tr("settings.tab.audio") }
         TabButton { text: janela.tr("settings.tab.debug") }
         TabButton { text: janela.tr("settings.tab.about") }
@@ -733,6 +735,31 @@ ApplicationWindow {
                             }
                         }
 
+                        // O turbo da porta: o modo e o botão padrão são do jogador; os toques por
+                        // segundo, de todos. A tecla de turbo é a última linha da grade acima. Ver
+                        // `docs/implementacao/24-velocidade.md`.
+                        Titulo { text: janela.tr("turbo") }
+                        Dica { text: janela.tr("turbo.hint") }
+                        Repeater {
+                            model: [["turbo.mode", "turbo.mode"], ["turbo.button", "turbo.button"], ["turbo.rate", "turbo.rate"]]
+
+                            RowLayout {
+                                required property var modelData
+
+                                Label {
+                                    Layout.preferredWidth: 180
+                                    text: janela.tr(modelData[1])
+                                }
+                                ComboBox {
+                                    Layout.preferredWidth: 280
+                                    focusPolicy: Qt.NoFocus
+                                    model: janela.depende([Idioma.versao], cfg.opcoes(modelData[0]))
+                                    currentIndex: janela.depende([cfg.versao, cfg.portaEditada], cfg.valor(modelData[0]))
+                                    onActivated: (indice) => janela.define(modelData[0], indice)
+                                }
+                            }
+                        }
+
                         Label {
                             readonly property string motivo: janela.depende([cfg.versao, abaDeControles.tique], cfg.recusa(false))
                             Layout.fillWidth: true
@@ -788,45 +815,129 @@ ApplicationWindow {
 
                         Dica {
                             Layout.topMargin: 12
+                            Layout.bottomMargin: 16
                             text: janela.tr("controls.players_note")
                         }
+                    }
+                }
+            }
+        }
 
-                        // Os atalhos da janela do jogo. A tecla vem pelo mesmo teclado desta aba;
-                        // a captura recusa o que já tem dono. Ver `docs/implementacao/22-screenshots.md`.
-                        Titulo { text: janela.tr("controls.shortcuts") }
-                        Dica { text: janela.tr("controls.shortcuts.hint") }
+        // Atalhos: todas as teclas da janela do jogo num lugar só, como o "Hotkey Settings" do
+        // Dolphin — as trocáveis, e as fixas só para ler. A tecla vem do teclado desta janela, e o
+        // botão de controle de um relógio próprio: o controle não gera evento no Qt.
+        ScrollView {
+            id: abaDeAtalhos
+
+            readonly property bool aVista: janela.visible && abas.currentIndex === 2
+            property int tique: 0
+
+            contentWidth: availableWidth
+
+            Timer {
+                interval: 33
+                repeat: true
+                running: abaDeAtalhos.aVista
+                onTriggered: {
+                    cfg.leAtalhoDoControle()
+                    abaDeAtalhos.tique += 1
+                }
+            }
+            onAVistaChanged: if (aVista) tecladoDosAtalhos.forceActiveFocus()
+
+            // O mesmo teclado da aba de controles: com uma captura aberta, a tecla vira o atalho.
+            FocusScope {
+                id: tecladoDosAtalhos
+
+                width: abaDeAtalhos.availableWidth
+                implicitHeight: atalhos.implicitHeight + 32
+                focus: true
+                Keys.onPressed: (evento) => {
+                    if (!evento.isAutoRepeat)
+                        cfg.tecla(evento.key, true)
+                    evento.accepted = true
+                }
+                Keys.onReleased: (evento) => {
+                    if (!evento.isAutoRepeat)
+                        cfg.tecla(evento.key, false)
+                    evento.accepted = true
+                }
+
+                ColumnLayout {
+                    id: atalhos
+
+                    width: parent.width - 32
+                    x: 16
+                    y: 12
+                    spacing: 6
+
+                    Dica {
+                        text: janela.tr("controls.shortcuts.hint")
+                    }
+
+                    Repeater {
+                        model: [
+                            ["screenshot", "controls.shortcut.screenshot", "controls.shortcut.waiting", "controls.shortcut.reset"],
+                            ["avancar", "controls.shortcut.fast_forward", "controls.shortcut.waiting_any", "controls.shortcut.reset_ff"],
+                            ["voltar", "controls.shortcut.rewind", "controls.shortcut.waiting_any", "controls.shortcut.reset_rewind"]
+                        ]
+
                         RowLayout {
-                            readonly property bool esperando: janela.depende([abaDeControles.tique], cfg.capturandoAtalho())
+                            required property var modelData
+                            readonly property bool esperando: janela.depende([abaDeAtalhos.tique], cfg.capturandoAtalho(modelData[0]))
 
                             Label {
                                 Layout.preferredWidth: 180
-                                text: janela.tr("controls.shortcut.screenshot")
+                                text: janela.tr(modelData[1])
                             }
                             Label {
-                                Layout.preferredWidth: 80
+                                Layout.preferredWidth: 160
+                                elide: Text.ElideRight
                                 font.family: "monospace"
-                                text: janela.depende([cfg.versao], cfg.atalhoDeScreenshot())
+                                text: janela.depende([cfg.versao], cfg.atalho(modelData[0]))
                             }
                             Button {
                                 focusPolicy: Qt.NoFocus
                                 checkable: true
                                 checked: parent.esperando
-                                text: janela.tr(parent.esperando ? "controls.shortcut.waiting" : "controls.shortcut.change")
-                                onClicked: cfg.capturaAtalho()
+                                text: janela.tr(parent.esperando ? modelData[2] : "controls.shortcut.change")
+                                onClicked: cfg.capturaAtalho(modelData[0])
                             }
                             Button {
                                 focusPolicy: Qt.NoFocus
-                                text: janela.tr("controls.shortcut.reset")
-                                onClicked: cfg.restauraAtalho()
+                                text: janela.tr(modelData[3])
+                                onClicked: cfg.restauraAtalho(modelData[0])
                             }
                         }
-                        Label {
-                            readonly property string motivo: janela.depende([cfg.versao, abaDeControles.tique], cfg.recusa(true))
-                            Layout.fillWidth: true
-                            Layout.bottomMargin: 16
-                            wrapMode: Text.Wrap
-                            color: "#e0a030"
-                            text: motivo
+                    }
+                    Label {
+                        readonly property string motivo: janela.depende([cfg.versao, abaDeAtalhos.tique], cfg.recusa(true))
+                        Layout.fillWidth: true
+                        wrapMode: Text.Wrap
+                        color: "#e0a030"
+                        text: motivo
+                    }
+
+                    Titulo { text: janela.tr("controls.shortcut.fixed") }
+                    Repeater {
+                        model: [
+                            ["controls.shortcut.quit", "Esc"],
+                            ["controls.shortcut.pause", "P"],
+                            ["controls.shortcut.fullscreen", "F11 · Alt+Enter"]
+                        ]
+
+                        RowLayout {
+                            required property var modelData
+
+                            Label {
+                                Layout.preferredWidth: 180
+                                text: janela.tr(modelData[0])
+                            }
+                            Label {
+                                font.family: "monospace"
+                                opacity: 0.6
+                                text: modelData[1]
+                            }
                         }
                     }
                 }
@@ -881,11 +992,6 @@ ApplicationWindow {
                     chave: "graphics.keep_aspect"
                     rotulo: "graphics.keep_aspect"
                 }
-                Opcao {
-                    chave: "graphics.speed_limit"
-                    rotulo: "graphics.speed_limit"
-                    dica: "graphics.speed_limit.hint"
-                }
                 // O "pôr o quadro na tela pelo GL" do egui não aparece aqui: a janela Qt sempre
                 // põe o quadro pelo scene graph, com a textura da placa quando há uma.
                 Opcao {
@@ -936,6 +1042,70 @@ ApplicationWindow {
                         Layout.bottomMargin: 16
                         text: janela.tr("graphics.anisotropic.hint")
                     }
+                }
+            }
+        }
+
+        // Velocidade: o ritmo do jogo contra o relógio do mundo. Ver
+        // `docs/implementacao/24-velocidade.md`.
+        ScrollView {
+            contentWidth: availableWidth
+
+            ColumnLayout {
+                width: parent.width - 32
+                x: 16
+                spacing: 6
+
+                Escolha {
+                    Layout.topMargin: 12
+                    chave: "speed.fps_limit"
+                    rotulo: "speed.fps_limit"
+                }
+                Dica { text: janela.tr("speed.fps_limit.hint") }
+                Escolha {
+                    Layout.topMargin: 12
+                    chave: "speed.frameskip"
+                    rotulo: "speed.frameskip"
+                }
+                Dica { text: janela.tr("speed.frameskip.hint") }
+
+                Titulo { text: janela.tr("speed.ff") }
+                Dica { text: janela.tr("speed.ff.hint") }
+                Escolha {
+                    chave: "speed.ff.ratio"
+                    rotulo: "speed.ff.ratio"
+                }
+                Escolha {
+                    chave: "speed.ff.mode"
+                    rotulo: "speed.ff.mode"
+                }
+                Opcao {
+                    chave: "speed.ff.mute"
+                    rotulo: "speed.ff.mute"
+                    dica: "speed.ff.mute.hint"
+                }
+
+                Titulo { text: janela.tr("speed.rewind") }
+                Opcao {
+                    chave: "speed.rewind.on"
+                    rotulo: "speed.rewind.on"
+                    dica: "speed.rewind.on.hint"
+                }
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    Layout.bottomMargin: 16
+                    enabled: janela.v("speed.rewind.on")
+                    spacing: 6
+
+                    Escolha {
+                        chave: "speed.rewind.interval"
+                        rotulo: "speed.rewind.interval"
+                    }
+                    Escolha {
+                        chave: "speed.rewind.memory"
+                        rotulo: "speed.rewind.memory"
+                    }
+                    Dica { text: janela.tr("speed.rewind.memory.hint") }
                 }
             }
         }

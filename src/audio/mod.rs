@@ -140,10 +140,12 @@ impl Voice {
         at(index) + (at(index + 1) - at(index)) * fraction
     }
 
-    /// Avança um quadro da placa, tratando o fim do som e a repetição.
-    fn advance(&mut self) {
-        self.position += self.step;
-        self.tocados += self.step;
+    /// Avança um quadro da placa, tratando o fim do som e a repetição. `ritmo` é a velocidade do
+    /// jogo: ver [`Mixer::define_avanco`].
+    fn advance(&mut self, ritmo: f64) {
+        let passo = self.step * ritmo;
+        self.position += passo;
+        self.tocados += passo;
         if (self.position as usize) < self.sound.frames() {
             return;
         }
@@ -168,9 +170,9 @@ impl Voice {
     /// **Os dois caminhos da mixagem usam este passo** — o audível e o mudo. O mudo também precisa
     /// consumir a descida: sem isso a voz nunca chegaria ao fim ali, e o teste que cobra "o som
     /// andou até o fim" pegou exatamente isso.
-    fn passo(&mut self) {
+    fn passo(&mut self, ritmo: f64) {
         match self.descida {
-            0 => self.advance(),
+            0 => self.advance(ritmo),
             1 => {
                 self.done = true;
                 // **Uma voz que morre antes do fim do som é um corte**, e é o sintoma exato que se
@@ -234,9 +236,11 @@ struct Stream {
 }
 
 impl Stream {
-    /// Avança um quadro da placa e devolve o quadro estéreo daquele instante.
-    fn next_frame(&mut self) -> [f32; 2] {
-        self.fraction += self.step;
+    /// Avança um quadro da placa e devolve o quadro estéreo daquele instante. `ritmo` é a
+    /// velocidade do jogo: a 3x o jogo entrega o triplo de amostras, e a placa as consome no
+    /// mesmo passo, sem a fila crescer até o teto e descartar.
+    fn next_frame(&mut self, ritmo: f64) -> [f32; 2] {
+        self.fraction += self.step * ritmo;
         while self.fraction >= 1.0 {
             self.fraction -= 1.0;
             self.previous = self.current;
@@ -286,6 +290,12 @@ struct State {
     master: f32,
     muted: bool,
     rate: u32,
+    /// A velocidade do jogo em relação ao console: 1 fora do fast-forward. Ver
+    /// [`Mixer::define_avanco`].
+    ritmo: f64,
+    /// Calado pelo fast-forward, à parte do `muted` do usuário: soltar o avanço não pode ligar um
+    /// som que o usuário desligou.
+    abafado: bool,
 }
 
 /// O mixer, compartilhado entre o emulador e a linha de execução de áudio.
@@ -306,6 +316,7 @@ impl Mixer {
                 rate,
                 master,
                 muted,
+                ritmo: 1.0,
                 ..State::default()
             })),
         }
@@ -467,6 +478,21 @@ impl Mixer {
         }
     }
 
+    /// A velocidade do jogo, para o som andar junto com ele, e se o fast-forward o cala.
+    ///
+    /// **O som é puxado pelo relógio da placa, e não pelo do jogo.** A placa pede amostras no
+    /// ritmo do mundo; a 3x o jogo tocaria a música em 1x e entregaria os efeitos três vezes mais
+    /// juntos, e o fim de cada som — que o jogo mede pelo relógio virtual — chegaria antes de o
+    /// mixer tocá-lo inteiro. Multiplicar o passo de cada voz e de cada fluxo pela velocidade faz
+    /// o som acompanhar o jogo, mais agudo, como uma fita acelerada. Fora do fast-forward o
+    /// ritmo é exatamente 1, e nada muda. Ver `docs/implementacao/24-velocidade.md`.
+    pub fn define_avanco(&self, ritmo: f32, abafado: bool) {
+        if let Ok(mut state) = self.state.lock() {
+            state.ritmo = f64::from(ritmo.clamp(0.1, 16.0));
+            state.abafado = abafado;
+        }
+    }
+
     /// Um mixer sem placa nenhuma, para gravar em arquivo o que sairia pelo alto-falante.
     ///
     /// Existe para poder **conferir** o som: sem isto, a única forma de saber se o áudio está
@@ -490,16 +516,17 @@ impl Mixer {
         let Ok(mut state) = self.state.lock() else {
             return;
         };
-        let master = match state.muted {
+        let master = match state.muted || state.abafado {
             true => 0.0,
             false => state.master,
         };
+        let ritmo = state.ritmo;
         if master == 0.0 {
             // Mudo ainda consome as vozes: o som continua correndo, só não sai.
             for voice in state.voices.values_mut() {
                 if !voice.paused && !voice.done {
                     for _ in 0..frames {
-                        voice.passo();
+                        voice.passo(ritmo);
                     }
                 }
             }
@@ -507,7 +534,7 @@ impl Mixer {
             for stream in state.streams.values_mut() {
                 if !stream.paused {
                     for _ in 0..frames {
-                        stream.next_frame();
+                        stream.next_frame(ritmo);
                     }
                 }
             }
@@ -529,7 +556,7 @@ impl Mixer {
                 }
                 // Depois de começar a descida, o som não avança mais: o que se ouve é o último
                 // valor, cada vez menor. Quando a descida acaba, a voz sai.
-                voice.passo();
+                voice.passo(ritmo);
             }
         }
         for stream in state.streams.values_mut() {
@@ -538,7 +565,7 @@ impl Mixer {
             }
             let gain = stream.volume * master;
             for frame in out.chunks_mut(channels) {
-                let stereo = stream.next_frame();
+                let stereo = stream.next_frame(ritmo);
                 for (channel, slot) in frame.iter_mut().enumerate() {
                     *slot += stereo[channel.min(1)] * gain;
                 }
@@ -787,6 +814,37 @@ mod tests {
                 "canais {canais}: tocou {total} quadros, esperado {esperado} (som de {quadros})"
             );
         }
+    }
+
+    /// A 3x a voz acaba na terça parte do tempo, que é quando o jogo — pelo relógio virtual —
+    /// acha que ela acabou. E o abafado do avanço cala sem parar a voz.
+    #[test]
+    fn no_avanco_a_voz_anda_na_velocidade_do_jogo() {
+        let quadros = 9_000usize;
+        let som = Arc::new(Sound {
+            samples: vec![0.5; quadros],
+            rate: 9_000,
+            channels: 1,
+        });
+        let mixer = mixer(9_000);
+        mixer.define_avanco(3.0, true);
+        mixer.play(4, som, 1.0, 1);
+        assert!(mixer.render(10).iter().all(|&s| s == 0.0), "abafado não soa");
+        let mut total = 10usize;
+        while mixer.is_playing(4) && total < 40_000 {
+            let _ = mixer.render(100);
+            total += 100;
+        }
+        let esperado = quadros / 3 + DESCIDA_FRAMES as usize;
+        assert!(
+            total.abs_diff(esperado) <= 100,
+            "tocou {total} quadros, esperado {esperado}"
+        );
+
+        // Fora do avanço, de volta a 1 e audível.
+        mixer.define_avanco(1.0, false);
+        mixer.play(5, tone(9_000, 100), 1.0, 1);
+        assert!(mixer.render(4).iter().all(|&s| s > 0.9));
     }
 
     #[test]

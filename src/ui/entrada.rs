@@ -13,6 +13,7 @@ use crate::input::gamepads::Gamepads;
 use crate::input::sensores::{EstadoDoSensor, Sensores};
 use crate::input::wiimote::{EstadoWiimote, Wiimotes};
 use crate::input::{PORTAS, Pad};
+use crate::ui::settings::Atalhos;
 
 /// O VID da Nintendo, cujos controles têm o comprimento no Y. Ver
 /// [`EntradaDoDesktop::movimento_da_porta`].
@@ -91,19 +92,61 @@ impl EntradaDoDesktop {
     ///
     /// Uma porta desligada não entra: o que sai daqui são os pares `(porta, controle)` das que
     /// estão ligadas, e é o que a sessão entrega ao jogo.
-    pub fn pads(&mut self, controles: &Controls, teclas: &HashSet<egui::Key>) -> Vec<(usize, Pad)> {
+    ///
+    /// O que é de atalho — ver [`Atalhos::reservadas`] — não entra: a tecla ou o botão do
+    /// fast-forward não aperta nada no jogo.
+    pub fn pads(
+        &mut self,
+        controles: &Controls,
+        atalhos: &Atalhos,
+        teclas: &HashSet<egui::Key>,
+    ) -> Vec<(usize, Pad)> {
         self.gamepads.poll();
         controles
             .ligadas()
-            .map(|(porta, _)| (porta, self.pad(controles, porta, teclas)))
+            .map(|(porta, _)| (porta, self.pad(controles, atalhos, porta, teclas)))
             .collect()
+    }
+
+    /// Se a tecla de turbo de cada porta está apertada: a tecla do teclado, ou o botão do controle
+    /// daquela porta. Ver [`crate::velocidade::turbo::BOTAO_DO_TURBO`].
+    pub fn turbos(&self, controles: &Controls, teclas: &HashSet<egui::Key>) -> [bool; PORTAS] {
+        std::array::from_fn(|porta| {
+            let Some(jogador) = controles.player(porta).filter(|j| j.ligada) else {
+                return false;
+            };
+            let device = jogador.device.as_deref();
+            let wiimote = self.wiimote_da_porta(controles, porta);
+            jogador
+                .sources(crate::velocidade::turbo::BOTAO_DO_TURBO)
+                .iter()
+                .any(|fonte| {
+                    tecla_apertada(fonte, teclas)
+                        || self.gamepads.is_active(device, porta, fonte)
+                        || wiimote.is_some_and(|w| w.fonte_acionada(fonte))
+                })
+        })
+    }
+
+    /// Se algum dos atalhos `fontes` está apertado agora: a tecla, ou o botão em qualquer
+    /// controle ligado. Quem chama já fez o `poll` da volta, no [`EntradaDoDesktop::pads`].
+    pub fn atalho_apertado(&self, fontes: &[Source], teclas: &HashSet<egui::Key>) -> bool {
+        fontes
+            .iter()
+            .any(|fonte| tecla_apertada(fonte, teclas) || self.gamepads.algum_ativo(fonte))
     }
 
     /// O estado do controle de uma porta, montado a partir do mapeamento dela.
     ///
     /// O teclado e o controle são consultados juntos: quem tem os dois pode usar os dois, e é
     /// isso que ter mais de uma origem por botão significa.
-    pub fn pad(&self, controles: &Controls, porta: usize, teclas: &HashSet<egui::Key>) -> Pad {
+    pub fn pad(
+        &self,
+        controles: &Controls,
+        atalhos: &Atalhos,
+        porta: usize,
+        teclas: &HashSet<egui::Key>,
+    ) -> Pad {
         let Some(player) = controles.player(porta) else {
             return Pad::default();
         };
@@ -114,9 +157,10 @@ impl EntradaDoDesktop {
         let wiimote = self.wiimote_da_porta(controles, porta);
         let mut pad = player.pad(
             |source| {
-                tecla_apertada(source, teclas)
-                    || gamepads.is_active(device, porta, source)
-                    || wiimote.is_some_and(|w| w.fonte_acionada(source))
+                !atalhos.reservadas().any(|reservada| reservada == source)
+                    && (tecla_apertada(source, teclas)
+                        || gamepads.is_active(device, porta, source)
+                        || wiimote.is_some_and(|w| w.fonte_acionada(source)))
             },
             |axis| gamepads.value(device, porta, axis),
         );

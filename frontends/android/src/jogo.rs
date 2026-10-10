@@ -12,6 +12,9 @@ use zeebx::ui::depuracao;
 use zeebx::ui::gpu;
 use zeebx::ui::settings::{Proporcao, Scaling};
 
+use zeebx::input::bindings::Source;
+use zeebx::velocidade::rewind::Leitura;
+
 use crate::Emulador;
 use crate::estado;
 use zeebx::session::FATIA_MAXIMA;
@@ -22,17 +25,54 @@ impl Emulador {
             return;
         };
 
-        // Com a pergunta na tela, ou em pausa, o jogo fica parado — inclusive o relógio, para
-        // ele não gastar o orçamento todo de uma vez quando voltar.
-        let parado = self.confirmando || self.pausado;
+        // Os atalhos da sessão: a peça na tela, ou o botão do controle físico ligado a eles nos
+        // ajustes. O rewind vem antes de tudo: voltando, o jogo não anda e o fast-forward fica
+        // suspenso. Ver `docs/implementacao/24-velocidade.md`.
+        let na_tela = self.sobreposicao.atalhos;
+        let fisico = |fontes: &[Source]| {
+            fontes.iter().any(|fonte| match fonte {
+                Source::Button { name } => self.fisicos.contains(name.as_str()),
+                _ => false,
+            })
+        };
+        let atalhos = &self.settings.atalhos;
+        let voltar = na_tela.voltar || fisico(&atalhos.voltar);
+        let avancar = na_tela.avancar || fisico(&atalhos.avancar);
+        let jogador = self.settings.controls.player(0);
+        let turbo_apertado = na_tela.turbo
+            || jogador.is_some_and(|j| fisico(j.sources(zeebx::velocidade::turbo::BOTAO_DO_TURBO)));
+        // As origens físicas dos atalhos não chegam ao jogo: ver `Atalhos::reservadas`.
+        let mut reservados = 0u32;
+        for fonte in atalhos.reservadas() {
+            if let Source::Button { name } = fonte
+                && self.fisicos.contains(name.as_str())
+                && let Some(indice) = crate::entrada::indice_do_botao(name)
+            {
+                reservados |= 1 << indice;
+            }
+        }
+        if !self.confirmando {
+            let leitura =
+                self.rewind
+                    .le(sessao, voltar, self.pausado, &self.settings.velocidade.rewind);
+            if leitura == Leitura::Soltou {
+                self.ultimo = Instant::now();
+            }
+        }
+
+        // Com a pergunta na tela, em pausa ou voltando, o jogo fica parado — inclusive o relógio,
+        // para ele não gastar o orçamento todo de uma vez quando voltar.
+        let parado = self.confirmando || self.pausado || self.rewind.voltando();
         if parado {
+            self.avancando = false;
             self.ultimo = Instant::now();
         } else {
             // O orçamento é o tempo real que passou desde o quadro anterior, preso ao teto: é
             // quanto o jogo precisa emular para acompanhar o relógio do mundo.
             let passou = self.ultimo.elapsed().min(FATIA_MAXIMA);
             self.ultimo = Instant::now();
-let mut pad = self.pad;
+            let mut pad = self.pad;
+            pad.buttons &= !reservados;
             pad.buttons |= self.sobreposicao.botoes;
             // O eixo da tela só vale onde o manche físico está parado: os dois juntos não se
             // somam, porque meio curso de cada um não é um curso inteiro de nenhum.
@@ -42,11 +82,23 @@ let mut pad = self.pad;
                 }
             }
             sessao.set_port_pad(0, pad);
+            // O turbo do jogador 1: quais botões pulsam sai daqui, e quando, do relógio do jogo.
+            let pulsando = match jogador {
+                Some(j) => self.turbo.pulsando(j.turbo, &j.botao_do_turbo, &pad, turbo_apertado),
+                None => 0,
+            };
+            sessao.define_toques_do_turbo(self.settings.velocidade.turbo_por_segundo);
+            sessao.define_turbo(0, pulsando);
             // O `egui` pintou no mesmo contexto desde o passo anterior, e o espelho de estado
             // da placa não sabe: sem avisar, o jogo desenharia com o viewport, a tesoura e a
             // mistura que a janela deixou. Ver `Session::retoma_o_contexto`.
             sessao.retoma_o_contexto();
-            if sessao.step(passou, self.settings.graphics.speed_limit) == Step::Stopped {
+            let avancando = self.avanco.atualiza(avancar, self.settings.velocidade.avanco.modo);
+            let ritmo = self.settings.velocidade.ritmo_com(avancando);
+            self.avancando = avancando;
+            let passo = sessao.anda(passou, &ritmo);
+            self.rewind.acompanha(sessao);
+            if passo == Step::Stopped {
                 let motivo = sessao.stopped_reason().unwrap_or_default();
                 let normal = sessao.saiu_normalmente();
                 log::info!("o jogo parou: {motivo}");
@@ -254,6 +306,7 @@ let mut pad = self.pad;
         });
 
         self.desenha_sobreposicao(ctx);
+        self.desenha_indicadores(ctx);
 
         if self.confirmando {
             self.pergunta(ctx);
@@ -488,6 +541,8 @@ let mut pad = self.pad;
             match resultado {
                 Ok(_) => {
                     log::info!("save state carregado do slot {}", slot + 1);
+                    // Os pontos do rewind são de outra linha do tempo.
+                    self.rewind.esquece_os_pontos();
                     // O estado do console voltou; a entrada física, porém, é o que está apertado
                     // agora, não o que estava apertado no instante salvo. Zerar evita que o botão
                     // usado para confirmar o Load entre no primeiro quadro restaurado.
@@ -581,5 +636,50 @@ fn caber(area: egui::Vec2, aspecto: f32) -> egui::Vec2 {
     match area.x / area.y.max(1.0) > aspecto {
         true => egui::vec2(area.y * aspecto, area.y),
         false => egui::vec2(area.x, area.x / aspecto),
+    }
+}
+
+impl Emulador {
+    /// O "◀◀", o "▶▶ 3x" e o "Turbo" por cima do jogo, no canto de cima à esquerda, enquanto
+    /// valem: um alternar esquecido ligado parece defeito do jogo. Os mesmos textos da janela do
+    /// desktop.
+    fn desenha_indicadores(&self, ctx: &egui::Context) {
+        let virgula = !self.catalogo.current().starts_with("en");
+        let rewind = self.rewind.indicador().map(|sem_pontos| match sem_pontos {
+            true => format!("◀◀ {}", self.catalogo.get("rewind.empty")),
+            false => "◀◀".to_string(),
+        });
+        let avanco = (self.avancando)
+            .then(|| self.sessao.as_ref().map(|sessao| sessao.sample().speed as f32 / 100.0))
+            .flatten()
+            .map(|alcancada| {
+                zeebx::velocidade::rotulo_do_avanco(
+                    self.settings.velocidade.avanco.proporcao(),
+                    alcancada,
+                    virgula,
+                )
+            });
+        let turbo = self.turbo.ligado().then(|| self.catalogo.get("turbo.on_screen").to_string());
+        let texto: Vec<String> = rewind.into_iter().chain(avanco).chain(turbo).collect();
+        if texto.is_empty() {
+            return;
+        }
+        egui::Area::new(egui::Id::new("indicadores"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(egui::pos2(16.0, 16.0))
+            .interactable(false)
+            .show(ctx, |ui| {
+                egui::Frame::NONE
+                    .fill(egui::Color32::from_black_alpha(200))
+                    .corner_radius(6.0)
+                    .inner_margin(egui::Margin::symmetric(12, 8))
+                    .show(ui, |ui| {
+                        ui.label(
+                            egui::RichText::new(texto.join("  ·  "))
+                                .strong()
+                                .color(egui::Color32::WHITE),
+                        );
+                    });
+            });
     }
 }

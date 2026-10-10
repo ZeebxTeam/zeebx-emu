@@ -169,7 +169,7 @@ fn gira(app: AndroidApp, emulador: &mut Emulador) {
 
         app.poll_events(espera, |evento| match evento {
             PollEvent::Main(MainEvent::InitWindow { .. }) => {
-                let limitar = emulador.settings.graphics.speed_limit;
+                let limitar = emulador.settings.velocidade.limite_fps.limita_velocidade();
                 let feita = match placa.as_mut() {
                     // A segunda janela em diante reaproveita o contexto: é o que mantém vivos
                     // os objetos de GL que a sessão criou.
@@ -205,6 +205,7 @@ fn gira(app: AndroidApp, emulador: &mut Emulador) {
                 // volta. No console, perder o aparelho equivale a soltar tudo.
                 emulador.pad = Pad::default();
                 emulador.sobreposicao.solta();
+                entrada.fisicos.clear();
                 visivel = false
             }
             PollEvent::Main(MainEvent::Destroy) => sair = true,
@@ -233,6 +234,11 @@ fn gira(app: AndroidApp, emulador: &mut Emulador) {
                 entrada.recebe(evento, &mut emulador.pad, sobreposicao);
                 InputStatus::Handled
             }) {}
+        }
+        // Os botões físicos para os atalhos, e o que desceu agora para uma captura aberta.
+        emulador.fisicos.clone_from(&entrada.fisicos);
+        if let Some(nome) = entrada.ultimo_fisico {
+            emulador.capturou_botao(nome);
         }
         // O "voltar" do Android vale em qualquer tela. O botão 2 do controle vale em todas menos
         // no jogo, onde ele é do jogador -- ali quem fecha é o "voltar" do aparelho.
@@ -271,7 +277,7 @@ fn gira(app: AndroidApp, emulador: &mut Emulador) {
             &primitivas,
             &saida.textures_delta,
             saida.pixels_per_point,
-            emulador.settings.graphics.speed_limit,
+            emulador.settings.velocidade.limite_fps.limita_velocidade(),
         );
     }
 
@@ -398,6 +404,21 @@ pub struct Emulador {
     /// Por que o último jogo não abriu, quando não abriu.
     erro: Option<String>,
     ultimo: Instant,
+    /// Os botões do controle físico apertados agora, pelo nome do desktop. Ver
+    /// [`entrada::Entrada::fisicos`].
+    fisicos: std::collections::HashSet<&'static str>,
+    /// O atalho do fast-forward, que se segura ou se alterna.
+    avanco: zeebx::velocidade::Interruptor,
+    /// Os pontos de retorno e o atalho do rewind.
+    rewind: zeebx::velocidade::rewind::ControleDoRewind,
+    /// O turbo do jogador 1, o único que o Android tem.
+    turbo: zeebx::velocidade::turbo::TurboDaPorta,
+    /// Se o fast-forward valeu na última volta, para o "▶▶" na tela.
+    avancando: bool,
+    /// O atalho esperando um botão do controle físico, na seção de ajustes.
+    capturando: Option<ajustes::AtalhoFisico>,
+    /// Um atalho acabou de ser capturado nesta rodada. Ver [`Emulador::capturou_botao`].
+    capturado_agora: bool,
 }
 
 impl Emulador {
@@ -482,6 +503,13 @@ impl Emulador {
             estado_mensagem: None,
             erro: None,
             ultimo: Instant::now(),
+            fisicos: Default::default(),
+            avanco: Default::default(),
+            rewind: Default::default(),
+            turbo: Default::default(),
+            avancando: false,
+            capturando: None,
+            capturado_agora: false,
         };
         emulador.recarrega();
         emulador
@@ -697,6 +725,11 @@ impl Emulador {
         self.confirmando = false;
         self.pausado = false;
         self.pad = Pad::default();
+        // Os pontos de retorno são do jogo que fechou; o alternar do turbo e do fast-forward
+        // não passam para o próximo.
+        self.rewind = Default::default();
+        self.avanco.desliga();
+        self.turbo.desliga();
         self.onde = Onde::Biblioteca;
     }
 

@@ -435,7 +435,7 @@ impl<C: CpuBackend> Machine<C> {
         };
         if let Some(cfg) = path {
             // Arquivo de perfil do emulador: mesma semântica de modo do caminho comum.
-            return self.open_resolved(guest_path, cfg, Self::open_options(mode));
+            return self.open_resolved(guest_path, cfg, mode);
         }
         // A partir daqui vale a resolução do VFS, que decide entre conteúdo e overlay e diz se
         // o arquivo do pacote precisa ser copiado antes de receber escrita.
@@ -484,9 +484,17 @@ impl<C: CpuBackend> Machine<C> {
         {
             let _ = std::fs::create_dir_all(parent);
         }
-        let options = Self::open_options(mode);
+        self.open_resolved(guest_path, path, mode)
+    }
 
-        self.open_resolved(guest_path, path, options)
+    /// Se o jogo tem algum arquivo aberto para escrita agora.
+    ///
+    /// **Um ponto do rewind não nasce no meio de uma gravação.** O estado guarda o arquivo aberto
+    /// pelo caminho e pelo deslocamento, e não pelo conteúdo (ver `save.rs`); voltar para o meio de
+    /// uma gravação faria o jogo continuar escrevendo de um deslocamento antigo por cima de um
+    /// arquivo que já mudou — o save do jogador. Ver `docs/implementacao/24-velocidade.md`.
+    pub fn tem_arquivo_para_escrita(&self) -> bool {
+        self.open_files.values().any(|aberto| aberto.escrita)
     }
 
     /// As opções de abertura equivalentes ao modo do BREW.
@@ -505,13 +513,14 @@ impl<C: CpuBackend> Machine<C> {
         options
     }
 
-    /// Abre `path` já resolvido e registra o `IFile`.
+    /// Abre `path` já resolvido, no modo do BREW, e registra o `IFile`.
     fn open_resolved(
         &mut self,
         guest_path: &str,
         path: std::path::PathBuf,
-        options: std::fs::OpenOptions,
+        mode: u32,
     ) -> Result<u32, CpuError> {
+        let options = Self::open_options(mode);
         let Ok(file) = options.open(&path) else {
             // O caminho do host e o erro do sistema entram no registro: "o jogo não conseguiu
             // abrir o save" não diz se o problema é o caminho resolvido, a permissão ou o modo.
@@ -538,6 +547,7 @@ impl<C: CpuBackend> Machine<C> {
                 file,
                 guest_path: guest_path.to_string(),
                 caminho: path,
+                escrita: mode & (OFM_CREATE | OFM_READWRITE | OFM_APPEND) != 0,
             },
         );
         self.file_error = SUCCESS;

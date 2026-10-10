@@ -182,6 +182,29 @@ Window {
         }
     }
 
+    // O fast-forward e o turbo ligado, no canto de cima à esquerda, enquanto valem: um alternar
+    // esquecido ligado parece defeito do jogo. Ver `docs/implementacao/24-velocidade.md`.
+    Rectangle {
+        anchors.left: tela.left
+        anchors.top: tela.top
+        anchors.margins: 16
+        width: textoDosIndicadores.implicitWidth + 24
+        height: textoDosIndicadores.implicitHeight + 16
+        visible: tela.indicadores !== ""
+        radius: 6
+        color: "#e6202020"
+        border.color: "#505050"
+
+        Text {
+            id: textoDosIndicadores
+
+            anchors.centerIn: parent
+            color: "white"
+            font.bold: true
+            text: tela.indicadores
+        }
+    }
+
     // O aviso do screenshot, no canto de cima, por dois segundos. É o Qt que o desenha por cima
     // do quadro, e por isso ele não entra no PNG, que vem do núcleo. Clicar abre a pasta do jogo.
     Rectangle {

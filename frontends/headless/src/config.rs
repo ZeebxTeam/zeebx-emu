@@ -14,6 +14,7 @@ use std::path::PathBuf;
 use zeebx::input::bindings::{Aparelho, AxisSource, Controls, Player, Source};
 use zeebx::registro::Ajuste;
 use zeebx::ui::settings::{Audio, Graphics, ModoDaJanela, Proporcao, Scaling, Settings};
+use zeebx::velocidade::{Frameskip, LimiteFps};
 
 use crate::ini::{Ini, Valor, sem_aspas};
 
@@ -358,7 +359,25 @@ pub fn de_texto(texto: &str) -> Lido {
     }
     booleano(&mut ini, "video", "smooth", &mut settings.graphics.smooth, &mut avisos);
     booleano(&mut ini, "video", "keep_aspect", &mut settings.graphics.keep_aspect, &mut avisos);
-    booleano(&mut ini, "video", "speed_limit", &mut settings.graphics.speed_limit, &mut avisos);
+    // `speed_limit` é o nome de antes do `fps_limit`, e continua aceito: um `config.ini` antigo
+    // com ele desligado segue sem freio. Quando os dois aparecem, vale o novo.
+    let mut limitado = settings.velocidade.limite_fps.limita_velocidade();
+    booleano(&mut ini, "video", "speed_limit", &mut limitado, &mut avisos);
+    if !limitado {
+        settings.velocidade.limite_fps = LimiteFps::Desligado;
+    }
+    if let Some(v) = ini.pega("video", "fps_limit") {
+        match LimiteFps::de_texto(&v.texto) {
+            Some(limite) => settings.velocidade.limite_fps = limite,
+            None => avisa(&mut avisos, &v, "fps_limit expects 60, 30 or off"),
+        }
+    }
+    if let Some(v) = ini.pega("video", "frameskip") {
+        match Frameskip::de_texto(&v.texto) {
+            Some(pulo) => settings.velocidade.frameskip = pulo,
+            None => avisa(&mut avisos, &v, "frameskip expects off, auto or a number from 1 to 6"),
+        }
+    }
     booleano(&mut ini, "video", "vsync", &mut headless.vsync, &mut avisos);
     if let Some(v) = ini.pega("video", "title") {
         headless.titulo = sem_aspas(&v.texto).to_string();
@@ -728,6 +747,7 @@ mod testes {
              scaling = integer\n\
              smooth = true\n\
              speed_limit = false\n\
+             frameskip = auto\n\
              [graphics]\n\
              gpu_rasterizer = true\n\
              internal_resolution = 2\n\
@@ -743,7 +763,8 @@ mod testes {
         assert_eq!(g.janela_do_jogo, ModoDaJanela::TelaCheia);
         assert_eq!(g.scaling, Scaling::Integer);
         assert!(g.smooth);
-        assert!(!g.speed_limit);
+        assert_eq!(lido.settings.velocidade.limite_fps, LimiteFps::Desligado);
+        assert_eq!(lido.settings.velocidade.frameskip, Frameskip::Automatico);
         assert!(g.gpu_rasterizer);
         assert_eq!(g.resolucao_interna, 2);
         assert_eq!(g.proporcao, Proporcao::Larga16x9);
@@ -754,6 +775,20 @@ mod testes {
         );
         assert_eq!(de_texto("[audio]\nsoundfont = -\n").settings.audio.soundfont, None);
         assert!(!lido.settings.audio.midi_effects);
+    }
+
+    /// O `fps_limit` vence o `speed_limit` antigo, e valor estranho avisa sem mudar nada.
+    #[test]
+    fn o_limite_de_quadros_e_o_frameskip() {
+        let lido = de_texto("[video]\nspeed_limit = false\nfps_limit = 30\nframeskip = 3\n");
+        assert!(lido.avisos.is_empty(), "{:?}", lido.avisos);
+        assert_eq!(lido.settings.velocidade.limite_fps, LimiteFps::Trinta);
+        assert_eq!(lido.settings.velocidade.frameskip, Frameskip::Fixo(3));
+
+        let lido = de_texto("[video]\nfps_limit = 120\nframeskip = 9\n");
+        assert_eq!(lido.avisos.len(), 2, "{:?}", lido.avisos);
+        assert_eq!(lido.settings.velocidade.limite_fps, LimiteFps::Sessenta);
+        assert_eq!(lido.settings.velocidade.frameskip, Frameskip::Desligado);
     }
 
     /// Citar a seção já liga a porta, e uma porta não citada fica como vem de fábrica.

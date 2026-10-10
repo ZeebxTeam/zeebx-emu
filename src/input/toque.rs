@@ -26,10 +26,16 @@ pub enum Peca {
     Zl,
     Zr,
     Home,
+    /// A tecla de turbo do jogador 1. Ver [`crate::velocidade::turbo`].
+    Turbo,
+    /// O fast-forward. Ver [`crate::velocidade::Avanco`].
+    Avancar,
+    /// O rewind. Ver [`crate::velocidade::rewind`].
+    Voltar,
 }
 
 impl Peca {
-    pub const TODAS: [Self; 10] = [
+    pub const TODAS: [Self; 13] = [
         Self::Direcional,
         Self::MancheEsquerdo,
         Self::MancheDireito,
@@ -40,6 +46,9 @@ impl Peca {
         Self::Zl,
         Self::Zr,
         Self::Home,
+        Self::Turbo,
+        Self::Avancar,
+        Self::Voltar,
     ];
 
     /// A chave da peça nas posições e nos tamanhos gravados. Não muda nunca: é o que está no
@@ -57,6 +66,9 @@ impl Peca {
             Self::Zl => "zl",
             Self::Zr => "zr",
             Self::Home => "home",
+            Self::Turbo => "turbo",
+            Self::Avancar => "avancar",
+            Self::Voltar => "voltar",
         }
     }
 
@@ -83,6 +95,9 @@ impl Peca {
             Self::Zl => "ZL",
             Self::Zr => "ZR",
             Self::Home => "HOME",
+            Self::Turbo => "TURBO",
+            Self::Avancar => "▶▶",
+            Self::Voltar => "◀◀",
         }
     }
 
@@ -93,7 +108,13 @@ impl Peca {
     /// os "superiores" de cada lado, e o HOME ocupa o `Back` — ver [`super::BUTTON_UIDS`].
     pub fn indice(self) -> Option<usize> {
         match self {
-            Self::Direcional | Self::MancheEsquerdo | Self::MancheDireito => None,
+            // O turbo, o fast-forward e o rewind não são botões do console: ver [`atalhos`].
+            Self::Direcional
+            | Self::MancheEsquerdo
+            | Self::MancheDireito
+            | Self::Turbo
+            | Self::Avancar
+            | Self::Voltar => None,
             Self::B1 => Some(0),
             Self::B2 => Some(1),
             Self::B3 => Some(2),
@@ -114,9 +135,10 @@ impl Peca {
         }
     }
 
-    /// Redonda ou pílula. Os gatilhos são pílulas, como no controle.
+    /// Redonda ou pílula. Os gatilhos são pílulas, como no controle, e as peças de atalho também:
+    /// não são botões do Zeebo, e não devem parecer.
     pub fn redonda(self) -> bool {
-        !matches!(self, Self::Zl | Self::Zr)
+        !matches!(self, Self::Zl | Self::Zr | Self::Turbo | Self::Avancar | Self::Voltar)
     }
 
     /// Metade da largura e da altura, em pontos, no tamanho de fábrica.
@@ -129,7 +151,8 @@ impl Peca {
             Self::MancheEsquerdo | Self::MancheDireito => [50.0, 50.0],
             Self::B1 | Self::B2 | Self::B3 | Self::B4 => [30.0, 30.0],
             Self::Zl | Self::Zr => [44.0, 22.0],
-            Self::Home => [30.0, 18.0],
+            Self::Home | Self::Avancar | Self::Voltar => [30.0, 18.0],
+            Self::Turbo => [34.0, 18.0],
         }
     }
 }
@@ -205,6 +228,18 @@ fn lugar_de_fabrica(peca: Peca, tela: [f32; 2], escala: f32) -> [f32; 2] {
         Peca::Zr => [largura - MARGEM - meio[0], MARGEM + meio[1]],
         // Em cima, no meio: embaixo é onde os manches moram.
         Peca::Home => [largura / 2.0, MARGEM / 2.0 + meio[1]],
+        // O rewind e o fast-forward ladeiam o HOME, longe dos polegares: são atalhos da sessão,
+        // e um toque sem querer no meio de uma luta voltaria ou aceleraria o jogo.
+        Peca::Voltar | Peca::Avancar => {
+            let home = Peca::Home.meio()[0] * escala;
+            let lado = match peca {
+                Peca::Voltar => -1.0,
+                _ => 1.0,
+            };
+            [largura / 2.0 + lado * (home + VAO * escala + meio[0]), MARGEM / 2.0 + meio[1]]
+        }
+        // O turbo fica em cima do losango, ao alcance do polegar que aperta os botões.
+        Peca::Turbo => [losango[0], losango[1] - passo - botao - VAO * escala - meio[1]],
     }
 }
 
@@ -333,6 +368,34 @@ fn aperta(elemento: &Elemento, dedo: [f32; 2]) -> u32 {
     }
 }
 
+/// As peças de atalho que os dedos seguram: o turbo, o fast-forward e o rewind. Como os
+/// [`botoes`], é só função de onde os dedos estão.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Atalhos {
+    pub turbo: bool,
+    pub avancar: bool,
+    pub voltar: bool,
+}
+
+pub fn atalhos(elementos: &[Elemento], dedos: impl IntoIterator<Item = [f32; 2]>) -> Atalhos {
+    let mut atalhos = Atalhos::default();
+    for dedo in dedos {
+        for elemento in elementos {
+            let dx = dedo[0] - elemento.centro[0];
+            let dy = dedo[1] - elemento.centro[1];
+            let [mx, my] = elemento.meio;
+            let dentro = dx.abs() <= mx * FOLGA && dy.abs() <= my * FOLGA;
+            match elemento.peca {
+                Peca::Turbo => atalhos.turbo |= dentro,
+                Peca::Avancar => atalhos.avancar |= dentro,
+                Peca::Voltar => atalhos.voltar |= dentro,
+                _ => {}
+            }
+        }
+    }
+    atalhos
+}
+
 /// O manche em que um dedo que acabou de encostar pegou, se pegou em algum.
 ///
 /// É só na descida que se pergunta: daí em diante o dedo é do manche até levantar, saia ele do
@@ -437,6 +500,24 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// As peças de atalho não apertam botão do console, e o dedo em cima delas é lido à parte.
+    #[test]
+    fn as_pecas_de_atalho_nao_apertam_botao() {
+        let elementos = fabrica();
+        for peca in [Peca::Turbo, Peca::Avancar, Peca::Voltar] {
+            let ponto = centro(&elementos, peca);
+            assert_eq!(botoes(&elementos, [ponto]), 0, "{peca:?}");
+        }
+        let lidos = atalhos(&elementos, [centro(&elementos, Peca::Avancar)]);
+        assert_eq!(lidos, Atalhos { avancar: true, ..Atalhos::default() });
+        let lidos = atalhos(
+            &elementos,
+            [centro(&elementos, Peca::Turbo), centro(&elementos, Peca::Voltar)],
+        );
+        assert_eq!(lidos, Atalhos { turbo: true, voltar: true, avancar: false });
+        assert_eq!(atalhos(&elementos, [centro(&elementos, Peca::B1)]), Atalhos::default());
     }
 
     #[test]
