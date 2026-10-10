@@ -21,6 +21,7 @@ use crate::ui::partida::{self, Abertura, Partida, Saida};
 use crate::ui::i18n::Catalog;
 use crate::ui::library::Game;
 use crate::ui::settings::{Scaling, Settings};
+use crate::velocidade::LimiteFps;
 use crate::video::display::Framebuffer;
 
 /// A tela do Zeebo.
@@ -1672,13 +1673,17 @@ impl App {
                 self.catalog.get("graphics.keep_aspect"),
             )
             .changed();
-        changed |= ui
-            .checkbox(
-                &mut graphics.speed_limit,
-                self.catalog.get("graphics.speed_limit"),
-            )
-            .changed();
-        ui.weak(self.catalog.get("graphics.speed_limit.hint"));
+        // O limite de quadros mora em `velocidade`, mas aqui fica onde o `speed_limit` ficava:
+        // o egui é legado e não ganha a aba nova do Qt.
+        ui.add_space(12.0);
+        ui.label(self.catalog.get("speed.fps_limit"));
+        for limite in LimiteFps::TODOS {
+            let rotulo = self.catalog.get(limite.chave()).to_string();
+            changed |= ui
+                .radio_value(&mut self.settings.velocidade.limite_fps, limite, rotulo)
+                .changed();
+        }
+        ui.weak(self.catalog.get("speed.fps_limit.hint"));
 
         ui.add_space(12.0);
         changed |= ui
@@ -2182,13 +2187,13 @@ impl App {
     /// O estado de cada porta ligada agora. Ver [`EntradaDoDesktop::pads`].
     fn pads_now(&mut self, ctx: &egui::Context) -> Vec<(usize, Pad)> {
         let teclas = ctx.input(|input| input.keys_down.clone());
-        self.entrada.pads(&self.settings.controls, &teclas)
+        self.entrada.pads(&self.settings.controls, &self.settings.atalhos, &teclas)
     }
 
     /// O estado do controle de uma porta. Ver [`EntradaDoDesktop::pad`].
     fn pad_of(&self, ctx: &egui::Context, porta: usize) -> Pad {
         let teclas = ctx.input(|input| input.keys_down.clone());
-        self.entrada.pad(&self.settings.controls, porta, &teclas)
+        self.entrada.pad(&self.settings.controls, &self.settings.atalhos, porta, &teclas)
     }
 
     fn wiimote_da_porta(&self, porta: usize) -> Option<crate::input::wiimote::EstadoWiimote> {
@@ -2287,9 +2292,22 @@ impl App {
         };
         let movimentos: [[f32; 3]; crate::input::PORTAS] =
             std::array::from_fn(|porta| self.movimento_da_porta(porta));
-        let limit = self.settings.graphics.speed_limit;
+        // O fast-forward, pelo mesmo atalho da janela Qt: a tecla, ou o botão de qualquer
+        // controle. O `pads_now` acima já leu os controles desta volta.
+        let teclas = ctx.input(|input| input.keys_down.clone());
+        let apertado = self.entrada.atalho_apertado(&self.settings.atalhos.avancar, &teclas);
+        let modo = self.settings.velocidade.avanco.modo;
+        let voltar = self.entrada.atalho_apertado(&self.settings.atalhos.voltar, &teclas);
         let Some(partida) = self.partida.as_mut() else {
             return true;
+        };
+        partida.le_o_rewind(voltar, &self.settings.velocidade.rewind);
+        let avancando = partida.le_o_avanco(apertado, modo);
+        let ritmo = self.settings.velocidade.ritmo_com(avancando);
+        let turbo = partida::TurboDaVolta {
+            apertado: self.entrada.turbos(&self.settings.controls, &teclas),
+            controles: &self.settings.controls,
+            toques_por_segundo: self.settings.velocidade.turbo_por_segundo,
         };
         if let Some(pads) = &pads {
             // Guardamos teclas físicas: soltar 4 enquanto a seta continua apertada
@@ -2321,7 +2339,8 @@ impl App {
                 pads,
                 movimentos,
                 self.teclado_apertado.iter().filter_map(|k| input::avk_de(*k)),
-                limit,
+                &ritmo,
+                &turbo,
             );
         }
         // O pedido de lançar vem antes da saída: ver [`Partida::pedido_de_lancamento`].
