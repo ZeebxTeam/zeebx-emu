@@ -16,7 +16,9 @@ authors = "ZeebxTeam"
 supported_extensions = "mod|zip|7z"
 corename = "Zeebx"
 # **`license`, no singular.** `licenses` não é lido por ninguém, e era o que estava aqui.
-license = "GPLv2+"
+# GPLv3, e não GPLv2+: o core liga crates que são só Apache-2.0 (`ab_glyph`, `sevenz-rust2`,
+# `zopfli`), e o binário só pode ser distribuído sob a GPLv3. O código continua GPLv2+.
+license = "GPLv3"
 permissions = ""
 # Acompanha a versão do crate. Ver o `version` do `Cargo.toml` da raiz.
 display_version = "0.4.1"

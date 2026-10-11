@@ -20,6 +20,7 @@ use zeebx::input::Pad;
 use zeebx::input::bindings::Aparelho;
 use zeebx::session::{Session, StartError, Step};
 use zeebx::storage::StoragePaths;
+use zeebx::velocidade::{ContadorDePulo, Frameskip, LimiteFps, Ritmo};
 
 /// Versão da ABI que este core implementa.
 const API_VERSION: u32 = 1;
@@ -726,11 +727,10 @@ struct Core {
     placa_ligada: bool,
     /// A política de frameskip escolhida agora — ver [`Frameskip`].
     frameskip: Frameskip,
-    /// Quantos quadros já se passaram desde o último desenhado de verdade, no modo fixo.
-    ///
-    /// É contador, e não paridade (`quadro % 2`), porque o fixo aceita qualquer razão — pular 3
-    /// a cada 4 é tão válido quanto pular 1 a cada 2 — e só um contador serve às duas.
-    frameskip_contador: u32,
+    /// A fase do pulo fixo e da meia apresentação dos 30 FPS: quantos quadros já se passaram
+    /// desde o último desenhado. É o mesmo contador da janela do desktop — ver
+    /// [`zeebx::velocidade::ContadorDePulo`].
+    pulo: ContadorDePulo,
     /// Se o `SET_AUDIO_BUFFER_STATUS_CALLBACK` já foi pedido ao frontend. Uma vez só: pedir de
     /// novo a cada quadro não muda a resposta, e a documentação do próprio Libretro pede
     /// moderação nesta chamada.
@@ -739,8 +739,6 @@ struct Core {
     frameskip_leitura_pixels_avisada: bool,
     /// Teto de velocidade escolhido — ver [`LimiteFps`].
     limite_fps: LimiteFps,
-    /// Fase da duplicação de apresentação do teto de 30 FPS.
-    limite_fps_contador: u32,
     /// Este quadro deve repetir a imagem anterior no callback de vídeo.
     ///
     /// Separado de `pula_desenho`: jogos 2D e jogos com `glReadPixels` podem não economizar
@@ -1986,60 +1984,6 @@ fn numero_de_texto(texto: &str, minimo: usize, maximo: usize) -> Option<usize> {
     Some(valor.clamp(minimo, maximo))
 }
 
-/// A política de frameskip do core.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-enum Frameskip {
-    #[default]
-    Desligado,
-    /// Pula `n` quadros a cada `n + 1` — `1` é metade, `2` é um terço, e por aí adiante.
-    Fixo(u32),
-    /// Decide por quadro, pelo aviso do frontend sobre o próprio buffer de áudio dele.
-    Automatico,
-}
-
-impl Frameskip {
-    /// Lê o texto declarado na opção. `None` para o que não é nenhum dos valores conhecidos —
-    /// e quem chama mantém o modo anterior, como as outras opções.
-    fn de_texto(texto: &str) -> Option<Self> {
-        match texto.trim().to_ascii_lowercase().as_str() {
-            "desligado" => Some(Self::Desligado),
-            "automatico" => Some(Self::Automatico),
-            outro => outro.parse::<u32>().ok().filter(|&n| (1..=6).contains(&n)).map(Self::Fixo),
-        }
-    }
-}
-
-/// O teto de velocidade do jogo, separado de frameskip.
-///
-/// **60 não quer dizer "chame retro_run 60 vezes"** — isso já é decisão do frontend. Quer dizer
-/// "não deixe o relógio virtual passar do relógio real", que é o freio que o desktop já usa para
-/// impedir Crash/Zeebo Extreme/NFS de correrem acima da velocidade do console.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-enum LimiteFps {
-    /// Sem freio: deixa quem quer boost (Need for Speed) usar o que o host aguenta.
-    Desligado,
-    /// Velocidade lógica real do console e apresentação normal.
-    #[default]
-    Sessenta,
-    /// Velocidade lógica real do console, mas apresenta só um em cada dois quadros.
-    Trinta,
-}
-
-impl LimiteFps {
-    fn de_texto(texto: &str) -> Option<Self> {
-        match texto.trim() {
-            "desligado" => Some(Self::Desligado),
-            "60" => Some(Self::Sessenta),
-            "30" => Some(Self::Trinta),
-            _ => None,
-        }
-    }
-
-    fn limita_velocidade(self) -> bool {
-        !matches!(self, Self::Desligado)
-    }
-}
-
 /// O que o `SET_AUDIO_BUFFER_STATUS_CALLBACK` avisou da última vez.
 ///
 /// Global porque o callback do frontend não tem como devolver contexto nenhum — é só a
@@ -2158,7 +2102,7 @@ fn aplica_opcoes_quentes(estado: &mut Core) {
     {
         if limite != estado.limite_fps {
             // A taxa de apresentação de 30 não pode herdar a paridade do limite anterior.
-            estado.limite_fps_contador = 0;
+            estado.pulo = ContadorDePulo::default();
         }
         estado.limite_fps = limite;
     }
@@ -2171,7 +2115,7 @@ fn aplica_opcoes_quentes(estado: &mut Core) {
         if modo != antes {
             // Mudar razão fixa no meio não pode herdar fase do modo anterior: 1/2 virar 1/7 no
             // quinto quadro e pular logo o primeiro é surpresa sem ganho.
-            estado.frameskip_contador = 0;
+            estado.pulo = ContadorDePulo::default();
         }
         // O registro do Automático acontece no primeiro `retro_run`, porque
         // SET_MINIMUM_AUDIO_LATENCY só é válido dentro dessa chamada. Aqui, que também roda em
@@ -2679,11 +2623,10 @@ unsafe fn carrega(
     let mut core = Core {
         placa_ligada: false,
         frameskip: Frameskip::Desligado,
-        frameskip_contador: 0,
+        pulo: ContadorDePulo::default(),
         frameskip_callback_pedido: false,
         frameskip_leitura_pixels_avisada: false,
         limite_fps: LimiteFps::Sessenta,
-        limite_fps_contador: 0,
         limite_fps_duplica: false,
         session,
         mixer,
@@ -2863,39 +2806,16 @@ pub extern "C" fn retro_run() {
             aviso("Zeebx: frameskip de rasterização foi desativado neste jogo porque ele usa glReadPixels");
             estado.frameskip_leitura_pixels_avisada = true;
         }
-        let pula_por_frameskip = match estado.frameskip {
-            Frameskip::Desligado => {
-                estado.frameskip_contador = 0;
-                false
-            }
-            Frameskip::Fixo(n) => {
-                let pula = estado.frameskip_contador != 0;
-                estado.frameskip_contador = (estado.frameskip_contador + 1) % (n + 1);
-                pula
-            }
-            // A própria `libretro.h` diz o que fazer com o aviso: **é** a decisão, não uma dica.
-            Frameskip::Automatico => {
-                AUDIO_ESTOURO_PROVAVEL.load(std::sync::atomic::Ordering::Relaxed)
-            }
-        };
-        // 30 FPS **não desacelera a lógica**: o freio de velocidade continua em 1x, e só a
-        // apresentação duplica um quadro a cada dois. É o oposto de alterar o período virtual
-        // de vsync — aquilo faria o jogo avançar 33 ms por chamada e poderia acelerá-lo.
-        let pula_por_limite = match estado.limite_fps {
-            LimiteFps::Trinta => {
-                let pula = estado.limite_fps_contador != 0;
-                estado.limite_fps_contador = (estado.limite_fps_contador + 1) % 2;
-                pula
-            }
-            LimiteFps::Desligado | LimiteFps::Sessenta => {
-                estado.limite_fps_contador = 0;
-                false
-            }
-        };
-        estado.limite_fps_duplica = pula_por_limite;
-        estado.session.define_pula_desenho(
-            (pula_por_frameskip || pula_por_limite) && !estado.session.leu_pixels(),
-        );
+        // A própria `libretro.h` diz o que fazer com o aviso de áudio: **é** a decisão do
+        // Automático, não uma dica. E os 30 FPS **não desaceleram a lógica**: o freio continua em
+        // 1x, e só a apresentação duplica um quadro a cada dois — ver [`LimiteFps::Trinta`].
+        let ritmo = Ritmo::das_escolhas(estado.limite_fps, estado.frameskip);
+        let sobra = AUDIO_ESTOURO_PROVAVEL.load(std::sync::atomic::Ordering::Relaxed);
+        let pulo = estado.pulo.decide(&ritmo, sobra);
+        estado.limite_fps_duplica = pulo.metade;
+        estado
+            .session
+            .define_pula_desenho(pulo.algum() && !estado.session.leu_pixels());
         // **A placa de agora, e a sessão de agora.** O aviso do frontend — contexto perdido, ou
         // contexto refeito — chega no meio do quadro e vira uma marca só (`PERDEU_A_PLACA`, ver
         // [`contexto_perdido`]); o que se faz com ela é isto, **antes** de [`liga_a_placa`], porque

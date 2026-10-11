@@ -153,19 +153,30 @@ impl Gamepads {
         let Some(pad) = self.find(device, porta) else {
             return false;
         };
-        match source {
-            Source::Key { .. } => false,
-            Source::Button { name } => {
-                button_by_name(name).is_some_and(|button| pad.is_pressed(button))
-            }
-            Source::Axis { name, positive } => axis_by_name(name).is_some_and(|axis| {
-                let value = pad.value(axis);
-                match positive {
-                    true => value >= AXIS_THRESHOLD,
-                    false => value <= -AXIS_THRESHOLD,
-                }
-            }),
-        }
+        acionada(&pad, source)
+    }
+
+    /// Se `source` está acionada em **algum** controle ligado.
+    ///
+    /// É a pergunta dos atalhos da janela, como o fast-forward: eles são da sessão, e não de uma
+    /// porta, e quem joga no controle dois avança com o botão do controle dois.
+    pub fn algum_ativo(&self, source: &Source) -> bool {
+        let Some(gilrs) = &self.gilrs else {
+            return false;
+        };
+        gilrs.gamepads().any(|(_, pad)| acionada(&pad, source))
+    }
+
+    /// O primeiro botão apertado em qualquer controle ligado, para capturar um atalho. Só
+    /// botões: um atalho num eixo dispararia com o manche fora do centro.
+    pub fn primeiro_botao_de_algum(&self) -> Option<Source> {
+        let gilrs = self.gilrs.as_ref()?;
+        gilrs.gamepads().find_map(|(_, pad)| {
+            BUTTONS
+                .iter()
+                .find(|(_, button)| pad.is_pressed(*button))
+                .map(|(name, _)| Source::button(name))
+        })
     }
 
     /// O curso de um eixo do controle, de -1 a 1. `None` se não há controle ou o eixo é
@@ -196,6 +207,23 @@ impl Gamepads {
             }
         }
         None
+    }
+}
+
+/// Se a origem está acionada num controle. O teclado não é daqui: responde que não.
+fn acionada(pad: &gilrs::Gamepad<'_>, source: &Source) -> bool {
+    match source {
+        Source::Key { .. } => false,
+        Source::Button { name } => {
+            button_by_name(name).is_some_and(|button| pad.is_pressed(button))
+        }
+        Source::Axis { name, positive } => axis_by_name(name).is_some_and(|axis| {
+            let value = pad.value(axis);
+            match positive {
+                true => value >= AXIS_THRESHOLD,
+                false => value <= -AXIS_THRESHOLD,
+            }
+        }),
     }
 }
 

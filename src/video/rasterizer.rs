@@ -798,6 +798,10 @@ pub trait Rasterizador {
         false
     }
 
+    /// Avisa que o jogo trocou de buffer. Só o rasterizador de placa faz algo: mede o quadro para
+    /// o relatório periódico do log. Ver `GpuState::fecha_quadro`.
+    fn fecha_quadro(&mut self) {}
+
     fn frame_rgb565(&mut self, width: usize, height: usize, out: &mut Vec<u8>);
     /// Exporta diretamente em RGB565 nativo para a tela do host, sem passar por bytes.
     fn frame_rgb565_words(&mut self, width: usize, height: usize, out: &mut Vec<u16>);

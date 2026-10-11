@@ -41,6 +41,12 @@ case "$ZEEBX_ANDROID_ABI" in
 esac
 cp "$SYSROOT/$TRIPLA/libc++_shared.so" "$JNI/$ZEEBX_ANDROID_ABI/"
 
+# As licenças vão dentro da APK, em `assets/licenses`: a GPL e as licenças das bibliotecas pedem
+# que o texto acompanhe o binário. O Gradle empacota o `src/main/assets` sozinho.
+LICENCAS="$AQUI/apk/app/src/main/assets/licenses"
+mkdir -p "$LICENCAS"
+cp "$RAIZ/LICENSE" "$RAIZ/LICENSE-GPL3" "$RAIZ/THIRD-PARTY-NOTICES.txt" "$LICENCAS/"
+
 echo "== .so =="
 ls -lh "$JNI/$ZEEBX_ANDROID_ABI/"
 

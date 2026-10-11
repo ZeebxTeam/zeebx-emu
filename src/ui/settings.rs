@@ -8,6 +8,10 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::input::bindings::Source;
+use crate::velocidade::rewind::AjustesDoRewind;
+use crate::velocidade::{Avanco, Frameskip, LimiteFps, Ritmo};
+
 const FILE_NAME: &str = "settings.json";
 
 /// Reexportado para preservar a API desktop durante a migração para configuração neutra.
@@ -99,6 +103,9 @@ pub struct DebugView {
     pub timeline: bool,
     /// A janela separada com o log da execução.
     pub log: bool,
+    /// Grava cada execução num arquivo próprio, com carimbo de hora em cada linha. Ver
+    /// [`crate::ui::partida::caminho_da_sessao`].
+    pub gravar_sessao: bool,
     /// Até que nível o **núcleo** registra: `aviso` (padrão), `informacao`, `depuracao`,
     /// `erro`, `fatal` ou `desligado`. Ver [`crate::registro`].
     ///
@@ -117,6 +124,7 @@ impl Default for DebugView {
             memory: true,
             timeline: true,
             log: false,
+            gravar_sessao: false,
             nivel_de_log: "aviso".to_string(),
         }
     }
@@ -129,14 +137,25 @@ pub struct Graphics {
     pub janela: ModoDaJanela,
     /// Como a janela do jogo abre.
     pub janela_do_jogo: ModoDaJanela,
+    /// O tamanho em que a janela principal estava quando foi fechada, em pontos.
+    ///
+    /// `None` é o padrão de fábrica (960×720). Só vale em modo janela: maximizada ou em tela
+    /// cheia, o tamanho da tela não é escolha do usuário e não é guardado.
+    pub tamanho_da_janela: Option<[f32; 2]>,
+    /// O mesmo, para a janela do jogo.
+    pub tamanho_da_janela_do_jogo: Option<[f32; 2]>,
     pub scaling: Scaling,
     /// Interpolar ao ampliar. Desligado, o pixel do console aparece como bloco.
     pub smooth: bool,
     /// Manter os 4:3 da tela do Zeebo.
     pub keep_aspect: bool,
-    /// Segurar o emulador no ritmo do console. Desligado, ele corre o quanto o host aguenta e
-    /// os jogos ficam acelerados.
-    pub speed_limit: bool,
+    /// O `speed_limit` de antes do limite de quadros, **só para ler** um arquivo antigo.
+    ///
+    /// Desligado virava [`crate::velocidade::LimiteFps::Desligado`]; ver
+    /// [`Settings::load_from`]. Nunca é gravado: o arquivo novo diz o mesmo em
+    /// [`Velocidade::limite_fps`].
+    #[serde(rename = "speed_limit", skip_serializing)]
+    pub limite_antigo: Option<bool>,
     /// Pôr o quadro na tela pelo GL da janela, em vez de mandá-lo como textura do egui.
     ///
     /// Pela placa o quadro sobe em RGB565, que é o formato em que ele já está, e quem amplia é
@@ -221,10 +240,12 @@ impl Default for Graphics {
         Self {
             janela: ModoDaJanela::Maximizada,
             janela_do_jogo: ModoDaJanela::Maximizada,
+            tamanho_da_janela: None,
+            tamanho_da_janela_do_jogo: None,
             scaling: Scaling::default(),
             smooth: false,
             keep_aspect: true,
-            speed_limit: true,
+            limite_antigo: None,
             gpu_present: true,
             // Desligado por padrão: é um rasterizador novo, e a revisão jogo a jogo é de quem
             // usa. Nos dois títulos medidos ele ganha, mas isso não é licença para trocar o
@@ -283,7 +304,9 @@ pub struct Settings {
     /// Como a biblioteca mostra os jogos.
     pub biblioteca: ModoDaBiblioteca,
     pub movimento: Movimento,
+    pub controles_na_tela: ControlesNaTela,
     pub graphics: Graphics,
+    pub velocidade: Velocidade,
     pub debug: DebugView,
     pub audio: Audio,
     pub controls: crate::input::bindings::Controls,
@@ -302,16 +325,45 @@ pub struct Settings {
 #[serde(default)]
 pub struct Atalhos {
     pub screenshot: String,
+    /// O fast-forward: tecla ou botão de controle, de qualquer controle ligado. Ver
+    /// [`crate::velocidade::Avanco`].
+    ///
+    /// **Uma lista, e de `Source`**, ao contrário do screenshot: quem joga com controle precisa
+    /// de um botão, e o mapeamento dos botões do jogo já sabe guardar um. Um botão que está aqui
+    /// não chega ao jogo — ver [`Atalhos::reservadas`].
+    pub avancar: Vec<Source>,
+    /// O rewind, que se segura: tecla ou botão, como o [`Atalhos::avancar`]. Ver
+    /// [`crate::velocidade::rewind`].
+    pub voltar: Vec<Source>,
 }
 
 impl Atalhos {
     pub const SCREENSHOT_PADRAO: &str = "F9";
+    /// F10 segurado é o fast-forward desde o primeiro desenho dele, no PR #83; quem já se
+    /// acostumou não perde o hábito.
+    pub const AVANCAR_PADRAO: &str = "F10";
+    /// O Backspace, que seria a escolha óbvia, já é o `AVK_CLR` do jogo.
+    pub const VOLTAR_PADRAO: &str = "F8";
+
+    pub fn avancar_padrao() -> Vec<Source> {
+        vec![Source::key(Self::AVANCAR_PADRAO)]
+    }
+
+    /// As origens que são de atalho e por isso não chegam ao jogo.
+    ///
+    /// Um botão de controle ligado a um atalho e também a um botão do Zeebo faria as duas coisas
+    /// ao mesmo tempo: avançar e, digamos, pular. O atalho ganha, e o editor avisa do conflito.
+    pub fn reservadas(&self) -> impl Iterator<Item = &Source> {
+        self.avancar.iter().chain(&self.voltar)
+    }
 }
 
 impl Default for Atalhos {
     fn default() -> Self {
         Self {
             screenshot: Self::SCREENSHOT_PADRAO.to_string(),
+            avancar: Self::avancar_padrao(),
+            voltar: vec![Source::key(Self::VOLTAR_PADRAO)],
         }
     }
 }
@@ -322,11 +374,14 @@ impl Default for Atalhos {
 pub struct Atualizacoes {
     /// Perguntar ao GitHub na abertura.
     pub ao_abrir: bool,
+    /// Se uma release marcada como pré-lançamento conta como versão nova. **Ligado de fábrica**:
+    /// até a 0.4.1 todas as releases saíram assim, e desligado ninguém seria avisado de nada.
+    pub pre_lancamentos: bool,
 }
 
 impl Default for Atualizacoes {
     fn default() -> Self {
-        Self { ao_abrir: true }
+        Self { ao_abrir: true, pre_lancamentos: true }
     }
 }
 
@@ -365,6 +420,91 @@ impl Default for Movimento {
     }
 }
 
+/// Quando os controles desenhados na tela aparecem.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModoDosControlesNaTela {
+    /// Aparecem até chegar um aperto de controle físico, e voltam no próximo toque na tela. É o
+    /// padrão porque serve aos dois jeitos de jogar sem pedir que ninguém escolha.
+    #[default]
+    Automatico,
+    Sempre,
+    Nunca,
+}
+
+impl ModoDosControlesNaTela {
+    pub const TODOS: [Self; 3] = [Self::Automatico, Self::Sempre, Self::Nunca];
+
+    pub fn chave(self) -> &'static str {
+        match self {
+            Self::Automatico => "touch.mode.auto",
+            Self::Sempre => "touch.mode.always",
+            Self::Nunca => "touch.mode.never",
+        }
+    }
+}
+
+/// Os controles desenhados na tela de um celular. Só o Android os desenha; os outros frontends
+/// carregam e gravam de volta sem mexer. Ver [`crate::input::toque`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ControlesNaTela {
+    pub modo: ModoDosControlesNaTela,
+    /// O tamanho das peças, em porcento do de fábrica.
+    pub escala: u8,
+    /// Em porcento. Opaco de fábrica não: a peça fica por cima do jogo.
+    pub opacidade: u8,
+    /// Onde o usuário pôs cada peça, pela [`crate::input::toque::Peca::chave`], em **fração** da
+    /// tela. Fração, e não ponto, porque o mesmo arquivo pode ir de um celular para um tablet. A
+    /// peça que não está aqui fica no lugar de fábrica, e "restaurar" é esvaziar o mapa.
+    pub posicoes: std::collections::BTreeMap<String, [f32; 2]>,
+    /// O tamanho de cada peça, em porcento, por cima da [`Self::escala`]. Mesma chave das
+    /// posições; a peça que não está aqui fica em 100.
+    pub tamanhos: std::collections::BTreeMap<String, u8>,
+    /// Mostrar as peças de atalho. O turbo e o rewind, além disso, só aparecem com a função em
+    /// uso — ver [`ControlesNaTela::mostra`].
+    pub mostrar_avancar: bool,
+    pub mostrar_voltar: bool,
+    pub mostrar_turbo: bool,
+}
+
+impl Default for ControlesNaTela {
+    fn default() -> Self {
+        Self {
+            modo: ModoDosControlesNaTela::default(),
+            escala: 100,
+            opacidade: 55,
+            posicoes: Default::default(),
+            tamanhos: Default::default(),
+            mostrar_avancar: true,
+            mostrar_voltar: true,
+            mostrar_turbo: true,
+        }
+    }
+}
+
+impl ControlesNaTela {
+    /// Se a peça aparece na tela.
+    ///
+    /// **O turbo e o rewind só aparecem com a função em uso**: o rewind vem desligado, e quem
+    /// nunca o ligou não ganha um botão que não faz nada. O fast-forward não tem ajuste de ligar,
+    /// só a velocidade, e por isso aparece sempre — no celular não existe F10, e sem a peça ele
+    /// ficaria escondido de quem não procura nos ajustes. Cada um se esconde pela chave dele.
+    pub fn mostra(&self, peca: crate::input::toque::Peca, settings: &Settings) -> bool {
+        use crate::input::toque::Peca;
+        match peca {
+            Peca::Avancar => self.mostrar_avancar,
+            Peca::Voltar => self.mostrar_voltar && settings.velocidade.rewind.ligado,
+            Peca::Turbo => {
+                let modo = settings.controls.player(0).map(|jogador| jogador.turbo);
+                self.mostrar_turbo
+                    && modo.is_some_and(|modo| modo != crate::velocidade::turbo::ModoDoTurbo::Desligado)
+            }
+            _ => true,
+        }
+    }
+}
+
 /// A disposição da biblioteca na tela principal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -374,6 +514,46 @@ pub enum ModoDaBiblioteca {
     Grade,
     /// Um jogo por vez, no jeito da Z-Wheel: o rolo de logos em cima e as caixas passando.
     Slider,
+}
+
+/// O ritmo do jogo: o limite de quadros e o pulo de desenho. Ver [`crate::velocidade`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Velocidade {
+    pub limite_fps: LimiteFps,
+    pub frameskip: Frameskip,
+    pub avanco: Avanco,
+    /// Quantos toques por segundo o turbo dá, no relógio do jogo. Um só para todos os jogadores:
+    /// o modo e o botão é que são de cada um. Ver [`crate::velocidade::turbo`].
+    pub turbo_por_segundo: u8,
+    pub rewind: AjustesDoRewind,
+}
+
+impl Default for Velocidade {
+    fn default() -> Self {
+        Self {
+            limite_fps: LimiteFps::default(),
+            frameskip: Frameskip::default(),
+            avanco: Avanco::default(),
+            turbo_por_segundo: crate::velocidade::turbo::TOQUES_PADRAO,
+            rewind: AjustesDoRewind::default(),
+        }
+    }
+}
+
+impl Velocidade {
+    /// O ritmo destas escolhas, para entregar à sessão.
+    pub fn ritmo(&self) -> Ritmo {
+        Ritmo::das_escolhas(self.limite_fps, self.frameskip)
+    }
+
+    /// O ritmo de agora: o das escolhas, ou o do fast-forward por cima dele.
+    pub fn ritmo_com(&self, avancando: bool) -> Ritmo {
+        match avancando {
+            true => self.ritmo().acelerado(&self.avanco),
+            false => self.ritmo(),
+        }
+    }
 }
 
 /// Reexportado pela UI para não quebrar preferências serializadas e chamadas desktop.
@@ -390,7 +570,18 @@ impl Settings {
         // Um arquivo de uma versão anterior não traz o que ela não conhecia, e o padrão de um
         // campo novo nem sempre é o vazio.
         settings.controls.adopt();
+        settings.adota_o_limite_antigo();
         settings
+    }
+
+    /// O `speed_limit` desligado de um arquivo antigo vira o limite de quadros desligado.
+    ///
+    /// Ligado não muda nada: era o padrão, e o padrão do limite novo é o mesmo freio. O campo
+    /// antigo some na leitura, e a próxima gravação já sai sem ele.
+    fn adota_o_limite_antigo(&mut self) {
+        if self.graphics.limite_antigo.take() == Some(false) {
+            self.velocidade.limite_fps = LimiteFps::Desligado;
+        }
     }
 
     pub fn load() -> Self {
@@ -421,6 +612,20 @@ pub fn rotulo_da_resolucao(fator: u8) -> String {
         _ => "~4K",
     };
     format!("{fator}x · {largura}×{altura} · {referencia}")
+}
+
+/// O rótulo de uma escolha de pulo de desenho: "Desligado", "Automático", ou quantos quadros são
+/// desenhados no fixo — "1 de 3" diz mais a quem joga que o `n` da conta.
+pub fn rotulo_do_frameskip(frameskip: Frameskip, catalogo: &crate::ui::i18n::Catalog) -> String {
+    match frameskip {
+        Frameskip::Desligado => catalogo.get("common.off").to_string(),
+        Frameskip::Automatico => catalogo.get("speed.frameskip.auto").to_string(),
+        Frameskip::Fixo(n) => format!(
+            "{} 1/{}",
+            catalogo.get("speed.frameskip.fixed"),
+            u32::from(n) + 1
+        ),
+    }
 }
 
 /// O rótulo de um nível de antialias ou de anisotrópico: 1 é desligado.
@@ -467,14 +672,41 @@ mod tests {
             screenshots_dir: Some(PathBuf::from("/imagens/zeebo")),
             atalhos: Atalhos {
                 screenshot: "F12".into(),
+                avancar: vec![Source::key("F7"), Source::button("LeftThumb")],
+                voltar: vec![Source::button("RightThumb")],
             },
             biblioteca: ModoDaBiblioteca::Slider,
             movimento: Movimento {
                 aviso_de_calibracao: false,
             },
+            controles_na_tela: ControlesNaTela {
+                modo: ModoDosControlesNaTela::Nunca,
+                escala: 130,
+                opacidade: 80,
+                posicoes: [("botoes".to_string(), [0.75, 0.5])].into(),
+                tamanhos: [("dpad".to_string(), 140)].into(),
+                mostrar_avancar: false,
+                mostrar_voltar: true,
+                mostrar_turbo: false,
+            },
             graphics: Graphics {
                 scaling: Scaling::Fit,
                 ..Graphics::default()
+            },
+            velocidade: Velocidade {
+                limite_fps: LimiteFps::Trinta,
+                frameskip: Frameskip::Fixo(2),
+                avanco: Avanco {
+                    proporcao: 0,
+                    modo: crate::velocidade::ModoDoAtalho::Alternar,
+                    sem_som: true,
+                },
+                turbo_por_segundo: 15,
+                rewind: AjustesDoRewind {
+                    ligado: true,
+                    intervalo_ms: 2000,
+                    memoria_mb: 512,
+                },
             },
             debug: DebugView {
                 overlay: true,
@@ -493,12 +725,34 @@ mod tests {
                 ativo: false,
                 capas_url: "https://exemplo/{chave}.png".into(),
             },
-            atualizacoes: Atualizacoes { ao_abrir: false },
+            atualizacoes: Atualizacoes { ao_abrir: false, pre_lancamentos: false },
             aviso_dispensado_na_versao: Some("0.1.0".into()),
         };
         settings.save_to(&path).unwrap();
 
         assert_eq!(Settings::load_from(&path), settings);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Quem tem um `settings.json` de antes do tamanho de janela ganha `None` nos dois
+    /// campos novos, e o que foi guardado volta igual do disco.
+    #[test]
+    fn o_tamanho_da_janela_vai_e_volta_e_falta_nas_versoes_antigas() {
+        let dir = std::env::temp_dir().join("zeebx-testes-janela");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+
+        let antigo: Settings =
+            serde_json::from_str(r#"{ "graphics": { "janela": "maximizada" } }"#).unwrap();
+        assert_eq!(antigo.graphics.tamanho_da_janela, None);
+        assert_eq!(antigo.graphics.tamanho_da_janela_do_jogo, None);
+
+        let mut novo = Settings::default();
+        novo.graphics.tamanho_da_janela = Some([1280.0, 800.0]);
+        novo.graphics.tamanho_da_janela_do_jogo = Some([640.0, 512.0]);
+        novo.save_to(&path).unwrap();
+        assert_eq!(Settings::load_from(&path), novo);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -508,8 +762,35 @@ mod tests {
     fn um_arquivo_de_antes_dos_atalhos_ganha_o_f9() {
         let lido: Settings = serde_json::from_str(r#"{ "roms_dir": "/jogos" }"#).unwrap();
         assert_eq!(lido.atalhos.screenshot, "F9");
+        assert_eq!(lido.atalhos.avancar, [Source::key("F10")]);
         assert_eq!(lido.screenshots_dir, None);
         assert_eq!(lido.roms_dir, Some(PathBuf::from("/jogos")));
+        // Um arquivo que já tinha o F9 trocado, de antes do fast-forward, ganha o F10 também.
+        let trocado: Settings =
+            serde_json::from_str(r#"{ "atalhos": { "screenshot": "F12" } }"#).unwrap();
+        assert_eq!(trocado.atalhos.screenshot, "F12");
+        assert_eq!(trocado.atalhos.avancar, [Source::key("F10")]);
+    }
+
+    /// O `speed_limit` desligado de antes do limite de quadros continua desligado, e o campo
+    /// antigo não volta a ser gravado.
+    #[test]
+    fn o_speed_limit_antigo_vira_o_limite_de_quadros() {
+        let dir = std::env::temp_dir().join("zeebx-testes-speed-limit");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+
+        std::fs::write(&path, r#"{"graphics": {"speed_limit": false, "smooth": true}}"#).unwrap();
+        let lido = Settings::load_from(&path);
+        assert_eq!(lido.velocidade.limite_fps, LimiteFps::Desligado);
+        assert!(lido.graphics.smooth);
+        assert_eq!(lido.graphics.limite_antigo, None);
+        lido.save_to(&path).unwrap();
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("speed_limit"));
+
+        std::fs::write(&path, r#"{"graphics": {"speed_limit": true}}"#).unwrap();
+        assert_eq!(Settings::load_from(&path).velocidade.limite_fps, LimiteFps::Sessenta);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

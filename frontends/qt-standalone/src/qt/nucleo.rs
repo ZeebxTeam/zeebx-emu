@@ -30,7 +30,7 @@ use zeebx::ui::navegacao::{self, Comando, Navegacao};
 use zeebx::video::icon::{self, Image};
 use zeebx::ui::entrada::EntradaDoDesktop;
 use zeebx::ui::i18n::{self, Catalog};
-use zeebx::ui::partida::{self, Abertura, Partida, Relatorio, Saida};
+use zeebx::ui::partida::{self, Abertura, Partida, Relatorio, Saida, TurboDaVolta};
 use zeebx::ui::screenshot;
 use zeebx::ui::settings::{self, Proporcao, Settings};
 use zeebx::video::rasterizer::QuadroNaPlaca;
@@ -78,6 +78,8 @@ pub struct Volta {
     pub aviso: Option<AvisoNaTela>,
     /// Um screenshot terminou de gravar desde a volta anterior.
     pub screenshot: Option<AvisoDeScreenshot>,
+    /// O que escrever por cima do jogo — o fast-forward, o turbo ligado —; vazio esconde.
+    pub indicadores: String,
 }
 
 /// O que dizer de um screenshot que terminou, já traduzido.
@@ -150,6 +152,8 @@ pub struct Nucleo {
     pub atualizacao: Option<atualizacao::Resposta>,
     /// Uma versão nova chegou e o aviso dela ainda não foi dispensado.
     aviso_de_atualizacao: bool,
+    /// A versão nova sendo baixada e instalada. O aviso mostra o andamento.
+    pub instalacao_de_atualizacao: Option<atualizacao::Atualizacao>,
     /// O relatório da execução, gravado sozinho. Ver [`Relatorio`].
     relatorio: Relatorio,
     /// A janela de log foi fechada nesta execução. Zera ao abrir outro jogo: fechar dispensa o log
@@ -199,6 +203,7 @@ impl Nucleo {
             procura_de_atualizacao: None,
             atualizacao: None,
             aviso_de_atualizacao: false,
+            instalacao_de_atualizacao: None,
             relatorio: Relatorio::default(),
             log_dispensado: false,
             calibracao: Calibracao::default(),
@@ -208,7 +213,7 @@ impl Nucleo {
         nucleo.procura_de_novo();
         // Na abertura, a pergunta ao GitHub, como no egui: a resposta chega pelo relógio da
         // biblioteca, e o aviso espera o de abertura sair da frente.
-        if nucleo.settings.atualizacoes.ao_abrir {
+        if nucleo.settings.atualizacoes.ao_abrir && atualizacao::Instalacao::desta().avisa() {
             nucleo.procura_atualizacao();
         }
         nucleo
@@ -297,6 +302,28 @@ impl Nucleo {
         self.aviso_de_atualizacao = false;
     }
 
+    /// Mostra de novo o aviso da versão nova, se há uma: é por ele que a instalação anda.
+    pub fn reabre_aviso_de_atualizacao(&mut self) {
+        self.aviso_de_atualizacao = matches!(self.atualizacao, Some(atualizacao::Resposta::Nova(_)));
+    }
+
+    /// Começa a baixar e instalar a versão nova avisada. Uma instalação em andamento não é
+    /// começada de novo.
+    pub fn instala_atualizacao(&mut self) {
+        let em_andamento = self.instalacao_de_atualizacao.as_ref().is_some_and(|a| !a.terminou());
+        if let (Some(atualizacao::Resposta::Nova(lancamento)), false) = (&self.atualizacao, em_andamento) {
+            self.instalacao_de_atualizacao = Some(atualizacao::instala(lancamento, "latest-qt.json"));
+        }
+    }
+
+    /// Guarda as configurações e troca esta execução pela versão instalada.
+    pub fn reinicia_na_versao_nova(&self) -> ! {
+        if let Err(erro) = self.settings.save() {
+            eprintln!("não deu para guardar as configurações: {erro}");
+        }
+        atualizacao::reinicia()
+    }
+
     /// O que o jogo aberto escreveu, e as queixas do emulador sobre ele.
     pub fn log(&self) -> Vec<String> {
         self.partida.as_ref().map(|p| p.sessao().log()).unwrap_or_default()
@@ -310,7 +337,8 @@ impl Nucleo {
     /// Pergunta ao GitHub se há versão nova. A resposta chega pelo [`Nucleo::a_cada_quadro`].
     pub fn procura_atualizacao(&mut self) {
         self.atualizacao = None;
-        self.procura_de_atualizacao = Some(atualizacao::procura());
+        let pre = self.settings.atualizacoes.pre_lancamentos;
+        self.procura_de_atualizacao = Some(atualizacao::procura(pre));
     }
 
     pub fn procurando_atualizacao(&self) -> bool {
@@ -447,7 +475,7 @@ impl Nucleo {
         }
         let pads: Vec<_> = self
             .entrada
-            .pads(&self.settings.controls, &HashSet::new())
+            .pads(&self.settings.controls, &self.settings.atalhos, &HashSet::new())
             .into_iter()
             .map(|(_, pad)| pad)
             .collect();
@@ -684,10 +712,22 @@ impl Nucleo {
                 ..Volta::default()
             };
         };
-        let pads = self.entrada.pads(&self.settings.controls, &self.teclas);
+        let pads = self.entrada.pads(&self.settings.controls, &self.settings.atalhos, &self.teclas);
         let movimentos = self.entrada.movimentos(&self.settings.controls);
         let teclado = self.teclas.iter().filter_map(|tecla| input::avk_de(*tecla));
-        let limite = self.settings.graphics.speed_limit;
+        // O fast-forward é da sessão, e não de uma porta: a tecla ou o botão de qualquer
+        // controle. Ver `docs/implementacao/24-velocidade.md`.
+        // O rewind vem antes: voltando, o jogo não anda e o fast-forward fica suspenso.
+        let voltar = self.entrada.atalho_apertado(&self.settings.atalhos.voltar, &self.teclas);
+        partida.le_o_rewind(voltar, &self.settings.velocidade.rewind);
+        let apertado = self.entrada.atalho_apertado(&self.settings.atalhos.avancar, &self.teclas);
+        let avancando = partida.le_o_avanco(apertado, self.settings.velocidade.avanco.modo);
+        let ritmo = self.settings.velocidade.ritmo_com(avancando);
+        let turbo = TurboDaVolta {
+            apertado: self.entrada.turbos(&self.settings.controls, &self.teclas),
+            controles: &self.settings.controls,
+            toques_por_segundo: self.settings.velocidade.turbo_por_segundo,
+        };
         // A proporção "da janela" acompanha o tamanho dela; o destino só é refeito quando as
         // colunas a mais mudam. É GL, então vai com o contexto corrente.
         let da_janela = (self.settings.graphics.proporcao == Proporcao::Janela)
@@ -697,7 +737,7 @@ impl Nucleo {
             if da_janela.is_some() {
                 partida.sessao_mut().define_proporcao(da_janela);
             }
-            partida.avanca(&pads, movimentos, teclado, limite);
+            partida.avanca(&pads, movimentos, teclado, &ritmo, &turbo);
             // **O que este contexto desenhou só fica garantido para o do Qt Quick depois de um
             // `glFinish`.** A textura do quadro é escrita aqui e lida lá, e a especificação do
             // OpenGL só promete a mudança visível a outro contexto quando o primeiro terminou o
@@ -748,7 +788,24 @@ impl Nucleo {
         }
         volta.aviso = self.aviso_de_calibracao();
         volta.screenshot = screenshot;
+        volta.indicadores = self.indicadores();
         volta
+    }
+
+    /// O que vai por cima do jogo: o "▶▶ 3x" de enquanto ele avança e o "Turbo" de um turbo de
+    /// alternar ligado, ou vazio.
+    fn indicadores(&self) -> String {
+        let Some(partida) = self.partida.as_ref() else {
+            return String::new();
+        };
+        let virgula = !self.catalogo.current().starts_with("en");
+        let avanco = partida.indicador_do_avanco(&self.settings.velocidade.avanco, virgula);
+        let rewind = partida.indicador_do_rewind().map(|sem_pontos| match sem_pontos {
+            true => format!("◀◀ {}", self.catalogo.get("rewind.empty")),
+            false => "◀◀".to_string(),
+        });
+        let turbo = partida.turbo_ligado().then(|| self.catalogo.get("turbo.on_screen").to_string());
+        rewind.into_iter().chain(avanco).chain(turbo).collect::<Vec<_>>().join("  ·  ")
     }
 
     /// O aviso de calibração neste quadro, com os mesmos textos do egui.

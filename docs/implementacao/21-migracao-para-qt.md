@@ -285,6 +285,12 @@ O que mais a janela do egui fazia e a do Qt passou a fazer:
   `qt-build-utils`, que dá apelido a um arquivo de `assets/`.
 - **O título da biblioteca**, sem a impressão digital da pasta; **o modo da janela** configurado
   (`graphics.janela_do_jogo`, e o `graphics.janela` para a principal); **F11 e Alt+Enter**.
+- **O tamanho em que a janela ficou**, em `graphics.tamanho_da_janela` e
+  `graphics.tamanho_da_janela_do_jogo`. Só em modo janela: maximizada ou em tela cheia, o
+  tamanho é o da tela, e guardá-lo faria a janela reabrir do tamanho da tela cheia. O Qt
+  grava depois de meio segundo sem mudar de tamanho, para não escrever o `settings.json`
+  inteiro a cada pixel de um arrasto de borda; o egui grava assim que o tamanho muda, no
+  laço de quadros.
 - **"Pausado" traduzido**, com a chave `play.paused` nos quatro idiomas — o egui não mostrava nada.
 
 Falta o nome oficial da Z-Wheel no título, que depende do acervo (fase 4). **Não conferido:** o

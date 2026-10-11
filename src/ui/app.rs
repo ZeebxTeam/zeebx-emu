@@ -21,6 +21,7 @@ use crate::ui::partida::{self, Abertura, Partida, Saida};
 use crate::ui::i18n::Catalog;
 use crate::ui::library::Game;
 use crate::ui::settings::{Scaling, Settings};
+use crate::velocidade::LimiteFps;
 use crate::video::display::Framebuffer;
 
 /// A tela do Zeebo.
@@ -130,6 +131,8 @@ pub struct App {
     atualizacao: Option<atualizacao::Resposta>,
     /// O aviso de versão nova está na tela.
     aviso_de_atualizacao: bool,
+    /// A versão nova sendo baixada e instalada, com o aviso mostrando o andamento.
+    instalacao_de_atualizacao: Option<atualizacao::Atualizacao>,
     /// O aviso de abertura ainda está na tela.
     aviso_de_abertura: bool,
     /// A caixa "não mostrar de novo" do aviso de abertura.
@@ -244,6 +247,7 @@ impl App {
             procura_de_atualizacao: None,
             atualizacao: None,
             aviso_de_atualizacao: false,
+            instalacao_de_atualizacao: None,
             presenca: discord::Acompanha::default(),
             discord_recado: None,
             aviso_nao_mostrar: false,
@@ -265,8 +269,9 @@ impl App {
             gpu_falhou: Default::default(),
         };
         app.atualiza_z_wheel();
-        if app.settings.atualizacoes.ao_abrir {
-            app.procura_de_atualizacao = Some(atualizacao::procura());
+        if app.settings.atualizacoes.ao_abrir && atualizacao::Instalacao::desta().avisa() {
+            let pre = app.settings.atualizacoes.pre_lancamentos;
+            app.procura_de_atualizacao = Some(atualizacao::procura(pre));
         }
         app
     }
@@ -332,27 +337,89 @@ impl App {
             self.aviso_de_atualizacao = false;
             return;
         };
+        let andamento = self.instalacao_de_atualizacao.as_ref().map(|a| (a.andamento(), a.fracao()));
+        if matches!(
+            andamento,
+            Some((atualizacao::Andamento::Baixando { .. } | atualizacao::Andamento::Instalando, _))
+        ) {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+        let troca_sozinha = atualizacao::Instalacao::desta().troca_sozinha();
         let mut fechar = false;
+        let mut instalar = false;
+        let mut reiniciar = false;
         let resposta = egui::Modal::new(egui::Id::new("aviso-de-atualizacao")).show(ctx, |ui| {
             ui.set_max_width(420.0);
             ui.heading(self.catalog.get("update.title"));
             ui.add_space(8.0);
-            ui.label(self.catalog.format(
-                "update.available",
-                &[("new", &lancamento.versao), ("current", atualizacao::VERSAO_ATUAL)],
-            ));
-            ui.add_space(12.0);
-            ui.horizontal(|ui| {
-                if ui.button(self.catalog.get("update.download")).clicked() {
-                    ctx.open_url(egui::OpenUrl::new_tab(&lancamento.pagina));
-                    fechar = true;
+            let versoes = [("new", lancamento.versao.as_str()), ("current", atualizacao::VERSAO_ATUAL)];
+            match &andamento {
+                None => {
+                    ui.label(self.catalog.format("update.available", &versoes));
+                    ui.add_space(12.0);
+                    ui.horizontal(|ui| {
+                        if troca_sozinha && ui.button(self.catalog.get("update.install")).clicked() {
+                            instalar = true;
+                        }
+                        let pagina = if troca_sozinha { "update.release_page" } else { "update.download" };
+                        if ui.button(self.catalog.get(pagina)).clicked() {
+                            ctx.open_url(egui::OpenUrl::new_tab(&lancamento.pagina));
+                            fechar = !troca_sozinha;
+                        }
+                        if ui.button(self.catalog.get("update.later")).clicked() {
+                            fechar = true;
+                        }
+                    });
                 }
-                if ui.button(self.catalog.get("update.later")).clicked() {
-                    fechar = true;
+                Some((atualizacao::Andamento::Baixando { .. }, fracao)) => {
+                    ui.label(self.catalog.get("update.downloading"));
+                    let barra = match fracao {
+                        Some(f) => egui::ProgressBar::new(*f).show_percentage(),
+                        None => egui::ProgressBar::new(0.0).animate(true),
+                    };
+                    ui.add(barra);
                 }
-            });
+                Some((atualizacao::Andamento::Instalando, _)) => {
+                    ui.label(self.catalog.get("update.installing"));
+                    ui.add(egui::ProgressBar::new(1.0).animate(true));
+                }
+                Some((atualizacao::Andamento::Pronta, _)) => {
+                    ui.label(self.catalog.format("update.ready", &versoes));
+                    ui.add_space(12.0);
+                    ui.horizontal(|ui| {
+                        if ui.button(self.catalog.get("update.restart")).clicked() {
+                            reiniciar = true;
+                        }
+                        if ui.button(self.catalog.get("update.later")).clicked() {
+                            fechar = true;
+                        }
+                    });
+                }
+                Some((atualizacao::Andamento::Falhou(motivo), _)) => {
+                    ui.label(self.catalog.format("update.failed", &[("reason", motivo)]));
+                    ui.add_space(12.0);
+                    ui.horizontal(|ui| {
+                        if ui.button(self.catalog.get("update.download")).clicked() {
+                            ctx.open_url(egui::OpenUrl::new_tab(&lancamento.pagina));
+                            fechar = true;
+                        }
+                        if ui.button(self.catalog.get("update.later")).clicked() {
+                            fechar = true;
+                        }
+                    });
+                }
+            }
         });
-        if fechar || resposta.should_close() {
+        if instalar {
+            self.instalacao_de_atualizacao = Some(atualizacao::instala(&lancamento, "latest-egui.json"));
+        }
+        if reiniciar {
+            self.save();
+            atualizacao::reinicia();
+        }
+        // Clicar fora não fecha no meio do download: a instalação seguiria sem ninguém ver.
+        let ocupado = self.instalacao_de_atualizacao.as_ref().is_some_and(|a| !a.terminou());
+        if fechar || (resposta.should_close() && !ocupado) {
             self.aviso_de_atualizacao = false;
         }
     }
@@ -370,6 +437,12 @@ impl App {
                 self.catalog.get("settings.updates.on_start"),
             )
             .changed();
+        changed |= ui
+            .checkbox(
+                &mut self.settings.atualizacoes.pre_lancamentos,
+                self.catalog.get("settings.updates.prereleases"),
+            )
+            .changed();
         ui.horizontal(|ui| {
             let procurando = self.procura_de_atualizacao.is_some();
             if ui
@@ -377,7 +450,8 @@ impl App {
                 .clicked()
             {
                 self.atualizacao = None;
-                self.procura_de_atualizacao = Some(atualizacao::procura());
+                let pre = self.settings.atualizacoes.pre_lancamentos;
+                self.procura_de_atualizacao = Some(atualizacao::procura(pre));
             }
             let estado = match (&self.atualizacao, procurando) {
                 (_, true) => self.catalog.get("settings.updates.checking").to_string(),
@@ -395,7 +469,12 @@ impl App {
             };
             ui.label(estado);
             if let Some(atualizacao::Resposta::Nova(lancamento)) = &self.atualizacao {
-                if ui.button(self.catalog.get("update.download")).clicked() {
+                // Quem troca sozinho abre o aviso, que é onde o andamento aparece.
+                if atualizacao::Instalacao::desta().troca_sozinha() {
+                    if ui.button(self.catalog.get("update.install")).clicked() {
+                        self.aviso_de_atualizacao = true;
+                    }
+                } else if ui.button(self.catalog.get("update.download")).clicked() {
                     ui.ctx().open_url(egui::OpenUrl::new_tab(&lancamento.pagina));
                 }
             }
@@ -1496,6 +1575,20 @@ impl App {
             .checkbox(&mut debug.log, self.catalog.get("debug.log"))
             .changed();
         ui.weak(self.catalog.get("debug.log.hint"));
+        ui.add_space(8.0);
+        changed |= ui
+            .checkbox(&mut debug.gravar_sessao, self.catalog.get("debug.gravar_sessao"))
+            .changed();
+        ui.weak(self.catalog.get("debug.gravar_sessao.hint"));
+        if ui.button(self.catalog.get("debug.gravar_sessao.open")).clicked() {
+            let pasta = crate::ui::partida::pasta_de_sessoes();
+            if let Err(erro) = std::fs::create_dir_all(&pasta) {
+                eprintln!("não deu para criar {}: {erro}", pasta.display());
+            }
+            ui.ctx().open_url(egui::OpenUrl::new_tab(
+                crate::ui::screenshot::endereco_de(&pasta),
+            ));
+        }
         changed
     }
 
@@ -1580,13 +1673,17 @@ impl App {
                 self.catalog.get("graphics.keep_aspect"),
             )
             .changed();
-        changed |= ui
-            .checkbox(
-                &mut graphics.speed_limit,
-                self.catalog.get("graphics.speed_limit"),
-            )
-            .changed();
-        ui.weak(self.catalog.get("graphics.speed_limit.hint"));
+        // O limite de quadros mora em `velocidade`, mas aqui fica onde o `speed_limit` ficava:
+        // o egui é legado e não ganha a aba nova do Qt.
+        ui.add_space(12.0);
+        ui.label(self.catalog.get("speed.fps_limit"));
+        for limite in LimiteFps::TODOS {
+            let rotulo = self.catalog.get(limite.chave()).to_string();
+            changed |= ui
+                .radio_value(&mut self.settings.velocidade.limite_fps, limite, rotulo)
+                .changed();
+        }
+        ui.weak(self.catalog.get("speed.fps_limit.hint"));
 
         ui.add_space(12.0);
         changed |= ui
@@ -2060,11 +2157,25 @@ impl App {
         let builder = self.settings.graphics.janela_do_jogo.no_construtor(
             egui::ViewportBuilder::default()
                 .with_title(format!("{title} — Zeebx"))
-                .with_inner_size([SCREEN[0] as f32, SCREEN[1] as f32 + 32.0])
+                .with_inner_size(
+                    self.settings
+                        .graphics
+                        .tamanho_da_janela_do_jogo
+                        .unwrap_or([SCREEN[0] as f32, SCREEN[1] as f32 + 32.0]),
+                )
                 .with_min_inner_size([320.0, 240.0]),
         );
         let mut close = false;
         ctx.show_viewport_immediate(id, builder, |ctx, _class| {
+            if let Some(tamanho) = tamanho_em_modo_janela(ctx)
+                && Some(tamanho)
+                    != self.settings.graphics.tamanho_da_janela_do_jogo
+            {
+                self.settings.graphics.tamanho_da_janela_do_jogo = Some(tamanho);
+                if let Err(erro) = self.settings.save() {
+                    eprintln!("não deu para guardar as configurações: {erro}");
+                }
+            }
             close = self.playing_screen(ctx);
         });
         if close {
@@ -2076,13 +2187,13 @@ impl App {
     /// O estado de cada porta ligada agora. Ver [`EntradaDoDesktop::pads`].
     fn pads_now(&mut self, ctx: &egui::Context) -> Vec<(usize, Pad)> {
         let teclas = ctx.input(|input| input.keys_down.clone());
-        self.entrada.pads(&self.settings.controls, &teclas)
+        self.entrada.pads(&self.settings.controls, &self.settings.atalhos, &teclas)
     }
 
     /// O estado do controle de uma porta. Ver [`EntradaDoDesktop::pad`].
     fn pad_of(&self, ctx: &egui::Context, porta: usize) -> Pad {
         let teclas = ctx.input(|input| input.keys_down.clone());
-        self.entrada.pad(&self.settings.controls, porta, &teclas)
+        self.entrada.pad(&self.settings.controls, &self.settings.atalhos, porta, &teclas)
     }
 
     fn wiimote_da_porta(&self, porta: usize) -> Option<crate::input::wiimote::EstadoWiimote> {
@@ -2181,9 +2292,22 @@ impl App {
         };
         let movimentos: [[f32; 3]; crate::input::PORTAS] =
             std::array::from_fn(|porta| self.movimento_da_porta(porta));
-        let limit = self.settings.graphics.speed_limit;
+        // O fast-forward, pelo mesmo atalho da janela Qt: a tecla, ou o botão de qualquer
+        // controle. O `pads_now` acima já leu os controles desta volta.
+        let teclas = ctx.input(|input| input.keys_down.clone());
+        let apertado = self.entrada.atalho_apertado(&self.settings.atalhos.avancar, &teclas);
+        let modo = self.settings.velocidade.avanco.modo;
+        let voltar = self.entrada.atalho_apertado(&self.settings.atalhos.voltar, &teclas);
         let Some(partida) = self.partida.as_mut() else {
             return true;
+        };
+        partida.le_o_rewind(voltar, &self.settings.velocidade.rewind);
+        let avancando = partida.le_o_avanco(apertado, modo);
+        let ritmo = self.settings.velocidade.ritmo_com(avancando);
+        let turbo = partida::TurboDaVolta {
+            apertado: self.entrada.turbos(&self.settings.controls, &teclas),
+            controles: &self.settings.controls,
+            toques_por_segundo: self.settings.velocidade.turbo_por_segundo,
         };
         if let Some(pads) = &pads {
             // Guardamos teclas físicas: soltar 4 enquanto a seta continua apertada
@@ -2215,7 +2339,8 @@ impl App {
                 pads,
                 movimentos,
                 self.teclado_apertado.iter().filter_map(|k| input::avk_de(*k)),
-                limit,
+                &ritmo,
+                &turbo,
             );
         }
         // O pedido de lançar vem antes da saída: ver [`Partida::pedido_de_lancamento`].
@@ -2495,6 +2620,17 @@ impl eframe::App for App {
         // A janela principal é só a biblioteca. As configurações e o jogo são janelas do
         // sistema, cada uma com o seu título e o seu botão de fechar.
         alterna_tela_cheia(ctx);
+        if let Some(tamanho) = tamanho_em_modo_janela(ctx)
+            && Some(tamanho) != self.settings.graphics.tamanho_da_janela
+        {
+            // O tamanho em que fechar é o tamanho em que reabrir: sem isto a janela voltava
+            // sempre ao padrão de fábrica. Só em modo janela — maximizada ou em tela cheia,
+            // o tamanho é o da tela, e não escolha do usuário.
+            self.settings.graphics.tamanho_da_janela = Some(tamanho);
+            if let Err(erro) = self.settings.save() {
+                eprintln!("não deu para guardar as configurações: {erro}");
+            }
+        }
         egui::TopBottomPanel::top("nav").show(ctx, |ui| self.nav(ui));
         egui::CentralPanel::default().show(ctx, |ui| self.library_screen(ui));
         if self.settings_open {
@@ -2566,6 +2702,20 @@ fn upload_art(ctx: &egui::Context, art: &PadArt) -> ArtTextures {
 /// A maior altura que o desenho pode tomar. A janela de configurações também precisa caber a
 /// lista de botões.
 const ART_HEIGHT: f32 = 210.0;
+
+/// O tamanho atual da janela deste contexto, em pontos — e só em modo janela.
+///
+/// Maximizada ou em tela cheia, o tamanho é o da tela, e não escolha do usuário: guardar
+/// seria reabrir a janela com o tamanho da tela cheia.
+fn tamanho_em_modo_janela(ctx: &egui::Context) -> Option<[f32; 2]> {
+    ctx.input(|i| {
+        let janela = i.viewport();
+        let normal = !janela.maximized.unwrap_or(false) && !janela.fullscreen.unwrap_or(false);
+        normal
+            .then(|| janela.inner_rect.map(|ret| [ret.width(), ret.height()]))
+            .flatten()
+    })
+}
 
 /// `F11`, ou `Alt+Enter`, põe e tira a janela em foco da tela cheia.
 ///

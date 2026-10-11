@@ -197,9 +197,12 @@ fn format_com(fmt: &str, args: &mut impl ArgSource, largo: bool) -> String {
                 let value = args.next_word();
                 out.push_str(&f.pad(char::from_u32(value).unwrap_or('?').to_string()));
             }
-            Some('s') => {
+            // `%S` é a outra largura: string de `AECHAR` no `SPRINTF`. No `WSPRINTF` vale o
+            // espelho, `char`, como no printf da Microsoft — esse lado não foi visto em jogo. Sem ele o especificador saía como veio e não consumia argumento, e o `%d` seguinte
+            // imprimia o ponteiro: o mapa do Need For Speed dizia "vença 286973016 corridas".
+            Some(conv @ ('s' | 'S')) => {
                 let addr = args.next_word();
-                let mut text = match largo {
+                let mut text = match largo ^ (conv == 'S') {
                     true => args.read_wide_string(addr),
                     false => args.read_cstring(addr),
                 };
@@ -325,6 +328,21 @@ mod tests {
         assert_eq!(format_largo("- %s -", &mut args), "- L:Escavação -");
         let mut args = fake(&[0x100], &[(0x100, "Escavação")]);
         assert_eq!(format("- %s -", &mut args), "- Escavação -");
+    }
+
+    /// O desafio do mapa do Need For Speed. Sem o `%S`, o `%d` lia o ponteiro do nome do chefe.
+    #[test]
+    fn o_s_maiusculo_e_a_outra_largura_e_consome_argumento() {
+        let mut args = fake(
+            &[0x100, 4, 0x200],
+            &[(0x100, "MARCUS"), (0x200, "MONTANHAS")],
+        );
+        assert_eq!(
+            format("Para desafiar %S, vença %d corridas na região %S.", &mut args),
+            "Para desafiar L:MARCUS, vença 4 corridas na região L:MONTANHAS."
+        );
+        let mut args = fake(&[0x100], &[(0x100, "MARCUS")]);
+        assert_eq!(format_largo("[%S]", &mut args), "[MARCUS]");
     }
 
 }

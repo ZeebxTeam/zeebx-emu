@@ -28,14 +28,41 @@ ApplicationWindow {
     // O jogo pedido na linha de comando, se houve: abre direto, sem passar pela lista.
     required property string jogoInicial
 
-    width: 960
-    height: 720
+    width: larguraGuardada > 0 ? larguraGuardada : 960
+    height: alturaGuardada > 0 ? alturaGuardada : 720
     minimumWidth: 480
     minimumHeight: 360
     title: "Zeebx"
 
+    // O tamanho em que a janela foi fechada é o tamanho em que ela abre. Chamadas de
+    // função não têm sinal de mudança: avaliam uma vez, na montagem, que é quando valem.
+    readonly property real larguraGuardada: biblioteca.larguraDaJanela()
+    readonly property real alturaGuardada: biblioteca.alturaDaJanela()
+
+    // E o contrário: arrasta, a janela guarda. Em tela cheia ou maximizada, o tamanho é o da
+    // tela, e não escolha do usuário — aí não se guarda.
+    function guardaTamanho() {
+        if (visibility === Window.Windowed)
+            biblioteca.guardaTamanhoDaJanela(width, height)
+    }
+
+    // Arrastar a borda passa por dezenas de tamanhos por segundo, e cada um escreveria o
+    // `settings.json` inteiro. A gravação espera a mão parar.
+    onWidthChanged: filaDaGravacao.restart()
+    onHeightChanged: filaDaGravacao.restart()
+
+    Timer {
+        id: filaDaGravacao
+        interval: 500
+        onTriggered: principal.guardaTamanho()
+    }
+
     // Fechar a biblioteca encerra tudo, com ou sem jogo aberto — como no egui.
-    onClosing: Qt.quit()
+    onClosing: {
+        filaDaGravacao.stop()
+        principal.guardaTamanho()
+        Qt.quit()
+    }
 
     Component.onCompleted: {
         aplicaModo()
@@ -156,6 +183,7 @@ ApplicationWindow {
                 const texto = avisos.deAtualizacao()
                 if (texto !== "") {
                     novaVersao.texto = texto
+                    novaVersao.pagina = avisos.paginaDaAtualizacao()
                     novaVersao.open()
                 }
             }
@@ -205,13 +233,23 @@ ApplicationWindow {
             }
 
             Button {
+                id: botaoZWheel
+
                 focusPolicy: Qt.NoFocus
                 text: "▶ " + tr("nav.z_wheel")
                 enabled: principal.depende([configuracoes.cfg.versao], biblioteca.temZWheel())
                 onClicked: principal.mostra(biblioteca.abreZWheel())
-                ToolTip.visible: hovered
-                ToolTip.delay: 500
-                ToolTip.text: tr(enabled ? "nav.z_wheel.hint" : "nav.z_wheel.missing")
+                // O teto de largura é o dos cartões (GradeDaBiblioteca.qml:133): sem ele, a dica
+                // comprida saía numa linha só, mais larga que a tela.
+                ToolTip {
+                    visible: botaoZWheel.hovered
+                    delay: 500
+                    width: Math.min(implicitWidth, 320)
+                    contentItem: Label {
+                        wrapMode: Text.Wrap
+                        text: tr(botaoZWheel.enabled ? "nav.z_wheel.hint" : "nav.z_wheel.missing")
+                    }
+                }
             }
 
             // A busca: filtra a lista pelo nome, sem ligar para acentos. Esc limpa; o Enter joga
@@ -231,12 +269,20 @@ ApplicationWindow {
                 }
                 Keys.onReturnPressed: if (!principal.sobreposta) principal.mostra(biblioteca.abre(principal.escolhido()))
                 Keys.onEnterPressed: if (!principal.sobreposta) principal.mostra(biblioteca.abre(principal.escolhido()))
-                ToolTip.visible: hovered
-                ToolTip.delay: 500
-                ToolTip.text: tr("nav.search.hint")
+                ToolTip {
+                    visible: busca.hovered
+                    delay: 500
+                    width: Math.min(implicitWidth, 320)
+                    contentItem: Label {
+                        wrapMode: Text.Wrap
+                        text: tr("nav.search.hint")
+                    }
+                }
             }
 
             ToolButton {
+                id: botaoLimpaBusca
+
                 focusPolicy: Qt.NoFocus
                 text: "✕"
                 visible: busca.text !== ""
@@ -245,8 +291,14 @@ ApplicationWindow {
                     busca.text = ""
                     principal.vista.forceActiveFocus()
                 }
-                ToolTip.visible: hovered
-                ToolTip.text: tr("nav.search.clear")
+                ToolTip {
+                    visible: botaoLimpaBusca.hovered
+                    width: Math.min(implicitWidth, 320)
+                    contentItem: Label {
+                        wrapMode: Text.Wrap
+                        text: tr("nav.search.clear")
+                    }
+                }
             }
 
             Item {
@@ -269,12 +321,20 @@ ApplicationWindow {
             // próprio banco. Testar rede com isso custa um dia por tentativa, então o botão recua
             // a data em um dia.
             Button {
+                id: botaoLiberaSync
+
                 focusPolicy: Qt.NoFocus
                 text: tr("nav.unlock_sync")
                 onClicked: recado.text = biblioteca.liberaSincronizacao()
-                ToolTip.visible: hovered
-                ToolTip.delay: 500
-                ToolTip.text: tr("nav.unlock_sync.hint")
+                ToolTip {
+                    visible: botaoLiberaSync.hovered
+                    delay: 500
+                    width: Math.min(implicitWidth, 320)
+                    contentItem: Label {
+                        wrapMode: Text.Wrap
+                        text: tr("nav.unlock_sync.hint")
+                    }
+                }
             }
         }
 
@@ -425,37 +485,97 @@ ApplicationWindow {
         onClosed: avisos.dispensaAbertura(naoMostrar.checked)
     }
 
-    // O aviso de versão nova, se a procura ao abrir achou uma.
+    // O aviso de versão nova, se a procura ao abrir achou uma. Nas cópias que se trocam sozinhas
+    // (AppImage, instalador do Windows, `.app`) é também onde a instalação anda: a etapa é lida a
+    // cada volta do relógio acima, enquanto o diálogo está aberto.
     Dialog {
         id: novaVersao
 
         property string texto: ""
+        // Guardada na abertura: o `onClosed` dispensa o aviso, e depois disso o núcleo não diz
+        // mais qual é a página. Se o diálogo fechasse antes do `onClicked`, o botão abria "".
+        property string pagina: ""
+        readonly property bool sozinho: avisos.atualizaSozinho()
+        // 0 nenhuma, 1 baixando, 2 instalando, 3 pronta, 4 falhou. Ver `etapaDaAtualizacao`.
+        property int etapa: 0
+        property real fracao: -1
+        property string andamento: ""
+        readonly property bool ocupado: etapa === 1 || etapa === 2
+
+        function acompanha() {
+            etapa = avisos.etapaDaAtualizacao()
+            fracao = avisos.fracaoDaAtualizacao()
+            andamento = avisos.textoDaAtualizacao()
+        }
 
         anchors.centerIn: parent
         width: Math.min(460, principal.width - 32)
         modal: true
         title: principal.tr("update.title")
+        // No meio do download, clicar fora ou apertar Esc não fecha: a instalação seguiria sem
+        // ninguém ver, e o emulador fecharia sozinho no Windows.
+        closePolicy: ocupado ? Popup.NoAutoClose : Popup.CloseOnEscape
 
-        Label {
-            width: parent.width
-            wrapMode: Text.Wrap
-            text: novaVersao.texto
+        Timer {
+            interval: 100
+            repeat: true
+            running: novaVersao.visible
+            onTriggered: novaVersao.acompanha()
         }
 
-        footer: DialogButtonBox {
-            Button {
-                text: principal.tr("update.download")
-                onClicked: {
-                    Qt.openUrlExternally(avisos.paginaDaAtualizacao())
-                    novaVersao.close()
+        ColumnLayout {
+            width: parent.width
+            spacing: 12
+
+            Label {
+                Layout.fillWidth: true
+                wrapMode: Text.Wrap
+                text: novaVersao.etapa === 0 ? novaVersao.texto : novaVersao.andamento
+            }
+
+            ProgressBar {
+                Layout.fillWidth: true
+                visible: novaVersao.ocupado
+                indeterminate: novaVersao.etapa === 2 || novaVersao.fracao < 0
+                value: Math.max(0, novaVersao.fracao)
+            }
+
+            RowLayout {
+                Layout.alignment: Qt.AlignRight
+                visible: !novaVersao.ocupado
+
+                Button {
+                    visible: novaVersao.sozinho && novaVersao.etapa === 0
+                    text: principal.tr("update.install")
+                    onClicked: {
+                        avisos.instalaAtualizacao()
+                        novaVersao.acompanha()
+                    }
+                }
+                Button {
+                    visible: novaVersao.etapa === 3
+                    text: principal.tr("update.restart")
+                    onClicked: avisos.reiniciaNaVersaoNova()
+                }
+                Button {
+                    // Sem troca sozinha, ou se ela falhou, o caminho é a página da release.
+                    visible: novaVersao.etapa === 0 || novaVersao.etapa === 4
+                    text: principal.tr(novaVersao.sozinho && novaVersao.etapa === 0
+                                       ? "update.release_page" : "update.download")
+                    onClicked: {
+                        Qt.openUrlExternally(novaVersao.pagina)
+                        if (!novaVersao.sozinho || novaVersao.etapa === 4)
+                            novaVersao.close()
+                    }
+                }
+                Button {
+                    text: principal.tr("update.later")
+                    onClicked: novaVersao.close()
                 }
             }
-            Button {
-                text: principal.tr("update.later")
-                DialogButtonBox.buttonRole: DialogButtonBox.RejectRole
-            }
         }
 
+        onOpened: acompanha()
         onClosed: avisos.dispensaAtualizacao()
     }
 }

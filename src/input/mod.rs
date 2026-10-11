@@ -11,6 +11,7 @@ pub mod gamepads;
 #[cfg(feature = "desktop")]
 pub mod padview;
 pub mod sensores;
+pub mod toque;
 pub mod wiimote;
 
 /// Quantas portas de entrada o console tem.

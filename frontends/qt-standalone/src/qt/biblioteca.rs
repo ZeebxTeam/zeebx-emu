@@ -93,6 +93,26 @@ pub mod qobject {
         #[cxx_name = "modoDaJanela"]
         fn modo_da_janela(self: &Biblioteca) -> i32;
 
+        /// A largura em que a janela principal estava quando foi fechada, em pontos, ou zero
+        /// sem tamanho guardado. Ver `graphics.tamanho_da_janela`.
+        #[qinvokable]
+        #[cxx_name = "larguraDaJanela"]
+        fn largura_da_janela(self: &Biblioteca) -> f64;
+
+        /// A altura em que a janela principal estava quando foi fechada, em pontos, ou zero
+        /// sem tamanho guardado. Ver `graphics.tamanho_da_janela`.
+        #[qinvokable]
+        #[cxx_name = "alturaDaJanela"]
+        fn altura_da_janela(self: &Biblioteca) -> f64;
+
+        /// Guarda o tamanho atual da janela principal. A janela chama isto depois de um
+        /// tempo sem mudar de tamanho, e ao fechar — maximizada ou em tela cheia, o tamanho
+        /// é o da tela, e não escolha do usuário, e a janela não chama. Ver
+        /// `graphics.tamanho_da_janela`.
+        #[qinvokable]
+        #[cxx_name = "guardaTamanhoDaJanela"]
+        fn guarda_tamanho_da_janela(self: &Biblioteca, largura: f64, altura: f64);
+
         /// Como a biblioteca aparece: 0 em grade, 1 no slider. Ver `biblioteca` nas
         /// configurações.
         #[qinvokable]
@@ -340,6 +360,28 @@ impl qobject::Biblioteca {
 
     pub fn modo_da_janela(&self) -> i32 {
         nucleo::com(|nucleo| super::ponte::modo(nucleo.settings.graphics.janela))
+    }
+
+    pub fn largura_da_janela(&self) -> f64 {
+        nucleo::com(|nucleo| {
+            nucleo.settings.graphics.tamanho_da_janela.map_or(0.0, |[largura, _]| largura as f64)
+        })
+    }
+
+    pub fn altura_da_janela(&self) -> f64 {
+        nucleo::com(|nucleo| {
+            nucleo.settings.graphics.tamanho_da_janela.map_or(0.0, |[_, altura]| altura as f64)
+        })
+    }
+
+    pub fn guarda_tamanho_da_janela(&self, largura: f64, altura: f64) {
+        nucleo::com(|nucleo| {
+            nucleo.settings.graphics.tamanho_da_janela =
+                (largura > 0.0 && altura > 0.0).then_some([largura as f32, altura as f32]);
+            if let Err(erro) = nucleo.settings.save() {
+                eprintln!("não deu para guardar as configurações: {erro}");
+            }
+        })
     }
 
     pub fn modo_da_biblioteca(&self) -> i32 {

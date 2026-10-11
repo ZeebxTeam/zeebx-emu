@@ -1,0 +1,49 @@
+# Configuração do `cargo about`, que o `ferramentas/avisos_de_terceiros.py` roda para gerar o
+# `THIRD-PARTY-NOTICES.txt`. Ver o comentário no topo daquele script.
+
+# As licenças que aceitamos ligar num binário GPLv3. Uma crate nova com licença fora desta lista
+# faz o `cargo about` falhar, e é o momento de conferir se ela combina com a GPL antes de entrar.
+accepted = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "bzip2-1.0.6",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    "MPL-2.0",
+    "OFL-1.1",
+    "Ubuntu-font-1.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+
+# Os alvos em que algum binário da release é compilado. O Switch fica de fora: o alvo dele não é
+# do rustc, e o que ele liga é um subconjunto do core Libretro, que está aqui.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "aarch64-linux-android",
+    "x86_64-linux-android",
+    "aarch64-apple-ios",
+    "wasm32-unknown-emscripten",
+]
+
+# Os crates do próprio Zeebx (todos `publish = false`) não são de terceiros: a licença deles é o
+# LICENSE da raiz.
+private = { ignore = true }
+
+ignore-dev-dependencies = true
+ignore-build-dependencies = true
+# O `ring` declara "Apache-2.0 AND ISC" sem dizer qual arquivo é qual; o workaround do próprio
+# `cargo about` sabe separar.
+workarounds = ["ring"]

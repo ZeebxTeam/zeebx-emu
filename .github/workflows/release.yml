@@ -49,6 +49,8 @@ jobs:
   # `zeebx-standalone-qt-*`. Os passos moram no `qt.yml`, que monta e abre cada instalador.
   standalone-qt:
     uses: ./.github/workflows/qt.yml
+    # Pelo `ZEEBX_ATUALIZADOR_CHAVE`, que assina os pacotes para o atualizador.
+    secrets: inherit
 
   # O frontend do egui (`frontends/egui-standalone`, binário `zeebx`), legado:
   # `zeebx-standalone-egui-*`.
@@ -176,6 +178,34 @@ jobs:
           hdiutil convert "$tmp/rw.dmg" -format UDZO -o "${dmg%.dmg}"
           rm -rf "$tmp"
 
+      # O atualizador do emulador só instala o que confere com a chave pública embutida nele
+      # (`CHAVE_PUBLICA` em `src/ui/atualizacao.rs`). Cada pacote que se troca sozinho ganha um
+      # `.sig` ao lado, e o job `release` junta tudo no `latest-egui.json` com o
+      # `ferramentas/manifesto_de_atualizacao.py`. Sem o segredo — num fork, ou no `ci.yml` — os
+      # pacotes saem sem `.sig`, e a release só avisa, com a página, como antes.
+      - name: Assinar para o atualizador
+        shell: bash
+        env:
+          CARGO_PACKAGER_SIGN_PRIVATE_KEY: ${{ secrets.ZEEBX_ATUALIZADOR_CHAVE }}
+          CARGO_PACKAGER_SIGN_PRIVATE_KEY_PASSWORD: ""
+        run: |
+          set -euo pipefail
+          if [ -z "$CARGO_PACKAGER_SIGN_PRIVATE_KEY" ]; then
+            echo "::warning::sem o segredo ZEEBX_ATUALIZADOR_CHAVE: os pacotes saem sem assinatura"
+            exit 0
+          fi
+          cd target/pacotes
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            # O atualizador desembrulha o `.tar.gz` pulando o primeiro nível: a raiz tem de ser o
+            # `.app`, já com a assinatura ad-hoc. Sem o `COPYFILE_DISABLE` o tar do macOS mete
+            # arquivos `._*` do AppleDouble dentro do bundle.
+            COPYFILE_DISABLE=1 tar -czf "zeebx-standalone-egui-${{ matrix.nome }}.app.tar.gz" "Zeebx.app"
+          fi
+          for pacote in *.AppImage *-setup.exe *.app.tar.gz; do
+            [ -f "$pacote" ] || continue
+            cargo packager signer sign "$pacote"
+          done
+
       - uses: actions/upload-artifact@v4
         with:
           name: zeebx-standalone-egui-${{ matrix.nome }}
@@ -184,6 +214,8 @@ jobs:
             target/pacotes/*.AppImage
             target/pacotes/*-setup.exe
             target/pacotes/*.dmg
+            target/pacotes/*.app.tar.gz
+            target/pacotes/*.sig
           if-no-files-found: error
 
   headless:
@@ -236,6 +268,7 @@ jobs:
         run: |
           mkdir -p entrega
           cp frontends/headless/config.ini frontends/headless/LEIAME.md entrega/
+          mkdir -p entrega/licenses && cp LICENSE LICENSE-GPL3 THIRD-PARTY-NOTICES.txt entrega/licenses/
           if [ "$RUNNER_OS" = "Windows" ]; then
             cp target/release/zeebx-headless.exe entrega/
           else
@@ -460,6 +493,7 @@ jobs:
           mkdir -p pacote
           cp "${{ matrix.biblioteca }}" "pacote/${{ matrix.arquivo }}"
           cp frontends/libretro/zeebx_libretro.info pacote/
+          mkdir -p pacote/licenses && cp LICENSE LICENSE-GPL3 THIRD-PARTY-NOTICES.txt pacote/licenses/
           grep -q '^database = "Mobile - Zeebo"' pacote/zeebx_libretro.info
           cd pacote && zip -r "../zeebx_libretro-${{ matrix.nome }}.zip" .
 
@@ -470,6 +504,8 @@ jobs:
           New-Item -ItemType Directory -Force -Path pacote | Out-Null
           Copy-Item "${{ matrix.biblioteca }}" "pacote/${{ matrix.arquivo }}"
           Copy-Item "frontends/libretro/zeebx_libretro.info" "pacote/"
+          New-Item -ItemType Directory -Force -Path pacote/licenses | Out-Null
+          Copy-Item LICENSE, LICENSE-GPL3, THIRD-PARTY-NOTICES.txt pacote/licenses/
           if (-not (Select-String -Path "pacote/zeebx_libretro.info" -Pattern '^database = "Mobile - Zeebo"')) {
             throw "o .info nao aponta para a base 'Mobile - Zeebo'"
           }
@@ -509,6 +545,7 @@ jobs:
           mkdir -p pacote
           cp target/wasm/zeebx_libretro_emscripten.wasm pacote/
           cp frontends/libretro/zeebx_libretro.info pacote/
+          mkdir -p pacote/licenses && cp LICENSE LICENSE-GPL3 THIRD-PARTY-NOTICES.txt pacote/licenses/
           grep -q '^database = "Mobile - Zeebo"' pacote/zeebx_libretro.info
           cd pacote && zip -r "../zeebx_libretro-wasm.zip" .
 
@@ -560,8 +597,9 @@ jobs:
 
       - name: Empacota o core
         run: |
+          mkdir -p frontends/switch/saida/licenses && cp LICENSE LICENSE-GPL3 THIRD-PARTY-NOTICES.txt frontends/switch/saida/licenses/
           cd frontends/switch/saida
-          zip "$GITHUB_WORKSPACE/zeebx_libretro-switch.zip" libzeebx_libretro.a
+          zip -r "$GITHUB_WORKSPACE/zeebx_libretro-switch.zip" libzeebx_libretro.a licenses
 
       - uses: actions/upload-artifact@v4
         with:
@@ -569,8 +607,24 @@ jobs:
           path: zeebx_libretro-switch.zip
           if-no-files-found: error
 
+  # O `THIRD-PARTY-NOTICES.txt` que vai em todos os pacotes é versionado, e não gerado em cada job:
+  # o contêiner do Switch e o runner do Windows não teriam de instalar o `cargo about`. O preço é
+  # ele poder envelhecer com um `cargo update`, e é isto que pega: a release não sai com avisos
+  # de licença de dependências que já não são as que o binário leva.
+  licencas:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      # A versão casa com a `VERSAO_DO_CARGO_ABOUT` do script: outra formata diferente.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about@0.9.2
+      - name: Os avisos de terceiros estão em dia
+        run: python3 ferramentas/avisos_de_terceiros.py --confere
+
   release:
-    needs: [standalone-qt, standalone-egui, headless, android, ios, core, wasm, switch]
+    needs: [standalone-qt, standalone-egui, headless, android, ios, core, wasm, switch, licencas]
     # Sai com o que deu certo: um sistema que falhou não segura os outros.
     #
     # A tag vem de dois lugares: do `push` de uma tag, e aí é o `github.ref_name`; ou do
@@ -611,6 +665,11 @@ jobs:
             fi
           done
           echo "não há nota para $tag em docs/patch-notes/; a release sai com a lista de commits"
+
+      # Os `latest-qt.json` e `latest-egui.json` que o atualizador de cada frontend lê nesta
+      # release. Os `.sig` entram neles e saem da pasta.
+      - name: Os manifestos do atualizador
+        run: python3 ferramentas/manifesto_de_atualizacao.py pacotes "${{ inputs.versao || github.ref_name }}"
 
       - uses: softprops/action-gh-release@v2
         with:

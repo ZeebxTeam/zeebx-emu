@@ -178,6 +178,10 @@ isso dá um som que toca, parece bem, e está no tom errado.
 Vozes terminadas são recolhidas dentro do `fill`, no mesmo lugar em que são consumidas. A saída é
 `cpal`.
 
+No fast-forward o passo de cada voz e de cada fluxo é multiplicado pela velocidade que o jogo
+alcançou (`Mixer::define_avanco`): o som é puxado pelo relógio da placa, e sem isso a música
+seguia em 1x com o jogo a 3x. Ver [24-velocidade.md](24-velocidade.md).
+
 ## Como conferir sem ouvir
 
 `--dump-audio=arquivo.wav` grava a mistura. Foi assim que a implementação foi verificada: pico de

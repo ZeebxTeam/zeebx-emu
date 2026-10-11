@@ -122,6 +122,14 @@ vale disparar aquele workflow antes da tag. Você não consegue dispará-lo.
 - **O código do Zeebx é GPL-2.0-or-later**. O backend de CPU padrão é o Dynarmic, para que
   frontends GPLv3 como Qt 6 possam linkar o núcleo sem carregar uma dependência GPLv2-only. Antes
   de propor uma biblioteca nova, cheque a licença dela e as features do binário que vai linká-la.
+  **Os binários já são GPLv3 na prática**: todos ligam crates que são só Apache-2.0, que não
+  combinam com a GPLv2. Por isso uma dependência GPL-2.0-only não entra em binário nenhum.
+- **A `CHAVE_PUBLICA` de `src/ui/atualizacao.rs` e o segredo `ZEEBX_ATUALIZADOR_CHAVE` do GitHub
+  andam em par.** O segredo assina os pacotes da release; a chave embutida é o que o emulador
+  aceita. Trocar um sem o outro faz toda atualização automática ser recusada — e quem já tem a
+  versão velha instalada só sai dela baixando à mão.
+- **O `THIRD-PARTY-NOTICES.txt` acompanha o `Cargo.lock`.** Mudou dependência, rode
+  `python3 ferramentas/avisos_de_terceiros.py` e commite junto; a release confere.
 - **O `Cargo.lock` é versionado** e o CI usa `--locked`. Membro novo no workspace entra no lock,
   no mesmo commit.
 
@@ -139,6 +147,12 @@ prefixo de conventional commit no histórico recente. O corpo explica a razão, 
 
 **Português no código e na documentação; inglês onde o usuário estrangeiro lê** — as opções e
 mensagens do headless, as chaves do `config.ini`, os arquivos de `assets/lang/`.
+
+## A lista de contribuidores do README
+
+A tabela "Quem faz o Zeebx" do README é escrita, e não buscada: o README não roda nada. Ela sai
+de `python3 ferramentas/contribuidores.py`, que lê a mesma API do site (`docs/site.js`) e reescreve
+o trecho entre os marcadores `<!-- contribuidores -->`. Refaça quando entrar gente nova.
 
 ## Notas de versão
 
