@@ -30,11 +30,20 @@ ApplicationWindow {
     // O objeto das configurações, para a principal reler o que depende delas.
     property alias cfg: cfg
 
+    // **O modo do jogo.** Com `jogo` preenchido, a janela edita as configurações daquele jogo
+    // só: ficam as abas de controles, gráficos, velocidade e áudio, e o que é da janela sai.
+    // Ver `Nucleo::com_o_jogo`.
+    property string jogo: ""
+    property string nomeDoJogo: ""
+    readonly property bool doJogo: jogo !== ""
+    readonly property bool personalizado: doJogo && v("jogo.personalizado")
+
     width: 720
     height: 640
     minimumWidth: 420
     minimumHeight: 320
-    title: "Zeebx — " + tr("settings.title")
+    title: "Zeebx — " + (doJogo ? tr("game_settings.title").replace("{game}", nomeDoJogo)
+                                : tr("settings.title"))
 
     // Os textos e os valores se refazem sozinhos: a `versao` do idioma e a das configurações são
     // lidas aqui, e uma ligação que chama estas funções depende delas.
@@ -56,6 +65,14 @@ ApplicationWindow {
         show()
         raise()
         requestActivate()
+    }
+
+    // Abre no modo do jogo de `chave`, na aba dos controles.
+    function abreDoJogo(chave, nome) {
+        jogo = chave
+        nomeDoJogo = nome
+        cfg.editaOJogo(chave)
+        abre(1)
     }
 
     // A procura por versão nova e o Discord respondem de outra thread: o estado deles é relido
@@ -138,17 +155,55 @@ ApplicationWindow {
         font.bold: true
     }
 
-    header: TabBar {
-        id: abas
+    // Uma aba que só existe nas configurações gerais: no modo do jogo ela some, e a largura zero
+    // faz a barra repartir o espaço só entre as que ficam.
+    component AbaGeral: TabButton {
+        visible: !janela.doJogo
+        width: janela.doJogo ? 0 : undefined
+    }
 
-        TabButton { text: janela.tr("settings.tab.general") }
-        TabButton { text: janela.tr("settings.tab.controls") }
-        TabButton { text: janela.tr("settings.tab.shortcuts") }
-        TabButton { text: janela.tr("settings.tab.graphics") }
-        TabButton { text: janela.tr("settings.tab.speed") }
-        TabButton { text: janela.tr("settings.tab.audio") }
-        TabButton { text: janela.tr("settings.tab.debug") }
-        TabButton { text: janela.tr("settings.tab.about") }
+    header: ColumnLayout {
+        spacing: 0
+
+        // No modo do jogo, a opção que liga as configurações dele. Desligada, as abas mostram as
+        // gerais, sem deixar mexer: é o que o jogo está usando.
+        Pane {
+            Layout.fillWidth: true
+            visible: janela.doJogo
+
+            ColumnLayout {
+                width: parent.width
+                spacing: 0
+
+                CheckBox {
+                    text: janela.tr("game_settings.custom")
+                    checked: janela.personalizado
+                    onToggled: janela.define("jogo.personalizado", checked)
+                }
+                Label {
+                    Layout.fillWidth: true
+                    Layout.leftMargin: 32
+                    wrapMode: Text.Wrap
+                    opacity: 0.6
+                    text: janela.tr("game_settings.custom.hint")
+                }
+            }
+        }
+
+        TabBar {
+            id: abas
+
+            Layout.fillWidth: true
+
+            AbaGeral { text: janela.tr("settings.tab.general") }
+            TabButton { text: janela.tr("settings.tab.controls") }
+            AbaGeral { text: janela.tr("settings.tab.shortcuts") }
+            TabButton { text: janela.tr("settings.tab.graphics") }
+            TabButton { text: janela.tr("settings.tab.speed") }
+            TabButton { text: janela.tr("settings.tab.audio") }
+            AbaGeral { text: janela.tr("settings.tab.debug") }
+            AbaGeral { text: janela.tr("settings.tab.about") }
+        }
     }
 
     // Toda aba rola: a gráfica já não cabe na altura padrão da janela, e uma opção que some
@@ -156,6 +211,7 @@ ApplicationWindow {
     StackLayout {
         anchors.fill: parent
         currentIndex: abas.currentIndex
+        enabled: !janela.doJogo || janela.personalizado
 
         // Geral
         ScrollView {
@@ -953,16 +1009,22 @@ ApplicationWindow {
                 x: 16
                 spacing: 6
 
+                // As janelas são do emulador, e não do jogo: no modo do jogo, saem.
                 Escolha {
                     Layout.topMargin: 12
+                    visible: !janela.doJogo
                     chave: "graphics.janela"
                     rotulo: "graphics.window.main"
                 }
                 Escolha {
+                    visible: !janela.doJogo
                     chave: "graphics.janela_do_jogo"
                     rotulo: "graphics.window.game"
                 }
-                Dica { text: janela.tr("graphics.window.hint") }
+                Dica {
+                    visible: !janela.doJogo
+                    text: janela.tr("graphics.window.hint")
+                }
 
                 Titulo { text: janela.tr("graphics.scaling") }
                 Repeater {

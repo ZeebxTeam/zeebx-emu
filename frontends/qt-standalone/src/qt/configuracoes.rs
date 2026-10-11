@@ -48,6 +48,12 @@ pub mod qobject {
         #[qinvokable]
         fn valor(self: &Configuracoes, chave: &QString) -> QVariant;
 
+        /// Passa a editar as configurações do jogo de `chave`; vazio volta às globais. Ver
+        /// [`super::nucleo::Nucleo::com_o_jogo`].
+        #[qinvokable]
+        #[cxx_name = "editaOJogo"]
+        fn edita_o_jogo(self: Pin<&mut Configuracoes>, chave: &QString);
+
         /// Grava uma opção, salva o arquivo e aplica o efeito.
         #[qinvokable]
         fn define(self: Pin<&mut Configuracoes>, chave: &QString, valor: &QVariant);
@@ -468,6 +474,9 @@ pub struct ConfiguracoesRust {
     teclas: HashSet<Key>,
     /// A calibração em andamento: a porta e as leituras paradas juntadas até agora.
     calibrando: Option<(usize, Vec<[f32; 3]>)>,
+    /// A chave do jogo cujas configurações esta janela edita; vazia, as globais. Ver
+    /// [`qobject::Configuracoes::com`].
+    jogo: String,
     /// A última calibração foi recusada por não estar de face para cima.
     calibracao_recusada: bool,
     /// O pedido de permissão para os sensores, que corre numa thread enquanto a janela de senha
@@ -607,7 +616,11 @@ fn escolha<T: Copy>(opcoes: &[T], indice: i32) -> Option<T> {
 impl qobject::Configuracoes {
     pub fn valor(&self, chave: &QString) -> QVariant {
         let chave = String::from(chave);
-        nucleo::com(|nucleo| {
+        if chave == "jogo.personalizado" {
+            let jogo = &self.rust().jogo;
+            return QVariant::from(&nucleo::com(|nucleo| nucleo.personalizado(jogo)));
+        }
+        self.com(|nucleo| {
             let caminho = |caminho: &Option<PathBuf>| {
                 QVariant::from(&QString::from(
                     &caminho.as_ref().map(|p| p.display().to_string()).unwrap_or_default(),
@@ -682,7 +695,14 @@ impl qobject::Configuracoes {
         let ligado = valor.value::<bool>().unwrap_or_default();
         let numero = valor.value::<i32>().unwrap_or_default();
         let porta = self.porta();
-        let efeito = nucleo::com(|nucleo| {
+        // Ligar e desligar as do jogo é fora da troca: é ela que decide o que se edita.
+        if chave == "jogo.personalizado" {
+            let jogo = self.rust().jogo.clone();
+            nucleo::com(|nucleo| nucleo.personaliza(&jogo, ligado));
+            self.as_mut().aplica(Efeito::default());
+            return;
+        }
+        let efeito = self.com(|nucleo| {
             let mut efeito = Efeito::default();
             if let Some(campo) = booleano(&mut nucleo.settings, &chave) {
                 *campo = ligado;
@@ -788,7 +808,7 @@ impl qobject::Configuracoes {
                 }
                 _ => {}
             }
-            salva(&nucleo.settings);
+            nucleo.salva_configuracoes();
             efeito
         });
         self.as_mut().aplica(efeito);
@@ -796,7 +816,7 @@ impl qobject::Configuracoes {
 
     pub fn opcoes(&self, chave: &QString) -> QStringList {
         let chave = String::from(chave);
-        let rotulos: Vec<String> = nucleo::com(|nucleo| {
+        let rotulos: Vec<String> = self.com(|nucleo| {
             let catalogo = &nucleo.catalogo;
             let traduz = |chaves: &[&str]| chaves.iter().map(|c| catalogo.get(c).to_string()).collect();
             let desligado = catalogo.get("common.off");
@@ -868,9 +888,9 @@ impl qobject::Configuracoes {
         let Some(pasta) = rfd::FileDialog::new().pick_folder() else {
             return;
         };
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             nucleo.settings.roms_dir = Some(pasta);
-            salva(&nucleo.settings);
+            nucleo.salva_configuracoes();
         });
         self.as_mut().aplica(Efeito {
             biblioteca: Some(true),
@@ -879,7 +899,7 @@ impl qobject::Configuracoes {
     }
 
     pub fn pasta_de_screenshots(&self) -> QString {
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             let pasta = screenshot::pasta(nucleo.settings.screenshots_dir.as_deref());
             QString::from(&pasta.display().to_string())
         })
@@ -889,27 +909,27 @@ impl qobject::Configuracoes {
         let Some(pasta) = rfd::FileDialog::new().pick_folder() else {
             return;
         };
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             nucleo.settings.screenshots_dir = Some(pasta);
-            salva(&nucleo.settings);
+            nucleo.salva_configuracoes();
         });
         self.as_mut().aplica(Efeito::default());
     }
 
     pub fn usa_pasta_padrao_de_screenshots(mut self: Pin<&mut Self>) {
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             nucleo.settings.screenshots_dir = None;
-            salva(&nucleo.settings);
+            nucleo.salva_configuracoes();
         });
         self.as_mut().aplica(Efeito::default());
     }
 
     pub fn screenshots_na_pasta_padrao(&self) -> bool {
-        nucleo::com(|nucleo| nucleo.settings.screenshots_dir.is_none())
+        self.com(|nucleo| nucleo.settings.screenshots_dir.is_none())
     }
 
     pub fn soundfont(&self) -> QString {
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             QString::from(&match &nucleo.settings.audio.soundfont {
                 Some(caminho) => caminho.display().to_string(),
                 None => nucleo.catalogo.get("audio.soundfont.auto").to_string(),
@@ -926,27 +946,27 @@ impl qobject::Configuracoes {
         else {
             return;
         };
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             nucleo.settings.audio.soundfont = Some(arquivo);
-            salva(&nucleo.settings);
+            nucleo.salva_configuracoes();
         });
         self.as_mut().aplica(Efeito::default());
     }
 
     pub fn usa_soundfont_automatico(mut self: Pin<&mut Self>) {
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             nucleo.settings.audio.soundfont = None;
-            salva(&nucleo.settings);
+            nucleo.salva_configuracoes();
         });
         self.as_mut().aplica(Efeito::default());
     }
 
     pub fn soundfont_automatico(&self) -> bool {
-        nucleo::com(|nucleo| nucleo.settings.audio.soundfont.is_none())
+        self.com(|nucleo| nucleo.settings.audio.soundfont.is_none())
     }
 
     pub fn endereco_da_pasta_de_screenshots(&self) -> QString {
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             let pasta = screenshot::pasta(nucleo.settings.screenshots_dir.as_deref());
             if let Err(erro) = std::fs::create_dir_all(&pasta) {
                 eprintln!("não deu para criar {}: {erro}", pasta.display());
@@ -974,7 +994,7 @@ impl qobject::Configuracoes {
     }
 
     pub fn detecta_z_wheel(mut self: Pin<&mut Self>) {
-        let achada = nucleo::com(|nucleo| {
+        let achada = self.com(|nucleo| {
             library::detecta_z_wheel(nucleo.settings.roms_dir.as_deref(), &nucleo.jogos)
         });
         if let Some(caminho) = achada {
@@ -983,7 +1003,7 @@ impl qobject::Configuracoes {
     }
 
     pub fn estado_da_z_wheel(&self) -> QString {
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             let catalogo = &nucleo.catalogo;
             QString::from(&match (&nucleo.z_wheel, &nucleo.acervo) {
                 (Some(_), Some(acervo)) => catalogo
@@ -995,23 +1015,23 @@ impl qobject::Configuracoes {
     }
 
     pub fn z_wheel_achada(&self) -> bool {
-        nucleo::com(|nucleo| nucleo.z_wheel.is_some())
+        self.com(|nucleo| nucleo.z_wheel.is_some())
     }
 
     pub fn pasta_de_roms_falta(&self) -> bool {
-        nucleo::com(|nucleo| nucleo.settings.roms_dir.as_ref().is_some_and(|p| !p.is_dir()))
+        self.com(|nucleo| nucleo.settings.roms_dir.as_ref().is_some_and(|p| !p.is_dir()))
     }
 
     pub fn procura_atualizacao(self: Pin<&mut Self>) {
-        nucleo::com(|nucleo| nucleo.procura_atualizacao());
+        self.com(|nucleo| nucleo.procura_atualizacao());
     }
 
     pub fn procurando_atualizacao(&self) -> bool {
-        nucleo::com(|nucleo| nucleo.procurando_atualizacao())
+        self.com(|nucleo| nucleo.procurando_atualizacao())
     }
 
     pub fn estado_da_atualizacao(&self) -> QString {
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             let catalogo = &nucleo.catalogo;
             let texto = match (&nucleo.atualizacao, nucleo.procurando_atualizacao()) {
                 (_, true) => catalogo.get("settings.updates.checking").to_string(),
@@ -1029,7 +1049,7 @@ impl qobject::Configuracoes {
     }
 
     pub fn pagina_da_atualizacao(&self) -> QString {
-        nucleo::com(|nucleo| match &nucleo.atualizacao {
+        self.com(|nucleo| match &nucleo.atualizacao {
             Some(Resposta::Nova(lancamento)) => QString::from(&lancamento.pagina),
             _ => QString::default(),
         })
@@ -1040,15 +1060,15 @@ impl qobject::Configuracoes {
     }
 
     pub fn mostra_aviso_de_atualizacao(&self) {
-        nucleo::com(|nucleo| nucleo.reabre_aviso_de_atualizacao());
+        self.com(|nucleo| nucleo.reabre_aviso_de_atualizacao());
     }
 
     pub fn discord_conectado(&self) -> bool {
-        nucleo::com(|nucleo| nucleo.presenca.conectado())
+        self.com(|nucleo| nucleo.presenca.conectado())
     }
 
     pub fn onde_ficam(&self) -> QString {
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             let caminho = settings::settings_path().display().to_string();
             QString::from(&nucleo.catalogo.format("settings.saved_at", &[("path", &caminho)]))
         })
@@ -1066,9 +1086,9 @@ impl qobject::Configuracoes {
     }
 
     fn aponta_z_wheel(mut self: Pin<&mut Self>, caminho: PathBuf) {
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             nucleo.settings.z_wheel_path = Some(caminho);
-            salva(&nucleo.settings);
+            nucleo.salva_configuracoes();
             nucleo.atualiza_z_wheel();
         });
         self.as_mut().aplica(Efeito {
@@ -1111,9 +1131,18 @@ fn dono(settings: &Settings, e_ela: impl Fn(&Source) -> bool) -> Option<(usize, 
     })
 }
 
-fn salva(settings: &Settings) {
-    if let Err(erro) = settings.save() {
-        eprintln!("não deu para guardar as configurações: {erro}");
+/// O jogo em edição.
+impl qobject::Configuracoes {
+    /// O `nucleo::com` desta janela: com as configurações do jogo em edição no lugar das
+    /// globais, quando há jogo e ele tem as próprias. Ver [`nucleo::Nucleo::com_o_jogo`].
+    fn com<T>(&self, f: impl FnOnce(&mut nucleo::Nucleo) -> T) -> T {
+        let jogo = &self.rust().jogo;
+        nucleo::com(|nucleo| nucleo.com_o_jogo(jogo, f))
+    }
+
+    pub fn edita_o_jogo(mut self: Pin<&mut Self>, chave: &QString) {
+        self.as_mut().rust_mut().jogo = String::from(chave);
+        self.aplica(Efeito::default());
     }
 }
 
@@ -1135,8 +1164,8 @@ impl qobject::Configuracoes {
 
     /// Os controles da porta mudaram: salva, e com um jogo aberto vale na hora.
     fn controles_mudaram(mut self: Pin<&mut Self>) {
-        nucleo::com(|nucleo| {
-            salva(&nucleo.settings);
+        self.com(|nucleo| {
+            nucleo.salva_configuracoes();
             nucleo.portas_mudaram();
         });
         let versao = self.versao().wrapping_add(1);
@@ -1152,18 +1181,18 @@ impl qobject::Configuracoes {
 
     pub fn porta_ligada(&self) -> bool {
         let porta = self.porta();
-        nucleo::com(|nucleo| nucleo.settings.controls.player(porta).is_some_and(|j| j.ligada))
+        self.com(|nucleo| nucleo.settings.controls.player(porta).is_some_and(|j| j.ligada))
     }
 
     pub fn liga_porta(mut self: Pin<&mut Self>, ligada: bool) {
         let porta = self.porta();
-        nucleo::com(|nucleo| nucleo.settings.controls.player_mut(porta).ligada = ligada);
+        self.com(|nucleo| nucleo.settings.controls.player_mut(porta).ligada = ligada);
         self.as_mut().controles_mudaram();
     }
 
     pub fn aparelho(&self) -> i32 {
         let porta = self.porta();
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             let aparelho = nucleo.settings.controls.player(porta).map(|j| j.aparelho);
             aparelho.map_or(1, |aparelho| indice(&APARELHOS, &aparelho))
         })
@@ -1174,7 +1203,7 @@ impl qobject::Configuracoes {
         let Some(aparelho) = escolha(&APARELHOS, aparelho) else {
             return;
         };
-        nucleo::com(|nucleo| nucleo.settings.controls.player_mut(porta).aparelho = aparelho);
+        self.com(|nucleo| nucleo.settings.controls.player_mut(porta).aparelho = aparelho);
         self.as_mut().controles_mudaram();
     }
 
@@ -1194,7 +1223,7 @@ impl qobject::Configuracoes {
 
     pub fn controles(&self) -> QStringList {
         let porta = self.porta();
-        let nomes = nucleo::com(|nucleo| {
+        let nomes = self.com(|nucleo| {
             let mut nomes = vec![nucleo.catalogo.get("controls.device.none").to_string()];
             nomes.extend(Self::nomes_dos_controles(nucleo, porta));
             nomes
@@ -1204,7 +1233,7 @@ impl qobject::Configuracoes {
 
     pub fn controle_atual(&self) -> i32 {
         let porta = self.porta();
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             let Some(device) = nucleo.settings.controls.player(porta).and_then(|j| j.device.clone()) else {
                 return 0;
             };
@@ -1215,7 +1244,7 @@ impl qobject::Configuracoes {
 
     pub fn escolhe_controle(mut self: Pin<&mut Self>, indice: i32) {
         let porta = self.porta();
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             let nomes = Self::nomes_dos_controles(nucleo, porta);
             let device = usize::try_from(indice - 1).ok().and_then(|i| nomes.get(i).cloned());
             nucleo.settings.controls.player_mut(porta).troca_controle(device);
@@ -1225,7 +1254,7 @@ impl qobject::Configuracoes {
 
     pub fn restaura_mapeamento(mut self: Pin<&mut Self>) {
         let porta = self.porta();
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             let jogador = nucleo.settings.controls.player_mut(porta);
             *jogador = zeebx::input::bindings::Player::padrao_do_controle(jogador.device.clone());
         });
@@ -1241,7 +1270,7 @@ impl qobject::Configuracoes {
 
     pub fn origens_do_botao(&self, botao: &QString) -> QString {
         let (porta, botao) = (self.porta(), String::from(botao));
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             let origens = nucleo
                 .settings
                 .controls
@@ -1273,7 +1302,7 @@ impl qobject::Configuracoes {
 
     pub fn limpa_botao(mut self: Pin<&mut Self>, botao: &QString) {
         let (porta, botao) = (self.porta(), String::from(botao));
-        nucleo::com(|nucleo| nucleo.settings.controls.player_mut(porta).clear(&botao));
+        self.com(|nucleo| nucleo.settings.controls.player_mut(porta).clear(&botao));
         self.as_mut().controles_mudaram();
     }
 
@@ -1306,7 +1335,7 @@ impl qobject::Configuracoes {
         drop(rust);
         // A tecla de um atalho não vira botão: na janela do jogo o atalho ganha, e o botão
         // pareceria mapeado sem responder.
-        let recusa = nucleo::com(|nucleo| {
+        let recusa = self.com(|nucleo| {
             if let Some(qual) = ATALHOS
                 .into_iter()
                 .find(|qual| qual.tem_a_tecla(&nucleo.settings.atalhos, tecla))
@@ -1334,7 +1363,7 @@ impl qobject::Configuracoes {
         let Some(qual) = Atalho::de_nome(qual) else {
             return QString::default();
         };
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             let atalhos = &nucleo.settings.atalhos;
             let origens = match qual {
                 Atalho::Screenshot => return QString::from(&atalhos.screenshot),
@@ -1384,7 +1413,7 @@ impl qobject::Configuracoes {
         let Some(qual @ (Atalho::Avancar | Atalho::Voltar)) = self.rust().capturando_atalho else {
             return;
         };
-        let botao = nucleo::com(|nucleo| {
+        let botao = self.com(|nucleo| {
             nucleo.entrada.gamepads.poll();
             nucleo.entrada.gamepads.primeiro_botao_de_algum()
         });
@@ -1409,7 +1438,7 @@ impl qobject::Configuracoes {
     /// fast-forward: lá a origem do atalho deixa de chegar ao jogo ([`Atalhos::reservadas`]), e
     /// quem a escolheu sabe o que fez. O aviso diz qual botão ficou sem ela.
     fn define_atalho(mut self: Pin<&mut Self>, qual: Atalho, origem: Source) {
-        let recusa = nucleo::com(|nucleo| {
+        let recusa = self.com(|nucleo| {
             let catalogo = &nucleo.catalogo;
             let nome = origem.label();
             let tecla = match &origem {
@@ -1448,7 +1477,7 @@ impl qobject::Configuracoes {
                 Some(origens) => *origens = vec![origem.clone()],
                 None => nucleo.settings.atalhos.screenshot = nome.clone(),
             }
-            salva(&nucleo.settings);
+            nucleo.salva_configuracoes();
             conflito
         });
         self.as_mut().rust_mut().recusa = recusa.map(|texto| (true, texto));
@@ -1461,7 +1490,7 @@ impl qobject::Configuracoes {
         let mut calibrando = self.as_mut().rust_mut().calibrando.take();
         let mut recusada = None;
         let mut recusa_do_botao = None;
-        let mudou = nucleo::com(|nucleo| {
+        let mudou = self.com(|nucleo| {
             // **O gilrs só atualiza o estado quando a fila de eventos é drenada.** Sem isto o
             // desenho ficava apagado por mais que se apertasse.
             nucleo.entrada.gamepads.poll();
@@ -1539,14 +1568,14 @@ impl qobject::Configuracoes {
 
     pub fn apertado(&self, botao: &QString) -> bool {
         let botao = String::from(botao);
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             let pad = self.pad(nucleo);
             Pad::button_by_name(&botao).is_some_and(|i| pad.is_down(i))
         })
     }
 
     pub fn eixo(&self, indice: i32) -> f64 {
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             let pad = self.pad(nucleo);
             let valor = usize::try_from(indice).ok().and_then(|i| pad.axes.get(i).copied());
             f64::from(valor.unwrap_or(0)) / f64::from(AXIS_CURSO)
@@ -1558,13 +1587,13 @@ impl qobject::Configuracoes {
     }
 
     pub fn origens_de_eixo(&self) -> QStringList {
-        let nenhum = nucleo::com(|nucleo| nucleo.catalogo.get("controls.axis.none").to_string());
+        let nenhum = self.com(|nucleo| nucleo.catalogo.get("controls.axis.none").to_string());
         lista_de_textos(std::iter::once(nenhum).chain(gamepads::axis_names().map(String::from)).collect())
     }
 
     pub fn origem_do_eixo(&self, eixo: &QString) -> i32 {
         let (porta, eixo) = (self.porta(), String::from(eixo));
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             let origem = nucleo.settings.controls.player(porta).and_then(|j| j.axes.get(&eixo).cloned());
             origem
                 .and_then(|origem| gamepads::axis_names().position(|nome| nome == origem.name))
@@ -1574,7 +1603,7 @@ impl qobject::Configuracoes {
 
     pub fn define_origem_do_eixo(mut self: Pin<&mut Self>, eixo: &QString, indice: i32) {
         let (porta, eixo) = (self.porta(), String::from(eixo));
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             let jogador = nucleo.settings.controls.player_mut(porta);
             let nome = usize::try_from(indice - 1).ok().and_then(|i| gamepads::axis_names().nth(i));
             match nome {
@@ -1598,7 +1627,7 @@ impl qobject::Configuracoes {
 
     pub fn eixo_invertido(&self, eixo: &QString) -> bool {
         let (porta, eixo) = (self.porta(), String::from(eixo));
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             let jogador = nucleo.settings.controls.player(porta);
             jogador.and_then(|j| j.axes.get(&eixo)).is_some_and(|s| s.invert)
         })
@@ -1606,7 +1635,7 @@ impl qobject::Configuracoes {
 
     pub fn inverte_eixo(mut self: Pin<&mut Self>, eixo: &QString, invertido: bool) {
         let (porta, eixo) = (self.porta(), String::from(eixo));
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             if let Some(origem) = nucleo.settings.controls.player_mut(porta).axes.get_mut(&eixo) {
                 origem.invert = invertido;
             }
@@ -1615,13 +1644,13 @@ impl qobject::Configuracoes {
     }
 
     pub fn proporcao_da_arte(&self) -> f64 {
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             nucleo.arte.as_ref().map_or(0.0, |arte| arte.width as f64 / arte.height as f64)
         })
     }
 
     pub fn partes(&self) -> QStringList {
-        let nomes = nucleo::com(|nucleo| {
+        let nomes = self.com(|nucleo| {
             let partes = nucleo.arte.as_ref().map(|arte| arte.parts()).unwrap_or_default();
             partes.iter().map(|parte| parte.button.clone()).collect()
         });
@@ -1629,7 +1658,7 @@ impl qobject::Configuracoes {
     }
 
     pub fn limites_da_parte(&self, indice: i32) -> QRectF {
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             let Some(arte) = &nucleo.arte else {
                 return QRectF::default();
             };
@@ -1642,7 +1671,7 @@ impl qobject::Configuracoes {
     }
 
     pub fn botao_em(&self, u: f64, v: f64) -> QString {
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             let botao = nucleo.arte.as_ref().and_then(|arte| arte.hit(u as f32, v as f32));
             QString::from(botao.unwrap_or_default())
         })
@@ -1650,7 +1679,7 @@ impl qobject::Configuracoes {
 
     pub fn sensor(&self) -> QString {
         let porta = self.porta();
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             let sensor = nucleo.entrada.sensor_da_porta(&nucleo.settings.controls, porta);
             QString::from(&sensor.descreve(&nucleo.catalogo))
         })
@@ -1658,7 +1687,7 @@ impl qobject::Configuracoes {
 
     pub fn sensor_sem_permissao(&self) -> bool {
         let porta = self.porta();
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             let sensor = nucleo.entrada.sensor_da_porta(&nucleo.settings.controls, porta);
             matches!(sensor, SensorDaPorta::Controle(s) if s.sem_permissao)
         })
@@ -1666,14 +1695,14 @@ impl qobject::Configuracoes {
 
     pub fn com_leitura(&self) -> bool {
         let porta = self.porta();
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             nucleo.entrada.movimento_bruto_da_porta(&nucleo.settings.controls, porta).is_some()
         })
     }
 
     pub fn linha_do_movimento(&self) -> QString {
         let porta = self.porta();
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             let [x, y, z] = nucleo.entrada.movimento_da_porta(&nucleo.settings.controls, porta);
             let pad = self.pad(nucleo);
             let nomes: Vec<&str> = ["up", "down", "left", "right", "b1", "b2", "back"]
@@ -1690,7 +1719,7 @@ impl qobject::Configuracoes {
 
     pub fn giro(&self) -> f64 {
         let porta = self.porta();
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             // O ângulo de volante, o mesmo que o Crash Nitro Kart calcula: a gravidade no plano da
             // face. Deitado, ela sai desse plano e o ângulo vira ruído, então a imagem só gira
             // quando a gravidade está de fato ali.
@@ -1717,7 +1746,7 @@ impl qobject::Configuracoes {
     pub fn restaura_calibracao(mut self: Pin<&mut Self>) {
         let porta = self.porta();
         self.as_mut().rust_mut().calibrando = None;
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             nucleo.settings.controls.player_mut(porta).calibracao_movimento = Default::default();
         });
         self.as_mut().controles_mudaram();
@@ -1755,7 +1784,7 @@ impl qobject::Configuracoes {
             Ok(Liberacao::Falhou(erro)) => erro,
             _ => return QString::default(),
         };
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             QString::from(
                 &nucleo
                     .catalogo

@@ -23,24 +23,33 @@ pub enum Comando {
     Direita,
     Abrir,
     ZWheel,
+    /// As configurações do jogo escolhido: o X do controle.
+    Configurar,
+    /// Os detalhes do jogo escolhido: o Y do controle.
+    Inspecionar,
 }
 
-const COMANDOS: [Comando; 6] = [
+const COMANDOS: [Comando; 8] = [
     Comando::Cima,
     Comando::Baixo,
     Comando::Esquerda,
     Comando::Direita,
     Comando::Abrir,
     Comando::ZWheel,
+    Comando::Configurar,
+    Comando::Inspecionar,
 ];
 
 /// O que está apertado agora, na ordem dos [`Comando`]: `[cima, baixo, esquerda, direita, abrir,
-/// home]`.
+/// home, configurar, inspecionar]`.
+///
+/// Configurar e inspecionar são o X e o Y de um controle comum: o `b2` e o `b3`, que no Z-Pad
+/// ficam à esquerda e em cima do losango, onde o X e o Y estão.
 ///
 /// `teclas` é o teclado da janela — as quatro setas e o abrir (Enter ou espaço) —, e `pads` os
 /// controles das portas ligadas. **Os dois viram um estado só antes de detectar o aperto:** uma
 /// seta mapeada também no controle continua sendo um passo, e não dois.
-pub fn apertado(teclas: [bool; 5], pads: &[Pad]) -> [bool; 6] {
+pub fn apertado(teclas: [bool; 5], pads: &[Pad]) -> [bool; 8] {
     let botao = |nome: &str| {
         Pad::button_by_name(nome).is_some_and(|i| pads.iter().any(|pad| pad.is_down(i)))
     };
@@ -52,6 +61,8 @@ pub fn apertado(teclas: [bool; 5], pads: &[Pad]) -> [bool; 6] {
         teclas[3] || botao("right") || eixo(0, 1),
         teclas[4] || botao("b1") || botao("start"),
         botao("back"),
+        botao("b2"),
+        botao("b3"),
     ]
 }
 
@@ -59,7 +70,7 @@ pub fn apertado(teclas: [bool; 5], pads: &[Pad]) -> [bool; 6] {
 #[derive(Default)]
 pub struct Navegacao {
     /// O que estava apertado na leitura anterior.
-    antes: [bool; 6],
+    antes: [bool; 8],
     /// Desde quando a direção segurada está apertada, e quando ela repetiu pela última vez.
     segurando: Option<(usize, Instant, Instant)>,
 }
@@ -68,12 +79,12 @@ impl Navegacao {
     /// A biblioteca não está escutando — um jogo aberto, as configurações por cima. Tudo conta
     /// como já apertado, para o botão que a fecha não abrir um jogo ao voltar.
     pub fn silencia(&mut self) {
-        self.antes = [true; 6];
+        self.antes = [true; 8];
         self.segurando = None;
     }
 
     /// Os comandos desta leitura.
-    pub fn comandos(&mut self, agora: [bool; 6], instante: Instant) -> Vec<Comando> {
+    pub fn comandos(&mut self, agora: [bool; 8], instante: Instant) -> Vec<Comando> {
         let mut comandos = Vec::new();
         for (i, comando) in COMANDOS.iter().enumerate() {
             if agora[i] && !self.antes[i] {
@@ -102,8 +113,8 @@ impl Navegacao {
 mod tests {
     use super::*;
 
-    const DIREITA: [bool; 6] = [false, false, false, true, false, false];
-    const NADA: [bool; 6] = [false; 6];
+    const DIREITA: [bool; 8] = [false, false, false, true, false, false, false, false];
+    const NADA: [bool; 8] = [false; 8];
 
     /// Só o aperto vira comando, e a direção segurada repete depois da espera, no ritmo.
     #[test]

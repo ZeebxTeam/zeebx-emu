@@ -289,6 +289,28 @@ pub fn id_do_modulo(path: &Path) -> Option<String> {
     Some(interno.parent()?.file_name()?.to_str()?.to_string())
 }
 
+/// O nome com que as coisas de um jogo só são guardadas, como as configurações dele (ver
+/// [`crate::ui::settings::ConfigDoJogo`]).
+///
+/// O ClassID do applet, quando o manifesto diz: ele é do jogo, e não do arquivo — renomear o
+/// pacote ou mudá-lo de pasta não perde nada. Sem ele, o id do módulo, e por último o nome do
+/// arquivo. Só caracteres que valem em nome de arquivo em qualquer sistema.
+pub fn chave_do_jogo(path: &Path) -> Option<String> {
+    let chave = match applet_clsid(path) {
+        Some(classe) => format!("{classe:08x}"),
+        None => id_do_modulo(path)
+            .or_else(|| Some(path.file_stem()?.to_str()?.to_string()))?,
+    };
+    let limpa: String = chave
+        .chars()
+        .map(|c| match c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+            true => c,
+            false => '_',
+        })
+        .collect();
+    (!limpa.is_empty()).then_some(limpa)
+}
+
 pub fn title_for(mod_path: &Path) -> String {
     let stem = mod_path
         .file_stem()

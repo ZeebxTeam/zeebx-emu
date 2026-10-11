@@ -189,6 +189,9 @@ pub enum Saida {
 
 /// O que é preciso, além do caminho, para abrir um jogo. Ver [`Partida::abre`].
 pub struct Abertura<'a> {
+    /// As que valem para este jogo: as dele, quando ele tem as próprias (ver
+    /// [`crate::ui::settings::ConfigDoJogo`]). Quem abre é que junta, porque é quem as relê
+    /// durante o jogo.
     pub settings: &'a Settings,
     /// Onde gravar a serial do jogo, quando o log está ligado.
     pub serial: Option<&'a Path>,
@@ -224,6 +227,8 @@ pub struct Partida {
     turbos: [TurboDaPorta; PORTAS],
     /// Os pontos de retorno e o atalho do rewind. Ver [`Partida::le_o_rewind`].
     rewind: ControleDoRewind,
+    /// A chave do jogo, de [`crate::library::chave_do_jogo`].
+    chave: Option<String>,
 }
 
 /// O que o turbo precisa saber numa volta: a tecla de turbo de cada porta, o mapeamento de onde
@@ -342,6 +347,7 @@ impl Partida {
             avancando: false,
             turbos: Default::default(),
             rewind: ControleDoRewind::default(),
+            chave: crate::library::chave_do_jogo(caminho),
             diario: numero.map(|numero| Diario {
                 numero,
                 inicio: Instant::now(),
@@ -456,6 +462,11 @@ impl Partida {
 
     pub fn sessao_mut(&mut self) -> &mut Session {
         &mut self.sessao
+    }
+
+    /// A chave deste jogo. Ver [`crate::library::chave_do_jogo`].
+    pub fn chave(&self) -> Option<&str> {
+        self.chave.as_deref()
     }
 
     /// Esquece o que a entrada tinha deixado: o controle anterior, as teclas entregues, a pausa.

@@ -32,7 +32,7 @@ use zeebx::ui::entrada::EntradaDoDesktop;
 use zeebx::ui::i18n::{self, Catalog};
 use zeebx::ui::partida::{self, Abertura, Partida, Relatorio, Saida, TurboDaVolta};
 use zeebx::ui::screenshot;
-use zeebx::ui::settings::{self, Proporcao, Settings};
+use zeebx::ui::settings::{self, ConfigDoJogo, Proporcao, Settings};
 use zeebx::video::rasterizer::QuadroNaPlaca;
 use zeebx::video::display::Framebuffer;
 
@@ -120,6 +120,16 @@ pub struct Nucleo {
     /// de controles continua servindo pela lista.
     pub arte: Option<PadArt>,
     partida: Option<Partida>,
+    /// As configurações do jogo aberto, quando ele tem as próprias: a global com as seções dele
+    /// por cima. É daqui, e não de `settings`, que o passo lê os controles e o ritmo. Ver
+    /// [`ConfigDoJogo`].
+    personalizadas: Option<Settings>,
+    /// As configurações do jogo que a janela de configurações está editando, pela chave: lidas
+    /// do disco uma vez, e não a cada valor que o QML pede. Ver [`Nucleo::com_o_jogo`].
+    edicao: Option<(String, Settings)>,
+    /// A chave do jogo cujas configurações estão em `settings` agora, no meio de um
+    /// [`Nucleo::com_o_jogo`]. Ver [`Nucleo::salva_configuracoes`].
+    editando: Option<String>,
     /// O contexto que o rasterizador na placa recebe emprestado. Criado na primeira abertura, e não
     /// no arranque: precisa do `QGuiApplication` de pé. Com ele, tudo que toca a sessão — o passo,
     /// a abertura, e o fim de uma partida, que solta texturas — acontece com o contexto corrente.
@@ -188,6 +198,9 @@ impl Nucleo {
                 .inspect_err(|erro| eprintln!("desenho do controle: {erro:?}"))
                 .ok(),
             partida: None,
+            personalizadas: None,
+            edicao: None,
+            editando: None,
             gl: None,
             placa: None,
             jogos: Vec::new(),
@@ -347,10 +360,99 @@ impl Nucleo {
 
     /// Mexe na sessão do jogo aberto, com o contexto de GL corrente: a resolução interna, a
     /// proporção e as melhorias refazem o destino na placa, e isso é GL.
+    ///
+    /// **Só quando o que se edita é o que o jogo usa.** As configurações de um jogo não tocam outro
+    /// que esteja aberto, e a global não toca o jogo aberto que tem as próprias.
     pub fn na_sessao(&mut self, f: impl FnOnce(&mut zeebx::session::Session)) {
+        let do_aberto = self.partida.as_ref().and_then(Partida::chave);
+        let vale = match &self.editando {
+            Some(chave) => do_aberto == Some(chave.as_str()),
+            None => self.personalizadas.is_none(),
+        };
+        if !vale {
+            return;
+        }
         let com_placa = self.gl.is_some();
         if let Some(partida) = self.partida.as_mut() {
             no_contexto(com_placa, || f(partida.sessao_mut()));
+        }
+    }
+
+    /// As configurações que valem agora para o jogo aberto: as dele, quando ele tem as próprias,
+    /// ou as globais.
+    pub fn valendo(&self) -> &Settings {
+        self.personalizadas.as_ref().unwrap_or(&self.settings)
+    }
+
+    /// Roda `f` com as configurações do jogo de `chave` no lugar das globais, quando ele tem as
+    /// próprias; sem `chave`, ou sem as próprias, roda com as globais.
+    ///
+    /// **Por que trocar, e não passar outra referência.** A janela de configurações lê e grava
+    /// `nucleo.settings` em quase cem lugares; a janela de um jogo é a mesma janela, com a troca
+    /// em volta de cada chamada. Durante a troca, [`Nucleo::salva_configuracoes`] grava no arquivo
+    /// do jogo, e [`Nucleo::na_sessao`] só mexe no jogo aberto se for ele. Tudo roda na thread da
+    /// interface, entre duas voltas do jogo: nenhum passo vê a troca.
+    pub fn com_o_jogo<T>(&mut self, chave: &str, f: impl FnOnce(&mut Self) -> T) -> T {
+        if chave.is_empty() {
+            return f(self);
+        }
+        let em_cache = self.edicao.take().filter(|(qual, _)| qual == chave);
+        let do_jogo = match em_cache {
+            Some((_, do_jogo)) => Some(do_jogo),
+            None => ConfigDoJogo::carrega(chave).map(|config| config.sobre(&self.settings)),
+        };
+        let Some(mut do_jogo) = do_jogo else {
+            return f(self);
+        };
+        std::mem::swap(&mut self.settings, &mut do_jogo);
+        self.editando = Some(chave.to_string());
+        let resposta = f(self);
+        self.editando = None;
+        std::mem::swap(&mut self.settings, &mut do_jogo);
+        // O jogo aberto, se for este, passa a ler o que acabou de mudar.
+        if self.partida.as_ref().and_then(Partida::chave) == Some(chave) {
+            self.personalizadas = Some(do_jogo.clone());
+        }
+        self.edicao = Some((chave.to_string(), do_jogo));
+        resposta
+    }
+
+    /// Grava as configurações que estão em `settings`: as do jogo no meio de um
+    /// [`Nucleo::com_o_jogo`], as globais fora dele.
+    pub fn salva_configuracoes(&self) {
+        let gravou = match &self.editando {
+            Some(chave) => ConfigDoJogo::das(&self.settings).grava(chave),
+            None => self.settings.save(),
+        };
+        if let Err(erro) = gravou {
+            eprintln!("não deu para guardar as configurações: {erro}");
+        }
+    }
+
+    /// Se o jogo de `chave` tem as próprias configurações.
+    pub fn personalizado(&self, chave: &str) -> bool {
+        settings::caminho_do_jogo(chave).is_file()
+    }
+
+    /// Liga ou desliga as configurações próprias do jogo de `chave`.
+    ///
+    /// Ligar copia as globais de agora: é o ponto de partida, e o jogo só fica diferente quando
+    /// alguém mexer. Desligar apaga o arquivo, e o jogo volta às globais — inclusive aberto.
+    pub fn personaliza(&mut self, chave: &str, ligado: bool) {
+        if chave.is_empty() || ligado == self.personalizado(chave) {
+            return;
+        }
+        self.edicao = None;
+        let feito = match ligado {
+            true => ConfigDoJogo::das(&self.settings).grava(chave),
+            false => ConfigDoJogo::apaga(chave),
+        };
+        if let Err(erro) = feito {
+            eprintln!("não deu para mudar as configurações do jogo: {erro}");
+            return;
+        }
+        if self.partida.as_ref().and_then(Partida::chave) == Some(chave) {
+            self.personalizadas = ligado.then(|| self.settings.clone());
         }
     }
 
@@ -458,9 +560,8 @@ impl Nucleo {
                 .filter(|jogador| jogador.ligada)
                 .map(|jogador| jogador.aparelho)
         });
-        if let Some(partida) = self.partida.as_mut() {
-            partida.sessao_mut().set_portas(portas);
-        }
+        // Pelo `na_sessao`: as portas de um jogo não vão para outro que esteja aberto.
+        self.na_sessao(|sessao| sessao.set_portas(portas));
     }
 
     /// Os comandos que o controle manda à biblioteca nesta leitura.
@@ -504,7 +605,8 @@ impl Nucleo {
         let Some(titulo) = self.titulo() else {
             return String::new();
         };
-        let onde = match (&self.placa, self.settings.graphics.gpu_rasterizer) {
+        let graficos = &self.valendo().graphics;
+        let onde = match (&self.placa, graficos.gpu_rasterizer) {
             (Some(placa), true) => format!("placa: {placa}"),
             _ => "software".to_string(),
         };
@@ -563,8 +665,12 @@ impl Nucleo {
             .then(|| partida::caminho_da_serial(&library::title_for(caminho)));
         self.relatorio.esquece();
         self.log_dispensado = false;
+        // As do jogo, quando ele tem as próprias: valem na abertura e, guardadas, no passo.
+        let personalizadas = library::chave_do_jogo(caminho)
+            .and_then(|chave| ConfigDoJogo::carrega(&chave))
+            .map(|config| config.sobre(&self.settings));
         let abertura = Abertura {
-            settings: &self.settings,
+            settings: personalizadas.as_ref().unwrap_or(&self.settings),
             serial: serial.as_deref(),
             gl: self.gl.clone(),
             instalados: self
@@ -578,6 +684,7 @@ impl Nucleo {
         let partida = no_contexto(com_placa, || Partida::abre(caminho, abertura, anterior))
             .map_err(|erro| erro.to_string())?;
         // A de antes sai aqui, e com o contexto corrente: as texturas dela moram nele.
+        self.personalizadas = personalizadas;
         no_contexto(com_placa, || self.partida = Some(partida));
         Ok(())
     }
@@ -587,6 +694,7 @@ impl Nucleo {
     pub fn fecha(&mut self) {
         if self.partida.is_some() {
             no_contexto(self.gl.is_some(), || self.partida = None);
+            self.personalizadas = None;
         }
         self.teclas.clear();
     }
@@ -712,25 +820,28 @@ impl Nucleo {
                 ..Volta::default()
             };
         };
-        let pads = self.entrada.pads(&self.settings.controls, &self.settings.atalhos, &self.teclas);
-        let movimentos = self.entrada.movimentos(&self.settings.controls);
+        // As do jogo, quando ele tem as próprias. Pelo campo, e não por um método: a `partida`
+        // acima já é um empréstimo de `self`.
+        let valendo = self.personalizadas.as_ref().unwrap_or(&self.settings);
+        let pads = self.entrada.pads(&valendo.controls, &self.settings.atalhos, &self.teclas);
+        let movimentos = self.entrada.movimentos(&valendo.controls);
         let teclado = self.teclas.iter().filter_map(|tecla| input::avk_de(*tecla));
         // O fast-forward é da sessão, e não de uma porta: a tecla ou o botão de qualquer
         // controle. Ver `docs/implementacao/24-velocidade.md`.
         // O rewind vem antes: voltando, o jogo não anda e o fast-forward fica suspenso.
         let voltar = self.entrada.atalho_apertado(&self.settings.atalhos.voltar, &self.teclas);
-        partida.le_o_rewind(voltar, &self.settings.velocidade.rewind);
+        partida.le_o_rewind(voltar, &valendo.velocidade.rewind);
         let apertado = self.entrada.atalho_apertado(&self.settings.atalhos.avancar, &self.teclas);
-        let avancando = partida.le_o_avanco(apertado, self.settings.velocidade.avanco.modo);
-        let ritmo = self.settings.velocidade.ritmo_com(avancando);
+        let avancando = partida.le_o_avanco(apertado, valendo.velocidade.avanco.modo);
+        let ritmo = valendo.velocidade.ritmo_com(avancando);
         let turbo = TurboDaVolta {
-            apertado: self.entrada.turbos(&self.settings.controls, &self.teclas),
-            controles: &self.settings.controls,
-            toques_por_segundo: self.settings.velocidade.turbo_por_segundo,
+            apertado: self.entrada.turbos(&valendo.controls, &self.teclas),
+            controles: &valendo.controls,
+            toques_por_segundo: valendo.velocidade.turbo_por_segundo,
         };
         // A proporção "da janela" acompanha o tamanho dela; o destino só é refeito quando as
         // colunas a mais mudam. É GL, então vai com o contexto corrente.
-        let da_janela = (self.settings.graphics.proporcao == Proporcao::Janela)
+        let da_janela = (valendo.graphics.proporcao == Proporcao::Janela)
             .then(|| area[0] / area[1].max(1.0));
         let contexto = self.gl.clone();
         no_contexto(contexto.is_some(), || {
@@ -799,7 +910,8 @@ impl Nucleo {
             return String::new();
         };
         let virgula = !self.catalogo.current().starts_with("en");
-        let avanco = partida.indicador_do_avanco(&self.settings.velocidade.avanco, virgula);
+        let velocidade = &self.valendo().velocidade;
+        let avanco = partida.indicador_do_avanco(&velocidade.avanco, virgula);
         let rewind = partida.indicador_do_rewind().map(|sem_pontos| match sem_pontos {
             true => format!("◀◀ {}", self.catalogo.get("rewind.empty")),
             false => "◀◀".to_string(),
@@ -811,7 +923,7 @@ impl Nucleo {
     /// O aviso de calibração neste quadro, com os mesmos textos do egui.
     fn aviso_de_calibracao(&mut self) -> Option<AvisoNaTela> {
         let calibracao = self.partida.as_ref()?.sessao().calibracao();
-        let controles = &self.settings.controls;
+        let controles = &self.personalizadas.as_ref().unwrap_or(&self.settings).controls;
         let porta = controles
             .ligadas()
             .find(|(_, jogador)| jogador.aparelho == Aparelho::Boomerang)

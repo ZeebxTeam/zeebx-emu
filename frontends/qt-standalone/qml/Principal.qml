@@ -104,6 +104,23 @@ ApplicationWindow {
         return emSlider ? slider.linha(slider.cursor) : grade.currentIndex
     }
 
+    // As configurações próprias do jogo da linha: a mesma janela de configurações, só com as abas
+    // que valem por jogo. Ver `Nucleo::com_o_jogo`.
+    function configuraJogo(linha) {
+        const chave = biblioteca.chave(linha)
+        if (chave !== "")
+            configuracoesDoJogo.abreDoJogo(chave, biblioteca.item(linha).titulo)
+    }
+
+    // O que se sabe do jogo da linha, num diálogo.
+    function inspecionaJogo(linha) {
+        if (biblioteca.linhas() === 0)
+            return
+        detalhes.linha = linha
+        detalhes.dados = biblioteca.detalhes(linha)
+        detalhes.open()
+    }
+
     // A busca ou a varredura refizeram a lista: a escolha volta ao primeiro, sem a animação do
     // slider atravessar a lista.
     function recomeca() {
@@ -139,6 +156,16 @@ ApplicationWindow {
         visible: false
     }
 
+    // As configurações de um jogo só. Uma janela à parte, e não a de cima no modo do jogo: as
+    // duas podem estar abertas, e cada uma edita o que é seu.
+    JanelaDeConfiguracoes {
+        id: configuracoesDoJogo
+
+        biblioteca: biblioteca
+        principal: principal
+        visible: false
+    }
+
     JanelaDeSaves {
         id: saves
 
@@ -166,6 +193,7 @@ ApplicationWindow {
     // abriria um jogo sem querer. O mouse continua valendo, como no egui. Toda janela que abrir
     // por cima da principal entra aqui.
     readonly property bool sobreposta: jogo.visible || configuracoes.visible || saves.visible
+                                       || configuracoesDoJogo.visible || detalhes.visible
                                        || boasVindas.visible || novaVersao.visible
 
     // O controle não gera evento no Qt, como não gerava no egui: enquanto a biblioteca está à
@@ -191,6 +219,10 @@ ApplicationWindow {
             for (const codigo of biblioteca.comandos(escutando)) {
                 if (codigo === 5)
                     principal.mostra(biblioteca.abreZWheel())
+                else if (codigo === 6)
+                    principal.configuraJogo(principal.escolhido())
+                else if (codigo === 7)
+                    principal.inspecionaJogo(principal.escolhido())
                 else
                     principal.vista.comando(codigo)
             }
@@ -375,7 +407,7 @@ ApplicationWindow {
                 horizontalAlignment: Text.AlignRight
                 elide: Text.ElideLeft
                 opacity: 0.6
-                text: tr("library.controls_hint")
+                text: tr("library.controls_hint") + " · " + tr("library.pad_game")
             }
         }
 
@@ -420,6 +452,8 @@ ApplicationWindow {
             escutando: !principal.sobreposta
             biblioteca: biblioteca
             onAbre: (linha) => principal.mostra(biblioteca.abre(linha))
+            onConfigura: (linha) => principal.configuraJogo(linha)
+            onInspeciona: (linha) => principal.inspecionaJogo(linha)
         }
 
         SliderDaBiblioteca {
@@ -432,6 +466,107 @@ ApplicationWindow {
             escutando: !principal.sobreposta
             biblioteca: biblioteca
             onAbre: (linha) => principal.mostra(biblioteca.abre(linha))
+        }
+    }
+
+    // Os detalhes de um jogo: o que a biblioteca sabe dele, e o caminho para as configurações dele.
+    Dialog {
+        id: detalhes
+
+        property int linha: -1
+        property var dados: ({})
+
+        function campo(nome) {
+            return dados[nome] !== undefined ? dados[nome] : ""
+        }
+
+        anchors.centerIn: parent
+        width: Math.min(560, principal.width - 32)
+        modal: true
+        title: principal.tr("details.title").replace("{game}", campo("titulo"))
+
+        // **Sem layouts aqui dentro.** Texto que quebra linha dentro de layouts aninhados faz a
+        // altura depender da largura e a largura da altura: o diálogo não terminava de se
+        // arrumar e saía estreito, com o texto vazando. Com as larguras dadas, não há volta.
+        Item {
+            width: parent.width
+            implicitHeight: Math.max(capaDosDetalhes.height, fichaDosDetalhes.implicitHeight)
+
+            Image {
+                id: capaDosDetalhes
+
+                width: 112
+                height: 145
+                fillMode: Image.PreserveAspectFit
+                source: detalhes.campo("capa")
+                smooth: !detalhes.campo("capaNitida")
+            }
+
+            Column {
+                id: fichaDosDetalhes
+
+                x: capaDosDetalhes.width + 16
+                width: parent.width - x
+                spacing: 8
+
+                Repeater {
+                    // O rótulo em cima do valor, e não ao lado: o valor ganha a largura inteira.
+                    // O caminho quebra em qualquer lugar, porque não tem espaços onde quebrar.
+                    model: [
+                        { rotulo: "details.classid", valor: detalhes.campo("classe") || "—" },
+                        { rotulo: "details.module", valor: detalhes.campo("modulo") || "—" },
+                        { rotulo: "details.file", valor: detalhes.campo("caminho") },
+                        { rotulo: "details.size", valor: detalhes.campo("tamanho") },
+                        { rotulo: "details.custom",
+                          valor: principal.tr(detalhes.campo("personalizado") ? "details.custom.yes"
+                                                                              : "details.custom.no") },
+                    ]
+
+                    Column {
+                        required property var modelData
+
+                        width: fichaDosDetalhes.width
+
+                        Label {
+                            opacity: 0.6
+                            font.pixelSize: 11
+                            text: principal.tr(modelData.rotulo)
+                        }
+                        Label {
+                            width: parent.width
+                            wrapMode: Text.WrapAnywhere
+                            text: modelData.valor
+                        }
+                    }
+                }
+
+                Image {
+                    height: Math.min(64, sourceSize.height)
+                    fillMode: Image.PreserveAspectFit
+                    source: detalhes.campo("classificacao")
+                    visible: source !== ""
+                }
+                Label {
+                    width: parent.width
+                    wrapMode: Text.Wrap
+                    visible: text !== ""
+                    text: detalhes.campo("descricao")
+                }
+            }
+        }
+
+        footer: DialogButtonBox {
+            Button {
+                text: principal.tr("library.menu.configure")
+                onClicked: {
+                    detalhes.close()
+                    principal.configuraJogo(detalhes.linha)
+                }
+            }
+            Button {
+                text: principal.tr("details.close")
+                DialogButtonBox.buttonRole: DialogButtonBox.RejectRole
+            }
         }
     }
 

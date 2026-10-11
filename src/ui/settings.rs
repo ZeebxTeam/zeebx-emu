@@ -556,6 +556,94 @@ impl Velocidade {
     }
 }
 
+/// As configurações de um jogo só, quando ele tem as próprias: áudio, gráficos, velocidade e
+/// controles.
+///
+/// Guardadas em `<config>/jogos/<chave>.json`, uma por jogo; **o arquivo existir é o "usar
+/// configurações personalizadas"**. Cada seção é uma cópia inteira da global no momento em que a
+/// opção foi ligada, e não só a diferença: mudar a global depois não mexe no jogo, que é o que
+/// "personalizado" quer dizer. A chave é a de [`crate::library::chave_do_jogo`].
+///
+/// Dos gráficos, o que é da janela — modo e tamanho das duas, e o caminho de apresentação —
+/// continua global, mesmo estando no arquivo: ver [`ConfigDoJogo::sobre`].
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ConfigDoJogo {
+    pub audio: Audio,
+    pub graphics: Graphics,
+    pub velocidade: Velocidade,
+    pub controls: crate::input::bindings::Controls,
+}
+
+impl ConfigDoJogo {
+    /// As seções do jogo, copiadas de `settings`.
+    pub fn das(settings: &Settings) -> Self {
+        Self {
+            audio: settings.audio.clone(),
+            graphics: settings.graphics.clone(),
+            velocidade: settings.velocidade.clone(),
+            controls: settings.controls.clone(),
+        }
+    }
+
+    /// A configuração que vale para o jogo: a `global`, com as seções do jogo por cima.
+    pub fn sobre(&self, global: &Settings) -> Settings {
+        let janela = &global.graphics;
+        Settings {
+            audio: self.audio.clone(),
+            graphics: Graphics {
+                janela: janela.janela,
+                janela_do_jogo: janela.janela_do_jogo,
+                tamanho_da_janela: janela.tamanho_da_janela,
+                tamanho_da_janela_do_jogo: janela.tamanho_da_janela_do_jogo,
+                gpu_present: janela.gpu_present,
+                limite_antigo: None,
+                ..self.graphics.clone()
+            },
+            velocidade: self.velocidade.clone(),
+            controls: self.controls.clone(),
+            ..global.clone()
+        }
+    }
+
+    /// As do jogo de `chave`, se ele tem. Ilegível conta como não ter: o jogo abre com a global.
+    pub fn carrega(chave: &str) -> Option<Self> {
+        Self::carrega_de(&caminho_do_jogo(chave))
+    }
+
+    pub fn carrega_de(path: &Path) -> Option<Self> {
+        let texto = std::fs::read_to_string(path).ok()?;
+        let mut config: Self = serde_json::from_str(&texto).ok()?;
+        config.controls.adopt();
+        Some(config)
+    }
+
+    pub fn grava(&self, chave: &str) -> std::io::Result<()> {
+        self.grava_em(&caminho_do_jogo(chave))
+    }
+
+    pub fn grava_em(&self, path: &Path) -> std::io::Result<()> {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let texto = serde_json::to_string_pretty(self).map_err(std::io::Error::other)?;
+        std::fs::write(path, texto)
+    }
+
+    /// Desliga as configurações do jogo: ele volta à global.
+    pub fn apaga(chave: &str) -> std::io::Result<()> {
+        match std::fs::remove_file(caminho_do_jogo(chave)) {
+            Err(erro) if erro.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            resultado => resultado,
+        }
+    }
+}
+
+/// Onde moram as configurações do jogo de `chave`. Ver [`ConfigDoJogo`].
+pub fn caminho_do_jogo(chave: &str) -> PathBuf {
+    config_dir().join("jogos").join(format!("{chave}.json"))
+}
+
 /// Reexportado pela UI para não quebrar preferências serializadas e chamadas desktop.
 pub use crate::config::ZWheel;
 
@@ -841,6 +929,53 @@ mod tests {
         assert_eq!(loaded.graphics, Graphics::default());
         assert_eq!(loaded.audio, Audio::default());
         assert_eq!(loaded.controls, crate::input::bindings::Controls::default());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// O jogo personalizado leva as quatro seções dele, e o resto — inclusive a janela, que mora
+    /// nos gráficos — continua sendo o da global.
+    #[test]
+    fn as_do_jogo_trocam_so_as_secoes_do_jogo() {
+        let mut do_jogo = Settings::default();
+        do_jogo.audio.volume = 20;
+        do_jogo.graphics.resolucao_interna = 3;
+        do_jogo.graphics.janela = ModoDaJanela::TelaCheia;
+        do_jogo.velocidade.limite_fps = LimiteFps::Trinta;
+        do_jogo.controls.players[0].ligada = false;
+        let config = ConfigDoJogo::das(&do_jogo);
+
+        let mut global = Settings::default();
+        global.language = Some("es".into());
+        global.graphics.tamanho_da_janela = Some([800.0, 600.0]);
+        let vale = config.sobre(&global);
+
+        assert_eq!(vale.audio.volume, 20);
+        assert_eq!(vale.graphics.resolucao_interna, 3);
+        assert_eq!(vale.velocidade.limite_fps, LimiteFps::Trinta);
+        assert!(!vale.controls.players[0].ligada);
+        assert_eq!(vale.language.as_deref(), Some("es"), "o idioma é da global");
+        assert_eq!(vale.graphics.janela, global.graphics.janela, "o modo da janela é da global");
+        assert_eq!(vale.graphics.tamanho_da_janela, Some([800.0, 600.0]));
+        // E as do jogo voltam inteiras de uma configuração já montada.
+        assert_eq!(ConfigDoJogo::das(&vale).audio, config.audio);
+    }
+
+    /// O arquivo do jogo vai e volta do disco; sem arquivo, ou ilegível, o jogo não tem as dele.
+    #[test]
+    fn as_do_jogo_vao_e_voltam_e_sem_arquivo_nao_ha() {
+        let dir = std::env::temp_dir().join("zeebx-testes-config-do-jogo");
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("jogos").join("01234567.json");
+        assert_eq!(ConfigDoJogo::carrega_de(&path), None);
+
+        let mut config = ConfigDoJogo::default();
+        config.audio.volume = 55;
+        config.velocidade.frameskip = Frameskip::Fixo(1);
+        config.grava_em(&path).unwrap();
+        assert_eq!(ConfigDoJogo::carrega_de(&path), Some(config));
+
+        std::fs::write(&path, "{ isto não é json").unwrap();
+        assert_eq!(ConfigDoJogo::carrega_de(&path), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

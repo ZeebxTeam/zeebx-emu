@@ -229,7 +229,7 @@ impl qobject::TelaDoJogo {
         let (volta, mostra, destino, suave, depuracao) = nucleo::com(|nucleo| {
             let volta = nucleo.passo(area);
             let depuracao = nucleo.depuracao();
-            let graficos = &nucleo.settings.graphics;
+            let graficos = &nucleo.valendo().graphics;
             // O quadro largo experimental tem a proporção dele; o resto é o 4:3 do console.
             let (mostra, aspecto) = match nucleo.quadro() {
                 Some(Quadro::Placa(quadro)) => (

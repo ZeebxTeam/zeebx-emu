@@ -72,6 +72,15 @@ pub mod qobject {
         #[qinvokable]
         fn abre(self: &Biblioteca, linha: i32) -> QString;
 
+        /// A chave das coisas do jogo da linha, como as configurações dele. Vazia se a linha não
+        /// existe. Ver `zeebx::library::chave_do_jogo`.
+        #[qinvokable]
+        fn chave(self: &Biblioteca, linha: i32) -> QString;
+
+        /// O que a janela de detalhes mostra do jogo da linha.
+        #[qinvokable]
+        fn detalhes(self: &Biblioteca, linha: i32) -> QMap_QString_QVariant;
+
         /// Abre a Z-Wheel. Devolve vazio, ou o motivo de não ter aberta.
         #[qinvokable]
         #[cxx_name = "abreZWheel"]
@@ -193,6 +202,26 @@ const QUADRO_DA_CAPA: [f32; 2] = [112.0, 145.0];
 pub struct BibliotecaRust {
     contagem: QString,
     vazio: QString,
+}
+
+/// O arquivo do jogo de uma linha da lista.
+fn caminho_da_linha(nucleo: &nucleo::Nucleo, linha: i32) -> Option<PathBuf> {
+    let linha = usize::try_from(linha).ok()?;
+    let &(_, indice) = nucleo.lista.get(linha)?;
+    Some(nucleo.jogos[indice].path.clone())
+}
+
+/// Um tamanho de arquivo para gente ler: "512 KB", "34,2 MB" — ou "34.2 MB" em inglês.
+fn tamanho_legivel(bytes: u64, virgula: bool) -> String {
+    const MB: f64 = 1024.0 * 1024.0;
+    let texto = match bytes {
+        0..1_048_576 => format!("{} KB", bytes.div_ceil(1024)),
+        _ => format!("{:.1} MB", bytes as f64 / MB),
+    };
+    match virgula {
+        true => texto.replace('.', ","),
+        false => texto,
+    }
 }
 
 /// O resultado de uma abertura, como o QML o lê: vazio é sucesso.
@@ -338,6 +367,35 @@ impl qobject::Biblioteca {
         }))
     }
 
+    pub fn chave(&self, linha: i32) -> QString {
+        let caminho = nucleo::com(|nucleo| caminho_da_linha(nucleo, linha));
+        QString::from(caminho.and_then(|c| zeebx::library::chave_do_jogo(&c)).unwrap_or_default())
+    }
+
+    pub fn detalhes(&self, linha: i32) -> QMap<QMapPair_QString_QVariant> {
+        let mut detalhes = self.item(linha);
+        let Some(caminho) = nucleo::com(|nucleo| caminho_da_linha(nucleo, linha)) else {
+            return detalhes;
+        };
+        let chave = zeebx::library::chave_do_jogo(&caminho).unwrap_or_default();
+        let indice = self.index(linha, 0, &QModelIndex::default());
+        let texto = |texto: &str| QVariant::from(&QString::from(texto));
+        detalhes.insert(QString::from("classe"), self.data(&indice, CLASSE));
+        detalhes.insert(QString::from("caminho"), texto(&caminho.display().to_string()));
+        detalhes.insert(
+            QString::from("modulo"),
+            texto(&zeebx::library::id_do_modulo(&caminho).unwrap_or_default()),
+        );
+        let bytes = std::fs::metadata(&caminho).map(|m| m.len()).unwrap_or(0);
+        let (personalizado, virgula) = nucleo::com(|nucleo| {
+            (nucleo.personalizado(&chave), !nucleo.catalogo.current().starts_with("en"))
+        });
+        detalhes.insert(QString::from("tamanho"), texto(&tamanho_legivel(bytes, virgula)));
+        detalhes.insert(QString::from("personalizado"), QVariant::from(&personalizado));
+        detalhes.insert(QString::from("chave"), texto(&chave));
+        detalhes
+    }
+
     pub fn abre_z_wheel(&self) -> QString {
         resposta(nucleo::com(|nucleo| {
             let caminho = nucleo
@@ -430,6 +488,8 @@ impl qobject::Biblioteca {
                 Comando::Direita => 3,
                 Comando::Abrir => 4,
                 Comando::ZWheel => 5,
+                Comando::Configurar => 6,
+                Comando::Inspecionar => 7,
             })
             .collect();
         QList::from(codigos)
