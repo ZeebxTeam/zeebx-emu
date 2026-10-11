@@ -262,6 +262,7 @@ impl Partida {
             settings.graphics.gpu_rasterizer,
             abertura.gl,
             settings.z_wheel,
+            settings.patches.ligados,
         );
         let mut sessao = match sessao {
             Ok(sessao) => sessao,

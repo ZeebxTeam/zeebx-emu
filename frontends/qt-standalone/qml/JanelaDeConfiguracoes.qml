@@ -1000,6 +1000,18 @@ ApplicationWindow {
                     rotulo: "audio.midi_effects"
                     dica: "audio.midi_effects.hint"
                 }
+
+                // Os remendos de ritmo por jogo: o interruptor e o que ele liga.
+                Titulo { text: janela.tr("settings.patches") }
+                Dica { text: janela.tr("settings.patches.hint") }
+                Opcao {
+                    chave: "patches.ligados"
+                    rotulo: "settings.patches.enable"
+                }
+                Repeater {
+                    model: janela.depende([cfg.versao], cfg.remendos())
+                    Dica { text: modelData }
+                }
             }
         }
 

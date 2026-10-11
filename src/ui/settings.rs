@@ -302,6 +302,8 @@ pub struct Settings {
     pub audio: Audio,
     pub controls: crate::input::bindings::Controls,
     pub z_wheel: ZWheel,
+    /// Os remendos de ritmo por jogo. Ver [`crate::patch`].
+    pub patches: Patches,
     pub discord: Discord,
     pub atualizacoes: Atualizacoes,
     /// A versão em que o aviso de abertura foi dispensado de vez. Outra versão mostra de novo.
@@ -450,6 +452,7 @@ pub enum ModoDaBiblioteca {
 
 /// Reexportado pela UI para não quebrar preferências serializadas e chamadas desktop.
 pub use crate::config::ZWheel;
+pub use crate::config::Patches;
 
 impl Settings {
     /// Lê as preferências de `path`. Arquivo ausente ou ilegível devolve o padrão — abrir com
@@ -568,6 +571,7 @@ mod tests {
                 fim_de_vida: false,
                 ..ZWheel::default()
             },
+            patches: Patches::default(),
             discord: Discord {
                 ativo: false,
                 capas_url: "https://exemplo/{chave}.png".into(),

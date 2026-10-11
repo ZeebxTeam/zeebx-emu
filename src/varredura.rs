@@ -1046,6 +1046,8 @@ pub fn examina(arquivo: &Path, ms_virtuais: u32, teto: Duration) -> Relatorio {
         false,
         None,
         Default::default(),
+        // A varredura mede o módulo intacto: remendo aqui contaminaria a medida.
+        false,
         &instalados,
     ) {
         Ok(session) => session,
@@ -1346,7 +1348,7 @@ pub fn examina(arquivo: &Path, ms_virtuais: u32, teto: Duration) -> Relatorio {
 /// caminho até o applet existir: carga do `.mod`, `AEEMod_Load`, `.mif` e `CreateInstance`.
 pub fn abre(arquivo: &Path) -> Result<Duration, String> {
     let comeco = Instant::now();
-    match Session::start_with(arquivo, crate::PORTAS_PADRAO, None, false, None, Default::default()) {
+    match Session::start_with(arquivo, crate::PORTAS_PADRAO, None, false, None, Default::default(), false) {
         Ok(_) => Ok(comeco.elapsed()),
         Err(erro) => Err(erro.to_string()),
     }

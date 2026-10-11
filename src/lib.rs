@@ -10,6 +10,7 @@ pub mod input;
 pub mod loader;
 pub mod library;
 pub mod machine;
+pub mod patch;
 pub mod ponte;
 pub mod rede;
 pub mod registro;

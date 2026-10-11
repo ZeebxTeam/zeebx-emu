@@ -640,6 +640,7 @@ impl Emulador {
             na_placa,
             self.gl.clone().filter(|_| na_placa),
             self.settings.z_wheel,
+            self.settings.patches.ligados,
             &self.storage,
             &self.instalados,
         ) {

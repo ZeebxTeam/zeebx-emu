@@ -490,6 +490,7 @@ fn main() -> ExitCode {
             report(sessao_sem_janela(
                 &args[1], seconds, dump, &keys, &fotos, placa, serial, z_wheel, escala, melhorias,
                 perfil, boomerang, portas, tracing, trace_filter,
+                !args.iter().any(|a| a == "--sem-patches"),
             ))
         }
         // Sem argumento nenhum, o que se quer é o emulador, não a ajuda.
@@ -507,7 +508,7 @@ fn main() -> ExitCode {
                              [--portas=controle|teclado|nenhum,...] [--teclas=ms:nome,...]"
             );
             eprintln!(
-                "     zeebx sessao <arquivo.zip> [--seconds=N] [--keys=ms:botão,...] [--dump=QUADRO.bmp] [--fotos=ms,...] [--placa] [--serial=CAMINHO] [--fabrica] [--sem-fim-de-vida] [--sem-transicoes] [--escala=N] [--msaa=N] [--aniso=N] [--perfil[=MS]] [--boomerang] [--movimento=ms:x:y:z,...] [--wiimote] [--proporcao=16:9]
+                "     zeebx sessao <arquivo.zip> [--seconds=N] [--keys=ms:botão,...] [--dump=QUADRO.bmp] [--fotos=ms,...] [--placa] [--serial=CAMINHO] [--fabrica] [--sem-fim-de-vida] [--sem-transicoes] [--escala=N] [--msaa=N] [--aniso=N] [--perfil[=MS]] [--sem-patches] [--boomerang] [--movimento=ms:x:y:z,...] [--wiimote] [--proporcao=16:9]
                              [--portas=controle,controle] [--dpad-nos-eixos]  (a sessão da janela, sem janela)"
             );
             eprintln!(
@@ -1340,6 +1341,8 @@ fn sessao_sem_janela(
     portas_pedidas: Option<[Option<bindings::Aparelho>; input::PORTAS]>,
     tracing: bool,
     trace_filter: Option<String>,
+    // `--sem-patches` mede o módulo intacto; sem ele vale o interruptor da sessão.
+    patches: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let serial = serial.map(std::path::Path::new);
     let settings = ui::settings::Settings::load();
@@ -1365,6 +1368,7 @@ fn sessao_sem_janela(
         placa,
         None,
         z_wheel,
+        patches,
     )
     .map_err(|err| format!("{err:?}"))?;
     session.define_resolucao_interna(escala);
@@ -1514,6 +1518,7 @@ fn sessao_sem_janela(
                 placa,
                 None,
                 z_wheel,
+                patches,
             )
             .map_err(|err| format!("{err:?}"))?;
             session.define_resolucao_interna(escala);

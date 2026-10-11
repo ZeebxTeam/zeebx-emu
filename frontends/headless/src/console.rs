@@ -137,6 +137,7 @@ impl Console {
             g.gpu_rasterizer,
             self.gl.clone(),
             self.settings.z_wheel,
+            self.settings.patches.ligados,
         )
         .map_err(|erro| erro.to_string())?;
 
