@@ -43,8 +43,6 @@ pub mod screenshot;
 pub mod settings;
 
 #[cfg(feature = "desktop")]
-pub mod app;
-#[cfg(feature = "desktop")]
 pub mod atualizacao;
 #[cfg(feature = "desktop")]
 pub mod discord;
@@ -54,5 +52,3 @@ pub mod entrada;
 #[cfg(feature = "desktop")]
 pub mod window;
 
-#[cfg(feature = "desktop")]
-pub use app::App;

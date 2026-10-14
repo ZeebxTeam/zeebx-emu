@@ -297,8 +297,8 @@ function classificar(nome) {
     if (m[1] === 'wasm') { so = 'web'; arch = 'wasm'; }
     else [so, arch] = sistemaEArquitetura(m[1]);
   } else if ((m = n.match(/^zeebx-(standalone|headless)-(?:(egui|qt)-)?(.+?)(?:-setup)?\.[a-z]+$/))) {
-    // O desktop sai em dois frontends, `zeebx-standalone-egui-…` e `zeebx-standalone-qt-…`; o nome
-    // sem a interface é o das releases de antes da separação, que eram do egui.
+    // O desktop é o `zeebx-standalone-qt-…`. Até a 0.4.2 saiu também o `zeebx-standalone-egui-…`, e
+    // o nome sem a interface é o das releases de antes da separação, que eram do egui.
     tipo = m[1] === 'standalone' ? 'app' : 'headless';
     if (tipo === 'app' && so !== 'android') interface_ = m[2] || 'egui';
     [so, arch] = sistemaEArquitetura(m[3]);
@@ -523,8 +523,8 @@ function processadorDoMac() {
 // do .deb porque roda em qualquer distribuição. No Windows ARM o instalador x86_64 serve, pela
 // emulação do próprio Windows, e por isso a arquitetura não é exigida ali. Linux ARM64 (um
 // Raspberry Pi, por exemplo) não tem emulador com interface, só o core: ele é a última opção.
-// O desktop sai em Qt, a interface principal, e em egui, a legada. Cada formato é pedido primeiro
-// em Qt; a regra sem interface fica logo atrás, para as releases de antes do Qt.
+// O desktop sai em Qt; até a 0.4.2 saiu também em egui. Cada formato é pedido primeiro em Qt; a
+// regra sem interface fica logo atrás, para as releases de antes do Qt.
 const qtPrimeiro = (regra) => [{ ...regra, interface: 'qt' }, regra];
 
 const PREFERENCIA = {

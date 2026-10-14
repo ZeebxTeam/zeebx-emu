@@ -65,23 +65,6 @@ impl ModoDaJanela {
             Self::TelaCheia => "graphics.window.fullscreen",
         }
     }
-
-    /// Aplica o modo a uma janela que ainda vai abrir.
-    pub fn no_construtor(self, janela: egui::ViewportBuilder) -> egui::ViewportBuilder {
-        match self {
-            Self::Janela => janela,
-            Self::Maximizada => janela.with_maximized(true),
-            Self::TelaCheia => janela.with_fullscreen(true),
-        }
-    }
-
-    /// Os comandos que levam uma janela aberta a este modo.
-    pub fn comandos(self) -> [egui::ViewportCommand; 2] {
-        [
-            egui::ViewportCommand::Fullscreen(self == Self::TelaCheia),
-            egui::ViewportCommand::Maximized(self == Self::Maximizada),
-        ]
-    }
 }
 
 /// O que o painel de depuração mostra durante a execução.

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Monta o `latest-qt.json` e o `latest-egui.json` que o atualizador do emulador lê na release.
+"""Monta o `latest-qt.json` que o atualizador do emulador lê na release.
 
-Cada frontend desktop pergunta pelo seu (`src/ui/atualizacao.rs`, função `instala`), no endereço
+A interface Qt pergunta por ele (`src/ui/atualizacao.rs`, função `instala`), no endereço
 da release escolhida: `.../releases/download/<tag>/latest-qt.json`. O manifesto diz, por sistema,
 qual pacote baixar e a assinatura minisign dele, que o CI gerou com `cargo packager signer sign`
 ao lado de cada pacote (`<pacote>.sig`). Um pacote sem `.sig` fica de fora, e aquele sistema cai
@@ -59,7 +59,7 @@ def main() -> None:
     if len(sys.argv) != 3:
         sys.exit(__doc__)
     pasta, tag = pathlib.Path(sys.argv[1]), sys.argv[2]
-    for frontend in ("qt", "egui"):
+    for frontend in ("qt",):
         dados = manifesto(pasta, frontend, tag)
         if dados is None:
             print(f"{frontend}: nenhum pacote assinado, sem latest-{frontend}.json")

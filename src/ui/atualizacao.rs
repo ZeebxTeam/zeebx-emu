@@ -10,7 +10,7 @@
 //!
 //! Com a feature `atualizador`, [`instala`] baixa a versão nova e troca esta cópia por ela, nos
 //! pacotes que sabem ser trocados (ver [`Instalacao`]). O que é baixado vem descrito num manifesto
-//! publicado na release (`latest-qt.json`, `latest-egui.json`), com a assinatura minisign de cada
+//! publicado na release (`latest-qt.json`), com a assinatura minisign de cada
 //! pacote; a chave pública está em [`CHAVE_PUBLICA`], e um pacote que não confere não é instalado.
 
 use std::sync::mpsc::{self, Receiver};
@@ -241,7 +241,7 @@ impl Atualizacao {
 }
 
 /// Baixa e instala `lancamento` numa thread. `manifesto` é o arquivo da release que descreve os
-/// pacotes deste frontend: `latest-qt.json` ou `latest-egui.json`. Sem a feature `atualizador`
+/// pacotes deste frontend: `latest-qt.json`. Sem a feature `atualizador`
 /// (o headless, que compila a mesma janela) a resposta é uma falha, e o botão nem aparece: ver
 /// [`Instalacao::troca_sozinha`].
 #[cfg(not(feature = "atualizador"))]
@@ -251,7 +251,7 @@ pub fn instala(_: &Lancamento, _: &str) -> Atualizacao {
 }
 
 /// Baixa e instala `lancamento` numa thread. `manifesto` é o arquivo da release que descreve os
-/// pacotes deste frontend: `latest-qt.json` ou `latest-egui.json`.
+/// pacotes deste frontend: `latest-qt.json`.
 #[cfg(feature = "atualizador")]
 pub fn instala(lancamento: &Lancamento, manifesto: &str) -> Atualizacao {
     use std::sync::{Arc, Mutex};

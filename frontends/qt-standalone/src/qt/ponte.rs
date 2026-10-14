@@ -155,7 +155,7 @@ use std::pin::Pin;
 use cxx_qt::CxxQtType;
 use cxx_qt_lib::{QImage, QImageFormat, QList, QRectF, QString};
 
-use zeebx::eframe::egui::Key;
+use zeebx::egui::Key;
 use zeebx::ui::partida::enquadra;
 use zeebx::ui::settings::ModoDaJanela;
 

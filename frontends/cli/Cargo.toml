@@ -1,0 +1,29 @@
+[package]
+name = "zeebx-cli"
+version = "0.4.2"
+edition = "2024"
+license = "GPL-2.0-or-later"
+description = "A linha de comando do Zeebx: rodar, medir e inspecionar um jogo sem interface"
+authors = ["ZeebxTeam"]
+repository = "https://github.com/ZeebxTeam/zeebx-emu"
+publish = false
+
+# **O nome do binário continua `zeebx`.** Ele era a janela do egui e a linha de comando juntas; a
+# janela saiu (a interface é o `zeebx-qt`, em `frontends/qt-standalone`), e a linha de comando
+# ficou com o nome, que é o que os scripts, o CI e a documentação digitam: `zeebx sessao`,
+# `zeebx bench`, `zeebx run`.
+#
+# **Sem Qt de propósito.** Estas são as ferramentas de medir e de depurar, e elas precisam compilar
+# numa máquina ou num contêiner sem o Qt instalado. Também não sai em instalador nenhum.
+[[bin]]
+name = "zeebx"
+path = "src/main.rs"
+
+[dependencies]
+# Os dispositivos do host (gilrs, Wii Remote), a janela crua do `run --window` (minifb) e o contexto
+# fora de tela do `sessao --placa` e do `bench` (glutin) vêm pela feature `desktop` do núcleo, que é
+# a padrão.
+zeebx = { path = "../.." }
+
+[build-dependencies]
+winresource = "0.1"

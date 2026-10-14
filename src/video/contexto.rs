@@ -4,10 +4,9 @@
 //! e é justamente ali que a comparação das superfícies é feita. Um backend de GPU que só
 //! funcionasse com janela seria um backend que não se pode medir.
 //!
-//! Por isso o contexto é próprio e independente do que o `eframe` cria para a interface. Além de
+//! Por isso o contexto é próprio e independente do que a janela cria para a interface. Além de
 //! dar um caminho só para os dois modos, ele evita acoplar o núcleo à thread de render e ao
-//! estado de GL do egui — que desenha a interface no mesmo contexto e não espera encontrá-lo
-//! mexido.
+//! estado de GL da interface — que desenha no mesmo contexto e não espera encontrá-lo mexido.
 //!
 //! A superfície é um pbuffer de 1x1 que nunca é desenhado: o destino real é um framebuffer
 //! próprio, criado pelo backend no tamanho da superfície do console. O pbuffer existe só porque
@@ -16,7 +15,7 @@
 //!
 //! **No macOS não há EGL** — o `glutin` só oferece o CGL, que pede uma janela. Lá o contexto fora
 //! de tela responde que não existe, e o caminho sem janela usa o rasterizador de software. Com
-//! janela nada muda: o backend recebe o contexto do `eframe`.
+//! janela nada muda: o backend recebe o contexto da janela.
 
 use glow;
 #[cfg(not(target_os = "macos"))]
@@ -39,7 +38,7 @@ use std::num::NonZeroU32;
 pub struct Contexto {
     /// As funções de GL já resolvidas. É o que o backend usa.
     ///
-    /// Compartilhável porque o caminho com janela **não** cria contexto: ele recebe o do eframe.
+    /// Compartilhável porque o caminho com janela **não** cria contexto: ele recebe o dela.
     /// Ver [`crate::video::gpu::GpuState::novo`].
     pub gl: std::sync::Arc<glow::Context>,
     /// O contexto corrente. Solto no fim, depois do `gl`.

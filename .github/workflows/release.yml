@@ -7,7 +7,6 @@
 # Os nomes dizem qual formato é qual:
 #
 #   zeebx-standalone-qt-linux-x86_64.deb     o emulador com a interface Qt, a principal, para instalar
-#   zeebx-standalone-egui-linux-x86_64.deb   o mesmo com a interface egui, legada
 #   zeebx-headless-linux-x86_64.zip          o binário sem interface, para quem tem frontend próprio
 #   zeebx-android-arm64-v8a.apk              o aplicativo de Android
 #   zeebx-ios-simulator.zip                  o aplicativo de iOS, para o simulador, com o leia-me
@@ -52,172 +51,6 @@ jobs:
     # Pelo `ZEEBX_ATUALIZADOR_CHAVE`, que assina os pacotes para o atualizador.
     secrets: inherit
 
-  # O frontend do egui (`frontends/egui-standalone`, binário `zeebx`), legado:
-  # `zeebx-standalone-egui-*`.
-  standalone-egui:
-    name: standalone-egui ${{ matrix.nome }}
-    runs-on: ${{ matrix.sistema }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - nome: linux-x86_64
-            sistema: ubuntu-22.04
-            formatos: deb,appimage
-          - nome: windows-x86_64
-            sistema: windows-latest
-            formatos: nsis
-          - nome: macos-arm64
-            sistema: macos-latest
-            formatos: dmg
-          - nome: macos-x86_64
-            sistema: macos-15-intel
-            formatos: dmg
-    steps:
-      - uses: actions/checkout@v5
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: egui-${{ matrix.nome }}-${{ matrix.sistema }}
-
-      - name: Dependências do Linux
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake ninja-build pkg-config python3 libclang-dev \
-            libglib2.0-dev libasound2-dev libudev-dev libxkbcommon-dev libwayland-dev \
-            libgl1-mesa-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev libfuse2
-
-      - name: Dependências do macOS
-        if: runner.os == 'macOS'
-        run: brew install cmake ninja pkg-config || true
-
-      - name: cargo-packager
-        run: cargo install cargo-packager --locked
-
-      # Os testes ainda não foram rodados em Windows e macOS: um tropeço neles aparece no log
-      # sem impedir os pacotes. O frontend sem interface entra aqui porque o núcleo já está
-      # compilado neste job, e testá-lo num job próprio seria pagar a compilação duas vezes.
-      - name: Testes
-        continue-on-error: true
-        run: cargo test --release --locked -p zeebx -p zeebx-standalone-egui -p zeebx-headless
-
-      # **Roda no diretório do frontend, e não na raiz.** O `cargo packager` lê a configuração do
-      # manifesto onde é chamado, e desde a 0.3.0 ela mora no pacote que produz o binário. Os
-      # pacotes continuam saindo em `target/pacotes` da raiz, pelo `out-dir` de lá.
-      - name: Pacotes
-        if: runner.os != 'macOS'
-        working-directory: frontends/egui-standalone
-        env:
-          # O AppImage é montado sem FUSE no runner.
-          APPIMAGE_EXTRACT_AND_RUN: "1"
-        run: cargo packager -p zeebx-standalone-egui --release --formats ${{ matrix.formatos }}
-
-      # **O `.app` inteiro sai assinado ad-hoc, e não só o binário.** O `cargo packager` sem
-      # identidade deixa o executável só com a assinatura que o linker põe (`linker-signed`) e o
-      # bundle sem `_CodeSignature`. No Apple Silicon, com a quarentena de quem baixou, o
-      # Gatekeeper chama isso de "danificado" e manda para o Lixo — foi o que a v0.3.0 fez num
-      # M4 (issue 53), e quem caiu nisso foi para o `.dmg` de Intel, que roda pelo Rosetta. Com o
-      # selo ad-hoc o aviso passa a ser o de desenvolvedor não verificado, que se libera em
-      # Ajustes > Privacidade e Segurança. O `.dmg` sai do `hdiutil` para levar o `.app` assinado,
-      # com o atalho para Aplicativos, como o do `cargo packager` levava.
-      - name: Imagem do macOS
-        if: runner.os == 'macOS'
-        shell: bash
-        run: |
-          set -euo pipefail
-          (cd frontends/egui-standalone && cargo packager -p zeebx-standalone-egui --release --formats app)
-          app=target/pacotes/Zeebx.app
-          codesign --force --deep --sign - "$app"
-          codesign --verify --deep --strict "$app"
-          raiz=$(mktemp -d)
-          cp -R "$app" "$raiz/"
-          ln -s /Applications "$raiz/Applications"
-          hdiutil create -volname Zeebx -srcfolder "$raiz" -ov -format UDZO target/pacotes/Zeebx.dmg
-          rm -rf "$raiz"
-
-      # O `cargo-packager` nomeia pelo produto e pela versão (`Zeebx_0.2.1_x64-setup.exe`), e o
-      # nome não diz de qual sistema nem de qual formato o arquivo é. Numa release com oito
-      # arquivos isso importa. O que muda é só o nome do arquivo: o `.deb` continua trazendo os
-      # metadados dele, e o atualizador do emulador olha a tag, não os nomes.
-      - name: Nomear
-        shell: bash
-        run: |
-          cd target/pacotes
-          for arquivo in *; do
-            case "$arquivo" in
-              *-setup.exe) novo="zeebx-standalone-egui-${{ matrix.nome }}-setup.exe" ;;
-              *.deb)       novo="zeebx-standalone-egui-${{ matrix.nome }}.deb" ;;
-              *.AppImage)  novo="zeebx-standalone-egui-${{ matrix.nome }}.AppImage" ;;
-              *.dmg)       novo="zeebx-standalone-egui-${{ matrix.nome }}.dmg" ;;
-              *)           continue ;;
-            esac
-            mv -- "$arquivo" "$novo"
-            echo "$arquivo -> $novo"
-          done
-
-      # O Gatekeeper marca o que veio da internet e, sem assinatura da Apple, abre com
-      # "Zeebx.app is damaged". O aviso some com `xattr -dr com.apple.quarantine`. A nota
-      # entra na imagem, ao lado do aplicativo, para quem abre o `.dmg` ler antes de arrastar.
-      - name: Nota do Gatekeeper
-        if: runner.os == 'macOS'
-        run: |
-          set -euo pipefail
-          dmg=$(echo target/pacotes/*.dmg)
-          tmp=$(mktemp -d)
-          mnt="$tmp/mnt"
-          mkdir -p "$mnt"
-          hdiutil convert "$dmg" -format UDRW -o "$tmp/rw"
-          hdiutil attach "$tmp/rw.dmg" -mountpoint "$mnt" -nobrowse
-          cp frontends/egui-standalone/LEIA-ME-macos.txt "$mnt/LEIA-ME.txt"
-          sync
-          hdiutil detach "$mnt"
-          rm -f "$dmg"
-          hdiutil convert "$tmp/rw.dmg" -format UDZO -o "${dmg%.dmg}"
-          rm -rf "$tmp"
-
-      # O atualizador do emulador só instala o que confere com a chave pública embutida nele
-      # (`CHAVE_PUBLICA` em `src/ui/atualizacao.rs`). Cada pacote que se troca sozinho ganha um
-      # `.sig` ao lado, e o job `release` junta tudo no `latest-egui.json` com o
-      # `ferramentas/manifesto_de_atualizacao.py`. Sem o segredo — num fork, ou no `ci.yml` — os
-      # pacotes saem sem `.sig`, e a release só avisa, com a página, como antes.
-      - name: Assinar para o atualizador
-        shell: bash
-        env:
-          CARGO_PACKAGER_SIGN_PRIVATE_KEY: ${{ secrets.ZEEBX_ATUALIZADOR_CHAVE }}
-          CARGO_PACKAGER_SIGN_PRIVATE_KEY_PASSWORD: ""
-        run: |
-          set -euo pipefail
-          if [ -z "$CARGO_PACKAGER_SIGN_PRIVATE_KEY" ]; then
-            echo "::warning::sem o segredo ZEEBX_ATUALIZADOR_CHAVE: os pacotes saem sem assinatura"
-            exit 0
-          fi
-          cd target/pacotes
-          if [ "$RUNNER_OS" = "macOS" ]; then
-            # O atualizador desembrulha o `.tar.gz` pulando o primeiro nível: a raiz tem de ser o
-            # `.app`, já com a assinatura ad-hoc. Sem o `COPYFILE_DISABLE` o tar do macOS mete
-            # arquivos `._*` do AppleDouble dentro do bundle.
-            COPYFILE_DISABLE=1 tar -czf "zeebx-standalone-egui-${{ matrix.nome }}.app.tar.gz" "Zeebx.app"
-          fi
-          for pacote in *.AppImage *-setup.exe *.app.tar.gz; do
-            [ -f "$pacote" ] || continue
-            cargo packager signer sign "$pacote"
-          done
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: zeebx-standalone-egui-${{ matrix.nome }}
-          path: |
-            target/pacotes/*.deb
-            target/pacotes/*.AppImage
-            target/pacotes/*-setup.exe
-            target/pacotes/*.dmg
-            target/pacotes/*.app.tar.gz
-            target/pacotes/*.sig
-          if-no-files-found: error
-
   headless:
     name: headless ${{ matrix.nome }}
     runs-on: ${{ matrix.sistema }}
@@ -259,6 +92,14 @@ jobs:
 
       - name: Compilar
         run: cargo build --release --locked -p zeebx-headless
+
+      # Os testes do núcleo moram aqui desde que a interface do egui saiu: era o job dela que os
+      # rodava, e este é o que já compila o núcleo sem Qt nos quatro sistemas. A linha de comando
+      # (`zeebx-cli`) entra junto pelo mesmo motivo. Um tropeço aparece no log sem impedir os
+      # pacotes, como antes.
+      - name: Testes
+        continue-on-error: true
+        run: cargo test --release --locked -p zeebx -p zeebx-headless -p zeebx-cli
 
       # O que vai no pacote: o binário, o `config.ini` comentado e o leia-me. O arquivo de
       # configuração vai junto porque o primeiro lugar em que o emulador o procura é ao lado do
@@ -624,7 +465,7 @@ jobs:
         run: python3 ferramentas/avisos_de_terceiros.py --confere
 
   release:
-    needs: [standalone-qt, standalone-egui, headless, android, ios, core, wasm, switch, licencas]
+    needs: [standalone-qt, headless, android, ios, core, wasm, switch, licencas]
     # Sai com o que deu certo: um sistema que falhou não segura os outros.
     #
     # A tag vem de dois lugares: do `push` de uma tag, e aí é o `github.ref_name`; ou do
@@ -666,8 +507,8 @@ jobs:
           done
           echo "não há nota para $tag em docs/patch-notes/; a release sai com a lista de commits"
 
-      # Os `latest-qt.json` e `latest-egui.json` que o atualizador de cada frontend lê nesta
-      # release. Os `.sig` entram neles e saem da pasta.
+      # O `latest-qt.json` que o atualizador da interface lê nesta release. Os `.sig` entram nele e
+      # saem da pasta.
       - name: Os manifestos do atualizador
         run: python3 ferramentas/manifesto_de_atualizacao.py pacotes "${{ inputs.versao || github.ref_name }}"
 

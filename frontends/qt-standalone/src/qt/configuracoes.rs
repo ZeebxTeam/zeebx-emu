@@ -419,7 +419,7 @@ use std::sync::{Arc, Mutex};
 use cxx_qt::CxxQtType;
 use cxx_qt_lib::{QList, QRectF, QString, QStringList, QVariant};
 
-use zeebx::eframe::egui::Key;
+use zeebx::egui::Key;
 use zeebx::input::bindings::{Aparelho, AxisSource, CONFIGURABLE, CalibracaoDeMovimento, Source};
 use zeebx::input::gamepads;
 use zeebx::input::sensores;

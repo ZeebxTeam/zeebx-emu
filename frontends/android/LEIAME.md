@@ -2,10 +2,10 @@
 
 O núcleo é o mesmo. O que muda é quem o gira.
 
-A emulação — o BREW, a CPU, o rasterizador, o carregador — virou a biblioteca `zeebx`, e três
-coisas a consomem: o binário de desktop (`frontends/egui-standalone`, com a janela do egui e a linha de
-comando), os testes, e o `.so` deste diretório. Nenhuma linha de emulação sabe em qual dos três
-está rodando.
+A emulação — o BREW, a CPU, o rasterizador, o carregador — virou a biblioteca `zeebx`, e quem a
+consome são os frontends — a interface de desktop (`frontends/qt-standalone`), a linha de comando
+(`frontends/cli`), o headless, o core Libretro, o iOS —, os testes, e o `.so` deste diretório.
+Nenhuma linha de emulação sabe em qual deles está rodando.
 
 Este diretório é `frontends/android/` porque ele é **um** frontend, não *o* frontend do Android:
 quando houver outro alvo — um console, um navegador —, ele entra ao lado, e o núcleo continua
@@ -17,7 +17,7 @@ O que depende de uma janela de desktop está atrás de `cfg(not(target_os = "and
 
 | Fica em toda plataforma | Só no desktop |
 |---|---|
-| `audio`, `brew`, `cpu`, `input`, `loader`, `machine`, `video`, `session` | `ui::app` (a janela do egui), `ui::window`, `ui::atualizacao`, `ui::discord` |
+| `audio`, `brew`, `cpu`, `input`, `loader`, `machine`, `video`, `session` | `ui::window`, `ui::atualizacao`, `ui::discord` |
 | `ui::settings`, `ui::library`, `ui::acervo`, `ui::saves`, `ui::i18n`, `ui::gpu` | `glutin`, `gilrs`, `minifb`, `rfd`, `ureq`, `discord-rich-presence` |
 
 A segunda linha da primeira coluna é o ponto: a biblioteca de jogos, os ajustes e os saves são

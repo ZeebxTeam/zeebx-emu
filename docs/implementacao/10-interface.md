@@ -1,7 +1,10 @@
 # 10 — A interface
 
-`egui`/`eframe`. Três janelas de sistema separadas, não abas: a biblioteca é a janela principal,
-e as configurações e o jogo abrem em **viewports imediatas** próprias.
+Qt 6 / Qt Quick, com o [cxx-qt](https://github.com/KDAB/cxx-qt) como ponte com o Rust:
+`frontends/qt-standalone`, binário `zeebx-qt`. Janelas de sistema separadas, não abas: a biblioteca
+é a janela principal, e o jogo, as configurações, os saves e o log abrem cada um na sua. A regra de
+cada tela mora no núcleo (`src/ui/`), e a janela só a mostra; a migração, desde a interface do
+egui que existiu até a 0.4.2, está em [21](21-migracao-para-qt.md).
 
 ## Biblioteca
 
@@ -50,7 +53,7 @@ de cima; um jogo aberto pela biblioteca que sai sozinho fecha a janela dele.
 
 ### Grade e slider
 
-`ui/vitrine.rs`. Em grade, cartões em pé na proporção das caixas; em slider, um jogo por vez no
+`GradeDaBiblioteca.qml` e `SliderDaBiblioteca.qml`. Em grade, cartões em pé na proporção das caixas; em slider, um jogo por vez no
 jeito da Z-Wheel: o rolo de logos girando como cilindro, o nome, as caixas deslizando (a posição
 corre atrás da escolha com uma mola amortecida, e a lista dá a volta) e a classificação com a
 descrição embaixo.
@@ -58,8 +61,9 @@ descrição embaixo.
 Os dois modos andam pelo controle: direcional, manche e setas escolhem, com repetição ao segurar;
 botão 1, Start, Enter ou espaço abrem; HOME abre a Z-Wheel. Teclado, direcional e manche viram um
 estado só antes de detectar o aperto, para uma seta mapeada também no controle não andar dois. A
-biblioteca não escuta com jogo ou configurações abertos, e como o controle não gera evento no egui
-a janela se redesenha sozinha para lê-lo.
+biblioteca não escuta com qualquer janela por cima dela — o jogo, as configurações, os saves, um
+aviso —, e como o controle não gera evento no Qt, um relógio de 33 ms o lê
+(`ui::navegacao`).
 
 ### Busca
 
@@ -67,8 +71,8 @@ O campo na barra de cima filtra a lista dos dois modos. Um jogo fica se o títul
 palavras digitadas, em qualquer ordem. Caixa, acento e pontuação não contam, e as siglas com
 ponto se juntam: "cnk" acha "C.N.K.", "boia" acha "Bóia". Mudar a busca põe a escolha no primeiro
 resultado, sem a mola do slider atravessar a lista. Com o campo em foco, setas e espaço são do
-texto e o teclado não navega; o controle continua navegando. O Enter tira o foco do campo antes
-de a biblioteca ler o quadro, e por isso abre o jogo escolhido. Ctrl+F leva ao campo e Esc limpa.
+texto e o teclado não navega; o controle continua navegando. O Enter no campo abre o jogo
+escolhido. Ctrl+F leva ao campo, e o Esc e o ✕ limpam e devolvem as setas à lista.
 
 ## Configurações
 
@@ -129,18 +133,19 @@ como um zero teimoso — é o que separa "não mapeado" de "mapeado no eixo erra
 
 ## Ícone da janela
 
-A logo (`assets/zeebx.png`) é reduzida a 256 pixels de lado no arranque — ela tem mais de mil, e
-um ícone desse tamanho é megabytes de textura para desenhar algo que nunca passa de alguns pixels
-na barra.
+A logo (`assets/zeebx.png`) é reduzida a 256 pixels de lado no arranque, pelo `QImage::scaled` com
+filtro suave — ela tem mais de mil, e um ícone desse tamanho é megabytes de textura para desenhar
+algo que nunca passa de alguns pixels na barra.
 
-A redução faz a média com a cor **premultiplicada** pelo alfa. Sem isso, um pixel transparente
-entra na conta com a cor que ele guarda — que costuma ser preta — e a borda de um logo com fundo
-transparente fica com um halo escuro.
+A redução precisa fazer a média com a cor **premultiplicada** pelo alfa. Sem isso, um pixel
+transparente entra na conta com a cor que ele guarda — que costuma ser preta — e a borda de um logo
+com fundo transparente fica com um halo escuro.
 
-Uma logo que não abra não impede a janela de abrir: o ícone simplesmente não é definido.
+Uma logo que não abra não impede a janela de abrir: o ícone simplesmente não é definido. O ícone
+vale para todas as janelas (`aplica_icone`, em `frontends/qt-standalone/src/qt/cpp/gl_qt.cpp`).
 
-**No macOS o ícone da janela vem do pacote `.app`, não desta chamada** — o `with_icon` vale em
-Windows e Linux. Um `.app` de verdade ainda não é montado por nós.
+**No Wayland não existe ícone em pixels**: o compositor casa o `setDesktopFileName("zeebx")` com o
+`zeebx.desktop` instalado e tira o ícone de lá. **No macOS**, o ícone vem do pacote `.app`.
 
 ## Título da janela do jogo
 
@@ -184,8 +189,10 @@ prontos para as Art Assets. Quem publicar as capas pode dar o endereço com `{ch
 
 ## Linha de comando
 
+A interface é o `zeebx-qt` (`zeebx-qt <jogo>` abre direto o jogo). A linha de comando é o
+`zeebx`, em `frontends/cli`, sem Qt — compila numa máquina ou num contêiner sem ele:
+
 ```bash
-zeebx                                   # abre a interface
 zeebx info jogo.mod                     # o que o módulo declara
 zeebx run jogo.mod --seconds=6 --trace  # roda sem janela e resume as chamadas
 ```

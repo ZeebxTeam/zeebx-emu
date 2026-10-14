@@ -20,14 +20,13 @@ pub mod ui;
 pub mod velocidade;
 pub mod video;
 
-/// O `eframe` que o núcleo usa, reexportado para quem monta a janela.
+/// O `egui` que o núcleo usa, reexportado para os frontends.
 ///
-/// **Tem de ser este, e não outro.** O `ui::App` daqui implementa `eframe::App`, e um frontend
-/// que declarasse o `eframe` por conta própria poderia resolver para outra versão: aí o
-/// `Box<dyn eframe::App>` dele seria de um `eframe` e o `App` seria de outro, e o erro sai no
-/// ligador, não no compilador. Reexportar é o que garante um `eframe` só na árvore.
-#[cfg(feature = "desktop")]
-pub use eframe;
+/// O núcleo não abre janela com ele: o que fica são os tipos que a interface compartilha — os
+/// nomes de tecla do `egui::Key`, que são o formato gravado no `settings.json`, e o desenho do
+/// [`ui::gpu::Pintor`], que o Android e o headless usam. Reexportar garante um `egui` só na árvore:
+/// a ponte Qt compara teclas com o mesmo `egui::Key` que leu a configuração.
+pub use egui;
 
 /// Configuração histórica da linha de comando: um Dragon na primeira porta e segunda livre.
 pub const PORTAS_PADRAO: [Option<input::bindings::Aparelho>; input::PORTAS] =

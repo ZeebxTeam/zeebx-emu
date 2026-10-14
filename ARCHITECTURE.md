@@ -48,7 +48,7 @@ chamada não vinha do trampolim, vinha de dois métodos que faziam trabalho dema
 ## Camadas
 
 ```
-  interface (egui)        ─┐
+  interface (Qt)          ─┐
   linha de comando        ─┤
   frontends/android       ─┼─▶  Session  ─▶  Machine  ─▶  CpuBackend  ─▶  dynarmic (A32)
   frontends/libretro      ─┘                                            └─▶ interpretador (wasm32)
@@ -173,12 +173,13 @@ A decodificação de imagem, o som, a rasterização, o `printf`, o AES, o MD5 e
 recursos são escritos aqui. As dependências cobrem o que é do host ou o que seria reinventar mal.
 
 O `dynarmic` é o núcleo ARM, atrás do `CpuBackend`, e só existe no nativo: o `wasm32` usa o
-interpretador de `cpu/interpretador.rs`. O `eframe` com o `egui` é a interface,
-e o `minifb` é a janela do modo `--window`, que é separada dela. O `cpal` só põe som na placa; a
+interpretador de `cpu/interpretador.rs`. A interface é em Qt Quick, pelo `cxx-qt`
+(`frontends/qt-standalone`), e o `minifb` é a janela do modo `--window` da linha de comando, que é
+separada dela. O `egui` fica no núcleo sem janela nenhuma: são os nomes de tecla gravados na
+configuração e o pintor de quadro que o Android e o headless usam. O `cpal` só põe som na placa; a
 decodificação é nossa. O `gilrs` dá controles de verdade nos três sistemas.
 
-O `ab_glyph` rasteriza os glifos do `IDISPLAY_DrawText`. Ele já vinha na árvore por causa do
-`eframe`, então usá-lo direto não acrescenta compilação — e escrever um interpretador de TrueType
+O `ab_glyph` rasteriza os glifos do `IDISPLAY_DrawText`: escrever um interpretador de TrueType
 seria reinventar mal. A fonte em si nunca é nossa: é a que o jogo empacota.
 
 O `rusqlite`, com a build embutida, atende o `AEECLSID_SQLMGR`. Não é conveniência: o console
@@ -193,8 +194,8 @@ para não depender do GTK no Linux. O `serde` e o `serde_json` guardam a configu
 
 O `build.rs` da raiz existia por um motivo só: linkar a `libatomic` que o `unicorn-engine-sys`
 precisava, e esse motivo **saiu da árvore com o Unicorn**. O que sobrou dele é o
-`cargo:rerun-if-changed` e o registro de que o ícone do `.exe` passou a ser compilado pelo
-`frontends/egui-standalone`, que é quem produz o executável. Quem tem um `build.rs` com
+`cargo:rerun-if-changed` e o registro de que o ícone do `.exe` é compilado pelos pacotes que
+produzem executável: o `frontends/qt-standalone` e o `frontends/cli`. Quem tem um `build.rs` com
 trabalho de verdade hoje é o core Libretro, e por outro motivo: o shim de compatibilidade com
 glibc anterior a 2.34
 ([`frontends/libretro/src/r36s_compat.c`](frontends/libretro/src/r36s_compat.c)), que define

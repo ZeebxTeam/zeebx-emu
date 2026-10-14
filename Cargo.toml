@@ -1,7 +1,7 @@
 [workspace]
 members = [
     ".",
-    "frontends/egui-standalone",
+    "frontends/cli",
     "frontends/qt-standalone",
     "frontends/libretro",
     "frontends/android",
@@ -27,8 +27,8 @@ publish = false
 name = "zeebx"
 path = "src/lib.rs"
 
-# `desktop` reúne o que só a janela, os dispositivos do host e a interface precisam: eframe, rfd,
-# minifb, cpal, gilrs, Discord, glutin. O core Libretro compila com `--no-default-features` e não
+# `desktop` reúne o que só a janela, os dispositivos do host e a interface precisam: rfd, minifb,
+# cpal, gilrs, Discord, glutin. O core Libretro compila com `--no-default-features` e não
 # linka nada disso: vídeo, áudio e entrada chegam por callback do frontend.
 [features]
 default = ["desktop"]
@@ -41,7 +41,6 @@ desktop = [
     # padrão: sem um `.sf2` instalado ele nem é carregado, e sem ele a música é a mesma de antes.
     "soundfont",
     "dep:discord-rich-presence",
-    "dep:eframe",
     "dep:gilrs",
     "dep:glutin",
     "dep:minifb",
@@ -57,7 +56,7 @@ gl = []
 # A saída de som pela placa do host, com o `cpal`.
 #
 # **Separada do `desktop` de propósito.** O `cpal` não é interface: no Android ele fala com o
-# Oboe, que é a saída nativa do aparelho, e o frontend de lá precisa dele sem precisar do eframe,
+# Oboe, que é a saída nativa do aparelho, e o frontend de lá precisa dele sem precisar
 # do gilrs ou do rfd. O core Libretro continua sem: lá quem toca é o frontend, e a regra da casa
 # é que o core não linka placa de som.
 audio = ["dep:cpal"]
@@ -81,11 +80,9 @@ atualizador = ["desktop", "dep:cargo-packager-updater"]
 [dependencies]
 # Tipos de interface compartilhados pelo desktop e pelo frontend Android; não abre janela sozinho.
 egui = { version = "0.33.3", default-features = false, features = ["default_fonts"] }
-eframe = { version = "0.33.3", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"], optional = true }
 # Saída de áudio do host. A decodificação é nossa: os jogos entregam PCM.
-# Contexto de OpenGL fora de tela para o rasterizador na placa. Já vinha na árvore pelo
-# eframe, então promovê-lo a dependência direta não acrescenta build nenhuma — e é o que
-# permite a GPU funcionar também no `run` sem janela, onde toda a medição é feita.
+# Contexto de OpenGL fora de tela para o rasterizador na placa: é o que permite a GPU funcionar
+# no `run` e no `sessao` sem janela, onde toda a medição é feita.
 glutin = { version = "0.32.3", optional = true }
 raw-window-handle = { version = "0.6", optional = true }
 # Contexto de OpenGL. O `glow` é só o vínculo com a API, sem janela: o motor o usa para desenhar
@@ -115,9 +112,8 @@ resvg = { version = "0.48.1", default-features = false }
 # e JOIN. Reimplementar isso seria reinventar mal. A build é embutida para não depender de
 # biblioteca do sistema.
 rusqlite = { version = "0.37", features = ["bundled"] }
-# Rasterização de glifo para o `IDISPLAY_DrawText`. Já vinha na árvore por causa do `eframe`,
-# então usá-la direto não acrescenta build nenhuma — e escrever um interpretador de TrueType
-# seria reinventar mal.
+# Rasterização de glifo para o `IDISPLAY_DrawText`: escrever um interpretador de TrueType seria
+# reinventar mal.
 ab_glyph = "0.2"
 # Só o JPEG dos ícones de `.mif`. O resto da decodificação de imagem é nossa.
 zune-jpeg = { version = "0.5.15", default-features = false, features = ["std"] }

@@ -20,8 +20,8 @@ Cargo.toml          a biblioteca `zeebx` — o emulador inteiro, sem interface
 src/                BREW, CPU, vídeo, áudio, carregador, sessão, save state
 src/ui/             telas e estado compartilhados entre frontends (ver o aviso abaixo)
 frontends/
-  qt-standalone/          a interface principal: o binário `zeebx-qt`, em Qt Quick
-  egui-standalone/        legado: o binário `zeebx`, janela do egui e linha de comando
+  qt-standalone/          a interface: o binário `zeebx-qt`, em Qt Quick
+  cli/                    a linha de comando: o binário `zeebx` (`run`, `sessao`, `bench`...), sem Qt
   headless/               sem interface, configurado por `config.ini`
   libretro/               o core do RetroArch
   android/                o aplicativo, sem uma linha de Java
@@ -33,13 +33,14 @@ assets/             ícones, fontes e `lang/` — os idiomas de fábrica
 
 **`src/ui/` não é só interface.** O `library`, o `settings`, o `saves`, o `acervo` e o `i18n`
 moram ali mas são lidos **pelo núcleo** — o `machine`, o `loader` e a `session` falam com eles.
-Só `ui::app`, `ui::window`, `ui::atualizacao` e `ui::discord` são janela de verdade.
+Só `ui::window` (a janela crua do `zeebx run --window`), `ui::atualizacao` e `ui::discord` são de
+desktop de verdade; a janela da interface mora em `frontends/qt-standalone`.
 
 ## As features, e por que elas existem
 
 | Feature | O que traz | Quem usa |
 |---|---|---|
-| `desktop` | eframe, gilrs, minifb, rfd, Discord, glutin — implica `gpu`, `audio`, `soundfont` | standalone, headless |
+| `desktop` | gilrs, minifb, rfd, Discord, glutin — implica `gpu`, `audio`, `soundfont` | Qt, linha de comando, headless |
 | `audio` | só o `cpal`, que no Android fala com o Oboe | Android, e o `desktop` |
 | `gl` | o desenho na placa; **não puxa nada de host** | core, Android, e o `desktop` |
 | `gpu` | criar contexto próprio (glutin) — implica `gl` | desktop |
@@ -55,21 +56,28 @@ na tag.
 
 ## Compilar e provar
 
-O desktop principal é o frontend Qt (`zeebx-standalone-qt`, binário `zeebx-qt`). O do egui
-(`zeebx-standalone-egui`, binário `zeebx`) é legado, e os dois compilam no CI e saem na release.
-Só o do Qt pede o **Qt 6** (6.4 ou mais novo), que o build acha pelo `qmake6`, pelo `qmake` ou pelo `QMAKE`.
+A interface é o frontend Qt (`zeebx-standalone-qt`, binário `zeebx-qt`), e é ela que sai nos
+instaladores. A linha de comando (`zeebx-cli`, binário `zeebx`) é a bancada de medir e depurar, e
+não pede Qt. A interface do egui saiu depois da 0.4.2. O Qt pede o **Qt 6** (6.4 ou mais novo),
+que o build acha pelo `qmake6`, pelo `qmake` ou pelo `QMAKE`.
 `python3 ferramentas/prepara_build.py` diz o que falta. A interface Qt está em
 [`docs/implementacao/21-migracao-para-qt.md`](docs/implementacao/21-migracao-para-qt.md).
 
 ```bash
-cargo build --release --locked -p zeebx-standalone-egui     # o binário `zeebx`
+cargo build --release --locked -p zeebx-cli                 # o binário `zeebx`
 cargo build --release --locked -p zeebx-standalone-qt       # o binário `zeebx-qt`
-cargo test  --release --locked -p zeebx -p zeebx-standalone-egui -p zeebx-standalone-qt
+cargo test  --release --locked -p zeebx -p zeebx-cli -p zeebx-standalone-qt
 timeout 60 ./target/release/zeebx controles                 # sobe de verdade, sem tela
 
-cargo build --release --locked -p zeebx-headless -p zeebx-libretro
+cargo build --release --locked -p zeebx-headless
+cargo build --release --locked -p zeebx-libretro            # sozinho: ver abaixo
 python3 ferramentas/verifica_core.py target/release/libzeebx_libretro.so
 ```
+
+**O core Libretro compila num comando só dele.** Junto com outro pacote, o Cargo une as features
+do núcleo que os dois pedem, e o core herda o `audio` do outro: um código que só compila com som
+passa no comando conjunto e quebra no `libretro.yml`, que o compila sozinho. Já aconteceu com o
+`set_audio` da `ui::partida`.
 
 O `verifica_core.py` abre a biblioteca como o frontend a abre (`dlopen`) e chama a ABI. Não é
 `nm` numa lista de símbolos: ele pega dependência que faltou no link, que a leitura de símbolos
@@ -104,8 +112,8 @@ release faz o mesmo e publica `zeebx_libretro-switch.zip`. O `.a` não liga sozi
 
 **A tag é o único gatilho automático.** O `release.yml` dispara em `v0.0.0` e monta a release como
 rascunho. O `ci.yml`, o `libretro.yml`, o `headless.yml`, o `android.yml`, o `ios.yml` e o
-`qt.yml` são `workflow_dispatch`: o CI padrão compila o frontend do egui nas seis plataformas e
-chama o `qt.yml`, que compila o do Qt e monta os instaladores dele. A release chama o mesmo `qt.yml`:
+`qt.yml` são `workflow_dispatch`: o CI padrão compila a linha de comando — e com ela o núcleo e os
+testes — nas seis plataformas e chama o `qt.yml`, que compila a interface e monta os instaladores. A release chama o mesmo `qt.yml`:
 os passos do Qt moram num lugar só. Onze jobs por execução é caro demais
 para gastar em cada push, e quem decide é quem pede. A exceção é o `discord-issues.yml`, que não
 compila nada: avisa no Discord quando uma issue abre, fecha ou muda de responsável.
@@ -115,7 +123,9 @@ vale disparar aquele workflow antes da tag. Você não consegue dispará-lo.
 
 ## O que não pode quebrar
 
-- **O nome do binário é `zeebx`.** O pacote mudou de lugar; o que o usuário digita, não.
+- **Os nomes dos binários não mudam.** A interface é o `zeebx-qt` — é o que o atalho, o `.desktop`
+  e o atualizador de quem já a tem instalada apontam —, e a linha de comando é o `zeebx`, que os
+  scripts, o CI e a documentação digitam. O pacote pode mudar de lugar; o que o usuário digita, não.
 - **O `.so` do core e o `zeebx_libretro.info` andam em par.** Um `.info` velho ao lado de um core
   novo faz o scan do RetroArch marcar `??` em tudo. E os campos de capacidade do `.info` têm de
   casar com o que a ABI faz.

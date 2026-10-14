@@ -1,7 +1,7 @@
 //! O painel de depuração: velocidade, relógio, memória e o gráfico do último minuto.
 //!
-//! Ele mora aqui, e não no `ui::app`, porque não é da janela do desktop: é a mesma faixa, com
-//! os mesmos números e as mesmas traduções, no desktop e no Android. Quem decide **onde** ela
+//! Ele mora no núcleo porque não é de uma janela só: é a mesma faixa, com os mesmos números e as
+//! mesmas traduções, no Qt e no Android. Quem decide **onde** ela
 //! fica — uma faixa que encolhe o jogo, uma sobreposição — é cada frontend; o que ela diz é
 //! isto aqui.
 

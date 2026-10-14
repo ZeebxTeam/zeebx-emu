@@ -8,9 +8,9 @@ authors = ["ZeebxTeam"]
 repository = "https://github.com/ZeebxTeam/zeebx-emu"
 publish = false
 
-# **Um frontend à parte, e não uma feature do `egui-standalone`.** Cada interface é um pacote, um
-# binário e um artefato: o `zeebx` continua sendo o do egui, e este é o `zeebx-qt`. Os dois
-# binários no mesmo `target/release` precisam de nomes diferentes.
+# **O binário é o `zeebx-qt`, e não o `zeebx`.** O `zeebx` é a linha de comando
+# (`frontends/cli`), e os dois saem no mesmo `target/release`. O nome também é o de quem já tem a
+# interface instalada: atalho, `.desktop` e atualizador apontam para ele.
 [[bin]]
 name = "zeebx-qt"
 path = "src/main.rs"
@@ -70,11 +70,10 @@ main = true
 # `liboss4-salsa-asound2`, uma imitação do ALSA sobre o OSS4 sem todos os símbolos. Num sistema sem
 # o ALSA de verdade, o `apt` escolhia a imitação e o binário parava ao abrir, com
 # "undefined symbol: snd_pcm_status_get_trigger_htstamp" — conferido num `ubuntu:24.04` limpo.
-# As de áudio, entrada e GL já estavam; **as de janela faltavam**, e o defeito só apareceria
-# numa instalação de sistema mínimo: o `eframe` é declarado com as features `x11` e `wayland`, então
-# o binário linka `libX11`, `libXcursor`, `libXrandr`, `libXi` e `libwayland-client`, e o `.deb` não
-# puxava nenhuma delas. A lista abaixo é a mesma do `ci.yml`, que é o que o build precisa para
-# compilar — trocando os `-dev` pelos pacotes de execução.
+# As de áudio, entrada e GL são as que o binário linka fora do Qt, conferidas com `ldd`: o ALSA, o
+# `libudev`, o GL, o `libxkbcommon` e o `libX11` (do `glutin` e do `minifb` do núcleo). As que o
+# `eframe` puxava — `libXcursor`, `libXrandr`, `libXi` e `libwayland-client` — saíram com ele: o
+# binário não as linka mais, e o `libwayland-client` chega pelo `qt6-wayland`.
 #
 # **O `.deb` usa o Qt do sistema**, e por isso é compilado contra ele, no Ubuntu 24.04: um binário
 # do Qt 6.11 não roda num Qt mais velho, e o 24.04 traz o 6.4. As do Qt são as que o binário linka,
@@ -88,10 +87,6 @@ depends = [
     "libxkbcommon0",
     "libatomic1",
     "libx11-6",
-    "libxcursor1",
-    "libxrandr2",
-    "libxi6",
-    "libwayland-client0",
     "libqt6core6t64",
     "libqt6gui6t64 | libqt6gui6",
     "libqt6network6t64 | libqt6network6",
