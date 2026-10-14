@@ -2620,6 +2620,12 @@ unsafe fn carrega(
     let rasterizador = unsafe { le_opcao(c"zeebx_rasterizador") }.unwrap_or_default();
     if rasterizador.trim().eq_ignore_ascii_case("software") {
         log("Zeebx: rasterizador fixado no processador pela opção do core; nenhum contexto de placa será pedido");
+    } else if cfg!(target_os = "vita") {
+        // O rasterizador de placa pede OpenGL ES 3 (`#version 300 es`, VAO, FBO). O RetroArch
+        // da Vita desenha com vitaGL, que não entrega esse perfil — pedir o contexto seria
+        // recusado, ou aceito por um driver que não cumpre. O RGB565 do processador é o
+        // caminho que o frontend apresenta.
+        log("Zeebx: na PlayStation Vita o desenho fica no processador; o frontend de lá não entrega OpenGL ES 3");
     } else {
         pede_o_contexto_de_placa();
     }

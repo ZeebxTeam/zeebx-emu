@@ -15,6 +15,7 @@
 #   zeebx_libretro-linux-aarch64.zip         o core Libretro, com o `.info`, para RetroArch
 #   zeebx_libretro-wasm.zip                  o mesmo core em WebAssembly, para o ROMBundler
 #   zeebx_libretro-switch.zip                o core como `.a` estático, para o ROMBundler ligar no Switch
+#   zeebx_libretro-vita.zip                  o core como `.a` estático, para o RetroArch ligar na Vita
 #
 # O APK sai assinado com a chave de depuração, que é a que o Gradle gera sozinho. Serve para
 # instalar de lado (`adb install`), **não** para a Play Store: aquela pede a chave de publicação,
@@ -607,6 +608,47 @@ jobs:
           path: zeebx_libretro-switch.zip
           if-no-files-found: error
 
+  # O vitasdk não está no runner: o job roda na imagem oficial, como o `core-vita` do
+  # `libretro.yml`. O `.a` não abre no aparelho: o RetroArch da Vita liga estático e espera
+  # este arquivo renomeado para `libretro_vita.a`.
+  vita:
+    name: core-vita
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: vitasdk/vitasdk:2026.08
+    steps:
+      - name: Git, curl e o compilador do host
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential ca-certificates curl git pkg-config zip
+
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rust-src
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: core-vita
+
+      - name: Compila o staticlib
+        run: ./frontends/vita/compilar.sh --local
+
+      - name: Empacota o core
+        run: |
+          mkdir -p frontends/vita/saida/licenses && cp LICENSE LICENSE-GPL3 THIRD-PARTY-NOTICES.txt frontends/vita/saida/licenses/
+          cd frontends/vita/saida
+          zip -r "$GITHUB_WORKSPACE/zeebx_libretro-vita.zip" libzeebx_libretro.a licenses
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zeebx_libretro_vita
+          path: zeebx_libretro-vita.zip
+          if-no-files-found: error
+
   # O `THIRD-PARTY-NOTICES.txt` que vai em todos os pacotes é versionado, e não gerado em cada job:
   # o contêiner do Switch e o runner do Windows não teriam de instalar o `cargo about`. O preço é
   # ele poder envelhecer com um `cargo update`, e é isto que pega: a release não sai com avisos
@@ -624,7 +666,7 @@ jobs:
         run: python3 ferramentas/avisos_de_terceiros.py --confere
 
   release:
-    needs: [standalone-qt, standalone-egui, headless, android, ios, core, wasm, switch, licencas]
+    needs: [standalone-qt, standalone-egui, headless, android, ios, core, wasm, switch, vita, licencas]
     # Sai com o que deu certo: um sistema que falhou não segura os outros.
     #
     # A tag vem de dois lugares: do `push` de uma tag, e aí é o `github.ref_name`; ou do

@@ -26,6 +26,8 @@ frontends/
   libretro/               o core do RetroArch
   android/                o aplicativo, sem uma linha de Java
   ios/                    o aplicativo de iOS: UIKit por cima de uma biblioteca estática
+  switch/                 o `.a` estático que o ROMBundler liga
+  vita/                   o `.a` estático que o RetroArch da Vita liga
 ferramentas/        scripts Python: catálogo, varredura, instalação do core
 docs/               documentação; `patch-notes/` guarda as notas de cada versão
 assets/             ícones, fontes e `lang/` — os idiomas de fábrica
@@ -91,6 +93,16 @@ Mac a imagem Docker `rombundler-switch` traz o devkitA64 e o rustc; o job `core-
 `libretro.yml` roda o mesmo script com `--local` dentro da imagem `devkitpro/devkita64`. A
 release faz o mesmo e publica `zeebx_libretro-switch.zip`. O `.a` não liga sozinho: os
 `switch_jit_*` e `switch_spinlock_*` que o patch do dynarmic chama vêm do ROMBundler.
+
+**Vita** (o `.a` estático que o RetroArch liga) mora em
+[`frontends/vita/compilar.sh`](frontends/vita/compilar.sh). O alvo é o
+`armv7-sony-vita-newlibeabihf`, tier 3: a std é recompilada com `-Z build-std` e o
+vitasdk fornece o `arm-vita-eabi-gcc`. O dynarmic fica de fora — ele não emite ARMv7 —,
+então o núcleo é o interpretador, e o desenho fica no processador porque o vitaGL não
+entrega OpenGL ES 3. No Mac a imagem Docker `vitasdk/vitasdk` traz o SDK; o job
+`core-vita` do `libretro.yml` roda o mesmo script com `--local` dentro dessa imagem. A
+release faz o mesmo e publica `zeebx_libretro-vita.zip`. O `.a` não abre sozinho: o
+RetroArch o consome renomeado para `libretro_vita.a`.
 
 **iOS** precisa de um Mac com Xcode e dos alvos `aarch64-apple-ios` e
 `aarch64-apple-ios-sim` no rustup. O passo a passo está em

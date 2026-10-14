@@ -7,6 +7,10 @@ use super::*;
 ///
 /// No Switch, 64 entradas descartam uma trilha que ninguém está tocando e a próxima
 /// reprodução sintetiza de novo. O teto em bytes continua sendo o limite de memória.
+///
+/// Na Vita a contagem fica em 64. O console tem 512 MB para o sistema inteiro, e o
+/// interpretador já não reserva o bloco de código do JIT (32 MiB no Switch, 64 no
+/// desktop). Subir a contagem, como no Switch, cabe menos aqui.
 #[cfg(zeebx_switch)]
 const MAX_SONS_GUARDADOS: usize = 512;
 #[cfg(not(zeebx_switch))]
