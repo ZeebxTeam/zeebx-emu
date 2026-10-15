@@ -458,11 +458,7 @@ pub fn toca(banco: &Banco, bytes: &[u8], taxa: u32) -> Option<Sound> {
         elapsed.as_secs_f64() * 1000.0,
         if elapsed.as_secs_f64() > 0.0 { comprimento / elapsed.as_secs_f64() } else { 0.0 }
     );
-    Some(Sound {
-        rate: taxa,
-        channels: 1,
-        samples: amostras,
-    })
+    Some(Sound::novo(taxa, 1, amostras))
 }
 
 /// Desce o volume só quando o pico passou de [`TETO`]. Devolve o pico **antes** de mexer.

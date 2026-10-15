@@ -2527,6 +2527,7 @@ impl GlState {
         let rows = height.div_ceil(bands);
         std::thread::scope(|scope| {
             let mut top = 0i32;
+            let mut indice = 0usize;
             for ((color, depth), stencil) in color
                 .chunks_mut(rows * width)
                 .zip(depth.chunks_mut(rows * width))
@@ -2535,7 +2536,15 @@ impl GlState {
                 let band_top = top;
                 top += (color.len() / width) as i32;
                 let textures = &*textures;
-                scope.spawn(move || {
+                let nucleo = indice;
+                indice += 1;
+                let trabalho = move || {
+                    // Sem isto as três threads nascem com máscara 0 e o kernel
+                    // as deixa no núcleo de quem criou — o mesmo do interpretador.
+                    #[cfg(target_os = "vita")]
+                    afinidade_vita(nucleo);
+                    #[cfg(not(target_os = "vita"))]
+                    let _ = nucleo;
                     let mut band = Band {
                         top: band_top,
                         color,
@@ -2548,7 +2557,17 @@ impl GlState {
                             fill_band(tri, &uniforms, &mut band);
                         }
                     }
-                });
+                };
+                // A std pede 2 MiB de pilha. Na Vita cada `flush` cria as threads
+                // de novo, e 2 MiB vezes três é alocação do kernel a cada quadro
+                // desenhado. 128 KiB cabe no preenchimento, que não recursa.
+                #[cfg(target_os = "vita")]
+                std::thread::Builder::new()
+                    .stack_size(128 * 1024)
+                    .spawn_scoped(scope, trabalho)
+                    .expect("a Vita recusou a thread do preenchimento");
+                #[cfg(not(target_os = "vita"))]
+                scope.spawn(trabalho);
             }
         });
         pending.clear();
@@ -2742,12 +2761,43 @@ const MIN_BAND_ROWS: usize = 8;
 /// Em quantas faixas horizontais dividir um quadro de `height` linhas.
 fn bands(height: usize) -> usize {
     static CORES: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    let cores = *CORES.get_or_init(|| {
-        std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1)
-    });
+    let cores = *CORES.get_or_init(nucleos_do_preenchimento);
     cores.min(height / MIN_BAND_ROWS).max(1)
+}
+
+/// Quantos núcleos o preenchimento pode ocupar.
+///
+/// Na Vita `available_parallelism` devolve erro: o ramo Unix da std não conhece
+/// `target_os = "vita"` e cai em "não suportado". O `unwrap_or(1)` deixava o
+/// 3D inteiro no núcleo do interpretador. O homebrew tem três núcleos; o
+/// quarto é `SCE_KERNEL_CPU_MASK_SYSTEM`.
+fn nucleos_do_preenchimento() -> usize {
+    if cfg!(target_os = "vita") {
+        return 3;
+    }
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+}
+
+/// Põe a thread de preenchimento num núcleo de usuário da Vita.
+///
+/// `sceKernelCreateThread` com máscara 0, que é o que o `pthread` da newlib
+/// passa, não espalha o trabalho. As máscaras são as de `psp2/kernel/cpu.h`:
+/// `USER_0`, `USER_1` e `USER_2`.
+#[cfg(target_os = "vita")]
+fn afinidade_vita(indice: usize) {
+    const NUCLEOS: [i32; 3] = [0x0001_0000, 0x0002_0000, 0x0004_0000];
+    unsafe extern "C" {
+        fn sceKernelGetThreadId() -> i32;
+        fn sceKernelChangeThreadCpuAffinityMask(thid: i32, mask: i32) -> i32;
+    }
+    unsafe {
+        let id = sceKernelGetThreadId();
+        if id > 0 {
+            let _ = sceKernelChangeThreadCpuAffinityMask(id, NUCLEOS[indice % 3]);
+        }
+    }
 }
 
 /// Um triângulo já projetado na tela, com tudo que não depende do pixel resolvido.
@@ -2961,13 +3011,21 @@ fn fill_band(tri: &Prepared, uniforms: &Uniforms, band: &mut Band) {
             edge(tri.screen[0], tri.screen[1], start) * tri.inv_area,
         ];
         let row = (y - band.top) as usize * width;
+        // A interseção de um triângulo com a linha é um intervalo só: cada
+        // aresta anda num sentido, e depois que o pixel sai não volta. Parar
+        // ali não muda pixel nenhum — só deixa de percorrer o resto da caixa.
+        let mut dentro = false;
         for x in tri.min_x..tri.max_x {
             let bary = w;
             // O passo vem antes do descarte porque o `continue` pularia a soma.
             w = [w[0] + tri.step[0], w[1] + tri.step[1], w[2] + tri.step[2]];
             if bary[0] < 0.0 || bary[1] < 0.0 || bary[2] < 0.0 {
+                if dentro {
+                    break;
+                }
                 continue;
             }
+            dentro = true;
             // **A partir do primeiro vértice, e não pela soma dos três pesos.** Os pesos vêm
             // acumulados ao longo da linha e somam 1 ± ε, e ε muda de um triângulo para o
             // outro: com z constante, `b·z` saía um pouco acima de z num triângulo e abaixo no

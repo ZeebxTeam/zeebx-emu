@@ -670,12 +670,93 @@ impl Voz {
 /// Devolve o mesmo [`Sound`](crate::audio::wav::Sound) que o WAVE e o MP3 produzem — o misturador não
 /// precisa saber que aqui não havia som nenhum, só partitura.
 pub fn decode(data: &[u8]) -> Option<crate::audio::wav::Sound> {
+    let parte = prepara(data)?;
+    sintetiza_bloqueando(parte)
+}
+
+/// A mesma síntese, sem segurar quem chamou quando a música é longa.
+///
+/// Na Vita a conta de uma trilha de dezenas de segundos cabe no fio do quadro e
+/// a imagem para até ela acabar. Abaixo de dois segundos continua aqui mesmo: um
+/// efeito não paga uma thread, e quem lê o som em seguida já encontra a amostra.
+pub fn decode_sem_travar(data: &[u8]) -> Option<crate::audio::wav::Sound> {
+    let parte = prepara(data)?;
+    if parte.total <= (RATE as usize) * 2 {
+        return sintetiza_bloqueando(parte);
+    }
+    let vivo = match reserva_da_sintese(parte.total) {
+        Reserva::Largo(samples) => std::sync::Arc::new(crate::audio::wav::AoVivo::de_f32(samples)),
+        Reserva::Curto(pcm) => {
+            if pcm.is_empty() {
+                return None;
+            }
+            if pcm.len() < parte.total {
+                crate::registro!(
+                    crate::registro::Nivel::Aviso,
+                    "midi",
+                    "a música de {:.1}s não coube inteira; sintetizando {:.1}s",
+                    parte.total as f64 / f64::from(RATE),
+                    pcm.len() as f64 / f64::from(RATE)
+                );
+            }
+            std::sync::Arc::new(crate::audio::wav::AoVivo::de_i16(pcm))
+        }
+    };
+    let som = crate::audio::wav::Sound::em_sintese(RATE, 1, std::sync::Arc::clone(&vivo));
+    let trabalho = std::sync::Arc::new(std::sync::Mutex::new(Some(parte)));
+    let vivo_fio = std::sync::Arc::clone(&vivo);
+    let trabalho_fio = std::sync::Arc::clone(&trabalho);
+    let criado = std::thread::Builder::new()
+        .name("zeebx-midi".into())
+        .stack_size(128 * 1024)
+        .spawn(move || {
+            // A thread nasce com a prioridade de quem a criou. No aparelho isso é a
+            // do jogo, e a síntese de uma trilha longa ocupa um núcleo inteiro no
+            // mesmo grau do interpretador e do preenchimento — o quadro perde um
+            // terço. Prioridade baixa só corre quando esses dois não estão usando
+            // o núcleo.
+            #[cfg(target_os = "vita")]
+            prioridade_baixa_vita();
+            if let Some(parte) = trabalho_fio.lock().ok().and_then(|mut g| g.take()) {
+                preenche_ao_vivo(&vivo_fio, &parte.mortas, &parte.tabelas);
+            }
+        });
+    if criado.is_err() {
+        if let Some(parte) = trabalho.lock().ok().and_then(|mut g| g.take()) {
+            preenche_ao_vivo(&vivo, &parte.mortas, &parte.tabelas);
+        }
+    }
+    Some(som)
+}
+
+/// A faixa de usuário da Vita vai de 64 (a mais urgente) a 191. O jogo e o
+/// preenchimento ficam no alto; a música espera a sobra.
+#[cfg(target_os = "vita")]
+fn prioridade_baixa_vita() {
+    unsafe extern "C" {
+        fn sceKernelGetThreadId() -> i32;
+        fn sceKernelChangeThreadPriority(thid: i32, priority: i32) -> i32;
+    }
+    unsafe {
+        let id = sceKernelGetThreadId();
+        if id > 0 {
+            let _ = sceKernelChangeThreadPriority(id, 191);
+        }
+    }
+}
+
+struct Parte {
+    mortas: Vec<Voz>,
+    tabelas: Vec<Tabela>,
+    total: usize,
+}
+
+fn prepara(data: &[u8]) -> Option<Parte> {
     let partitura = le(data)?;
     let eventos = partitura.no_tempo();
     let fim = eventos.last()?.0.min(MAX_SEGUNDOS);
     // Meio segundo de sobra para a última nota terminar de soltar.
     let total = ((fim + 0.5) * f64::from(RATE)) as usize + 1;
-    let mut samples = vec![0.0f32; total];
 
     let mut programa = [0u8; 16];
     let mut volume = [1.0f32; 16];
@@ -792,22 +873,334 @@ pub fn decode(data: &[u8]) -> Option<crate::audio::wav::Sound> {
         mortas.push(voz);
     }
 
-    for voz in &mortas {
-        toca_voz(voz, &mut samples, &tabelas);
+    Some(Parte {
+        mortas,
+        tabelas,
+        total,
+    })
+}
+
+fn sintetiza_bloqueando(parte: Parte) -> Option<crate::audio::wav::Sound> {
+    let Parte {
+        mortas,
+        tabelas,
+        total,
+    } = parte;
+    // O buffer largo é o caminho de sempre. Na Vita a trilha de 86,67 s pede
+    // 7.688.424 bytes contínuos e o `malloc` falha com o heap já partido; aí a
+    // mesma soma vai para 16 bits, a metade do tamanho, e se nem isso couber
+    // fica o prefixo que couber — a música recomeça antes, e o processo não cai.
+    match reserva_da_sintese(total) {
+        Reserva::Largo(mut samples) => {
+            for voz in &mortas {
+                toca_voz(voz, &mut samples, &tabelas);
+            }
+            if samples.iter().all(|s| *s == 0.0) {
+                return None;
+            }
+            aplica_ganho_fixo(&mut samples);
+            Some(crate::audio::wav::Sound::novo(RATE, 1, samples))
+        }
+        Reserva::Curto(mut pcm) => {
+            if pcm.len() < total {
+                crate::registro!(
+                    crate::registro::Nivel::Aviso,
+                    "midi",
+                    "a música de {:.1}s não coube inteira; sintetizando {:.1}s",
+                    total as f64 / f64::from(RATE),
+                    pcm.len() as f64 / f64::from(RATE)
+                );
+            }
+            enche_compacto(&mortas, &tabelas, &mut pcm);
+            if pcm.iter().all(|s| *s == 0) {
+                return None;
+            }
+            Some(crate::audio::wav::Sound::de_i16(RATE, 1, pcm))
+        }
     }
-    if samples.iter().all(|s| *s == 0.0) {
+}
+
+enum Reserva {
+    Largo(Vec<f32>),
+    Curto(Vec<i16>),
+}
+
+/// O buffer da síntese. `try_reserve_exact` devolve erro em vez de abortar o processo.
+fn reserva_da_sintese(total: usize) -> Reserva {
+    let mut largo = Vec::new();
+    if largo.try_reserve_exact(total).is_ok() {
+        largo.resize(total, 0.0);
+        return Reserva::Largo(largo);
+    }
+    let mut n = total;
+    loop {
+        let mut curto = Vec::new();
+        if curto.try_reserve_exact(n).is_ok() {
+            curto.resize(n, 0);
+            return Reserva::Curto(curto);
+        }
+        if n <= 1024 {
+            // Nem isto coube. `resize` abortaria do mesmo jeito que o `vec!`
+            // antigo; vazio faz o `decode` desistir sem derrubar o processo.
+            return Reserva::Curto(Vec::new());
+        }
+        n /= 2;
+    }
+}
+
+/// Soma as vozes em 16 bits, uma janela de cada vez.
+///
+/// O buffer largo não coube. A percussão (filtrada, curta) é calculada à parte;
+/// o resto acumula numa janela de 4096 amostras que é reaproveitada. O ganho
+/// fixo entra na hora de gravar, e o limitador de pico passa uma segunda vez,
+/// como em [`aplica_ganho_fixo`].
+fn enche_compacto(vozes: &[Voz], tabelas: &[Tabela], pcm: &mut [i16]) {
+    let filtradas: Vec<(usize, Vec<f32>)> = vozes
+        .iter()
+        .filter_map(|voz| contribuicao_filtrada(voz, tabelas))
+        .collect();
+    let mut cursores: Vec<Cursor> = vozes
+        .iter()
+        .filter(|voz| matches!(voz.filtro, Filtro::Nenhum))
+        .map(Cursor::novo)
+        .collect();
+    let mut janela = vec![0.0f32; JANELA.min(pcm.len()).max(1)];
+    let mut pico = 0.0f32;
+    let mut pos = 0usize;
+    while pos < pcm.len() {
+        let n = JANELA.min(pcm.len() - pos);
+        janela[..n].fill(0.0);
+        for cursor in &mut cursores {
+            cursor.soma(&mut janela[..n], pos, tabelas);
+        }
+        for (base, buf) in &filtradas {
+            if *base >= pos + n || base + buf.len() <= pos {
+                continue;
+            }
+            let de = pos.saturating_sub(*base);
+            let ate = (pos + n - *base).min(buf.len());
+            for (i, valor) in buf[de..ate].iter().enumerate() {
+                let destino = *base + de + i - pos;
+                if let Some(slot) = janela.get_mut(destino) {
+                    *slot += *valor;
+                }
+            }
+        }
+        for (i, amostra) in janela[..n].iter().enumerate() {
+            let ganho = amostra * GANHO_TABELA;
+            pico = pico.max(ganho.abs());
+            pcm[pos + i] = (ganho * 32767.0).clamp(-32767.0, 32767.0) as i16;
+        }
+        pos += n;
+    }
+    if pico > TETO {
+        let fator = TETO / pico;
+        for amostra in pcm.iter_mut() {
+            *amostra = (f32::from(*amostra) * fator) as i16;
+        }
+    }
+}
+
+/// A mesma soma da janela, publicando cada pedaço assim que ele existe.
+///
+/// Quem toca segura a voz enquanto a amostra não chegou, então a música
+/// começa do início e o quadro do jogo não espera a trilha inteira.
+fn preenche_ao_vivo(vivo: &crate::audio::wav::AoVivo, vozes: &[Voz], tabelas: &[Tabela]) {
+    let mut cursores: Vec<Cursor> = vozes
+        .iter()
+        .filter(|voz| matches!(voz.filtro, Filtro::Nenhum))
+        .map(Cursor::novo)
+        .collect();
+    let mut adiados: Vec<FiltroAdiado> = vozes
+        .iter()
+        .filter(|voz| !matches!(voz.filtro, Filtro::Nenhum))
+        .copied()
+        .map(FiltroAdiado::novo)
+        .collect();
+    let total = vivo.total();
+    if total == 0 {
+        vivo.publica(0);
+        return;
+    }
+    let mut janela = vec![0.0f32; JANELA.min(total).max(1)];
+    let mut pos = 0usize;
+    while pos < total {
+        let n = JANELA.min(total - pos);
+        let trecho = &mut janela[..n];
+        trecho.fill(0.0);
+        for cursor in &mut cursores {
+            cursor.soma(trecho, pos, tabelas);
+        }
+        for adiado in &mut adiados {
+            if !adiado.sobrepoe(pos, n) {
+                continue;
+            }
+            let Some((base, buf)) = adiado.amostras(tabelas) else {
+                continue;
+            };
+            if base >= pos + n || base + buf.len() <= pos {
+                continue;
+            }
+            let de = pos.saturating_sub(base);
+            let ate = (pos + n - base).min(buf.len());
+            for (i, valor) in buf[de..ate].iter().enumerate() {
+                let destino = base + de + i - pos;
+                if let Some(slot) = trecho.get_mut(destino) {
+                    *slot += *valor;
+                }
+            }
+        }
+        let mut pico = 0.0f32;
+        for amostra in trecho.iter_mut() {
+            *amostra *= GANHO_TABELA;
+            pico = pico.max(amostra.abs());
+        }
+        if pico > TETO {
+            let fator = TETO / pico;
+            for amostra in trecho.iter_mut() {
+                *amostra *= fator;
+            }
+        }
+        if vivo.e_largo() {
+            vivo.escreve_f32(pos, trecho);
+        } else {
+            let mut pcm = vec![0i16; n];
+            for (i, amostra) in trecho.iter().enumerate() {
+                pcm[i] = (amostra * 32767.0).clamp(-32767.0, 32767.0) as i16;
+            }
+            vivo.escreve_i16(pos, &pcm);
+        }
+        pos += n;
+        vivo.publica(pos);
+    }
+}
+
+struct FiltroAdiado {
+    voz: Voz,
+    pronto: Option<(usize, Vec<f32>)>,
+}
+
+impl FiltroAdiado {
+    fn novo(voz: Voz) -> Self {
+        Self { voz, pronto: None }
+    }
+
+    fn sobrepoe(&self, pos: usize, n: usize) -> bool {
+        let fim = self
+            .voz
+            .solta
+            .map(|s| s + self.voz.cauda())
+            .unwrap_or(self.voz.inicio);
+        self.voz.inicio < pos + n && fim > pos
+    }
+
+    fn amostras(&mut self, tabelas: &[Tabela]) -> Option<(usize, &[f32])> {
+        if self.pronto.is_none() {
+            self.pronto = contribuicao_filtrada(&self.voz, tabelas);
+        }
+        self.pronto.as_ref().map(|(base, buf)| (*base, buf.as_slice()))
+    }
+}
+
+const JANELA: usize = 4096;
+
+struct Cursor {
+    voz: Voz,
+    fase: f32,
+    passo: f32,
+    ruido: u32,
+    harmonicos: u32,
+    /// Próxima amostra absoluta que esta voz ainda vai escrever.
+    proximo: usize,
+    fim: usize,
+}
+
+impl Cursor {
+    fn novo(voz: &Voz) -> Self {
+        let taxa = RATE as f32;
+        let harmonicos = match voz.frequencia > 0.0 {
+            true => (taxa / 2.0 / voz.frequencia) as u32,
+            false => 1,
+        };
+        let fim = match voz.solta {
+            Some(s) => s + voz.cauda(),
+            None => usize::MAX,
+        };
+        Self {
+            voz: *voz,
+            fase: 0.0,
+            passo: voz.frequencia / taxa,
+            ruido: 0x1234_5678u32 ^ ((voz.nota as u32) << 16) ^ voz.inicio as u32,
+            harmonicos,
+            proximo: voz.inicio,
+            fim,
+        }
+    }
+
+    fn soma(&mut self, janela: &mut [f32], pos: usize, tabelas: &[Tabela]) {
+        let taxa = RATE as f32;
+        let solta = self
+            .voz
+            .solta
+            .map(|s| (s.saturating_sub(self.voz.inicio)) as f32 / taxa);
+        let fim_janela = pos + janela.len();
+        while self.proximo < fim_janela && self.proximo < self.fim {
+            let i = self.proximo - self.voz.inicio;
+            let t = i as f32 / taxa;
+            let envoltoria = self.voz.envoltoria(t, solta);
+            if envoltoria <= 0.0 && solta.is_some_and(|s| t > s) {
+                self.proximo = self.fim;
+                break;
+            }
+            let crua = match self.voz.tabela.and_then(|i| tabelas.get(i)) {
+                Some(tabela) => tabela.amostra(self.fase),
+                None => self
+                    .voz
+                    .timbre
+                    .forma
+                    .amostra(self.fase, self.harmonicos.max(1), &mut self.ruido),
+            };
+            self.fase = (self.fase + self.passo).fract();
+            let destino = self.proximo - pos;
+            janela[destino] += crua * envoltoria * self.voz.amplitude;
+            self.proximo += 1;
+        }
+    }
+}
+
+/// A percussão filtrada, já na escala de energia, pronta para somar.
+///
+/// É curta (o mais longo da tabela passa de meio segundo). Cabe num `Vec`
+/// próprio; a nota melódica, que dura a música, não.
+fn contribuicao_filtrada(voz: &Voz, tabelas: &[Tabela]) -> Option<(usize, Vec<f32>)> {
+    if matches!(voz.filtro, Filtro::Nenhum) {
         return None;
     }
-    aplica_ganho_fixo(&mut samples);
-    Some(crate::audio::wav::Sound {
-        rate: RATE,
-        channels: 1,
-        samples,
-    })
+    let base = voz.inicio;
+    let fim = match voz.solta {
+        Some(s) => s + voz.cauda(),
+        None => return None,
+    };
+    let len = fim.saturating_sub(base);
+    if len == 0 {
+        return None;
+    }
+    let mut buf = vec![0.0f32; len];
+    let mut deslocada = *voz;
+    deslocada.inicio = 0;
+    deslocada.solta = deslocada.solta.map(|s| s.saturating_sub(base));
+    toca_voz_em(&deslocada, &mut buf, tabelas, voz.inicio);
+    Some((base, buf))
 }
 
 /// Soma uma voz no buffer, do começo dela até a envoltória zerar.
 fn toca_voz(voz: &Voz, samples: &mut [f32], tabelas: &[Tabela]) {
+    toca_voz_em(voz, samples, tabelas, voz.inicio);
+}
+
+/// `semente` é a posição original da nota. O caminho curto recomeça o buffer em
+/// zero para não alocar a música inteira, e sem isto o ruído da percussão mudava.
+fn toca_voz_em(voz: &Voz, samples: &mut [f32], tabelas: &[Tabela], semente: usize) {
     let taxa = RATE as f32;
     let solta = voz
         .solta
@@ -822,7 +1215,7 @@ fn toca_voz(voz: &Voz, samples: &mut [f32], tabelas: &[Tabela]) {
         true => (taxa / 2.0 / voz.frequencia) as u32,
         false => 1,
     };
-    let mut ruido = 0x1234_5678u32 ^ ((voz.nota as u32) << 16) ^ voz.inicio as u32;
+    let mut ruido = 0x1234_5678u32 ^ ((voz.nota as u32) << 16) ^ semente as u32;
     // Filtro RC de um polo: `alpha = fc / (fc + fs/2π)`. O passa-alta usa **dois** em cascata,
     // porque um só cai 6 dB por oitava e deixa grave demais passar — com um polo o chimbau ainda
     // disputava a faixa do baixo, que é o defeito que se queria consertar.
@@ -1502,5 +1895,101 @@ mod tests {
         let divisao = i16::from_be_bytes([0xe7, 40]);
         let eventos = le(&smf(divisao, &uma_nota(69, 250))).unwrap().no_tempo();
         assert!((eventos[1].0 - 0.25).abs() < 1e-6, "{:?}", eventos[1].0);
+    }
+
+    /// O caminho de 16 bits existe para quando o buffer largo não cabe. Ele tem de
+    /// soar como o largo: a diferença cabe na quantização.
+    #[test]
+    fn o_caminho_compacto_acompanha_o_largo() {
+        let timbre = timbre(0);
+        let frequencia = 440.0f32;
+        let harmonicos = (RATE as f32 / 2.0 / frequencia) as u32;
+        let (tabelas, indice) = match timbre.forma {
+            Forma::Parcial { expoente } => {
+                (vec![Tabela::nova(expoente, harmonicos.max(1))], Some(0))
+            }
+            _ => (Vec::new(), None),
+        };
+        let voz = Voz {
+            canal: 0,
+            nota: 69,
+            tabela: indice,
+            inicio: 100,
+            solta: Some(8_000),
+            frequencia,
+            timbre,
+            filtro: Filtro::Nenhum,
+            amplitude: 0.8,
+        };
+        let total = 9_000;
+        let mut largo = vec![0.0f32; total];
+        toca_voz(&voz, &mut largo, &tabelas);
+        aplica_ganho_fixo(&mut largo);
+        let mut curto = vec![0i16; total];
+        enche_compacto(std::slice::from_ref(&voz), &tabelas, &mut curto);
+        let erro = largo
+            .iter()
+            .zip(curto.iter())
+            .map(|(a, b)| (a - f32::from(*b) / 32767.0).abs())
+            .fold(0.0f32, f32::max);
+        assert!(erro < 0.002, "erro {erro}");
+        assert!(curto.iter().any(|s| *s != 0));
+    }
+
+    /// A percussão filtrada também passa pelo caminho curto, e o filtro muda a energia.
+    #[test]
+    fn o_caminho_compacto_acompanha_a_percussao() {
+        let (timbre, filtro) = percussao(42);
+        let voz = Voz {
+            canal: 9,
+            nota: 42,
+            tabela: None,
+            inicio: 50,
+            solta: Some(2_000),
+            frequencia: 0.0,
+            timbre,
+            filtro,
+            amplitude: 0.5,
+        };
+        let total = 4_000;
+        let mut largo = vec![0.0f32; total];
+        toca_voz(&voz, &mut largo, &[]);
+        aplica_ganho_fixo(&mut largo);
+        let mut curto = vec![0i16; total];
+        enche_compacto(std::slice::from_ref(&voz), &[], &mut curto);
+        let erro = largo
+            .iter()
+            .zip(curto.iter())
+            .map(|(a, b)| (a - f32::from(*b) / 32767.0).abs())
+            .fold(0.0f32, f32::max);
+        assert!(erro < 0.002, "erro {erro}");
+        assert!(curto.iter().any(|s| *s != 0));
+    }
+
+    /// Efeito curto continua no fio de quem pediu. Trilha longa devolve o som
+    /// e termina a conta depois: é o que tira a pausa do jogo na Vita.
+    #[test]
+    fn a_sintese_longa_nao_segura_quem_chamou() {
+        let curta = nota_de(0, 69, 48);
+        let a = decode(&curta).unwrap();
+        let b = decode_sem_travar(&curta).unwrap();
+        assert_eq!(a.samples, b.samples);
+
+        let longa = nota_de(0, 69, 384);
+        let cheio = decode(&longa).unwrap();
+        let vivo = decode_sem_travar(&longa).unwrap();
+        assert_eq!(vivo.n_amostras(), cheio.n_amostras());
+        let prazo = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !vivo.alcanca(vivo.n_amostras().saturating_sub(1)) {
+            assert!(
+                std::time::Instant::now() < prazo,
+                "a síntese não terminou"
+            );
+            std::thread::yield_now();
+        }
+        let erro = (0..cheio.n_amostras())
+            .map(|i| (cheio.ler(i) - vivo.ler(i)).abs())
+            .fold(0.0f32, f32::max);
+        assert!(erro < 0.002, "erro {erro}");
     }
 }
