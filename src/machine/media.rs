@@ -7,6 +7,10 @@ use super::*;
 ///
 /// No Switch, 64 entradas descartam uma trilha que ninguém está tocando e a próxima
 /// reprodução sintetiza de novo. O teto em bytes continua sendo o limite de memória.
+///
+/// Na Vita a contagem fica em 64. O console tem 512 MB para o sistema inteiro, e o
+/// interpretador já não reserva o bloco de código do JIT (32 MiB no Switch, 64 no
+/// desktop). Subir a contagem, como no Switch, cabe menos aqui.
 #[cfg(zeebx_switch)]
 const MAX_SONS_GUARDADOS: usize = 512;
 #[cfg(not(zeebx_switch))]
@@ -256,7 +260,7 @@ impl<C: CpuBackend> Machine<C> {
                 if tocando
                     && let Some(som) = self.media_sound(this)?
                 {
-                    let dur_s = som.samples.len() as f64
+                    let dur_s = som.n_amostras() as f64
                         / f64::from(som.channels.max(1))
                         / f64::from(som.rate.max(1));
                     // **Som de laço não tem fim, e por isso não tem "quanto falta".** O
@@ -503,7 +507,7 @@ impl<C: CpuBackend> Machine<C> {
                     // quadros. Sem esta divisão, `menu_music.mp3` (15,67 s) aparecia com 31,19 s.
                     Some(som) => format!(
                         "{:.2}s a {} Hz, {} canal(is)",
-                        som.samples.len() as f64
+                        som.n_amostras() as f64
                             / f64::from(som.channels.max(1))
                             / f64::from(som.rate.max(1)),
                         som.rate,
@@ -536,7 +540,7 @@ impl<C: CpuBackend> Machine<C> {
             .cargas_de_midia
             .values()
             .filter_map(|carga| carga.som.as_ref())
-            .map(|som| som.samples.len() * std::mem::size_of::<f32>())
+            .map(|som| som.bytes_pcm())
             .sum();
         let teto = TETO_ESCOLHIDO.load(std::sync::atomic::Ordering::Relaxed);
         if self.cargas_de_midia.len() <= MAX_SONS_GUARDADOS && bytes_guardados <= teto
@@ -596,9 +600,15 @@ impl<C: CpuBackend> Machine<C> {
                     }
                     None => match {
                         let t_midi = std::time::Instant::now();
-                        let dec = crate::audio::midi::decode(bytes);
+                        // Na Vita a síntese longa segue numa thread. No fio do quadro
+                        // ela segura a imagem até a música inteira existir.
+                        let dec = if cfg!(target_os = "vita") {
+                            crate::audio::midi::decode_sem_travar(bytes)
+                        } else {
+                            crate::audio::midi::decode(bytes)
+                        };
                         if let Some(ref sound) = dec {
-                            let dur_s = sound.samples.len() as f64 / sound.rate.max(1) as f64;
+                            let dur_s = sound.n_amostras() as f64 / sound.rate.max(1) as f64;
                             crate::registro!(
                                 crate::registro::Nivel::Informacao,
                                 "midi",
@@ -905,7 +915,18 @@ impl<C: CpuBackend> Machine<C> {
         };
         let (gain, repeat) = (state.gain(), state.repeat);
         if let Some(mixer) = &self.audio {
-            mixer.play(this, sound, gain, repeat);
+            // A Vita mistura pelo tempo de parede, que anda na frente do virtual.
+            // Uma trilha de uma vez só acabaria no misturador e ficaria muda até o
+            // jogo pedir de novo, no DONE. Laço no misturador segura a música;
+            // `poll_media` corta quando o virtual chega no fim. Efeito curto
+            // continua uma vez: repetir um soco soa como outro soco.
+            let no_mixer = if cfg!(target_os = "vita") && repeat != 0 && length_us >= 3_000_000
+            {
+                0
+            } else {
+                repeat
+            };
+            mixer.play(this, sound, gain, no_mixer);
         }
         if avisa {
             self.notify_media(this, MM_CMD_PLAY, MM_STATUS_START)?;
@@ -1170,6 +1191,12 @@ impl<C: CpuBackend> Machine<C> {
             if let Some(state) = self.media.get_mut(&this) {
                 state.state = MM_STATE_READY;
                 state.ends_us = 0;
+            }
+            // O laço que `inicia_reproducao` pôs na trilha longa não acaba sozinho.
+            // Sem este `stop`, a música seguiria depois do DONE.
+            #[cfg(target_os = "vita")]
+            if let Some(mixer) = &self.audio {
+                mixer.stop(this);
             }
             self.notify_media(this, MM_CMD_PLAY, MM_STATUS_DONE)?;
         }

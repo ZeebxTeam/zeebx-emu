@@ -85,6 +85,24 @@ pub struct Framebuffer {
 /// De onde sai a [`Framebuffer::versao`] de cada superfície nova.
 static PROXIMA_SERIE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
+/// RGB565 little-endian, que é o que `to_le_bytes` escreve. Num alvo little-endian
+/// o `u16` já está nessa ordem e a linha sai numa cópia só.
+fn copia_rgb565(pixels: &[u16], destino: &mut [u8]) {
+    let n = pixels.len() * 2;
+    if destino.len() < n {
+        return;
+    }
+    if cfg!(target_endian = "little") {
+        // SAFETY: cada `u16` ocupa dois bytes, `n` é exatamente isso, e o destino cabe.
+        let bytes = unsafe { std::slice::from_raw_parts(pixels.as_ptr().cast::<u8>(), n) };
+        destino[..n].copy_from_slice(bytes);
+        return;
+    }
+    for (par, pixel) in destino.chunks_exact_mut(2).zip(pixels) {
+        par.copy_from_slice(&pixel.to_le_bytes());
+    }
+}
+
 impl Framebuffer {
     pub fn new(width: u32, height: u32) -> Self {
         Self {
@@ -196,11 +214,14 @@ impl Framebuffer {
         let y0 = rect.y.max(0) as u32;
         let x1 = ((rect.x as i32 + rect.width as i32).max(0) as u32).min(self.width);
         let y1 = ((rect.y as i32 + rect.height as i32).max(0) as u32).min(self.height);
-        for y in y0..y1 {
-            for x in x0..x1 {
-                self.pixels[(y * self.width + x) as usize] = value;
-                self.touched += 1;
+        if x0 < x1 && y0 < y1 {
+            let n = (x1 - x0) as usize;
+            let passo = self.width as usize;
+            for y in y0..y1 {
+                let i = y as usize * passo + x0 as usize;
+                self.pixels[i..i + n].fill(value);
             }
+            self.touched += n as u64 * (y1 - y0) as u64;
         }
         self.suja(x0, y0, x1, y1);
     }
@@ -249,13 +270,14 @@ impl Framebuffer {
             .max(0)
             .min(self.height as i32);
         let (x0, y0) = (rect.x.max(0) as i32, rect.y.max(0) as i32);
-        for y in y0..y1 {
-            for x in x0..x1 {
-                self.pixels[(y as u32 * self.width + x as u32) as usize] = value;
-                self.touched += 1;
-            }
-        }
         if x0 < x1 && y0 < y1 {
+            let n = (x1 - x0) as usize;
+            let passo = self.width as usize;
+            for y in y0..y1 {
+                let i = y as usize * passo + x0 as usize;
+                self.pixels[i..i + n].fill(value);
+            }
+            self.touched += n as u64 * (y1 - y0) as u64;
             self.suja(x0 as u32, y0 as u32, x1 as u32, y1 as u32);
         }
     }
@@ -279,18 +301,80 @@ impl Framebuffer {
         src_y: i32,
         transparent: Option<u16>,
     ) {
-        for row in 0..height {
-            for col in 0..width {
-                let (sx, sy) = (src_x + col, src_y + row);
-                if sx < 0 || sy < 0 || sx >= src.width as i32 || sy >= src.height as i32 {
-                    continue;
+        // O recorte das duas superfícies sai uma vez. `set_pixel_native` fundia a
+        // caixa suja e somava `touched` por pixel: um blit de tela inteira fazia
+        // isso 307200 vezes, e o desenho em si era o de menos.
+        if width <= 0 || height <= 0 || src.width == 0 || src.height == 0 {
+            return;
+        }
+        let (Some(mut x1), Some(mut y1)) = (dst_x.checked_add(width), dst_y.checked_add(height))
+        else {
+            return;
+        };
+        let mut x0 = dst_x;
+        let mut y0 = dst_y;
+        let mut sx = src_x;
+        let mut sy = src_y;
+        if x0 < 0 {
+            sx -= x0;
+            x0 = 0;
+        }
+        if y0 < 0 {
+            sy -= y0;
+            y0 = 0;
+        }
+        if sx < 0 {
+            x0 -= sx;
+            sx = 0;
+        }
+        if sy < 0 {
+            y0 -= sy;
+            sy = 0;
+        }
+        x1 = x1.min(self.width as i32);
+        y1 = y1.min(self.height as i32);
+        if x0 >= x1 || y0 >= y1 || sx >= src.width as i32 || sy >= src.height as i32 {
+            return;
+        }
+        let folga_x = sx + (x1 - x0) - src.width as i32;
+        if folga_x > 0 {
+            x1 -= folga_x;
+        }
+        let folga_y = sy + (y1 - y0) - src.height as i32;
+        if folga_y > 0 {
+            y1 -= folga_y;
+        }
+        if x0 >= x1 || y0 >= y1 {
+            return;
+        }
+        let n = (x1 - x0) as usize;
+        let passo_d = self.width as usize;
+        let passo_s = src.width as usize;
+        let mut escritos = 0u64;
+        if let Some(chave) = transparent {
+            for row in 0..(y1 - y0) {
+                let s = (sy + row) as usize * passo_s + sx as usize;
+                let d = (y0 + row) as usize * passo_d + x0 as usize;
+                for i in 0..n {
+                    let valor = src.pixels[s + i];
+                    if valor == chave {
+                        continue;
+                    }
+                    self.pixels[d + i] = valor;
+                    escritos += 1;
                 }
-                let value = src.get_pixel(sx, sy);
-                if Some(value) == transparent {
-                    continue;
-                }
-                self.set_pixel_native(dst_x + col, dst_y + row, value);
             }
+        } else {
+            for row in 0..(y1 - y0) {
+                let s = (sy + row) as usize * passo_s + sx as usize;
+                let d = (y0 + row) as usize * passo_d + x0 as usize;
+                self.pixels[d..d + n].copy_from_slice(&src.pixels[s..s + n]);
+            }
+            escritos = n as u64 * (y1 - y0) as u64;
+        }
+        if escritos > 0 {
+            self.touched += escritos;
+            self.suja(x0 as u32, y0 as u32, x1 as u32, y1 as u32);
         }
     }
 
@@ -399,24 +483,22 @@ impl Framebuffer {
     /// [`Framebuffer::to_rgb565_bytes`] aloca um `Vec` novo a cada quadro; num frontend que
     /// entrega 60 quadros por segundo isso é lixo a cada 16 ms, e o coletor aparece como engasgo.
     pub fn write_rgb565_into(&self, out: &mut Vec<u8>) {
-        out.clear();
-        out.reserve(self.pixels.len() * 2);
-        for pixel in &self.pixels {
-            out.extend_from_slice(&pixel.to_le_bytes());
+        let n = self.pixels.len() * 2;
+        if out.len() != n {
+            out.resize(n, 0);
         }
+        copia_rgb565(&self.pixels, out);
     }
 
-    /// Assinatura barata do conteúdo da tela, para reconhecer quadro repetido.
+    /// Assinatura para reconhecer quadro repetido.
     ///
-    /// Não é hash criptográfico: é o suficiente para dizer "nada mudou" sem custar uma passada
-    /// cara sobre 600 KB por quadro.
+    /// Era um produto por pixel, 307200 vezes por quadro, para descobrir se a imagem mudou.
+    /// Toda escrita na tela já soma [`Framebuffer::escritas`]. Um quadro de jogo mexe nesse
+    /// contador; o hash só repetia a conclusão e não cabia nos 16 ms.
     pub fn signature(&self) -> u64 {
-        let mut valor: u64 = 0xcbf2_9ce4_8422_2325;
-        for pixel in &self.pixels {
-            valor ^= u64::from(*pixel);
-            valor = valor.wrapping_mul(0x100_0000_01b3);
-        }
-        valor
+        self.serie
+            .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            ^ self.touched
     }
 
     pub fn to_rgb565_bytes(&self) -> Vec<u8> {
@@ -435,13 +517,17 @@ impl Framebuffer {
     }
 
     /// Recarrega uma superfície já convertida em palavras RGB565.
+    ///
+    /// O quadro que mudou — o caso de quem está jogando — discordava logo no começo e mesmo
+    /// assim era comparado pixel a pixel. A comparação inteira só segue quando nada mudou,
+    /// que é o que o frontend usa para não reenviar a mesma imagem.
     pub fn load_rgb565_words(&mut self, words: &[u16]) {
-        for (pixel, &value) in self.pixels.iter_mut().zip(words) {
-            if *pixel != value {
-                *pixel = value;
-                self.touched += 1;
-            }
+        let n = self.pixels.len().min(words.len());
+        if n == 0 || self.pixels[..n] == words[..n] {
+            return;
         }
+        self.pixels[..n].copy_from_slice(&words[..n]);
+        self.touched = self.touched.saturating_add(1);
     }
 
     /// Bytes por linha no buffer do `IDIB`: a largura em RGB565 alinhada em 4 bytes.
@@ -483,14 +569,16 @@ impl Framebuffer {
     pub fn write_rgb565_with_pitch(&self, out: &mut [u8], pitch: usize) {
         let largura = self.width as usize;
         let (linha_em_bytes, passo) = (largura * 2, pitch.max(largura * 2));
+        if passo == linha_em_bytes {
+            copia_rgb565(&self.pixels, out);
+            return;
+        }
         for (y, linha) in self.pixels.chunks_exact(largura).enumerate() {
             let inicio = y * passo;
             let Some(destino) = out.get_mut(inicio..inicio + linha_em_bytes) else {
                 return;
             };
-            for (par, pixel) in destino.chunks_exact_mut(2).zip(linha) {
-                par.copy_from_slice(&pixel.to_le_bytes());
-            }
+            copia_rgb565(linha, destino);
         }
     }
 

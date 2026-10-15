@@ -196,7 +196,17 @@ pub fn decode_detalhado(data: &[u8]) -> Result<crate::audio::wav::Sound, String>
     let audio = &data[inicio..];
     let mut sondado = None;
     for extensao in ["mp3", "ogg"] {
-        let fonte = std::io::Cursor::new(audio.to_vec());
+        // A cópia é o preço de o decodificador não olhar o buffer do guest. `to_vec`
+        // aborta quando não cabe; na Vita o malloc não devolve erro.
+        let mut copia = Vec::new();
+        if copia.try_reserve_exact(audio.len()).is_err() {
+            return Err(format!(
+                "sem memória para copiar {} bytes do áudio",
+                audio.len()
+            ));
+        }
+        copia.extend_from_slice(audio);
+        let fonte = std::io::Cursor::new(copia);
         let fluxo = MediaSourceStream::new(Box::new(fonte), Default::default());
         let mut hint = Hint::new();
         hint.with_extension(extensao);
@@ -246,6 +256,20 @@ pub fn decode_detalhado(data: &[u8]) -> Result<crate::audio::wav::Sound, String>
         let buffer =
             buffer.get_or_insert_with(|| SampleBuffer::new(quadro.capacity() as u64, spec));
         buffer.copy_interleaved_ref(quadro);
+        let extra = buffer.samples().len();
+        // O `extend` pede o buffer novo antes de soltar o velho. Na Vita essa
+        // alocação não volta erro: aborta o processo. O Zeetris morreu ao pedir
+        // 4.718.592 bytes no meio da música. Guardar o pedaço que coube deixava
+        // o quadro seguinte sem os ~1,2 MiB do envio, e o vitaGL copiava um
+        // ponteiro nulo. Sem o som inteiro, não fica som nenhum: o jogo segue
+        // com a duração cronometrada.
+        if samples.try_reserve(extra).is_err() {
+            return Err(format!(
+                "sem memória para {} amostras (já tinha {})",
+                samples.len() + extra,
+                samples.len()
+            ));
+        }
         samples.extend_from_slice(buffer.samples());
     }
     if samples.is_empty() || rate == 0 || channels == 0 {
@@ -254,11 +278,7 @@ pub fn decode_detalhado(data: &[u8]) -> Result<crate::audio::wav::Sound, String>
             samples.len()
         ));
     }
-    Ok(crate::audio::wav::Sound {
-        rate,
-        channels,
-        samples,
-    })
+    Ok(crate::audio::wav::Sound::novo(rate, channels, samples))
 }
 
 #[cfg(test)]

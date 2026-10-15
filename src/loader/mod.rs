@@ -44,6 +44,12 @@ pub const MODULE_BSS_SLACK: usize = 1024 * 1024;
 /// (`docs/01-hardware.md`), e o tamanho aqui é escolha nossa — só precisa ser folgado o bastante
 /// para o jogo reconhecer o aparelho.
 ///
+/// Na Vita o processo inteiro cabe em 232 MiB. Com 64 MiB aqui, o quadro seguinte do
+/// frontend não acha o bloco temporário de ~1,2 MiB (640×480 em 32 bits): o vitaGL
+/// copia esse ponteiro mesmo quando a alocação volta nula, e o Zeetris, já aberto,
+/// morreu num data abort dentro do `sceClibMemcpy`. 48 MiB ainda é o heap que a
+/// Z-Wheel lê como "quanto há livre". Não medi se 48 basta para o Quake nesse aparelho.
+///
 /// **Medido em 22/09/2026, e o número ficou:** dobrar para 128 MB não move a Z-Wheel. Ela aloca
 /// ~64 MiB no próprio pool (o `memcheck` dela imprime `Free(67001392)`, o mesmo número nos dois
 /// tamanhos) e depois pede **o total que sobra** — 67 001 488 com 64 MB, 134 110 352 com 128 MB.
@@ -51,7 +57,11 @@ pub const MODULE_BSS_SLACK: usize = 1024 * 1024;
 /// alvo. O que ficou dessa medição é a contabilidade honesta de "quanto há livre": ver
 /// [`crate::brew::heap::Heap::maior_bloco`].
 pub const HEAP_BASE: u32 = 0x1000_0000;
-pub const HEAP_SIZE: usize = 64 * 1024 * 1024;
+pub const HEAP_SIZE: usize = if cfg!(target_os = "vita") {
+    48 * 1024 * 1024
+} else {
+    64 * 1024 * 1024
+};
 /// Pilha. `sp` começa no topo porque a pilha do ARM cresce para baixo.
 pub const STACK_BASE: u32 = 0x2000_0000;
 pub const STACK_SIZE: usize = 1024 * 1024;

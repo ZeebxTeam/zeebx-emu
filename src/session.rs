@@ -10,10 +10,11 @@ use std::time::{Duration, Instant};
 
 /// No desktop e no core nativo a sessão recompila os blocos. No `wasm32` o bloco emitido não
 /// roda no navegador. No iOS o sistema recusa a página executável que o Dynarmic aloca — o
-/// simulador também é `TARGET_OS_IPHONE`. Nos dois, o interpretador ocupa o mesmo lugar.
-#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
+/// simulador também é `TARGET_OS_IPHONE`. Na Vita o host é Cortex-A9 e o dynarmic não emite
+/// ARMv7. Nesses três, o interpretador ocupa o mesmo lugar.
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "vita")))]
 use crate::cpu::dynarmic::DynarmicCpu as CpuDaSessao;
-#[cfg(any(target_arch = "wasm32", target_os = "ios"))]
+#[cfg(any(target_arch = "wasm32", target_os = "ios", target_os = "vita"))]
 use crate::cpu::interpretador::Interpretador as CpuDaSessao;
 use crate::input::Pad;
 use crate::library;
@@ -1256,6 +1257,16 @@ impl Session {
             linhas.extend(semihosting.lines().map(|linha| format!("  {linha}")));
         }
         linhas
+    }
+
+    /// Solta o que esta sessão segura de grande, para a seguinte caber.
+    ///
+    /// A sessão fica parada: o mapa foi embora, e executá-la leria memória que já não existe.
+    /// Quem troca e não consegue abrir o próximo fica neste estado, em vez de seguir com um
+    /// jogo pela metade.
+    pub fn solta_para_troca(&mut self) {
+        self.stopped = Some(Outcome::Returned { code: 0 });
+        self.machine.solta_para_troca();
     }
 
     /// Mistura o som num `Mixer` sem placa, para gravar: quem chama pede os quadros com

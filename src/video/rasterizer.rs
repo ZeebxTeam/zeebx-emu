@@ -405,6 +405,13 @@ pub struct Texture {
     /// `GL_TEXTURE_CROP_RECT_OES`: qual pedaço da textura o `glDrawTex*OES` desenha, em texels.
     /// Largura ou altura negativa espelha o eixo, que é como a extensão vira a imagem.
     pub crop: [i32; 4],
+    /// Cópia do nível zero em blocos de 4×4, quando alguém a monta.
+    ///
+    /// O quadro não monta. A cópia cabe no cache, mas na Vita ela é outra textura
+    /// inteira, e o dump do Double Dragon abortou ao pedi-la (158400 bytes). Sem
+    /// ela o texel é o mesmo — a amostragem lê `pixels` em linha. O teste ainda monta
+    /// a cópia para conferir o índice.
+    blocos: Vec<[u8; 4]>,
 }
 
 impl Default for Texture {
@@ -420,6 +427,7 @@ impl Default for Texture {
             filter: gles::GL_LINEAR,
             min_filter: gles::GL_NEAREST_MIPMAP_LINEAR,
             crop: [0; 4],
+            blocos: Vec::new(),
         }
     }
 }
@@ -520,35 +528,138 @@ impl Texture {
 
     /// Amostra um nível, com ou sem interpolação entre texels vizinhos.
     fn sample_nivel(&self, u: f32, v: f32, nivel: usize, suave: bool) -> [f32; 4] {
+        // O nível zero é o que o jogo vê de perto, e é o que não cabe no cache. Os níveis
+        // menores já são pequenos: continuam em linha, que é como foram gravados.
+        if nivel == 0 {
+            return self.amostra_base(u, v, suave);
+        }
         let (width, height, pixels) = self.nivel(nivel);
+        self.amostra_linha(width, height, pixels, u, v, suave)
+    }
+
+    /// O nível zero, pelos blocos quando eles já foram montados.
+    fn amostra_base(&self, u: f32, v: f32, suave: bool) -> [f32; 4] {
+        if self.width == 0 || self.height == 0 {
+            return [1.0; 4];
+        }
+        if self.blocos_prontos() {
+            return self.amostra_em::<true>(u, v, suave);
+        }
+        self.amostra_em::<false>(u, v, suave)
+    }
+
+    #[inline(always)]
+    fn amostra_em<const BLOCOS: bool>(&self, u: f32, v: f32, suave: bool) -> [f32; 4] {
+        let width = self.width;
+        let height = self.height;
+        let (x, y) = (u * width as f32 - 0.5, v * height as f32 - 0.5);
+        let bw = width.div_ceil(4);
+        let texel = |ix: i32, iy: i32| {
+            let ix = Self::wrap(self.wrap[0], ix, width);
+            let iy = Self::wrap(self.wrap[1], iy, height);
+            let p = if BLOCOS {
+                self.blocos[indice_bloco(ix, iy, bw)]
+            } else {
+                self.pixels[iy * width + ix]
+            };
+            [p[0] as f32 / 255.0, p[1] as f32 / 255.0, p[2] as f32 / 255.0, p[3] as f32 / 255.0]
+        };
+        interpola(x, y, suave, texel)
+    }
+
+    fn amostra_linha(
+        &self,
+        width: usize,
+        height: usize,
+        pixels: &[[u8; 4]],
+        u: f32,
+        v: f32,
+        suave: bool,
+    ) -> [f32; 4] {
         if width == 0 || height == 0 {
             return [1.0; 4];
         }
-        let texel = |x: i32, y: i32| {
-            let x = Self::wrap(self.wrap[0], x, width);
-            let y = Self::wrap(self.wrap[1], y, height);
-            let p = pixels[y * width + x];
-            std::array::from_fn::<f32, 4, _>(|i| p[i] as f32 / 255.0)
-        };
         let (x, y) = (u * width as f32 - 0.5, v * height as f32 - 0.5);
-        if !suave {
-            return texel(x.round() as i32, y.round() as i32);
-        }
-        let (x0, y0) = (x.floor(), y.floor());
-        let (fx, fy) = (x - x0, y - y0);
-        let (x0, y0) = (x0 as i32, y0 as i32);
-        let cantos = [
-            texel(x0, y0),
-            texel(x0 + 1, y0),
-            texel(x0, y0 + 1),
-            texel(x0 + 1, y0 + 1),
-        ];
-        std::array::from_fn(|c| {
-            let cima = cantos[0][c] + (cantos[1][c] - cantos[0][c]) * fx;
-            let baixo = cantos[2][c] + (cantos[3][c] - cantos[2][c]) * fx;
-            cima + (baixo - cima) * fy
+        interpola(x, y, suave, |ix, iy| {
+            let ix = Self::wrap(self.wrap[0], ix, width);
+            let iy = Self::wrap(self.wrap[1], iy, height);
+            let p = pixels[iy * width + ix];
+            [p[0] as f32 / 255.0, p[1] as f32 / 255.0, p[2] as f32 / 255.0, p[3] as f32 / 255.0]
         })
     }
+
+    fn tamanho_blocos(&self) -> usize {
+        if self.width == 0 || self.height == 0 {
+            return 0;
+        }
+        self.width.div_ceil(4) * self.height.div_ceil(4) * 16
+    }
+
+    fn blocos_prontos(&self) -> bool {
+        let n = self.tamanho_blocos();
+        n > 0 && self.blocos.len() == n && self.pixels.len() >= self.width * self.height
+    }
+
+    /// Monta a cópia para o teste do índice. O quadro não chama: no dump do Double
+    /// Dragon a cópia de 158400 bytes abortou o processo.
+    #[cfg(test)]
+    fn garante_blocos(&mut self) -> bool {
+        let n = self.tamanho_blocos();
+        if n == 0 || self.pixels.len() < self.width * self.height {
+            self.blocos.clear();
+            return false;
+        }
+        if self.blocos.len() == n {
+            return true;
+        }
+        let mut blocos = Vec::new();
+        if blocos.try_reserve_exact(n).is_err() {
+            self.blocos.clear();
+            return false;
+        }
+        blocos.resize(n, [0u8; 4]);
+        let bw = self.width.div_ceil(4);
+        for y in 0..self.height {
+            let linha = y * self.width;
+            for x in 0..self.width {
+                blocos[indice_bloco(x, y, bw)] = self.pixels[linha + x];
+            }
+        }
+        self.blocos = blocos;
+        true
+    }
+
+    fn invalida_blocos(&mut self) {
+        self.blocos.clear();
+    }
+}
+
+/// Índice de um texel dentro da cópia em blocos de 4×4.
+#[inline(always)]
+fn indice_bloco(x: usize, y: usize, largura_blocos: usize) -> usize {
+    ((y / 4) * largura_blocos + (x / 4)) * 16 + (y % 4) * 4 + (x % 4)
+}
+
+/// Interpola os texels vizinhos. A conta é a mesma de antes: o que mudou foi de onde o texel sai.
+#[inline(always)]
+fn interpola(x: f32, y: f32, suave: bool, texel: impl Fn(i32, i32) -> [f32; 4]) -> [f32; 4] {
+    if !suave {
+        return texel(x.round() as i32, y.round() as i32);
+    }
+    let (x0, y0) = (x.floor(), y.floor());
+    let (fx, fy) = (x - x0, y - y0);
+    let (x0, y0) = (x0 as i32, y0 as i32);
+    let cantos = [
+        texel(x0, y0),
+        texel(x0 + 1, y0),
+        texel(x0, y0 + 1),
+        texel(x0 + 1, y0 + 1),
+    ];
+    std::array::from_fn(|c| {
+        let cima = cantos[0][c] + (cantos[1][c] - cantos[0][c]) * fx;
+        let baixo = cantos[2][c] + (cantos[3][c] - cantos[2][c]) * fx;
+        cima + (baixo - cima) * fy
+    })
 }
 
 /// Estado completo do OpenGL ES que o rasterizador mantém.
@@ -645,6 +756,12 @@ pub trait Rasterizador {
         &mut self,
         origem: &crate::save_state::Leitor<'_>,
     ) -> Result<(), crate::save_state::Erro>;
+
+    /// Larga texturas e o framebuffer.
+    ///
+    /// A troca de jogo precisa deste espaço antes de criar o rasterizador seguinte. Quem não
+    /// guarda pixels no processo não tem o que soltar.
+    fn solta_os_pixels(&mut self) {}
 
     /// Termina o desenho que estava na fila.
     ///
@@ -870,6 +987,12 @@ impl Rasterizador for GlState {
         crate::save_state::Guardavel::restaura(self, origem)
     }
 
+    fn solta_os_pixels(&mut self) {
+        self.textures.clear();
+        self.quadro = Vec::new();
+        self.stencil = Vec::new();
+    }
+
     /// Os três acumuladores de um desenho em curso.
     ///
     /// `transformed` é o que sobra de um `glBegin` sem `glEnd`, e `batch`/`pending` são o lote
@@ -1074,14 +1197,38 @@ impl Rasterizador for GlState {
     }
 }
 
+/// Lado do bloco, em pixels.
+///
+/// Cor e profundidade do mesmo pixel são 8 bytes. Um bloco de 32×32 cabe em 8 KiB, e a L1 do
+/// Cortex-A9 da Vita tem 32 KiB: sobra espaço para o texel que o laço acabou de ler. Um bloco
+/// de 64×64 ocuparia a cache inteira, e a primeira amostra de textura o expulsaria. A faixa
+/// horizontal de antes tinha centenas de linhas por 640 colunas — bem maior que a cache — e
+/// cada núcleo relia a cena toda para pintar a sua.
+const LADO_DO_BLOCO: usize = 32;
+const PIXELS_DO_BLOCO: usize = LADO_DO_BLOCO * LADO_DO_BLOCO;
+
+/// Um pixel do quadro: a cor e a profundidade juntas, para a leitura do teste de z e a escrita
+/// da cor caírem na mesma linha de cache.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Pixel {
+    cor: [u8; 4],
+    z: f32,
+}
+
+const _: () = assert!(std::mem::size_of::<Pixel>() == 8);
+
 pub struct GlState {
     pub(crate) width: usize,
     pub(crate) height: usize,
-    /// Cor do quadro, em RGBA de 8 bits — convertida para RGB565 só na apresentação.
-    pub(crate) color: Vec<[u8; 4]>,
-    /// Profundidade normalizada em `[0, 1]`.
-    pub(crate) depth: Vec<f32>,
+    /// Cor e profundidade, em blocos de [`LADO_DO_BLOCO`]. O índice não é `y * largura + x`.
+    quadro: Vec<Pixel>,
+    /// Quantos blocos cabem numa linha de blocos.
+    blocos_x: usize,
     /// O stencil, de oito bits — o tamanho que o `GL_STENCIL_BITS` do console anuncia.
+    ///
+    /// No mesmo arranjo dos blocos da cor: um núcleo recebe uma fatia exclusiva, e o índice
+    /// local de um pixel é o mesmo nos dois.
     ///
     /// Existe por causa do reflexo do palco da Z-Wheel: ela marca o chão aqui e desenha o
     /// modelo espelhado só onde a marca ficou. Sem o buffer, o espelhado saía por fora do chão
@@ -1190,6 +1337,11 @@ pub struct GlState {
     batch: Batch,
     /// O que já foi desenhado neste quadro e ainda não virou pixel. Ver [`GlState::flush`].
     pending: Pending,
+    /// Por bloco, os triângulos que o tocam, na ordem em que o jogo os mandou.
+    ///
+    /// Vive aqui para a próxima pintura reaproveitar os vetores. Esvaziar não devolve a
+    /// capacidade: um quadro cheio não volta a pedir essa memória sessenta vezes por segundo.
+    caixas: Vec<Vec<Desenho>>,
     /// Os vértices já transformados da draw call em curso. Vive aqui pelo mesmo motivo: o
     /// Quake faz meio milhão de draw calls em vinte e cinco segundos de jogo, e uma alocação
     /// por chamada é meio milhão de idas ao alocador para desenhar dois triângulos de cada vez.
@@ -1205,12 +1357,21 @@ pub struct GlState {
 
 impl GlState {
     pub fn new(width: usize, height: usize) -> Self {
+        let blocos_x = width.div_ceil(LADO_DO_BLOCO);
+        let blocos_y = height.div_ceil(LADO_DO_BLOCO);
+        let n = blocos_x.saturating_mul(blocos_y).saturating_mul(PIXELS_DO_BLOCO);
         Self {
             width,
             height,
-            color: vec![[0, 0, 0, 255]; width * height],
-            depth: vec![1.0; width * height],
-            stencil: vec![0; width * height],
+            quadro: vec![
+                Pixel {
+                    cor: [0, 0, 0, 255],
+                    z: 1.0,
+                };
+                n
+            ],
+            blocos_x,
+            stencil: vec![0; n],
             lighting: false,
             color_material: false,
             lights: std::array::from_fn(|i| match i {
@@ -1266,9 +1427,75 @@ impl GlState {
             front_face: gles::GL_CCW,
             batch: Batch::default(),
             pending: Pending::default(),
+            caixas: Vec::new(),
             transformed: Vec::new(),
             sujo: true,
         }
+    }
+
+    /// O índice do pixel `(x, y)` dentro do arranjo em blocos.
+    #[inline(always)]
+    fn indice(&self, x: usize, y: usize) -> usize {
+        let tx = x / LADO_DO_BLOCO;
+        let ty = y / LADO_DO_BLOCO;
+        let lx = x % LADO_DO_BLOCO;
+        let ly = y % LADO_DO_BLOCO;
+        (ty * self.blocos_x + tx) * PIXELS_DO_BLOCO + ly * LADO_DO_BLOCO + lx
+    }
+
+    #[inline(always)]
+    fn pixel(&self, x: usize, y: usize) -> &Pixel {
+        &self.quadro[self.indice(x, y)]
+    }
+
+    #[inline(always)]
+    fn pixel_mut(&mut self, x: usize, y: usize) -> &mut Pixel {
+        let i = self.indice(x, y);
+        &mut self.quadro[i]
+    }
+
+    /// `(x, y)` a partir do índice linear `y * largura + x`. Os testes falam nessa ordem;
+    /// a apresentação e o save state percorrem `x` e `y` direto.
+    #[cfg(test)]
+    fn lugar(&self, i: usize) -> (usize, usize) {
+        (i % self.width, i / self.width)
+    }
+
+    #[cfg(test)]
+    fn cor_em(&self, i: usize) -> [u8; 4] {
+        let (x, y) = self.lugar(i);
+        self.pixel(x, y).cor
+    }
+
+    #[cfg(test)]
+    fn poe_cor(&mut self, i: usize, cor: [u8; 4]) {
+        let (x, y) = self.lugar(i);
+        self.pixel_mut(x, y).cor = cor;
+    }
+
+    #[cfg(test)]
+    fn profundidade_em(&self, i: usize) -> f32 {
+        let (x, y) = self.lugar(i);
+        self.pixel(x, y).z
+    }
+
+    #[cfg(test)]
+    fn poe_profundidade(&mut self, i: usize, z: f32) {
+        let (x, y) = self.lugar(i);
+        self.pixel_mut(x, y).z = z;
+    }
+
+    #[cfg(test)]
+    fn stencil_em(&self, i: usize) -> u8 {
+        let (x, y) = self.lugar(i);
+        self.stencil[self.indice(x, y)]
+    }
+
+    #[cfg(test)]
+    fn poe_stencil(&mut self, i: usize, valor: u8) {
+        let (x, y) = self.lugar(i);
+        let i = self.indice(x, y);
+        self.stencil[i] = valor;
     }
 
     /// A matriz do topo da pilha ativa, como o `glQueryMatrixxOES` a devolve.
@@ -1532,8 +1759,8 @@ impl GlState {
                     continue;
                 }
                 // A linha `fy` contada de baixo é a `sh - 1 - fy` no nosso buffer.
-                let origem = (sh - 1 - fy as usize) * self.width + fx as usize;
-                saida[linha * width + coluna] = self.color[origem];
+                let origem_y = sh - 1 - fy as usize;
+                saida[linha * width + coluna] = self.pixel(fx as usize, origem_y).cor;
             }
         }
         // O `n` só é diferente de 1 quando há redução, e aí o laço acima já amostrou a superfície
@@ -1894,6 +2121,15 @@ impl GlState {
         self.texture_env
     }
 
+    /// A fila ainda vai ler esta textura. Mudar o conteúdo ou o filtro antes de
+    /// pintar faria o desenho que já está na fila usar o que veio depois.
+    fn fila_usa(&self, name: u32) -> bool {
+        self.pending
+            .jobs
+            .iter()
+            .any(|job| job.texture == Some(name) || job.texture1 == Some(name))
+    }
+
     pub fn bind_texture(&mut self, name: u32) {
         match self.active_unit {
             0 => self.bound_texture = name,
@@ -1937,7 +2173,11 @@ impl GlState {
         if !mudou {
             return;
         }
-        self.flush();
+        // O parâmetro só muda o que a fila ainda vai amostrar. Uma textura que
+        // ninguém enfileirou pode mudar sem pintar o resto do quadro.
+        if self.fila_usa(ligada) {
+            self.flush();
+        }
         let Some(texture) = self.textures.get_mut(&ligada) else {
             return;
         };
@@ -1985,7 +2225,9 @@ impl GlState {
     /// A fila menciona texturas pelo nome: apagar uma antes de ela ser lida mudaria o que já foi
     /// desenhado, e por isso a fila é despejada antes.
     pub fn delete_texture(&mut self, name: u32) {
-        self.flush();
+        if self.fila_usa(name) {
+            self.flush();
+        }
         self.textures.remove(&name);
     }
 
@@ -2004,13 +2246,17 @@ impl GlState {
         height: usize,
         pixels: Vec<[u8; 4]>,
     ) {
-        self.flush();
+        if self.fila_usa(name) {
+            self.flush();
+        }
         let texture = self.textures.entry(name).or_default();
         if level == 0 {
             texture.width = width;
             texture.height = height;
             texture.pixels = pixels;
             texture.mipmaps.clear();
+            // O nível zero mudou: a cópia em blocos ainda tem a imagem anterior.
+            texture.invalida_blocos();
             return;
         }
         let indice = level as usize - 1;
@@ -2042,7 +2288,9 @@ impl GlState {
         height: u32,
         pixels: &[[u8; 4]],
     ) -> Result<(), Option<(u32, u32)>> {
-        self.flush();
+        if self.fila_usa(name) {
+            self.flush();
+        }
         let Some(texture) = self.textures.get_mut(&name) else {
             return Err(None);
         };
@@ -2061,6 +2309,7 @@ impl GlState {
         // o painel de promoção da Z-Wheel, que troca o texto por aqui, saía com as letras
         // fantasmas do texto anterior por cima das novas.
         texture.mipmaps.clear();
+        texture.invalida_blocos();
         Ok(())
     }
 
@@ -2070,11 +2319,16 @@ impl GlState {
         self.flush();
         if mask & gles::GL_COLOR_BUFFER_BIT != 0 {
             let c = pack(self.clear_color);
-            self.color.fill(c);
+            for pixel in &mut self.quadro {
+                pixel.cor = c;
+            }
             self.sujo = true;
         }
         if mask & gles::GL_DEPTH_BUFFER_BIT != 0 {
-            self.depth.fill(self.clear_depth);
+            let z = self.clear_depth;
+            for pixel in &mut self.quadro {
+                pixel.z = z;
+            }
         }
         if mask & gles::GL_STENCIL_BUFFER_BIT != 0 {
             self.stencil.fill(self.clear_stencil);
@@ -2164,22 +2418,19 @@ impl GlState {
         let mut batch = std::mem::take(&mut self.batch);
         batch.clear();
         match mode {
-            gles::GL_TRIANGLES => {
-                for tri in clip.chunks_exact(3) {
-                    self.triangle([tri[0], tri[1], tri[2]], &mut batch);
-                }
-            }
-            gles::GL_TRIANGLE_STRIP => {
-                for (i, window) in clip.windows(3).enumerate() {
-                    // A cada passo a orientação alterna; trocar dois vértices a mantém.
-                    if i % 2 == 0 {
-                        self.triangle([window[0], window[1], window[2]], &mut batch);
-                    } else {
-                        self.triangle([window[1], window[0], window[2]], &mut batch);
+            gles::GL_TRIANGLES => self.triangulos_ou_retangulos(&clip, &mut batch),
+            gles::GL_TRIANGLE_STRIP => self.faixa_ou_retangulos(&clip, &mut batch),
+            gles::GL_TRIANGLE_FAN => {
+                // Um leque de quatro vértices é um quadrilátero. Mais que isso é um
+                // polígono, e o retângulo não o cobre.
+                if clip.len() == 4 {
+                    if let Some(sprite) = self.sprite_de(&clip) {
+                        self.enfileira_sprite(sprite);
+                        self.batch = batch;
+                        self.transformed = clip;
+                        return;
                     }
                 }
-            }
-            gles::GL_TRIANGLE_FAN => {
                 for window in clip[1..].windows(2) {
                     self.triangle([clip[0], window[0], window[1]], &mut batch);
                 }
@@ -2208,7 +2459,20 @@ impl GlState {
     ///
     /// O pedaço da textura vem do `GL_TEXTURE_CROP_RECT_OES`, e largura ou altura negativa ali
     /// espelha o eixo — é assim que a extensão vira a imagem.
+    ///
+    /// O caso comum — uma textura, sem névoa, sem stencil, sem a segunda unidade — não vira
+    /// dois triângulos. Cada pixel seria sombreado duas vezes com peso baricêntrico para
+    /// amostrar um retângulo que já se sabe. O blit visita cada pixel uma vez. Estado que o
+    /// retângulo não cobre continua nos triângulos, para a imagem não mudar.
     pub fn draw_texture(&mut self, x: f32, y: f32, z: f32, width: f32, height: f32) {
+        match self.caminho_do_blit(x, y, z, width, height) {
+            CaminhoSprite::Fora => return,
+            CaminhoSprite::Pronto(sprite) => {
+                self.enfileira_sprite(sprite);
+                return;
+            }
+            CaminhoSprite::Triangulos => {}
+        }
         let Some(texture) = self.textures.get(&self.bound_texture) else {
             return;
         };
@@ -2449,11 +2713,17 @@ impl GlState {
         let start = self.pending.triangles.len();
         self.pending.triangles.append(&mut batch.triangles);
         self.pending.cost += batch.cost;
-        self.pending.jobs.push(Job {
-            first: start,
-            last: self.pending.triangles.len(),
-            // A textura fica pelo nome, não por referência: entre agora e o despejo o jogo
-            // pode ligar outra, e é a deste momento que vale.
+        let last = self.pending.triangles.len();
+        self.pending.jobs.push(self.anota_job(start, last, None));
+    }
+
+    /// O estado do OpenGL que vale para este desenho. A textura fica pelo nome, não por
+    /// referência: entre agora e o despejo o jogo pode ligar outra, e é a deste momento que vale.
+    fn anota_job(&self, first: usize, last: usize, sprite: Option<u32>) -> Job {
+        Job {
+            first,
+            last,
+            sprite,
             texture: match self.texture_2d {
                 true => Some(self.bound_texture),
                 false => None,
@@ -2480,14 +2750,391 @@ impl GlState {
             alpha_test: self.alpha_test,
             alpha_func: self.alpha_func,
             alpha_ref: self.alpha_ref,
-        });
+        }
     }
 
-    /// Pinta tudo que está na fila, dividindo a tela em faixas horizontais quando compensa.
+    fn enfileira_sprite(&mut self, sprite: Sprite) {
+        let area =
+            (sprite.x1 - sprite.x0).max(0) as usize * (sprite.y1 - sprite.y0).max(0) as usize;
+        let id = self.pending.sprites.len() as u32;
+        self.pending.sprites.push(sprite);
+        let at = self.pending.triangles.len();
+        self.pending.jobs.push(self.anota_job(at, at, Some(id)));
+        self.pending.cost += area;
+    }
+
+    /// Uma textura, sem névoa, sem stencil e sem a segunda unidade. O resto do estado cabe
+    /// no retângulo; o que não cabe continua nos triângulos.
+    fn estado_de_sprite(&self) -> bool {
+        if !self.texture_2d
+            || self.lighting
+            || self.unidade1.ligada
+            || self.stencil_test
+            || (self.fog.ligada && self.fog.permitida)
+            || self.color_mask != [true, true, true, true]
+        {
+            return false;
+        }
+        !self.blend
+            || (self.blend_src == gles::GL_SRC_ALPHA
+                && self.blend_dst == gles::GL_ONE_MINUS_SRC_ALPHA)
+    }
+
+    /// Dois triângulos, ou uma faixa de quatro vértices, quando formam um retângulo alinhado
+    /// aos eixos com a textura também alinhada. O jogo 2D manda o sprite assim, e não pelo
+    /// `glDrawTex`: cada pixel do retângulo era sombreado com peso baricêntrico.
+    fn triangulos_ou_retangulos(&mut self, clip: &[Vertex], batch: &mut Batch) {
+        let mut i = 0;
+        while i + 6 <= clip.len() {
+            if let Some(sprite) = self.sprite_de(&clip[i..i + 6]) {
+                self.enqueue(batch);
+                batch.clear();
+                self.enfileira_sprite(sprite);
+                i += 6;
+                continue;
+            }
+            self.triangle([clip[i], clip[i + 1], clip[i + 2]], batch);
+            i += 3;
+        }
+        while i + 3 <= clip.len() {
+            self.triangle([clip[i], clip[i + 1], clip[i + 2]], batch);
+            i += 3;
+        }
+    }
+
+    fn faixa_ou_retangulos(&mut self, clip: &[Vertex], batch: &mut Batch) {
+        let mut i = 0;
+        while i + 3 <= clip.len() {
+            if i + 4 <= clip.len() {
+                // Na faixa o triângulo ímpar troca os dois primeiros vértices. A ordem
+                // aqui é a do triângulo que o descarte de face vê.
+                let quad = if i % 2 == 0 {
+                    [clip[i], clip[i + 1], clip[i + 2], clip[i + 3]]
+                } else {
+                    [clip[i + 1], clip[i], clip[i + 2], clip[i + 3]]
+                };
+                if let Some(sprite) = self.sprite_de(&quad) {
+                    self.enqueue(batch);
+                    batch.clear();
+                    self.enfileira_sprite(sprite);
+                    i += 2;
+                    continue;
+                }
+            }
+            let window = [clip[i], clip[i + 1], clip[i + 2]];
+            if i % 2 == 0 {
+                self.triangle(window, batch);
+            } else {
+                self.triangle([window[1], window[0], window[2]], batch);
+            }
+            i += 1;
+        }
+    }
+
+    /// Quatro cantos de um retângulo na tela, com `s` constante na vertical e `t` na
+    /// horizontal. Perspectiva, z inclinado ou textura girada voltam para os triângulos.
+    fn sprite_de(&self, verts: &[Vertex]) -> Option<Sprite> {
+        if !self.estado_de_sprite() || verts.len() < 3 {
+            return None;
+        }
+        let (vx, vy, vw, vh) = self.viewport_do_topo();
+        if vw <= 0 || vh <= 0 {
+            return None;
+        }
+        let projeta = |v: &Vertex| -> Option<[f32; 4]> {
+            let [x, y, z, w] = v.position;
+            if w <= 1.0e-8 || z + w < 0.0 {
+                return None;
+            }
+            let inv_w = 1.0 / w;
+            let (perto, longe) = self.depth_range;
+            Some([
+                vx as f32 + (x * inv_w * 0.5 + 0.5) * vw as f32,
+                vy as f32 + (0.5 - y * inv_w * 0.5) * vh as f32,
+                perto + (longe - perto) * (z * inv_w * 0.5 + 0.5),
+                inv_w,
+            ])
+        };
+        let a = projeta(&verts[0])?;
+        let b = projeta(&verts[1])?;
+        let c = projeta(&verts[2])?;
+        let area = edge(a, b, c);
+        if area == 0.0 {
+            return None;
+        }
+        let counter_clockwise = area < 0.0;
+        let front = (self.front_face == gles::GL_CCW) == counter_clockwise;
+        if self.cull_face
+            && match self.cull_mode {
+                gles::GL_FRONT => front,
+                gles::GL_FRONT_AND_BACK => true,
+                _ => !front,
+            }
+        {
+            return None;
+        }
+        let perto = |p: f32, q: f32| (p - q).abs() <= 1.0e-4 * (1.0 + p.abs().max(q.abs()));
+        let mut idx = [0usize; 4];
+        let mut n = 0usize;
+        for (i, v) in verts.iter().enumerate() {
+            if let Some(&j) = idx[..n].iter().find(|&&j| {
+                v.position
+                    .iter()
+                    .zip(verts[j].position)
+                    .all(|(p, q)| perto(*p, q))
+            }) {
+                if v.uv[..2]
+                    .iter()
+                    .zip(verts[j].uv[..2].iter())
+                    .any(|(p, q)| !perto(*p, *q))
+                    || v.color.iter().zip(verts[j].color).any(|(p, q)| !perto(*p, q))
+                {
+                    return None;
+                }
+                continue;
+            }
+            if n == 4 {
+                return None;
+            }
+            idx[n] = i;
+            n += 1;
+        }
+        if n != 4 {
+            return None;
+        }
+        let mut tela = [[0.0f32; 4]; 4];
+        for i in 0..4 {
+            tela[i] = projeta(&verts[idx[i]])?;
+        }
+        let (mut min_x, mut max_x) = (f32::MAX, f32::MIN);
+        let (mut min_y, mut max_y) = (f32::MAX, f32::MIN);
+        for p in &tela {
+            min_x = min_x.min(p[0]);
+            max_x = max_x.max(p[0]);
+            min_y = min_y.min(p[1]);
+            max_y = max_y.max(p[1]);
+        }
+        if max_x - min_x < 1.0e-3 || max_y - min_y < 1.0e-3 {
+            return None;
+        }
+        let na_borda = |v: f32, lo: f32, hi: f32| (v - lo).abs() <= 0.05 || (v - hi).abs() <= 0.05;
+        if tela
+            .iter()
+            .any(|p| !na_borda(p[0], min_x, max_x) || !na_borda(p[1], min_y, max_y))
+        {
+            return None;
+        }
+        let canto = |direita: bool, baixo: bool| {
+            let x = if direita { max_x } else { min_x };
+            let y = if baixo { max_y } else { min_y };
+            tela.iter()
+                .position(|p| (p[0] - x).abs() <= 0.05 && (p[1] - y).abs() <= 0.05)
+        };
+        let tl = canto(false, false)?;
+        let tr = canto(true, false)?;
+        let bl = canto(false, true)?;
+        let br = canto(true, true)?;
+        if tl == tr || tl == bl || tr == br || bl == br {
+            return None;
+        }
+        let cor = verts[idx[tl]].color;
+        if [tr, bl, br]
+            .iter()
+            .any(|&i| verts[idx[i]].color.iter().zip(cor).any(|(p, q)| !perto(*p, q)))
+        {
+            return None;
+        }
+        let uv = |i: usize| verts[idx[i]].uv;
+        let (s_tl, t_tl) = (uv(tl)[0], uv(tl)[1]);
+        let (s_tr, t_tr) = (uv(tr)[0], uv(tr)[1]);
+        let (s_bl, t_bl) = (uv(bl)[0], uv(bl)[1]);
+        let (s_br, t_br) = (uv(br)[0], uv(br)[1]);
+        // O quarto canto tem de fechar o paralelogramo. Se não fechar, a textura está
+        // em perspectiva e o retângulo não a reproduz.
+        let cruza = |a: f32, b: f32, c: f32, d: f32| (a + d - b - c).abs() > 1.0e-3;
+        if cruza(s_tl, s_tr, s_bl, s_br) || cruza(t_tl, t_tr, t_bl, t_br) {
+            return None;
+        }
+        let (ds, ds_y) = (s_tr - s_tl, s_bl - s_tl);
+        let (dt_x, dt) = (t_tr - t_tl, t_bl - t_tl);
+        let z = tela[tl][2];
+        let invw = tela[tl][3];
+        if tela.iter().any(|p| !perto(p[2], z) || !perto(p[3], invw)) {
+            return None;
+        }
+        let mut x0 = (min_x - 0.5).ceil() as i32;
+        let mut x1 = (max_x - 0.5).ceil() as i32;
+        let mut y0 = (min_y - 0.5).ceil() as i32;
+        let mut y1 = (max_y - 0.5).ceil() as i32;
+        x0 = x0.max(vx).max(0);
+        x1 = x1.min(vx + vw).min(self.width as i32);
+        y0 = y0.max(vy).max(0);
+        y1 = y1.min(vy + vh).min(self.height as i32);
+        if let Some((tx, ty, tw_, th_)) = self.tesoura {
+            x0 = x0.max(tx);
+            x1 = x1.min(tx + tw_);
+            y0 = y0.max(ty);
+            y1 = y1.min(ty + th_);
+        }
+        if x0 >= x1 || y0 >= y1 {
+            return None;
+        }
+        let Some(texture) = self.textures.get(&self.bound_texture) else {
+            return None;
+        };
+        let (tw, th) = (texture.width as f32, texture.height as f32);
+        if tw == 0.0 || th == 0.0 {
+            return None;
+        }
+        let inv_w = 1.0 / (max_x - min_x);
+        let inv_h = 1.0 / (max_y - min_y);
+        let pegada = |du: f32, dv: f32| {
+            let quadrado = du * du + dv * dv;
+            if quadrado > 1.0 {
+                quadrado.log2() * 0.5
+            } else {
+                0.0
+            }
+        };
+        let alinhada = ds_y.abs() < 1.0e-5 && dt_x.abs() < 1.0e-5;
+        Some(Sprite {
+            x0,
+            y0,
+            x1,
+            y1,
+            left: min_x,
+            top: min_y,
+            inv_w,
+            inv_h,
+            s0: s_tl,
+            ds,
+            ds_y,
+            t_topo: t_tl,
+            dt_x,
+            dt,
+            lod: pegada(ds * tw * inv_w, dt_x * th * inv_w)
+                .max(pegada(ds_y * tw * inv_h, dt * th * inv_h)),
+            z,
+            textura: self.bound_texture,
+            cor,
+            env: self.texture_env,
+            mistura: self.blend,
+            alfa: self.alpha_test,
+            alpha_func: self.alpha_func,
+            alpha_ref: self.alpha_ref,
+            depth_test: self.depth_test,
+            depth_mask: self.depth_mask,
+            depth_func: self.depth_func,
+            copia: alinhada.then(|| {
+                copia_direta(
+                    texture, min_x, min_y, inv_w, inv_h, s_tl, ds, t_tl, dt, x0, y0, x1, y1,
+                )
+            }).flatten(),
+        })
+    }
+
+    /// O blit vira retângulo quando o estado é o de um sprite. `Fora` é um desenho que não
+    /// pinta nada; `Triangulos` devolve o caminho que já existia.
+    fn caminho_do_blit(&self, x: f32, y: f32, z: f32, width: f32, height: f32) -> CaminhoSprite {
+        if !self.estado_de_sprite() || !z.is_finite() || z < 0.0 {
+            return CaminhoSprite::Triangulos;
+        }
+        let Some(texture) = self.textures.get(&self.bound_texture) else {
+            return CaminhoSprite::Fora;
+        };
+        let (tw, th) = (texture.width as f32, texture.height as f32);
+        if tw == 0.0 || th == 0.0 || width == 0.0 || height == 0.0 || !x.is_finite() || !y.is_finite()
+        {
+            return CaminhoSprite::Fora;
+        }
+        let [ucr, vcr, mut wcr, mut hcr] = texture.crop.map(|value| value as f32);
+        if wcr == 0.0 && hcr == 0.0 {
+            wcr = tw;
+            hcr = th;
+        }
+        let (vx, vy, vw, vh) = self.viewport_do_topo();
+        if vw <= 0 || vh <= 0 {
+            return CaminhoSprite::Fora;
+        }
+        let surface_height = self.surface().1 as f32;
+        let left = x;
+        let right = x + width;
+        let top = surface_height - y - height;
+        let bottom = surface_height - y;
+        if !left.is_finite() || !right.is_finite() || !top.is_finite() || !bottom.is_finite() {
+            return CaminhoSprite::Triangulos;
+        }
+        let mut x0 = (left.min(right) - 0.5).ceil() as i32;
+        let mut x1 = (left.max(right) - 0.5).ceil() as i32;
+        let mut y0 = (top.min(bottom) - 0.5).ceil() as i32;
+        let mut y1 = (top.max(bottom) - 0.5).ceil() as i32;
+        x0 = x0.max(vx).max(0);
+        x1 = x1.min(vx + vw).min(self.width as i32);
+        y0 = y0.max(vy).max(0);
+        y1 = y1.min(vy + vh).min(self.height as i32);
+        if let Some((tx, ty, tw_, th_)) = self.tesoura {
+            x0 = x0.max(tx);
+            x1 = x1.min(tx + tw_);
+            y0 = y0.max(ty);
+            y1 = y1.min(ty + th_);
+        }
+        if x0 >= x1 || y0 >= y1 {
+            return CaminhoSprite::Fora;
+        }
+        let inv_w = 1.0 / (right - left);
+        let inv_h = 1.0 / (bottom - top);
+        let s0 = ucr / tw;
+        let ds = wcr / tw;
+        let t_topo = (vcr + hcr) / th;
+        let dt = -hcr / th;
+        let du = ds * tw * inv_w;
+        let dv = dt * th * inv_h;
+        let pegada = |delta: f32| {
+            let quadrado = delta * delta;
+            if quadrado > 1.0 {
+                quadrado.log2() * 0.5
+            } else {
+                0.0
+            }
+        };
+        let (perto, longe) = self.depth_range;
+        let cor = self.current_color();
+        CaminhoSprite::Pronto(Sprite {
+            x0,
+            y0,
+            x1,
+            y1,
+            left,
+            top,
+            inv_w,
+            inv_h,
+            s0,
+            ds,
+            ds_y: 0.0,
+            t_topo,
+            dt_x: 0.0,
+            dt,
+            lod: pegada(du).max(pegada(dv)),
+            z: perto + (longe - perto) * z,
+            textura: self.bound_texture,
+            cor,
+            env: self.texture_env,
+            mistura: self.blend,
+            alfa: self.alpha_test,
+            alpha_func: self.alpha_func,
+            alpha_ref: self.alpha_ref,
+            depth_test: self.depth_test,
+            depth_mask: self.depth_mask,
+            depth_func: self.depth_func,
+            copia: copia_direta(texture, left, top, inv_w, inv_h, s0, ds, t_topo, dt, x0, y0, x1, y1),
+        })
+    }
+
+    /// Pinta tudo que está na fila.
     ///
-    /// Cada faixa é um pedaço exclusivo do quadro e percorre a fila inteira na ordem em que o
-    /// jogo desenhou, então a transparência empilha na mesma sequência e o resultado é o mesmo
-    /// que o de uma thread só.
+    /// Cada triângulo entra só nos blocos que a caixa dele toca, e entra na ordem em que o
+    /// jogo desenhou. Dentro do bloco a transparência e as camadas no mesmo z empilham como
+    /// numa thread só. Blocos não dividem pixel, então os núcleos não precisam combiná-los.
     ///
     /// Precisa ser chamado antes de qualquer coisa que leia o quadro ou mude uma textura que a
     /// fila mencione — apresentar, limpar, trocar de superfície, carregar ou apagar textura.
@@ -2498,9 +3145,10 @@ impl GlState {
         self.sujo = true;
         // Separar os campos permite ler as texturas e escrever no quadro ao mesmo tempo.
         let Self {
-            color,
-            depth,
+            quadro,
             stencil,
+            blocos_x,
+            caixas,
             textures,
             width,
             height,
@@ -2508,51 +3156,95 @@ impl GlState {
             ..
         } = self;
         let (width, height) = (*width, *height);
-        let (jobs, triangles) = (&pending.jobs, &pending.triangles);
+        let blocos_x = *blocos_x;
+        let blocos_y = height.div_ceil(LADO_DO_BLOCO);
+        let ntiles = blocos_x.saturating_mul(blocos_y);
+        if ntiles == 0 || quadro.is_empty() {
+            pending.clear();
+            return;
+        }
+        if caixas.len() < ntiles {
+            caixas.resize_with(ntiles, Vec::new);
+        }
+        for caixa in caixas.iter_mut().take(ntiles) {
+            caixa.clear();
+        }
+        reparte(
+            &mut caixas[..ntiles],
+            &pending.jobs,
+            &pending.triangles,
+            &pending.sprites,
+            blocos_x,
+            width,
+            height,
+        );
 
-        let bands = bands(height);
-        if bands < 2 || pending.cost < PARALLEL_COST {
-            let mut band = Band {
-                top: 0,
-                color,
-                depth,
+        let (jobs, triangles, sprites) = (&pending.jobs, &pending.triangles, &pending.sprites);
+        let nucleos = nucleos_do_quadro(ntiles, pending.cost);
+        if nucleos < 2 {
+            pinta_blocos(
+                quadro,
                 stencil,
-            };
-            for job in jobs {
-                let uniforms = job.uniforms(textures, width);
-                for tri in &triangles[job.first..job.last] {
-                    fill_band(tri, &uniforms, &mut band);
-                }
-            }
+                &caixas[..ntiles],
+                0,
+                blocos_x,
+                width,
+                height,
+                jobs,
+                triangles,
+                sprites,
+                textures,
+            );
             pending.clear();
             return;
         }
 
-        let rows = height.div_ceil(bands);
+        let lado2 = PIXELS_DO_BLOCO;
+        let por = ntiles.div_ceil(nucleos);
         std::thread::scope(|scope| {
-            let mut top = 0i32;
-            for ((color, depth), stencil) in color
-                .chunks_mut(rows * width)
-                .zip(depth.chunks_mut(rows * width))
-                .zip(stencil.chunks_mut(rows * width))
+            let mut nucleo = 0usize;
+            let mut tile0 = 0usize;
+            for ((pixels, stencil), caixas) in quadro
+                .chunks_mut(por * lado2)
+                .zip(stencil.chunks_mut(por * lado2))
+                .zip(caixas[..ntiles].chunks(por))
             {
-                let band_top = top;
-                top += (color.len() / width) as i32;
+                let inicio = tile0;
+                tile0 += caixas.len();
+                let qual = nucleo;
+                nucleo += 1;
                 let textures = &*textures;
-                scope.spawn(move || {
-                    let mut band = Band {
-                        top: band_top,
-                        color,
-                        depth,
+                let trabalho = move || {
+                    // Sem isto as três threads nascem com máscara 0 e o kernel
+                    // as deixa no núcleo de quem criou — o mesmo do interpretador.
+                    #[cfg(target_os = "vita")]
+                    afinidade_vita(qual);
+                    #[cfg(not(target_os = "vita"))]
+                    let _ = qual;
+                    pinta_blocos(
+                        pixels,
                         stencil,
-                    };
-                    for job in jobs {
-                        let uniforms = job.uniforms(textures, width);
-                        for tri in &triangles[job.first..job.last] {
-                            fill_band(tri, &uniforms, &mut band);
-                        }
-                    }
-                });
+                        caixas,
+                        inicio,
+                        blocos_x,
+                        width,
+                        height,
+                        jobs,
+                        triangles,
+                        sprites,
+                        textures,
+                    );
+                };
+                // A std pede 2 MiB de pilha. Na Vita cada `flush` cria as threads
+                // de novo, e 2 MiB vezes três é alocação do kernel a cada quadro
+                // desenhado. 128 KiB cabe no preenchimento, que não recursa.
+                #[cfg(target_os = "vita")]
+                std::thread::Builder::new()
+                    .stack_size(128 * 1024)
+                    .spawn_scoped(scope, trabalho)
+                    .expect("a Vita recusou a thread do preenchimento");
+                #[cfg(not(target_os = "vita"))]
+                scope.spawn(trabalho);
             }
         });
         pending.clear();
@@ -2603,9 +3295,9 @@ impl GlState {
                         continue;
                     }
                     let [r, g, b] = expande(new, offset);
-                    let index = y * self.width + x;
+                    let pixel = self.pixel_mut(x, y);
+                    pixel.cor = [r, g, b, pixel.cor[3]];
                     self.sujo = true;
-                    self.color[index] = [r, g, b, self.color[index][3]];
                 }
             }
             return;
@@ -2617,9 +3309,9 @@ impl GlState {
                     continue;
                 }
                 let [r, g, b] = expande(new, offset);
-                let index = y * self.width + x;
+                let pixel = self.pixel_mut(x, y);
+                pixel.cor = [r, g, b, pixel.cor[3]];
                 self.sujo = true;
-                self.color[index] = [r, g, b, self.color[index][3]];
             }
         }
     }
@@ -2638,6 +3330,11 @@ impl GlState {
     /// **O caminho sem escala é separado de propósito.** Quando o pedido tem o tamanho da
     /// superfície — que é o caso normal —, as duas divisões por pixel do laço geral somam mais
     /// de quatrocentas mil divisões inteiras por chamada, e elas custavam mais que a conversão.
+    ///
+    /// Mesmo sem escala, `pixel` conferia o índice do `Vec` a cada pixel e saltava de bloco em
+    /// bloco. Uma linha de bloco são 32 pixels contíguos: a leitura anda nessa fatia. E
+    /// `clear` + `resize` zerava o buffer inteiro antes de reescrevê-lo — meio megabyte por
+    /// quadro, jogado fora em seguida.
     pub fn frame_rgb565(&mut self, width: usize, height: usize, out: &mut Vec<u8>) {
         self.flush();
         // Quadro igual ao que já está em `out`: não há o que reconverter. Ver [`GlState::sujo`].
@@ -2645,25 +3342,23 @@ impl GlState {
             return;
         }
         let (sw, sh) = self.surface();
-        out.clear();
-        out.resize(width * height * 2, 0);
-        let converte = |p: [u8; 4]| {
-            ((p[0] as u16 >> 3) << 11) | ((p[1] as u16 >> 2) << 5) | (p[2] as u16 >> 3)
-        };
+        if out.len() != width * height * 2 {
+            out.resize(width * height * 2, 0);
+        }
         // Escreve numa fatia já dimensionada. Antes era um `extend` por pixel, e no caminho de
         // escala isso é uma ida ao `Vec` para cada dois bytes.
         if sw == width && sh == height {
             for (y, saida) in out.chunks_exact_mut(width * 2).enumerate() {
-                let linha = &self.color[y * self.width..y * self.width + width];
-                for (pixel, par) in linha.iter().zip(saida.chunks_exact_mut(2)) {
-                    par.copy_from_slice(&converte(*pixel).to_le_bytes());
-                }
+                self.visita_linha_nativa(y, width, |x, cor| {
+                    let i = x * 2;
+                    saida[i..i + 2].copy_from_slice(&cor_565(cor).to_le_bytes());
+                });
             }
         } else {
             for (y, saida) in out.chunks_exact_mut(width * 2).enumerate() {
-                let linha = &self.color[(y * sh / height) * self.width..][..self.width];
+                let sy = y * sh / height;
                 for (x, par) in saida.chunks_exact_mut(2).enumerate() {
-                    par.copy_from_slice(&converte(linha[x * sw / width]).to_le_bytes());
+                    par.copy_from_slice(&cor_565(self.pixel(x * sw / width, sy).cor).to_le_bytes());
                 }
             }
         }
@@ -2677,27 +3372,43 @@ impl GlState {
             return;
         }
         let (sw, sh) = self.surface();
-        out.clear();
-        out.resize(width * height, 0);
-        let converte = |p: [u8; 4]| {
-            ((p[0] as u16 >> 3) << 11) | ((p[1] as u16 >> 2) << 5) | (p[2] as u16 >> 3)
-        };
+        if out.len() != width * height {
+            out.resize(width * height, 0);
+        }
         if sw == width && sh == height {
-            for (saida, &pixel) in out.iter_mut().zip(&self.color) {
-                *saida = converte(pixel);
+            for y in 0..height {
+                let linha = &mut out[y * width..(y + 1) * width];
+                self.visita_linha_nativa(y, width, |x, cor| linha[x] = cor_565(cor));
             }
         } else {
             for y in 0..height {
-                let linha = &self.color[(y * sh / height) * self.width..][..self.width];
+                let sy = y * sh / height;
                 for x in 0..width {
-                    out[y * width + x] = converte(linha[x * sw / width]);
+                    out[y * width + x] = cor_565(self.pixel(x * sw / width, sy).cor);
                 }
             }
         }
         self.sujo = false;
     }
 
-#[cfg(test)]
+    /// Uma linha do quadro nativo, bloco a bloco. Dentro do bloco os 32 pixels são contíguos.
+    fn visita_linha_nativa(&self, y: usize, width: usize, mut grava: impl FnMut(usize, [u8; 4])) {
+        let ly = y % LADO_DO_BLOCO;
+        let ty = y / LADO_DO_BLOCO;
+        let mut x = 0;
+        let mut tx = 0;
+        while x < width {
+            let n = (width - x).min(LADO_DO_BLOCO);
+            let base = (ty * self.blocos_x + tx) * PIXELS_DO_BLOCO + ly * LADO_DO_BLOCO;
+            for (i, pixel) in self.quadro[base..base + n].iter().enumerate() {
+                grava(x + i, pixel.cor);
+            }
+            x += n;
+            tx += 1;
+        }
+    }
+
+    #[cfg(test)]
     pub fn present(&mut self, width: usize, height: usize) -> Vec<u16> {
         // Entregar o quadro é o ponto em que ele precisa estar pintado — quem pede o resultado
         // não tem por que saber que o desenho é acumulado.
@@ -2707,7 +3418,7 @@ impl GlState {
         for y in 0..height {
             let sy = y * sh / height;
             for x in 0..width {
-                let p = self.color[sy * self.width + x * sw / width];
+                let p = self.pixel(x * sw / width, sy).cor;
                 out[y * width + x] =
                     ((p[0] as u16 >> 3) << 11) | ((p[1] as u16 >> 2) << 5) | (p[2] as u16 >> 3);
             }
@@ -2727,31 +3438,940 @@ const MAX_MATRIX_STACK: usize = 16;
 /// custa junta uma fração do total.
 const PARALLEL_COST: usize = 64_000;
 
-/// Altura mínima de uma faixa, em linhas.
+/// Quantos núcleos acordar para um quadro já repartido em blocos.
 ///
-/// Ela é o **teto real de paralelismo em superfícies baixas**, e não um detalhe de afinação: com
-/// as quarenta linhas de antes, o palco de 640x330 da Z-Wheel dava `330 / 40 = 8` faixas, e numa
-/// máquina de 24 núcleos dois terços dela ficavam parados durante todo o preenchimento.
-///
-/// Medido, tempo de `flush` na Z-Wheel em treze segundos virtuais: 2474 ms com 40 linhas, 1938
-/// com 16, 1868 com 8. E na pista do Crash, em trinta segundos virtuais, o total de API foi de
-/// 4637 para 3842 e 3622 ms nos mesmos cortes — quem temia que faixas finas custassem caro numa
-/// superfície de 480 linhas estava enganado, porque ali o número de faixas esbarra no número de
-/// núcleos antes de esbarrar nesta constante.
-///
-/// O preparo por faixa existe e cresce quando ela afina — é por isso que há um piso —, mas até
-/// oito linhas ele continua menor que o trabalho que a faixa ganha.
-const MIN_BAND_ROWS: usize = 8;
+/// Abaixo de [`PARALLEL_COST`] o preenchimento acaba antes de as threads acordarem. Com um
+/// bloco só não há o que dividir.
+fn nucleos_do_quadro(blocos: usize, cost: usize) -> usize {
+    if blocos < 2 || cost < PARALLEL_COST {
+        return 1;
+    }
+    nucleos_do_preenchimento().min(blocos)
+}
 
-/// Em quantas faixas horizontais dividir um quadro de `height` linhas.
-fn bands(height: usize) -> usize {
-    static CORES: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    let cores = *CORES.get_or_init(|| {
-        std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1)
-    });
-    cores.min(height / MIN_BAND_ROWS).max(1)
+/// O que entrou num bloco, na ordem em que o jogo desenhou.
+#[derive(Clone, Copy)]
+enum Desenho {
+    Tri(u32),
+    Sprite(u32),
+}
+
+enum CaminhoSprite {
+    /// Não pinta: recorte vazio, textura ausente ou tamanho zero.
+    Fora,
+    Pronto(Sprite),
+    /// Estado que o retângulo não cobre. O `glDrawTex` segue nos dois triângulos.
+    Triangulos,
+}
+
+/// Cópia direta quando cada pixel cai num texel inteiro e o vizinho é o texel ao lado.
+///
+/// Ampliar, reduzir ou cair no meio de um texel continua na amostragem. Os quatro cantos
+/// visíveis têm de caber na textura: repetir ou prender a borda não é uma cópia.
+fn copia_direta(
+    texture: &Texture,
+    left: f32,
+    top: f32,
+    inv_w: f32,
+    inv_h: f32,
+    s0: f32,
+    ds: f32,
+    t_topo: f32,
+    dt: f32,
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+) -> Option<Copia> {
+    let tw = texture.width as f32;
+    let th = texture.height as f32;
+    let passo = |v: f32| {
+        let arred = v.round();
+        if (v - arred).abs() > 1.0e-3 || (arred != 1.0 && arred != -1.0) {
+            None
+        } else {
+            Some(arred as i32)
+        }
+    };
+    let inteiro = |v: f32| {
+        let arred = v.round();
+        if !v.is_finite() || (v - arred).abs() > 1.0e-3 {
+            None
+        } else {
+            Some(arred as i32)
+        }
+    };
+    let passo_x = passo(ds * tw * inv_w)?;
+    let passo_y = passo(dt * th * inv_h)?;
+    let texel = |x: i32, y: i32| {
+        let u = s0 + ds * ((x as f32 + 0.5 - left) * inv_w);
+        let v = t_topo + dt * ((y as f32 + 0.5 - top) * inv_h);
+        Some((inteiro(u * tw - 0.5)?, inteiro(v * th - 0.5)?))
+    };
+    let (tex_x, tex_y) = texel(x0, y0)?;
+    let copia = Copia {
+        tex_x,
+        passo_x,
+        x_ref: x0,
+        tex_y,
+        passo_y,
+        y_ref: y0,
+    };
+    let dentro = |x: i32, y: i32| {
+        let tx = copia.tex_x + copia.passo_x * (x - copia.x_ref);
+        let ty = copia.tex_y + copia.passo_y * (y - copia.y_ref);
+        tx >= 0 && ty >= 0 && tx < texture.width as i32 && ty < texture.height as i32
+    };
+    let ultimo_x = x1 - 1;
+    let ultimo_y = y1 - 1;
+    if dentro(x0, y0) && dentro(ultimo_x, y0) && dentro(x0, ultimo_y) && dentro(ultimo_x, ultimo_y) {
+        Some(copia)
+    } else {
+        None
+    }
+}
+
+/// Põe cada desenho nos blocos que a caixa dele toca, na ordem da fila.
+fn reparte(
+    caixas: &mut [Vec<Desenho>],
+    jobs: &[Job],
+    triangles: &[Prepared],
+    sprites: &[Sprite],
+    blocos_x: usize,
+    width: usize,
+    height: usize,
+) {
+    let ultimo_bloco_x = width.div_ceil(LADO_DO_BLOCO).saturating_sub(1);
+    let ultimo_bloco_y = height.div_ceil(LADO_DO_BLOCO).saturating_sub(1);
+    let empurra = |caixas: &mut [Vec<Desenho>], x0: usize, y0: usize, x1: usize, y1: usize, desenho: Desenho| {
+        let x0 = x0.min(ultimo_bloco_x);
+        let x1 = x1.min(ultimo_bloco_x);
+        let y0 = y0.min(ultimo_bloco_y);
+        let y1 = y1.min(ultimo_bloco_y);
+        if x0 > x1 || y0 > y1 {
+            return;
+        }
+        for ty in y0..=y1 {
+            for tx in x0..=x1 {
+                caixas[ty * blocos_x + tx].push(desenho);
+            }
+        }
+    };
+    for job in jobs {
+        if let Some(id) = job.sprite {
+            let Some(sprite) = sprites.get(id as usize) else {
+                continue;
+            };
+            if sprite.x0 >= sprite.x1 || sprite.y0 >= sprite.y1 || sprite.x1 <= 0 || sprite.y1 <= 0 {
+                continue;
+            }
+            let x0 = (sprite.x0.max(0) as usize) / LADO_DO_BLOCO;
+            let y0 = (sprite.y0.max(0) as usize) / LADO_DO_BLOCO;
+            let x1 = (sprite.x1 as usize - 1) / LADO_DO_BLOCO;
+            let y1 = (sprite.y1 as usize - 1) / LADO_DO_BLOCO;
+            empurra(caixas, x0, y0, x1, y1, Desenho::Sprite(id));
+            continue;
+        }
+        for i in job.first..job.last {
+            let tri = &triangles[i];
+            if tri.max_x <= tri.min_x || tri.max_y <= tri.min_y || tri.max_x <= 0 || tri.max_y <= 0 {
+                continue;
+            }
+            let x0 = (tri.min_x.max(0) as usize) / LADO_DO_BLOCO;
+            let y0 = (tri.min_y.max(0) as usize) / LADO_DO_BLOCO;
+            let x1 = (tri.max_x as usize - 1) / LADO_DO_BLOCO;
+            let y1 = (tri.max_y as usize - 1) / LADO_DO_BLOCO;
+            empurra(caixas, x0, y0, x1, y1, Desenho::Tri(i as u32));
+        }
+    }
+}
+
+/// Pinta os blocos `tile0..`, cada um só com os triângulos da caixa dele.
+fn pinta_blocos(
+    pixels: &mut [Pixel],
+    stencil: &mut [u8],
+    caixas: &[Vec<Desenho>],
+    tile0: usize,
+    blocos_x: usize,
+    width: usize,
+    height: usize,
+    jobs: &[Job],
+    triangles: &[Prepared],
+    sprites: &[Sprite],
+    textures: &HashMap<u32, Texture>,
+) {
+    for (k, caixa) in caixas.iter().enumerate() {
+        if caixa.is_empty() {
+            continue;
+        }
+        let tile = tile0 + k;
+        let tx = tile % blocos_x;
+        let ty = tile / blocos_x;
+        let x0 = (tx * LADO_DO_BLOCO) as i32;
+        let y0 = (ty * LADO_DO_BLOCO) as i32;
+        let largura = (width - x0 as usize).min(LADO_DO_BLOCO) as i32;
+        let altura = (height - y0 as usize).min(LADO_DO_BLOCO) as i32;
+        let inicio = k * PIXELS_DO_BLOCO;
+        let mut bloco = Bloco {
+            x0,
+            y0,
+            largura,
+            altura,
+            pixels: &mut pixels[inicio..inicio + PIXELS_DO_BLOCO],
+            stencil: &mut stencil[inicio..inicio + PIXELS_DO_BLOCO],
+        };
+        // Os índices crescem com a fila, então o job só anda para a frente.
+        // Um blit entra no meio da fila e não tem triângulo: pintá-lo aqui preserva a
+        // ordem do pintor com o que veio antes e com o que vem depois.
+        let mut cursor = 0;
+        let mut job_i = 0;
+        while cursor < caixa.len() {
+            match caixa[cursor] {
+                Desenho::Sprite(id) => {
+                    if let Some(sprite) = sprites.get(id as usize) {
+                        pinta_sprite(sprite, textures, &mut bloco);
+                    }
+                    cursor += 1;
+                }
+                Desenho::Tri(ti) => {
+                    let ti = ti as usize;
+                    while job_i < jobs.len()
+                        && (jobs[job_i].sprite.is_some() || jobs[job_i].last <= ti)
+                    {
+                        job_i += 1;
+                    }
+                    if job_i >= jobs.len() {
+                        cursor += 1;
+                        continue;
+                    }
+                    let job = &jobs[job_i];
+                    let uniforms = job.uniforms(textures);
+                    while cursor < caixa.len() {
+                        let Desenho::Tri(ti) = caixa[cursor] else {
+                            break;
+                        };
+                        let ti = ti as usize;
+                        // Os jobs cobrem a fila sem buraco: o `first` do próximo é o `last` deste.
+                        // Um índice antes do job atual não pertence a ele.
+                        if ti < job.first {
+                            cursor += 1;
+                            continue;
+                        }
+                        if ti >= job.last {
+                            break;
+                        }
+                        fill_band(&triangles[ti], &uniforms, &mut bloco);
+                        cursor += 1;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Pinta a parte do blit que cai neste bloco.
+fn pinta_sprite(sprite: &Sprite, textures: &HashMap<u32, Texture>, bloco: &mut Bloco<'_>) {
+    let x0 = sprite.x0.max(bloco.x0);
+    let y0 = sprite.y0.max(bloco.y0);
+    let x1 = sprite.x1.min(bloco.x0 + bloco.largura);
+    let y1 = sprite.y1.min(bloco.y0 + bloco.altura);
+    if x0 >= x1 || y0 >= y1 {
+        return;
+    }
+    let Some(texture) = textures.get(&sprite.textura) else {
+        return;
+    };
+    if texture.width == 0 || texture.height == 0 {
+        return;
+    }
+    // `REPLACE` e `MODULATE` saem em inteiro. O amostrador em flutuante, no Cortex-A9,
+    // troca de pipeline a cada pixel — foi o que sobrou depois que o retângulo tirou o
+    // peso baricêntrico e o quadro só foi de 10 para 12.
+    if let Some(fator) = fatores_u8(sprite) {
+        if let Some(copia) = sprite.copia {
+            if fator == [255; 4] && !sprite.mistura && !sprite.alfa && !sprite.depth_test {
+                for y in y0..y1 {
+                    let ty = copia.tex_y + copia.passo_y * (y - copia.y_ref);
+                    let origem = ty as usize * texture.width;
+                    // `x` anda dentro do bloco, então o índice do quadro é sequencial.
+                // Recalcular `no_bloco` a cada pixel refazia a mesma conta.
+                let mut index = no_bloco(bloco, x0, y);
+                let mut tx = copia.tex_x + copia.passo_x * (x0 - copia.x_ref);
+                for _ in x0..x1 {
+                    bloco.pixels[index].cor = texture.pixels[origem + tx as usize];
+                    index += 1;
+                    tx += copia.passo_x;
+                }
+                }
+                return;
+            }
+            for y in y0..y1 {
+                let ty = copia.tex_y + copia.passo_y * (y - copia.y_ref);
+                let origem = ty as usize * texture.width;
+                for x in x0..x1 {
+                    let tx = copia.tex_x + copia.passo_x * (x - copia.x_ref);
+                    deposita_u8(
+                        sprite,
+                        bloco,
+                        x,
+                        y,
+                        aplica_u8(texture.pixels[origem + tx as usize], fator),
+                    );
+                }
+            }
+            return;
+        }
+        if let Some(suave) = filtro_inteiro(texture, sprite.lod) {
+            pinta_inteiro(sprite, texture, bloco, x0, y0, x1, y1, fator, suave);
+            return;
+        }
+    }
+    for y in y0..y1 {
+        let fy = (y as f32 + 0.5 - sprite.top) * sprite.inv_h;
+        for x in x0..x1 {
+            let fx = (x as f32 + 0.5 - sprite.left) * sprite.inv_w;
+            let u = sprite.s0 + sprite.ds * fx + sprite.ds_y * fy;
+            let v = sprite.t_topo + sprite.dt_x * fx + sprite.dt * fy;
+            escreve_sprite(sprite, bloco, x, y, texture.sample_lod(u, v, sprite.lod));
+        }
+    }
+}
+
+/// Nível zero, sem misturar dois mipmaps. `Some(true)` é interpolação.
+fn filtro_inteiro(texture: &Texture, lod: f32) -> Option<bool> {
+    if lod > 0.0 && texture.niveis() > 1 {
+        return None;
+    }
+    let suave = if lod <= 0.0 {
+        texture.filter == gles::GL_LINEAR
+    } else {
+        !matches!(
+            texture.min_filter,
+            gles::GL_NEAREST | gles::GL_NEAREST_MIPMAP_NEAREST | gles::GL_NEAREST_MIPMAP_LINEAR
+        )
+    };
+    Some(suave)
+}
+
+fn fatores_u8(sprite: &Sprite) -> Option<[u32; 4]> {
+    match sprite.env.modo {
+        gles::GL_REPLACE => Some([255; 4]),
+        gles::GL_MODULATE => Some(std::array::from_fn(|c| {
+            (sprite.cor[c].clamp(0.0, 1.0) * 255.0 + 0.5) as u32
+        })),
+        _ => None,
+    }
+}
+
+fn aplica_u8(texel: [u8; 4], fator: [u32; 4]) -> [u8; 4] {
+    if fator == [255; 4] {
+        return texel;
+    }
+    std::array::from_fn(|c| ((texel[c] as u32 * fator[c] + 127) / 255) as u8)
+}
+
+fn mistura_u8(src: [u8; 4], dst: [u8; 4]) -> [u8; 4] {
+    let a = src[3] as u32;
+    let inv = 255 - a;
+    std::array::from_fn(|c| ((src[c] as u32 * a + dst[c] as u32 * inv + 127) / 255) as u8)
+}
+
+fn deposita_u8(sprite: &Sprite, bloco: &mut Bloco<'_>, x: i32, y: i32, src: [u8; 4]) {
+    if sprite.alfa && !compare(sprite.alpha_func, src[3] as f32 / 255.0, sprite.alpha_ref) {
+        return;
+    }
+    let index = no_bloco(bloco, x, y);
+    if sprite.depth_test && !passa_z(sprite.depth_func, sprite.z, le_z(&bloco.pixels[index])) {
+        return;
+    }
+    if sprite.mistura {
+        match src[3] {
+            0 => {}
+            255 => bloco.pixels[index].cor = src,
+            _ => bloco.pixels[index].cor = mistura_u8(src, bloco.pixels[index].cor),
+        }
+    } else {
+        bloco.pixels[index].cor = src;
+    }
+    if sprite.depth_test && sprite.depth_mask {
+        poe_z(&mut bloco.pixels[index], sprite.z);
+    }
+}
+
+/// Profundidade positiva compara pelos bits. `z` de janela fica em `0..1`, e uma
+/// comparação em flutuante no meio do blit troca o pipeline do Cortex-A9.
+fn passa_z(func: u32, z: f32, atual: u32) -> bool {
+    let z = z.to_bits();
+    if (z | atual) & 0x8000_0000 != 0 {
+        return compare(func, f32::from_bits(z), f32::from_bits(atual));
+    }
+    match func {
+        gles::GL_NEVER => false,
+        gles::GL_LESS => z < atual,
+        gles::GL_EQUAL => z == atual,
+        gles::GL_LEQUAL => z <= atual,
+        gles::GL_GREATER => z > atual,
+        gles::GL_NOTEQUAL => z != atual,
+        gles::GL_GEQUAL => z >= atual,
+        gles::GL_ALWAYS => true,
+        _ => compare(func, f32::from_bits(z), f32::from_bits(atual)),
+    }
+}
+
+fn le_z(pixel: &Pixel) -> u32 {
+    unsafe { std::ptr::addr_of!(pixel.z).cast::<u32>().read_unaligned() }
+}
+
+fn poe_z(pixel: &mut Pixel, z: f32) {
+    unsafe {
+        std::ptr::addr_of_mut!(pixel.z)
+            .cast::<u32>()
+            .write_unaligned(z.to_bits());
+    }
+}
+
+/// Vizinho ou interpolação em ponto fixo 16.16. O passo é constante no retângulo,
+/// então a linha não volta para o flutuante.
+fn pinta_inteiro(
+    sprite: &Sprite,
+    texture: &Texture,
+    bloco: &mut Bloco<'_>,
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+    fator: [u32; 4],
+    suave: bool,
+) {
+    // `coord = (origem + ao_longo_x * fx + ao_longo_y * fy) * tamanho - 0.5`,
+    // com `fx` e `fy` a fração do pixel dentro do retângulo.
+    let eixo = |origem: f32, ao_longo_x: f32, ao_longo_y: f32, tamanho: f32| {
+        let passo_x = ao_longo_x * sprite.inv_w * tamanho;
+        let passo_y = ao_longo_y * sprite.inv_h * tamanho;
+        let em_zero = (origem
+            + ao_longo_x * (0.5 - sprite.left) * sprite.inv_w
+            + ao_longo_y * (0.5 - sprite.top) * sprite.inv_h)
+            * tamanho
+            - 0.5;
+        (
+            (em_zero * 65536.0).round() as i64,
+            (passo_x * 65536.0).round() as i64,
+            (passo_y * 65536.0).round() as i64,
+        )
+    };
+    let (u_zero, u_px, u_py) = eixo(sprite.s0, sprite.ds, sprite.ds_y, texture.width as f32);
+    let (v_zero, v_px, v_py) = eixo(sprite.t_topo, sprite.dt_x, sprite.dt, texture.height as f32);
+    // O teste de alfa compara em flutuante. A faixa opaca da Vita fica numa função
+    // só com NEON, para o bilinear não entrar e sair do pipeline a cada pixel.
+    #[cfg(target_os = "vita")]
+    if !sprite.alfa {
+        unsafe {
+            pinta_opaco_neon(
+                sprite, texture, bloco, x0, y0, x1, y1, fator, suave, u_zero, u_px, u_py,
+                v_zero, v_px, v_py,
+            );
+        }
+        return;
+    }
+    pinta_inteiro_escalar(
+        sprite, texture, bloco, x0, y0, x1, y1, fator, suave, u_zero, u_px, u_py, v_zero, v_px,
+        v_py,
+    );
+}
+
+fn pinta_inteiro_escalar(
+    sprite: &Sprite,
+    texture: &Texture,
+    bloco: &mut Bloco<'_>,
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+    fator: [u32; 4],
+    suave: bool,
+    u_zero: i64,
+    u_px: i64,
+    u_py: i64,
+    v_zero: i64,
+    v_px: i64,
+    v_py: i64,
+) {
+    let solido = !sprite.alfa && !sprite.depth_test && !sprite.mistura;
+    let branco = fator == [255; 4];
+    let mut u_linha = u_zero + u_py * y0 as i64;
+    let mut v_linha = v_zero + v_py * y0 as i64;
+    for y in y0..y1 {
+        let u_no_x = u_linha + u_px * x0 as i64;
+        let v_no_x = v_linha + v_px * x0 as i64;
+        if pinta_linha_1x1(
+            sprite, texture, bloco, x0, x1, y, u_no_x, v_no_x, u_px, v_px, fator, solido, branco,
+            suave,
+        ) {
+            u_linha += u_py;
+            v_linha += v_py;
+            continue;
+        }
+        let mut u = u_no_x;
+        let mut v = v_no_x;
+        let n = (x1 - x0) as i64;
+        let direto = suave
+            && n > 0
+            && janela_dentro(u, u + u_px * (n - 1), texture.width)
+            && janela_dentro(v, v + v_px * (n - 1), texture.height);
+        let mut x = x0;
+        if !sprite.alfa {
+            while x + 4 <= x1 {
+                let mut texels = [[0u8; 4]; 4];
+                for texel in &mut texels {
+                    *texel = amostra_fixa(texture, u, v, suave, direto);
+                    u += u_px;
+                    v += v_px;
+                }
+                guarda_quatro(sprite, bloco, x, y, &texels, fator, solido, branco);
+                x += 4;
+            }
+        }
+        while x < x1 {
+            let texel = aplica_u8(amostra_fixa(texture, u, v, suave, direto), fator);
+            if solido {
+                bloco.pixels[no_bloco(bloco, x, y)].cor = texel;
+            } else {
+                deposita_u8(sprite, bloco, x, y, texel);
+            }
+            u += u_px;
+            v += v_px;
+            x += 1;
+        }
+        u_linha += u_py;
+        v_linha += v_py;
+    }
+}
+
+/// A linha inteira, inclusive o texel `+ 1` do bilinear, cai dentro da textura.
+/// Na borda o wrap continua valendo: repetir e grampear mudam esse vizinho.
+fn janela_dentro(a: i64, b: i64, tamanho: usize) -> bool {
+    if tamanho < 2 {
+        return false;
+    }
+    let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+    if lo < 0 {
+        return false;
+    }
+    (hi >> 16) + 1 < tamanho as i64
+}
+
+fn texel_de(texture: &Texture, x: i32, y: i32, direto: bool) -> [u8; 4] {
+    if direto {
+        return texture.pixels[y as usize * texture.width + x as usize];
+    }
+    let x = Texture::wrap(texture.wrap[0], x, texture.width);
+    let y = Texture::wrap(texture.wrap[1], y, texture.height);
+    texture.pixels[y * texture.width + x]
+}
+
+fn vizinho_fixo(q: i64) -> i32 {
+    if q >= 0 {
+        ((q + 32768) >> 16) as i32
+    } else {
+        -(((-q) + 32768) >> 16) as i32
+    }
+}
+
+/// Um texel de tela por texel de textura, com `v` constante na linha.
+///
+/// O fundo 2D é esse caso. A borda pede o texel seguinte, que pode dar a volta, então a
+/// linha inteira não cabia no atalho de "tudo dentro". Aqui o miolo lê as duas linhas da
+/// textura em sequência — o pixel de baixo reaproveita o texel da direita do anterior —
+/// e só a borda volta ao wrap.
+fn pinta_linha_1x1(
+    sprite: &Sprite,
+    texture: &Texture,
+    bloco: &mut Bloco<'_>,
+    x0: i32,
+    x1: i32,
+    y: i32,
+    u: i64,
+    v: i64,
+    u_px: i64,
+    v_px: i64,
+    fator: [u32; 4],
+    solido: bool,
+    branco: bool,
+    suave: bool,
+) -> bool {
+    if !suave || v_px != 0 || (u_px != 65536 && u_px != -65536) || x0 >= x1 {
+        return false;
+    }
+    let (y_base, fy) = chao_frac(v);
+    if y_base < 0 || y_base as usize + 1 >= texture.height || texture.width < 2 {
+        return false;
+    }
+    let w = texture.width;
+    let cima = y_base as usize * w;
+    let baixo = cima + w;
+    let pixels = &texture.pixels;
+    let mut u_atual = u;
+    let mut x = x0;
+    while x < x1 {
+        let (x_tex, fx) = chao_frac(u_atual);
+        // Passo de um texel para a direita: o vizinho da direita deste pixel é o
+        // da esquerda do próximo. A borda, e o passo para a esquerda, seguem um a um.
+        if u_px == 65536 && x_tex >= 0 && (x_tex as usize) + 1 < w {
+            let mut tx = x_tex as usize;
+            let mut esquerda_cima = pixels[cima + tx];
+            let mut esquerda_baixo = pixels[baixo + tx];
+            while x < x1 {
+                let direita = tx + 1;
+                if direita >= w {
+                    break;
+                }
+                let direita_cima = pixels[cima + direita];
+                let direita_baixo = pixels[baixo + direita];
+                let texel = aplica_ou_nao(
+                    bilinear_rapido(
+                        esquerda_cima,
+                        direita_cima,
+                        esquerda_baixo,
+                        direita_baixo,
+                        fx,
+                        fy,
+                    ),
+                    fator,
+                    branco,
+                );
+                deposita_ou_solido(sprite, bloco, x, y, texel, solido);
+                esquerda_cima = direita_cima;
+                esquerda_baixo = direita_baixo;
+                tx = direita;
+                u_atual += u_px;
+                x += 1;
+            }
+            continue;
+        }
+        let texel = if x_tex >= 0 && (x_tex as usize) + 1 < w {
+            let tx = x_tex as usize;
+            bilinear_rapido(
+                pixels[cima + tx],
+                pixels[cima + tx + 1],
+                pixels[baixo + tx],
+                pixels[baixo + tx + 1],
+                fx,
+                fy,
+            )
+        } else {
+            amostra_fixa(texture, u_atual, v, true, false)
+        };
+        deposita_ou_solido(sprite, bloco, x, y, aplica_ou_nao(texel, fator, branco), solido);
+        u_atual += u_px;
+        x += 1;
+    }
+    true
+}
+
+fn aplica_ou_nao(texel: [u8; 4], fator: [u32; 4], branco: bool) -> [u8; 4] {
+    if branco {
+        texel
+    } else {
+        aplica_u8(texel, fator)
+    }
+}
+
+fn deposita_ou_solido(
+    sprite: &Sprite,
+    bloco: &mut Bloco<'_>,
+    x: i32,
+    y: i32,
+    texel: [u8; 4],
+    solido: bool,
+) {
+    if solido {
+        bloco.pixels[no_bloco(bloco, x, y)].cor = texel;
+    } else {
+        deposita_u8(sprite, bloco, x, y, texel);
+    }
+}
+
+fn amostra_fixa(texture: &Texture, u: i64, v: i64, suave: bool, direto: bool) -> [u8; 4] {
+    if suave {
+        let (x0t, fx) = chao_frac(u);
+        let (y0t, fy) = chao_frac(v);
+        bilinear_rapido(
+            texel_de(texture, x0t, y0t, direto),
+            texel_de(texture, x0t + 1, y0t, direto),
+            texel_de(texture, x0t, y0t + 1, direto),
+            texel_de(texture, x0t + 1, y0t + 1, direto),
+            fx,
+            fy,
+        )
+    } else {
+        texel_de(texture, vizinho_fixo(u), vizinho_fixo(v), false)
+    }
+}
+
+fn guarda_quatro(
+    sprite: &Sprite,
+    bloco: &mut Bloco<'_>,
+    x: i32,
+    y: i32,
+    texels: &[[u8; 4]; 4],
+    fator: [u32; 4],
+    solido: bool,
+    branco: bool,
+) {
+    if solido {
+        let mut index = no_bloco(bloco, x, y);
+        for texel in texels {
+            bloco.pixels[index].cor = if branco { *texel } else { aplica_u8(*texel, fator) };
+            index += 1;
+        }
+        return;
+    }
+    for (k, texel) in texels.iter().enumerate() {
+        deposita_u8(sprite, bloco, x + k as i32, y, aplica_u8(*texel, fator));
+    }
+}
+
+fn chao_frac(q: i64) -> (i32, u32) {
+    let chao = (q >> 16) as i32;
+    let frac = (q - ((chao as i64) << 16)) as u32;
+    (chao, frac >> 8)
+}
+
+#[cfg_attr(target_os = "vita", allow(dead_code))]
+fn bilinear(c00: [u8; 4], c10: [u8; 4], c01: [u8; 4], c11: [u8; 4], fx: u32, fy: u32) -> [u8; 4] {
+    let ix = 256 - fx;
+    let iy = 256 - fy;
+    std::array::from_fn(|c| {
+        let cima = c00[c] as u32 * ix + c10[c] as u32 * fx;
+        let baixo = c01[c] as u32 * ix + c11[c] as u32 * fx;
+        ((cima * iy + baixo * fy + 32768) >> 16) as u8
+    })
+}
+
+/// A mesma conta de [`bilinear`]. No Cortex-A9 os quatro canais saem juntos no NEON;
+/// no host fica a versão escalar, que é a que os testes conferem.
+fn bilinear_rapido(
+    c00: [u8; 4],
+    c10: [u8; 4],
+    c01: [u8; 4],
+    c11: [u8; 4],
+    fx: u32,
+    fy: u32,
+) -> [u8; 4] {
+    #[cfg(target_os = "vita")]
+    unsafe {
+        return bilinear_neon(c00, c10, c01, c11, fx, fy);
+    }
+    #[cfg(not(target_os = "vita"))]
+    {
+        bilinear(c00, c10, c01, c11, fx, fy)
+    }
+}
+
+/// `255 * 256 = 65280` cabe em 16 bits, então o produto estreito do NEON não corta.
+/// O acumulador com o `+ 32768` é que precisa de 32.
+///
+/// Quem pinta a faixa opaca já está com NEON ligado e chama isto direto, para o
+/// produto dos quatro canais não voltar para uma função sem o atributo a cada pixel.
+#[cfg(target_os = "vita")]
+#[target_feature(enable = "neon,v7")]
+#[inline]
+fn bilinear_neon(
+    c00: [u8; 4],
+    c10: [u8; 4],
+    c01: [u8; 4],
+    c11: [u8; 4],
+    fx: u32,
+    fy: u32,
+) -> [u8; 4] {
+    use std::arch::arm::{
+        vaddq_u32, vdup_n_u16, vdupq_n_u32, vgetq_lane_u32, vld1_u16, vmla_u16, vmlal_u16,
+        vmul_u16, vmull_u16, vshrq_n_u32,
+    };
+    let w = |c: [u8; 4]| {
+        [
+            u16::from(c[0]),
+            u16::from(c[1]),
+            u16::from(c[2]),
+            u16::from(c[3]),
+        ]
+    };
+    let c00 = w(c00);
+    let c10 = w(c10);
+    let c01 = w(c01);
+    let c11 = w(c11);
+    unsafe {
+        let c00 = vld1_u16(c00.as_ptr());
+        let c10 = vld1_u16(c10.as_ptr());
+        let c01 = vld1_u16(c01.as_ptr());
+        let c11 = vld1_u16(c11.as_ptr());
+        let ix = vdup_n_u16((256 - fx) as u16);
+        let iy = vdup_n_u16((256 - fy) as u16);
+        let fx = vdup_n_u16(fx as u16);
+        let fy = vdup_n_u16(fy as u16);
+        let cima = vmla_u16(vmul_u16(c00, ix), c10, fx);
+        let baixo = vmla_u16(vmul_u16(c01, ix), c11, fx);
+        let acc = vaddq_u32(vmlal_u16(vmull_u16(cima, iy), baixo, fy), vdupq_n_u32(32768));
+        let acc = vshrq_n_u32::<16>(acc);
+        [
+            vgetq_lane_u32::<0>(acc) as u8,
+            vgetq_lane_u32::<1>(acc) as u8,
+            vgetq_lane_u32::<2>(acc) as u8,
+            vgetq_lane_u32::<3>(acc) as u8,
+        ]
+    }
+}
+
+/// A faixa opaca inteira com NEON ligado. O flutuante ficou em [`pinta_inteiro`],
+/// antes da chamada: daqui até o fim da faixa só há inteiro e o bilinear.
+#[cfg(target_os = "vita")]
+#[target_feature(enable = "neon,v7")]
+fn pinta_opaco_neon(
+    sprite: &Sprite,
+    texture: &Texture,
+    bloco: &mut Bloco<'_>,
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+    fator: [u32; 4],
+    suave: bool,
+    u_zero: i64,
+    u_px: i64,
+    u_py: i64,
+    v_zero: i64,
+    v_px: i64,
+    v_py: i64,
+) {
+    let solido = !sprite.depth_test && !sprite.mistura;
+    let branco = fator == [255; 4];
+    let mut u_linha = u_zero + u_py * y0 as i64;
+    let mut v_linha = v_zero + v_py * y0 as i64;
+    for y in y0..y1 {
+        let u_no_x = u_linha + u_px * x0 as i64;
+        let v_no_x = v_linha + v_px * x0 as i64;
+        if pinta_linha_1x1(
+            sprite, texture, bloco, x0, x1, y, u_no_x, v_no_x, u_px, v_px, fator, solido, branco,
+            suave,
+        ) {
+            u_linha += u_py;
+            v_linha += v_py;
+            continue;
+        }
+        let mut u = u_no_x;
+        let mut v = v_no_x;
+        let n = (x1 - x0) as i64;
+        let direto = suave
+            && n > 0
+            && janela_dentro(u, u + u_px * (n - 1), texture.width)
+            && janela_dentro(v, v + v_px * (n - 1), texture.height);
+        let mut x = x0;
+        while x + 4 <= x1 {
+            let mut texels = [[0u8; 4]; 4];
+            for texel in &mut texels {
+                *texel = if suave {
+                    let (x0t, fx) = chao_frac(u);
+                    let (y0t, fy) = chao_frac(v);
+                    bilinear_neon(
+                        texel_de(texture, x0t, y0t, direto),
+                        texel_de(texture, x0t + 1, y0t, direto),
+                        texel_de(texture, x0t, y0t + 1, direto),
+                        texel_de(texture, x0t + 1, y0t + 1, direto),
+                        fx,
+                        fy,
+                    )
+                } else {
+                    texel_de(texture, vizinho_fixo(u), vizinho_fixo(v), false)
+                };
+                u += u_px;
+                v += v_px;
+            }
+            guarda_quatro(sprite, bloco, x, y, &texels, fator, solido, branco);
+            x += 4;
+        }
+        while x < x1 {
+            let texel = if suave {
+                let (x0t, fx) = chao_frac(u);
+                let (y0t, fy) = chao_frac(v);
+                bilinear_neon(
+                    texel_de(texture, x0t, y0t, direto),
+                    texel_de(texture, x0t + 1, y0t, direto),
+                    texel_de(texture, x0t, y0t + 1, direto),
+                    texel_de(texture, x0t + 1, y0t + 1, direto),
+                    fx,
+                    fy,
+                )
+            } else {
+                texel_de(texture, vizinho_fixo(u), vizinho_fixo(v), false)
+            };
+            let texel = if branco { texel } else { aplica_u8(texel, fator) };
+            if solido {
+                bloco.pixels[no_bloco(bloco, x, y)].cor = texel;
+            } else {
+                deposita_u8(sprite, bloco, x, y, texel);
+            }
+            u += u_px;
+            v += v_px;
+            x += 1;
+        }
+        u_linha += u_py;
+        v_linha += v_py;
+    }
+}
+
+fn escreve_sprite(sprite: &Sprite, bloco: &mut Bloco<'_>, x: i32, y: i32, texel: [f32; 4]) {
+    let texel = sprite.env.aplica(sprite.cor, texel);
+    if sprite.alfa && !compare(sprite.alpha_func, texel[3], sprite.alpha_ref) {
+        return;
+    }
+    let index = no_bloco(bloco, x, y);
+    if sprite.depth_test && !passa_z(sprite.depth_func, sprite.z, le_z(&bloco.pixels[index])) {
+        return;
+    }
+    let mixed = if sprite.mistura {
+        mistura_alfa(texel, unpack(bloco.pixels[index].cor))
+    } else {
+        texel
+    };
+    bloco.pixels[index].cor = pack(mixed);
+    if sprite.depth_test && sprite.depth_mask {
+        poe_z(&mut bloco.pixels[index], sprite.z);
+    }
+}
+
+/// Quantos núcleos o preenchimento pode ocupar.
+///
+/// Na Vita `available_parallelism` devolve erro: o ramo Unix da std não conhece
+/// `target_os = "vita"` e cai em "não suportado". O `unwrap_or(1)` deixava o
+/// 3D inteiro no núcleo do interpretador. O homebrew tem três núcleos; o
+/// quarto é `SCE_KERNEL_CPU_MASK_SYSTEM`.
+fn nucleos_do_preenchimento() -> usize {
+    if cfg!(target_os = "vita") {
+        return 3;
+    }
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+}
+
+/// Põe a thread de preenchimento num núcleo de usuário da Vita.
+///
+/// `sceKernelCreateThread` com máscara 0, que é o que o `pthread` da newlib
+/// passa, não espalha o trabalho. As máscaras são as de `psp2/kernel/cpu.h`:
+/// `USER_0`, `USER_1` e `USER_2`.
+#[cfg(target_os = "vita")]
+fn afinidade_vita(indice: usize) {
+    const NUCLEOS: [i32; 3] = [0x0001_0000, 0x0002_0000, 0x0004_0000];
+    unsafe extern "C" {
+        fn sceKernelGetThreadId() -> i32;
+        fn sceKernelChangeThreadCpuAffinityMask(thid: i32, mask: i32) -> i32;
+    }
+    unsafe {
+        let id = sceKernelGetThreadId();
+        if id > 0 {
+            let _ = sceKernelChangeThreadCpuAffinityMask(id, NUCLEOS[indice % 3]);
+        }
+    }
 }
 
 /// Um triângulo já projetado na tela, com tudo que não depende do pixel resolvido.
@@ -2816,6 +4436,9 @@ impl Stencil {
 struct Job {
     first: usize,
     last: usize,
+    /// `Some` quando o job é um blit de `glDrawTex`, e não um intervalo de triângulos.
+    /// `first == last`: não há triângulo para pintar.
+    sprite: Option<u32>,
     /// Nome da textura ligada, ou `None` se o desenho não usa textura.
     texture: Option<u32>,
     texture_env: TexEnv,
@@ -2840,10 +4463,9 @@ struct Job {
 
 impl Job {
     /// Resolve o nome da textura e monta o estado que o preenchimento lê.
-    fn uniforms<'a>(&self, textures: &'a HashMap<u32, Texture>, width: usize) -> Uniforms<'a> {
+    fn uniforms<'a>(&self, textures: &'a HashMap<u32, Texture>) -> Uniforms<'a> {
         let texture = self.texture.and_then(|name| textures.get(&name));
         Uniforms {
-            width,
             texture,
             usa_mipmap: texture.is_some_and(|texture| {
                 !texture.mipmaps.is_empty()
@@ -2883,6 +4505,7 @@ impl Job {
 struct Pending {
     triangles: Vec<Prepared>,
     jobs: Vec<Job>,
+    sprites: Vec<Sprite>,
     /// Soma das caixas envolventes, em fragmentos: é ela que decide se vale acordar as threads.
     cost: usize,
 }
@@ -2891,8 +4514,59 @@ impl Pending {
     fn clear(&mut self) {
         self.triangles.clear();
         self.jobs.clear();
+        self.sprites.clear();
         self.cost = 0;
     }
+}
+
+/// Um `glDrawTex` que cabe num retângulo: cada pixel é visitado uma vez.
+///
+/// Os dois triângulos do caminho geral recalculam peso baricêntrico, perspectiva e
+/// amostragem para o mesmo texel. Num arcade 2D isso é a tela inteira, várias vezes por
+/// quadro. O retângulo guarda a coordenada de janela e o recorte; o despejo copia ou amostra.
+struct Sprite {
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+    /// Aresta em que a fração de textura é zero. Pode ficar fora do recorte visível.
+    left: f32,
+    top: f32,
+    inv_w: f32,
+    inv_h: f32,
+    s0: f32,
+    /// Variação de `s` ao longo da largura e da altura. As duas juntas cobrem o
+    /// sprite girado 90° no atlas, que não tem `s` constante na vertical.
+    ds: f32,
+    ds_y: f32,
+    t_topo: f32,
+    dt_x: f32,
+    dt: f32,
+    lod: f32,
+    z: f32,
+    textura: u32,
+    cor: [f32; 4],
+    env: TexEnv,
+    mistura: bool,
+    alfa: bool,
+    alpha_func: u32,
+    alpha_ref: f32,
+    depth_test: bool,
+    depth_mask: bool,
+    depth_func: u32,
+    /// Cópia 1:1 do nível zero, quando o texel cai num inteiro e anda um por pixel.
+    copia: Option<Copia>,
+}
+
+/// `texel = origem + passo * (pixel - referencia)`.
+#[derive(Clone, Copy)]
+struct Copia {
+    tex_x: i32,
+    passo_x: i32,
+    x_ref: i32,
+    tex_y: i32,
+    passo_y: i32,
+    y_ref: i32,
 }
 
 /// Os triângulos de uma draw call, com o custo estimado de preenchê-los.
@@ -2913,7 +4587,6 @@ impl Batch {
 /// O estado do OpenGL que vale para o lote inteiro. Só leitura, e por isso compartilhável
 /// entre as threads que preenchem as faixas.
 struct Uniforms<'a> {
-    width: usize,
     texture: Option<&'a Texture>,
     /// Se a textura do lote tem cadeia de mipmaps **e** o filtro pede nível.
     ///
@@ -2940,38 +4613,236 @@ struct Uniforms<'a> {
     fog: Neblina,
 }
 
-/// Uma faixa horizontal do quadro: o pedaço exclusivo de uma thread.
-struct Band<'a> {
-    /// Linha da tela que corresponde ao começo da faixa.
-    top: i32,
-    color: &'a mut [[u8; 4]],
-    depth: &'a mut [f32],
+/// Um bloco do quadro: o pedaço exclusivo de uma thread.
+///
+/// `pixels` e `stencil` têm o passo de [`LADO_DO_BLOCO`], mesmo quando a borda da tela ocupa
+/// menos que isso. O laço não escreve fora de `largura` × `altura`.
+struct Bloco<'a> {
+    x0: i32,
+    y0: i32,
+    largura: i32,
+    altura: i32,
+    pixels: &'a mut [Pixel],
     stencil: &'a mut [u8],
 }
 
-/// Preenche a parte de um triângulo que cai dentro da faixa.
-fn fill_band(tri: &Prepared, uniforms: &Uniforms, band: &mut Band) {
-    let width = uniforms.width;
-    let rows = (band.color.len() / width) as i32;
-    let top = tri.min_y.max(band.top);
-    let bottom = tri.max_y.min(band.top + rows);
+/// Índice local de `(x, y)` dentro do bloco. Os dois buffers usam o mesmo.
+#[inline(always)]
+fn no_bloco(bloco: &Bloco<'_>, x: i32, y: i32) -> usize {
+    (y - bloco.y0) as usize * LADO_DO_BLOCO + (x - bloco.x0) as usize
+}
+
+/// O pixel comum: uma textura, sem segunda unidade, sem névoa e sem stencil.
+///
+/// `MODULATE` e `REPLACE` são o que os jogos pedem quase sempre. A mistura, quando existe,
+/// é a do sprite (`SRC_ALPHA`, `ONE_MINUS_SRC_ALPHA`). O resto continua no laço geral.
+fn tenta_direto(tri: &Prepared, uniforms: &Uniforms, bloco: &mut Bloco) -> bool {
+    let Some(texture) = uniforms.texture else {
+        return false;
+    };
+    if uniforms.usa_mipmap || uniforms.texture1.is_some() {
+        return false;
+    }
+    if (uniforms.fog.ligada && uniforms.fog.permitida) || uniforms.stencil.test {
+        return false;
+    }
+    if uniforms.color_mask != [true, true, true, true] {
+        return false;
+    }
+    let modula = match uniforms.texture_env.modo {
+        gles::GL_REPLACE => false,
+        gles::GL_MODULATE => true,
+        _ => return false,
+    };
+    let mistura = if uniforms.blend {
+        if uniforms.blend_src != gles::GL_SRC_ALPHA
+            || uniforms.blend_dst != gles::GL_ONE_MINUS_SRC_ALPHA
+        {
+            return false;
+        }
+        true
+    } else {
+        false
+    };
+    if texture.blocos_prontos() {
+        preenche_direto::<true>(tri, uniforms, bloco, texture, uniforms.alpha_test, mistura, modula);
+    } else {
+        preenche_direto::<false>(tri, uniforms, bloco, texture, uniforms.alpha_test, mistura, modula);
+    }
+    true
+}
+
+fn preenche_direto<const BLOCOS: bool>(
+    tri: &Prepared,
+    uniforms: &Uniforms,
+    bloco: &mut Bloco,
+    texture: &Texture,
+    alfa: bool,
+    mistura: bool,
+    modula: bool,
+) {
+    let top = tri.min_y.max(bloco.y0);
+    let bottom = tri.max_y.min(bloco.y0 + bloco.altura);
+    // Sem mipmap o nível é zero, e o filtro é o de ampliação — o mesmo que `sample_lod` faz
+    // quando o `lod` não passa de zero.
+    let suave = texture.filter == gles::GL_LINEAR;
+    let dz1 = tri.screen[1][2] - tri.screen[0][2];
+    let dz2 = tri.screen[2][2] - tri.screen[0][2];
+    let z0 = tri.screen[0][2];
+    let (w0, w1, w2) = (tri.screen[0][3], tri.screen[1][3], tri.screen[2][3]);
+    let step = tri.step;
+
     for y in top..bottom {
-        // Cada linha recomeça do cálculo exato: o erro do acúmulo fica preso dentro da linha
-        // em vez de descer pela imagem toda.
-        let start = [tri.min_x as f32 + 0.5, y as f32 + 0.5, 0.0, 0.0];
+        let x0 = tri.min_x.max(bloco.x0);
+        let x1 = tri.max_x.min(bloco.x0 + bloco.largura);
+        if x0 >= x1 {
+            continue;
+        }
+        let start = [x0 as f32 + 0.5, y as f32 + 0.5, 0.0, 0.0];
+        let mut bary = [
+            edge(tri.screen[1], tri.screen[2], start) * tri.inv_area,
+            edge(tri.screen[2], tri.screen[0], start) * tri.inv_area,
+            edge(tri.screen[0], tri.screen[1], start) * tri.inv_area,
+        ];
+        let mut x = x0;
+        // A interseção com a linha é um intervalo. O trecho de fora, à esquerda, não amostra.
+        while x < x1 && (bary[0] < 0.0 || bary[1] < 0.0 || bary[2] < 0.0) {
+            bary = [
+                bary[0] + step[0],
+                bary[1] + step[1],
+                bary[2] + step[2],
+            ];
+            x += 1;
+        }
+        while x < x1 {
+            if bary[0] < 0.0 || bary[1] < 0.0 || bary[2] < 0.0 {
+                break;
+            }
+            let index = no_bloco(bloco, x, y);
+            // A mesma conta do laço geral: z pelas diferenças a partir do primeiro vértice,
+            // para camadas no mesmo z com `GL_LEQUAL` não se reprovarem por ε.
+            let z = z0 + bary[1] * dz1 + bary[2] * dz2;
+            let inv_w = bary[0] * w0 + bary[1] * w1 + bary[2] * w2;
+            if inv_w == 0.0 {
+                bary = [bary[0] + step[0], bary[1] + step[1], bary[2] + step[2]];
+                x += 1;
+                continue;
+            }
+            let persp = 1.0 / inv_w;
+            // Sem teste de alfa a textura espera a profundidade. Com ele, o alfa decide antes
+            // e um fragmento reprovado não escreve o z.
+            if !alfa
+                && uniforms.depth_test
+                && !compare(uniforms.depth_func, z, bloco.pixels[index].z)
+            {
+                bary = [bary[0] + step[0], bary[1] + step[1], bary[2] + step[2]];
+                x += 1;
+                continue;
+            }
+            let u = atributo(bary, &tri.over_w, 4, persp);
+            let v = atributo(bary, &tri.over_w, 5, persp);
+            let texel = if BLOCOS {
+                texture.amostra_em::<true>(u, v, suave)
+            } else if texture.width == 0 || texture.height == 0 {
+                [1.0; 4]
+            } else {
+                texture.amostra_em::<false>(u, v, suave)
+            };
+            let source = if modula {
+                [
+                    atributo(bary, &tri.over_w, 0, persp) * texel[0],
+                    atributo(bary, &tri.over_w, 1, persp) * texel[1],
+                    atributo(bary, &tri.over_w, 2, persp) * texel[2],
+                    atributo(bary, &tri.over_w, 3, persp) * texel[3],
+                ]
+            } else {
+                texel
+            };
+            if alfa && !compare(uniforms.alpha_func, source[3], uniforms.alpha_ref) {
+                bary = [bary[0] + step[0], bary[1] + step[1], bary[2] + step[2]];
+                x += 1;
+                continue;
+            }
+            if alfa
+                && uniforms.depth_test
+                && !compare(uniforms.depth_func, z, bloco.pixels[index].z)
+            {
+                bary = [bary[0] + step[0], bary[1] + step[1], bary[2] + step[2]];
+                x += 1;
+                continue;
+            }
+            let mixed = if mistura {
+                mistura_alfa(source, unpack(bloco.pixels[index].cor))
+            } else {
+                source
+            };
+            bloco.pixels[index].cor = pack(mixed);
+            if uniforms.depth_test && uniforms.depth_mask {
+                bloco.pixels[index].z = z;
+            }
+            bary = [bary[0] + step[0], bary[1] + step[1], bary[2] + step[2]];
+            x += 1;
+        }
+    }
+}
+
+#[inline(always)]
+fn atributo(bary: [f32; 3], over: &[[f32; 9]; 3], k: usize, persp: f32) -> f32 {
+    (bary[0] * over[0][k] + bary[1] * over[1][k] + bary[2] * over[2][k]) * persp
+}
+
+/// `GL_SRC_ALPHA` com `GL_ONE_MINUS_SRC_ALPHA`, nos quatro canais.
+#[inline(always)]
+fn mistura_alfa(source: [f32; 4], destination: [f32; 4]) -> [f32; 4] {
+    let s = source[3];
+    let d = 1.0 - s;
+    [
+        (source[0] * s + destination[0] * d).clamp(0.0, 1.0),
+        (source[1] * s + destination[1] * d).clamp(0.0, 1.0),
+        (source[2] * s + destination[2] * d).clamp(0.0, 1.0),
+        (source[3] * s + destination[3] * d).clamp(0.0, 1.0),
+    ]
+}
+
+/// Preenche a parte de um triângulo que cai dentro do bloco.
+fn fill_band(tri: &Prepared, uniforms: &Uniforms, bloco: &mut Bloco) {
+    // O laço geral carrega stencil, névoa, mipmap e a segunda textura. No Cortex-A9 da Vita
+    // isso não cabe nos 32 KiB de cache de instrução, e o pixel comum — uma textura, sem
+    // cadeia, sem névoa, sem stencil — paga o tamanho do laço que não usa.
+    if tenta_direto(tri, uniforms, bloco) {
+        return;
+    }
+    let top = tri.min_y.max(bloco.y0);
+    let bottom = tri.max_y.min(bloco.y0 + bloco.altura);
+    for y in top..bottom {
+        let x0 = tri.min_x.max(bloco.x0);
+        let x1 = tri.max_x.min(bloco.x0 + bloco.largura);
+        if x0 >= x1 {
+            continue;
+        }
+        // Cada linha recomeça do cálculo exato, no primeiro x do bloco: o erro do acúmulo
+        // fica preso dentro da linha em vez de descer pela imagem toda.
+        let start = [x0 as f32 + 0.5, y as f32 + 0.5, 0.0, 0.0];
         let mut w = [
             edge(tri.screen[1], tri.screen[2], start) * tri.inv_area,
             edge(tri.screen[2], tri.screen[0], start) * tri.inv_area,
             edge(tri.screen[0], tri.screen[1], start) * tri.inv_area,
         ];
-        let row = (y - band.top) as usize * width;
-        for x in tri.min_x..tri.max_x {
+        // A interseção de um triângulo com a linha é um intervalo só: cada
+        // aresta anda num sentido, e depois que o pixel sai não volta. Parar
+        // ali não muda pixel nenhum — só deixa de percorrer o resto da caixa.
+        let mut dentro = false;
+        for x in x0..x1 {
             let bary = w;
             // O passo vem antes do descarte porque o `continue` pularia a soma.
             w = [w[0] + tri.step[0], w[1] + tri.step[1], w[2] + tri.step[2]];
             if bary[0] < 0.0 || bary[1] < 0.0 || bary[2] < 0.0 {
+                if dentro {
+                    break;
+                }
                 continue;
             }
+            dentro = true;
             // **A partir do primeiro vértice, e não pela soma dos três pesos.** Os pesos vêm
             // acumulados ao longo da linha e somam 1 ± ε, e ε muda de um triângulo para o
             // outro: com z constante, `b·z` saía um pouco acima de z num triângulo e abaixo no
@@ -2980,7 +4851,7 @@ fn fill_band(tri: &Prepared, uniforms: &Uniforms, band: &mut Band) {
             let z = tri.screen[0][2]
                 + bary[1] * (tri.screen[1][2] - tri.screen[0][2])
                 + bary[2] * (tri.screen[2][2] - tri.screen[0][2]);
-            let index = row + x as usize;
+            let index = no_bloco(bloco, x, y);
 
             let inv_w = bary[0] * tri.screen[0][3]
                 + bary[1] * tri.screen[1][3]
@@ -3077,15 +4948,15 @@ fn fill_band(tri: &Prepared, uniforms: &Uniforms, band: &mut Band) {
             // onde a profundidade reprova.
             let stencil = &uniforms.stencil;
             let profundidade_passa =
-                !uniforms.depth_test || compare(uniforms.depth_func, z, band.depth[index]);
+                !uniforms.depth_test || compare(uniforms.depth_func, z, bloco.pixels[index].z);
             if stencil.test {
-                let atual = band.stencil[index];
+                let atual = bloco.stencil[index];
                 if !stencil.passa(atual) {
-                    band.stencil[index] = stencil.aplica(0, atual);
+                    bloco.stencil[index] = stencil.aplica(0, atual);
                     continue;
                 }
                 let qual = usize::from(profundidade_passa) + 1;
-                band.stencil[index] = stencil.aplica(qual, atual);
+                bloco.stencil[index] = stencil.aplica(qual, atual);
             }
             if !profundidade_passa {
                 continue;
@@ -3097,7 +4968,7 @@ fn fill_band(tri: &Prepared, uniforms: &Uniforms, band: &mut Band) {
             };
 
             let mixed = if uniforms.blend {
-                let destination = unpack(band.color[index]);
+                let destination = unpack(bloco.pixels[index].cor);
                 let mut out = [0.0; 4];
                 for c in 0..4 {
                     let s = factor(uniforms.blend_src, source, destination, c);
@@ -3111,9 +4982,9 @@ fn fill_band(tri: &Prepared, uniforms: &Uniforms, band: &mut Band) {
 
             // O `glColorMask` decide canal a canal. Escrever o que ele proibiu apagaria o que
             // uma passada anterior deixou ali, que é justamente o ponto de mascarar.
-            let anterior = band.color[index];
+            let anterior = bloco.pixels[index].cor;
             let novo = pack(mixed);
-            band.color[index] = std::array::from_fn(|i| {
+            bloco.pixels[index].cor = std::array::from_fn(|i| {
                 if uniforms.color_mask[i] {
                     novo[i]
                 } else {
@@ -3121,7 +4992,7 @@ fn fill_band(tri: &Prepared, uniforms: &Uniforms, band: &mut Band) {
                 }
             });
             if uniforms.depth_test && uniforms.depth_mask {
-                band.depth[index] = z;
+                bloco.pixels[index].z = z;
             }
         }
     }
@@ -3311,6 +5182,10 @@ fn factor(kind: u32, source: [f32; 4], destination: [f32; 4], c: usize) -> f32 {
     }
 }
 
+fn cor_565(p: [u8; 4]) -> u16 {
+    ((p[0] as u16 >> 3) << 11) | ((p[1] as u16 >> 2) << 5) | (p[2] as u16 >> 3)
+}
+
 fn pack(color: [f32; 4]) -> [u8; 4] {
     std::array::from_fn(|i| (color[i].clamp(0.0, 1.0) * 255.0 + 0.5) as u8)
 }
@@ -3391,16 +5266,16 @@ mod tests {
         let mut state = GlState::new(2, 1);
         let mut exported = Vec::new();
         state.frame_rgb565(2, 1, &mut exported);
-        state.color[1] = [0, 255, 0, 255];
-        state.depth[0] = 0.25;
-        state.stencil[0] = 7;
+        state.poe_cor(1, [0, 255, 0, 255]);
+        state.poe_profundidade(0, 0.25);
+        state.poe_stencil(0, 7);
         let mut changed = exported.clone();
         changed[..2].copy_from_slice(&0xf800u16.to_le_bytes());
         state.import_rgb565_changes(2, 1, &exported, &changed);
-        assert_eq!(&state.color[0][..3], &[255, 0, 0]);
-        assert_eq!(state.color[1], [0, 255, 0, 255]);
-        assert_eq!(state.depth[0], 0.25);
-        assert_eq!(state.stencil[0], 7);
+        assert_eq!(&state.cor_em(0)[..3], &[255, 0, 0]);
+        assert_eq!(state.cor_em(1), [0, 255, 0, 255]);
+        assert_eq!(state.profundidade_em(0), 0.25);
+        assert_eq!(state.stencil_em(0), 7);
     }
 
     /// O caminho **com escala** tem laço próprio, com as divisões por pixel, e é o do Quake:
@@ -3415,7 +5290,7 @@ mod tests {
         let mut changed = exported.clone();
         changed[..2].copy_from_slice(&0xf800u16.to_le_bytes());
         state.import_rgb565_changes(2, 1, &exported, &changed);
-        assert_eq!(&state.color[0][..3], &[255, 0, 0]);
+        assert_eq!(&state.cor_em(0)[..3], &[255, 0, 0]);
     }
 
     #[test]
@@ -3464,7 +5339,7 @@ mod tests {
             );
             state.flush();
             assert_eq!(
-                state.color[3 * 8 + 4],
+                state.cor_em(3 * 8 + 4),
                 [0, 255, 0, 255],
                 "vertical={vertical}"
             );
@@ -3516,6 +5391,44 @@ mod tests {
         assert!((meio[0] - 0.5).abs() < 0.01, "interpolado: {meio:?}");
     }
 
+    /// Os blocos de 4×4 são só um arranjo do nível zero: o texel que sai tem de ser o da linha.
+    ///
+    /// A largura 6 e a altura 5 não são múltiplos de 4, e o ponto no meio cai na fronteira de
+    /// dois blocos — é ali que um índice trocado pinta o texel vizinho.
+    #[test]
+    fn os_blocos_amostram_o_mesmo_texel() {
+        let mut pixels = Vec::new();
+        for y in 0..5u8 {
+            for x in 0..6u8 {
+                pixels.push([x * 40, y * 40, x.wrapping_add(y).wrapping_mul(3), 255]);
+            }
+        }
+        let mut textura = Texture {
+            width: 6,
+            height: 5,
+            pixels,
+            filter: gles::GL_LINEAR,
+            ..Texture::default()
+        };
+        let pontos = [
+            (0.5 / 6.0, 0.5 / 5.0),
+            (4.0 / 6.0, 4.0 / 5.0),
+            (5.5 / 6.0, 4.5 / 5.0),
+            (-0.2, 1.3),
+            (0.0, 0.0),
+        ];
+        let mut esperados = Vec::new();
+        for (u, v) in pontos {
+            esperados.push((textura.amostra_base(u, v, false), textura.amostra_base(u, v, true)));
+        }
+        textura.garante_blocos();
+        assert!(textura.blocos_prontos());
+        for ((u, v), (perto, suave)) in pontos.into_iter().zip(esperados) {
+            assert_eq!(textura.amostra_base(u, v, false), perto, "vizinho ({u}, {v})");
+            assert_eq!(textura.amostra_base(u, v, true), suave, "linear ({u}, {v})");
+        }
+    }
+
     /// Com cadeia, o nível sai do `lod`: zero é a imagem cheia, e o último é o menor nível.
     #[test]
     fn o_lod_escolhe_o_nivel() {
@@ -3552,8 +5465,8 @@ mod tests {
         estado.set_stencil_op(gles::GL_KEEP, gles::GL_KEEP, gles::GL_REPLACE);
         quadrado(&mut estado, -1.0, 0.0, 1.0, 1.0, [1.0; 4]);
         estado.flush();
-        assert_eq!(estado.stencil[0], 1, "topo marcado");
-        assert_eq!(estado.stencil[12], 0, "fundo intocado");
+        assert_eq!(estado.stencil_em(0), 1, "topo marcado");
+        assert_eq!(estado.stencil_em(12), 0, "fundo intocado");
 
         // Segundo passe: pinta de vermelho só onde a marca está.
         estado.set_color_mask([true; 4]);
@@ -3561,8 +5474,8 @@ mod tests {
         estado.set_stencil_op(gles::GL_KEEP, gles::GL_KEEP, gles::GL_KEEP);
         quadrado(&mut estado, -1.0, -1.0, 1.0, 1.0, [1.0, 0.0, 0.0, 1.0]);
         estado.flush();
-        assert_eq!(estado.color[0][0], 255, "topo pintado");
-        assert_eq!(estado.color[12][0], 0, "fundo poupado pelo stencil");
+        assert_eq!(estado.cor_em(0)[0], 255, "topo pintado");
+        assert_eq!(estado.cor_em(12)[0], 0, "fundo poupado pelo stencil");
     }
 
     /// A máscara de escrita decide bit a bit o que o desenho pode mudar no stencil.
@@ -3577,7 +5490,7 @@ mod tests {
         estado.set_stencil_mask(0b0000_1111);
         quadrado(&mut estado, -1.0, -1.0, 1.0, 1.0, [1.0; 4]);
         estado.flush();
-        assert_eq!(estado.stencil[0], 0b1010_1111);
+        assert_eq!(estado.stencil_em(0), 0b1010_1111);
     }
 
     /// Um desenho reprovado no stencil não pinta, mas **aplica** a operação de falha: é isso
@@ -3591,8 +5504,8 @@ mod tests {
         estado.set_stencil_op(gles::GL_INCR, gles::GL_KEEP, gles::GL_KEEP);
         quadrado(&mut estado, -1.0, -1.0, 1.0, 1.0, [1.0, 0.0, 0.0, 1.0]);
         estado.flush();
-        assert_eq!(estado.stencil[0], 1, "a operação de falha valeu");
-        assert_eq!(estado.color[0][0], 0, "e nada foi pintado");
+        assert_eq!(estado.stencil_em(0), 1, "a operação de falha valeu");
+        assert_eq!(estado.cor_em(0)[0], 0, "e nada foi pintado");
     }
 
     /// Um quadrado em coordenadas normalizadas, com a cor dada.
@@ -3765,9 +5678,15 @@ mod tests {
 
     /// O quadro depois de pintado. O desenho é acumulado e só vira pixel no despejo — que no
     /// emulador acontece no `eglSwapBuffers`, e aqui precisa ser pedido.
-    fn pixels(state: &mut GlState) -> &[[u8; 4]] {
+    fn pixels(state: &mut GlState) -> Vec<[u8; 4]> {
         state.flush();
-        &state.color
+        let mut saida = Vec::with_capacity(state.width * state.height);
+        for y in 0..state.height {
+            for x in 0..state.width {
+                saida.push(state.pixel(x, y).cor);
+            }
+        }
+        saida
     }
 
     fn quad(state: &mut GlState, z: f32, color: [f32; 4]) {
@@ -3850,6 +5769,155 @@ mod tests {
     }
 
     #[test]
+    fn o_blit_um_para_um_copia_o_texel_sem_trocar_de_linha() {
+        // Tela do mesmo tamanho do recorte: cada pixel é um texel. Errar o passo
+        // troca a linha de cima com a de baixo, que é a imagem de cabeça para baixo.
+        let mut state = GlState::new(4, 2);
+        state.set_viewport(0, 0, 4, 2);
+        let linha0 = [[255, 0, 0, 255], [0, 255, 0, 255], [0, 0, 255, 255], [255, 255, 255, 255]];
+        let linha1 = [[255, 255, 0, 255], [0, 255, 255, 255], [255, 0, 255, 255], [128, 128, 128, 255]];
+        let mut texels = linha0.to_vec();
+        texels.extend_from_slice(&linha1);
+        state.textures.insert(
+            1,
+            Texture {
+                width: 4,
+                height: 2,
+                pixels: texels,
+                filter: gles::GL_NEAREST,
+                ..Texture::default()
+            },
+        );
+        state.bind_texture(1);
+        state.set_capability(gles::GL_TEXTURE_2D, true);
+        state.set_texture_crop([0, 0, 4, 2]);
+        state.draw_texture(0.0, 0.0, 0.0, 4.0, 2.0);
+        let frame = pixels(&mut state);
+        // A janela tem o zero embaixo: a primeira linha da textura fica na base da tela.
+        assert_eq!(&frame[4..8], &linha0);
+        assert_eq!(&frame[0..4], &linha1);
+    }
+
+    #[test]
+    fn o_blit_linear_um_para_um_nao_troca_a_linha() {
+        // O fundo do arcade é este caso: um texel por pixel, filtro linear. A cor chapada
+        // tem de sobreviver à borda, que pede o texel seguinte e dá a volta.
+        let mut state = GlState::new(4, 2);
+        state.set_viewport(0, 0, 4, 2);
+        let mut texels = vec![[0, 0, 255, 255]; 4];
+        texels.extend_from_slice(&[[255, 0, 0, 255]; 4]);
+        state.textures.insert(
+            1,
+            Texture {
+                width: 4,
+                height: 2,
+                pixels: texels,
+                filter: gles::GL_LINEAR,
+                ..Texture::default()
+            },
+        );
+        state.bind_texture(1);
+        state.set_capability(gles::GL_TEXTURE_2D, true);
+        state.set_texture_crop([0, 0, 4, 2]);
+        state.draw_texture(0.0, 0.0, 0.0, 4.0, 2.0);
+        let frame = pixels(&mut state);
+        let azul = |p: [u8; 4]| p[2] > p[0];
+        let vermelho = |p: [u8; 4]| p[0] > p[2];
+        assert!(frame[4..8].iter().all(|p| azul(*p)), "a base segue a primeira linha: {frame:?}");
+        assert!(frame[0..4].iter().all(|p| vermelho(*p)), "o topo segue a segunda linha: {frame:?}");
+    }
+
+    #[test]
+    fn o_quadrilatero_alinhado_sai_pelo_mesmo_blit() {
+        // O jogo 2D não chama `glDrawTex`: manda o sprite como faixa de quatro vértices.
+        // Se isto voltar a ser dois triângulos, a fila de retângulos fica vazia.
+        let mut state = GlState::new(4, 2);
+        state.set_viewport(0, 0, 4, 2);
+        let linha0 = [[255, 0, 0, 255], [0, 255, 0, 255], [0, 0, 255, 255], [255, 255, 255, 255]];
+        let linha1 = [[255, 255, 0, 255], [0, 255, 255, 255], [255, 0, 255, 255], [128, 128, 128, 255]];
+        let mut texels = linha0.to_vec();
+        texels.extend_from_slice(&linha1);
+        state.textures.insert(
+            1,
+            Texture {
+                width: 4,
+                height: 2,
+                pixels: texels,
+                filter: gles::GL_NEAREST,
+                ..Texture::default()
+            },
+        );
+        state.bind_texture(1);
+        state.set_capability(gles::GL_TEXTURE_2D, true);
+        let vertice = |x: f32, y: f32, s: f32, t: f32| Vertex {
+            position: [x, y, 0.0, 1.0],
+            uv: [s, t, 0.0, 1.0],
+            ..Vertex::default()
+        };
+        // Faixa: a primeira linha da textura (t = 0) fica na base da janela, y = -1.
+        state.draw(
+            gles::GL_TRIANGLE_STRIP,
+            &[
+                vertice(-1.0, -1.0, 0.0, 0.0),
+                vertice(1.0, -1.0, 1.0, 0.0),
+                vertice(-1.0, 1.0, 0.0, 1.0),
+                vertice(1.0, 1.0, 1.0, 1.0),
+            ],
+        );
+        assert_eq!(state.pending.sprites.len(), 1, "a faixa virou um retângulo");
+        let frame = pixels(&mut state);
+        assert_eq!(&frame[4..8], &linha0);
+        assert_eq!(&frame[0..4], &linha1);
+    }
+
+    #[test]
+    fn o_sprite_girado_no_atlas_continua_no_blit() {
+        // Atlas gira o recorte 90°. `s` deixa de ser constante na vertical; tratar
+        // isso como "não é retângulo" devolvia o sprite aos dois triângulos.
+        let mut state = GlState::new(2, 2);
+        state.set_viewport(0, 0, 2, 2);
+        state.textures.insert(
+            1,
+            Texture {
+                width: 2,
+                height: 2,
+                pixels: vec![
+                    [255, 0, 0, 255],
+                    [0, 255, 0, 255],
+                    [0, 0, 255, 255],
+                    [255, 255, 255, 255],
+                ],
+                filter: gles::GL_NEAREST,
+                ..Texture::default()
+            },
+        );
+        state.bind_texture(1);
+        state.set_capability(gles::GL_TEXTURE_2D, true);
+        let vertice = |x: f32, y: f32, s: f32, t: f32| Vertex {
+            position: [x, y, 0.0, 1.0],
+            uv: [s, t, 0.0, 1.0],
+            ..Vertex::default()
+        };
+        // `s` cresce para baixo, `t` cresce para a direita.
+        state.draw(
+            gles::GL_TRIANGLE_STRIP,
+            &[
+                vertice(-1.0, -1.0, 1.0, 0.0),
+                vertice(1.0, -1.0, 1.0, 1.0),
+                vertice(-1.0, 1.0, 0.0, 0.0),
+                vertice(1.0, 1.0, 0.0, 1.0),
+            ],
+        );
+        assert_eq!(state.pending.sprites.len(), 1, "o giro ficou no blit");
+        let frame = pixels(&mut state);
+        // `s` desce, `t` vai para a direita. O canto superior esquerdo amostra o texel (0, 0).
+        assert_eq!(frame[0], [255, 0, 0, 255]);
+        assert_eq!(frame[1], [0, 0, 255, 255]);
+        assert_eq!(frame[2], [0, 255, 0, 255]);
+        assert_eq!(frame[3], [255, 255, 255, 255]);
+    }
+
+    #[test]
     fn multiplicacao_respeita_a_ordem_do_opengl() {
         // `translate` depois de `scale` escala a translação — é a ordem do `glTranslate`
         // aplicado sobre uma matriz que já tem escala.
@@ -3927,6 +5995,47 @@ mod tests {
         let azuis = quadro.iter().filter(|p| **p == [0, 0, 255, 255]).count();
         assert_eq!(azuis, dentro(azul), "o azul perdeu pixels para quem estava embaixo");
         assert_eq!(verdes, dentro(verde) - dentro(azul), "o verde perdeu pixels para o vermelho");
+    }
+
+    /// Um triângulo que atravessa o corte de 32 pixels pinta os dois blocos, e o de cima
+    /// continua na frente. O custo passa do limiar das threads, então isto também cobre a
+    /// divisão entre núcleos.
+    #[test]
+    fn os_blocos_vizinhos_respeitam_a_ordem_e_a_profundidade() {
+        let lado = 256;
+        let mut state = GlState::new(lado, lado);
+        state.set_viewport(0, 0, lado as i32, lado as i32);
+        state.set_capability(gles::GL_DEPTH_TEST, true);
+        state.set_depth_func(gles::GL_LESS);
+        state.clear(gles::GL_COLOR_BUFFER_BIT | gles::GL_DEPTH_BUFFER_BIT);
+        quad(&mut state, 0.0, [1.0, 0.0, 0.0, 1.0]);
+        let v = |x: f32, y: f32| Vertex {
+            position: [x, y, -0.5, 1.0],
+            color: [0.0, 0.0, 1.0, 1.0],
+            ..Default::default()
+        };
+        state.draw(
+            gles::GL_TRIANGLES,
+            &[
+                v(0.0, -1.0),
+                v(1.0, -1.0),
+                v(1.0, 1.0),
+                v(0.0, -1.0),
+                v(1.0, 1.0),
+                v(0.0, 1.0),
+            ],
+        );
+        let quadro = pixels(&mut state);
+        let vermelho = [255, 0, 0, 255];
+        let azul = [0, 0, 255, 255];
+        assert_eq!(quadro[0], vermelho, "o canto do primeiro bloco");
+        assert_eq!(quadro[32], vermelho, "a primeira coluna do bloco da direita, ainda na metade esquerda");
+        assert_eq!(quadro[lado - 1], azul, "a borda direita, no último bloco");
+        assert_eq!(quadro[32 * lado + 32], vermelho, "o bloco de baixo, à esquerda do centro");
+        // x em NDC 0 cai no meio. O pixel 128 é o primeiro cujo centro passa de zero.
+        assert_eq!(quadro[127], vermelho, "o último pixel à esquerda do meio");
+        assert_eq!(quadro[128], azul, "o primeiro pixel da metade da frente");
+        assert_eq!(quadro[(lado - 1) * lado + (lado - 1)], azul, "o canto do último bloco");
     }
 
     /// O `y` do `glViewport` conta de baixo para cima, e o quadro é guardado de cima para baixo.
@@ -4393,23 +6502,34 @@ impl crate::save_state::Guardavel for GlState {
             luz.extend(floats(&fonte.attenuation));
         }
         destino.poe_u32s("gl.iluminacao", luz);
+        let n = self.width * self.height;
         destino.poe_u32s(
             "gl.buffers",
             [
                 self.width as u32,
                 self.height as u32,
-                self.color.len() as u32,
-                self.depth.len() as u32,
-                self.stencil.len() as u32,
+                n as u32,
+                n as u32,
+                n as u32,
             ],
         );
-        destino.poe("gl.buffer.cor", bytes_dos_rgba(&self.color));
-        let mut profundidade = Vec::with_capacity(self.depth.len() * 4);
-        for valor in &self.depth {
-            profundidade.extend_from_slice(&valor.to_bits().to_le_bytes());
+        // A ordem do arquivo continua sendo a linear, `y * largura + x`. O arranjo em blocos
+        // é só da memória de trabalho; um save antigo tem de voltar no mesmo pixel.
+        let mut cor = Vec::with_capacity(n * 4);
+        let mut profundidade = Vec::with_capacity(n * 4);
+        let mut stencil = Vec::with_capacity(n);
+        for y in 0..self.height {
+            for x in 0..self.width {
+                let pixel = *self.pixel(x, y);
+                let marca = self.stencil[self.indice(x, y)];
+                cor.extend_from_slice(&pixel.cor);
+                profundidade.extend_from_slice(&pixel.z.to_bits().to_le_bytes());
+                stencil.push(marca);
+            }
         }
+        destino.poe("gl.buffer.cor", cor);
         destino.poe("gl.buffer.profundidade", profundidade);
-        destino.poe("gl.buffer.stencil", self.stencil.clone());
+        destino.poe("gl.buffer.stencil", stencil);
         grava_texturas(&self.textures, destino);
     }
 
@@ -4676,10 +6796,24 @@ impl crate::save_state::Guardavel for GlState {
             .chunks_exact(4)
             .map(|p| f32::from_bits(u32::from_le_bytes([p[0], p[1], p[2], p[3]])))
             .collect();
-
-        self.color = cor;
-        self.depth = profundidade;
-        self.stencil = stencil;
+        let n = self.width * self.height;
+        if cor.len() != n || profundidade.len() != n || stencil.len() != n {
+            return Err(Erro::Secao {
+                nome: "gl.buffer.cor".to_string(),
+                motivo: format!(
+                    "o arquivo tem {} pixels de cor e a superfície é {n}",
+                    cor.len()
+                ),
+            });
+        }
+        for i in 0..n {
+            let x = i % self.width;
+            let y = i / self.width;
+            let idx = self.indice(x, y);
+            self.quadro[idx].cor = cor[i];
+            self.quadro[idx].z = profundidade[i];
+            self.stencil[idx] = stencil[i];
+        }
         self.textures = le_texturas(origem)?;
         Ok(())
     }
@@ -4733,15 +6867,6 @@ fn grava_texturas(
         destino.poe_u32s(&format!("tex.{id}.mips"), medidas);
         destino.poe(&format!("tex.{id}.mip_pixels"), pixels);
     }
-}
-
-/// Os pixels RGBA como bytes, num vetor só.
-fn bytes_dos_rgba(pixels: &[[u8; 4]]) -> Vec<u8> {
-    let mut saida = Vec::with_capacity(pixels.len() * 4);
-    for pixel in pixels {
-        saida.extend_from_slice(pixel);
-    }
-    saida
 }
 
 /// Os pixels RGBA como bytes.
@@ -4830,6 +6955,7 @@ fn le_texturas(
                     meta[8] as i32,
                     meta[9] as i32,
                 ],
+                blocos: Vec::new(),
             },
         );
     }
@@ -5133,6 +7259,7 @@ mod testes_do_estado_de_gl {
                 filter: 0x2601,
                 min_filter: 0x2703,
                 crop: [1, -2, 3, -4],
+                blocos: Vec::new(),
             },
         );
 
@@ -5175,6 +7302,7 @@ mod testes_do_estado_de_gl {
                 filter: 0,
                 min_filter: 0,
                 crop: [0; 4],
+                blocos: Vec::new(),
             },
         );
         let mut secoes = Secoes::nova();
@@ -5201,12 +7329,12 @@ mod testes_do_estado_de_gl {
     #[test]
     fn os_buffers_de_cor_profundidade_e_stencil_vem_de_volta() {
         let mut antes = GlState::new(4, 2);
-        assert_eq!(antes.color.len(), 8, "o estado novo já tem os buffers da superfície");
-        antes.color[0] = [1, 2, 3, 4];
-        antes.color[7] = [5, 6, 7, 8];
-        antes.depth[3] = 0.25;
-        antes.depth[7] = 0.75;
-        antes.stencil[5] = 9;
+        assert_eq!(antes.cor_em(0), [0, 0, 0, 255], "o estado novo já tem os buffers da superfície");
+        antes.poe_cor(0, [1, 2, 3, 4]);
+        antes.poe_cor(7, [5, 6, 7, 8]);
+        antes.poe_profundidade(3, 0.25);
+        antes.poe_profundidade(7, 0.75);
+        antes.poe_stencil(5, 9);
 
         let mut secoes = Secoes::nova();
         antes.grava(&mut secoes);
@@ -5215,14 +7343,11 @@ mod testes_do_estado_de_gl {
         let mut depois = GlState::new(4, 2);
         depois.restaura(&leitor).expect("restaurou");
 
-        assert_eq!(depois.color.len(), 8);
-        assert_eq!(depois.color[0], [1, 2, 3, 4], "o primeiro pixel da cor");
-        assert_eq!(depois.color[7], [5, 6, 7, 8], "o último pixel da cor");
-        assert_eq!(depois.depth.len(), 8);
-        assert_eq!(depois.depth[3], 0.25, "a profundidade é f32");
-        assert_eq!(depois.depth[7], 0.75);
-        assert_eq!(depois.stencil.len(), 8);
-        assert_eq!(depois.stencil[5], 9);
+        assert_eq!(depois.cor_em(0), [1, 2, 3, 4], "o primeiro pixel da cor");
+        assert_eq!(depois.cor_em(7), [5, 6, 7, 8], "o último pixel da cor");
+        assert_eq!(depois.profundidade_em(3), 0.25, "a profundidade é f32");
+        assert_eq!(depois.profundidade_em(7), 0.75);
+        assert_eq!(depois.stencil_em(5), 9);
     }
 
     /// **Um buffer maior que a superfície é recusado**, e não alocado.

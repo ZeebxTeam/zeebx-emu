@@ -54,6 +54,14 @@ pub trait CpuBackend {
     /// Prepara o núcleo para executar com este mapa de memória.
     fn reset(&mut self, mem: &GuestMemory) -> Result<(), CpuError>;
 
+    /// Solta a cópia do mapa que o [`reset`](Self::reset) guardou.
+    ///
+    /// A troca de applet monta a sessão seguinte enquanto esta ainda existe. O heap do guest
+    /// é a maior peça, e na Vita uma alocação que não cabe aborta o processo: a troca para o
+    /// Zeetris parou ao pedir 4.718.592 bytes com o jogo anterior ainda vivo. Quem chama já
+    /// decidiu que este jogo não volta a rodar.
+    fn solta_o_mapa(&mut self);
+
     fn read_reg(&self, reg: Reg) -> u32;
     fn write_reg(&mut self, reg: Reg, value: u32);
 
@@ -270,19 +278,20 @@ impl std::fmt::Display for CpuError {
 
 impl std::error::Error for CpuError {}
 
-#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "vita")))]
 pub mod dynarmic;
 
 /// Interpretador A32/T32. Entra onde o JIT não pode emitir código que o processo execute: no
-/// `wasm32` o navegador não salta para o bloco, e no iOS o kernel recusa a página executável.
-/// Também entra nos testes do próprio arquivo. O desktop continua no JIT.
-#[cfg(any(test, target_arch = "wasm32", target_os = "ios"))]
+/// `wasm32` o navegador não salta para o bloco, no iOS o kernel recusa a página executável, e
+/// na Vita o host é Cortex-A9 — o dynarmic não tem backend ARMv7. Também entra nos testes do
+/// próprio arquivo. O desktop continua no JIT.
+#[cfg(any(test, target_arch = "wasm32", target_os = "ios", target_os = "vita"))]
 pub mod interpretador;
 
 /// O alias que o resto do código usa para pedir "o backend padrão".
-#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "vita")))]
 pub type BackendPadrao = dynarmic::DynarmicCpu;
-#[cfg(any(target_arch = "wasm32", target_os = "ios"))]
+#[cfg(any(target_arch = "wasm32", target_os = "ios", target_os = "vita"))]
 pub type BackendPadrao = interpretador::Interpretador;
 
 // As constantes da faixa de vtables do BREW são parte do contrato entre o backend e o despachante.
