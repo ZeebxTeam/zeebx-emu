@@ -1185,22 +1185,37 @@ fn contribuicao_filtrada(voz: &Voz, tabelas: &[Tabela]) -> Option<(usize, Vec<f3
     if len == 0 {
         return None;
     }
-    let mut buf = vec![0.0f32; len];
+    // O `vec!` não devolve erro: na Vita ele aborta o processo. O dump do Double
+    // Dragon morreu neste fio, pedindo 10300 bytes — 2575 amostras de `f32`, uma
+    // percussão curta — com o heap já sem um buraco desse tamanho.
+    let mut buf = Vec::new();
+    if buf.try_reserve_exact(len).is_err() {
+        return None;
+    }
+    buf.resize(len, 0.0);
     let mut deslocada = *voz;
     deslocada.inicio = 0;
     deslocada.solta = deslocada.solta.map(|s| s.saturating_sub(base));
-    toca_voz_em(&deslocada, &mut buf, tabelas, voz.inicio);
+    // O buffer é só desta nota. A segunda cópia, do tamanho da primeira, era o
+    // pedido que não cabia.
+    toca_voz_em(&deslocada, &mut buf, tabelas, voz.inicio, true);
     Some((base, buf))
 }
 
 /// Soma uma voz no buffer, do começo dela até a envoltória zerar.
 fn toca_voz(voz: &Voz, samples: &mut [f32], tabelas: &[Tabela]) {
-    toca_voz_em(voz, samples, tabelas, voz.inicio);
+    toca_voz_em(voz, samples, tabelas, voz.inicio, false);
 }
 
 /// `semente` é a posição original da nota. O caminho curto recomeça o buffer em
 /// zero para não alocar a música inteira, e sem isto o ruído da percussão mudava.
-fn toca_voz_em(voz: &Voz, samples: &mut [f32], tabelas: &[Tabela], semente: usize) {
+fn toca_voz_em(
+    voz: &Voz,
+    samples: &mut [f32],
+    tabelas: &[Tabela],
+    semente: usize,
+    exclusivo: bool,
+) {
     let taxa = RATE as f32;
     let solta = voz
         .solta
@@ -1234,14 +1249,20 @@ fn toca_voz_em(voz: &Voz, samples: &mut [f32], tabelas: &[Tabela], semente: usiz
         return;
     };
 
-    // Voz sem filtro entra direto no buffer. Voz filtrada é montada à parte e depois escalada,
-    // porque filtrar tira energia — um passa-baixa em 120 Hz devolve um vinte avos do ruído — e
-    // sem corrigir isso o número da tabela não quer dizer nada. Percussão é curta, então o
-    // buffer extra é pequeno.
-    let mut voz_filtrada = match voz.filtro {
-        Filtro::Nenhum => Vec::new(),
-        _ => Vec::with_capacity(trecho.len()),
-    };
+    // Voz sem filtro entra direto no buffer. Voz filtrada é escalada depois, porque
+    // filtrar tira energia — um passa-baixa em 120 Hz devolve um vinte avos do ruído.
+    // Quando o buffer é só desta nota, a escala é nele mesmo. No buffer compartilhado
+    // a nota vai para uma cópia, para não apagar o que já estava somado. Se essa cópia
+    // não couber, a nota fica de fora: o `with_capacity` abortaria o processo.
+    let no_lugar = exclusivo && !matches!(voz.filtro, Filtro::Nenhum);
+    let mut voz_filtrada = Vec::new();
+    if !matches!(voz.filtro, Filtro::Nenhum)
+        && !no_lugar
+        && voz_filtrada.try_reserve_exact(trecho.len()).is_err()
+    {
+        return;
+    }
+    let mut escritos = 0usize;
     for (i, destino) in trecho.iter_mut().enumerate() {
         let t = i as f32 / taxa;
         let envoltoria = voz.envoltoria(t, solta);
@@ -1271,8 +1292,27 @@ fn toca_voz_em(voz: &Voz, samples: &mut [f32], tabelas: &[Tabela], semente: usiz
         };
         match voz.filtro {
             Filtro::Nenhum => *destino += valor * envoltoria * voz.amplitude,
+            _ if no_lugar => {
+                *destino = valor * envoltoria;
+                escritos = i + 1;
+            }
             _ => voz_filtrada.push(valor * envoltoria),
         }
+    }
+    if no_lugar {
+        let pedaco = &mut trecho[..escritos];
+        if !pedaco.is_empty() {
+            let energia =
+                (pedaco.iter().map(|s| f64::from(s * s)).sum::<f64>() / pedaco.len() as f64).sqrt()
+                    as f32;
+            if energia > 0.0 {
+                let fator = voz.amplitude * 0.7 / energia;
+                for amostra in pedaco {
+                    *amostra *= fator;
+                }
+            }
+        }
+        return;
     }
     if voz_filtrada.is_empty() {
         return;
