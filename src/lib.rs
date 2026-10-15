@@ -1,6 +1,10 @@
 //! Núcleo reutilizável do Zeebx.
 //!
 //! O motor é compartilhado pelo desktop, Libretro, headless, Android e iOS.
+#![cfg_attr(
+    target_os = "vita",
+    feature(stdarch_arm_neon_intrinsics, arm_target_feature)
+)]
 
 pub mod audio;
 pub mod brew;

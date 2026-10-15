@@ -50,7 +50,15 @@ compilar_local() {
 	# O gcc do vitasdk já aponta o Cortex-A9. `-mword-relocations` é o que o
 	# Makefile.vita do RetroArch usa para o objeto caber no executável grande.
 	# `compat/` cobre o `sys/ioctl.h` que a newlib não traz e o sqlite inclui.
-	local cflags="-march=armv7-a -mfpu=neon -mfloat-abi=hard -mword-relocations -DVITA -I${AQUI}/compat"
+	#
+	# Isto só alcança o sqlite e o stub de POSIX. O interpretador e o
+	# rasterizador são Rust: o alvo `armv7-sony-vita-newlibeabihf` já é
+	# Cortex-A9, NEON, VFP hard-float e Thumb-2, e o release compila em
+	# `opt-level = 3` com LTO fino. `-marm` trocaria o Thumb-2 por ARM de 32
+	# bits no objeto C, que não é o quadro; no Rust alargaria o laço e cabe
+	# pior nos 32 KiB de cache de instrução do A9. `-ffast-math` mudaria o
+	# teste de profundidade, que compara z exato.
+	local cflags="-march=armv7-a -mtune=cortex-a9 -mfpu=neon -mfloat-abi=hard -mword-relocations -O2 -DVITA -I${AQUI}/compat"
 	export CFLAGS_armv7_sony_vita_newlibeabihf="${cflags}"
 	export CXXFLAGS_armv7_sony_vita_newlibeabihf="${cflags}"
 	# Sem mmap e sem WAL: a newlib não tem `sys/mman.h`. Tabela temporária em

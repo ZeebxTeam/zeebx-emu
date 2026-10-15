@@ -3324,7 +3324,13 @@ pub extern "C" fn retro_unserialize(data: *const c_void, size: usize) -> bool {
         return false;
     };
     match estado.session.restaura_estado(arquivo) {
-        Ok(()) => true,
+        Ok(()) => {
+            // A assinatura agora acompanha o contador de escritas. Um estado antigo pode
+            // trazer o mesmo número do quadro que estava na tela, e sem isto o frontend
+            // repetiria a imagem de antes da carga.
+            estado.ultima_assinatura = None;
+            true
+        }
         Err(erro) => {
             aviso(&format!("Zeebx: o save state foi recusado: {erro}"));
             false
