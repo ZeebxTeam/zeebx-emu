@@ -834,11 +834,7 @@ mod tests {
     #[test]
     fn no_avanco_a_voz_anda_na_velocidade_do_jogo() {
         let quadros = 9_000usize;
-        let som = Arc::new(Sound {
-            samples: vec![0.5; quadros],
-            rate: 9_000,
-            channels: 1,
-        });
+        let som = Arc::new(Sound::novo(9_000, 1, vec![0.5; quadros]));
         let mixer = mixer(9_000);
         mixer.define_avanco(3.0, true);
         mixer.play(4, som, 1.0, 1);

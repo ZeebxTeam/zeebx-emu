@@ -136,7 +136,7 @@ mod tests {
     fn silenciar_nao_deixa_o_botao_de_fechar_abrir_um_jogo() {
         let mut navegacao = Navegacao::default();
         navegacao.silencia();
-        let abrir = [false, false, false, false, true, false];
+        let abrir = [false, false, false, false, true, false, false, false];
         assert!(navegacao.comandos(abrir, Instant::now()).is_empty());
     }
 
