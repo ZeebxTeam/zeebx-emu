@@ -160,6 +160,8 @@ impl App {
                     }
                     0
                 }
+                // As configurações e os detalhes por jogo ainda são só do Qt.
+                (Comando::Configurar | Comando::Inspecionar, _) => 0,
             };
             if passo != 0 {
                 self.vitrine.cursor = match self.settings.biblioteca {

@@ -56,6 +56,7 @@ pub mod qobject {
         #[qproperty(bool, screenshot_falhou, cxx_name = "screenshotFalhou")]
         #[qproperty(QString, screenshot_pasta, cxx_name = "screenshotPasta")]
         #[qproperty(i32, screenshot_serie, cxx_name = "screenshotSerie")]
+        #[qproperty(QString, indicadores)]
         type TelaDoJogo = super::TelaDoJogoRust;
 
         /// Uma volta: entrada, emulação e, se a tela mudou, um quadro novo.
@@ -98,6 +99,23 @@ pub mod qobject {
         #[cxx_name = "modoDaJanela"]
         fn modo_da_janela(self: &Self) -> i32;
 
+        /// A largura em que a janela do jogo estava quando foi fechada, em pontos, ou zero
+        /// sem tamanho guardado. Ver `graphics.tamanho_da_janela_do_jogo`.
+        #[qinvokable]
+        #[cxx_name = "larguraDaJanela"]
+        fn largura_da_janela(self: &Self) -> f64;
+
+        /// A altura em que a janela do jogo estava quando foi fechada, em pontos, ou zero
+        /// sem tamanho guardado. Ver `graphics.tamanho_da_janela_do_jogo`.
+        #[qinvokable]
+        #[cxx_name = "alturaDaJanela"]
+        fn altura_da_janela(self: &Self) -> f64;
+
+        /// Guarda o tamanho atual da janela do jogo. Como na principal: depois de um tempo
+        /// sem mudar de tamanho, e ao fechar. Ver `graphics.tamanho_da_janela_do_jogo`.
+        #[qinvokable]
+        #[cxx_name = "guardaTamanhoDaJanela"]
+        fn guarda_tamanho_da_janela(self: &Self, largura: f64, altura: f64);
 
         /// O jogo saiu sozinho e não há para onde voltar: a janela fecha, como a do egui.
         #[qsignal]
@@ -164,6 +182,8 @@ pub struct TelaDoJogoRust {
     screenshot_falhou: bool,
     screenshot_pasta: QString,
     screenshot_serie: i32,
+    /// O "▶▶ 3x" do fast-forward e o "Turbo"; vazio esconde.
+    indicadores: QString,
     /// A tela que foi para o `ItemDoQuadro` como imagem: série e escritas. Igual, não há o que
     /// subir. `None` quando o que está lá é a textura da placa, ou nada.
     chave: Option<(u64, u64)>,
@@ -209,7 +229,7 @@ impl qobject::TelaDoJogo {
         let (volta, mostra, destino, suave, depuracao) = nucleo::com(|nucleo| {
             let volta = nucleo.passo(area);
             let depuracao = nucleo.depuracao();
-            let graficos = &nucleo.settings.graphics;
+            let graficos = &nucleo.valendo().graphics;
             // O quadro largo experimental tem a proporção dele; o resto é o 4:3 do console.
             let (mostra, aspecto) = match nucleo.quadro() {
                 Some(Quadro::Placa(quadro)) => (
@@ -296,6 +316,10 @@ impl qobject::TelaDoJogo {
             let serie = self.screenshot_serie().wrapping_add(1);
             self.as_mut().set_screenshot_serie(serie);
         }
+        let indicadores = QString::from(&volta.indicadores);
+        if self.indicadores() != &indicadores {
+            self.as_mut().set_indicadores(indicadores);
+        }
         let parou = QString::from(&volta.parou);
         if self.parou() != &parou {
             self.as_mut().set_parou(parou);
@@ -350,6 +374,35 @@ impl qobject::TelaDoJogo {
         nucleo::com(|nucleo| modo(nucleo.settings.graphics.janela_do_jogo))
     }
 
+    pub fn largura_da_janela(&self) -> f64 {
+        nucleo::com(|nucleo| {
+            nucleo
+                .settings
+                .graphics
+                .tamanho_da_janela_do_jogo
+                .map_or(0.0, |[largura, _]| largura as f64)
+        })
+    }
+
+    pub fn altura_da_janela(&self) -> f64 {
+        nucleo::com(|nucleo| {
+            nucleo
+                .settings
+                .graphics
+                .tamanho_da_janela_do_jogo
+                .map_or(0.0, |[_, altura]| altura as f64)
+        })
+    }
+
+    pub fn guarda_tamanho_da_janela(&self, largura: f64, altura: f64) {
+        nucleo::com(|nucleo| {
+            nucleo.settings.graphics.tamanho_da_janela_do_jogo =
+                (largura > 0.0 && altura > 0.0).then_some([largura as f32, altura as f32]);
+            if let Err(erro) = nucleo.settings.save() {
+                eprintln!("não deu para guardar as configurações: {erro}");
+            }
+        })
+    }
 }
 
 /// O `QImage` construído sobre bytes próprios exige linhas alinhadas a quatro bytes. Uma

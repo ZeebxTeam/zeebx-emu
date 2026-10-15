@@ -652,6 +652,24 @@ impl CpuBackend for DynarmicCpu {
         Ok(())
     }
 
+    fn suja_pilha(&mut self, addr: u32, len: u32) -> Result<(), CpuError> {
+        // Sem a invalidação de propósito: pilha nunca virou código (ver o traço). A marcação
+        // paga `jit_mut` e dois empréstimos por chamada de API para sair sempre vazia, e era
+        // isso que levava os 30% — medido no `bench` do Crash Nitro Kart, que volta de 296%
+        // para 368% só sem ela.
+        debug_assert!(
+            self.jit_mut().is_ok_and(|jit| {
+                let fim = addr.saturating_add(len.saturating_sub(1));
+                ((addr / PAGE)..=(fim / PAGE)).all(|p| !jit.paginas_executadas.contem(p))
+            }),
+            "sujeira de pilha em {addr:#010x}+{len} caiu em página executada"
+        );
+        self.memoria
+            .borrow_mut()
+            .fill(addr, 0, len)
+            .map_err(|e| CpuError(e.to_string()))
+    }
+
     fn run(&mut self, pc: u32, max_instructions: u64) -> Result<StopReason, CpuError> {
         let jit = self.jit_mut()?;
         // **O bit 0 do endereço é o modo, não parte do endereço.** O despachante retoma no `lr`

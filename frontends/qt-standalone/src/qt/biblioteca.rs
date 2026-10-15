@@ -72,6 +72,15 @@ pub mod qobject {
         #[qinvokable]
         fn abre(self: &Biblioteca, linha: i32) -> QString;
 
+        /// A chave das coisas do jogo da linha, como as configurações dele. Vazia se a linha não
+        /// existe. Ver `zeebx::library::chave_do_jogo`.
+        #[qinvokable]
+        fn chave(self: &Biblioteca, linha: i32) -> QString;
+
+        /// O que a janela de detalhes mostra do jogo da linha.
+        #[qinvokable]
+        fn detalhes(self: &Biblioteca, linha: i32) -> QMap_QString_QVariant;
+
         /// Abre a Z-Wheel. Devolve vazio, ou o motivo de não ter aberta.
         #[qinvokable]
         #[cxx_name = "abreZWheel"]
@@ -92,6 +101,26 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "modoDaJanela"]
         fn modo_da_janela(self: &Biblioteca) -> i32;
+
+        /// A largura em que a janela principal estava quando foi fechada, em pontos, ou zero
+        /// sem tamanho guardado. Ver `graphics.tamanho_da_janela`.
+        #[qinvokable]
+        #[cxx_name = "larguraDaJanela"]
+        fn largura_da_janela(self: &Biblioteca) -> f64;
+
+        /// A altura em que a janela principal estava quando foi fechada, em pontos, ou zero
+        /// sem tamanho guardado. Ver `graphics.tamanho_da_janela`.
+        #[qinvokable]
+        #[cxx_name = "alturaDaJanela"]
+        fn altura_da_janela(self: &Biblioteca) -> f64;
+
+        /// Guarda o tamanho atual da janela principal. A janela chama isto depois de um
+        /// tempo sem mudar de tamanho, e ao fechar — maximizada ou em tela cheia, o tamanho
+        /// é o da tela, e não escolha do usuário, e a janela não chama. Ver
+        /// `graphics.tamanho_da_janela`.
+        #[qinvokable]
+        #[cxx_name = "guardaTamanhoDaJanela"]
+        fn guarda_tamanho_da_janela(self: &Biblioteca, largura: f64, altura: f64);
 
         /// Como a biblioteca aparece: 0 em grade, 1 no slider. Ver `biblioteca` nas
         /// configurações.
@@ -173,6 +202,26 @@ const QUADRO_DA_CAPA: [f32; 2] = [112.0, 145.0];
 pub struct BibliotecaRust {
     contagem: QString,
     vazio: QString,
+}
+
+/// O arquivo do jogo de uma linha da lista.
+fn caminho_da_linha(nucleo: &nucleo::Nucleo, linha: i32) -> Option<PathBuf> {
+    let linha = usize::try_from(linha).ok()?;
+    let &(_, indice) = nucleo.lista.get(linha)?;
+    Some(nucleo.jogos[indice].path.clone())
+}
+
+/// Um tamanho de arquivo para gente ler: "512 KB", "34,2 MB" — ou "34.2 MB" em inglês.
+fn tamanho_legivel(bytes: u64, virgula: bool) -> String {
+    const MB: f64 = 1024.0 * 1024.0;
+    let texto = match bytes {
+        0..1_048_576 => format!("{} KB", bytes.div_ceil(1024)),
+        _ => format!("{:.1} MB", bytes as f64 / MB),
+    };
+    match virgula {
+        true => texto.replace('.', ","),
+        false => texto,
+    }
 }
 
 /// O resultado de uma abertura, como o QML o lê: vazio é sucesso.
@@ -318,6 +367,35 @@ impl qobject::Biblioteca {
         }))
     }
 
+    pub fn chave(&self, linha: i32) -> QString {
+        let caminho = nucleo::com(|nucleo| caminho_da_linha(nucleo, linha));
+        QString::from(caminho.and_then(|c| zeebx::library::chave_do_jogo(&c)).unwrap_or_default())
+    }
+
+    pub fn detalhes(&self, linha: i32) -> QMap<QMapPair_QString_QVariant> {
+        let mut detalhes = self.item(linha);
+        let Some(caminho) = nucleo::com(|nucleo| caminho_da_linha(nucleo, linha)) else {
+            return detalhes;
+        };
+        let chave = zeebx::library::chave_do_jogo(&caminho).unwrap_or_default();
+        let indice = self.index(linha, 0, &QModelIndex::default());
+        let texto = |texto: &str| QVariant::from(&QString::from(texto));
+        detalhes.insert(QString::from("classe"), self.data(&indice, CLASSE));
+        detalhes.insert(QString::from("caminho"), texto(&caminho.display().to_string()));
+        detalhes.insert(
+            QString::from("modulo"),
+            texto(&zeebx::library::id_do_modulo(&caminho).unwrap_or_default()),
+        );
+        let bytes = std::fs::metadata(&caminho).map(|m| m.len()).unwrap_or(0);
+        let (personalizado, virgula) = nucleo::com(|nucleo| {
+            (nucleo.personalizado(&chave), !nucleo.catalogo.current().starts_with("en"))
+        });
+        detalhes.insert(QString::from("tamanho"), texto(&tamanho_legivel(bytes, virgula)));
+        detalhes.insert(QString::from("personalizado"), QVariant::from(&personalizado));
+        detalhes.insert(QString::from("chave"), texto(&chave));
+        detalhes
+    }
+
     pub fn abre_z_wheel(&self) -> QString {
         resposta(nucleo::com(|nucleo| {
             let caminho = nucleo
@@ -340,6 +418,28 @@ impl qobject::Biblioteca {
 
     pub fn modo_da_janela(&self) -> i32 {
         nucleo::com(|nucleo| super::ponte::modo(nucleo.settings.graphics.janela))
+    }
+
+    pub fn largura_da_janela(&self) -> f64 {
+        nucleo::com(|nucleo| {
+            nucleo.settings.graphics.tamanho_da_janela.map_or(0.0, |[largura, _]| largura as f64)
+        })
+    }
+
+    pub fn altura_da_janela(&self) -> f64 {
+        nucleo::com(|nucleo| {
+            nucleo.settings.graphics.tamanho_da_janela.map_or(0.0, |[_, altura]| altura as f64)
+        })
+    }
+
+    pub fn guarda_tamanho_da_janela(&self, largura: f64, altura: f64) {
+        nucleo::com(|nucleo| {
+            nucleo.settings.graphics.tamanho_da_janela =
+                (largura > 0.0 && altura > 0.0).then_some([largura as f32, altura as f32]);
+            if let Err(erro) = nucleo.settings.save() {
+                eprintln!("não deu para guardar as configurações: {erro}");
+            }
+        })
     }
 
     pub fn modo_da_biblioteca(&self) -> i32 {
@@ -388,6 +488,8 @@ impl qobject::Biblioteca {
                 Comando::Direita => 3,
                 Comando::Abrir => 4,
                 Comando::ZWheel => 5,
+                Comando::Configurar => 6,
+                Comando::Inspecionar => 7,
             })
             .collect();
         QList::from(codigos)

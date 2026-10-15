@@ -3,8 +3,8 @@ Versão considerada na análise: v0.4.1 (em desenvolvimento)
 
 | Status | Legenda | Jogos | % |
 |---|---|---|---|
-| ✅ | (compatível) | 56 | 93,3% |
-| 🔄 | (roda com ressalvas) | 3 | 5,0% |
+| ✅ | (compatível) | 55 | 91,7% |
+| 🔄 | (roda com ressalvas) | 4 | 6,7% |
 | ❌ | (incompatível) | 1 | 1,7% |
 
 
@@ -39,7 +39,7 @@ Versão considerada na análise: v0.4.1 (em desenvolvimento)
 | Iron Sight | ✅ | |
 | Karnovs Revenge | ✅ | Emulador de arcade embutido, com som |
 | Magical Drop 3 | ✅ | Emulador de arcade embutido, com som |
-| Need For Speed - Carbon - Domine a Cidade | ✅ | |
+| Need For Speed - Carbon - Domine a Cidade | 🔄 | Jogadores relatam que, depois das corridas do tutorial, o jogo trava num erro e não dá para avançar ([#35](https://github.com/ZeebxTeam/zeebx-emu/issues/35)) |
 | Pac-Mania | ✅ | |
 | Peggle | ✅ | |
 | Powerboat Challenge | ✅ | Joga; menus, seleção de personagem e ilha, e o save de opções persiste |

@@ -28,14 +28,41 @@ ApplicationWindow {
     // O jogo pedido na linha de comando, se houve: abre direto, sem passar pela lista.
     required property string jogoInicial
 
-    width: 960
-    height: 720
+    width: larguraGuardada > 0 ? larguraGuardada : 960
+    height: alturaGuardada > 0 ? alturaGuardada : 720
     minimumWidth: 480
     minimumHeight: 360
     title: "Zeebx"
 
+    // O tamanho em que a janela foi fechada é o tamanho em que ela abre. Chamadas de
+    // função não têm sinal de mudança: avaliam uma vez, na montagem, que é quando valem.
+    readonly property real larguraGuardada: biblioteca.larguraDaJanela()
+    readonly property real alturaGuardada: biblioteca.alturaDaJanela()
+
+    // E o contrário: arrasta, a janela guarda. Em tela cheia ou maximizada, o tamanho é o da
+    // tela, e não escolha do usuário — aí não se guarda.
+    function guardaTamanho() {
+        if (visibility === Window.Windowed)
+            biblioteca.guardaTamanhoDaJanela(width, height)
+    }
+
+    // Arrastar a borda passa por dezenas de tamanhos por segundo, e cada um escreveria o
+    // `settings.json` inteiro. A gravação espera a mão parar.
+    onWidthChanged: filaDaGravacao.restart()
+    onHeightChanged: filaDaGravacao.restart()
+
+    Timer {
+        id: filaDaGravacao
+        interval: 500
+        onTriggered: principal.guardaTamanho()
+    }
+
     // Fechar a biblioteca encerra tudo, com ou sem jogo aberto — como no egui.
-    onClosing: Qt.quit()
+    onClosing: {
+        filaDaGravacao.stop()
+        principal.guardaTamanho()
+        Qt.quit()
+    }
 
     Component.onCompleted: {
         aplicaModo()
@@ -77,6 +104,23 @@ ApplicationWindow {
         return emSlider ? slider.linha(slider.cursor) : grade.currentIndex
     }
 
+    // As configurações próprias do jogo da linha: a mesma janela de configurações, só com as abas
+    // que valem por jogo. Ver `Nucleo::com_o_jogo`.
+    function configuraJogo(linha) {
+        const chave = biblioteca.chave(linha)
+        if (chave !== "")
+            configuracoesDoJogo.abreDoJogo(chave, biblioteca.item(linha).titulo)
+    }
+
+    // O que se sabe do jogo da linha, num diálogo.
+    function inspecionaJogo(linha) {
+        if (biblioteca.linhas() === 0)
+            return
+        detalhes.linha = linha
+        detalhes.dados = biblioteca.detalhes(linha)
+        detalhes.open()
+    }
+
     // A busca ou a varredura refizeram a lista: a escolha volta ao primeiro, sem a animação do
     // slider atravessar a lista.
     function recomeca() {
@@ -112,6 +156,16 @@ ApplicationWindow {
         visible: false
     }
 
+    // As configurações de um jogo só. Uma janela à parte, e não a de cima no modo do jogo: as
+    // duas podem estar abertas, e cada uma edita o que é seu.
+    JanelaDeConfiguracoes {
+        id: configuracoesDoJogo
+
+        biblioteca: biblioteca
+        principal: principal
+        visible: false
+    }
+
     JanelaDeSaves {
         id: saves
 
@@ -139,6 +193,7 @@ ApplicationWindow {
     // abriria um jogo sem querer. O mouse continua valendo, como no egui. Toda janela que abrir
     // por cima da principal entra aqui.
     readonly property bool sobreposta: jogo.visible || configuracoes.visible || saves.visible
+                                       || configuracoesDoJogo.visible || detalhes.visible
                                        || boasVindas.visible || novaVersao.visible
 
     // O controle não gera evento no Qt, como não gerava no egui: enquanto a biblioteca está à
@@ -164,6 +219,10 @@ ApplicationWindow {
             for (const codigo of biblioteca.comandos(escutando)) {
                 if (codigo === 5)
                     principal.mostra(biblioteca.abreZWheel())
+                else if (codigo === 6)
+                    principal.configuraJogo(principal.escolhido())
+                else if (codigo === 7)
+                    principal.inspecionaJogo(principal.escolhido())
                 else
                     principal.vista.comando(codigo)
             }
@@ -206,13 +265,23 @@ ApplicationWindow {
             }
 
             Button {
+                id: botaoZWheel
+
                 focusPolicy: Qt.NoFocus
                 text: "▶ " + tr("nav.z_wheel")
                 enabled: principal.depende([configuracoes.cfg.versao], biblioteca.temZWheel())
                 onClicked: principal.mostra(biblioteca.abreZWheel())
-                ToolTip.visible: hovered
-                ToolTip.delay: 500
-                ToolTip.text: tr(enabled ? "nav.z_wheel.hint" : "nav.z_wheel.missing")
+                // O teto de largura é o dos cartões (GradeDaBiblioteca.qml:133): sem ele, a dica
+                // comprida saía numa linha só, mais larga que a tela.
+                ToolTip {
+                    visible: botaoZWheel.hovered
+                    delay: 500
+                    width: Math.min(implicitWidth, 320)
+                    contentItem: Label {
+                        wrapMode: Text.Wrap
+                        text: tr(botaoZWheel.enabled ? "nav.z_wheel.hint" : "nav.z_wheel.missing")
+                    }
+                }
             }
 
             // A busca: filtra a lista pelo nome, sem ligar para acentos. Esc limpa; o Enter joga
@@ -232,12 +301,20 @@ ApplicationWindow {
                 }
                 Keys.onReturnPressed: if (!principal.sobreposta) principal.mostra(biblioteca.abre(principal.escolhido()))
                 Keys.onEnterPressed: if (!principal.sobreposta) principal.mostra(biblioteca.abre(principal.escolhido()))
-                ToolTip.visible: hovered
-                ToolTip.delay: 500
-                ToolTip.text: tr("nav.search.hint")
+                ToolTip {
+                    visible: busca.hovered
+                    delay: 500
+                    width: Math.min(implicitWidth, 320)
+                    contentItem: Label {
+                        wrapMode: Text.Wrap
+                        text: tr("nav.search.hint")
+                    }
+                }
             }
 
             ToolButton {
+                id: botaoLimpaBusca
+
                 focusPolicy: Qt.NoFocus
                 text: "✕"
                 visible: busca.text !== ""
@@ -246,8 +323,14 @@ ApplicationWindow {
                     busca.text = ""
                     principal.vista.forceActiveFocus()
                 }
-                ToolTip.visible: hovered
-                ToolTip.text: tr("nav.search.clear")
+                ToolTip {
+                    visible: botaoLimpaBusca.hovered
+                    width: Math.min(implicitWidth, 320)
+                    contentItem: Label {
+                        wrapMode: Text.Wrap
+                        text: tr("nav.search.clear")
+                    }
+                }
             }
 
             Item {
@@ -270,12 +353,20 @@ ApplicationWindow {
             // próprio banco. Testar rede com isso custa um dia por tentativa, então o botão recua
             // a data em um dia.
             Button {
+                id: botaoLiberaSync
+
                 focusPolicy: Qt.NoFocus
                 text: tr("nav.unlock_sync")
                 onClicked: recado.text = biblioteca.liberaSincronizacao()
-                ToolTip.visible: hovered
-                ToolTip.delay: 500
-                ToolTip.text: tr("nav.unlock_sync.hint")
+                ToolTip {
+                    visible: botaoLiberaSync.hovered
+                    delay: 500
+                    width: Math.min(implicitWidth, 320)
+                    contentItem: Label {
+                        wrapMode: Text.Wrap
+                        text: tr("nav.unlock_sync.hint")
+                    }
+                }
             }
         }
 
@@ -316,7 +407,7 @@ ApplicationWindow {
                 horizontalAlignment: Text.AlignRight
                 elide: Text.ElideLeft
                 opacity: 0.6
-                text: tr("library.controls_hint")
+                text: tr("library.controls_hint") + " · " + tr("library.pad_game")
             }
         }
 
@@ -361,6 +452,8 @@ ApplicationWindow {
             escutando: !principal.sobreposta
             biblioteca: biblioteca
             onAbre: (linha) => principal.mostra(biblioteca.abre(linha))
+            onConfigura: (linha) => principal.configuraJogo(linha)
+            onInspeciona: (linha) => principal.inspecionaJogo(linha)
         }
 
         SliderDaBiblioteca {
@@ -373,6 +466,107 @@ ApplicationWindow {
             escutando: !principal.sobreposta
             biblioteca: biblioteca
             onAbre: (linha) => principal.mostra(biblioteca.abre(linha))
+        }
+    }
+
+    // Os detalhes de um jogo: o que a biblioteca sabe dele, e o caminho para as configurações dele.
+    Dialog {
+        id: detalhes
+
+        property int linha: -1
+        property var dados: ({})
+
+        function campo(nome) {
+            return dados[nome] !== undefined ? dados[nome] : ""
+        }
+
+        anchors.centerIn: parent
+        width: Math.min(560, principal.width - 32)
+        modal: true
+        title: principal.tr("details.title").replace("{game}", campo("titulo"))
+
+        // **Sem layouts aqui dentro.** Texto que quebra linha dentro de layouts aninhados faz a
+        // altura depender da largura e a largura da altura: o diálogo não terminava de se
+        // arrumar e saía estreito, com o texto vazando. Com as larguras dadas, não há volta.
+        Item {
+            width: parent.width
+            implicitHeight: Math.max(capaDosDetalhes.height, fichaDosDetalhes.implicitHeight)
+
+            Image {
+                id: capaDosDetalhes
+
+                width: 112
+                height: 145
+                fillMode: Image.PreserveAspectFit
+                source: detalhes.campo("capa")
+                smooth: !detalhes.campo("capaNitida")
+            }
+
+            Column {
+                id: fichaDosDetalhes
+
+                x: capaDosDetalhes.width + 16
+                width: parent.width - x
+                spacing: 8
+
+                Repeater {
+                    // O rótulo em cima do valor, e não ao lado: o valor ganha a largura inteira.
+                    // O caminho quebra em qualquer lugar, porque não tem espaços onde quebrar.
+                    model: [
+                        { rotulo: "details.classid", valor: detalhes.campo("classe") || "—" },
+                        { rotulo: "details.module", valor: detalhes.campo("modulo") || "—" },
+                        { rotulo: "details.file", valor: detalhes.campo("caminho") },
+                        { rotulo: "details.size", valor: detalhes.campo("tamanho") },
+                        { rotulo: "details.custom",
+                          valor: principal.tr(detalhes.campo("personalizado") ? "details.custom.yes"
+                                                                              : "details.custom.no") },
+                    ]
+
+                    Column {
+                        required property var modelData
+
+                        width: fichaDosDetalhes.width
+
+                        Label {
+                            opacity: 0.6
+                            font.pixelSize: 11
+                            text: principal.tr(modelData.rotulo)
+                        }
+                        Label {
+                            width: parent.width
+                            wrapMode: Text.WrapAnywhere
+                            text: modelData.valor
+                        }
+                    }
+                }
+
+                Image {
+                    height: Math.min(64, sourceSize.height)
+                    fillMode: Image.PreserveAspectFit
+                    source: detalhes.campo("classificacao")
+                    visible: source !== ""
+                }
+                Label {
+                    width: parent.width
+                    wrapMode: Text.Wrap
+                    visible: text !== ""
+                    text: detalhes.campo("descricao")
+                }
+            }
+        }
+
+        footer: DialogButtonBox {
+            Button {
+                text: principal.tr("library.menu.configure")
+                onClicked: {
+                    detalhes.close()
+                    principal.configuraJogo(detalhes.linha)
+                }
+            }
+            Button {
+                text: principal.tr("details.close")
+                DialogButtonBox.buttonRole: DialogButtonBox.RejectRole
+            }
         }
     }
 

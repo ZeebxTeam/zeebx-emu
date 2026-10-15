@@ -218,7 +218,7 @@ impl Console {
             self.anteriores[*indice] = *pad;
         }
 
-        let limite = self.settings.graphics.speed_limit;
+        let ritmo = self.settings.velocidade.ritmo();
         let sessao = self.sessao.as_mut().expect("conferido acima");
         for (indice, pad) in portas {
             sessao.set_port_pad(indice, pad);
@@ -235,7 +235,12 @@ impl Console {
         // Uma tela intermediária à espera vai à tela primeiro, e o jogo não anda nesta volta.
         self.adiantado = false;
         if !sessao.mostra_quadro_intermediario() {
-            match sessao.step(fatia, limite) {
+            // Com janela, ela pintou no mesmo contexto desde a volta anterior, e o espelho de
+            // estado da placa não sabe: sem avisar, o jogo desenharia com o viewport, a tesoura
+            // e a mistura que ela deixou. Sem janela o contexto é próprio e isto não faz nada.
+            // Ver `Session::retoma_o_contexto`.
+            sessao.retoma_o_contexto();
+            match sessao.anda(fatia, &ritmo) {
                 Step::Stopped => return Fim::Acabou(sessao.stopped_reason().unwrap_or_default()),
                 Step::Ahead => self.adiantado = true,
                 Step::Presented | Step::Running => {}

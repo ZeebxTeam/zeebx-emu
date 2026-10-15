@@ -991,11 +991,16 @@ const MAX_TRACE: usize = 2000;
 /// passasse numa tela com texto.
 const MAX_TEXT: usize = 64;
 
-/// Teto de chamadas de API por execução. O orçamento de instruções não segura um laço que
-/// chama API a cada volta, porque ele é reiniciado a cada chamada atendida.
-/// O teto existe para um laço de repetição não travar o emulador, e é generoso porque um jogo
-/// 3D chama a API às centenas de milhares por segundo: só o Quake faz mais de trezentas
-/// chamadas de OpenGL por quadro.
+/// Teto de chamadas de API num trecho só — uma entrada no [`Machine::execute`], sem devolver a
+/// vez. O orçamento de instruções não segura um laço que chama API a cada volta, porque ele é
+/// reiniciado a cada chamada atendida. O teto existe para um laço de repetição não travar o
+/// emulador, e é generoso porque um jogo 3D chama a API às centenas de milhares por segundo: só
+/// o Quake faz mais de trezentas chamadas de OpenGL por quadro.
+///
+/// **Era por execução, e isso derrubava jogo saudável.** O contador nunca zerava: a umas 330 mil
+/// chamadas por segundo, os 200 milhões acabavam em dez minutos, e o jogo parava com "provável
+/// laço de repetição" no meio da corrida — a issue #70, no Ridge Racer. O que separa laço de
+/// jogo é não devolver a vez, e não o total acumulado.
 const MAX_CALLS: u64 = 200_000_000;
 
 /// Instruções por milissegundo do relógio virtual: o ARM11 do MSM7201A roda a 528 MHz, e o
@@ -1342,6 +1347,9 @@ struct OpenFile {
     /// Onde o arquivo aberto mora no host. Nem sempre é o que o `guest_path` resolve: a
     /// `tectoy.cfg` sem fim de vida é uma cópia no perfil do aparelho.
     caminho: std::path::PathBuf,
+    /// Se foi aberto para escrita. É o que impede o rewind de marcar um ponto no meio de uma
+    /// gravação: ver [`Machine::tem_arquivo_para_escrita`].
+    escrita: bool,
 }
 
 /// Um callback do guest: a função e o contexto que ela recebe.
@@ -2829,7 +2837,8 @@ pub struct Machine<C: CpuBackend> {
     banco_de_som: Option<std::sync::Arc<crate::audio::soundfont::Banco>>,
     /// Quantas vezes cada método foi chamado — o retrato do que o jogo usa.
     calls: BTreeMap<(u32, u32), u64>,
-    /// Total de chamadas atendidas, para aplicar o teto.
+    /// Total de chamadas atendidas desde que o jogo abriu. O teto olha a diferença dentro de um
+    /// trecho ([`MAX_CALLS`]); o total serve à estatística.
     calls_total: u64,
     /// Se o quadro **de agora** deve pular o desenho — 3D e a limpeza de tela, não a lógica.
     ///
@@ -3443,6 +3452,9 @@ impl<C: CpuBackend> Machine<C> {
         // primeira volta, porque ela repete a abertura enquanto ninguém toca e cada repetição
         // gasta orçamento.
         let comeco = self.cpu.instructions();
+        // Local, e não um contador que se zera: um callback atendido aqui dentro entra de novo no
+        // `execute`, e zerar na entrada dele esconderia o laço do trecho de fora.
+        let chamadas_no_comeco = self.calls_total;
         let teto = budget.saturating_mul(TETO_DE_TRECHO);
         self.orcamento = budget;
         loop {
@@ -3453,10 +3465,12 @@ impl<C: CpuBackend> Machine<C> {
                 return Ok(Outcome::Budget);
             }
             match self.cpu.run(pc, fatia)? {
-                StopReason::ApiCall { addr } if self.calls_total >= MAX_CALLS => {
+                StopReason::ApiCall { addr }
+                    if self.calls_total - chamadas_no_comeco >= MAX_CALLS =>
+                {
                     let _ = addr;
                     return Ok(Outcome::CallLimit {
-                        calls: self.calls_total,
+                        calls: self.calls_total - chamadas_no_comeco,
                     });
                 }
                 StopReason::ApiCall { addr } => match self.dispatch(addr)? {
@@ -3685,7 +3699,8 @@ impl<C: CpuBackend> Machine<C> {
         if let Some(piso) = piso
             && sp.wrapping_sub(GASTO) >= piso
         {
-            let _ = self.cpu.fill_mem(sp - GASTO, 0, GASTO);
+            // Sem invalidar o JIT: pilha não vira código (ver `CpuBackend::suja_pilha`).
+            let _ = self.cpu.suja_pilha(sp - GASTO, GASTO);
         }
     }
 

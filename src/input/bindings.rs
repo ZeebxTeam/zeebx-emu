@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::input::{self, Pad};
+use crate::velocidade::turbo::ModoDoTurbo;
 
 /// Uma origem de entrada no host.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -157,6 +158,17 @@ pub struct Player {
     /// A calibração do sensor de movimento que alimenta esta porta, para o Boomerang.
     #[serde(default)]
     pub calibracao_movimento: CalibracaoDeMovimento,
+    /// Como a tecla de turbo deste jogador funciona. A tecla mora em `buttons`, com o nome
+    /// [`crate::velocidade::turbo::BOTAO_DO_TURBO`]. Ver [`crate::velocidade::turbo`].
+    #[serde(default)]
+    pub turbo: ModoDoTurbo,
+    /// O botão que pulsa nos modos de botão único.
+    #[serde(default = "botao_padrao_do_turbo")]
+    pub botao_do_turbo: String,
+}
+
+fn botao_padrao_do_turbo() -> String {
+    crate::velocidade::turbo::BOTAO_PADRAO.to_string()
 }
 
 /// A correção de um acelerômetro do host: o que ele mede parado, de face para cima, vira
@@ -262,6 +274,8 @@ impl Default for Player {
             axes: BTreeMap::new(),
             direcional_nos_eixos: false,
             calibracao_movimento: CalibracaoDeMovimento::default(),
+            turbo: ModoDoTurbo::Desligado,
+            botao_do_turbo: botao_padrao_do_turbo(),
         }
     }
 }

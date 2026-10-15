@@ -27,6 +27,7 @@ mod seletor;
 mod sistema;
 mod tela;
 mod tema;
+mod toque;
 mod widgets;
 
 use std::collections::HashMap;
@@ -40,7 +41,7 @@ use zeebx::session::Session;
 use zeebx::storage::StoragePaths;
 use zeebx::ui::i18n::Catalog;
 use zeebx::ui::library::{self, Game};
-use zeebx::ui::settings::Settings;
+use zeebx::ui::settings::{ModoDosControlesNaTela, Settings};
 
 use entrada::Entrada;
 use tela::{Placa, Tela};
@@ -168,7 +169,7 @@ fn gira(app: AndroidApp, emulador: &mut Emulador) {
 
         app.poll_events(espera, |evento| match evento {
             PollEvent::Main(MainEvent::InitWindow { .. }) => {
-                let limitar = emulador.settings.graphics.speed_limit;
+                let limitar = emulador.settings.velocidade.limite_fps.limita_velocidade();
                 let feita = match placa.as_mut() {
                     // A segunda janela em diante reaproveita o contexto: é o que mantém vivos
                     // os objetos de GL que a sessão criou.
@@ -203,6 +204,8 @@ fn gira(app: AndroidApp, emulador: &mut Emulador) {
                 // controle. Se mantivermos o estado, a direção fica presa quando a atividade
                 // volta. No console, perder o aparelho equivale a soltar tudo.
                 emulador.pad = Pad::default();
+                emulador.sobreposicao.solta();
+                entrada.fisicos.clear();
                 visivel = false
             }
             PollEvent::Main(MainEvent::Destroy) => sair = true,
@@ -214,14 +217,28 @@ fn gira(app: AndroidApp, emulador: &mut Emulador) {
         }
 
         entrada.comeca_quadro();
+        // O dedo vai para os controles na tela só com o jogo rodando de fato. Com a pergunta do
+        // "voltar" aberta ele tem de alcançar os botões dela, que são do egui.
+        let no_jogo = emulador.onde == Onde::Jogo
+            && !emulador.confirmando
+            && emulador.settings.controles_na_tela.modo != ModoDosControlesNaTela::Nunca;
+        if !no_jogo {
+            emulador.sobreposicao.solta();
+        }
         if let Ok(mut fila) = app.input_events_iter() {
             // O iterador entrega um evento por chamada e quer a resposta na hora: `Handled`
             // diz ao Android que o evento morre aqui — é isso que impede o "voltar" de fechar
             // a atividade por baixo de nós.
             while fila.next(|evento| {
-                entrada.recebe(evento, &mut emulador.pad);
+                let sobreposicao = no_jogo.then_some(&mut emulador.sobreposicao);
+                entrada.recebe(evento, &mut emulador.pad, sobreposicao);
                 InputStatus::Handled
             }) {}
+        }
+        // Os botões físicos para os atalhos, e o que desceu agora para uma captura aberta.
+        emulador.fisicos.clone_from(&entrada.fisicos);
+        if let Some(nome) = entrada.ultimo_fisico {
+            emulador.capturou_botao(nome);
         }
         // O "voltar" do Android vale em qualquer tela. O botão 2 do controle vale em todas menos
         // no jogo, onde ele é do jogador -- ali quem fecha é o "voltar" do aparelho.
@@ -260,7 +277,7 @@ fn gira(app: AndroidApp, emulador: &mut Emulador) {
             &primitivas,
             &saida.textures_delta,
             saida.pixels_per_point,
-            emulador.settings.graphics.speed_limit,
+            emulador.settings.velocidade.limite_fps.limita_velocidade(),
         );
     }
 
@@ -280,6 +297,8 @@ pub enum Onde {
     SeletorDeBanco(PathBuf),
     /// Um jogo rodando.
     Jogo,
+    /// O editor dos controles na tela.
+    EditaToque,
 }
 
 /// O aplicativo inteiro: o que está na tela e o que sustenta cada tela.
@@ -362,6 +381,12 @@ pub struct Emulador {
     quadro_565: Option<(u64, u64, std::sync::Arc<[u8]>)>,
     /// Os botões apertados agora, alimentados pela fila nativa.
     pad: Pad,
+    /// Os controles desenhados na tela, e os botões que os dedos apertam neles.
+    sobreposicao: toque::Sobreposicao,
+    /// A peça que o editor está arrastando, e onde o dedo a pegou em relação ao centro dela.
+    arrastando: Option<(zeebx::input::toque::Peca, egui::Vec2)>,
+    /// A peça escolhida no editor, a que a barra de tamanho cresce e encolhe.
+    escolhida: Option<zeebx::input::toque::Peca>,
     /// O "voltar" foi apertado com um jogo aberto: a pergunta está na tela.
     confirmando: bool,
     /// O jogo está parado por escolha, e não por falha.
@@ -379,6 +404,21 @@ pub struct Emulador {
     /// Por que o último jogo não abriu, quando não abriu.
     erro: Option<String>,
     ultimo: Instant,
+    /// Os botões do controle físico apertados agora, pelo nome do desktop. Ver
+    /// [`entrada::Entrada::fisicos`].
+    fisicos: std::collections::HashSet<&'static str>,
+    /// O atalho do fast-forward, que se segura ou se alterna.
+    avanco: zeebx::velocidade::Interruptor,
+    /// Os pontos de retorno e o atalho do rewind.
+    rewind: zeebx::velocidade::rewind::ControleDoRewind,
+    /// O turbo do jogador 1, o único que o Android tem.
+    turbo: zeebx::velocidade::turbo::TurboDaPorta,
+    /// Se o fast-forward valeu na última volta, para o "▶▶" na tela.
+    avancando: bool,
+    /// O atalho esperando um botão do controle físico, na seção de ajustes.
+    capturando: Option<ajustes::AtalhoFisico>,
+    /// Um atalho acabou de ser capturado nesta rodada. Ver [`Emulador::capturou_botao`].
+    capturado_agora: bool,
 }
 
 impl Emulador {
@@ -451,6 +491,9 @@ impl Emulador {
             foco_da_barra: None,
             quadro_565: None,
             pad: Pad::default(),
+            sobreposicao: Default::default(),
+            arrastando: None,
+            escolhida: None,
             confirmando: false,
             pausado: false,
             estado_id: None,
@@ -460,6 +503,13 @@ impl Emulador {
             estado_mensagem: None,
             erro: None,
             ultimo: Instant::now(),
+            fisicos: Default::default(),
+            avanco: Default::default(),
+            rewind: Default::default(),
+            turbo: Default::default(),
+            avancando: false,
+            capturando: None,
+            capturado_agora: false,
         };
         emulador.recarrega();
         emulador
@@ -675,6 +725,11 @@ impl Emulador {
         self.confirmando = false;
         self.pausado = false;
         self.pad = Pad::default();
+        // Os pontos de retorno são do jogo que fechou; o alternar do turbo e do fast-forward
+        // não passam para o próximo.
+        self.rewind = Default::default();
+        self.avanco.desliga();
+        self.turbo.desliga();
         self.onde = Onde::Biblioteca;
     }
 
@@ -702,6 +757,11 @@ impl Emulador {
                 }
             }
             Onde::Ajustes => self.onde = Onde::Biblioteca,
+            Onde::EditaToque => {
+                self.arrastando = None;
+                self.escolhida = None;
+                self.onde = Onde::Ajustes;
+            }
             Onde::Biblioteca => {}
         }
     }
@@ -712,6 +772,7 @@ impl Emulador {
         match self.onde.clone() {
             Onde::Jogo => self.jogo(ctx),
             Onde::Ajustes => self.ajustes(ctx),
+            Onde::EditaToque => self.edita_toque(ctx),
             Onde::Seletor(atual) => self.seletor(ctx, &atual),
             Onde::SeletorDeBanco(atual) => self.seletor_de_banco(ctx, &atual),
             Onde::Biblioteca => self.biblioteca(ctx),

@@ -543,7 +543,29 @@ pub struct GpuState {
     /// Chamadas de estado enviadas e poupadas pelo espelho, para conferência.
     envios_de_estado: std::cell::Cell<u64>,
     poupancas_de_estado: std::cell::Cell<u64>,
+    /// O que vai para o relatório periódico do log. Ver [`GpuState::fecha_quadro`].
+    medida: Medida,
 }
+
+/// Contagens de uma janela de [`QUADROS_POR_RELATORIO`] quadros.
+///
+/// Existe pela issue #70: o Ridge Racer oscila entre 10 e 25 quadros por segundo depois da
+/// segunda volta numa RTX 4090 no Windows, e aqui (AMD, Mesa) ficou em 30,3 do começo ao fim. Sem
+/// a placa do relato, o que resta é o log de quem tem: se texturas ou envios crescem com o tempo,
+/// aparece aqui; se ficam parados enquanto o tempo real por quadro sobe, o peso está no driver.
+#[derive(Default)]
+struct Medida {
+    quadros: u32,
+    bytes_enviados: u64,
+    lotes: u64,
+    inicio: Option<std::time::Instant>,
+    ultimo: Option<std::time::Instant>,
+    pior_quadro: std::time::Duration,
+}
+
+/// 300 quadros são 10 s no ritmo de 30 do console: espaçado o bastante para não encher o anel do
+/// log, curto o bastante para separar a primeira volta da segunda.
+const QUADROS_POR_RELATORIO: u32 = 300;
 
 struct Destino {
     fbo: glow::Framebuffer,
@@ -662,6 +684,7 @@ impl GpuState {
             espelho: std::cell::Cell::new(Espelho::default()),
             envios_de_estado: std::cell::Cell::new(0),
             poupancas_de_estado: std::cell::Cell::new(0),
+            medida: Medida::default(),
             reduzido: None,
             amostras: 1,
             anisotropia: 1.0,
@@ -1080,6 +1103,48 @@ impl GpuState {
         self.espelho.set(m);
     }
 
+    /// Conta o quadro e, a cada [`QUADROS_POR_RELATORIO`], escreve no log o que a placa guarda e
+    /// recebeu. Ver [`Medida`].
+    fn fecha_quadro(&mut self) {
+        let agora = std::time::Instant::now();
+        let m = &mut self.medida;
+        let inicio = *m.inicio.get_or_insert(agora);
+        if let Some(ultimo) = m.ultimo.replace(agora) {
+            m.pior_quadro = m.pior_quadro.max(agora - ultimo);
+        }
+        m.quadros += 1;
+        if m.quadros < QUADROS_POR_RELATORIO {
+            return;
+        }
+        // Os níveis menores somam um terço ao maior; a conta ignora isso de propósito, porque o que
+        // interessa é a tendência entre relatórios, e não o número absoluto.
+        let bytes_vivos: usize = self
+            .texturas
+            .values()
+            .map(|t| t.largura * t.altura * 4)
+            .sum();
+        let segundos = (agora - inicio).as_secs_f64();
+        crate::registro!(
+            crate::registro::Nivel::Informacao,
+            "gl",
+            "placa: {} quadros em {:.1} s reais ({:.1} por segundo, pior {} ms), {} texturas vivas \
+({:.1} MB), {:.2} MB enviados e {} lotes na janela",
+            m.quadros,
+            segundos,
+            m.quadros as f64 / segundos.max(f64::EPSILON),
+            m.pior_quadro.as_millis(),
+            self.texturas.len(),
+            bytes_vivos as f64 / 1_048_576.0,
+            m.bytes_enviados as f64 / 1_048_576.0,
+            m.lotes,
+        );
+        self.medida = Medida {
+            inicio: Some(agora),
+            ultimo: Some(agora),
+            ..Medida::default()
+        };
+    }
+
     /// Quantas chamadas de estado o espelho enviou e quantas poupou.
     pub fn estado_enviado_e_poupado(&self) -> (u64, u64) {
         (
@@ -1269,6 +1334,7 @@ impl GpuState {
         if quantos == 0 {
             return;
         }
+        self.medida.lotes += 1;
         // **A placa pode morrer no meio do quadro.** O aviso do frontend não espera o `retro_run`
         // terminar, e desenhar depois dele é chamar funções de GL que já não existem. O que estava
         // na placa fica — o quadro sai do que já foi desenhado —, e a sessão nasce de novo no
@@ -1536,6 +1602,10 @@ impl GpuState {
             gl.disable(glow::DEPTH_TEST);
             gl.disable(glow::CULL_FACE);
             gl.disable(glow::STENCIL_TEST);
+            // O espelho abaixo diz que a tesoura ficou desligada, e ela precisa ficar mesmo: com
+            // ela ligada no GL, o desenho seguinte sem tesoura não reenvia nada e sai recortado
+            // pelo retângulo do anterior. Era o Peggle na placa, sem fundo nenhum.
+            gl.disable(glow::SCISSOR_TEST);
             if !gl.version().is_embedded {
                 gl.disable(glow::DEPTH_CLAMP);
             }
@@ -2464,6 +2534,7 @@ impl Rasterizador for GpuState {
     ) {
         self.descarrega();
         let bytes: Vec<u8> = pixels.iter().flatten().copied().collect();
+        self.medida.bytes_enviados += bytes.len() as u64;
         let gl = &self.gl;
         let objeto = match self.texturas.get(&name) {
             Some(t) => t.objeto,
@@ -2472,6 +2543,16 @@ impl Rasterizador for GpuState {
                     Ok(objeto) => objeto,
                     Err(_) => return,
                 };
+                // **Os parâmetros vêm de antes da imagem.** O jogo costuma ligar o nome, pedir
+                // filtro e repetição e só então mandar a imagem; até aqui a textura não existia
+                // na placa, e o `set_texture_parameter` só guardava no estado do software. Nascer
+                // com `GL_LINEAR` fixo jogava fora o `GL_NEAREST` que o Treino Cerebral pede, e o
+                // bilinear marcava a junta de cada peça dos botões. É o mesmo que a restauração
+                // de estado faz em `recria_texturas_restauradas`.
+                let (filtro, filtro_min, wrap, crop) = match self.estado.textures.get(&name) {
+                    Some(t) => (t.filter, t.min_filter, t.wrap, t.crop),
+                    None => (gles::GL_LINEAR, gles::GL_LINEAR, [gles::GL_REPEAT; 2], [0; 4]),
+                };
                 self.texturas.insert(
                     name,
                     Textura {
@@ -2479,10 +2560,10 @@ impl Rasterizador for GpuState {
                         largura: width,
                         altura: height,
                         maior_nivel: 0,
-                        crop: [0; 4],
-                        filtro: gles::GL_LINEAR,
-                        filtro_min: gles::GL_LINEAR,
-                        wrap: [gles::GL_REPEAT; 2],
+                        crop,
+                        filtro,
+                        filtro_min,
+                        wrap,
                     },
                 );
                 objeto
@@ -2530,6 +2611,7 @@ impl Rasterizador for GpuState {
         if resultado.is_ok() {
             if let Some(t) = self.texturas.get(&name) {
                 let bytes: Vec<u8> = pixels.iter().flatten().copied().collect();
+                self.medida.bytes_enviados += bytes.len() as u64;
                 unsafe {
                     let gl = &self.gl;
                     gl.bind_texture(glow::TEXTURE_2D, Some(t.objeto));
@@ -2729,6 +2811,10 @@ impl Rasterizador for GpuState {
 
     fn quadro_espera_pela_placa(&self) -> bool {
         true
+    }
+
+    fn fecha_quadro(&mut self) {
+        GpuState::fecha_quadro(self)
     }
 
     fn estado_enviado_e_poupado(&self) -> (u64, u64) {
@@ -3957,6 +4043,69 @@ mod tests {
             referencia.read_rect(0, 0, largura, altura),
             "o segundo lote desenhou com o viewport, a tesoura ou a mistura que a janela deixou"
         );
+    }
+
+    /// **O filtro pedido antes da imagem vale para a textura que a imagem cria.**
+    ///
+    /// A ordem comum é gerar o nome, ligar, definir os parâmetros e só então mandar a imagem. A
+    /// placa só guardava os parâmetros de texturas que já existiam nela, e a textura nascia no
+    /// `upload_level` com `GL_LINEAR`: o Treino Cerebral pede `GL_NEAREST` para os botões e as
+    /// caixas, montados de peças lado a lado, e o bilinear puxava o vizinho do atlas para a
+    /// junta de cada peça — as linhas claras a cada poucos pixels.
+    #[test]
+    fn o_filtro_pedido_antes_da_imagem_vale_para_a_textura() {
+        let Some((mut gpu, _)) = par(4, 4) else {
+            return;
+        };
+        gpu.bind_texture(7);
+        gpu.set_texture_parameter(gles::GL_TEXTURE_MAG_FILTER, gles::GL_NEAREST);
+        gpu.set_texture_parameter(gles::GL_TEXTURE_MIN_FILTER, gles::GL_NEAREST);
+        gpu.set_texture_parameter(gles::GL_TEXTURE_WRAP_S, gles::GL_CLAMP_TO_EDGE);
+        gpu.upload_level(7, 0, 2, 2, vec![[255; 4]; 4]);
+
+        let t = &gpu.texturas[&7];
+        assert_eq!(t.filtro, gles::GL_NEAREST, "ampliação");
+        assert_eq!(t.filtro_min, gles::GL_NEAREST, "redução");
+        assert_eq!(t.wrap[0], gles::GL_CLAMP_TO_EDGE, "repetição em s");
+    }
+
+    /// **A tesoura que o jogo desliga sai do GL também, com o contexto emprestado.**
+    ///
+    /// O Peggle recorta quase todo desenho com `glScissor` e desliga a tesoura para o fundo. O
+    /// `devolve_o_contexto` dizia ao espelho que tinha deixado a tesoura desligada, sem desligá-la:
+    /// o fundo não reenviava nada e saía recortado pelo retângulo do último sprite. Na placa, o
+    /// menu e o cenário da fase não apareciam, e as telas anteriores ficavam por baixo.
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn a_tesoura_desligada_pelo_jogo_nao_recorta_o_lote_seguinte() {
+        let (largura, altura) = (16, 16);
+        let Some((contexto, gl)) = placa_emprestada() else {
+            return;
+        };
+        let Some(mut r) = estado_emprestado(largura, altura, &gl) else {
+            return;
+        };
+        let _ = &contexto;
+        primeiro_lote(&mut r, (largura, altura));
+
+        // Um sprite recortado num canto de 4×4, e o lote fecha: o contexto volta ao anfitrião.
+        r.set_capability(gles::GL_SCISSOR_TEST, true);
+        r.set_scissor(0, 0, 4, 4);
+        segundo_lote(&mut r);
+
+        // O fundo, sem tesoura, cobre a tela inteira.
+        r.set_capability(gles::GL_SCISSOR_TEST, false);
+        let azul = [0.0, 0.0, 1.0, 1.0];
+        triangulo(&mut r, azul, [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0)]);
+        triangulo(&mut r, azul, [(1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)]);
+        r.descarrega_o_desenho();
+
+        let fora_do_azul = r
+            .read_rect(0, 0, largura, altura)
+            .iter()
+            .filter(|p| **p != [0, 0, 255, 255])
+            .count();
+        assert_eq!(fora_do_azul, 0, "o fundo saiu recortado pela tesoura do sprite anterior");
     }
 
     #[cfg(feature = "gpu")]

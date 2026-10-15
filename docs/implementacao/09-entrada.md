@@ -386,3 +386,11 @@ toques:    6 entregue(s) ao jogo
      3001 ms  porta 1  aperta b1
      3134 ms  porta 1  solta  b1
 ```
+
+## O turbo e os atalhos de botão
+
+A tecla de turbo é uma entrada a mais no mapeamento de cada jogador, `buttons["turbo"]`, que o
+`Pad::button_by_name` não conhece e por isso não aperta nada no jogo. Quais botões pulsam sai do
+modo do jogador; quando eles estão apertados, da fase do relógio do jogo, na sessão. Os atalhos
+da janela que aceitam botão — o fast-forward e o rewind — guardam um `Source`, como os botões do
+jogo, e o botão de um atalho não chega ao jogo. Ver [24-velocidade.md](24-velocidade.md).

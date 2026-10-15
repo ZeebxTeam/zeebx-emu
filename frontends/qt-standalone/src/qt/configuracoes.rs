@@ -48,6 +48,12 @@ pub mod qobject {
         #[qinvokable]
         fn valor(self: &Configuracoes, chave: &QString) -> QVariant;
 
+        /// Passa a editar as configurações do jogo de `chave`; vazio volta às globais. Ver
+        /// [`super::nucleo::Nucleo::com_o_jogo`].
+        #[qinvokable]
+        #[cxx_name = "editaOJogo"]
+        fn edita_o_jogo(self: Pin<&mut Configuracoes>, chave: &QString);
+
         /// Grava uma opção, salva o arquivo e aplica o efeito.
         #[qinvokable]
         fn define(self: Pin<&mut Configuracoes>, chave: &QString, valor: &QVariant);
@@ -103,6 +109,11 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "enderecoDaPastaDeScreenshots"]
         fn endereco_da_pasta_de_screenshots(self: &Configuracoes) -> QString;
+
+        /// O endereço `file://` da pasta das sessões gravadas, criada se ainda não existe.
+        #[qinvokable]
+        #[cxx_name = "enderecoDaPastaDeSessoes"]
+        fn endereco_da_pasta_de_sessoes(self: &Configuracoes) -> QString;
 
         #[qinvokable]
         #[cxx_name = "escolheZWheel"]
@@ -232,24 +243,29 @@ pub mod qobject {
         #[qinvokable]
         fn captura(self: Pin<&mut Configuracoes>, botao: &QString);
 
-        /// A tecla do screenshot, pelo nome.
+        /// O que está ligado a um atalho (`screenshot`, `avancar`), pelo nome.
         #[qinvokable]
-        #[cxx_name = "atalhoDeScreenshot"]
-        fn atalho_de_screenshot(self: &Configuracoes) -> QString;
+        fn atalho(self: &Configuracoes, qual: &QString) -> QString;
 
-        /// Começa a esperar a tecla do screenshot; de novo, desiste. Só teclado.
+        /// Começa a esperar a tecla — ou o botão, no fast-forward — de um atalho; de novo,
+        /// desiste.
         #[qinvokable]
         #[cxx_name = "capturaAtalho"]
-        fn captura_atalho(self: Pin<&mut Configuracoes>);
+        fn captura_atalho(self: Pin<&mut Configuracoes>, qual: &QString);
 
         #[qinvokable]
         #[cxx_name = "capturandoAtalho"]
-        fn capturando_atalho(self: &Configuracoes) -> bool;
+        fn capturando_atalho(self: &Configuracoes, qual: &QString) -> bool;
 
-        /// Volta o screenshot ao F9.
+        /// Volta um atalho ao de fábrica.
         #[qinvokable]
         #[cxx_name = "restauraAtalho"]
-        fn restaura_atalho(self: Pin<&mut Configuracoes>);
+        fn restaura_atalho(self: Pin<&mut Configuracoes>, qual: &QString);
+
+        /// A leitura de cada quadro da aba de atalhos: um botão de controle para a captura aberta.
+        #[qinvokable]
+        #[cxx_name = "leAtalhoDoControle"]
+        fn le_atalho_do_controle(self: Pin<&mut Configuracoes>);
 
         /// Por que a última tecla capturada foi recusada, se foi: `atalho` diz se a captura era a
         /// do screenshot ou a de um botão do Zeebo, porque cada uma mostra o motivo no seu lugar.
@@ -413,11 +429,16 @@ use zeebx::ui::entrada::SensorDaPorta;
 
 use zeebx::library;
 use zeebx::ui::atualizacao::{self, Resposta};
+use zeebx::ui::partida;
 use zeebx::ui::screenshot;
 use zeebx::ui::settings::{
     self, Atalhos, ModoDaBiblioteca, ModoDaJanela, Proporcao, Scaling, Settings, rotulo_da_resolucao,
     rotulo_de_nivel,
 };
+
+use zeebx::velocidade::rewind::AjustesDoRewind;
+use zeebx::velocidade::turbo::{self, ModoDoTurbo};
+use zeebx::velocidade::{Avanco, Frameskip, LimiteFps, ModoDoAtalho};
 
 use super::nucleo;
 
@@ -444,15 +465,18 @@ pub struct ConfiguracoesRust {
     porta_editada: i32,
     /// O botão esperando uma tecla ou um botão de controle.
     capturando: Option<String>,
-    /// O atalho do screenshot esperando uma tecla. Separado do `capturando` porque o
-    /// `le_controle` não pode dar a ele um botão de controle: o atalho é só de teclado.
-    capturando_atalho: bool,
+    /// O atalho esperando uma tecla. Separado do `capturando` porque o `le_controle` é da porta
+    /// em edição, e um atalho não é de porta nenhuma.
+    capturando_atalho: Option<Atalho>,
     /// A última tecla recusada: se era a captura do atalho, e o motivo já traduzido.
     recusa: Option<(bool, String)>,
     /// As teclas apertadas na janela de configurações, para acender o desenho.
     teclas: HashSet<Key>,
     /// A calibração em andamento: a porta e as leituras paradas juntadas até agora.
     calibrando: Option<(usize, Vec<[f32; 3]>)>,
+    /// A chave do jogo cujas configurações esta janela edita; vazia, as globais. Ver
+    /// [`qobject::Configuracoes::com`].
+    jogo: String,
     /// A última calibração foi recusada por não estar de face para cima.
     calibracao_recusada: bool,
     /// O pedido de permissão para os sensores, que corre numa thread enquanto a janela de senha
@@ -469,6 +493,70 @@ enum Liberacao {
     Pedindo,
     Feita,
     Falhou(String),
+}
+
+/// Um atalho trocável da janela do jogo, pelo nome que o QML usa.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Atalho {
+    /// Só teclado: ver `docs/implementacao/22-screenshots.md`.
+    Screenshot,
+    /// Tecla ou botão de qualquer controle: ver `docs/implementacao/24-velocidade.md`.
+    Avancar,
+    /// Como o fast-forward.
+    Voltar,
+}
+
+impl Atalho {
+    fn de_nome(nome: &QString) -> Option<Self> {
+        match String::from(nome).as_str() {
+            "screenshot" => Some(Self::Screenshot),
+            "avancar" => Some(Self::Avancar),
+            "voltar" => Some(Self::Voltar),
+            _ => None,
+        }
+    }
+
+    /// A chave do nome do atalho no catálogo.
+    fn chave(self) -> &'static str {
+        match self {
+            Self::Screenshot => "controls.shortcut.screenshot",
+            Self::Avancar => "controls.shortcut.fast_forward",
+            Self::Voltar => "controls.shortcut.rewind",
+        }
+    }
+
+    /// Se a tecla já é deste atalho.
+    fn tem_a_tecla(self, atalhos: &Atalhos, tecla: Key) -> bool {
+        match self {
+            Self::Screenshot => Key::from_name(&atalhos.screenshot) == Some(tecla),
+            Self::Avancar => atalhos.avancar.iter().any(|fonte| e_a_tecla(fonte, tecla)),
+            Self::Voltar => atalhos.voltar.iter().any(|fonte| e_a_tecla(fonte, tecla)),
+        }
+    }
+
+    /// As origens de um atalho que aceita tecla ou botão. O screenshot não é um deles.
+    fn origens(self, atalhos: &mut Atalhos) -> Option<&mut Vec<Source>> {
+        match self {
+            Self::Screenshot => None,
+            Self::Avancar => Some(&mut atalhos.avancar),
+            Self::Voltar => Some(&mut atalhos.voltar),
+        }
+    }
+}
+
+const ATALHOS: [Atalho; 3] = [Atalho::Screenshot, Atalho::Avancar, Atalho::Voltar];
+
+/// O atalho que reserva a origem: o fast-forward ou o rewind.
+fn atalho_da_origem(atalhos: &Atalhos, origem: &Source) -> Atalho {
+    match atalhos.voltar.contains(origem) {
+        true => Atalho::Voltar,
+        false => Atalho::Avancar,
+    }
+}
+
+/// Se a origem é a tecla. Pela tecla, nunca pelo texto: ver `ui::entrada::tecla_apertada`.
+fn e_a_tecla(fonte: &Source, tecla: Key) -> bool {
+    matches!(fonte, Source::Key { name } if Key::from_name(name) == Some(tecla))
 }
 
 /// Quantas leituras paradas a calibração do movimento junta: meio segundo a 100 por segundo.
@@ -499,7 +587,6 @@ fn booleano<'a>(settings: &'a mut Settings, chave: &str) -> Option<&'a mut bool>
         "atualizacoes.pre_lancamentos" => &mut settings.atualizacoes.pre_lancamentos,
         "graphics.smooth" => &mut settings.graphics.smooth,
         "graphics.keep_aspect" => &mut settings.graphics.keep_aspect,
-        "graphics.speed_limit" => &mut settings.graphics.speed_limit,
         "graphics.neblina" => &mut settings.graphics.neblina,
         "graphics.gpu_rasterizer" => &mut settings.graphics.gpu_rasterizer,
         "audio.enabled" => &mut settings.audio.enabled,
@@ -510,7 +597,10 @@ fn booleano<'a>(settings: &'a mut Settings, chave: &str) -> Option<&'a mut bool>
         "debug.memory" => &mut settings.debug.memory,
         "debug.timeline" => &mut settings.debug.timeline,
         "debug.log" => &mut settings.debug.log,
+        "debug.gravar_sessao" => &mut settings.debug.gravar_sessao,
         "movimento.aviso_de_calibracao" => &mut settings.movimento.aviso_de_calibracao,
+        "speed.ff.mute" => &mut settings.velocidade.avanco.sem_som,
+        "speed.rewind.on" => &mut settings.velocidade.rewind.ligado,
         _ => return None,
     })
 }
@@ -526,7 +616,11 @@ fn escolha<T: Copy>(opcoes: &[T], indice: i32) -> Option<T> {
 impl qobject::Configuracoes {
     pub fn valor(&self, chave: &QString) -> QVariant {
         let chave = String::from(chave);
-        nucleo::com(|nucleo| {
+        if chave == "jogo.personalizado" {
+            let jogo = &self.rust().jogo;
+            return QVariant::from(&nucleo::com(|nucleo| nucleo.personalizado(jogo)));
+        }
+        self.com(|nucleo| {
             let caminho = |caminho: &Option<PathBuf>| {
                 QVariant::from(&QString::from(
                     &caminho.as_ref().map(|p| p.display().to_string()).unwrap_or_default(),
@@ -560,6 +654,33 @@ impl qobject::Configuracoes {
                 "graphics.antialias" => indice(&ANTIALIAS, &graficos.antialias),
                 "graphics.anisotropico" => indice(&ANISOTROPICO, &graficos.anisotropico),
                 "audio.volume" => i32::from(nucleo.settings.audio.volume),
+                "speed.fps_limit" => indice(&LimiteFps::TODOS, &nucleo.settings.velocidade.limite_fps),
+                "speed.frameskip" => indice(&Frameskip::todos(), &nucleo.settings.velocidade.frameskip),
+                "speed.ff.ratio" => indice(&Avanco::escolhas(), &nucleo.settings.velocidade.avanco.proporcao),
+                "speed.rewind.interval" => {
+                    indice(&AjustesDoRewind::INTERVALOS_MS, &nucleo.settings.velocidade.rewind.intervalo_ms)
+                }
+                "speed.rewind.memory" => {
+                    indice(&AjustesDoRewind::MEMORIAS_MB, &nucleo.settings.velocidade.rewind.memoria_mb)
+                }
+                "turbo.rate" => i32::from(
+                    nucleo.settings.velocidade.turbo_por_segundo.clamp(turbo::TOQUES_MENOS, turbo::TOQUES_MAIS)
+                        - turbo::TOQUES_MENOS,
+                ),
+                // O modo e o botão do turbo são da porta em edição.
+                "turbo.mode" | "turbo.button" => {
+                    let jogador = nucleo.settings.controls.player(self.porta());
+                    match chave.as_str() {
+                        "turbo.mode" => {
+                            indice(&ModoDoTurbo::TODOS, &jogador.map(|j| j.turbo).unwrap_or_default())
+                        }
+                        _ => {
+                            let botao = jogador.map(|j| j.botao_do_turbo.as_str()).unwrap_or_default();
+                            indice(&turbo::PULSAVEIS, &botao)
+                        }
+                    }
+                }
+                "speed.ff.mode" => indice(&ModoDoAtalho::TODOS, &nucleo.settings.velocidade.avanco.modo),
                 _ => {
                     eprintln!("configuração desconhecida: {chave}");
                     return QVariant::default();
@@ -573,7 +694,15 @@ impl qobject::Configuracoes {
         let chave = String::from(chave);
         let ligado = valor.value::<bool>().unwrap_or_default();
         let numero = valor.value::<i32>().unwrap_or_default();
-        let efeito = nucleo::com(|nucleo| {
+        let porta = self.porta();
+        // Ligar e desligar as do jogo é fora da troca: é ela que decide o que se edita.
+        if chave == "jogo.personalizado" {
+            let jogo = self.rust().jogo.clone();
+            nucleo::com(|nucleo| nucleo.personaliza(&jogo, ligado));
+            self.as_mut().aplica(Efeito::default());
+            return;
+        }
+        let efeito = self.com(|nucleo| {
             let mut efeito = Efeito::default();
             if let Some(campo) = booleano(&mut nucleo.settings, &chave) {
                 *campo = ligado;
@@ -629,6 +758,43 @@ impl qobject::Configuracoes {
                     let permitida = graficos.neblina;
                     nucleo.na_sessao(|sessao| sessao.define_neblina(permitida));
                 }
+                // O ritmo é lido a cada volta: vale na hora, sem avisar a sessão.
+                "speed.fps_limit" => {
+                    nucleo.settings.velocidade.limite_fps =
+                        escolha(&LimiteFps::TODOS, numero).unwrap_or_default();
+                }
+                "speed.frameskip" => {
+                    nucleo.settings.velocidade.frameskip =
+                        escolha(&Frameskip::todos(), numero).unwrap_or_default();
+                }
+                "speed.ff.ratio" => {
+                    nucleo.settings.velocidade.avanco.proporcao =
+                        escolha(&Avanco::escolhas(), numero).unwrap_or(Avanco::default().proporcao);
+                }
+                "speed.ff.mode" => {
+                    nucleo.settings.velocidade.avanco.modo =
+                        escolha(&ModoDoAtalho::TODOS, numero).unwrap_or_default();
+                }
+                "speed.rewind.interval" => {
+                    nucleo.settings.velocidade.rewind.intervalo_ms =
+                        escolha(&AjustesDoRewind::INTERVALOS_MS, numero).unwrap_or(1000);
+                }
+                "speed.rewind.memory" => {
+                    nucleo.settings.velocidade.rewind.memoria_mb = escolha(&AjustesDoRewind::MEMORIAS_MB, numero)
+                        .unwrap_or(AjustesDoRewind::MEMORIA_PADRAO_MB);
+                }
+                "turbo.rate" => {
+                    nucleo.settings.velocidade.turbo_por_segundo =
+                        (numero.max(0) as u8).saturating_add(turbo::TOQUES_MENOS).min(turbo::TOQUES_MAIS);
+                }
+                "turbo.mode" => {
+                    nucleo.settings.controls.player_mut(porta).turbo =
+                        escolha(&ModoDoTurbo::TODOS, numero).unwrap_or_default();
+                }
+                "turbo.button" => {
+                    nucleo.settings.controls.player_mut(porta).botao_do_turbo =
+                        escolha(&turbo::PULSAVEIS, numero).unwrap_or(turbo::BOTAO_PADRAO).to_string();
+                }
                 // Mexer no volume com o jogo aberto tem que valer na hora, não só na próxima
                 // abertura.
                 "audio.enabled" | "audio.volume" => {
@@ -642,7 +808,7 @@ impl qobject::Configuracoes {
                 }
                 _ => {}
             }
-            salva(&nucleo.settings);
+            nucleo.salva_configuracoes();
             efeito
         });
         self.as_mut().aplica(efeito);
@@ -650,7 +816,7 @@ impl qobject::Configuracoes {
 
     pub fn opcoes(&self, chave: &QString) -> QStringList {
         let chave = String::from(chave);
-        let rotulos: Vec<String> = nucleo::com(|nucleo| {
+        let rotulos: Vec<String> = self.com(|nucleo| {
             let catalogo = &nucleo.catalogo;
             let traduz = |chaves: &[&str]| chaves.iter().map(|c| catalogo.get(c).to_string()).collect();
             let desligado = catalogo.get("common.off");
@@ -669,6 +835,43 @@ impl qobject::Configuracoes {
                     Proporcao::TODAS.iter().map(|p| catalogo.get(p.chave()).to_string()).collect()
                 }
                 "graphics.resolucao_interna" => (1..=6u8).map(rotulo_da_resolucao).collect(),
+                "speed.fps_limit" => {
+                    LimiteFps::TODOS.iter().map(|l| catalogo.get(l.chave()).to_string()).collect()
+                }
+                "speed.frameskip" => Frameskip::todos()
+                    .into_iter()
+                    .map(|f| settings::rotulo_do_frameskip(f, catalogo))
+                    .collect(),
+                "speed.ff.ratio" => Avanco::escolhas()
+                    .into_iter()
+                    .map(|n| match n {
+                        0 => catalogo.get("speed.ff.unlimited").to_string(),
+                        n => format!("{n}x"),
+                    })
+                    .collect(),
+                "speed.ff.mode" => {
+                    ModoDoAtalho::TODOS.iter().map(|m| catalogo.get(m.chave()).to_string()).collect()
+                }
+                "turbo.mode" => {
+                    ModoDoTurbo::TODOS.iter().map(|m| catalogo.get(m.chave()).to_string()).collect()
+                }
+                "speed.rewind.interval" => AjustesDoRewind::INTERVALOS_MS
+                    .iter()
+                    .map(|&ms| match ms % 1000 {
+                        0 => catalogo.format("speed.rewind.every_s", &[("n", &(ms / 1000).to_string())]),
+                        _ => catalogo.format("speed.rewind.every_ms", &[("n", &ms.to_string())]),
+                    })
+                    .collect(),
+                "speed.rewind.memory" => {
+                    AjustesDoRewind::MEMORIAS_MB.iter().map(|mb| format!("{mb} MB")).collect()
+                }
+                "turbo.button" => turbo::PULSAVEIS
+                    .iter()
+                    .map(|b| catalogo.get(&format!("button.{b}")).to_string())
+                    .collect(),
+                "turbo.rate" => (turbo::TOQUES_MENOS..=turbo::TOQUES_MAIS)
+                    .map(|n| catalogo.format("turbo.rate.value", &[("n", &n.to_string())]))
+                    .collect(),
                 "graphics.antialias" => {
                     ANTIALIAS.iter().map(|&n| rotulo_de_nivel(n, "MSAA", desligado)).collect()
                 }
@@ -685,9 +888,9 @@ impl qobject::Configuracoes {
         let Some(pasta) = rfd::FileDialog::new().pick_folder() else {
             return;
         };
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             nucleo.settings.roms_dir = Some(pasta);
-            salva(&nucleo.settings);
+            nucleo.salva_configuracoes();
         });
         self.as_mut().aplica(Efeito {
             biblioteca: Some(true),
@@ -696,7 +899,7 @@ impl qobject::Configuracoes {
     }
 
     pub fn pasta_de_screenshots(&self) -> QString {
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             let pasta = screenshot::pasta(nucleo.settings.screenshots_dir.as_deref());
             QString::from(&pasta.display().to_string())
         })
@@ -706,27 +909,27 @@ impl qobject::Configuracoes {
         let Some(pasta) = rfd::FileDialog::new().pick_folder() else {
             return;
         };
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             nucleo.settings.screenshots_dir = Some(pasta);
-            salva(&nucleo.settings);
+            nucleo.salva_configuracoes();
         });
         self.as_mut().aplica(Efeito::default());
     }
 
     pub fn usa_pasta_padrao_de_screenshots(mut self: Pin<&mut Self>) {
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             nucleo.settings.screenshots_dir = None;
-            salva(&nucleo.settings);
+            nucleo.salva_configuracoes();
         });
         self.as_mut().aplica(Efeito::default());
     }
 
     pub fn screenshots_na_pasta_padrao(&self) -> bool {
-        nucleo::com(|nucleo| nucleo.settings.screenshots_dir.is_none())
+        self.com(|nucleo| nucleo.settings.screenshots_dir.is_none())
     }
 
     pub fn soundfont(&self) -> QString {
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             QString::from(&match &nucleo.settings.audio.soundfont {
                 Some(caminho) => caminho.display().to_string(),
                 None => nucleo.catalogo.get("audio.soundfont.auto").to_string(),
@@ -743,33 +946,41 @@ impl qobject::Configuracoes {
         else {
             return;
         };
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             nucleo.settings.audio.soundfont = Some(arquivo);
-            salva(&nucleo.settings);
+            nucleo.salva_configuracoes();
         });
         self.as_mut().aplica(Efeito::default());
     }
 
     pub fn usa_soundfont_automatico(mut self: Pin<&mut Self>) {
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             nucleo.settings.audio.soundfont = None;
-            salva(&nucleo.settings);
+            nucleo.salva_configuracoes();
         });
         self.as_mut().aplica(Efeito::default());
     }
 
     pub fn soundfont_automatico(&self) -> bool {
-        nucleo::com(|nucleo| nucleo.settings.audio.soundfont.is_none())
+        self.com(|nucleo| nucleo.settings.audio.soundfont.is_none())
     }
 
     pub fn endereco_da_pasta_de_screenshots(&self) -> QString {
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             let pasta = screenshot::pasta(nucleo.settings.screenshots_dir.as_deref());
             if let Err(erro) = std::fs::create_dir_all(&pasta) {
                 eprintln!("não deu para criar {}: {erro}", pasta.display());
             }
             QString::from(&screenshot::endereco_de(&pasta))
         })
+    }
+
+    pub fn endereco_da_pasta_de_sessoes(&self) -> QString {
+        let pasta = partida::pasta_de_sessoes();
+        if let Err(erro) = std::fs::create_dir_all(&pasta) {
+            eprintln!("não deu para criar {}: {erro}", pasta.display());
+        }
+        QString::from(&screenshot::endereco_de(&pasta))
     }
 
     pub fn escolhe_z_wheel(mut self: Pin<&mut Self>, pasta: bool) {
@@ -783,7 +994,7 @@ impl qobject::Configuracoes {
     }
 
     pub fn detecta_z_wheel(mut self: Pin<&mut Self>) {
-        let achada = nucleo::com(|nucleo| {
+        let achada = self.com(|nucleo| {
             library::detecta_z_wheel(nucleo.settings.roms_dir.as_deref(), &nucleo.jogos)
         });
         if let Some(caminho) = achada {
@@ -792,7 +1003,7 @@ impl qobject::Configuracoes {
     }
 
     pub fn estado_da_z_wheel(&self) -> QString {
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             let catalogo = &nucleo.catalogo;
             QString::from(&match (&nucleo.z_wheel, &nucleo.acervo) {
                 (Some(_), Some(acervo)) => catalogo
@@ -804,23 +1015,23 @@ impl qobject::Configuracoes {
     }
 
     pub fn z_wheel_achada(&self) -> bool {
-        nucleo::com(|nucleo| nucleo.z_wheel.is_some())
+        self.com(|nucleo| nucleo.z_wheel.is_some())
     }
 
     pub fn pasta_de_roms_falta(&self) -> bool {
-        nucleo::com(|nucleo| nucleo.settings.roms_dir.as_ref().is_some_and(|p| !p.is_dir()))
+        self.com(|nucleo| nucleo.settings.roms_dir.as_ref().is_some_and(|p| !p.is_dir()))
     }
 
     pub fn procura_atualizacao(self: Pin<&mut Self>) {
-        nucleo::com(|nucleo| nucleo.procura_atualizacao());
+        self.com(|nucleo| nucleo.procura_atualizacao());
     }
 
     pub fn procurando_atualizacao(&self) -> bool {
-        nucleo::com(|nucleo| nucleo.procurando_atualizacao())
+        self.com(|nucleo| nucleo.procurando_atualizacao())
     }
 
     pub fn estado_da_atualizacao(&self) -> QString {
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             let catalogo = &nucleo.catalogo;
             let texto = match (&nucleo.atualizacao, nucleo.procurando_atualizacao()) {
                 (_, true) => catalogo.get("settings.updates.checking").to_string(),
@@ -838,7 +1049,7 @@ impl qobject::Configuracoes {
     }
 
     pub fn pagina_da_atualizacao(&self) -> QString {
-        nucleo::com(|nucleo| match &nucleo.atualizacao {
+        self.com(|nucleo| match &nucleo.atualizacao {
             Some(Resposta::Nova(lancamento)) => QString::from(&lancamento.pagina),
             _ => QString::default(),
         })
@@ -849,15 +1060,15 @@ impl qobject::Configuracoes {
     }
 
     pub fn mostra_aviso_de_atualizacao(&self) {
-        nucleo::com(|nucleo| nucleo.reabre_aviso_de_atualizacao());
+        self.com(|nucleo| nucleo.reabre_aviso_de_atualizacao());
     }
 
     pub fn discord_conectado(&self) -> bool {
-        nucleo::com(|nucleo| nucleo.presenca.conectado())
+        self.com(|nucleo| nucleo.presenca.conectado())
     }
 
     pub fn onde_ficam(&self) -> QString {
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             let caminho = settings::settings_path().display().to_string();
             QString::from(&nucleo.catalogo.format("settings.saved_at", &[("path", &caminho)]))
         })
@@ -875,9 +1086,9 @@ impl qobject::Configuracoes {
     }
 
     fn aponta_z_wheel(mut self: Pin<&mut Self>, caminho: PathBuf) {
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             nucleo.settings.z_wheel_path = Some(caminho);
-            salva(&nucleo.settings);
+            nucleo.salva_configuracoes();
             nucleo.atualiza_z_wheel();
         });
         self.as_mut().aplica(Efeito {
@@ -906,22 +1117,32 @@ impl qobject::Configuracoes {
 /// contam, e não só as ligadas: ligar uma porta depois não pode criar a colisão que a captura
 /// recusou.
 fn dono_da_tecla(settings: &Settings, tecla: Key) -> Option<(usize, &'static str)> {
+    dono(settings, |fonte| e_a_tecla(fonte, tecla))
+}
+
+/// O botão do Zeebo, e a porta, que já tem uma origem que satisfaz `e_ela`.
+fn dono(settings: &Settings, e_ela: impl Fn(&Source) -> bool) -> Option<(usize, &'static str)> {
     (0..zeebx::input::PORTAS).find_map(|porta| {
         let jogador = settings.controls.player(porta)?;
         CONFIGURABLE
             .iter()
-            .find(|botao| {
-                jogador.sources(botao).iter().any(|fonte| {
-                    matches!(fonte, Source::Key { name } if Key::from_name(name) == Some(tecla))
-                })
-            })
+            .find(|botao| jogador.sources(botao).iter().any(&e_ela))
             .map(|botao| (porta, *botao))
     })
 }
 
-fn salva(settings: &Settings) {
-    if let Err(erro) = settings.save() {
-        eprintln!("não deu para guardar as configurações: {erro}");
+/// O jogo em edição.
+impl qobject::Configuracoes {
+    /// O `nucleo::com` desta janela: com as configurações do jogo em edição no lugar das
+    /// globais, quando há jogo e ele tem as próprias. Ver [`nucleo::Nucleo::com_o_jogo`].
+    fn com<T>(&self, f: impl FnOnce(&mut nucleo::Nucleo) -> T) -> T {
+        let jogo = &self.rust().jogo;
+        nucleo::com(|nucleo| nucleo.com_o_jogo(jogo, f))
+    }
+
+    pub fn edita_o_jogo(mut self: Pin<&mut Self>, chave: &QString) {
+        self.as_mut().rust_mut().jogo = String::from(chave);
+        self.aplica(Efeito::default());
     }
 }
 
@@ -933,13 +1154,18 @@ impl qobject::Configuracoes {
 
     /// O controle da porta agora, com o teclado desta janela.
     fn pad(&self, nucleo: &nucleo::Nucleo) -> Pad {
-        nucleo.entrada.pad(&nucleo.settings.controls, self.porta(), &self.rust().teclas)
+        nucleo.entrada.pad(
+            &nucleo.settings.controls,
+            &nucleo.settings.atalhos,
+            self.porta(),
+            &self.rust().teclas,
+        )
     }
 
     /// Os controles da porta mudaram: salva, e com um jogo aberto vale na hora.
     fn controles_mudaram(mut self: Pin<&mut Self>) {
-        nucleo::com(|nucleo| {
-            salva(&nucleo.settings);
+        self.com(|nucleo| {
+            nucleo.salva_configuracoes();
             nucleo.portas_mudaram();
         });
         let versao = self.versao().wrapping_add(1);
@@ -955,18 +1181,18 @@ impl qobject::Configuracoes {
 
     pub fn porta_ligada(&self) -> bool {
         let porta = self.porta();
-        nucleo::com(|nucleo| nucleo.settings.controls.player(porta).is_some_and(|j| j.ligada))
+        self.com(|nucleo| nucleo.settings.controls.player(porta).is_some_and(|j| j.ligada))
     }
 
     pub fn liga_porta(mut self: Pin<&mut Self>, ligada: bool) {
         let porta = self.porta();
-        nucleo::com(|nucleo| nucleo.settings.controls.player_mut(porta).ligada = ligada);
+        self.com(|nucleo| nucleo.settings.controls.player_mut(porta).ligada = ligada);
         self.as_mut().controles_mudaram();
     }
 
     pub fn aparelho(&self) -> i32 {
         let porta = self.porta();
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             let aparelho = nucleo.settings.controls.player(porta).map(|j| j.aparelho);
             aparelho.map_or(1, |aparelho| indice(&APARELHOS, &aparelho))
         })
@@ -977,7 +1203,7 @@ impl qobject::Configuracoes {
         let Some(aparelho) = escolha(&APARELHOS, aparelho) else {
             return;
         };
-        nucleo::com(|nucleo| nucleo.settings.controls.player_mut(porta).aparelho = aparelho);
+        self.com(|nucleo| nucleo.settings.controls.player_mut(porta).aparelho = aparelho);
         self.as_mut().controles_mudaram();
     }
 
@@ -997,7 +1223,7 @@ impl qobject::Configuracoes {
 
     pub fn controles(&self) -> QStringList {
         let porta = self.porta();
-        let nomes = nucleo::com(|nucleo| {
+        let nomes = self.com(|nucleo| {
             let mut nomes = vec![nucleo.catalogo.get("controls.device.none").to_string()];
             nomes.extend(Self::nomes_dos_controles(nucleo, porta));
             nomes
@@ -1007,7 +1233,7 @@ impl qobject::Configuracoes {
 
     pub fn controle_atual(&self) -> i32 {
         let porta = self.porta();
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             let Some(device) = nucleo.settings.controls.player(porta).and_then(|j| j.device.clone()) else {
                 return 0;
             };
@@ -1018,7 +1244,7 @@ impl qobject::Configuracoes {
 
     pub fn escolhe_controle(mut self: Pin<&mut Self>, indice: i32) {
         let porta = self.porta();
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             let nomes = Self::nomes_dos_controles(nucleo, porta);
             let device = usize::try_from(indice - 1).ok().and_then(|i| nomes.get(i).cloned());
             nucleo.settings.controls.player_mut(porta).troca_controle(device);
@@ -1028,7 +1254,7 @@ impl qobject::Configuracoes {
 
     pub fn restaura_mapeamento(mut self: Pin<&mut Self>) {
         let porta = self.porta();
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             let jogador = nucleo.settings.controls.player_mut(porta);
             *jogador = zeebx::input::bindings::Player::padrao_do_controle(jogador.device.clone());
         });
@@ -1036,12 +1262,15 @@ impl qobject::Configuracoes {
     }
 
     pub fn botoes(&self) -> QStringList {
-        lista_de_textos(CONFIGURABLE.iter().map(|b| b.to_string()).collect())
+        // A tecla de turbo se mapeia como um botão, mas não é botão do Zeebo: ver
+        // [`zeebx::velocidade::turbo::BOTAO_DO_TURBO`].
+        let botoes = CONFIGURABLE.iter().chain([&turbo::BOTAO_DO_TURBO]);
+        lista_de_textos(botoes.map(|b| b.to_string()).collect())
     }
 
     pub fn origens_do_botao(&self, botao: &QString) -> QString {
         let (porta, botao) = (self.porta(), String::from(botao));
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             let origens = nucleo
                 .settings
                 .controls
@@ -1062,7 +1291,7 @@ impl qobject::Configuracoes {
     pub fn captura(mut self: Pin<&mut Self>, botao: &QString) {
         let botao = String::from(botao);
         let mut rust = self.as_mut().rust_mut();
-        rust.capturando_atalho = false;
+        rust.capturando_atalho = None;
         rust.recusa = None;
         // Clicar de novo no mesmo botão desiste da captura.
         rust.capturando = match rust.capturando.as_deref() == Some(botao.as_str()) {
@@ -1073,7 +1302,7 @@ impl qobject::Configuracoes {
 
     pub fn limpa_botao(mut self: Pin<&mut Self>, botao: &QString) {
         let (porta, botao) = (self.porta(), String::from(botao));
-        nucleo::com(|nucleo| nucleo.settings.controls.player_mut(porta).clear(&botao));
+        self.com(|nucleo| nucleo.settings.controls.player_mut(porta).clear(&botao));
         self.as_mut().controles_mudaram();
     }
 
@@ -1090,10 +1319,10 @@ impl qobject::Configuracoes {
         if !apertada {
             return;
         }
-        if std::mem::take(&mut rust.capturando_atalho) {
+        if let Some(qual) = rust.capturando_atalho.take() {
             drop(rust);
             if tecla != Key::Escape {
-                self.as_mut().define_atalho(tecla);
+                self.as_mut().define_atalho(qual, Source::key(tecla.name()));
             }
             return;
         }
@@ -1104,13 +1333,18 @@ impl qobject::Configuracoes {
             return;
         }
         drop(rust);
-        // A tecla do screenshot não vira botão: na janela do jogo o atalho ganha, e o botão
+        // A tecla de um atalho não vira botão: na janela do jogo o atalho ganha, e o botão
         // pareceria mapeado sem responder.
-        let recusa = nucleo::com(|nucleo| {
-            if nucleo.e_atalho_de_screenshot(tecla) {
-                let texto = nucleo
-                    .catalogo
-                    .format("controls.shortcut.is_screenshot", &[("key", tecla.name())]);
+        let recusa = self.com(|nucleo| {
+            if let Some(qual) = ATALHOS
+                .into_iter()
+                .find(|qual| qual.tem_a_tecla(&nucleo.settings.atalhos, tecla))
+            {
+                let catalogo = &nucleo.catalogo;
+                let texto = catalogo.format(
+                    "controls.shortcut.is_shortcut",
+                    &[("key", tecla.name()), ("shortcut", catalogo.get(qual.chave()))],
+                );
                 return Some(texto);
             }
             // O teclado primeiro: é o que está debaixo da mão de quem está configurando.
@@ -1125,25 +1359,68 @@ impl qobject::Configuracoes {
         self.as_mut().controles_mudaram();
     }
 
-    pub fn atalho_de_screenshot(&self) -> QString {
-        nucleo::com(|nucleo| QString::from(&nucleo.settings.atalhos.screenshot))
+    pub fn atalho(&self, qual: &QString) -> QString {
+        let Some(qual) = Atalho::de_nome(qual) else {
+            return QString::default();
+        };
+        self.com(|nucleo| {
+            let atalhos = &nucleo.settings.atalhos;
+            let origens = match qual {
+                Atalho::Screenshot => return QString::from(&atalhos.screenshot),
+                Atalho::Avancar => &atalhos.avancar,
+                Atalho::Voltar => &atalhos.voltar,
+            };
+            QString::from(&match origens.is_empty() {
+                true => nucleo.catalogo.get("controls.unbound").to_string(),
+                false => origens.iter().map(Source::label).collect::<Vec<_>>().join(", "),
+            })
+        })
     }
 
-    pub fn captura_atalho(mut self: Pin<&mut Self>) {
+    pub fn captura_atalho(mut self: Pin<&mut Self>, qual: &QString) {
+        let qual = Atalho::de_nome(qual);
         let mut rust = self.as_mut().rust_mut();
-        rust.capturando_atalho = !rust.capturando_atalho;
+        // Clicar de novo no mesmo atalho desiste da captura.
+        rust.capturando_atalho = match rust.capturando_atalho == qual {
+            true => None,
+            false => qual,
+        };
         rust.capturando = None;
         rust.recusa = None;
     }
 
-    pub fn capturando_atalho(&self) -> bool {
-        self.rust().capturando_atalho
+    pub fn capturando_atalho(&self, qual: &QString) -> bool {
+        let qual = Atalho::de_nome(qual);
+        qual.is_some() && self.rust().capturando_atalho == qual
     }
 
-    pub fn restaura_atalho(mut self: Pin<&mut Self>) {
-        let padrao = Key::from_name(Atalhos::SCREENSHOT_PADRAO).expect("o F9 é uma tecla");
-        self.as_mut().rust_mut().capturando_atalho = false;
-        self.as_mut().define_atalho(padrao);
+    pub fn restaura_atalho(mut self: Pin<&mut Self>, qual: &QString) {
+        let Some(qual) = Atalho::de_nome(qual) else {
+            return;
+        };
+        self.as_mut().rust_mut().capturando_atalho = None;
+        let padrao = match qual {
+            Atalho::Screenshot => Source::key(Atalhos::SCREENSHOT_PADRAO),
+            Atalho::Avancar => Source::key(Atalhos::AVANCAR_PADRAO),
+            Atalho::Voltar => Source::key(Atalhos::VOLTAR_PADRAO),
+        };
+        self.as_mut().define_atalho(qual, padrao);
+    }
+
+    /// Um botão de controle para a captura aberta de um atalho que aceita botão. O screenshot é
+    /// só de teclado, e para ele isto não faz nada.
+    pub fn le_atalho_do_controle(mut self: Pin<&mut Self>) {
+        let Some(qual @ (Atalho::Avancar | Atalho::Voltar)) = self.rust().capturando_atalho else {
+            return;
+        };
+        let botao = self.com(|nucleo| {
+            nucleo.entrada.gamepads.poll();
+            nucleo.entrada.gamepads.primeiro_botao_de_algum()
+        });
+        if let Some(botao) = botao {
+            self.as_mut().rust_mut().capturando_atalho = None;
+            self.as_mut().define_atalho(qual, botao);
+        }
     }
 
     pub fn recusa(&self, atalho: bool) -> QString {
@@ -1153,26 +1430,55 @@ impl qobject::Configuracoes {
         }
     }
 
-    /// Troca a tecla do screenshot, ou diz por que não: Esc, P e F11 são da janela do jogo, e
-    /// uma tecla que já é botão do Zeebo ficaria com dois donos. Recusar, e não trocar as duas de
-    /// lugar, porque a troca mexeria num mapeamento sem ninguém ver.
-    fn define_atalho(mut self: Pin<&mut Self>, tecla: Key) {
-        let recusa = nucleo::com(|nucleo| {
+    /// Troca a origem de um atalho, ou diz por que não: Esc, P e F11 são da janela do jogo, e uma
+    /// tecla de outro atalho ficaria com dois donos. Recusar, e não trocar as duas de lugar,
+    /// porque a troca mexeria num atalho sem ninguém ver.
+    ///
+    /// **Um botão do Zeebo na mesma tecla** é recusa no screenshot, como sempre foi, e só aviso no
+    /// fast-forward: lá a origem do atalho deixa de chegar ao jogo ([`Atalhos::reservadas`]), e
+    /// quem a escolheu sabe o que fez. O aviso diz qual botão ficou sem ela.
+    fn define_atalho(mut self: Pin<&mut Self>, qual: Atalho, origem: Source) {
+        let recusa = self.com(|nucleo| {
             let catalogo = &nucleo.catalogo;
-            if matches!(tecla, Key::Escape | Key::P | Key::F11) {
-                return Some(catalogo.format("controls.shortcut.reserved", &[("key", tecla.name())]));
+            let nome = origem.label();
+            let tecla = match &origem {
+                Source::Key { name } => Key::from_name(name),
+                _ => None,
+            };
+            if let Some(tecla) = tecla {
+                if matches!(tecla, Key::Escape | Key::P | Key::F11) {
+                    return Some(catalogo.format("controls.shortcut.reserved", &[("key", tecla.name())]));
+                }
+                if let Some(outro) = ATALHOS
+                    .into_iter()
+                    .find(|outro| *outro != qual && outro.tem_a_tecla(&nucleo.settings.atalhos, tecla))
+                {
+                    return Some(catalogo.format(
+                        "controls.shortcut.taken_shortcut",
+                        &[("key", &nome), ("shortcut", catalogo.get(outro.chave()))],
+                    ));
+                }
             }
-            if let Some((porta, botao)) = dono_da_tecla(&nucleo.settings, tecla) {
+            let dono = dono(&nucleo.settings, |fonte| *fonte == origem)
+                .or_else(|| tecla.and_then(|tecla| dono_da_tecla(&nucleo.settings, tecla)));
+            let conflito = dono.map(|(porta, botao)| {
                 let botao = catalogo.get(&format!("button.{botao}")).to_string();
                 let porta = (porta + 1).to_string();
-                return Some(catalogo.format(
-                    "controls.shortcut.taken",
-                    &[("key", tecla.name()), ("button", &botao), ("port", &porta)],
-                ));
+                let chave = match qual {
+                    Atalho::Screenshot => "controls.shortcut.taken",
+                    Atalho::Avancar | Atalho::Voltar => "controls.shortcut.shared",
+                };
+                catalogo.format(chave, &[("key", &nome), ("button", &botao), ("port", &porta)])
+            });
+            if qual == Atalho::Screenshot && conflito.is_some() {
+                return conflito;
             }
-            nucleo.settings.atalhos.screenshot = tecla.name().to_string();
-            salva(&nucleo.settings);
-            None
+            match qual.origens(&mut nucleo.settings.atalhos) {
+                Some(origens) => *origens = vec![origem.clone()],
+                None => nucleo.settings.atalhos.screenshot = nome.clone(),
+            }
+            nucleo.salva_configuracoes();
+            conflito
         });
         self.as_mut().rust_mut().recusa = recusa.map(|texto| (true, texto));
         self.as_mut().aplica(Efeito::default());
@@ -1183,7 +1489,8 @@ impl qobject::Configuracoes {
         let capturando = self.rust().capturando.clone();
         let mut calibrando = self.as_mut().rust_mut().calibrando.take();
         let mut recusada = None;
-        let mudou = nucleo::com(|nucleo| {
+        let mut recusa_do_botao = None;
+        let mudou = self.com(|nucleo| {
             // **O gilrs só atualiza o estado quando a fila de eventos é drenada.** Sem isto o
             // desenho ficava apagado por mais que se apertasse.
             nucleo.entrada.gamepads.poll();
@@ -1196,9 +1503,28 @@ impl qobject::Configuracoes {
                     Some(wiimote) if device.is_some() => wiimote.primeira_fonte(),
                     _ => nucleo.entrada.gamepads.first_active(device.as_deref(), porta),
                 };
-                if let Some(origem) = origem {
-                    nucleo.settings.controls.player_mut(porta).bind(botao, origem);
-                    mudou = true;
+                // O botão de um atalho não vira botão do Zeebo, pelo mesmo motivo da tecla: no
+                // jogo o atalho ganha. Ver [`Atalhos::reservadas`].
+                let reservada = origem.as_ref().is_some_and(|origem| {
+                    nucleo.settings.atalhos.reservadas().any(|r| r == origem)
+                });
+                match origem {
+                    Some(origem) if reservada => {
+                        let catalogo = &nucleo.catalogo;
+                        recusa_do_botao = Some(catalogo.format(
+                            "controls.shortcut.is_shortcut",
+                            &[
+                                ("key", &origem.label()),
+                                ("shortcut", catalogo.get(atalho_da_origem(&nucleo.settings.atalhos, &origem).chave())),
+                            ],
+                        ));
+                        mudou = true;
+                    }
+                    Some(origem) => {
+                        nucleo.settings.controls.player_mut(porta).bind(botao, origem);
+                        mudou = true;
+                    }
+                    None => {}
                 }
             }
             // A calibração em andamento junta leituras paradas e fecha na média.
@@ -1230,6 +1556,9 @@ impl qobject::Configuracoes {
         if let Some(recusada) = recusada {
             rust.calibracao_recusada = recusada;
         }
+        if recusa_do_botao.is_some() {
+            rust.recusa = recusa_do_botao.map(|texto| (false, texto));
+        }
         if mudou {
             rust.capturando = None;
             drop(rust);
@@ -1239,14 +1568,14 @@ impl qobject::Configuracoes {
 
     pub fn apertado(&self, botao: &QString) -> bool {
         let botao = String::from(botao);
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             let pad = self.pad(nucleo);
             Pad::button_by_name(&botao).is_some_and(|i| pad.is_down(i))
         })
     }
 
     pub fn eixo(&self, indice: i32) -> f64 {
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             let pad = self.pad(nucleo);
             let valor = usize::try_from(indice).ok().and_then(|i| pad.axes.get(i).copied());
             f64::from(valor.unwrap_or(0)) / f64::from(AXIS_CURSO)
@@ -1258,13 +1587,13 @@ impl qobject::Configuracoes {
     }
 
     pub fn origens_de_eixo(&self) -> QStringList {
-        let nenhum = nucleo::com(|nucleo| nucleo.catalogo.get("controls.axis.none").to_string());
+        let nenhum = self.com(|nucleo| nucleo.catalogo.get("controls.axis.none").to_string());
         lista_de_textos(std::iter::once(nenhum).chain(gamepads::axis_names().map(String::from)).collect())
     }
 
     pub fn origem_do_eixo(&self, eixo: &QString) -> i32 {
         let (porta, eixo) = (self.porta(), String::from(eixo));
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             let origem = nucleo.settings.controls.player(porta).and_then(|j| j.axes.get(&eixo).cloned());
             origem
                 .and_then(|origem| gamepads::axis_names().position(|nome| nome == origem.name))
@@ -1274,7 +1603,7 @@ impl qobject::Configuracoes {
 
     pub fn define_origem_do_eixo(mut self: Pin<&mut Self>, eixo: &QString, indice: i32) {
         let (porta, eixo) = (self.porta(), String::from(eixo));
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             let jogador = nucleo.settings.controls.player_mut(porta);
             let nome = usize::try_from(indice - 1).ok().and_then(|i| gamepads::axis_names().nth(i));
             match nome {
@@ -1298,7 +1627,7 @@ impl qobject::Configuracoes {
 
     pub fn eixo_invertido(&self, eixo: &QString) -> bool {
         let (porta, eixo) = (self.porta(), String::from(eixo));
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             let jogador = nucleo.settings.controls.player(porta);
             jogador.and_then(|j| j.axes.get(&eixo)).is_some_and(|s| s.invert)
         })
@@ -1306,7 +1635,7 @@ impl qobject::Configuracoes {
 
     pub fn inverte_eixo(mut self: Pin<&mut Self>, eixo: &QString, invertido: bool) {
         let (porta, eixo) = (self.porta(), String::from(eixo));
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             if let Some(origem) = nucleo.settings.controls.player_mut(porta).axes.get_mut(&eixo) {
                 origem.invert = invertido;
             }
@@ -1315,13 +1644,13 @@ impl qobject::Configuracoes {
     }
 
     pub fn proporcao_da_arte(&self) -> f64 {
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             nucleo.arte.as_ref().map_or(0.0, |arte| arte.width as f64 / arte.height as f64)
         })
     }
 
     pub fn partes(&self) -> QStringList {
-        let nomes = nucleo::com(|nucleo| {
+        let nomes = self.com(|nucleo| {
             let partes = nucleo.arte.as_ref().map(|arte| arte.parts()).unwrap_or_default();
             partes.iter().map(|parte| parte.button.clone()).collect()
         });
@@ -1329,7 +1658,7 @@ impl qobject::Configuracoes {
     }
 
     pub fn limites_da_parte(&self, indice: i32) -> QRectF {
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             let Some(arte) = &nucleo.arte else {
                 return QRectF::default();
             };
@@ -1342,7 +1671,7 @@ impl qobject::Configuracoes {
     }
 
     pub fn botao_em(&self, u: f64, v: f64) -> QString {
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             let botao = nucleo.arte.as_ref().and_then(|arte| arte.hit(u as f32, v as f32));
             QString::from(botao.unwrap_or_default())
         })
@@ -1350,7 +1679,7 @@ impl qobject::Configuracoes {
 
     pub fn sensor(&self) -> QString {
         let porta = self.porta();
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             let sensor = nucleo.entrada.sensor_da_porta(&nucleo.settings.controls, porta);
             QString::from(&sensor.descreve(&nucleo.catalogo))
         })
@@ -1358,7 +1687,7 @@ impl qobject::Configuracoes {
 
     pub fn sensor_sem_permissao(&self) -> bool {
         let porta = self.porta();
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             let sensor = nucleo.entrada.sensor_da_porta(&nucleo.settings.controls, porta);
             matches!(sensor, SensorDaPorta::Controle(s) if s.sem_permissao)
         })
@@ -1366,14 +1695,14 @@ impl qobject::Configuracoes {
 
     pub fn com_leitura(&self) -> bool {
         let porta = self.porta();
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             nucleo.entrada.movimento_bruto_da_porta(&nucleo.settings.controls, porta).is_some()
         })
     }
 
     pub fn linha_do_movimento(&self) -> QString {
         let porta = self.porta();
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             let [x, y, z] = nucleo.entrada.movimento_da_porta(&nucleo.settings.controls, porta);
             let pad = self.pad(nucleo);
             let nomes: Vec<&str> = ["up", "down", "left", "right", "b1", "b2", "back"]
@@ -1390,7 +1719,7 @@ impl qobject::Configuracoes {
 
     pub fn giro(&self) -> f64 {
         let porta = self.porta();
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             // O ângulo de volante, o mesmo que o Crash Nitro Kart calcula: a gravidade no plano da
             // face. Deitado, ela sai desse plano e o ângulo vira ruído, então a imagem só gira
             // quando a gravidade está de fato ali.
@@ -1417,7 +1746,7 @@ impl qobject::Configuracoes {
     pub fn restaura_calibracao(mut self: Pin<&mut Self>) {
         let porta = self.porta();
         self.as_mut().rust_mut().calibrando = None;
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             nucleo.settings.controls.player_mut(porta).calibracao_movimento = Default::default();
         });
         self.as_mut().controles_mudaram();
@@ -1455,7 +1784,7 @@ impl qobject::Configuracoes {
             Ok(Liberacao::Falhou(erro)) => erro,
             _ => return QString::default(),
         };
-        nucleo::com(|nucleo| {
+        self.com(|nucleo| {
             QString::from(
                 &nucleo
                     .catalogo

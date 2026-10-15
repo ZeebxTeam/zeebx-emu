@@ -145,6 +145,9 @@ impl<C: CpuBackend> Machine<C> {
             "cpu.instructions",
             self.cpu.instructions().to_le_bytes().to_vec(),
         );
+        // A outra parcela do relógio: o tempo ocioso que o emulador pulou. Ver o `relogio.us` no
+        // cabeçalho de [`Machine::grava_escalares_e_mapas`].
+        secoes.poe("relogio.us", self.clock_us.to_le_bytes().to_vec());
         for regiao in self.module.mem.regions() {
             let Some(quanto) =
                 self.quanto_gravar(regiao.name, regiao.base, regiao.bytes.len(), regiao.writable)
@@ -208,6 +211,16 @@ impl<C: CpuBackend> Machine<C> {
             });
         }
         let relogio = u64::from_le_bytes(bytes_do_relogio.try_into().unwrap());
+        // Opcional: um estado gravado antes de 2026-10-10 não tem a seção, e carrega como
+        // carregava — com o tempo pulado de agora. Ver o cabeçalho de
+        // [`Machine::grava_escalares_e_mapas`].
+        let tempo_pulado = match leitor.secao("relogio.us") {
+            None => None,
+            Some(bytes) => Some(u64::from_le_bytes(bytes.try_into().map_err(|_| Erro::Secao {
+                nome: "relogio.us".to_string(),
+                motivo: format!("esperava 8 bytes e tem {}", bytes.len()),
+            })?)),
+        };
 
         // A memória é lida e conferida antes de qualquer escrita.
         let mut regioes: Vec<(u32, Vec<u8>)> = Vec::new();
@@ -271,6 +284,9 @@ impl<C: CpuBackend> Machine<C> {
         // núcleos, e o valor que veio do estado é o que manda.
         self.cpu.set_cpsr(cpsr);
         self.cpu.set_instructions(relogio);
+        if let Some(tempo_pulado) = tempo_pulado {
+            self.clock_us = tempo_pulado;
+        }
         Ok(())
     }
 }
@@ -717,7 +733,8 @@ impl<C: CpuBackend> Machine<C> {
                 nome: format!("arq.{id}"),
                 motivo: format!("não deu para voltar o arquivo ao byte {posicao}: {erro}"),
             })?;
-            abertos.insert(id, OpenFile { file, guest_path, caminho });
+            // Reaberto só para leitura, como sempre foi: o que muda aqui é só o registro.
+            abertos.insert(id, OpenFile { file, guest_path, caminho, escrita: false });
         }
 
         self.fontes = fontes;
@@ -1118,9 +1135,14 @@ fn bytes_em_pixels(bytes: &[u8]) -> Vec<u16> {
 ///   — mas o gravador de log não faz parte do jogo, e fica fora;
 /// - `modulos_instalados` e `enumerations`: listas de **texto**. Precisam do mesmo tratamento de
 ///   texto que os caminhos, e ficam para a passada seguinte;
-/// - o relógio em microssegundos (`clock_us`) **não** entra: ele é o contador de instruções
-///   dividido pela taxa, e o contador já entra. Gravar os dois seria guardar a mesma coisa duas
-///   vezes, com a chance de voltarem discordando;
+/// - o relógio em microssegundos (`clock_us`) entra à parte, na seção `relogio.us`, e não aqui.
+///   **Ele não é o contador de instruções dividido pela taxa**, como este parágrafo dizia: o
+///   relógio é `clock_us + instruções / 528` (ver `time.rs`), e o `clock_us` é o tempo ocioso que
+///   o emulador pulou — o vsync, o `skip_idle_time`, o `MSLEEP` —, que nos jogos medidos é a
+///   maior parte dele. Sem a seção, restaurar devolvia as instruções e deixava o tempo pulado no
+///   "agora": no Double Dragon, um estado gravado em 20 265 ms voltava em 25 408 ms, e os
+///   temporizadores e o próximo vsync — gravados em tempo absoluto — venciam todos de uma vez.
+///   Medido em 2026-10-10, quando o rewind expôs o defeito;
 /// - `z_wheel` é caminho de conteúdo, e quem o conhece é o core.
 impl<C: CpuBackend> Machine<C> {
     fn grava_escalares_e_mapas(&self, secoes: &mut Secoes) {
@@ -2929,6 +2951,36 @@ mod tests {
         assert_eq!(depois.cpu.instructions(), 12_345_678, "o relógio não voltou");
     }
 
+    /// O tempo pulado também volta, e o relógio inteiro é o de quando o estado foi gravado. Um
+    /// estado antigo, sem a seção, carrega com o tempo pulado de agora, como carregava.
+    #[test]
+    fn o_tempo_pulado_volta_com_o_estado() {
+        let mut antes = maquina();
+        antes.clock_us = 20_000_000;
+        antes.cpu.set_instructions(528 * 1_000);
+        let arquivo = antes.grava_estado();
+        let relogio = antes.clock_ms();
+
+        let mut depois = maquina();
+        depois.clock_us = 90_000_000;
+        depois.restaura_estado(&arquivo).expect("restaurou");
+        assert_eq!(depois.clock_us, 20_000_000, "o tempo pulado não voltou");
+        assert_eq!(depois.clock_ms(), relogio);
+
+        let leitor = crate::save_state::Leitor::abre(&arquivo).unwrap();
+        let sem_a_secao: Vec<(String, Vec<u8>)> = leitor
+            .nomes()
+            .into_iter()
+            .filter(|nome| *nome != "relogio.us")
+            .map(|nome| (nome.to_string(), leitor.secao(nome).unwrap().to_vec()))
+            .collect();
+        let antigo = crate::save_state::escreve(&sem_a_secao);
+        let mut depois = maquina();
+        depois.clock_us = 90_000_000;
+        depois.restaura_estado(&antigo).expect("o estado antigo carrega");
+        assert_eq!(depois.clock_us, 90_000_000);
+    }
+
     /// O arquivo da Machine inclui o estado do rasterizador, e nao apenas a prova isolada do
     /// GlState. Foi esta ligacao que faltou na 0.3.0: os testes do rasterizador passavam, mas o
     /// ZBXS final de um jogo nao continha nenhuma secao gl.*.
@@ -3300,6 +3352,7 @@ mod tests {
                     file,
                     guest_path: "./dados/cena.bin".to_string(),
                     caminho: caminho.clone(),
+                    escrita: false,
                 },
             );
         }
