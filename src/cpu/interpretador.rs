@@ -9,6 +9,8 @@
 //! Não foi medido contra o JIT. O desktop continua no `dynarmic`; isto entra no `wasm32`, onde
 //! o bloco emitido não roda, e no iOS, onde o sistema não deixa o processo mapear código.
 
+use std::cell::Cell;
+
 use super::mem::GuestMemory;
 use super::{API_BASE, API_SIZE, RETURN_MAGIC, apara_semihosting};
 use super::{CpuBackend, CpuError, Reg, StopReason};
@@ -27,6 +29,40 @@ const SYS_WRITEC: u32 = 0x03;
 const SYS_WRITE0: u32 = 0x04;
 const MAX_SEMIHOSTING_STRING: u32 = 4096;
 
+/// Quantas retas de Thumb ficam guardadas. O índice é o endereço; 512 cabe o
+/// laço quente sem varrer uma tabela.
+const N_BLOCOS: usize = 512;
+/// Janelas de 256 MB. Cabe o módulo, o heap, a pilha, os objetos e as superfícies
+/// em entradas diferentes. Ver o campo `dados`.
+const N_FAIXAS: usize = 8;
+
+fn indice_da_faixa(addr: u32) -> usize {
+    ((addr >> 28) as usize) & (N_FAIXAS - 1)
+}
+const OPS_DO_BLOCO: usize = 16;
+
+#[derive(Clone, Copy)]
+struct BlocoThumb {
+    pc: u32,
+    geracao: u32,
+    n: u8,
+    ops: [u16; OPS_DO_BLOCO],
+}
+
+impl BlocoThumb {
+    const VAZIO: Self = Self {
+        pc: 0,
+        geracao: 0,
+        n: 0,
+        ops: [0; OPS_DO_BLOCO],
+    };
+}
+
+enum Seguinte {
+    Parou(StopReason),
+    Continua,
+}
+
 pub struct Interpretador {
     mem: GuestMemory,
     r: [u32; 16],
@@ -37,6 +73,26 @@ pub struct Interpretador {
     /// Endereço do `LDREX` ainda sem `STREX`. Uma escrita qualquer o derruba: é o monitor
     /// exclusivo de um núcleo só, que é o que este processo é.
     exclusivo: Option<u32>,
+    /// A região da última busca, e a do último dado.
+    ///
+    /// O código do jogo mora numa região e a pilha em outra. Varrer a lista nas duas,
+    /// em toda instrução, era o custo fixo do interpretador — e na Vita ele é o núcleo.
+    /// São duas porque busca e leitura se alternam: uma cache só erraria sempre.
+    /// Guarda base, fim e índice. O byte continua sendo lido da região, então uma
+    /// escrita no meio do código aparece na instrução seguinte.
+    codigo: Cell<Option<(u32, u32, u32)>>,
+    /// Uma entrada por janela de 256 MB. O módulo está em 0, o heap em `0x10000000`
+    /// e a pilha em `0x20000000`: com uma entrada só, a constante e a variável
+    /// derrubavam uma à outra e cada troca varria o mapa inteiro.
+    dados: [Cell<Option<(u32, u32, u32)>>; N_FAIXAS],
+    /// Retas de Thumb já buscadas. O jogo volta para o mesmo endereço o tempo
+    /// todo; buscar a meia-palavra de novo, em toda volta, era o que sobrava
+    /// depois da cache de região. ARM fica de fora: marcar toda escrita no PC
+    /// seria um segundo decodificador, e o miolo do BREW é Thumb.
+    blocos: Box<[BlocoThumb]>,
+    /// Sobe quando uma escrita acerta região executável. O bloco guardado leva
+    /// o valor de quando foi montado; um número velho não executa.
+    geracao_codigo: u32,
 }
 
 impl Interpretador {
@@ -49,6 +105,10 @@ impl Interpretador {
             vigias: Vec::new(),
             semihosting: String::new(),
             exclusivo: None,
+            codigo: Cell::new(None),
+            dados: std::array::from_fn(|_| Cell::new(None)),
+            blocos: vec![BlocoThumb::VAZIO; N_BLOCOS].into_boxed_slice(),
+            geracao_codigo: 1,
         })
     }
 
@@ -131,21 +191,9 @@ impl Interpretador {
         if (API_BASE..API_BASE.saturating_add(API_SIZE)).contains(&addr) {
             return Err(StopReason::ApiCall { addr });
         }
-        let bytes = self
-            .mem
-            .read(addr, len)
-            .map_err(|_| StopReason::MemoryFault { addr, pc: addr })?;
-        // `GuestMemory::executavel` exige quatro bytes. Uma Thumb no fim da região cabe em dois
-        // e seria recusada; a pergunta certa é se a região que a leitura achou deixa executar.
-        let executavel = self.mem.regions().iter().any(|regiao| {
-            regiao.executavel
-                && addr >= regiao.base
-                && u64::from(addr) + u64::from(len)
-                    <= u64::from(regiao.base) + regiao.bytes.len() as u64
-        });
-        if !executavel {
+        let Some(bytes) = self.fatia(true, addr, len) else {
             return Err(StopReason::MemoryFault { addr, pc: addr });
-        }
+        };
         Ok(match len {
             2 => u32::from(u16::from_le_bytes([bytes[0], bytes[1]])),
             _ => u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
@@ -153,10 +201,9 @@ impl Interpretador {
     }
 
     fn le_mem(&self, addr: u32, len: u32, pc: u32) -> Result<u32, StopReason> {
-        let bytes = self
-            .mem
-            .read(addr, len)
-            .map_err(|_| StopReason::MemoryFault { addr, pc })?;
+        let Some(bytes) = self.fatia(false, addr, len) else {
+            return Err(StopReason::MemoryFault { addr, pc });
+        };
         Ok(match len {
             1 => u32::from(bytes[0]),
             2 => u32::from(u16::from_le_bytes([bytes[0], bytes[1]])),
@@ -165,12 +212,113 @@ impl Interpretador {
     }
 
     fn es_mem(&mut self, addr: u32, dados: &[u8], pc: u32) -> Result<(), StopReason> {
+        let len = dados.len() as u32;
+        let mut mexeu_codigo = false;
+        let gravou = match self.dados[indice_da_faixa(addr)].get() {
+            Some((base, fim, indice))
+                if addr >= base && addr.checked_add(len).is_some_and(|a| a <= fim) =>
+            {
+                match self.mem.regions_mut().get_mut(indice as usize) {
+                    Some(regiao) if regiao.base == base && regiao.writable => {
+                        let off = (addr - base) as usize;
+                        let ate = off + dados.len();
+                        if ate <= regiao.bytes.len() {
+                            mexeu_codigo = regiao.executavel;
+                            regiao.bytes[off..ate].copy_from_slice(dados);
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    _ => false,
+                }
+            }
+            _ => false,
+        };
+        if gravou {
+            if mexeu_codigo {
+                self.geracao_codigo = self.geracao_codigo.wrapping_add(1);
+            }
+            self.exclusivo = None;
+            self.suja(addr, len);
+            return Ok(());
+        }
         self.mem
             .write(addr, dados)
             .map_err(|_| StopReason::MemoryFault { addr, pc })?;
+        if self.toca_codigo(addr, len) {
+            self.geracao_codigo = self.geracao_codigo.wrapping_add(1);
+        }
+        if let Some(achado) = self.acha(addr, len, false) {
+            self.dados[indice_da_faixa(addr)].set(Some(achado));
+        }
         self.exclusivo = None;
-        self.suja(addr, dados.len() as u32);
+        self.suja(addr, len);
         Ok(())
+    }
+
+    fn toca_codigo(&self, addr: u32, len: u32) -> bool {
+        let fim = addr.saturating_add(len);
+        self.mem.regions().iter().any(|regiao| {
+            if !regiao.executavel {
+                return false;
+            }
+            let rfim = regiao.base.saturating_add(regiao.bytes.len() as u32);
+            addr < rfim && fim > regiao.base
+        })
+    }
+
+    /// Os bytes de `addr` na região guardada, ou na que a varredura achar.
+    ///
+    /// `so_executavel` é a busca de instrução: uma região de dado no mesmo endereço
+    /// não é código. `GuestMemory::executavel` pede quatro bytes e recusaria a Thumb
+    /// do fim da região; aqui basta o tamanho pedido.
+    fn fatia(&self, codigo: bool, addr: u32, len: u32) -> Option<&[u8]> {
+        if !codigo {
+            let slot = &self.dados[indice_da_faixa(addr)];
+            if let Some((base, fim, indice)) = slot.get() {
+                if addr >= base && addr.checked_add(len).is_some_and(|a| a <= fim) {
+                    if let Some(bytes) = self.bytes_em(indice as usize, addr, len, false) {
+                        return Some(bytes);
+                    }
+                }
+            }
+            let achado = self.acha(addr, len, false)?;
+            slot.set(Some(achado));
+            return self.bytes_em(achado.2 as usize, addr, len, false);
+        }
+        if let Some((base, fim, indice)) = self.codigo.get() {
+            if addr >= base && addr.checked_add(len).is_some_and(|a| a <= fim) {
+                if let Some(bytes) = self.bytes_em(indice as usize, addr, len, true) {
+                    return Some(bytes);
+                }
+            }
+        }
+        let achado = self.acha(addr, len, true)?;
+        self.codigo.set(Some(achado));
+        self.bytes_em(achado.2 as usize, addr, len, true)
+    }
+
+    fn acha(&self, addr: u32, len: u32, so_executavel: bool) -> Option<(u32, u32, u32)> {
+        let regions = self.mem.regions();
+        let indice = regions.iter().position(|regiao| {
+            (!so_executavel || regiao.executavel) && cabe(regiao, addr, len)
+        })?;
+        let regiao = &regions[indice];
+        let fim = regiao.base.saturating_add(regiao.bytes.len() as u32);
+        Some((regiao.base, fim, indice as u32))
+    }
+
+    fn bytes_em(&self, indice: usize, addr: u32, len: u32, so_executavel: bool) -> Option<&[u8]> {
+        let regiao = self.mem.regions().get(indice)?;
+        if so_executavel && !regiao.executavel {
+            return None;
+        }
+        if !cabe(regiao, addr, len) {
+            return None;
+        }
+        let off = (addr - regiao.base) as usize;
+        Some(&regiao.bytes[off..off + len as usize])
     }
 
     fn suja(&mut self, addr: u32, len: u32) {
@@ -925,6 +1073,9 @@ impl Interpretador {
         Ok(false)
     }
 
+    /// O imediato de 8 bits é o que mais se repete num bloco reto. Fica `inline`
+    /// para o laço do bloco não pagar a ida ao `match` grande de [`Self::thumb_exec`].
+    #[inline(always)]
     fn thumb_imm(&mut self, instr: u16, _pc: u32) -> Result<bool, StopReason> {
         let kind = (instr >> 11) & 3;
         let rd = u32::from((instr >> 8) & 7);
@@ -1069,6 +1220,44 @@ impl Interpretador {
                 Ok(true)
             }
         }
+    }
+
+    /// Palavra com deslocamento fixo: registrador, pilha ou constante do `PC`.
+    ///
+    /// O compilador Thumb emite isto o tempo todo. Passa por [`Self::le_mem`], que
+    /// já acha a região pela janela, em vez do `match` de todos os formatos.
+    fn thumb_palavra(&mut self, op: u16, pc: u32) -> Result<bool, StopReason> {
+        let grupo = op >> 11;
+        let (addr, rd, carrega) = match grupo {
+            0b01100 | 0b01101 => {
+                let rn = self.r[((op >> 3) & 7) as usize];
+                let imm = u32::from((op >> 6) & 0x1F) << 2;
+                (rn.wrapping_add(imm), (op & 7) as usize, grupo == 0b01101)
+            }
+            0b10010 | 0b10011 => {
+                let imm = u32::from(op & 0xFF) << 2;
+                (
+                    self.r[13].wrapping_add(imm),
+                    ((op >> 8) & 7) as usize,
+                    grupo == 0b10011,
+                )
+            }
+            0b01001 => {
+                let imm = u32::from(op & 0xFF) << 2;
+                (
+                    (pc.wrapping_add(4) & !3).wrapping_add(imm),
+                    ((op >> 8) & 7) as usize,
+                    true,
+                )
+            }
+            _ => return self.thumb_exec(op, pc),
+        };
+        if carrega {
+            self.r[rd] = self.le_mem(addr, 4, pc)?;
+        } else {
+            self.es_mem(addr, &self.r[rd].to_le_bytes(), pc)?;
+        }
+        Ok(false)
     }
 
     fn thumb_ldr_pc(&mut self, instr: u16, pc: u32) -> Result<bool, StopReason> {
@@ -1344,6 +1533,29 @@ impl Interpretador {
     }
 }
 
+/// A reta de Thumb acaba nesta meia-palavra: a próxima pode não ser a seguinte.
+fn thumb_termina_bloco(op: u16) -> bool {
+    let topo = op >> 11;
+    if topo == 0b01000 && op & (1 << 10) != 0 {
+        let qual = (op >> 8) & 3;
+        // CMP não escreve. BX sempre desvia. ADD e MOV só quando o destino é o PC.
+        if qual == 1 {
+            return false;
+        }
+        if qual == 3 {
+            return true;
+        }
+        return (op >> 7) & 1 == 1 && op & 7 == 7;
+    }
+    // POP com o PC na lista. O bit 8 é o registrador extra, e no pop ele é o PC.
+    if topo == 0b10110 || topo == 0b10111 {
+        return (op >> 8) & 0xF == 0b1101;
+    }
+    // B condicional, B, e as metades do BL que de fato desviam. O prefixo
+    // `11110` só guarda o LR e cai na meia-palavra seguinte.
+    matches!(topo, 0b11010 | 0b11011 | 0b11100 | 0b11101 | 0b11111)
+}
+
 fn meia(valor: u32, alta: bool) -> i32 {
     let h = if alta { valor >> 16 } else { valor & 0xFFFF };
     h as u16 as i16 as i32
@@ -1513,6 +1725,143 @@ fn alu(opcode: u32, a: u32, b: u32, carry: bool) -> (u32, bool, bool, bool, bool
     }
 }
 
+impl Interpretador {
+    fn avanca_um(&mut self) -> Result<(), StopReason> {
+        match self.passo() {
+            Ok(saltou) => {
+                if !saltou {
+                    let passo = if self.thumb() { 2 } else { 4 };
+                    self.r[15] = self.r[15].wrapping_add(passo);
+                }
+                self.instrucoes += 1;
+                Ok(())
+            }
+            Err(motivo) => Err(motivo),
+        }
+    }
+
+    /// Executa Thumb até sair do modo, estourar o orçamento ou parar.
+    ///
+    /// A reta é montada uma vez e reexecutada enquanto o endereço bater. Uma
+    /// escrita em código sobe a geração e a reta seguinte é buscada de novo.
+    fn roda_bloco_thumb(&mut self, limite: u64) -> Seguinte {
+        loop {
+            if self.instrucoes >= limite {
+                return Seguinte::Parou(StopReason::Budget);
+            }
+            if !self.thumb() {
+                return Seguinte::Continua;
+            }
+            let pc = self.r[15];
+            if pc & 1 != 0 {
+                return Seguinte::Parou(StopReason::Exception { pc });
+            }
+            let Some(bloco) = self.bloco_thumb(pc) else {
+                return match self.avanca_um() {
+                    Ok(()) => Seguinte::Continua,
+                    Err(motivo) => Seguinte::Parou(motivo),
+                };
+            };
+            let geracao = bloco.geracao;
+            let mut i = 0usize;
+            let mut pc_i = pc;
+            while i < bloco.n as usize {
+                if self.instrucoes >= limite {
+                    self.r[15] = pc_i;
+                    return Seguinte::Parou(StopReason::Budget);
+                }
+                self.r[15] = pc_i;
+                let op = bloco.ops[i];
+                // `movs`/`cmp`/`adds`/`subs` com imediato. O resto continua no
+                // despacho completo: alargar este laço com todos os formatos
+                // estoura a cache de instrução do Cortex-A9.
+                let grupo = op >> 11;
+                // Imediato, e a palavra na pilha, no heap ou na constante do módulo.
+                // São os formatos que o compilador mais emite. O resto fica no
+                // despacho grande: pôr todo o Thumb aqui estoura a cache de instrução.
+                let executou = if (0b00100..=0b00111).contains(&grupo) {
+                    self.thumb_imm(op, pc_i)
+                } else if matches!(grupo, 0b01001 | 0b01100 | 0b01101 | 0b10010 | 0b10011) {
+                    self.thumb_palavra(op, pc_i)
+                } else {
+                    self.thumb_exec(op, pc_i)
+                };
+                match executou {
+                    Ok(saltou) => {
+                        self.instrucoes += 1;
+                        let codigo_mudou = self.geracao_codigo != geracao;
+                        if saltou || codigo_mudou {
+                            if !saltou {
+                                self.r[15] = pc_i.wrapping_add(2);
+                            }
+                            break;
+                        }
+                        pc_i = pc_i.wrapping_add(2);
+                        i += 1;
+                        if i == bloco.n as usize {
+                            self.r[15] = pc_i;
+                        }
+                    }
+                    Err(motivo) => {
+                        self.r[15] = pc_i;
+                        return Seguinte::Parou(motivo);
+                    }
+                }
+            }
+        }
+    }
+
+    fn bloco_thumb(&mut self, pc: u32) -> Option<BlocoThumb> {
+        let i = ((pc >> 1) as usize) & (N_BLOCOS - 1);
+        let slot = self.blocos[i];
+        if slot.n > 0 && slot.geracao == self.geracao_codigo && slot.pc == pc {
+            return Some(slot);
+        }
+        let montado = self.monta_bloco_thumb(pc)?;
+        self.blocos[i] = montado;
+        Some(montado)
+    }
+
+    fn monta_bloco_thumb(&self, pc: u32) -> Option<BlocoThumb> {
+        let mut ops = [0u16; OPS_DO_BLOCO];
+        let mut n = 0u8;
+        let mut addr = pc;
+        while (n as usize) < OPS_DO_BLOCO {
+            if addr == RETURN_MAGIC || (API_BASE..API_BASE.saturating_add(API_SIZE)).contains(&addr)
+            {
+                if n == 0 {
+                    return None;
+                }
+                break;
+            }
+            let op = match self.busca(addr, 2) {
+                Ok(op) => op as u16,
+                Err(_) => {
+                    if n == 0 {
+                        return None;
+                    }
+                    break;
+                }
+            };
+            ops[n as usize] = op;
+            n += 1;
+            addr = addr.wrapping_add(2);
+            if thumb_termina_bloco(op) {
+                break;
+            }
+        }
+        if n == 0 {
+            return None;
+        }
+        Some(BlocoThumb {
+            pc,
+            geracao: self.geracao_codigo,
+            n,
+            ops,
+        })
+    }
+}
+
 impl CpuBackend for Interpretador {
     fn reset(&mut self, mem: &GuestMemory) -> Result<(), CpuError> {
         let mut copia = GuestMemory::new();
@@ -1534,6 +1883,11 @@ impl CpuBackend for Interpretador {
         self.vigias.clear();
         self.semihosting.clear();
         self.exclusivo = None;
+        self.codigo.set(None);
+        for faixa in &self.dados {
+            faixa.set(None);
+        }
+        self.geracao_codigo = self.geracao_codigo.wrapping_add(1);
         Ok(())
     }
 
@@ -1557,15 +1911,14 @@ impl CpuBackend for Interpretador {
             if self.instrucoes >= limite {
                 return Ok(StopReason::Budget);
             }
-            match self.passo() {
-                Ok(saltou) => {
-                    if !saltou {
-                        let passo = if self.thumb() { 2 } else { 4 };
-                        self.r[15] = self.r[15].wrapping_add(passo);
-                    }
-                    self.instrucoes += 1;
+            if self.thumb() {
+                match self.roda_bloco_thumb(limite) {
+                    Seguinte::Parou(motivo) => return Ok(motivo),
+                    Seguinte::Continua => continue,
                 }
-                Err(motivo) => return Ok(motivo),
+            }
+            if let Err(motivo) = self.avanca_um() {
+                return Ok(motivo);
             }
         }
     }
@@ -1621,8 +1974,19 @@ impl CpuBackend for Interpretador {
     fn write_mem(&mut self, addr: u32, data: &[u8]) -> Result<(), CpuError> {
         self.mem
             .write(addr, data)
-            .map_err(|e| CpuError(e.to_string()))
+            .map_err(|e| CpuError(e.to_string()))?;
+        if self.toca_codigo(addr, data.len() as u32) {
+            self.geracao_codigo = self.geracao_codigo.wrapping_add(1);
+        }
+        Ok(())
     }
+}
+
+fn cabe(regiao: &super::mem::Region, addr: u32, len: u32) -> bool {
+    let Some(fim) = regiao.base.checked_add(regiao.bytes.len() as u32) else {
+        return false;
+    };
+    addr >= regiao.base && addr.checked_add(len).is_some_and(|a| a <= fim)
 }
 
 fn indice(reg: Reg) -> usize {
@@ -1845,4 +2209,46 @@ mod tests {
         assert_eq!(cpu.run(0, 10).unwrap(), StopReason::Returned);
         assert_eq!(cpu.read_reg(Reg::R1), 0);
     }
+
+    #[test]
+    fn thumb_reexecuta_o_bloco_e_enxerga_codigo_gravado() {
+        // movs r0, #1; bx lr. A segunda corrida troca a primeira meia-palavra
+        // por movs r0, #7. Sem invalidar o bloco, r0 continuaria 1.
+        let mut cpu = cpu_with(&[0x01, 0x20, 0x70, 0x47]);
+        cpu.write_reg(Reg::Lr, RETURN_MAGIC);
+        assert_eq!(cpu.run(1, 10).unwrap(), StopReason::Returned);
+        assert_eq!(cpu.read_reg(Reg::R0), 1);
+        cpu.write_mem(0, &0x2007u16.to_le_bytes()).unwrap();
+        cpu.write_reg(Reg::Lr, RETURN_MAGIC);
+        assert_eq!(cpu.run(1, 10).unwrap(), StopReason::Returned);
+        assert_eq!(cpu.read_reg(Reg::R0), 7);
+
+        // strh r1, [r2, #0]; movs r0, #1; bx lr. O store grava `movs r0, #7`
+        // por cima da segunda instrução, que ainda está no bloco montado.
+        let mut cpu = cpu_with(&[0x11, 0x80, 0x01, 0x20, 0x70, 0x47]);
+        cpu.write_reg(Reg::R1, 0x2007);
+        cpu.write_reg(Reg::R2, 2);
+        cpu.write_reg(Reg::Lr, RETURN_MAGIC);
+        assert_eq!(cpu.run(1, 10).unwrap(), StopReason::Returned);
+        assert_eq!(cpu.read_reg(Reg::R0), 7);
+    }
+
+    #[test]
+    fn a_leitura_alternada_nao_mistura_pilha_e_dados() {
+        // movs r2, #1; lsls r2, r2, #29; ldr r3, [r2, #4]
+        // movs r0, #1; lsls r0, r0, #12; ldr r1, [r0, #0]
+        // ldr r3, [r2, #4]; ldr r1, [r0, #0]; b .
+        let codigo = [
+            0x01, 0x22, 0x52, 0x07, 0x53, 0x68, 0x01, 0x20, 0x00, 0x03, 0x01, 0x68, 0x53, 0x68,
+            0x01, 0x68, 0xfe, 0xe7,
+        ];
+        let mut cpu = cpu_with(&codigo);
+        cpu.write_mem(0x1000, &0x1111_1111u32.to_le_bytes()).unwrap();
+        cpu.write_mem(0x2000_0004, &0x2222_2222u32.to_le_bytes())
+            .unwrap();
+        assert_eq!(cpu.run(1, 8).unwrap(), StopReason::Budget);
+        assert_eq!(cpu.read_reg(Reg::R1), 0x1111_1111);
+        assert_eq!(cpu.read_reg(Reg::R3), 0x2222_2222);
+    }
+
 }
