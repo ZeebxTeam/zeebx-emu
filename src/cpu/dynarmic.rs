@@ -516,6 +516,14 @@ impl CpuBackend for DynarmicCpu {
         Ok(())
     }
 
+    fn solta_o_mapa(&mut self) {
+        // O JIT aponta para as páginas do mapa. Larga ele antes de trocar o mapa: a tabela
+        // ficaria com ponteiro para memória já devolvida.
+        self.jit = None;
+        *self.memoria.borrow_mut() = GuestMemory::new();
+        self.tabela.fill(std::ptr::null_mut());
+    }
+
     fn read_reg(&self, reg: Reg) -> u32 {
         self.jit().map_or(0, |jit| jit.get_reg(Self::indice(reg)))
     }

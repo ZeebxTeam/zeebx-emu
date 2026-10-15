@@ -3026,6 +3026,31 @@ impl<C: CpuBackend> Machine<C> {
         self.z_wheel = opcoes;
     }
 
+    /// Solta o mapa do guest, as texturas e o áudio já decodificado.
+    ///
+    /// A sessão seguinte pede outro heap do guest. Enquanto este ainda está vivo, os dois
+    /// coexistem, e na Vita a alocação que não cabe aborta o processo. A troca para o Zeetris
+    /// parou ao pedir 4.718.592 bytes.
+    pub fn solta_para_troca(&mut self) {
+        self.audio = None;
+        self.images.clear();
+        self.image_bitmaps.clear();
+        self.bitmaps.clear();
+        self.sounds.clear();
+        self.cargas_de_midia.clear();
+        self.decoders.clear();
+        self.unzips.clear();
+        self.quadros_do_update.clear();
+        #[cfg(feature = "soundfont")]
+        {
+            self.banco_de_som = None;
+        }
+        self.gl_last_frame_words = Vec::new();
+        self.gl.solta_os_pixels();
+        self.screen = Framebuffer::new(1, 1);
+        self.cpu.solta_o_mapa();
+    }
+
     pub fn new(cpu: C, module: LoadedModule, root: impl Into<std::path::PathBuf>) -> Self {
         let storage = crate::storage::StoragePaths::from_root(crate::config::config_dir());
         Self::new_with_storage(cpu, module, root, &storage, None)

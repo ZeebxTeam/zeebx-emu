@@ -1891,6 +1891,15 @@ impl CpuBackend for Interpretador {
         Ok(())
     }
 
+    fn solta_o_mapa(&mut self) {
+        self.mem = GuestMemory::new();
+        self.codigo.set(None);
+        for faixa in &self.dados {
+            faixa.set(None);
+        }
+        self.geracao_codigo = self.geracao_codigo.wrapping_add(1);
+    }
+
     fn read_reg(&self, reg: Reg) -> u32 {
         self.r[indice(reg)]
     }
@@ -2251,4 +2260,17 @@ mod tests {
         assert_eq!(cpu.read_reg(Reg::R3), 0x2222_2222);
     }
 
+    /// A troca de jogo devolve o heap antes de montar o seguinte. Sem isto a Vita
+    /// aborta: o malloc de lá não devolve erro.
+    #[test]
+    fn solta_o_mapa_devolve_a_memoria_do_guest() {
+        let mut cpu = Interpretador::new().unwrap();
+        let mut mem = GuestMemory::new();
+        mem.map_zeroed("heap", 0x1000_0000, 4096).unwrap();
+        cpu.reset(&mem).unwrap();
+        let mut palavra = [0u8; 4];
+        assert!(cpu.read_mem(0x1000_0000, &mut palavra).is_ok());
+        cpu.solta_o_mapa();
+        assert!(cpu.read_mem(0x1000_0000, &mut palavra).is_err());
+    }
 }

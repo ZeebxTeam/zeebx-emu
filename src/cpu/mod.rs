@@ -54,6 +54,14 @@ pub trait CpuBackend {
     /// Prepara o núcleo para executar com este mapa de memória.
     fn reset(&mut self, mem: &GuestMemory) -> Result<(), CpuError>;
 
+    /// Solta a cópia do mapa que o [`reset`](Self::reset) guardou.
+    ///
+    /// A troca de applet monta a sessão seguinte enquanto esta ainda existe. O heap do guest
+    /// é a maior peça, e na Vita uma alocação que não cabe aborta o processo: a troca para o
+    /// Zeetris parou ao pedir 4.718.592 bytes com o jogo anterior ainda vivo. Quem chama já
+    /// decidiu que este jogo não volta a rodar.
+    fn solta_o_mapa(&mut self);
+
     fn read_reg(&self, reg: Reg) -> u32;
     fn write_reg(&mut self, reg: Reg, value: u32);
 

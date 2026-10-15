@@ -2738,6 +2738,15 @@ fn troca_para(estado: &mut Core, caminho: &Path, aberto_pela_z_wheel: bool) -> R
     // o jogo voltando para ela. Sem isto a primeira troca devolveria o desenho ao processador, e o
     // sintoma seria "o render em hardware funciona até o primeiro jogo".
     let instalados = instalados_da_biblioteca(&estado.jogos);
+    // Na Vita o jogo novo pede outro heap do guest, outra superfície e as texturas dele
+    // enquanto o anterior ainda existe. O malloc de lá não devolve erro: aborta. A troca
+    // para o Zeetris parou ao pedir 4.718.592 bytes. Soltar antes abre esse espaço. Se a
+    // abertura falhar, a sessão antiga fica parada — o mapa dela já foi devolvido.
+    #[cfg(target_os = "vita")]
+    {
+        estado.mixer = zeebx::audio::Mixer::silent(SAMPLE_RATE);
+        estado.session.solta_para_troca();
+    }
     let mut session = match placa() {
         Some(contexto) => Session::start_with_storage_installed_policy(
             caminho,

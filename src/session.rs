@@ -1259,6 +1259,16 @@ impl Session {
         linhas
     }
 
+    /// Solta o que esta sessão segura de grande, para a seguinte caber.
+    ///
+    /// A sessão fica parada: o mapa foi embora, e executá-la leria memória que já não existe.
+    /// Quem troca e não consegue abrir o próximo fica neste estado, em vez de seguir com um
+    /// jogo pela metade.
+    pub fn solta_para_troca(&mut self) {
+        self.stopped = Some(Outcome::Returned { code: 0 });
+        self.machine.solta_para_troca();
+    }
+
     /// Mistura o som num `Mixer` sem placa, para gravar: quem chama pede os quadros com
     /// `render` no ritmo do relógio virtual.
     pub fn grava_audio(&mut self, taxa: u32) -> crate::audio::Mixer {
