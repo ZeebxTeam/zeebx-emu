@@ -7,6 +7,7 @@ members = [
     "frontends/android",
     "frontends/headless",
     "frontends/ios",
+    "rcheevos-sys",
 ]
 resolver = "3"
 
@@ -77,6 +78,13 @@ gpu = ["gl", "dep:glutin", "dep:raw-window-handle"]
 # instalador (AppImage, NSIS, `.app`). Separada do `desktop` porque o headless também o usa, e ele
 # sai num zip que ninguém instala. Traz o `reqwest`, que não pode chegar ao core Libretro.
 atualizador = ["desktop", "dep:cargo-packager-updater"]
+# Conquistas do RetroAchievements, pelo rcheevos (`rcheevos-sys/`, submódulo git). **Desligada nas
+# releases** até o RA aceitar o console: sem o Zeebo no servidor, todo jogo voltaria como
+# desconhecido. Compilar com ela pede o submódulo (`git submodule update --init`). Não entra no core
+# Libretro, porque o RetroArch já integra o rcheevos e quem lê a memória do core é ele. Ver
+# `docs/implementacao/25-conquistas.md`.
+# O `ureq` vem junto: é o HTTP do servidor do RA e dos ícones (ver `src/conquistas/http.rs`).
+conquistas = ["dep:rcheevos-sys", "dep:ureq"]
 # O binário é a interface desktop: sem a feature ele nem é construído.
 [dependencies]
 # Tipos de interface compartilhados pelo desktop e pelo frontend Android; não abre janela sozinho.
@@ -105,6 +113,8 @@ serde_json = "1.0.151"
 # O cliente HTTP da tela de atualização. Só o desktop chama: o core não tem essa tela, e o
 # `ring` que o `ureq` puxa não compila para `wasm32-unknown-emscripten`.
 ureq = { version = "3", optional = true }
+# O rcheevos, compilado pelo `build.rs` da crate a partir do submódulo. Ver a feature `conquistas`.
+rcheevos-sys = { path = "rcheevos-sys", optional = true }
 # Só leitura de zip: `deflate` cobre o que os empacotadores usam.
 zip = { version = "2", default-features = false, features = ["deflate"] }
 # Identidade estável de conteúdo/caches. Tamanho+mtime pode colidir ou mudar numa cópia idêntica.

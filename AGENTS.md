@@ -44,6 +44,7 @@ Só `ui::app`, `ui::window`, `ui::atualizacao` e `ui::discord` são janela de ve
 | `gl` | o desenho na placa; **não puxa nada de host** | core, Android, e o `desktop` |
 | `gpu` | criar contexto próprio (glutin) — implica `gl` | desktop |
 | `soundfont` | MIDI por banco de amostras (rustysynth, Rust puro) | core e desktop |
+| `conquistas` | o RetroAchievements: o rcheevos (submódulo) e o `ureq` | ninguém nas releases; o Qt com `--features conquistas` |
 
 **A regra da casa: o core Libretro não linka biblioteca de host.** Sem janela, sem placa de som,
 sem controle. Quem entrega vídeo, áudio e entrada é o frontend. O `libretro.yml` cobra isso com
@@ -60,6 +61,10 @@ O desktop principal é o frontend Qt (`zeebx-standalone-qt`, binário `zeebx-qt`
 Só o do Qt pede o **Qt 6** (6.4 ou mais novo), que o build acha pelo `qmake6`, pelo `qmake` ou pelo `QMAKE`.
 `python3 ferramentas/prepara_build.py` diz o que falta. A interface Qt está em
 [`docs/implementacao/21-migracao-para-qt.md`](docs/implementacao/21-migracao-para-qt.md).
+
+**As conquistas vêm desligadas** até o RA aceitar o Zeebo, e a feature pede o submódulo
+(`git submodule update --init rcheevos-sys/rcheevos`). O CI não o baixa: nenhum workflow liga a
+feature. Ver [`docs/implementacao/25-conquistas.md`](docs/implementacao/25-conquistas.md).
 
 ```bash
 cargo build --release --locked -p zeebx-standalone-egui     # o binário `zeebx`

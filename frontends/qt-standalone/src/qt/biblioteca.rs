@@ -386,6 +386,12 @@ impl qobject::Biblioteca {
             QString::from("modulo"),
             texto(&zeebx::library::id_do_modulo(&caminho).unwrap_or_default()),
         );
+        let conquistas = nucleo::com(|nucleo| {
+            nucleo
+                .conquistas
+                .resumo_guardado(&nucleo.settings, &chave, &nucleo.catalogo)
+        });
+        detalhes.insert(QString::from("conquistas"), texto(&conquistas));
         let bytes = std::fs::metadata(&caminho).map(|m| m.len()).unwrap_or(0);
         let (personalizado, virgula) = nucleo::com(|nucleo| {
             (nucleo.personalizado(&chave), !nucleo.catalogo.current().starts_with("en"))

@@ -80,6 +80,12 @@ pub struct Volta {
     pub screenshot: Option<AvisoDeScreenshot>,
     /// O que escrever por cima do jogo — o fast-forward, o turbo ligado —; vazio esconde.
     pub indicadores: String,
+    /// Os avisos das conquistas desta volta: o jogo reconhecido, um desbloqueio, um placar.
+    pub conquistas: Vec<super::conquistas::AvisoDeConquista>,
+    /// Os contadores dos placares em andamento; vazio esconde.
+    pub contador: String,
+    /// O atalho da lista de conquistas foi apertado nesta volta.
+    pub lista_de_conquistas: bool,
 }
 
 /// O que dizer de um screenshot que terminou, já traduzido.
@@ -175,6 +181,10 @@ pub struct Nucleo {
     teclas: HashSet<Key>,
     /// Por onde as threads de gravação dos screenshots respondem. Ver [`Nucleo::screenshot`].
     gravacoes: (Sender<Gravacao>, Receiver<Gravacao>),
+    /// As conquistas do RetroAchievements. Ver [`super::conquistas`].
+    pub conquistas: super::conquistas::NoNucleo,
+    /// O atalho da lista de conquistas estava apertado na volta anterior.
+    lista_antes: bool,
 }
 
 impl Nucleo {
@@ -222,6 +232,8 @@ impl Nucleo {
             calibracao: Calibracao::default(),
             teclas: HashSet::new(),
             gravacoes: mpsc::channel(),
+            conquistas: Default::default(),
+            lista_antes: false,
         };
         nucleo.procura_de_novo();
         // Na abertura, a pergunta ao GitHub, como no egui: a resposta chega pelo relógio da
@@ -275,6 +287,9 @@ impl Nucleo {
         let discord = &self.settings.discord;
         self.presenca
             .atualiza(discord.ativo, &self.catalogo, classe, titulo, &discord.capas_url);
+        if self.conquistas.a_cada_quadro(&mut self.settings) {
+            self.salva_configuracoes();
+        }
         if let Some(canal) = &self.procura_de_atualizacao {
             match canal.try_recv() {
                 Ok(resposta) => {
@@ -681,8 +696,14 @@ impl Nucleo {
         };
         let anterior = self.partida.as_mut();
         let com_placa = self.gl.is_some();
-        let partida = no_contexto(com_placa, || Partida::abre(caminho, abertura, anterior))
+        let mut partida = no_contexto(com_placa, || Partida::abre(caminho, abertura, anterior))
             .map_err(|erro| erro.to_string())?;
+        // As conquistas largam o jogo de antes antes de pegar este: descarregar depois
+        // descarregaria o novo, que o cliente já teria carregado.
+        if let Some(antiga) = self.partida.as_mut() {
+            self.conquistas.desliga(antiga.sessao_mut());
+        }
+        self.conquistas.liga(partida.sessao_mut(), caminho);
         // A de antes sai aqui, e com o contexto corrente: as texturas dela moram nele.
         self.personalizadas = personalizadas;
         no_contexto(com_placa, || self.partida = Some(partida));
@@ -692,6 +713,9 @@ impl Nucleo {
     /// Solta a partida com o contexto dela corrente: soltar texturas com o contexto do Qt Quick
     /// corrente apagaria as dele.
     pub fn fecha(&mut self) {
+        if let Some(partida) = self.partida.as_mut() {
+            self.conquistas.desliga(partida.sessao_mut());
+        }
         if self.partida.is_some() {
             no_contexto(self.gl.is_some(), || self.partida = None);
             self.personalizadas = None;
@@ -729,6 +753,21 @@ impl Nucleo {
         if let Some(partida) = self.partida.as_mut() {
             partida.pausada = !partida.pausada;
         }
+    }
+
+    /// Pausa ou retoma, sem alternar: a lista de conquistas pausa ao abrir e retoma ao fechar.
+    pub fn define_pausa(&mut self, pausada: bool) {
+        if let Some(partida) = self.partida.as_mut() {
+            partida.pausada = pausada;
+        }
+    }
+
+    /// Sai da conta do RetroAchievements e esquece o token.
+    pub fn sai_das_conquistas(&mut self) {
+        self.conquistas.sai();
+        self.settings.conquistas.usuario = None;
+        self.settings.conquistas.token = None;
+        self.salva_configuracoes();
     }
 
     pub fn pausada(&self) -> bool {
@@ -831,6 +870,12 @@ impl Nucleo {
         // O rewind vem antes: voltando, o jogo não anda e o fast-forward fica suspenso.
         let voltar = self.entrada.atalho_apertado(&self.settings.atalhos.voltar, &self.teclas);
         partida.le_o_rewind(voltar, &valendo.velocidade.rewind);
+        // A lista abre na descida do atalho, e não enquanto ele está apertado.
+        let lista = self
+            .entrada
+            .atalho_apertado(&self.settings.atalhos.conquistas, &self.teclas);
+        let lista_de_conquistas = lista && !self.lista_antes;
+        self.lista_antes = lista;
         let apertado = self.entrada.atalho_apertado(&self.settings.atalhos.avancar, &self.teclas);
         let avancando = partida.le_o_avanco(apertado, valendo.velocidade.avanco.modo);
         let ritmo = valendo.velocidade.ritmo_com(avancando);
@@ -883,7 +928,39 @@ impl Nucleo {
         if let Some(partida) = &self.partida {
             self.relatorio.grava(partida);
         }
+        // Os eventos das conquistas desta volta. O hardcore ligado com o jogo aberto pede que
+        // ele recomece do zero: abrir de novo o mesmo arquivo é o recomeço.
+        let mut das_conquistas = super::conquistas::DaVolta::default();
+        if let Some(partida) = self.partida.as_mut() {
+            let pausada = partida.pausada;
+            let recusado = partida.toma_a_recusa_do_rewind();
+            das_conquistas = self.conquistas.depois_do_passo(
+                partida.sessao_mut(),
+                pausada,
+                recusado,
+                &mut self.settings,
+                &self.catalogo,
+            );
+        }
+        let reinicio = das_conquistas
+            .reiniciar
+            .then(|| self.conquistas.caminho_aberto().map(Path::to_path_buf))
+            .flatten();
         let mut volta = Volta::default();
+        if let Some(caminho) = reinicio.filter(|_| proximo.is_none()) {
+            let pela_z_wheel = self.partida.as_ref().is_some_and(|p| p.aberta_pela_z_wheel);
+            volta.estado = Some(match self.abre(&caminho) {
+                Ok(()) => self.estado(),
+                Err(erro) => format!("não abriu: {erro}"),
+            });
+            if let Some(partida) = self.partida.as_mut() {
+                partida.aberta_pela_z_wheel = pela_z_wheel;
+                partida.reinicia_relogio();
+            }
+        }
+        volta.conquistas = das_conquistas.avisos;
+        volta.contador = das_conquistas.contador;
+        volta.lista_de_conquistas = lista_de_conquistas;
         if let Some(caminho) = proximo {
             volta.estado = Some(match self.abre(&caminho) {
                 Ok(()) => self.estado(),

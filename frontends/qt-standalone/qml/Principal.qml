@@ -520,7 +520,11 @@ ApplicationWindow {
                         { rotulo: "details.custom",
                           valor: principal.tr(detalhes.campo("personalizado") ? "details.custom.yes"
                                                                               : "details.custom.no") },
-                    ]
+                    // O "12/40" da última vez em que o jogo foi aberto com a conta conectada: sem
+                    // resumo guardado, a linha não aparece.
+                    ].concat(detalhes.campo("conquistas") !== ""
+                             ? [{ rotulo: "details.achievements", valor: detalhes.campo("conquistas") }]
+                             : [])
 
                     Column {
                         required property var modelData

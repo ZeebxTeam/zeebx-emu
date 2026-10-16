@@ -57,6 +57,7 @@ pub mod qobject {
         #[qproperty(QString, screenshot_pasta, cxx_name = "screenshotPasta")]
         #[qproperty(i32, screenshot_serie, cxx_name = "screenshotSerie")]
         #[qproperty(QString, indicadores)]
+        #[qproperty(QString, contador)]
         type TelaDoJogo = super::TelaDoJogoRust;
 
         /// Uma volta: entrada, emulação e, se a tela mudou, um quadro novo.
@@ -117,9 +118,24 @@ pub mod qobject {
         #[cxx_name = "guardaTamanhoDaJanela"]
         fn guarda_tamanho_da_janela(self: &Self, largura: f64, altura: f64);
 
+        /// Pausa ou retoma sem alternar: a lista de conquistas pausa ao abrir e retoma ao fechar.
+        #[qinvokable]
+        #[cxx_name = "definePausa"]
+        fn define_pausa(self: Pin<&mut Self>, pausada: bool);
+
         /// O jogo saiu sozinho e não há para onde voltar: a janela fecha, como a do egui.
         #[qsignal]
         fn fechou(self: Pin<&mut Self>);
+
+        /// Um aviso das conquistas: o jogo reconhecido, um desbloqueio, um placar. O QML os põe
+        /// numa fila e mostra um de cada vez. `icone` é `file://`, ou vazio.
+        #[qsignal]
+        fn conquista(self: Pin<&mut Self>, titulo: QString, texto: QString, icone: QString);
+
+        /// O atalho da lista de conquistas foi apertado.
+        #[qsignal]
+        #[cxx_name = "listaDeConquistas"]
+        fn lista_de_conquistas(self: Pin<&mut Self>);
 
         #[inherit]
         fn size(self: &Self) -> QSizeF;
@@ -184,6 +200,8 @@ pub struct TelaDoJogoRust {
     screenshot_serie: i32,
     /// O "▶▶ 3x" do fast-forward e o "Turbo"; vazio esconde.
     indicadores: QString,
+    /// Os contadores dos placares em andamento; vazio esconde.
+    contador: QString,
     /// A tela que foi para o `ItemDoQuadro` como imagem: série e escritas. Igual, não há o que
     /// subir. `None` quando o que está lá é a textura da placa, ou nada.
     chave: Option<(u64, u64)>,
@@ -324,6 +342,21 @@ impl qobject::TelaDoJogo {
         if self.parou() != &parou {
             self.as_mut().set_parou(parou);
         }
+        let contador = QString::from(&volta.contador);
+        if self.contador() != &contador {
+            self.as_mut().set_contador(contador);
+        }
+        // Os sinais depois do `nucleo::com`, nunca dentro: ver a regra no topo do `nucleo.rs`.
+        for aviso in volta.conquistas {
+            self.as_mut().conquista(
+                QString::from(&aviso.titulo),
+                QString::from(&aviso.texto),
+                QString::from(&aviso.icone),
+            );
+        }
+        if volta.lista_de_conquistas {
+            self.as_mut().lista_de_conquistas();
+        }
         if volta.fechou {
             self.as_mut().esvazia();
             self.as_mut().rust_mut().chave = None;
@@ -363,6 +396,10 @@ impl qobject::TelaDoJogo {
             nucleo.alterna_pausa();
             nucleo.pausada()
         })
+    }
+
+    pub fn define_pausa(self: Pin<&mut Self>, pausada: bool) {
+        nucleo::com(|nucleo| nucleo.define_pausa(pausada));
     }
 
     pub fn atualiza(mut self: Pin<&mut Self>) {

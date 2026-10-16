@@ -504,6 +504,8 @@ enum Atalho {
     Avancar,
     /// Como o fast-forward.
     Voltar,
+    /// A lista de conquistas, como o fast-forward. Ver `docs/implementacao/25-conquistas.md`.
+    Conquistas,
 }
 
 impl Atalho {
@@ -512,6 +514,7 @@ impl Atalho {
             "screenshot" => Some(Self::Screenshot),
             "avancar" => Some(Self::Avancar),
             "voltar" => Some(Self::Voltar),
+            "conquistas" => Some(Self::Conquistas),
             _ => None,
         }
     }
@@ -522,6 +525,7 @@ impl Atalho {
             Self::Screenshot => "controls.shortcut.screenshot",
             Self::Avancar => "controls.shortcut.fast_forward",
             Self::Voltar => "controls.shortcut.rewind",
+            Self::Conquistas => "controls.shortcut.achievements",
         }
     }
 
@@ -531,6 +535,10 @@ impl Atalho {
             Self::Screenshot => Key::from_name(&atalhos.screenshot) == Some(tecla),
             Self::Avancar => atalhos.avancar.iter().any(|fonte| e_a_tecla(fonte, tecla)),
             Self::Voltar => atalhos.voltar.iter().any(|fonte| e_a_tecla(fonte, tecla)),
+            Self::Conquistas => atalhos
+                .conquistas
+                .iter()
+                .any(|fonte| e_a_tecla(fonte, tecla)),
         }
     }
 
@@ -540,17 +548,26 @@ impl Atalho {
             Self::Screenshot => None,
             Self::Avancar => Some(&mut atalhos.avancar),
             Self::Voltar => Some(&mut atalhos.voltar),
+            Self::Conquistas => Some(&mut atalhos.conquistas),
         }
     }
 }
 
-const ATALHOS: [Atalho; 3] = [Atalho::Screenshot, Atalho::Avancar, Atalho::Voltar];
+const ATALHOS: [Atalho; 4] = [
+    Atalho::Screenshot,
+    Atalho::Avancar,
+    Atalho::Voltar,
+    Atalho::Conquistas,
+];
 
-/// O atalho que reserva a origem: o fast-forward ou o rewind.
+/// O atalho que reserva a origem: o fast-forward, o rewind ou a lista de conquistas.
 fn atalho_da_origem(atalhos: &Atalhos, origem: &Source) -> Atalho {
-    match atalhos.voltar.contains(origem) {
-        true => Atalho::Voltar,
-        false => Atalho::Avancar,
+    if atalhos.voltar.contains(origem) {
+        Atalho::Voltar
+    } else if atalhos.conquistas.contains(origem) {
+        Atalho::Conquistas
+    } else {
+        Atalho::Avancar
     }
 }
 
@@ -1369,6 +1386,7 @@ impl qobject::Configuracoes {
                 Atalho::Screenshot => return QString::from(&atalhos.screenshot),
                 Atalho::Avancar => &atalhos.avancar,
                 Atalho::Voltar => &atalhos.voltar,
+                Atalho::Conquistas => &atalhos.conquistas,
             };
             QString::from(&match origens.is_empty() {
                 true => nucleo.catalogo.get("controls.unbound").to_string(),
@@ -1403,6 +1421,7 @@ impl qobject::Configuracoes {
             Atalho::Screenshot => Source::key(Atalhos::SCREENSHOT_PADRAO),
             Atalho::Avancar => Source::key(Atalhos::AVANCAR_PADRAO),
             Atalho::Voltar => Source::key(Atalhos::VOLTAR_PADRAO),
+            Atalho::Conquistas => Source::key(Atalhos::CONQUISTAS_PADRAO),
         };
         self.as_mut().define_atalho(qual, padrao);
     }
@@ -1410,7 +1429,9 @@ impl qobject::Configuracoes {
     /// Um botão de controle para a captura aberta de um atalho que aceita botão. O screenshot é
     /// só de teclado, e para ele isto não faz nada.
     pub fn le_atalho_do_controle(mut self: Pin<&mut Self>) {
-        let Some(qual @ (Atalho::Avancar | Atalho::Voltar)) = self.rust().capturando_atalho else {
+        let Some(qual @ (Atalho::Avancar | Atalho::Voltar | Atalho::Conquistas)) =
+            self.rust().capturando_atalho
+        else {
             return;
         };
         let botao = self.com(|nucleo| {
@@ -1466,7 +1487,9 @@ impl qobject::Configuracoes {
                 let porta = (porta + 1).to_string();
                 let chave = match qual {
                     Atalho::Screenshot => "controls.shortcut.taken",
-                    Atalho::Avancar | Atalho::Voltar => "controls.shortcut.shared",
+                    Atalho::Avancar | Atalho::Voltar | Atalho::Conquistas => {
+                        "controls.shortcut.shared"
+                    }
                 };
                 catalogo.format(chave, &[("key", &nome), ("button", &botao), ("port", &porta)])
             });

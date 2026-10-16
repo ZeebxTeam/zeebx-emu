@@ -3624,6 +3624,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "20675572f6f24e9e76ef639bc5552774ed45f1c30e2951e1e99c59888861c539"
 
 [[package]]
+name = "rcheevos-sys"
+version = "0.4.2"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "redox_syscall"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6216,6 +6223,7 @@ dependencies = [
  "minifb",
  "png",
  "raw-window-handle",
+ "rcheevos-sys",
  "resvg",
  "rfd",
  "rusqlite",
@@ -6294,6 +6302,7 @@ dependencies = [
  "glow",
  "qt-build-utils",
  "rfd",
+ "serde_json",
  "winresource",
  "zeebx",
 ]

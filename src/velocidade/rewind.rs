@@ -284,6 +284,9 @@ pub enum Leitura {
     /// O atalho foi solto: o tempo real que passou voltando não é para o jogo correr atrás, e
     /// quem mede esse tempo do lado de fora (a fatia da janela) tem de recomeçar também.
     Soltou,
+    /// O atalho foi apertado, e o hardcore do RetroAchievements não deixa voltar: a janela avisa
+    /// na tela. Vem uma vez por aperto, e não a cada volta em que ele continua apertado.
+    Hardcore,
 }
 
 impl ControleDoRewind {
@@ -311,6 +314,25 @@ impl ControleDoRewind {
             *self = Self::default();
             return match soltou {
                 true => Leitura::Soltou,
+                false => Leitura::Nada,
+            };
+        }
+        // No hardcore o rewind some: os pontos marcados antes não servem mais, e nenhum novo é
+        // marcado (ver [`Session::pode_marcar_ponto`]). Ligar o hardcore reinicia o jogo, então
+        // não há partida em andamento para soltar.
+        if sessao.em_hardcore() {
+            let desceu = apertado && !self.antes;
+            // Defensivo: se o hardcore chegou com o atalho segurado, o som calado volta.
+            if self.voltando {
+                sessao.cala(false);
+                sessao.recomeca_o_relogio();
+            }
+            *self = Self {
+                antes: apertado,
+                ..Self::default()
+            };
+            return match desceu {
+                true => Leitura::Hardcore,
                 false => Leitura::Nada,
             };
         }

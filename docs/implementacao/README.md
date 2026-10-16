@@ -34,6 +34,7 @@ função não está aqui.
 | [21-migracao-para-qt.md](21-migracao-para-qt.md) | Plano da troca do egui por Qt Quick com cxx-qt, e o que o núcleo empresta da janela |
 | [22-screenshots.md](22-screenshots.md) | O F9 da janela do jogo: que quadro sai, em que tamanho, onde grava, e a régua do RetroAchievements |
 | [24-velocidade.md](24-velocidade.md) | Limite de quadros, frameskip, fast-forward, turbo e rewind: o ritmo do jogo contra o relógio do mundo |
+| [25-conquistas.md](25-conquistas.md) | O RetroAchievements pelo rcheevos: o cliente, o hardcore, o hash, a interface e o mapa de memória em aberto |
 
 ## Como medir
 

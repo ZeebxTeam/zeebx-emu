@@ -1,0 +1,15 @@
+[package]
+name = "rcheevos-sys"
+version = "0.4.2"
+edition = "2024"
+# O código desta crate é do Zeebx. O C que ela compila é o rcheevos, MIT, que mora no submódulo
+# `rcheevos/` — ver `rcheevos/LICENSE`.
+license = "GPL-2.0-or-later"
+description = "Vínculo do Zeebx com o rcheevos, a biblioteca de conquistas do RetroAchievements"
+publish = false
+# Diz ao cargo que esta crate liga a biblioteca nativa `rcheevos`: duas crates que a compilassem
+# no mesmo binário dariam símbolos duplicados, e o cargo recusa o grafo antes do link.
+links = "rcheevos"
+
+[build-dependencies]
+cc = "1.0"

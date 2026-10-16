@@ -61,6 +61,9 @@ pub enum Erro {
     Integridade { esperado: u32, encontrado: u32 },
     /// Uma seção está malformada por dentro.
     Secao { nome: String, motivo: String },
+    /// O modo hardcore do RetroAchievements está valendo, e ele não deixa carregar estado. Não
+    /// é defeito do arquivo: desligar o hardcore deixa o mesmo arquivo carregar.
+    Hardcore,
 }
 
 impl std::fmt::Display for Erro {
@@ -95,6 +98,11 @@ impl std::fmt::Display for Erro {
             Erro::Secao { nome, motivo } => {
                 write!(f, "seção \"{nome}\" malformada: {motivo}")
             }
+            Erro::Hardcore => write!(
+                f,
+                "o modo hardcore do RetroAchievements não deixa carregar estados; desligue-o \
+                 para carregar"
+            ),
         }
     }
 }

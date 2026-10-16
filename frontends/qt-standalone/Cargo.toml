@@ -15,6 +15,12 @@ publish = false
 name = "zeebx-qt"
 path = "src/main.rs"
 
+[features]
+# As conquistas do RetroAchievements. **Desligada nas releases** até o RA aceitar o Zeebo: ver a
+# feature de mesmo nome no `Cargo.toml` da raiz e `docs/implementacao/25-conquistas.md`. Sem ela a
+# aba e os avisos somem, e o submódulo do rcheevos não é necessário.
+conquistas = ["zeebx/conquistas"]
+
 [dependencies]
 # O núcleo com a feature `desktop`: o áudio, a entrada e a sessão de jogo que o Qt reusa.
 zeebx = { path = "../..", features = ["atualizador"] }
@@ -28,6 +34,8 @@ glow = "0.16"
 # O seletor de pastas e de arquivos das configurações, o mesmo que o egui usa pelo núcleo: o `rfd`
 # não é reexportado de lá. Mesma versão e mesmas features, então a árvore não cresce.
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "async-std"] }
+# A lista de conquistas vai ao QML em JSON. O núcleo já traz esta crate.
+serde_json = "1"
 
 # Os instaladores do Qt, gerados pelo `cargo packager --release` rodado neste diretório: `.deb` e
 # AppImage no Linux, NSIS no Windows, `.dmg` no macOS. Nome, identificador e binário próprios, para

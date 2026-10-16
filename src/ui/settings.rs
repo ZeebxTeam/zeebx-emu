@@ -313,6 +313,9 @@ pub struct Settings {
     pub z_wheel: ZWheel,
     pub discord: Discord,
     pub atualizacoes: Atualizacoes,
+    /// A conta do RetroAchievements e o que mostrar dela. Global de propósito: o hardcore não
+    /// entra nas configurações por jogo (ver [`ConfigDoJogo`]).
+    pub conquistas: AjustesDasConquistas,
     /// A versão em que o aviso de abertura foi dispensado de vez. Outra versão mostra de novo.
     pub aviso_dispensado_na_versao: Option<String>,
 }
@@ -335,6 +338,9 @@ pub struct Atalhos {
     /// O rewind, que se segura: tecla ou botão, como o [`Atalhos::avancar`]. Ver
     /// [`crate::velocidade::rewind`].
     pub voltar: Vec<Source>,
+    /// A lista de conquistas por cima do jogo, que o pausa: tecla ou botão, como os outros. Ver
+    /// `docs/implementacao/25-conquistas.md`.
+    pub conquistas: Vec<Source>,
 }
 
 impl Atalhos {
@@ -344,6 +350,8 @@ impl Atalhos {
     pub const AVANCAR_PADRAO: &str = "F10";
     /// O Backspace, que seria a escolha óbvia, já é o `AVK_CLR` do jogo.
     pub const VOLTAR_PADRAO: &str = "F8";
+    /// Longe do F8 ao F11, que são do rewind, do screenshot, do fast-forward e da tela cheia.
+    pub const CONQUISTAS_PADRAO: &str = "F6";
 
     pub fn avancar_padrao() -> Vec<Source> {
         vec![Source::key(Self::AVANCAR_PADRAO)]
@@ -354,7 +362,10 @@ impl Atalhos {
     /// Um botão de controle ligado a um atalho e também a um botão do Zeebo faria as duas coisas
     /// ao mesmo tempo: avançar e, digamos, pular. O atalho ganha, e o editor avisa do conflito.
     pub fn reservadas(&self) -> impl Iterator<Item = &Source> {
-        self.avancar.iter().chain(&self.voltar)
+        self.avancar
+            .iter()
+            .chain(&self.voltar)
+            .chain(&self.conquistas)
     }
 }
 
@@ -364,6 +375,38 @@ impl Default for Atalhos {
             screenshot: Self::SCREENSHOT_PADRAO.to_string(),
             avancar: Self::avancar_padrao(),
             voltar: vec![Source::key(Self::VOLTAR_PADRAO)],
+            conquistas: vec![Source::key(Self::CONQUISTAS_PADRAO)],
+        }
+    }
+}
+
+/// A conta do RetroAchievements e os avisos. Ver `docs/implementacao/25-conquistas.md`.
+///
+/// **A senha não mora aqui.** O login devolve um token, e é ele que fica, como no RetroArch: a
+/// senha vai ao servidor uma vez e é esquecida.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AjustesDasConquistas {
+    pub usuario: Option<String>,
+    pub token: Option<String>,
+    /// Casual por padrão: o RA só aceita desbloqueios hardcore de emuladores aprovados, e o
+    /// Zeebx ainda não é um deles.
+    pub hardcore: bool,
+    /// O aviso de cada conquista desbloqueada.
+    pub aviso_de_desbloqueio: bool,
+    /// Os avisos de começo, falha e envio de placar. O contador de um placar em andamento fica
+    /// sempre: o RA não deixa desligar os placares, só os avisos deles.
+    pub aviso_de_placar: bool,
+}
+
+impl Default for AjustesDasConquistas {
+    fn default() -> Self {
+        Self {
+            usuario: None,
+            token: None,
+            hardcore: false,
+            aviso_de_desbloqueio: true,
+            aviso_de_placar: true,
         }
     }
 }
@@ -762,6 +805,7 @@ mod tests {
                 screenshot: "F12".into(),
                 avancar: vec![Source::key("F7"), Source::button("LeftThumb")],
                 voltar: vec![Source::button("RightThumb")],
+                conquistas: vec![Source::key("F2")],
             },
             biblioteca: ModoDaBiblioteca::Slider,
             movimento: Movimento {
@@ -814,6 +858,13 @@ mod tests {
                 capas_url: "https://exemplo/{chave}.png".into(),
             },
             atualizacoes: Atualizacoes { ao_abrir: false, pre_lancamentos: false },
+            conquistas: AjustesDasConquistas {
+                usuario: Some("jogador".into()),
+                token: Some("token".into()),
+                hardcore: true,
+                aviso_de_desbloqueio: false,
+                aviso_de_placar: false,
+            },
             aviso_dispensado_na_versao: Some("0.1.0".into()),
         };
         settings.save_to(&path).unwrap();

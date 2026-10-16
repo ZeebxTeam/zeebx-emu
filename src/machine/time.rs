@@ -90,6 +90,18 @@ impl<C: CpuBackend> Machine<C> {
         self.now_ms()
     }
 
+    /// O mesmo relógio em microssegundos, a resolução em que ele anda. As conquistas contam
+    /// quadros de 60 Hz por ele, e um quadro dura 16 666 µs.
+    pub fn clock_us(&self) -> u64 {
+        self.now_us()
+    }
+
+    /// Adianta o relógio sem executar nada, para testar quem conta o tempo.
+    #[cfg(test)]
+    pub(crate) fn adianta_o_relogio_us(&mut self, us: u64) {
+        self.clock_us += us;
+    }
+
     /// O relógio que o guest enxerga: o tempo adiantado pelo laço de quadros mais o tempo que
     /// o próprio guest gastou executando instruções.
     ///

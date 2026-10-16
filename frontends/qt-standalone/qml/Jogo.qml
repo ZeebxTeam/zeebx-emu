@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Controls
 import QtQuick.Window
 
 import zeebx
@@ -96,7 +97,11 @@ Window {
                 if (!evento.isAutoRepeat)
                     tela.screenshot(Qt.formatDateTime(new Date(), "yyyy-MM-dd HH-mm-ss"))
             } else if (evento.key === Qt.Key_Escape) {
-                janela.close()
+                // Com a lista de conquistas aberta, o Esc fecha a lista, e não o jogo.
+                if (listaDeConquistas.visible)
+                    listaDeConquistas.fecha()
+                else
+                    janela.close()
             } else if (evento.key === Qt.Key_P && !evento.isAutoRepeat) {
                 pausado.visible = tela.pausa()
             } else if (evento.key === Qt.Key_F11
@@ -116,6 +121,13 @@ Window {
         onActiveFocusChanged: if (!activeFocus) solta()
         // Um jogo que sai sozinho sem Z-Wheel para onde voltar fecha a janela, como no egui.
         onFechou: janela.close()
+        onConquista: (titulo, texto, icone) => avisoDeConquista.enfileira(titulo, texto, icone)
+        onListaDeConquistas: {
+            if (listaDeConquistas.visible)
+                listaDeConquistas.fecha()
+            else
+                listaDeConquistas.abre()
+        }
     }
 
     Text {
@@ -133,6 +145,8 @@ Window {
     // texto diz se ele está parado. É uma área flutuante, que não tira espaço do quadro. Ver
     // `src/ui/calibracao.rs`.
     Rectangle {
+        id: avisoDeCalibracao
+
         anchors.right: tela.right
         anchors.bottom: tela.bottom
         anchors.margins: 16
@@ -246,6 +260,258 @@ Window {
             function onScreenshotSerieChanged() {
                 avisoDoScreenshot.visible = true
                 someODoScreenshot.restart()
+            }
+        }
+    }
+
+    // Os avisos das conquistas, no canto de baixo à esquerda, como no RALibretro, um de cada vez:
+    // o jogo reconhecido, cada desbloqueio com o ícone, os placares. Vários juntos esperam na fila,
+    // e cada um fica quatro segundos. Ver `docs/implementacao/25-conquistas.md`.
+    Rectangle {
+        id: avisoDeConquista
+
+        property var fila: []
+
+        function enfileira(titulo, texto, icone) {
+            fila.push({ titulo: titulo, texto: texto, icone: icone })
+            if (!visible)
+                proximo()
+        }
+        function proximo() {
+            if (fila.length === 0) {
+                visible = false
+                return
+            }
+            const aviso = fila.shift()
+            tituloDaConquista.text = aviso.titulo
+            textoDaConquista.text = aviso.texto
+            iconeDaConquista.source = aviso.icone
+            visible = true
+            someAConquista.restart()
+        }
+
+        anchors.left: tela.left
+        anchors.bottom: tela.bottom
+        anchors.margins: 16
+        width: Math.min(linhaDaConquista.implicitWidth + 24, tela.width - 32)
+        height: linhaDaConquista.implicitHeight + 16
+        visible: false
+        radius: 6
+        color: "#e6202020"
+        border.color: "#c8a040"
+
+        Row {
+            id: linhaDaConquista
+
+            anchors.centerIn: parent
+            spacing: 12
+
+            Image {
+                id: iconeDaConquista
+
+                width: 48
+                height: 48
+                visible: source !== ""
+                fillMode: Image.PreserveAspectFit
+                smooth: true
+            }
+
+            Column {
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: 2
+
+                Text {
+                    id: tituloDaConquista
+
+                    color: "white"
+                    font.bold: true
+                }
+
+                Text {
+                    id: textoDaConquista
+
+                    visible: text !== ""
+                    color: "#d0d0d0"
+                }
+            }
+        }
+
+        Timer {
+            id: someAConquista
+
+            interval: 4000
+            onTriggered: avisoDeConquista.proximo()
+        }
+    }
+
+    // Os contadores dos placares em andamento, no canto de baixo à direita, como no RALibretro: o
+    // da esquerda é dos avisos. O RA não deixa desligá-los, só os avisos de começo e fim. Com o
+    // aviso de calibração do Boomerang no mesmo canto, ficam em cima dele.
+    Rectangle {
+        anchors.right: tela.right
+        anchors.bottom: avisoDeCalibracao.visible ? avisoDeCalibracao.top : tela.bottom
+        anchors.margins: 16
+        width: textoDoContador.implicitWidth + 24
+        height: textoDoContador.implicitHeight + 16
+        visible: tela.contador !== ""
+        radius: 6
+        color: "#e6202020"
+        border.color: "#505050"
+
+        Text {
+            id: textoDoContador
+
+            anchors.centerIn: parent
+            color: "white"
+            font.family: "monospace"
+            text: tela.contador
+        }
+    }
+
+    // A lista de conquistas por cima do jogo, que fica pausado enquanto ela está aberta. Abre e
+    // fecha pelo atalho (F6 por padrão); o Esc também fecha. Os ícones chegam aos poucos, e a
+    // lista é relida a cada meio segundo.
+    Rectangle {
+        id: listaDeConquistas
+
+        property bool pausadoAntes: false
+        property var grupos: []
+        property string cabecalho: ""
+
+        function rele() {
+            grupos = JSON.parse(Conquistas.lista())
+            cabecalho = Conquistas.cabecalho()
+        }
+        function abre() {
+            if (!Conquistas.disponivel())
+                return
+            pausadoAntes = pausado.visible
+            tela.definePausa(true)
+            rele()
+            visible = true
+        }
+        function fecha() {
+            visible = false
+            tela.definePausa(pausadoAntes)
+            tela.forceActiveFocus()
+        }
+
+        anchors.fill: tela
+        visible: false
+        color: "#ee101010"
+
+        Timer {
+            interval: 500
+            repeat: true
+            running: listaDeConquistas.visible
+            onTriggered: listaDeConquistas.rele()
+        }
+
+        Column {
+            id: topoDaLista
+
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.margins: 24
+            spacing: 4
+
+            Text {
+                color: "white"
+                font.bold: true
+                font.pixelSize: 20
+                text: janela.tr("achievements.list.title")
+            }
+            Text {
+                width: parent.width
+                wrapMode: Text.Wrap
+                color: "#d0d0d0"
+                text: listaDeConquistas.cabecalho !== "" ? listaDeConquistas.cabecalho
+                                                         : janela.tr("achievements.list.empty")
+            }
+            Text {
+                color: "#9a9a9a"
+                text: janela.tr("achievements.list.hint")
+            }
+        }
+
+        ScrollView {
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: topoDaLista.bottom
+            anchors.bottom: parent.bottom
+            anchors.margins: 24
+            contentWidth: availableWidth
+
+            Column {
+                width: parent.width
+                spacing: 12
+
+                Repeater {
+                    model: listaDeConquistas.grupos
+
+                    Column {
+                        required property var modelData
+
+                        width: parent.width
+                        spacing: 6
+
+                        Text {
+                            color: "#c8a040"
+                            font.bold: true
+                            text: modelData.grupo
+                        }
+
+                        Repeater {
+                            model: modelData.itens
+
+                            Row {
+                                required property var modelData
+
+                                width: parent.width
+                                spacing: 12
+                                opacity: modelData.desbloqueada ? 1.0 : 0.75
+
+                                Image {
+                                    width: 48
+                                    height: 48
+                                    source: modelData.icone
+                                    fillMode: Image.PreserveAspectFit
+                                    smooth: true
+                                }
+
+                                Column {
+                                    width: parent.width - 60
+                                    spacing: 2
+
+                                    Text {
+                                        width: parent.width
+                                        elide: Text.ElideRight
+                                        color: "white"
+                                        font.bold: true
+                                        text: modelData.titulo + "  ·  " + modelData.pontos
+                                    }
+                                    Text {
+                                        width: parent.width
+                                        wrapMode: Text.Wrap
+                                        color: "#d0d0d0"
+                                        text: modelData.descricao
+                                    }
+                                    Text {
+                                        visible: modelData.progresso !== ""
+                                        color: "#9ad0ff"
+                                        text: modelData.progresso
+                                    }
+                                    Text {
+                                        visible: modelData.semSuporte
+                                        color: "#ffb040"
+                                        text: janela.tr("achievements.unsupported.hint")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }

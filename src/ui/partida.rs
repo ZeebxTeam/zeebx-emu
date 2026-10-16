@@ -227,6 +227,9 @@ pub struct Partida {
     turbos: [TurboDaPorta; PORTAS],
     /// Os pontos de retorno e o atalho do rewind. Ver [`Partida::le_o_rewind`].
     rewind: ControleDoRewind,
+    /// O atalho do rewind foi apertado com o hardcore valendo. Ver
+    /// [`Partida::toma_a_recusa_do_rewind`].
+    rewind_recusado: bool,
     /// A chave do jogo, de [`crate::library::chave_do_jogo`].
     chave: Option<String>,
 }
@@ -347,6 +350,7 @@ impl Partida {
             avancando: false,
             turbos: Default::default(),
             rewind: ControleDoRewind::default(),
+            rewind_recusado: false,
             chave: crate::library::chave_do_jogo(caminho),
             diario: numero.map(|numero| Diario {
                 numero,
@@ -491,9 +495,17 @@ impl Partida {
     /// [`ControleDoRewind::le`].
     pub fn le_o_rewind(&mut self, apertado: bool, ajustes: &AjustesDoRewind) {
         let leitura = self.rewind.le(&mut self.sessao, apertado, self.pausada, ajustes);
-        if leitura == Leitura::Soltou {
-            self.reinicia_relogio();
+        match leitura {
+            Leitura::Soltou => self.reinicia_relogio(),
+            Leitura::Hardcore => self.rewind_recusado = true,
+            Leitura::Nada => {}
         }
+    }
+
+    /// Se o atalho do rewind foi recusado pelo hardcore desde a última pergunta. A janela mostra
+    /// "Indisponível no modo hardcore" uma vez por aperto.
+    pub fn toma_a_recusa_do_rewind(&mut self) -> bool {
+        std::mem::take(&mut self.rewind_recusado)
     }
 
     /// O que a janela escreve por cima do jogo enquanto ele volta: `Some(true)` quando não há mais

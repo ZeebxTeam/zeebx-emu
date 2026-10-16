@@ -201,6 +201,12 @@ ApplicationWindow {
             TabButton { text: janela.tr("settings.tab.graphics") }
             TabButton { text: janela.tr("settings.tab.speed") }
             TabButton { text: janela.tr("settings.tab.audio") }
+            // Só nas gerais, e só nas compilações com as conquistas: o hardcore é global.
+            AbaGeral {
+                visible: !janela.doJogo && Conquistas.disponivel()
+                width: visible ? undefined : 0
+                text: janela.tr("settings.tab.achievements")
+            }
             AbaGeral { text: janela.tr("settings.tab.debug") }
             AbaGeral { text: janela.tr("settings.tab.about") }
         }
@@ -936,7 +942,9 @@ ApplicationWindow {
                             ["screenshot", "controls.shortcut.screenshot", "controls.shortcut.waiting", "controls.shortcut.reset"],
                             ["avancar", "controls.shortcut.fast_forward", "controls.shortcut.waiting_any", "controls.shortcut.reset_ff"],
                             ["voltar", "controls.shortcut.rewind", "controls.shortcut.waiting_any", "controls.shortcut.reset_rewind"]
-                        ]
+                        ].concat(Conquistas.disponivel()
+                                 ? [["conquistas", "controls.shortcut.achievements", "controls.shortcut.waiting_any", "controls.shortcut.reset_achievements"]]
+                                 : [])
 
                         RowLayout {
                             required property var modelData
@@ -1232,6 +1240,132 @@ ApplicationWindow {
                     rotulo: "audio.midi_effects"
                     dica: "audio.midi_effects.hint"
                 }
+            }
+        }
+
+        // Conquistas: a conta do RetroAchievements, o hardcore e os avisos. Ver
+        // `docs/implementacao/25-conquistas.md`. A senha vai ao servidor e é esquecida: o que fica
+        // guardado é o token do login.
+        ScrollView {
+            id: abaDeConquistas
+
+            contentWidth: availableWidth
+
+            ColumnLayout {
+                id: colunaDasConquistas
+
+                width: parent.width - 32
+                x: 16
+                spacing: 6
+
+                // Relidos pelo relógio da janela: o login responde de outra thread.
+                readonly property bool conectado: janela.depende([janela.tique], Conquistas.conectado())
+                readonly property bool entrando: janela.depende([janela.tique], Conquistas.entrando())
+
+                Titulo { text: janela.tr("achievements.account") }
+                Dica { text: janela.tr("achievements.account.hint") }
+
+                Label {
+                    visible: colunaDasConquistas.conectado
+                    text: janela.depende([janela.tique], Conquistas.conta())
+                }
+                Button {
+                    visible: colunaDasConquistas.conectado
+                    text: janela.tr("achievements.logout")
+                    onClicked: Conquistas.sai()
+                }
+
+                GridLayout {
+                    visible: !colunaDasConquistas.conectado
+                    columns: 2
+
+                    Label { text: janela.tr("achievements.user") }
+                    TextField {
+                        id: usuarioDasConquistas
+
+                        Layout.preferredWidth: 240
+                        enabled: !colunaDasConquistas.entrando
+                    }
+                    Label { text: janela.tr("achievements.password") }
+                    TextField {
+                        id: senhaDasConquistas
+
+                        Layout.preferredWidth: 240
+                        echoMode: TextInput.Password
+                        onAccepted: botaoDeEntrar.clicked()
+                    }
+                }
+                Button {
+                    id: botaoDeEntrar
+
+                    visible: !colunaDasConquistas.conectado
+                    enabled: !colunaDasConquistas.entrando && usuarioDasConquistas.text !== ""
+                             && senhaDasConquistas.text !== ""
+                    text: janela.tr(colunaDasConquistas.entrando ? "achievements.logging_in" : "achievements.login")
+                    onClicked: {
+                        Conquistas.entra(usuarioDasConquistas.text, senhaDasConquistas.text)
+                        // A senha não fica nem no campo.
+                        senhaDasConquistas.text = ""
+                    }
+                }
+                Label {
+                    readonly property string erro: janela.depende([janela.tique], Conquistas.erro())
+                    Layout.fillWidth: true
+                    visible: erro !== ""
+                    wrapMode: Text.Wrap
+                    color: "#e0a030"
+                    text: erro
+                }
+
+                Titulo { text: janela.tr("achievements.mode") }
+                CheckBox {
+                    text: janela.tr("achievements.hardcore")
+                    checked: janela.depende([janela.tique], Conquistas.hardcore())
+                    onToggled: {
+                        // Entrar no hardcore com um jogo aberto o reinicia: pergunta antes. Sair
+                        // é livre, e o RA permite a qualquer hora.
+                        if (checked && Conquistas.jogoAberto()) {
+                            checked = false
+                            confirmaHardcore.open()
+                        } else {
+                            Conquistas.defineHardcore(checked)
+                        }
+                    }
+                }
+                Dica {
+                    Layout.leftMargin: 32
+                    text: janela.tr("achievements.hardcore.hint")
+                }
+
+                Titulo { text: janela.tr("achievements.notifications") }
+                CheckBox {
+                    text: janela.tr("achievements.notify.unlock")
+                    checked: janela.depende([janela.tique], Conquistas.aviso("desbloqueio"))
+                    onToggled: Conquistas.defineAviso("desbloqueio", checked)
+                }
+                CheckBox {
+                    text: janela.tr("achievements.notify.leaderboard")
+                    checked: janela.depende([janela.tique], Conquistas.aviso("placar"))
+                    onToggled: Conquistas.defineAviso("placar", checked)
+                }
+                Dica {
+                    Layout.leftMargin: 32
+                    text: janela.tr("achievements.notify.leaderboard.hint")
+                }
+            }
+
+            Dialog {
+                id: confirmaHardcore
+
+                anchors.centerIn: Overlay.overlay
+                modal: true
+                title: janela.tr("achievements.hardcore.confirm.title")
+                standardButtons: Dialog.Ok | Dialog.Cancel
+
+                Label {
+                    text: janela.tr("achievements.hardcore.confirm")
+                }
+                onAccepted: Conquistas.defineHardcore(true)
             }
         }
 
