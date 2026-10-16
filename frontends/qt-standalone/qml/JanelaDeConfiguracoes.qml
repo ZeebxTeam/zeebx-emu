@@ -67,6 +67,18 @@ ApplicationWindow {
         requestActivate()
     }
 
+    // Uma captura começou: a tecla tem de chegar a `teclado`, o FocusScope da aba.
+    //
+    // **No clique, e não só quando a aba aparece.** O foco era pedido ao mostrar a aba, e a
+    // captura ficava em "Aguardando" para sempre quando ele não estava lá: a janela aberta pelo
+    // aviso de boas-vindas, que no Wayland pode nascer sem o teclado, ou uma lista desta aba que
+    // ficou com o foco depois de usada. Os botões de atribuir não pegam o foco de propósito — com
+    // ele, o espaço capturado clicaria o botão de novo —, então quem o devolve é isto.
+    function escutaTeclas(teclado) {
+        janela.requestActivate()
+        teclado.forceActiveFocus()
+    }
+
     // Abre no modo do jogo de `chave`, na aba dos controles.
     function abreDoJogo(chave, nome) {
         jogo = chave
@@ -678,7 +690,10 @@ ApplicationWindow {
                                 onPositionChanged: (mouse) => desenho.sob = cfg.botaoEm(mouse.x / width, mouse.y / height)
                                 onExited: desenho.sob = ""
                                 // Clicar na peça é o mesmo que clicar em "atribuir" na linha dela.
-                                onClicked: if (desenho.sob !== "") cfg.captura(desenho.sob)
+                                onClicked: if (desenho.sob !== "") {
+                                    cfg.captura(desenho.sob)
+                                    janela.escutaTeclas(teclado)
+                                }
                             }
                         }
                     }
@@ -773,7 +788,10 @@ ApplicationWindow {
                                     checkable: true
                                     checked: esperando
                                     text: janela.tr(esperando ? "controls.assigning" : "controls.assign")
-                                    onClicked: cfg.captura(modelData)
+                                    onClicked: {
+                                        cfg.captura(modelData)
+                                        janela.escutaTeclas(teclado)
+                                    }
                                 }
                             }
                             Repeater {
@@ -823,6 +841,11 @@ ApplicationWindow {
                             wrapMode: Text.Wrap
                             color: "#e0a030"
                             text: motivo
+                        }
+                        Dica {
+                            readonly property string dica: janela.depende([abaDeControles.tique], cfg.dicaDeCaptura())
+                            visible: dica !== ""
+                            text: dica
                         }
 
                         // Os eixos: um eixo não é um botão, tem curso, e por isso a origem é uma só
@@ -935,7 +958,8 @@ ApplicationWindow {
                         model: [
                             ["screenshot", "controls.shortcut.screenshot", "controls.shortcut.waiting", "controls.shortcut.reset"],
                             ["avancar", "controls.shortcut.fast_forward", "controls.shortcut.waiting_any", "controls.shortcut.reset_ff"],
-                            ["voltar", "controls.shortcut.rewind", "controls.shortcut.waiting_any", "controls.shortcut.reset_rewind"]
+                            ["voltar", "controls.shortcut.rewind", "controls.shortcut.waiting_any", "controls.shortcut.reset_rewind"],
+                            ["reiniciar", "controls.shortcut.restart", "controls.shortcut.waiting", "controls.shortcut.reset_restart"]
                         ]
 
                         RowLayout {
@@ -957,7 +981,10 @@ ApplicationWindow {
                                 checkable: true
                                 checked: parent.esperando
                                 text: janela.tr(parent.esperando ? modelData[2] : "controls.shortcut.change")
-                                onClicked: cfg.capturaAtalho(modelData[0])
+                                onClicked: {
+                                    cfg.capturaAtalho(modelData[0])
+                                    janela.escutaTeclas(tecladoDosAtalhos)
+                                }
                             }
                             Button {
                                 focusPolicy: Qt.NoFocus
@@ -972,6 +999,11 @@ ApplicationWindow {
                         wrapMode: Text.Wrap
                         color: "#e0a030"
                         text: motivo
+                    }
+                    Dica {
+                        readonly property string dica: janela.depende([abaDeAtalhos.tique], cfg.dicaDeCaptura())
+                        visible: dica !== ""
+                        text: dica
                     }
 
                     Titulo { text: janela.tr("controls.shortcut.fixed") }

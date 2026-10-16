@@ -213,7 +213,8 @@ pub struct Partida {
     teclas_pendentes: Vec<(u32, bool)>,
     /// Quando o jogo rodou pela última vez, para saber quanto tempo real ele tem a recuperar.
     ultimo_passo: Instant,
-    pub pausada: bool,
+    /// Parada pela janela. Muda só pela [`Partida::alterna_pausa`], que leva o som junto.
+    pausada: bool,
     /// Se o jogo foi aberto pela Z-Wheel. Quando ele sai sozinho, a Z-Wheel volta, como no
     /// console; aberto pela biblioteca, sair encerra.
     pub aberta_pela_z_wheel: bool,
@@ -477,7 +478,7 @@ impl Partida {
         self.pad_anterior = Default::default();
         self.teclas_entregues.clear();
         self.teclas_pendentes.clear();
-        self.pausada = false;
+        self.define_pausa(false);
         self.avanco.desliga();
         self.avancando = false;
         for turbo in &mut self.turbos {
@@ -486,10 +487,34 @@ impl Partida {
         self.rewind.solta();
     }
 
+    pub fn pausada(&self) -> bool {
+        self.pausada
+    }
+
+    pub fn alterna_pausa(&mut self) {
+        self.define_pausa(!self.pausada);
+    }
+
+    /// Pausa ou solta o jogo, e o som com ele: sem isso a música seguia tocando com a imagem
+    /// parada. Ver [`Session::congela_o_som`].
+    fn define_pausa(&mut self, pausada: bool) {
+        self.pausada = pausada;
+        self.sessao.congela_o_som(pausada);
+    }
+
     /// Lê o atalho do rewind desta volta. Vem **antes** do [`Partida::le_o_avanco`] e do
     /// [`Partida::avanca`]: voltando, o jogo não anda e o fast-forward fica suspenso. Ver
     /// [`ControleDoRewind::le`].
+    ///
+    /// **Voltar um ponto é GL**, como andar: o estado restaurado refaz as texturas na placa. Quem
+    /// chama deixa o contexto do rasterizador corrente — o Qt chamava isto fora dele, e as
+    /// texturas do ponto iam parar no contexto do Qt Quick. E, como no [`Partida::avanca`], a
+    /// janela pode ter pintado no mesmo contexto desde o passo anterior: o espelho do estado da
+    /// placa é avisado antes.
     pub fn le_o_rewind(&mut self, apertado: bool, ajustes: &AjustesDoRewind) {
+        if apertado && ajustes.ligado {
+            self.sessao.retoma_o_contexto();
+        }
         let leitura = self.rewind.le(&mut self.sessao, apertado, self.pausada, ajustes);
         if leitura == Leitura::Soltou {
             self.reinicia_relogio();
@@ -524,7 +549,7 @@ impl Partida {
     /// separador decimal do idioma. Ver [`crate::velocidade::rotulo_do_avanco`].
     pub fn indicador_do_avanco(&self, avanco: &Avanco, virgula: bool) -> Option<String> {
         self.avancando.then(|| {
-            let alcancada = self.sessao.sample().speed as f32 / 100.0;
+            let alcancada = self.sessao.velocidade_alcancada();
             crate::velocidade::rotulo_do_avanco(avanco.proporcao(), alcancada, virgula)
         })
     }

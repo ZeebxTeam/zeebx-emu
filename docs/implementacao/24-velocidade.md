@@ -74,6 +74,21 @@ manda. O contador do fixo e da meia apresentação é o mesmo nos dois (`Contado
 quadros por segundo para mostrar 60 é o que impediria o host de chegar à proporção. Um frameskip
 fixo escolhido continua valendo.
 
+### O jogo que fica para trás
+
+Um relato da 0.4.2: no Qt, numa máquina com EndeavourOS, o NFS parava (imagem e som, com a janela
+respondendo) com qualquer frameskip fora do automático, e voltava ao automático. Não se
+reproduziu: aqui o NFS anda a 1x na corrida com todas as escolhas, trocadas no meio. A suspeita é o
+jogo rodar abaixo do tempo real naquela máquina, porque o automático é a única escolha que pula
+quadro quando o jogo atrasa.
+
+Para o próximo relato trazer o dado, a sessão vigia a velocidade (`VigiaDaVelocidade`). Quando,
+num segundo real, o jogo anda menos da metade do que o ritmo pede, o registro diz o quanto andou,
+o frameskip, a meia apresentação, o custo do último quadro desenhado e do último pulado, e quantas
+voltas houve e quantas estavam adiantadas. Uma linha por episódio, e outra quando ele volta a 90%.
+Uma pausa ou o rewind não contam: a medida recomeça depois de um buraco entre as voltas. Lento de
+verdade aparece como uma velocidade baixa com quadros caros; parado aparece como zero.
+
 ## O fast-forward
 
 A velocidade é uma proporção fixa de 2x a 10x, ou "sem limite". O atalho é F10 (o do PR #83, para
@@ -104,6 +119,14 @@ O mixer agora multiplica o passo de cada voz e de cada fluxo pela velocidade
 usada é a **alcançada**, numa média móvel de meio segundo, e não a pedida. Com 10x pedidos e o host
 chegando a 4x, um passo de 10 deixaria o som duas vezes e meia na frente do jogo. A 1x o ritmo é
 exatamente 1, porque seguir a oscilação da medida desafinaria a música de quem nem está avançando.
+
+**A média parte da proporção pedida, e não de 1x.** O jogo acelera no aperto: no Action Hero 3D a
+3x, os primeiros 100 ms já andam 2,8x. Partindo de 1x, a média levava um segundo e meio para chegar
+perto dos 3x, e o som e o rótulo ▶▶ subiam devagar atrás do jogo. O fast-forward parecia gradual.
+Do segundo aperto em diante, com a mesma proporção, ela parte de onde parou da última vez. No mesmo
+jogo a 10x o host chega a 6,7x, e partir de 10 a cada aperto fazia a altura escorregar por um
+segundo e meio; medido de novo, o segundo aperto começa em 6,56x. O rótulo usa essa mesma média
+(`Session::velocidade_alcancada`), e não a amostra de meio segundo do painel.
 
 "Sem som" cala o mixer enquanto avança. "Sem limite" é sempre mudo: a velocidade real varia de
 quadro leve para quadro pesado, e o som que a acompanhasse mudaria de altura o tempo todo.
@@ -177,6 +200,48 @@ mudou: o save do jogador. Um ponto que o motor recusa (um arquivo que o jogo apa
 exemplo) sai do anel, e o anterior é tentado. **O que o jogo gravou no disco não volta**: voltar
 para antes de um save não desfaz o save, o mesmo que o save state manual faz.
 
+### O rewind no Qt
+
+O rewind não funcionava na janela Qt. Lá ele é o único caminho que restaura um estado, porque a
+janela não tem save state manual, e a leitura do atalho rodava fora do contexto de GL do jogo.
+Voltar um ponto refaz as texturas na placa: elas eram apagadas e criadas no contexto que estivesse
+corrente, o do Qt Quick ou nenhum. A leitura agora vai com o contexto do jogo corrente, e a
+`Partida`, como antes de andar, avisa o espelho do estado da placa
+(`Session::retoma_o_contexto`) antes de voltar um ponto. O Android faz o mesmo aviso. Com o
+rasterizador de processador o aviso não faz nada, e por isso nenhum teste sem placa o observa.
+
+### A tela preta e o passo para a frente
+
+Pela placa, o Magical Drop III e o Um Jogo de Ovos ficavam com a tela preta durante todo o rewind.
+Duas coisas se somavam. O último quadro fica na textura da placa até alguém pedi-lo, e a textura não
+entra no estado: o ponto voltava com a tela de um quadro antigo, ou preta num jogo que só desenha
+pelo GL. E, restaurado o estado, o contador de escritas da tela voltava igual ao gravado, a tela
+parecia intacta, e a janela mostrava a textura da placa, que volta vazia.
+
+O ponto agora traz o quadro da placa para a tela antes de gravar (`materializa_quadro_gl`, com o
+contexto do jogo corrente, logo depois de ele andar), e a máquina restaurada diz que a imagem é a
+da tela até a próxima troca de buffer (`Machine::quadro_na_placa`). Medido com a `Partida` pela
+placa, no Magical Drop III: sem a primeira metade, a tela de cada ponto saía com 0 pixels acesos;
+com ela, com cerca de 237 mil.
+
+A mesma medida mostrou o rewind indo **para a frente**: 30.023 ms, volta a 29.000, e o passo
+seguinte de volta a 30.023. O ponto que a thread comprimia quando o jogo voltou entrava no anel
+depois e virava o mais novo. Tirar um ponto agora muda a geração do anel, como limpar, e o que
+estava em voo é descartado: 30.023, 29.000, 27.977, 26.954.
+
+### O som que não voltava
+
+O mixer não entra no save state, e restaurar não mexia nele. Voltar no rewind deixava tocando o
+que o mixer tocava no instante de antes: a música da cena seguinte por cima da restaurada, para
+sempre quando era um laço, porque o jogo restaurado não sabe daquela voz e nunca a manda parar.
+Visto no Action Hero 3D, cuja música é MP3 em laço. O mesmo valia para o save state manual.
+
+Agora o restaurar cala o mixer inteiro e toca de novo o que o estado diz que toca
+(`Machine::refaz_o_som`). Um efeito volta do ponto que o relógio virtual marca, contando as
+repetições. Um laço volta do começo, porque o instante em que ele começou não é guardado. Um fluxo
+PCM volta vazio, e o jogo o enche de novo. Um som cujo cache não está na memória, num estado de
+outra sessão, fica calado até o jogo tocá-lo de novo, como já ficava.
+
 ### O relógio que não voltava
 
 O rewind expôs um defeito antigo do save state. O relógio do jogo é
@@ -194,9 +259,22 @@ save state do Android e do core.
 A aba **Atalhos** do Qt junta todas as teclas da janela do jogo num lugar só, como o *Hotkey
 Settings* do Dolphin:
 
-- **Trocáveis**: o screenshot (só teclado, F9), o fast-forward (F10) e o rewind (F8). Os dois
-  últimos aceitam uma tecla ou um botão de qualquer controle ligado.
+- **Trocáveis**: o screenshot (só teclado, F9), o fast-forward (F10), o rewind (F8) e o reiniciar
+  (só teclado, R). O fast-forward e o rewind aceitam uma tecla ou um botão de qualquer controle
+  ligado.
 - **Fixos**, só para leitura: Esc, P, F11.
+
+**O reiniciar abre o mesmo jogo de novo**, na hora, sem confirmação, como o botão de reset de um
+console (`Nucleo::reinicia`). Não é um reset da máquina: a abertura é o único caminho que monta
+tudo como o jogo espera — as configurações dele, as portas, o som, a Z-Wheel de onde ele veio. O
+que o jogo gravou no disco fica. Como o screenshot, ele recusa uma tecla que já é botão do Zeebo, e
+é perguntado antes do jogo. Quem já usava o R num botão, num arquivo de antes do atalho, ganha o
+reiniciar **sem tecla** (`Settings::adota_o_atalho_de_reiniciar`), em vez de perder o botão. No
+Android, o "Reiniciar" fica na caixa do voltar, ao lado de pausar.
+
+A pausa mostra um **⏸** no centro da tela, com a palavra embaixo; continuar mostra um **▶** por meio
+segundo, e o reiniciar um **↻**, que somem esmaecendo. São desenhados com `Shape`, e não com
+caracteres: nem toda fonte tem o ⏸ e o ↻.
 
 Um botão que é de atalho **não chega ao jogo** (`Atalhos::reservadas`). Se ele também for um botão
 do Zeebo, o editor avisa, mas deixa salvar. Os padrões são só de teclado: o controle do Zeebo usa

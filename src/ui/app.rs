@@ -2285,7 +2285,7 @@ impl App {
         self.aviso_de_calibracao(ctx, calibracao);
         // A entrada é lida antes de pegar a partida emprestada: montar o estado do controle
         // precisa do mapeamento e dos controles ligados, que também vivem no `self`.
-        let pausada = self.partida.as_ref().is_none_or(|partida| partida.pausada);
+        let pausada = self.partida.as_ref().is_none_or(Partida::pausada);
         let pads = match pausada {
             true => None,
             false => Some(self.pads_now(ctx)),
@@ -2382,7 +2382,7 @@ impl App {
             ctx.input(|i| i.key_pressed(egui::Key::Escape) || i.viewport().close_requested());
         if ctx.input(|i| i.key_pressed(egui::Key::P)) {
             if let Some(partida) = self.partida.as_mut() {
-                partida.pausada = !partida.pausada;
+                partida.alterna_pausa();
             }
         }
         alterna_tela_cheia(ctx);
@@ -2592,7 +2592,7 @@ impl App {
         // pedido vai também para a janela principal porque é dentro do quadro dela que esta
         // aqui é desenhada — pedir só para si mesma deixaria o jogo parado sempre que a
         // biblioteca estivesse ociosa.
-        let pausada = self.partida.as_ref().is_some_and(|partida| partida.pausada);
+        let pausada = self.partida.as_ref().is_some_and(Partida::pausada);
         if !stop && !pausada && ended.is_none() {
             ctx.request_repaint();
             ctx.request_repaint_of(egui::ViewportId::ROOT);

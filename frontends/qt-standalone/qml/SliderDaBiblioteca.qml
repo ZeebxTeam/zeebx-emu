@@ -1,4 +1,7 @@
 import QtQuick
+import QtQuick.Controls
+
+import zeebx
 
 // A biblioteca no jeito da Z-Wheel: o rolo de logos girando como cilindro, o nome, as caixas
 // deslizando, e a classificação com a descrição embaixo. As medidas e as curvas são as do
@@ -19,6 +22,8 @@ Item {
 
     required property var biblioteca
     signal abre(int linha)
+    signal configura(int linha)
+    signal inspeciona(int linha)
     // O teclado anda pelo slider. Falso com outra janela por cima — ver `Principal.sobreposta`.
     property bool escutando: true
 
@@ -73,6 +78,44 @@ Item {
     Keys.onReturnPressed: if (escutando) abre(linha(cursor))
     Keys.onEnterPressed: if (escutando) abre(linha(cursor))
     Keys.onSpacePressed: if (escutando) abre(linha(cursor))
+    // As mesmas teclas da grade: X configura, C mostra os detalhes, Menu e Shift+F10 abrem o menu.
+    Keys.onPressed: (evento) => {
+        evento.accepted = false
+        if (!escutando || evento.isAutoRepeat || total === 0)
+            return
+        if (evento.key === Qt.Key_X) {
+            configura(linha(cursor))
+        } else if (evento.key === Qt.Key_C) {
+            inspeciona(linha(cursor))
+        } else if (evento.key === Qt.Key_Menu
+                   || (evento.key === Qt.Key_F10 && (evento.modifiers & Qt.ShiftModifier))) {
+            menuDoJogo.linha = linha(cursor)
+            menuDoJogo.popup(slider, slider.width / 2, slider.height / 2)
+        } else {
+            return
+        }
+        evento.accepted = true
+    }
+
+    function tr(chave) {
+        return depende([Idioma.versao], Idioma.texto(chave))
+    }
+
+    // O menu do jogo escolhido, o mesmo da grade.
+    Menu {
+        id: menuDoJogo
+
+        property int linha: -1
+
+        MenuItem {
+            text: slider.tr("library.menu.configure") + "  (X)"
+            onTriggered: slider.configura(menuDoJogo.linha)
+        }
+        MenuItem {
+            text: slider.tr("library.menu.details") + "  (C)"
+            onTriggered: slider.inspeciona(menuDoJogo.linha)
+        }
+    }
 
     // A posição corre atrás do cursor com uma mola amortecida: rápida no começo, macia no fim.
     FrameAnimation {

@@ -182,6 +182,15 @@ No fast-forward o passo de cada voz e de cada fluxo é multiplicado pela velocid
 alcançou (`Mixer::define_avanco`): o som é puxado pelo relógio da placa, e sem isso a música
 seguia em 1x com o jogo a 3x. Ver [24-velocidade.md](24-velocidade.md).
 
+**Pausar a janela congela o misturador** (`Mixer::congela`, chamado pela `Partida` no egui e no Qt e
+pelo `Emulador` no Android). Antes, a pausa só parava o jogo: a linha de áudio seguia puxando as
+vozes, e a música continuava com a imagem parada. Como quem diz que um som acabou é o relógio
+virtual, e a pausa o segura, a música podia acabar durante a pausa e, na volta, o jogo esperava um
+som que já não existia. Os fluxos (`Stream`) não tinham o defeito: o jogo parado não os alimenta, e
+a fila seca. Congelado, o `fill` não anda voz nem fluxo; entrar e sair passam por uma rampa de
+`DESCIDA_FRAMES` quadros, porque parar no meio da onda estala. Não é o mudo, que deixa o som correr,
+nem o calado do rewind, que troca o som pelo de cada ponto.
+
 ## Como conferir sem ouvir
 
 `--dump-audio=arquivo.wav` grava a mistura. Foi assim que a implementação foi verificada: pico de

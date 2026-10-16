@@ -335,6 +335,8 @@ pub struct Atalhos {
     /// O rewind, que se segura: tecla ou botão, como o [`Atalhos::avancar`]. Ver
     /// [`crate::velocidade::rewind`].
     pub voltar: Vec<Source>,
+    /// Reiniciar o jogo aberto, na hora. Só de teclado, como o screenshot; vazio é sem tecla.
+    pub reiniciar: String,
 }
 
 impl Atalhos {
@@ -344,6 +346,8 @@ impl Atalhos {
     pub const AVANCAR_PADRAO: &str = "F10";
     /// O Backspace, que seria a escolha óbvia, já é o `AVK_CLR` do jogo.
     pub const VOLTAR_PADRAO: &str = "F8";
+    /// O R de "reset", que nenhum botão do teclado de fábrica usa.
+    pub const REINICIAR_PADRAO: &str = "R";
 
     pub fn avancar_padrao() -> Vec<Source> {
         vec![Source::key(Self::AVANCAR_PADRAO)]
@@ -364,6 +368,7 @@ impl Default for Atalhos {
             screenshot: Self::SCREENSHOT_PADRAO.to_string(),
             avancar: Self::avancar_padrao(),
             voltar: vec![Source::key(Self::VOLTAR_PADRAO)],
+            reiniciar: Self::REINICIAR_PADRAO.to_string(),
         }
     }
 }
@@ -651,15 +656,42 @@ impl Settings {
     /// Lê as preferências de `path`. Arquivo ausente ou ilegível devolve o padrão — abrir com
     /// as opções de fábrica é sempre melhor que não abrir.
     pub fn load_from(path: &Path) -> Self {
-        let mut settings: Self = std::fs::read_to_string(path)
-            .ok()
-            .and_then(|text| serde_json::from_str(&text).ok())
+        let texto = std::fs::read_to_string(path).ok();
+        let mut settings: Self = texto
+            .as_deref()
+            .and_then(|text| serde_json::from_str(text).ok())
             .unwrap_or_default();
         // Um arquivo de uma versão anterior não traz o que ela não conhecia, e o padrão de um
         // campo novo nem sempre é o vazio.
         settings.controls.adopt();
         settings.adota_o_limite_antigo();
+        if let Some(texto) = &texto {
+            settings.adota_o_atalho_de_reiniciar(texto);
+        }
         settings
+    }
+
+    /// O atalho de reiniciar chega sem tecla para quem já usa o R num botão do Zeebo.
+    ///
+    /// O R de fábrica não está em nenhum botão do teclado de fábrica, mas quem remapeou pode tê-lo
+    /// posto num: o atalho, perguntado antes do jogo, roubaria o botão, e um toque nele
+    /// reiniciaria a partida. Só vale para o arquivo que ainda não conhecia o atalho — quem o
+    /// escolheu depois escolheu.
+    fn adota_o_atalho_de_reiniciar(&mut self, texto: &str) {
+        let conhecia = serde_json::from_str::<serde_json::Value>(texto)
+            .ok()
+            .is_some_and(|valor| valor.pointer("/atalhos/reiniciar").is_some());
+        let tecla = Atalhos::REINICIAR_PADRAO;
+        let usada = self.controls.players.iter().any(|jogador| {
+            jogador
+                .buttons
+                .values()
+                .flatten()
+                .any(|fonte| matches!(fonte, Source::Key { name } if name == tecla))
+        });
+        if !conhecia && usada {
+            self.atalhos.reiniciar.clear();
+        }
     }
 
     /// O `speed_limit` desligado de um arquivo antigo vira o limite de quadros desligado.
@@ -762,6 +794,7 @@ mod tests {
                 screenshot: "F12".into(),
                 avancar: vec![Source::key("F7"), Source::button("LeftThumb")],
                 voltar: vec![Source::button("RightThumb")],
+                reiniciar: "Home".into(),
             },
             biblioteca: ModoDaBiblioteca::Slider,
             movimento: Movimento {
@@ -878,6 +911,30 @@ mod tests {
 
         std::fs::write(&path, r#"{"graphics": {"speed_limit": true}}"#).unwrap();
         assert_eq!(Settings::load_from(&path).velocidade.limite_fps, LimiteFps::Sessenta);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// O R de reiniciar chega para quem não o usa, e não rouba o botão de quem já o mapeou. Quem
+    /// já conhecia o atalho fica com o que escolheu.
+    #[test]
+    fn o_atalho_de_reiniciar_nao_rouba_um_botao() {
+        let dir = std::env::temp_dir().join(format!("zeebx-testes-reiniciar-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+
+        std::fs::write(&path, r#"{ "roms_dir": "/jogos" }"#).unwrap();
+        assert_eq!(Settings::load_from(&path).atalhos.reiniciar, "R");
+
+        let mut com_r = Settings::default();
+        com_r.controls.player_mut(0).bind("b4", Source::key("R"));
+        let mut valor = serde_json::to_value(&com_r).unwrap();
+        valor["atalhos"].as_object_mut().unwrap().remove("reiniciar");
+        std::fs::write(&path, valor.to_string()).unwrap();
+        assert_eq!(Settings::load_from(&path).atalhos.reiniciar, "", "o R do b4 virou reinício");
+
+        // Gravado com o atalho, ele vale mesmo com o R num botão: foi escolha.
+        com_r.save_to(&path).unwrap();
+        assert_eq!(Settings::load_from(&path).atalhos.reiniciar, "R");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

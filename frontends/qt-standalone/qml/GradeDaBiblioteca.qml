@@ -36,6 +36,29 @@ GridView {
     Keys.onReturnPressed: if (escutando) abre(currentIndex)
     Keys.onEnterPressed: if (escutando) abre(currentIndex)
     Keys.onSpacePressed: if (escutando) abre(currentIndex)
+    // O X e o C são as configurações e os detalhes, como o b2 e o b3 do controle — no teclado de
+    // fábrica é onde eles ficam. A tecla Menu e o Shift+F10 abrem o menu do cartão escolhido,
+    // como o clique direito.
+    Keys.onPressed: (evento) => {
+        evento.accepted = false
+        if (!escutando || evento.isAutoRepeat || count === 0)
+            return
+        if (evento.key === Qt.Key_X) {
+            configura(currentIndex)
+        } else if (evento.key === Qt.Key_C) {
+            inspeciona(currentIndex)
+        } else if (evento.key === Qt.Key_Menu
+                   || (evento.key === Qt.Key_F10 && (evento.modifiers & Qt.ShiftModifier))) {
+            menuDoJogo.linha = currentIndex
+            if (currentItem)
+                menuDoJogo.popup(currentItem, currentItem.width / 2, currentItem.height / 2)
+            else
+                menuDoJogo.popup()
+        } else {
+            return
+        }
+        evento.accepted = true
+    }
 
     // Devolve `valor`, e faz a ligação depender das `versoes`: ver o `depende` do slider.
     function depende(versoes, valor) {
@@ -52,11 +75,11 @@ GridView {
         property int linha: -1
 
         MenuItem {
-            text: grade.tr("library.menu.configure")
+            text: grade.tr("library.menu.configure") + "  (X)"
             onTriggered: grade.configura(menuDoJogo.linha)
         }
         MenuItem {
-            text: grade.tr("library.menu.details")
+            text: grade.tr("library.menu.details") + "  (C)"
             onTriggered: grade.inspeciona(menuDoJogo.linha)
         }
     }

@@ -69,8 +69,13 @@ struct Anel {
     pontos: VecDeque<Ponto>,
     bytes: usize,
     teto: usize,
-    /// Muda a cada [`Rewind::limpa`]: um ponto que a thread terminou de comprimir depois disso é
-    /// de um jogo que já não existe, e não entra.
+    /// Muda a cada [`Rewind::limpa`] e a cada ponto tirado: um ponto que a thread terminou de
+    /// comprimir depois disso é de uma linha do tempo que já não existe, e não entra.
+    ///
+    /// **Tirar um ponto também conta.** O que está na thread quando o jogo volta foi marcado antes
+    /// do rewind, e para o ponto restaurado ele é o futuro. Entrando no anel depois, ele virava o
+    /// mais novo, e o passo seguinte do rewind levava o jogo **para a frente** — medido no
+    /// Magical Drop III: 30.023 ms, volta a 29.000, e o passo seguinte de volta a 30.023.
     geracao: u64,
 }
 
@@ -90,6 +95,7 @@ impl Anel {
     fn tira_o_mais_novo(&mut self) -> Option<Ponto> {
         let ponto = self.pontos.pop_back()?;
         self.bytes -= ponto.comprimido.len();
+        self.geracao = self.geracao.wrapping_add(1);
         Some(ponto)
     }
 }
@@ -168,6 +174,11 @@ impl Rewind {
             return;
         }
         let geracao = self.anel.lock().map(|anel| anel.geracao).unwrap_or_default();
+        // **O ponto leva a imagem do instante.** Pela placa, o último quadro fica na textura até
+        // alguém o pedir, e a textura não entra no estado: sem trazê-lo para a tela, o ponto
+        // voltava com a tela de um quadro antigo — ou preta, num jogo que só desenha pelo GL. O
+        // contexto do jogo está corrente aqui: o ponto é marcado logo depois de ele andar.
+        sessao.materializa_quadro_gl();
         let estado = sessao.grava_estado();
         self.ocupada.store(true, Ordering::Release);
         match envio.try_send((geracao, agora, estado)) {
@@ -429,6 +440,21 @@ mod tests {
         assert_eq!(anel.tira_o_mais_novo().map(|p| p.relogio_ms), Some(4));
         assert_eq!(anel.bytes, 0);
         assert!(anel.tira_o_mais_novo().is_none());
+    }
+
+    /// O ponto que a thread comprimia quando o jogo voltou não entra depois: para o ponto
+    /// restaurado, ele é o futuro, e entrando seria o próximo passo do rewind — para a frente.
+    #[test]
+    fn tirar_um_ponto_descarta_o_que_estava_na_thread() {
+        let mut anel = Anel {
+            teto: 1000,
+            ..Anel::default()
+        };
+        anel.guarda(ponto(29_000, 10));
+        // A thread pegou a geração deste instante para o ponto de 30.023 ms.
+        let do_pedido = anel.geracao;
+        assert_eq!(anel.tira_o_mais_novo().map(|p| p.relogio_ms), Some(29_000));
+        assert_ne!(anel.geracao, do_pedido, "o ponto em voo entraria no anel");
     }
 
     #[test]

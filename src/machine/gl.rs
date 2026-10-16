@@ -7,6 +7,68 @@ use super::*;
 /// de memória. Acima daqui, volta a ler componente a componente — que é lento, mas seguro.
 const TETO_DO_ARRAY: u64 = 8 << 20;
 
+/// Os nomes em uso de um tipo de objeto do OpenGL ES: texturas ou buffers.
+///
+/// **Nome apagado volta a valer.** Antes os nomes saíam de um contador que só crescia, e a
+/// especificação não proíbe: ela só exige que o `glGen*` entregue nomes fora de uso. Mas o Rally
+/// Master Pro guarda uma flag por textura num vetor de 248 bytes indexado pelo nome dela, e cada
+/// etapa apaga e recria as texturas da cena. Com o contador, o nome passava de 248 depois de
+/// algumas corridas e o jogo escrevia além do vetor, por cima do objeto vizinho no heap. O
+/// destrutor desse vizinho lia depois um ponteiro feito de bytes `0x01` e o jogo parava com
+/// "acesso inválido a `0x0101010d`". Medido: com uma guarda depois de cada bloco, as escritas
+/// fora do lugar caíam todas no fim desse vetor.
+///
+/// Sai o **menor** nome livre. Não foi medido no aparelho qual nome o driver do Zeebo entrega,
+/// só que ele reaproveita: o jogo roda no console sem cair. O menor livre é o que mantém os nomes
+/// baixos, e nomes baixos são o que o vetor do Rally supõe.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct NomesGl {
+    em_uso: std::collections::BTreeSet<u32>,
+}
+
+impl NomesGl {
+    /// Os nomes de uma lista, como um save state os guarda.
+    pub(crate) fn de(nomes: impl IntoIterator<Item = u32>) -> Self {
+        Self {
+            em_uso: nomes.into_iter().filter(|&nome| nome != 0).collect(),
+        }
+    }
+
+    /// O menor nome livre, que passa a estar em uso. Zero é o objeto padrão e nunca sai daqui.
+    pub(crate) fn gera(&mut self) -> u32 {
+        let mut nome = 1;
+        for &usado in &self.em_uso {
+            if usado != nome {
+                break;
+            }
+            nome += 1;
+        }
+        self.em_uso.insert(nome);
+        nome
+    }
+
+    /// Um nome que o jogo ligou sem ter gerado: o OpenGL o cria na primeira ligação, e daí em
+    /// diante o `glGen*` não pode entregá-lo a mais ninguém.
+    pub(crate) fn usa(&mut self, nome: u32) {
+        if nome != 0 {
+            self.em_uso.insert(nome);
+        }
+    }
+
+    pub(crate) fn libera(&mut self, nome: u32) {
+        self.em_uso.remove(&nome);
+    }
+
+    pub(crate) fn em_uso(&self) -> impl Iterator<Item = u32> + '_ {
+        self.em_uso.iter().copied()
+    }
+
+    /// O maior nome em uso, ou zero.
+    pub(crate) fn maior(&self) -> u32 {
+        self.em_uso.last().copied().unwrap_or(0)
+    }
+}
+
 impl<C: CpuBackend> Machine<C> {
     /// Um ajuste de textura vindo da extensão, com os nomes do OpenGL ES.
     pub(super) fn apply_texture_setting(&mut self, name: &str, pname: u32, value: u32) {
@@ -101,20 +163,23 @@ impl<C: CpuBackend> Machine<C> {
                 let addr = self.intern(text)?;
                 answer = Some((1, addr));
             }
-            // A spec só exige nomes distintos e fora de uso, então uma sequência serve.
-            "GenTextures" | "GenBuffers" => {
+            // Sem onde escrever, nenhum nome sai: o jogo não teria como devolvê-lo. Ver [`NomesGl`].
+            "GenTextures" | "GenBuffers" if a[1] != 0 => {
                 let (count, out) = (a[0], a[1]);
                 for i in 0..count {
-                    self.gles_next_name += 1;
-                    if out != 0 {
-                        self.cpu.write_u32(out + i * 4, self.gles_next_name)?;
-                    }
+                    let nome = match name == "GenTextures" {
+                        true => self.nomes_de_textura.gera(),
+                        false => self.nomes_de_buffer.gera(),
+                    };
+                    self.cpu.write_u32(out + i * 4, nome)?;
                 }
             }
+            "GenTextures" | "GenBuffers" => {}
             "DeleteTextures" => {
                 for i in 0..a[0] {
                     let name = self.cpu.read_u32(a[1] + i * 4)?;
                     self.gl.delete_texture(name);
+                    self.nomes_de_textura.libera(name);
                 }
             }
 
@@ -132,6 +197,7 @@ impl<C: CpuBackend> Machine<C> {
                 if nome != 0 {
                     self.gl_buffers.entry(nome).or_default();
                 }
+                self.nomes_de_buffer.usa(nome);
                 match alvo {
                     gles::GL_ARRAY_BUFFER => self.gl_array_buffer = nome,
                     gles::GL_ELEMENT_ARRAY_BUFFER => self.gl_element_buffer = nome,
@@ -174,6 +240,7 @@ impl<C: CpuBackend> Machine<C> {
                 for i in 0..a[0] {
                     let nome = self.cpu.read_u32(a[1] + i * 4)?;
                     self.gl_buffers.remove(&nome);
+                    self.nomes_de_buffer.libera(nome);
                     // Apagar um buffer desliga a ligação dele, e é o que a especificação pede:
                     // o alvo volta para zero, ou seja, para a memória do jogo.
                     if self.gl_array_buffer == nome {
@@ -379,7 +446,10 @@ impl<C: CpuBackend> Machine<C> {
             "TexEnvx" | "TexEnvi" | "TexEnvf" | "TexEnvxv" | "TexEnviv" | "TexEnvfv" => {}
             "ActiveTexture" => self.gl.set_active_texture(a[0]),
             "ClientActiveTexture" => self.gl.set_client_active_texture(a[0]),
-            "BindTexture" => self.gl.bind_texture(a[1]),
+            "BindTexture" => {
+                self.nomes_de_textura.usa(a[1]);
+                self.gl.bind_texture(a[1]);
+            }
             "TexImage2D" => self.gles_tex_image(&a)?,
             "TexSubImage2D" => self.gles_tex_sub_image(&a)?,
             "CompressedTexImage2D" => self.gles_compressed_tex_image(&a)?,
@@ -1070,6 +1140,7 @@ impl<C: CpuBackend> Machine<C> {
         self.gl.descarrega_o_desenho();
         self.gl.fecha_quadro();
         self.gl_quadro_pendente = true;
+        self.placa_sem_o_quadro = false;
         // **O quadro na placa vale para a tela como ela está agora**, mesmo sem ter sido lido. É o
         // que o [`Machine::quadro_na_placa`] compara, e quem apresenta pela placa nunca materializa
         // — a textura é justamente o que dispensa a leitura. Marcado só na materialização, o
@@ -1140,8 +1211,15 @@ impl<C: CpuBackend> Machine<C> {
     /// desenho 2D depois disso — um HUD pelo `IDisplay`, uma caixa de mensagem — vive só na tela
     /// do console, e mostrar a textura grande o apagaria. Nesse caso a janela fica com a tela de
     /// 640×480, como sempre.
+    ///
+    /// **Nem logo depois de restaurar um estado.** A textura da placa não entra no save state, e
+    /// volta vazia; a tela da CPU volta com a imagem gravada. Como o contador de escritas da tela
+    /// volta junto, a tela parecia intacta, e a janela mostrava a textura: preto. No rewind, que
+    /// segura o jogo parado em cada ponto, a tela ficava preta do começo ao fim — medido no Magical
+    /// Drop III e no Um Jogo de Ovos, pela placa. Até a próxima troca de buffer vale a tela.
     pub fn quadro_na_placa(&self) -> Option<crate::video::rasterizer::QuadroNaPlaca> {
-        let intacta = self.escritas_do_quadro_gl == Some(self.screen().escritas());
+        let intacta = !self.placa_sem_o_quadro
+            && self.escritas_do_quadro_gl == Some(self.screen().escritas());
         intacta.then(|| self.gl.quadro_na_placa()).flatten()
     }
 
@@ -1252,6 +1330,48 @@ fn fatia_do_buffer(conteudo: &[u8], endereco: u32, quantos: u32) -> Vec<u8> {
     match conteudo.get(inicio..fim) {
         Some(fatia) => fatia.to_vec(),
         None => vec![0u8; quantos as usize],
+    }
+}
+
+#[cfg(test)]
+mod testes_dos_nomes {
+    use super::NomesGl;
+
+    /// Um nome apagado volta a sair, e sai o menor livre. Sem isso o Rally Master Pro passava de
+    /// 248 texturas em algumas corridas: ver [`NomesGl`].
+    #[test]
+    fn o_nome_apagado_volta_a_sair() {
+        let mut nomes = NomesGl::default();
+        assert_eq!([nomes.gera(), nomes.gera(), nomes.gera()], [1, 2, 3]);
+        nomes.libera(2);
+        assert_eq!(nomes.gera(), 2);
+        assert_eq!(nomes.gera(), 4);
+    }
+
+    /// Mil ciclos de apagar e recriar a mesma cena não fazem o nome crescer.
+    #[test]
+    fn recriar_a_cena_nao_faz_o_nome_crescer() {
+        let mut nomes = NomesGl::default();
+        let fixo = nomes.gera();
+        for _ in 0..1000 {
+            let cena: Vec<u32> = (0..60).map(|_| nomes.gera()).collect();
+            for nome in cena {
+                nomes.libera(nome);
+            }
+        }
+        assert_eq!(nomes.maior(), fixo);
+        assert_eq!(nomes.gera(), 2);
+    }
+
+    /// Um nome ligado sem ter sido gerado passa a existir, e o `glGen*` não o entrega a mais
+    /// ninguém. Zero é o objeto padrão e nunca entra.
+    #[test]
+    fn o_nome_ligado_sem_gerar_fica_em_uso() {
+        let mut nomes = NomesGl::default();
+        nomes.usa(1);
+        nomes.usa(0);
+        assert_eq!(nomes.gera(), 2);
+        assert_eq!(nomes.em_uso().collect::<Vec<_>>(), vec![1, 2]);
     }
 }
 

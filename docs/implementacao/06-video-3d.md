@@ -188,7 +188,8 @@ funções de buffer pelo `eglGetProcAddress`. Três defeitos nossos apareceram c
 
 E o `glTexEnv` ganhou o **`GL_COMBINE`** (`TexEnv`, nos dois rasterizadores): função, três fontes e
 operandos para o RGB e para o alfa, escalas e a `GL_TEXTURE_ENV_COLOR`, na unidade 0. Antes ele
-caía no `GL_MODULATE`. O QX configura a combinação com a fonte na textura.
+caía no `GL_MODULATE`. O QX configura a combinação com a fonte na textura. Função e fonte
+inválidas são recusadas, e as fontes aceitam o crossbar — ver a seção do Bóia Cross.
 
 **Os personagens sumiam porque respondíamos uma unidade de textura só.** O motor pergunta
 `GL_MAX_TEXTURE_UNITS` na abertura e guarda a resposta no gerenciador de extensões; o gerenciador
@@ -202,6 +203,39 @@ Com duas unidades, o motor ilumina pela textura: `DOT3_RGB` entre o mapa de rele
 a cor do vértice, que passa a levar a direção da luz, na unidade 0; e `ADD_SIGNED` com a textura
 de cor, alfa pela `GL_TEXTURE_ENV_COLOR`, na unidade 1. O dragão, as galinhas e o cenário inteiro
 — cachoeira, rochas, a iluminação — aparecem, nos dois rasterizadores.
+
+## A água do Bóia Cross: enum inválido e o crossbar
+
+A água da primeira pista (Santo André) saía azul-roxa e opaca; no longplay capturado do console
+ela é marrom e turva. O rastreio do desenho dela (`sessao --trace=IGLES11`, código do jogo em
+`0x3cf64`) mostra o QX montando um relevo em duas unidades:
+
+```
+unidade 0  textura 0xca (mapa de normais, o azul-lilás)
+           GL_COMBINE_RGB = GL_DOT3_RGB
+           GL_COMBINE_RGB = GL_TEXTURE0        <- queria GL_SRC0_RGB
+           GL_SRC1_RGB    = GL_PRIMARY_COLOR   (o vetor da luz, ~(0,5; 0,95; 0,7))
+unidade 1  textura 0xc9 (a cor da água, marrom)
+           GL_COMBINE_RGB = GL_COMBINE         <- não é função nenhuma
+           GL_SRC0_RGB    = GL_PREVIOUS
+           GL_SRC1_RGB    = GL_TEXTURE1
+           GL_COMBINE_ALPHA = GL_REPLACE, GL_SRC0_ALPHA = GL_TEXTURE1
+```
+
+Dois defeitos nossos se somavam:
+
+- **Aceitávamos qualquer valor.** No driver, função ou fonte que não existe é
+  `GL_INVALID_ENUM` e o valor de antes fica: a unidade 0 continua no `DOT3`, a 1 no `MODULATE`
+  padrão. Aqui o `GL_TEXTURE0` virava a função e caía na multiplicação — o mapa de normais vezes o
+  vetor da luz, que é a cor azul-roxa da água. O `TexEnv::define` agora recusa os dois.
+- **`GL_TEXTURE0` e `GL_TEXTURE1` como fonte** (o `ARB_texture_env_crossbar`) caíam no
+  `GL_PREVIOUS`. A unidade 1 multiplicava o anterior por ele mesmo, e a textura marrom nunca era
+  amostrada. O crossbar não é do OpenGL ES 1.1, mas o aparelho o aceita: com a fonte recusada a
+  unidade 1 ficaria no `GL_PREVIOUS` padrão, sem marrom nenhum, e a água do vídeo é marrom.
+
+Nos dois rasterizadores as duas unidades agora amostram antes de qualquer uma combinar, e uma
+fonte que aponta para unidade que não desenha faz a unidade passar o anterior adiante, que é a
+regra do crossbar. Essa última não foi medida no aparelho — nenhum jogo testado a exercita.
 
 ## A distância de desenho dos Zeebo Extreme
 
@@ -351,6 +385,40 @@ leitura do endereço zero, ou seja, aparece como acesso inválido a `0x00000000`
 de GL. Um pedido que passe do fim do buffer sai **zerado** em vez de falhar, porque o OpenGL
 deixa o resultado indefinido ali e derrubar o `glDrawElements` inteiro por causa de um vértice
 seria pior — ver `fatia_do_buffer` e os testes dela.
+
+## Os nomes de textura e de buffer: o Rally Master Pro
+
+O Rally Master Pro parava depois de algumas corridas, na troca de cena, com "acesso inválido a
+`0x0101010d`". A parada era determinística: um roteiro sem janela que abandona a etapa e a
+recarrega a cada 30 s parava sempre no mesmo ponto, aos 194 s, no quinto ou sexto ciclo. O
+endereço é `0x01010101 + 0x0c`: um campo lido de memória coberta de bytes `0x01`.
+
+O que achou o culpado foi uma guarda temporária: 64 bytes preenchidos depois de cada bloco do
+heap, e uma vigia de escrita nas guardas. Todas as escritas fora do lugar caíam no mesmo bloco,
+um vetor de 248 bytes, e eram bytes `0x01` logo depois do fim dele. Na parada provocada pela
+vigia, os registradores mostravam um `glBindTexture(GL_TEXTURE_2D, …)` a caminho, e a escrita
+anterior tinha sido no índice `0xf8`: o jogo guarda uma flag por textura, indexada pelo **nome**
+dela.
+
+Os nomes saíam de um contador que só crescia. A especificação permite: o `glGen*` só precisa
+entregar nomes fora de uso. Mas cada etapa apaga e recria as texturas da cena, então o nome
+passava de 248 em algumas corridas, e a flag ia parar no objeto vizinho do heap. Com a guarda no
+caminho, as escritas ficavam nela e o jogo não parava, o que fechou o diagnóstico.
+
+Agora os nomes em uso ficam num `NomesGl`, um para texturas e outro para buffers, e o `glGen*`
+entrega o **menor nome livre**: nome apagado volta a sair. O `glBind*` de um nome nunca gerado o
+marca como usado, porque o OpenGL cria o objeto na primeira ligação. Com isso, o mesmo roteiro
+rodou 680 s, cerca de 21 ciclos, sem parar e sem acesso inválido nenhum.
+
+**Qual nome o driver do Zeebo entrega não foi medido.** Sabe-se só que ele reaproveita, porque o
+jogo não para no console. O menor livre é o que mantém os nomes baixos, e nomes baixos são o que
+o vetor de 248 supõe. O Mesa, por exemplo, entrega o maior em uso mais um, o que também
+reaproveita quando a cena inteira sai.
+
+O save state guarda os dois conjuntos. Um estado anterior a isso só tem o contador, e então os
+nomes de 1 até ele ficam em uso, que é o que o contador garantia. O campo do contador continua
+no arquivo, com o maior nome em uso: um motor antigo que abra um estado novo continua a contar
+dali, sem repetir um nome vivo.
 
 ## Apresentação
 

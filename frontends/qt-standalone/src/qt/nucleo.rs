@@ -120,6 +120,8 @@ pub struct Nucleo {
     /// de controles continua servindo pela lista.
     pub arte: Option<PadArt>,
     partida: Option<Partida>,
+    /// De onde a partida aberta foi aberta: é o que o [`Nucleo::reinicia`] abre de novo.
+    caminho_aberto: Option<PathBuf>,
     /// As configurações do jogo aberto, quando ele tem as próprias: a global com as seções dele
     /// por cima. É daqui, e não de `settings`, que o passo lê os controles e o ritmo. Ver
     /// [`ConfigDoJogo`].
@@ -198,6 +200,7 @@ impl Nucleo {
                 .inspect_err(|erro| eprintln!("desenho do controle: {erro:?}"))
                 .ok(),
             partida: None,
+            caminho_aberto: None,
             personalizadas: None,
             edicao: None,
             editando: None,
@@ -590,8 +593,21 @@ impl Nucleo {
     /// devolve apenas se nada foi desenhado em 2D depois do último `eglSwapBuffers`. Com HUD pelo
     /// `IDisplay`, caixa de mensagem ou a Z-Wheel, que compõe o 3D na CPU, vale a tela de 640×480.
     ///
+    /// **A tela de 640×480 recebe antes o quadro que a placa deixou pendente**, como no egui. Pela
+    /// placa, o `eglSwapBuffers` não lê o quadro de volta: a tela da CPU só o recebe quando alguém
+    /// pede ([`Session::materializa_quadro_gl`]). Na resolução interna 1x a textura grande não
+    /// existe e a janela mostra sempre a tela, e lida sem isto ela tinha o quadro de quando o
+    /// jogo desenhou em 2D pela última vez: o Ultimate Chess 3D piscava entre a cena e o preto.
+    ///
     /// [`Session::quadro_na_placa`]: zeebx::session::Session::quadro_na_placa
-    pub fn quadro(&self) -> Option<Quadro<'_>> {
+    /// [`Session::materializa_quadro_gl`]: zeebx::session::Session::materializa_quadro_gl
+    pub fn quadro(&mut self) -> Option<Quadro<'_>> {
+        let com_placa = self.gl.is_some();
+        let partida = self.partida.as_mut()?;
+        if partida.sessao().quadro_na_placa().filter(|_| com_placa).is_none() {
+            // É GL: lê o quadro da placa, com o contexto do jogo corrente.
+            no_contexto(com_placa, || partida.sessao_mut().materializa_quadro_gl());
+        }
         let sessao = self.partida.as_ref()?.sessao();
         let placa = self.gl.as_ref().and(sessao.quadro_na_placa());
         Some(match placa {
@@ -685,6 +701,7 @@ impl Nucleo {
             .map_err(|erro| erro.to_string())?;
         // A de antes sai aqui, e com o contexto corrente: as texturas dela moram nele.
         self.personalizadas = personalizadas;
+        self.caminho_aberto = Some(caminho.to_path_buf());
         no_contexto(com_placa, || self.partida = Some(partida));
         Ok(())
     }
@@ -695,6 +712,7 @@ impl Nucleo {
         if self.partida.is_some() {
             no_contexto(self.gl.is_some(), || self.partida = None);
             self.personalizadas = None;
+            self.caminho_aberto = None;
         }
         self.teclas.clear();
     }
@@ -727,12 +745,12 @@ impl Nucleo {
 
     pub fn alterna_pausa(&mut self) {
         if let Some(partida) = self.partida.as_mut() {
-            partida.pausada = !partida.pausada;
+            partida.alterna_pausa();
         }
     }
 
     pub fn pausada(&self) -> bool {
-        self.partida.as_ref().is_some_and(|partida| partida.pausada)
+        self.partida.as_ref().is_some_and(Partida::pausada)
     }
 
     /// Uma tecla da janela do jogo. Cada evento vai à partida na hora: ver
@@ -750,6 +768,30 @@ impl Nucleo {
     /// A janela do jogo perdeu o foco: nenhuma tecla continua apertada.
     pub fn solta_teclas(&mut self) {
         self.teclas.clear();
+    }
+
+    /// Recomeça o jogo aberto, do zero, como se ele tivesse acabado de ser escolhido.
+    ///
+    /// **É abrir o mesmo caminho de novo**, e não um reset da máquina: a abertura é o único
+    /// caminho que monta tudo como o jogo espera — as configurações dele, as portas, o som, a
+    /// Z-Wheel de onde ele veio. O que o jogo gravou no disco fica; o que não gravou se perde,
+    /// como no botão de reset de um console. Falhando, a partida de antes continua.
+    pub fn reinicia(&mut self) -> Result<(), String> {
+        let Some(caminho) = self.caminho_aberto.clone() else {
+            return Err("nenhum jogo aberto".to_string());
+        };
+        let pela_z_wheel = self.partida.as_ref().is_some_and(|p| p.aberta_pela_z_wheel);
+        self.abre(&caminho)?;
+        if let Some(partida) = self.partida.as_mut() {
+            partida.aberta_pela_z_wheel = pela_z_wheel;
+            partida.reinicia_relogio();
+        }
+        Ok(())
+    }
+
+    /// Se a tecla é a de reiniciar. Como a do screenshot, é perguntada antes do jogo.
+    pub fn e_atalho_de_reinicio(&self, tecla: Key) -> bool {
+        Key::from_name(&self.settings.atalhos.reiniciar) == Some(tecla)
     }
 
     /// Se a tecla é a do screenshot. A janela do jogo pergunta antes de passá-la ao jogo: o
@@ -829,8 +871,12 @@ impl Nucleo {
         // O fast-forward é da sessão, e não de uma porta: a tecla ou o botão de qualquer
         // controle. Ver `docs/implementacao/24-velocidade.md`.
         // O rewind vem antes: voltando, o jogo não anda e o fast-forward fica suspenso.
+        //
+        // **Com o contexto do jogo corrente.** Voltar um ponto restaura o estado, e o estado
+        // refaz as texturas na placa. Fora do `no_contexto`, elas eram apagadas e criadas no
+        // contexto que estivesse corrente — o do Qt Quick, ou nenhum —, e o rewind não funcionava.
         let voltar = self.entrada.atalho_apertado(&self.settings.atalhos.voltar, &self.teclas);
-        partida.le_o_rewind(voltar, &valendo.velocidade.rewind);
+        no_contexto(self.gl.is_some(), || partida.le_o_rewind(voltar, &valendo.velocidade.rewind));
         let apertado = self.entrada.atalho_apertado(&self.settings.atalhos.avancar, &self.teclas);
         let avancando = partida.le_o_avanco(apertado, valendo.velocidade.avanco.modo);
         let ritmo = valendo.velocidade.ritmo_com(avancando);

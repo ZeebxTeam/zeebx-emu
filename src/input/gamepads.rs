@@ -60,13 +60,47 @@ pub fn axis_by_name(name: &str) -> Option<Axis> {
         .map(|(_, axis)| *axis)
 }
 
+/// De quanto em quanto tempo o Linux confere se os aparelhos de entrada mudaram. Ver
+/// [`Gamepads::confere_os_aparelhos`].
+#[cfg(target_os = "linux")]
+const CONFERENCIA_DOS_APARELHOS: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// Os controles ligados, e o estado deles.
 ///
 /// Um computador sem nenhum controle — ou sem permissão para lê-los — não pode impedir o
 /// emulador de abrir, então a falha vira "nenhum controle" e o teclado segue funcionando.
 pub struct Gamepads {
     gilrs: Option<Gilrs>,
+    /// Os controles cujo primeiro evento já foi para o registro. Ver [`Gamepads::anota`].
+    vistos: std::collections::HashSet<gilrs::GamepadId>,
+    /// Quando chegou o último evento de qualquer controle: a aba de controles usa para dizer que
+    /// nada está chegando.
+    ultimo_evento: Option<std::time::Instant>,
+    /// Quando o `gilrs` disse que um controle conectou pela última vez.
+    ultima_conexao: Option<std::time::Instant>,
+    /// O que a última conferência de `/dev/input` viu. Ver [`Gamepads::confere_os_aparelhos`].
+    #[cfg(target_os = "linux")]
+    aparelhos: Option<ConferenciaDosAparelhos>,
 }
+
+/// Uma conferência dos nós de entrada do Linux.
+#[cfg(target_os = "linux")]
+struct ConferenciaDosAparelhos {
+    quando: std::time::Instant,
+    /// A conferência anterior: os `novos` passaram a abrir entre ela e esta, e uma conexão do
+    /// `gilrs` desde ela é a deles.
+    desde: std::time::Instant,
+    /// Os nós que dava para abrir.
+    abriveis: std::collections::BTreeSet<NoDeEntrada>,
+    /// Os que passaram a dar nesta conferência: se o `gilrs` não conectar nenhum controle até a
+    /// próxima, ele não os viu.
+    novos: std::collections::BTreeSet<NoDeEntrada>,
+}
+
+/// Um nó `event*` de `/dev/input`: o nome e o inode, para um nó recriado com o mesmo nome contar
+/// como outro.
+#[cfg(target_os = "linux")]
+type NoDeEntrada = (String, u64);
 
 impl Default for Gamepads {
     fn default() -> Self {
@@ -77,17 +111,152 @@ impl Default for Gamepads {
 impl Gamepads {
     pub fn new() -> Self {
         Self {
-            gilrs: Gilrs::new().ok(),
+            gilrs: abre_o_gilrs(),
+            vistos: std::collections::HashSet::new(),
+            ultimo_evento: None,
+            ultima_conexao: None,
+            #[cfg(target_os = "linux")]
+            aparelhos: None,
         }
     }
 
     /// Consome os eventos pendentes. Precisa ser chamado a cada quadro: é isso que mantém o
     /// estado dos botões em dia e detecta um controle ligado no meio do caminho.
     pub fn poll(&mut self) {
-        let Some(gilrs) = &mut self.gilrs else {
+        if let Some(gilrs) = &mut self.gilrs {
+            let mut eventos = Vec::new();
+            while let Some(evento) = gilrs.next_event() {
+                eventos.push(evento);
+            }
+            for evento in eventos {
+                self.anota(&evento);
+            }
+        }
+        // Depois dos eventos: um controle que o `gilrs` acabou de conectar já está anotado.
+        #[cfg(target_os = "linux")]
+        self.confere_os_aparelhos();
+    }
+
+    /// Quando chegou o último evento de algum controle — um botão, um eixo, uma conexão.
+    pub fn ultimo_evento(&self) -> Option<std::time::Instant> {
+        self.ultimo_evento
+    }
+
+    /// Leva ao registro o que se precisa para entender um controle que não responde.
+    ///
+    /// **É o diagnóstico do controle de PS4 no Mac (issue #59)**: a captura esperava para sempre
+    /// e não havia como saber se o controle nem chegava ao emulador ou chegava sem nomes. Cada
+    /// conexão diz o nome do sistema, o VID/PID e se há mapeamento; o primeiro evento de cada
+    /// controle diz o código cru — inclusive de um botão que o mapeamento não nomeia.
+    fn anota(&mut self, evento: &gilrs::Event) {
+        use gilrs::EventType;
+        self.ultimo_evento = Some(std::time::Instant::now());
+        let Some(gilrs) = &self.gilrs else {
             return;
         };
-        while gilrs.next_event().is_some() {}
+        let pad = gilrs.gamepad(evento.id);
+        match evento.event {
+            EventType::Connected => {
+                self.vistos.remove(&evento.id);
+                self.ultima_conexao = Some(std::time::Instant::now());
+                crate::registro!(
+                    crate::registro::Nivel::Informacao,
+                    "controles",
+                    "conectou: {}",
+                    descreve(&pad)
+                );
+            }
+            EventType::Disconnected => {
+                crate::registro!(
+                    crate::registro::Nivel::Informacao,
+                    "controles",
+                    "desconectou: {}",
+                    pad.name()
+                );
+            }
+            EventType::ButtonPressed(botao, codigo) | EventType::ButtonChanged(botao, _, codigo)
+                if self.vistos.insert(evento.id) =>
+            {
+                crate::registro!(
+                    crate::registro::Nivel::Informacao,
+                    "controles",
+                    "primeiro botão de {}: {botao:?} (código {codigo})",
+                    pad.name()
+                );
+            }
+            EventType::AxisChanged(eixo, valor, codigo)
+                if valor.abs() >= AXIS_THRESHOLD && self.vistos.insert(evento.id) =>
+            {
+                crate::registro!(
+                    crate::registro::Nivel::Informacao,
+                    "controles",
+                    "primeiro eixo de {}: {eixo:?} em {valor:.2} (código {codigo})",
+                    pad.name()
+                );
+            }
+            _ => {}
+        }
+    }
+
+    /// Recria o `gilrs` quando um controle foi liberado depois de conectar, e ele não viu.
+    ///
+    /// **Um controle religado com o emulador aberto não voltava.** O `gilrs` só tenta abrir um
+    /// aparelho no `add` do udev. Com o `joycond` — comum no Arch e derivados —, o nó de um
+    /// controle da Nintendo nasce `crw-------`, e só pouco mais de um segundo depois, num
+    /// `change`, ganha a permissão de leitura. O `gilrs` leva `EACCES` no `add`, ignora o
+    /// `change`, e o controle só voltava reiniciando o emulador. Medido com um Pro Controller
+    /// em 2026-10-11 — ver `docs/implementacao/09-entrada.md`.
+    ///
+    /// Uma vez por segundo, a conferência vê quais nós `event*` o processo consegue abrir — pelo
+    /// `access`, que respeita as ACLs que o udev dá a quem está sentado na máquina. Um nó que passa
+    /// a abrir é anotado; se até a conferência seguinte o `gilrs` não conectou controle nenhum, ele
+    /// não viu aquele nó, e é criado de novo: a busca inicial dele, a que sempre funcionou, encontra
+    /// o controle liberado.
+    ///
+    /// **Só nesse caso, e não a cada mudança.** Recriar reordena a lista: uma porta sem controle
+    /// escolhido pega o da posição dela, e dois jogadores trocariam de controle. Um controle comum
+    /// o `gilrs` conecta sozinho no `add`, e aí a lista fica como está.
+    #[cfg(target_os = "linux")]
+    fn confere_os_aparelhos(&mut self) {
+        let agora = std::time::Instant::now();
+        if self
+            .aparelhos
+            .as_ref()
+            .is_some_and(|antes| agora - antes.quando < CONFERENCIA_DOS_APARELHOS)
+        {
+            return;
+        }
+        let abriveis = nos_abriveis(std::path::Path::new("/dev/input"));
+        let Some(antes) = self.aparelhos.take() else {
+            self.aparelhos = Some(ConferenciaDosAparelhos {
+                quando: agora,
+                desde: agora,
+                abriveis,
+                novos: Default::default(),
+            });
+            return;
+        };
+        let conectou_desde = self.ultima_conexao.is_some_and(|quando| quando >= antes.desde);
+        let perdidos: Vec<&NoDeEntrada> =
+            antes.novos.iter().filter(|no| abriveis.contains(*no)).collect();
+        if !perdidos.is_empty() && !conectou_desde {
+            crate::registro!(
+                crate::registro::Nivel::Informacao,
+                "controles",
+                "{} passou a abrir depois de conectar, e a leitura de controles não viu: ela é \
+                 refeita",
+                perdidos.iter().map(|(nome, _)| nome.as_str()).collect::<Vec<_>>().join(", ")
+            );
+            self.gilrs = abre_o_gilrs();
+            self.vistos.clear();
+        }
+        let novos = abriveis.difference(&antes.abriveis).cloned().collect();
+        self.aparelhos = Some(ConferenciaDosAparelhos {
+            quando: agora,
+            desde: antes.quando,
+            abriveis,
+            novos,
+        });
     }
 
     /// O nome de cada controle ligado, na ordem em que o sistema os lista.
@@ -210,6 +379,72 @@ impl Gamepads {
     }
 }
 
+/// Abre o `gilrs`, e diz no registro o que ele achou — ou por que não abriu.
+fn abre_o_gilrs() -> Option<Gilrs> {
+    match Gilrs::new() {
+        Ok(gilrs) => {
+            let lista: Vec<String> = gilrs.gamepads().map(|(_, pad)| descreve(&pad)).collect();
+            crate::registro!(
+                crate::registro::Nivel::Informacao,
+                "controles",
+                "{} controle(s): {}",
+                lista.len(),
+                match lista.is_empty() {
+                    true => "nenhum".to_string(),
+                    false => lista.join("; "),
+                }
+            );
+            Some(gilrs)
+        }
+        Err(erro) => {
+            crate::registro!(
+                crate::registro::Nivel::Aviso,
+                "controles",
+                "a leitura de controles não abriu: {erro}"
+            );
+            None
+        }
+    }
+}
+
+/// Um controle como o registro o descreve: o nome do mapeamento, o do sistema, o VID/PID e se há
+/// mapeamento SDL para ele. Sem mapeamento, o `gilrs` nomeia os botões pela posição crua.
+fn descreve(pad: &gilrs::Gamepad<'_>) -> String {
+    let hexa = |id: Option<u16>| id.map_or("?".to_string(), |id| format!("{id:04x}"));
+    format!(
+        "\"{}\" (sistema: \"{}\", {}:{}, mapeamento {:?})",
+        pad.name(),
+        pad.os_name(),
+        hexa(pad.vendor_id()),
+        hexa(pad.product_id()),
+        pad.mapping_source()
+    )
+}
+
+/// Os nós `event*` de `pasta` que este processo consegue abrir para leitura e escrita, como o
+/// `gilrs` abre. Ver [`Gamepads::confere_os_aparelhos`].
+#[cfg(target_os = "linux")]
+fn nos_abriveis(pasta: &std::path::Path) -> std::collections::BTreeSet<NoDeEntrada> {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::MetadataExt;
+    std::fs::read_dir(pasta)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entrada| {
+            let nome = entrada.file_name().to_string_lossy().into_owned();
+            if !nome.starts_with("event") {
+                return None;
+            }
+            let caminho = std::ffi::CString::new(entrada.path().as_os_str().as_bytes()).ok()?;
+            // SAFETY: `caminho` é uma string C válida, viva durante a chamada.
+            let abre = unsafe { libc::access(caminho.as_ptr(), libc::R_OK | libc::W_OK) } == 0;
+            let inode = entrada.metadata().ok()?.ino();
+            abre.then_some((nome, inode))
+        })
+        .collect()
+}
+
 /// Se a origem está acionada num controle. O teclado não é daqui: responde que não.
 fn acionada(pad: &gilrs::Gamepad<'_>, source: &Source) -> bool {
     match source {
@@ -295,10 +530,42 @@ mod tests {
         }
     }
 
+    /// Um nó conta quando passa a abrir — o que o `joycond` faz um segundo depois de o controle
+    /// conectar —, e só os `event*` contam.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn os_nos_abriveis_veem_a_permissao_liberada() {
+        use std::os::unix::fs::PermissionsExt;
+        // Como root, `access` diz que tudo abre, e não há o que medir.
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let pasta = std::env::temp_dir().join(format!("zeebx-aparelhos-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&pasta);
+        std::fs::create_dir_all(&pasta).unwrap();
+        let no = pasta.join("event18");
+        std::fs::write(&no, b"").unwrap();
+        std::fs::set_permissions(&no, std::fs::Permissions::from_mode(0o000)).unwrap();
+        std::fs::write(pasta.join("js0"), b"").unwrap();
+        assert!(nos_abriveis(&pasta).is_empty(), "o nó fechado contou, ou o js0 entrou");
+
+        std::fs::set_permissions(&no, std::fs::Permissions::from_mode(0o666)).unwrap();
+        let abertos: Vec<String> = nos_abriveis(&pasta).into_iter().map(|(nome, _)| nome).collect();
+        assert_eq!(abertos, ["event18"]);
+        let _ = std::fs::remove_dir_all(&pasta);
+    }
+
     #[test]
     fn sem_controle_nada_esta_acionado() {
         // Um computador sem controle não pode impedir o emulador de abrir.
-        let pads = Gamepads { gilrs: None };
+        let pads = Gamepads {
+            gilrs: None,
+            vistos: Default::default(),
+            ultimo_evento: None,
+            ultima_conexao: None,
+            #[cfg(target_os = "linux")]
+            aparelhos: None,
+        };
         assert!(pads.names().is_empty());
         assert!(!pads.is_active(None, 0, &Source::button("South")));
         assert_eq!(pads.first_active(None, 0), None);

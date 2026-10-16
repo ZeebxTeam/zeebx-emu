@@ -272,18 +272,33 @@ impl<C: CpuBackend> Machine<C> {
             // Falso encerra a enumeração, e o `GetLastError` de depois devolve `EFAILED` mesmo
             // quando tudo correu bem — a documentação chama isso de compatibilidade com o
             // cliente 1.0, e há jogo que confere.
+            //
+            // **Cada entrada é procurada como o `OpenFile` a procuraria**: no overlay antes do
+            // pacote. A listagem soma as duas pastas, e uma entrada que só existe no overlay — o
+            // save que o jogo gravou — não tem metadados no pacote. E uma entrada que não se
+            // resolve é pulada, e não o fim da lista. As duas coisas juntas faziam o Ultimate
+            // Chess 3D, com uma partida salva (`gamestd.sv2`), ver a lista acabar no save: os
+            // arquivos das peças, que vêm depois dele na ordem, sumiam, e o jogo lia o campo 0x14
+            // de um ponteiro nulo ao abrir.
             "EnumNext" => {
-                let next = self
+                let mut proxima = None;
+                while let Some(guest) = self
                     .enumerations
                     .get_mut(&this)
-                    .and_then(std::collections::VecDeque::pop_front);
-                match next.and_then(|guest| {
+                    .and_then(std::collections::VecDeque::pop_front)
+                {
                     let meta = self
                         .vfs
-                        .resolve_dir(&guest)
-                        .and_then(|p| p.metadata().ok())?;
-                    Some((guest, meta))
-                }) {
+                        .resolve(&guest)
+                        .filter(|p| p.exists())
+                        .or_else(|| self.vfs.resolve_dir(&guest))
+                        .and_then(|p| p.metadata().ok());
+                    if let Some(meta) = meta {
+                        proxima = Some((guest, meta));
+                        break;
+                    }
+                }
+                match proxima {
                     Some((guest, meta)) => {
                         self.write_file_info(a1, &guest, &meta)?;
                         TRUE

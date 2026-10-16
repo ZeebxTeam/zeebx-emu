@@ -55,10 +55,19 @@ mod time;
 mod widget;
 mod zip;
 
-/// Teto para leitura de string do guest, contra ponteiro corrompido.
 /// Teto de uma instrução SQL vinda do guest. As maiores do Z-Wheel têm 110 bytes.
 const MAX_SQL: usize = 4096;
-const MAX_STRING: usize = 4096;
+
+/// Teto para leitura de string do guest, contra ponteiro corrompido.
+///
+/// **Um MiB, e não quatro KB.** O teto só protege de um ponteiro sem terminador: a leitura vai em
+/// blocos até o zero, e uma string curta custa o mesmo com qualquer teto. Mas o jogo não tem teto
+/// nenhum, e com quatro KB o `strlen` mentia. As fases do Alice no País das Maravilhas são código
+/// Lua com o mapa de blocos numa string base64 de uma linha só — 15.426 caracteres na fase 2, e
+/// 202.806 no `stage1-30` —, e o jogo decodificava só os primeiros 4.096. Os blocos vêm em ordem de
+/// linha: tudo abaixo da linha 29 da fase 2 sumia, desenho e colisão. Era a faixa preta no pé da
+/// tela, e a sala da brecha sem chão, onde a Alice caía para sempre.
+const MAX_STRING: usize = 1 << 20;
 
 /// Teto para as conversões de número (`strtoul`, `atoi`, `strtod`).
 ///
@@ -2684,8 +2693,9 @@ pub struct Machine<C: CpuBackend> {
     egl_swaps: u32,
     /// Quantos `glClear` limparam a cor. Ver [`Machine::gl_swaps`].
     gl_clears: u32,
-    /// Último nome de textura ou buffer entregue pelo OpenGL ES.
-    gles_next_name: u32,
+    /// Os nomes de textura e de buffer em uso no OpenGL ES. Ver [`gl::NomesGl`].
+    nomes_de_textura: gl::NomesGl,
+    nomes_de_buffer: gl::NomesGl,
     /// O objeto `IGLES11`, criado sob demanda pelo `QueryInterface` do EGL.
     gles_object: u32,
     /// Superfície e contexto correntes do EGL.
@@ -2710,6 +2720,9 @@ pub struct Machine<C: CpuBackend> {
     /// coisa — essa só acontece quando o desenho 2D por cima ou uma leitura de pixels precisa
     /// dela.
     gl_quadro_pendente: bool,
+    /// Um estado acabou de ser restaurado, e a textura da placa não tem o quadro dele. Ver
+    /// [`Machine::quadro_na_placa`].
+    placa_sem_o_quadro: bool,
     /// Quantas vezes o quadro pendente foi trazido para a tela da CPU. Ver
     /// [`Machine::materializacoes_do_quadro_gl`].
     gl_materializacoes: u32,
@@ -3261,7 +3274,8 @@ impl<C: CpuBackend> Machine<C> {
             egl_next_handle: EGL_HANDLE_BASE,
             egl_swaps: 0,
             gl_clears: 0,
-            gles_next_name: 0,
+            nomes_de_textura: gl::NomesGl::default(),
+            nomes_de_buffer: gl::NomesGl::default(),
             gles_object: 0,
             egl_surface: 0,
             egl_context: 0,
@@ -3270,6 +3284,7 @@ impl<C: CpuBackend> Machine<C> {
             audio: None,
             gl_last_frame_words: Vec::new(),
             gl_quadro_pendente: false,
+            placa_sem_o_quadro: false,
             gl_materializacoes: 0,
             gl: rasterizador(SCREEN_WIDTH as usize, SCREEN_HEIGHT as usize),
             gl_vertices: ArrayPointer::default(),
