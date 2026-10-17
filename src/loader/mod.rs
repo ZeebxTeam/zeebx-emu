@@ -77,6 +77,28 @@ pub const OBJECT_SIZE: usize = 4 * 1024 * 1024;
 pub const SURFACE_BASE: u32 = 0x4000_0000;
 pub const SURFACE_SIZE: usize = 8 * 1024 * 1024;
 
+/// Memória que **o emulador** pede no espaço do guest, fora do heap do jogo.
+///
+/// Pilhas de `IThread`, o buffer de linha do `IPeek`, o `AEEImageInfo`, as strings do
+/// `eglQueryString` e os ponteiros de saída que passamos a callbacks do jogo. Moravam no heap,
+/// intercalados com o que o jogo pede, e isso fazia o endereço de cada estrutura do jogo
+/// depender da **versão do Zeebx**: um bloco nosso a mais e tudo depois dele andava. O
+/// RetroAchievements lê o heap por endereço, e uma conquista não pode quebrar porque o emulador
+/// passou a alocar diferente. Com o heap só do jogo, os endereços dependem só do que o jogo pede.
+///
+/// O que o jogo pede **por uma API** — `STRDUP`, `LoadResData`, `IHeap_Malloc` — continua no
+/// heap: lá é o sistema que aloca em nome dele, e o tamanho sai do jogo, não de nós.
+///
+/// 16 MB porque o `IPeek` reserva o tamanho da fonte inteira e cada thread leva no mínimo
+/// 64 KB. A região é zerada e só ocupa o que for tocado.
+pub const INTERNAL_BASE: u32 = 0x3400_0000;
+pub const INTERNAL_SIZE: usize = 16 * 1024 * 1024;
+
+/// O endereço é de um bloco da região interna, e não do heap do jogo.
+pub fn e_interno(addr: u32) -> bool {
+    (INTERNAL_BASE..INTERNAL_BASE + INTERNAL_SIZE as u32).contains(&addr)
+}
+
 /// Onde os módulos de **extensão** são mapeados.
 ///
 /// Um módulo de extensão é um `.mod` como qualquer outro: mesma imagem linkada em base zero,
@@ -240,6 +262,7 @@ pub fn load_with(
     mem.map("helpers", HELPERS_BASE, build_helper_table(), true)?;
     mem.map_zeroed("stubs", STUB_BASE, STUB_SIZE)?;
     mem.map_zeroed("surfaces", SURFACE_BASE, SURFACE_SIZE)?;
+    mem.map_zeroed("internal", INTERNAL_BASE, INTERNAL_SIZE)?;
     mem.map("vtables", VTABLE_BASE, build_vtables(), false)?;
 
     // Cada objeto ocupa uma palavra só por enquanto: o ponteiro para a vtable.

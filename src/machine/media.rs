@@ -956,7 +956,7 @@ impl<C: CpuBackend> Machine<C> {
             return Ok(());
         }
         if self.bloco_de_aviso_de_midia == 0 {
-            self.bloco_de_aviso_de_midia = self.heap.alloc(MEDIA_NOTIFY_LEN).unwrap_or(0);
+            self.bloco_de_aviso_de_midia = self.aloca_interno(MEDIA_NOTIFY_LEN)?;
         }
         let block = self.bloco_de_aviso_de_midia;
         if block == 0 {
@@ -1074,7 +1074,7 @@ impl<C: CpuBackend> Machine<C> {
             return Ok(());
         }
         if self.buffer_de_fluxo == 0 {
-            self.buffer_de_fluxo = self.heap.alloc(MAX_LEITURA_PCM).unwrap_or(0);
+            self.buffer_de_fluxo = self.aloca_interno(MAX_LEITURA_PCM)?;
             if self.buffer_de_fluxo == 0 {
                 return Ok(());
             }

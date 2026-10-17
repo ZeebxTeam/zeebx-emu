@@ -226,9 +226,10 @@ impl<C: CpuBackend> Machine<C> {
             return Ok(());
         };
         // O ponteiro de saída precisa viver na memória do guest.
-        let Some(out) = self.heap.alloc(4) else {
+        let out = self.aloca_interno(4)?;
+        if out == 0 {
             return Ok(());
-        };
+        }
         // O `IDIB` tem dois IIDs: o atual e o que o BREW 2.0 usava. Um bitmap escrito para a
         // plataforma antiga só reconhece o segundo.
         let mut dib = 0;
@@ -241,7 +242,7 @@ impl<C: CpuBackend> Machine<C> {
                 break;
             }
         }
-        self.heap.free(out);
+        self.libera(out);
 
         let failed = !matches!(outcome, Outcome::Returned { code: 0 });
         if failed || dib == 0 {

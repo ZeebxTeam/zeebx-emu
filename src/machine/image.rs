@@ -326,7 +326,7 @@ impl<C: CpuBackend> Machine<C> {
                     self.image_notify.remove(&this);
                     self.avisos_de_imagem.retain(|&imagem| imagem != this);
                     if let Some(info) = self.image_info.remove(&this) {
-                        self.heap.free(info);
+                        self.libera(info);
                     }
                 }
                 remaining
@@ -463,7 +463,7 @@ impl<C: CpuBackend> Machine<C> {
         let info = match self.image_info.get(&image) {
             Some(&info) => info,
             None => {
-                let info = self.heap.alloc(12).unwrap_or(0);
+                let info = self.aloca_interno(12)?;
                 if info != 0 {
                     self.image_info.insert(image, info);
                 }
