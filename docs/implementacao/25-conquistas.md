@@ -132,7 +132,7 @@ jogo.
 | Fast-forward, turbo, frameskip, limite de 30 fps | permitidos: o limite de 30 fps não desacelera a lógica |
 | A ponte de rede (`src/ponte.rs`) | permitida: só deposita a resposta do servidor na memória do jogo, e vem desligada |
 
-**As travas moram na sessão, e não nas telas.** O Qt e o egui ainda não têm save state — só o core
+**As travas moram na sessão, e não nas telas.** O Qt ainda não tem save state — só o core
 Libretro, o Android e o rewind gravam e restauram —, e uma tela que viesse depois esqueceria a
 regra. Na sessão, ela já nasce valendo.
 
@@ -229,22 +229,33 @@ ele faz.
 
 **A medida que pesa na conversa.** A primeira proposta era usar a região do módulo — a imagem, a
 `.data` e a `.bss` — como âncora estável, porque ela fica sempre no mesmo endereço, e alcançar o
-heap só por ponteiro. Medido em 2026-10-13 com o teste de ponta a ponta, depois de 3 s de jogo:
+heap só por ponteiro. Medido com o teste de ponta a ponta, depois de 3 s de jogo — a primeira vez em
+2026-10-13, e de novo em 2026-10-17, depois de os blocos do emulador saírem do heap (ver abaixo):
 
-| Jogo | Região do módulo | Algum byte dela mudou em 0,5 s? | Algum byte dela muda a cada 100 ms? | Primeiro byte do heap que muda a cada 100 ms |
-|---|---|---|---|---|
-| Double Dragon | 1.507.328 bytes | não | não | `0x1000005c` |
-| Pac-Mania | 1.196.032 bytes | não | não | `0x100014c8` |
-| Peggle | 1.318.912 bytes | não | não | `0x100000a0` |
-| Crash Bandicoot Nitro Kart 3D | 1.695.744 bytes | não | não | `0x10000090` |
-| Galaxy on Fire | 1.519.616 bytes | não medido | não | `0x1000004c` |
-| Quake | 1.486.848 bytes | não medido | não | nenhum |
+| Jogo | Região do módulo | Algum byte dela mudou em 0,5 s? | Algum byte dela muda a cada 100 ms? | Primeiro byte do heap que muda a cada 100 ms, antes | e depois da região interna |
+|---|---|---|---|---|---|
+| Double Dragon | 1.507.328 bytes | não | não | `0x1000005c` | `0x1000005c` |
+| Pac-Mania | 1.196.032 bytes | não | não | `0x100014c8` | `0x100014c8` |
+| Peggle | 1.318.912 bytes | não | não | `0x100000a0` | **`0x10000088`** |
+| Crash Bandicoot Nitro Kart 3D | 1.695.744 bytes | não | não | `0x10000090` | `0x10000090` |
+| Galaxy on Fire | 1.519.616 bytes | não medido | não | `0x1000004c` | `0x1000004c` |
+| Quake | 1.486.848 bytes | não medido | não | nenhum | nenhum |
 
 **Nos quatro jogos medidos de perto, nada muda no módulo; o estado vivo está no heap, já nos
 primeiros bytes.** A hipótese, não conferida no código dos jogos, é o costume do BREW de guardar o
-estado do jogo na struct do applet, que o `AEEApplet_New` aloca no heap logo na abertura. Se for isso, a âncora estável não é o módulo,
-e sim o começo do heap — que depende do nosso alocador, e que o `ARCHITECTURE.md` já viu se
-deslocar 64 bytes só com o cache de extração frio. Os PRs do rcheevos que servem de referência para
+estado do jogo na struct do applet, que o `AEEApplet_New` aloca no heap logo na abertura. Se for
+isso, a âncora estável não é o módulo, e sim o começo do heap.
+
+**O heap passou a ser só do jogo.** O que o emulador aloca para si no espaço do guest — pilhas de
+`IThread`, o buffer do `IPeek`, o `AEEImageInfo`, strings internas — morava no heap, intercalado com
+o que o jogo pede, e um bloco nosso a mais empurrava tudo o que vinha depois. Agora sai de uma região
+própria, `0x34000000` (16 MB), pelo `aloca_interno` (ver [02-cpu-e-memoria.md](02-cpu-e-memoria.md)).
+A coluna "depois" mostra o efeito: no Peggle o estado andou 24 bytes, de `0x100000a0` para
+`0x10000088`, porque um bloco do emulador alocado antes dele saiu do caminho; nos outros cinco nada
+mudou, porque nenhum bloco nosso vinha antes do estado. Daqui em diante o endereço de cada estrutura
+depende só do que o jogo pede e da regra do nosso alocador — que precisa ficar a mesma, e é isso que
+se propõe ao RA. Na varredura das 74 ROMs com 6 s de jogo, nenhuma encheu os 16 MB da região
+interna. Os PRs do rcheevos que servem de referência para
 a conversa: o [#446](https://github.com/RetroAchievements/rcheevos/pull/446) (3DS, endereços
 virtuais um para um e leitura que falha marcando a faixa como vazia) e o
 [#472](https://github.com/RetroAchievements/rcheevos/pull/472) (um console com mais de 16 MB e uma
@@ -293,7 +304,7 @@ ZEEBX_RA_HOST=http://127.0.0.1:8090 ./target/release/zeebx-qt
 ```
 
 Qualquer usuário e senha entram. O conjunto tem duas conquistas sobre um byte que muda sozinho (o
-`0x100000a0` do Peggle, da tabela acima; outro jogo pede `--endereco`), uma com progresso medido,
+`0x10000088` do Peggle, da tabela acima; outro jogo pede `--endereco`), uma com progresso medido,
 uma sobre um endereço que o Zeebx não lê — para cair em "sem suporte" — e um placar. Os ícones são
 quadrados de uma cor, dourado e cinza. `--sem-rede-para awardachievement` responde 503 aos
 desbloqueios, que é como ver a fila de pendentes funcionar.
