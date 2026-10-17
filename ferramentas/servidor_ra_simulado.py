@@ -16,7 +16,8 @@ Qualquer usuário e senha entram. O conjunto tem:
 - 104: um endereço que o Zeebx não lê, para a conquista cair em "sem suporte";
 - um placar que começa na primeira mudança e é enviado na trecentésima.
 
-O byte padrão é o `0x100000a0`, que muda a cada 100 ms no Peggle (medido em 2026-10-13; ver a
+O byte padrão é o `0x10000088`, que muda a cada 100 ms no Peggle (medido em 2026-10-17, já com a
+região interna do emulador fora do heap; antes dela era o `0x100000a0`. Ver a
 tabela em `docs/implementacao/25-conquistas.md`). Para outro jogo, passe `--endereco` com um byte da
 mesma tabela, ou um achado com o teste `uma_conquista_dispara_num_jogo_de_verdade`.
 
@@ -197,7 +198,7 @@ def main():
     jogo = argumentos.add_mutually_exclusive_group(required=True)
     jogo.add_argument("--jogo", help="o .mod do jogo; o hash é o MD5 dele, como no Zeebx")
     jogo.add_argument("--hash", help="o hash já calculado")
-    argumentos.add_argument("--endereco", default="0x100000a0", help="o byte que muda (padrão: o do Peggle)")
+    argumentos.add_argument("--endereco", default="0x10000088", help="o byte que muda (padrão: o do Peggle)")
     argumentos.add_argument("--porta", type=int, default=8090)
     argumentos.add_argument("--sem-rede-para", action="append", default=[], metavar="R",
                             help="responde 503 a este r= (ex.: awardachievement); pode repetir")
