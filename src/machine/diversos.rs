@@ -194,10 +194,10 @@ impl<C: CpuBackend> Machine<C> {
             // `glBindBuffer` e companhia, e é no mesmo lugar que eles ficam guardados.
             "GenBuffersQUALCOMM" => {
                 let (quantos, saida) = (self.arg(1), self.arg(2));
-                for i in 0..quantos {
-                    self.gles_next_name += 1;
-                    if saida != 0 {
-                        self.cpu.write_u32(saida + i * 4, self.gles_next_name)?;
+                if saida != 0 {
+                    for i in 0..quantos {
+                        let nome = self.nomes_de_buffer.gera();
+                        self.cpu.write_u32(saida + i * 4, nome)?;
                     }
                 }
                 SUCCESS
@@ -207,6 +207,7 @@ impl<C: CpuBackend> Machine<C> {
                 if nome != 0 {
                     self.gl_buffers.entry(nome).or_default();
                 }
+                self.nomes_de_buffer.usa(nome);
                 match alvo {
                     gles::GL_ARRAY_BUFFER => self.gl_array_buffer = nome,
                     gles::GL_ELEMENT_ARRAY_BUFFER => self.gl_element_buffer = nome,

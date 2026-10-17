@@ -198,18 +198,34 @@ impl TexEnv {
 
     /// Aplica um `glTexEnv` que não é o modo nem a cor. Os enums chegam como inteiro mesmo nas
     /// formas `x` e `f`; as escalas chegam como número.
+    ///
+    /// **Função ou fonte que não existe é recusada, e o valor de antes fica.** É o
+    /// `GL_INVALID_ENUM` do driver. O Bóia Cross monta a água com dois erros de digitação:
+    /// `GL_COMBINE_RGB` = `GL_DOT3_RGB` seguido de `GL_COMBINE_RGB` = `GL_TEXTURE0` (queria o
+    /// `GL_SRC0_RGB`), e na unidade 1 `GL_COMBINE_RGB` = `GL_COMBINE`. Aceitos, a unidade 0 saía
+    /// do `DOT3` para a multiplicação — o mapa de normais vezes o vetor da luz, que é azul-roxo —, e
+    /// a água da primeira pista ficava dessa cor. No aparelho ela é marrom.
     pub fn define(&mut self, pname: u32, enumeracao: u32, numero: f32) {
         let faixa = |base: u32| pname.checked_sub(base).filter(|&i| i < 3).map(|i| i as usize);
         match pname {
-            gles::GL_COMBINE_RGB => self.combina[0] = enumeracao,
-            gles::GL_COMBINE_ALPHA => self.combina[1] = enumeracao,
+            gles::GL_COMBINE_RGB if funcao_do_combine(enumeracao, true) => {
+                self.combina[0] = enumeracao
+            }
+            gles::GL_COMBINE_ALPHA if funcao_do_combine(enumeracao, false) => {
+                self.combina[1] = enumeracao
+            }
+            gles::GL_COMBINE_RGB | gles::GL_COMBINE_ALPHA => {}
             gles::GL_RGB_SCALE => self.escala[0] = numero,
             gles::GL_ALPHA_SCALE => self.escala[1] = numero,
             _ => {
                 if let Some(i) = faixa(gles::GL_SRC0_RGB) {
-                    self.fontes[0][i] = enumeracao;
+                    if fonte_do_combine(enumeracao) {
+                        self.fontes[0][i] = enumeracao;
+                    }
                 } else if let Some(i) = faixa(gles::GL_SRC0_ALPHA) {
-                    self.fontes[1][i] = enumeracao;
+                    if fonte_do_combine(enumeracao) {
+                        self.fontes[1][i] = enumeracao;
+                    }
                 } else if let Some(i) = faixa(gles::GL_OPERAND0_RGB) {
                     self.operandos[0][i] = enumeracao;
                 } else if let Some(i) = faixa(gles::GL_OPERAND0_ALPHA) {
@@ -219,14 +235,22 @@ impl TexEnv {
         }
     }
 
-    /// A cor do fragmento a partir da cor primária e do texel, na unidade 0.
+    /// A cor do fragmento a partir da cor primária e do texel, na unidade 0, sem a unidade 1.
     pub fn aplica(&self, primaria: [f32; 4], texel: [f32; 4]) -> [f32; 4] {
-        self.aplica_com(primaria, primaria, texel)
+        self.aplica_com(primaria, primaria, texel, [Some(texel), None])
     }
 
     /// O mesmo numa unidade qualquer: `anterior` é o que saiu da unidade de antes (a cor
-    /// primária, na unidade 0), e é sobre ela que os modos clássicos agem.
-    pub fn aplica_com(&self, anterior: [f32; 4], primaria: [f32; 4], texel: [f32; 4]) -> [f32; 4] {
+    /// primária, na unidade 0), e é sobre ela que os modos clássicos agem. `texeis` é o que cada
+    /// unidade amostrou, `None` na desligada — é dali que saem as fontes `GL_TEXTURE0` e
+    /// `GL_TEXTURE1` do `GL_COMBINE`.
+    pub fn aplica_com(
+        &self,
+        anterior: [f32; 4],
+        primaria: [f32; 4],
+        texel: [f32; 4],
+        texeis: Texeis,
+    ) -> [f32; 4] {
         let primaria_ = primaria;
         let primaria = anterior;
         match self.modo {
@@ -246,19 +270,39 @@ impl TexEnv {
                 out[3] = primaria[3] * texel[3];
                 out
             }
-            gles::GL_COMBINE => self.combina(anterior, primaria_, texel),
+            gles::GL_COMBINE => self.combina(anterior, primaria_, texel, texeis),
             // `GL_MODULATE` é o padrão e o que os jogos usam quase sempre.
             _ => std::array::from_fn(|c| primaria[c] * texel[c]),
         }
     }
 
     /// O `GL_COMBINE`. Na unidade 0, `GL_PREVIOUS` é a cor primária.
-    fn combina(&self, anterior: [f32; 4], primaria: [f32; 4], texel: [f32; 4]) -> [f32; 4] {
+    fn combina(
+        &self,
+        anterior: [f32; 4],
+        primaria: [f32; 4],
+        texel: [f32; 4],
+        texeis: Texeis,
+    ) -> [f32; 4] {
+        // Fonte numa unidade desligada faz esta unidade se comportar como desligada, que é a
+        // regra do `ARB_texture_env_crossbar`. Não foi medida no aparelho: nenhum jogo testado
+        // chegou a fazer isso.
+        //
+        // `texel_da` é `None` para quem não é `GL_TEXTUREn`, e `Some(None)` para a unidade
+        // desligada.
+        let texel_da = |qual: u32| texeis.get(qual.wrapping_sub(gles::GL_TEXTURE0) as usize);
+        let desligada = |&qual: &u32| texel_da(qual) == Some(&None);
+        if self.fontes.iter().flatten().any(desligada) {
+            return anterior;
+        }
         let fonte = |qual: u32| match qual {
             gles::GL_TEXTURE => texel,
             gles::GL_CONSTANT => self.cor,
             gles::GL_PRIMARY_COLOR => primaria,
-            _ => anterior,
+            // O crossbar: o texel de uma unidade pelo nome dela. A unidade 1 da água do Bóia
+            // Cross tira a cor de `GL_TEXTURE1` e o alfa também; lido como `GL_PREVIOUS`, a cor
+            // marrom da água nunca era amostrada.
+            qual => texel_da(qual).copied().flatten().unwrap_or(anterior),
         };
         // O operando de uma fonte, para um canal. No alfa só existem os dois de alfa; um jogo que
         // manda `GL_SRC_COLOR` ali (o QX manda) recebe o alfa, que é o que o driver faz.
@@ -298,6 +342,38 @@ impl TexEnv {
         }
         saida
     }
+}
+
+/// O texel que cada unidade amostrou no fragmento, `None` na que não desenha.
+pub type Texeis = [Option<[f32; 4]>; 2];
+
+/// Se `funcao` é uma função do `GL_COMBINE` para o RGB (`rgb`) ou para o alfa. Os `DOT3` só
+/// existem no RGB.
+fn funcao_do_combine(funcao: u32, rgb: bool) -> bool {
+    match funcao {
+        gles::GL_REPLACE
+        | gles::GL_MODULATE
+        | gles::GL_ADD
+        | gles::GL_ADD_SIGNED
+        | gles::GL_INTERPOLATE
+        | gles::GL_SUBTRACT => true,
+        gles::GL_DOT3_RGB | gles::GL_DOT3_RGBA => rgb,
+        _ => false,
+    }
+}
+
+/// Se `fonte` é uma fonte do `GL_COMBINE`: as quatro do OpenGL ES 1.1 e, do crossbar, as duas
+/// unidades que temos pelo nome.
+///
+/// **O crossbar não é do OpenGL ES 1.1, mas o aparelho o aceita.** A prova é a água do Bóia
+/// Cross: a unidade 1 só lê a textura de cor marrom por `GL_TEXTURE1`, e com a fonte recusada
+/// ela ficaria no `GL_PREVIOUS` padrão, sem marrom nenhum. No longplay capturado do console a
+/// água da primeira pista é marrom.
+fn fonte_do_combine(fonte: u32) -> bool {
+    matches!(
+        fonte,
+        gles::GL_TEXTURE | gles::GL_CONSTANT | gles::GL_PRIMARY_COLOR | gles::GL_PREVIOUS
+    ) || fonte.wrapping_sub(gles::GL_TEXTURE0) < 2
 }
 
 /// A unidade de textura 1: se está ligada, a textura dela e o ambiente dela.
@@ -3002,7 +3078,7 @@ fn fill_band(tri: &Prepared, uniforms: &Uniforms, band: &mut Band) {
             let montar = || {
                 let mut source = [attribute(0), attribute(1), attribute(2), attribute(3)];
                 let primaria = source;
-                if let Some(texture) = uniforms.texture {
+                let texel0 = uniforms.texture.map(|texture| {
                     // A redução pode acontecer em qualquer eixo da tela. Compare os
                     // vizinhos da direita e de baixo, usando o maior footprint.
                     let (u, v) = (attribute(4), attribute(5));
@@ -3043,14 +3119,23 @@ fn fill_band(tri: &Prepared, uniforms: &Uniforms, band: &mut Band) {
                     } else {
                         reducao(tri.step).max(reducao(tri.step_y))
                     };
-                    let texel = texture.sample_lod(u, v, lod);
-                    source = uniforms.texture_env.aplica(source, texel);
+                    texture.sample_lod(u, v, lod)
+                });
+                // Sem mipmap: nos jogos que usam a unidade 1 ela leva mapa de luz ou a textura de
+                // cor de um relevo, e o nível base basta. Ela é amostrada antes de a 0 combinar
+                // porque o crossbar deixa a 0 ler o texel dela.
+                let texel1 = uniforms
+                    .texture1
+                    .map(|texture| texture.sample_lod(attribute(7), attribute(8), 0.0));
+                let texeis = [texel0, texel1];
+                if let Some(texel) = texel0 {
+                    source = uniforms
+                        .texture_env
+                        .aplica_com(source, primaria, texel, texeis);
                 }
-                // A unidade 1 age sobre o que saiu da 0. Sem mipmap: nos jogos que a usam ela
-                // leva mapa de luz ou a textura de cor de um relevo, e o nível base basta.
-                if let Some(texture) = uniforms.texture1 {
-                    let texel = texture.sample_lod(attribute(7), attribute(8), 0.0);
-                    source = uniforms.env1.aplica_com(source, primaria, texel);
+                // A unidade 1 age sobre o que saiu da 0.
+                if let Some(texel) = texel1 {
+                    source = uniforms.env1.aplica_com(source, primaria, texel, texeis);
                 }
                 // **A névoa entra depois da textura e antes do teste de alfa**, que é a ordem do
                 // OpenGL ES 1.1, e mexe só no RGB: o alfa do fragmento continua sendo o dele.
@@ -3743,11 +3828,52 @@ mod tests {
         env.cor = [0.0, 0.0, 0.0, 0.5];
         let anterior = [0.75, 0.5, 0.25, 1.0];
         let texel = [0.5, 0.5, 0.5, 1.0];
-        let saida = env.aplica_com(anterior, [0.0; 4], texel);
+        let saida = env.aplica_com(anterior, [0.0; 4], texel, [None, Some(texel)]);
         // 0,5 + anterior − 0,5 = anterior; alfa 1 × 0,5.
         for (canal, esperado) in [0.75, 0.5, 0.25, 0.5].into_iter().enumerate() {
             assert!((saida[canal] - esperado).abs() < 1e-6, "{saida:?}");
         }
+    }
+
+    /// Função ou fonte que não existe é `GL_INVALID_ENUM`, e o valor de antes fica. A água do
+    /// Bóia Cross pede `DOT3_RGB` e logo depois manda `GL_TEXTURE0` no `GL_COMBINE_RGB`; aceito,
+    /// o relevo virava multiplicação e a água saía azul-roxa.
+    #[test]
+    fn o_combine_recusa_funcao_e_fonte_que_nao_existem() {
+        let mut env = TexEnv::com_modo(gles::GL_COMBINE);
+        env.define(gles::GL_COMBINE_RGB, gles::GL_DOT3_RGB, 0.0);
+        env.define(gles::GL_COMBINE_RGB, gles::GL_TEXTURE0, 0.0);
+        env.define(gles::GL_COMBINE_RGB, gles::GL_COMBINE, 0.0);
+        assert_eq!(env.combina[0], gles::GL_DOT3_RGB);
+        // O `DOT3` só existe no RGB.
+        env.define(gles::GL_COMBINE_ALPHA, gles::GL_DOT3_RGBA, 0.0);
+        assert_eq!(env.combina[1], gles::GL_MODULATE);
+        env.define(gles::GL_SRC0_RGB + 1, gles::GL_PRIMARY_COLOR, 0.0);
+        env.define(gles::GL_SRC0_RGB + 1, gles::GL_DOT3_RGB, 0.0);
+        env.define(gles::GL_SRC0_ALPHA, gles::GL_TEXTURE0 + 2, 0.0);
+        assert_eq!(env.fontes[0][1], gles::GL_PRIMARY_COLOR);
+        assert_eq!(env.fontes[1][0], gles::GL_TEXTURE);
+    }
+
+    /// O crossbar: `GL_TEXTURE0` e `GL_TEXTURE1` são o texel daquela unidade, não o anterior. É
+    /// a unidade 1 da água do Bóia Cross: o relevo da 0 vezes a cor da 1, com o alfa da 1.
+    #[test]
+    fn o_crossbar_le_o_texel_de_cada_unidade_pelo_nome() {
+        let mut env = TexEnv::com_modo(gles::GL_COMBINE);
+        env.define(gles::GL_SRC0_RGB, gles::GL_PREVIOUS, 0.0);
+        env.define(gles::GL_SRC0_RGB + 1, gles::GL_TEXTURE0 + 1, 0.0);
+        env.define(gles::GL_COMBINE_ALPHA, gles::GL_REPLACE, 0.0);
+        env.define(gles::GL_SRC0_ALPHA, gles::GL_TEXTURE0 + 1, 0.0);
+        env.define(gles::GL_SRC0_ALPHA + 1, gles::GL_TEXTURE0, 0.0);
+        let anterior = [0.5, 0.5, 0.5, 0.0];
+        let marrom = [0.6, 0.4, 0.2, 0.8];
+        let saida = env.aplica_com(anterior, [0.0; 4], marrom, [Some([1.0; 4]), Some(marrom)]);
+        for (canal, esperado) in [0.3, 0.2, 0.1, 0.8].into_iter().enumerate() {
+            assert!((saida[canal] - esperado).abs() < 1e-6, "{saida:?}");
+        }
+        // Fonte numa unidade que não desenha: esta unidade passa o anterior adiante.
+        let saida = env.aplica_com(anterior, [0.0; 4], marrom, [None, Some(marrom)]);
+        assert_eq!(saida, anterior);
     }
 
     #[test]

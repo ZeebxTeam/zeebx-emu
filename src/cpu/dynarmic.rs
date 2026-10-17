@@ -263,7 +263,12 @@ impl Callbacks for Estado {
         // interrupção BREW: depois de atendê-la a execução continua na instrução seguinte.
         // Reconhecemos as duas operações de saída que os jogos observados usam e devolvemos zero
         // nas outras, como o monitor ARM faz para a maioria das consultas inofensivas.
-        if swi == 0xab {
+        //
+        // **O número muda com o estado do núcleo**: `0xAB` é o do Thumb, e `0x123456` o do ARM.
+        // O Ultimate Chess 3D escreve o log dele em ARM, e com só o `0xAB` reconhecido o
+        // primeiro `SYS_WRITEC` — ao comer uma peça do adversário — parava o jogo com "exceção
+        // do núcleo ARM". O interpretador já atendia os dois: ele olha só o `r0`.
+        if SEMIHOSTING.contains(&swi) {
             let jit = unsafe { &mut *cb.jit.get() };
             let op = jit.get_reg(0);
             let arg = jit.get_reg(1);
@@ -323,6 +328,9 @@ impl Callbacks for Estado {
         }
     }
 }
+
+/// Os números de `SVC` do semihosting ARM: o do Thumb e o do ARM.
+const SEMIHOSTING: [u32; 2] = [0xab, 0x12_3456];
 
 /// De quantas em quantas entradas no JIT o relógio é lido, quando a medição está ligada.
 const AMOSTRA_DO_JIT: u64 = 64;
@@ -885,6 +893,21 @@ mod tests {
         assert_eq!(cpu.run(0, 10).unwrap(), StopReason::Returned);
         assert_eq!(cpu.semihosting(), "Z");
         assert_eq!(cpu.read_reg(Reg::R0), 0);
+    }
+
+    /// O semihosting no estado ARM usa `SVC #0x123456`, e não pode parar o jogo.
+    #[test]
+    fn semihosting_do_estado_arm_tambem_escreve() {
+        // mov r0,#SYS_WRITEC ; mov r1,#0x1000 ; svc #0x123456 ; bx lr
+        let code = [0xe3a0_0003u32, 0xe3a0_1a01, 0xef12_3456, 0xe12f_ff1e]
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .collect::<Vec<_>>();
+        let mut cpu = cpu_with(&code);
+        cpu.write_mem(0x1000, b"C").unwrap();
+        cpu.write_reg(Reg::Lr, RETURN_MAGIC);
+        assert_eq!(cpu.run(0, 10).unwrap(), StopReason::Returned);
+        assert_eq!(cpu.semihosting(), "C");
     }
 
     #[test]

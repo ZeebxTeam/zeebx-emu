@@ -393,6 +393,8 @@ pub struct Emulador {
     pausado: bool,
     /// Identidade BLAKE3 do arquivo que abriu a sessão, a mesma regra do armazenamento do núcleo.
     estado_id: Option<String>,
+    /// De onde o jogo aberto veio: é o que o "Reiniciar" da caixa do voltar abre de novo.
+    caminho_aberto: Option<std::path::PathBuf>,
     /// Os cinco slots persistentes do jogo atual.
     estados: [Option<estado::Slot>; estado::SLOTS],
     /// Miniaturas já convertidas/subidas ao egui, por slot.
@@ -497,6 +499,7 @@ impl Emulador {
             confirmando: false,
             pausado: false,
             estado_id: None,
+            caminho_aberto: None,
             estados: std::array::from_fn(|_| None),
             miniaturas_estado: HashMap::new(),
             estado_sobrescrever: None,
@@ -687,6 +690,7 @@ impl Emulador {
                     log::error!("sem som: {erro}");
                 }
                 self.sessao = Some(sessao);
+                self.caminho_aberto = Some(caminho.to_path_buf());
                 self.estado_id = estado_id;
                 self.estados = self
                     .estado_id
@@ -714,6 +718,7 @@ impl Emulador {
     /// Fecha o jogo e volta para a biblioteca.
     fn fecha(&mut self) {
         self.sessao = None;
+        self.caminho_aberto = None;
         self.textura = None;
         self.quadro = None;
         self.quadro_565 = None;
@@ -731,6 +736,16 @@ impl Emulador {
         self.avanco.desliga();
         self.turbo.desliga();
         self.onde = Onde::Biblioteca;
+    }
+
+    /// Recomeça o jogo aberto, do zero: fecha e abre o mesmo caminho, como o botão de reset de
+    /// um console. O que o jogo gravou no disco fica, e os save states também.
+    fn reinicia(&mut self) {
+        let Some(caminho) = self.caminho_aberto.clone() else {
+            return;
+        };
+        self.fecha();
+        self.abre(&caminho);
     }
 
     /// O botão "voltar" do Android.

@@ -250,9 +250,6 @@ mod sem_a_feature {
         ) -> DaVolta {
             DaVolta::default()
         }
-        pub fn caminho_aberto(&self) -> Option<&Path> {
-            None
-        }
         pub fn resumo_guardado(&self, _: &Settings, _: &str, _: &Catalog) -> String {
             String::new()
         }
@@ -380,10 +377,6 @@ mod com_a_feature {
                     .cliente
                     .as_ref()
                     .is_some_and(|c| c.borrow().jogo().is_some())
-        }
-
-        pub fn caminho_aberto(&self) -> Option<&Path> {
-            self.jogo.as_ref().map(|(caminho, _)| caminho.as_path())
         }
 
         pub fn cabecalho(&self, catalogo: &Catalog, titulo: &str, hardcore: bool) -> String {

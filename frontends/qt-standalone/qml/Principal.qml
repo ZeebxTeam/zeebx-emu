@@ -466,6 +466,8 @@ ApplicationWindow {
             escutando: !principal.sobreposta
             biblioteca: biblioteca
             onAbre: (linha) => principal.mostra(biblioteca.abre(linha))
+            onConfigura: (linha) => principal.configuraJogo(linha)
+            onInspeciona: (linha) => principal.inspecionaJogo(linha)
         }
     }
 

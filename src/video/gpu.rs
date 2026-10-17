@@ -515,6 +515,14 @@ pub struct GpuState {
     escala: usize,
     /// O quadro reduzido ao tamanho do console, de onde saem as leituras quando `escala > 1`.
     reduzido: Option<(glow::Framebuffer, glow::Texture, (usize, usize))>,
+    /// A frente: a cópia do último quadro apresentado, enquanto o jogo já desenha o seguinte no
+    /// destino. Ver [`GpuState::protege_a_frente`].
+    frente: Option<(glow::Framebuffer, glow::Texture, (i32, i32))>,
+    /// Houve `eglSwapBuffers`, e o destino ainda é o quadro apresentado: a próxima escrita nele
+    /// copia antes para a frente.
+    trocou: bool,
+    /// A frente tem o quadro apresentado e o destino já mudou: quem apresenta lê a frente.
+    frente_valida: bool,
     /// Amostras por pixel do antialias (MSAA); 1 é desligado. Ver [`Rasterizador::define_antialias`].
     amostras: usize,
     /// O filtro anisotrópico aplicado às texturas do jogo; 1 é desligado.
@@ -685,6 +693,9 @@ impl GpuState {
             poupancas_de_estado: std::cell::Cell::new(0),
             medida: Medida::default(),
             reduzido: None,
+            frente: None,
+            trocou: false,
+            frente_valida: false,
             amostras: 1,
             anisotropia: 1.0,
         })
@@ -743,6 +754,8 @@ impl GpuState {
             unsafe { self.gl.bind_framebuffer(glow::FRAMEBUFFER, alvo) };
             return;
         }
+        // A frente é do destino que sai: o quadro dela tem outra medida.
+        self.solta_a_frente();
         let gl = &self.gl;
         unsafe {
             if let Some(antigo) = self.quadro.take() {
@@ -878,6 +891,88 @@ impl GpuState {
             let alvo = self.alvo_do_desenho();
             gl.bind_framebuffer(glow::FRAMEBUFFER, alvo);
         }
+    }
+
+    /// Guarda o quadro apresentado antes de o jogo escrever o seguinte por cima.
+    ///
+    /// **O destino é um buffer só, e quem apresenta o lia vivo.** No aparelho o `eglSwapBuffers`
+    /// troca a frente com o fundo, e a frente fica intacta até a troca seguinte. Aqui a janela
+    /// mostrava o destino — e uma volta da janela pode acabar no meio do quadro seguinte, quando
+    /// o prazo dela vence: ela pegava o destino depois do `glClear` e antes dos desenhos. O
+    /// Ultimate Chess 3D, que reenvia linhas de textura a cada quadro e por isso raramente acaba
+    /// a volta na troca, piscava entre a cena e o preto na resolução 3x, e na 1x, em que a tela da
+    /// CPU lê o quadro, ficava preto.
+    ///
+    /// **A cópia é sob demanda**: na troca nada se copia, porque o destino *é* o quadro
+    /// apresentado; só a primeira escrita depois dela copia o destino para a frente. Uma volta
+    /// que acaba na troca — o caso de quase todo jogo leve — não paga cópia nenhuma. O
+    /// `glReadPixels` do jogo continua lendo o destino vivo, que é o fundo, como no aparelho.
+    fn protege_a_frente(&mut self) {
+        if !self.trocou || self.fbo_externo.is_some() || self.placa.morreu() {
+            return;
+        }
+        self.trocou = false;
+        let Some(destino) = self.quadro.as_ref() else {
+            return;
+        };
+        let (w, h) = (
+            ((destino.medida.0 + 2 * destino.extra) * destino.escala) as i32,
+            (destino.medida.1 * destino.escala) as i32,
+        );
+        let origem = destino.fbo;
+        let gl = self.gl.clone();
+        unsafe {
+            if self.frente.is_none_or(|f| f.2 != (w, h)) {
+                self.solta_a_frente();
+                let cor = gl.create_texture().expect("textura da frente");
+                gl.bind_texture(glow::TEXTURE_2D, Some(cor));
+                gl.tex_image_2d(
+                    glow::TEXTURE_2D,
+                    0,
+                    glow::RGBA8 as i32,
+                    w,
+                    h,
+                    0,
+                    glow::RGBA,
+                    glow::UNSIGNED_BYTE,
+                    glow::PixelUnpackData::Slice(None),
+                );
+                // Os mesmos filtros da `cor`: quem apresenta amostra uma ou a outra.
+                gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::NEAREST as i32);
+                gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::NEAREST as i32);
+                let fbo = gl.create_framebuffer().expect("framebuffer da frente");
+                gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
+                gl.framebuffer_texture_2d(
+                    glow::FRAMEBUFFER,
+                    glow::COLOR_ATTACHMENT0,
+                    glow::TEXTURE_2D,
+                    Some(cor),
+                    0,
+                );
+                gl.bind_texture(glow::TEXTURE_2D, None);
+                self.frente = Some((fbo, cor, (w, h)));
+            }
+            let frente = self.frente.map(|f| f.0);
+            gl.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(origem));
+            gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, frente);
+            gl.disable(glow::SCISSOR_TEST);
+            self.esquece_a_tesoura();
+            gl.blit_framebuffer(0, 0, w, h, 0, 0, w, h, glow::COLOR_BUFFER_BIT, glow::NEAREST);
+            gl.bind_framebuffer(glow::FRAMEBUFFER, self.alvo_do_desenho());
+        }
+        self.frente_valida = true;
+    }
+
+    /// Larga a frente: o destino mudou de medida, ou o contexto acabou.
+    fn solta_a_frente(&mut self) {
+        if let Some((fbo, cor, _)) = self.frente.take() {
+            unsafe {
+                self.gl.delete_framebuffer(fbo);
+                self.gl.delete_texture(cor);
+            }
+        }
+        self.trocou = false;
+        self.frente_valida = false;
     }
 
     /// Resolve o antialias: as amostras do framebuffer de desenho viram a `cor`.
@@ -1064,11 +1159,18 @@ impl GpuState {
                     gl.delete_framebuffer(fbo);
                     gl.delete_texture(cor);
                 }
+                if let Some((fbo, cor, _)) = self.frente.take() {
+                    gl.delete_framebuffer(fbo);
+                    gl.delete_texture(cor);
+                }
             }
         } else {
             self.quadro = None;
             self.reduzido = None;
+            self.frente = None;
         }
+        self.trocou = false;
+        self.frente_valida = false;
         self.uniformes = Uniformes::default();
         self.anel = (0, 0);
         self.vao_pronto = false;
@@ -1100,6 +1202,41 @@ impl GpuState {
         m.tesoura = None;
         m.tesoura_ligada = None;
         self.espelho.set(m);
+    }
+
+    /// O `eglSwapBuffers`: o destino passa a ser o quadro apresentado.
+    ///
+    /// **É só da troca, e não do [`Rasterizador::descarrega_o_desenho`].** Aquele também é chamado
+    /// pelo save state, que o rewind tira a cada segundo no meio do quadro. Feito lá, isto dava a
+    /// troca por acontecida logo depois do `glClear`: a frente era largada, e a janela mostrava o
+    /// destino recém-limpo — o Ultimate Chess 3D piscava preto uma vez por segundo, e com o
+    /// antialias o `resolve` levava à `cor` o quadro pela metade.
+    ///
+    /// **O antialias é resolvido aqui, na troca, e não só na leitura.** A textura `cor` é o que
+    /// a janela apresenta pela placa ([`GpuState::quadro_na_placa`]), e com MSAA a cena mora no
+    /// framebuffer de amostras até o `resolve`. Antes da leitura adiada, ler o quadro a cada
+    /// troca resolvia de carona; com a leitura adiada, quem apresenta pela placa nunca lê, e a
+    /// textura ficava como estava — preta com o antialias ligado, enquanto a `zeebx sessao`,
+    /// que lê, saía certa. O framebuffer do frontend não passa por aqui: ali
+    /// quem apresenta é ele. O `resolve` deixa o destino ligado, e o contexto de quem apresenta
+    /// volta ao estado que ele espera.
+    fn troca(&mut self) {
+        if self.fbo_externo.is_some() {
+            return;
+        }
+        self.descarrega();
+        let com_amostras = self.quadro.as_ref().is_some_and(|d| d.multi.is_some());
+        if com_amostras && !self.placa.morreu() {
+            self.resolve();
+            self.devolve_o_contexto();
+        }
+        // O destino agora é o quadro apresentado; a frente, se havia, ficou velha. Ver
+        // [`GpuState::protege_a_frente`]. E o que a tela mostra mudou da frente para o destino,
+        // mesmo sem desenho novo desde a última leitura: a próxima tem de reler.
+        self.trocou = true;
+        if std::mem::take(&mut self.frente_valida) {
+            self.sujo = true;
+        }
     }
 
     /// Conta o quadro e, a cada [`QUADROS_POR_RELATORIO`], escreve no log o que a placa guarda e
@@ -1342,6 +1479,7 @@ impl GpuState {
             self.vertices.clear();
             return;
         }
+        self.protege_a_frente();
         self.destino();
         self.aplica();
         let textura_da_ponte = textura.is_some();
@@ -1456,18 +1594,27 @@ impl GpuState {
     /// filtro linear, antes de qualquer leitura: é o que o jogo vê — o `GetColorBufferQUALCOMM`, o
     /// `glReadPixels`, a cópia para a tela —, e ler o quadro grande seria mover o quadrado do fator
     /// em bytes para jogar quase tudo fora.
-    fn liga_para_leitura(&mut self) {
+    ///
+    /// `apresentado` diz o que se lê: o quadro da última troca, que é o que a tela mostra — a
+    /// frente, quando o jogo já escreveu no destino depois dela —, ou o destino vivo, que é o que
+    /// o `glReadPixels` do jogo pede. Ver [`GpuState::protege_a_frente`].
+    fn liga_para_leitura(&mut self, apresentado: bool) {
         self.destino();
+        let da_frente = apresentado && self.frente_valida && self.fbo_externo.is_none();
         // O framebuffer do frontend não passa pelo nosso resolve. No caminho interno, resolve
-        // MSAA antes de ler.
-        if self.fbo_externo.is_none() {
+        // MSAA antes de ler — menos na frente, que já é a cópia resolvida.
+        if self.fbo_externo.is_none() && !da_frente {
             self.resolve();
         }
+        let origem = match da_frente {
+            true => self.frente.map(|f| f.0),
+            false => self.quadro.as_ref().map(|d| d.fbo),
+        };
         let extra = self.quadro.as_ref().map_or(0, |d| d.extra) as i32;
         if self.escala <= 1 && extra == 0 {
             let fbo = match self.fbo_externo {
                 Some(_) => self.alvo_do_desenho(),
-                None => self.quadro.as_ref().map(|d| d.fbo),
+                None => origem,
             };
             unsafe { self.gl.bind_framebuffer(glow::FRAMEBUFFER, fbo) };
             return;
@@ -1507,7 +1654,6 @@ impl GpuState {
                 gl.bind_texture(glow::TEXTURE_2D, None);
                 self.reduzido = Some((fbo, cor, medida));
             }
-            let origem = self.quadro.as_ref().map(|d| d.fbo);
             let destino = self.reduzido.as_ref().map(|r| r.0);
             gl.bind_framebuffer(glow::READ_FRAMEBUFFER, origem);
             gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, destino);
@@ -1539,7 +1685,7 @@ impl GpuState {
             self.le_quadro(largura, altura);
             return false;
         }
-        self.liga_para_leitura();
+        self.liga_para_leitura(true);
         self.pixels.clear();
         self.pixels.resize(largura * altura * 2, 0);
         unsafe {
@@ -1563,7 +1709,7 @@ impl GpuState {
 
     /// Lê o quadro da placa para `self.pixels`, em RGBA, com a linha 0 no topo.
     fn le_quadro(&mut self, largura: usize, altura: usize) {
-        self.liga_para_leitura();
+        self.liga_para_leitura(true);
         self.pixels.clear();
         self.pixels.resize(largura * altura * 4, 0);
         unsafe {
@@ -1870,12 +2016,15 @@ fn codigo_funcao(funcao: u32) -> i32 {
     }
 }
 
-/// A fonte do `GL_COMBINE` no shader: textura, constante, cor primária ou unidade anterior.
+/// A fonte do `GL_COMBINE` no shader: textura, constante, cor primária, unidade anterior ou, pelo
+/// crossbar, o texel da unidade 0 ou da 1. Ver `fonte_do_combine`, no rasterizador.
 fn codigo_fonte(fonte: u32) -> i32 {
     match fonte {
         gles::GL_TEXTURE => 0,
         gles::GL_CONSTANT => 1,
         gles::GL_PRIMARY_COLOR => 2,
+        f if f == gles::GL_TEXTURE0 => 4,
+        f if f == gles::GL_TEXTURE0 + 1 => 5,
         _ => 3,
     }
 }
@@ -2001,12 +2150,26 @@ uniform int func_alfa;
 uniform float ref_alfa;
 out vec4 saida;
 
-// A fonte do `GL_COMBINE`: 0 a textura, 1 a constante, 2 a cor primária, 3 a unidade anterior.
-vec4 fonte_de(int qual, vec4 anterior, vec4 primaria, vec4 texel, vec4 constante) {
+// A fonte do `GL_COMBINE`: 0 a textura, 1 a constante, 2 a cor primária, 3 a unidade anterior,
+// 4 e 5 o texel da unidade 0 e o da 1 (o crossbar).
+vec4 fonte_de(int qual, vec4 anterior, vec4 primaria, vec4 texel, vec4 constante, vec4 texel0,
+              vec4 texel1) {
     if (qual == 0) { return texel; }
     if (qual == 1) { return constante; }
     if (qual == 2) { return primaria; }
+    if (qual == 4) { return texel0; }
+    if (qual == 5) { return texel1; }
     return anterior;
+}
+
+// Se alguma fonte é o texel de uma unidade que não desenha: aí a unidade age como desligada, a
+// regra do `ARB_texture_env_crossbar`. Igual ao `TexEnv::combina` do software.
+bool falta_unidade(int srgb[3], int salfa[3]) {
+    for (int i = 0; i < 3; i++) {
+        if ((srgb[i] == 4 || salfa[i] == 4) && texturando != 1) { return true; }
+        if ((srgb[i] == 5 || salfa[i] == 5) && texturando1 != 1) { return true; }
+    }
+    return false;
 }
 
 // O operando no RGB: a cor, o complemento dela, o alfa ou o complemento dele.
@@ -2045,13 +2208,17 @@ float funcao_alfa(int f, float a0, float a1, float a2) {
 // Uma unidade de textura, caso a caso igual ao `TexEnv::aplica_com` do software: os modos
 // clássicos agem sobre o que saiu da unidade anterior.
 vec4 unidade(int modo, int crgb, int calfa, int srgb[3], int orgb[3], int salfa[3], int oalfa[3],
-             float ergb, float ealfa, vec4 constante, vec4 anterior, vec4 primaria, vec4 texel) {
+             float ergb, float ealfa, vec4 constante, vec4 anterior, vec4 primaria, vec4 texel,
+             vec4 texel0, vec4 texel1) {
     if (modo == 4) {
+        if (falta_unidade(srgb, salfa)) { return anterior; }
         vec3 r[3];
         float a[3];
         for (int i = 0; i < 3; i++) {
-            r[i] = operando_rgb(orgb[i], fonte_de(srgb[i], anterior, primaria, texel, constante));
-            a[i] = operando_alfa(oalfa[i], fonte_de(salfa[i], anterior, primaria, texel, constante));
+            r[i] = operando_rgb(orgb[i],
+                                fonte_de(srgb[i], anterior, primaria, texel, constante, texel0, texel1));
+            a[i] = operando_alfa(oalfa[i],
+                                 fonte_de(salfa[i], anterior, primaria, texel, constante, texel0, texel1));
         }
         vec3 rgb = clamp(funcao_rgb(crgb, r[0], r[1], r[2]) * ergb, 0.0, 1.0);
         float alfa = clamp(funcao_alfa(calfa, a[0], a[1], a[2]) * ealfa, 0.0, 1.0);
@@ -2071,13 +2238,17 @@ vec4 unidade(int modo, int crgb, int calfa, int srgb[3], int orgb[3], int salfa[
 void main() {
     vec4 primaria = vcor;
     vec4 cor = primaria;
+    // As duas unidades amostram antes de qualquer uma combinar: pelo crossbar, a 0 pode ler o
+    // texel da 1.
+    vec4 texel0 = texturando == 1 ? texture(amostra, vuv) : vec4(0.0);
+    vec4 texel1 = texturando1 == 1 ? texture(amostra1, vuv1) : vec4(0.0);
     if (texturando == 1) {
         cor = unidade(env, cmb_rgb, cmb_alfa, src_rgb, op_rgb, src_alfa, op_alfa, escala_rgb,
-                      escala_alfa, cor_env, cor, primaria, texture(amostra, vuv));
+                      escala_alfa, cor_env, cor, primaria, texel0, texel0, texel1);
     }
     if (texturando1 == 1) {
         cor = unidade(env1, cmb_rgb1, cmb_alfa1, src_rgb1, op_rgb1, src_alfa1, op_alfa1,
-                      escala_rgb1, escala_alfa1, cor_env1, cor, primaria, texture(amostra1, vuv1));
+                      escala_rgb1, escala_alfa1, cor_env1, cor, primaria, texel1, texel0, texel1);
     }
     // A névoa entra depois da textura e antes do teste de alfa, e mexe só no RGB — a mesma
     // ordem do rasterizador de software.
@@ -2176,19 +2347,6 @@ impl Rasterizador for GpuState {
 
     fn descarrega_o_desenho(&mut self) {
         self.descarrega();
-        // **O antialias é resolvido aqui, na troca, e não só na leitura.** A textura `cor` é o que
-        // a janela apresenta pela placa ([`GpuState::quadro_na_placa`]), e com MSAA a cena mora no
-        // framebuffer de amostras até o `resolve`. Antes da leitura adiada, ler o quadro a cada
-        // troca resolvia de carona; com a leitura adiada, quem apresenta pela placa nunca lê, e a
-        // textura ficava como estava — preta com o antialias ligado, enquanto a `zeebx sessao`,
-        // que lê, saía certa. O framebuffer do frontend não passa por aqui: ali
-        // quem apresenta é ele. O `resolve` deixa o destino ligado, e o contexto de quem apresenta
-        // volta ao estado que ele espera.
-        let com_amostras = self.quadro.as_ref().is_some_and(|d| d.multi.is_some());
-        if com_amostras && self.fbo_externo.is_none() && !self.placa.morreu() {
-            self.resolve();
-            self.devolve_o_contexto();
-        }
     }
 
     fn desenho_em_curso(&self) -> bool {
@@ -2314,6 +2472,7 @@ impl Rasterizador for GpuState {
 
     fn clear(&mut self, mask: u32) {
         self.descarrega();
+        self.protege_a_frente();
         self.destino();
         // **O `clear` do rasterizador de software ignora as máscaras**: ele preenche os vetores
         // direto. O `glClear` respeita `glDepthMask`, `glStencilMask` e `glColorMask`, então elas
@@ -2785,7 +2944,7 @@ impl Rasterizador for GpuState {
         if width == 0 || height == 0 {
             return Vec::new();
         }
-        self.liga_para_leitura();
+        self.liga_para_leitura(false);
         let altura_da_superficie = self.surface().1 as i32;
         let de_baixo = altura_da_superficie - y - height as i32;
         let mut bytes = vec![0u8; width * height * 4];
@@ -2813,6 +2972,7 @@ impl Rasterizador for GpuState {
     }
 
     fn fecha_quadro(&mut self) {
+        self.troca();
         GpuState::fecha_quadro(self)
     }
 
@@ -2990,6 +3150,7 @@ impl Rasterizador for GpuState {
         if !mudou {
             return;
         }
+        self.protege_a_frente();
         self.destino();
         unsafe {
             let gl = &self.gl;
@@ -3084,7 +3245,11 @@ impl Rasterizador for GpuState {
             return None;
         }
         self.destino();
-        self.resolve();
+        // O que a tela mostra: a frente, quando o jogo já escreveu no destino depois da troca.
+        match self.frente_valida && self.fbo_externo.is_none() {
+            true => unsafe { self.gl.bind_framebuffer(glow::FRAMEBUFFER, self.frente.map(|f| f.0)) },
+            false => self.resolve(),
+        }
         let (sw, sh) = self.estado.surface();
         let (w, h) = ((sw + 2 * extra) * self.escala, sh * self.escala);
         let mut bytes = vec![0u8; w * h * 4];
@@ -3166,8 +3331,14 @@ impl Rasterizador for GpuState {
         let (fw, fh) = destino.medida;
         let (sw, sh) = self.estado.surface();
         let extra = destino.extra;
+        // A frente, quando o jogo já começou o quadro seguinte no destino: ver
+        // [`GpuState::protege_a_frente`].
+        let textura = match self.frente_valida {
+            true => self.frente.map_or(destino.cor, |f| f.1),
+            false => destino.cor,
+        };
         Some(QuadroNaPlaca {
-            textura: destino.cor,
+            textura,
             recorte: [
                 (sw.min(fw) + 2 * extra) as f32 / (fw + 2 * extra).max(1) as f32,
                 sh.min(fh) as f32 / fh.max(1) as f32,
@@ -3481,6 +3652,72 @@ mod tests {
             pixel(&a, largura, 1, 1),
             pixel(&b, largura, 1, 1),
             "sem névoa os dois têm de voltar a concordar"
+        );
+    }
+
+    /// A água do Bóia Cross, com as chamadas que o jogo faz: `DOT3` entre o mapa de normais e o
+    /// vetor da luz na cor do vértice, e a unidade 1 multiplicando pela cor da água que ela lê
+    /// por `GL_TEXTURE1`. As duas funções inválidas no meio são do jogo e têm de ser ignoradas.
+    ///
+    /// Antes, os dois rasterizadores davam azul: o mapa de normais vezes o vértice, ao quadrado.
+    #[test]
+    fn a_agua_do_boia_cross_sai_igual_nos_dois_rasterizadores() {
+        let (largura, altura) = (16, 16);
+        let Some((mut gpu, mut sw)) = par(largura, altura) else {
+            return;
+        };
+        let cena = |r: &mut dyn Rasterizador| {
+            r.set_viewport(0, 0, largura as i32, altura as i32);
+            r.set_clear_color([0.0, 0.0, 0.0, 1.0]);
+            r.clear(gles::GL_COLOR_BUFFER_BIT);
+            let unidade1 = gles::GL_TEXTURE0 + 1;
+            r.set_active_texture(gles::GL_TEXTURE0);
+            r.bind_texture(1);
+            r.upload_level(1, 0, 1, 1, vec![[128, 128, 255, 255]]);
+            r.set_capability(gles::GL_TEXTURE_2D, true);
+            r.set_texture_env(gles::GL_COMBINE);
+            r.set_texture_env_param(gles::GL_COMBINE_RGB, gles::GL_DOT3_RGB, 0.0);
+            r.set_texture_env_param(gles::GL_COMBINE_RGB, gles::GL_TEXTURE0, 0.0);
+            r.set_texture_env_param(gles::GL_SRC0_RGB + 1, gles::GL_PRIMARY_COLOR, 0.0);
+            r.set_active_texture(unidade1);
+            r.bind_texture(2);
+            r.upload_level(2, 0, 1, 1, vec![[160, 120, 80, 255]]);
+            r.set_capability(gles::GL_TEXTURE_2D, true);
+            r.set_texture_env(gles::GL_COMBINE);
+            r.set_texture_env_param(gles::GL_COMBINE_RGB, gles::GL_COMBINE, 0.0);
+            r.set_texture_env_param(gles::GL_SRC0_RGB, gles::GL_PREVIOUS, 0.0);
+            r.set_texture_env_param(gles::GL_SRC0_RGB + 1, unidade1, 0.0);
+            r.set_texture_env_param(gles::GL_COMBINE_ALPHA, gles::GL_REPLACE, 0.0);
+            r.set_texture_env_param(gles::GL_SRC0_ALPHA, unidade1, 0.0);
+            r.set_texture_env_param(gles::GL_SRC0_ALPHA + 1, gles::GL_TEXTURE0, 0.0);
+            // A luz (0, 0, ½) codificada como cor: o `DOT3` com a normal (0, 0, ½) dá ½.
+            let canto = |x: f32, y: f32| Vertex {
+                position: [x, y, 0.0, 1.0],
+                color: [0.5, 0.5, 0.75, 0.0],
+                uv: UV_PADRAO,
+                uv1: UV_PADRAO,
+                normal: [0.0, 0.0, 1.0],
+                fog: 1.0,
+            };
+            r.draw(
+                gles::GL_TRIANGLES,
+                &[canto(-1.0, 1.0), canto(-1.0, -1.0), canto(1.0, 1.0)],
+            );
+        };
+        let (a, b) = ambos(&mut gpu, &mut sw, largura, altura, cena);
+        let (placa, software) = (pixel(&a, largura, 1, 1), pixel(&b, largura, 1, 1));
+        // Metade do marrom (80, 60, 40) em RGB565: perto de (9,7; 14,8; 4,9).
+        assert!(
+            (9..=10).contains(&software.0)
+                && (14..=15).contains(&software.1)
+                && (4..=5).contains(&software.2),
+            "o software devia dar metade do marrom, e deu {software:?}"
+        );
+        assert!(
+            placa.0.abs_diff(software.0) <= 1
+                && placa.1.abs_diff(software.1) <= 1
+                && placa.2.abs_diff(software.2) <= 1,
+            "placa {placa:?} contra software {software:?}"
         );
     }
 
@@ -4066,6 +4303,54 @@ mod tests {
         assert_eq!(t.filtro, gles::GL_NEAREST, "ampliação");
         assert_eq!(t.filtro_min, gles::GL_NEAREST, "redução");
         assert_eq!(t.wrap[0], gles::GL_CLAMP_TO_EDGE, "repetição em s");
+    }
+
+    /// **A tela mostra o quadro da última troca, e não o destino no meio do seguinte.** O jogo
+    /// limpa de verde depois da troca do quadro vermelho, e a leitura do que se apresenta continua
+    /// vermelha até a próxima troca; o `glReadPixels` do jogo, que lê o fundo, já vê o verde. Era
+    /// o Ultimate Chess 3D piscando entre a cena e o preto. Ver [`GpuState::protege_a_frente`].
+    ///
+    /// O save state do meio, que o rewind tira a cada segundo, drena o desenho e não é troca: com
+    /// ele dado por troca, o xadrez piscava preto uma vez por segundo. Com e sem antialias, que
+    /// resolvia o quadro pela metade na `cor`. Ver [`GpuState::troca`].
+    #[test]
+    fn a_tela_mostra_o_quadro_da_troca_e_nao_o_meio_do_seguinte() {
+        let (largura, altura) = (8, 8);
+        let vermelho = 0xf800u16;
+        let verde = 0x07e0u16;
+        for amostras in [1, 4] {
+            let Some((mut gpu, _)) = par(largura, altura) else {
+                return;
+            };
+            Rasterizador::define_antialias(&mut gpu, amostras);
+            let troca = |gpu: &mut GpuState| {
+                gpu.descarrega_o_desenho();
+                Rasterizador::fecha_quadro(gpu);
+            };
+            gpu.set_viewport(0, 0, largura as i32, altura as i32);
+            gpu.set_clear_color([1.0, 0.0, 0.0, 1.0]);
+            gpu.clear(gles::GL_COLOR_BUFFER_BIT);
+            troca(&mut gpu);
+
+            gpu.set_clear_color([0.0, 1.0, 0.0, 1.0]);
+            gpu.clear(gles::GL_COLOR_BUFFER_BIT);
+            // O save state do rewind, no meio do quadro.
+            gpu.descarrega_o_desenho();
+            let mut quadro = Vec::new();
+            gpu.frame_rgb565_words(largura, altura, &mut quadro);
+            assert!(
+                quadro.iter().all(|&p| p == vermelho),
+                "a tela leu o meio do quadro seguinte, com {amostras} amostra(s)"
+            );
+            assert_eq!(gpu.read_rect(0, 0, 1, 1)[0], [0, 255, 0, 255], "o jogo lê o fundo");
+
+            troca(&mut gpu);
+            gpu.frame_rgb565_words(largura, altura, &mut quadro);
+            assert!(
+                quadro.iter().all(|&p| p == verde),
+                "a troca seguinte não chegou à tela, com {amostras} amostra(s)"
+            );
+        }
     }
 
     /// **A tesoura que o jogo desliga sai do GL também, com o contexto emprestado.**

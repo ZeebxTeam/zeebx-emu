@@ -90,6 +90,16 @@ pub mod qobject {
         #[qinvokable]
         fn pausa(self: Pin<&mut Self>) -> bool;
 
+        /// Se o `Qt::Key` é o atalho de reiniciar. Ver `atalhos.reiniciar`.
+        #[qinvokable]
+        #[cxx_name = "ehAtalhoDeReinicio"]
+        fn eh_atalho_de_reinicio(self: &Self, codigo: i32) -> bool;
+
+        /// Recomeça o jogo aberto. Devolve se recomeçou; falhando, o de antes continua, e a
+        /// linha de estado diz por quê.
+        #[qinvokable]
+        fn reinicia(self: Pin<&mut Self>) -> bool;
+
         /// Relê o título do jogo aberto para a linha de estado. A janela chama isto ao aparecer.
         #[qinvokable]
         fn atualiza(self: Pin<&mut Self>);
@@ -118,10 +128,11 @@ pub mod qobject {
         #[cxx_name = "guardaTamanhoDaJanela"]
         fn guarda_tamanho_da_janela(self: &Self, largura: f64, altura: f64);
 
-        /// Pausa ou retoma sem alternar: a lista de conquistas pausa ao abrir e retoma ao fechar.
+        /// Pausa ou retoma sem alternar, e devolve como estava antes: a lista de conquistas pausa
+        /// ao abrir e devolve essa pausa ao fechar.
         #[qinvokable]
         #[cxx_name = "definePausa"]
-        fn define_pausa(self: Pin<&mut Self>, pausada: bool);
+        fn define_pausa(self: Pin<&mut Self>, pausada: bool) -> bool;
 
         /// O jogo saiu sozinho e não há para onde voltar: a janela fecha, como a do egui.
         #[qsignal]
@@ -247,7 +258,11 @@ impl qobject::TelaDoJogo {
         let (volta, mostra, destino, suave, depuracao) = nucleo::com(|nucleo| {
             let volta = nucleo.passo(area);
             let depuracao = nucleo.depuracao();
-            let graficos = &nucleo.valendo().graphics;
+            // Copiados antes: o `quadro` empresta o núcleo inteiro para trazer o quadro da placa.
+            let (scaling, keep_aspect, smooth) = {
+                let graficos = &nucleo.valendo().graphics;
+                (graficos.scaling, graficos.keep_aspect, graficos.smooth)
+            };
             // O quadro largo experimental tem a proporção dele; o resto é o 4:3 do console.
             let (mostra, aspecto) = match nucleo.quadro() {
                 Some(Quadro::Placa(quadro)) => (
@@ -274,9 +289,20 @@ impl qobject::TelaDoJogo {
                 }
                 None => (Mostra::Nada, 4.0 / 3.0),
             };
-            let enquadrado = enquadra(area, graficos.scaling, graficos.keep_aspect, aspecto);
-            (volta, mostra, centrado(area, enquadrado), graficos.smooth, depuracao)
+            let enquadrado = enquadra(area, scaling, keep_aspect, aspecto);
+            (volta, mostra, centrado(area, enquadrado), smooth, depuracao)
         });
+        // O jogo recomeçou nesta volta (o hardcore ligado com ele aberto): uma tela nova com a
+        // mesma série da antiga seria tomada pela mesma imagem, e o quadro da partida que acabou
+        // ficaria à mostra. Como no `reinicia`, a tela esvazia e a próxima volta manda a nova.
+        let mostra = match (volta.reiniciou, mostra) {
+            (true, Mostra::MesmaImagem) => {
+                self.as_mut().esvazia();
+                self.as_mut().rust_mut().chave = None;
+                Mostra::Nada
+            }
+            (_, mostra) => mostra,
+        };
         match mostra {
             Mostra::Textura { textura, recorte } => {
                 self.as_mut().rust_mut().chave = None;
@@ -398,8 +424,40 @@ impl qobject::TelaDoJogo {
         })
     }
 
-    pub fn define_pausa(self: Pin<&mut Self>, pausada: bool) {
-        nucleo::com(|nucleo| nucleo.define_pausa(pausada));
+    pub fn define_pausa(self: Pin<&mut Self>, pausada: bool) -> bool {
+        nucleo::com(|nucleo| {
+            let antes = nucleo.pausada();
+            nucleo.define_pausa(pausada);
+            antes
+        })
+    }
+
+    pub fn eh_atalho_de_reinicio(&self, codigo: i32) -> bool {
+        tecla_do_qt(codigo).is_some_and(|tecla| nucleo::com(|nucleo| nucleo.e_atalho_de_reinicio(tecla)))
+    }
+
+    pub fn reinicia(mut self: Pin<&mut Self>) -> bool {
+        let (resultado, estado) = nucleo::com(|nucleo| {
+            let resultado = nucleo.reinicia();
+            let estado = match &resultado {
+                Ok(()) => nucleo.estado(),
+                Err(erro) => format!("não reiniciou: {erro}"),
+            };
+            (resultado, estado)
+        });
+        self.as_mut().set_estado(QString::from(&estado));
+        if resultado.is_err() {
+            return false;
+        }
+        // **A textura da partida que acabou não existe mais**, como no `fecha`: o nó não pode
+        // continuar apontando para ela. Apontando, o Qt desenhava um quadro com o número dela — e
+        // a partida nova já tinha dado esse número a outra textura: por um quadro aparecia a
+        // fonte do menu do jogo, em vermelho, no Resident Evil 4, no Ridge Racer e no Rolimã. A
+        // próxima volta manda a imagem nova.
+        self.as_mut().esvazia();
+        self.as_mut().rust_mut().chave = None;
+        self.as_mut().set_parou(QString::default());
+        true
     }
 
     pub fn atualiza(mut self: Pin<&mut Self>) {

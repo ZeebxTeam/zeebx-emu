@@ -28,6 +28,21 @@ pub const PORTAS: usize = 2;
 /// `0xe030`, `0xe04a` e outros — que são `AVK_`.
 pub const EVT_KEY: u32 = 0x100;
 
+/// A soltura de uma tecla, na numeração do `AEE.h`: `EVT_KEY_PRESS` é `0x101` e
+/// `EVT_KEY_RELEASE` é `0x102`.
+///
+/// **A soltura saía como `0x101`, que é o aperto.** O Quake só lê `0x101` e `0x102` — é ele
+/// mesmo quem confirma a numeração: o tratador em `0x3a8ec` trata `0x101` como aperto e `0x102`
+/// como soltura, e a tradução que ele faz do controle em tecla manda `0x101` no aperto
+/// (`0x49a24`). O botão 2 do controle vira `AVK_CLR`, que o Quake liga ao `togglemenu`: a soltura
+/// dele chegava como um segundo aperto que nunca era solto, a tecla ficava abaixada para sempre,
+/// e todo aperto seguinte era descartado como repetição — o menu não abria mais na fase.
+///
+/// O aperto continua só como `EVT_KEY`. Com o `EVT_KEY_PRESS` junto, o botão 2 abriria o menu
+/// do Quake no meio da fase, e no aparelho ele não abre: no longplay, "Sempre correr desligado"
+/// aparece sem menu nenhum.
+pub const EVT_KEY_RELEASE: u32 = 0x102;
+
 /// Os códigos virtuais do BREW que o console usa, na numeração do `AEEVCodes.h`.
 ///
 /// A numeração foi conferida no módulo da Z-Wheel, que é quem mais depende dela:
@@ -129,6 +144,11 @@ pub const BUTTON_UIDS: [u32; BUTTONS] = [
 /// Índices dos quatro sentidos do direcional em [`BUTTON_UIDS`], na ordem cima, baixo,
 /// esquerda, direita. Na lista eles ficam na ordem dos UIDs — ver [`BUTTON_UIDS`].
 pub const DPAD: [usize; 4] = [12, 14, 13, 15];
+
+/// Os índices do HOME, que o BREW chama de `Back`, e do `Start` em [`BUTTON_UIDS`]. Ver
+/// [`Pad::com_o_home_nos_dois`].
+pub const HOME: usize = 9;
+pub const START: usize = 11;
 
 /// Nome de cada botão, para o mapeamento de teclas e para a linha de comando.
 /// O controle tem **um** gatilho de cada lado, o ZL e o ZR, e é o "superior" de cada par que
@@ -307,6 +327,29 @@ impl Pad {
         };
         self.set_axis(1, vertical);
         self.set_axis(0, horizontal);
+    }
+
+    /// O controle como o console o entrega: o HOME aperta o `Back` **e** o `Start`.
+    ///
+    /// O controle do Zeebo tem um botão só no meio, e os jogos discordam do UID dele. O Double
+    /// Dragon pede "APERTE O BOTÃO HOME" e só reconhece o `Back`: na tela de título, o `back` abre
+    /// o menu e o `start` não faz nada. O Quake pede "Aperte o botão Home para chamar o menu" e só
+    /// reconhece o `Start`: a tabela de UIDs dele (`0x7a4` no módulo) leva o `Start` ao índice 9,
+    /// que vira o `AVK_CLR` e daí a tecla ligada ao `togglemenu`, e manda o `Back` para "botão
+    /// desconhecido". Os dois rodam no mesmo aparelho, então o HOME chega com os dois.
+    ///
+    /// **Não foi medido no console.** O levantamento das tabelas de UID dos jogos — as que partem
+    /// de `0x0106c3fe` — não achou quem dê ações diferentes aos dois: FIFA 09, Need for Speed,
+    /// Quake II e Action Hero 3D só reconhecem o `Back`; Alien Breaker, Tork and Kral e Heavy
+    /// Weapon guardam os dois em bits separados, e não achei consulta ao bit do `Start` em nenhum
+    /// dos três.
+    ///
+    /// Só nesse sentido: o `start` apertado sozinho, por quem o mapeou à mão, continua só `Start`.
+    pub fn com_o_home_nos_dois(mut self) -> Self {
+        if self.is_down(HOME) {
+            self.press(START, true);
+        }
+        self
     }
 
     /// Os botões que mudaram entre `self` e `next`, com o novo estado de cada um.
@@ -622,6 +665,27 @@ mod tests {
             [0xe030, 0xe031, 0xe032, 0xe033, 0xe034, 0xe035]
         );
         assert_eq!(avk::por_nome("confirma"), Some(0xe064));
+    }
+
+    #[test]
+    fn o_home_aperta_o_back_e_o_start() {
+        assert_eq!(BUTTON_NAMES[HOME], "back");
+        assert_eq!(BUTTON_NAMES[START], "start");
+        let mut home = Pad::default();
+        home.press(HOME, true);
+        let visto = home.com_o_home_nos_dois();
+        assert!(visto.is_down(HOME) && visto.is_down(START));
+        assert_eq!(
+            Pad::default().changes(&visto),
+            vec![(HOME, true), (START, true)]
+        );
+
+        let mut start = Pad::default();
+        start.press(START, true);
+        assert!(
+            !start.com_o_home_nos_dois().is_down(HOME),
+            "o start sozinho não vira HOME"
+        );
     }
 
     #[test]
