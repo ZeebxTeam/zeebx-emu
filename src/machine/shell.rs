@@ -386,7 +386,7 @@ impl<C: CpuBackend> Machine<C> {
         //
         // O tamanho do bloco no heap é a medida honesta: não é o número que o jogo disse, é o
         // que ele de fato reservou. Assim a cópia continua limitada ao que existe.
-        let capacity = declared.max(self.heap.size_of(buffer).unwrap_or(0));
+        let capacity = declared.max(self.tamanho_do_bloco(buffer).unwrap_or(0));
         if capacity < len {
             self.write_at(size_out, len)?;
             return Ok(0);
@@ -567,7 +567,7 @@ impl<C: CpuBackend> Machine<C> {
         }
 
         // AEEAppStart: error, clsApp, pDisplay, rc (4 × int16), pszArgs = 24 bytes.
-        let start = self.heap.alloc(24).unwrap_or(0);
+        let start = self.aloca_interno(24)?;
         if start != 0 {
             self.cpu.write_mem(start, &[0u8; 24])?;
             self.cpu.write_u32(start + 4, clsid)?;

@@ -199,7 +199,7 @@ impl<C: CpuBackend> Machine<C> {
                 r
             }
             "free" => {
-                self.heap.free(a0);
+                self.libera(a0);
                 SUCCESS
             }
             "realloc" => self.realloc(a0, a1 & !ALLOC_NO_ZMEM)?,
@@ -687,7 +687,7 @@ impl<C: CpuBackend> Machine<C> {
 
             // --- Memória, versão e depuração ------------------------------------------
             "sysfree" => {
-                self.heap.free(a0);
+                self.libera(a0);
                 SUCCESS
             }
             "err_strdup" => {

@@ -53,9 +53,10 @@ real de cada método de API, que é onde a resposta costuma estar.
 | módulo | `0x0001_0000` | imagem + 1 MB | o `.mod` carregado, com prefixo de uma página |
 | heap | `0x1000_0000` | 64 MB | o que o `MALLOC` do jogo consome |
 | pilha | `0x2000_0000` | 1 MB | `sp` começa no topo; a pilha do ARM cresce para baixo |
-| objetos | `0x3000_0000` | 64 KB | os objetos que entregamos ao jogo |
+| objetos | `0x3000_0000` | 4 MB | os objetos que entregamos ao jogo |
 | helpers | `0x3100_0000` | 1 KB | a tabela da stdlib do BREW |
 | stubs | `0x3200_0000` | 4 KB | código ARM que **nós** escrevemos |
+| interna | `0x3400_0000` | 16 MB | o que **o emulador** aloca para si: pilhas de thread, buffers |
 | superfícies | `0x4000_0000` | 8 MB | os pixels, no espaço do guest |
 | vtables | `0xe000_0000` | somente leitura | os ponteiros que levam ao trampolim |
 
@@ -161,7 +162,16 @@ No `realloc`, a falta de espaço deixa o bloco antigo intacto e devolve nulo —
 tirava do jogo os dados que ele ainda tinha. Tamanho zero é `FREE`: o bloco sai e o ponteiro vira
 nulo, e o `ERR_REALLOC(0, &p)` deixa `p` nulo como o jogo espera.
 
-O que **nós** alocamos no heap do jogo também tem dono. O buffer de linha do `IPeek`, do tamanho
+**O heap é só do jogo.** O que o emulador precisa no espaço do guest — a pilha de cada
+`IThread`, o buffer de linha do `IPeek`, o `AEEImageInfo`, o `AEEAppStart`, as strings do
+`eglQueryString`, os ponteiros de saída passados a callbacks do jogo — sai da região interna,
+pelo `aloca_interno`. Intercalados com o que o jogo pede, esses blocos faziam o endereço de cada
+estrutura do jogo depender da versão do Zeebx, e o RetroAchievements lê o heap por endereço: uma
+conquista não pode quebrar porque o emulador passou a alocar um bloco a mais. O que o jogo pede
+por uma API (`STRDUP`, `LoadResData`, `IHeap_Malloc`) continua no heap, porque o tamanho e o
+momento saem do jogo. Todo `free` passa pelo `libera`, que escolhe o alocador pelo endereço.
+
+O que **nós** alocamos no espaço do guest também tem dono. O buffer de linha do `IPeek`, do tamanho
 do arquivo inteiro, sai com o leitor; o `AEEImageInfo` do aviso de imagem é um bloco por imagem,
 reaproveitado e devolvido no `Release`, e não um bloco novo a cada aviso.
 
