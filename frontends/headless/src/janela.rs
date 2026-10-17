@@ -70,7 +70,8 @@ impl Janela {
             .as_raw();
         let display = config.display();
         // Sem pedir versão nem perfil: o glutin resolve isso no melhor que o driver oferece, e
-        // é o mesmo que o eframe faz — o que mantém os shaders do [`Pintor`] valendo nos dois.
+        // é o mesmo que o eframe fazia na janela do egui — o que mantém os shaders do [`Pintor`]
+        // valendo.
         let atributos = ContextAttributesBuilder::new().build(Some(janela_crua));
         let contexto = unsafe { display.create_context(&config, &atributos) }
             .map_err(|erro| format!("no GL context: {erro}"))?;

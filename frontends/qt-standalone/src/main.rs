@@ -1,7 +1,7 @@
 //! Zeebx Qt — o emulador de Zeebo com a interface em Qt Quick.
 //!
-//! Um frontend à parte do `egui-standalone`: `zeebx-qt` abre a biblioteca, e `zeebx-qt <jogo>` abre
-//! direto o jogo. A linha de comando de depuração (`run`, `info`, `bench`...) continua no `zeebx`.
+//! A interface do emulador: `zeebx-qt` abre a biblioteca, e `zeebx-qt <jogo>` abre direto o jogo. A
+//! linha de comando de depuração (`run`, `info`, `bench`...) é o `zeebx`, em `frontends/cli`.
 
 // No Windows, a versão de distribuição abre sem a janela de console atrás da interface.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]

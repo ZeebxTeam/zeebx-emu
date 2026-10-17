@@ -28,7 +28,8 @@ brew install --cask zeebxteam/tap/zeebx-qt
 ```
 
 No macOS vai para Aplicativos (pede o macOS 13 ou mais novo); no Linux, o AppImage vai para
-`~/Applications/zeebx-qt.AppImage`. A interface antiga, em egui, é o cask `zeebxteam/tap/zeebx`.
+`~/Applications/zeebx-qt.AppImage`. A interface antiga, em egui, foi até a 0.4.2: o cask
+`zeebxteam/tap/zeebx` fica nela.
 
 O emulador se atualiza sozinho no AppImage, no instalador do Windows e no `.app` do macOS: quando
 sai uma versão nova, ele avisa e oferece "Atualizar agora". Nas configurações, em Atualizações, dá
@@ -44,7 +45,7 @@ frontends/android/
 frontends/ios/
 frontends/headless/
 frontends/libretro/
-frontends/egui-standalone/
+frontends/cli/
 frontends/qt-standalone/
 
 E também ajuste o [.github/workflows/release.yml](release.yml) para apontar um alvo de build durante nosso CI, assim garante que o target seja fornecido junto durante a criação da release!
@@ -86,10 +87,10 @@ cargo build --release
 
 ### O que mais precisa estar instalado
 
-O desktop tem dois frontends: `zeebx-qt`, com a interface em **Qt 6** (`frontends/qt-standalone`,
-Qt 6.4 ou mais novo), que é a principal, e `zeebx`, com a interface em egui
-(`frontends/egui-standalone`), legada. Os dois saem na release. Os dois usam dependências nativas para `dynarmic`,
-áudio, janela e controles; o Qt só o segundo pede. Debian, Ubuntu e derivados:
+A interface é o `zeebx-qt`, em **Qt 6** (`frontends/qt-standalone`, Qt 6.4 ou mais novo). A linha de
+comando — `zeebx run`, `zeebx sessao`, `zeebx bench`, para medir e depurar — é o `zeebx`
+(`frontends/cli`), sem Qt. Os dois usam dependências nativas para `dynarmic`, áudio e controles; o
+Qt só a interface pede. A interface em egui saiu depois da 0.4.2. Debian, Ubuntu e derivados:
 
 ```bash
 sudo apt install build-essential cmake ninja-build pkg-config python3 clang libclang-dev \
@@ -103,8 +104,8 @@ No Arch: `qt6-base qt6-declarative qt6-wayland`. O build acha o Qt pelo `qmake6`
 para usar outro, aponte `QMAKE` para ele.
 
 ```bash
-cargo build --release -p zeebx-standalone-egui   # target/release/zeebx
-cargo build --release -p zeebx-standalone-qt     # target/release/zeebx-qt
+cargo build --release -p zeebx-standalone-qt     # target/release/zeebx-qt, a interface
+cargo build --release -p zeebx-cli               # target/release/zeebx, a linha de comando
 ```
 
 O core Libretro não linka a interface desktop nem bibliotecas de áudio/controle do host:
@@ -122,9 +123,8 @@ python3 ferramentas/prepara_build.py
 ### Instaladores e releases
 
 Os instaladores saem do [cargo-packager](https://github.com/crabnebula-dev/cargo-packager), com a
-configuração em `[package.metadata.packager]` no `Cargo.toml` de cada frontend, rodado de dentro
-da pasta dele. No `frontends/egui-standalone/`, `cargo packager --release` basta. No
-`frontends/qt-standalone/` **ele não implanta o Qt**: cada formato tem o passo dele, e o
+configuração em `[package.metadata.packager]` no `Cargo.toml` de `frontends/qt-standalone/`, rodado
+de dentro da pasta dele. **Ele não implanta o Qt**: cada formato tem o passo dele, e o
 [`release.yml`](.github/workflows/release.yml) é a receita completa.
 
 - **`.deb`**: usa o Qt do sistema, então precisa ser montado contra ele — no Ubuntu 24.04, com os
@@ -149,10 +149,9 @@ São dois formatos em cada um dos quatro sistemas, e o nome do arquivo diz qual 
 
 | | |
 |---|---|
-| `zeebx-standalone-qt-linux-x86_64.deb`, `.AppImage` | o emulador com a interface em Qt, a principal, para instalar |
+| `zeebx-standalone-qt-linux-x86_64.deb`, `.AppImage` | o emulador com a interface, para instalar |
 | `zeebx-standalone-qt-windows-x86_64-setup.exe` | idem, no Windows |
 | `zeebx-standalone-qt-macos-arm64.dmg`, `-x86_64.dmg` | idem, nos dois Macs |
-| `zeebx-standalone-egui-…` | os mesmos formatos, com a interface em egui, legada |
 | `zeebx-headless-<sistema>.zip` | o binário sem interface, com o `config.ini` e o leia-me |
 | `zeebx-android-arm64-v8a.apk` | o aplicativo de Android |
 | `zeebx-ios-simulator.zip` | o simulador e o leia-me |

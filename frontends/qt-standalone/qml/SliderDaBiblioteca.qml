@@ -1,8 +1,8 @@
 import QtQuick
 
 // A biblioteca no jeito da Z-Wheel: o rolo de logos girando como cilindro, o nome, as caixas
-// deslizando, e a classificação com a descrição embaixo. As medidas e as curvas são as do
-// `src/ui/app/vitrine.rs`, que desenha o mesmo slider no egui.
+// deslizando, e a classificação com a descrição embaixo. As medidas e as curvas vêm do slider da
+// interface do egui (`src/ui/app/vitrine.rs`, até a 0.4.2).
 Item {
     id: slider
 

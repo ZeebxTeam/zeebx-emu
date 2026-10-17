@@ -405,8 +405,8 @@ struct Placa {
     /// **O que pode largar um dos três é outro código desenhando com o mesmo contexto — e há.** O
     /// `Pintor` da janela termina cada pintura com `use_program(None)` e `bind_vertex_array(None)`
     /// **de propósito**, para devolver o contexto ao `egui` (`src/ui/gpu.rs`), e o contexto em que
-    /// ele pinta é o mesmo em que o rasterizador desenha (`src/ui/app.rs`, com
-    /// `graphics.gpu_rasterizer`). Por isso o cache não é invalidado só pelo contexto refeito: quem
+    /// ele pinta é o mesmo em que o rasterizador desenha (a janela do headless,
+    /// `frontends/headless/src/janela.rs`, e o Android). Por isso o cache não é invalidado só pelo contexto refeito: quem
     /// o invalida é [`GpuState::devolve_o_contexto`] e [`GpuState::desenha_no_fbo`].
     ligados: std::cell::Cell<bool>,
 }
@@ -438,8 +438,7 @@ impl Placa {
     /// **Com a placa morta, não podem.** Apagar é chamar `delete_*` no driver, e as funções que este
     /// estado guardou morreram com o contexto: no melhor caso o driver anota um erro, no pior o
     /// ponteiro aponta para código que já não existe. Os nomes são **largados**, e quem os apagaria
-    /// já não existe. É a regra que o repositório já escreve do outro lado da janela
-    /// (`src/ui/app.rs`, no `on_exit`: "soltar depois seria mexer num contexto morto").
+    /// já não existe: soltar depois seria mexer num contexto morto.
     fn apaga_ao_morrer(&self) -> bool {
         !self.morreu()
     }
@@ -594,7 +593,7 @@ impl GpuState {
     ///
     /// `emprestado` é o contexto da janela, quando há uma. **Receber em vez de criar não é
     /// economia, é correção:** o núcleo roda na mesma thread da interface, e um contexto nosso
-    /// tornado corrente ali desliga o do eframe — o egui para de pintar e a janela congela,
+    /// tornado corrente ali desliga o da janela — a interface para de pintar e congela,
     /// enquanto o áudio, que é outra thread, segue tocando.
     ///
     /// Sem janela — o `run` da linha de comando, onde a medição é feita — não há o que emprestar
@@ -3990,7 +3989,7 @@ mod tests {
     ///
     /// É a metade que faltava do achado 2: nenhum teste punha o `Pintor` do `egui` entre dois lotes
     /// do rasterizador, **no mesmo contexto** — que é o caminho de `graphics.gpu_rasterizer = true`
-    /// (`src/ui/app.rs` entrega o contexto do `eframe` à sessão, e `src/ui/gpu.rs` o pinta). O que
+    /// (a janela do headless entrega o contexto dela à sessão, e o `src/ui/gpu.rs` pinta nele). O que
     /// o `Pintor` faz no fim de cada pintura está copiado aqui: `use_program(None)` e
     /// `bind_vertex_array(None)`. O quadro dos dois lados tem de sair **igual**.
     /// **O que a janela muda entre dois quadros volta a ser do motor.** O `egui` pinta no mesmo

@@ -4,7 +4,8 @@ import QtQuick.Controls
 import zeebx
 
 // A biblioteca em grade: cartões em pé, na proporção das caixas que a Z-Wheel traz, quantos
-// couberem na largura. Ver `src/ui/app/vitrine.rs`, que desenha a mesma grade no egui.
+// couberem na largura. É a grade que a interface do egui tinha (`src/ui/app/vitrine.rs`, até a
+// 0.4.2).
 GridView {
     id: grade
 

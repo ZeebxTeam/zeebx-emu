@@ -132,7 +132,7 @@ aqui não há interface — há um quadro. O laço é nosso, sobre o winit, e é
 entrada como o sistema a entrega e ser dono do ciclo de vida da janela.
 
 Isso é sobre o laço, **não** sobre o tamanho da compilação. O `zeebx` de que este pacote depende
-é a biblioteca inteira, e fora do Android ela traz o eframe, o `rfd`, o Discord e o `ureq` por
+é a biblioteca inteira, e fora do Android ela traz o `rfd`, o Discord e o `ureq` por
 conta própria: compilar o headless compila aquilo junto. Enxugar de verdade seria pôr as telas
 do desktop atrás de uma feature do núcleo, o que ainda não foi feito.
 

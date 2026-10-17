@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::time::Instant;
 
-use zeebx::eframe::egui::Key;
+use zeebx::egui::Key;
 use zeebx::input;
 use zeebx::input::padview::PadArt;
 use zeebx::library::{self, Game};
