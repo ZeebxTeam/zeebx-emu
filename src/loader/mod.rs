@@ -381,7 +381,8 @@ mod tests {
         assert_eq!(
             names,
             [
-                "module", "nulo", "heap", "stack", "objects", "helpers", "stubs", "surfaces", "vtables"
+                "module", "nulo", "heap", "stack", "objects", "helpers", "stubs", "surfaces",
+                "internal", "vtables"
             ]
         );
     }
