@@ -97,6 +97,7 @@ sudo apt install build-essential cmake ninja-build pkg-config python3 clang libc
     libglib2.0-dev libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev \
     qt6-base-dev qt6-base-dev-tools qt6-declarative-dev qt6-declarative-dev-tools qmake6 \
     qt6-wayland qml6-module-qtquick qml6-module-qtquick-controls qml6-module-qtquick-layouts \
+    qml6-module-qtquick-shapes \
     qml6-module-qtquick-templates qml6-module-qtquick-window qml6-module-qtqml-workerscript
 ```
 
