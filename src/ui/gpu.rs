@@ -10,8 +10,9 @@
 //! desenhar com GL dentro do egui sem mexer no emulador — e é sobre este pedaço que um backend
 //! de GPU seria construído depois.
 //!
-//! O contexto que o `eframe` cria é **core 3.3** (o glutin resolve "sem perfil, sem versão"
-//! assim), então não há pipeline fixo: mesmo para um quadrado com textura é preciso shader.
+//! O contexto de desktop é **core 3.3** (o Qt o pede assim, e o glutin do headless resolve "sem
+//! perfil, sem versão" do mesmo jeito), então não há pipeline fixo: mesmo para um quadrado com
+//! textura é preciso shader.
 
 // O `egui` vem direto, e **não** pelo `eframe`: o reexport amarrava este módulo ao desktop, e
 // quem desenha aqui é o motor, que não tem janela nenhuma.
@@ -81,8 +82,8 @@ pub struct Pintor {
 }
 
 impl Pintor {
-    /// Monta o programa. Tenta GLSL 3.30 e cai para ES 3.00 — o `eframe` pede um contexto de
-    /// OpenGL e só cai para GLES quando o primeiro falha, então os dois casos existem.
+    /// Monta o programa. Tenta GLSL 3.30 e cai para ES 3.00 — o desktop entrega OpenGL e o
+    /// Android entrega GLES, então os dois casos existem.
     pub fn novo(gl: &glow::Context) -> Result<Self, String> {
         let program = ["#version 330 core\n", "#version 300 es\nprecision mediump float;\n"]
             .into_iter()
@@ -258,7 +259,7 @@ impl Pintor {
         }
     }
 
-    /// Devolve à placa o que foi criado. O `eframe` chama isto no fim, pelo `on_exit`.
+    /// Devolve à placa o que foi criado. Quem montou o pintor chama isto ao fechar a janela.
     pub fn solta(&self, gl: &glow::Context) {
         unsafe {
             gl.delete_program(self.program);

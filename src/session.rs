@@ -147,6 +147,10 @@ pub struct Session {
     pulo: PuloDaSessao,
     /// A velocidade que o som segue. Ver [`Session::acompanha_o_som`].
     som_do_avanco: SomDoAvanco,
+    /// O som parado pela pausa. Ver [`Session::congela_o_som`].
+    som_congelado: bool,
+    /// A vigia do jogo que fica para trás. Ver [`VigiaDaVelocidade`].
+    vigia: VigiaDaVelocidade,
     /// O turbo: o controle cru de cada porta e os botões que pulsam. Ver [`Session::pulsa`].
     turbo: TurboDaSessao,
     stopped: Option<Outcome>,
@@ -240,8 +244,13 @@ const BOTOES_COM_TECLA: [(&str, u32); 2] = [
 struct SomDoAvanco {
     /// O instante real e o relógio virtual da volta anterior.
     ultima: Option<(Instant, u64)>,
-    /// A velocidade alcançada, em média.
-    media: f64,
+    /// A velocidade alcançada, em média. `None` antes da primeira medida do sem limite.
+    media: Option<f64>,
+    /// A proporção pedida na volta anterior: trocar de proporção recomeça a média dela.
+    pedida: Option<Option<f32>>,
+    /// A última proporção acima de 1x e a média em que ela parou: é por onde o próximo aperto
+    /// com a mesma proporção começa.
+    lembrada: Option<(Option<f32>, f64)>,
     /// O último ritmo e o último abafado entregues ao mixer.
     enviado: Option<(f32, bool)>,
     /// Calado pelo rewind. Ver [`Session::cala`].
@@ -254,13 +263,39 @@ impl Default for SomDoAvanco {
     fn default() -> Self {
         Self {
             ultima: None,
-            media: 1.0,
+            media: Some(1.0),
+            pedida: None,
+            lembrada: None,
             enviado: None,
             calado: false,
             abafado_pelo_ritmo: false,
         }
     }
 }
+
+/// O que a sessão observa para dizer no registro que o jogo ficou para trás.
+///
+/// **É o diagnóstico do frameskip que "congelava" no Qt** (NFS numa máquina com EndeavourOS: com
+/// qualquer escolha fora do automático, imagem e som paravam e a janela seguia respondendo). Não
+/// se reproduziu, e a suspeita é o jogo rodar abaixo do tempo real nessa máquina: o automático é a
+/// única escolha que pula quadro quando o jogo atrasa. Quando o jogo anda menos da metade do que o
+/// ritmo pede, a linha do registro diz com que escolhas, a que velocidade e quanto custou cada
+/// quadro — o que separa "lento demais" de "parado de verdade".
+#[derive(Debug, Clone, Copy, Default)]
+struct VigiaDaVelocidade {
+    /// O começo da janela de medida: o instante real e o relógio virtual.
+    inicio: Option<(Instant, u64)>,
+    /// A última volta, para ver um buraco — pausa, rewind, janela arrastada — e recomeçar.
+    ultima: Option<Instant>,
+    /// Voltas na janela, e quantas delas o jogo estava adiantado.
+    voltas: u32,
+    adiantadas: u32,
+    /// Se o aviso de lento já saiu e espera a recuperação.
+    lento: bool,
+}
+
+/// A janela da vigia, em tempo real.
+const JANELA_DA_VIGIA: Duration = Duration::from_secs(1);
 
 /// A constante de tempo da média da velocidade que o som segue, em segundos. Meio segundo é o
 /// mesmo [`SPEED_WINDOW_MS`] que o painel usa: curto para acompanhar a troca de cena, longo para
@@ -685,6 +720,8 @@ impl Session {
             proporcao: Some(1.0),
             pulo: PuloDaSessao::default(),
             som_do_avanco: SomDoAvanco::default(),
+            som_congelado: false,
+            vigia: VigiaDaVelocidade::default(),
             turbo: TurboDaSessao::default(),
             stopped: None,
             window,
@@ -717,7 +754,78 @@ impl Session {
     pub fn anda(&mut self, budget: Duration, ritmo: &Ritmo) -> Step {
         let passo = self.anda_sem_som(budget, ritmo);
         self.acompanha_o_som(ritmo);
+        self.vigia(ritmo, passo);
         passo
+    }
+
+    /// Diz no registro quando o jogo anda menos da metade do que o ritmo pede, e quando volta.
+    /// Ver [`VigiaDaVelocidade`].
+    fn vigia(&mut self, ritmo: &Ritmo, passo: Step) {
+        let agora = Instant::now();
+        let relogio = u64::from(self.machine.clock_ms());
+        let vigia = &mut self.vigia;
+        let buraco = vigia
+            .ultima
+            .is_none_or(|ultima| (agora - ultima).as_secs_f64() > LACUNA_DO_SOM_S);
+        vigia.ultima = Some(agora);
+        // Sem freio não há meta para ficar para trás; parado, não há jogo.
+        let Some(alvo) = ritmo.proporcao.filter(|_| passo != Step::Stopped) else {
+            vigia.inicio = None;
+            return;
+        };
+        if buraco {
+            *vigia = VigiaDaVelocidade {
+                inicio: Some((agora, relogio)),
+                ultima: Some(agora),
+                lento: vigia.lento,
+                ..VigiaDaVelocidade::default()
+            };
+            return;
+        }
+        vigia.voltas += 1;
+        if passo == Step::Ahead {
+            vigia.adiantadas += 1;
+        }
+        let Some((inicio, relogio_inicio)) = vigia.inicio else {
+            vigia.inicio = Some((agora, relogio));
+            return;
+        };
+        let passou = agora - inicio;
+        if passou < JANELA_DA_VIGIA {
+            return;
+        }
+        let velocidade = relogio.saturating_sub(relogio_inicio) as f64 / passou.as_millis() as f64;
+        let fracao = velocidade / f64::from(alvo);
+        let ms = |d: Duration| d.as_secs_f64() * 1000.0;
+        if fracao < 0.5 && !vigia.lento {
+            vigia.lento = true;
+            crate::registro!(
+                crate::registro::Nivel::Aviso,
+                "velocidade",
+                "o jogo andou {:.0}% do pedido no último segundo ({velocidade:.2}x de {alvo}x): \
+                 frameskip {:?}, meia apresentação {}, quadro desenhado {:.1} ms, pulado {:.1} ms, \
+                 {} volta(s), {} adiantada(s)",
+                fracao * 100.0,
+                ritmo.frameskip,
+                ritmo.meia_apresentacao,
+                ms(self.pulo.duracao_desenhado),
+                ms(self.pulo.duracao_pulado),
+                vigia.voltas,
+                vigia.adiantadas
+            );
+        } else if fracao >= 0.9 && vigia.lento {
+            vigia.lento = false;
+            crate::registro!(
+                crate::registro::Nivel::Informacao,
+                "velocidade",
+                "o jogo voltou a {:.0}% do pedido ({velocidade:.2}x), com frameskip {:?}",
+                fracao * 100.0,
+                ritmo.frameskip
+            );
+        }
+        vigia.inicio = Some((agora, relogio));
+        vigia.voltas = 0;
+        vigia.adiantadas = 0;
     }
 
     /// O som acompanha a velocidade que o jogo **alcançou**, e não a pedida.
@@ -727,18 +835,36 @@ impl Session {
     /// aos estalos. A velocidade medida, numa média de meio segundo, mantém os dois juntos; ela
     /// oscila de quadro leve para quadro pesado, e a média é o que impede a altura de tremer.
     ///
+    /// **A média parte da proporção pedida, e não de 1x.** Partindo de 1x, ela levava um segundo e
+    /// meio para chegar perto dos 3x: o jogo acelerava na hora — medido no Action Hero 3D, 2,8x
+    /// já nos primeiros 100 ms —, e o som e o rótulo subiam devagar atrás dele, e o fast-forward
+    /// parecia gradual. Partindo do pedido, os dois saltam junto com o jogo, e a média só desce
+    /// quando o host não acompanha. Do segundo aperto em diante, com a mesma proporção, ela parte
+    /// de onde parou da última vez: no mesmo Action Hero a 10x o host chega a 6,7x, e partir de 10
+    /// a cada aperto fazia a altura escorregar por um segundo e meio. O sem limite não tem pedido:
+    /// parte da última vez, ou da primeira medida.
+    ///
     /// A 1x o som fica em exatamente 1: a medida oscila em torno disso, e seguir a oscilação
     /// desafinaria a música de quem nem está avançando.
     fn acompanha_o_som(&mut self, ritmo: &Ritmo) {
         let agora = Instant::now();
         let relogio = u64::from(self.machine.clock_ms());
         let som = &mut self.som_do_avanco;
-        let alvo = match ritmo.proporcao {
-            Some(1.0) => {
-                som.media = 1.0;
-                som.ultima = None;
-                1.0
+        if som.pedida != Some(ritmo.proporcao) {
+            if let (Some(pedida), Some(media)) = (som.pedida, som.media)
+                && pedida != Some(1.0)
+            {
+                som.lembrada = Some((pedida, media));
             }
+            som.pedida = Some(ritmo.proporcao);
+            som.media = match som.lembrada {
+                Some((pedida, media)) if pedida == ritmo.proporcao => Some(media),
+                _ => ritmo.proporcao.map(f64::from),
+            };
+            som.ultima = None;
+        }
+        let alvo = match ritmo.proporcao {
+            Some(1.0) => 1.0,
             _ => {
                 if let Some((antes, relogio_antes)) = som.ultima {
                     let dt = (agora - antes).as_secs_f64();
@@ -747,11 +873,16 @@ impl Session {
                     if dt > 0.0 && dt <= LACUNA_DO_SOM_S {
                         let instante = relogio.saturating_sub(relogio_antes) as f64 / 1000.0 / dt;
                         let peso = dt / (MEDIA_DO_SOM_S + dt);
-                        som.media += (instante - som.media) * peso;
+                        som.media = Some(match som.media {
+                            Some(media) => media + (instante - media) * peso,
+                            None => instante,
+                        });
                     }
                 }
                 som.ultima = Some((agora, relogio));
-                som.media.clamp(0.25, f64::from(crate::velocidade::Avanco::MAIOR) + 2.0)
+                som.media
+                    .unwrap_or(1.0)
+                    .clamp(0.25, f64::from(crate::velocidade::Avanco::MAIOR) + 2.0)
             }
         };
         som.abafado_pelo_ritmo = ritmo.abafa_o_som;
@@ -1284,8 +1415,10 @@ impl Session {
         }
         match crate::audio::Output::open(level, false) {
             Ok(output) => {
-                // A saída nova nasce em 1x e audível: o que foi entregue à anterior não vale.
+                // A saída nova nasce em 1x e audível: o que foi entregue à anterior não vale. A
+                // pausa, sim: trocar o volume com o jogo pausado não pode soltar a música.
                 self.som_do_avanco.enviado = None;
+                output.mixer().congela(self.som_congelado);
                 self.machine.set_audio(Some(output.mixer()));
                 self.audio = Some(output);
                 None
@@ -1508,6 +1641,34 @@ impl Session {
         if let Some(audio) = &self.audio {
             audio.mixer().define_avanco(ritmo, abafado);
         }
+    }
+
+    /// Para o som onde ele está, ou o solta: é a pausa da janela. Ver
+    /// [`crate::audio::Mixer::congela`].
+    ///
+    /// Diferente do [`Session::cala`]: calado, o som corre sem sair; congelado, ele espera o jogo.
+    pub fn congela_o_som(&mut self, congelado: bool) {
+        if self.som_congelado == congelado {
+            return;
+        }
+        self.som_congelado = congelado;
+        #[cfg(feature = "audio")]
+        if let Some(audio) = &self.audio {
+            audio.mixer().congela(congelado);
+        }
+    }
+
+    /// A velocidade que o jogo alcança, em vezes a do console, pela mesma média que o som segue
+    /// fora de 1x; a 1x, ou antes da primeira medida do sem limite, a da [`Session::sample`].
+    ///
+    /// É o número do rótulo ▶▶. A amostra mede janelas de meio segundo, e no aperto do
+    /// fast-forward mostrava 1x subindo até o pedido. Ver [`Session::acompanha_o_som`].
+    pub fn velocidade_alcancada(&self) -> f32 {
+        let media = match self.som_do_avanco.pedida {
+            Some(Some(1.0)) | None => None,
+            Some(_) => self.som_do_avanco.media,
+        };
+        media.map_or(self.sample.speed as f32 / 100.0, |media| media as f32)
     }
 
     /// Assinatura do conteúdo da tela, para o frontend evitar reenvio de quadro repetido.
@@ -1892,6 +2053,8 @@ pub(crate) mod tests {
             proporcao: Some(1.0),
             pulo: PuloDaSessao::default(),
             som_do_avanco: SomDoAvanco::default(),
+            som_congelado: false,
+            vigia: VigiaDaVelocidade::default(),
             turbo: TurboDaSessao::default(),
             stopped: None,
             window,
@@ -1983,6 +2146,88 @@ pub(crate) mod tests {
         let visto = sessao.machine.pad_da_porta(0);
         assert!(!visto.is_down(b1), "sem turbo, volta ao cru");
         assert!(visto.is_down(up));
+    }
+
+    /// O jogo vê o HOME como `Back` e `Start` juntos, e soltá-lo solta os dois. Ver
+    /// [`Pad::com_o_home_nos_dois`].
+    #[test]
+    fn o_jogo_ve_o_home_como_back_e_start() {
+        let mut sessao = sessao_minima_para_save_state();
+        let mut home = Pad::default();
+        home.press(crate::input::HOME, true);
+        sessao.set_port_pad(0, home);
+        let visto = sessao.machine.pad_da_porta(0);
+        assert!(visto.is_down(crate::input::HOME) && visto.is_down(crate::input::START));
+
+        sessao.set_port_pad(0, Pad::default());
+        let visto = sessao.machine.pad_da_porta(0);
+        assert!(!visto.is_down(crate::input::HOME) && !visto.is_down(crate::input::START));
+    }
+
+    /// O fast-forward começa na proporção pedida: a média do som e do rótulo não sobe de 1x aos
+    /// poucos. Sem pedido — o sem limite —, ela espera a primeira medida.
+    #[test]
+    fn o_avanco_comeca_na_proporcao_pedida() {
+        let mut sessao = sessao_minima_para_save_state();
+        assert_eq!(sessao.velocidade_alcancada(), 0.0, "a 1x vale a amostra, ainda vazia");
+
+        let tres = Ritmo { proporcao: Some(3.0), ..Ritmo::CONSOLE };
+        sessao.acompanha_o_som(&tres);
+        assert_eq!(sessao.velocidade_alcancada(), 3.0);
+        assert_eq!(sessao.som_do_avanco.enviado, Some((3.0, false)));
+
+        // Voltar a 1x zera a média, e o pedido seguinte parte dele de novo.
+        sessao.acompanha_o_som(&Ritmo::CONSOLE);
+        assert_eq!(sessao.som_do_avanco.enviado, Some((1.0, false)));
+        let dez = Ritmo { proporcao: Some(10.0), ..Ritmo::CONSOLE };
+        sessao.acompanha_o_som(&dez);
+        assert_eq!(sessao.velocidade_alcancada(), 10.0);
+
+        // O próximo aperto com a mesma proporção parte de onde ela parou.
+        sessao.som_do_avanco.media = Some(6.5);
+        sessao.acompanha_o_som(&Ritmo::CONSOLE);
+        sessao.acompanha_o_som(&dez);
+        assert_eq!(sessao.velocidade_alcancada(), 6.5);
+        sessao.acompanha_o_som(&tres);
+        assert_eq!(sessao.velocidade_alcancada(), 3.0, "a lembrança é da proporção dela");
+
+        sessao.acompanha_o_som(&Ritmo::SEM_FREIO);
+        assert_eq!(sessao.som_do_avanco.media, None, "sem limite não tem por onde começar");
+    }
+
+    /// Um segundo sem o relógio andar, a 1x, é "lento"; um buraco entre as voltas — a pausa, o
+    /// rewind — recomeça a medida sem acusar nada; e sem freio não há meta.
+    #[test]
+    fn a_vigia_acusa_o_jogo_parado_e_nao_a_pausa() {
+        let mut sessao = sessao_minima_para_save_state();
+        let relogio = u64::from(sessao.machine.clock_ms());
+        let agora = Instant::now();
+
+        sessao.vigia = VigiaDaVelocidade {
+            inicio: Some((agora - Duration::from_millis(1100), relogio)),
+            ultima: Some(agora - Duration::from_millis(16)),
+            ..VigiaDaVelocidade::default()
+        };
+        sessao.vigia(&Ritmo::CONSOLE, Step::Running);
+        assert!(sessao.vigia.lento, "um segundo parado a 1x não foi acusado");
+        assert_eq!(sessao.vigia.voltas, 0, "a janela não recomeçou");
+
+        // A última volta foi há um segundo: é buraco, e não lentidão.
+        sessao.vigia = VigiaDaVelocidade {
+            inicio: Some((agora - Duration::from_millis(1100), relogio)),
+            ultima: Some(agora - Duration::from_secs(1)),
+            ..VigiaDaVelocidade::default()
+        };
+        sessao.vigia(&Ritmo::CONSOLE, Step::Running);
+        assert!(!sessao.vigia.lento, "a pausa foi acusada");
+
+        sessao.vigia = VigiaDaVelocidade {
+            inicio: Some((agora - Duration::from_millis(1100), relogio)),
+            ultima: Some(agora - Duration::from_millis(16)),
+            ..VigiaDaVelocidade::default()
+        };
+        sessao.vigia(&Ritmo::SEM_FREIO, Step::Running);
+        assert!(!sessao.vigia.lento && sessao.vigia.inicio.is_none(), "sem freio não tem meta");
     }
 
     #[test]

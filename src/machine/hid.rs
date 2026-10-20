@@ -381,6 +381,7 @@ impl<C: CpuBackend> Machine<C> {
 
     /// O mesmo, para uma porta escolhida.
     pub fn set_port_pad(&mut self, porta: usize, pad: Pad) {
+        let pad = pad.com_o_home_nos_dois();
         if porta >= input::PORTAS || pad == self.pads[porta] {
             return;
         }
@@ -587,8 +588,8 @@ impl<C: CpuBackend> Machine<C> {
     /// Entrega as teclas enfileiradas.
     ///
     /// O evento é o `EVT_KEY` do BREW, com o código virtual no `wParam`. A soltura vai como
-    /// `EVT_KEY + 1`, que é o `EVT_KEY_RELEASE`: um jogo que só olhe o aperto ignora a segunda
-    /// sem prejuízo, e um que conte as duas precisa das duas.
+    /// [`input::EVT_KEY_RELEASE`]: um jogo que só olhe o aperto ignora a segunda sem prejuízo, e
+    /// um que conte as duas precisa das duas.
     ///
     /// **Quem recebe tecla primeiro é o widget, não o aplicativo.** No BREW é a extensão de
     /// interface que roteia a entrada para quem está em foco, e o tratador do formulário de
@@ -621,7 +622,7 @@ impl<C: CpuBackend> Machine<C> {
             }
             let evento = match down {
                 true => input::EVT_KEY,
-                false => input::EVT_KEY + 1,
+                false => input::EVT_KEY_RELEASE,
             };
             let mut tratado = false;
             // Com o painel de HTML em foco, as setas verticais são dele enquanto houver texto

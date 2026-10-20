@@ -287,6 +287,12 @@ impl<C: CpuBackend> Machine<C> {
         if let Some(tempo_pulado) = tempo_pulado {
             self.clock_us = tempo_pulado;
         }
+        // Com o relógio já no lugar: o som de cada efeito volta do ponto que ele marca.
+        self.refaz_o_som();
+        // A textura da placa não volta com o estado: até a próxima troca de buffer, a imagem é a
+        // da tela restaurada. Ver [`Machine::quadro_na_placa`].
+        self.placa_sem_o_quadro = true;
+        self.gl_quadro_pendente = false;
         Ok(())
     }
 }
@@ -1156,7 +1162,11 @@ impl<C: CpuBackend> Machine<C> {
             self.current_applet,
             self.applet_class,
             self.egl_next_handle,
-            self.gles_next_name,
+            // Era o contador de nomes do OpenGL ES. Vai o maior nome em uso: um motor antigo que
+            // abra este estado continua a contar dali, sem repetir um nome vivo.
+            self.nomes_de_textura
+                .maior()
+                .max(self.nomes_de_buffer.maior()),
             self.egl_swaps,
             self.gl_clears,
             self.unpack_alignment,
@@ -1186,6 +1196,8 @@ impl<C: CpuBackend> Machine<C> {
         numeros.push(self.ativacao_pendente.unwrap_or((0, 0)).0);
         numeros.push(self.ativacao_pendente.unwrap_or((0, 0)).1);
         secoes.poe_u32s("esc.numeros", numeros);
+        secoes.poe_u32s("esc.nomes_de_textura", self.nomes_de_textura.em_uso());
+        secoes.poe_u32s("esc.nomes_de_buffer", self.nomes_de_buffer.em_uso());
 
         let mut conjuntos: Vec<u32> = self.installed_applets.iter().copied().collect();
         conjuntos.sort_unstable();
@@ -1311,7 +1323,17 @@ impl<C: CpuBackend> Machine<C> {
         let current_applet = numeros[6];
         let applet_class = numeros[7];
         let egl_next_handle = numeros[8];
-        let gles_next_name = numeros[9];
+        let maior_nome_antigo = numeros[9];
+        // Um estado de antes do [`super::gl::NomesGl`] só tem o contador: tudo o que ele já
+        // entregou fica em uso, que é exatamente o que o contador garantia.
+        let nomes = |secao: &str| -> Result<super::gl::NomesGl, Erro> {
+            Ok(match leitor.secao(secao) {
+                Some(_) => super::gl::NomesGl::de(leitor.u32s(secao)?),
+                None => super::gl::NomesGl::de(1..=maior_nome_antigo),
+            })
+        };
+        let nomes_de_textura = nomes("esc.nomes_de_textura")?;
+        let nomes_de_buffer = nomes("esc.nomes_de_buffer")?;
         let egl_swaps = numeros[10];
         let gl_clears = numeros[11];
         let unpack_alignment = numeros[12];
@@ -1395,7 +1417,8 @@ impl<C: CpuBackend> Machine<C> {
         self.current_applet = current_applet;
         self.applet_class = applet_class;
         self.egl_next_handle = egl_next_handle;
-        self.gles_next_name = gles_next_name;
+        self.nomes_de_textura = nomes_de_textura;
+        self.nomes_de_buffer = nomes_de_buffer;
         self.egl_swaps = egl_swaps;
         self.gl_clears = gl_clears;
         self.unpack_alignment = unpack_alignment;
@@ -2102,7 +2125,8 @@ impl<C: CpuBackend> Machine<C> {
 /// - **`vfs`** e **`resources`**: são **cache do que está em disco** (o sistema de arquivos do
 ///   aparelho e os recursos do pacote). Derrubá-los faz recarregar, e é o certo: gravar seria
 ///   duplicar o pacote dentro do save state;
-/// - **`audio`**: o `Mixer` do host. O que o jogo pediu está nos `sounds`, e o mixer se refaz;
+/// - **`audio`**: o `Mixer` do host. O que o jogo pediu está nos `media`, e o mixer se refaz deles
+///   ao restaurar: ver [`Machine::refaz_o_som`];
 /// - **`ignored_gl`**, **`api_time`**, **`profiling_api`**, **`tracing`**, **`fault_*`**: instrumento
 ///   e diagnóstico, pela mesma razão de sempre — salvar faria dois save states legitimamente
 ///   diferentes.
@@ -2979,6 +3003,42 @@ mod tests {
         depois.clock_us = 90_000_000;
         depois.restaura_estado(&antigo).expect("o estado antigo carrega");
         assert_eq!(depois.clock_us, 90_000_000);
+    }
+
+    /// Os nomes do OpenGL ES em uso voltam com o estado, e o próximo `glGen*` não repete um nome
+    /// vivo. Um estado antigo, só com o contador, deixa em uso tudo o que o contador entregou.
+    #[test]
+    fn os_nomes_do_gl_voltam_com_o_estado() {
+        let mut antes = maquina();
+        antes.nomes_de_textura = super::super::gl::NomesGl::de([1, 2, 5]);
+        antes.nomes_de_buffer = super::super::gl::NomesGl::de([3]);
+        let arquivo = antes.grava_estado();
+
+        let mut depois = maquina();
+        depois.restaura_estado(&arquivo).expect("restaurou");
+        assert_eq!(depois.nomes_de_textura, antes.nomes_de_textura);
+        assert_eq!(depois.nomes_de_buffer, antes.nomes_de_buffer);
+        assert_eq!(
+            depois.nomes_de_textura.gera(),
+            3,
+            "o buraco do 3 é o menor livre"
+        );
+
+        let leitor = crate::save_state::Leitor::abre(&arquivo).unwrap();
+        let sem_as_secoes: Vec<(String, Vec<u8>)> = leitor
+            .nomes()
+            .into_iter()
+            .filter(|nome| !nome.starts_with("esc.nomes_de_"))
+            .map(|nome| (nome.to_string(), leitor.secao(nome).unwrap().to_vec()))
+            .collect();
+        let antigo = crate::save_state::escreve(&sem_as_secoes);
+        let mut depois = maquina();
+        depois
+            .restaura_estado(&antigo)
+            .expect("o estado antigo carrega");
+        // O campo do contador guarda o maior nome em uso, 5: do 1 ao 5 fica tudo reservado.
+        assert_eq!(depois.nomes_de_textura.gera(), 6);
+        assert_eq!(depois.nomes_de_buffer.gera(), 6);
     }
 
     /// O arquivo da Machine inclui o estado do rasterizador, e nao apenas a prova isolada do
@@ -3905,6 +3965,73 @@ mod tests {
         assert_eq!(midia.buffer, (0x12, 0x13));
         assert_eq!(midia.ends_us, 0x2_0000_000b);
         assert_eq!(midia.notify.function, 0x1000_7000);
+    }
+
+    /// **Depois de restaurar, a imagem é a da tela, e não a da placa.** A textura da placa não
+    /// entra no estado e volta vazia; até a próxima troca de buffer, a janela mostra a tela
+    /// restaurada. Um quadro pendente de antes do `Load` também não pode cair por cima dela.
+    #[test]
+    fn restaurar_deixa_a_imagem_na_tela_ate_a_proxima_troca() {
+        let mut maquina = maquina();
+        let arquivo = maquina.grava_estado();
+        maquina.gl_quadro_pendente = true;
+        maquina.restaura_estado(&arquivo).expect("restaurou");
+        assert!(maquina.placa_sem_o_quadro, "a janela mostraria a textura vazia da placa");
+        assert!(!maquina.gl_quadro_pendente, "o quadro de antes do Load cairia por cima da tela");
+        assert!(maquina.quadro_na_placa().is_none());
+    }
+
+    /// **O mixer volta ao que o estado restaurado toca.** O que ele tocava depois do ponto salvo
+    /// sai — um laço ficaria para sempre, porque o jogo restaurado não sabe dele —, e o que o
+    /// estado diz que toca volta: o laço do começo, o efeito do ponto em que o relógio o deixou.
+    #[test]
+    fn restaurar_refaz_o_som_do_estado() {
+        let som = std::sync::Arc::new(crate::audio::wav::Sound {
+            rate: 1_000,
+            channels: 1,
+            samples: vec![0.5; 1_000],
+        });
+        let mut maquina = maquina();
+        let mixer = crate::audio::Mixer::silent(1_000);
+        maquina.set_audio(Some(mixer.clone()));
+        maquina.cargas_de_midia.insert(
+            7,
+            crate::machine::CargaDeMidia {
+                som: Some(som.clone()),
+                silencio_us: None,
+            },
+        );
+        let agora = maquina.now_us();
+        let tocando = |repeat, ends_us| MediaState {
+            state: crate::machine::MM_STATE_PLAY,
+            carga: 7,
+            repeat,
+            ends_us,
+            ..MediaState::default()
+        };
+        // A música em laço e um efeito de um segundo com 0,4 s por tocar.
+        maquina.media.insert(0xa00, tocando(0, u64::MAX));
+        maquina.media.insert(0xb00, tocando(1, agora + 400_000));
+        // Um efeito que já acabou para o relógio não volta.
+        maquina.media.insert(0xc00, tocando(1, agora));
+        let arquivo = maquina.grava_estado();
+
+        // Depois do ponto salvo, outra música começou noutra voz.
+        mixer.play(0xd00, som, 1.0, 0);
+        maquina.restaura_estado(&arquivo).expect("restaurou");
+
+        assert!(!mixer.is_playing(0xd00), "a música de depois do ponto continuou tocando");
+        assert!(mixer.is_playing(0xa00), "o laço do estado não voltou");
+        assert!(!mixer.is_playing(0xc00), "um efeito já acabado voltou a tocar");
+        let mut quadros = 0usize;
+        while mixer.is_playing(0xb00) && quadros < 5_000 {
+            let _ = mixer.render(10);
+            quadros += 10;
+        }
+        assert!(
+            quadros.abs_diff(400 + 64) <= 20,
+            "o efeito devia tocar só os 0,4 s que faltavam, e tocou {quadros} quadros"
+        );
     }
 
     /// **O resto: escalares, GL, IGraphics, teclados e threads** — e a conta de campos certa.

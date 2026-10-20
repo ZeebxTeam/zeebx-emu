@@ -148,6 +148,31 @@ Com o rasterizador da placa ligado, a aba gráfica oferece **resolução interna
 O rasterizador de software ignora a opção: o custo cresceria com o quadrado do fator. Jogos 2D não
 ganham nada, porque a imagem já sai pronta em 640×480.
 
+### A frente: o quadro apresentado
+
+O destino da placa é um buffer só, e a janela o lia vivo — como textura grande, ou pela tela da
+CPU na leitura adiada. Mas uma volta da janela pode acabar no meio do quadro seguinte, quando o prazo
+dela vence: a janela pegava o destino depois do `glClear` e antes dos desenhos. O Ultimate Chess 3D,
+que reenvia linhas de textura (`glTexSubImage2D`) a cada quadro e por isso raramente acaba a volta
+na troca, piscava entre a cena e o preto em 3x, e na 1x, em que a tela da CPU lê o quadro, ficava
+preto. Medido com o shader pintando de verde e a limpeza de vermelho: logo depois de cada desenho, o
+destino estava inteiro verde, e a leitura da tela voltava vermelha.
+
+No aparelho o `eglSwapBuffers` troca a frente com o fundo. Aqui, a primeira escrita depois de uma
+troca — `glClear`, um lote, o 2D importado — copia antes o destino para a **frente**
+(`GpuState::protege_a_frente`), e até a troca seguinte quem apresenta lê a frente: a textura grande,
+a cópia para a tela da CPU e o quadro grande dos screenshots. O `glReadPixels` do jogo continua lendo
+o destino, que é o fundo. A cópia é sob demanda: na troca nada se copia, porque o destino é o quadro
+apresentado, e uma volta que acaba na troca não paga cópia nenhuma.
+
+A troca é marcada no `Rasterizador::fecha_quadro`, que só o `eglSwapBuffers` chama
+(`GpuState::troca`), e não no `descarrega_o_desenho`. Este também é chamado pelo save state, que o
+rewind tira a cada segundo no meio do quadro. Marcada lá, a troca contava como feita logo depois do
+`glClear`: a frente era largada, a janela mostrava o destino recém-limpo, e o xadrez piscava preto
+uma vez por segundo, a cada 61 quadros. Com antialias, o `resolve` daquela hora ainda levava à
+textura da janela o quadro pela metade. Achado com a mesma sonda dentro da janela Qt: a troca
+apresentava 0 pixels acesos, e a limpeza ficava separada dos desenhos que vinham depois dela.
+
 ## Proporção larga, experimental
 
 `graphics.proporcao` (Nativa, 16:9, 16:10, a da janela), só no rasterizador da placa. Não estica:

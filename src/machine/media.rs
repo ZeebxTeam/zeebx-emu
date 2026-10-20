@@ -1157,6 +1157,52 @@ impl<C: CpuBackend> Machine<C> {
         Ok(())
     }
 
+    /// Põe o mixer de acordo com um save state recém-restaurado.
+    ///
+    /// **O mixer não entra no save state**, e o que ele tocava era do instante de antes do `Load`.
+    /// Sem isto, voltar no rewind deixava a música da cena seguinte tocando por cima da
+    /// restaurada — e para sempre, quando era um laço: o jogo restaurado não sabe que aquela voz
+    /// existe, e nunca a manda parar. Medido no Action Hero 3D.
+    ///
+    /// O que o estado diz que toca volta a tocar: um efeito, do ponto em que o relógio virtual o
+    /// deixou; um laço, do começo, porque o instante em que ele começou não fica guardado; um
+    /// fluxo, vazio, que o [`Machine::bombeia_fluxos_pcm`] volta a encher. Um som cujo cache não
+    /// está mais na memória — o estado veio de outra sessão — fica calado até o jogo tocá-lo de
+    /// novo, como já ficava. Os buffers vivos não voltam: ver [`Machine::bombeia_buffers_vivos`].
+    pub(super) fn refaz_o_som(&mut self) {
+        self.buffers_vivos.clear();
+        let Some(mixer) = self.audio.clone() else {
+            return;
+        };
+        mixer.para_tudo();
+        let agora = self.now_us();
+        let tocando: Vec<(u32, MediaState)> = self
+            .media
+            .iter()
+            .filter(|(_, state)| state.state == MM_STATE_PLAY && agora < state.ends_us)
+            .map(|(&this, &state)| (this, state))
+            .collect();
+        for (this, state) in tocando {
+            if let Some(fluxo) = self.fluxos_pcm.get(&this) {
+                if fluxo.tocando {
+                    mixer.open_stream(this, fluxo.taxa, fluxo.canais, state.gain());
+                }
+                continue;
+            }
+            let Some(som) = self.carga_do(this).and_then(|carga| carga.som.clone()) else {
+                continue;
+            };
+            let desde_us = match state.repeat {
+                0 => 0,
+                vezes => {
+                    let duracao_us = som.frames() as u64 * 1_000_000 / u64::from(som.rate.max(1));
+                    (duracao_us * u64::from(vezes)).saturating_sub(state.ends_us - agora)
+                }
+            };
+            mixer.play_desde(this, som, state.gain(), state.repeat, desde_us);
+        }
+    }
+
     /// Enfileira o aviso de fim dos sons que já terminaram.
     pub(super) fn poll_media(&mut self) -> Result<(), CpuError> {
         let now = self.now_us();

@@ -17,16 +17,17 @@ marcada aqui como feita.
 | 5 — configurações | feita: as seis abas, o desenho do controle com clique pela silhueta, captura, eixos, Boomerang, Discord e atualizações |
 | 6 — janelas auxiliares | feita: saves, log da execução, aviso de abertura e aviso de versão nova |
 | 7 — conferência | feita: as chaves de texto das duas interfaces comparadas, teste de que toda chave usada existe, e o que faltava no Qt (ícone, `app_id`, tamanhos mínimos, tela cheia na biblioteca) |
-| 8 — corte do eframe | segunda etapa feita: a feature `ui-qt` vem ligada, o Qt é a interface padrão e o egui fica em `zeebx egui`. O corte espera uma release com o Qt |
+| 8 — corte do eframe | feita: a interface do egui saiu depois da 0.4.2. O `eframe` e o `ui::App` saíram do núcleo, e a linha de comando foi para `frontends/cli` (binário `zeebx`, sem Qt) |
 | 9 — build e empacotamento | feita: o `release.yml` monta o AppImage, o NSIS e o `.dmg` com o Qt embutido, e o `.deb` com o Qt do sistema; o `ci.yml` instala o Qt nos seis alvos; o `qt.yml` faz o mesmo que a release e abre cada instalador antes de sair |
 
 **Os dois frontends foram separados depois da fase 9.** O Qt não é mais uma feature do standalone
 do egui: ele mora em `frontends/qt-standalone` (pacote `zeebx-standalone-qt`, binário `zeebx-qt`),
 e o egui voltou a ser o único conteúdo de `frontends/egui-standalone` (pacote
 `zeebx-standalone-egui`, binário `zeebx`), que antes se chamava `classical-standalone`. A feature
-`ui-qt`, o `zeebx qt` e o `zeebx egui` deixaram de existir. **O frontend Qt ficou como legado**:
-saiu do `ci.yml` e do `release.yml`, e só o `qt.yml`, à mão, ainda o compila. O texto das fases abaixo descreve
-o arranjo da época, com a feature.
+`ui-qt`, o `zeebx qt` e o `zeebx egui` deixaram de existir. Por um tempo o Qt ficou como legado,
+compilado só pelo `qt.yml`; depois voltou à release como a interface principal, e a 0.4.0, a 0.4.1
+e a 0.4.2 saíram com as duas. **Depois da 0.4.2 a interface do egui saiu** (fim da fase 8). O texto
+das fases abaixo descreve o arranjo de cada época, com a feature.
 
 ## Onde o egui está de verdade
 
@@ -517,10 +518,34 @@ sobra é:
 
 1. a fase 9 — feita;
 2. a licença trocada e a feature ligada por padrão — feito;
-3. uma release com o Qt padrão e o `zeebx egui` ainda lá;
-4. na seguinte, o corte: saem o `eframe`, o `ui::App`, o `zeebx egui` e os caminhos `cfg` da
-   feature, e são reescritos o [10](10-interface.md), o `ARCHITECTURE.md` e os comentários do
-   `video/`.
+3. uma release com o Qt padrão e o `zeebx egui` ainda lá — foram três, da 0.4.0 à 0.4.2, já com
+   os dois frontends separados;
+4. na seguinte, o corte — feito, abaixo.
+
+**A terceira etapa, o corte, feita depois da 0.4.2.** O que saiu:
+
+- **o `frontends/egui-standalone`**, com a janela e os instaladores dele, e o job `standalone-egui`
+  do `release.yml`. Quem tem a interface do egui instalada fica na 0.4.2: o atualizador dela lê o
+  `latest-egui.json`, que deixou de ser publicado, e as notas da versão explicam a troca;
+- **o `eframe`**, da feature `desktop` e do `Cargo.lock` — e com ele o `winit`, o `wgpu` e o `naga`,
+  que só ele puxava —, o `ui::App` (`src/ui/app.rs`, `src/ui/app/vitrine.rs`) e os
+  `ModoDaJanela::no_construtor` e `comandos`, que só montavam a janela dele;
+- **do `.deb` da Qt**, o `libxcursor1`, o `libxrandr2`, o `libxi6` e o `libwayland-client0`: eram do
+  `eframe`, e o binário não os linka mais (conferido com `ldd`).
+
+**A linha de comando ficou, num pacote próprio.** Ela morava no binário do egui — `run`, `sessao`,
+`bench`, `info`, `controles`, `wiimote` —, e o CI, os scripts e a documentação a usam. Agora é o
+`frontends/cli` (pacote `zeebx-cli`), com o mesmo binário `zeebx` e sem Qt, para compilar numa
+máquina ou num contêiner sem ele. O `ci.yml` a compila nos seis alvos, o que mantém o núcleo e os
+testes dele cobertos também nos dois ARM64, onde o Qt não é montado; na release, os testes do
+núcleo foram para o job do headless, que era o que os rodava junto com o egui. A interface
+continua `zeebx-qt`: é o nome a que o atalho, o `.desktop` e o atualizador de quem a tem instalada
+apontam.
+
+**O `egui` ficou no núcleo, sem janela.** São os nomes de tecla do `egui::Key`, que é o formato
+gravado no `settings.json` e o que a ponte Qt compara, e o [`Pintor`](../../src/ui/gpu.rs), que a
+janela do headless e o Android usam. O núcleo o reexporta (`zeebx::egui`), no lugar do
+`zeebx::eframe` de antes. O `rfd` também ficou: a Qt o usa para os seletores de pasta e arquivo.
 
 ### 9 — Build e empacotamento
 

@@ -185,3 +185,19 @@ A `strtoul` do C aceita `+` e `-` e, com `-`, devolve o número negado. Agora a 
 espaço inicial é o do `isspace` (`' '`, `\t`, `\n`, `\v`, `\f`, `\r`), não o do Unicode, que lido
 em Latin-1 contaria o `0xA0`. O `0` do prefixo octal na base 0 também passou a ser consumido. Com
 isso o Alice passa do idioma, do título e do menu e chega à fase.
+
+### O teto das strings, e o mapa cortado
+
+Chegar à fase não era jogá-la inteira. Na fase 2, a parte de baixo do cenário saía preta, e a
+Alice, levada pela fenda a uma sala, caía para sempre no vazio. O mesmo valia para o rasterizador
+de processador e para a placa: o jogo desenha por software, e o que faltava era o mapa.
+
+As fases são código Lua gerado por um editor (`AliceEditor's Lua Exporter`), dentro do
+`resources.pakz` — um pacote `PACK` de fluxos LZMA. O mapa de blocos de cada camada é uma string
+base64 de uma linha só, com entradas de 8 bytes (x, y, bloco, bandeiras) em ordem de linha: 15.426
+caracteres na fase 2, e 202.806 no `stage1-30`. O teto de leitura de string do emulador era de
+4.096 bytes, e o `strlen` devolvia 4.096 para todas elas. O jogo decodificava só o começo, e todo
+bloco depois da linha 29 da fase 2 sumia — o chão da sala fica nas linhas 56 a 61.
+
+O teto existe contra um ponteiro sem terminador, e a leitura vai em blocos até o zero: subir para
+1 MiB não muda o custo de uma string curta. Todas as fases do jogo têm linhas acima de 4.096.

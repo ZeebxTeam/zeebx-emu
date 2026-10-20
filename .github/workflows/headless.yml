@@ -58,7 +58,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      # Cache separado do `ci`: lá o perfil compila a biblioteca inteira com o eframe do desktop,
+      # Cache separado do `ci`: lá o perfil compila a biblioteca inteira com a linha de comando,
       # aqui o alvo é outro binário. Misturar as chaves é invalidar as duas o tempo todo.
       - uses: Swatinem/rust-cache@v2
         with:

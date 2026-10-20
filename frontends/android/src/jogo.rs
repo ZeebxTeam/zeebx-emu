@@ -52,6 +52,11 @@ impl Emulador {
             }
         }
         if !self.confirmando {
+            // Voltar um ponto refaz as texturas na placa, e a janela pintou no mesmo contexto
+            // desde o passo anterior: o mesmo aviso de antes de andar, logo abaixo.
+            if voltar && self.settings.velocidade.rewind.ligado {
+                sessao.retoma_o_contexto();
+            }
             let leitura =
                 self.rewind
                     .le(sessao, voltar, self.pausado, &self.settings.velocidade.rewind);
@@ -63,6 +68,9 @@ impl Emulador {
         // Com a pergunta na tela, em pausa ou voltando, o jogo fica parado — inclusive o relógio,
         // para ele não gastar o orçamento todo de uma vez quando voltar.
         let parado = self.confirmando || self.pausado || self.rewind.voltando();
+        // O som para junto, menos no rewind, que já o cala e troca pelo de cada ponto. Ver
+        // `Session::congela_o_som`.
+        sessao.congela_o_som(self.confirmando || self.pausado);
         if parado {
             self.avancando = false;
             self.ultimo = Instant::now();
@@ -328,6 +336,7 @@ impl Emulador {
         let mut fechar = false;
         let mut continuar = false;
         let mut alterna_pausa = false;
+        let mut reiniciar = false;
         let mut salvar_slot = None;
         let mut carregar_slot = None;
         let mut armar_sobrescrita = None;
@@ -380,6 +389,7 @@ impl Emulador {
             false => self.tr("play.pause").to_string(),
         };
         let parar_rotulo = self.tr("play.stop").to_string();
+        let reiniciar_rotulo = self.tr("play.restart").to_string();
         let mensagem = self.estado_mensagem.clone();
 
         egui::Window::new(titulo)
@@ -485,9 +495,12 @@ impl Emulador {
                     let seguir =
                         ui.add_sized([150.0, 48.0], egui::Button::new(&continuar_rotulo));
                     let pausa = ui.add_sized([110.0, 48.0], egui::Button::new(&pausa_rotulo));
+                    let recomeca =
+                        ui.add_sized([110.0, 48.0], egui::Button::new(&reiniciar_rotulo));
                     let parar = ui.add_sized([110.0, 48.0], egui::Button::new(&parar_rotulo));
                     continuar = seguir.clicked();
                     alterna_pausa = pausa.clicked();
+                    reiniciar = recomeca.clicked();
                     fechar = parar.clicked();
                     // **O mesmo primeiro foco das outras telas.** Sem ele esta janela não
                     // respondia a controle nenhum: o egui move o foco na direção da seta, mas só
@@ -579,6 +592,9 @@ impl Emulador {
             self.confirmando = false;
             self.estado_sobrescrever = None;
         }
+        if reiniciar {
+            self.reinicia();
+        }
         if fechar {
             self.fecha();
         }
@@ -650,7 +666,7 @@ impl Emulador {
             false => "◀◀".to_string(),
         });
         let avanco = (self.avancando)
-            .then(|| self.sessao.as_ref().map(|sessao| sessao.sample().speed as f32 / 100.0))
+            .then(|| self.sessao.as_ref().map(|sessao| sessao.velocidade_alcancada()))
             .flatten()
             .map(|alcancada| {
                 zeebx::velocidade::rotulo_do_avanco(

@@ -4,7 +4,8 @@ import QtQuick.Controls
 import zeebx
 
 // A biblioteca em grade: cartões em pé, na proporção das caixas que a Z-Wheel traz, quantos
-// couberem na largura. Ver `src/ui/app/vitrine.rs`, que desenha a mesma grade no egui.
+// couberem na largura. É a grade que a interface do egui tinha (`src/ui/app/vitrine.rs`, até a
+// 0.4.2).
 GridView {
     id: grade
 
@@ -36,6 +37,29 @@ GridView {
     Keys.onReturnPressed: if (escutando) abre(currentIndex)
     Keys.onEnterPressed: if (escutando) abre(currentIndex)
     Keys.onSpacePressed: if (escutando) abre(currentIndex)
+    // O X e o C são as configurações e os detalhes, como o b2 e o b3 do controle — no teclado de
+    // fábrica é onde eles ficam. A tecla Menu e o Shift+F10 abrem o menu do cartão escolhido,
+    // como o clique direito.
+    Keys.onPressed: (evento) => {
+        evento.accepted = false
+        if (!escutando || evento.isAutoRepeat || count === 0)
+            return
+        if (evento.key === Qt.Key_X) {
+            configura(currentIndex)
+        } else if (evento.key === Qt.Key_C) {
+            inspeciona(currentIndex)
+        } else if (evento.key === Qt.Key_Menu
+                   || (evento.key === Qt.Key_F10 && (evento.modifiers & Qt.ShiftModifier))) {
+            menuDoJogo.linha = currentIndex
+            if (currentItem)
+                menuDoJogo.popup(currentItem, currentItem.width / 2, currentItem.height / 2)
+            else
+                menuDoJogo.popup()
+        } else {
+            return
+        }
+        evento.accepted = true
+    }
 
     // Devolve `valor`, e faz a ligação depender das `versoes`: ver o `depende` do slider.
     function depende(versoes, valor) {
@@ -52,11 +76,11 @@ GridView {
         property int linha: -1
 
         MenuItem {
-            text: grade.tr("library.menu.configure")
+            text: grade.tr("library.menu.configure") + "  (X)"
             onTriggered: grade.configura(menuDoJogo.linha)
         }
         MenuItem {
-            text: grade.tr("library.menu.details")
+            text: grade.tr("library.menu.details") + "  (C)"
             onTriggered: grade.inspeciona(menuDoJogo.linha)
         }
     }

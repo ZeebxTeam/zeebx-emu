@@ -1,9 +1,9 @@
-# O frontend Qt (`frontends/qt-standalone`, binário `zeebx-qt`), **a interface principal**:
+# O frontend Qt (`frontends/qt-standalone`, binário `zeebx-qt`), **a interface do emulador**:
 # compila, testa, monta os instaladores nos três sistemas e abre cada um antes de sair. Roda à mão
 # pela aba Actions, e é chamado pelo `ci.yml` e pelo `release.yml` (`workflow_call`) — um lugar só
-# para os passos do Qt, em vez de três cópias que envelhecem cada uma de um jeito. O frontend do
-# egui (`frontends/egui-standalone`, binário `zeebx`) é outro pacote, legado, e compila nos jobs
-# próprios do `ci.yml` e do `release.yml`.
+# para os passos do Qt, em vez de três cópias que envelhecem cada uma de um jeito. A interface do
+# egui saiu depois da 0.4.2; a linha de comando (`frontends/cli`, binário `zeebx`) compila no job
+# próprio do `ci.yml`.
 #
 # Os pacotes saem como `zeebx-standalone-qt-<sistema>-<arquitetura>`, o nome que a página de
 # downloads (`docs/site.js`) reconhece como o desktop em Qt. O binário continua `zeebx-qt`.
@@ -94,7 +94,7 @@ jobs:
         with:
           key: qt-${{ matrix.nome }}-${{ matrix.sistema }}
 
-      # A mesma lista do `ci.yml`: o núcleo e a janela do egui continuam no binário. As `libxcb-*`
+      # A mesma lista do `ci.yml`, que é a do núcleo. As `libxcb-*`
       # são as dependências do plugin de plataforma do Qt (`libqxcb.so`), que o
       # `linuxdeploy-plugin-qt` precisa achar para levar ao AppImage; o `xvfb`, a tela virtual
       # em que o AppImage é aberto antes de sair como artefato.

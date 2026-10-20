@@ -13,8 +13,8 @@ android {
         // O AAudio, que é a saída de som do `cpal` no Android, chega no 26.
         minSdk = 26
         targetSdk = 35
-        versionCode = 5
-        versionName = "0.4.2"
+        versionCode = 6
+        versionName = "0.4.3"
         ndk {
             abiFilters += "arm64-v8a"
         }

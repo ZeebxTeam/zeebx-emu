@@ -53,3 +53,6 @@ frontends/switch/saida/
 # Xcode: estado local. O projeto em si (`project.pbxproj`) fica versionado.
 xcuserdata/
 *.xcuserstate
+
+# Wiki do GitHub: repositório próprio (zeebx-emu.wiki.git), clonado aqui só para edição.
+/wiki/
