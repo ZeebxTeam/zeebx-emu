@@ -10,6 +10,8 @@ que cada uma grava) não mudaram.
 Geral, Controles, Atalhos, Gráficos, Velocidade, Áudio e Depuração, cada uma com um ícone da
 Lucide ([27](27-moldura-da-janela.md#os-ícones)): `settings`, `gamepad-2`, `keyboard`, `monitor`,
 `gauge`, `volume-2` e `bug`. Os mesmos ícones foram para o menu Configurações da janela principal.
+Nas compilações com a feature `conquistas`, Conquistas entra antes de Depuração, com o `trophy`
+([25](25-conquistas.md#a-interface)); sem ela, a categoria e o item do menu somem.
 
 **A coluna mantém o `id: abas` e o `currentIndex` da `TabBar` de antes.** Quem abre a janela numa
 categoria (`abre(1)`, os itens do menu Configurações) e as páginas que leem o controle enquanto estão
@@ -20,7 +22,7 @@ As categorias não pegam o foco do teclado no clique, como os botões da barra d
 captura de teclas das páginas de controles e de atalhos precisa dele.
 
 No modo de um jogo só (as configurações próprias de um jogo), as categorias que não valem por jogo
-(Geral, Atalhos e Depuração) somem, e a coluna mostra só Controles, Gráficos, Velocidade e Áudio.
+(Geral, Atalhos, Conquistas e Depuração) somem, e a coluna mostra só Controles, Gráficos, Velocidade e Áudio.
 
 ## A explicação no rodapé
 
