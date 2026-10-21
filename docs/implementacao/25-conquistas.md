@@ -10,7 +10,7 @@ está no código e por quê.
 |---|---|---|
 | O rcheevos | `rcheevos-sys/` (crate) e `rcheevos-sys/rcheevos/` (submódulo do fork) | compila no Linux e no Android; Windows e macOS só pelo CI |
 | O cliente | `src/conquistas/`, feature `conquistas` | login, jogo, quadros, hardcore, progresso, HTTP |
-| A interface | `frontends/qt-standalone`, feature `conquistas` | aba, avisos, lista, detalhes |
+| A interface | `frontends/qt-standalone`, feature `conquistas` | categoria, menus, avisos, lista, detalhes |
 | O mapa de memória | `Mapa::provisorio` | **em aberto**, a combinar com o RA |
 | O hash | `rc_hash` do fork | MD5 do `.mod`; o PR ao rcheevos ainda não foi aberto |
 
@@ -132,9 +132,13 @@ jogo.
 | Fast-forward, turbo, frameskip, limite de 30 fps | permitidos: o limite de 30 fps não desacelera a lógica |
 | A ponte de rede (`src/ponte.rs`) | permitida: só deposita a resposta do servidor na memória do jogo, e vem desligada |
 
-**As travas moram na sessão, e não nas telas.** O Qt ainda não tem save state — só o core
-Libretro, o Android e o rewind gravam e restauram —, e uma tela que viesse depois esqueceria a
-regra. Na sessão, ela já nasce valendo.
+**As travas moram na sessão, e não nas telas.** Quando elas foram escritas, o Qt ainda não tinha
+save state, e uma tela que viesse depois esqueceria a regra. Foi o que aconteceu: os dez slots do
+desktop (`docs/implementacao/25-save-state-no-desktop.md`) chegaram depois, e o carregar deles já
+nasceu recusado no hardcore, porque passa pelo `Session::restaura_estado`. A tela só acrescenta a
+educação: o menu Sistema desabilita o Carregar estado e o Desfazer carregar, e o atalho responde
+"Indisponível no modo hardcore" em vez do erro da sessão, sem gravar o estado de agora para um
+desfazer que não pode vir. Salvar continua livre, como o RA permite.
 
 **O hardcore vale quando há o que proteger** (`Conquistas::protege_o_jogo`): ligado, e com um jogo
 que tem conquistas **ou que ainda está a caminho**. Entre o pedido e a resposta do servidor o set
@@ -157,10 +161,10 @@ rcheevos manda. Os dois sentidos têm teste.
 
 | Onde | O quê |
 |---|---|
-| Configurações → Conquistas | login, conta, sair; o hardcore, que pergunta antes de reiniciar um jogo aberto; os dois avisos |
+| Configurações → Conquistas (categoria com o troféu, e o item no menu Configurações) | login, conta, sair; o hardcore, que pergunta antes de reiniciar um jogo aberto; os dois avisos. A explicação de cada um vai para o rodapé, como nas outras categorias |
 | Ao abrir o jogo | o título, "x de y conquistas" e o modo; ou "Sem conquistas para este jogo" |
 | Durante o jogo | os avisos no canto de baixo à esquerda, como no RALibretro, numa fila de quatro segundos cada: desbloqueio com ícone, placares, conexão; o contador dos placares no canto de baixo à direita |
-| F6 (trocável, tecla ou botão) | a lista por cima do jogo, que fica pausado; o F6 ou o Esc fecham |
+| F6 (trocável, tecla ou botão), ou Sistema → Lista de conquistas | a lista por cima do jogo, que fica pausado; o F6 ou o Esc fecham. O P, o R e o menu fecham a lista antes de fazer o que fazem |
 | Detalhes da biblioteca | "Conquistas: x de y", da última vez em que o jogo foi aberto com a conta |
 
 **A senha não é guardada.** O login devolve um token, e é ele que vai ao `settings.json`, como no
@@ -182,7 +186,8 @@ pede os de todas as conquistas, para o aviso de desbloqueio sair com o ícone.
 
 **O objeto `Conquistas` do QML existe com ou sem a feature.** O cxx-qt gera a ponte do arquivo, e
 uma ponte que só existisse com a feature pediria um `build.rs` e um QML para cada caso. Sem a
-feature, `Conquistas.disponivel()` responde falso, e a aba, a linha do atalho e a lista somem. O F6
+feature, `Conquistas.disponivel()` responde falso, e a categoria, os dois itens de menu, a linha do
+atalho e a lista somem. O F6
 continua entre as teclas reservadas e não chega ao jogo; nenhum mapeamento padrão o usa.
 
 Os indicadores de desafio e de progresso (os ícones pequenos de "quase lá") ficaram para depois: a
