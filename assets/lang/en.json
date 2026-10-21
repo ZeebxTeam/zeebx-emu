@@ -446,6 +446,7 @@
   "menu.system.resume": "Resume",
   "menu.system.save_state": "Save state",
   "menu.system.screenshot": "Screenshot",
+  "menu.system.achievements": "Achievements list",
   "menu.system.undo_load": "Undo load state",
   "menu.tools": "Tools",
   "menu.tools.saves": "Saves…",

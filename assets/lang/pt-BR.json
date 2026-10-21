@@ -446,6 +446,7 @@
   "menu.system.resume": "Continuar",
   "menu.system.save_state": "Salvar estado",
   "menu.system.screenshot": "Screenshot",
+  "menu.system.achievements": "Lista de conquistas",
   "menu.system.undo_load": "Desfazer carregar",
   "menu.tools": "Ferramentas",
   "menu.tools.saves": "Saves…",

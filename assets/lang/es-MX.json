@@ -446,6 +446,7 @@
   "menu.system.resume": "Continuar",
   "menu.system.save_state": "Guardar estado",
   "menu.system.screenshot": "Captura de pantalla",
+  "menu.system.achievements": "Lista de logros",
   "menu.system.undo_load": "Deshacer la carga",
   "menu.tools": "Herramientas",
   "menu.tools.saves": "Guardados…",
