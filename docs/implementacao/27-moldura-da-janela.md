@@ -14,14 +14,17 @@ ferramentas ou para a de status.
 
 ```text
 Arquivo        Abrir a Z-Wheel · Procurar jogos de novo · Sair
-Sistema        Pausar/Continuar · Reiniciar · Fast-forward · Screenshot · Salvar estado ▸ ·
-               Carregar estado ▸ · Desfazer carregar · Fechar o jogo
-Configurações  Geral · Controles · Atalhos · Gráficos · Velocidade · Áudio · Depuração ·
-               Configurações deste jogo…
+Sistema        Pausar/Continuar · Reiniciar · Fast-forward · Screenshot · Lista de conquistas* ·
+               Salvar estado ▸ · Carregar estado ▸ · Desfazer carregar · Fechar o jogo
+Configurações  Geral · Controles · Atalhos · Gráficos · Velocidade · Áudio · Conquistas* ·
+               Depuração · Configurações deste jogo…
 Exibir         Grade · Slider · Barra de ferramentas · Barra de status · Tela cheia
 Ferramentas    Saves… · Log da execução · Liberar a sincronização do Zeeboids
 Ajuda          Repositório no GitHub · Servidor no Discord · Procurar atualização · Sobre o Zeebx
 ```
+
+\* Só nas compilações com a feature `conquistas` ([25](25-conquistas.md#a-interface)). No hardcore,
+o Carregar estado e o Desfazer carregar ficam desabilitados.
 
 **A tecla ao lado do item é só texto.** O `shortcut` de um item de menu do QML vale na janela
 inteira: o P digitado na busca pausaria o jogo. Quem atende as teclas continua sendo a janela do
@@ -84,7 +87,7 @@ a cor é a do texto, e acompanha o tema sem imagem para recolorir; e o Qt não p
 QtSvg, que o `.deb`, o `windeployqt` e o `macdeployqt` teriam de levar junto.
 
 A fonte inteira tem 2150 ícones e 900 KB. O [`ferramentas/icones.py`](../../ferramentas/icones.py)
-recorta só os que a interface usa (33, com 13 KB, em `assets/icones/lucide.ttf`, embutida no binário)
+recorta só os que a interface usa (34, com 14 KB, em `assets/icones/lucide.ttf`, embutida no binário)
 e escreve a tabela de nomes do `Icone.qml`. Para acrescentar um ícone, o nome entra na lista do
 script e ele roda de novo, sobre o pacote `lucide-static` da mesma versão. A licença é ISC, e MIT
 para os ícones que vieram do Feather; as duas estão em `ferramentas/licencas/lucide-LICENSE` e no
