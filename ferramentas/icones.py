@@ -61,6 +61,7 @@ ICONES = [
     "search",
     "settings",
     "square",  # fechar o jogo
+    "trophy",  # conquistas
     "undo-2",  # desfazer carregar
     "volume-2",  # áudio
     "x",
