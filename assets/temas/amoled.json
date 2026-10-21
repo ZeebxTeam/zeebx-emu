@@ -1,0 +1,39 @@
+{
+  "formato": 1,
+  "nome": {
+    "pt-BR": "AMOLED",
+    "en": "AMOLED",
+    "es": "AMOLED",
+    "es-MX": "AMOLED"
+  },
+  "escuro": true,
+  "cores": {
+    "window": "#000000",
+    "windowText": "#e4e4e4",
+    "base": "#121212",
+    "alternateBase": "#0a0a0a",
+    "text": "#e4e4e4",
+    "placeholderText": "#858585",
+    "button": "#1a1a1a",
+    "buttonText": "#e4e4e4",
+    "brightText": "#ffffff",
+    "light": "#3a3a3a",
+    "midlight": "#262626",
+    "mid": "#3d3d3d",
+    "dark": "#141414",
+    "shadow": "#000000",
+    "highlight": "#2462d3",
+    "highlightedText": "#ffffff",
+    "link": "#86b0ff",
+    "linkVisited": "#b9a2ff",
+    "toolTipBase": "#1a1a1a",
+    "toolTipText": "#e4e4e4"
+  },
+  "desabilitado": {
+    "windowText": "#5e5e5e",
+    "text": "#5e5e5e",
+    "buttonText": "#5e5e5e"
+  },
+  "aviso": "#e5a33b",
+  "erro": "#f07067"
+}

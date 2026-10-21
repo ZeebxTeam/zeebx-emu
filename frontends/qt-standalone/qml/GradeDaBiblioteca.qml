@@ -195,6 +195,9 @@ GridView {
                 delay: 500
                 width: Math.min(implicitWidth, 320)
                 contentItem: Label {
+                    // A cor da dica, e não a do texto da janela: num tema de dica escura com
+                    // janela clara, o texto sumia.
+                    color: palette.toolTipText
                     wrapMode: Text.Wrap
                     text: "<b>" + grade.escapa(cartao.titulo) + "</b>"
                           + (cartao.descricao !== "" ? "<br><br>" + grade.escapa(cartao.descricao) : "")

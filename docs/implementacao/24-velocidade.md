@@ -202,8 +202,9 @@ para antes de um save não desfaz o save, o mesmo que o save state manual faz.
 
 ### O rewind no Qt
 
-O rewind não funcionava na janela Qt. Lá ele é o único caminho que restaura um estado, porque a
-janela não tem save state manual, e a leitura do atalho rodava fora do contexto de GL do jogo.
+O rewind não funcionava na janela Qt. Lá ele era o único caminho que restaurava um estado, porque
+a janela não tinha save state manual (ele chegou depois, ver [25](25-save-state-no-desktop.md)), e
+a leitura do atalho rodava fora do contexto de GL do jogo.
 Voltar um ponto refaz as texturas na placa: elas eram apagadas e criadas no contexto que estivesse
 corrente, o do Qt Quick ou nenhum. A leitura agora vai com o contexto do jogo corrente, e a
 `Partida`, como antes de andar, avisa o espelho do estado da placa

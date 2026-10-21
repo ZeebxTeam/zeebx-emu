@@ -1,0 +1,39 @@
+{
+  "formato": 1,
+  "nome": {
+    "pt-BR": "Claro",
+    "en": "Light",
+    "es": "Claro",
+    "es-MX": "Claro"
+  },
+  "escuro": false,
+  "cores": {
+    "window": "#eef0f3",
+    "windowText": "#1c1f24",
+    "base": "#ffffff",
+    "alternateBase": "#f3f5f8",
+    "text": "#1c1f24",
+    "placeholderText": "#69707b",
+    "button": "#e2e5ea",
+    "buttonText": "#1c1f24",
+    "brightText": "#ffffff",
+    "light": "#ffffff",
+    "midlight": "#eceef2",
+    "mid": "#b9bec7",
+    "dark": "#8d939d",
+    "shadow": "#5f646c",
+    "highlight": "#2b63c4",
+    "highlightedText": "#ffffff",
+    "link": "#1f58b8",
+    "linkVisited": "#6a3fb0",
+    "toolTipBase": "#262a31",
+    "toolTipText": "#f1f3f6"
+  },
+  "desabilitado": {
+    "windowText": "#8d939d",
+    "text": "#8d939d",
+    "buttonText": "#8d939d"
+  },
+  "aviso": "#9a5b00",
+  "erro": "#b3261e"
+}

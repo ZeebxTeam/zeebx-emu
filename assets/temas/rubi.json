@@ -1,0 +1,39 @@
+{
+  "formato": 1,
+  "nome": {
+    "pt-BR": "Rubi",
+    "en": "Ruby",
+    "es": "Rubí",
+    "es-MX": "Rubí"
+  },
+  "escuro": true,
+  "cores": {
+    "window": "#261b1e",
+    "windowText": "#f1e5e7",
+    "base": "#1c1416",
+    "alternateBase": "#2b1f22",
+    "text": "#f1e5e7",
+    "placeholderText": "#a68e93",
+    "button": "#35262a",
+    "buttonText": "#f1e5e7",
+    "brightText": "#ffffff",
+    "light": "#4d373c",
+    "midlight": "#402e32",
+    "mid": "#58404a",
+    "dark": "#140d0f",
+    "shadow": "#0a0607",
+    "highlight": "#cb3854",
+    "highlightedText": "#ffffff",
+    "link": "#ff98a8",
+    "linkVisited": "#e0a0ff",
+    "toolTipBase": "#3a2a2e",
+    "toolTipText": "#f1e5e7"
+  },
+  "desabilitado": {
+    "windowText": "#7c666b",
+    "text": "#7c666b",
+    "buttonText": "#7c666b"
+  },
+  "aviso": "#eaa645",
+  "erro": "#ff7a85"
+}

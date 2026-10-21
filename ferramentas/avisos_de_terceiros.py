@@ -5,11 +5,12 @@ MIT, BSD, Apache, Zlib, OFL e a LGPL do Qt pedem que o aviso de copyright e o te
 acompanhem o binário. O arquivo é versionado e vai em todos os pacotes da release; o
 `release.yml` roda este script com `--confere` e para se ele estiver velho.
 
-Três partes, porque o `cargo about` só enxerga crates:
+Quatro partes, porque o `cargo about` só enxerga crates:
 
 - as crates, pelo `cargo about` com o `about.toml` da raiz;
 - o C++ que o `dynarmic` compila junto (fmt, mcl, xbyak, zydis…), lido da cópia da crate no
   registro do cargo;
+- a fonte de ícones Lucide, embutida no frontend Qt (ver `ferramentas/icones.py`);
 - o Qt 6, que vai dentro do AppImage, do instalador do Windows e do `.dmg` do frontend Qt.
 
     python3 ferramentas/avisos_de_terceiros.py            # reescreve o arquivo
@@ -101,9 +102,21 @@ def dynarmic() -> str:
     return "".join(partes)
 
 
+def lucide() -> str:
+    texto = (LICENCAS / "lucide-LICENSE").read_text(encoding="utf-8").strip()
+    return (
+        "=" * 80
+        + "\nLucide icons (ISC; MIT for the icons derived from Feather)\n\n"
+        + "Used by: the Qt frontend (zeebx-qt), as a font with the icons of the toolbar and the\n"
+        + "menus, embedded in the binary.\n"
+        + "-" * 80
+        + f"\n\n{texto}\n\n"
+    )
+
+
 def gera() -> str:
     lgpl = (LICENCAS / "LGPL-3.0.txt").read_text(encoding="utf-8")
-    return CABECALHO + crates() + dynarmic() + QT + lgpl
+    return CABECALHO + crates() + dynarmic() + lucide() + QT + lgpl
 
 
 def main() -> None:

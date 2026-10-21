@@ -19,6 +19,8 @@ pub mod qobject {
         type QImage = cxx_qt_lib::QImage;
         include!("cxx-qt-lib/qlist.h");
         type QList_i32 = cxx_qt_lib::QList<i32>;
+        include!("cxx-qt-lib/qstringlist.h");
+        type QStringList = cxx_qt_lib::QStringList;
     }
 
     unsafe extern "C++Qt" {
@@ -56,6 +58,10 @@ pub mod qobject {
         #[qproperty(bool, screenshot_falhou, cxx_name = "screenshotFalhou")]
         #[qproperty(QString, screenshot_pasta, cxx_name = "screenshotPasta")]
         #[qproperty(i32, screenshot_serie, cxx_name = "screenshotSerie")]
+        #[qproperty(QString, estado_texto, cxx_name = "estadoTexto")]
+        #[qproperty(bool, estado_falhou, cxx_name = "estadoFalhou")]
+        #[qproperty(i32, estado_serie, cxx_name = "estadoSerie")]
+        #[qproperty(QString, velocidade)]
         #[qproperty(QString, indicadores)]
         #[qproperty(QString, contador)]
         type TelaDoJogo = super::TelaDoJogoRust;
@@ -85,6 +91,52 @@ pub mod qobject {
         /// arquivo. O aviso chega depois, pela `screenshotSerie`.
         #[qinvokable]
         fn screenshot(self: Pin<&mut Self>, carimbo: &QString);
+
+        /// Se o `Qt::Key`, com os `Qt::KeyboardModifiers` do evento, é um atalho do save state.
+        /// Perguntado antes de tudo na janela do jogo: a combinação bate só com os mesmos
+        /// modificadores, e o Shift+F9 de um save state não pode virar o F9 do screenshot.
+        #[qinvokable]
+        #[cxx_name = "ehAtalhoDeEstado"]
+        fn eh_atalho_de_estado(self: &Self, codigo: i32, modificadores: i32) -> bool;
+
+        /// Faz o que o atalho do save state pede. O aviso chega pela `estadoSerie`.
+        #[qinvokable]
+        #[cxx_name = "atalhoDeEstado"]
+        fn atalho_de_estado(self: Pin<&mut Self>, codigo: i32, modificadores: i32);
+
+        /// O save state pelo menu: `acao` 0 salva, 1 carrega e 2 desfaz o último carregar, no
+        /// `slot` (de zero), que passa a ser o atual. O aviso chega pela `estadoSerie`.
+        #[qinvokable]
+        #[cxx_name = "estadoPeloMenu"]
+        fn estado_pelo_menu(self: Pin<&mut Self>, acao: i32, slot: i32);
+
+        /// Os slots do jogo aberto, um por linha, para o menu.
+        #[qinvokable]
+        #[cxx_name = "slotsDeEstado"]
+        fn slots_de_estado(self: &Self) -> QStringList;
+
+        /// Quais slots têm estado: 1 ou 0 por slot, na ordem. O Carregar do menu desabilita os
+        /// vazios.
+        #[qinvokable]
+        #[cxx_name = "slotsOcupados"]
+        fn slots_ocupados(self: &Self) -> QList_i32;
+
+        #[qinvokable]
+        #[cxx_name = "slotAtual"]
+        fn slot_atual(self: &Self) -> i32;
+
+        #[qinvokable]
+        #[cxx_name = "podeDesfazerCarregar"]
+        fn pode_desfazer_carregar(self: &Self) -> bool;
+
+        /// Liga ou desliga o fast-forward pelo menu, e devolve como ficou.
+        #[qinvokable]
+        #[cxx_name = "alternaAvanco"]
+        fn alterna_avanco(self: Pin<&mut Self>) -> bool;
+
+        #[qinvokable]
+        #[cxx_name = "avancoFixo"]
+        fn avanco_fixo(self: &Self) -> bool;
 
         /// Pausa ou retoma o jogo. Devolve se ficou pausado.
         #[qinvokable]
@@ -180,11 +232,11 @@ pub mod qobject {
 use std::pin::Pin;
 
 use cxx_qt::CxxQtType;
-use cxx_qt_lib::{QImage, QImageFormat, QList, QRectF, QString};
+use cxx_qt_lib::{QImage, QImageFormat, QList, QRectF, QString, QStringList};
 
 use zeebx::egui::Key;
 use zeebx::ui::partida::enquadra;
-use zeebx::ui::settings::ModoDaJanela;
+use zeebx::ui::settings::{ModoDaJanela, Modificadores};
 
 use super::nucleo::{self, Quadro};
 
@@ -209,6 +261,12 @@ pub struct TelaDoJogoRust {
     screenshot_falhou: bool,
     screenshot_pasta: QString,
     screenshot_serie: i32,
+    /// O aviso do último atalho do save state, do mesmo jeito que o do screenshot.
+    estado_texto: QString,
+    estado_falhou: bool,
+    estado_serie: i32,
+    /// A velocidade e os quadros por segundo, para a barra de status da principal.
+    velocidade: QString,
     /// O "▶▶ 3x" do fast-forward e o "Turbo"; vazio esconde.
     indicadores: QString,
     /// Os contadores dos placares em andamento; vazio esconde.
@@ -360,6 +418,15 @@ impl qobject::TelaDoJogo {
             let serie = self.screenshot_serie().wrapping_add(1);
             self.as_mut().set_screenshot_serie(serie);
         }
+        let velocidade = QString::from(
+            &volta
+                .ritmo
+                .map(|(velocidade, quadros)| format!("{velocidade}% · {quadros} FPS"))
+                .unwrap_or_default(),
+        );
+        if self.velocidade() != &velocidade {
+            self.as_mut().set_velocidade(velocidade);
+        }
         let indicadores = QString::from(&volta.indicadores);
         if self.indicadores() != &indicadores {
             self.as_mut().set_indicadores(indicadores);
@@ -394,6 +461,83 @@ impl qobject::TelaDoJogo {
         if let Some(tecla) = tecla_do_qt(codigo) {
             nucleo::com(|nucleo| nucleo.tecla(tecla, apertada));
         }
+    }
+
+    pub fn eh_atalho_de_estado(&self, codigo: i32, modificadores: i32) -> bool {
+        let modificadores = modificadores_do_qt(modificadores);
+        tecla_do_qt(codigo).is_some_and(|tecla| {
+            nucleo::com(|nucleo| nucleo.e_atalho_de_estado(tecla, modificadores))
+        })
+    }
+
+    pub fn atalho_de_estado(self: Pin<&mut Self>, codigo: i32, modificadores: i32) {
+        let Some(tecla) = tecla_do_qt(codigo) else {
+            return;
+        };
+        let modificadores = modificadores_do_qt(modificadores);
+        let resposta = nucleo::com(|nucleo| nucleo.atalho_de_estado(tecla, modificadores));
+        self.mostra_aviso_de_estado(resposta);
+    }
+
+    pub fn estado_pelo_menu(self: Pin<&mut Self>, acao: i32, slot: i32) {
+        let pedido = match acao {
+            0 => nucleo::PedidoDeEstado::Salvar,
+            1 => nucleo::PedidoDeEstado::Carregar,
+            _ => nucleo::PedidoDeEstado::Desfazer,
+        };
+        let slot = usize::try_from(slot).ok();
+        let resposta = nucleo::com(|nucleo| nucleo.faz_estado(pedido, slot));
+        self.mostra_aviso_de_estado(resposta);
+    }
+
+    pub fn slots_de_estado(&self) -> QStringList {
+        let slots = nucleo::com(|nucleo| nucleo.slots_de_estado());
+        let mut lista = QStringList::default();
+        for slot in &slots {
+            lista.append(QString::from(slot));
+        }
+        lista
+    }
+
+    pub fn slots_ocupados(&self) -> QList<i32> {
+        let ocupados = nucleo::com(|nucleo| nucleo.slots_ocupados());
+        QList::from(ocupados.into_iter().map(i32::from).collect::<Vec<_>>())
+    }
+
+    pub fn slot_atual(&self) -> i32 {
+        nucleo::com(|nucleo| nucleo.slot_atual() as i32)
+    }
+
+    pub fn pode_desfazer_carregar(&self) -> bool {
+        nucleo::com(|nucleo| nucleo.pode_desfazer_carregar())
+    }
+
+    pub fn alterna_avanco(self: Pin<&mut Self>) -> bool {
+        nucleo::com(|nucleo| nucleo.alterna_o_avanco_fixo())
+    }
+
+    pub fn avanco_fixo(&self) -> bool {
+        nucleo::com(|nucleo| nucleo.avanco_fixo())
+    }
+
+    /// O aviso de um pedido do save state, pelo atalho ou pelo menu.
+    fn mostra_aviso_de_estado(
+        mut self: Pin<&mut Self>,
+        resposta: Option<(nucleo::AvisoDeEstado, bool)>,
+    ) {
+        let Some((aviso, restaurou)) = resposta else {
+            return;
+        };
+        // **O console voltou a outro instante**, e a tela restaurada pode ter a mesma série e as
+        // mesmas escritas que a imagem que está no item: sem esquecer a chave, a próxima volta a
+        // acharia igual e deixaria a de antes à mostra.
+        if restaurou {
+            self.as_mut().rust_mut().chave = None;
+        }
+        self.as_mut().set_estado_texto(QString::from(&aviso.texto));
+        self.as_mut().set_estado_falhou(aviso.falhou);
+        let serie = self.estado_serie().wrapping_add(1);
+        self.as_mut().set_estado_serie(serie);
     }
 
     pub fn eh_atalho_de_screenshot(&self, codigo: i32) -> bool {
@@ -520,6 +664,30 @@ fn imagem_rgb565(bytes: &[u8], largura: usize, altura: usize) -> QImage {
     unsafe { QImage::from_raw_bytes(dados, largura as i32, altura as i32, QImageFormat::Format_RGB16) }
 }
 
+/// Os modificadores de um evento do Qt (`Qt::KeyboardModifiers`), como o [`Modificadores`] os
+/// guarda.
+///
+/// **No Mac o Qt troca os nomes**: o que ele chama de `ControlModifier` é o ⌘, e o
+/// `MetaModifier` é o Control. Fora dele o Meta é a tecla do sistema (a do Windows, o Super), que
+/// o [`Modificadores`] também guarda no `cmd`. O do teclado numérico não conta: o Enter de lá é o
+/// mesmo Enter.
+pub(super) fn modificadores_do_qt(bits: i32) -> Modificadores {
+    const SHIFT: i32 = 0x0200_0000;
+    const CONTROL: i32 = 0x0400_0000;
+    const ALT: i32 = 0x0800_0000;
+    const META: i32 = 0x1000_0000;
+    let (ctrl, cmd) = match cfg!(target_os = "macos") {
+        true => (bits & META != 0, bits & CONTROL != 0),
+        false => (bits & CONTROL != 0, bits & META != 0),
+    };
+    Modificadores {
+        ctrl,
+        alt: bits & ALT != 0,
+        shift: bits & SHIFT != 0,
+        cmd,
+    }
+}
+
 /// O nome que o egui dá à tecla, a partir do `Qt::Key`. É o nome que está gravado no
 /// `settings.json`: mudar de interface não pode desfazer o mapeamento de ninguém.
 /// O `egui::Key` de um `Qt::Key`, passando pelo nome.
@@ -567,7 +735,28 @@ fn nome_da_tecla(codigo: i32) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Key, tecla_do_qt};
+    use super::{Key, Modificadores, modificadores_do_qt, tecla_do_qt};
+
+    /// O ⌘ do Mac chega ao Qt como Control; o Control, como Meta.
+    #[test]
+    fn os_modificadores_do_qt() {
+        assert!(modificadores_do_qt(0).nenhum());
+        // O teclado numérico não é modificador de ninguém.
+        assert!(modificadores_do_qt(0x2000_0000).nenhum());
+        let shift = modificadores_do_qt(0x0200_0000);
+        assert_eq!(
+            shift,
+            Modificadores {
+                shift: true,
+                ..Modificadores::default()
+            }
+        );
+        let control = modificadores_do_qt(0x0400_0000);
+        match cfg!(target_os = "macos") {
+            true => assert!(control.cmd && !control.ctrl),
+            false => assert!(control.ctrl && !control.cmd),
+        }
+    }
 
     /// A seta do Qt é a seta do egui: daí em diante vale [`zeebx::ui::entrada::tecla_apertada`],
     /// que aceita as duas grafias do `settings.json`.
