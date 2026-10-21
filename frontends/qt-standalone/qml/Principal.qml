@@ -328,6 +328,8 @@ ApplicationWindow {
     property var slotsDoMenu: []
     property var ocupadosDoMenu: []
     property int slotDoMenu: 0
+    // Se o hardcore do RetroAchievements vale para o jogo aberto, também lido quando o menu abre.
+    property bool hardcoreDoMenu: false
 
     function atalho(nome) {
         return depende([configuracoes.cfg.versao], configuracoes.cfg.atalho(nome))
@@ -491,7 +493,11 @@ ApplicationWindow {
                 principal.ocupadosDoMenu = principal.jogando ? principal.palco.tela.slotsOcupados() : []
                 principal.slotDoMenu = principal.jogando ? principal.palco.tela.slotAtual() : 0
                 itemDoAvanco.checked = principal.jogando && principal.palco.tela.avancoFixo()
-                itemDoDesfazer.enabled = principal.jogando && principal.palco.tela.podeDesfazerCarregar()
+                // O hardcore não deixa carregar estado: os dois ficam desabilitados, e não recusados
+                // depois do clique.
+                principal.hardcoreDoMenu = principal.jogando && principal.palco.tela.emHardcore()
+                itemDoDesfazer.enabled = principal.jogando && !principal.hardcoreDoMenu
+                                         && principal.palco.tela.podeDesfazerCarregar()
             }
 
             ItemDeMenu {
@@ -525,6 +531,15 @@ ApplicationWindow {
                 enabled: principal.jogando
                 onTriggered: principal.palco.screenshot()
             }
+            ItemDeMenu {
+                icone: "trophy"
+                text: tr("menu.system.achievements")
+                atalho: principal.atalho("conquistas")
+                visible: Conquistas.disponivel()
+                height: visible ? implicitHeight : 0
+                enabled: principal.jogando
+                onTriggered: principal.palco.alternaConquistas()
+            }
             MenuSeparator {}
             Menu {
                 title: tr("menu.system.save_state")
@@ -549,7 +564,7 @@ ApplicationWindow {
                 // Largura que caiba o slot ocupado: o Menu mede os itens na primeira vez que abre,
                 // e não cresce quando um slot vazio passa a ocupado.
                 width: Math.max(implicitWidth, 340)
-                enabled: principal.jogando
+                enabled: principal.jogando && !principal.hardcoreDoMenu
 
                 ItemDeSlot { slot: 0; acao: 1; icone: "folder-open" }
                 ItemDeSlot { slot: 1; acao: 1; icone: "folder-open" }
@@ -592,7 +607,16 @@ ApplicationWindow {
             ItemDeMenu { icone: "monitor"; text: tr("settings.tab.graphics"); onTriggered: configuracoes.abre(3) }
             ItemDeMenu { icone: "gauge"; text: tr("settings.tab.speed"); onTriggered: configuracoes.abre(4) }
             ItemDeMenu { icone: "volume-2"; text: tr("settings.tab.audio"); onTriggered: configuracoes.abre(5) }
-            ItemDeMenu { icone: "bug"; text: tr("settings.tab.debug"); onTriggered: configuracoes.abre(6) }
+            // Só nas compilações com as conquistas, como a categoria. Escondido, o item não pode
+            // deixar o espaço dele no menu.
+            ItemDeMenu {
+                icone: "trophy"
+                text: tr("settings.tab.achievements")
+                visible: Conquistas.disponivel()
+                height: visible ? implicitHeight : 0
+                onTriggered: configuracoes.abre(6)
+            }
+            ItemDeMenu { icone: "bug"; text: tr("settings.tab.debug"); onTriggered: configuracoes.abre(7) }
             MenuSeparator {}
             ItemDeMenu {
                 text: tr("menu.settings.game")
