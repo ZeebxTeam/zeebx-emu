@@ -129,6 +129,12 @@ pub mod qobject {
         #[cxx_name = "podeDesfazerCarregar"]
         fn pode_desfazer_carregar(self: &Self) -> bool;
 
+        /// Se o hardcore do RetroAchievements vale para o jogo aberto: o menu desabilita o
+        /// carregar e o desfazer.
+        #[qinvokable]
+        #[cxx_name = "emHardcore"]
+        fn em_hardcore(self: &Self) -> bool;
+
         /// Liga ou desliga o fast-forward pelo menu, e devolve como ficou.
         #[qinvokable]
         #[cxx_name = "alternaAvanco"]
@@ -199,6 +205,11 @@ pub mod qobject {
         #[qsignal]
         #[cxx_name = "listaDeConquistas"]
         fn lista_de_conquistas(self: Pin<&mut Self>);
+
+        /// O jogo recomeçou sozinho, porque o hardcore foi ligado com ele aberto. A partida nova
+        /// começa andando: o palco esquece a pausa e fecha a lista de conquistas.
+        #[qsignal]
+        fn reiniciou(self: Pin<&mut Self>);
 
         #[inherit]
         fn size(self: &Self) -> QSizeF;
@@ -450,6 +461,9 @@ impl qobject::TelaDoJogo {
         if volta.lista_de_conquistas {
             self.as_mut().lista_de_conquistas();
         }
+        if volta.reiniciou {
+            self.as_mut().reiniciou();
+        }
         if volta.fechou {
             self.as_mut().esvazia();
             self.as_mut().rust_mut().chave = None;
@@ -510,6 +524,10 @@ impl qobject::TelaDoJogo {
 
     pub fn pode_desfazer_carregar(&self) -> bool {
         nucleo::com(|nucleo| nucleo.pode_desfazer_carregar())
+    }
+
+    pub fn em_hardcore(&self) -> bool {
+        nucleo::com(|nucleo| nucleo.em_hardcore())
     }
 
     pub fn alterna_avanco(self: Pin<&mut Self>) -> bool {
