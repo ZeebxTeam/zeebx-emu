@@ -1179,7 +1179,17 @@ const PROP_COR_DE_FUNDO: u32 = 0x130;
 /// nada.
 const WIDGET_HTML: u32 = 0x0102_dd32;
 
-const FAMILIA_DOS_WIDGETS: [u32; 10] = [
+/// O decorador de lista que o `CreateListWidget` pede, `0x01028e1b`.
+///
+/// A tela de Cadastro registra `Unable to create list decorator in CreateListWidget` e em
+/// seguida usa o ponteiro nulo: o `CreateInstance` desta classe devolvia `ECLASSNOTSUPPORT`
+/// (20) porque ela não estava na família. É vizinha de numeração da `0x01028e19` e da
+/// `0x01028e26`, que já nascem como widget. Sem o dump não dá para saber o que ela desenha;
+/// o que se sabe é que um objeto nulo vira `acesso inválido a 0x0`. Nascer como widget vivo
+/// é o mesmo tratamento das outras, e é o que impede o jogo de guardar nulo.
+const WIDGET_DECORADOR_DE_LISTA: u32 = 0x0102_8e1b;
+
+const FAMILIA_DOS_WIDGETS: [u32; 11] = [
     WIDGET_HTML,
     AEECLSID_WIDGET,
     // A `0x01028e05` é a última que o palco pede. Depois de montar o pbuffer — `ChooseConfig`,
@@ -1193,6 +1203,7 @@ const FAMILIA_DOS_WIDGETS: [u32; 10] = [
     // registra `Failure in call to CreateOwnerDrawWidget` e desiste da roda de jogos inteira.
     0x0102_8e14,
     0x0102_8e19,
+    WIDGET_DECORADOR_DE_LISTA,
     // A `0x01028e26` também entrou pela sonda: `slot3(0x801, 0x186, 0xff0000ff)` — o acessador,
     // com uma cor — e o mesmo slot 14 das outras.
     0x0102_8e26,

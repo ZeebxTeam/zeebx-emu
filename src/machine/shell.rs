@@ -958,3 +958,33 @@ mod testes_do_item_id {
         assert_eq!(machine.item_id_de(0x0100_0001), 0);
     }
 }
+
+#[cfg(test)]
+mod testes_do_decorador {
+    use super::*;
+
+    /// O Cadastro pede `CreateInstance(0x01028e1b)` para o decorador da lista. Recusada, a
+    /// classe virava ponteiro nulo e o jogo seguia com ele.
+    #[test]
+    fn o_decorador_de_lista_nasce_como_widget() {
+        let code = [
+            0xe3a0_0010u32.to_le_bytes(), // mov r0, #16
+            0xe12f_ff1eu32.to_le_bytes(), // bx lr
+        ]
+        .concat();
+        let image = crate::loader::modfile::ModImage::parse(code).unwrap();
+        let module = crate::loader::load(&image).unwrap();
+        let mut machine = Machine::new(crate::cpu::BackendPadrao::new().unwrap(), module, ".");
+        machine.cpu.reset(&machine.module.mem).unwrap();
+        let saida = machine.heap.alloc(4).unwrap();
+        machine.cpu.write_reg(Reg::R1, WIDGET_DECORADOR_DE_LISTA);
+        machine.cpu.write_reg(Reg::R2, saida);
+        assert_eq!(machine.shell_create_instance().unwrap(), SUCCESS);
+        let objeto = machine.cpu.read_u32(saida).unwrap();
+        assert_ne!(objeto, 0);
+        assert_eq!(
+            machine.widgets.get(&objeto).map(|no| no.classe),
+            Some(WIDGET_DECORADOR_DE_LISTA)
+        );
+    }
+}
