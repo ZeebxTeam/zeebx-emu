@@ -5,6 +5,7 @@ mod biblioteca;
 mod configuracoes;
 mod nucleo;
 mod ponte;
+mod tema;
 
 use std::process::ExitCode;
 
@@ -33,6 +34,11 @@ pub fn launch(jogo: Option<&str>) -> ExitCode {
     // As capas, os logos e as classificações da biblioteca: `image://zeebx/…`.
     biblioteca::registra_imagens(engine.as_mut().upcast_pin());
     engine.load(&QUrl::from("qrc:/qt/qml/zeebx/qml/Principal.qml"));
+    // **O tema depois do `load`, e antes de a primeira janela aparecer.** Aplicado antes, só os
+    // itens soltos (os cartões da grade) o seguiam: as janelas e os controles do Fusion nascem com
+    // a paleta do estilo, tirada do sistema, e só passam à do programa quando ela muda com eles já
+    // criados. Medido no Qt 6.4 e no 6.12. Aqui as janelas existem e ainda não foram mostradas.
+    tema::aplica();
     let saida = app.exec();
     // **A ordem é a correção.** Primeiro a engine; depois o jogo, solto com o contexto de GL
     // ainda vivo, porque as texturas dele moram lá; depois o contexto; e só então o

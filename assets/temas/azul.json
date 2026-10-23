@@ -1,0 +1,39 @@
+{
+  "formato": 1,
+  "nome": {
+    "pt-BR": "Azul",
+    "en": "Blue",
+    "es": "Azul",
+    "es-MX": "Azul"
+  },
+  "escuro": true,
+  "cores": {
+    "window": "#181e30",
+    "windowText": "#e5edf7",
+    "base": "#111627",
+    "alternateBase": "#1d2438",
+    "text": "#e5edf7",
+    "placeholderText": "#8d9ab0",
+    "button": "#222a3f",
+    "buttonText": "#e5edf7",
+    "brightText": "#ffffff",
+    "light": "#3a4563",
+    "midlight": "#2d364f",
+    "mid": "#404e6a",
+    "dark": "#0d111d",
+    "shadow": "#06090f",
+    "highlight": "#4b6acf",
+    "highlightedText": "#ffffff",
+    "link": "#93abff",
+    "linkVisited": "#c9a8ff",
+    "toolTipBase": "#2a334a",
+    "toolTipText": "#e5edf7"
+  },
+  "desabilitado": {
+    "windowText": "#66738a",
+    "text": "#66738a",
+    "buttonText": "#66738a"
+  },
+  "aviso": "#f0b34a",
+  "erro": "#ff7a74"
+}

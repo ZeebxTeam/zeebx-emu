@@ -24,6 +24,8 @@ pub mod calibracao;
 // Sem gate, como os irmãos abaixo: o painel só fala com a `session`, o `i18n` e o `settings`,
 // e é o mesmo que o frontend de Android desenha. Não há nada de desktop aqui.
 pub mod depuracao;
+// Sem gate: os slots só falam com a `session` e com o disco, e o Android e o Qt gravam igual.
+pub mod estados;
 // **O pintor é da feature `gl`, e não do `desktop`.** Ele é o backend de OpenGL do motor: o
 // frontend de Android desenha com ele e não tem eframe nenhum. O `desktop` continua trazendo-o,
 // porque implica `gpu`, que implica `gl`.
@@ -41,6 +43,8 @@ pub mod saves;
 // ganhar o botão sem reescrever nada.
 pub mod screenshot;
 pub mod settings;
+// Sem gate: um tema é um JSON de cores, e quem as aplica é a janela de cada frontend.
+pub mod temas;
 
 #[cfg(feature = "desktop")]
 pub mod atualizacao;
