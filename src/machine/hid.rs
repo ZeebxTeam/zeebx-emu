@@ -680,7 +680,12 @@ impl<C: CpuBackend> Machine<C> {
                 .collect();
             for (_, (funcao, contexto)) in na_tela {
                 let saida = self.call_guest(funcao, [contexto, evento, avk, 0], QSORT_BUDGET)?;
-                if matches!(saida, Outcome::Returned { code } if code != 0) {
+                // A barra responde "tratei" para qualquer tecla e no console não recebe tecla.
+                // Contar esse retorno fechava a porta de quem está fora da árvore: com o aviso
+                // de jogo não instalado no topo, b1, b2 e as setas deixavam de chegar ao menu.
+                if matches!(saida, Outcome::Returned { code } if code != 0)
+                    && !self.e_tratador_da_barra(funcao, contexto)
+                {
                     tratado = true;
                 }
             }
@@ -688,7 +693,9 @@ impl<C: CpuBackend> Machine<C> {
                 for (_, (funcao, contexto)) in fora {
                     let saida =
                         self.call_guest(funcao, [contexto, evento, avk, 0], QSORT_BUDGET)?;
-                    if matches!(saida, Outcome::Returned { code } if code != 0) {
+                    if matches!(saida, Outcome::Returned { code } if code != 0)
+                        && !self.e_tratador_da_barra(funcao, contexto)
+                    {
                         tratado = true;
                         break;
                     }

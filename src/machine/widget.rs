@@ -366,7 +366,7 @@ impl<C: CpuBackend> Machine<C> {
             .widgets
             .iter()
             .filter(|(endereco, no)| {
-                no.classe == 0x0102_8e3f
+                no.classe == WIDGET_BARRA
                     && (no.pai == 0 || no.pai == **endereco)
                     && (no.filhos.len() + no.anexados.len()) > 0
             })
@@ -422,34 +422,118 @@ impl<C: CpuBackend> Machine<C> {
         // Quem está à mostra é o último empilhado, e é o que esta função devolve. Sem nenhum
         // formulário — antes de a interface existir —, vale a raiz mais nova que tenha filho,
         // que é o que sustentava a tela até aqui.
-        let formulario = self
-            .widgets
-            .iter()
-            .filter(|(endereco, no)| {
-                no.classe == WIDGET_FORMULARIO && com_filhos.contains(endereco)
-            })
-            .max_by_key(|(_, no)| no.serial)
-            .map(|(&endereco, _)| endereco);
+        let e_formulario = |endereco: u32, no: &Widget| {
+            no.classe == WIDGET_FORMULARIO && com_filhos.contains(&endereco)
+        };
+        let e_raiz = |endereco: u32, no: &Widget| {
+            (no.pai == 0 || no.pai == endereco) && com_filhos.contains(&endereco)
+        };
         // **Nem todo formulário recebe o conteúdo pelo item `0x5000`.** O do menu principal não
         // recebe: ele fica com zero filho, e o que ele mostra vira uma raiz solta — o container
         // de `0x30000c10`, com a barra de status e o palco dentro. O evento `0x7b0a` já é
-        // encaminhado pela raiz; a ligação de pai em si ainda não foi observada.
+        // encaminhado pela raiz; a ligação de pai em si ainda não foi observada. Escolher só
+        // entre formulários deixava o do z-pad como atual para sempre, e ele traz a `0x77300`.
         //
-        // Enquanto isso, escolher só entre formulários deixava o do z-pad como atual para
-        // sempre, e ele traz a `0x77300` — um tratador que devolve "tratei" para qualquer
-        // tecla. Com ela na frente, nenhuma tecla chegava ao menu: a roda não girava.
+        // **O mais novo que tenha o que desenhar.** Confirmar um jogo que não está instalado
+        // abre um aviso: a Z-Wheel registra `Failure attempting to launch game, error(0)` — o
+        // zero é o `CanStartApplet` falso — e empilha um formulário sem imagem, sem texto e
+        // sem desenho próprio. Esse formulário é o mais novo, então virava a tela atual. Trocar
+        // de formulário limpa o quadro de branco, o aviso não é desenhado, e o que sobra é a
+        // barra. As teclas iam para essa árvore; a `0x77300` da barra respondia "tratei" e o
+        // menu, que ficou por baixo, não via mais b1, b2 nem seta.
         //
-        // Então a escolha é entre os dois candidatos, e vence o mais novo.
-        let raiz = self.raiz_mais_nova(&com_filhos);
+        // Enquanto houver uma tela anterior com o que pintar, o aviso vazio não a cobre. Entre
+        // os dois candidatos, os dois com desenho — ou nenhum — continuam valendo o mais novo.
+        // Só um com desenho: esse, ainda que o outro seja mais novo. Não foi medido com o dump.
+        let formulario = self
+            .mais_novo_que_pinta(e_formulario)
+            .or_else(|| self.mais_novo(e_formulario));
+        let raiz = self
+            .mais_novo_que_pinta(e_raiz)
+            .or_else(|| self.raiz_mais_nova(&com_filhos));
         match (formulario, raiz) {
             (Some(f), Some(r)) => {
                 let idade = |quem: u32| self.widgets.get(&quem).map_or(0, |no| no.serial);
-                return Some(if idade(r) > idade(f) { r } else { f });
+                let pinta = |quem: u32| self.tem_o_que_pintar(quem);
+                return Some(match (pinta(f), pinta(r)) {
+                    (true, false) => f,
+                    (false, true) => r,
+                    _ if idade(r) > idade(f) => r,
+                    _ => f,
+                });
             }
             (Some(f), None) => return Some(f),
             (None, _) => {}
         }
         raiz
+    }
+
+    /// O widget mais novo que casa com `pred` e tem o que desenhar.
+    fn mais_novo_que_pinta(&self, pred: impl Fn(u32, &Widget) -> bool) -> Option<u32> {
+        self.widgets
+            .iter()
+            .filter(|(endereco, no)| pred(**endereco, no) && self.tem_o_que_pintar(**endereco))
+            .max_by_key(|(_, no)| no.serial)
+            .map(|(&endereco, _)| endereco)
+    }
+
+    /// O widget mais novo que casa com `pred`, com ou sem desenho.
+    fn mais_novo(&self, pred: impl Fn(u32, &Widget) -> bool) -> Option<u32> {
+        self.widgets
+            .iter()
+            .filter(|(endereco, no)| pred(**endereco, no))
+            .max_by_key(|(_, no)| no.serial)
+            .map(|(&endereco, _)| endereco)
+    }
+
+    /// Se a árvore de `raiz` tem alguma coisa que o substituto de pintura desenha.
+    ///
+    /// Imagem pendurada, texto, retorno de desenho, fundo opaco ou o widget de HTML. Tamanho
+    /// sozinho não conta: o aviso de erro pode ter retângulo e mesmo assim não pôr um pixel,
+    /// e era isso que limpava a tela.
+    fn tem_o_que_pintar(&self, raiz: u32) -> bool {
+        /// A árvore vem do jogo; um ciclo não pode prender a escolha da tela.
+        const TETO: usize = 64;
+        let mut fila = vec![raiz];
+        let mut vistos = std::collections::HashSet::new();
+        while let Some(atual) = fila.pop() {
+            if !vistos.insert(atual) || vistos.len() > TETO {
+                break;
+            }
+            let Some(no) = self.widgets.get(&atual) else {
+                continue;
+            };
+            let fundo = no
+                .propriedades
+                .get(&PROP_COR_DE_FUNDO)
+                .is_some_and(|cor| cor & 0xff != 0);
+            if !no.texto.is_empty()
+                || no.desenho.0 != 0
+                || no.classe == WIDGET_HTML
+                || self.paginas_html.contains_key(&atual)
+                || fundo
+                || no.anexados.iter().any(|id| self.images.contains_key(id))
+            {
+                return true;
+            }
+            for filho in no.filhos.values().chain(no.anexados.iter()) {
+                if self.widgets.contains_key(filho) {
+                    fila.push(*filho);
+                }
+            }
+        }
+        false
+    }
+
+    /// Se este par função/contexto é o tratador da barra de status.
+    ///
+    /// A `0x77300` devolve 1 para qualquer tecla. Entregar a tecla a ela não é o problema —
+    /// todos os tratadores da tela atual já a recebem. O problema é contar esse 1 como
+    /// consumo: aí ninguém de fora da árvore vê a tecla, e o menu fica por baixo do aviso.
+    pub(super) fn e_tratador_da_barra(&self, funcao: u32, contexto: u32) -> bool {
+        self.widgets
+            .values()
+            .any(|no| no.classe == WIDGET_BARRA && no.tratador == (funcao, contexto) && funcao != 0)
     }
 
     /// A raiz mais nova que tenha filho, que é o que sustentava a tela antes dos formulários.
@@ -1850,6 +1934,117 @@ mod testes_do_container {
         assert_eq!(vizinho_na_pilha(&pilha, 10, false, true), 30, "com volta, dá a volta");
         assert_eq!(vizinho_na_pilha(&pilha, 20, true, false), 30);
         assert_eq!(vizinho_na_pilha(&[], 0, true, true), 0);
+    }
+}
+
+#[cfg(test)]
+mod testes_do_aviso {
+    use super::*;
+    use crate::cpu::BackendPadrao;
+    use crate::loader::{self, MODULE_BASE};
+
+    /// `mov r0,#1; bx lr` no início — a `0x77300` da barra, que diz "tratei" para qualquer tecla.
+    /// Em `+8`, o tratador do menu: grava 7 na palavra em `MODULE_BASE+0x20` e devolve.
+    fn codigo_dos_tratadores() -> Vec<u8> {
+        let mut codigo = Vec::new();
+        codigo.extend_from_slice(&0xe3a0_0001u32.to_le_bytes()); // mov r0, #1
+        codigo.extend_from_slice(&0xe12f_ff1eu32.to_le_bytes()); // bx lr
+        codigo.extend_from_slice(&0xe3a0_0007u32.to_le_bytes()); // mov r0, #7
+        codigo.extend_from_slice(&0xe59f_1004u32.to_le_bytes()); // ldr r1, [pc, #4]
+        codigo.extend_from_slice(&0xe581_0000u32.to_le_bytes()); // str r0, [r1]
+        codigo.extend_from_slice(&0xe12f_ff1eu32.to_le_bytes()); // bx lr
+        codigo.extend_from_slice(&(MODULE_BASE + 0x20).to_le_bytes());
+        codigo.resize(0x40, 0);
+        codigo
+    }
+
+    fn maquina() -> Machine<BackendPadrao> {
+        let image = loader::modfile::ModImage::parse(codigo_dos_tratadores()).unwrap();
+        let module = loader::load(&image).unwrap();
+        let mut machine = Machine::new(BackendPadrao::new().unwrap(), module, ".");
+        machine.cpu.reset(&machine.module.mem).unwrap();
+        machine
+    }
+
+    fn no(classe: u32, serial: u64, pai: u32) -> Widget {
+        Widget {
+            classe,
+            serial,
+            pai,
+            visivel: true,
+            ..Widget::default()
+        }
+    }
+
+    const ENGOLIDOR: u32 = MODULE_BASE;
+    const MENU: u32 = MODULE_BASE + 8;
+    const MARCA: u32 = MODULE_BASE + 0x20;
+
+    /// O aviso de jogo sem ROM é mais novo e não tem o que desenhar. A tela continua sendo o
+    /// menu, que é o que ainda tem texto.
+    #[test]
+    fn aviso_vazio_nao_cobre_o_menu() {
+        let mut machine = maquina();
+        let mut menu = no(WIDGET_FORMULARIO, 1, 0);
+        menu.anexados.push(0x11);
+        machine.widgets.insert(0x10, menu);
+        let mut filho = no(0, 2, 0x10);
+        filho.texto = "Jogar".to_string();
+        machine.widgets.insert(0x11, filho);
+
+        let mut aviso = no(WIDGET_FORMULARIO, 5, 0);
+        aviso.anexados.push(0x31);
+        machine.widgets.insert(0x30, aviso);
+        machine.widgets.insert(0x31, no(0, 6, 0x30));
+
+        assert_eq!(machine.formulario_atual(), Some(0x10));
+    }
+
+    /// Um formulário novo que tem texto passa a ser a tela. A regra só segura o que está vazio.
+    #[test]
+    fn formulario_novo_com_texto_continua_sendo_a_tela() {
+        let mut machine = maquina();
+        let mut menu = no(WIDGET_FORMULARIO, 1, 0);
+        menu.anexados.push(0x11);
+        machine.widgets.insert(0x10, menu);
+        let mut filho = no(0, 2, 0x10);
+        filho.texto = "Jogar".to_string();
+        machine.widgets.insert(0x11, filho);
+
+        let mut ajuda = no(WIDGET_FORMULARIO, 8, 0);
+        ajuda.anexados.push(0x51);
+        machine.widgets.insert(0x50, ajuda);
+        let mut pagina = no(0, 9, 0x50);
+        pagina.texto = "Ajuda".to_string();
+        machine.widgets.insert(0x51, pagina);
+
+        assert_eq!(machine.formulario_atual(), Some(0x50));
+    }
+
+    /// A barra devolve "tratei", mas a tecla ainda chega ao menu, que está fora dessa árvore.
+    #[test]
+    fn a_barra_nao_engole_a_tecla_do_menu() {
+        let mut machine = maquina();
+        let mut menu_tela = no(WIDGET_FORMULARIO, 4, 0);
+        menu_tela.anexados.push(0x11);
+        machine.widgets.insert(0x10, menu_tela);
+        let mut filho = no(0, 2, 0x10);
+        filho.texto = "Jogar".to_string();
+        machine.widgets.insert(0x11, filho);
+
+        let mut barra = no(WIDGET_BARRA, 3, 0);
+        barra.anexados.push(0x41);
+        barra.tratador = (ENGOLIDOR, 0x10024);
+        machine.widgets.insert(0x40, barra);
+        machine.widgets.insert(0x41, no(0, 1, 0x40));
+
+        let mut menu = no(0, 1, 0);
+        menu.tratador = (MENU, 0x10028);
+        machine.widgets.insert(0x20, menu);
+
+        machine.set_key(0xe035, true);
+        machine.flush_keys().unwrap();
+        assert_eq!(machine.cpu.read_u32(MARCA).unwrap(), 7, "a tecla não chegou ao menu");
     }
 }
 

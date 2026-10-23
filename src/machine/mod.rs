@@ -1147,6 +1147,10 @@ const WIDGET_FORMULARIO: u32 = 0x0102_8e47;
 /// O formulário raiz do applet, o `[app+0x24]` da Z-Wheel. Nele o slot 6 é o
 /// `IROOTFORM_RemoveForm`. Ver o braço do `DefinirVisivel`.
 const WIDGET_RAIZ: u32 = 0x0102_8e51;
+/// A barra de status, `0x01028e3f`. O tratador dela na Z-Wheel é a `0x77300`
+/// (`mov r0,#1; bx lr`): devolve "tratei" para qualquer tecla, e no console a barra
+/// não recebe tecla. Ver [`Machine::e_tratador_da_barra`].
+const WIDGET_BARRA: u32 = 0x0102_8e3f;
 
 /// A classe da família em que o slot 6 **põe texto**, em vez de esconder ou mostrar.
 ///
@@ -1199,7 +1203,7 @@ const FAMILIA_DOS_WIDGETS: [u32; 10] = [
     // `ZPad_Keyboard_Instructions_Form.c` falhava com `ECLASSNOTSUPPORT`, que é o 20 do
     // `Couldn't create z-pad instruction form (20)`.
     0x0102_8e36,
-    0x0102_8e3f,
+    WIDGET_BARRA,
     0x0102_8e47,
 ];
 
