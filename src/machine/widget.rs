@@ -1730,14 +1730,14 @@ impl<C: CpuBackend> Machine<C> {
         if !dados.visivel || funcao == 0 || desenho == 0 {
             return Ok(false);
         }
-        let resposta = self.malloc(4)?;
+        let resposta = self.aloca_interno(4)?;
         if resposta == 0 {
             return Ok(false);
         }
         self.cpu.write_u32(resposta, 0)?;
         let _ = self.call_guest_aninhado(funcao, [contexto, PODE_TER_FOCO, 0, resposta], QSORT_BUDGET)?;
         let pode = self.cpu.read_u32(resposta)? & 0xff != 0;
-        self.heap.free(resposta);
+        self.libera(resposta);
         Ok(pode)
     }
 

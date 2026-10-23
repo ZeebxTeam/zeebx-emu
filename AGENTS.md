@@ -140,6 +140,10 @@ vale disparar aquele workflow antes da tag. Você não consegue dispará-lo.
   versão velha instalada só sai dela baixando à mão.
 - **O `THIRD-PARTY-NOTICES.txt` acompanha o `Cargo.lock`.** Mudou dependência, rode
   `python3 ferramentas/avisos_de_terceiros.py` e commite junto; a release confere.
+- **O heap do guest é só do jogo.** Memória que o emulador pede para si no espaço do guest sai
+  do `aloca_interno` (região `0x3400_0000`), nunca do `malloc` nem do `heap.alloc`. Um bloco
+  nosso no heap muda o endereço de tudo o que o jogo aloca depois, e o RetroAchievements lê o
+  heap por endereço. As bases e tamanhos de `loader/mod.rs` são o mesmo contrato.
 - **O `Cargo.lock` é versionado** e o CI usa `--locked`. Membro novo no workspace entra no lock,
   no mesmo commit.
 

@@ -87,6 +87,7 @@ impl<C: CpuBackend> Machine<C> {
             "heap" => usado(self.heap.proximo(), base, tamanho),
             "objects" => usado(self.objects.proximo(), base, tamanho),
             "surfaces" => usado(self.superficies.proximo(), base, tamanho),
+            "internal" => usado(self.heap_interno.proximo(), base, tamanho),
             _ => tamanho,
         };
         Some(usado)
@@ -106,6 +107,7 @@ impl<C: CpuBackend> Machine<C> {
             "heap" => ("heap", "heap.next"),
             "objects" => ("objects", "objects.next"),
             "surfaces" => ("surfaces", "surfaces.next"),
+            "internal" => ("internal", "internal.next"),
             _ => return Ok(tamanho),
         };
         let proximo = leitor.u32(campo)?;
@@ -181,6 +183,7 @@ impl<C: CpuBackend> Machine<C> {
         self.heap.grava_com_prefixo("heap", &mut secoes);
         self.objects.grava(&mut secoes);
         self.superficies.grava_com_prefixo("surfaces", &mut secoes);
+        self.heap_interno.grava_com_prefixo("internal", &mut secoes);
         secoes.fecha()
     }
 
@@ -229,6 +232,12 @@ impl<C: CpuBackend> Machine<C> {
                 continue;
             };
             let secao = secao_da_regiao(regiao.name);
+            // Estado de antes da região interna: os blocos nossos estão dentro do heap, e o
+            // `libera` os devolve para lá pelo endereço. A região fica como está, e o alocador
+            // interno recomeça vazio mais abaixo.
+            if regiao.name == "internal" && leitor.secao(&secao).is_none() {
+                continue;
+            }
             let bytes = leitor.secao(&secao).ok_or_else(|| Erro::Secao {
                 nome: secao.clone(),
                 motivo: "a seção não está no arquivo".to_string(),
@@ -271,6 +280,11 @@ impl<C: CpuBackend> Machine<C> {
         self.objects.restaura(&leitor)?;
         self.superficies
             .restaura_com_prefixo("surfaces", &leitor)?;
+        if leitor.secao("internal.base").is_some() {
+            self.heap_interno.restaura_com_prefixo("internal", &leitor)?;
+        } else {
+            self.heap_interno = crate::brew::heap::Heap::new(crate::loader::INTERNAL_BASE, crate::loader::INTERNAL_SIZE);
+        }
         for (base, bytes) in regioes {
             self.cpu.write_mem(base, &bytes).map_err(|erro| Erro::Secao {
                 nome: format!("mem.{base:#010x}"),
