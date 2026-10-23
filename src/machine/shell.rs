@@ -988,3 +988,29 @@ mod testes_do_decorador {
         );
     }
 }
+
+#[cfg(test)]
+mod testes_do_beep {
+    use super::*;
+
+    /// O `ISHELL_Beep` não tem alto-falante. Sucesso vazio evita abortar o callback.
+    #[test]
+    fn o_beep_devolve_sucesso() {
+        let code = [
+            0xe3a0_0010u32.to_le_bytes(),
+            0xe12f_ff1eu32.to_le_bytes(),
+        ]
+        .concat();
+        let image = crate::loader::modfile::ModImage::parse(code).unwrap();
+        let module = crate::loader::load(&image).unwrap();
+        let mut machine = Machine::new(crate::cpu::BackendPadrao::new().unwrap(), module, ".");
+        machine.cpu.reset(&machine.module.mem).unwrap();
+        let slot = crate::brew::aee_slots::SHELL
+            .iter()
+            .position(|nome| *nome == "Beep")
+            .unwrap() as u32;
+        let endereco = crate::brew::aee::encode(Interface::Shell, slot);
+        assert_eq!(machine.dispatch(endereco).unwrap(), Some(SUCCESS));
+        assert!(!machine.missing_apis.iter().any(|linha| linha.contains("Beep")));
+    }
+}

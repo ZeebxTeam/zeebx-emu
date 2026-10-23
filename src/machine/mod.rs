@@ -3967,6 +3967,10 @@ impl<C: CpuBackend> Machine<C> {
             // O BREW prevê essa resposta, e o jogo segue pelo caminho de quem não pôde
             // perguntar em vez de parar aqui.
             (Interface::Shell, slot) if Interface::Shell.method(slot) == Some("Prompt") => FALSE,
+            // `void ISHELL_Beep(IShell *, uint32 dwBeepType, boolean bLoud)`.
+            // Não há alto-falante de sistema. Recusar o método aborta o callback que pediu
+            // o bipe — a chamada some no meio e quem chamou não volta.
+            (Interface::Shell, slot) if Interface::Shell.method(slot) == Some("Beep") => SUCCESS,
             (Interface::Shell, slot) if Interface::Shell.method(slot) == Some("DetectType") => {
                 self.shell_detect_type()?
             }
