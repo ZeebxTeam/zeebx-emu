@@ -31,8 +31,9 @@ use zeebx::video::icon::{self, Image};
 use zeebx::ui::entrada::EntradaDoDesktop;
 use zeebx::ui::i18n::{self, Catalog};
 use zeebx::ui::partida::{self, Abertura, Partida, Relatorio, Saida, TurboDaVolta};
+use zeebx::ui::estados;
 use zeebx::ui::screenshot;
-use zeebx::ui::settings::{self, ConfigDoJogo, Proporcao, Settings};
+use zeebx::ui::settings::{self, Combinacao, ConfigDoJogo, Modificadores, Proporcao, Settings};
 use zeebx::video::rasterizer::QuadroNaPlaca;
 use zeebx::video::display::Framebuffer;
 
@@ -88,6 +89,32 @@ pub struct AvisoDeScreenshot {
     pub falhou: bool,
     /// O endereço `file://` da pasta do jogo, para o clique no aviso abri-la.
     pub pasta: String,
+}
+
+/// O que dizer de um atalho do save state, já traduzido.
+pub struct AvisoDeEstado {
+    pub texto: String,
+    pub falhou: bool,
+}
+
+impl AvisoDeEstado {
+    fn certo(texto: String) -> Self {
+        Self { texto, falhou: false }
+    }
+
+    fn falhou(texto: String) -> Self {
+        Self { texto, falhou: true }
+    }
+}
+
+/// O que um atalho do save state pede. Ver [`Nucleo::atalho_de_estado`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PedidoDeEstado {
+    Salvar,
+    Carregar,
+    Proximo,
+    Anterior,
+    Desfazer,
 }
 
 /// O que a thread de gravação responde: o arquivo, ou o motivo da falha, e a pasta.
@@ -177,6 +204,9 @@ pub struct Nucleo {
     teclas: HashSet<Key>,
     /// Por onde as threads de gravação dos screenshots respondem. Ver [`Nucleo::screenshot`].
     gravacoes: (Sender<Gravacao>, Receiver<Gravacao>),
+    /// O slot dos atalhos do save state, de zero. Fica de um jogo para o outro, como no PCSX2:
+    /// quem guarda tudo no 3 não quer escolher o 3 de novo a cada jogo.
+    slot: usize,
 }
 
 impl Nucleo {
@@ -225,6 +255,7 @@ impl Nucleo {
             calibracao: Calibracao::default(),
             teclas: HashSet::new(),
             gravacoes: mpsc::channel(),
+            slot: 0,
         };
         nucleo.procura_de_novo();
         // Na abertura, a pergunta ao GitHub, como no egui: a resposta chega pelo relógio da
@@ -798,6 +829,122 @@ impl Nucleo {
     /// atalho ganha de um botão mapeado na mesma tecla.
     pub fn e_atalho_de_screenshot(&self, tecla: Key) -> bool {
         Key::from_name(&self.settings.atalhos.screenshot) == Some(tecla)
+    }
+
+    /// O que o atalho do save state pede, se a tecla, com estes modificadores, é um deles.
+    fn pedido_de_estado(&self, tecla: Key, modificadores: Modificadores) -> Option<PedidoDeEstado> {
+        let atalhos = &self.settings.atalhos;
+        let procurada = Some(Combinacao { tecla, modificadores });
+        [
+            (&atalhos.salvar_estado, PedidoDeEstado::Salvar),
+            (&atalhos.carregar_estado, PedidoDeEstado::Carregar),
+            (&atalhos.proximo_slot, PedidoDeEstado::Proximo),
+            (&atalhos.slot_anterior, PedidoDeEstado::Anterior),
+            (&atalhos.desfazer_carregar, PedidoDeEstado::Desfazer),
+        ]
+        .into_iter()
+        .find(|(texto, _)| Combinacao::le(texto) == procurada)
+        .map(|(_, pedido)| pedido)
+    }
+
+    /// Se a tecla, com estes modificadores, é um atalho do save state. A janela do jogo pergunta
+    /// antes de tudo: o atalho ganha de um botão mapeado na mesma tecla.
+    pub fn e_atalho_de_estado(&self, tecla: Key, modificadores: Modificadores) -> bool {
+        self.pedido_de_estado(tecla, modificadores).is_some()
+    }
+
+    /// Faz o que o atalho do save state pede, se a tecla é um deles: o aviso, e se o console
+    /// voltou a outro instante. `None` quando a tecla não é atalho nenhum, ou não há jogo aberto.
+    ///
+    /// Os slots moram com o resto do perfil, em `<config>/states/<conteúdo>/`, o mesmo layout do
+    /// Android. Ver `docs/implementacao/25-save-state-no-desktop.md`.
+    pub fn atalho_de_estado(
+        &mut self,
+        tecla: Key,
+        modificadores: Modificadores,
+    ) -> Option<(AvisoDeEstado, bool)> {
+        let pedido = self.pedido_de_estado(tecla, modificadores)?;
+        let com_placa = self.gl.is_some();
+        let partida = self.partida.as_mut()?;
+        let raiz = zeebx::config::config_dir();
+        let numero = |slot: usize| (slot + 1).to_string();
+        let catalogo = &self.catalogo;
+        let falha = |motivo: String| {
+            AvisoDeEstado::falhou(catalogo.format("play.state.error", &[("reason", &motivo)]))
+        };
+        let aviso = match pedido {
+            PedidoDeEstado::Proximo | PedidoDeEstado::Anterior => {
+                self.slot = match pedido {
+                    PedidoDeEstado::Proximo => (self.slot + 1) % estados::SLOTS,
+                    _ => (self.slot + estados::SLOTS - 1) % estados::SLOTS,
+                };
+                let ocupado = partida
+                    .sessao()
+                    .conteudo()
+                    .and_then(|id| estados::lista(&raiz, id.as_str())[self.slot].clone());
+                let situacao = match ocupado {
+                    Some(slot) => catalogo.format(
+                        "play.state.used",
+                        &[("size", &estados::tamanho(slot.bytes))],
+                    ),
+                    None => catalogo.get("play.state.empty").to_string(),
+                };
+                let texto = catalogo.format(
+                    "play.state.selected",
+                    &[("slot", &numero(self.slot)), ("status", &situacao)],
+                );
+                return Some((AvisoDeEstado::certo(texto), false));
+            }
+            PedidoDeEstado::Salvar => {
+                match no_contexto(com_placa, || partida.salva_estado(&raiz, self.slot)) {
+                    Ok(_) => AvisoDeEstado::certo(
+                        catalogo.format("play.state.saved", &[("slot", &numero(self.slot))]),
+                    ),
+                    Err(motivo) => falha(motivo),
+                }
+            }
+            PedidoDeEstado::Carregar => {
+                let vazio = partida
+                    .sessao()
+                    .conteudo()
+                    .is_some_and(|id| estados::lista(&raiz, id.as_str())[self.slot].is_none());
+                if vazio {
+                    let texto =
+                        catalogo.format("play.state.empty_slot", &[("slot", &numero(self.slot))]);
+                    return Some((AvisoDeEstado::falhou(texto), false));
+                }
+                match no_contexto(com_placa, || partida.carrega_estado(&raiz, self.slot)) {
+                    Ok(_) => {
+                        let desfazer = Combinacao::le(&self.settings.atalhos.desfazer_carregar)
+                            .filter(|_| partida.pode_desfazer_carregar());
+                        let texto = match desfazer {
+                            Some(tecla) => catalogo.format(
+                                "play.state.loaded.undo",
+                                &[("slot", &numero(self.slot)), ("key", &tecla.rotulo())],
+                            ),
+                            None => catalogo
+                                .format("play.state.loaded", &[("slot", &numero(self.slot))]),
+                        };
+                        return Some((AvisoDeEstado::certo(texto), true));
+                    }
+                    Err(motivo) => falha(motivo),
+                }
+            }
+            PedidoDeEstado::Desfazer => {
+                if !partida.pode_desfazer_carregar() {
+                    let texto = catalogo.get("play.state.nothing_to_undo").to_string();
+                    return Some((AvisoDeEstado::falhou(texto), false));
+                }
+                match no_contexto(com_placa, || partida.desfaz_carregar()) {
+                    Ok(()) => {
+                        let texto = catalogo.get("play.state.undone").to_string();
+                        return Some((AvisoDeEstado::certo(texto), true));
+                    }
+                    Err(motivo) => falha(motivo),
+                }
+            }
+        };
+        Some((aviso, false))
     }
 
     /// Grava o quadro que está na tela. `carimbo` é a hora local, que vem do Qt.

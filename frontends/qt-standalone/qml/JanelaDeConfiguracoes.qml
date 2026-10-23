@@ -425,12 +425,12 @@ ApplicationWindow {
                 focus: true
                 Keys.onPressed: (evento) => {
                     if (!evento.isAutoRepeat)
-                        cfg.tecla(evento.key, true)
+                        cfg.tecla(evento.key, evento.modifiers, true)
                     evento.accepted = true
                 }
                 Keys.onReleased: (evento) => {
                     if (!evento.isAutoRepeat)
-                        cfg.tecla(evento.key, false)
+                        cfg.tecla(evento.key, evento.modifiers, false)
                     evento.accepted = true
                 }
 
@@ -933,12 +933,12 @@ ApplicationWindow {
                 focus: true
                 Keys.onPressed: (evento) => {
                     if (!evento.isAutoRepeat)
-                        cfg.tecla(evento.key, true)
+                        cfg.tecla(evento.key, evento.modifiers, true)
                     evento.accepted = true
                 }
                 Keys.onReleased: (evento) => {
                     if (!evento.isAutoRepeat)
-                        cfg.tecla(evento.key, false)
+                        cfg.tecla(evento.key, evento.modifiers, false)
                     evento.accepted = true
                 }
 
@@ -953,13 +953,22 @@ ApplicationWindow {
                     Dica {
                         text: janela.tr("controls.shortcuts.hint")
                     }
+                    Dica {
+                        text: janela.tr("controls.shortcuts.combo.hint")
+                    }
 
                     Repeater {
                         model: [
                             ["screenshot", "controls.shortcut.screenshot", "controls.shortcut.waiting", "controls.shortcut.reset"],
                             ["avancar", "controls.shortcut.fast_forward", "controls.shortcut.waiting_any", "controls.shortcut.reset_ff"],
                             ["voltar", "controls.shortcut.rewind", "controls.shortcut.waiting_any", "controls.shortcut.reset_rewind"],
-                            ["reiniciar", "controls.shortcut.restart", "controls.shortcut.waiting", "controls.shortcut.reset_restart"]
+                            ["reiniciar", "controls.shortcut.restart", "controls.shortcut.waiting", "controls.shortcut.reset_restart"],
+                            // Os do save state: o de fábrica muda com o sistema, e o botão o diz.
+                            ["salvar_estado", "controls.shortcut.save_state", "controls.shortcut.waiting_combo", ""],
+                            ["carregar_estado", "controls.shortcut.load_state", "controls.shortcut.waiting_combo", ""],
+                            ["proximo_slot", "controls.shortcut.next_slot", "controls.shortcut.waiting_combo", ""],
+                            ["slot_anterior", "controls.shortcut.previous_slot", "controls.shortcut.waiting_combo", ""],
+                            ["desfazer_carregar", "controls.shortcut.undo_load", "controls.shortcut.waiting_combo", ""]
                         ]
 
                         RowLayout {
@@ -988,7 +997,9 @@ ApplicationWindow {
                             }
                             Button {
                                 focusPolicy: Qt.NoFocus
-                                text: janela.tr(modelData[3])
+                                text: modelData[3] !== ""
+                                      ? janela.tr(modelData[3])
+                                      : janela.tr("controls.shortcut.reset_key").replace("{key}", cfg.padraoDoAtalho(modelData[0]))
                                 onClicked: cfg.restauraAtalho(modelData[0])
                             }
                         }

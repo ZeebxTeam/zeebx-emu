@@ -320,6 +320,18 @@ pub struct Atalhos {
     pub voltar: Vec<Source>,
     /// Reiniciar o jogo aberto, na hora. Só de teclado, como o screenshot; vazio é sem tecla.
     pub reiniciar: String,
+    /// Os save states da janela do jogo: gravar no slot escolhido, carregar dele, trocar de slot
+    /// e desfazer o último carregar. Ver [`crate::ui::estados`].
+    ///
+    /// **Uma [`Combinacao`], e não uma tecla só**, ao contrário dos de cima: no Mac as teclas F
+    /// são de brilho, de volume e do Mission Control, e o padrão de lá é com o ⌘. Só de teclado,
+    /// como o screenshot: um botão de controle que grava ou carrega estado é fácil de apertar sem
+    /// querer. Vazio é sem tecla.
+    pub salvar_estado: String,
+    pub carregar_estado: String,
+    pub proximo_slot: String,
+    pub slot_anterior: String,
+    pub desfazer_carregar: String,
 }
 
 impl Atalhos {
@@ -335,6 +347,31 @@ impl Atalhos {
     pub fn avancar_padrao() -> Vec<Source> {
         vec![Source::key(Self::AVANCAR_PADRAO)]
     }
+
+    /// Os do save state seguem o PCSX2 no Windows e no Linux — F1 grava, F3 carrega, F2 troca de
+    /// slot — e o costume do Mac fora dele, onde ⌘S e ⌘L são o gravar e o abrir de todo programa
+    /// e o OpenEmu faz o mesmo. Nenhum jogo usa o ⌘, então nada colide com os botões.
+    pub const SALVAR_ESTADO_PADRAO: &str = match cfg!(target_os = "macos") {
+        true => "Cmd+S",
+        false => "F1",
+    };
+    pub const CARREGAR_ESTADO_PADRAO: &str = match cfg!(target_os = "macos") {
+        true => "Cmd+L",
+        false => "F3",
+    };
+    pub const PROXIMO_SLOT_PADRAO: &str = match cfg!(target_os = "macos") {
+        true => "Cmd+CloseBracket",
+        false => "F2",
+    };
+    pub const SLOT_ANTERIOR_PADRAO: &str = match cfg!(target_os = "macos") {
+        true => "Cmd+OpenBracket",
+        false => "Shift+F2",
+    };
+    /// O F4 fica ao lado dos três; o ⌘Z é o desfazer de todo programa do Mac.
+    pub const DESFAZER_CARREGAR_PADRAO: &str = match cfg!(target_os = "macos") {
+        true => "Cmd+Z",
+        false => "F4",
+    };
 
     /// As origens que são de atalho e por isso não chegam ao jogo.
     ///
@@ -352,7 +389,122 @@ impl Default for Atalhos {
             avancar: Self::avancar_padrao(),
             voltar: vec![Source::key(Self::VOLTAR_PADRAO)],
             reiniciar: Self::REINICIAR_PADRAO.to_string(),
+            salvar_estado: Self::SALVAR_ESTADO_PADRAO.to_string(),
+            carregar_estado: Self::CARREGAR_ESTADO_PADRAO.to_string(),
+            proximo_slot: Self::PROXIMO_SLOT_PADRAO.to_string(),
+            slot_anterior: Self::SLOT_ANTERIOR_PADRAO.to_string(),
+            desfazer_carregar: Self::DESFAZER_CARREGAR_PADRAO.to_string(),
         }
+    }
+}
+
+/// Os modificadores de uma [`Combinacao`].
+///
+/// **O `cmd` é o ⌘ no Mac.** Fora dele é a tecla do sistema (a do Windows, o Super), que o Qt
+/// chama de Meta nos dois casos — mas no Mac o Qt troca os nomes, e o que ele chama de Control é
+/// o ⌘. Quem lê o teclado de um toolkit é quem desfaz a troca.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Modificadores {
+    pub ctrl: bool,
+    pub alt: bool,
+    pub shift: bool,
+    pub cmd: bool,
+}
+
+impl Modificadores {
+    pub fn nenhum(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// Uma tecla e os modificadores que vão com ela: `F1`, `Shift+F2`, `Cmd+S`.
+///
+/// Gravada como texto, com o nome de tecla do `egui::Key` no fim e os modificadores na frente,
+/// separados por `+`. Uma tecla sozinha é escrita como sempre foi (`F9`), e por isso o mesmo texto
+/// serve aos atalhos de uma tecla só. Os nomes do egui não têm `+`: o da tecla de mais é `Plus`.
+///
+/// **Bate só com os mesmos modificadores.** O F2 troca para o próximo slot e o Shift+F2 para o
+/// anterior: aceitar modificadores a mais faria o Shift+F2 também andar para a frente.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Combinacao {
+    pub tecla: egui::Key,
+    pub modificadores: Modificadores,
+}
+
+impl Combinacao {
+    /// Lê o texto gravado. `None` para o vazio, para um modificador desconhecido ou para uma
+    /// tecla que o egui não conhece.
+    pub fn le(texto: &str) -> Option<Self> {
+        let mut partes: Vec<&str> = texto.split('+').map(str::trim).collect();
+        let tecla = egui::Key::from_name(partes.pop()?)?;
+        let mut modificadores = Modificadores::default();
+        for parte in partes {
+            let campo = match parte {
+                "Ctrl" => &mut modificadores.ctrl,
+                "Alt" => &mut modificadores.alt,
+                "Shift" => &mut modificadores.shift,
+                "Cmd" => &mut modificadores.cmd,
+                _ => return None,
+            };
+            *campo = true;
+        }
+        Some(Self {
+            tecla,
+            modificadores,
+        })
+    }
+
+    /// O texto que se grava: os modificadores na ordem do Ctrl+Alt+Shift+Cmd, e a tecla.
+    pub fn nome(&self) -> String {
+        let m = &self.modificadores;
+        let mut nome = String::new();
+        for (ligado, texto) in [
+            (m.ctrl, "Ctrl+"),
+            (m.alt, "Alt+"),
+            (m.shift, "Shift+"),
+            (m.cmd, "Cmd+"),
+        ] {
+            if ligado {
+                nome.push_str(texto);
+            }
+        }
+        nome.push_str(self.tecla.name());
+        nome
+    }
+
+    /// O que se mostra a quem lê: no Mac, os símbolos de lá (`⇧⌘S`); fora dele, `Shift+F2`. A
+    /// tecla vai pelo símbolo quando tem um: `]`, e não `CloseBracket`.
+    pub fn rotulo(&self) -> String {
+        let m = &self.modificadores;
+        let tecla = self.tecla.symbol_or_name();
+        if cfg!(target_os = "macos") {
+            let mut rotulo = String::new();
+            for (ligado, simbolo) in [(m.ctrl, "⌃"), (m.alt, "⌥"), (m.shift, "⇧"), (m.cmd, "⌘")]
+            {
+                if ligado {
+                    rotulo.push_str(simbolo);
+                }
+            }
+            rotulo.push_str(tecla);
+            return rotulo;
+        }
+        let sistema = match cfg!(target_os = "windows") {
+            true => "Win+",
+            false => "Super+",
+        };
+        let mut rotulo = String::new();
+        for (ligado, texto) in [
+            (m.ctrl, "Ctrl+"),
+            (m.alt, "Alt+"),
+            (m.shift, "Shift+"),
+            (m.cmd, sistema),
+        ] {
+            if ligado {
+                rotulo.push_str(texto);
+            }
+        }
+        rotulo.push_str(tecla);
+        rotulo
     }
 }
 
@@ -649,29 +801,46 @@ impl Settings {
         settings.controls.adopt();
         settings.adota_o_limite_antigo();
         if let Some(texto) = &texto {
-            settings.adota_o_atalho_de_reiniciar(texto, path);
+            settings.adota_os_atalhos_novos(texto, path);
         }
         settings
     }
 
-    /// O atalho de reiniciar chega sem tecla para quem já usa o R num botão do Zeebo.
+    /// Um atalho novo chega sem tecla para quem já usa a tecla de fábrica dele num botão do Zeebo.
     ///
-    /// O R de fábrica não está em nenhum botão do teclado de fábrica, mas quem remapeou pode tê-lo
-    /// posto num: o atalho, perguntado antes do jogo, roubaria o botão, e um toque nele
-    /// reiniciaria a partida. Só vale para o arquivo que ainda não conhecia o atalho — quem o
-    /// escolheu depois escolheu.
+    /// O R de reiniciar e o F1 a F4 do save state não estão em nenhum botão do teclado de fábrica,
+    /// mas quem remapeou pode tê-los posto num: o atalho, perguntado antes do jogo, roubaria o
+    /// botão, e um toque nele reiniciaria a partida ou carregaria um estado. Só vale para o arquivo
+    /// que ainda não conhecia o atalho — quem o escolheu depois escolheu. Uma combinação com
+    /// modificador (o Shift+F2, o ⌘S) não colide com botão nenhum, e chega sempre.
     ///
-    /// **As configurações de cada jogo contam também.** O atalho é um só, e um jogo com o R num
+    /// **As configurações de cada jogo contam também.** O atalho é um só, e um jogo com a tecla num
     /// botão perderia o botão do mesmo jeito. Elas moram em `jogos/`, ao lado de `path`.
-    fn adota_o_atalho_de_reiniciar(&mut self, texto: &str, path: &Path) {
-        let conhecia = serde_json::from_str::<serde_json::Value>(texto)
-            .ok()
-            .is_some_and(|valor| valor.pointer("/atalhos/reiniciar").is_some());
-        if conhecia {
+    fn adota_os_atalhos_novos(&mut self, texto: &str, path: &Path) {
+        let valor = serde_json::from_str::<serde_json::Value>(texto).ok();
+        let atalhos = &mut self.atalhos;
+        let novos: Vec<&mut String> = [
+            ("reiniciar", &mut atalhos.reiniciar),
+            ("salvar_estado", &mut atalhos.salvar_estado),
+            ("carregar_estado", &mut atalhos.carregar_estado),
+            ("proximo_slot", &mut atalhos.proximo_slot),
+            ("slot_anterior", &mut atalhos.slot_anterior),
+            ("desfazer_carregar", &mut atalhos.desfazer_carregar),
+        ]
+        .into_iter()
+        .filter(|(campo, _)| {
+            let conhecia = valor
+                .as_ref()
+                .is_some_and(|valor| valor.pointer(&format!("/atalhos/{campo}")).is_some());
+            !conhecia
+        })
+        .map(|(_, atalho)| atalho)
+        .filter(|atalho| !atalho.contains('+'))
+        .collect();
+        if novos.is_empty() {
             return;
         }
-        let tecla = Atalhos::REINICIAR_PADRAO;
-        let usa = |controles: &crate::input::bindings::Controls| {
+        let usa = |controles: &crate::input::bindings::Controls, tecla: &str| {
             controles.players.iter().any(|jogador| {
                 jogador
                     .buttons
@@ -680,16 +849,20 @@ impl Settings {
                     .any(|fonte| matches!(fonte, Source::Key { name } if name == tecla))
             })
         };
-        let algum_jogo = || {
-            let Some(pasta) = path.parent().map(|dir| dir.join("jogos")) else {
-                return false;
-            };
-            std::fs::read_dir(pasta).into_iter().flatten().flatten().any(|entrada| {
-                ConfigDoJogo::carrega_de(&entrada.path()).is_some_and(|jogo| usa(&jogo.controls))
-            })
-        };
-        if usa(&self.controls) || algum_jogo() {
-            self.atalhos.reiniciar.clear();
+        let jogos: Vec<ConfigDoJogo> = path
+            .parent()
+            .map(|dir| dir.join("jogos"))
+            .and_then(|pasta| std::fs::read_dir(pasta).ok())
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|entrada| ConfigDoJogo::carrega_de(&entrada.path()))
+            .collect();
+        for atalho in novos {
+            let tecla = atalho.clone();
+            if usa(&self.controls, &tecla) || jogos.iter().any(|jogo| usa(&jogo.controls, &tecla)) {
+                atalho.clear();
+            }
         }
     }
 
@@ -794,6 +967,11 @@ mod tests {
                 avancar: vec![Source::key("F7"), Source::button("LeftThumb")],
                 voltar: vec![Source::button("RightThumb")],
                 reiniciar: "Home".into(),
+                salvar_estado: "Ctrl+S".into(),
+                carregar_estado: "F6".into(),
+                proximo_slot: "Alt+Shift+CloseBracket".into(),
+                slot_anterior: String::new(),
+                desfazer_carregar: "Cmd+Z".into(),
             },
             biblioteca: ModoDaBiblioteca::Slider,
             movimento: Movimento {
@@ -942,6 +1120,84 @@ mod tests {
         std::fs::write(&path, r#"{ "roms_dir": "/jogos" }"#).unwrap();
         assert_eq!(Settings::load_from(&path).atalhos.reiniciar, "", "o R do jogo virou reinício");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// O F1 do save state segue a regra do R: chega para quem não o usa, e não rouba o botão de
+    /// quem o pôs num. A combinação com modificador chega sempre.
+    #[test]
+    fn os_atalhos_do_save_state_nao_roubam_um_botao() {
+        let dir = std::env::temp_dir().join(format!("zeebx-testes-estado-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+
+        let mut com_f1 = Settings::default();
+        com_f1.controls.player_mut(0).bind("b1", Source::key("F1"));
+        com_f1.controls.player_mut(0).bind("b2", Source::key("F2"));
+        let mut valor = serde_json::to_value(&com_f1).unwrap();
+        for campo in [
+            "salvar_estado",
+            "carregar_estado",
+            "proximo_slot",
+            "slot_anterior",
+            "desfazer_carregar",
+        ] {
+            valor["atalhos"].as_object_mut().unwrap().remove(campo);
+        }
+        std::fs::write(&path, valor.to_string()).unwrap();
+        let lido = Settings::load_from(&path).atalhos;
+        assert_eq!(lido.carregar_estado, Atalhos::CARREGAR_ESTADO_PADRAO);
+        assert_eq!(lido.slot_anterior, Atalhos::SLOT_ANTERIOR_PADRAO);
+        if cfg!(target_os = "macos") {
+            assert_eq!(lido.salvar_estado, "Cmd+S");
+        } else {
+            assert_eq!(lido.salvar_estado, "", "o F1 do b1 virou save state");
+            assert_eq!(lido.proximo_slot, "", "o F2 do b2 virou troca de slot");
+        }
+
+        // Gravado com o atalho, ele vale mesmo com a tecla num botão: foi escolha.
+        com_f1.save_to(&path).unwrap();
+        assert_eq!(
+            Settings::load_from(&path).atalhos.salvar_estado,
+            Atalhos::SALVAR_ESTADO_PADRAO
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_combinacao_vai_ao_texto_e_volta() {
+        let shift_f2 = Combinacao::le("Shift+F2").unwrap();
+        assert_eq!(shift_f2.tecla, egui::Key::F2);
+        assert!(shift_f2.modificadores.shift && !shift_f2.modificadores.cmd);
+        assert_eq!(shift_f2.nome(), "Shift+F2");
+
+        let so_a_tecla = Combinacao::le("F9").unwrap();
+        assert!(so_a_tecla.modificadores.nenhum());
+        assert_eq!(so_a_tecla.nome(), "F9");
+
+        // A ordem de quem escreveu à mão não importa; a gravada é sempre a mesma.
+        assert_eq!(
+            Combinacao::le("Cmd+Shift+]").unwrap().nome(),
+            "Shift+Cmd+CloseBracket"
+        );
+        assert_eq!(Combinacao::le("Ctrl+Plus").unwrap().tecla, egui::Key::Plus);
+
+        assert_eq!(Combinacao::le(""), None);
+        assert_eq!(Combinacao::le("Hyper+F1"), None);
+        assert_eq!(Combinacao::le("Shift+"), None);
+
+        for padrao in [
+            Atalhos::SALVAR_ESTADO_PADRAO,
+            Atalhos::CARREGAR_ESTADO_PADRAO,
+            Atalhos::PROXIMO_SLOT_PADRAO,
+            Atalhos::SLOT_ANTERIOR_PADRAO,
+            Atalhos::DESFAZER_CARREGAR_PADRAO,
+        ] {
+            assert_eq!(
+                Combinacao::le(padrao).map(|c| c.nome()).as_deref(),
+                Some(padrao)
+            );
+        }
     }
 
     #[test]

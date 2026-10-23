@@ -94,9 +94,15 @@ Window {
         // Zeebo, que usa setas, Z, X, C, V, Q, W, F, G, H, Backspace e Enter. F11 e Alt+Enter
         // alternam a tela cheia. O screenshot (F9 por padrão) e o reiniciar (R por padrão),
         // trocáveis, são perguntados antes do jogo: um botão mapeado na mesma tecla não a recebe.
-        // Ver `docs/implementacao/22-screenshots.md`.
+        // Ver `docs/implementacao/22-screenshots.md`. Os do save state vêm antes de todos: são
+        // combinações, que batem só com os mesmos modificadores, e o Shift+F9 de um deles não
+        // pode virar o F9 do screenshot. Ver `docs/implementacao/25-save-state-no-desktop.md`.
         Keys.onPressed: (evento) => {
-            if (tela.ehAtalhoDeScreenshot(evento.key)) {
+            if (tela.ehAtalhoDeEstado(evento.key, evento.modifiers)) {
+                // Segurar não grava nem carrega trinta vezes. O aviso chega pela `estadoSerie`.
+                if (!evento.isAutoRepeat)
+                    tela.atalhoDeEstado(evento.key, evento.modifiers)
+            } else if (tela.ehAtalhoDeScreenshot(evento.key)) {
                 // Segurar a tecla tira um screenshot, e não trinta.
                 if (!evento.isAutoRepeat)
                     tela.screenshot(Qt.formatDateTime(new Date(), "yyyy-MM-dd HH-mm-ss"))
@@ -386,6 +392,46 @@ Window {
             function onScreenshotSerieChanged() {
                 avisoDoScreenshot.visible = true
                 someODoScreenshot.restart()
+            }
+        }
+    }
+
+    // O aviso do save state, no mesmo canto, pelo mesmo tempo: o slot escolhido, o estado salvo
+    // ou carregado, ou por que não deu. Embaixo do do screenshot, para os dois caberem juntos.
+    Rectangle {
+        id: avisoDoEstado
+
+        anchors.right: tela.right
+        anchors.top: avisoDoScreenshot.visible ? avisoDoScreenshot.bottom : tela.top
+        anchors.topMargin: avisoDoScreenshot.visible ? 8 : 16
+        anchors.rightMargin: 16
+        width: textoDoEstado.implicitWidth + 24
+        height: textoDoEstado.implicitHeight + 16
+        visible: false
+        radius: 6
+        color: "#e6202020"
+        border.color: "#505050"
+
+        Text {
+            id: textoDoEstado
+
+            anchors.centerIn: parent
+            color: tela.estadoFalhou ? "#ffb040" : "white"
+            text: tela.estadoTexto
+        }
+
+        Timer {
+            id: someODoEstado
+
+            interval: 2000
+            onTriggered: avisoDoEstado.visible = false
+        }
+
+        Connections {
+            target: tela
+            function onEstadoSerieChanged() {
+                avisoDoEstado.visible = true
+                someODoEstado.restart()
             }
         }
     }

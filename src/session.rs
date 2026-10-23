@@ -132,6 +132,9 @@ pub struct Session {
     #[cfg(feature = "audio")]
     audio: Option<crate::audio::Output>,
     title: String,
+    /// A identidade do arquivo que o frontend abriu, quando o perfil tem overlay. É a pasta dos
+    /// saves e dos slots de save state do jogo. Ver [`Session::conteudo`].
+    conteudo: Option<crate::storage::ContentId>,
     /// O ClassID do applet desta sessão.
     classe: u32,
     /// A tela intermediária à mostra, quando há uma. Ver [`Session::mostra_quadro_intermediario`].
@@ -614,16 +617,17 @@ impl Session {
         // O overlay é por conteúdo: o mesmo jogo extraído de novo continua lendo o mesmo save, e
         // um pacote diferente não herda o save do outro. O hash é do arquivo escolhido pelo
         // frontend (`.zip` ou `.mod`), antes de qualquer extração.
-        let save_root = match storage.overlay {
+        let id_do_conteudo = match storage.overlay {
             true => {
                 let id = storage
                     .content_id(conteudo)
                     .map_err(|e| StartError::Unreadable(e))?;
                 grava_titulo(storage, &id, conteudo);
-                Some(storage.save_for(&id))
+                Some(id)
             }
             false => None,
         };
+        let save_root = id_do_conteudo.as_ref().map(|id| storage.save_for(id));
         let cpu = CpuDaSessao::new().map_err(|e| StartError::NotLoadable(e.to_string()))?;
         let mut machine = Machine::new_with_storage_policy(cpu, module, root, storage, save_root, midi_policy);
         // A lista precisa existir antes de `run` e `create_applet`: a Z-Wheel a enumera no boot.
@@ -713,6 +717,7 @@ impl Session {
             #[cfg(feature = "audio")]
             audio: None,
             title,
+            conteudo: id_do_conteudo,
             classe: clsid,
             intermediario: None,
             started: Instant::now(),
@@ -1676,6 +1681,16 @@ impl Session {
         self.screen().signature()
     }
 
+    /// A identidade do arquivo aberto: o hash do `.zip`, do `.7z` ou do `.mod` escolhido, antes
+    /// da extração. `None` só num perfil montado à mão, sem overlay.
+    ///
+    /// Existe para os slots de save state ([`crate::ui::estados`]): a sessão já calculou o hash
+    /// para achar a pasta dos saves, e calcular de novo leria o pacote inteiro outra vez a cada
+    /// jogo aberto — e a cada um que a Z-Wheel lança.
+    pub fn conteudo(&self) -> Option<&crate::storage::ContentId> {
+        self.conteudo.as_ref()
+    }
+
     /// A raiz do sistema de arquivos do jogo: onde a extração vive.
     ///
     /// O frontend precisa dela para podar o cache sem apagar o jogo em execução.
@@ -2046,6 +2061,7 @@ pub(crate) mod tests {
             #[cfg(feature = "audio")]
             audio: None,
             title: "teste".to_string(),
+            conteudo: None,
             classe: 0,
             intermediario: None,
             started: agora,

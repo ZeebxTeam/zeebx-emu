@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 
 use crate::input::{self, Pad, PORTAS};
 use crate::session::{FATIA_MAXIMA, Session, StartError, Z_WHEEL};
+use crate::ui::estados;
 use crate::ui::settings::{Scaling, Settings};
 use crate::input::bindings::Controls;
 use crate::velocidade::rewind::{AjustesDoRewind, ControleDoRewind, Leitura};
@@ -230,6 +231,8 @@ pub struct Partida {
     rewind: ControleDoRewind,
     /// A chave do jogo, de [`crate::library::chave_do_jogo`].
     chave: Option<String>,
+    /// O estado de antes do último carregar, para desfazê-lo. Ver [`Partida::desfaz_carregar`].
+    antes_de_carregar: Option<Vec<u8>>,
 }
 
 /// O que o turbo precisa saber numa volta: a tecla de turbo de cada porta, o mapeamento de onde
@@ -349,6 +352,7 @@ impl Partida {
             turbos: Default::default(),
             rewind: ControleDoRewind::default(),
             chave: crate::library::chave_do_jogo(caminho),
+            antes_de_carregar: None,
             diario: numero.map(|numero| Diario {
                 numero,
                 inicio: Instant::now(),
@@ -530,6 +534,76 @@ impl Partida {
     /// Esquece os pontos de retorno: um save state carregado é outra linha do tempo.
     pub fn esquece_os_pontos(&mut self) {
         self.rewind.esquece_os_pontos();
+    }
+
+    /// Grava o estado no `slot` do jogo, em `raiz` (ver [`crate::ui::estados`]).
+    ///
+    /// **Com o contexto do rasterizador corrente**, como o [`Partida::le_o_rewind`]: a miniatura e
+    /// o quadro que entra no estado são lidos da textura da placa.
+    pub fn salva_estado(&mut self, raiz: &Path, slot: usize) -> Result<estados::Slot, String> {
+        let id = self.id_do_conteudo()?;
+        estados::salva(raiz, &id, slot, &mut self.sessao)
+    }
+
+    /// Carrega o estado do `slot`, guardando antes o de agora para o [`Partida::desfaz_carregar`].
+    ///
+    /// Com o contexto do rasterizador corrente: o estado restaurado refaz as texturas na placa.
+    pub fn carrega_estado(&mut self, raiz: &Path, slot: usize) -> Result<estados::Slot, String> {
+        let id = self.id_do_conteudo()?;
+        // **O de agora é guardado antes**, e não depois de o slot ser lido: é o carregar sem
+        // querer que custa caro, e o desfazer é o que o devolve. Sem poder gravar agora — um
+        // desenho começado —, o carregar segue, e não há o que desfazer: o jogador pediu.
+        let antes = self.sessao.pode_salvar().ok().map(|()| {
+            self.sessao.materializa_quadro_gl();
+            self.sessao.grava_estado()
+        });
+        let slot = estados::carrega(raiz, &id, slot, &mut self.sessao)?;
+        self.antes_de_carregar = antes;
+        self.depois_de_restaurar();
+        Ok(slot)
+    }
+
+    /// Volta ao estado de antes do último carregar. Só uma vez: desfazer de novo não refaz.
+    pub fn desfaz_carregar(&mut self) -> Result<(), String> {
+        let antes = self
+            .antes_de_carregar
+            .take()
+            .ok_or_else(|| "nenhum carregar para desfazer".to_string())?;
+        self.sessao.retoma_o_contexto();
+        if let Err(erro) = self.sessao.restaura_estado(&antes) {
+            // O estado é da mesma sessão, e o motor só o recusaria por um defeito dele; fica
+            // guardado para uma segunda tentativa não perder o progresso de vez.
+            self.antes_de_carregar = Some(antes);
+            return Err(erro.to_string());
+        }
+        self.depois_de_restaurar();
+        Ok(())
+    }
+
+    /// Se há um carregar para desfazer.
+    pub fn pode_desfazer_carregar(&self) -> bool {
+        self.antes_de_carregar.is_some()
+    }
+
+    fn id_do_conteudo(&self) -> Result<String, String> {
+        self.sessao
+            .conteudo()
+            .map(|id| id.as_str().to_string())
+            .ok_or_else(|| "o arquivo deste jogo não foi identificado".to_string())
+    }
+
+    /// O que muda na janela quando o console volta a outro instante.
+    ///
+    /// Os pontos do rewind são de outra linha do tempo. A entrada que o jogo já recebeu também:
+    /// o que está apertado agora chega de novo como aperto no primeiro quadro restaurado. E o
+    /// tempo real que passou no carregar não é para o jogo recuperar. A pausa fica como estava:
+    /// carregar com o jogo parado mostra o instante carregado, parado.
+    fn depois_de_restaurar(&mut self) {
+        self.rewind.esquece_os_pontos();
+        self.pad_anterior = Default::default();
+        self.teclas_entregues.clear();
+        self.teclas_pendentes.clear();
+        self.reinicia_relogio();
     }
 
     /// Se algum jogador está com o turbo de alternar ligado: a janela diz "Turbo" na tela.
@@ -762,6 +836,111 @@ pub fn enquadra(area: [f32; 2], escala: Scaling, manter_proporcao: bool, aspecto
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Salva, anda, carrega e desfaz numa partida de verdade, e confere o relógio do jogo e a tela
+    /// em cada passo. É o caminho dos atalhos do save state da janela Qt.
+    fn salva_anda_carrega_e_desfaz(rom: &str, gl: Option<Arc<glow::Context>>) {
+        let mut settings = Settings::default();
+        settings.graphics.gpu_rasterizer = gl.is_some();
+        settings.audio.enabled = false;
+        let abertura = Abertura {
+            settings: &settings,
+            serial: None,
+            gl,
+            instalados: Vec::new(),
+        };
+        let mut partida = Partida::abre(Path::new(rom), abertura, None).expect("o jogo abriu");
+        let anda = |partida: &mut Partida, ms: u32| {
+            let alvo = partida.sessao().clock_ms() + ms;
+            while partida.sessao().clock_ms() < alvo {
+                partida.sessao_mut().step(Duration::from_millis(50), false);
+                assert_eq!(partida.sessao().stopped_reason(), None, "o jogo parou");
+            }
+        };
+        let tela = |partida: &mut Partida| {
+            partida.sessao_mut().materializa_quadro_gl();
+            partida.sessao().screen().signature()
+        };
+        let raiz = std::env::temp_dir().join(format!(
+            "zeebx-testes-partida-estado-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&raiz);
+
+        anda(&mut partida, 3000);
+        assert!(
+            partida.desfaz_carregar().is_err(),
+            "sem carregar não há o que desfazer"
+        );
+        partida
+            .salva_estado(&raiz, 4)
+            .expect("o estado foi gravado");
+        let (salvo_em, tela_salva) = (partida.sessao().clock_ms(), tela(&mut partida));
+
+        anda(&mut partida, 2000);
+        let (antes_em, tela_antes) = (partida.sessao().clock_ms(), tela(&mut partida));
+        partida
+            .carrega_estado(&raiz, 4)
+            .expect("o estado foi carregado");
+        assert_eq!(
+            partida.sessao().clock_ms(),
+            salvo_em,
+            "o relógio voltou ao instante salvo"
+        );
+        assert_eq!(
+            tela(&mut partida),
+            tela_salva,
+            "a tela voltou à do instante salvo"
+        );
+        assert!(partida.pode_desfazer_carregar());
+
+        partida.desfaz_carregar().expect("o carregar foi desfeito");
+        assert_eq!(
+            partida.sessao().clock_ms(),
+            antes_em,
+            "o relógio voltou a antes do carregar"
+        );
+        assert_eq!(
+            tela(&mut partida),
+            tela_antes,
+            "a tela voltou a antes do carregar"
+        );
+        assert!(!partida.pode_desfazer_carregar(), "desfazer vale uma vez");
+
+        // E o jogo continua andando depois de tudo.
+        anda(&mut partida, 1000);
+        let _ = std::fs::remove_dir_all(&raiz);
+    }
+
+    /// Só com `ZEEBX_TESTE_ROM`. Abre o jogo com o perfil de `config_dir`: rode com
+    /// `XDG_CONFIG_HOME` apontando para uma pasta descartável, para não mexer nos saves de verdade.
+    #[test]
+    fn o_save_state_vai_e_volta_numa_partida() {
+        let Ok(rom) = std::env::var("ZEEBX_TESTE_ROM") else {
+            eprintln!("sem ZEEBX_TESTE_ROM: nada a salvar");
+            return;
+        };
+        salva_anda_carrega_e_desfaz(&rom, None);
+    }
+
+    /// O mesmo pela placa: a miniatura e a tela do estado vêm da textura, e carregar refaz as
+    /// texturas no contexto.
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn o_save_state_vai_e_volta_numa_partida_pela_placa() {
+        let Ok(rom) = std::env::var("ZEEBX_TESTE_ROM") else {
+            eprintln!("sem ZEEBX_TESTE_ROM: nada a salvar");
+            return;
+        };
+        let contexto = match crate::video::contexto::Contexto::novo() {
+            Ok(contexto) => contexto,
+            Err(porque) => {
+                eprintln!("sem placa fora de tela: {porque}");
+                return;
+            }
+        };
+        salva_anda_carrega_e_desfaz(&rom, Some(contexto.gl.clone()));
+    }
 
     #[test]
     fn a_ampliacao_inteira_so_usa_multiplos_exatos() {
