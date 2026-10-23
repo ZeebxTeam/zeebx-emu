@@ -1,5 +1,5 @@
 # Status geral
-Versão considerada na análise: v0.4.1 (em desenvolvimento)
+Versão considerada na análise: v0.4.3
 
 | Status | Legenda | Jogos | % |
 |---|---|---|---|
@@ -11,7 +11,7 @@ Versão considerada na análise: v0.4.1 (em desenvolvimento)
 # Observações:
 
 - É recomendado configurar o controle ao abrir o emulador pela primeira vez, mesmo assim, alguns games podem apresentar inputs diferentes.
-- Jogos compatíveis com Boomerang (Sensor de movimento), como Crash Nitro Kart 3D, todos os Zeebo Sports, entre outros, podem ser jogados utilizando controles com sensores de movimento - tais como Dualshock 4, Dualsense, Wii Remote, e Switch Pro Controller - por meio de pareamento Bluetooth.
+- Jogos compatíveis com Boomerang (Sensor de movimento), como Crash Nitro Kart 3D, todos os Zeebo Sports, entre outros, podem ser jogados utilizando controles com sensores de movimento - tais como Dualshock 4, Dualsense, Wii Remote, e Switch Pro Controller - por meio de pareamento Bluetooth. Esse suporte a controles com sensor via Bluetooth vale hoje no desktop Linux; nos cores Libretro e nas demais plataformas o sensor de movimento ainda não é suportado ([#60](https://github.com/ZeebxTeam/zeebx-emu/issues/60)).
 - Todos os jogos da Data East são jogos arcade em um emulador embutido próprio.
 - Nenhum jogo, indenpendentemente de ser oficial, homebrew, ou port, está livre de bugs ou crashes e podem ser ainda incompatíveis. Agradeço pelos reports!
 - Funcionalidades online do Zeeboids podem não estar em operação a todo momento, visto que ainda é um recurso em desenvolvimento. Todos os avatares Zeeboids poderão ser excluídos após o desenvolvimento e migração para um servidor final adequado, mas fique à vontade para testar.
@@ -39,7 +39,7 @@ Versão considerada na análise: v0.4.1 (em desenvolvimento)
 | Iron Sight | ✅ | |
 | Karnovs Revenge | ✅ | Emulador de arcade embutido, com som |
 | Magical Drop 3 | ✅ | Emulador de arcade embutido, com som |
-| Need For Speed - Carbon - Domine a Cidade | 🔄 | Jogadores relatam que, depois das corridas do tutorial, o jogo trava num erro e não dá para avançar ([#35](https://github.com/ZeebxTeam/zeebx-emu/issues/35)) |
+| Need For Speed - Carbon - Domine a Cidade | 🔄 | A carreira avança desde a v0.4.2; o desempenho ainda é baixo e há câmera lenta em algumas partes ([#36](https://github.com/ZeebxTeam/zeebx-emu/issues/36), [#81](https://github.com/ZeebxTeam/zeebx-emu/issues/81)) |
 | Pac-Mania | ✅ | |
 | Peggle | ✅ | |
 | Powerboat Challenge | ✅ | Joga; menus, seleção de personagem e ilha, e o save de opções persiste |
@@ -47,10 +47,10 @@ Versão considerada na análise: v0.4.1 (em desenvolvimento)
 | Quake | 🔄 | Desempenho pendente de correcao e audio bugando |
 | Quake 2 | 🔄 | Desempenho pendente de correcao |
 | Raging Thunder 2 | ✅ | |
-| Rally Master Pro | ✅ | |
+| Rally Master Pro | ✅ | Travamento depois de algumas corridas corrigido na v0.4.3 |
 | Reckless Racing | ✅ | |
 | Resident Evil 4 - Zeebo Edition | ✅ | |
-| Ridge Racer | ✅ | Joga; menus, painel da corrida e corrida |
+| Ridge Racer | ✅ | Joga; menus, painel da corrida e corrida. Parada depois da segunda volta corrigida na v0.4.2 |
 | Spin Master | ✅ | Emulador de arcade embutido, com som |
 | Street Hoop | ✅ | Emulador de arcade embutido, com som |
 | Super BurgerTime | ✅ | Emulador de arcade embutido, com som |
@@ -77,7 +77,7 @@ Versão considerada na análise: v0.4.1 (em desenvolvimento)
 | Zeebo Sports Tenis | ✅ | |
 | Zeebo Sports Volei | ✅ | |
 | Zeetris (Homebrew) | ✅ | |
-| Zenonia | ✅ | |
+| Zenonia | ✅ | No core Libretro aarch64, em aparelhos como o R36S, o jogo abre com som e a tela fica preta ([#62](https://github.com/ZeebxTeam/zeebx-emu/issues/62)) |
 | Zumas Revenge | ✅ | Joga |
 | Z-Wheel | 🔄 | Utilizável, porém ainda com muitos bugs, online não implementado |
 
