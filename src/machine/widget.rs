@@ -71,6 +71,9 @@ impl<C: CpuBackend> Machine<C> {
             if let Some(widget) = self.widgets.get_mut(&objeto) {
                 widget.partiu = true;
             }
+            if self.contexto_liberado(funcao, contexto) {
+                continue;
+            }
             self.call_guest(funcao, [contexto, PARTIDA.0, PARTIDA.1, 1], QSORT_BUDGET)?;
         }
         Ok(())
@@ -123,6 +126,9 @@ impl<C: CpuBackend> Machine<C> {
         chamar.sort_by_key(|(endereco, _)| self.widgets[endereco].serial);
         let tela = self.target()?;
         for (endereco, (funcao, contexto)) in chamar {
+            if self.contexto_liberado(funcao, contexto) {
+                continue;
+            }
             let (x, y) = self.posicao_na_tela(endereco);
             self.call_guest(funcao, [contexto, tela, x as u32, y as u32], QSORT_BUDGET)?;
         }
@@ -167,6 +173,9 @@ impl<C: CpuBackend> Machine<C> {
             .map(|widget| widget.tratador)
             .filter(|(funcao, _)| *funcao != 0);
         if let (true, Some((funcao, contexto))) = (ainda_no_topo, tratador) {
+            if self.contexto_liberado(funcao, contexto) {
+                return Ok(());
+            }
             self.call_guest(funcao, [contexto, GRAVA, FORM_ATIVO, 1], QSORT_BUDGET)?;
         }
         Ok(())
@@ -534,6 +543,25 @@ impl<C: CpuBackend> Machine<C> {
         self.widgets
             .values()
             .any(|no| no.classe == WIDGET_BARRA && no.tratador == (funcao, contexto) && funcao != 0)
+    }
+
+    /// Se a função ou o contexto já foram marcados como bloco liberado.
+    ///
+    /// A troca de idioma da Z-Wheel solta a tela anterior e segue avisando quem estava nela.
+    /// A marca `0xA7` é do jogo — o nosso heap não preenche o bloco. Chamar mesmo assim é o
+    /// acesso inválido em `0xA7A7A7A4`, com o pc nesse endereço. Não foi medido com o dump:
+    /// o que se evita aqui é entrar num ponteiro que já tem essa cara.
+    pub(super) fn contexto_liberado(&mut self, funcao: u32, contexto: u32) -> bool {
+        let funcao_livre = (funcao & !3) == (MARCA_DE_BLOCO_LIVRE & !3);
+        let contexto_livre =
+            contexto != 0 && self.cpu.read_u32(contexto).ok() == Some(MARCA_DE_BLOCO_LIVRE);
+        if funcao_livre || contexto_livre {
+            self.assumptions.insert(
+                "um retorno de chamada não rodou porque a função ou o contexto tinham a marca 0xA7 de bloco liberado",
+            );
+            return true;
+        }
+        false
     }
 
     /// A raiz mais nova que tenha filho, que é o que sustentava a tela antes dos formulários.
@@ -1466,11 +1494,15 @@ impl<C: CpuBackend> Machine<C> {
                     // reconhecer o endereço mantém a árvore avançando e evita tratá-lo como
                     // um código de propriedade desconhecido.
                     _ if self.widgets.contains_key(&seletor) => OK,
-                    // Eventos oferecidos primeiro ao root pelo applet (0x7b418).
-                    // Um retorno verdadeiro interrompe o despacho em 0x7b420, antes dos
+                    // Eventos oferecidos primeiro à raiz pelo applet (`0x7b418`).
+                    // Um retorno verdadeiro interrompe o despacho em `0x7b420`, antes dos
                     // handlers do próprio applet que preenchem as saídas de fonte/recurso.
-                    // Sem handler aqui, devolver falso permite que o applet os resolva.
-                    0x101 | 0x7b0a | 0x7b0e | 0x7b0f => FALSE,
+                    // O `0x7b0b` é irmão do `0x7b0a` nesse caminho: a troca de idioma passa
+                    // por ele. O `0x7001` é o que a transição de slide manda no fim, e a raiz
+                    // ainda precisa tratar. Devolver verdadeiro engoliria os dois.
+                    // O braço desconhecido já devolvia zero; explícitos, eles saem do
+                    // relatório de API ausente, e ninguém "conserta" o log devolvendo OK.
+                    0x101 | 0x7b0a | 0x7b0b | 0x7b0e | 0x7b0f | 0x7001 => FALSE,
                     LE => {
                         // **Nem todo `0x800` pede um filho.** O jogo lê e grava pelo mesmo
                         // seletor coisas de tipos diferentes, e o número do item é que diz
@@ -1807,11 +1839,13 @@ impl<C: CpuBackend> Machine<C> {
     /// candidato poria o foco nele ao voltar das capas.
     fn aceita_foco(&mut self, widget: u32) -> Result<bool, CpuError> {
         const PODE_TER_FOCO: u32 = 0x702;
-        let Some(dados) = self.widgets.get(&widget) else {
-            return Ok(false);
+        let (visivel, funcao, contexto, desenho) = {
+            let Some(dados) = self.widgets.get(&widget) else {
+                return Ok(false);
+            };
+            (dados.visivel, dados.tratador.0, dados.tratador.1, dados.desenho.0)
         };
-        let ((funcao, contexto), desenho) = (dados.tratador, dados.desenho.0);
-        if !dados.visivel || funcao == 0 || desenho == 0 {
+        if !visivel || funcao == 0 || desenho == 0 || self.contexto_liberado(funcao, contexto) {
             return Ok(false);
         }
         let resposta = self.malloc(4)?;
@@ -1833,7 +1867,10 @@ impl<C: CpuBackend> Machine<C> {
         let Some((funcao, contexto)) = self.widgets.get(&widget).map(|w| w.tratador) else {
             return Ok(());
         };
-        if funcao == 0 || !self.widgets_avisando.insert(widget) {
+        if funcao == 0
+            || self.contexto_liberado(funcao, contexto)
+            || !self.widgets_avisando.insert(widget)
+        {
             return Ok(());
         }
         let saida = self.call_guest_aninhado(funcao, [contexto, evento, parametro, 0], QSORT_BUDGET);
@@ -1881,7 +1918,7 @@ impl<C: CpuBackend> Machine<C> {
                 (widget.liberadores.0, widget.tratador.1),
                 (widget.liberadores.1, widget.desenho.1),
             ] {
-                if liberador != 0 {
+                if liberador != 0 && !self.contexto_liberado(liberador, contexto) {
                     let _ = self.call_guest_aninhado(liberador, [contexto, 0, 0, 0], QSORT_BUDGET)?;
                 }
             }
@@ -2045,6 +2082,44 @@ mod testes_do_aviso {
         machine.set_key(0xe035, true);
         machine.flush_keys().unwrap();
         assert_eq!(machine.cpu.read_u32(MARCA).unwrap(), 7, "a tecla não chegou ao menu");
+    }
+
+    /// Contexto com a marca `0xA7` não é chamado. O tratador, se rodasse, gravaria 7.
+    #[test]
+    fn contexto_liberado_nao_e_chamado() {
+        let mut machine = maquina();
+        let contexto = MODULE_BASE + 0x24;
+        machine.cpu.write_u32(contexto, 0xA7A7_A7A7).unwrap();
+        let mut menu = no(0, 1, 0);
+        menu.tratador = (MENU, contexto);
+        machine.widgets.insert(0x20, menu);
+        machine.set_key(0xe035, true);
+        machine.flush_keys().unwrap();
+        assert_eq!(machine.cpu.read_u32(MARCA).unwrap(), 0);
+        machine.avisa_widget(0x20, 0x700, 1).unwrap();
+        assert_eq!(machine.cpu.read_u32(MARCA).unwrap(), 0);
+    }
+
+    /// `0x7b0b` e `0x7001` devolvem falso e não entram na lista de API ausente.
+    /// Um seletor desconhecido continua entrando.
+    #[test]
+    fn eventos_da_troca_de_idioma_nao_sao_engolidos() {
+        let mut machine = maquina();
+        machine.widgets.insert(0x10, no(WIDGET_RAIZ, 1, 0));
+        machine.cpu.write_reg(Reg::R0, 0x10);
+        for seletor in [0x7b0bu32, 0x7001] {
+            machine.cpu.write_reg(Reg::R1, seletor);
+            machine.cpu.write_reg(Reg::R2, 0);
+            machine.cpu.write_reg(Reg::R3, 0);
+            assert_eq!(machine.widget_call(3).unwrap(), Some(0));
+            assert!(
+                !machine.missing_apis.iter().any(|linha| linha.contains(&format!("{seletor:#x}"))),
+                "{seletor:#x} foi parar no relatório"
+            );
+        }
+        machine.cpu.write_reg(Reg::R1, 0x1234);
+        machine.widget_call(3).unwrap();
+        assert!(machine.missing_apis.iter().any(|linha| linha.contains("0x1234")));
     }
 }
 

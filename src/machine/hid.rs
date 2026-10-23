@@ -679,6 +679,9 @@ impl<C: CpuBackend> Machine<C> {
                 .map(|(_, (funcao, _))| format!("{funcao:#x}"))
                 .collect();
             for (_, (funcao, contexto)) in na_tela {
+                if self.contexto_liberado(funcao, contexto) {
+                    continue;
+                }
                 let saida = self.call_guest(funcao, [contexto, evento, avk, 0], QSORT_BUDGET)?;
                 // A barra responde "tratei" para qualquer tecla e no console não recebe tecla.
                 // Contar esse retorno fechava a porta de quem está fora da árvore: com o aviso
@@ -691,6 +694,9 @@ impl<C: CpuBackend> Machine<C> {
             }
             if !tratado {
                 for (_, (funcao, contexto)) in fora {
+                    if self.contexto_liberado(funcao, contexto) {
+                        continue;
+                    }
                     let saida =
                         self.call_guest(funcao, [contexto, evento, avk, 0], QSORT_BUDGET)?;
                     if matches!(saida, Outcome::Returned { code } if code != 0)

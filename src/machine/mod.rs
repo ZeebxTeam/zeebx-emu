@@ -1028,6 +1028,11 @@ const VSYNC_PERIOD_US: u64 = 1_000_000 / 60;
 const SUCCESS: u32 = 0;
 /// `ECLASSNOTSUPPORT`: o ClassID pedido não existe nesta plataforma.
 const ECLASSNOTSUPPORT: u32 = 20;
+/// Preenchimento de bloco liberado, no estilo da Qualcomm: cada byte é `0xA7`.
+///
+/// O heap daqui não escreve essa marca. Quando ela aparece, foi o jogo. Usada como endereço
+/// de código, o acesso inválido sai alinhado em `0xA7A7A7A4`.
+const MARCA_DE_BLOCO_LIVRE: u32 = 0xA7A7_A7A7;
 /// `ENOMEMORY`: acabou memória.
 const ENOMEMORY: u32 = 3;
 /// `ENOTYPE`: não há tipo associado a este conteúdo (`AEEError.h`).
@@ -3365,6 +3370,14 @@ impl<C: CpuBackend> Machine<C> {
         args: [u32; 4],
         budget: u64,
     ) -> Result<Outcome, CpuError> {
+        // Função lida de um bloco que o jogo já marcou como livre. Entrar nela é o acesso
+        // inválido em `0xA7A7A7A4`, com o pc igual ao endereço. Devolver zero é "não tratei".
+        if (func & !3) == (MARCA_DE_BLOCO_LIVRE & !3) {
+            self.assumptions.insert(
+                "um retorno de chamada não rodou porque a função tinha a marca 0xA7 de bloco liberado",
+            );
+            return Ok(Outcome::Returned { code: 0 });
+        }
         self.cpu.write_reg(Reg::R0, args[0]);
         self.cpu.write_reg(Reg::R1, args[1]);
         self.cpu.write_reg(Reg::R2, args[2]);
@@ -3391,6 +3404,12 @@ impl<C: CpuBackend> Machine<C> {
         args: [u32; 4],
         budget: u64,
     ) -> Result<Outcome, CpuError> {
+        if (func & !3) == (MARCA_DE_BLOCO_LIVRE & !3) {
+            self.assumptions.insert(
+                "um retorno de chamada não rodou porque a função tinha a marca 0xA7 de bloco liberado",
+            );
+            return Ok(Outcome::Returned { code: 0 });
+        }
         const CONTEXTO: [Reg; 15] = [
             Reg::R0,
             Reg::R1,
