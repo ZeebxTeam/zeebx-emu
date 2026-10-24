@@ -238,6 +238,11 @@ Responder só "sucesso" faz a montagem avançar e o roller ficar **sem superfíc
 como um **`CreateCompatibleBitmap`**: criar e devolver uma superfície do tamanho pedido. Feito isso,
 aparecem as superfícies de **214×34** (roller) e **440×49** (abas).
 
+O mesmo slot, no BREW, é `SetModel`. O decorador de lista (`0x01028e1b`) recebe um `IVetor` já
+vivo. Gravar um bitmap por cima desse ponteiro apaga a vtable da lista. A divisão é pelo
+argumento: `r1` que já é objeto guarda o modelo; `r1` que não é objeto continua sendo a fábrica
+de bitmap do roller.
+
 > Isso só funciona se o teu `QueryInterface` de widget for permissivo (devolver `this` para qualquer
 > IID). É o que fazemos, e está anotado como hipótese — é também a suspeita por trás de uma recursão
 > antiga em `0x1177c`, porque um grafo auto-referente prende quem caminha procurando pai ou irmão.
@@ -672,7 +677,9 @@ número que nenhuma alocação consegue.
 A família dos widgets é atendida em bloco (por vizinhança de numeração), e o que distingue uma
 classe da outra não está em header nenhum. O censo do acessador por classe
 (`ZEEBX_ROM_SELETORES=1`) responde **pelo uso**, e na Z-Wheel a `0x01028e19` — a única do trio
-`0x01028e19` / `0x01028e2a` / `0x01028e4b` que este roteiro cria — recebe dois seletores, e só:
+`0x01028e19` / `0x01028e2a` / `0x01028e4b` que este roteiro cria — recebe dois seletores, e só.
+A `0x01028e4b` (Apagar Jogos) **não** entra na família: um widget genérico não abre o diálogo,
+e o b1 no jogo volta ao menu. Ela segue recusada, com a suposição no relatório.
 
 ```text
 classe 0x01028e19  seletor 0x800  (5x)
