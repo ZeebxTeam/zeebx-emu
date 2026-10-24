@@ -113,6 +113,13 @@ impl<C: CpuBackend> Machine<C> {
         if chamar.is_empty() {
             return Ok(());
         }
+        // O texto do diálogo tem de sair **depois** deste desenho. Se `pinta_textos` já rodou,
+        // o painel cobre a mensagem e a caixa aparece vazia.
+        if self.textos_de_widget > 0 {
+            self.assumptions.insert(
+                "o texto do diálogo foi pintado antes do desenho do jogo, e o painel cobre a mensagem",
+            );
+        }
         // A ordem é a de criação, como no `pinta_widgets`: não é profundidade de verdade, mas é
         // estável, e desenho instável é pior do que desenho na ordem errada.
         chamar.sort_by_key(|(endereco, _)| self.widgets[endereco].serial);
@@ -660,6 +667,19 @@ impl<C: CpuBackend> Machine<C> {
             let (x, y) = self.posicao_na_tela(dono);
             self.draw_image(imagem, x, y, None)?;
         }
+        Ok(())
+    }
+
+    /// Fundo e imagens, depois o desenho do jogo, e só então o texto.
+    ///
+    /// O painel dos diálogos (`0x01028e14`, 510×125) é owner-draw. Pintar o texto antes dele
+    /// deixa "Comprar Z-Credits", "Verificar Saldo" e a confirmação da capa por baixo do
+    /// painel — a caixa abre vazia. O HTML mora dentro de [`Machine::pinta_textos`], então
+    /// acompanha o texto.
+    pub(super) fn pinta_a_interface(&mut self) -> Result<(), CpuError> {
+        self.textos_de_widget = 0;
+        self.pinta_widgets()?;
+        self.desenha_widgets()?;
         self.pinta_textos()
     }
 
@@ -720,8 +740,9 @@ impl<C: CpuBackend> Machine<C> {
 
     /// Escreve o texto que os widgets guardam, na posição e na cor deles.
     ///
-    /// Faz parte do mesmo substituto do [`Machine::pinta_widgets`]: o console desenharia isto
-    /// pela extensão de widgets, que não está no dump. O que temos é o texto — que chega pelo
+    /// Roda **depois** do desenho do jogo, em [`Machine::pinta_a_interface`]: o painel é
+    /// owner-draw e, pintado por cima, esconde a mensagem. O console desenharia isto pela
+    /// extensão de widgets, que não está no dump. O que temos é o texto — que chega pelo
     /// slot 6 da [`WIDGET_DE_TEXTO`] — e a fonte do próprio pacote do jogo, que já carrega.
     ///
     /// A cor sai da propriedade [`PROP_COR`], que vem como `RRGGBBAA`; sem ela, preto. O alfa é
@@ -754,6 +775,14 @@ impl<C: CpuBackend> Machine<C> {
         escritas.sort_unstable_by(|a, b| (a.0, a.2, a.1).cmp(&(b.0, b.2, b.1)));
         self.pinta_html()?;
         for (_, x, y, rgba, texto) in escritas {
+            if texto.chars().any(|c| !c.is_whitespace()) {
+                if self.textos_desenhados.len() >= MAX_TEXTOS_DESENHADOS {
+                    self.textos_desenhados.pop_front();
+                }
+                self.textos_desenhados
+                    .push_back((self.clock_ms(), x, y, texto.clone()));
+                self.textos_de_widget = self.textos_de_widget.saturating_add(1);
+            }
             // A cor vem como `RRGGBBAA`. O alfa é descartado porque a superfície do console não
             // tem canal para ele — mesma razão do meio-tom no `escreve`.
             let cor = Rgb {
@@ -2127,6 +2156,37 @@ mod testes_do_aviso {
         machine.desenha_widgets().unwrap();
         assert_eq!(machine.cpu.read_u32(marca_orfao).unwrap(), 0, "o órfão pintou");
         assert_eq!(machine.cpu.read_u32(MARCA).unwrap(), 7, "a barra não pintou");
+    }
+
+    /// O painel é owner-draw. O texto do diálogo entra no relatório depois dele, não antes.
+    #[test]
+    fn o_texto_do_dialogo_fica_depois_do_painel() {
+        let mut machine = maquina();
+        let mut dialogo = no(WIDGET_FORMULARIO, 4, 0);
+        dialogo.anexados.push(0x11);
+        dialogo.anexados.push(0x12);
+        machine.widgets.insert(0x10, dialogo);
+        let mut painel = no(0x0102_8e14, 5, 0x10);
+        painel.desenho = (MENU, 0x10028);
+        painel.tamanho = (510, 125);
+        machine.widgets.insert(0x11, painel);
+        let mut texto = no(WIDGET_DE_TEXTO, 6, 0x10);
+        texto.texto = "Saldo".into();
+        machine.widgets.insert(0x12, texto);
+
+        machine.pinta_a_interface().unwrap();
+        assert_eq!(machine.cpu.read_u32(MARCA).unwrap(), 7, "o painel não desenhou");
+        assert!(
+            machine.drawn_text().any(|item| item.3 == "Saldo"),
+            "o texto do diálogo não foi pintado"
+        );
+        assert!(
+            !machine
+                .assumptions
+                .iter()
+                .any(|linha| linha.contains("antes do desenho")),
+            "o texto saiu antes do painel"
+        );
     }
 
     /// Contexto com a marca `0xA7` não é chamado. O tratador, se rodasse, gravaria 7.

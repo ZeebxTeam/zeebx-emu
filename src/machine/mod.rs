@@ -2349,6 +2349,11 @@ pub struct Machine<C: CpuBackend> {
     /// quando falta a fonte, e um jogo que desenha várias telas de aviso ao longo da execução
     /// aparece no relatório como uma sopa de mensagens sem dono.
     textos_desenhados: std::collections::VecDeque<(u32, i32, i32, String)>,
+    /// Textos de widget já enfileirados nesta pintura da interface.
+    ///
+    /// Zerado em [`Machine::pinta_a_interface`]. Se ainda for maior que zero quando o
+    /// desenho do jogo roda, o painel owner-draw foi pintado por cima da mensagem.
+    textos_de_widget: u32,
     /// Alocações que o heap recusou, por tamanho pedido e por quem pediu.
     ///
     /// O `malloc` do BREW devolve zero quando não cabe, e um jogo que não distingue "não cabe" de
@@ -3133,6 +3138,7 @@ impl<C: CpuBackend> Machine<C> {
             web_requests: BTreeSet::new(),
             collections: HashMap::new(),
             textos_desenhados: std::collections::VecDeque::new(),
+            textos_de_widget: 0,
             alocacoes_recusadas: BTreeSet::new(),
             checagens_recusadas: BTreeSet::new(),
             fontes: std::collections::HashMap::new(),
