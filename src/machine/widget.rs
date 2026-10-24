@@ -530,12 +530,13 @@ impl<C: CpuBackend> Machine<C> {
     ///
     /// A troca de idioma da Z-Wheel solta a tela anterior e segue avisando quem estava nela.
     /// A marca `0xA7` é do jogo — o nosso heap não preenche o bloco. Chamar mesmo assim é o
-    /// acesso inválido em `0xA7A7A7A4`, com o pc nesse endereço. Não foi medido com o dump:
-    /// o que se evita aqui é entrar num ponteiro que já tem essa cara.
+    /// acesso inválido em `0xA7A7A7A4`, com o pc nesse endereço. Em es/en o próprio `r0` é
+    /// `0xA7A7A7A7`: ler a primeira palavra falha, a guarda antiga deixava passar, e a função
+    /// desviava para o veneno com `lr` ainda em `0xfff00000`.
     pub(super) fn contexto_liberado(&mut self, funcao: u32, contexto: u32) -> bool {
-        let funcao_livre = (funcao & !3) == (MARCA_DE_BLOCO_LIVRE & !3);
-        let contexto_livre =
-            contexto != 0 && self.cpu.read_u32(contexto).ok() == Some(MARCA_DE_BLOCO_LIVRE);
+        let funcao_livre = tem_marca_de_bloco_livre(funcao);
+        let contexto_livre = tem_marca_de_bloco_livre(contexto)
+            || (contexto != 0 && self.cpu.read_u32(contexto).ok() == Some(MARCA_DE_BLOCO_LIVRE));
         if funcao_livre || contexto_livre {
             self.assumptions.insert(
                 "um retorno de chamada não rodou porque a função ou o contexto tinham a marca 0xA7 de bloco liberado",
@@ -2256,6 +2257,23 @@ mod testes_do_aviso {
         machine.flush_keys().unwrap();
         assert_eq!(machine.cpu.read_u32(MARCA).unwrap(), 0);
         machine.avisa_widget(0x20, 0x700, 1).unwrap();
+        assert_eq!(machine.cpu.read_u32(MARCA).unwrap(), 0);
+    }
+
+    /// O contexto é o veneno, não um endereço que começa com ele. A entrega da tecla não entra.
+    #[test]
+    fn contexto_que_e_a_marca_nao_recebe_tecla() {
+        let mut machine = maquina();
+        let mut menu = no(0, 1, 0);
+        menu.tratador = (MENU, 0xA7A7_A7A7);
+        machine.widgets.insert(0x20, menu);
+        machine.set_key(0xe035, true);
+        machine.flush_keys().unwrap();
+        assert_eq!(machine.cpu.read_u32(MARCA).unwrap(), 0);
+        let desfecho = machine
+            .call_guest(MENU, [0xA7A7_A7A4, input::EVT_KEY_RELEASE, 0, 0], 1_000)
+            .unwrap();
+        assert!(matches!(desfecho, Outcome::Returned { code: 0 }));
         assert_eq!(machine.cpu.read_u32(MARCA).unwrap(), 0);
     }
 

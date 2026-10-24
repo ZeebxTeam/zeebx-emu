@@ -1033,6 +1033,14 @@ const ECLASSNOTSUPPORT: u32 = 20;
 /// O heap daqui não escreve essa marca. Quando ela aparece, foi o jogo. Usada como endereço
 /// de código, o acesso inválido sai alinhado em `0xA7A7A7A4`.
 const MARCA_DE_BLOCO_LIVRE: u32 = 0xA7A7_A7A7;
+
+/// O valor, alinhado, é o preenchimento `0xA7` de bloco liberado.
+///
+/// Vale para a função e para o ponteiro de contexto. O byte baixo pode ter sido alinhado
+/// para `0xA4` quando o endereço virou destino de `bx`.
+fn tem_marca_de_bloco_livre(valor: u32) -> bool {
+    (valor & !3) == (MARCA_DE_BLOCO_LIVRE & !3)
+}
 /// `ENOMEMORY`: acabou memória.
 const ENOMEMORY: u32 = 3;
 /// `ENOTYPE`: não há tipo associado a este conteúdo (`AEEError.h`).
@@ -3405,9 +3413,13 @@ impl<C: CpuBackend> Machine<C> {
     ) -> Result<Outcome, CpuError> {
         // Função lida de um bloco que o jogo já marcou como livre. Entrar nela é o acesso
         // inválido em `0xA7A7A7A4`, com o pc igual ao endereço. Devolver zero é "não tratei".
-        if (func & !3) == (MARCA_DE_BLOCO_LIVRE & !3) {
+        // O contexto em `r0` também pode ser a marca. Em es/en a entrega da tecla entra numa
+        // função válida com `r0=0xA7A7A7A7`; ela desvia para o veneno e o `lr` fica em
+        // `0xfff00000`. Ler a primeira palavra desse endereço falha, então a guarda antiga
+        // não via.
+        if tem_marca_de_bloco_livre(func) || tem_marca_de_bloco_livre(args[0]) {
             self.assumptions.insert(
-                "um retorno de chamada não rodou porque a função tinha a marca 0xA7 de bloco liberado",
+                "um retorno de chamada não rodou porque a função ou o contexto tinham a marca 0xA7 de bloco liberado",
             );
             return Ok(Outcome::Returned { code: 0 });
         }
@@ -3437,9 +3449,9 @@ impl<C: CpuBackend> Machine<C> {
         args: [u32; 4],
         budget: u64,
     ) -> Result<Outcome, CpuError> {
-        if (func & !3) == (MARCA_DE_BLOCO_LIVRE & !3) {
+        if tem_marca_de_bloco_livre(func) || tem_marca_de_bloco_livre(args[0]) {
             self.assumptions.insert(
-                "um retorno de chamada não rodou porque a função tinha a marca 0xA7 de bloco liberado",
+                "um retorno de chamada não rodou porque a função ou o contexto tinham a marca 0xA7 de bloco liberado",
             );
             return Ok(Outcome::Returned { code: 0 });
         }
