@@ -666,6 +666,20 @@ impl<C: CpuBackend> Machine<C> {
             AEECLSID_COLLECTION => Interface::Collection,
             AEECLSID_SQLMGR => Interface::SqlMgr,
             AEECLSID_SOURCEUTIL => Interface::SourceUtil,
+            // A `0x01028e4b` aparece no firmware no mesmo depósito da família, e o Apagar Jogos
+            // a pede. Nascer como widget genérico não resolve: o b1 no jogo volta ao menu em
+            // vez de confirmar. Sem o formato do diálogo, recusar é o que já acontecia, e a
+            // suposição fica no relatório para a próxima medição.
+            0x0102_8e4b => {
+                self.assumptions.insert(
+                    "a classe 0x01028e4b foi recusada: um widget genérico não abre o diálogo de Apagar Jogos",
+                );
+                self.unknown_classes.insert(clsid);
+                if out != 0 {
+                    self.cpu.write_u32(out, 0)?;
+                }
+                return Ok(ECLASSNOTSUPPORT);
+            }
             _ if FAMILIA_DOS_WIDGETS.contains(&clsid) => Interface::Widget,
             AEECLSID_CONTROL => Interface::Control,
             AEECLSID_ZEEBOMCP => Interface::ZeeboMcp,
@@ -956,5 +970,99 @@ mod testes_do_item_id {
         assert_eq!(machine.item_id_de(0x0102_8e36), 279888);
         // Classe que não é de módulo instalado continua devolvendo zero, como a API manda.
         assert_eq!(machine.item_id_de(0x0100_0001), 0);
+    }
+}
+
+#[cfg(test)]
+mod testes_do_decorador {
+    use super::*;
+
+    /// O Cadastro pede `CreateInstance(0x01028e1b)` para o decorador da lista. Recusada, a
+    /// classe virava ponteiro nulo e o jogo seguia com ele.
+    #[test]
+    fn o_decorador_de_lista_nasce_como_widget() {
+        let code = [
+            0xe3a0_0010u32.to_le_bytes(), // mov r0, #16
+            0xe12f_ff1eu32.to_le_bytes(), // bx lr
+        ]
+        .concat();
+        let image = crate::loader::modfile::ModImage::parse(code).unwrap();
+        let module = crate::loader::load(&image).unwrap();
+        let mut machine = Machine::new(crate::cpu::BackendPadrao::new().unwrap(), module, ".");
+        machine.cpu.reset(&machine.module.mem).unwrap();
+        let saida = machine.heap.alloc(4).unwrap();
+        machine.cpu.write_reg(Reg::R1, WIDGET_DECORADOR_DE_LISTA);
+        machine.cpu.write_reg(Reg::R2, saida);
+        assert_eq!(machine.shell_create_instance().unwrap(), SUCCESS);
+        let objeto = machine.cpu.read_u32(saida).unwrap();
+        assert_ne!(objeto, 0);
+        assert_eq!(
+            machine.widgets.get(&objeto).map(|no| no.classe),
+            Some(WIDGET_DECORADOR_DE_LISTA)
+        );
+    }
+
+    /// O campo do Cadastro (`0x01028e2f`) também precisa nascer. Sem ele a tela para no
+    /// decorador.
+    #[test]
+    fn o_campo_do_cadastro_nasce_como_widget() {
+        let code = [0xe3a0_0010u32.to_le_bytes(), 0xe12f_ff1eu32.to_le_bytes()].concat();
+        let image = crate::loader::modfile::ModImage::parse(code).unwrap();
+        let module = crate::loader::load(&image).unwrap();
+        let mut machine = Machine::new(crate::cpu::BackendPadrao::new().unwrap(), module, ".");
+        machine.cpu.reset(&machine.module.mem).unwrap();
+        let saida = machine.heap.alloc(4).unwrap();
+        machine.cpu.write_reg(Reg::R1, WIDGET_CAMPO);
+        machine.cpu.write_reg(Reg::R2, saida);
+        assert_eq!(machine.shell_create_instance().unwrap(), SUCCESS);
+        let objeto = machine.cpu.read_u32(saida).unwrap();
+        assert_eq!(
+            machine.widgets.get(&objeto).map(|no| no.classe),
+            Some(WIDGET_CAMPO)
+        );
+    }
+
+    /// Apagar Jogos pede `0x01028e4b`. Widget genérico não abre o diálogo, então a classe
+    /// continua recusada e o relatório guarda a suposição.
+    #[test]
+    fn a_classe_do_apagar_jogos_continua_recusada() {
+        let code = [0xe3a0_0010u32.to_le_bytes(), 0xe12f_ff1eu32.to_le_bytes()].concat();
+        let image = crate::loader::modfile::ModImage::parse(code).unwrap();
+        let module = crate::loader::load(&image).unwrap();
+        let mut machine = Machine::new(crate::cpu::BackendPadrao::new().unwrap(), module, ".");
+        machine.cpu.reset(&machine.module.mem).unwrap();
+        let saida = machine.heap.alloc(4).unwrap();
+        machine.cpu.write_reg(Reg::R1, 0x0102_8e4b);
+        machine.cpu.write_reg(Reg::R2, saida);
+        assert_eq!(machine.shell_create_instance().unwrap(), ECLASSNOTSUPPORT);
+        assert_eq!(machine.cpu.read_u32(saida).unwrap(), 0);
+        assert!(machine.assumptions.iter().any(|linha| linha.contains("0x01028e4b")));
+        assert!(!FAMILIA_DOS_WIDGETS.contains(&0x0102_8e4b));
+    }
+}
+
+#[cfg(test)]
+mod testes_do_beep {
+    use super::*;
+
+    /// O `ISHELL_Beep` não tem alto-falante. Sucesso vazio evita abortar o callback.
+    #[test]
+    fn o_beep_devolve_sucesso() {
+        let code = [
+            0xe3a0_0010u32.to_le_bytes(),
+            0xe12f_ff1eu32.to_le_bytes(),
+        ]
+        .concat();
+        let image = crate::loader::modfile::ModImage::parse(code).unwrap();
+        let module = crate::loader::load(&image).unwrap();
+        let mut machine = Machine::new(crate::cpu::BackendPadrao::new().unwrap(), module, ".");
+        machine.cpu.reset(&machine.module.mem).unwrap();
+        let slot = crate::brew::aee_slots::SHELL
+            .iter()
+            .position(|nome| *nome == "Beep")
+            .unwrap() as u32;
+        let endereco = crate::brew::aee::encode(Interface::Shell, slot);
+        assert_eq!(machine.dispatch(endereco).unwrap(), Some(SUCCESS));
+        assert!(!machine.missing_apis.iter().any(|linha| linha.contains("Beep")));
     }
 }
