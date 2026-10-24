@@ -91,33 +91,25 @@ impl<C: CpuBackend> Machine<C> {
     /// passarmos um `IDisplay`: para o palco é indiferente, e para o outro a interface que
     /// faltar aparece no relatório em vez de sumir.
     ///
-    /// Uma vez por quadro para cada widget visível que registrou desenho — e **não** só os do
-    /// formulário atual, ao contrário do que o `pinta_widgets` faz.
+    /// Uma vez por quadro, e só para quem está na árvore da tela atual.
     ///
-    /// A restrição por árvore chegou a existir aqui e deixava o palco de fora: o formulário do
-    /// menu fica com zero filho, porque não recebe o conteúdo pelo item `0x5000`, e o que ele
-    /// mostra vira uma raiz solta. Desenho registrado é explícito — quem registrou quer ser
-    /// chamado —, então ele não depende de acertarmos qual é a tela atual. Quando a ligação que
-    /// falta chegar pelo evento `0x7b0a`, vale reconsiderar.
+    /// A restrição chegou a sair daqui porque o formulário do menu fica com zero filho — o
+    /// conteúdo entra por uma raiz solta, não pelo item `0x5000` — e filtrar apagava o palco.
+    /// O [`Machine::formulario_atual`] passou a preferir essa raiz quando ela é o que se pinta,
+    /// então o palco volta a estar na árvore. O que ficou de fora é o contêiner do Cadastro:
+    /// pai zero, nunca entra num formulário, e desenhar todo órfão com callback pintava o
+    /// magenta dele por cima do menu, da ajuda e de Configurar.
     pub(super) fn desenha_widgets(&mut self) -> Result<(), CpuError> {
-        // Callbacks de desenho são a própria indicação de que o widget pertence ao palco. A
-        // Z-Wheel mantém a barra inferior numa raiz separada do formulário atual; filtrá-la pela
-        // árvore do formulário apaga a barra mesmo quando ela está visível.
         let mut chamar: Vec<(u32, (u32, u32))> = self
             .widgets
             .iter()
             .filter(|(_, no)| no.desenho.0 != 0 && no.visivel)
             .map(|(&endereco, no)| (endereco, no.desenho))
             .collect();
-        // **Formulário coberto não desenha.** Com a tela de ajuda por cima, o palco e a roda do
-        // menu — que moram no formulário de baixo — continuavam sendo chamados, e o palco caía
-        // por cima do painel da ajuda. Só o que pertence a um formulário que não é o do topo sai;
-        // o que não está sob formulário nenhum, como a barra de status, segue sendo desenhado.
-        let topo = self.formulario_atual();
-        chamar.retain(|(endereco, _)| match self.formulario_de(*endereco) {
-            Some(formulario) => Some(formulario) == topo,
-            None => true,
-        });
+        // A barra de status também não é filha do formulário, mas
+        // [`Machine::arvore_do_formulario`] já inclui a mais nova — é ela que continua.
+        let dentro = self.arvore_do_formulario();
+        chamar.retain(|(endereco, _)| dentro.contains(endereco));
         if chamar.is_empty() {
             return Ok(());
         }
@@ -179,24 +171,6 @@ impl<C: CpuBackend> Machine<C> {
             self.call_guest(funcao, [contexto, GRAVA, FORM_ATIVO, 1], QSORT_BUDGET)?;
         }
         Ok(())
-    }
-
-    /// O formulário a que um widget pertence, subindo pelos pais, quando há um.
-    fn formulario_de(&self, widget: u32) -> Option<u32> {
-        /// A árvore vem do jogo; um ciclo não pode prender o desenho.
-        const TETO: usize = 64;
-        let mut atual = widget;
-        for _ in 0..TETO {
-            let no = self.widgets.get(&atual)?;
-            if no.classe == WIDGET_FORMULARIO {
-                return Some(atual);
-            }
-            if no.pai == 0 || no.pai == atual {
-                return None;
-            }
-            atual = no.pai;
-        }
-        None
     }
 
     /// Lê a posição que o `AdicionarFilho` traz em `r3` e guarda no filho.
@@ -2108,6 +2082,51 @@ mod testes_do_aviso {
         machine.set_key(0xe035, true);
         machine.flush_keys().unwrap();
         assert_eq!(machine.cpu.read_u32(MARCA).unwrap(), 7, "a tecla não chegou ao menu");
+    }
+
+    /// O desenho do Cadastro, solto na árvore, não pinta quando outra tela está ativa.
+    /// A barra, que também não é filha do formulário, continua.
+    #[test]
+    fn o_desenho_fora_da_tela_atual_nao_pinta() {
+        let mut machine = maquina();
+        // `mov r0,#9; ldr r1,[pc,#4]; str r0,[r1]; bx lr; .word marca` em +0x28.
+        let marca_orfao = machine.heap.alloc(4).unwrap();
+        let base = MODULE_BASE + 0x28;
+        for (i, palavra) in [
+            0xe3a0_0009u32,
+            0xe59f_1004,
+            0xe581_0000,
+            0xe12f_ff1e,
+            marca_orfao,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            machine.cpu.write_u32(base + i as u32 * 4, palavra).unwrap();
+        }
+
+        let mut menu = no(WIDGET_FORMULARIO, 10, 0);
+        menu.anexados.push(0x11);
+        machine.widgets.insert(0x10, menu);
+        let mut filho = no(0, 2, 0x10);
+        filho.texto = "Menu".into();
+        machine.widgets.insert(0x11, filho);
+
+        let mut orfao = no(0x0102_8e14, 1, 0);
+        orfao.desenho = (base, 0x10030);
+        orfao.anexados.push(0x31);
+        machine.widgets.insert(0x30, orfao);
+        machine.widgets.insert(0x31, no(0, 1, 0x30));
+
+        let mut barra = no(WIDGET_BARRA, 3, 0);
+        barra.desenho = (MENU, 0x10028);
+        barra.anexados.push(0x41);
+        machine.widgets.insert(0x40, barra);
+        machine.widgets.insert(0x41, no(0, 1, 0x40));
+
+        machine.desenha_widgets().unwrap();
+        assert_eq!(machine.cpu.read_u32(marca_orfao).unwrap(), 0, "o órfão pintou");
+        assert_eq!(machine.cpu.read_u32(MARCA).unwrap(), 7, "a barra não pintou");
     }
 
     /// Contexto com a marca `0xA7` não é chamado. O tratador, se rodasse, gravaria 7.
