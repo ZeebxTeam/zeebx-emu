@@ -617,7 +617,28 @@ impl<C: CpuBackend> Machine<C> {
                 }
             }
             // NativeColor no nosso caso é o próprio RGB565 do framebuffer.
-            "RGBToNative" => Rgb::from_rgbval(self.cpu.read_reg(Reg::R1)).to_rgb565() as u32,
+            //
+            // O slot 3 também aparece com `r1` na pilha (`0x200fffc4` em `lr=0x30c48`). Isso
+            // não é uma cor: um `RGBVAL` cabe abaixo de `0x01000000`. É o mesmo desencontro de
+            // interface do slot 13 do widget — o jogo trata o retorno como ponteiro de saída.
+            // Escrever o bitmap e contar a referência é o que um `QueryInterface` faria. Cor de
+            // verdade continua sendo convertida.
+            "RGBToNative" => {
+                let cor = self.cpu.read_reg(Reg::R1);
+                let pilha = loader::STACK_BASE..loader::STACK_BASE + loader::STACK_SIZE as u32;
+                if pilha.contains(&cor) {
+                    if self.cpu.write_u32(cor, this).is_err() {
+                        return Ok(Some(EBADPARM));
+                    }
+                    self.objects.add_ref(this);
+                    self.assumptions.insert(
+                        "o slot 3 do bitmap recebeu um ponteiro na pilha e devolveu o próprio bitmap, não um RGBToNative",
+                    );
+                    SUCCESS
+                } else {
+                    Rgb::from_rgbval(cor).to_rgb565() as u32
+                }
+            }
             "NativeToRGB" => {
                 let native = self.cpu.read_reg(Reg::R1) as u16;
                 to_rgbval(Rgb::from_rgb565(native))
@@ -1236,5 +1257,33 @@ mod testes_do_bitmap_intacto {
         machine.bitmaps.insert(destino, tela);
         machine.blit(destino, (0, 0), (4, 4), origem, (0, 0), AEE_RO_COPY);
         assert_eq!(machine.bitmaps[&destino].get_pixel(0, 0), 0xffff);
+    }
+
+    /// `r1` na pilha não é cor. O slot devolve o bitmap, como um ponteiro de saída.
+    /// Uma cor de verdade continua virando RGB565 e não escreve nesse ponteiro.
+    #[test]
+    fn o_slot_3_com_ponteiro_na_pilha_devolve_o_bitmap() {
+        let mut machine = maquina();
+        let bitmap = machine.objects.create(Interface::Bitmap).unwrap();
+        let saida = loader::STACK_BASE + 0x100;
+        machine.cpu.write_u32(saida, 0x1111_1111).unwrap();
+        machine.cpu.write_reg(Reg::R0, bitmap);
+        machine.cpu.write_reg(Reg::R1, saida);
+        let slot = crate::brew::aee_slots::BITMAP
+            .iter()
+            .position(|nome| *nome == "RGBToNative")
+            .unwrap() as u32;
+        assert_eq!(machine.bitmap_call(slot).unwrap(), Some(SUCCESS));
+        assert_eq!(machine.cpu.read_u32(saida).unwrap(), bitmap);
+        assert_eq!(machine.objects.contagem(bitmap), 2);
+
+        let cor = 0x0000_ff00u32;
+        machine.cpu.write_reg(Reg::R1, cor);
+        assert_eq!(
+            machine.bitmap_call(slot).unwrap(),
+            Some(Rgb::from_rgbval(cor).to_rgb565() as u32)
+        );
+        assert_eq!(machine.cpu.read_u32(saida).unwrap(), bitmap);
+        assert_eq!(machine.objects.contagem(bitmap), 2);
     }
 }
