@@ -2495,6 +2495,13 @@ pub struct Machine<C: CpuBackend> {
     debug_indice: HashMap<String, usize>,
     /// Superfícies de desenho, indexadas pelo ponteiro do `IBitmap` no guest.
     bitmaps: HashMap<u32, Framebuffer>,
+    /// Bitmaps de `CreateCompatibleBitmap` em que ninguém desenhou ainda.
+    ///
+    /// Nascem com a cor de máscara, para o blit transparente do Toy Raid. Um `COPY` dessa
+    /// superfície, antes de qualquer traço, pintava o magenta na tela — o retângulo do
+    /// Cadastro e do teclado. Enquanto o conjunto contém o bitmap, o `COPY` trata a máscara
+    /// como transparente.
+    bitmaps_intactos: std::collections::HashSet<u32>,
     /// `r0..r11` no momento da última falha de memória, para o relatório.
     fault_regs: [u32; 12],
     /// Endereços de retorno vistos na pilha da última falha.
@@ -3198,6 +3205,7 @@ impl<C: CpuBackend> Machine<C> {
             debug_output: Vec::new(),
             debug_indice: HashMap::new(),
             bitmaps: HashMap::new(),
+            bitmaps_intactos: std::collections::HashSet::new(),
             fault_regs: [0; 12],
             fault_stack: Vec::new(),
             timers: Vec::new(),

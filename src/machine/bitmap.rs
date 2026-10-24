@@ -624,6 +624,7 @@ impl<C: CpuBackend> Machine<C> {
             }
             // int DrawPixel(IBitmap *po, unsigned x, unsigned y, NativeColor c, AEERasterOp rop)
             "DrawPixel" => {
+                self.bitmaps_intactos.remove(&this);
                 let (x, y) = (
                     self.cpu.read_reg(Reg::R1) as i32,
                     self.cpu.read_reg(Reg::R2) as i32,
@@ -646,6 +647,7 @@ impl<C: CpuBackend> Machine<C> {
             // Zenonia usa isto no meio do jogo, e sem ele parava — nos dois motores, no mesmo
             // ponto, depois de quase 1.400 voltas.
             "SetPixels" => {
+                self.bitmaps_intactos.remove(&this);
                 let quantos = self.cpu.read_reg(Reg::R1);
                 let pontos = self.cpu.read_reg(Reg::R2);
                 let color = self.cpu.read_reg(Reg::R3) as u16;
@@ -693,6 +695,7 @@ impl<C: CpuBackend> Machine<C> {
             }
             // int DrawHScanline(IBitmap *po, unsigned y, unsigned xMin, unsigned xMax, ...)
             "DrawHScanline" => {
+                self.bitmaps_intactos.remove(&this);
                 let y = self.cpu.read_reg(Reg::R1) as i32;
                 let x_min = self.cpu.read_reg(Reg::R2) as i32;
                 let x_max = self.cpu.read_reg(Reg::R3) as i32;
@@ -722,6 +725,9 @@ impl<C: CpuBackend> Machine<C> {
                 if rop == AEE_RO_TRANSPARENT && color == transparent {
                     return Ok(Some(SUCCESS));
                 }
+                if rect.is_some() && self.bitmaps.contains_key(&this) {
+                    self.bitmaps_intactos.remove(&this);
+                }
                 if let (Some(rect), Some(fb)) = (rect, self.bitmaps.get_mut(&this)) {
                     // `AEE_RO_COPY` é o normal; qualquer outra operação que chegue aqui ainda
                     // pinta, porque recusar o desenho é pior do que pintar demais.
@@ -745,6 +751,9 @@ impl<C: CpuBackend> Machine<C> {
                 let origin = (self.stack_arg(2)? as i32, self.stack_arg(3)? as i32);
                 let rop = self.stack_arg(4)?;
                 self.blit(this, dst, size, src, origin, rop);
+                if !self.bitmaps_intactos.contains(&src) {
+                    self.bitmaps_intactos.remove(&this);
+                }
                 SUCCESS
             }
             // BltOut inverte os papéis: a fonte é `po` e o destino vem no argumento.
@@ -758,6 +767,9 @@ impl<C: CpuBackend> Machine<C> {
                 let origin = (self.stack_arg(2)? as i32, self.stack_arg(3)? as i32);
                 let rop = self.stack_arg(4)?;
                 self.blit(dst, dst_pos, size, this, origin, rop);
+                if !self.bitmaps_intactos.contains(&this) {
+                    self.bitmaps_intactos.remove(&dst);
+                }
                 SUCCESS
             }
             // int GetInfo(IBitmap *po, AEEBitmapInfo *pinfo, int nSize)
@@ -796,6 +808,7 @@ impl<C: CpuBackend> Machine<C> {
                     TRANSPARENT_KEY,
                 );
                 self.bitmaps.insert(addr, novo);
+                self.bitmaps_intactos.insert(addr);
                 // **O bitmap compatível já nasce `IDIB`, com os campos públicos preenchidos.** O
                 // Zenonia cria o canvas 320x240 assim e lê `cx`, `cy` e `pBmp` direto da struct,
                 // sem `QueryInterface` nenhum. Com os campos zerados o canvas tinha tamanho zero:
@@ -936,6 +949,7 @@ impl<C: CpuBackend> Machine<C> {
     /// Só os buffers que **nós** reservamos voltam — os que têm capacidade anotada. O de uma
     /// superfície do jogo (`IDIB` dele) é memória dele.
     pub(super) fn solta_dib(&mut self, bitmap: u32) {
+        self.bitmaps_intactos.remove(&bitmap);
         if let Some((buffer, _)) = self.dib_do_decodificador.remove(&bitmap) {
             self.solta_superficie(buffer);
         }
@@ -1107,11 +1121,15 @@ impl<C: CpuBackend> Machine<C> {
             return;
         };
         if let Some(source) = self.bitmaps.get(&src) {
-            let transparent = if rop == AEE_RO_TRANSPARENT {
+            let transparent = if rop == AEE_RO_TRANSPARENT || self.bitmaps_intactos.contains(&src) {
                 // Sem cor pedida, vale a do BREW: `RGB_MASK_COLOR`, o magenta. O Action Hero 3D
                 // desenha cada letra com `AEE_RO_TRANSPARENT` de uma folha de fundo magenta
                 // sem nunca chamar `SetTransparencyColor`; sem o padrão, a folha inteira
                 // aparecia na tela a cada letra.
+                //
+                // O `COPY` de um compatível ainda intocado entra aqui pelo mesmo motivo: a
+                // máscara é o preenchimento inicial, não um pixel que o jogo pintou. Sem isto
+                // o Cadastro e o teclado copiavam um retângulo magenta para a tela.
                 Some(self.transparency.get(&src).copied().unwrap_or(TRANSPARENT_KEY))
             } else {
                 None
@@ -1178,4 +1196,45 @@ struct TransformBlt {
     altura: i32,
     /// `A, B, C, D`, já fora do ponto fixo.
     m: [f32; 4],
+}
+
+#[cfg(test)]
+mod testes_do_bitmap_intacto {
+    use super::*;
+    use crate::cpu::BackendPadrao;
+    use crate::loader;
+
+    fn maquina() -> Machine<BackendPadrao> {
+        let code = [0xe3a0_0010u32.to_le_bytes(), 0xe12f_ff1eu32.to_le_bytes()].concat();
+        let image = loader::modfile::ModImage::parse(code).unwrap();
+        let module = loader::load(&image).unwrap();
+        let mut machine = Machine::new(BackendPadrao::new().unwrap(), module, ".");
+        machine.cpu.reset(&machine.module.mem).unwrap();
+        machine
+    }
+
+    /// O compatível nasce magenta, mas um `COPY` antes de qualquer traço não pinta a máscara.
+    #[test]
+    fn o_copy_de_bitmap_intacto_nao_pinta_a_mascara() {
+        let mut machine = maquina();
+        let saida = machine.heap.alloc(4).unwrap();
+        machine.cpu.write_reg(Reg::R1, saida);
+        machine.cpu.write_reg(Reg::R2, 4);
+        machine.cpu.write_reg(Reg::R3, 4);
+        let slot = crate::brew::aee_slots::BITMAP
+            .iter()
+            .position(|nome| *nome == "CreateCompatibleBitmap")
+            .unwrap() as u32;
+        assert_eq!(machine.bitmap_call(slot).unwrap(), Some(SUCCESS));
+        let origem = machine.cpu.read_u32(saida).unwrap();
+        let destino = machine.objects.create(Interface::Bitmap).unwrap();
+        let mut tela = Framebuffer::new(4, 4);
+        tela.fill_rect_native(
+            Rect { x: 0, y: 0, width: 4, height: 4 },
+            0xffff,
+        );
+        machine.bitmaps.insert(destino, tela);
+        machine.blit(destino, (0, 0), (4, 4), origem, (0, 0), AEE_RO_COPY);
+        assert_eq!(machine.bitmaps[&destino].get_pixel(0, 0), 0xffff);
+    }
 }
