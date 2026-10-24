@@ -1184,6 +1184,14 @@ const PROP_COR_DE_FUNDO: u32 = 0x130;
 /// nada.
 const WIDGET_HTML: u32 = 0x0102_dd32;
 
+/// O campo de texto que o Cadastro cria depois do decorador, `0x01028e2f`.
+///
+/// Sem ela o `CreateInstance` devolve 20 e a tela não monta o nome nem o teclado. É vizinha da
+/// `0x01028e2a`, que já é widget de texto. Nascer como widget é o que a família faz. O acesso
+/// nulo em `lr=0x49aa4` (`r0` dentro do módulo, `r1` zero, `pc` zero) continua: a instrução não
+/// está neste repositório, e inventar o ponteiro que ela carrega seria chute.
+const WIDGET_CAMPO: u32 = 0x0102_8e2f;
+
 /// O decorador de lista que o `CreateListWidget` pede, `0x01028e1b`.
 ///
 /// A tela de Cadastro registra `Unable to create list decorator in CreateListWidget` e em
@@ -1194,7 +1202,7 @@ const WIDGET_HTML: u32 = 0x0102_dd32;
 /// é o mesmo tratamento das outras, e é o que impede o jogo de guardar nulo.
 const WIDGET_DECORADOR_DE_LISTA: u32 = 0x0102_8e1b;
 
-const FAMILIA_DOS_WIDGETS: [u32; 11] = [
+const FAMILIA_DOS_WIDGETS: [u32; 12] = [
     WIDGET_HTML,
     AEECLSID_WIDGET,
     // A `0x01028e05` é a última que o palco pede. Depois de montar o pbuffer — `ChooseConfig`,
@@ -1209,6 +1217,7 @@ const FAMILIA_DOS_WIDGETS: [u32; 11] = [
     0x0102_8e14,
     0x0102_8e19,
     WIDGET_DECORADOR_DE_LISTA,
+    WIDGET_CAMPO,
     // A `0x01028e26` também entrou pela sonda: `slot3(0x801, 0x186, 0xff0000ff)` — o acessador,
     // com uma cor — e o mesmo slot 14 das outras.
     0x0102_8e26,

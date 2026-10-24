@@ -1091,14 +1091,40 @@ impl<C: CpuBackend> Machine<C> {
             // A terceira palavra do trio é a `0x52574`, o liberador: guardado, e chamado quando
             // o widget morre (ver o `Release`).
             "Slot13" => {
-                // Leitura em 0x24100..0x24198 do tectoy.mod: (&bitmap, w, h),
-                // seguida de QueryInterface no bitmap devolvido. O widget foi usado
-                // como interface de bitmap pelo QueryInterface permissivo acima.
-                let slot = crate::brew::aee_slots::BITMAP
-                    .iter()
-                    .position(|name| *name == "CreateCompatibleBitmap")
-                    .expect("slot de bitmap");
-                return self.bitmap_call(slot as u32);
+                // No BREW este slot é `SetModel`. O decorador `0x01028e1b` recebe o `IVetor`
+                // da lista aqui. Tratar como `CreateCompatibleBitmap` escrevia um bitmap em
+                // `*r1`, que é a vtable do vetor: o slot seguinte ia para `pc` 0 e o buffer
+                // magenta da lista nascia desse bitmap.
+                //
+                // O roller, em `0x24100`, usa o mesmo número com `(&bitmap, largura, altura)`
+                // — `r1` é saída, não objeto. Os dois se separam por isso: ponteiro de objeto
+                // vivo é modelo; o resto continua fábrica de superfície.
+                let alvo = self.cpu.read_reg(Reg::R1);
+                if self.objects.kind_of(alvo).is_some() {
+                    let anterior = self
+                        .widgets
+                        .get(&this)
+                        .and_then(|widget| widget.modelos.get(&0).copied());
+                    if let Some(widget) = self.widgets.get_mut(&this) {
+                        widget.modelos.insert(0, alvo);
+                    }
+                    if anterior != Some(alvo) {
+                        self.objects.add_ref(alvo);
+                        if let Some(anterior) = anterior {
+                            self.objects.release(anterior);
+                        }
+                    }
+                    self.assumptions.insert(
+                        "o slot 13 do widget guardou o modelo — com r1 objeto, não é CreateCompatibleBitmap",
+                    );
+                    SUCCESS
+                } else {
+                    let slot = crate::brew::aee_slots::BITMAP
+                        .iter()
+                        .position(|name| *name == "CreateCompatibleBitmap")
+                        .expect("slot de bitmap");
+                    return self.bitmap_call(slot as u32);
+                }
             }
             "Slot16" => {
                 let onde = self.cpu.read_reg(Reg::R1);
@@ -2120,6 +2146,37 @@ mod testes_do_aviso {
         machine.cpu.write_reg(Reg::R1, 0x1234);
         machine.widget_call(3).unwrap();
         assert!(machine.missing_apis.iter().any(|linha| linha.contains("0x1234")));
+    }
+
+    /// `SetModel` não pode escrever no objeto. A vtable do `IVetor` fica onde estava.
+    #[test]
+    fn o_slot_13_com_objeto_guarda_o_modelo() {
+        let mut machine = maquina();
+        let vetor = machine.objects.create(Interface::Vetor).unwrap();
+        machine.cpu.write_u32(vetor, 0x1111_1111).unwrap();
+        machine.widgets.insert(0x10, no(WIDGET_DECORADOR_DE_LISTA, 1, 0));
+        machine.cpu.write_reg(Reg::R0, 0x10);
+        machine.cpu.write_reg(Reg::R1, vetor);
+        assert_eq!(machine.widget_call(13).unwrap(), Some(SUCCESS));
+        assert_eq!(machine.cpu.read_u32(vetor).unwrap(), 0x1111_1111);
+        assert_eq!(machine.widgets[&0x10].modelos.get(&0).copied(), Some(vetor));
+    }
+
+    /// Sem objeto em `r1`, o roller continua recebendo uma superfície.
+    #[test]
+    fn o_slot_13_sem_objeto_cria_bitmap() {
+        let mut machine = maquina();
+        machine.widgets.insert(0x10, no(0x0102_8e14, 1, 0));
+        let saida = machine.heap.alloc(4).unwrap();
+        machine.cpu.write_u32(saida, 0).unwrap();
+        machine.cpu.write_reg(Reg::R0, 0x10);
+        machine.cpu.write_reg(Reg::R1, saida);
+        machine.cpu.write_reg(Reg::R2, 8);
+        machine.cpu.write_reg(Reg::R3, 4);
+        assert_eq!(machine.widget_call(13).unwrap(), Some(SUCCESS));
+        let bitmap = machine.cpu.read_u32(saida).unwrap();
+        assert!(machine.bitmaps.contains_key(&bitmap));
+        assert!(machine.objects.kind_of(bitmap) == Some(Interface::Bitmap));
     }
 }
 

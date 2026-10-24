@@ -987,6 +987,26 @@ mod testes_do_decorador {
             Some(WIDGET_DECORADOR_DE_LISTA)
         );
     }
+
+    /// O campo do Cadastro (`0x01028e2f`) também precisa nascer. Sem ele a tela para no
+    /// decorador.
+    #[test]
+    fn o_campo_do_cadastro_nasce_como_widget() {
+        let code = [0xe3a0_0010u32.to_le_bytes(), 0xe12f_ff1eu32.to_le_bytes()].concat();
+        let image = crate::loader::modfile::ModImage::parse(code).unwrap();
+        let module = crate::loader::load(&image).unwrap();
+        let mut machine = Machine::new(crate::cpu::BackendPadrao::new().unwrap(), module, ".");
+        machine.cpu.reset(&machine.module.mem).unwrap();
+        let saida = machine.heap.alloc(4).unwrap();
+        machine.cpu.write_reg(Reg::R1, WIDGET_CAMPO);
+        machine.cpu.write_reg(Reg::R2, saida);
+        assert_eq!(machine.shell_create_instance().unwrap(), SUCCESS);
+        let objeto = machine.cpu.read_u32(saida).unwrap();
+        assert_eq!(
+            machine.widgets.get(&objeto).map(|no| no.classe),
+            Some(WIDGET_CAMPO)
+        );
+    }
 }
 
 #[cfg(test)]
