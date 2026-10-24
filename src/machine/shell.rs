@@ -666,6 +666,20 @@ impl<C: CpuBackend> Machine<C> {
             AEECLSID_COLLECTION => Interface::Collection,
             AEECLSID_SQLMGR => Interface::SqlMgr,
             AEECLSID_SOURCEUTIL => Interface::SourceUtil,
+            // A `0x01028e4b` aparece no firmware no mesmo depósito da família, e o Apagar Jogos
+            // a pede. Nascer como widget genérico não resolve: o b1 no jogo volta ao menu em
+            // vez de confirmar. Sem o formato do diálogo, recusar é o que já acontecia, e a
+            // suposição fica no relatório para a próxima medição.
+            0x0102_8e4b => {
+                self.assumptions.insert(
+                    "a classe 0x01028e4b foi recusada: um widget genérico não abre o diálogo de Apagar Jogos",
+                );
+                self.unknown_classes.insert(clsid);
+                if out != 0 {
+                    self.cpu.write_u32(out, 0)?;
+                }
+                return Ok(ECLASSNOTSUPPORT);
+            }
             _ if FAMILIA_DOS_WIDGETS.contains(&clsid) => Interface::Widget,
             AEECLSID_CONTROL => Interface::Control,
             AEECLSID_ZEEBOMCP => Interface::ZeeboMcp,
@@ -1006,6 +1020,24 @@ mod testes_do_decorador {
             machine.widgets.get(&objeto).map(|no| no.classe),
             Some(WIDGET_CAMPO)
         );
+    }
+
+    /// Apagar Jogos pede `0x01028e4b`. Widget genérico não abre o diálogo, então a classe
+    /// continua recusada e o relatório guarda a suposição.
+    #[test]
+    fn a_classe_do_apagar_jogos_continua_recusada() {
+        let code = [0xe3a0_0010u32.to_le_bytes(), 0xe12f_ff1eu32.to_le_bytes()].concat();
+        let image = crate::loader::modfile::ModImage::parse(code).unwrap();
+        let module = crate::loader::load(&image).unwrap();
+        let mut machine = Machine::new(crate::cpu::BackendPadrao::new().unwrap(), module, ".");
+        machine.cpu.reset(&machine.module.mem).unwrap();
+        let saida = machine.heap.alloc(4).unwrap();
+        machine.cpu.write_reg(Reg::R1, 0x0102_8e4b);
+        machine.cpu.write_reg(Reg::R2, saida);
+        assert_eq!(machine.shell_create_instance().unwrap(), ECLASSNOTSUPPORT);
+        assert_eq!(machine.cpu.read_u32(saida).unwrap(), 0);
+        assert!(machine.assumptions.iter().any(|linha| linha.contains("0x01028e4b")));
+        assert!(!FAMILIA_DOS_WIDGETS.contains(&0x0102_8e4b));
     }
 }
 

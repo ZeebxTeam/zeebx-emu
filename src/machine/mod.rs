@@ -1210,7 +1210,9 @@ const FAMILIA_DOS_WIDGETS: [u32; 12] = [
     // logo esta; recusada, o `CreateStageWidget` desiste e leva a roda de jogos junto. No
     // firmware ela aparece nos mesmos depósitos de literais que a `0x01028e19` e a
     // `0x01028e4b`, ao lado do seletor `0x801` e de uma cor, que é como as outras da família
-    // são usadas.
+    // são usadas. A `0x01028e4b` fica de fora de propósito: o Apagar Jogos a pede, e nascer
+    // como widget genérico não abre o diálogo — o b1 no jogo volta ao menu. Ver o braço
+    // dela em [`Machine::shell_create_instance`].
     0x0102_8e05,
     // A `0x01028e14` é o `OwnerDrawWidget`: o `CreateTectoyRollerWidget` a cria e, recusada,
     // registra `Failure in call to CreateOwnerDrawWidget` e desiste da roda de jogos inteira.
