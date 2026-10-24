@@ -189,7 +189,10 @@ impl<C: CpuBackend> Machine<C> {
     /// que sobrava na tela era um amontoado no canto.
     ///
     /// Largura e altura vêm zeradas quando o widget se mede sozinho, e aí não são gravadas: um
-    /// tamanho zero apagaria o que o slot 7 já disse.
+    /// tamanho zero apagaria o que o slot 7 já disse. Também só entram quando a palavra do
+    /// meio, o sinalizador, é 0 ou 1 — a forma medida na abertura, `{0, 0, 1, 640, 480}`. Sem
+    /// isso, `+12` e `+16` caem em cima da posição do vizinho (a barra em `(465, 17)` virava
+    /// tamanho) e o diálogo abre com uma faixa branca no topo.
     ///
     /// O mesmo slot atende cinco classes da família de widgets, e nem toda chamada tem esta
     /// forma — algumas passam uma função em `r2` e um objeto em `r3`. Por isso a posição só é
@@ -199,6 +202,7 @@ impl<C: CpuBackend> Machine<C> {
         /// Deslocamentos dentro da estrutura, em palavras.
         const X: u32 = 0;
         const Y: u32 = 4;
+        const SINAL: u32 = 8;
         const LARGURA: u32 = 12;
         const ALTURA: u32 = 16;
 
@@ -209,11 +213,16 @@ impl<C: CpuBackend> Machine<C> {
         let (Ok(x), Ok(y)) = (self.cpu.read_u32(onde + X), self.cpu.read_u32(onde + Y)) else {
             return Ok(());
         };
+        let sinal = self.cpu.read_u32(onde + SINAL).unwrap_or(u32::MAX);
         let tamanho = match (
             self.cpu.read_u32(onde + LARGURA),
             self.cpu.read_u32(onde + ALTURA),
         ) {
-            (Ok(largura), Ok(altura)) if largura != 0 && altura != 0 => Some((largura, altura)),
+            (Ok(largura), Ok(altura))
+                if (sinal == 0 || sinal == 1) && largura != 0 && altura != 0 =>
+            {
+                Some((largura, altura))
+            }
             _ => None,
         };
         if let Some(widget) = self.widgets.get_mut(&filho) {
@@ -2112,6 +2121,28 @@ mod testes_do_aviso {
         machine.set_key(0xe035, true);
         machine.flush_keys().unwrap();
         assert_eq!(machine.cpu.read_u32(MARCA).unwrap(), 7, "a tecla não chegou ao menu");
+    }
+
+    /// Sem o sinalizador 0 ou 1, largura e altura são a posição do vizinho e não entram.
+    #[test]
+    fn tamanho_so_entra_com_o_sinalizador() {
+        let mut machine = maquina();
+        machine.widgets.insert(0x10, no(0, 1, 0));
+        let onde = machine.heap.alloc(24).unwrap();
+        for (i, palavra) in [52u32, 331, 465, 17, 9, 0].into_iter().enumerate() {
+            machine.cpu.write_u32(onde + i as u32 * 4, palavra).unwrap();
+        }
+        machine.cpu.write_reg(Reg::R2, 0);
+        machine.cpu.write_reg(Reg::R3, onde);
+        machine.anota_posicao(0x10).unwrap();
+        assert_eq!(machine.widgets[&0x10].posicao, (52, 331));
+        assert_eq!(machine.widgets[&0x10].tamanho, (0, 0));
+
+        machine.cpu.write_u32(onde + 8, 1).unwrap();
+        machine.cpu.write_u32(onde + 12, 100).unwrap();
+        machine.cpu.write_u32(onde + 16, 40).unwrap();
+        machine.anota_posicao(0x10).unwrap();
+        assert_eq!(machine.widgets[&0x10].tamanho, (100, 40));
     }
 
     /// O desenho do Cadastro, solto na árvore, não pinta quando outra tela está ativa.
