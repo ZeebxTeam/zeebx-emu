@@ -2458,6 +2458,13 @@ pub struct Machine<C: CpuBackend> {
     calibracoes: (u32, u32),
     /// Teclas apertadas e ainda não entregues, como `(código AVK, apertada)`.
     teclas: std::collections::VecDeque<(u32, bool)>,
+    /// Quem viu o aperto de cada tecla: os tratadores e se o applet também viu.
+    ///
+    /// A soltura volta só para esse conjunto. O `b1` que abre um diálogo solta em cima do
+    /// tratador novo, e esse tratador lia a soltura como confirmar. Não entra no save state:
+    /// um estado gravado no meio do aperto esquece a lista, e a soltura seguinte não confirma
+    /// ninguém.
+    apertos_vistos: HashMap<u32, (Vec<(u32, u32)>, bool)>,
     /// Os últimos toques entregues, para o relatório.
     ///
     /// A fila acima é consumida pelo jogo e some; esta fica. Existe porque um problema de
@@ -3199,6 +3206,7 @@ impl<C: CpuBackend> Machine<C> {
             portas_de_aparelho: HashMap::new(),
             media_log: std::collections::VecDeque::new(),
             teclas: std::collections::VecDeque::new(),
+            apertos_vistos: HashMap::new(),
             pad_log: std::collections::VecDeque::new(),
             current_applet: 0,
             random_state: 0x1234_5678,

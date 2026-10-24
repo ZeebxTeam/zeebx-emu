@@ -2189,6 +2189,60 @@ mod testes_do_aviso {
         );
     }
 
+    /// A soltura do botão que abriu o diálogo não chega no tratador que nasceu depois.
+    #[test]
+    fn a_soltura_nao_confirma_o_dialogo_que_nasceu_no_aperto() {
+        let mut machine = maquina();
+        let marca_dialogo = machine.heap.alloc(4).unwrap();
+        let base = MODULE_BASE + 0x28;
+        for (i, palavra) in [
+            0xe3a0_0009u32,
+            0xe59f_1004,
+            0xe581_0000,
+            0xe12f_ff1e,
+            marca_dialogo,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            machine.cpu.write_u32(base + i as u32 * 4, palavra).unwrap();
+        }
+
+        let mut tela = no(WIDGET_FORMULARIO, 4, 0);
+        tela.anexados.push(0x11);
+        tela.anexados.push(0x20);
+        machine.widgets.insert(0x10, tela);
+        let mut filho = no(0, 2, 0x10);
+        filho.texto = "Jogar".into();
+        machine.widgets.insert(0x11, filho);
+        let mut menu = no(0, 3, 0x10);
+        menu.tratador = (MENU, 0x10028);
+        machine.widgets.insert(0x20, menu);
+
+        machine.set_key(0xe035, true);
+        machine.flush_keys().unwrap();
+        assert_eq!(machine.cpu.read_u32(MARCA).unwrap(), 7, "o aperto não chegou");
+        machine.cpu.write_u32(MARCA, 0).unwrap();
+
+        let mut dialogo = no(0, 9, 0x10);
+        dialogo.tratador = (base, 0x10030);
+        machine.widgets.insert(0x30, dialogo);
+        machine.widgets.get_mut(&0x10).unwrap().anexados.push(0x30);
+
+        machine.set_key(0xe035, false);
+        machine.flush_keys().unwrap();
+        assert_eq!(
+            machine.cpu.read_u32(MARCA).unwrap(),
+            7,
+            "a soltura não voltou a quem apertou"
+        );
+        assert_eq!(
+            machine.cpu.read_u32(marca_dialogo).unwrap(),
+            0,
+            "o diálogo que nasceu no aperto viu a soltura"
+        );
+    }
+
     /// Contexto com a marca `0xA7` não é chamado. O tratador, se rodasse, gravaria 7.
     #[test]
     fn contexto_liberado_nao_e_chamado() {

@@ -624,9 +624,9 @@ impl<C: CpuBackend> Machine<C> {
                 true => input::EVT_KEY,
                 false => input::EVT_KEY_RELEASE,
             };
-            let mut tratado = false;
             // Com o painel de HTML em foco, as setas verticais são dele enquanto houver texto
-            // para rolar. Ver [`Machine::rola_html_em_foco`].
+            // para rolar. Ver [`Machine::rola_html_em_foco`]. Isso consome o aperto e a soltura
+            // antes de qualquer tratador, então não entra em [`Machine::apertos_vistos`].
             if matches!(avk, input::avk::UP | input::avk::DOWN) {
                 let para_baixo = avk == input::avk::DOWN;
                 if down && self.rola_html_em_foco(para_baixo) {
@@ -637,6 +637,11 @@ impl<C: CpuBackend> Machine<C> {
                     continue;
                 }
             }
+            if !down {
+                self.solta_tecla(avk)?;
+                continue;
+            }
+            let mut tratado = false;
             // **O mais novo primeiro.** Os formulários se empilham e nenhum é destruído aqui,
             // então a lista tem o tratador da abertura ao lado do da tela atual. O da abertura
             // devolve 1 para qualquer aperto — ele trata a tecla 0 e a CLR —, e vindo antes
@@ -678,10 +683,12 @@ impl<C: CpuBackend> Machine<C> {
                 .take(4)
                 .map(|(_, (funcao, _))| format!("{funcao:#x}"))
                 .collect();
+            let mut vistos = Vec::new();
             for (_, (funcao, contexto)) in na_tela {
                 if self.contexto_liberado(funcao, contexto) {
                     continue;
                 }
+                vistos.push((funcao, contexto));
                 let saida = self.call_guest(funcao, [contexto, evento, avk, 0], QSORT_BUDGET)?;
                 // A barra responde "tratei" para qualquer tecla e no console não recebe tecla.
                 // Contar esse retorno fechava a porta de quem está fora da árvore: com o aviso
@@ -697,6 +704,7 @@ impl<C: CpuBackend> Machine<C> {
                     if self.contexto_liberado(funcao, contexto) {
                         continue;
                     }
+                    vistos.push((funcao, contexto));
                     let saida =
                         self.call_guest(funcao, [contexto, evento, avk, 0], QSORT_BUDGET)?;
                     if matches!(saida, Outcome::Returned { code } if code != 0)
@@ -715,11 +723,7 @@ impl<C: CpuBackend> Machine<C> {
             // indistinguíveis.
             if self.serial.is_some() {
                 self.registra_serial(format!(
-                    "<tecla {avk:#x} {} para {} tratador(es) na tela e {} fora ({}){}>",
-                    match down {
-                        true => "aperta",
-                        false => "solta",
-                    },
+                    "<tecla {avk:#x} aperta para {} tratador(es) na tela e {} fora ({}){}>",
                     quantos_na_tela,
                     quantos_fora,
                     quem.join(" "),
@@ -729,9 +733,65 @@ impl<C: CpuBackend> Machine<C> {
                     }
                 ));
             }
-            if !tratado {
+            let applet = if !tratado {
                 let _ = self.send_applet_event(self.applet_class, evento, avk as u16, 0)?;
+                true
+            } else {
+                false
+            };
+            self.apertos_vistos.insert(avk, (vistos, applet));
+        }
+        Ok(())
+    }
+
+    /// Entrega a soltura só a quem viu o aperto.
+    ///
+    /// Um diálogo que nasce no aperto — Comprar Z-Credits, Verificar Saldo, confirmar a capa —
+    /// não estava na lista, então não trata a soltura como "confirmei". Com `b1:3000` a caixa
+    /// sumia ao soltar o botão.
+    fn solta_tecla(&mut self, avk: u32) -> Result<(), CpuError> {
+        let Some((vistos, applet)) = self.apertos_vistos.remove(&avk) else {
+            if self.serial.is_some() {
+                self.registra_serial(format!(
+                    "<tecla {avk:#x} solta sem aperto registrado, ninguém confirma>"
+                ));
             }
+            return Ok(());
+        };
+        let quantos = vistos.len();
+        let quem: Vec<String> = vistos
+            .iter()
+            .take(4)
+            .map(|(funcao, _)| format!("{funcao:#x}"))
+            .collect();
+        let mut tratado = false;
+        for (funcao, contexto) in vistos {
+            if self.contexto_liberado(funcao, contexto) {
+                continue;
+            }
+            let saida = self.call_guest(
+                funcao,
+                [contexto, input::EVT_KEY_RELEASE, avk, 0],
+                QSORT_BUDGET,
+            )?;
+            if matches!(saida, Outcome::Returned { code } if code != 0)
+                && !self.e_tratador_da_barra(funcao, contexto)
+            {
+                tratado = true;
+            }
+        }
+        if self.serial.is_some() {
+            self.registra_serial(format!(
+                "<tecla {avk:#x} solta para {quantos} tratador(es) que viram o aperto ({}){}>",
+                quem.join(" "),
+                match tratado {
+                    true => ", tratada",
+                    false => ", ninguém tratou",
+                }
+            ));
+        }
+        if applet {
+            let _ = self.send_applet_event(self.applet_class, input::EVT_KEY_RELEASE, avk as u16, 0)?;
         }
         Ok(())
     }
