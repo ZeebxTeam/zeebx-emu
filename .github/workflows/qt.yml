@@ -219,7 +219,13 @@ jobs:
           raiz=$(mktemp -d)
           cp -R "$app" "$raiz/"
           ln -s /Applications "$raiz/Applications"
-          hdiutil create -volname "Zeebx Qt" -srcfolder "$raiz" -ov -format UDZO target/pacotes/Zeebx.dmg
+          # No runner o `hdiutil` às vezes falha com "Resource busy": algum serviço do sistema
+          # ainda segura o volume temporário. Tentar de novo depois de alguns segundos resolve.
+          for tentativa in 1 2 3 4 5; do
+            hdiutil create -volname "Zeebx Qt" -srcfolder "$raiz" -ov -format UDZO target/pacotes/Zeebx.dmg && break
+            [[ $tentativa == 5 ]] && exit 1
+            sleep $((tentativa * 5))
+          done
           rm -rf "$raiz"
 
       - name: Nomear
