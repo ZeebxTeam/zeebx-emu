@@ -112,19 +112,209 @@ fn decode_ima_adpcm(payload: &[u8], channels: usize, block_align: usize) -> Vec<
 }
 
 /// Um som pronto para tocar: amostras normalizadas em `-1.0..=1.0`, intercaladas por canal.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Sound {
     pub rate: u32,
     pub channels: u16,
     pub samples: Vec<f32>,
+    /// A mesma onda em 16 bits, quando o buffer em `f32` não coube.
+    ///
+    /// Vazio no caminho normal. A trilha de 86,67 s do Double Dragon pede 7.688.424
+    /// bytes em `f32` (`(duração + 0,5) × 22050 + 1`, vezes 4). Na Vita esse
+    /// `malloc` falha — o heap de 232 MB já está partido pelo heap do jogo — e o
+    /// processo aborta. Em 16 bits a mesma trilha ocupa a metade.
+    pub compacto: Vec<i16>,
+    /// Preenchido por outra thread. `None` quando o som já chegou pronto.
+    ao_vivo: Option<std::sync::Arc<AoVivo>>,
+}
+
+impl PartialEq for Sound {
+    fn eq(&self, other: &Self) -> bool {
+        self.rate == other.rate
+            && self.channels == other.channels
+            && self.samples == other.samples
+            && self.compacto == other.compacto
+            && self.ao_vivo.is_none()
+            && other.ao_vivo.is_none()
+    }
 }
 
 impl Sound {
+    pub fn novo(rate: u32, channels: u16, samples: Vec<f32>) -> Self {
+        Self {
+            rate,
+            channels,
+            samples,
+            compacto: Vec::new(),
+            ao_vivo: None,
+        }
+    }
+
+    pub fn de_i16(rate: u32, channels: u16, compacto: Vec<i16>) -> Self {
+        Self {
+            rate,
+            channels,
+            samples: Vec::new(),
+            compacto,
+            ao_vivo: None,
+        }
+    }
+
+    pub(crate) fn em_sintese(rate: u32, channels: u16, ao_vivo: std::sync::Arc<AoVivo>) -> Self {
+        Self {
+            rate,
+            channels,
+            samples: Vec::new(),
+            compacto: Vec::new(),
+            ao_vivo: Some(ao_vivo),
+        }
+    }
+
+    /// Quantas amostras há, seja no buffer largo ou no compacto.
+    pub fn n_amostras(&self) -> usize {
+        if let Some(vivo) = &self.ao_vivo {
+            return vivo.total;
+        }
+        if self.samples.is_empty() {
+            self.compacto.len()
+        } else {
+            self.samples.len()
+        }
+    }
+
+    /// Bytes que este som ocupa no cache.
+    pub fn bytes_pcm(&self) -> usize {
+        if let Some(vivo) = &self.ao_vivo {
+            return vivo.bytes;
+        }
+        self.samples.len() * std::mem::size_of::<f32>()
+            + self.compacto.len() * std::mem::size_of::<i16>()
+    }
+
+    /// A amostra `indice` já foi escrita. Som pronto responde sempre que sim.
+    pub fn alcanca(&self, indice: usize) -> bool {
+        let Some(vivo) = &self.ao_vivo else {
+            return true;
+        };
+        let prontas = vivo.prontas.load(std::sync::atomic::Ordering::Acquire);
+        prontas >= vivo.total || indice < prontas
+    }
+
+    /// A amostra `i`, em `-1.0..=1.0`.
+    pub fn ler(&self, i: usize) -> f32 {
+        if let Some(vivo) = &self.ao_vivo {
+            return vivo.ler(i);
+        }
+        if let Some(s) = self.samples.get(i) {
+            return *s;
+        }
+        self.compacto
+            .get(i)
+            .map(|s| f32::from(*s) / 32767.0)
+            .unwrap_or(0.0)
+    }
+
     /// Quantos quadros de áudio o som tem — uma amostra por canal conta como um.
     pub fn frames(&self) -> usize {
         match self.channels {
             0 => 0,
-            channels => self.samples.len() / channels as usize,
+            channels => self.n_amostras() / channels as usize,
+        }
+    }
+}
+
+/// Buffer que uma thread enche enquanto o jogo já segue.
+///
+/// A síntese de uma trilha longa leva segundos na Vita. Feita no fio do quadro,
+/// a imagem para e só volta quando a conta acaba. Aqui o fio do jogo recebe o
+/// som na hora, com o tamanho certo, e a voz espera a amostra que ainda não
+/// existe em vez de pular para o meio da música.
+pub(crate) struct AoVivo {
+    samples: std::cell::UnsafeCell<Vec<f32>>,
+    compacto: std::cell::UnsafeCell<Vec<i16>>,
+    prontas: std::sync::atomic::AtomicUsize,
+    total: usize,
+    bytes: usize,
+}
+
+impl std::fmt::Debug for AoVivo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AoVivo")
+            .field("total", &self.total)
+            .field(
+                "prontas",
+                &self.prontas.load(std::sync::atomic::Ordering::Relaxed),
+            )
+            .finish()
+    }
+}
+
+// Quem lê só enxerga índices já publicados. Quem escreve publica o fim da
+// janela depois de gravá-la, com `Release`. Não há amostra lida e escrita
+// ao mesmo tempo.
+unsafe impl Send for AoVivo {}
+unsafe impl Sync for AoVivo {}
+
+impl AoVivo {
+    pub(crate) fn de_f32(samples: Vec<f32>) -> Self {
+        let total = samples.len();
+        Self {
+            bytes: total * std::mem::size_of::<f32>(),
+            samples: std::cell::UnsafeCell::new(samples),
+            compacto: std::cell::UnsafeCell::new(Vec::new()),
+            prontas: std::sync::atomic::AtomicUsize::new(0),
+            total,
+        }
+    }
+
+    pub(crate) fn de_i16(compacto: Vec<i16>) -> Self {
+        let total = compacto.len();
+        Self {
+            bytes: total * std::mem::size_of::<i16>(),
+            samples: std::cell::UnsafeCell::new(Vec::new()),
+            compacto: std::cell::UnsafeCell::new(compacto),
+            prontas: std::sync::atomic::AtomicUsize::new(0),
+            total,
+        }
+    }
+
+    pub(crate) fn total(&self) -> usize {
+        self.total
+    }
+
+    pub(crate) fn e_largo(&self) -> bool {
+        !unsafe { &*self.samples.get() }.is_empty()
+    }
+
+    pub(crate) fn escreve_f32(&self, pos: usize, dados: &[f32]) {
+        let buf = unsafe { &mut *self.samples.get() };
+        buf[pos..pos + dados.len()].copy_from_slice(dados);
+    }
+
+    pub(crate) fn escreve_i16(&self, pos: usize, dados: &[i16]) {
+        let buf = unsafe { &mut *self.compacto.get() };
+        buf[pos..pos + dados.len()].copy_from_slice(dados);
+    }
+
+    pub(crate) fn publica(&self, ate: usize) {
+        self.prontas
+            .store(ate, std::sync::atomic::Ordering::Release);
+    }
+
+    fn ler(&self, i: usize) -> f32 {
+        if i >= self.prontas.load(std::sync::atomic::Ordering::Acquire) {
+            return 0.0;
+        }
+        unsafe {
+            let samples = &*self.samples.get();
+            if !samples.is_empty() {
+                return samples.get(i).copied().unwrap_or(0.0);
+            }
+            let compacto = &*self.compacto.get();
+            compacto
+                .get(i)
+                .map(|s| f32::from(*s) / 32767.0)
+                .unwrap_or(0.0)
         }
     }
 }
@@ -268,11 +458,11 @@ pub fn parse(data: &[u8]) -> Result<Sound, WavError> {
     };
     let payload = &data[body..end];
     if tag == FORMAT_IMA_ADPCM {
-        return Ok(Sound {
-            rate: rate.max(1),
-            channels: channels.max(1),
-            samples: decode_ima_adpcm(payload, channels.max(1) as usize, align as usize),
-        });
+        return Ok(Sound::novo(
+            rate.max(1),
+            channels.max(1),
+            decode_ima_adpcm(payload, channels.max(1) as usize, align as usize),
+        ));
     }
     if tag != FORMAT_PCM {
         return Err(WavError::NotPcm(tag));
@@ -289,11 +479,7 @@ pub fn parse(data: &[u8]) -> Result<Sound, WavError> {
             .collect(),
         other => return Err(WavError::BadDepth(other)),
     };
-    Ok(Sound {
-        rate: rate.max(1),
-        channels: channels.max(1),
-        samples,
-    })
+    Ok(Sound::novo(rate.max(1), channels.max(1), samples))
 }
 
 #[cfg(test)]

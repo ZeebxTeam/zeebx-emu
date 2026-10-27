@@ -130,13 +130,11 @@ impl Voice {
         let fraction = (self.position - self.position.floor()) as f32;
         // Som mono alimenta os dois canais; som estéreo usa o canal pedido.
         let lane = channel.min(channels - 1);
-        let at = |frame: usize| -> f32 {
-            self.sound
-                .samples
-                .get(frame.min(frames - 1) * channels + lane)
-                .copied()
-                .unwrap_or(0.0)
-        };
+        let preciso = index.saturating_add(1) * channels.max(1) + lane;
+        if !self.sound.alcanca(preciso) {
+            return 0.0;
+        }
+        let at = |frame: usize| -> f32 { self.sound.ler(frame.min(frames - 1) * channels + lane) };
         at(index) + (at(index + 1) - at(index)) * fraction
     }
 
@@ -171,6 +169,15 @@ impl Voice {
     /// consumir a descida: sem isso a voz nunca chegaria ao fim ali, e o teste que cobra "o som
     /// andou até o fim" pegou exatamente isso.
     fn passo(&mut self, ritmo: f64) {
+        if self.descida == 0 {
+            // Amostra que a síntese ainda não escreveu: ficar parado aqui. Avançar
+            // tocaria silêncio e, quando o buffer aparecesse, a música começaria no meio.
+            let quadro = self.position.floor() as usize;
+            let canais = (self.sound.channels as usize).max(1);
+            if !self.sound.alcanca(quadro.saturating_add(1) * canais) {
+                return;
+            }
+        }
         match self.descida {
             0 => self.advance(ritmo),
             1 => {
@@ -568,9 +575,18 @@ impl Mixer {
 
     /// Mistura `frames` quadros estéreo e devolve as amostras intercaladas.
     pub fn render(&self, frames: usize) -> Vec<f32> {
-        let mut out = vec![0.0; frames * 2];
-        self.fill(&mut out, 2);
+        let mut out = Vec::new();
+        self.render_into(frames, &mut out);
         out
+    }
+
+    /// O mesmo que [`render`](Self::render), escrevendo num buffer que o chamador guarda.
+    ///
+    /// O core pede isto a cada quadro. Alocar e soltar o `Vec` toda vez parte o heap
+    /// da Vita, e o `malloc` seguinte — a trilha longa — não acha um bloco contínuo.
+    pub fn render_into(&self, frames: usize, out: &mut Vec<f32>) {
+        out.resize(frames * 2, 0.0);
+        self.fill(out, 2);
     }
 
     /// Preenche `out` com a mistura das vozes. `channels` é quantos canais a placa quer.
@@ -615,6 +631,9 @@ impl Mixer {
             if voice.paused || voice.done {
                 continue;
             }
+            // Mono alimenta os dois canais com a mesma amostra. Calcular duas vezes era o
+            // caminho geral, e na trilha (um canal, 22 kHz) isso é metade do laço.
+            let mono = voice.sound.channels <= 1;
             for frame in out[..vivos * channels].chunks_mut(channels) {
                 if voice.done {
                     break;
@@ -622,8 +641,15 @@ impl Mixer {
                 // **O ganho fica dentro do laço.** O `decaimento()` muda a cada quadro enquanto a
                 // voz desce; içá-lo para fora congelaria o primeiro valor e apagaria a descida.
                 let gain = voice.volume * master * voice.decaimento();
-                for (channel, slot) in frame.iter_mut().enumerate() {
-                    *slot += voice.sample(channel) * gain;
+                if mono {
+                    let amostra = voice.sample(0) * gain;
+                    for slot in frame.iter_mut() {
+                        *slot += amostra;
+                    }
+                } else {
+                    for (channel, slot) in frame.iter_mut().enumerate() {
+                        *slot += voice.sample(channel) * gain;
+                    }
                 }
                 // Depois de começar a descida, o som não avança mais: o que se ouve é o último
                 // valor, cada vez menor. Quando a descida acaba, a voz sai.
@@ -838,11 +864,11 @@ mod tests {
     use super::*;
 
     fn tone(rate: u32, frames: usize) -> Arc<Sound> {
-        Arc::new(Sound {
+        Arc::new(Sound::novo(
             rate,
-            channels: 1,
-            samples: (0..frames).map(|_| 1.0).collect(),
-        })
+            1,
+            (0..frames).map(|_| 1.0).collect(),
+        ))
     }
 
     /// Um mixer sem placa, para testar a mistura sem depender de áudio no host.
@@ -867,11 +893,7 @@ mod tests {
             let samples: Vec<f32> = (0..quadros * usize::from(canais))
                 .map(|i| ((i % 97) as f32 / 97.0) * 0.5)
                 .collect();
-            let som = Arc::new(Sound {
-                samples,
-                rate: 8_000,
-                channels: canais,
-            });
+            let som = Arc::new(Sound::novo(8_000, canais, samples));
             let mixer = mixer(8_000);
             mixer.play(7, som, 1.0, 1);
             let mut total = 0usize;
@@ -914,11 +936,7 @@ mod tests {
     #[test]
     fn no_avanco_a_voz_anda_na_velocidade_do_jogo() {
         let quadros = 9_000usize;
-        let som = Arc::new(Sound {
-            samples: vec![0.5; quadros],
-            rate: 9_000,
-            channels: 1,
-        });
+        let som = Arc::new(Sound::novo(9_000, 1, vec![0.5; quadros]));
         let mixer = mixer(9_000);
         mixer.define_avanco(3.0, true);
         mixer.play(4, som, 1.0, 1);
@@ -1129,13 +1147,13 @@ mod tests {
         // volume, e só a frequência denuncia — daí contar as passagens por zero.
         let rate = 8000;
         let hertz = 1000.0;
-        let sound = Arc::new(Sound {
+        let sound = Arc::new(Sound::novo(
             rate,
-            channels: 1,
-            samples: (0..rate)
+            1,
+            (0..rate)
                 .map(|i| (i as f32 / rate as f32 * hertz * std::f32::consts::TAU).sin())
                 .collect(),
-        });
+        ));
 
         let device = 32000;
         let mixer = mixer(device);

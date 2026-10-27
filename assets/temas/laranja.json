@@ -1,0 +1,39 @@
+{
+  "formato": 1,
+  "nome": {
+    "pt-BR": "Laranja",
+    "en": "Orange",
+    "es": "Naranja",
+    "es-MX": "Naranja"
+  },
+  "escuro": true,
+  "cores": {
+    "window": "#231e1c",
+    "windowText": "#f3ece5",
+    "base": "#1b1614",
+    "alternateBase": "#28221f",
+    "text": "#f3ece5",
+    "placeholderText": "#a59a8f",
+    "button": "#312a27",
+    "buttonText": "#f3ece5",
+    "brightText": "#ffffff",
+    "light": "#4b413c",
+    "midlight": "#3c3430",
+    "mid": "#584c46",
+    "dark": "#151110",
+    "shadow": "#0a0908",
+    "highlight": "#ca4014",
+    "highlightedText": "#ffffff",
+    "link": "#ff9b73",
+    "linkVisited": "#e3a8ff",
+    "toolTipBase": "#38302c",
+    "toolTipText": "#f3ece5"
+  },
+  "desabilitado": {
+    "windowText": "#7b7168",
+    "text": "#7b7168",
+    "buttonText": "#7b7168"
+  },
+  "aviso": "#f0c75a",
+  "erro": "#ff7a6e"
+}

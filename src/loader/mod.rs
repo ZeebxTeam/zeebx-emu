@@ -44,6 +44,14 @@ pub const MODULE_BSS_SLACK: usize = 1024 * 1024;
 /// (`docs/01-hardware.md`), e o tamanho aqui é escolha nossa — só precisa ser folgado o bastante
 /// para o jogo reconhecer o aparelho.
 ///
+/// Na Vita o processo inteiro cabe em 232 MiB, e o `Vec` zerado é reservado de verdade:
+/// a newlib não tem o overcommit do desktop. Com 64 MiB aqui, o quadro seguinte do
+/// frontend não achava o bloco temporário de ~1,2 MiB (640×480 em 32 bits): o vitaGL
+/// copia esse ponteiro mesmo quando a alocação volta nula, e o Zeetris, já aberto,
+/// morreu num data abort dentro do `sceClibMemcpy`. 48 MiB ainda é o heap que a
+/// Z-Wheel lê como "quanto há livre". A região interna soma mais 16 MiB reservados no
+/// aparelho. Não medi se 48 basta para o Quake nele.
+///
 /// **Medido em 22/09/2026, e o número ficou:** dobrar para 128 MB não move a Z-Wheel. Ela aloca
 /// ~64 MiB no próprio pool (o `memcheck` dela imprime `Free(67001392)`, o mesmo número nos dois
 /// tamanhos) e depois pede **o total que sobra** — 67 001 488 com 64 MB, 134 110 352 com 128 MB.
@@ -51,7 +59,11 @@ pub const MODULE_BSS_SLACK: usize = 1024 * 1024;
 /// alvo. O que ficou dessa medição é a contabilidade honesta de "quanto há livre": ver
 /// [`crate::brew::heap::Heap::maior_bloco`].
 pub const HEAP_BASE: u32 = 0x1000_0000;
-pub const HEAP_SIZE: usize = 64 * 1024 * 1024;
+pub const HEAP_SIZE: usize = if cfg!(target_os = "vita") {
+    48 * 1024 * 1024
+} else {
+    64 * 1024 * 1024
+};
 /// Pilha. `sp` começa no topo porque a pilha do ARM cresce para baixo.
 pub const STACK_BASE: u32 = 0x2000_0000;
 pub const STACK_SIZE: usize = 1024 * 1024;
@@ -76,6 +88,29 @@ pub const OBJECT_SIZE: usize = 4 * 1024 * 1024;
 /// ele desenhar direto — é assim que os jogos comerciais escrevem na tela.
 pub const SURFACE_BASE: u32 = 0x4000_0000;
 pub const SURFACE_SIZE: usize = 8 * 1024 * 1024;
+
+/// Memória que **o emulador** pede no espaço do guest, fora do heap do jogo.
+///
+/// Pilhas de `IThread`, o buffer de linha do `IPeek`, o `AEEImageInfo`, as strings do
+/// `eglQueryString` e os ponteiros de saída que passamos a callbacks do jogo. Moravam no heap,
+/// intercalados com o que o jogo pede, e isso fazia o endereço de cada estrutura do jogo
+/// depender da **versão do Zeebx**: um bloco nosso a mais e tudo depois dele andava. O
+/// RetroAchievements lê o heap por endereço, e uma conquista não pode quebrar porque o emulador
+/// passou a alocar diferente. Com o heap só do jogo, os endereços dependem só do que o jogo pede.
+///
+/// O que o jogo pede **por uma API** — `STRDUP`, `LoadResData`, `IHeap_Malloc` — continua no
+/// heap: lá é o sistema que aloca em nome dele, e o tamanho sai do jogo, não de nós.
+///
+/// 16 MB porque o `IPeek` reserva o tamanho da fonte inteira e cada thread leva no mínimo
+/// 64 KB. No desktop a região é zerada e só ocupa o que for tocado. Na Vita o bloco inteiro
+/// é reservado na largada: a newlib não entrega página sob demanda.
+pub const INTERNAL_BASE: u32 = 0x3400_0000;
+pub const INTERNAL_SIZE: usize = 16 * 1024 * 1024;
+
+/// O endereço é de um bloco da região interna, e não do heap do jogo.
+pub fn e_interno(addr: u32) -> bool {
+    (INTERNAL_BASE..INTERNAL_BASE + INTERNAL_SIZE as u32).contains(&addr)
+}
 
 /// Onde os módulos de **extensão** são mapeados.
 ///
@@ -240,6 +275,7 @@ pub fn load_with(
     mem.map("helpers", HELPERS_BASE, build_helper_table(), true)?;
     mem.map_zeroed("stubs", STUB_BASE, STUB_SIZE)?;
     mem.map_zeroed("surfaces", SURFACE_BASE, SURFACE_SIZE)?;
+    mem.map_zeroed("internal", INTERNAL_BASE, INTERNAL_SIZE)?;
     mem.map("vtables", VTABLE_BASE, build_vtables(), false)?;
 
     // Cada objeto ocupa uma palavra só por enquanto: o ponteiro para a vtable.
@@ -358,7 +394,8 @@ mod tests {
         assert_eq!(
             names,
             [
-                "module", "nulo", "heap", "stack", "objects", "helpers", "stubs", "surfaces", "vtables"
+                "module", "nulo", "heap", "stack", "objects", "helpers", "stubs", "surfaces",
+                "internal", "vtables"
             ]
         );
     }

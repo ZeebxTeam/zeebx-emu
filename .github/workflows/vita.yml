@@ -1,0 +1,62 @@
+# Compila o aplicativo da Vita, sem esperar a tag.
+#
+# O `release.yml` monta o mesmo VPK, mas só no dia da tag e junto com tudo o mais. Aqui ele sai
+# sozinho, à mão. O core que o RetroArch liga continua no `libretro.yml`; este workflow é o
+# `zeebx.vpk`, que abre sem frontend.
+#
+# **Nenhum push ou merge dispara isto.** O único gatilho automático do repositório é a tag, no
+# `release.yml`; aqui é você quem pede o run pela aba Actions.
+
+name: vita
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: vita-app-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  vpk:
+    name: vita-vpk
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: vitasdk/vitasdk:2026.08
+    steps:
+      - name: Git, curl e o compilador do host
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential ca-certificates curl git pkg-config unzip zip
+
+      - uses: actions/checkout@v5
+
+      # 1.99.1 de propósito. O VPK recompila a std com `RUSTC_BOOTSTRAP=1` e usa
+      # `alloc_error_hook`. Uma estável nova pode recusar os dois.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.99.1
+          components: rust-src
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: vita-app
+
+      - name: Compila o VPK
+        run: ./frontends/vita-standalone/compilar.sh --local
+
+      - name: Empacota
+        run: |
+          mkdir -p frontends/vita-standalone/saida/licenses
+          cp LICENSE LICENSE-GPL3 THIRD-PARTY-NOTICES.txt frontends/vita-standalone/saida/licenses/
+          cp frontends/vita-standalone/LEIAME.md frontends/vita-standalone/saida/
+          cd frontends/vita-standalone/saida
+          zip -r "$GITHUB_WORKSPACE/zeebx-vita.zip" zeebx.vpk LEIAME.md licenses
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zeebx_vita
+          path: zeebx-vita.zip
+          retention-days: 14
+          if-no-files-found: error

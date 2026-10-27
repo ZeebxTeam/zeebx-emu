@@ -34,6 +34,12 @@ função não está aqui.
 | [21-migracao-para-qt.md](21-migracao-para-qt.md) | Plano da troca do egui por Qt Quick com cxx-qt, e o que o núcleo empresta da janela |
 | [22-screenshots.md](22-screenshots.md) | O F9 da janela do jogo: que quadro sai, em que tamanho, onde grava, e a régua do RetroAchievements |
 | [24-velocidade.md](24-velocidade.md) | Limite de quadros, frameskip, fast-forward, turbo e rewind: o ritmo do jogo contra o relógio do mundo |
+| [25-save-state-no-desktop.md](25-save-state-no-desktop.md) | Os dez slots por jogo, o salvar e o carregar com a placa, o desfazer, e os atalhos com o ⌘ do Mac |
+| [26-temas.md](26-temas.md) | As paletas sobre o Fusion, o arquivo de cada tema, como a cor chega às janelas e a conta do contraste |
+| [27-moldura-da-janela.md](27-moldura-da-janela.md) | A barra de menus, a de ferramentas com os ícones da Lucide e a de status em volta da biblioteca |
+| [28-jogo-na-janela-principal.md](28-jogo-na-janela-principal.md) | O jogo no lugar da biblioteca, a janela separada como opção, e um palco para cada uma |
+| [29-configuracoes-com-barra-lateral.md](29-configuracoes-com-barra-lateral.md) | As categorias numa coluna com ícones, e a explicação de cada opção no rodapé |
+| [30-ajustes-da-repaginada.md](30-ajustes-da-repaginada.md) | A casa da Z-Wheel, o jogo até o pé da janela com as métricas no canto, o Z-Pad e o Dragon num botão, e a pergunta antes de fechar o jogo |
 
 ## Como medir
 

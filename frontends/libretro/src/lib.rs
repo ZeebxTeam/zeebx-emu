@@ -703,8 +703,18 @@ struct Core {
     ultima_assinatura: Option<u64>,
     /// Relógio virtual da última chamada, para o áudio acompanhar o tempo que passou de verdade.
     ultimo_relogio_ms: u32,
+    /// Parede da última entrega de áudio. O quadro na Vita demora mais que o
+    /// relógio virtual, e o alto-falante não espera: a conta de amostras usa este
+    /// instante.
+    #[cfg(target_os = "vita")]
+    ultimo_som_real: std::time::Instant,
     /// Amostras que o frontend não aceitou e ficam para a chamada seguinte.
     audio_pendente: Vec<i16>,
+    /// Buffer do misturador, reaproveitado a cada quadro.
+    ///
+    /// `render` alocava um `Vec` novo por quadro. Na Vita isso parte o heap, e a
+    /// trilha longa depois não acha um bloco contínuo.
+    mix_buf: Vec<f32>,
     /// Se já avisou que o quadro saiu do tamanho do console.
     avisou_tamanho: bool,
     /// Política de síntese MIDI configurada nas opções do core.
@@ -2564,6 +2574,12 @@ unsafe fn carrega(
     let rasterizador = unsafe { le_opcao(c"zeebx_rasterizador") }.unwrap_or_default();
     if rasterizador.trim().eq_ignore_ascii_case("software") {
         log("Zeebx: rasterizador fixado no processador pela opção do core; nenhum contexto de placa será pedido");
+    } else if cfg!(target_os = "vita") {
+        // O rasterizador de placa pede OpenGL ES 3 (`#version 300 es`, VAO, FBO). O RetroArch
+        // da Vita desenha com vitaGL, que não entrega esse perfil — pedir o contexto seria
+        // recusado, ou aceito por um driver que não cumpre. O RGB565 do processador é o
+        // caminho que o frontend apresenta.
+        log("Zeebx: na PlayStation Vita o desenho fica no processador; o frontend de lá não entrega OpenGL ES 3");
     } else {
         pede_o_contexto_de_placa();
     }
@@ -2643,7 +2659,10 @@ unsafe fn carrega(
         gl_quadros_antes: 0,
         ultima_assinatura: None,
         ultimo_relogio_ms: 0,
+        #[cfg(target_os = "vita")]
+        ultimo_som_real: std::time::Instant::now(),
         audio_pendente: Vec::new(),
+        mix_buf: Vec::new(),
         avisou_tamanho: false,
         midi_backend,
         select_antes: false,
@@ -2755,6 +2774,10 @@ fn troca_para(estado: &mut Core, caminho: &Path, aberto_pela_z_wheel: bool) -> R
     estado.ultima_assinatura = None;
     estado.select_antes = false;
     estado.ultimo_relogio_ms = estado.session.clock_ms();
+    #[cfg(target_os = "vita")]
+    {
+        estado.ultimo_som_real = std::time::Instant::now();
+    }
     Ok(())
 }
 
@@ -3032,17 +3055,36 @@ pub extern "C" fn retro_run() {
         // Áudio: **o tempo vem do relógio virtual**, não de um número fixo. Um jogo que passa dois
         // quadros virtuais entre duas chamadas precisa entregar o dobro de amostras, senão o som
         // atrasa em relação à imagem e o frontend engasga ao tentar acompanhar.
+        //
+        // Na Vita o quadro não cabe nesse relógio. O alto-falante consome 44100 amostras
+        // por segundo de parede; entregar só o virtual deixa um buraco, e a música anda
+        // no ritmo do jogo. O teto de 150 ms cabe num anel curto de reprodutor: um pico
+        // maior seria aceito na ABI e descartado lá, e a trilha pularia.
         let agora = estado.session.clock_ms();
         let decorrido = u64::from(agora.wrapping_sub(estado.ultimo_relogio_ms));
         estado.ultimo_relogio_ms = agora;
-        let devidas = (decorrido.min(1000) * u64::from(SAMPLE_RATE) / 1000) as usize;
+        let virt = (decorrido.min(1000) * u64::from(SAMPLE_RATE) / 1000) as usize;
+        // `cfg!` não esconde o campo: o core do desktop também compila este arquivo,
+        // e `ultimo_som_real` só existe na Vita.
+        #[cfg(target_os = "vita")]
+        let devidas = {
+            let real = estado.ultimo_som_real.elapsed().as_millis() as u64;
+            estado.ultimo_som_real = std::time::Instant::now();
+            let real_n = (real.min(150) * u64::from(SAMPLE_RATE) / 1000) as usize;
+            real_n.max(virt)
+        };
+        #[cfg(not(target_os = "vita"))]
+        let devidas = virt;
         let mut som = std::mem::take(&mut estado.audio);
         som.clear();
         // O que o frontend não aceitou da vez anterior vai na frente, para não sumir um pedaço.
         som.append(&mut estado.audio_pendente);
-        for amostra in estado.mixer.render(devidas) {
+        let mut mix = std::mem::take(&mut estado.mix_buf);
+        estado.mixer.render_into(devidas, &mut mix);
+        for amostra in mix.iter().copied() {
             som.push((amostra.clamp(-1.0, 1.0) * f32::from(i16::MAX)) as i16);
         }
+        estado.mix_buf = mix;
         (
             quadro,
             som,

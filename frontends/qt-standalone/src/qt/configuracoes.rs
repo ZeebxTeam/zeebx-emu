@@ -262,6 +262,11 @@ pub mod qobject {
         #[cxx_name = "restauraAtalho"]
         fn restaura_atalho(self: Pin<&mut Configuracoes>, qual: &QString);
 
+        /// O atalho de fábrica, como se mostra: o do save state muda com o sistema.
+        #[qinvokable]
+        #[cxx_name = "padraoDoAtalho"]
+        fn padrao_do_atalho(self: &Configuracoes, qual: &QString) -> QString;
+
         /// A leitura de cada quadro da aba de atalhos: um botão de controle para a captura aberta.
         #[qinvokable]
         #[cxx_name = "leAtalhoDoControle"]
@@ -284,8 +289,10 @@ pub mod qobject {
 
         /// Um `Qt::Key` na janela de configurações: acende o botão no desenho, e com uma captura
         /// aberta vira a origem dele. Esc desiste da captura.
+        /// `modificadores` são os `Qt::KeyboardModifiers` do evento: valem na captura dos atalhos
+        /// do save state, que aceitam combinação.
         #[qinvokable]
-        fn tecla(self: Pin<&mut Configuracoes>, codigo: i32, apertada: bool);
+        fn tecla(self: Pin<&mut Configuracoes>, codigo: i32, modificadores: i32, apertada: bool);
 
         /// A leitura de cada quadro da aba: o controle, a captura por botão de controle e a
         /// calibração em andamento.
@@ -409,6 +416,11 @@ pub mod qobject {
         #[cxx_name = "idiomaMudou"]
         fn idioma_mudou(self: Pin<&mut Configuracoes>);
 
+        /// O tema mudou. A paleta já foi aplicada; falta o QML reler as cores de aviso e de erro.
+        #[qsignal]
+        #[cxx_name = "temaMudou"]
+        fn tema_mudou(self: Pin<&mut Configuracoes>);
+
         /// O modo da janela principal mudou: vale na hora, como no egui. O da janela do jogo vale
         /// no próximo jogo.
         #[qsignal]
@@ -438,8 +450,8 @@ use zeebx::ui::atualizacao::{self, Resposta};
 use zeebx::ui::partida;
 use zeebx::ui::screenshot;
 use zeebx::ui::settings::{
-    self, Atalhos, ModoDaBiblioteca, ModoDaJanela, Proporcao, Scaling, Settings, rotulo_da_resolucao,
-    rotulo_de_nivel,
+    self, Atalhos, Combinacao, Modificadores, ModoDaBiblioteca, ModoDaJanela, Proporcao, Scaling,
+    Settings, rotulo_da_resolucao, rotulo_de_nivel,
 };
 
 use zeebx::velocidade::rewind::AjustesDoRewind;
@@ -517,6 +529,12 @@ enum Atalho {
     Voltar,
     /// Reiniciar o jogo aberto: só teclado, como o screenshot.
     Reiniciar,
+    /// Os do save state: só teclado, e com modificador ou sem. Ver [`Combinacao`].
+    SalvarEstado,
+    CarregarEstado,
+    ProximoSlot,
+    SlotAnterior,
+    DesfazerCarregar,
 }
 
 impl Atalho {
@@ -526,6 +544,11 @@ impl Atalho {
             "avancar" => Some(Self::Avancar),
             "voltar" => Some(Self::Voltar),
             "reiniciar" => Some(Self::Reiniciar),
+            "salvar_estado" => Some(Self::SalvarEstado),
+            "carregar_estado" => Some(Self::CarregarEstado),
+            "proximo_slot" => Some(Self::ProximoSlot),
+            "slot_anterior" => Some(Self::SlotAnterior),
+            "desfazer_carregar" => Some(Self::DesfazerCarregar),
             _ => None,
         }
     }
@@ -537,6 +560,49 @@ impl Atalho {
             Self::Avancar => "controls.shortcut.fast_forward",
             Self::Voltar => "controls.shortcut.rewind",
             Self::Reiniciar => "controls.shortcut.restart",
+            Self::SalvarEstado => "controls.shortcut.save_state",
+            Self::CarregarEstado => "controls.shortcut.load_state",
+            Self::ProximoSlot => "controls.shortcut.next_slot",
+            Self::SlotAnterior => "controls.shortcut.previous_slot",
+            Self::DesfazerCarregar => "controls.shortcut.undo_load",
+        }
+    }
+
+    /// O texto gravado de um atalho do save state, que é uma [`Combinacao`]. `None` nos outros.
+    fn combinacao(self, atalhos: &Atalhos) -> Option<&String> {
+        Some(match self {
+            Self::SalvarEstado => &atalhos.salvar_estado,
+            Self::CarregarEstado => &atalhos.carregar_estado,
+            Self::ProximoSlot => &atalhos.proximo_slot,
+            Self::SlotAnterior => &atalhos.slot_anterior,
+            Self::DesfazerCarregar => &atalhos.desfazer_carregar,
+            Self::Screenshot | Self::Avancar | Self::Voltar | Self::Reiniciar => return None,
+        })
+    }
+
+    fn combinacao_mut(self, atalhos: &mut Atalhos) -> Option<&mut String> {
+        Some(match self {
+            Self::SalvarEstado => &mut atalhos.salvar_estado,
+            Self::CarregarEstado => &mut atalhos.carregar_estado,
+            Self::ProximoSlot => &mut atalhos.proximo_slot,
+            Self::SlotAnterior => &mut atalhos.slot_anterior,
+            Self::DesfazerCarregar => &mut atalhos.desfazer_carregar,
+            Self::Screenshot | Self::Avancar | Self::Voltar | Self::Reiniciar => return None,
+        })
+    }
+
+    /// O de fábrica, no texto que se grava.
+    fn padrao(self) -> &'static str {
+        match self {
+            Self::Screenshot => Atalhos::SCREENSHOT_PADRAO,
+            Self::Avancar => Atalhos::AVANCAR_PADRAO,
+            Self::Voltar => Atalhos::VOLTAR_PADRAO,
+            Self::Reiniciar => Atalhos::REINICIAR_PADRAO,
+            Self::SalvarEstado => Atalhos::SALVAR_ESTADO_PADRAO,
+            Self::CarregarEstado => Atalhos::CARREGAR_ESTADO_PADRAO,
+            Self::ProximoSlot => Atalhos::PROXIMO_SLOT_PADRAO,
+            Self::SlotAnterior => Atalhos::SLOT_ANTERIOR_PADRAO,
+            Self::DesfazerCarregar => Atalhos::DESFAZER_CARREGAR_PADRAO,
         }
     }
 
@@ -547,20 +613,38 @@ impl Atalho {
             Self::Avancar => atalhos.avancar.iter().any(|fonte| e_a_tecla(fonte, tecla)),
             Self::Voltar => atalhos.voltar.iter().any(|fonte| e_a_tecla(fonte, tecla)),
             Self::Reiniciar => Key::from_name(&atalhos.reiniciar) == Some(tecla),
+            // Uma combinação só ocupa a tecla quando é ela sozinha: o Shift+F2 deixa o F2 livre,
+            // porque na janela do jogo a combinação bate só com os mesmos modificadores.
+            _ => self
+                .combinacao(atalhos)
+                .and_then(|texto| Combinacao::le(texto))
+                .is_some_and(|combinacao| {
+                    combinacao.modificadores.nenhum() && combinacao.tecla == tecla
+                }),
         }
     }
 
     /// As origens de um atalho que aceita tecla ou botão. O screenshot e o reiniciar não são.
     fn origens(self, atalhos: &mut Atalhos) -> Option<&mut Vec<Source>> {
         match self {
-            Self::Screenshot | Self::Reiniciar => None,
             Self::Avancar => Some(&mut atalhos.avancar),
             Self::Voltar => Some(&mut atalhos.voltar),
+            _ => None,
         }
     }
 }
 
-const ATALHOS: [Atalho; 4] = [Atalho::Screenshot, Atalho::Avancar, Atalho::Voltar, Atalho::Reiniciar];
+const ATALHOS: [Atalho; 9] = [
+    Atalho::Screenshot,
+    Atalho::Avancar,
+    Atalho::Voltar,
+    Atalho::Reiniciar,
+    Atalho::SalvarEstado,
+    Atalho::CarregarEstado,
+    Atalho::ProximoSlot,
+    Atalho::SlotAnterior,
+    Atalho::DesfazerCarregar,
+];
 
 /// O atalho que reserva a origem: o fast-forward ou o rewind.
 fn atalho_da_origem(atalhos: &Atalhos, origem: &Source) -> Atalho {
@@ -591,6 +675,7 @@ struct Efeito {
     biblioteca: Option<bool>,
     idioma: bool,
     janela_principal: bool,
+    tema: bool,
 }
 
 /// As opções de liga e desliga, pela chave.
@@ -602,6 +687,8 @@ fn booleano<'a>(settings: &'a mut Settings, chave: &str) -> Option<&'a mut bool>
         "atualizacoes.ao_abrir" => &mut settings.atualizacoes.ao_abrir,
         "atualizacoes.pre_lancamentos" => &mut settings.atualizacoes.pre_lancamentos,
         "graphics.smooth" => &mut settings.graphics.smooth,
+        "graphics.jogo_separado" => &mut settings.graphics.jogo_separado,
+        "graphics.confirmar_ao_fechar" => &mut settings.graphics.confirmar_ao_fechar,
         "graphics.keep_aspect" => &mut settings.graphics.keep_aspect,
         "graphics.neblina" => &mut settings.graphics.neblina,
         "graphics.gpu_rasterizer" => &mut settings.graphics.gpu_rasterizer,
@@ -612,9 +699,12 @@ fn booleano<'a>(settings: &'a mut Settings, chave: &str) -> Option<&'a mut bool>
         "debug.clock" => &mut settings.debug.clock,
         "debug.memory" => &mut settings.debug.memory,
         "debug.timeline" => &mut settings.debug.timeline,
+        "debug.metricas" => &mut settings.debug.metricas,
         "debug.log" => &mut settings.debug.log,
         "debug.gravar_sessao" => &mut settings.debug.gravar_sessao,
         "movimento.aviso_de_calibracao" => &mut settings.movimento.aviso_de_calibracao,
+        "barras.ferramentas" => &mut settings.barras.ferramentas,
+        "barras.status" => &mut settings.barras.status,
         "speed.ff.mute" => &mut settings.velocidade.avanco.sem_som,
         "speed.rewind.on" => &mut settings.velocidade.rewind.ligado,
         _ => return None,
@@ -662,6 +752,11 @@ impl qobject::Configuracoes {
                     &[ModoDaBiblioteca::Grade, ModoDaBiblioteca::Slider],
                     &nucleo.settings.biblioteca,
                 ),
+                // O zero é a paleta do sistema; os temas vêm depois, na ordem do seletor.
+                "tema" => nucleo
+                    .tema()
+                    .and_then(|tema| nucleo.temas.iter().position(|t| t.chave == tema.chave))
+                    .map_or(0, |posicao| posicao as i32 + 1),
                 "graphics.janela" => indice(&ModoDaJanela::TODOS, &graficos.janela),
                 "graphics.janela_do_jogo" => indice(&ModoDaJanela::TODOS, &graficos.janela_do_jogo),
                 "graphics.scaling" => indice(&Scaling::ALL, &graficos.scaling),
@@ -738,6 +833,13 @@ impl qobject::Configuracoes {
                 "biblioteca" => {
                     let modos = [ModoDaBiblioteca::Grade, ModoDaBiblioteca::Slider];
                     nucleo.settings.biblioteca = escolha(&modos, numero).unwrap_or_default();
+                }
+                "tema" => {
+                    nucleo.settings.tema = usize::try_from(numero - 1)
+                        .ok()
+                        .and_then(|i| nucleo.temas.get(i))
+                        .map(|tema| tema.chave.clone());
+                    efeito.tema = true;
                 }
                 "graphics.janela" => {
                     graficos.janela = escolha(&ModoDaJanela::TODOS, numero).unwrap_or_default();
@@ -840,6 +942,12 @@ impl qobject::Configuracoes {
                 "language" => catalogo.languages().iter().map(|l| l.name.clone()).collect(),
                 "biblioteca" => {
                     traduz(&["settings.library_view.grid", "settings.library_view.slider"])
+                }
+                "tema" => {
+                    let idioma = catalogo.current();
+                    std::iter::once(catalogo.get("settings.theme.system").to_string())
+                        .chain(nucleo.temas.iter().map(|tema| tema.nome(idioma).to_string()))
+                        .collect()
                 }
                 "graphics.janela" | "graphics.janela_do_jogo" => {
                     ModoDaJanela::TODOS.iter().map(|m| catalogo.get(m.chave()).to_string()).collect()
@@ -1126,6 +1234,11 @@ impl qobject::Configuracoes {
         if efeito.janela_principal {
             self.as_mut().janela_principal_mudou();
         }
+        // Aqui, e não dentro do `com` da gravação: ver `tema::aplica`.
+        if efeito.tema {
+            super::tema::aplica();
+            self.as_mut().tema_mudou();
+        }
     }
 }
 
@@ -1323,7 +1436,7 @@ impl qobject::Configuracoes {
         self.as_mut().controles_mudaram();
     }
 
-    pub fn tecla(mut self: Pin<&mut Self>, codigo: i32, apertada: bool) {
+    pub fn tecla(mut self: Pin<&mut Self>, codigo: i32, modificadores: i32, apertada: bool) {
         let Some(tecla) = super::ponte::tecla_do_qt(codigo) else {
             return;
         };
@@ -1338,8 +1451,21 @@ impl qobject::Configuracoes {
         }
         if let Some(qual) = rust.capturando_atalho.take() {
             drop(rust);
-            if tecla != Key::Escape {
-                self.as_mut().define_atalho(qual, Source::key(tecla.name()));
+            if tecla == Key::Escape {
+                return;
+            }
+            match qual.combinacao(&Atalhos::default()) {
+                Some(_) => {
+                    let modificadores = super::ponte::modificadores_do_qt(modificadores);
+                    self.as_mut().define_combinacao(
+                        qual,
+                        Combinacao {
+                            tecla,
+                            modificadores,
+                        },
+                    );
+                }
+                None => self.as_mut().define_atalho(qual, Source::key(tecla.name())),
             }
             return;
         }
@@ -1382,6 +1508,12 @@ impl qobject::Configuracoes {
         };
         self.com(|nucleo| {
             let atalhos = &nucleo.settings.atalhos;
+            if let Some(texto) = qual.combinacao(atalhos) {
+                return QString::from(&match Combinacao::le(texto) {
+                    Some(combinacao) => combinacao.rotulo(),
+                    None => nucleo.catalogo.get("controls.unbound").to_string(),
+                });
+            }
             let origens = match qual {
                 Atalho::Screenshot => return QString::from(&atalhos.screenshot),
                 Atalho::Reiniciar => {
@@ -1392,6 +1524,7 @@ impl qobject::Configuracoes {
                 }
                 Atalho::Avancar => &atalhos.avancar,
                 Atalho::Voltar => &atalhos.voltar,
+                _ => return QString::default(),
             };
             QString::from(&match origens.is_empty() {
                 true => nucleo.catalogo.get("controls.unbound").to_string(),
@@ -1423,13 +1556,23 @@ impl qobject::Configuracoes {
             return;
         };
         self.as_mut().rust_mut().capturando_atalho = None;
-        let padrao = match qual {
-            Atalho::Screenshot => Source::key(Atalhos::SCREENSHOT_PADRAO),
-            Atalho::Avancar => Source::key(Atalhos::AVANCAR_PADRAO),
-            Atalho::Voltar => Source::key(Atalhos::VOLTAR_PADRAO),
-            Atalho::Reiniciar => Source::key(Atalhos::REINICIAR_PADRAO),
+        if qual.combinacao(&Atalhos::default()).is_some() {
+            if let Some(padrao) = Combinacao::le(qual.padrao()) {
+                self.as_mut().define_combinacao(qual, padrao);
+            }
+            return;
+        }
+        self.as_mut().define_atalho(qual, Source::key(qual.padrao()));
+    }
+
+    pub fn padrao_do_atalho(&self, qual: &QString) -> QString {
+        let Some(qual) = Atalho::de_nome(qual) else {
+            return QString::default();
         };
-        self.as_mut().define_atalho(qual, padrao);
+        QString::from(&match Combinacao::le(qual.padrao()) {
+            Some(combinacao) => combinacao.rotulo(),
+            None => qual.padrao().to_string(),
+        })
     }
 
     /// Um botão de controle para a captura aberta de um atalho que aceita botão. O screenshot é
@@ -1514,12 +1657,12 @@ impl qobject::Configuracoes {
                 let botao = catalogo.get(&format!("button.{botao}")).to_string();
                 let porta = (porta + 1).to_string();
                 let chave = match qual {
-                    Atalho::Screenshot | Atalho::Reiniciar => "controls.shortcut.taken",
                     Atalho::Avancar | Atalho::Voltar => "controls.shortcut.shared",
+                    _ => "controls.shortcut.taken",
                 };
                 catalogo.format(chave, &[("key", &nome), ("button", &botao), ("port", &porta)])
             });
-            if matches!(qual, Atalho::Screenshot | Atalho::Reiniciar) && conflito.is_some() {
+            if !matches!(qual, Atalho::Avancar | Atalho::Voltar) && conflito.is_some() {
                 return conflito;
             }
             let atalhos = &mut nucleo.settings.atalhos;
@@ -1531,9 +1674,63 @@ impl qobject::Configuracoes {
                         *origens = vec![origem.clone()];
                     }
                 }
+                // Os do save state passam pelo `define_combinacao`.
+                _ => {}
             }
             nucleo.salva_configuracoes();
             conflito
+        });
+        self.as_mut().rust_mut().recusa = recusa.map(|texto| (true, texto));
+        self.as_mut().aplica(Efeito::default());
+    }
+
+    /// O [`define_atalho`](Self::define_atalho) dos atalhos do save state, que aceitam
+    /// combinação. As mesmas recusas, olhando os modificadores: o Esc, o P e o F11 sozinhos e o
+    /// Alt+Enter são da janela do jogo; a mesma combinação não serve a dois atalhos; e a tecla
+    /// sozinha de um botão do Zeebo é recusada, como no screenshot. Com modificador ela não colide
+    /// com botão nenhum: o jogo não lê modificadores.
+    fn define_combinacao(mut self: Pin<&mut Self>, qual: Atalho, combinacao: Combinacao) {
+        let recusa = self.com(|nucleo| {
+            let catalogo = &nucleo.catalogo;
+            let rotulo = combinacao.rotulo();
+            let sozinha = combinacao.modificadores.nenhum();
+            let tecla = combinacao.tecla;
+            let alt_enter = Modificadores {
+                alt: true,
+                ..Modificadores::default()
+            };
+            if (sozinha && matches!(tecla, Key::Escape | Key::P | Key::F11))
+                || (tecla == Key::Enter && combinacao.modificadores == alt_enter)
+            {
+                return Some(catalogo.format("controls.shortcut.reserved", &[("key", &rotulo)]));
+            }
+            let atalhos = &nucleo.settings.atalhos;
+            let outro = ATALHOS
+                .into_iter()
+                .filter(|outro| *outro != qual)
+                .find(|outro| match outro.combinacao(atalhos) {
+                    Some(texto) => Combinacao::le(texto) == Some(combinacao),
+                    None => sozinha && outro.tem_a_tecla(atalhos, tecla),
+                });
+            if let Some(outro) = outro {
+                return Some(catalogo.format(
+                    "controls.shortcut.taken_shortcut",
+                    &[("key", &rotulo), ("shortcut", catalogo.get(outro.chave()))],
+                ));
+            }
+            if sozinha && let Some((porta, botao)) = dono_da_tecla(&nucleo.settings, tecla) {
+                let botao = catalogo.get(&format!("button.{botao}")).to_string();
+                let porta = (porta + 1).to_string();
+                return Some(catalogo.format(
+                    "controls.shortcut.taken",
+                    &[("key", &rotulo), ("button", &botao), ("port", &porta)],
+                ));
+            }
+            if let Some(texto) = qual.combinacao_mut(&mut nucleo.settings.atalhos) {
+                *texto = combinacao.nome();
+            }
+            nucleo.salva_configuracoes();
+            None
         });
         self.as_mut().rust_mut().recusa = recusa.map(|texto| (true, texto));
         self.as_mut().aplica(Efeito::default());

@@ -49,6 +49,7 @@ frontends/android/apk/local.properties
 frontends/android/apk/app/src/main/jniLibs/
 frontends/android/apk/app/src/main/assets/licenses/
 frontends/switch/saida/
+frontends/vita-standalone/saida/
 
 # Xcode: estado local. O projeto em si (`project.pbxproj`) fica versionado.
 xcuserdata/

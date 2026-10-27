@@ -39,7 +39,7 @@ impl<C: CpuBackend> Machine<C> {
                     self.sources.remove(&this);
                     // O buffer de linha é nosso, do tamanho da fonte inteira.
                     if let Some(peek) = self.peeks.remove(&this) {
-                        self.heap.free(peek.buffer);
+                        self.libera(peek.buffer);
                     }
                 }
                 restantes
@@ -123,7 +123,7 @@ impl<C: CpuBackend> Machine<C> {
                 // ele e **copia** o conteúdo antes de pedir a próxima, então um buffer só,
                 // reaproveitado, basta. Reservar do tamanho da fonte garante que a maior linha
                 // possível caiba.
-                let buffer = self.heap.alloc(bytes.len() as u32 + 1).unwrap_or(0);
+                let buffer = self.aloca_interno(bytes.len() as u32 + 1)?;
                 if buffer == 0 {
                     return Ok(Some(ENOMEMORY));
                 }

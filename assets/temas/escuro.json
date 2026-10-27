@@ -1,0 +1,39 @@
+{
+  "formato": 1,
+  "nome": {
+    "pt-BR": "Escuro",
+    "en": "Dark",
+    "es": "Oscuro",
+    "es-MX": "Oscuro"
+  },
+  "escuro": true,
+  "cores": {
+    "window": "#25282c",
+    "windowText": "#e6e8eb",
+    "base": "#1c1e21",
+    "alternateBase": "#282b2f",
+    "text": "#e6e8eb",
+    "placeholderText": "#8e949c",
+    "button": "#2f3337",
+    "buttonText": "#e6e8eb",
+    "brightText": "#ffffff",
+    "light": "#43484e",
+    "midlight": "#383c41",
+    "mid": "#4b5056",
+    "dark": "#17191b",
+    "shadow": "#0e0f10",
+    "highlight": "#3172d2",
+    "highlightedText": "#ffffff",
+    "link": "#80b4ff",
+    "linkVisited": "#b49cff",
+    "toolTipBase": "#33373c",
+    "toolTipText": "#e6e8eb"
+  },
+  "desabilitado": {
+    "windowText": "#6c7179",
+    "text": "#6c7179",
+    "buttonText": "#6c7179"
+  },
+  "aviso": "#e5a33b",
+  "erro": "#f07067"
+}

@@ -188,8 +188,8 @@ impl<C: CpuBackend> Machine<C> {
                 )?;
                 // Só o retorno normal conta; um callback que se perde não interrompe o resto.
                 let seguir = !matches!(outcome, Outcome::Returned { code } if code != 0);
-                self.heap.free(valores);
-                self.heap.free(nomes);
+                self.libera(valores);
+                self.libera(nomes);
                 seguir
             }
             _ => {
@@ -211,7 +211,7 @@ impl<C: CpuBackend> Machine<C> {
     ) -> Result<Option<u32>, CpuError> {
         let contagem = textos.clone().count() as u32;
         let bytes: usize = textos.clone().map(|t| t.map_or(0, |t| t.len() + 1)).sum();
-        let bloco = self.malloc(contagem * 4 + bytes as u32)?;
+        let bloco = self.aloca_interno(contagem * 4 + bytes as u32)?;
         if bloco == 0 {
             return Ok(None);
         }

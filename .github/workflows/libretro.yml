@@ -11,8 +11,8 @@
 #
 # Cada alvo roda no seu próprio runner: AArch64 Linux e Windows em runner ARM64 nativo, porque
 # cross-build de `unicorn` (QEMU em C) e `dynarmic` (C++20 com CMake) exigiria toolchain e sysroot
-# que ninguém quer manter só para empacotar. O Switch é a exceção: o `.a` sai da imagem
-# `devkitpro/devkita64`, pelo `frontends/switch/compilar.sh`.
+# que ninguém quer manter só para empacotar. Duas exceções saem de imagem, pelo script do
+# frontend: o Switch, da `devkitpro/devkita64`; a Vita, da `vitasdk/vitasdk`.
 
 name: libretro
 
@@ -224,3 +224,42 @@ jobs:
         with:
           name: zeebx_libretro_switch
           path: frontends/switch/saida/libzeebx_libretro.a
+
+  # Biblioteca estática para o RetroArch da Vita ligar. O vitasdk não está no runner: o job
+  # inteiro roda na imagem oficial, e o `compilar.sh --local` recompila a std (o alvo é tier 3)
+  # e confere que o `.a` é ARM de 32 bits e exporta a ABI. O arquivo não abre sozinho: o
+  # RetroArch o consome como `libretro_vita.a`.
+  vita:
+    name: core-vita
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      # Tag datada, não `latest`: a imagem nova entra quando alguém muda esta linha.
+      image: vitasdk/vitasdk:2026.08
+    steps:
+      - name: Git, curl e o compilador do host
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential ca-certificates curl git pkg-config
+
+      - uses: actions/checkout@v5
+
+      # 1.99.1 de propósito. O core recompila a std com `RUSTC_BOOTSTRAP=1`.
+      # Uma estável nova pode recusar isso; a versão sobe quando alguém troca esta linha.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.99.1
+          components: rust-src
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: libretro-vita
+
+      - name: Compila o staticlib
+        run: ./frontends/vita/compilar.sh --local
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zeebx_libretro_vita
+          path: frontends/vita/saida/libzeebx_libretro.a

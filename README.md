@@ -115,6 +115,12 @@ O core Libretro não linka a interface desktop nem bibliotecas de áudio/control
 cargo build --release -p zeebx-libretro
 ```
 
+O core da PlayStation Vita é uma biblioteca estática, no mesmo molde do Switch. O script e o
+que o RetroArch espera dele estão em [`frontends/vita/compilar.sh`](frontends/vita/compilar.sh).
+
+O aplicativo que abre sozinho na Vita, sem RetroArch, é o VPK de
+[`frontends/vita-standalone`](frontends/vita-standalone/LEIAME.md).
+
 Para conferir dependências antes do build standalone:
 
 ```bash

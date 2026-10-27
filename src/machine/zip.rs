@@ -230,7 +230,7 @@ impl<C: CpuBackend> Machine<C> {
         if let Some(stream) = self.streams.remove(&this)
             && stream.dono
         {
-            self.heap.free(stream.buffer);
+            self.libera(stream.buffer);
         }
     }
 }

@@ -31,8 +31,10 @@ use zeebx::video::icon::{self, Image};
 use zeebx::ui::entrada::EntradaDoDesktop;
 use zeebx::ui::i18n::{self, Catalog};
 use zeebx::ui::partida::{self, Abertura, Partida, Relatorio, Saida, TurboDaVolta};
+use zeebx::ui::estados;
 use zeebx::ui::screenshot;
-use zeebx::ui::settings::{self, ConfigDoJogo, Proporcao, Settings};
+use zeebx::ui::settings::{self, Combinacao, ConfigDoJogo, Modificadores, Proporcao, Settings};
+use zeebx::ui::temas::{self, Tema};
 use zeebx::video::rasterizer::QuadroNaPlaca;
 use zeebx::video::display::Framebuffer;
 
@@ -80,6 +82,11 @@ pub struct Volta {
     pub screenshot: Option<AvisoDeScreenshot>,
     /// O que escrever por cima do jogo — o fast-forward, o turbo ligado —; vazio esconde.
     pub indicadores: String,
+    /// A velocidade e os quadros por segundo da última amostra, para a barra de status.
+    pub ritmo: Option<(u32, u32)>,
+    /// As linhas da caixa de métricas do canto, a primeira com os quadros por segundo; vazio com
+    /// a opção desligada. Ver [`Nucleo::metricas`].
+    pub metricas: Vec<String>,
 }
 
 /// O que dizer de um screenshot que terminou, já traduzido.
@@ -88,6 +95,32 @@ pub struct AvisoDeScreenshot {
     pub falhou: bool,
     /// O endereço `file://` da pasta do jogo, para o clique no aviso abri-la.
     pub pasta: String,
+}
+
+/// O que dizer de um atalho do save state, já traduzido.
+pub struct AvisoDeEstado {
+    pub texto: String,
+    pub falhou: bool,
+}
+
+impl AvisoDeEstado {
+    fn certo(texto: String) -> Self {
+        Self { texto, falhou: false }
+    }
+
+    fn falhou(texto: String) -> Self {
+        Self { texto, falhou: true }
+    }
+}
+
+/// O que um atalho ou um item do menu do save state pede. Ver [`Nucleo::faz_estado`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PedidoDeEstado {
+    Salvar,
+    Carregar,
+    Proximo,
+    Anterior,
+    Desfazer,
 }
 
 /// O que a thread de gravação responde: o arquivo, ou o motivo da falha, e a pasta.
@@ -115,6 +148,9 @@ pub enum Quadro<'a> {
 pub struct Nucleo {
     pub settings: Settings,
     pub catalogo: Catalog,
+    /// Os temas de fábrica e os das pastas, lidos uma vez na abertura, como os idiomas. Ver
+    /// [`zeebx::ui::temas`].
+    pub temas: Vec<Tema>,
     pub entrada: EntradaDoDesktop,
     /// O desenho do controle, com a silhueta de cada botão. Vazio se o desenho não abrir: a tela
     /// de controles continua servindo pela lista.
@@ -164,6 +200,10 @@ pub struct Nucleo {
     pub atualizacao: Option<atualizacao::Resposta>,
     /// Uma versão nova chegou e o aviso dela ainda não foi dispensado.
     aviso_de_atualizacao: bool,
+    /// A procura em andamento foi pedida pelo menu: quem pediu quer saber a resposta mesmo sem
+    /// versão nova. Ver [`Nucleo::resultado_da_procura`].
+    procura_pelo_menu: bool,
+    resultado_da_procura: Option<String>,
     /// A versão nova sendo baixada e instalada. O aviso mostra o andamento.
     pub instalacao_de_atualizacao: Option<atualizacao::Atualizacao>,
     /// O relatório da execução, gravado sozinho. Ver [`Relatorio`].
@@ -177,6 +217,9 @@ pub struct Nucleo {
     teclas: HashSet<Key>,
     /// Por onde as threads de gravação dos screenshots respondem. Ver [`Nucleo::screenshot`].
     gravacoes: (Sender<Gravacao>, Receiver<Gravacao>),
+    /// O slot dos atalhos do save state, de zero. Fica de um jogo para o outro, como no PCSX2:
+    /// quem guarda tudo no 3 não quer escolher o 3 de novo a cada jogo.
+    slot: usize,
 }
 
 impl Nucleo {
@@ -195,6 +238,7 @@ impl Nucleo {
         let mut nucleo = Self {
             settings,
             catalogo,
+            temas: temas::carrega(&temas::pastas()),
             entrada: EntradaDoDesktop::inicia(),
             arte: PadArt::builtin()
                 .inspect_err(|erro| eprintln!("desenho do controle: {erro:?}"))
@@ -219,12 +263,15 @@ impl Nucleo {
             procura_de_atualizacao: None,
             atualizacao: None,
             aviso_de_atualizacao: false,
+            procura_pelo_menu: false,
+            resultado_da_procura: None,
             instalacao_de_atualizacao: None,
             relatorio: Relatorio::default(),
             log_dispensado: false,
             calibracao: Calibracao::default(),
             teclas: HashSet::new(),
             gravacoes: mpsc::channel(),
+            slot: 0,
         };
         nucleo.procura_de_novo();
         // Na abertura, a pergunta ao GitHub, como no egui: a resposta chega pelo relógio da
@@ -261,6 +308,13 @@ impl Nucleo {
 
     /// Troca o idioma da interface. Os nomes oficiais da Z-Wheel são por idioma, então a lista é
     /// refeita junto. Devolve se o idioma existe.
+    /// O tema escolhido, se há um e ele foi lido. Um tema que sumiu da pasta, ou que não abriu, é
+    /// a paleta do sistema, sem apagar a escolha: devolvido o arquivo, o tema volta.
+    pub fn tema(&self) -> Option<&Tema> {
+        let chave = self.settings.tema.as_deref()?;
+        self.temas.iter().find(|tema| tema.chave == chave)
+    }
+
     pub fn muda_idioma(&mut self, codigo: &str) -> bool {
         if !self.catalogo.select(codigo) {
             return false;
@@ -282,6 +336,20 @@ impl Nucleo {
             match canal.try_recv() {
                 Ok(resposta) => {
                     self.aviso_de_atualizacao = matches!(resposta, atualizacao::Resposta::Nova(_));
+                    // A versão nova abre o aviso de sempre; o resto só aparece a quem perguntou.
+                    if std::mem::take(&mut self.procura_pelo_menu) {
+                        self.resultado_da_procura = match &resposta {
+                            atualizacao::Resposta::Nova(_) => None,
+                            atualizacao::Resposta::EmDia => Some(self.catalogo.format(
+                                "update.up_to_date",
+                                &[("current", atualizacao::VERSAO_ATUAL)],
+                            )),
+                            atualizacao::Resposta::Falhou(motivo) => Some(
+                                self.catalogo
+                                    .format("update.check_failed", &[("reason", motivo)]),
+                            ),
+                        };
+                    }
                     self.atualizacao = Some(resposta);
                     self.procura_de_atualizacao = None;
                 }
@@ -355,6 +423,19 @@ impl Nucleo {
         self.atualizacao = None;
         let pre = self.settings.atualizacoes.pre_lancamentos;
         self.procura_de_atualizacao = Some(atualizacao::procura(pre));
+    }
+
+    /// A procura pedida pelo menu Ajuda. O aviso de versão nova é o de sempre; "em dia" e a falha
+    /// voltam por [`Nucleo::resultado_da_procura`], que na abertura ficariam caladas.
+    pub fn procura_atualizacao_pelo_menu(&mut self) {
+        self.procura_pelo_menu = true;
+        self.resultado_da_procura = None;
+        self.procura_atualizacao();
+    }
+
+    /// A resposta da procura pelo menu que não é versão nova, uma vez.
+    pub fn resultado_da_procura(&mut self) -> Option<String> {
+        self.resultado_da_procura.take()
     }
 
     pub fn procurando_atualizacao(&self) -> bool {
@@ -743,6 +824,16 @@ impl Nucleo {
         Some((textos, historia))
     }
 
+    /// Se fechar o jogo aberto pede confirmação. A Z-Wheel fecha sem perguntar: ela é a tela
+    /// inicial, e não guarda nada que se perca.
+    pub fn confirma_ao_fechar(&self) -> bool {
+        self.settings.graphics.confirmar_ao_fechar
+            && self
+                .partida
+                .as_ref()
+                .is_some_and(|partida| partida.sessao().classe() != Z_WHEEL)
+    }
+
     pub fn alterna_pausa(&mut self) {
         if let Some(partida) = self.partida.as_mut() {
             partida.alterna_pausa();
@@ -798,6 +889,192 @@ impl Nucleo {
     /// atalho ganha de um botão mapeado na mesma tecla.
     pub fn e_atalho_de_screenshot(&self, tecla: Key) -> bool {
         Key::from_name(&self.settings.atalhos.screenshot) == Some(tecla)
+    }
+
+    /// O que o atalho do save state pede, se a tecla, com estes modificadores, é um deles.
+    fn pedido_de_estado(&self, tecla: Key, modificadores: Modificadores) -> Option<PedidoDeEstado> {
+        let atalhos = &self.settings.atalhos;
+        let procurada = Some(Combinacao { tecla, modificadores });
+        [
+            (&atalhos.salvar_estado, PedidoDeEstado::Salvar),
+            (&atalhos.carregar_estado, PedidoDeEstado::Carregar),
+            (&atalhos.proximo_slot, PedidoDeEstado::Proximo),
+            (&atalhos.slot_anterior, PedidoDeEstado::Anterior),
+            (&atalhos.desfazer_carregar, PedidoDeEstado::Desfazer),
+        ]
+        .into_iter()
+        .find(|(texto, _)| Combinacao::le(texto) == procurada)
+        .map(|(_, pedido)| pedido)
+    }
+
+    /// Se a tecla, com estes modificadores, é um atalho do save state. A janela do jogo pergunta
+    /// antes de tudo: o atalho ganha de um botão mapeado na mesma tecla.
+    pub fn e_atalho_de_estado(&self, tecla: Key, modificadores: Modificadores) -> bool {
+        self.pedido_de_estado(tecla, modificadores).is_some()
+    }
+
+    /// Faz o que o atalho do save state pede, se a tecla é um deles: o aviso, e se o console
+    /// voltou a outro instante. `None` quando a tecla não é atalho nenhum, ou não há jogo aberto.
+    ///
+    /// Os slots moram com o resto do perfil, em `<config>/states/<conteúdo>/`, o mesmo layout do
+    /// Android. Ver `docs/implementacao/25-save-state-no-desktop.md`.
+    pub fn atalho_de_estado(
+        &mut self,
+        tecla: Key,
+        modificadores: Modificadores,
+    ) -> Option<(AvisoDeEstado, bool)> {
+        let pedido = self.pedido_de_estado(tecla, modificadores)?;
+        self.faz_estado(pedido, None)
+    }
+
+    /// Faz o pedido do save state no `slot`, ou no slot atual. Escolhido pelo menu, o slot passa
+    /// a ser o atual, como no PCSX2: o F1 e o F3 seguintes vão nele. `None` sem jogo aberto.
+    pub fn faz_estado(
+        &mut self,
+        pedido: PedidoDeEstado,
+        slot: Option<usize>,
+    ) -> Option<(AvisoDeEstado, bool)> {
+        if let Some(slot) = slot.filter(|slot| *slot < estados::SLOTS) {
+            self.slot = slot;
+        }
+        let com_placa = self.gl.is_some();
+        let partida = self.partida.as_mut()?;
+        let raiz = zeebx::config::config_dir();
+        let numero = |slot: usize| (slot + 1).to_string();
+        let catalogo = &self.catalogo;
+        let falha = |motivo: String| {
+            AvisoDeEstado::falhou(catalogo.format("play.state.error", &[("reason", &motivo)]))
+        };
+        let aviso = match pedido {
+            PedidoDeEstado::Proximo | PedidoDeEstado::Anterior => {
+                self.slot = match pedido {
+                    PedidoDeEstado::Proximo => (self.slot + 1) % estados::SLOTS,
+                    _ => (self.slot + estados::SLOTS - 1) % estados::SLOTS,
+                };
+                let ocupado = partida
+                    .sessao()
+                    .conteudo()
+                    .and_then(|id| estados::lista(&raiz, id.as_str())[self.slot].clone());
+                let situacao = match ocupado {
+                    Some(slot) => catalogo.format(
+                        "play.state.used",
+                        &[("size", &estados::tamanho(slot.bytes))],
+                    ),
+                    None => catalogo.get("play.state.empty").to_string(),
+                };
+                let texto = catalogo.format(
+                    "play.state.selected",
+                    &[("slot", &numero(self.slot)), ("status", &situacao)],
+                );
+                return Some((AvisoDeEstado::certo(texto), false));
+            }
+            PedidoDeEstado::Salvar => {
+                match no_contexto(com_placa, || partida.salva_estado(&raiz, self.slot)) {
+                    Ok(_) => AvisoDeEstado::certo(
+                        catalogo.format("play.state.saved", &[("slot", &numero(self.slot))]),
+                    ),
+                    Err(motivo) => falha(motivo),
+                }
+            }
+            PedidoDeEstado::Carregar => {
+                let vazio = partida
+                    .sessao()
+                    .conteudo()
+                    .is_some_and(|id| estados::lista(&raiz, id.as_str())[self.slot].is_none());
+                if vazio {
+                    let texto =
+                        catalogo.format("play.state.empty_slot", &[("slot", &numero(self.slot))]);
+                    return Some((AvisoDeEstado::falhou(texto), false));
+                }
+                match no_contexto(com_placa, || partida.carrega_estado(&raiz, self.slot)) {
+                    Ok(_) => {
+                        let desfazer = Combinacao::le(&self.settings.atalhos.desfazer_carregar)
+                            .filter(|_| partida.pode_desfazer_carregar());
+                        let texto = match desfazer {
+                            Some(tecla) => catalogo.format(
+                                "play.state.loaded.undo",
+                                &[("slot", &numero(self.slot)), ("key", &tecla.rotulo())],
+                            ),
+                            None => catalogo
+                                .format("play.state.loaded", &[("slot", &numero(self.slot))]),
+                        };
+                        return Some((AvisoDeEstado::certo(texto), true));
+                    }
+                    Err(motivo) => falha(motivo),
+                }
+            }
+            PedidoDeEstado::Desfazer => {
+                if !partida.pode_desfazer_carregar() {
+                    let texto = catalogo.get("play.state.nothing_to_undo").to_string();
+                    return Some((AvisoDeEstado::falhou(texto), false));
+                }
+                match no_contexto(com_placa, || partida.desfaz_carregar()) {
+                    Ok(()) => {
+                        let texto = catalogo.get("play.state.undone").to_string();
+                        return Some((AvisoDeEstado::certo(texto), true));
+                    }
+                    Err(motivo) => falha(motivo),
+                }
+            }
+        };
+        Some((aviso, false))
+    }
+
+    /// Os slots do jogo aberto para o menu, um por linha: "Slot 3 · Ocupado · 2,1 MB" ou
+    /// "Slot 4 · Vazio". Vazio sem jogo, ou sem a identidade do arquivo dele.
+    pub fn slots_de_estado(&self) -> Vec<String> {
+        let Some(id) = self.partida.as_ref().and_then(|p| p.sessao().conteudo()) else {
+            return Vec::new();
+        };
+        let catalogo = &self.catalogo;
+        estados::lista(&zeebx::config::config_dir(), id.as_str())
+            .iter()
+            .enumerate()
+            .map(|(slot, salvo)| {
+                let nome = catalogo.format("play.state.slot", &[("slot", &(slot + 1).to_string())]);
+                let situacao = match salvo {
+                    Some(salvo) => catalogo.format(
+                        "play.state.used",
+                        &[("size", &estados::tamanho(salvo.bytes))],
+                    ),
+                    None => catalogo.get("play.state.empty").to_string(),
+                };
+                format!("{nome} · {situacao}")
+            })
+            .collect()
+    }
+
+    /// Quais slots do jogo aberto têm estado, na ordem. Todos vazios sem jogo.
+    pub fn slots_ocupados(&self) -> Vec<bool> {
+        let Some(id) = self.partida.as_ref().and_then(|p| p.sessao().conteudo()) else {
+            return vec![false; estados::SLOTS];
+        };
+        estados::lista(&zeebx::config::config_dir(), id.as_str())
+            .iter()
+            .map(Option::is_some)
+            .collect()
+    }
+
+    pub fn slot_atual(&self) -> usize {
+        self.slot
+    }
+
+    pub fn pode_desfazer_carregar(&self) -> bool {
+        self.partida
+            .as_ref()
+            .is_some_and(Partida::pode_desfazer_carregar)
+    }
+
+    /// O fast-forward pelo menu: liga ou desliga, e diz como ficou. Ver
+    /// [`Partida::alterna_o_avanco_fixo`].
+    pub fn alterna_o_avanco_fixo(&mut self) -> bool {
+        self.partida
+            .as_mut()
+            .is_some_and(Partida::alterna_o_avanco_fixo)
+    }
+
+    pub fn avanco_fixo(&self) -> bool {
+        self.partida.as_ref().is_some_and(Partida::avanco_fixo)
     }
 
     /// Grava o quadro que está na tela. `carimbo` é a hora local, que vem do Qt.
@@ -946,7 +1223,35 @@ impl Nucleo {
         volta.aviso = self.aviso_de_calibracao();
         volta.screenshot = screenshot;
         volta.indicadores = self.indicadores();
+        volta.ritmo = self.partida.as_ref().map(|p| {
+            let amostra = p.sessao().sample();
+            (amostra.speed, amostra.fps)
+        });
+        volta.metricas = self.metricas();
         volta
+    }
+
+    /// A caixa de métricas do canto, quando ligada: os quadros por segundo, a velocidade e onde o
+    /// jogo desenha — este último saiu do pé da janela com a barra de status, que some enquanto o
+    /// jogo roda na principal, e com a faixa da janela separada.
+    fn metricas(&self) -> Vec<String> {
+        let Some(partida) = self.partida.as_ref().filter(|_| self.settings.debug.metricas) else {
+            return Vec::new();
+        };
+        let amostra = partida.sessao().sample();
+        let graficos = &self.valendo().graphics;
+        let onde = match (&self.placa, graficos.gpu_rasterizer) {
+            (Some(placa), true) => self.catalogo.format(
+                "debug.metricas.gpu",
+                &[("scale", &graficos.resolucao_interna.to_string()), ("name", placa)],
+            ),
+            _ => self.catalogo.get("debug.metricas.software").to_string(),
+        };
+        vec![
+            self.catalogo.format("debug.metricas.fps", &[("fps", &amostra.fps.to_string())]),
+            self.catalogo.format("debug.metricas.speed", &[("percent", &amostra.speed.to_string())]),
+            onde,
+        ]
     }
 
     /// O que vai por cima do jogo: o "▶▶ 3x" de enquanto ele avança e o "Turbo" de um turbo de

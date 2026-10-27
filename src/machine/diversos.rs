@@ -716,12 +716,13 @@ impl<C: CpuBackend> Machine<C> {
                 let modelo = self.modelos_de_valor.entry(this).or_default();
                 modelo.valor = a1;
                 modelo.tamanho = a2;
-                if let Some(evento) = self.heap.alloc(MODEL_EVENT) {
+                let evento = self.aloca_interno(MODEL_EVENT)?;
+                if evento != 0 {
                     self.cpu.write_u32(evento, EVT_MDL_VALUE)?;
                     self.cpu.write_u32(evento + 4, this)?;
                     self.cpu.write_u32(evento + 8, 0)?;
                     self.avisa_ouvintes(this, evento)?;
-                    self.heap.free(evento);
+                    self.libera(evento);
                 }
                 SUCCESS
             }

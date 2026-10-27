@@ -1,0 +1,39 @@
+{
+  "formato": 1,
+  "nome": {
+    "pt-BR": "Esmeralda",
+    "en": "Emerald",
+    "es": "Esmeralda",
+    "es-MX": "Esmeralda"
+  },
+  "escuro": true,
+  "cores": {
+    "window": "#19231f",
+    "windowText": "#e3eee8",
+    "base": "#121a17",
+    "alternateBase": "#1e2a25",
+    "text": "#e3eee8",
+    "placeholderText": "#8aa397",
+    "button": "#23322c",
+    "buttonText": "#e3eee8",
+    "brightText": "#ffffff",
+    "light": "#384b42",
+    "midlight": "#2d3e36",
+    "mid": "#40574c",
+    "dark": "#0c120f",
+    "shadow": "#050806",
+    "highlight": "#1b8156",
+    "highlightedText": "#ffffff",
+    "link": "#74d8a8",
+    "linkVisited": "#a8c8ff",
+    "toolTipBase": "#28382f",
+    "toolTipText": "#e3eee8"
+  },
+  "desabilitado": {
+    "windowText": "#62776d",
+    "text": "#62776d",
+    "buttonText": "#62776d"
+  },
+  "aviso": "#e2b048",
+  "erro": "#f07067"
+}

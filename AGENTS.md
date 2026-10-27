@@ -26,6 +26,9 @@ frontends/
   libretro/               o core do RetroArch
   android/                o aplicativo, sem uma linha de Java
   ios/                    o aplicativo de iOS: UIKit por cima de uma biblioteca estática
+  switch/                 o `.a` estático que o ROMBundler liga
+  vita/                   o `.a` estático que o RetroArch da Vita liga
+  vita-standalone/        o VPK que abre sozinho, sem RetroArch
 ferramentas/        scripts Python: catálogo, varredura, instalação do core
 docs/               documentação; `patch-notes/` guarda as notas de cada versão
 assets/             ícones, fontes e `lang/` — os idiomas de fábrica
@@ -100,6 +103,27 @@ Mac a imagem Docker `rombundler-switch` traz o devkitA64 e o rustc; o job `core-
 release faz o mesmo e publica `zeebx_libretro-switch.zip`. O `.a` não liga sozinho: os
 `switch_jit_*` e `switch_spinlock_*` que o patch do dynarmic chama vêm do ROMBundler.
 
+**Vita** (o `.a` estático que o RetroArch liga) mora em
+[`frontends/vita/compilar.sh`](frontends/vita/compilar.sh). O alvo é o
+`armv7-sony-vita-newlibeabihf`, tier 3: a std é recompilada com `-Z build-std` e o
+vitasdk fornece o `arm-vita-eabi-gcc`. O dynarmic fica de fora — ele não emite ARMv7 —,
+então o núcleo é o interpretador, e o desenho fica no processador porque o vitaGL não
+entrega OpenGL ES 3. No Mac a imagem Docker `vitasdk/vitasdk` traz o SDK; o job
+`core-vita` do `libretro.yml` roda o mesmo script com `--local` dentro dessa imagem. A
+release faz o mesmo e publica `zeebx_libretro-vita.zip`. O `.a` não abre sozinho: o
+RetroArch o consome renomeado para `libretro_vita.a`.
+
+O aplicativo, que não passa pelo RetroArch, mora em
+[`frontends/vita-standalone`](frontends/vita-standalone/LEIAME.md). É um VPK: o mesmo alvo e a
+mesma imagem Docker, outro binário. O `vita.yml` é `workflow_dispatch`, como o APK; a release
+publica `zeebx-vita.zip`.
+
+**A memória na Vita é apertada e não foi medida no aparelho.** O heap do jogo lá é de 48 MiB
+(64 no resto), e a região interna soma mais 16 MiB que a newlib reserva de verdade. Uma região
+nova ou maior em `loader/mod.rs` sai dessa mesma conta. O heap de outro tamanho também faz o
+save state da Vita não abrir nas outras plataformas, e vice-versa. Ver
+[`frontends/vita-standalone/LEIAME.md`](frontends/vita-standalone/LEIAME.md).
+
 **iOS** precisa de um Mac com Xcode e dos alvos `aarch64-apple-ios` e
 `aarch64-apple-ios-sim` no rustup. O passo a passo está em
 [`frontends/ios/LEIAME.md`](frontends/ios/LEIAME.md):
@@ -111,8 +135,8 @@ release faz o mesmo e publica `zeebx_libretro-switch.zip`. O `.a` não liga sozi
 ## O CI
 
 **A tag é o único gatilho automático.** O `release.yml` dispara em `v0.0.0` e monta a release como
-rascunho. O `ci.yml`, o `libretro.yml`, o `headless.yml`, o `android.yml`, o `ios.yml` e o
-`qt.yml` são `workflow_dispatch`: o CI padrão compila a linha de comando — e com ela o núcleo e os
+rascunho. O `ci.yml`, o `libretro.yml`, o `headless.yml`, o `android.yml`, o `ios.yml`, o
+`vita.yml` e o `qt.yml` são `workflow_dispatch`: o CI padrão compila a linha de comando — e com ela o núcleo e os
 testes — nas seis plataformas e chama o `qt.yml`, que compila a interface e monta os instaladores. A release chama o mesmo `qt.yml`:
 os passos do Qt moram num lugar só. Onze jobs por execução é caro demais
 para gastar em cada push, e quem decide é quem pede. A exceção é o `discord-issues.yml`, que não
@@ -140,6 +164,10 @@ vale disparar aquele workflow antes da tag. Você não consegue dispará-lo.
   versão velha instalada só sai dela baixando à mão.
 - **O `THIRD-PARTY-NOTICES.txt` acompanha o `Cargo.lock`.** Mudou dependência, rode
   `python3 ferramentas/avisos_de_terceiros.py` e commite junto; a release confere.
+- **O heap do guest é só do jogo.** Memória que o emulador pede para si no espaço do guest sai
+  do `aloca_interno` (região `0x3400_0000`), nunca do `malloc` nem do `heap.alloc`. Um bloco
+  nosso no heap muda o endereço de tudo o que o jogo aloca depois, e o RetroAchievements lê o
+  heap por endereço. As bases e tamanhos de `loader/mod.rs` são o mesmo contrato.
 - **O `Cargo.lock` é versionado** e o CI usa `--locked`. Membro novo no workspace entra no lock,
   no mesmo commit.
 

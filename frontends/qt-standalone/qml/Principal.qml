@@ -32,7 +32,7 @@ ApplicationWindow {
     height: alturaGuardada > 0 ? alturaGuardada : 720
     minimumWidth: 480
     minimumHeight: 360
-    title: "Zeebx"
+    title: jogandoNaPrincipal ? "Zeebx — " + palcoDaPrincipal.tela.estado : "Zeebx"
 
     // O tamanho em que a janela foi fechada é o tamanho em que ela abre. Chamadas de
     // função não têm sinal de mudança: avaliam uma vez, na montagem, que é quando valem.
@@ -57,8 +57,22 @@ ApplicationWindow {
         onTriggered: principal.guardaTamanho()
     }
 
-    // Fechar a biblioteca encerra tudo, com ou sem jogo aberto — como no egui.
-    onClosing: {
+    // A janela perdeu o foco com o jogo nela: nenhuma tecla continua apertada.
+    onActiveChanged: if (!active && jogandoNaPrincipal) palcoDaPrincipal.tela.solta()
+
+    // Fechar a biblioteca encerra tudo, com ou sem jogo aberto — como no egui. Com um jogo aberto,
+    // pergunta antes, onde o jogo está. Ver `graphics.confirmar_ao_fechar`.
+    property bool saidaConfirmada: false
+    onClosing: (close) => {
+        if (jogando && !saidaConfirmada && palco.tela.confirmaAoFechar()) {
+            close.accepted = false
+            if (jogo.visible) {
+                jogo.raise()
+                jogo.requestActivate()
+            }
+            palco.pedeParaSair()
+            return
+        }
         filaDaGravacao.stop()
         principal.guardaTamanho()
         Qt.quit()
@@ -78,6 +92,9 @@ ApplicationWindow {
     // O modo configurado para a janela principal (`graphics.janela`), como no egui. As
     // configurações chamam isto de novo quando ele muda: na principal, vale na hora.
     function aplicaModo() {
+        // Com o jogo nela, vale o modo do jogo; o da principal volta quando ele fechar.
+        if (jogandoNaPrincipal)
+            return
         const modo = biblioteca.modoDaJanela()
         if (modo === 2)
             showFullScreen()
@@ -93,10 +110,76 @@ ApplicationWindow {
     }
 
     // `erro` vazio é jogo aberto.
+    //
+    // **Onde o jogo aparece só se decide sem jogo rodando.** Um jogo aberto por cima de outro (a
+    // biblioteca usada com a janela separada, ou a Z-Wheel) fica onde o anterior estava: com os
+    // dois palcos ativos, o núcleo andaria duas vezes por quadro. A opção vale no próximo jogo.
     function mostra(erro) {
         aviso.text = erro
-        if (erro === "")
+        if (erro !== "")
+            return
+        if (jogo.visible)
             jogo.abre()
+        else if (jogandoNaPrincipal || !configuracoes.cfg.valor("graphics.jogo_separado"))
+            jogaNaPrincipal()
+        else
+            jogo.abre()
+    }
+
+    // O jogo na principal, no lugar da biblioteca. A janela fica no modo configurado para o jogo
+    // (`graphics.janela_do_jogo`) enquanto ele roda, e volta ao que era quando ele fecha.
+    property bool jogandoNaPrincipal: false
+    property int visibilidadeAntesDoJogo: Window.Windowed
+    // O palco onde o jogo está, para o menu, a barra de ferramentas e a de status.
+    readonly property var palco: jogandoNaPrincipal ? palcoDaPrincipal : jogo.palco
+    readonly property bool jogando: jogo.visible || jogandoNaPrincipal
+
+    function jogaNaPrincipal() {
+        if (!jogandoNaPrincipal) {
+            visibilidadeAntesDoJogo = visibility
+            jogandoNaPrincipal = true
+            const modo = palcoDaPrincipal.tela.modoDaJanela()
+            if (modo === 2)
+                showFullScreen()
+            else if (modo === 1)
+                showMaximized()
+            else
+                showNormal()
+        }
+        palcoDaPrincipal.prepara()
+        palcoDaPrincipal.foca()
+        raise()
+        requestActivate()
+    }
+
+    // O Fechar do menu e da barra: a pergunta aparece onde o jogo está, e a janela separada vem
+    // para a frente para mostrá-la.
+    function pedeParaFecharOJogo() {
+        if (jogo.visible) {
+            jogo.raise()
+            jogo.requestActivate()
+        }
+        palco.pedeParaFechar()
+    }
+
+    // Fecha o jogo de onde ele estiver, sem perguntar: quem pergunta é o `palco.pedeParaFechar()`,
+    // que chama isto depois. Na principal, a biblioteca volta, com a janela como era.
+    function fechaJogo() {
+        if (jogo.visible) {
+            jogo.fecha()
+            return
+        }
+        if (!jogandoNaPrincipal)
+            return
+        palcoDaPrincipal.fecha()
+        jogandoNaPrincipal = false
+        if (visibilidadeAntesDoJogo === Window.FullScreen)
+            showFullScreen()
+        else if (visibilidadeAntesDoJogo === Window.Maximized)
+            showMaximized()
+        else
+            showNormal()
+        principal.vista.forceActiveFocus()
     }
 
     // O jogo escolhido agora, pela linha da lista.
@@ -147,6 +230,16 @@ ApplicationWindow {
 
         transientParent: null
     }
+    Connections {
+        target: jogo.palco
+        function onSaidaPedida() { principal.sai() }
+    }
+
+    // Sair do Zeebx depois da pergunta, ou sem ela.
+    function sai() {
+        saidaConfirmada = true
+        close()
+    }
 
     JanelaDeConfiguracoes {
         id: configuracoes
@@ -178,10 +271,10 @@ ApplicationWindow {
     JanelaDeLog {
         id: janelaDeLog
 
-        transientParent: jogo
+        transientParent: principal.jogandoNaPrincipal ? principal : jogo
 
         pedida: principal.depende([configuracoes.cfg.versao, janelaDeLog.dispensas],
-                                  jogo.visible && janelaDeLog.log.ativo())
+                                  principal.jogando && janelaDeLog.log.ativo())
     }
 
     Avisos {
@@ -192,9 +285,11 @@ ApplicationWindow {
     // principal voltar a ter o foco. Mapeando o controle nas configurações, o botão apertado
     // abriria um jogo sem querer. O mouse continua valendo, como no egui. Toda janela que abrir
     // por cima da principal entra aqui.
-    readonly property bool sobreposta: jogo.visible || configuracoes.visible || saves.visible
+    readonly property bool sobreposta: principal.jogando || configuracoes.visible || saves.visible
                                        || configuracoesDoJogo.visible || detalhes.visible
                                        || boasVindas.visible || novaVersao.visible
+                                       || sobre.visible || respostaDaProcura.visible
+                                       || barraDeMenus.aberto
 
     // O controle não gera evento no Qt, como não gerava no egui: enquanto a biblioteca está à
     // vista, ele é lido aqui. Sem o foco, ou com outra janela por cima, o controle não é dela — e
@@ -213,6 +308,14 @@ ApplicationWindow {
                     novaVersao.texto = texto
                     novaVersao.pagina = avisos.paginaDaAtualizacao()
                     novaVersao.open()
+                }
+            }
+            // A procura pelo menu Ajuda responde mesmo sem versão nova.
+            if (!respostaDaProcura.visible) {
+                const resposta = avisos.resultadoDaProcura()
+                if (resposta !== "") {
+                    respostaDaProcura.texto = resposta
+                    respostaDaProcura.open()
                 }
             }
             const escutando = principal.active && !principal.sobreposta
@@ -242,54 +345,517 @@ ApplicationWindow {
     // avisa no terminal.
     Shortcut {
         sequences: [StandardKey.Find]
+        enabled: !principal.jogandoNaPrincipal
         onActivated: busca.forceActiveFocus()
     }
 
-    ColumnLayout {
-        anchors.fill: parent
-        anchors.margins: 8
-        spacing: 6
+    // Mostrar a barra de ferramentas e a de status: o menu Exibir liga e desliga, e fica gravado.
+    readonly property bool comFerramentas: depende([configuracoes.cfg.versao], configuracoes.cfg.valor("barras.ferramentas"))
+    readonly property bool comStatus: depende([configuracoes.cfg.versao], configuracoes.cfg.valor("barras.status"))
+    // Estreita demais para os rótulos, a barra de ferramentas fica só com os ícones, e o nome vai
+    // para a dica. A largura é a que os rótulos em português pedem, os mais longos dos quatro.
+    readonly property bool barraCompacta: width < 1200
 
-        // A barra de cima. **Os botões dela não pegam o foco do teclado**, nem os da linha da
-        // contagem e o do recado: clicado, um botão do Qt Quick fica com o foco, e as setas
-        // passavam a ir para ele, e não para a grade ou para o slider. No egui um clique não
-        // prendia o teclado.
-        RowLayout {
-            Layout.fillWidth: true
-            spacing: 8
+    // O que o menu Sistema mostra dos slots, lido quando ele abre: cada leitura toca o disco.
+    property var slotsDoMenu: []
+    property var ocupadosDoMenu: []
+    property int slotDoMenu: 0
 
+    function atalho(nome) {
+        return depende([configuracoes.cfg.versao], configuracoes.cfg.atalho(nome))
+    }
+
+    // A tela cheia da barra e do menu: a do jogo, se ele está aberto, e a da biblioteca, se não.
+    function alternaTelaCheia() {
+        if (jogo.visible)
+            jogo.alternaTelaCheia()
+        else
+            principal.visibility = principal.visibility === Window.FullScreen ? Window.Windowed : Window.FullScreen
+    }
+
+    // Um item de menu com o ícone na frente e a tecla do atalho à direita. **A tecla é só texto**:
+    // um `shortcut` de verdade valeria na janela inteira, e o P digitado na busca pausaria o jogo.
+    // Quem atende as teclas é a janela do jogo, como sempre.
+    component ItemDeMenu: MenuItem {
+        id: itemDeMenu
+
+        property string icone: ""
+        property string atalho: ""
+
+        // O indicador do item marcável ocupa a frente: a linha começa depois dele.
+        readonly property real recuo: checkable && indicator ? indicator.width + spacing : 0
+
+        contentItem: Item {
+            implicitWidth: linha.implicitWidth + itemDeMenu.recuo
+            implicitHeight: linha.implicitHeight
+
+            RowLayout {
+                id: linha
+
+                anchors.fill: parent
+                anchors.leftMargin: itemDeMenu.recuo
+                spacing: 8
+                opacity: itemDeMenu.enabled ? 1 : 0.45
+
+                // Vazio, o ícone ainda ocupa o lugar: os textos do menu ficam alinhados.
+                Icone {
+                    Layout.preferredWidth: 16
+                    visible: itemDeMenu.icone !== "" || !itemDeMenu.checkable
+                    nome: itemDeMenu.icone
+                    tamanho: 15
+                    color: itemDeMenu.highlighted ? itemDeMenu.palette.highlightedText : itemDeMenu.palette.windowText
+                }
+                Label {
+                    Layout.fillWidth: true
+                    text: itemDeMenu.text
+                    color: itemDeMenu.highlighted ? itemDeMenu.palette.highlightedText : itemDeMenu.palette.windowText
+                }
+                Label {
+                    Layout.leftMargin: 24
+                    visible: itemDeMenu.atalho !== ""
+                    opacity: 0.65
+                    text: itemDeMenu.atalho
+                    color: itemDeMenu.highlighted ? itemDeMenu.palette.highlightedText : itemDeMenu.palette.windowText
+                }
+            }
+        }
+    }
+
+    // Um slot no menu Sistema: `acao` 0 salva e 1 carrega. O slot atual mostra a tecla.
+    component ItemDeSlot: ItemDeMenu {
+        required property int slot
+        property int acao: 0
+
+        text: principal.slotsDoMenu[slot] !== undefined ? principal.slotsDoMenu[slot] : ""
+        enabled: acao === 0 || principal.ocupadosDoMenu[slot] === 1
+        atalho: slot === principal.slotDoMenu
+                ? principal.atalho(acao === 0 ? "salvar_estado" : "carregar_estado") : ""
+        onTriggered: principal.palco.tela.estadoPeloMenu(acao, slot)
+    }
+
+    // Um botão da barra de ferramentas: o ícone, e o nome ao lado enquanto couber. **Não pega o
+    // foco do teclado**: clicado, um botão do Qt Quick ficava com ele, e as setas deixavam de ir
+    // para a grade ou para o slider. No egui um clique não prendia o teclado.
+    component BotaoDeFerramenta: ToolButton {
+        id: botao
+
+        property string icone
+        property string dica: ""
+
+        focusPolicy: Qt.NoFocus
+        contentItem: RowLayout {
+            spacing: 6
+            opacity: botao.enabled ? 1 : 0.4
+
+            Icone {
+                Layout.preferredWidth: 20
+                nome: botao.icone
+                tamanho: 18
+                color: botao.palette.buttonText
+            }
             Label {
-                text: "Zeebx"
-                font.pixelSize: 20
-                font.bold: true
+                visible: !principal.barraCompacta
+                text: botao.text
+                color: botao.palette.buttonText
+            }
+        }
+        ToolTip.visible: hovered && (principal.barraCompacta || dica !== "")
+        ToolTip.delay: 500
+        ToolTip.text: dica !== "" ? dica : text
+    }
+
+    component Separador: Rectangle {
+        Layout.preferredWidth: 1
+        Layout.preferredHeight: 22
+        Layout.leftMargin: 4
+        Layout.rightMargin: 4
+        color: palette.mid
+    }
+
+    // Com o jogo na principal em tela cheia, as três barras saem, como no PCSX2: a tela é do jogo.
+    readonly property bool soOJogo: jogandoNaPrincipal && visibility === Window.FullScreen
+
+    menuBar: MenuBar {
+        id: barraDeMenus
+
+        visible: !principal.soOJogo
+
+        // Com um menu aberto, o controle não navega a biblioteca por baixo dele.
+        readonly property bool aberto: menuArquivo.visible || menuSistema.visible
+                                       || menuConfiguracoes.visible || menuExibir.visible
+                                       || menuFerramentas.visible || menuAjuda.visible
+
+        Menu {
+            id: menuArquivo
+
+            title: tr("menu.file")
+
+            // A Z-Wheel e a procura são da biblioteca: com o jogo no lugar dela, ficam desabilitadas.
+            // Abrir a Z-Wheel trocaria o jogo por ela sem pergunta nenhuma.
+            ItemDeMenu {
+                icone: "house"
+                text: tr("menu.file.z_wheel")
+                enabled: !principal.jogandoNaPrincipal
+                         && principal.depende([configuracoes.cfg.versao], biblioteca.temZWheel())
+                onTriggered: principal.mostra(biblioteca.abreZWheel())
+            }
+            ItemDeMenu {
+                icone: "refresh-cw"
+                text: tr("menu.file.rescan")
+                enabled: !principal.jogandoNaPrincipal
+                onTriggered: {
+                    biblioteca.procuraDeNovo()
+                    principal.recomeca()
+                }
+            }
+            MenuSeparator {}
+            ItemDeMenu {
+                icone: "log-out"
+                text: tr("menu.file.quit")
+                onTriggered: principal.close()
+            }
+        }
+
+        // O que se faz com o jogo aberto. Sem jogo, tudo desabilitado. O rewind não está aqui:
+        // voltar só faz sentido segurando a tecla, e um item de menu não se segura.
+        Menu {
+            id: menuSistema
+
+            title: tr("menu.system")
+            onAboutToShow: {
+                principal.slotsDoMenu = principal.jogando ? principal.palco.tela.slotsDeEstado() : []
+                principal.ocupadosDoMenu = principal.jogando ? principal.palco.tela.slotsOcupados() : []
+                principal.slotDoMenu = principal.jogando ? principal.palco.tela.slotAtual() : 0
+                itemDoAvanco.checked = principal.jogando && principal.palco.tela.avancoFixo()
+                itemDoDesfazer.enabled = principal.jogando && principal.palco.tela.podeDesfazerCarregar()
             }
 
-            Button {
+            ItemDeMenu {
+                icone: principal.palco.pausado ? "play" : "pause"
+                text: tr(principal.palco.pausado ? "menu.system.resume" : "menu.system.pause")
+                atalho: "P"
+                enabled: principal.jogando
+                onTriggered: principal.palco.pausa()
+            }
+            ItemDeMenu {
+                icone: "rotate-ccw"
+                text: tr("menu.system.restart")
+                atalho: principal.atalho("reiniciar")
+                enabled: principal.jogando
+                onTriggered: principal.palco.reinicia()
+            }
+            MenuSeparator {}
+            ItemDeMenu {
+                id: itemDoAvanco
+
+                checkable: true
+                text: tr("menu.system.fast_forward")
+                atalho: principal.atalho("avancar")
+                enabled: principal.jogando
+                onTriggered: checked = principal.palco.tela.alternaAvanco()
+            }
+            ItemDeMenu {
+                icone: "camera"
+                text: tr("menu.system.screenshot")
+                atalho: principal.atalho("screenshot")
+                enabled: principal.jogando
+                onTriggered: principal.palco.screenshot()
+            }
+            MenuSeparator {}
+            Menu {
+                title: tr("menu.system.save_state")
+                // Largura que caiba o slot ocupado: o Menu mede os itens na primeira vez que abre,
+                // e não cresce quando um slot vazio passa a ocupado.
+                width: Math.max(implicitWidth, 340)
+                enabled: principal.jogando
+
+                ItemDeSlot { slot: 0; icone: "save" }
+                ItemDeSlot { slot: 1; icone: "save" }
+                ItemDeSlot { slot: 2; icone: "save" }
+                ItemDeSlot { slot: 3; icone: "save" }
+                ItemDeSlot { slot: 4; icone: "save" }
+                ItemDeSlot { slot: 5; icone: "save" }
+                ItemDeSlot { slot: 6; icone: "save" }
+                ItemDeSlot { slot: 7; icone: "save" }
+                ItemDeSlot { slot: 8; icone: "save" }
+                ItemDeSlot { slot: 9; icone: "save" }
+            }
+            Menu {
+                title: tr("menu.system.load_state")
+                // Largura que caiba o slot ocupado: o Menu mede os itens na primeira vez que abre,
+                // e não cresce quando um slot vazio passa a ocupado.
+                width: Math.max(implicitWidth, 340)
+                enabled: principal.jogando
+
+                ItemDeSlot { slot: 0; acao: 1; icone: "folder-open" }
+                ItemDeSlot { slot: 1; acao: 1; icone: "folder-open" }
+                ItemDeSlot { slot: 2; acao: 1; icone: "folder-open" }
+                ItemDeSlot { slot: 3; acao: 1; icone: "folder-open" }
+                ItemDeSlot { slot: 4; acao: 1; icone: "folder-open" }
+                ItemDeSlot { slot: 5; acao: 1; icone: "folder-open" }
+                ItemDeSlot { slot: 6; acao: 1; icone: "folder-open" }
+                ItemDeSlot { slot: 7; acao: 1; icone: "folder-open" }
+                ItemDeSlot { slot: 8; acao: 1; icone: "folder-open" }
+                ItemDeSlot { slot: 9; acao: 1; icone: "folder-open" }
+            }
+            ItemDeMenu {
+                id: itemDoDesfazer
+
+                icone: "undo-2"
+                text: tr("menu.system.undo_load")
+                atalho: principal.atalho("desfazer_carregar")
+                onTriggered: principal.palco.tela.estadoPeloMenu(2, -1)
+            }
+            MenuSeparator {}
+            ItemDeMenu {
+                icone: "square"
+                text: tr("menu.system.close")
+                atalho: "Esc"
+                enabled: principal.jogando
+                onTriggered: principal.pedeParaFecharOJogo()
+            }
+        }
+
+        // Cada categoria abre a janela de configurações já nela, na ordem das abas.
+        Menu {
+            id: menuConfiguracoes
+
+            title: tr("menu.settings")
+
+            ItemDeMenu { icone: "settings"; text: tr("settings.tab.general"); onTriggered: configuracoes.abre(0) }
+            ItemDeMenu { icone: "gamepad-2"; text: tr("settings.tab.controls"); onTriggered: configuracoes.abre(1) }
+            ItemDeMenu { icone: "keyboard"; text: tr("settings.tab.shortcuts"); onTriggered: configuracoes.abre(2) }
+            ItemDeMenu { icone: "monitor"; text: tr("settings.tab.graphics"); onTriggered: configuracoes.abre(3) }
+            ItemDeMenu { icone: "gauge"; text: tr("settings.tab.speed"); onTriggered: configuracoes.abre(4) }
+            ItemDeMenu { icone: "volume-2"; text: tr("settings.tab.audio"); onTriggered: configuracoes.abre(5) }
+            ItemDeMenu { icone: "bug"; text: tr("settings.tab.debug"); onTriggered: configuracoes.abre(6) }
+            MenuSeparator {}
+            ItemDeMenu {
+                text: tr("menu.settings.game")
+                atalho: "X"
+                enabled: biblioteca.vazio === ""
+                onTriggered: principal.configuraJogo(principal.escolhido())
+            }
+        }
+
+        // Os marcáveis são relidos quando o menu abre, e não amarrados: um clique num marcável
+        // quebra a ligação dele, e uma troca feita nas configurações não apareceria aqui.
+        Menu {
+            id: menuExibir
+
+            title: tr("menu.view")
+            onAboutToShow: {
+                itemDaGrade.checked = !principal.emSlider
+                itemDoSlider.checked = principal.emSlider
+                itemDasFerramentas.checked = principal.comFerramentas
+                itemDoStatus.checked = principal.comStatus
+            }
+
+            ItemDeMenu {
+                id: itemDaGrade
+
+                checkable: true
+                icone: "layout-grid"
+                text: tr("settings.library_view.grid")
+                onTriggered: configuracoes.cfg.define("biblioteca", 0)
+            }
+            ItemDeMenu {
+                id: itemDoSlider
+
+                checkable: true
+                icone: "gallery-horizontal"
+                text: tr("settings.library_view.slider")
+                onTriggered: configuracoes.cfg.define("biblioteca", 1)
+            }
+            MenuSeparator {}
+            ItemDeMenu {
+                id: itemDasFerramentas
+
+                checkable: true
+                text: tr("menu.view.toolbar")
+                onTriggered: configuracoes.cfg.define("barras.ferramentas", checked)
+            }
+            ItemDeMenu {
+                id: itemDoStatus
+
+                checkable: true
+                text: tr("menu.view.statusbar")
+                onTriggered: configuracoes.cfg.define("barras.status", checked)
+            }
+            MenuSeparator {}
+            ItemDeMenu {
+                icone: "maximize"
+                text: tr("controls.shortcut.fullscreen")
+                atalho: "F11"
+                onTriggered: principal.alternaTelaCheia()
+            }
+        }
+
+        Menu {
+            id: menuFerramentas
+
+            title: tr("menu.tools")
+            onAboutToShow: itemDoLog.checked = configuracoes.cfg.valor("debug.log")
+
+            ItemDeMenu {
+                icone: "hard-drive"
+                text: tr("menu.tools.saves")
+                onTriggered: saves.abre()
+            }
+            ItemDeMenu {
+                id: itemDoLog
+
+                checkable: true
+                text: tr("debug.log")
+                onTriggered: configuracoes.cfg.define("debug.log", checked)
+            }
+            MenuSeparator {}
+            // O Zeeboids só deixa sincronizar uma vez por dia, e a trava é dele: guarda a data no
+            // próprio banco. Testar rede com isso custa um dia por tentativa, então o item recua
+            // a data em um dia.
+            ItemDeMenu {
+                icone: "calendar-clock"
+                text: tr("menu.tools.unlock_sync")
+                onTriggered: recado.text = biblioteca.liberaSincronizacao()
+            }
+        }
+
+        Menu {
+            id: menuAjuda
+
+            title: tr("menu.help")
+
+            ItemDeMenu {
+                icone: "external-link"
+                text: tr("about.repository")
+                onTriggered: Qt.openUrlExternally(configuracoes.cfg.endereco("repositorio"))
+            }
+            ItemDeMenu {
+                icone: "message-circle"
+                text: tr("about.discord")
+                onTriggered: Qt.openUrlExternally(configuracoes.cfg.endereco("discord"))
+            }
+            MenuSeparator {}
+            ItemDeMenu {
+                icone: "download"
+                text: tr("menu.help.check_update")
+                onTriggered: avisos.procuraAtualizacao()
+            }
+            ItemDeMenu {
+                icone: "info"
+                text: tr("menu.help.about")
+                onTriggered: sobre.open()
+            }
+        }
+    }
+
+    // A barra de ferramentas: o que se faz na biblioteca, o que se faz com o jogo aberto, as
+    // configurações, e à direita a vista e a busca, como no PCSX2.
+    header: ToolBar {
+        visible: principal.comFerramentas && !principal.soOJogo
+
+        RowLayout {
+            anchors.fill: parent
+            anchors.leftMargin: 4
+            anchors.rightMargin: 6
+            spacing: 2
+
+            BotaoDeFerramenta {
                 id: botaoZWheel
 
-                focusPolicy: Qt.NoFocus
-                text: "▶ " + tr("nav.z_wheel")
-                enabled: principal.depende([configuracoes.cfg.versao], biblioteca.temZWheel())
+                icone: "house"
+                text: tr("nav.z_wheel")
+                dica: tr(principal.jogandoNaPrincipal ? "nav.z_wheel.playing"
+                         : enabled ? "nav.z_wheel.hint" : "nav.z_wheel.missing")
+                // Como no menu Arquivo: com o jogo na principal, a Z-Wheel e a procura esperam.
+                enabled: !principal.jogandoNaPrincipal
+                         && principal.depende([configuracoes.cfg.versao], biblioteca.temZWheel())
                 onClicked: principal.mostra(biblioteca.abreZWheel())
-                // O teto de largura é o dos cartões (GradeDaBiblioteca.qml:133): sem ele, a dica
-                // comprida saía numa linha só, mais larga que a tela.
-                ToolTip {
-                    visible: botaoZWheel.hovered
-                    delay: 500
-                    width: Math.min(implicitWidth, 320)
-                    contentItem: Label {
-                        wrapMode: Text.Wrap
-                        text: tr(botaoZWheel.enabled ? "nav.z_wheel.hint" : "nav.z_wheel.missing")
-                    }
+            }
+            BotaoDeFerramenta {
+                icone: "refresh-cw"
+                text: tr("library.rescan")
+                enabled: !principal.jogandoNaPrincipal
+                onClicked: {
+                    biblioteca.procuraDeNovo()
+                    principal.recomeca()
                 }
+            }
+            Separador {}
+            BotaoDeFerramenta {
+                icone: principal.palco.pausado ? "play" : "pause"
+                text: tr(principal.palco.pausado ? "menu.system.resume" : "menu.system.pause")
+                enabled: principal.jogando
+                onClicked: principal.palco.pausa()
+            }
+            BotaoDeFerramenta {
+                icone: "rotate-ccw"
+                text: tr("menu.system.restart")
+                enabled: principal.jogando
+                onClicked: principal.palco.reinicia()
+            }
+            BotaoDeFerramenta {
+                icone: "square"
+                text: tr("toolbar.close")
+                enabled: principal.jogando
+                onClicked: principal.pedeParaFecharOJogo()
+            }
+            Separador {}
+            BotaoDeFerramenta {
+                icone: "settings"
+                text: tr("nav.settings")
+                onClicked: configuracoes.abre(-1)
+            }
+            BotaoDeFerramenta {
+                icone: "gamepad-2"
+                text: tr("settings.tab.controls")
+                onClicked: configuracoes.abre(1)
+            }
+            Separador {}
+            BotaoDeFerramenta {
+                icone: "maximize"
+                text: tr("controls.shortcut.fullscreen")
+                onClicked: principal.alternaTelaCheia()
+            }
+
+            Item {
+                Layout.fillWidth: true
+            }
+
+            // A vista da biblioteca, como o par grade/lista do PCSX2. **Não marcáveis**: o clique
+            // de um marcável troca o `checked` e quebra a ligação dele com a configuração, e uma
+            // troca feita pelo menu ou pelas configurações não apareceria aqui.
+            ToolButton {
+                focusPolicy: Qt.NoFocus
+                visible: !principal.jogandoNaPrincipal
+                checked: !principal.emSlider
+                contentItem: Icone { nome: "layout-grid"; tamanho: 18; color: palette.buttonText }
+                onClicked: configuracoes.cfg.define("biblioteca", 0)
+                ToolTip.visible: hovered
+                ToolTip.delay: 500
+                ToolTip.text: tr("settings.library_view.grid")
+            }
+            ToolButton {
+                focusPolicy: Qt.NoFocus
+                visible: !principal.jogandoNaPrincipal
+                checked: principal.emSlider
+                contentItem: Icone { nome: "gallery-horizontal"; tamanho: 18; color: palette.buttonText }
+                onClicked: configuracoes.cfg.define("biblioteca", 1)
+                ToolTip.visible: hovered
+                ToolTip.delay: 500
+                ToolTip.text: tr("settings.library_view.slider")
             }
 
             // A busca: filtra a lista pelo nome, sem ligar para acentos. Esc limpa; o Enter joga
             // o escolhido, que é o primeiro resultado enquanto ninguém mexe na escolha.
             TextField {
                 id: busca
+                visible: !principal.jogandoNaPrincipal
 
-                Layout.preferredWidth: 220
+                Layout.preferredWidth: 240
+                Layout.leftMargin: 6
+                leftPadding: 28
+                rightPadding: limpaBusca.visible ? 28 : 8
                 placeholderText: tr("nav.search")
                 onTextChanged: {
                     biblioteca.busca(text)
@@ -301,75 +867,92 @@ ApplicationWindow {
                 }
                 Keys.onReturnPressed: if (!principal.sobreposta) principal.mostra(biblioteca.abre(principal.escolhido()))
                 Keys.onEnterPressed: if (!principal.sobreposta) principal.mostra(biblioteca.abre(principal.escolhido()))
-                ToolTip {
-                    visible: busca.hovered
-                    delay: 500
-                    width: Math.min(implicitWidth, 320)
-                    contentItem: Label {
-                        wrapMode: Text.Wrap
-                        text: tr("nav.search.hint")
-                    }
+                ToolTip.visible: hovered && !activeFocus
+                ToolTip.delay: 500
+                ToolTip.text: tr("nav.search.hint")
+
+                Icone {
+                    anchors.left: parent.left
+                    anchors.leftMargin: 8
+                    anchors.verticalCenter: parent.verticalCenter
+                    nome: "search"
+                    tamanho: 14
+                    color: busca.palette.placeholderText
                 }
-            }
-
-            ToolButton {
-                id: botaoLimpaBusca
-
-                focusPolicy: Qt.NoFocus
-                text: "✕"
-                visible: busca.text !== ""
                 // Como o Esc da busca: a lista volta a ser das setas.
-                onClicked: {
-                    busca.text = ""
-                    principal.vista.forceActiveFocus()
-                }
-                ToolTip {
-                    visible: botaoLimpaBusca.hovered
-                    width: Math.min(implicitWidth, 320)
-                    contentItem: Label {
-                        wrapMode: Text.Wrap
-                        text: tr("nav.search.clear")
+                ToolButton {
+                    id: limpaBusca
+
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 26
+                    height: 26
+                    focusPolicy: Qt.NoFocus
+                    visible: busca.text !== ""
+                    contentItem: Icone { nome: "x"; tamanho: 14; color: busca.palette.text }
+                    onClicked: {
+                        busca.text = ""
+                        principal.vista.forceActiveFocus()
                     }
-                }
-            }
-
-            Item {
-                Layout.fillWidth: true
-            }
-
-            Button {
-                focusPolicy: Qt.NoFocus
-                text: tr("nav.saves")
-                onClicked: saves.abre()
-            }
-
-            Button {
-                focusPolicy: Qt.NoFocus
-                text: tr("nav.settings")
-                onClicked: configuracoes.abre(-1)
-            }
-
-            // O Zeeboids só deixa sincronizar uma vez por dia, e a trava é dele: guarda a data no
-            // próprio banco. Testar rede com isso custa um dia por tentativa, então o botão recua
-            // a data em um dia.
-            Button {
-                id: botaoLiberaSync
-
-                focusPolicy: Qt.NoFocus
-                text: tr("nav.unlock_sync")
-                onClicked: recado.text = biblioteca.liberaSincronizacao()
-                ToolTip {
-                    visible: botaoLiberaSync.hovered
-                    delay: 500
-                    width: Math.min(implicitWidth, 320)
-                    contentItem: Label {
-                        wrapMode: Text.Wrap
-                        text: tr("nav.unlock_sync.hint")
-                    }
+                    ToolTip.visible: hovered
+                    ToolTip.text: tr("nav.search.clear")
                 }
             }
         }
+    }
 
+    // A barra de status: a contagem e o que apertar à esquerda; com um jogo aberto, à direita,
+    // o nome dele, onde ele desenha, e a velocidade da última amostra, como no PCSX2.
+    //
+    // **Some enquanto o jogo roda na principal**, e o jogo desce até o pé da janela: a contagem e
+    // a dica são da biblioteca, e a velocidade e onde o jogo desenha estão na caixa de métricas
+    // do canto, que se liga em Depuração. Com a janela separada a biblioteca continua à vista, e a
+    // barra também, com o jogo à direita.
+    footer: ToolBar {
+        position: ToolBar.Footer
+        visible: principal.comStatus && !principal.soOJogo && !principal.jogandoNaPrincipal
+
+        RowLayout {
+            anchors.fill: parent
+            anchors.leftMargin: 8
+            anchors.rightMargin: 8
+            spacing: 8
+
+            Label {
+                text: biblioteca.contagem
+            }
+            Label {
+                Layout.fillWidth: true
+                elide: Text.ElideRight
+                opacity: 0.6
+                text: tr("library.controls_hint") + " · " + tr("library.pad_game")
+            }
+            Label {
+                visible: principal.jogando && text !== ""
+                text: principal.palco.tela.estado + (principal.palco.tela.velocidade !== "" ? "  ·  " + principal.palco.tela.velocidade : "")
+            }
+        }
+    }
+
+    // O jogo, quando ele roda na principal: no lugar da biblioteca, sem as margens dela.
+    PalcoDoJogo {
+        id: palcoDaPrincipal
+
+        anchors.fill: parent
+        visible: principal.jogandoNaPrincipal
+        ativo: principal.jogandoNaPrincipal
+        onFechaPedido: principal.fechaJogo()
+        onSaidaPedida: principal.sai()
+        onTelaCheiaPedida: principal.alternaTelaCheia()
+    }
+
+    ColumnLayout {
+        anchors.fill: parent
+        anchors.margins: 8
+        spacing: 6
+        visible: !principal.jogandoNaPrincipal
+
+        // O recado da última ação que tem o que dizer, como o liberar a sincronização.
         RowLayout {
             Layout.fillWidth: true
             visible: recado.text !== ""
@@ -387,43 +970,13 @@ ApplicationWindow {
             }
         }
 
-        // A contagem, o procurar de novo e o que apertar.
-        RowLayout {
-            Layout.fillWidth: true
-
-            Label {
-                text: biblioteca.contagem
-            }
-            Button {
-                focusPolicy: Qt.NoFocus
-                text: tr("library.rescan")
-                onClicked: {
-                    biblioteca.procuraDeNovo()
-                    principal.recomeca()
-                }
-            }
-            Label {
-                Layout.fillWidth: true
-                horizontalAlignment: Text.AlignRight
-                elide: Text.ElideLeft
-                opacity: 0.6
-                text: tr("library.controls_hint") + " · " + tr("library.pad_game")
-            }
-        }
-
-        Rectangle {
-            Layout.fillWidth: true
-            Layout.preferredHeight: 1
-            color: palette.mid
-        }
-
         // O que deu errado na última tentativa de abrir um jogo.
         Label {
             id: aviso
 
             Layout.fillWidth: true
             visible: text !== ""
-            color: "#d04040"
+            color: Tema.erro
             wrapMode: Text.Wrap
         }
 
@@ -542,9 +1095,16 @@ ApplicationWindow {
                     }
                 }
 
+                // A classificação é uma faixa larga (a idade, o tema e o conteúdo, lado a lado). Sem
+                // largura dada, a imagem ficava com a do arquivo e passava da borda do diálogo, por
+                // cima da janela principal. Agora cabe na coluna, e a altura segue a proporção.
                 Image {
-                    height: Math.min(64, sourceSize.height)
+                    width: parent.width
+                    height: sourceSize.width > 0
+                            ? Math.min(64, sourceSize.height, width * sourceSize.height / sourceSize.width)
+                            : 0
                     fillMode: Image.PreserveAspectFit
+                    horizontalAlignment: Image.AlignLeft
                     source: detalhes.campo("classificacao")
                     visible: source !== ""
                 }
@@ -565,6 +1125,95 @@ ApplicationWindow {
                     principal.configuraJogo(detalhes.linha)
                 }
             }
+            Button {
+                text: principal.tr("details.close")
+                DialogButtonBox.buttonRole: DialogButtonBox.RejectRole
+            }
+        }
+    }
+
+    // Ajuda > Sobre o Zeebx: o que era a aba Sobre das configurações, num diálogo como o do
+    // PCSX2.
+    Dialog {
+        id: sobre
+
+        anchors.centerIn: parent
+        width: Math.min(420, principal.width - 32)
+        modal: true
+        title: principal.tr("menu.help.about")
+
+        ColumnLayout {
+            width: parent.width
+            spacing: 6
+
+            Image {
+                Layout.alignment: Qt.AlignHCenter
+                Layout.preferredWidth: 96
+                Layout.preferredHeight: 96
+                fillMode: Image.PreserveAspectFit
+                source: "qrc:/zeebx/zeebx.png"
+                smooth: true
+                mipmap: true
+            }
+            Label {
+                Layout.alignment: Qt.AlignHCenter
+                font.pixelSize: 22
+                font.bold: true
+                text: principal.tr("app.name")
+            }
+            Label {
+                Layout.alignment: Qt.AlignHCenter
+                text: principal.tr("about.version").replace("{version}", configuracoes.cfg.versaoDoEmulador())
+            }
+            Label {
+                Layout.fillWidth: true
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.Wrap
+                opacity: 0.7
+                text: principal.tr("about.tagline")
+            }
+            RowLayout {
+                Layout.alignment: Qt.AlignHCenter
+                Layout.topMargin: 8
+
+                Button {
+                    text: principal.tr("about.repository")
+                    onClicked: Qt.openUrlExternally(configuracoes.cfg.endereco("repositorio"))
+                }
+                Button {
+                    text: principal.tr("about.discord")
+                    onClicked: Qt.openUrlExternally(configuracoes.cfg.endereco("discord"))
+                }
+            }
+        }
+
+        footer: DialogButtonBox {
+            Button {
+                text: principal.tr("details.close")
+                DialogButtonBox.buttonRole: DialogButtonBox.RejectRole
+            }
+        }
+    }
+
+    // A resposta da procura por versão nova feita pelo menu, quando não é versão nova: em dia, ou
+    // por que não deu. A versão nova abre o aviso de baixo, o de sempre.
+    Dialog {
+        id: respostaDaProcura
+
+        property string texto: ""
+
+        anchors.centerIn: parent
+        width: Math.min(420, principal.width - 32)
+        modal: true
+        title: principal.tr("menu.help.check_update")
+
+        Label {
+            width: parent.width
+            wrapMode: Text.Wrap
+            text: respostaDaProcura.texto
+        }
+
+        footer: DialogButtonBox {
             Button {
                 text: principal.tr("details.close")
                 DialogButtonBox.buttonRole: DialogButtonBox.RejectRole

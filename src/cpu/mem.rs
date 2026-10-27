@@ -67,6 +67,20 @@ impl fmt::Display for MemError {
 
 impl std::error::Error for MemError {}
 
+/// Os bytes de uma região, vistos do endereço do guest.
+///
+/// O ponteiro vive enquanto a região existir. Mapear outra região não move os bytes desta: cada
+/// uma tem o seu `Vec`. O interpretador guarda isso para não procurar a região a cada instrução.
+/// `ptr` nasce de `as_mut_ptr`: escrever num `*mut` que veio de `as_ptr` é indefinido.
+#[derive(Clone, Copy)]
+pub struct Janela {
+    pub base: u32,
+    pub ptr: *mut u8,
+    pub len: u32,
+    pub writable: bool,
+    pub executavel: bool,
+}
+
 #[derive(Debug, Default)]
 pub struct GuestMemory {
     regions: Vec<Region>,
@@ -136,6 +150,23 @@ impl GuestMemory {
 
     fn region_for_mut(&mut self, addr: u32, len: u32) -> Option<&mut Region> {
         self.regions.iter_mut().find(|r| r.contains(addr, len))
+    }
+
+    /// A região que contém `addr`, já com o ponteiro dos bytes.
+    ///
+    /// O empréstimo é mutável mesmo para uma leitura: o interpretador guarda o ponteiro e a
+    /// escrita seguinte usa o mesmo atalho. `as_mut_ptr` dá a proveniência de escrita.
+    pub fn janela_mut(&mut self, addr: u32) -> Option<Janela> {
+        let regiao = self.region_for_mut(addr, 1)?;
+        let len = u32::try_from(regiao.bytes.len()).ok()?;
+        let _fim = regiao.base.checked_add(len)?;
+        Some(Janela {
+            base: regiao.base,
+            ptr: regiao.bytes.as_mut_ptr(),
+            len,
+            writable: regiao.writable,
+            executavel: regiao.executavel,
+        })
     }
 
     pub fn read(&self, addr: u32, len: u32) -> Result<&[u8], MemError> {
@@ -302,5 +333,23 @@ mod tests {
             })
         );
         assert_eq!(m.read(0x2000, 4).unwrap(), &[0xaa; 4]);
+    }
+
+    #[test]
+    fn a_segunda_regiao_da_mesma_pagina_continua_legivel() {
+        let mut m = GuestMemory::new();
+        m.map("a", 0x100, vec![0x11; 16], true).unwrap();
+        m.map("b", 0x110, vec![0x22; 16], true).unwrap();
+        assert_eq!(m.read(0x100, 4).unwrap(), &[0x11; 4]);
+        assert_eq!(m.read(0x110, 4).unwrap(), &[0x22; 4]);
+        assert!(m.read(0x10c, 8).is_err(), "o acesso não cruza região");
+    }
+
+    #[test]
+    fn o_resto_da_pagina_parcial_nao_pertence_a_regiao() {
+        let mut m = GuestMemory::new();
+        m.map("curta", 0, vec![0xab; 100], true).unwrap();
+        assert!(m.read(98, 4).is_err());
+        assert_eq!(m.read(96, 4).unwrap(), &[0xab; 4]);
     }
 }

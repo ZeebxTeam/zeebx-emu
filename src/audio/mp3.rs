@@ -254,11 +254,7 @@ pub fn decode_detalhado(data: &[u8]) -> Result<crate::audio::wav::Sound, String>
             samples.len()
         ));
     }
-    Ok(crate::audio::wav::Sound {
-        rate,
-        channels,
-        samples,
-    })
+    Ok(crate::audio::wav::Sound::novo(rate, channels, samples))
 }
 
 #[cfg(test)]

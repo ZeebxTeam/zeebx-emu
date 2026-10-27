@@ -76,6 +76,18 @@ pub mod qobject {
         #[cxx_name = "dispensaAtualizacao"]
         fn dispensa_atualizacao(self: &Avisos);
 
+        /// Procura versão nova agora, pelo menu Ajuda. A nova abre o aviso de sempre; o resto
+        /// volta pelo `resultadoDaProcura`.
+        #[qinvokable]
+        #[cxx_name = "procuraAtualizacao"]
+        fn procura_atualizacao(self: &Avisos);
+
+        /// O que a procura pelo menu respondeu, quando não foi versão nova: em dia, ou por que
+        /// falhou. Vazio enquanto não há resposta; lido, some.
+        #[qinvokable]
+        #[cxx_name = "resultadoDaProcura"]
+        fn resultado_da_procura(self: &Avisos) -> QString;
+
         /// Esta cópia baixa e instala a versão nova sozinha, em vez de só abrir a página.
         #[qinvokable]
         #[cxx_name = "atualizaSozinho"]
@@ -247,6 +259,14 @@ impl qobject::Avisos {
 
     pub fn dispensa_atualizacao(&self) {
         nucleo::com(|nucleo| nucleo.dispensa_aviso_de_atualizacao());
+    }
+
+    pub fn procura_atualizacao(&self) {
+        nucleo::com(|nucleo| nucleo.procura_atualizacao_pelo_menu());
+    }
+
+    pub fn resultado_da_procura(&self) -> QString {
+        QString::from(&nucleo::com(|nucleo| nucleo.resultado_da_procura()).unwrap_or_default())
     }
 
     pub fn atualiza_sozinho(&self) -> bool {

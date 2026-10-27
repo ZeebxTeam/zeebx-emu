@@ -2302,6 +2302,8 @@ pub struct Machine<C: CpuBackend> {
     cpu: C,
     module: LoadedModule,
     heap: Heap,
+    /// O que o emulador aloca para si no espaço do guest: ver [`loader::INTERNAL_BASE`].
+    heap_interno: Heap,
     objects: ObjectStore,
     /// O que o jogo perguntou ao `IFileMgr`, com o caminho e o retorno.
     fs_log: std::collections::VecDeque<String>,
@@ -3090,6 +3092,7 @@ impl<C: CpuBackend> Machine<C> {
             cpu,
             module,
             heap,
+            heap_interno: Heap::new(loader::INTERNAL_BASE, loader::INTERNAL_SIZE),
             objects,
             fs_log: std::collections::VecDeque::new(),
             classes_pedidas: BTreeMap::new(),
@@ -3687,8 +3690,8 @@ impl<C: CpuBackend> Machine<C> {
     ///
     /// Só dentro de uma pilha que sabemos onde começa — a principal ou um bloco vivo da heap —,
     /// porque abaixo do piso mora outra coisa. O Iron Sight não usa `IThread`: ele aloca 64 KB
-    /// com `MALLOC` e aponta o `sp` para lá por conta própria, e a pilha de uma `IThread` também
-    /// é bloco da heap, então o mesmo critério serve às duas.
+    /// com `MALLOC` e aponta o `sp` para lá por conta própria, e a pilha de uma `IThread` é bloco
+    /// da região interna, então o mesmo critério serve às duas.
     fn gasta_a_pilha(&mut self) {
         /// Quanto a chamada de verdade teria usado de pilha. Não medido no aparelho: é a folga
         /// sobre os `0x4c` bytes que o Iron Sight precisa.
@@ -3701,13 +3704,18 @@ impl<C: CpuBackend> Machine<C> {
             // A resposta guardada só vale se o bloco continua vivo, do mesmo tamanho, e o `sp`
             // ainda está nele.
             let guardada = self.pilha_na_heap.filter(|&(inicio, tamanho)| {
-                self.heap.size_of(inicio) == Some(tamanho)
+                self.tamanho_do_bloco(inicio) == Some(tamanho)
                     && (inicio..=inicio + tamanho).contains(&sp)
             });
             if guardada.is_none() {
                 // O topo é exclusivo no bloco, mas é o `sp` inicial de uma pilha: procura-se
                 // pelo último byte abaixo dele.
-                self.pilha_na_heap = self.heap.bloco_que_contem(sp.wrapping_sub(1));
+                let fundo = sp.wrapping_sub(1);
+                self.pilha_na_heap = if loader::e_interno(fundo) {
+                    self.heap_interno.bloco_que_contem(fundo)
+                } else {
+                    self.heap.bloco_que_contem(fundo)
+                };
             }
             self.pilha_na_heap.map(|(inicio, _)| inicio)
         };
@@ -3823,7 +3831,7 @@ impl<C: CpuBackend> Machine<C> {
                             Some(&endereco) => endereco,
                             None => {
                                 let texto = format!("fs:/mif/{id}.mif");
-                                let endereco = self.heap.alloc(texto.len() as u32 + 1).unwrap_or(0);
+                                let endereco = self.aloca_interno(texto.len() as u32 + 1)?;
                                 if endereco != 0 {
                                     self.write_cstring_limited(endereco, &texto, texto.len() + 1)?;
                                     self.mif_no_guest.insert(classe, endereco);
@@ -3864,7 +3872,7 @@ impl<C: CpuBackend> Machine<C> {
                 self.shell_load_res_data(with_type)?
             }
             (Interface::Shell, slot) if Interface::Shell.method(slot) == Some("FreeResData") => {
-                self.heap.free(self.cpu.read_reg(Reg::R1));
+                self.libera(self.cpu.read_reg(Reg::R1));
                 SUCCESS
             }
             // Entrega um evento a um applet. O Z-Wheel manda um para **ele mesmo** — a string
@@ -4232,7 +4240,7 @@ impl<C: CpuBackend> Machine<C> {
         if let Some(&addr) = self.interned.get(text) {
             return Ok(addr);
         }
-        let addr = self.malloc(text.len() as u32 + 1)?;
+        let addr = self.aloca_interno(text.len() as u32 + 1)?;
         if addr != 0 {
             self.write_cstring(addr, text)?;
             self.interned.insert(text, addr);

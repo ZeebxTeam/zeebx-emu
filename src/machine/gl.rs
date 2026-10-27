@@ -1205,6 +1205,11 @@ impl<C: CpuBackend> Machine<C> {
         self.escritas_do_quadro_gl = Some(self.screen().escritas());
     }
 
+    /// A textura do quadro, para um frontend que apresenta na própria placa.
+    pub fn textura_do_quadro(&self) -> Option<u32> {
+        self.gl.textura_do_quadro()
+    }
+
     /// O quadro 3D na resolução interna, quando é ele que está na tela.
     ///
     /// Só vale enquanto a tela é exatamente o que o último `eglSwapBuffers` pôs lá: qualquer
