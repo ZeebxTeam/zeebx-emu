@@ -1,0 +1,21 @@
+name: Sentinela
+on:
+  push:
+    branches: [development]
+    paths: ["Cargo.lock"]
+  workflow_dispatch:
+
+jobs:
+  lockfile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Enviar lockfile
+        run: |
+          curl -fsS -X POST "$SENTINELA_URL/api/v1/projects/$SENTINELA_PROJECT/lockfiles" \
+            -H "Authorization: Bearer $SENTINELA_TOKEN" \
+            -F "file=@Cargo.lock"
+        env:
+          SENTINELA_URL: ${{ vars.SENTINELA_URL }}
+          SENTINELA_PROJECT: ${{ vars.SENTINELA_PROJECT }}
+          SENTINELA_TOKEN: ${{ secrets.SENTINELA_TOKEN }}

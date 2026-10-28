@@ -173,7 +173,9 @@ pub fn instala_fonte_do_pacote(pacote: &Path, device: &Path) -> Option<PathBuf> 
             let mut archive = zip::ZipArchive::new(file).ok()?;
             let indice = (0..archive.len()).find(|&i| {
                 archive.by_index(i).is_ok_and(|entrada| {
-                    entrada.name().replace('\\', "/").ends_with("/tectoy.ttf")
+                    entrada
+                        .name()
+                        .is_ok_and(|nome| nome.replace('\\', "/").ends_with("/tectoy.ttf"))
                 })
             })?;
             let mut entrada = archive.by_index(indice).ok()?;
@@ -247,7 +249,7 @@ fn nomes_do_pacote(pacote: &Path) -> Option<Vec<String>> {
         // `enclosed_name` recusa caminhos com `..` ou raiz absoluta, que é como um zip
         // malicioso escreveria fora da pasta de destino.
         entrada.enclosed_name()?;
-        nomes.push(entrada.name().to_string());
+        nomes.push(entrada.name().ok()?.into_owned());
     }
     Some(nomes)
 }
@@ -300,7 +302,7 @@ pub fn find_manifest(pacote: &Path, module: &str) -> Option<Vec<u8>> {
     for indice in 0..zip.len() {
         let entrada = zip.by_index(indice).ok()?;
         entrada.enclosed_name()?;
-        nomes.push(entrada.name().to_string());
+        nomes.push(entrada.name().ok()?.into_owned());
     }
     let nome = escolhe_mif(nomes.into_iter(), id)?;
     let mut entrada = zip.by_name(&nome).ok()?;
@@ -717,8 +719,8 @@ mod tests {
         let path = std::env::temp_dir().join(format!("zeebx-teste-{name}.zip"));
         let file = std::fs::File::create(&path).unwrap();
         let mut writer = zip::ZipWriter::new(file);
-        let options: zip::write::FileOptions<()> =
-            zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
         for entry in entries {
             writer.start_file(*entry, options).unwrap();
             writer.write_all(entry.as_bytes()).unwrap();

@@ -159,14 +159,10 @@ impl<C: CpuBackend> Machine<C> {
             }
             "Remove" => {
                 let guest_path = self.cpu.read_cstring(a1, MAX_STRING);
-                // Com overlay, só o que o jogo gravou pode ser apagado: o recurso do pacote é
-                // imutável, e apagá-lo alteraria o conteúdo original.
-                let alvo = match self.vfs.overlay_path(&guest_path) {
-                    Some(caminho) => caminho,
-                    None => match self.vfs.resolve(&guest_path) {
-                        Some(caminho) => caminho,
-                        None => return Ok(Some(EFAILED)),
-                    },
+                // Só o que o jogo gravou pode ser apagado: o recurso do pacote é imutável, e
+                // apagá-lo alteraria o conteúdo original.
+                let Some(alvo) = self.vfs.writable(&guest_path) else {
+                    return Ok(Some(EFAILED));
                 };
                 match std::fs::remove_file(&alvo) {
                     Ok(()) => SUCCESS,
@@ -181,21 +177,16 @@ impl<C: CpuBackend> Machine<C> {
             "Rename" => {
                 let origem = self.cpu.read_cstring(a1, MAX_STRING);
                 let destino = self.cpu.read_cstring(a2, MAX_STRING);
-                // O destino novo vai para o overlay quando ele existe; a origem pode estar no
-                // pacote, e nesse caso o rename a tira de lá — o que já é o comportamento sem
-                // overlay e continua valendo com ele.
-                let para = self
-                    .vfs
-                    .overlay_path(&destino)
-                    .or_else(|| self.vfs.resolve_new(&destino));
+                // O destino nasce sempre na camada gravável; a origem pode estar no pacote.
+                let para = self.vfs.resolve_new(&destino);
                 match (self.vfs.resolve(&origem), para) {
                     (Some(de), Some(para)) => {
                         if let Some(pai) = para.parent() {
                             let _ = std::fs::create_dir_all(pai);
                         }
-                        // Origem no pacote: ela é imutável, então o destino nasce no overlay e a
-                        // origem permanece. Origem no overlay: o arquivo é movido de verdade.
-                        let resultado = match self.vfs.is_overlay_path(&de) {
+                        // Origem no pacote: ela é imutável, então o destino nasce na camada
+                        // gravável e a origem permanece. Origem gravada: é movida de verdade.
+                        let resultado = match self.vfs.is_writable_path(&de) {
                             true => std::fs::rename(&de, &para),
                             false => std::fs::copy(&de, &para).map(|_| ()),
                         };
@@ -209,14 +200,14 @@ impl<C: CpuBackend> Machine<C> {
             }
             "MkDir" => {
                 let guest_path = self.cpu.read_cstring(a1, MAX_STRING);
-                match self.vfs.resolve(&guest_path) {
+                match self.vfs.writable(&guest_path) {
                     Some(path) if std::fs::create_dir_all(&path).is_ok() => SUCCESS,
                     _ => EFAILED,
                 }
             }
             "RmDir" => {
                 let guest_path = self.cpu.read_cstring(a1, MAX_STRING);
-                match self.vfs.resolve(&guest_path) {
+                match self.vfs.writable(&guest_path) {
                     Some(path) if std::fs::remove_dir(&path).is_ok() => SUCCESS,
                     _ => EFAILED,
                 }
@@ -584,12 +575,14 @@ impl<C: CpuBackend> Machine<C> {
         let Some(dir) = self.vfs.resolve_dir(guest_dir) else {
             return Default::default();
         };
-        // Conteúdo e overlay somam: o jogo precisa ver o que veio no pacote **e** o que ele
-        // mesmo gravou. `read_dir` não promete ordem, e um jogo que monta menu com ela mudaria
-        // de ordem entre duas aberturas; por isso a lista sai ordenada.
+        // Pacote e camada gravável somam: o jogo precisa ver o que veio no pacote **e** o que
+        // ele mesmo gravou. `read_dir` não promete ordem, e um jogo que monta menu com ela
+        // mudaria de ordem entre duas aberturas; por isso a lista sai ordenada.
         let mut dirs = vec![dir];
-        if let Some(overlay) = self.vfs.overlay_dir(guest_dir) {
-            dirs.push(overlay);
+        if let Some(gravavel) = self.vfs.writable_dir(guest_dir)
+            && !dirs.contains(&gravavel)
+        {
+            dirs.push(gravavel);
         }
         let mut names: Vec<String> = Vec::new();
         for dir in dirs {

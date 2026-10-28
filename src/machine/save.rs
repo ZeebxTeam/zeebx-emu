@@ -729,7 +729,20 @@ impl<C: CpuBackend> Machine<C> {
         let mut abertos = std::collections::HashMap::new();
         for id in ids {
             let guest_path = leitor.texto(&format!("arq.{id}.guest"))?;
-            let caminho = std::path::PathBuf::from(leitor.texto(&format!("arq.{id}.caminho"))?);
+            let gravado = std::path::PathBuf::from(leitor.texto(&format!("arq.{id}.caminho"))?);
+            // O caminho do host vem do arquivo de estado, e um estado é só um arquivo: fora do
+            // que o jogo alcança, vale o que o caminho do guest resolve hoje. É também o que
+            // leva um estado anterior ao store compartilhado de saves para a cópia migrada.
+            let caminho = match self.vfs.contains_host(&gravado) {
+                true => gravado,
+                false => self.vfs.resolve(&guest_path).ok_or_else(|| Erro::Secao {
+                    nome: format!("arq.{id}"),
+                    motivo: format!(
+                        "o estado guarda \"{}\", fora do que o jogo alcança",
+                        gravado.display()
+                    ),
+                })?,
+            };
             let bytes_da_posicao = leitor.secao(&format!("arq.{id}.pos")).ok_or_else(|| Erro::Secao {
                 nome: format!("arq.{id}.pos"),
                 motivo: "a seção não está no arquivo".to_string(),
@@ -2777,6 +2790,22 @@ impl<C: CpuBackend> Machine<C> {
         for id in ids {
             let caminho =
                 std::path::PathBuf::from(leitor.texto(&format!("db.{id}.caminho"))?);
+            // Como nos arquivos: o estado não abre banco fora do que o jogo alcança. A cópia de
+            // perfil do `tt_game_info` mora no aparelho do desktop, que pode não ser o do VFS.
+            let alcancavel = self.vfs.contains_host(&caminho)
+                || (caminho.starts_with(crate::loader::archive::device_dir().join("z-wheel"))
+                    && !caminho
+                        .components()
+                        .any(|c| matches!(c, std::path::Component::ParentDir)));
+            if !alcancavel {
+                return Err(Erro::Secao {
+                    nome: format!("db.{id}"),
+                    motivo: format!(
+                        "o estado guarda \"{}\", fora do que o jogo alcança",
+                        caminho.display()
+                    ),
+                });
+            }
             let banco =
                 crate::brew::sql::Database::open(&caminho).map_err(|erro| Erro::Secao {
                     nome: format!("db.{id}"),
@@ -3392,8 +3421,11 @@ mod tests {
     fn fontes_e_arquivos_abertos_vem_de_volta() {
         use std::io::{Read as _, Write as _};
 
-        // Um arquivo de verdade, em disco, com conteúdo conhecido.
-        let caminho = std::env::temp_dir().join("zeebx-teste-do-estado.bin");
+        // Um arquivo de verdade, em disco, com conteúdo conhecido. Ele mora no aparelho da
+        // máquina: o estado só reabre o que o jogo alcança.
+        let aparelho = std::env::temp_dir().join(format!("zeebx-teste-do-estado-{}", std::process::id()));
+        std::fs::create_dir_all(&aparelho).expect("criar o aparelho de teste");
+        let caminho = aparelho.join("cena.bin");
         let mut criado = std::fs::File::create(&caminho).expect("criar o arquivo de teste");
         let duzentos_e_cinquenta_e_seis: Vec<u8> = (0u8..=255).collect();
         criado
@@ -3433,6 +3465,7 @@ mod tests {
 
         let arquivo = antes.grava_estado();
         let mut depois = maquina();
+        depois.vfs.set_device_root(&aparelho);
         depois.restaura_estado(&arquivo).expect("restaurou");
 
         let metricas = depois.fontes.get(&0x1010).expect("as métricas voltaram");
@@ -3458,7 +3491,7 @@ mod tests {
             [7, 8],
             "o arquivo devia continuar do byte 7, e não do começo"
         );
-        let _ = std::fs::remove_file(&caminho);
+        let _ = std::fs::remove_dir_all(&aparelho);
     }
 
     /// **As tabelas de conteúdo voltam** — preferências, parâmetros, `IConfig`, texto decifrado,
@@ -4282,9 +4315,12 @@ mod tests {
             },
         );
 
-        // Um banco de verdade, em disco, com uma linha escrita.
-        let caminho = std::env::temp_dir().join("zeebx-teste-do-banco.db");
-        let _ = std::fs::remove_file(&caminho);
+        // Um banco de verdade, em disco, com uma linha escrita, no aparelho da máquina: o estado
+        // só reabre o que o jogo alcança.
+        let aparelho = std::env::temp_dir().join(format!("zeebx-teste-do-banco-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&aparelho);
+        std::fs::create_dir_all(&aparelho).expect("criar o aparelho de teste");
+        let caminho = aparelho.join("banco.db");
         let banco = crate::brew::sql::Database::open(&caminho).expect("abrir o banco");
         banco
             .exec("CREATE TABLE t(a INTEGER, b TEXT)")
@@ -4296,6 +4332,7 @@ mod tests {
 
         let arquivo = antes.grava_estado();
         let mut depois = maquina();
+        depois.vfs.set_device_root(&aparelho);
         depois.restaura_estado(&arquivo).expect("restaurou");
 
         let decodificador = depois.decoders.get(&0x100).expect("o decodificador voltou");
@@ -4314,7 +4351,7 @@ mod tests {
         assert_eq!(linhas[0].values[0].as_deref(), Some("7"));
         assert_eq!(linhas[0].values[1].as_deref(), Some("sete"));
 
-        let _ = std::fs::remove_file(&caminho);
+        let _ = std::fs::remove_dir_all(&aparelho);
     }
 
     /// **O MD5 no meio de um cálculo volta, e o resumo fecha certo.**

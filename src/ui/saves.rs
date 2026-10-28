@@ -240,18 +240,38 @@ fn titulo_do_conteudo(perfil: &crate::storage::StoragePaths, id: &str) -> String
 
 /// Os saves dos jogos de um perfil.
 ///
-/// Cada pasta de `saves/` é o overlay de um conteúdo, e tudo nela é save. O que uma versão
-/// antiga gravou dentro da extração do mesmo conteúdo entra **junto**: o VFS ainda lê essa cópia
-/// quando o overlay não tem o arquivo, então apagar só o overlay traria o save antigo de volta.
-/// As extrações sem overlay continuam listadas como antes.
+/// Cada pasta de `saves/mod/` é a pasta de um módulo no store compartilhado, e tudo nela é save.
+///
+/// As outras pastas de `saves/` são overlays por conteúdo, de antes do store. Enquanto o jogo
+/// não abre de novo, o overlay não foi migrado e aparece como antes, junto com o que uma versão
+/// mais antiga gravou dentro da extração. Depois de migrado ele fica no disco como cópia, mas
+/// sai da lista: o VFS já não o lê, e apagá-lo não apagaria o save que o jogo usa.
 pub fn dos_jogos_no_perfil(perfil: &crate::storage::StoragePaths) -> Vec<Save> {
     let mut com_overlay = std::collections::HashSet::new();
     let mut achados: Vec<Save> = Vec::new();
-    for entrada in std::fs::read_dir(&perfil.saves).into_iter().flatten().flatten() {
+    let store = perfil.mod_saves();
+    for entrada in std::fs::read_dir(&store).into_iter().flatten().flatten() {
         if !entrada.path().is_dir() {
             continue;
         }
+        let pasta = entrada.file_name().to_string_lossy().into_owned();
+        let itens: Vec<PathBuf> = std::fs::read_dir(entrada.path())
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .collect();
+        achados.extend(Save::de(titulo_da_pasta(perfil, &pasta), itens));
+    }
+    for entrada in std::fs::read_dir(&perfil.saves).into_iter().flatten().flatten() {
+        if !entrada.path().is_dir() || entrada.path() == store {
+            continue;
+        }
         let id = entrada.file_name().to_string_lossy().into_owned();
+        if entrada.path().join(crate::storage::MIGRATED_MARKER).exists() {
+            com_overlay.insert(id);
+            continue;
+        }
         let mut itens: Vec<PathBuf> = std::fs::read_dir(entrada.path())
             .into_iter()
             .flatten()
@@ -268,6 +288,15 @@ pub fn dos_jogos_no_perfil(perfil: &crate::storage::StoragePaths) -> Vec<Save> {
     achados.extend(do_cache(&perfil.cache, &com_overlay));
     achados.sort_by(|a, b| a.titulo.cmp(&b.titulo));
     achados
+}
+
+/// O nome a mostrar para uma pasta do store: o do conteúdo que a abriu primeiro, ou a pasta.
+fn titulo_da_pasta(perfil: &crate::storage::StoragePaths, pasta: &str) -> String {
+    std::fs::read_to_string(perfil.metadata.join(crate::storage::module_title_file(pasta)))
+        .ok()
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .unwrap_or_else(|| pasta.to_string())
 }
 
 /// O título sem a numeração que o cache acrescenta.
@@ -301,6 +330,8 @@ pub fn do_aparelho(device: &Path) -> Vec<Save> {
     };
     let mut achados: Vec<Save> = entradas
         .flatten()
+        // O `mod/` antigo do aparelho, depois de copiado para o store de saves, é só cópia.
+        .filter(|e| !e.path().join(crate::storage::MIGRATED_MARKER).exists())
         .filter_map(|e| {
             let nome = e.file_name().to_string_lossy().into_owned();
             Save::de(nome, vec![e.path()])

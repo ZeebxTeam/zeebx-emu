@@ -13,7 +13,7 @@ resolver = "3"
 
 [package]
 name = "zeebx"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2024"
 # O código do Zeebx é GPLv2 ou posterior. O backend de CPU padrão é o Dynarmic, para manter o
 # núcleo compatível com frontends GPLv3 como Qt 6.
@@ -104,7 +104,7 @@ serde_json = "1.0.151"
 # `ring` que o `ureq` puxa não compila para `wasm32-unknown-emscripten`.
 ureq = { version = "3", optional = true }
 # Só leitura de zip: `deflate` cobre o que os empacotadores usam.
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 # Identidade estável de conteúdo/caches. Tamanho+mtime pode colidir ou mudar numa cópia idêntica.
 blake3 = "1"
 resvg = { version = "0.48.1", default-features = false }

@@ -21,7 +21,7 @@ corename = "Zeebx"
 license = "GPLv3"
 permissions = ""
 # Acompanha a versão do crate. Ver o `version` do `Cargo.toml` da raiz.
-display_version = "0.5.0"
+display_version = "0.5.1"
 categories = "Emulator"
 
 # Hardware Information

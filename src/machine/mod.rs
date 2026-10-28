@@ -3121,9 +3121,8 @@ impl<C: CpuBackend> Machine<C> {
                 let mut vfs = Vfs::new(raiz.clone());
                 // Todos os jogos compartilham o mesmo `fs:/`, como no console.
                 vfs.set_device_root(aparelho.clone());
-                if let Some(save) = save_root {
-                    vfs.set_save_root(save);
-                }
+                // E o mesmo store de saves: o `/mod/` gravável é um só.
+                vfs.set_save_root(save_root.unwrap_or_else(|| storage.mod_saves()));
                 vfs
             },
             open_files: HashMap::new(),

@@ -32,8 +32,13 @@ impl<C: CpuBackend> Machine<C> {
             (Interface::SqlMgr, "OpenDatabase") => {
                 let nome = self.cpu.read_cstring(a1, MAX_STRING);
                 // O banco fica ao lado do módulo, como qualquer arquivo do jogo, e passa pelo
-                // VFS pelo mesmo motivo dos outros: nada escreve fora do diretório dele.
-                let Some(caminho) = self.vfs.resolve_new(&nome) else {
+                // VFS pelo mesmo motivo dos outros: nada escreve fora do diretório dele. Um banco
+                // que veio no pacote é copiado para a camada gravável antes de abrir, porque o
+                // SQLite escreve nele.
+                let alvo = self
+                    .vfs
+                    .open_target(&nome, crate::brew::vfs::OpenIntent::ReadWrite);
+                let Some(alvo) = alvo else {
                     if self.serial.is_some() {
                         self.registra_serial(format!("<banco {nome} -> caminho não resolve>"));
                     }
@@ -48,7 +53,8 @@ impl<C: CpuBackend> Machine<C> {
                     let catalogo = crate::library::CatalogIndex::load_from(
                         &crate::library::catalog_path(),
                     );
-                    match crate::brew::sql::sync_z_wheel_library(&caminho, &perfil, &catalogo) {
+                    let oficial = alvo.copy_from.unwrap_or(alvo.path);
+                    match crate::brew::sql::sync_z_wheel_library(&oficial, &perfil, &catalogo) {
                         Ok(caminho) => caminho,
                         Err(erro) => {
                             self.bad_pointers
@@ -57,7 +63,16 @@ impl<C: CpuBackend> Machine<C> {
                         }
                     }
                 } else {
-                    caminho
+                    if let Some(pai) = alvo.path.parent() {
+                        let _ = std::fs::create_dir_all(pai);
+                    }
+                    if let Some(origem) = &alvo.copy_from
+                        && std::fs::copy(origem, &alvo.path).is_err()
+                    {
+                        self.missing_files.insert(nome);
+                        return Ok(Some(EFAILED));
+                    }
+                    alvo.path
                 };
                 let aberto = crate::brew::sql::Database::open(&caminho);
                 if self.serial.is_some() {

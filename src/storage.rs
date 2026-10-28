@@ -16,6 +16,10 @@ use std::path::{Path, PathBuf};
 /// fonte espalharia os dados por dois caminhos que só coincidem em sistema sem diferença de caixa.
 /// Num host Linux, `zeebx` e `Zeebx` são pastas diferentes, e o jogo passaria a ter dois perfis.
 pub const PROFILE_DIR: &str = "zeebx";
+/// A pasta de `saves/` que faz o papel de `/mod/` gravável, e a de `aparelho/` que fazia antes.
+const SHARED_SAVES_DIR: &str = "mod";
+/// Marca, na origem, que a migração para o store compartilhado já foi feita.
+pub const MIGRATED_MARKER: &str = ".migrado-para-saves-mod";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoragePaths {
     /// Raiz `.../zeebx` criada sob o diretório de saves do frontend.
@@ -50,7 +54,7 @@ impl StoragePaths {
             metadata: root.join("metadata"),
             root,
             // O desktop gravava dentro da extração, no cache, e a poda do cache levava o save
-            // junto. O overlay põe o save em `saves/<conteúdo>/`, como nos outros frontends.
+            // junto. O save fica em `saves/mod/<pasta>/`, como nos outros frontends.
             overlay: true,
         }
     }
@@ -69,7 +73,7 @@ impl StoragePaths {
     /// |---|---|---|
     /// | `aparelho/` (a NAND `fs:/`) | `system` | é da máquina, não do título, e sobrevive a tudo |
     /// | `cache/` (conteúdo extraído) | `system` | é descartável e é o que enche o disco |
-    /// | `saves/<conteúdo>/` | `save` | é o que o jogador quer guardar, e o frontend o sincroniza |
+    /// | `saves/mod/<pasta>/` | `save` | é o que o jogador quer guardar, e o frontend o sincroniza |
     /// | `metadata/` | `save` | descreve o save, então anda junto dele |
     ///
     /// Sem `system_dir` tudo cai no diretório de saves, que é o mínimo que a ABI garante.
@@ -107,9 +111,39 @@ impl StoragePaths {
         ContentId::from_reader(std::fs::File::open(path)?)
     }
 
-    /// Onde fica o overlay privado de um conteúdo.
+    /// Onde ficava o overlay privado de um conteúdo, antes do store compartilhado.
+    ///
+    /// Só a migração lê daqui: ver [`StoragePaths::migrate_to_shared_saves`].
     pub fn save_for(&self, content: &ContentId) -> PathBuf {
         self.saves.join(content.as_str())
+    }
+
+    /// O store de saves compartilhado: o `/mod/` gravável de todos os jogos.
+    ///
+    /// É um só porque no console é um só: o que um jogo grava em `fs:/~/` fica em
+    /// `mod/<pasta>/`, e um jogo que procura o save de outro o encontra ali. O preço é que duas
+    /// versões do mesmo jogo, com a mesma pasta, dividem o save — como dividiriam no aparelho.
+    pub fn mod_saves(&self) -> PathBuf {
+        self.saves.join(SHARED_SAVES_DIR)
+    }
+
+    /// Leva para o store compartilhado o que os saves guardavam antes dele.
+    ///
+    /// `module` é a pasta do módulo, o `<pasta>` de `/mod/<pasta>/`.
+    ///
+    /// Até a 0.5.0 cada conteúdo tinha o overlay próprio em `saves/<conteúdo>/`, e o que o jogo
+    /// gravava em `fs:/mod/` caía em `aparelho/mod/`. A cópia não sobrescreve nada no store e não
+    /// apaga a origem; um marcador na origem diz que ela já foi copiada, para que um save que o
+    /// jogador apagou do store não volte na abertura seguinte.
+    pub fn migrate_to_shared_saves(
+        &self,
+        content: &ContentId,
+        module: &str,
+    ) -> std::io::Result<u64> {
+        let store = self.mod_saves();
+        let do_conteudo = copy_once(&self.save_for(content), &store.join(module))?;
+        let do_aparelho = copy_once(&self.device.join(SHARED_SAVES_DIR), &store)?;
+        Ok(do_conteudo + do_aparelho)
     }
 
     /// Onde fica o conteúdo extraído e reutilizável.
@@ -126,7 +160,8 @@ impl StoragePaths {
     ///
     /// O manifesto da extracao e a fonte de verdade: o que veio do pacote e ignorado; o que
     /// apareceu depois, dentro da raiz do modulo, e copiado. A origem nunca e apagada e um
-    /// arquivo que ja existe no overlay nunca e sobrescrito.
+    /// arquivo que ja existe no overlay nunca e sobrescrito. Daqui o overlay segue para o store
+    /// compartilhado em [`StoragePaths::migrate_to_shared_saves`].
     pub fn migrate_legacy_package_writes(
         &self,
         package: &Path,
@@ -201,6 +236,31 @@ impl StoragePaths {
                 manifest_modified,
                 &mut copied,
             )?;
+            // O que o jogo gravou num diretório irmão do pacote — o Quake grava em `mod/id1/` —
+            // não tinha overlay nenhum e ficava no cache. Vai direto para o store compartilhado.
+            let mods = module_root
+                .parent()
+                .filter(|pai| pai.file_name().is_some_and(|n| n.eq_ignore_ascii_case("mod")));
+            if let Some(mods) = mods {
+                let store = self.mod_saves();
+                for irmao in std::fs::read_dir(mods).into_iter().flatten().flatten() {
+                    let caminho = irmao.path();
+                    let pasta = irmao.file_type().is_ok_and(|tipo| tipo.is_dir());
+                    if !pasta || caminho.as_path() == module_root {
+                        continue;
+                    }
+                    migrate_unknown_tree(
+                        &caminho,
+                        mods,
+                        &cache_root,
+                        &store,
+                        &package_entries,
+                        package,
+                        manifest_modified,
+                        &mut copied,
+                    )?;
+                }
+            }
         }
         Ok(copied)
     }
@@ -312,6 +372,24 @@ fn copy_unknown_tree(
         }
     }
     Ok(())
+}
+
+/// O arquivo de `metadata/` com o título de uma pasta do store de saves.
+pub fn module_title_file(pasta: &str) -> String {
+    format!("mod-{pasta}.titulo")
+}
+
+/// Copia a árvore `origem` para `destino` sem sobrescrever, uma vez só.
+fn copy_once(origem: &Path, destino: &Path) -> std::io::Result<u64> {
+    let marcador = origem.join(MIGRATED_MARKER);
+    let ligacao = std::fs::symlink_metadata(origem).is_ok_and(|m| m.file_type().is_symlink());
+    if ligacao || !origem.is_dir() || marcador.exists() {
+        return Ok(0);
+    }
+    let mut copied = 0;
+    copy_unknown_tree(origem, origem, destino, &mut copied)?;
+    std::fs::write(marcador, b"")?;
+    Ok(copied)
 }
 
 fn copy_unknown_file(
@@ -530,5 +608,34 @@ mod tests {
         );
         assert!(legacy.join(crate::loader::archive::MANIFESTO).is_file());
         assert!(legacy.join("mod/7/progresso.sav").is_file());
+    }
+
+    #[test]
+    fn leva_os_saves_antigos_para_o_store_compartilhado_uma_vez() {
+        let root = crate::scratch::TempDir::new("zeebx-storage-shared");
+        let paths = StoragePaths::for_frontend(root.join("save"), Some(root.join("system")));
+        paths.create_dirs().unwrap();
+        let content = ContentId::parse("ab".repeat(32)).unwrap();
+        let antigo = paths.save_for(&content);
+        std::fs::create_dir_all(antigo.join("udata")).unwrap();
+        std::fs::write(antigo.join("udata/save.dat"), b"progresso").unwrap();
+        let da_z_wheel = paths.device.join("mod/274755");
+        std::fs::create_dir_all(&da_z_wheel).unwrap();
+        std::fs::write(da_z_wheel.join("tt_prefs.db"), b"prefs").unwrap();
+
+        let copiados = paths.migrate_to_shared_saves(&content, "123").unwrap();
+        let store = paths.mod_saves();
+        assert_eq!(
+            std::fs::read(store.join("123/udata/save.dat")).unwrap(),
+            b"progresso"
+        );
+        assert_eq!(std::fs::read(store.join("274755/tt_prefs.db")).unwrap(), b"prefs");
+        assert_eq!(copiados, (b"progresso".len() + b"prefs".len()) as u64);
+
+        // A origem fica, e a abertura seguinte não traz de volta o que o jogador apagou.
+        assert!(antigo.join("udata/save.dat").is_file());
+        std::fs::remove_file(store.join("123/udata/save.dat")).unwrap();
+        assert_eq!(paths.migrate_to_shared_saves(&content, "123").unwrap(), 0);
+        assert!(!store.join("123/udata/save.dat").exists());
     }
 }

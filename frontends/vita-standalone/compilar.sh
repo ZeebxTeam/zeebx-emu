@@ -81,7 +81,7 @@ compilar_local() {
 	# `-s` comprime o self. O ELF com relocação fica grande; o eboot que o aparelho lê, não.
 	"${bin}/vita-make-fself" -s "$tmp/zeebx.velf" "$tmp/eboot.bin"
 	# ATTRIBUTE2 é inteiro. 12 pede a memória estendida: é ela que cabe o heap de 192 MiB.
-	"${bin}/vita-mksfoex" -s TITLE_ID=ZEEB00001 -s APP_VER=00.50 -d ATTRIBUTE2=12 \
+	"${bin}/vita-mksfoex" -s TITLE_ID=ZEEB00001 -s APP_VER=00.51 -d ATTRIBUTE2=12 \
 		"Zeebx" "$tmp/param.sfo"
 	# O Vita de verdade recusa o VPK com 0x8010113D se o ícone ou o LiveArea não forem
 	# PNG de 256 cores (tipo 3, 8 bits). O Vita3K instala os mesmos arquivos em RGBA.

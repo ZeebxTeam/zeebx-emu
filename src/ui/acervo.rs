@@ -305,7 +305,7 @@ impl Fonte {
             let arquivo = zip::ZipArchive::new(std::fs::File::open(caminho).ok()?).ok()?;
             let prefixo = arquivo
                 .file_names()
-                .find_map(|nome| nome.strip_suffix(BANCO).map(str::to_string))
+                .find_map(|nome| nome.ok()?.strip_suffix(BANCO).map(str::to_string))
                 .filter(|prefixo| prefixo.is_empty() || prefixo.ends_with('/'))?;
             return Some(Self::Zip(arquivo, prefixo));
         }

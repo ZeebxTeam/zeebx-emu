@@ -4016,15 +4016,18 @@ fn matriz_de_normais(m: &Matrix) -> [[f32; 3]; 3] {
     if det.abs() <= f32::EPSILON {
         return a;
     }
-    // Inversa pela adjunta, já transposta: a transposta da inversa é a adjunta transposta
-    // dividida pelo determinante, e a adjunta é a transposta da matriz de cofatores — as duas
-    // transposições se cancelam, então o que fica é a matriz de cofatores sobre o determinante.
+    // A transposta da inversa é a matriz de cofatores da 3×3 sobre o determinante. Só que `a`
+    // já é a 3×3 **transposta** — a `Matrix` guarda por coluna, e cada linha de `a` é uma coluna
+    // dela —, então o cofator de `(i, j)` da 3×3 é o de `(j, i)` de `a`. Com `(i, j)` saía a
+    // inversa sem transpor: igual numa escala, mas numa rotação a normal girava ao contrário, e
+    // o terreno do Armageddon Squadron, desenhado em blocos com orientações próprias, ganhava
+    // luz e sombra em retângulos.
     let cofator = |i: usize, j: usize| {
         let (l1, l2) = ((i + 1) % 3, (i + 2) % 3);
         let (c1, c2) = ((j + 1) % 3, (j + 2) % 3);
         a[l1][c1] * a[l2][c2] - a[l1][c2] * a[l2][c1]
     };
-    std::array::from_fn(|i| std::array::from_fn(|j| cofator(i, j) / det))
+    std::array::from_fn(|i| std::array::from_fn(|j| cofator(j, i) / det))
 }
 
 /// Aplica a matriz de normais.
@@ -4762,6 +4765,26 @@ mod tests {
         let normal = normaliza(gira_normal(&matriz_de_normais(&m), [1.0, -1.0, 0.0]));
         let tangente = normaliza([1.0, 4.0, 0.0]);
         assert!(ponto(normal, tangente).abs() < 1e-5, "normal {normal:?}");
+    }
+
+    /// Numa rotação a normal gira junto com o modelo, e para o mesmo lado. A escala acima não
+    /// pega a troca entre a inversa e a transposta dela, porque nela as duas são iguais.
+    #[test]
+    fn a_normal_gira_junto_com_o_modelo() {
+        let m = rotation(90.0, 0.0, 0.0, 1.0);
+        let normal = gira_normal(&matriz_de_normais(&m), [1.0, 0.0, 0.0]);
+        assert!(normal[0].abs() < 1e-5, "normal {normal:?}");
+        assert!((normal[1] - 1.0).abs() < 1e-5, "normal {normal:?}");
+
+        // Rotação com translação e escala uniforme: a direção é a da rotação.
+        let mut m = translation(5.0, -3.0, 2.0);
+        m = multiply(&m, &rotation(30.0, 0.0, 1.0, 0.0));
+        m = multiply(&m, &scaling(2.0, 2.0, 2.0));
+        let normal = normaliza(gira_normal(&matriz_de_normais(&m), [0.0, 0.0, 1.0]));
+        let esperado = transform(&rotation(30.0, 0.0, 1.0, 0.0), [0.0, 0.0, 1.0, 0.0]);
+        for i in 0..3 {
+            assert!((normal[i] - esperado[i]).abs() < 1e-5, "normal {normal:?}");
+        }
     }
 
     /// Sem `GL_LIGHTING` nada disso acontece: a cor do vértice chega inteira ao rasterizador.

@@ -486,7 +486,7 @@ entre `flash0` (sistema) e o memory stick (saves):
 └── cache/<conteúdo>/          # extração do pacote: descartável e o que enche disco
 
 <save-dir>/zeebx/              # o que o jogador quer guardar
-├── saves/<conteúdo>/          # overlay gravável do título
+├── saves/mod/<pasta>/          # store de saves comum a todos os jogos
 └── metadata/<conteúdo>.json   # índice de origem e identidade
 ```
 
@@ -524,7 +524,7 @@ o perca em diretório temporário.
 | Camada | Onde | Persistente | Compartilhada | Conteúdo |
 |---|---|---:|---:|---|
 | `cache/<conteúdo>/` | system | descartável | não | ROM extraída, `.mod`, `.mif`, assets |
-| `saves/<conteúdo>/` | save | sim | não | arquivos relativos gravados pelo jogo |
+| `saves/mod/<pasta>/` | save | sim | não | o que os jogos gravam em `/mod/` |
 | `aparelho/` | system | sim | sim | `fs:/`, Z-Wheel, dados globais |
 
 Isto preserva o comportamento medido do console: Zeeboids pode gravar em

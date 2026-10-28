@@ -615,9 +615,9 @@ impl Session {
         // A raiz do sistema de arquivos do jogo é o diretório onde o `.mod` está: é lá que o
         // console guarda os arquivos do título.
         let root = path.parent().map(Path::to_path_buf).unwrap_or_default();
-        // O overlay é por conteúdo: o mesmo jogo extraído de novo continua lendo o mesmo save, e
-        // um pacote diferente não herda o save do outro. O hash é do arquivo escolhido pelo
-        // frontend (`.zip` ou `.mod`), antes de qualquer extração.
+        // O hash é do arquivo escolhido pelo frontend (`.zip` ou `.mod`), antes de qualquer
+        // extração. Ele já não nomeia o save — o store é compartilhado, por pasta de módulo —,
+        // mas ainda acha o overlay antigo a migrar e o título a mostrar.
         let id_do_conteudo = match storage.overlay {
             true => {
                 let id = storage
@@ -628,7 +628,26 @@ impl Session {
             }
             false => None,
         };
-        let save_root = id_do_conteudo.as_ref().map(|id| storage.save_for(id));
+        // O nome com que o VFS mostra o módulo em `/mod/<pasta>/`, e a pasta dele no store.
+        let pasta_do_modulo = root.file_name().map(|n| n.to_string_lossy().into_owned());
+        if let (Some(id), Some(pasta)) = (&id_do_conteudo, &pasta_do_modulo) {
+            grava_titulo_do_modulo(storage, pasta, conteudo);
+            match storage.migrate_to_shared_saves(id, pasta) {
+                Ok(bytes) if bytes > 0 => crate::registro!(
+                    crate::registro::Nivel::Informacao,
+                    "session",
+                    "{bytes} bytes de saves antigos copiados para {}",
+                    storage.mod_saves().display()
+                ),
+                Ok(_) => {}
+                Err(erro) => crate::registro!(
+                    crate::registro::Nivel::Aviso,
+                    "session",
+                    "não deu para copiar os saves antigos para o store compartilhado: {erro}"
+                ),
+            }
+        }
+        let save_root = Some(storage.mod_saves());
         let cpu = CpuDaSessao::new().map_err(|e| StartError::NotLoadable(e.to_string()))?;
         let mut machine = Machine::new_with_storage_policy(cpu, module, root, storage, save_root, midi_policy);
         // A lista precisa existir antes de `run` e `create_applet`: a Z-Wheel a enumera no boot.
@@ -2730,6 +2749,21 @@ fn os_dois_rasterizadores_desenham_o_mesmo_quadro() {
 /// nome vale, e é um arquivo a menos para escrever a cada abertura.
 fn grava_titulo(storage: &StoragePaths, id: &crate::storage::ContentId, conteudo: &Path) {
     let destino = storage.metadata.join(format!("{}.titulo", id.as_str()));
+    if destino.exists() {
+        return;
+    }
+    let Some(titulo) = conteudo.file_stem().map(|s| s.to_string_lossy().into_owned()) else {
+        return;
+    };
+    let _ = std::fs::create_dir_all(&storage.metadata);
+    let _ = std::fs::write(destino, titulo);
+}
+
+/// O título de uma pasta do store de saves, para a lista de saves mostrar o jogo e não o número.
+///
+/// O primeiro conteúdo a abrir a pasta dá o nome; outra versão do mesmo jogo não o troca.
+fn grava_titulo_do_modulo(storage: &StoragePaths, pasta: &str, conteudo: &Path) {
+    let destino = storage.metadata.join(crate::storage::module_title_file(pasta));
     if destino.exists() {
         return;
     }

@@ -5764,7 +5764,7 @@ Used by:
   - rustix 0.38.44 <https://github.com/bytecodealliance/rustix>
   - rustix 1.1.5 <https://github.com/bytecodealliance/rustix>
   - rustls-native-certs 0.8.4 <https://github.com/rustls/rustls-native-certs>
-  - rustls 0.23.45 <https://github.com/rustls/rustls>
+  - rustls 0.23.46 <https://github.com/rustls/rustls>
   - scoped-tls 1.0.1 <https://github.com/alexcrichton/scoped-tls>
   - scopeguard 1.2.0 <https://github.com/bluss/scopeguard>
   - security-framework-sys 2.17.0 <https://github.com/kornelski/rust-security-framework>
@@ -9253,6 +9253,7 @@ Used by:
   - thiserror 2.0.20 <https://github.com/dtolnay/thiserror>
   - time-core 0.1.9 <https://github.com/time-rs/time>
   - time 0.3.55 <https://github.com/time-rs/time>
+  - typed-path 0.13.0 <https://github.com/chipsenkbeil/typed-path>
   - unicode-ident 1.0.26 <https://github.com/dtolnay/unicode-ident>
   - usvg 0.48.1 <https://github.com/linebender/resvg>
   - utf8-zero 0.8.1 <https://github.com/algesten/utf8-zero>
@@ -9715,7 +9716,7 @@ this CC0 or use of the Work.
 Community Data License Agreement Permissive 2.0 (CDLA-Permissive-2.0)
 
 Used by:
-  - webpki-roots 1.0.9 <https://github.com/rustls/webpki-roots>
+  - webpki-roots 1.0.11 <https://github.com/rustls/webpki-roots>
 --------------------------------------------------------------------------------
 
 # Community Data License Agreement - Permissive - Version 2.0
@@ -10407,7 +10408,7 @@ THIS SOFTWARE.
 ISC License (ISC)
 
 Used by:
-  - rustls-webpki 0.103.15 <https://github.com/rustls/webpki>
+  - rustls-webpki 0.103.16 <https://github.com/rustls/webpki>
 --------------------------------------------------------------------------------
 
 Except as otherwise noted, this project is licensed under the following
@@ -11837,6 +11838,7 @@ MIT License (MIT)
 
 Used by:
   - tracing-core 0.1.36 <https://github.com/tokio-rs/tracing>
+  - zip 9.1.3 <https://github.com/zip-rs/zip2>
 --------------------------------------------------------------------------------
 
 The MIT License (MIT)
@@ -11861,38 +11863,6 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-
-================================================================================
-MIT License (MIT)
-
-Used by:
-  - zip 2.4.2 <https://github.com/zip-rs/zip2.git>
---------------------------------------------------------------------------------
-
-The MIT License (MIT)
-
-Copyright (c) 2014 Mathijs van de Nes
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-Some files in the "tests/data" subdirectory of this repository are under other
-licences; see files named LICENSE.*.txt for details.
 
 ================================================================================
 MIT License (MIT)
@@ -12822,6 +12792,34 @@ SPDX-License-Identifier: Unicode-3.0
 
 Portions of ICU4X may have been adapted from ICU4C and/or ICU4J.
 ICU 1.8.1 to ICU 57.1 © 1995-2016 International Business Machines Corporation and others.
+
+
+================================================================================
+zlib License (Zlib)
+
+Used by:
+  - zlib-rs 0.6.8 <https://github.com/trifectatechfoundation/zlib-rs>
+--------------------------------------------------------------------------------
+
+(C) 2024 Trifecta Tech Foundation 
+
+This software is provided 'as-is', without any express or implied
+warranty. In no event will the authors be held liable for any damages
+arising from the use of this software.
+
+Permission is granted to anyone to use this software for any purpose,
+including commercial applications, and to alter it and redistribute it
+freely, subject to the following restrictions:
+
+1. The origin of this software must not be misrepresented; you must not
+   claim that you wrote the original software. If you use this software
+   in a product, an acknowledgment in the product documentation would be
+   appreciated but is not required.
+
+2. Altered source versions must be plainly marked as such, and must not be
+   misrepresented as being the original software.
+
+3. This notice may not be removed or altered from any source distribution.
 
 
 ================================================================================

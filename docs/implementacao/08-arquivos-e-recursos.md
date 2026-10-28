@@ -42,17 +42,41 @@ ids `id..=id+a` vivem nas seções `b..=b+a`. Tipos: `1` string, `6` imagem (com
 apontam:
 
 ```
-arquivo.dat          relativo ao diretório do módulo
+arquivo.dat          /mod/<módulo>/arquivo.dat
 fs:/~/arquivo.dat    o "~" é o diretório do próprio módulo
-fs:/~/../id1/x       sobe para a raiz de módulos — o Quake guarda os dados dele assim
-fs:/~0x01234567/x    diretório de outro módulo, pelo ClassID
+fs:/~/../id1/x       /mod/id1/x — o Quake guarda os dados dele assim
+fs:/~0x01234567/x    diretório de um módulo, pelo ClassID (hoje, sempre o do próprio)
 fs:/shared/x         área compartilhada
 fs:/mod/<pasta>/x    a pasta de um módulo instalado — os ports feitos por fãs usam assim
 ```
 
-Qualquer caminho que escape da raiz é recusado — `..` além do limite, caminho absoluto do host,
-raiz do Windows. **Um `.mod` de origem desconhecida não deveria conseguir ler o resto da
-máquina.** O limite superior é a raiz de módulos, porque o Quake legitimamente sobe até lá.
+**O jogo nunca vê caminho do host.** O caminho do guest vira primeiro um caminho virtual, só como
+texto, e o `..` é resolvido ali: da pasta do módulo sobe até `/mod/` e nem um passo além; do
+aparelho não sobe. Componente com `:` ou NUL é recusado. Só então o caminho virtual vira caminho
+do host, por uma de duas camadas:
+
+| Camada | Virtual | Host | Acesso |
+|---|---|---|---|
+| pacote | `/mod/...` | a pasta `mod/` do pacote extraído | leitura |
+| gravável | `/mod/...` | `saves/mod/`, o store de saves comum a todos os jogos | leitura e escrita |
+| gravável | o resto de `/` | `aparelho/`, comum a todos os jogos | leitura e escrita |
+
+A leitura procura na gravável e depois no pacote; toda escrita vai para a gravável, e um recurso
+do pacote aberto para escrita é copiado antes. Remover, renomear, `MkDir` e `RmDir` só mexem na
+gravável: o pacote não pode ser alterado nem apagado. Um link simbólico entre a raiz da camada e
+o arquivo faz o caminho ser recusado, e o save state só reabre caminho dentro dessas raízes.
+
+O Quake (`mod/id1/`), o Quake 2 (`mod/quake2res/`), o Prey Evil (`mod/preyresources/`) e o NFS
+(`mod/nfsresources/`) sobem um nível para ler pastas que vêm **no mesmo zip**; nenhum jogo da
+biblioteca sobe dois. Por isso a pasta vizinha só é visível quando o módulo está num `mod/` de
+pacote. Um `.mod` solto enxerga só a própria pasta: a de cima é do usuário — se fosse
+`~/Downloads`, o jogo poderia apagar o que estivesse lá.
+
+O store é um só, e não um por conteúdo, porque no console é assim: um jogo que procura o save de
+outro em `fs:/mod/<pasta>/` o encontra. O preço é que duas versões do mesmo jogo, com a mesma
+pasta, dividem o save. Até a 0.5.0 havia um overlay por conteúdo em `saves/<hash>/`, e o que ia
+para `fs:/mod/` caía em `aparelho/mod/`; `StoragePaths::migrate_to_shared_saves` copia os dois para
+o store na abertura do jogo, sem sobrescrever, e marca a origem com `.migrado-para-saves-mod`.
 
 ### A barra vazia ancora no módulo
 
@@ -65,15 +89,12 @@ quantidade de pistas e sem o vetor delas, e a largada do Bóia Cross lia o ponte
 (`0x6cce0`). Sem a barra vazia nada muda: o NFS e o Quake 2 continuam alcançando `../nfsresources` e
 `../quake2res`.
 
-### `fs:/mod/` é do aparelho, com a instalação por trás
+### `fs:/mod/<pasta>/` e `fs:/~/` são a mesma pasta
 
-O `fs:/` que não é `~` vai para a pasta comum do aparelho, e a Z-Wheel guarda o que é dela em
-`fs:/mod/274755/` de lá. Só que no console `fs:/mod/<pasta>/` é onde o módulo está instalado, e os
-ports feitos por fãs abrem os próprios dados assim: o OpenTyrian pede
-`fs:/mod/opentyrian_zeebo/data/tyrian1.lvl`, não achava, e fechava no primeiro milissegundo. A
-regra ficou em camadas: o que existe no aparelho vem dele; senão, o que existe na raiz de módulos
-da instalação vem dela; um arquivo novo continua sendo criado no aparelho. O `..` continua preso
-à raiz de módulos.
+No console `fs:/mod/<pasta>/` é onde o módulo está instalado, e os ports feitos por fãs abrem os
+próprios dados assim: o OpenTyrian pede `fs:/mod/opentyrian_zeebo/data/tyrian1.lvl`. As duas
+formas dão no mesmo caminho virtual, e daí nas mesmas camadas. A Z-Wheel guarda o que é dela em
+`fs:/mod/274755/`, que agora cai no store de saves como o resto.
 
 `resolve` recusa o próprio diretório do módulo; `resolve_dir` o aceita. A diferença é exatamente
 essa: listar `fs:/~/` é legítimo, abri-lo como arquivo não.
