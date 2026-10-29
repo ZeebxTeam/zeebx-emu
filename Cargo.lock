@@ -5663,6 +5663,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "zeebx-tico"
+version = "0.5.1"
+dependencies = [
+ "serde_json",
+ "zeebx",
+]
+
+[[package]]
 name = "zeebx-vita"
 version = "0.5.1"
 dependencies = [

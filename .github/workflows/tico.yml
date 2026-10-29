@@ -1,0 +1,52 @@
+# Compila o módulo do tico, sem esperar a tag.
+#
+# O core que o ROMBundler liga continua no `libretro.yml`. Este workflow é o
+# zip que o tico instala em `sdmc:/tico/modules/zeebx/`. Não entra na release
+# enquanto o link do `.nro` não tiver saído uma vez: um alvo que só se prova
+# na imagem do devkitPro não pode segurar os outros pacotes.
+#
+# **Nenhum push ou merge dispara isto.** O único gatilho automático do repositório é a tag, no
+# `release.yml`; aqui é você quem pede o run pela aba Actions.
+
+name: tico
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: tico-module-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  modulo:
+    name: tico-module
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: devkitpro/devkita64:20260219
+    steps:
+      - name: Git, CMake e zip
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates cmake curl git ninja-build pkg-config python3 unzip zip
+
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: tico-module
+
+      - name: Compila o módulo
+        run: ./frontends/tico/compilar.sh --local
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zeebx_tico
+          path: frontends/tico/saida/zeebx-tico-module.zip
+          retention-days: 14
+          if-no-files-found: error

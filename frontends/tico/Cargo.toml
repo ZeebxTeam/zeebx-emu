@@ -1,0 +1,19 @@
+[package]
+name = "zeebx-tico"
+version = "0.5.1"
+edition = "2024"
+license = "GPL-2.0-or-later"
+description = "Módulo do Zeebx para o tico, no Nintendo Switch"
+publish = false
+
+[lib]
+name = "zeebx_tico"
+path = "src/lib.rs"
+
+[dependencies]
+# Sem `desktop`, sem `audio` e sem `gl`. O `audio` é o `cpal`, que não tem porta no
+# Horizon; o som sai pelo `audout` do hospedeiro em C. Sem `gl` o quadro é o do
+# processador: este `.nro` não abre contexto de OpenGL, ao contrário do core que o
+# RetroArch recebe já com a placa ligada.
+zeebx = { path = "../..", default-features = false, features = ["soundfont"] }
+serde_json = "1.0.151"
