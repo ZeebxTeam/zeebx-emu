@@ -85,8 +85,7 @@ impl<C: CpuBackend> Machine<C> {
         let agora = self.now_us();
         if agora.saturating_sub(self.ultimo_desenho_us) >= VSYNC_PERIOD_US {
             self.ultimo_desenho_us = agora;
-            self.pinta_widgets()?;
-            self.desenha_widgets()?;
+            self.pinta_a_interface()?;
         }
         self.entrega_ativacao()?;
         self.parte_animacao()?;

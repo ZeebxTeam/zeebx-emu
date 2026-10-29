@@ -71,6 +71,9 @@ impl<C: CpuBackend> Machine<C> {
             if let Some(widget) = self.widgets.get_mut(&objeto) {
                 widget.partiu = true;
             }
+            if self.contexto_liberado(funcao, contexto) {
+                continue;
+            }
             self.call_guest(funcao, [contexto, PARTIDA.0, PARTIDA.1, 1], QSORT_BUDGET)?;
         }
         Ok(())
@@ -88,41 +91,43 @@ impl<C: CpuBackend> Machine<C> {
     /// passarmos um `IDisplay`: para o palco é indiferente, e para o outro a interface que
     /// faltar aparece no relatório em vez de sumir.
     ///
-    /// Uma vez por quadro para cada widget visível que registrou desenho — e **não** só os do
-    /// formulário atual, ao contrário do que o `pinta_widgets` faz.
+    /// Uma vez por quadro, e só para quem está na árvore da tela atual.
     ///
-    /// A restrição por árvore chegou a existir aqui e deixava o palco de fora: o formulário do
-    /// menu fica com zero filho, porque não recebe o conteúdo pelo item `0x5000`, e o que ele
-    /// mostra vira uma raiz solta. Desenho registrado é explícito — quem registrou quer ser
-    /// chamado —, então ele não depende de acertarmos qual é a tela atual. Quando a ligação que
-    /// falta chegar pelo evento `0x7b0a`, vale reconsiderar.
+    /// A restrição chegou a sair daqui porque o formulário do menu fica com zero filho — o
+    /// conteúdo entra por uma raiz solta, não pelo item `0x5000` — e filtrar apagava o palco.
+    /// O [`Machine::formulario_atual`] passou a preferir essa raiz quando ela é o que se pinta,
+    /// então o palco volta a estar na árvore. O que ficou de fora é o contêiner do Cadastro:
+    /// pai zero, nunca entra num formulário, e desenhar todo órfão com callback pintava o
+    /// magenta dele por cima do menu, da ajuda e de Configurar.
     pub(super) fn desenha_widgets(&mut self) -> Result<(), CpuError> {
-        // Callbacks de desenho são a própria indicação de que o widget pertence ao palco. A
-        // Z-Wheel mantém a barra inferior numa raiz separada do formulário atual; filtrá-la pela
-        // árvore do formulário apaga a barra mesmo quando ela está visível.
         let mut chamar: Vec<(u32, (u32, u32))> = self
             .widgets
             .iter()
             .filter(|(_, no)| no.desenho.0 != 0 && no.visivel)
             .map(|(&endereco, no)| (endereco, no.desenho))
             .collect();
-        // **Formulário coberto não desenha.** Com a tela de ajuda por cima, o palco e a roda do
-        // menu — que moram no formulário de baixo — continuavam sendo chamados, e o palco caía
-        // por cima do painel da ajuda. Só o que pertence a um formulário que não é o do topo sai;
-        // o que não está sob formulário nenhum, como a barra de status, segue sendo desenhado.
-        let topo = self.formulario_atual();
-        chamar.retain(|(endereco, _)| match self.formulario_de(*endereco) {
-            Some(formulario) => Some(formulario) == topo,
-            None => true,
-        });
+        // A barra de status também não é filha do formulário, mas
+        // [`Machine::arvore_do_formulario`] já inclui a mais nova — é ela que continua.
+        let dentro = self.arvore_do_formulario();
+        chamar.retain(|(endereco, _)| dentro.contains(endereco));
         if chamar.is_empty() {
             return Ok(());
+        }
+        // O texto do diálogo tem de sair **depois** deste desenho. Se `pinta_textos` já rodou,
+        // o painel cobre a mensagem e a caixa aparece vazia.
+        if self.textos_de_widget > 0 {
+            self.assumptions.insert(
+                "o texto do diálogo foi pintado antes do desenho do jogo, e o painel cobre a mensagem",
+            );
         }
         // A ordem é a de criação, como no `pinta_widgets`: não é profundidade de verdade, mas é
         // estável, e desenho instável é pior do que desenho na ordem errada.
         chamar.sort_by_key(|(endereco, _)| self.widgets[endereco].serial);
         let tela = self.target()?;
         for (endereco, (funcao, contexto)) in chamar {
+            if self.contexto_liberado(funcao, contexto) {
+                continue;
+            }
             let (x, y) = self.posicao_na_tela(endereco);
             self.call_guest(funcao, [contexto, tela, x as u32, y as u32], QSORT_BUDGET)?;
         }
@@ -167,27 +172,12 @@ impl<C: CpuBackend> Machine<C> {
             .map(|widget| widget.tratador)
             .filter(|(funcao, _)| *funcao != 0);
         if let (true, Some((funcao, contexto))) = (ainda_no_topo, tratador) {
+            if self.contexto_liberado(funcao, contexto) {
+                return Ok(());
+            }
             self.call_guest(funcao, [contexto, GRAVA, FORM_ATIVO, 1], QSORT_BUDGET)?;
         }
         Ok(())
-    }
-
-    /// O formulário a que um widget pertence, subindo pelos pais, quando há um.
-    fn formulario_de(&self, widget: u32) -> Option<u32> {
-        /// A árvore vem do jogo; um ciclo não pode prender o desenho.
-        const TETO: usize = 64;
-        let mut atual = widget;
-        for _ in 0..TETO {
-            let no = self.widgets.get(&atual)?;
-            if no.classe == WIDGET_FORMULARIO {
-                return Some(atual);
-            }
-            if no.pai == 0 || no.pai == atual {
-                return None;
-            }
-            atual = no.pai;
-        }
-        None
     }
 
     /// Lê a posição que o `AdicionarFilho` traz em `r3` e guarda no filho.
@@ -199,7 +189,10 @@ impl<C: CpuBackend> Machine<C> {
     /// que sobrava na tela era um amontoado no canto.
     ///
     /// Largura e altura vêm zeradas quando o widget se mede sozinho, e aí não são gravadas: um
-    /// tamanho zero apagaria o que o slot 7 já disse.
+    /// tamanho zero apagaria o que o slot 7 já disse. Também só entram quando a palavra do
+    /// meio, o sinalizador, é 0 ou 1 — a forma medida na abertura, `{0, 0, 1, 640, 480}`. Sem
+    /// isso, `+12` e `+16` caem em cima da posição do vizinho (a barra em `(465, 17)` virava
+    /// tamanho) e o diálogo abre com uma faixa branca no topo.
     ///
     /// O mesmo slot atende cinco classes da família de widgets, e nem toda chamada tem esta
     /// forma — algumas passam uma função em `r2` e um objeto em `r3`. Por isso a posição só é
@@ -209,6 +202,7 @@ impl<C: CpuBackend> Machine<C> {
         /// Deslocamentos dentro da estrutura, em palavras.
         const X: u32 = 0;
         const Y: u32 = 4;
+        const SINAL: u32 = 8;
         const LARGURA: u32 = 12;
         const ALTURA: u32 = 16;
 
@@ -219,11 +213,16 @@ impl<C: CpuBackend> Machine<C> {
         let (Ok(x), Ok(y)) = (self.cpu.read_u32(onde + X), self.cpu.read_u32(onde + Y)) else {
             return Ok(());
         };
+        let sinal = self.cpu.read_u32(onde + SINAL).unwrap_or(u32::MAX);
         let tamanho = match (
             self.cpu.read_u32(onde + LARGURA),
             self.cpu.read_u32(onde + ALTURA),
         ) {
-            (Ok(largura), Ok(altura)) if largura != 0 && altura != 0 => Some((largura, altura)),
+            (Ok(largura), Ok(altura))
+                if (sinal == 0 || sinal == 1) && largura != 0 && altura != 0 =>
+            {
+                Some((largura, altura))
+            }
             _ => None,
         };
         if let Some(widget) = self.widgets.get_mut(&filho) {
@@ -366,7 +365,7 @@ impl<C: CpuBackend> Machine<C> {
             .widgets
             .iter()
             .filter(|(endereco, no)| {
-                no.classe == 0x0102_8e3f
+                no.classe == WIDGET_BARRA
                     && (no.pai == 0 || no.pai == **endereco)
                     && (no.filhos.len() + no.anexados.len()) > 0
             })
@@ -422,34 +421,138 @@ impl<C: CpuBackend> Machine<C> {
         // Quem está à mostra é o último empilhado, e é o que esta função devolve. Sem nenhum
         // formulário — antes de a interface existir —, vale a raiz mais nova que tenha filho,
         // que é o que sustentava a tela até aqui.
-        let formulario = self
-            .widgets
-            .iter()
-            .filter(|(endereco, no)| {
-                no.classe == WIDGET_FORMULARIO && com_filhos.contains(endereco)
-            })
-            .max_by_key(|(_, no)| no.serial)
-            .map(|(&endereco, _)| endereco);
+        let e_formulario = |endereco: u32, no: &Widget| {
+            no.classe == WIDGET_FORMULARIO && com_filhos.contains(&endereco)
+        };
+        let e_raiz = |endereco: u32, no: &Widget| {
+            (no.pai == 0 || no.pai == endereco) && com_filhos.contains(&endereco)
+        };
         // **Nem todo formulário recebe o conteúdo pelo item `0x5000`.** O do menu principal não
         // recebe: ele fica com zero filho, e o que ele mostra vira uma raiz solta — o container
         // de `0x30000c10`, com a barra de status e o palco dentro. O evento `0x7b0a` já é
-        // encaminhado pela raiz; a ligação de pai em si ainda não foi observada.
+        // encaminhado pela raiz; a ligação de pai em si ainda não foi observada. Escolher só
+        // entre formulários deixava o do z-pad como atual para sempre, e ele traz a `0x77300`.
         //
-        // Enquanto isso, escolher só entre formulários deixava o do z-pad como atual para
-        // sempre, e ele traz a `0x77300` — um tratador que devolve "tratei" para qualquer
-        // tecla. Com ela na frente, nenhuma tecla chegava ao menu: a roda não girava.
+        // **O mais novo que tenha o que desenhar.** Confirmar um jogo que não está instalado
+        // abre um aviso: a Z-Wheel registra `Failure attempting to launch game, error(0)` — o
+        // zero é o `CanStartApplet` falso — e empilha um formulário sem imagem, sem texto e
+        // sem desenho próprio. Esse formulário é o mais novo, então virava a tela atual. Trocar
+        // de formulário limpa o quadro de branco, o aviso não é desenhado, e o que sobra é a
+        // barra. As teclas iam para essa árvore; a `0x77300` da barra respondia "tratei" e o
+        // menu, que ficou por baixo, não via mais b1, b2 nem seta.
         //
-        // Então a escolha é entre os dois candidatos, e vence o mais novo.
-        let raiz = self.raiz_mais_nova(&com_filhos);
+        // Enquanto houver uma tela anterior com o que pintar, o aviso vazio não a cobre. Entre
+        // os dois candidatos, os dois com desenho — ou nenhum — continuam valendo o mais novo.
+        // Só um com desenho: esse, ainda que o outro seja mais novo. Não foi medido com o dump.
+        let formulario = self
+            .mais_novo_que_pinta(e_formulario)
+            .or_else(|| self.mais_novo(e_formulario));
+        let raiz = self
+            .mais_novo_que_pinta(e_raiz)
+            .or_else(|| self.raiz_mais_nova(&com_filhos));
         match (formulario, raiz) {
             (Some(f), Some(r)) => {
                 let idade = |quem: u32| self.widgets.get(&quem).map_or(0, |no| no.serial);
-                return Some(if idade(r) > idade(f) { r } else { f });
+                let pinta = |quem: u32| self.tem_o_que_pintar(quem);
+                return Some(match (pinta(f), pinta(r)) {
+                    (true, false) => f,
+                    (false, true) => r,
+                    _ if idade(r) > idade(f) => r,
+                    _ => f,
+                });
             }
             (Some(f), None) => return Some(f),
             (None, _) => {}
         }
         raiz
+    }
+
+    /// O widget mais novo que casa com `pred` e tem o que desenhar.
+    fn mais_novo_que_pinta(&self, pred: impl Fn(u32, &Widget) -> bool) -> Option<u32> {
+        self.widgets
+            .iter()
+            .filter(|(endereco, no)| pred(**endereco, no) && self.tem_o_que_pintar(**endereco))
+            .max_by_key(|(_, no)| no.serial)
+            .map(|(&endereco, _)| endereco)
+    }
+
+    /// O widget mais novo que casa com `pred`, com ou sem desenho.
+    fn mais_novo(&self, pred: impl Fn(u32, &Widget) -> bool) -> Option<u32> {
+        self.widgets
+            .iter()
+            .filter(|(endereco, no)| pred(**endereco, no))
+            .max_by_key(|(_, no)| no.serial)
+            .map(|(&endereco, _)| endereco)
+    }
+
+    /// Se a árvore de `raiz` tem alguma coisa que o substituto de pintura desenha.
+    ///
+    /// Imagem pendurada, texto, retorno de desenho, fundo opaco ou o widget de HTML. Tamanho
+    /// sozinho não conta: o aviso de erro pode ter retângulo e mesmo assim não pôr um pixel,
+    /// e era isso que limpava a tela.
+    fn tem_o_que_pintar(&self, raiz: u32) -> bool {
+        /// A árvore vem do jogo; um ciclo não pode prender a escolha da tela.
+        const TETO: usize = 64;
+        let mut fila = vec![raiz];
+        let mut vistos = std::collections::HashSet::new();
+        while let Some(atual) = fila.pop() {
+            if !vistos.insert(atual) || vistos.len() > TETO {
+                break;
+            }
+            let Some(no) = self.widgets.get(&atual) else {
+                continue;
+            };
+            let fundo = no
+                .propriedades
+                .get(&PROP_COR_DE_FUNDO)
+                .is_some_and(|cor| cor & 0xff != 0);
+            if !no.texto.is_empty()
+                || no.desenho.0 != 0
+                || no.classe == WIDGET_HTML
+                || self.paginas_html.contains_key(&atual)
+                || fundo
+                || no.anexados.iter().any(|id| self.images.contains_key(id))
+            {
+                return true;
+            }
+            for filho in no.filhos.values().chain(no.anexados.iter()) {
+                if self.widgets.contains_key(filho) {
+                    fila.push(*filho);
+                }
+            }
+        }
+        false
+    }
+
+    /// Se este par função/contexto é o tratador da barra de status.
+    ///
+    /// A `0x77300` devolve 1 para qualquer tecla. Entregar a tecla a ela não é o problema —
+    /// todos os tratadores da tela atual já a recebem. O problema é contar esse 1 como
+    /// consumo: aí ninguém de fora da árvore vê a tecla, e o menu fica por baixo do aviso.
+    pub(super) fn e_tratador_da_barra(&self, funcao: u32, contexto: u32) -> bool {
+        self.widgets
+            .values()
+            .any(|no| no.classe == WIDGET_BARRA && no.tratador == (funcao, contexto) && funcao != 0)
+    }
+
+    /// Se a função ou o contexto já foram marcados como bloco liberado.
+    ///
+    /// A troca de idioma da Z-Wheel solta a tela anterior e segue avisando quem estava nela.
+    /// A marca `0xA7` é do jogo — o nosso heap não preenche o bloco. Chamar mesmo assim é o
+    /// acesso inválido em `0xA7A7A7A4`, com o pc nesse endereço. Em es/en o próprio `r0` é
+    /// `0xA7A7A7A7`: ler a primeira palavra falha, a guarda antiga deixava passar, e a função
+    /// desviava para o veneno com `lr` ainda em `0xfff00000`.
+    pub(super) fn contexto_liberado(&mut self, funcao: u32, contexto: u32) -> bool {
+        let funcao_livre = tem_marca_de_bloco_livre(funcao);
+        let contexto_livre = tem_marca_de_bloco_livre(contexto)
+            || (contexto != 0 && self.cpu.read_u32(contexto).ok() == Some(MARCA_DE_BLOCO_LIVRE));
+        if funcao_livre || contexto_livre {
+            self.assumptions.insert(
+                "um retorno de chamada não rodou porque a função ou o contexto tinham a marca 0xA7 de bloco liberado",
+            );
+            return true;
+        }
+        false
     }
 
     /// A raiz mais nova que tenha filho, que é o que sustentava a tela antes dos formulários.
@@ -574,6 +677,19 @@ impl<C: CpuBackend> Machine<C> {
             let (x, y) = self.posicao_na_tela(dono);
             self.draw_image(imagem, x, y, None)?;
         }
+        Ok(())
+    }
+
+    /// Fundo e imagens, depois o desenho do jogo, e só então o texto.
+    ///
+    /// O painel dos diálogos (`0x01028e14`, 510×125) é owner-draw. Pintar o texto antes dele
+    /// deixa "Comprar Z-Credits", "Verificar Saldo" e a confirmação da capa por baixo do
+    /// painel — a caixa abre vazia. O HTML mora dentro de [`Machine::pinta_textos`], então
+    /// acompanha o texto.
+    pub(super) fn pinta_a_interface(&mut self) -> Result<(), CpuError> {
+        self.textos_de_widget = 0;
+        self.pinta_widgets()?;
+        self.desenha_widgets()?;
         self.pinta_textos()
     }
 
@@ -634,8 +750,9 @@ impl<C: CpuBackend> Machine<C> {
 
     /// Escreve o texto que os widgets guardam, na posição e na cor deles.
     ///
-    /// Faz parte do mesmo substituto do [`Machine::pinta_widgets`]: o console desenharia isto
-    /// pela extensão de widgets, que não está no dump. O que temos é o texto — que chega pelo
+    /// Roda **depois** do desenho do jogo, em [`Machine::pinta_a_interface`]: o painel é
+    /// owner-draw e, pintado por cima, esconde a mensagem. O console desenharia isto pela
+    /// extensão de widgets, que não está no dump. O que temos é o texto — que chega pelo
     /// slot 6 da [`WIDGET_DE_TEXTO`] — e a fonte do próprio pacote do jogo, que já carrega.
     ///
     /// A cor sai da propriedade [`PROP_COR`], que vem como `RRGGBBAA`; sem ela, preto. O alfa é
@@ -668,6 +785,14 @@ impl<C: CpuBackend> Machine<C> {
         escritas.sort_unstable_by(|a, b| (a.0, a.2, a.1).cmp(&(b.0, b.2, b.1)));
         self.pinta_html()?;
         for (_, x, y, rgba, texto) in escritas {
+            if texto.chars().any(|c| !c.is_whitespace()) {
+                if self.textos_desenhados.len() >= MAX_TEXTOS_DESENHADOS {
+                    self.textos_desenhados.pop_front();
+                }
+                self.textos_desenhados
+                    .push_back((self.clock_ms(), x, y, texto.clone()));
+                self.textos_de_widget = self.textos_de_widget.saturating_add(1);
+            }
             // A cor vem como `RRGGBBAA`. O alfa é descartado porque a superfície do console não
             // tem canal para ele — mesma razão do meio-tom no `escreve`.
             let cor = Rgb {
@@ -979,14 +1104,40 @@ impl<C: CpuBackend> Machine<C> {
             // A terceira palavra do trio é a `0x52574`, o liberador: guardado, e chamado quando
             // o widget morre (ver o `Release`).
             "Slot13" => {
-                // Leitura em 0x24100..0x24198 do tectoy.mod: (&bitmap, w, h),
-                // seguida de QueryInterface no bitmap devolvido. O widget foi usado
-                // como interface de bitmap pelo QueryInterface permissivo acima.
-                let slot = crate::brew::aee_slots::BITMAP
-                    .iter()
-                    .position(|name| *name == "CreateCompatibleBitmap")
-                    .expect("slot de bitmap");
-                return self.bitmap_call(slot as u32);
+                // No BREW este slot é `SetModel`. O decorador `0x01028e1b` recebe o `IVetor`
+                // da lista aqui. Tratar como `CreateCompatibleBitmap` escrevia um bitmap em
+                // `*r1`, que é a vtable do vetor: o slot seguinte ia para `pc` 0 e o buffer
+                // magenta da lista nascia desse bitmap.
+                //
+                // O roller, em `0x24100`, usa o mesmo número com `(&bitmap, largura, altura)`
+                // — `r1` é saída, não objeto. Os dois se separam por isso: ponteiro de objeto
+                // vivo é modelo; o resto continua fábrica de superfície.
+                let alvo = self.cpu.read_reg(Reg::R1);
+                if self.objects.kind_of(alvo).is_some() {
+                    let anterior = self
+                        .widgets
+                        .get(&this)
+                        .and_then(|widget| widget.modelos.get(&0).copied());
+                    if let Some(widget) = self.widgets.get_mut(&this) {
+                        widget.modelos.insert(0, alvo);
+                    }
+                    if anterior != Some(alvo) {
+                        self.objects.add_ref(alvo);
+                        if let Some(anterior) = anterior {
+                            self.objects.release(anterior);
+                        }
+                    }
+                    self.assumptions.insert(
+                        "o slot 13 do widget guardou o modelo — com r1 objeto, não é CreateCompatibleBitmap",
+                    );
+                    SUCCESS
+                } else {
+                    let slot = crate::brew::aee_slots::BITMAP
+                        .iter()
+                        .position(|name| *name == "CreateCompatibleBitmap")
+                        .expect("slot de bitmap");
+                    return self.bitmap_call(slot as u32);
+                }
             }
             "Slot16" => {
                 let onde = self.cpu.read_reg(Reg::R1);
@@ -1382,11 +1533,15 @@ impl<C: CpuBackend> Machine<C> {
                     // reconhecer o endereço mantém a árvore avançando e evita tratá-lo como
                     // um código de propriedade desconhecido.
                     _ if self.widgets.contains_key(&seletor) => OK,
-                    // Eventos oferecidos primeiro ao root pelo applet (0x7b418).
-                    // Um retorno verdadeiro interrompe o despacho em 0x7b420, antes dos
+                    // Eventos oferecidos primeiro à raiz pelo applet (`0x7b418`).
+                    // Um retorno verdadeiro interrompe o despacho em `0x7b420`, antes dos
                     // handlers do próprio applet que preenchem as saídas de fonte/recurso.
-                    // Sem handler aqui, devolver falso permite que o applet os resolva.
-                    0x101 | 0x7b0a | 0x7b0e | 0x7b0f => FALSE,
+                    // O `0x7b0b` é irmão do `0x7b0a` nesse caminho: a troca de idioma passa
+                    // por ele. O `0x7001` é o que a transição de slide manda no fim, e a raiz
+                    // ainda precisa tratar. Devolver verdadeiro engoliria os dois.
+                    // O braço desconhecido já devolvia zero; explícitos, eles saem do
+                    // relatório de API ausente, e ninguém "conserta" o log devolvendo OK.
+                    0x101 | 0x7b0a | 0x7b0b | 0x7b0e | 0x7b0f | 0x7001 => FALSE,
                     LE => {
                         // **Nem todo `0x800` pede um filho.** O jogo lê e grava pelo mesmo
                         // seletor coisas de tipos diferentes, e o número do item é que diz
@@ -1723,11 +1878,13 @@ impl<C: CpuBackend> Machine<C> {
     /// candidato poria o foco nele ao voltar das capas.
     fn aceita_foco(&mut self, widget: u32) -> Result<bool, CpuError> {
         const PODE_TER_FOCO: u32 = 0x702;
-        let Some(dados) = self.widgets.get(&widget) else {
-            return Ok(false);
+        let (visivel, funcao, contexto, desenho) = {
+            let Some(dados) = self.widgets.get(&widget) else {
+                return Ok(false);
+            };
+            (dados.visivel, dados.tratador.0, dados.tratador.1, dados.desenho.0)
         };
-        let ((funcao, contexto), desenho) = (dados.tratador, dados.desenho.0);
-        if !dados.visivel || funcao == 0 || desenho == 0 {
+        if !visivel || funcao == 0 || desenho == 0 || self.contexto_liberado(funcao, contexto) {
             return Ok(false);
         }
         let resposta = self.aloca_interno(4)?;
@@ -1749,7 +1906,10 @@ impl<C: CpuBackend> Machine<C> {
         let Some((funcao, contexto)) = self.widgets.get(&widget).map(|w| w.tratador) else {
             return Ok(());
         };
-        if funcao == 0 || !self.widgets_avisando.insert(widget) {
+        if funcao == 0
+            || self.contexto_liberado(funcao, contexto)
+            || !self.widgets_avisando.insert(widget)
+        {
             return Ok(());
         }
         let saida = self.call_guest_aninhado(funcao, [contexto, evento, parametro, 0], QSORT_BUDGET);
@@ -1797,7 +1957,7 @@ impl<C: CpuBackend> Machine<C> {
                 (widget.liberadores.0, widget.tratador.1),
                 (widget.liberadores.1, widget.desenho.1),
             ] {
-                if liberador != 0 {
+                if liberador != 0 && !self.contexto_liberado(liberador, contexto) {
                     let _ = self.call_guest_aninhado(liberador, [contexto, 0, 0, 0], QSORT_BUDGET)?;
                 }
             }
@@ -1850,6 +2010,355 @@ mod testes_do_container {
         assert_eq!(vizinho_na_pilha(&pilha, 10, false, true), 30, "com volta, dá a volta");
         assert_eq!(vizinho_na_pilha(&pilha, 20, true, false), 30);
         assert_eq!(vizinho_na_pilha(&[], 0, true, true), 0);
+    }
+}
+
+#[cfg(test)]
+mod testes_do_aviso {
+    use super::*;
+    use crate::cpu::BackendPadrao;
+    use crate::loader::{self, MODULE_BASE};
+
+    /// `mov r0,#1; bx lr` no início — a `0x77300` da barra, que diz "tratei" para qualquer tecla.
+    /// Em `+8`, o tratador do menu: grava 7 na palavra em `MODULE_BASE+0x20` e devolve.
+    fn codigo_dos_tratadores() -> Vec<u8> {
+        let mut codigo = Vec::new();
+        codigo.extend_from_slice(&0xe3a0_0001u32.to_le_bytes()); // mov r0, #1
+        codigo.extend_from_slice(&0xe12f_ff1eu32.to_le_bytes()); // bx lr
+        codigo.extend_from_slice(&0xe3a0_0007u32.to_le_bytes()); // mov r0, #7
+        codigo.extend_from_slice(&0xe59f_1004u32.to_le_bytes()); // ldr r1, [pc, #4]
+        codigo.extend_from_slice(&0xe581_0000u32.to_le_bytes()); // str r0, [r1]
+        codigo.extend_from_slice(&0xe12f_ff1eu32.to_le_bytes()); // bx lr
+        codigo.extend_from_slice(&(MODULE_BASE + 0x20).to_le_bytes());
+        codigo.resize(0x40, 0);
+        codigo
+    }
+
+    fn maquina() -> Machine<BackendPadrao> {
+        let image = loader::modfile::ModImage::parse(codigo_dos_tratadores()).unwrap();
+        let module = loader::load(&image).unwrap();
+        let mut machine = Machine::new(BackendPadrao::new().unwrap(), module, ".");
+        machine.cpu.reset(&machine.module.mem).unwrap();
+        machine
+    }
+
+    fn no(classe: u32, serial: u64, pai: u32) -> Widget {
+        Widget {
+            classe,
+            serial,
+            pai,
+            visivel: true,
+            ..Widget::default()
+        }
+    }
+
+    const ENGOLIDOR: u32 = MODULE_BASE;
+    const MENU: u32 = MODULE_BASE + 8;
+    const MARCA: u32 = MODULE_BASE + 0x20;
+
+    /// O aviso de jogo sem ROM é mais novo e não tem o que desenhar. A tela continua sendo o
+    /// menu, que é o que ainda tem texto.
+    #[test]
+    fn aviso_vazio_nao_cobre_o_menu() {
+        let mut machine = maquina();
+        let mut menu = no(WIDGET_FORMULARIO, 1, 0);
+        menu.anexados.push(0x11);
+        machine.widgets.insert(0x10, menu);
+        let mut filho = no(0, 2, 0x10);
+        filho.texto = "Jogar".to_string();
+        machine.widgets.insert(0x11, filho);
+
+        let mut aviso = no(WIDGET_FORMULARIO, 5, 0);
+        aviso.anexados.push(0x31);
+        machine.widgets.insert(0x30, aviso);
+        machine.widgets.insert(0x31, no(0, 6, 0x30));
+
+        assert_eq!(machine.formulario_atual(), Some(0x10));
+    }
+
+    /// Um formulário novo que tem texto passa a ser a tela. A regra só segura o que está vazio.
+    #[test]
+    fn formulario_novo_com_texto_continua_sendo_a_tela() {
+        let mut machine = maquina();
+        let mut menu = no(WIDGET_FORMULARIO, 1, 0);
+        menu.anexados.push(0x11);
+        machine.widgets.insert(0x10, menu);
+        let mut filho = no(0, 2, 0x10);
+        filho.texto = "Jogar".to_string();
+        machine.widgets.insert(0x11, filho);
+
+        let mut ajuda = no(WIDGET_FORMULARIO, 8, 0);
+        ajuda.anexados.push(0x51);
+        machine.widgets.insert(0x50, ajuda);
+        let mut pagina = no(0, 9, 0x50);
+        pagina.texto = "Ajuda".to_string();
+        machine.widgets.insert(0x51, pagina);
+
+        assert_eq!(machine.formulario_atual(), Some(0x50));
+    }
+
+    /// A barra devolve "tratei", mas a tecla ainda chega ao menu, que está fora dessa árvore.
+    #[test]
+    fn a_barra_nao_engole_a_tecla_do_menu() {
+        let mut machine = maquina();
+        let mut menu_tela = no(WIDGET_FORMULARIO, 4, 0);
+        menu_tela.anexados.push(0x11);
+        machine.widgets.insert(0x10, menu_tela);
+        let mut filho = no(0, 2, 0x10);
+        filho.texto = "Jogar".to_string();
+        machine.widgets.insert(0x11, filho);
+
+        let mut barra = no(WIDGET_BARRA, 3, 0);
+        barra.anexados.push(0x41);
+        barra.tratador = (ENGOLIDOR, 0x10024);
+        machine.widgets.insert(0x40, barra);
+        machine.widgets.insert(0x41, no(0, 1, 0x40));
+
+        let mut menu = no(0, 1, 0);
+        menu.tratador = (MENU, 0x10028);
+        machine.widgets.insert(0x20, menu);
+
+        machine.set_key(0xe035, true);
+        machine.flush_keys().unwrap();
+        assert_eq!(machine.cpu.read_u32(MARCA).unwrap(), 7, "a tecla não chegou ao menu");
+    }
+
+    /// Sem o sinalizador 0 ou 1, largura e altura são a posição do vizinho e não entram.
+    #[test]
+    fn tamanho_so_entra_com_o_sinalizador() {
+        let mut machine = maquina();
+        machine.widgets.insert(0x10, no(0, 1, 0));
+        let onde = machine.heap.alloc(24).unwrap();
+        for (i, palavra) in [52u32, 331, 465, 17, 9, 0].into_iter().enumerate() {
+            machine.cpu.write_u32(onde + i as u32 * 4, palavra).unwrap();
+        }
+        machine.cpu.write_reg(Reg::R2, 0);
+        machine.cpu.write_reg(Reg::R3, onde);
+        machine.anota_posicao(0x10).unwrap();
+        assert_eq!(machine.widgets[&0x10].posicao, (52, 331));
+        assert_eq!(machine.widgets[&0x10].tamanho, (0, 0));
+
+        machine.cpu.write_u32(onde + 8, 1).unwrap();
+        machine.cpu.write_u32(onde + 12, 100).unwrap();
+        machine.cpu.write_u32(onde + 16, 40).unwrap();
+        machine.anota_posicao(0x10).unwrap();
+        assert_eq!(machine.widgets[&0x10].tamanho, (100, 40));
+    }
+
+    /// O desenho do Cadastro, solto na árvore, não pinta quando outra tela está ativa.
+    /// A barra, que também não é filha do formulário, continua.
+    #[test]
+    fn o_desenho_fora_da_tela_atual_nao_pinta() {
+        let mut machine = maquina();
+        // `mov r0,#9; ldr r1,[pc,#4]; str r0,[r1]; bx lr; .word marca` em +0x28.
+        let marca_orfao = machine.heap.alloc(4).unwrap();
+        let base = MODULE_BASE + 0x28;
+        for (i, palavra) in [
+            0xe3a0_0009u32,
+            0xe59f_1004,
+            0xe581_0000,
+            0xe12f_ff1e,
+            marca_orfao,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            machine.cpu.write_u32(base + i as u32 * 4, palavra).unwrap();
+        }
+
+        let mut menu = no(WIDGET_FORMULARIO, 10, 0);
+        menu.anexados.push(0x11);
+        machine.widgets.insert(0x10, menu);
+        let mut filho = no(0, 2, 0x10);
+        filho.texto = "Menu".into();
+        machine.widgets.insert(0x11, filho);
+
+        let mut orfao = no(0x0102_8e14, 1, 0);
+        orfao.desenho = (base, 0x10030);
+        orfao.anexados.push(0x31);
+        machine.widgets.insert(0x30, orfao);
+        machine.widgets.insert(0x31, no(0, 1, 0x30));
+
+        let mut barra = no(WIDGET_BARRA, 3, 0);
+        barra.desenho = (MENU, 0x10028);
+        barra.anexados.push(0x41);
+        machine.widgets.insert(0x40, barra);
+        machine.widgets.insert(0x41, no(0, 1, 0x40));
+
+        machine.desenha_widgets().unwrap();
+        assert_eq!(machine.cpu.read_u32(marca_orfao).unwrap(), 0, "o órfão pintou");
+        assert_eq!(machine.cpu.read_u32(MARCA).unwrap(), 7, "a barra não pintou");
+    }
+
+    /// O painel é owner-draw. O texto do diálogo entra no relatório depois dele, não antes.
+    #[test]
+    fn o_texto_do_dialogo_fica_depois_do_painel() {
+        let mut machine = maquina();
+        let mut dialogo = no(WIDGET_FORMULARIO, 4, 0);
+        dialogo.anexados.push(0x11);
+        dialogo.anexados.push(0x12);
+        machine.widgets.insert(0x10, dialogo);
+        let mut painel = no(0x0102_8e14, 5, 0x10);
+        painel.desenho = (MENU, 0x10028);
+        painel.tamanho = (510, 125);
+        machine.widgets.insert(0x11, painel);
+        let mut texto = no(WIDGET_DE_TEXTO, 6, 0x10);
+        texto.texto = "Saldo".into();
+        machine.widgets.insert(0x12, texto);
+
+        machine.pinta_a_interface().unwrap();
+        assert_eq!(machine.cpu.read_u32(MARCA).unwrap(), 7, "o painel não desenhou");
+        assert!(
+            machine.drawn_text().any(|item| item.3 == "Saldo"),
+            "o texto do diálogo não foi pintado"
+        );
+        assert!(
+            !machine
+                .assumptions
+                .iter()
+                .any(|linha| linha.contains("antes do desenho")),
+            "o texto saiu antes do painel"
+        );
+    }
+
+    /// A soltura do botão que abriu o diálogo não chega no tratador que nasceu depois.
+    #[test]
+    fn a_soltura_nao_confirma_o_dialogo_que_nasceu_no_aperto() {
+        let mut machine = maquina();
+        let marca_dialogo = machine.heap.alloc(4).unwrap();
+        let base = MODULE_BASE + 0x28;
+        for (i, palavra) in [
+            0xe3a0_0009u32,
+            0xe59f_1004,
+            0xe581_0000,
+            0xe12f_ff1e,
+            marca_dialogo,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            machine.cpu.write_u32(base + i as u32 * 4, palavra).unwrap();
+        }
+
+        let mut tela = no(WIDGET_FORMULARIO, 4, 0);
+        tela.anexados.push(0x11);
+        tela.anexados.push(0x20);
+        machine.widgets.insert(0x10, tela);
+        let mut filho = no(0, 2, 0x10);
+        filho.texto = "Jogar".into();
+        machine.widgets.insert(0x11, filho);
+        let mut menu = no(0, 3, 0x10);
+        menu.tratador = (MENU, 0x10028);
+        machine.widgets.insert(0x20, menu);
+
+        machine.set_key(0xe035, true);
+        machine.flush_keys().unwrap();
+        assert_eq!(machine.cpu.read_u32(MARCA).unwrap(), 7, "o aperto não chegou");
+        machine.cpu.write_u32(MARCA, 0).unwrap();
+
+        let mut dialogo = no(0, 9, 0x10);
+        dialogo.tratador = (base, 0x10030);
+        machine.widgets.insert(0x30, dialogo);
+        machine.widgets.get_mut(&0x10).unwrap().anexados.push(0x30);
+
+        machine.set_key(0xe035, false);
+        machine.flush_keys().unwrap();
+        assert_eq!(
+            machine.cpu.read_u32(MARCA).unwrap(),
+            7,
+            "a soltura não voltou a quem apertou"
+        );
+        assert_eq!(
+            machine.cpu.read_u32(marca_dialogo).unwrap(),
+            0,
+            "o diálogo que nasceu no aperto viu a soltura"
+        );
+    }
+
+    /// Contexto com a marca `0xA7` não é chamado. O tratador, se rodasse, gravaria 7.
+    #[test]
+    fn contexto_liberado_nao_e_chamado() {
+        let mut machine = maquina();
+        let contexto = MODULE_BASE + 0x24;
+        machine.cpu.write_u32(contexto, 0xA7A7_A7A7).unwrap();
+        let mut menu = no(0, 1, 0);
+        menu.tratador = (MENU, contexto);
+        machine.widgets.insert(0x20, menu);
+        machine.set_key(0xe035, true);
+        machine.flush_keys().unwrap();
+        assert_eq!(machine.cpu.read_u32(MARCA).unwrap(), 0);
+        machine.avisa_widget(0x20, 0x700, 1).unwrap();
+        assert_eq!(machine.cpu.read_u32(MARCA).unwrap(), 0);
+    }
+
+    /// O contexto é o veneno, não um endereço que começa com ele. A entrega da tecla não entra.
+    #[test]
+    fn contexto_que_e_a_marca_nao_recebe_tecla() {
+        let mut machine = maquina();
+        let mut menu = no(0, 1, 0);
+        menu.tratador = (MENU, 0xA7A7_A7A7);
+        machine.widgets.insert(0x20, menu);
+        machine.set_key(0xe035, true);
+        machine.flush_keys().unwrap();
+        assert_eq!(machine.cpu.read_u32(MARCA).unwrap(), 0);
+        let desfecho = machine
+            .call_guest(MENU, [0xA7A7_A7A4, input::EVT_KEY_RELEASE, 0, 0], 1_000)
+            .unwrap();
+        assert!(matches!(desfecho, Outcome::Returned { code: 0 }));
+        assert_eq!(machine.cpu.read_u32(MARCA).unwrap(), 0);
+    }
+
+    /// `0x7b0b` e `0x7001` devolvem falso e não entram na lista de API ausente.
+    /// Um seletor desconhecido continua entrando.
+    #[test]
+    fn eventos_da_troca_de_idioma_nao_sao_engolidos() {
+        let mut machine = maquina();
+        machine.widgets.insert(0x10, no(WIDGET_RAIZ, 1, 0));
+        machine.cpu.write_reg(Reg::R0, 0x10);
+        for seletor in [0x7b0bu32, 0x7001] {
+            machine.cpu.write_reg(Reg::R1, seletor);
+            machine.cpu.write_reg(Reg::R2, 0);
+            machine.cpu.write_reg(Reg::R3, 0);
+            assert_eq!(machine.widget_call(3).unwrap(), Some(0));
+            assert!(
+                !machine.missing_apis.iter().any(|linha| linha.contains(&format!("{seletor:#x}"))),
+                "{seletor:#x} foi parar no relatório"
+            );
+        }
+        machine.cpu.write_reg(Reg::R1, 0x1234);
+        machine.widget_call(3).unwrap();
+        assert!(machine.missing_apis.iter().any(|linha| linha.contains("0x1234")));
+    }
+
+    /// `SetModel` não pode escrever no objeto. A vtable do `IVetor` fica onde estava.
+    #[test]
+    fn o_slot_13_com_objeto_guarda_o_modelo() {
+        let mut machine = maquina();
+        let vetor = machine.objects.create(Interface::Vetor).unwrap();
+        machine.cpu.write_u32(vetor, 0x1111_1111).unwrap();
+        machine.widgets.insert(0x10, no(WIDGET_DECORADOR_DE_LISTA, 1, 0));
+        machine.cpu.write_reg(Reg::R0, 0x10);
+        machine.cpu.write_reg(Reg::R1, vetor);
+        assert_eq!(machine.widget_call(13).unwrap(), Some(SUCCESS));
+        assert_eq!(machine.cpu.read_u32(vetor).unwrap(), 0x1111_1111);
+        assert_eq!(machine.widgets[&0x10].modelos.get(&0).copied(), Some(vetor));
+    }
+
+    /// Sem objeto em `r1`, o roller continua recebendo uma superfície.
+    #[test]
+    fn o_slot_13_sem_objeto_cria_bitmap() {
+        let mut machine = maquina();
+        machine.widgets.insert(0x10, no(0x0102_8e14, 1, 0));
+        let saida = machine.heap.alloc(4).unwrap();
+        machine.cpu.write_u32(saida, 0).unwrap();
+        machine.cpu.write_reg(Reg::R0, 0x10);
+        machine.cpu.write_reg(Reg::R1, saida);
+        machine.cpu.write_reg(Reg::R2, 8);
+        machine.cpu.write_reg(Reg::R3, 4);
+        assert_eq!(machine.widget_call(13).unwrap(), Some(SUCCESS));
+        let bitmap = machine.cpu.read_u32(saida).unwrap();
+        assert!(machine.bitmaps.contains_key(&bitmap));
+        assert!(machine.objects.kind_of(bitmap) == Some(Interface::Bitmap));
     }
 }
 

@@ -1028,6 +1028,19 @@ const VSYNC_PERIOD_US: u64 = 1_000_000 / 60;
 const SUCCESS: u32 = 0;
 /// `ECLASSNOTSUPPORT`: o ClassID pedido não existe nesta plataforma.
 const ECLASSNOTSUPPORT: u32 = 20;
+/// Preenchimento de bloco liberado, no estilo da Qualcomm: cada byte é `0xA7`.
+///
+/// O heap daqui não escreve essa marca. Quando ela aparece, foi o jogo. Usada como endereço
+/// de código, o acesso inválido sai alinhado em `0xA7A7A7A4`.
+const MARCA_DE_BLOCO_LIVRE: u32 = 0xA7A7_A7A7;
+
+/// O valor, alinhado, é o preenchimento `0xA7` de bloco liberado.
+///
+/// Vale para a função e para o ponteiro de contexto. O byte baixo pode ter sido alinhado
+/// para `0xA4` quando o endereço virou destino de `bx`.
+fn tem_marca_de_bloco_livre(valor: u32) -> bool {
+    (valor & !3) == (MARCA_DE_BLOCO_LIVRE & !3)
+}
 /// `ENOMEMORY`: acabou memória.
 const ENOMEMORY: u32 = 3;
 /// `ENOTYPE`: não há tipo associado a este conteúdo (`AEEError.h`).
@@ -1147,6 +1160,10 @@ const WIDGET_FORMULARIO: u32 = 0x0102_8e47;
 /// O formulário raiz do applet, o `[app+0x24]` da Z-Wheel. Nele o slot 6 é o
 /// `IROOTFORM_RemoveForm`. Ver o braço do `DefinirVisivel`.
 const WIDGET_RAIZ: u32 = 0x0102_8e51;
+/// A barra de status, `0x01028e3f`. O tratador dela na Z-Wheel é a `0x77300`
+/// (`mov r0,#1; bx lr`): devolve "tratei" para qualquer tecla, e no console a barra
+/// não recebe tecla. Ver [`Machine::e_tratador_da_barra`].
+const WIDGET_BARRA: u32 = 0x0102_8e3f;
 
 /// A classe da família em que o slot 6 **põe texto**, em vez de esconder ou mostrar.
 ///
@@ -1175,7 +1192,25 @@ const PROP_COR_DE_FUNDO: u32 = 0x130;
 /// nada.
 const WIDGET_HTML: u32 = 0x0102_dd32;
 
-const FAMILIA_DOS_WIDGETS: [u32; 10] = [
+/// O campo de texto que o Cadastro cria depois do decorador, `0x01028e2f`.
+///
+/// Sem ela o `CreateInstance` devolve 20 e a tela não monta o nome nem o teclado. É vizinha da
+/// `0x01028e2a`, que já é widget de texto. Nascer como widget é o que a família faz. O acesso
+/// nulo em `lr=0x49aa4` (`r0` dentro do módulo, `r1` zero, `pc` zero) continua: a instrução não
+/// está neste repositório, e inventar o ponteiro que ela carrega seria chute.
+const WIDGET_CAMPO: u32 = 0x0102_8e2f;
+
+/// O decorador de lista que o `CreateListWidget` pede, `0x01028e1b`.
+///
+/// A tela de Cadastro registra `Unable to create list decorator in CreateListWidget` e em
+/// seguida usa o ponteiro nulo: o `CreateInstance` desta classe devolvia `ECLASSNOTSUPPORT`
+/// (20) porque ela não estava na família. É vizinha de numeração da `0x01028e19` e da
+/// `0x01028e26`, que já nascem como widget. Sem o dump não dá para saber o que ela desenha;
+/// o que se sabe é que um objeto nulo vira `acesso inválido a 0x0`. Nascer como widget vivo
+/// é o mesmo tratamento das outras, e é o que impede o jogo de guardar nulo.
+const WIDGET_DECORADOR_DE_LISTA: u32 = 0x0102_8e1b;
+
+const FAMILIA_DOS_WIDGETS: [u32; 12] = [
     WIDGET_HTML,
     AEECLSID_WIDGET,
     // A `0x01028e05` é a última que o palco pede. Depois de montar o pbuffer — `ChooseConfig`,
@@ -1183,12 +1218,16 @@ const FAMILIA_DOS_WIDGETS: [u32; 10] = [
     // logo esta; recusada, o `CreateStageWidget` desiste e leva a roda de jogos junto. No
     // firmware ela aparece nos mesmos depósitos de literais que a `0x01028e19` e a
     // `0x01028e4b`, ao lado do seletor `0x801` e de uma cor, que é como as outras da família
-    // são usadas.
+    // são usadas. A `0x01028e4b` fica de fora de propósito: o Apagar Jogos a pede, e nascer
+    // como widget genérico não abre o diálogo — o b1 no jogo volta ao menu. Ver o braço
+    // dela em [`Machine::shell_create_instance`].
     0x0102_8e05,
     // A `0x01028e14` é o `OwnerDrawWidget`: o `CreateTectoyRollerWidget` a cria e, recusada,
     // registra `Failure in call to CreateOwnerDrawWidget` e desiste da roda de jogos inteira.
     0x0102_8e14,
     0x0102_8e19,
+    WIDGET_DECORADOR_DE_LISTA,
+    WIDGET_CAMPO,
     // A `0x01028e26` também entrou pela sonda: `slot3(0x801, 0x186, 0xff0000ff)` — o acessador,
     // com uma cor — e o mesmo slot 14 das outras.
     0x0102_8e26,
@@ -1199,7 +1238,7 @@ const FAMILIA_DOS_WIDGETS: [u32; 10] = [
     // `ZPad_Keyboard_Instructions_Form.c` falhava com `ECLASSNOTSUPPORT`, que é o 20 do
     // `Couldn't create z-pad instruction form (20)`.
     0x0102_8e36,
-    0x0102_8e3f,
+    WIDGET_BARRA,
     0x0102_8e47,
 ];
 
@@ -2322,6 +2361,11 @@ pub struct Machine<C: CpuBackend> {
     /// quando falta a fonte, e um jogo que desenha várias telas de aviso ao longo da execução
     /// aparece no relatório como uma sopa de mensagens sem dono.
     textos_desenhados: std::collections::VecDeque<(u32, i32, i32, String)>,
+    /// Textos de widget já enfileirados nesta pintura da interface.
+    ///
+    /// Zerado em [`Machine::pinta_a_interface`]. Se ainda for maior que zero quando o
+    /// desenho do jogo roda, o painel owner-draw foi pintado por cima da mensagem.
+    textos_de_widget: u32,
     /// Alocações que o heap recusou, por tamanho pedido e por quem pediu.
     ///
     /// O `malloc` do BREW devolve zero quando não cabe, e um jogo que não distingue "não cabe" de
@@ -2426,6 +2470,13 @@ pub struct Machine<C: CpuBackend> {
     calibracoes: (u32, u32),
     /// Teclas apertadas e ainda não entregues, como `(código AVK, apertada)`.
     teclas: std::collections::VecDeque<(u32, bool)>,
+    /// Quem viu o aperto de cada tecla: os tratadores e se o applet também viu.
+    ///
+    /// A soltura volta só para esse conjunto. O `b1` que abre um diálogo solta em cima do
+    /// tratador novo, e esse tratador lia a soltura como confirmar. Não entra no save state:
+    /// um estado gravado no meio do aperto esquece a lista, e a soltura seguinte não confirma
+    /// ninguém.
+    apertos_vistos: HashMap<u32, (Vec<(u32, u32)>, bool)>,
     /// Os últimos toques entregues, para o relatório.
     ///
     /// A fila acima é consumida pelo jogo e some; esta fica. Existe porque um problema de
@@ -2468,6 +2519,13 @@ pub struct Machine<C: CpuBackend> {
     debug_indice: HashMap<String, usize>,
     /// Superfícies de desenho, indexadas pelo ponteiro do `IBitmap` no guest.
     bitmaps: HashMap<u32, Framebuffer>,
+    /// Bitmaps de `CreateCompatibleBitmap` em que ninguém desenhou ainda.
+    ///
+    /// Nascem com a cor de máscara, para o blit transparente do Toy Raid. Um `COPY` dessa
+    /// superfície, antes de qualquer traço, pintava o magenta na tela — o retângulo do
+    /// Cadastro e do teclado. Enquanto o conjunto contém o bitmap, o `COPY` trata a máscara
+    /// como transparente.
+    bitmaps_intactos: std::collections::HashSet<u32>,
     /// `r0..r11` no momento da última falha de memória, para o relatório.
     fault_regs: [u32; 12],
     /// Endereços de retorno vistos na pilha da última falha.
@@ -3100,6 +3158,7 @@ impl<C: CpuBackend> Machine<C> {
             web_requests: BTreeSet::new(),
             collections: HashMap::new(),
             textos_desenhados: std::collections::VecDeque::new(),
+            textos_de_widget: 0,
             alocacoes_recusadas: BTreeSet::new(),
             checagens_recusadas: BTreeSet::new(),
             fontes: std::collections::HashMap::new(),
@@ -3159,6 +3218,7 @@ impl<C: CpuBackend> Machine<C> {
             portas_de_aparelho: HashMap::new(),
             media_log: std::collections::VecDeque::new(),
             teclas: std::collections::VecDeque::new(),
+            apertos_vistos: HashMap::new(),
             pad_log: std::collections::VecDeque::new(),
             current_applet: 0,
             random_state: 0x1234_5678,
@@ -3171,6 +3231,7 @@ impl<C: CpuBackend> Machine<C> {
             debug_output: Vec::new(),
             debug_indice: HashMap::new(),
             bitmaps: HashMap::new(),
+            bitmaps_intactos: std::collections::HashSet::new(),
             fault_regs: [0; 12],
             fault_stack: Vec::new(),
             timers: Vec::new(),
@@ -3352,6 +3413,18 @@ impl<C: CpuBackend> Machine<C> {
         args: [u32; 4],
         budget: u64,
     ) -> Result<Outcome, CpuError> {
+        // Função lida de um bloco que o jogo já marcou como livre. Entrar nela é o acesso
+        // inválido em `0xA7A7A7A4`, com o pc igual ao endereço. Devolver zero é "não tratei".
+        // O contexto em `r0` também pode ser a marca. Em es/en a entrega da tecla entra numa
+        // função válida com `r0=0xA7A7A7A7`; ela desvia para o veneno e o `lr` fica em
+        // `0xfff00000`. Ler a primeira palavra desse endereço falha, então a guarda antiga
+        // não via.
+        if tem_marca_de_bloco_livre(func) || tem_marca_de_bloco_livre(args[0]) {
+            self.assumptions.insert(
+                "um retorno de chamada não rodou porque a função ou o contexto tinham a marca 0xA7 de bloco liberado",
+            );
+            return Ok(Outcome::Returned { code: 0 });
+        }
         self.cpu.write_reg(Reg::R0, args[0]);
         self.cpu.write_reg(Reg::R1, args[1]);
         self.cpu.write_reg(Reg::R2, args[2]);
@@ -3378,6 +3451,12 @@ impl<C: CpuBackend> Machine<C> {
         args: [u32; 4],
         budget: u64,
     ) -> Result<Outcome, CpuError> {
+        if tem_marca_de_bloco_livre(func) || tem_marca_de_bloco_livre(args[0]) {
+            self.assumptions.insert(
+                "um retorno de chamada não rodou porque a função ou o contexto tinham a marca 0xA7 de bloco liberado",
+            );
+            return Ok(Outcome::Returned { code: 0 });
+        }
         const CONTEXTO: [Reg; 15] = [
             Reg::R0,
             Reg::R1,
@@ -3940,6 +4019,10 @@ impl<C: CpuBackend> Machine<C> {
             // O BREW prevê essa resposta, e o jogo segue pelo caminho de quem não pôde
             // perguntar em vez de parar aqui.
             (Interface::Shell, slot) if Interface::Shell.method(slot) == Some("Prompt") => FALSE,
+            // `void ISHELL_Beep(IShell *, uint32 dwBeepType, boolean bLoud)`.
+            // Não há alto-falante de sistema. Recusar o método aborta o callback que pediu
+            // o bipe — a chamada some no meio e quem chamou não volta.
+            (Interface::Shell, slot) if Interface::Shell.method(slot) == Some("Beep") => SUCCESS,
             (Interface::Shell, slot) if Interface::Shell.method(slot) == Some("DetectType") => {
                 self.shell_detect_type()?
             }

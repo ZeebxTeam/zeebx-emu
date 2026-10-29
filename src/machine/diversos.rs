@@ -749,7 +749,7 @@ impl<C: CpuBackend> Machine<C> {
         for (onde, funcao, contexto) in ouvintes {
             let vivo = self.cpu.read_u32(onde + 8).ok() == Some(funcao)
                 && self.cpu.read_u32(onde + 12).ok() == Some(contexto);
-            if !vivo || funcao == 0 {
+            if !vivo || funcao == 0 || self.contexto_liberado(funcao, contexto) {
                 if let Some(m) = self.modelos_de_valor.get_mut(&modelo) {
                     m.ouvintes.retain(|&(o, _, _)| o != onde);
                 }
