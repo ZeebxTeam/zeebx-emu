@@ -10,27 +10,28 @@ if [[ -x /opt/devkitpro/devkitA64/bin/aarch64-none-elf-gcc-ar ]]; then
 	ar_bin=/opt/devkitpro/devkitA64/bin/aarch64-none-elf-gcc-ar
 fi
 
-# Only the archive for this target. A host dynarmic left under target/release
-# is x86_64 and must not be folded into the Switch staticlib.
+# The archive is the argument so the tico NRO can bundle into its own staticlib.
+# Without one, this is the libretro core. The search root is that archive's target
+# directory: a host dynarmic under target/release is x86_64 and must not be folded in.
+art="${1:-target/aarch64-unknown-linux-gnu/release/libzeebx_libretro.a}"
+if [[ ! -f "$art" ]]; then
+	echo "bundle-native-libs: no archive to extend ($art)" >&2
+	exit 1
+fi
+# The profile directory, not the whole target/: a host dynarmic under
+# target/release is x86_64 and must not be folded into this archive.
+busca="$(cd "$(dirname "$art")" && pwd)"
+
 natives=()
 while IFS= read -r -d '' lib; do
 	natives+=("${lib}")
-done < <(find target/aarch64-unknown-linux-gnu/release -type f -path '*/out/lib/*.a' -print0 | sort -z)
+done < <(find "$busca" -type f -path '*/out/lib/*.a' -print0 | sort -z)
 
 if [[ ${#natives[@]} -eq 0 ]]; then
 	exit 0
 fi
 
-# Only this target's staticlib. A search over the whole tree would also pick up
-# archives from other targets or a previous copy under frontends/switch/saida.
-arts=(target/aarch64-unknown-linux-gnu/release/libzeebx_libretro.a)
-
-if [[ ! -f "${arts[0]}" ]]; then
-	echo "bundle-native-libs: no libretro archive to extend" >&2
-	exit 1
-fi
-
-for art in "${arts[@]}"; do
+for art in "$art"; do
 	tmp="$(mktemp -d)"
 	i=0
 	added=0

@@ -1,0 +1,30 @@
+{
+  "id": "zeebx",
+  "name": "Zeebx",
+  "nro": "tico-zeebx.nro",
+  "launch": "\"{nro}\" \"{rom}\" \"{title}\" \"{saves}\" \"{states}\" \"{system}\" \"{roms}\"",
+  "settings": "settings.json",
+  "config_file": "zeebx.jsonc",
+  "system_dir": "zeebx",
+  "is_libretro": false,
+  "bool_true_value": "enabled",
+  "bool_false_value": "disabled",
+  "list_label": "Zeebx (Zeebo)",
+  "systems": [
+    {
+      "slug": "zeebo",
+      "title": "Zeebo",
+      "short_title": "Zeebo",
+      "extensions": [".mod", ".zip", ".7z"],
+      "games_file": "zeebo.dat",
+      "naming": "no-intro",
+      "colors": {
+        "start": "E87722",
+        "end": "F5C16C",
+        "start_dark": "8A4510",
+        "end_dark": "A86B28"
+      },
+      "title_rules": { "region_tags": "strip", "articles": "move", "wrap": 32 }
+    }
+  ]
+}

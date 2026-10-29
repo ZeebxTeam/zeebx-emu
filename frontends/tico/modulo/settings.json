@@ -1,0 +1,125 @@
+{
+  "core_id": "zeebx",
+  "display_name": "Zeebx",
+  "config_file": "zeebx.jsonc",
+  "tabs": [
+    {
+      "name": "settings_zeebx_tab_video",
+      "sections": [
+        {
+          "title": "settings_zeebx_section_imagem",
+          "options": [
+            {
+              "key": "zeebx_frameskip",
+              "label": "settings_zeebx_frameskip",
+              "type": "enum",
+              "default": "automatico",
+              "restart": true,
+              "choices": [
+                { "label": "settings_zeebx_off", "value": "desligado" },
+                { "label": "settings_zeebx_auto", "value": "automatico" },
+                { "label": "1", "value": "1" },
+                { "label": "2", "value": "2" },
+                { "label": "3", "value": "3" },
+                { "label": "4", "value": "4" },
+                { "label": "5", "value": "5" },
+                { "label": "6", "value": "6" }
+              ]
+            },
+            {
+              "key": "zeebx_limite",
+              "label": "settings_zeebx_limite",
+              "type": "enum",
+              "default": "60",
+              "restart": true,
+              "choices": [
+                { "label": "60", "value": "60" },
+                { "label": "30", "value": "30" },
+                { "label": "settings_zeebx_off", "value": "desligado" }
+              ]
+            },
+            {
+              "key": "zeebx_resolucao",
+              "label": "settings_zeebx_resolucao",
+              "type": "enum",
+              "default": "1",
+              "restart": true,
+              "choices": [
+                { "label": "1x", "value": "1" },
+                { "label": "0.5x", "value": "0.5" },
+                { "label": "0.25x", "value": "0.25" }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "settings_zeebx_tab_audio",
+      "sections": [
+        {
+          "title": "settings_zeebx_section_som",
+          "options": [
+            {
+              "key": "zeebx_audio",
+              "label": "settings_zeebx_audio",
+              "type": "bool",
+              "default": "enabled",
+              "restart": true
+            },
+            {
+              "key": "zeebx_volume",
+              "label": "settings_zeebx_volume",
+              "type": "enum",
+              "default": "100",
+              "restart": true,
+              "choices": [
+                { "label": "100%", "value": "100" },
+                { "label": "75%", "value": "75" },
+                { "label": "50%", "value": "50" },
+                { "label": "25%", "value": "25" },
+                { "label": "0%", "value": "0" }
+              ]
+            },
+            {
+              "key": "zeebx_midi",
+              "label": "settings_zeebx_midi",
+              "type": "enum",
+              "default": "auto",
+              "restart": true,
+              "choices": [
+                { "label": "settings_zeebx_auto", "value": "auto" },
+                { "label": "settings_zeebx_soundfont", "value": "soundfont" },
+                { "label": "settings_zeebx_timbres", "value": "timbres" }
+              ]
+            },
+            {
+              "key": "zeebx_midi_efeitos",
+              "label": "settings_zeebx_midi_efeitos",
+              "type": "bool",
+              "default": "enabled",
+              "restart": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "settings_zeebx_tab_controles",
+      "sections": [
+        {
+          "title": "settings_zeebx_section_controle",
+          "options": [
+            {
+              "key": "zeebx_direcional_manche",
+              "label": "settings_zeebx_direcional",
+              "type": "bool",
+              "default": "disabled",
+              "restart": true
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

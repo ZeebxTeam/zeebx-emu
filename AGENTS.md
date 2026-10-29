@@ -27,6 +27,7 @@ frontends/
   android/                o aplicativo, sem uma linha de Java
   ios/                    o aplicativo de iOS: UIKit por cima de uma biblioteca estática
   switch/                 o `.a` estático que o ROMBundler liga
+  tico/                   o módulo do tico no Switch: o `.nro` que abre sem RetroArch
   vita/                   o `.a` estático que o RetroArch da Vita liga
   vita-standalone/        o VPK que abre sozinho, sem RetroArch
 ferramentas/        scripts Python: catálogo, varredura, instalação do core
@@ -102,6 +103,13 @@ Mac a imagem Docker `rombundler-switch` traz o devkitA64 e o rustc; o job `core-
 `libretro.yml` roda o mesmo script com `--local` dentro da imagem `devkitpro/devkita64`. A
 release faz o mesmo e publica `zeebx_libretro-switch.zip`. O `.a` não liga sozinho: os
 `switch_jit_*` e `switch_spinlock_*` que o patch do dynarmic chama vêm do ROMBundler.
+
+O módulo do [tico](https://github.com/ticohq/tico) é outro binário, em
+[`frontends/tico`](frontends/tico/LEIAME.md). O tico não liga biblioteca: ele abre um `.nro`
+com o caminho do jogo e espera `--resume` na volta. O `cfg(zeebx_switch)` é o mesmo do `.a`.
+O desenho desse `.nro` é no processador — ele não tem o contexto de OpenGL que o RetroArch
+empresta ao core. No Mac a imagem é a `devkitpro/devkita64` (o script instala o rustc no
+contêiner); o job `tico.yml` é manual, como o da Vita, e roda o mesmo `--local`.
 
 **Vita** (o `.a` estático que o RetroArch liga) mora em
 [`frontends/vita/compilar.sh`](frontends/vita/compilar.sh). O alvo é o
