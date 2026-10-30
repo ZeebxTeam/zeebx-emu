@@ -48,6 +48,7 @@ desktop de verdade; a janela da interface mora em `frontends/qt-standalone`.
 | `gl` | o desenho na placa; **não puxa nada de host** | core, Android, e o `desktop` |
 | `gpu` | criar contexto próprio (glutin) — implica `gl` | desktop |
 | `soundfont` | MIDI por banco de amostras (rustysynth, Rust puro) | core e desktop |
+| `conquistas` | RetroAchievements: o rcheevos (submódulo `rcheevos-sys/rcheevos`, `git submodule update --init`) e o `ureq` | Qt, com `--features conquistas`; **desligada nas releases** até o RA aceitar o console |
 
 **A regra da casa: o core Libretro não linka biblioteca de host.** Sem janela, sem placa de som,
 sem controle. Quem entrega vídeo, áudio e entrada é o frontend. O `libretro.yml` cobra isso com

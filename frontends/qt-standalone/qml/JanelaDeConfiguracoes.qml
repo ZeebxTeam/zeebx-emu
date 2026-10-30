@@ -316,6 +316,7 @@ ApplicationWindow {
                 { chave: "settings.tab.graphics", icone: "monitor", geral: false },
                 { chave: "settings.tab.speed", icone: "gauge", geral: false },
                 { chave: "settings.tab.audio", icone: "volume-2", geral: false },
+                { chave: "settings.tab.achievements", icone: "trophy", geral: true, conquistas: true },
                 { chave: "settings.tab.debug", icone: "bug", geral: true }
             ]
 
@@ -326,7 +327,8 @@ ApplicationWindow {
                 required property int index
 
                 width: ListView.view.width
-                visible: !modelData.geral || !janela.doJogo
+                visible: (!modelData.geral || !janela.doJogo)
+                         && (!modelData.conquistas || Conquistas.disponivel())
                 height: visible ? implicitHeight : 0
                 // Como os botões das outras janelas: o clique não leva o foco do teclado, que a
                 // captura de teclas das páginas de controles e de atalhos precisa.
@@ -1483,6 +1485,8 @@ ApplicationWindow {
                     }
                 }
             }
+
+            PaginaDeConquistas {}
 
             // Depuração
             ScrollView {

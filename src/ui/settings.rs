@@ -316,6 +316,8 @@ pub struct Settings {
     pub z_wheel: ZWheel,
     pub discord: Discord,
     pub atualizacoes: Atualizacoes,
+    /// A conta do RetroAchievements.
+    pub conquistas: ContaDasConquistas,
     /// A versão em que o aviso de abertura foi dispensado de vez. Outra versão mostra de novo.
     pub aviso_dispensado_na_versao: Option<String>,
 }
@@ -526,6 +528,17 @@ impl Combinacao {
         rotulo.push_str(tecla);
         rotulo
     }
+}
+
+/// A conta do RetroAchievements.
+///
+/// **A senha não mora aqui.** O login devolve um token, e é ele que fica, como no RetroArch: a
+/// senha vai ao servidor uma vez e é esquecida.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ContaDasConquistas {
+    pub usuario: Option<String>,
+    pub token: Option<String>,
 }
 
 /// A procura por versões novas. Ver [`crate::ui::atualizacao`].
@@ -1070,6 +1083,7 @@ mod tests {
                 capas_url: "https://exemplo/{chave}.png".into(),
             },
             atualizacoes: Atualizacoes { ao_abrir: false, pre_lancamentos: false },
+            conquistas: ContaDasConquistas { usuario: Some("jogador".into()), token: Some("token".into()) },
             aviso_dispensado_na_versao: Some("0.1.0".into()),
         };
         settings.save_to(&path).unwrap();

@@ -5,6 +5,8 @@
 pub mod audio;
 pub mod brew;
 pub mod config;
+#[cfg(feature = "conquistas")]
+pub mod conquistas;
 pub mod cpu;
 pub mod input;
 pub mod loader;

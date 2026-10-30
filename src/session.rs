@@ -166,6 +166,9 @@ pub struct Session {
     sample: Sample,
     /// As amostras recentes, para o gráfico. A mais nova no fim.
     history: std::collections::VecDeque<Sample>,
+    /// O hash do jogo e o cliente do RetroAchievements. Ver [`Session::liga_conquistas`].
+    #[cfg(feature = "conquistas")]
+    pub(crate) conquistas: crate::conquistas::DaSessao,
 }
 
 /// O pulo de desenho como a sessão o decide: uma vez por quadro, no começo dele.
@@ -607,6 +610,9 @@ impl Session {
             "{} bytes lidos; analisando o módulo",
             bytes.len()
         );
+        // Dos bytes, e não do arquivo: um `.7z` e o `.mod` solto dão o mesmo hash.
+        #[cfg(feature = "conquistas")]
+        let hash_das_conquistas = crate::conquistas::hash_do_modulo(&bytes);
         let image = ModImage::parse(bytes).map_err(|e| StartError::NotAModule(e.to_string()))?;
         let extensoes = extensoes_de(path);
         let module = loader::load_with(&image, &extensoes)
@@ -752,6 +758,11 @@ impl Session {
             window,
             sample: Sample::default(),
             history: std::collections::VecDeque::new(),
+            #[cfg(feature = "conquistas")]
+            conquistas: crate::conquistas::DaSessao {
+                hash: hash_das_conquistas,
+                ..Default::default()
+            },
         })
     }
 
@@ -1156,6 +1167,8 @@ impl Session {
         self.machine.comeca_volta();
         let passo = self.advance_once_inner();
         self.machine.fecha_volta();
+        #[cfg(feature = "conquistas")]
+        self.acompanha_as_conquistas();
         passo
     }
 
@@ -1595,7 +1608,13 @@ impl Session {
     }
 
     /// Grava o estado da máquina, no formato versionado de [`crate::save_state`].
+    /// Com as conquistas ligadas, os contadores de acerto delas vão junto.
     pub fn grava_estado(&self) -> Vec<u8> {
+        #[cfg(feature = "conquistas")]
+        if let Some(cliente) = &self.conquistas.cliente {
+            let progresso = cliente.borrow_mut().progresso();
+            return self.machine.grava_estado_com(|secoes| secoes.poe(SECAO_DAS_CONQUISTAS, progresso));
+        }
         self.machine.grava_estado()
     }
 
@@ -1628,6 +1647,21 @@ impl Session {
         // O contador de trocas de buffer voltou junto com a máquina: a decisão de pulo guardada
         // é de um quadro que, para ela, ainda não aconteceu.
         self.pulo.decidido_em = None;
+        // A contagem de quadros reancora; um estado sem a seção zera os contadores.
+        #[cfg(feature = "conquistas")]
+        {
+            self.conquistas.ultimo_quadro = None;
+            if let Some(cliente) = &self.conquistas.cliente {
+                let progresso = crate::save_state::Leitor::abre(arquivo)
+                    .ok()
+                    .and_then(|leitor| leitor.secao(SECAO_DAS_CONQUISTAS))
+                    .unwrap_or_default();
+                let mut cliente = cliente.borrow_mut();
+                if !cliente.restaura_progresso(progresso) {
+                    cliente.restaura_progresso(&[]);
+                }
+            }
+        }
         Ok(())
     }
 
@@ -2047,6 +2081,66 @@ impl Session {
     }
 }
 
+#[cfg(feature = "conquistas")]
+const SECAO_DAS_CONQUISTAS: &str = "conquistas";
+
+#[cfg(feature = "conquistas")]
+struct MemoriaDaMaquina<'a>(&'a Machine<CpuDaSessao>);
+
+#[cfg(feature = "conquistas")]
+impl crate::conquistas::Memoria for MemoriaDaMaquina<'_> {
+    fn le(&self, endereco: u32, destino: &mut [u8]) -> bool {
+        crate::cpu::CpuBackend::read_mem(self.0.cpu(), endereco, destino).is_ok()
+    }
+}
+
+#[cfg(feature = "conquistas")]
+impl Session {
+    /// Empresta o cliente a esta sessão e manda carregar o jogo pelo hash.
+    pub fn liga_conquistas(&mut self, cliente: crate::conquistas::Compartilhado) {
+        let Some(hash) = self.conquistas.hash.clone() else {
+            return;
+        };
+        cliente.borrow_mut().carrega_jogo(&hash);
+        self.conquistas.cliente = Some(cliente);
+        self.conquistas.ultimo_quadro = None;
+    }
+
+    /// Devolve o cliente e descarrega o jogo.
+    pub fn desliga_conquistas(&mut self) {
+        if let Some(cliente) = self.conquistas.cliente.take() {
+            cliente.borrow_mut().descarrega_jogo();
+        }
+    }
+
+    /// Com o jogo pausado: os pedidos andam, sem avaliar quadro.
+    pub fn conquistas_ociosas(&mut self) {
+        if let Some(cliente) = &self.conquistas.cliente {
+            cliente.borrow_mut().ocioso(Some(&MemoriaDaMaquina(&self.machine)));
+        }
+    }
+
+    /// Avalia as conquistas de cada quadro de 60 Hz que o relógio virtual cruzou nesta volta: pelo
+    /// relógio, e não pelo desenho, o pulo de quadros e o fast-forward não mudam a contagem. O teto
+    /// de 60 é para um salto anômalo do relógio.
+    pub(crate) fn acompanha_as_conquistas(&mut self) {
+        let Some(cliente) = self.conquistas.cliente.clone() else {
+            return;
+        };
+        let quadro = self.machine.clock_us() * 60 / 1_000_000;
+        let anterior = *self.conquistas.ultimo_quadro.get_or_insert(quadro);
+        if quadro <= anterior {
+            return;
+        }
+        self.conquistas.ultimo_quadro = Some(quadro);
+        let memoria = MemoriaDaMaquina(&self.machine);
+        let mut cliente = cliente.borrow_mut();
+        for _ in 0..(quadro - anterior).min(60) {
+            cliente.quadro(&memoria);
+        }
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -2104,6 +2198,8 @@ pub(crate) mod tests {
             window,
             sample: Sample::default(),
             history: std::collections::VecDeque::new(),
+            #[cfg(feature = "conquistas")]
+            conquistas: Default::default(),
         }
     }
 

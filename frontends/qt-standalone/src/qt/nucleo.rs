@@ -87,6 +87,8 @@ pub struct Volta {
     /// As linhas da caixa de métricas do canto, a primeira com os quadros por segundo; vazio com
     /// a opção desligada. Ver [`Nucleo::metricas`].
     pub metricas: Vec<String>,
+    /// Os avisos do RetroAchievements desta volta: o jogo reconhecido, uma conquista.
+    pub conquistas: Vec<super::conquistas::AvisoDeConquista>,
 }
 
 /// O que dizer de um screenshot que terminou, já traduzido.
@@ -220,6 +222,8 @@ pub struct Nucleo {
     /// O slot dos atalhos do save state, de zero. Fica de um jogo para o outro, como no PCSX2:
     /// quem guarda tudo no 3 não quer escolher o 3 de novo a cada jogo.
     slot: usize,
+    /// As conquistas do RetroAchievements. Ver [`super::conquistas`].
+    pub conquistas: super::conquistas::NoNucleo,
 }
 
 impl Nucleo {
@@ -272,6 +276,7 @@ impl Nucleo {
             teclas: HashSet::new(),
             gravacoes: mpsc::channel(),
             slot: 0,
+            conquistas: Default::default(),
         };
         nucleo.procura_de_novo();
         // Na abertura, a pergunta ao GitHub, como no egui: a resposta chega pelo relógio da
@@ -332,6 +337,9 @@ impl Nucleo {
         let discord = &self.settings.discord;
         self.presenca
             .atualiza(discord.ativo, &self.catalogo, classe, titulo, &discord.capas_url);
+        if self.conquistas.a_cada_quadro(&mut self.settings) {
+            self.salva_configuracoes();
+        }
         if let Some(canal) = &self.procura_de_atualizacao {
             match canal.try_recv() {
                 Ok(resposta) => {
@@ -778,8 +786,13 @@ impl Nucleo {
         };
         let anterior = self.partida.as_mut();
         let com_placa = self.gl.is_some();
-        let partida = no_contexto(com_placa, || Partida::abre(caminho, abertura, anterior))
+        let mut partida = no_contexto(com_placa, || Partida::abre(caminho, abertura, anterior))
             .map_err(|erro| erro.to_string())?;
+        // A de antes larga o jogo antes: descarregar depois descarregaria o novo.
+        if let Some(antiga) = self.partida.as_mut() {
+            self.conquistas.desliga(antiga.sessao_mut());
+        }
+        self.conquistas.liga(partida.sessao_mut());
         // A de antes sai aqui, e com o contexto corrente: as texturas dela moram nele.
         self.personalizadas = personalizadas;
         self.caminho_aberto = Some(caminho.to_path_buf());
@@ -790,6 +803,9 @@ impl Nucleo {
     /// Solta a partida com o contexto dela corrente: soltar texturas com o contexto do Qt Quick
     /// corrente apagaria as dele.
     pub fn fecha(&mut self) {
+        if let Some(partida) = self.partida.as_mut() {
+            self.conquistas.desliga(partida.sessao_mut());
+        }
         if self.partida.is_some() {
             no_contexto(self.gl.is_some(), || self.partida = None);
             self.personalizadas = None;
@@ -1207,6 +1223,15 @@ impl Nucleo {
             self.relatorio.grava(partida);
         }
         let mut volta = Volta::default();
+        if let Some(partida) = self.partida.as_mut() {
+            let pausada = partida.pausada();
+            let (avisos, mudou) =
+                self.conquistas.depois_do_passo(partida.sessao_mut(), pausada, &mut self.settings, &self.catalogo);
+            volta.conquistas = avisos;
+            if mudou {
+                self.salva_configuracoes();
+            }
+        }
         if let Some(caminho) = proximo {
             volta.estado = Some(match self.abre(&caminho) {
                 Ok(()) => self.estado(),

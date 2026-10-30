@@ -26,10 +26,10 @@ fn interface_qt() {
 
     CxxQtBuilder::new_qml_module(
         QmlModule::new("zeebx")
-            .qml_files(["qml/Principal.qml", "qml/Jogo.qml", "qml/GradeDaBiblioteca.qml", "qml/SliderDaBiblioteca.qml", "qml/JanelaDeConfiguracoes.qml", "qml/JanelaDeSaves.qml", "qml/JanelaDeLog.qml", "qml/Icone.qml", "qml/PalcoDoJogo.qml"])
+            .qml_files(["qml/Principal.qml", "qml/Jogo.qml", "qml/GradeDaBiblioteca.qml", "qml/SliderDaBiblioteca.qml", "qml/JanelaDeConfiguracoes.qml", "qml/JanelaDeSaves.qml", "qml/JanelaDeLog.qml", "qml/Icone.qml", "qml/PalcoDoJogo.qml", "qml/AvisoDeConquista.qml", "qml/PaginaDeConquistas.qml"])
             .depend("QtQuick"),
     )
-    .files(["src/qt/ponte.rs", "src/qt/biblioteca.rs", "src/qt/configuracoes.rs", "src/qt/auxiliares.rs", "src/qt/tema.rs"])
+    .files(["src/qt/ponte.rs", "src/qt/biblioteca.rs", "src/qt/configuracoes.rs", "src/qt/auxiliares.rs", "src/qt/tema.rs", "src/qt/conquistas.rs"])
     .include_dir("src/qt/cpp")
     .cpp_files([
         "src/qt/cpp/gl_qt.cpp",

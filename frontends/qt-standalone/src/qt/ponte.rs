@@ -189,6 +189,10 @@ pub mod qobject {
         #[qsignal]
         fn fechou(self: Pin<&mut Self>);
 
+        /// Um aviso do RetroAchievements. `icone` é uma URL, ou vazio.
+        #[qsignal]
+        fn conquista(self: Pin<&mut Self>, titulo: QString, texto: QString, icone: QString);
+
         #[inherit]
         fn size(self: &Self) -> QSizeF;
 
@@ -419,6 +423,14 @@ impl qobject::TelaDoJogo {
         let parou = QString::from(&volta.parou);
         if self.parou() != &parou {
             self.as_mut().set_parou(parou);
+        }
+        // Os sinais depois do `nucleo::com`, nunca dentro: ver a regra no topo do `nucleo.rs`.
+        for aviso in volta.conquistas {
+            self.as_mut().conquista(
+                QString::from(&aviso.titulo),
+                QString::from(&aviso.texto),
+                QString::from(&aviso.icone),
+            );
         }
         if volta.fechou {
             self.as_mut().esvazia();

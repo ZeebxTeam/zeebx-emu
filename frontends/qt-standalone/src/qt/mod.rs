@@ -3,6 +3,7 @@
 mod auxiliares;
 mod biblioteca;
 mod configuracoes;
+mod conquistas;
 mod nucleo;
 mod ponte;
 mod tema;

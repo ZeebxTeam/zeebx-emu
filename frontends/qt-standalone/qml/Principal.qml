@@ -628,7 +628,14 @@ ApplicationWindow {
             ItemDeMenu { icone: "monitor"; text: tr("settings.tab.graphics"); onTriggered: configuracoes.abre(3) }
             ItemDeMenu { icone: "gauge"; text: tr("settings.tab.speed"); onTriggered: configuracoes.abre(4) }
             ItemDeMenu { icone: "volume-2"; text: tr("settings.tab.audio"); onTriggered: configuracoes.abre(5) }
-            ItemDeMenu { icone: "bug"; text: tr("settings.tab.debug"); onTriggered: configuracoes.abre(6) }
+            ItemDeMenu {
+                icone: "trophy"
+                text: tr("settings.tab.achievements")
+                visible: Conquistas.disponivel()
+                height: visible ? implicitHeight : 0
+                onTriggered: configuracoes.abre(6)
+            }
+            ItemDeMenu { icone: "bug"; text: tr("settings.tab.debug"); onTriggered: configuracoes.abre(7) }
             MenuSeparator {}
             ItemDeMenu {
                 text: tr("menu.settings.game")
