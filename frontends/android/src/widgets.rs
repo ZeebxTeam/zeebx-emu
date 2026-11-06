@@ -1,25 +1,25 @@
-//! As peças de uma tela de toque.
+//! The pieces of a touch screen.
 //!
-//! Uma linha de configuração aqui não é um `checkbox` com uma legenda ao lado: é uma faixa da
-//! largura inteira, com o nome grande à esquerda e o controle à direita, alta o bastante para o
-//! polegar acertar sem mirar. É a diferença entre uma janela de desktop encolhida e uma tela
-//! feita para a mão.
+//! A settings row here is not a `checkbox` with a caption beside it: it is a full-width strip,
+//! with the name large on the left and the control on the right, tall enough for the thumb to hit
+//! without aiming. It is the difference between a shrunken desktop window and a screen made for
+//! the hand.
 //!
-//! **As dicas ficam escondidas.** Os textos de ajuda do Zeebx são longos — alguns têm cinco
-//! linhas — e todos abertos ao mesmo tempo viram uma parede cinza em que não se acha mais o
-//! que se procurava. Cada linha mostra um `?`; quem quer a explicação toca nele, e ela abre ali
-//! mesmo. Quem já sabe vê uma lista de nomes e valores.
+//! **Hints stay hidden.** Zeebx's help texts are long — some have five lines — and all of them
+//! open at once become a gray wall where you can no longer find what you were looking for. Each
+//! row shows a `?`; whoever wants the explanation taps it, and it opens right there. Whoever
+//! already knows sees a list of names and values.
 
-use crate::tema::ALVO;
+use crate::theme::TARGET_SIZE;
 
-/// Qual dica está aberta. É o identificador da linha, e só uma fica aberta por vez.
-pub type Aberta = Option<String>;
+/// Which hint is open. It is the row's identifier, and only one stays open at a time.
+pub type ExpandedHint = Option<String>;
 
-/// Um título de seção.
-pub fn secao(ui: &mut egui::Ui, titulo: &str) {
+/// A section title.
+pub fn section(ui: &mut egui::Ui, title: &str) {
     ui.add_space(14.0);
     ui.label(
-        egui::RichText::new(titulo.to_uppercase())
+        egui::RichText::new(title.to_uppercase())
             .small()
             .color(ui.visuals().weak_text_color())
             .strong(),
@@ -27,74 +27,76 @@ pub fn secao(ui: &mut egui::Ui, titulo: &str) {
     ui.add_space(4.0);
 }
 
-/// Uma faixa de linha: o fundo, o controle à direita, o `?` e o nome com o que sobrar.
+/// A row strip: the background, the control on the right, the `?` and the name with whatever is
+/// left.
 ///
-/// A ordem de dentro é da direita para a esquerda de propósito. O controle é quem manda na
-/// largura — uma chave tem 52 pontos, um selo de valor tem o que tiver —, e o nome fica com o
-/// resto; ao contrário, um nome comprido empurraria o alvo de toque para fora da tela.
-fn faixa<R>(
+/// The inner order is right to left on purpose. The control is what decides the width — a switch
+/// is 52 points, a value badge is whatever it is — and the name gets the rest; the other way
+/// around, a long name would push the touch target off the screen.
+fn strip<R>(
     ui: &mut egui::Ui,
-    chave: &str,
-    titulo: &str,
-    dica: Option<&str>,
-    aberta: &mut Aberta,
-    controle: impl FnOnce(&mut egui::Ui) -> R,
+    key_id: &str,
+    title: &str,
+    hint: Option<&str>,
+    opened: &mut ExpandedHint,
+    controller: impl FnOnce(&mut egui::Ui) -> R,
 ) -> R {
-    let mostrando = aberta.as_deref() == Some(chave);
-    let quadro = egui::Frame::NONE
+    let showing = opened.as_deref() == Some(key_id);
+    let frame = egui::Frame::NONE
         .fill(ui.visuals().widgets.inactive.weak_bg_fill)
         .corner_radius(12.0)
         .inner_margin(egui::Margin::symmetric(14, 8));
 
-    let resultado = quadro
+    let result = frame
         .show(ui, |ui| {
-            // A altura da linha é dada, não descoberta. Num `right_to_left` dentro de uma área
-            // de rolagem, o espaço disponível é a tela inteira, e o sub-`Ui` do nome esticava a
-            // faixa até o fim — uma linha ocupava a tela e as de baixo saíam de vista.
-            let caixa = egui::vec2(ui.available_width(), ALVO - 16.0);
+            // The row height is given, not discovered. In a `right_to_left` inside a scroll
+            // area, the available space is the whole screen, and the name's sub-`Ui` stretched
+            // the strip to the end — one row took up the screen and the ones below went out of
+            // view.
+            let container = egui::vec2(ui.available_width(), TARGET_SIZE - 16.0);
             ui.allocate_ui_with_layout(
-                caixa,
+                container,
                 egui::Layout::right_to_left(egui::Align::Center),
                 |ui| {
-                let devolvido = controle(ui);
-                if dica.is_some() {
+                let returned = controller(ui);
+                if hint.is_some() {
                     ui.add_space(4.0);
-                    let botao = egui::Button::new(
+                    let button = egui::Button::new(
                         egui::RichText::new("?").color(ui.visuals().weak_text_color()),
                     )
                     .frame(false)
                     .min_size(egui::vec2(34.0, 34.0));
-                    if ui.add(botao).clicked() {
-                        *aberta = match mostrando {
+                    if ui.add(button).clicked() {
+                        *opened = match showing {
                             true => None,
-                            false => Some(chave.to_string()),
+                            false => Some(key_id.to_string()),
                         };
                     }
                 }
                 ui.add_space(6.0);
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    ui.label(titulo);
+                    ui.label(title);
                 });
-                devolvido
+                returned
                 },
             )
             .inner
         })
         .inner;
 
-    if mostrando {
-        if let Some(dica) = dica {
+    if showing {
+        if let Some(hint) = hint {
             ui.add_space(2.0);
-            // A largura é imposta antes de o texto existir. Um `label` num `horizontal` não
-            // quebra linha: ele cresce, empurra a área de rolagem para os lados e desalinha
-            // todas as outras faixas — a tela inteira se entorta por causa de uma dica.
-            let largura = (ui.available_width() - 28.0).max(120.0);
+            // The width is imposed before the text exists. A `label` in a `horizontal` does not
+            // wrap: it grows, pushes the scroll area sideways and misaligns every other strip —
+            // the whole screen goes crooked because of one hint.
+            let width = (ui.available_width() - 28.0).max(120.0);
             ui.horizontal(|ui| {
                 ui.add_space(14.0);
                 ui.vertical(|ui| {
-                    ui.set_max_width(largura);
+                    ui.set_max_width(width);
                     ui.label(
-                        egui::RichText::new(dica)
+                        egui::RichText::new(hint)
                             .small()
                             .color(ui.visuals().weak_text_color()),
                     );
@@ -103,105 +105,106 @@ fn faixa<R>(
             ui.add_space(4.0);
         }
     }
-    resultado
+    result
 }
 
-/// Uma linha que liga e desliga.
-pub fn interruptor(
+/// A row that switches on and off.
+pub fn toggle(
     ui: &mut egui::Ui,
-    chave: &str,
-    titulo: &str,
-    dica: Option<&str>,
-    aberta: &mut Aberta,
-    valor: &mut bool,
+    key_id: &str,
+    title: &str,
+    hint: Option<&str>,
+    opened: &mut ExpandedHint,
+    value: &mut bool,
 ) -> bool {
-    faixa(ui, chave, titulo, dica, aberta, |ui| chave_de_luz(ui, valor))
+    strip(ui, key_id, title, hint, opened, |ui| toggle_switch(ui, value))
 }
 
-/// Uma escolha entre poucas opções, como os botões de um rádio de carro.
+/// A choice between a few options, like the buttons on a car radio.
 ///
-/// É um grupo de botões grandes lado a lado, e não uma coluna de bolinhas: a bolinha do
-/// `radio_button` tem 10 pontos de diâmetro, e ninguém acerta 10 pontos com o polegar.
-pub fn segmentado<T: PartialEq + Copy>(
+/// It is a group of large buttons side by side, not a column of dots: the `radio_button` dot is
+/// 10 points across, and nobody hits 10 points with a thumb.
+pub fn segmented<T: PartialEq + Copy>(
     ui: &mut egui::Ui,
-    chave: &str,
-    titulo: &str,
-    dica: Option<&str>,
-    aberta: &mut Aberta,
-    valor: &mut T,
-    opcoes: &[(T, String)],
+    key_id: &str,
+    title: &str,
+    hint: Option<&str>,
+    opened: &mut ExpandedHint,
+    value: &mut T,
+    options: &[(T, String)],
 ) -> bool {
-    let mut mudou = false;
-    faixa(ui, chave, titulo, dica, aberta, |_| {});
+    let mut changed = false;
+    strip(ui, key_id, title, hint, opened, |_| {});
     ui.add_space(4.0);
     ui.horizontal_wrapped(|ui| {
-        for (opcao, nome) in opcoes {
-            let escolhido = *valor == *opcao;
-            let botao = egui::Button::new(nome)
-                .min_size(egui::vec2(0.0, ALVO - 8.0))
-                .selected(escolhido);
-            if ui.add(botao).clicked() && !escolhido {
-                *valor = *opcao;
-                mudou = true;
+        for (option, name) in options {
+            let chosen = *value == *option;
+            let button = egui::Button::new(name)
+                .min_size(egui::vec2(0.0, TARGET_SIZE - 8.0))
+                .selected(chosen);
+            if ui.add(button).clicked() && !chosen {
+                *value = *option;
+                changed = true;
             }
         }
     });
     ui.add_space(6.0);
-    mudou
+    changed
 }
 
-/// Um número numa faixa, com o valor num selo à direita.
-pub fn deslizante(
+/// A number in a range, with the value in a badge on the right.
+pub fn slider(
     ui: &mut egui::Ui,
-    chave: &str,
-    titulo: &str,
-    dica: Option<&str>,
-    aberta: &mut Aberta,
-    valor: &mut u8,
-    faixa_de: std::ops::RangeInclusive<u8>,
-    rotulo: impl Fn(u8) -> String,
+    key_id: &str,
+    title: &str,
+    hint: Option<&str>,
+    opened: &mut ExpandedHint,
+    value: &mut u8,
+    range: std::ops::RangeInclusive<u8>,
+    label: impl Fn(u8) -> String,
 ) -> bool {
-    let mut mudou = false;
-    let atual = rotulo(*valor);
-    faixa(ui, chave, titulo, dica, aberta, |ui| {
-        ui.label(egui::RichText::new(atual).monospace().strong());
+    let mut changed = false;
+    let current = label(*value);
+    strip(ui, key_id, title, hint, opened, |ui| {
+        ui.label(egui::RichText::new(current).monospace().strong());
     });
     ui.add_space(2.0);
     ui.horizontal(|ui| {
         ui.add_space(14.0);
-        // O `Slider` não olha o espaço que recebe: ele mede pelo `spacing.slider_width`, que
-        // de fábrica são 100 pontos. Num alvo de arrastar isso é curto demais — cada pixel
-        // vale vários passos —, então a trilha é dita aqui, e é a linha inteira.
+        // `Slider` does not look at the space it gets: it measures by `spacing.slider_width`,
+        // which is 100 points out of the box. For a drag target that is far too short — each
+        // pixel is worth several steps — so the rail is stated here, and it is the whole row.
         ui.spacing_mut().slider_width = (ui.available_width() - 28.0).max(120.0);
-        // Sem o número do lado: ele já está no selo da linha, e o campo de digitar do
-        // `Slider` é um alvo minúsculo que só atrapalha no toque.
-        mudou = ui
-            .add(egui::Slider::new(valor, faixa_de).show_value(false))
+        // No number beside it: it is already in the row's badge, and the `Slider`'s text field
+        // is a tiny target that only gets in the way on touch.
+        changed = ui
+            .add(egui::Slider::new(value, range).show_value(false))
             .changed();
     });
     ui.add_space(6.0);
-    mudou
+    changed
 }
 
-/// Uma linha que leva a outro lugar: o nome em cima, o valor embaixo, e a seta à direita.
-pub fn navega(ui: &mut egui::Ui, titulo: &str, valor: &str) -> bool {
-    let quadro = egui::Frame::NONE
+/// A row that leads somewhere else: the name on top, the value below, and the arrow on the
+/// right.
+pub fn navigate(ui: &mut egui::Ui, title: &str, value: &str) -> bool {
+    let frame = egui::Frame::NONE
         .fill(ui.visuals().widgets.inactive.weak_bg_fill)
         .corner_radius(12.0)
         .inner_margin(egui::Margin::symmetric(14, 10));
-    let resposta = quadro
+    let response = frame
         .show(ui, |ui| {
-            let caixa = egui::vec2(ui.available_width(), ALVO - 8.0);
+            let container = egui::vec2(ui.available_width(), TARGET_SIZE - 8.0);
             ui.allocate_ui_with_layout(
-                caixa,
+                container,
                 egui::Layout::right_to_left(egui::Align::Center),
                 |ui| {
                     ui.label(egui::RichText::new("›").size(24.0));
                     ui.add_space(6.0);
                     ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                        ui.label(titulo);
+                        ui.label(title);
                         ui.label(
-                            egui::RichText::new(valor)
+                            egui::RichText::new(value)
                                 .small()
                                 .color(ui.visuals().weak_text_color()),
                         );
@@ -211,41 +214,42 @@ pub fn navega(ui: &mut egui::Ui, titulo: &str, valor: &str) -> bool {
         })
         .response;
     ui.interact(
-        resposta.rect,
-        egui::Id::new(("navega", titulo)),
+        response.rect,
+        egui::Id::new(("navega", title)),
         egui::Sense::click(),
     )
     .clicked()
 }
 
-/// O botão de ligar e desligar, desenhado à mão.
+/// The on/off switch, drawn by hand.
 ///
-/// O `checkbox` do egui é um quadradinho de 18 pontos com um risco dentro — do outro lado da
-/// tela não dá para saber se está marcado. Uma chave de luz diz o estado pela posição e pela
-/// cor, que é o que se lê de longe.
-fn chave_de_luz(ui: &mut egui::Ui, ligado: &mut bool) -> bool {
-    let tamanho = egui::vec2(52.0, 30.0);
-    let (rect, resposta) = ui.allocate_exact_size(tamanho, egui::Sense::click());
-    if resposta.clicked() {
-        *ligado = !*ligado;
+/// egui's `checkbox` is an 18-point square with a tick inside — from the other side of the screen
+/// you can't tell whether it is checked. A light switch tells its state by position and color,
+/// which is what reads from afar.
+fn toggle_switch(ui: &mut egui::Ui, enabled: &mut bool) -> bool {
+    let size = egui::vec2(52.0, 30.0);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    if response.clicked() {
+        *enabled = !*enabled;
     }
-    // A animação dá o retorno que o dedo não tem: sem ela a chave parece não ter respondido.
-    let quanto = ui
+    // The animation gives the feedback the finger lacks: without it the switch seems not to have
+    // responded.
+    let amount = ui
         .ctx()
-        .animate_bool_responsive(resposta.id, *ligado);
-    let visual = ui.style().interact_selectable(&resposta, *ligado);
-    let trilho = egui::Color32::from_rgb(90, 90, 96).lerp_to_gamma(
+        .animate_bool_responsive(response.id, *enabled);
+    let visual = ui.style().interact_selectable(&response, *enabled);
+    let rail = egui::Color32::from_rgb(90, 90, 96).lerp_to_gamma(
         ui.visuals().selection.bg_fill,
-        quanto,
+        amount,
     );
     ui.painter()
-        .rect_filled(rect, rect.height() / 2.0, trilho);
-    let raio = rect.height() / 2.0 - 3.0;
-    let centro = egui::pos2(
-        egui::lerp((rect.left() + raio + 3.0)..=(rect.right() - raio - 3.0), quanto),
+        .rect_filled(rect, rect.height() / 2.0, rail);
+    let radius = rect.height() / 2.0 - 3.0;
+    let center = egui::pos2(
+        egui::lerp((rect.left() + radius + 3.0)..=(rect.right() - radius - 3.0), amount),
         rect.center().y,
     );
     ui.painter()
-        .circle(centro, raio, egui::Color32::WHITE, visual.fg_stroke);
-    resposta.clicked()
+        .circle(center, radius, egui::Color32::WHITE, visual.fg_stroke);
+    response.clicked()
 }
