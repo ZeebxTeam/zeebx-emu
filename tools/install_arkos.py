@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Instala Zeebx em ArkOS/AeolusUX/dArkOS/dArkOSen.
+"""Installs Zeebx on ArkOS/AeolusUX/dArkOS/dArkOSen.
 
-Exemplo:
-  python3 ferramentas/instala_arkos.py --rootfs /media/$USER/root --roms /media/$USER/EASYROMS \\
+Example:
+  python3 tools/install_arkos.py --rootfs /media/$USER/root --roms /media/$USER/EASYROMS \\
     --core zeebx_libretro.so --info zeebx_libretro.info \\
     --soundfont GeneralUser-GS.sf2 --rom 'Double Dragon (Brazil) (Es,Pt).zip'
 """
@@ -40,12 +40,12 @@ def backup(path, rootfs):
         return None
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
     try:
-        relativo = path.resolve().relative_to(rootfs.resolve())
+        relative = path.resolve().relative_to(rootfs.resolve())
     except ValueError:
-        # EASYROMS é outra partição: preserve pelo menos pasta final + nome, sem tentar escrever
-        # fora da árvore de backup nem colidir com um arquivo homônimo do ROOTFS.
-        relativo = pathlib.Path("external") / path.parent.name / path.name
-    out = rootfs / "zeebx-backup" / stamp / relativo
+        # EASYROMS is another partition: keep at least the last folder + name, without trying to
+        # write outside the backup tree or colliding with a same-named file from ROOTFS.
+        relative = pathlib.Path("external") / path.parent.name / path.name
+    out = rootfs / "zeebx-backup" / stamp / relative
     out.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(path, out)
     return out
@@ -56,7 +56,7 @@ def update_es(path):
     if "<name>zeebo</name>" not in text:
         close = text.rfind("</systemList>")
         if close < 0:
-            raise ValueError(f"{path}: não achei </systemList>")
+            raise ValueError(f"{path}: could not find </systemList>")
         text = text[:close] + ENTRY + text[close:]
     path.write_text(text, encoding="utf-8")
     ET.parse(path)
@@ -68,16 +68,16 @@ def main():
     ap.add_argument("--core", type=pathlib.Path, required=True)
     ap.add_argument("--info", type=pathlib.Path, required=True)
     ap.add_argument("--soundfont", type=pathlib.Path)
-    ap.add_argument("--font", type=pathlib.Path, help="tectoy.ttf (opcional; a Z-Wheel também pode instalá-la)")
+    ap.add_argument("--font", type=pathlib.Path, help="tectoy.ttf (optional; the Z-Wheel can also install it)")
     ap.add_argument("--rom", type=pathlib.Path, action="append", default=[])
     args = ap.parse_args()
     rootfs, romroot = args.rootfs, args.roms
     for p in (rootfs, romroot, args.core, args.info):
         if not p.exists():
-            print(f"não existe: {p}", file=sys.stderr)
+            print(f"does not exist: {p}", file=sys.stderr)
             return 2
     if args.core.stat().st_size < 100_000 or args.core.read_bytes()[:4] != b"\x7fELF":
-        print("--core não parece ELF válido", file=sys.stderr)
+        print("--core does not look like a valid ELF", file=sys.stderr)
         return 2
     core_dst = rootfs / "home/ark/.config/retroarch/cores/zeebx_libretro.so"
     info_dst = rootfs / "home/ark/.config/retroarch/cores/zeebx_libretro.info"
@@ -116,29 +116,29 @@ def main():
     rom_dst.mkdir(parents=True, exist_ok=True)
     for rom in args.rom:
         if not rom.is_file():
-            print(f"ROM não existe: {rom}", file=sys.stderr)
+            print(f"ROM does not exist: {rom}", file=sys.stderr)
             return 2
         shutil.copy2(rom, rom_dst / rom.name)
         print(f"ROM: {rom_dst / rom.name}")
     if args.soundfont:
         if not args.soundfont.is_file():
-            print(f"SoundFont não existe: {args.soundfont}", file=sys.stderr)
+            print(f"SoundFont does not exist: {args.soundfont}", file=sys.stderr)
             return 2
         sf_dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(args.soundfont, sf_dst)
         print(f"SoundFont: {sf_dst}")
     elif sf_dst.exists():
-        print(f"SoundFont já presente: {sf_dst}")
+        print(f"SoundFont already present: {sf_dst}")
     if args.font:
         if not args.font.is_file():
-            print(f"Fonte não existe: {args.font}", file=sys.stderr)
+            print(f"Font does not exist: {args.font}", file=sys.stderr)
             return 2
         font_dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(args.font, font_dst)
-        print(f"Fonte: {font_dst}")
+        print(f"Font: {font_dst}")
     elif font_dst.exists():
-        print(f"Fonte já presente: {font_dst}")
-    print("Tudo instalado. Sincronize e desmonte as partições antes de remover o cartão.")
+        print(f"Font already present: {font_dst}")
+    print("All installed. Sync and unmount the partitions before removing the card.")
     return 0
 
 if __name__ == "__main__":

@@ -20,6 +20,10 @@ cmake-build-*/
 .vscode/
 *.swp
 
+# Python: bytecode cache written when the tools/ scripts run.
+__pycache__/
+*.pyc
+
 # Rust
 /target/
 # O cxx-qt-build escreve a configuração do servidor de linguagem QML com o caminho desta máquina.
