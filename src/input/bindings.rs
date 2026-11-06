@@ -1,41 +1,43 @@
-//! De onde vem cada botão do controle do Zeebo.
+//! Where each button of the Zeebo controller comes from.
 //!
-//! O mapeamento é guardado por **nome** — o nome da tecla, o do botão do controle do host, o do
-//! botão do Zeebo — e não por índice. Índices mudam quando a tabela muda; nomes sobrevivem, e é
-//! o que permite um arquivo de configuração escrito hoje continuar valendo depois.
+//! The mapping is stored by **name** — the key's name, the host controller button's, the Zeebo
+//! button's — and not by index. Indices change when the table changes; names survive, and that
+//! is what lets a settings file written today keep working later.
 //!
-//! Este módulo não conhece nem o teclado nem o controle: ele só diz *o que* aciona *o quê*.
-//! Quem sabe se a tecla `Z` está apertada é a interface, e é ela que traduz.
+//! This module knows neither the keyboard nor the controller: it only says *what* triggers
+//! *what*. The interface is what knows whether the `Z` key is pressed, and it is the one that
+//! translates.
 
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
 use crate::input::{self, Pad};
-use crate::velocidade::turbo::ModoDoTurbo;
+use crate::speed::turbo::TurboMode;
 
-/// Uma origem de entrada no host.
+/// An input source on the host.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "tipo", rename_all = "snake_case")]
 pub enum Source {
-    /// Uma tecla, pelo nome que a interface usa (`Z`, `Space`, `ArrowUp`).
+    /// A key, by the name the interface uses (`Z`, `Space`, `ArrowUp`).
     Key { name: String },
-    /// Um botão de um controle de verdade (`South`, `Start`, `LeftTrigger`).
+    /// A button of a real controller (`South`, `Start`, `LeftTrigger`).
     Button { name: String },
-    /// Um eixo de um controle, com o sentido que conta. É assim que um direcional analógico
-    /// aciona um direcional digital.
+    /// An axis of a controller, with the direction that counts. That is how an analog stick
+    /// triggers a digital D-pad.
     Axis { name: String, positive: bool },
 }
 
-/// De onde vem um eixo analógico do console.
+/// Where an analog axis of the console comes from.
 ///
-/// É diferente de uma [`Source::Axis`]: aquela pergunta "o jogador empurrou para este lado?" e
-/// serve para acionar um botão; esta traz o valor inteiro do eixo, que é o que um analógico é.
+/// It is different from a [`Source::Axis`]: that one asks "did the player push this way?" and
+/// serves to trigger a button; this one carries the axis's whole value, which is what an analog
+/// stick is.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AxisSource {
-    /// O eixo do controle do host, pelo nome (`LeftStickX`).
+    /// The host controller's axis, by name (`LeftStickX`).
     pub name: String,
-    /// Se o sentido vai ao contrário do que o console espera.
+    /// Whether the direction runs opposite to what the console expects.
     #[serde(default)]
     pub invert: bool,
 }
@@ -49,15 +51,16 @@ impl AxisSource {
     }
 }
 
-/// Abaixo de quanto curso o analógico conta como parado.
+/// Below how much travel the analog stick counts as at rest.
 ///
-/// Sem isso um manche que não volta exatamente ao centro deixaria o eixo tremendo perto do
-/// zero, e o jogo veria o controle oscilando sozinho.
-/// A zona morta do manche, em fração do curso.
+/// Without this a stick that does not return exactly to the center would leave the axis jittering
+/// near zero, and the game would see the controller oscillating on its own.
+/// The stick's dead zone, as a fraction of its travel.
 ///
-/// Pública porque o núcleo Libretro precisa da **mesma** regra no laço que lê o RetroPad: lá o
-/// manche parado chega como zero, e escrever esse zero por cima apagaria o que o espelho do
-/// direcional acabou de pôr — a opção `zeebx_dpad_to_analog_pN` ficaria sem efeito, e só no núcleo.
+/// Public because the Libretro core needs the **same** rule in the loop that reads the RetroPad:
+/// there the resting stick arrives as zero, and writing that zero on top would erase what the
+/// D-pad mirror has just put there — the `zeebx_dpad_to_analog_pN` option would have no effect,
+/// and only in the core.
 pub const DEADZONE: f32 = 0.12;
 
 impl Source {
@@ -73,7 +76,7 @@ impl Source {
         }
     }
 
-    /// Como a origem aparece na tela.
+    /// How the source appears on screen.
     pub fn label(&self) -> String {
         match self {
             Self::Key { name } => name.clone(),
@@ -88,147 +91,160 @@ impl Source {
         }
     }
 
-    /// Se a origem é do teclado — o que decide de onde a interface vai lê-la.
+    /// Whether the source is from the keyboard — which decides where the interface will read it
+    /// from.
     pub fn is_key(&self) -> bool {
         matches!(self, Self::Key { .. })
     }
 }
 
-/// O que o console enxerga ligado numa porta.
+/// What the console sees connected to a port.
 ///
-/// O Zeebo tem duas USB e aceita as duas coisas: o `IHID::GetConnectedDevices` da Z-Wheel é
-/// chamado duas vezes, uma pedindo `0x0106c3fd` — o joystick — e outra pedindo `0x0106c3fc`.
-/// Quando a segunda volta vazia, ela imprime `No keyboard reported`. Ou seja, **teclado é um
-/// aparelho de verdade** para o console, não um jeito de falar.
+/// The Zeebo has two USB ports and accepts both things: the Z-Wheel's
+/// `IHID::GetConnectedDevices` is called twice, once asking for `0x0106c3fd` — the joystick — and
+/// once asking for `0x0106c3fc`. When the second comes back empty, it prints
+/// `No keyboard reported`. In other words, **a keyboard is a real device** to the console, not a
+/// figure of speech.
 ///
-/// Isto é separado de qual controle do host alimenta a porta: teclado do computador movendo um
-/// joystick do console é a combinação que todo jogo entende, e continua sendo o padrão.
+/// This is separate from which host controller feeds the port: the computer's keyboard driving a
+/// console joystick is the combination every game understands, and it remains the default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Aparelho {
-    /// O Dragon, o controle que anuncia `1EAA:0135` ("New Zeebo Game Controller" no
-    /// `hid_devices.cfg`). É o que o descritor USB capturado de um console mostra, e o que o
-    /// emulador sempre apresentou; o nome serializado continua `Controle` por isso.
-    Controle,
-    /// O Z-Pad, que anuncia `1A5C:3033` ("Zeebo Game Controller"). Os botões e os eixos são os
-    /// mesmos do Dragon — o que muda é a pegada —, então para o jogo a diferença é só o par
-    /// VID/PID, que os jogos da Boomerang Sports usam para escolher o tratamento.
+pub enum Device {
+    /// The Dragon, the controller that announces `1EAA:0135` ("New Zeebo Game Controller" in
+    /// `hid_devices.cfg`). It is what the USB descriptor captured from a console shows, and what
+    /// the emulator has always presented; that is why the serialized name is still `Controle`.
+    #[serde(rename = "Controle")]
+    Controller,
+    /// The Z-Pad, which announces `1A5C:3033` ("Zeebo Game Controller"). The buttons and the axes
+    /// are the same as the Dragon's — what changes is the grip —, so for the game the only
+    /// difference is the VID/PID pair, which the Boomerang Sports games use to choose how to
+    /// handle it.
     ZPad,
-    /// Um teclado USB. O console enumera; jogo que o use, ainda não vimos.
-    Teclado,
-    /// O Boomerang, o controle de movimento: direcional, botões 1 e 2, HOME e acelerômetro. Os
-    /// jogos da Boomerang Sports o reconhecem e passam a jogar pelo movimento; os outros o veem
-    /// como um controle com poucos botões. Ver [`crate::machine`], `pacote_do_boomerang`.
+    /// A USB keyboard. The console enumerates it; a game that uses one, we have not seen yet.
+    #[serde(rename = "Teclado")]
+    Keyboard,
+    /// The Boomerang, the motion controller: D-pad, buttons 1 and 2, HOME and accelerometer. The
+    /// Boomerang Sports games recognize it and switch to motion play; the others see it as a
+    /// controller with few buttons. See [`crate::machine`], `boomerang_packet`.
     Boomerang,
 }
 
-impl Default for Aparelho {
+impl Default for Device {
     fn default() -> Self {
-        Self::Controle
+        Self::Controller
     }
 }
 
-/// O mapeamento de um jogador.
+/// One player's mapping.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Player {
-    /// Se a porta tem alguma coisa ligada. Uma porta desligada não é enumerada, e é assim que
-    /// se testa um jogo que se comporta diferente com dois controles.
-    pub ligada: bool,
-    /// Que aparelho o console vê nesta porta.
-    pub aparelho: Aparelho,
-    /// Qual controle do host alimenta este jogador, pelo nome que o sistema dá a ele. `None`
-    /// deixa o jogador só no teclado.
+    /// Whether the port has anything connected. A disabled port is not enumerated, and that is how
+    /// you test a game that behaves differently with two controllers.
+    #[serde(rename = "ligada")]
+    pub enabled: bool,
+    /// Which device the console sees on this port.
+    #[serde(rename = "aparelho")]
+    pub device_kind: Device,
+    /// Which host controller feeds this player, by the name the system gives it. `None` leaves
+    /// the player on the keyboard only.
     pub device: Option<String>,
-    /// As origens de cada botão do Zeebo, pelo nome do botão. Um botão pode ter mais de uma —
-    /// é o que permite `Espaço` e `X` fazerem a mesma coisa.
+    /// The sources of each Zeebo button, by the button's name. A button can have more than one —
+    /// that is what lets `Space` and `X` do the same thing.
     pub buttons: BTreeMap<String, Vec<Source>>,
-    /// De onde vem cada eixo analógico do console, pelo nome do eixo (`x`, `y`, `z`, `rz`).
+    /// Where each analog axis of the console comes from, by the axis's name (`x`, `y`, `z`,
+    /// `rz`).
     ///
-    /// Vazio deixa os eixos **em repouso**: o direcional digital não os alimenta por conta própria.
-    /// Para que ele os alimente há [`Player::direcional_nos_eixos`].
+    /// Empty leaves the axes **at rest**: the digital D-pad does not feed them on its own. For it
+    /// to feed them there is [`Player::dpad_to_axes`].
     #[serde(default)]
     pub axes: BTreeMap<String, AxisSource>,
-    /// Espelha o direcional nos eixos `X`/`Y`, para jogo que só lê o manche.
+    /// Mirrors the D-pad onto the `X`/`Y` axes, for games that only read the stick.
     ///
-    /// **Desligado por padrão, e é o mesmo ajuste nos dois frontends:** aqui e no
-    /// `zeebx_dpad_to_analog` do core Libretro. O motivo de não ser o padrão está em
-    /// [`Pad::espelha_o_direcional_nos_eixos`], com as duas tentativas medidas que o desfizeram.
+    /// **Off by default, and it is the same setting in both frontends:** here and in the
+    /// Libretro core's `zeebx_dpad_to_analog`. The reason it is not the default is in
+    /// [`Pad::mirror_dpad_on_axes`], with the two measured attempts that undid it.
     #[serde(default)]
-    pub direcional_nos_eixos: bool,
-    /// A calibração do sensor de movimento que alimenta esta porta, para o Boomerang.
+    #[serde(rename = "direcional_nos_eixos")]
+    pub dpad_to_axes: bool,
+    /// The calibration of the motion sensor that feeds this port, for the Boomerang.
     #[serde(default)]
-    pub calibracao_movimento: CalibracaoDeMovimento,
-    /// Como a tecla de turbo deste jogador funciona. A tecla mora em `buttons`, com o nome
-    /// [`crate::velocidade::turbo::BOTAO_DO_TURBO`]. Ver [`crate::velocidade::turbo`].
+    #[serde(rename = "calibracao_movimento")]
+    pub motion_calibration: MotionCalibration,
+    /// How this player's turbo key works. The key lives in `buttons`, under the name
+    /// [`crate::speed::turbo::TURBO_BUTTON`]. See [`crate::speed::turbo`].
     #[serde(default)]
-    pub turbo: ModoDoTurbo,
-    /// O botão que pulsa nos modos de botão único.
-    #[serde(default = "botao_padrao_do_turbo")]
-    pub botao_do_turbo: String,
+    pub turbo: TurboMode,
+    /// The button that pulses in the single-button modes.
+    #[serde(default = "default_turbo_button")]
+    #[serde(rename = "botao_do_turbo")]
+    pub turbo_button: String,
 }
 
-fn botao_padrao_do_turbo() -> String {
-    crate::velocidade::turbo::BOTAO_PADRAO.to_string()
+fn default_turbo_button() -> String {
+    crate::speed::turbo::DEFAULT_BUTTON.to_string()
 }
 
-/// A correção de um acelerômetro do host: o que ele mede parado, de face para cima, vira
-/// exatamente `[0, 0, 1]` g. Em milésimos, para o mapeamento continuar comparável por igualdade.
+/// The correction of a host accelerometer: what it measures at rest, face up, becomes exactly
+/// `[0, 0, 1]` g. In thousandths, so the mapping stays comparable by equality.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct CalibracaoDeMovimento {
-    /// O desvio de cada eixo, em mg.
+pub struct MotionCalibration {
+    /// Each axis's offset, in mg.
     pub zero_mg: [i32; 3],
-    /// Quanto o sensor mede para 1 g, em mg.
-    pub escala_mg: i32,
+    /// How much the sensor measures for 1 g, in mg.
+    #[serde(rename = "escala_mg")]
+    pub scale_mg: i32,
 }
 
-impl Default for CalibracaoDeMovimento {
+impl Default for MotionCalibration {
     fn default() -> Self {
         Self {
             zero_mg: [0; 3],
-            escala_mg: 1000,
+            scale_mg: 1000,
         }
     }
 }
 
-impl CalibracaoDeMovimento {
-    /// O maior desvio por eixo que uma calibração pode corrigir, em mg. Um acelerômetro de
-    /// controle erra por algumas dezenas de mg; um desvio de 1 g é o controle calibrado de lado.
-    const DESVIO_MAXIMO_MG: i32 = 250;
+impl MotionCalibration {
+    /// The largest per-axis offset a calibration can correct, in mg. A controller accelerometer
+    /// is off by a few tens of mg; an offset of 1 g is the controller calibrated on its side.
+    const MAX_DEVIATION_MG: i32 = 250;
 
-    /// A calibração que leva a média `parado` — lida com o controle imóvel de face para cima —
-    /// a `[0, 0, 1]`. `None` quando a leitura não é a de um controle de face para cima: calibrar
-    /// assim grava um desvio de 1 g, e todo jogo passa a ver a gravidade dobrada.
-    pub fn de_repouso(parado: [f32; 3]) -> Option<Self> {
-        let escala = parado.iter().map(|v| v * v).sum::<f32>().sqrt().max(0.1);
-        let zero = [parado[0], parado[1], parado[2] - escala];
-        let calibracao = Self {
+    /// The calibration that takes the average `stopped` — read with the controller motionless
+    /// and face up — to `[0, 0, 1]`. `None` when the reading is not that of a face-up controller:
+    /// calibrating like that saves a 1 g offset, and every game starts seeing doubled gravity.
+    pub fn from_rest(stopped: [f32; 3]) -> Option<Self> {
+        let scale = stopped.iter().map(|v| v * v).sum::<f32>().sqrt().max(0.1);
+        let zero = [stopped[0], stopped[1], stopped[2] - scale];
+        let calibration = Self {
             zero_mg: zero.map(|v| (v * 1000.0).round() as i32),
-            escala_mg: (escala * 1000.0).round() as i32,
+            scale_mg: (scale * 1000.0).round() as i32,
         };
-        (parado[2] > 0.0 && calibracao.plausivel()).then_some(calibracao)
+        (stopped[2] > 0.0 && calibration.is_plausible()).then_some(calibration)
     }
 
-    /// Se a calibração corrige só o que um sensor erra. Uma gravada de lado, de antes desta
-    /// verificação existir, não vale.
-    pub fn plausivel(&self) -> bool {
-        self.zero_mg.iter().all(|d| d.abs() <= Self::DESVIO_MAXIMO_MG)
-            && (500..=2000).contains(&self.escala_mg)
+    /// Whether the calibration only corrects what a sensor gets wrong. One saved on its side,
+    /// from before this check existed, does not count.
+    pub fn is_plausible(&self) -> bool {
+        self.zero_mg.iter().all(|d| d.abs() <= Self::MAX_DEVIATION_MG)
+            && (500..=2000).contains(&self.scale_mg)
     }
 
-    pub fn aplica(&self, bruto: [f32; 3]) -> [f32; 3] {
-        if !self.plausivel() {
-            return bruto;
+    pub fn apply(&self, raw: [f32; 3]) -> [f32; 3] {
+        if !self.is_plausible() {
+            return raw;
         }
-        let escala = self.escala_mg.max(100) as f32 / 1000.0;
-        std::array::from_fn(|i| (bruto[i] - self.zero_mg[i] as f32 / 1000.0) / escala)
+        let scale = self.scale_mg.max(100) as f32 / 1000.0;
+        std::array::from_fn(|i| (raw[i] - self.zero_mg[i] as f32 / 1000.0) / scale)
     }
 }
 
 impl Default for Player {
-    /// O padrão é o de qualquer emulador: a mão esquerda nas setas e a direita nas teclas de
-    /// ação. O `H` no HOME está aí porque o botão se chama `Back` por dentro, e ninguém
-    /// adivinharia isso lendo "APERTE O BOTÃO HOME" na tela do Double Dragon.
+    /// The default is any emulator's: the left hand on the arrows and the right on the action
+    /// keys. The `H` on HOME is there because the button is called `Back` internally, and nobody
+    /// would guess that reading "APERTE O BOTÃO HOME" ("PRESS THE HOME BUTTON") on Double
+    /// Dragon's screen.
     fn default() -> Self {
         let keyboard: [(&str, &[&str]); 12] = [
             ("up", &["ArrowUp"]),
@@ -253,8 +269,8 @@ impl Default for Player {
                 )
             })
             .collect();
-        // O HOME do console é o `Back` do BREW, e responde pelos dois nomes. O controle do
-        // Zeebo não tem Start: o HOME faz esse papel, então o Enter cai nele.
+        // The console's HOME is BREW's `Back`, and answers to both names. The Zeebo controller
+        // has no Start: HOME plays that role, so Enter lands on it.
         buttons.insert(
             "back".to_string(),
             vec![
@@ -264,73 +280,75 @@ impl Default for Player {
             ],
         );
         Self {
-            // A porta um nasce ligada; as outras, não. Ver [`Controls::default`].
-            ligada: true,
-            aparelho: Aparelho::Controle,
+            // Port one starts enabled; the others do not. See [`Controls::default`].
+            enabled: true,
+            device_kind: Device::Controller,
             device: None,
             buttons,
-            // O teclado não tem analógico: os eixos ficam em repouso, e quem os alimenta é o
-            // manche de um controle ou o direcional com `direcional_nos_eixos` ligado.
+            // The keyboard has no analog stick: the axes stay at rest, and what feeds them is a
+            // controller's stick or the D-pad with `dpad_to_axes` on.
             axes: BTreeMap::new(),
-            direcional_nos_eixos: false,
-            calibracao_movimento: CalibracaoDeMovimento::default(),
-            turbo: ModoDoTurbo::Desligado,
-            botao_do_turbo: botao_padrao_do_turbo(),
+            dpad_to_axes: false,
+            motion_calibration: MotionCalibration::default(),
+            turbo: TurboMode::Off,
+            turbo_button: default_turbo_button(),
         }
     }
 }
 
 impl Player {
-    /// O mapeamento típico do controle do host `device` — ou o teclado puro, sem controle. É o
-    /// que o "restaurar" da tela de controles põe na porta.
-    pub fn padrao_do_controle(device: Option<String>) -> Self {
+    /// The typical mapping of the host controller `device` — or the plain keyboard, without a
+    /// controller. It is what the controls screen's "restore" puts on the port.
+    pub fn default_for_controller(device: Option<String>) -> Self {
         match device {
-            // O Wii Remote não passa pelo gilrs, mas é um controle como os outros: o mapeamento
-            // típico dele vem junto, e muda-se na tela como qualquer outro.
-            Some(nome) if crate::input::wiimote::Wiimotes::indice_do_nome(&nome).is_some() => {
-                Self::with_wiimote(nome)
+            // The Wii Remote does not go through gilrs, but it is a controller like the others:
+            // its typical mapping comes along, and is changed on screen like any other.
+            Some(name) if crate::input::wiimote::Wiimotes::index_of_name(&name).is_some() => {
+                Self::with_wiimote(name)
             }
-            Some(nome) => Self::with_gamepad(nome),
+            Some(name) => Self::with_gamepad(name),
             None => Self::default(),
         }
     }
 
-    /// Troca o controle do host que alimenta esta porta.
+    /// Switches the host controller that feeds this port.
     ///
-    /// Escolher um controle traz o mapeamento típico dele junto; ficar sem controle volta para o
-    /// teclado puro. Nos dois casos o que estava configurado à mão se perde, e é por isso que a
-    /// troca é um clique deliberado numa lista. Trocar o controle troca **o mapeamento**, não a
-    /// porta: se ela está ligada e o que o console vê nela foram decididos antes, e perder isso
-    /// aqui seria a configuração se desfazer sozinha ao escolher um aparelho na lista.
-    pub fn troca_controle(&mut self, device: Option<String>) {
-        let (ligada, aparelho) = (self.ligada, self.aparelho);
-        *self = Self::padrao_do_controle(device);
-        self.ligada = ligada;
-        // **Um controle do host numa porta de teclado vira um controle para o console.** O
-        // `aparelho` é o que o console enumera, e uma porta marcada como teclado não entra na
-        // lista de joysticks que os jogos pedem: quem escolhia o segundo controle para a porta
-        // dois continuava sem ser visto como segundo jogador. As outras escolhas (Z-Pad,
-        // Boomerang) já são controle e ficam onde estão.
-        self.aparelho = match (aparelho, &self.device) {
-            (Aparelho::Teclado, Some(_)) => Aparelho::Controle,
-            (outro, _) => outro,
+    /// Choosing a controller brings its typical mapping along; going without a controller returns
+    /// to the plain keyboard. In both cases whatever was configured by hand is lost, and that is
+    /// why the switch is a deliberate click in a list. Switching the controller switches **the
+    /// mapping**, not the port: whether it is enabled and what the console sees on it were decided
+    /// before, and losing that here would be the configuration undoing itself when a device is
+    /// picked in the list.
+    pub fn switch_controller(&mut self, device: Option<String>) {
+        let (enabled, device_kind) = (self.enabled, self.device_kind);
+        *self = Self::default_for_controller(device);
+        self.enabled = enabled;
+        // **A host controller on a keyboard port becomes a controller for the console.**
+        // `device_kind` is what the console enumerates, and a port marked as keyboard does not
+        // enter the list of joysticks the games ask for: whoever picked the second controller for
+        // port two still went unseen as the second player. The other choices (Z-Pad, Boomerang)
+        // are already controllers and stay where they are.
+        self.device_kind = match (device_kind, &self.device) {
+            (Device::Keyboard, Some(_)) => Device::Controller,
+            (other, _) => other,
         };
     }
 
-    /// O mapeamento típico de um controle moderno, para quem liga um e quer jogar.
+    /// The typical mapping of a modern controller, for whoever connects one and wants to play.
     pub fn with_gamepad(device: String) -> Self {
-        // **A posição da mão, e não o rótulo do botão.** No aparelho o 1 fica embaixo, o 2 à
-        // esquerda, o 3 no topo e o 4 à direita (imagens oficiais do controle); no controle
-        // moderno, `South` é o de baixo, `West` o da esquerda, `North` o de cima e `East` o da
-        // direita. Cada botão do Zeebo cai no botão do host que está **no mesmo lugar** — era o
-        // que o issue #41 pedia, e o que faz a mão não reaprender nada ao trocar de controle.
+        // **The hand's position, not the button's label.** On the device 1 is at the bottom, 2
+        // on the left, 3 at the top and 4 on the right (official images of the controller); on a
+        // modern controller, `South` is the bottom one, `West` the left, `North` the top and
+        // `East` the right. Each Zeebo button lands on the host button **in the same place** —
+        // that is what issue #41 asked for, and what keeps the hand from relearning anything when
+        // switching controllers.
         //
-        // Os quatro saem de [`Self::botoes_de_acao_por_posicao`], que é **a mesma tabela da
-        // migração**: duas listas paralelas foi exatamente o que divergiu no issue #41.
+        // The four come from [`Self::action_buttons_by_position`], which is **the same table as
+        // the migration's**: two parallel lists is exactly what diverged in issue #41.
         let pad: [(&str, &str); 5] = [
             ("zl", "LeftTrigger"),
             ("zr", "RightTrigger"),
-            // O controle do Zeebo não tem Start; o HOME ocupa o lugar dele.
+            // The Zeebo controller has no Start; HOME takes its place.
             ("back", "Start"),
             ("lthumb", "LeftThumb"),
             ("rthumb", "RightThumb"),
@@ -342,7 +360,7 @@ impl Player {
             ("right", "DPadRight"),
         ];
         let mut player = Self::default();
-        for (button, source) in Self::botoes_de_acao_por_posicao() {
+        for (button, source) in Self::action_buttons_by_position() {
             player
                 .buttons
                 .entry(button.to_string())
@@ -356,11 +374,11 @@ impl Player {
                 .or_default()
                 .push(Source::button(source));
         }
-        // O manche **não** aperta o direcional. Ele é um eixo, e é como eixo que entra logo
-        // abaixo; ligá-lo também aos botões faria os dois agirem juntos e nenhum dos dois
-        // sozinho, que é justamente o que se quer evitar num controle com direcional de cruz.
+        // The stick does **not** press the D-pad. It is an axis, and it comes in as an axis right
+        // below; also binding it to the buttons would make the two act together and neither on
+        // its own, which is exactly what you want to avoid on a controller with a cross D-pad.
         player.buttons.entry("back".to_string()).or_default().push(
-            // O HOME do controle do host cai no HOME do Zeebo, que é o `Back`.
+            // The host controller's HOME lands on the Zeebo's HOME, which is `Back`.
             Source::button("Select"),
         );
         player.axes = Self::default_axes();
@@ -368,19 +386,19 @@ impl Player {
         player
     }
 
-    /// O mapeamento típico do Wii Remote, somado ao teclado.
+    /// The Wii Remote's typical mapping, added to the keyboard.
     ///
-    /// É o que ele fazia antes de ser mapeável — direcional no direcional, 1 e A no botão 1, 2 e B
-    /// no botão 2, HOME no HOME —, com o menos e o mais nos botões 3 e 4 para quem o usa como
-    /// Z-Pad. O resto se muda na tela de controles, como em qualquer controle.
+    /// It is what it did before it was mappable — D-pad on the D-pad, 1 and A on button 1, 2 and
+    /// B on button 2, HOME on HOME —, with minus and plus on buttons 3 and 4 for whoever uses it as
+    /// a Z-Pad. The rest is changed on the controls screen, as with any controller.
     pub fn with_wiimote(device: String) -> Self {
         let mut player = Self::default();
-        player.acrescenta_botoes_do_wiimote();
+        player.add_wiimote_buttons();
         player.device = Some(device);
         player
     }
 
-    fn acrescenta_botoes_do_wiimote(&mut self) {
+    fn add_wiimote_buttons(&mut self) {
         let wiimote: [(&str, &str); 11] = [
             ("up", "WiiUp"),
             ("down", "WiiDown"),
@@ -399,14 +417,14 @@ impl Player {
         }
     }
 
-    /// Os eixos de um controle moderno nos eixos do console.
+    /// A modern controller's axes on the console's axes.
     ///
-    /// O direcional do Zeebo é reportado como `X` e `Y`, então o manche esquerdo cai neles e o
-    /// direito nos que sobram, `Z` e `RZ`.
+    /// The Zeebo's D-pad is reported as `X` and `Y`, so the left stick lands on those and the
+    /// right one on the ones left over, `Z` and `RZ`.
     ///
-    /// `Y` vai invertido porque no console cima é o valor negativo, e na biblioteca de controles
-    /// cima é positivo. O par da direita segue a mesma convenção por falta de outra referência:
-    /// o arquivo do console nomeia `Z` e `RZ` sem dizer o sentido de nenhum dos dois.
+    /// `Y` is inverted because on the console up is the negative value, and in the controller
+    /// library up is positive. The right pair follows the same convention for lack of any other
+    /// reference: the console's file names `Z` and `RZ` without giving the direction of either.
     pub fn default_axes() -> BTreeMap<String, AxisSource> {
         [
             ("x", "LeftStickX", false),
@@ -419,18 +437,18 @@ impl Player {
         .collect()
     }
 
-    /// Dá eixos a um mapeamento salvo antes de eles existirem.
+    /// Gives axes to a mapping saved before they existed.
     ///
-    /// Sem isto, quem já tinha um controle configurado ficava com os manches mudos até refazer
-    /// o mapeamento à mão — e não teria como adivinhar que era preciso.
+    /// Without this, whoever already had a controller configured was left with mute sticks until
+    /// redoing the mapping by hand — and would have no way to guess that it was needed.
     fn adopt_axes(&mut self) {
         if self.device.is_none() || !self.axes.is_empty() {
             return;
         }
         self.axes = Self::default_axes();
-        // O mapeamento antigo ligava o manche aos botões do direcional, que era o jeito de ele
-        // servir para alguma coisa quando não havia eixo. Agora há, e deixar os dois faria o
-        // manche apertar o direcional além de mover o eixo.
+        // The old mapping bound the stick to the D-pad buttons, which was the way for it to be
+        // of any use when there were no axes. Now there are, and keeping both would make the
+        // stick press the D-pad on top of moving the axis.
         for button in ["up", "down", "left", "right"] {
             if let Some(sources) = self.buttons.get_mut(button) {
                 sources.retain(|source| !matches!(source, Source::Axis { .. }));
@@ -438,15 +456,15 @@ impl Player {
         }
     }
 
-    /// Devolve a inversão vertical a quem a perdeu.
+    /// Gives the vertical inversion back to whoever lost it.
     ///
-    /// Houve uma versão que salvou os quatro eixos sem inversão nenhuma, e quem a rodou ficou
-    /// com o arquivo assim — o padrão mudar de volta não conserta um mapa já gravado. Como o
-    /// mapa daquela versão é reconhecível (é o padrão de hoje com `y` e `rz` retos), dá para
-    /// desfazê-lo sem tocar em quem mexeu no mapeamento à mão.
-    /// Os quatro botões de ação do controle do host, como estavam **antes** do remapeamento por
-    /// posição (issue #41): leste no `b2`, oeste no `b3` e norte no `b4`.
-    fn botoes_de_acao_antigos() -> [(&'static str, Source); 4] {
+    /// There was a version that saved all four axes with no inversion at all, and whoever ran it
+    /// was left with the file that way — the default changing back does not fix a map already
+    /// saved. Since that version's map is recognizable (it is today's default with `y` and `rz`
+    /// upright), it can be undone without touching anyone who changed the mapping by hand.
+    /// The host controller's four action buttons, as they were **before** the remapping by
+    /// position (issue #41): east on `b2`, west on `b3` and north on `b4`.
+    fn legacy_action_buttons() -> [(&'static str, Source); 4] {
         [
             ("b1", Source::button("South")),
             ("b2", Source::button("East")),
@@ -455,8 +473,8 @@ impl Player {
         ]
     }
 
-    /// Os mesmos quatro, casando por **posição**: embaixo, esquerda, topo e direita.
-    fn botoes_de_acao_por_posicao() -> [(&'static str, Source); 4] {
+    /// The same four, matched by **position**: bottom, left, top and right.
+    fn action_buttons_by_position() -> [(&'static str, Source); 4] {
         [
             ("b1", Source::button("South")),
             ("b2", Source::button("West")),
@@ -465,62 +483,62 @@ impl Player {
         ]
     }
 
-    /// As origens de **botão** de um nome — sem as de teclado e sem as de eixo.
+    /// The **button** sources of a name — without the keyboard ones and without the axis ones.
     ///
-    /// É o que a migração dos botões de ação precisa olhar: quem tem controle carrega junto as
-    /// teclas do teclado, porque o [`Self::with_gamepad`] **soma** ao [`Self::default`].
-    fn origens_de_botao(&self, nome: &str) -> Vec<Source> {
-        self.sources(nome)
+    /// It is what the action-button migration needs to look at: whoever has a controller also
+    /// carries the keyboard keys, because [`Self::with_gamepad`] **adds** to [`Self::default`].
+    fn button_sources(&self, name: &str) -> Vec<Source> {
+        self.sources(name)
             .iter()
-            .filter(|origem| matches!(origem, Source::Button { .. }))
+            .filter(|origin| matches!(origin, Source::Button { .. }))
             .cloned()
             .collect()
     }
 
-    /// **O remapeamento por posição alcança quem já tinha o mapeamento salvo.**
+    /// **The remapping by position reaches whoever already had the mapping saved.**
     ///
-    /// Sem isto, só quem apagasse o `settings.json` veria a correção: o que está salvo manda mais
-    /// que o padrão novo, e o mapeamento antigo continuaria entregando leste no `b2` — que é
-    /// exatamente o defeito do issue #41.
+    /// Without this, only whoever deleted `settings.json` would see the fix: what is saved
+    /// outranks the new default, and the old mapping would keep delivering east on `b2` — which is
+    /// exactly the defect of issue #41.
     ///
-    /// **A comparação é só entre origens de botão, e não da lista inteira.** O que um jogador com
-    /// controle tem salvo é `b2 = [Space, X, East]`: as teclas do teclado mais o botão do
-    /// controle. Comparar a lista inteira nunca casaria com o que está salvo, e a migração nunca
-    /// aconteceria — que foi o defeito da primeira versão desta função.
+    /// **The comparison is only between button sources, not of the whole list.** What a player
+    /// with a controller has saved is `b2 = [Space, X, East]`: the keyboard keys plus the
+    /// controller button. Comparing the whole list would never match what is saved, and the
+    /// migration would never happen — which was the defect of the first version of this function.
     ///
-    /// A troca só acontece quando os quatro ainda são **exatamente** os antigos: quem mexeu em
-    /// qualquer um deles fica com o que escreveu. É a mesma regra do
-    /// [`Self::migrate_axis_convention`], e as teclas do teclado ficam onde estão.
+    /// The switch only happens when all four are still **exactly** the old ones: whoever changed
+    /// any of them keeps what they wrote. It is the same rule as
+    /// [`Self::migrate_axis_convention`], and the keyboard keys stay where they are.
     fn migrate_action_buttons(&mut self) {
-        let antigos = Self::botoes_de_acao_antigos();
-        let intocado = antigos
+        let legacy = Self::legacy_action_buttons();
+        let untouched = legacy
             .iter()
-            .all(|(nome, fonte)| self.origens_de_botao(nome) == [fonte.clone()]);
-        if !intocado {
+            .all(|(name, source)| self.button_sources(name) == [source.clone()]);
+        if !untouched {
             return;
         }
-        for (nome, fonte) in Self::botoes_de_acao_por_posicao() {
-            let origens = self.buttons.entry(nome.to_string()).or_default();
-            origens.retain(|origem| !matches!(origem, Source::Button { .. }));
-            origens.push(fonte);
+        for (name, source) in Self::action_buttons_by_position() {
+            let origins = self.buttons.entry(name.to_string()).or_default();
+            origins.retain(|origin| !matches!(origin, Source::Button { .. }));
+            origins.push(source);
         }
     }
 
     fn migrate_axis_convention(&mut self) {
-        let mut reto = Self::default_axes();
-        reto.get_mut("y").unwrap().invert = false;
-        reto.get_mut("rz").unwrap().invert = false;
-        if self.axes == reto {
+        let mut upright = Self::default_axes();
+        upright.get_mut("y").unwrap().invert = false;
+        upright.get_mut("rz").unwrap().invert = false;
+        if self.axes == upright {
             self.axes = Self::default_axes();
         }
     }
 
-    /// As origens de um botão, ou nada se ele não tem nenhuma.
+    /// A button's sources, or nothing if it has none.
     pub fn sources(&self, button: &str) -> &[Source] {
         self.buttons.get(button).map(Vec::as_slice).unwrap_or(&[])
     }
 
-    /// Liga `source` a `button`, sem repetir o que já está lá.
+    /// Binds `source` to `button`, without repeating what is already there.
     pub fn bind(&mut self, button: &str, source: Source) {
         let sources = self.buttons.entry(button.to_string()).or_default();
         if !sources.contains(&source) {
@@ -528,13 +546,13 @@ impl Player {
         }
     }
 
-    /// Desliga tudo de `button`.
+    /// Unbinds everything from `button`.
     pub fn clear(&mut self, button: &str) {
         self.buttons.remove(button);
     }
 
-    /// Monta o estado do controle: `active` diz se uma origem está acionada, e `analog` dá o
-    /// curso de um eixo do controle do host, de -1 a 1.
+    /// Builds the controller state: `active` says whether a source is triggered, and `analog`
+    /// gives the travel of a host controller axis, from -1 to 1.
     pub fn pad(
         &self,
         active: impl Fn(&Source) -> bool,
@@ -549,14 +567,15 @@ impl Player {
                 pad.press(index, true);
             }
         }
-        // O espelho do direcional, quando ligado, roda **antes** do laço do analógico. Ele escreve
-        // zero no repouso — é assim que o manche volta ao centro ao soltar a direção —, e quem tem
-        // a última palavra precisa ser o manche de verdade, quando ele está fora da zona morta.
-        if self.direcional_nos_eixos {
-            pad.espelha_o_direcional_nos_eixos();
+        // The D-pad mirror, when on, runs **before** the analog loop. It writes zero at rest —
+        // that is how the stick returns to center when the direction is released —, and the one
+        // with the last word has to be the real stick, when it is outside the dead zone.
+        if self.dpad_to_axes {
+            pad.mirror_dpad_on_axes();
         }
-        // O direcional **não** escreve nos eixos por conta própria — ver a nota do [`Pad::press`].
-        // Este laço é do analógico, e ele é quem alimenta `X`/`Y` e `Z`/`RZ`, como no aparelho.
+        // The D-pad does **not** write to the axes on its own — see the note on [`Pad::press`].
+        // This loop belongs to the analog stick, and it is what feeds `X`/`Y` and `Z`/`RZ`, as on
+        // the device.
         for (index, name) in input::AXIS_NAMES.iter().enumerate() {
             let Some(source) = self.axes.get(*name) else {
                 continue;
@@ -571,13 +590,13 @@ impl Player {
             if value.abs() < DEADZONE {
                 continue;
             }
-            pad.set_axis(index, (value * input::AXIS_CURSO as f32) as i32);
+            pad.set_axis(index, (value * input::AXIS_RANGE as f32) as i32);
         }
         pad
     }
 }
 
-/// Os mapeamentos de todos os jogadores.
+/// The mappings of all players.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Controls {
@@ -585,16 +604,16 @@ pub struct Controls {
 }
 
 impl Default for Controls {
-    /// Uma porta ligada e as outras livres.
+    /// One port enabled and the others free.
     ///
-    /// Ligar as duas por omissão seria pior do que parece: quem joga com um controle só veria o
-    /// teclado e o controle disputando a **mesma** porta, ou um jogo de dois enxergando um
-    /// segundo jogador parado.
+    /// Enabling both by default would be worse than it seems: whoever plays with a single
+    /// controller would see the keyboard and the controller fighting over the **same** port, or a
+    /// two-player game seeing an idle second player.
     fn default() -> Self {
         let mut players = vec![Player::default()];
-        while players.len() < crate::input::PORTAS {
+        while players.len() < crate::input::PORTS {
             players.push(Player {
-                ligada: false,
+                enabled: false,
                 ..Player::default()
             });
         }
@@ -603,7 +622,7 @@ impl Default for Controls {
 }
 
 impl Controls {
-    /// O mapeamento do jogador `index`, criando os que faltarem.
+    /// The mapping of player `index`, creating any that are missing.
     pub fn player_mut(&mut self, index: usize) -> &mut Player {
         while self.players.len() <= index {
             self.players.push(Player::default());
@@ -615,35 +634,35 @@ impl Controls {
         self.players.get(index)
     }
 
-    /// As portas ligadas, em ordem, como `(índice, jogador)`.
-    pub fn ligadas(&self) -> impl Iterator<Item = (usize, &Player)> {
+    /// The enabled ports, in order, as `(index, player)`.
+    pub fn enabled_players(&self) -> impl Iterator<Item = (usize, &Player)> {
         self.players
             .iter()
             .enumerate()
-            .take(crate::input::PORTAS)
-            .filter(|(_, jogador)| jogador.ligada)
+            .take(crate::input::PORTS)
+            .filter(|(_, player)| player.enabled)
     }
 
-    /// Ajusta um mapeamento vindo de uma versão anterior do emulador.
+    /// Adjusts a mapping coming from an earlier version of the emulator.
     ///
-    /// Um arquivo salvo antes das portas tem **um** jogador e nenhum campo `ligada`. Quem
-    /// resolve isso é o `serde(default)` da struct, que preenche campo faltante a partir do
-    /// `Player::default()` — e lá `ligada` é verdadeiro. Assim o controle de quem já usava o
-    /// emulador continua ligado, sem precisar de remendo aqui.
+    /// A file saved before ports existed has **one** player and no `ligada` field. What takes care
+    /// of that is the struct's `serde(default)`, which fills a missing field from
+    /// `Player::default()` — and there `enabled` is true. That way the controller of whoever
+    /// already used the emulator stays enabled, with no patch needed here.
     ///
-    /// O que falta fazer é só completar as portas que o arquivo antigo não tinha, e elas entram
-    /// **desligadas**: ninguém pediu um segundo jogador.
+    /// All that is left to do is fill in the ports the old file did not have, and they come in
+    /// **disabled**: nobody asked for a second player.
     pub fn adopt(&mut self) {
         for player in &mut self.players {
             player.adopt_axes();
             player.migrate_axis_convention();
             player.migrate_action_buttons();
-            player.migra_aparelho_do_controle();
-            player.migra_botoes_do_wiimote();
+            player.migrate_controller_device();
+            player.migrate_wiimote_buttons();
         }
-        while self.players.len() < crate::input::PORTAS {
+        while self.players.len() < crate::input::PORTS {
             self.players.push(Player {
-                ligada: false,
+                enabled: false,
                 ..Player::default()
             });
         }
@@ -651,49 +670,49 @@ impl Controls {
 }
 
 impl Player {
-    /// Uma porta com controle do host escolhido não é uma porta de teclado.
+    /// A port with a host controller selected is not a keyboard port.
     ///
-    /// Escolher o controle na lista trocava o mapeamento e deixava o `aparelho` como estava, e
-    /// `aparelho` é o que o console **enumera**: uma porta marcada como teclado não entra na
-    /// lista de joysticks que os jogos pedem. Quem punha o segundo controle na porta dois para
-    /// jogar com dois continuava com um joystick só na conta do jogo, e a opção de dois
-    /// jogadores ficava apagada.
+    /// Choosing the controller in the list switched the mapping and left `device_kind` as it
+    /// was, and `device_kind` is what the console **enumerates**: a port marked as keyboard does
+    /// not enter the list of joysticks the games ask for. Whoever put the second controller on
+    /// port two to play with two still had a single joystick as far as the game counted, and the
+    /// two-player option stayed greyed out.
     ///
-    /// Vale também para o Wii Remote, desde que ele é um controle mapeável como os outros.
-    fn migra_aparelho_do_controle(&mut self) {
-        if self.aparelho == Aparelho::Teclado && self.device.is_some() {
-            self.aparelho = Aparelho::Controle;
+    /// It also applies to the Wii Remote, since it became a mappable controller like the others.
+    fn migrate_controller_device(&mut self) {
+        if self.device_kind == Device::Keyboard && self.device.is_some() {
+            self.device_kind = Device::Controller;
         }
     }
 
-    /// Quem escolheu um Wii Remote antes de ele ser mapeável continua com os botões dele.
+    /// Whoever chose a Wii Remote before it was mappable keeps its buttons.
     ///
-    /// Os botões do Wii Remote se somavam por conta própria aos do teclado da porta, e o
-    /// mapeamento salvo não tinha nenhum. Sem isto, a atualização deixaria o controle mudo.
-    fn migra_botoes_do_wiimote(&mut self) {
+    /// The Wii Remote's buttons were added on their own to the port's keyboard ones, and the saved
+    /// mapping had none. Without this, the update would leave the controller mute.
+    fn migrate_wiimote_buttons(&mut self) {
         let wiimote = self
             .device
             .as_deref()
-            .is_some_and(|nome| crate::input::wiimote::Wiimotes::indice_do_nome(nome).is_some());
-        let tem_botao_do_wiimote = self.buttons.values().flatten().any(|source| {
+            .is_some_and(|device_name| crate::input::wiimote::Wiimotes::index_of_name(device_name).is_some());
+        let has_wiimote_button = self.buttons.values().flatten().any(|source| {
             matches!(source, Source::Button { name } if name.starts_with("Wii"))
         });
-        if wiimote && !tem_botao_do_wiimote {
-            self.acrescenta_botoes_do_wiimote();
+        if wiimote && !has_wiimote_button {
+            self.add_wiimote_buttons();
         }
     }
 }
 
-/// Os botões do Zeebo na ordem em que fazem sentido numa tela de configuração — o direcional
-/// primeiro, depois as ações, depois os ombros e o resto.
+/// The Zeebo's buttons in the order that makes sense on a settings screen — the D-pad first,
+/// then the actions, then the shoulders and the rest.
 ///
-/// Não há Start nem par de ombros: o controle do console tem quatro botões de ação, um gatilho
-/// de cada lado (o ZL e o ZR) e o HOME, que faz o papel do Start e aparece aqui como `back`
-/// porque é no `AEEUID_HIDJoystick_Back` que o `hid_devices.cfg` do console o mapeia.
+/// There is no Start nor a pair of shoulders: the console's controller has four action buttons,
+/// one trigger on each side (ZL and ZR) and HOME, which plays the role of Start and shows up here
+/// as `back` because `AEEUID_HIDJoystick_Back` is where the console's `hid_devices.cfg` maps it.
 ///
-/// Os UIDs que sobram — o Start e os dois ombros "inferiores" — continuam na tabela de
-/// [`crate::input::BUTTON_UIDS`], que descreve o descritor HID do aparelho e não a carcaça
-/// dele, mas não há como ligá-los a tecla nenhuma.
+/// The leftover UIDs — Start and the two "lower" shoulders — remain in the table of
+/// [`crate::input::BUTTON_UIDS`], which describes the device's HID descriptor and not its shell,
+/// but there is no way to bind them to any key.
 pub const CONFIGURABLE: [&str; 13] = [
     "up", "down", "left", "right", "b1", "b2", "b3", "b4", "zl", "zr", "lthumb", "rthumb", "back",
 ];
@@ -702,78 +721,79 @@ pub const CONFIGURABLE: [&str; 13] = [
 mod tests {
     use super::*;
 
-    /// Trocar o controle troca o mapeamento, não a porta: ela continua ligada, e uma porta de
-    /// teclado que ganha um controle passa a ser controle para o console — senão os jogos não a
-    /// enumeram como segundo jogador. Um Boomerang continua Boomerang.
+    /// Switching the controller switches the mapping, not the port: it stays enabled, and a
+    /// keyboard port that gets a controller becomes a controller to the console — otherwise the
+    /// games do not enumerate it as the second player. A Boomerang stays a Boomerang.
     #[test]
-    fn trocar_o_controle_preserva_a_porta() {
-        let mut teclado = Player {
-            ligada: true,
-            aparelho: Aparelho::Teclado,
+    fn switching_the_controller_keeps_the_port() {
+        let mut keyboard = Player {
+            enabled: true,
+            device_kind: Device::Keyboard,
             ..Player::default()
         };
-        teclado.troca_controle(Some("Xbox Controller".into()));
-        assert!(teclado.ligada);
-        assert_eq!(teclado.aparelho, Aparelho::Controle);
-        assert_eq!(teclado.device.as_deref(), Some("Xbox Controller"));
+        keyboard.switch_controller(Some("Xbox Controller".into()));
+        assert!(keyboard.enabled);
+        assert_eq!(keyboard.device_kind, Device::Controller);
+        assert_eq!(keyboard.device.as_deref(), Some("Xbox Controller"));
 
         let mut boomerang = Player {
-            ligada: true,
-            aparelho: Aparelho::Boomerang,
+            enabled: true,
+            device_kind: Device::Boomerang,
             ..Player::default()
         };
-        boomerang.troca_controle(Some("Pro Controller".into()));
-        assert_eq!(boomerang.aparelho, Aparelho::Boomerang);
+        boomerang.switch_controller(Some("Pro Controller".into()));
+        assert_eq!(boomerang.device_kind, Device::Boomerang);
 
-        boomerang.troca_controle(None);
-        assert_eq!(boomerang.device, None, "sem controle, volta ao teclado puro");
-        assert!(boomerang.ligada);
+        boomerang.switch_controller(None);
+        assert_eq!(boomerang.device, None, "without a controller, back to the plain keyboard");
+        assert!(boomerang.enabled);
     }
 
     #[test]
-    fn a_calibracao_leva_o_repouso_a_um_g_para_cima() {
-        let calibracao = CalibracaoDeMovimento::de_repouso([0.02, -0.05, 1.14]).unwrap();
-        let [x, y, z] = calibracao.aplica([0.02, -0.05, 1.14]);
+    fn calibration_maps_rest_to_one_g_up() {
+        let calibration = MotionCalibration::from_rest([0.02, -0.05, 1.14]).unwrap();
+        let [x, y, z] = calibration.apply([0.02, -0.05, 1.14]);
         assert!(x.abs() < 0.01 && y.abs() < 0.01 && (z - 1.0).abs() < 0.01, "{x} {y} {z}");
     }
 
-    /// Calibrado de lado, o desvio seria de 1 g: recusado, e uma gravada assim é ignorada.
+    /// Calibrated on its side, the offset would be 1 g: refused, and one saved that way is
+    /// ignored.
     #[test]
-    fn a_calibracao_de_lado_nao_vale() {
-        assert!(CalibracaoDeMovimento::de_repouso([-1.0, 0.0, 0.1]).is_none());
-        let gravada = CalibracaoDeMovimento {
+    fn a_sideways_calibration_is_not_valid() {
+        assert!(MotionCalibration::from_rest([-1.0, 0.0, 0.1]).is_none());
+        let saved = MotionCalibration {
             zero_mg: [-1002, 5, -906],
-            escala_mg: 1007,
+            scale_mg: 1007,
         };
-        assert_eq!(gravada.aplica([0.0, 0.0, 1.13]), [0.0, 0.0, 1.13]);
+        assert_eq!(saved.apply([0.0, 0.0, 1.13]), [0.0, 0.0, 1.13]);
     }
     use crate::input::BUTTON_NAMES;
 
-    /// O índice do `up` no controle do console, para os testes não repetirem a busca.
+    /// The index of `up` on the console's controller, so the tests do not repeat the lookup.
     const DPAD_UP: usize = input::DPAD[0];
 
     #[test]
-    fn os_botoes_configuraveis_existem_no_controle() {
-        // A lista da tela e a tabela do console precisam concordar: um nome que não existe
-        // vira uma linha que não faz nada, e ninguém descobre até tentar usar.
+    fn the_configurable_buttons_exist_on_the_controller() {
+        // The screen's list and the console's table have to agree: a name that does not exist
+        // becomes a row that does nothing, and nobody finds out until they try to use it.
         for name in CONFIGURABLE {
-            assert!(BUTTON_NAMES.contains(&name), "o botão {name} não existe");
+            assert!(BUTTON_NAMES.contains(&name), "button {name} does not exist");
         }
     }
 
     #[test]
-    fn o_padrao_cobre_todo_botao_configuravel() {
+    fn the_default_covers_every_configurable_button() {
         let player = Player::default();
         for button in CONFIGURABLE {
             assert!(
                 !player.sources(button).is_empty(),
-                "o botão {button} ficou sem tecla"
+                "button {button} was left without a key"
             );
         }
     }
 
     #[test]
-    fn uma_origem_acionada_aperta_o_botao() {
+    fn an_active_source_presses_the_button() {
         let player = Player::default();
         let pad = player.pad(|source| *source == Source::key("Z"), |_| None);
         assert!(pad.is_down(Pad::button_by_name("b1").unwrap()));
@@ -781,8 +801,8 @@ mod tests {
     }
 
     #[test]
-    fn duas_teclas_no_mesmo_botao_valem_as_duas() {
-        // `Espaço` e `X` fazem a mesma coisa, e é isso que ter mais de uma origem significa.
+    fn two_keys_on_the_same_button_both_count() {
+        // `Space` and `X` do the same thing, and that is what having more than one source means.
         let player = Player::default();
         let b2 = Pad::button_by_name("b2").unwrap();
         assert!(
@@ -794,13 +814,13 @@ mod tests {
     }
 
     #[test]
-    fn o_direcional_nao_sai_pelos_eixos() {
-        // Ele é botão, e só: nos eixos, um direcional digital desfaz o próprio passo ao ser
-        // solto. Ver a nota do `Pad::press`. Quem alimenta `X`/`Y` no Z-Pad é o manche.
+    fn the_dpad_does_not_come_out_through_the_axes() {
+        // It is a button, and only that: on the axes, a digital D-pad undoes its own step when
+        // released. See the note on `Pad::press`. What feeds `X`/`Y` on the Z-Pad is the stick.
         let player = Player::default();
-        let direita = Pad::button_by_name("right").unwrap();
+        let right = Pad::button_by_name("right").unwrap();
         let pad = player.pad(|s| *s == Source::key("ArrowRight"), |_| None);
-        assert!(pad.is_down(direita));
+        assert!(pad.is_down(right));
         assert_eq!(pad.axes, [0; 4]);
         let pad = player.pad(|s| *s == Source::key("ArrowUp"), |_| None);
         assert_eq!(pad.axes, [0; 4]);
@@ -808,11 +828,11 @@ mod tests {
     }
 
     #[test]
-    fn ligar_e_desligar_uma_origem() {
+    fn binding_and_unbinding_a_source() {
         let mut player = Player::default();
         player.bind("b1", Source::button("South"));
         assert_eq!(player.sources("b1").len(), 2);
-        // Ligar de novo não duplica.
+        // Binding again does not duplicate.
         player.bind("b1", Source::button("South"));
         assert_eq!(player.sources("b1").len(), 2);
         player.clear("b1");
@@ -820,8 +840,8 @@ mod tests {
     }
 
     #[test]
-    fn o_mapeamento_de_controle_mantem_o_teclado() {
-        // Ligar um controle não pode tirar o teclado de quem estava usando os dois.
+    fn a_controller_mapping_keeps_the_keyboard() {
+        // Connecting a controller must not take the keyboard away from whoever was using both.
         let player = Player::with_gamepad("Meu Controle".into());
         let b1 = Pad::button_by_name("b1").unwrap();
         assert!(player.pad(|s| *s == Source::key("Z"), |_| None).is_down(b1));
@@ -834,9 +854,9 @@ mod tests {
     }
 
     #[test]
-    fn o_analogico_escreve_o_eixo_com_o_curso_inteiro() {
-        // O manche não é um direcional com outro nome: o jogo precisa ver meio curso como meio
-        // curso, e não como "empurrado até o fim".
+    fn the_analog_writes_the_axis_with_full_travel() {
+        // The stick is not a D-pad under another name: the game needs to see half travel as half
+        // travel, and not as "pushed all the way".
         let player = Player::with_gamepad("Meu Controle".into());
         let pad = player.pad(
             |_| false,
@@ -845,104 +865,106 @@ mod tests {
                 _ => None,
             },
         );
-        assert_eq!(pad.axes[0], input::AXIS_CURSO / 2);
+        assert_eq!(pad.axes[0], input::AXIS_RANGE / 2);
         assert_eq!(pad.axes[1], 0);
     }
 
-    /// **O mapeamento salvo de quem já jogava segue a correção do #41** — e só ele: um mapeamento
-    /// mexido à mão fica como está.
+    /// **The saved mapping of whoever already played follows the fix for #41** — and only that
+    /// one: a mapping changed by hand stays as it is.
     #[test]
-    fn o_mapeamento_salvo_dos_botoes_de_acao_e_remepeado_para_a_posicao() {
-        // **O estado salvo de verdade**, e não um inventado: quem tem controle carrega as teclas do
-        // teclado junto (o `with_gamepad` soma ao `default`), então o arquivo diz
-        // `b2 = [Space, X, East]`. A primeira versão desta migração comparava a lista inteira e por
-        // isso nunca casaria — nunca migraria ninguém.
-        let mut antigo = Player::with_gamepad("Controle".into());
-        for (nome, fonte) in Player::botoes_de_acao_antigos() {
-            let origens = antigo.buttons.entry(nome.to_string()).or_default();
-            origens.retain(|origem| !matches!(origem, Source::Button { .. }));
-            origens.push(fonte);
+    fn the_saved_action_button_mapping_is_remapped_by_position() {
+        // **The real saved state**, not a made-up one: whoever has a controller carries the
+        // keyboard keys along (`with_gamepad` adds to `default`), so the file says
+        // `b2 = [Space, X, East]`. The first version of this migration compared the whole list
+        // and so would never match — it would never migrate anyone.
+        let mut old = Player::with_gamepad("Controle".into());
+        for (name, source) in Player::legacy_action_buttons() {
+            let origins = old.buttons.entry(name.to_string()).or_default();
+            origins.retain(|origin| !matches!(origin, Source::Button { .. }));
+            origins.push(source);
         }
-        assert_eq!(antigo.origens_de_botao("b2"), [Source::button("East")], "o ponto de partida");
+        assert_eq!(old.button_sources("b2"), [Source::button("East")], "the starting point");
 
-        antigo.migrate_action_buttons();
-        assert_eq!(antigo.origens_de_botao("b2"), [Source::button("West")], "leste sai do b2");
-        assert_eq!(antigo.origens_de_botao("b3"), [Source::button("North")]);
-        assert_eq!(antigo.origens_de_botao("b4"), [Source::button("East")]);
-        assert_eq!(antigo.origens_de_botao("b1"), [Source::button("South")]);
+        old.migrate_action_buttons();
+        assert_eq!(old.button_sources("b2"), [Source::button("West")], "east leaves b2");
+        assert_eq!(old.button_sources("b3"), [Source::button("North")]);
+        assert_eq!(old.button_sources("b4"), [Source::button("East")]);
+        assert_eq!(old.button_sources("b1"), [Source::button("South")]);
         assert!(
-            antigo.sources("b2").contains(&Source::key("Space")),
-            "as teclas do teclado não podem sumir na migração"
+            old.sources("b2").contains(&Source::key("Space")),
+            "the keyboard keys must not vanish in the migration"
         );
 
-        // Quem mexeu num deles fica com o que escreveu: nada é trocado por baixo.
-        let mut mexido = Player::with_gamepad("Controle".into());
-        mexido.bind("b2", Source::button("North"));
-        let antes = mexido.buttons.clone();
-        mexido.migrate_action_buttons();
+        // Whoever changed one of them keeps what they wrote: nothing is swapped underneath.
+        let mut tweaked = Player::with_gamepad("Controle".into());
+        tweaked.bind("b2", Source::button("North"));
+        let before = tweaked.buttons.clone();
+        tweaked.migrate_action_buttons();
         assert_eq!(
-            mexido.buttons, antes,
-            "um mapeamento mexido à mão não pode ser trocado por baixo"
+            tweaked.buttons, before,
+            "a mapping changed by hand must not be swapped underneath"
         );
 
-        // E o mapeamento que já nasce certo não é mexido duas vezes. O teclado continua junto das
-        // origens do controle, então o que se cobra é a origem do botão, e não a lista inteira.
-        let mut novo = Player::with_gamepad("Controle".into());
-        novo.migrate_action_buttons();
-        assert!(novo.sources("b2").contains(&Source::button("West")));
-        assert!(!novo.sources("b2").contains(&Source::button("East")));
-        assert!(novo.sources("b4").contains(&Source::button("East")));
+        // And a mapping that starts out right is not changed twice. The keyboard stays alongside
+        // the controller's sources, so what is checked is the button source, not the whole list.
+        let mut create = Player::with_gamepad("Controle".into());
+        create.migrate_action_buttons();
+        assert!(create.sources("b2").contains(&Source::button("West")));
+        assert!(!create.sources("b2").contains(&Source::button("East")));
+        assert!(create.sources("b4").contains(&Source::button("East")));
     }
 
 
-    /// O pedido do issue #39, do lado do standalone: é o ajuste que o usuário liga na tela.
+    /// The request of issue #39, on the standalone side: it is the setting the user turns on in
+    /// the screen.
     #[test]
-    fn o_direcional_nos_eixos_e_opt_in_e_nao_desliga_o_manche() {
-        let cima = |source: &Source| *source == Source::key("ArrowUp");
+    fn dpad_on_axes_is_opt_in_and_does_not_disable_the_stick() {
+        let up = |source: &Source| *source == Source::key("ArrowUp");
         let mut player = Player::default();
 
-        // Sem a opção, o que já era verdade continua: o direcional só aperta botão.
-        let pad = player.pad(cima, |_| None);
-        assert_eq!(pad.axes[1], 0, "sem a opção, o eixo não se mexe");
-        assert!(pad.is_down(input::DPAD[0]), "e o botão segue apertado");
+        // Without the option, what was already true still holds: the D-pad only presses buttons.
+        let pad = player.pad(up, |_| None);
+        assert_eq!(pad.axes[1], 0, "without the option, the axis does not move");
+        assert!(pad.is_down(input::DPAD[0]), "and the button stays pressed");
 
-        player.direcional_nos_eixos = true;
-        let pad = player.pad(cima, |_| None);
-        assert_eq!(pad.axes[1], -input::AXIS_CURSO);
+        player.dpad_to_axes = true;
+        let pad = player.pad(up, |_| None);
+        assert_eq!(pad.axes[1], -input::AXIS_RANGE);
         assert!(
-            pad.eixo_do_console(1) < input::AXIS_CENTRO,
-            "cima é o baixo"
+            pad.console_axis(1) < input::AXIS_CENTER,
+            "up is the low value"
         );
         assert!(pad.is_down(input::DPAD[0]));
 
-        // Soltar a direção devolve o eixo ao centro.
+        // Releasing the direction returns the axis to center.
         let pad = player.pad(|_| false, |_| None);
         assert_eq!([pad.axes[0], pad.axes[1]], [0, 0]);
 
-        // **O manche tem a última palavra:** com o direcional apertado e o analógico fora da zona
-        // morta, quem manda no eixo é o analógico. É para isso que o espelho roda antes do laço —
-        // e é só com controle que isto se vê, porque o teclado não tem fonte de eixo nenhuma.
-        let mut com_manche = Player::with_gamepad("Controle de teste".into());
-        com_manche.direcional_nos_eixos = true;
-        let pad = com_manche.pad(
+        // **The stick has the last word:** with the D-pad pressed and the analog stick outside the
+        // dead zone, the analog stick is what controls the axis. That is why the mirror runs
+        // before the loop — and this only shows with a controller, because the keyboard has no
+        // axis source at all.
+        let mut with_stick = Player::with_gamepad("Controle de teste".into());
+        with_stick.dpad_to_axes = true;
+        let pad = with_stick.pad(
             |source| *source == Source::button("DPadUp"),
             |axis| match axis {
                 "LeftStickX" => Some(0.5),
                 _ => None,
             },
         );
-        assert_eq!(pad.axes[0], input::AXIS_CURSO / 2, "o manche venceu");
+        assert_eq!(pad.axes[0], input::AXIS_RANGE / 2, "the stick won");
         assert_eq!(
             pad.axes[1],
-            -input::AXIS_CURSO,
-            "e o direcional ficou no outro eixo"
+            -input::AXIS_RANGE,
+            "and the D-pad stayed on the other axis"
         );
     }
 
     #[test]
-    fn cima_no_analogico_e_o_valor_baixo_no_console() {
-        // A biblioteca de controles diz que cima é positivo; o HID, que o eixo `Y` cresce para
-        // baixo. Errar este sinal inverte o eixo vertical de todo jogo que o lê.
+    fn up_on_the_analog_is_the_low_value_on_the_console() {
+        // The controller library says up is positive; HID, that the `Y` axis grows downward.
+        // Getting this sign wrong inverts the vertical axis of every game that reads it.
         let player = Player::with_gamepad("Meu Controle".into());
         let pad = player.pad(
             |_| false,
@@ -951,15 +973,15 @@ mod tests {
                 _ => None,
             },
         );
-        assert!(pad.axes[1] < 0, "eixo vertical deu {}", pad.axes[1]);
-        // E é o valor baixo que chega ao console, que é o que o jogo lê como "cima".
-        assert!(pad.eixo_do_console(1) < input::AXIS_CENTRO);
+        assert!(pad.axes[1] < 0, "vertical axis gave {}", pad.axes[1]);
+        // And it is the low value that reaches the console, which is what the game reads as "up".
+        assert!(pad.console_axis(1) < input::AXIS_CENTER);
     }
 
     #[test]
-    fn o_manche_direito_alimenta_os_eixos_que_o_direcional_nao_usa() {
-        // `Z` e `RZ` existem no controle do console e não tinham nada os alimentando: o manche
-        // direito ficava sem função nenhuma.
+    fn the_right_stick_feeds_the_axes_the_dpad_does_not_use() {
+        // `Z` and `RZ` exist on the console's controller and had nothing feeding them: the right
+        // stick had no function at all.
         let player = Player::with_gamepad("Meu Controle".into());
         let pad = player.pad(
             |_| false,
@@ -968,23 +990,24 @@ mod tests {
                 _ => None,
             },
         );
-        assert_eq!(pad.axes[2], -input::AXIS_CURSO);
+        assert_eq!(pad.axes[2], -input::AXIS_RANGE);
         assert_eq!(pad.axes[3], 0);
     }
 
     #[test]
-    fn o_analogico_em_repouso_deixa_o_eixo_no_centro() {
-        // A zona morta existe para que um manche que não volta exatamente ao centro não deixe
-        // o eixo tremendo, e o jogo não veja o controle andando sozinho.
+    fn an_analog_at_rest_leaves_the_axis_centered() {
+        // The dead zone exists so that a stick that does not return exactly to the center does
+        // not leave the axis jittering, and the game does not see the controller moving on its own.
         let player = Player::with_gamepad("Meu Controle".into());
         let pad = player.pad(|_| false, |_| Some(0.05));
         assert_eq!(pad.axes[0], 0);
     }
 
     #[test]
-    fn sem_controle_os_eixos_ficam_no_centro() {
-        // O teclado não tem analógico, e o mapeamento de teclado não mapeia eixo nenhum: nem o
-        // valor devolvido pelo analógico chega aos eixos, porque não há origem ligada a eles.
+    fn without_a_controller_the_axes_stay_centered() {
+        // The keyboard has no analog stick, and the keyboard mapping maps no axis at all: not even
+        // the value returned by the analog stick reaches the axes, because no source is bound to
+        // them.
         let player = Player::default();
         assert!(player.axes.is_empty());
         let pad = player.pad(|s| *s == Source::key("Enter"), |_| Some(1.0));
@@ -992,15 +1015,15 @@ mod tests {
     }
 
     #[test]
-    fn o_manche_esquerdo_nao_aperta_o_direcional() {
-        // O manche e o direcional de cruz são controles diferentes: ligar o manche também aos
-        // botões faria os dois agirem juntos e nenhum deles sozinho.
+    fn the_left_stick_does_not_press_the_dpad() {
+        // The stick and the cross D-pad are different controls: also binding the stick to the
+        // buttons would make the two act together and neither on its own.
         let player = Player::with_gamepad("Meu Controle".into());
         for button in ["up", "down", "left", "right"] {
             for source in player.sources(button) {
                 assert!(
                     !matches!(source, Source::Axis { .. }),
-                    "{button} ainda sai de um eixo"
+                    "{button} still comes from an axis"
                 );
             }
         }
@@ -1012,9 +1035,9 @@ mod tests {
     }
 
     #[test]
-    fn adotar_os_eixos_tira_o_manche_de_cima_do_direcional() {
-        // O mapeamento antigo ligava o manche aos botões do direcional por falta de eixo.
-        // Manter os dois faria o manche apertar o direcional além de mover o eixo.
+    fn adopting_the_axes_takes_the_stick_off_the_dpad() {
+        // The old mapping bound the stick to the D-pad buttons for lack of axes. Keeping both
+        // would make the stick press the D-pad on top of moving the axis.
         let mut player = Player {
             device: Some("Meu Controle".into()),
             ..Player::default()
@@ -1031,14 +1054,14 @@ mod tests {
         };
         controls.adopt();
         let up = controls.players[0].sources("up");
-        assert!(up.contains(&Source::key("ArrowUp")), "a tecla continua");
+        assert!(up.contains(&Source::key("ArrowUp")), "the key stays");
         assert!(!up.iter().any(|s| matches!(s, Source::Axis { .. })));
     }
 
     #[test]
-    fn um_mapeamento_sem_eixos_ganha_os_do_controle() {
-        // Um arquivo escrito antes de os eixos existirem deixaria os manches mudos, e ninguém
-        // adivinharia que era preciso refazer o mapeamento à mão.
+    fn a_mapping_without_axes_gets_the_controllers() {
+        // A file written before the axes existed would leave the sticks mute, and nobody would
+        // guess the mapping had to be redone by hand.
         let mut controls = Controls {
             players: vec![Player {
                 device: Some("Meu Controle".into()),
@@ -1048,83 +1071,83 @@ mod tests {
         controls.adopt();
         assert_eq!(controls.players[0].axes, Player::default_axes());
 
-        // Quem está só no teclado continua sem eixo nenhum: não há manche para mapear.
+        // Whoever is on the keyboard only still has no axes at all: there is no stick to map.
         let mut keyboard = Controls::default();
         keyboard.adopt();
         assert!(keyboard.players[0].axes.is_empty());
     }
 
     #[test]
-    fn o_jogador_que_falta_e_criado_com_o_padrao() {
+    fn a_missing_player_is_created_with_the_default() {
         let mut controls = Controls::default();
-        assert_eq!(controls.players.len(), crate::input::PORTAS);
+        assert_eq!(controls.players.len(), crate::input::PORTS);
         controls.player_mut(3);
         assert_eq!(controls.players.len(), 4);
         assert_eq!(controls.player(3), Some(&Player::default()));
     }
 
     #[test]
-    fn porta_com_controle_escolhido_deixa_de_ser_teclado() {
-        // O `aparelho` é o que o console enumera: com teclado ali, a porta não conta como
-        // joystick e o jogo de dois jogadores não vê o segundo.
+    fn a_port_with_a_chosen_controller_stops_being_keyboard() {
+        // `device_kind` is what the console enumerates: with a keyboard there, the port does not
+        // count as a joystick and the two-player game does not see the second one.
         let mut controls = Controls::default();
-        controls.players[1].ligada = true;
-        controls.players[1].aparelho = Aparelho::Teclado;
+        controls.players[1].enabled = true;
+        controls.players[1].device_kind = Device::Keyboard;
         controls.players[1].device = Some("Meu Controle #2".into());
         controls.adopt();
-        assert_eq!(controls.players[1].aparelho, Aparelho::Controle);
-        // Sem controle escolhido, teclado continua teclado.
-        let mut so_teclado = Controls::default();
-        so_teclado.players[0].aparelho = Aparelho::Teclado;
-        so_teclado.players[0].device = None;
-        so_teclado.adopt();
-        assert_eq!(so_teclado.players[0].aparelho, Aparelho::Teclado);
+        assert_eq!(controls.players[1].device_kind, Device::Controller);
+        // With no controller selected, a keyboard stays a keyboard.
+        let mut keyboard_only = Controls::default();
+        keyboard_only.players[0].device_kind = Device::Keyboard;
+        keyboard_only.players[0].device = None;
+        keyboard_only.adopt();
+        assert_eq!(keyboard_only.players[0].device_kind, Device::Keyboard);
     }
 
-    /// As duas portas nascem com o mesmo mapeamento, e só a primeira ligada. Ligar as duas por
-    /// omissão faria um jogo de dois enxergar um segundo jogador que ninguém pediu.
+    /// Both ports start with the same mapping, and only the first one enabled. Enabling both by
+    /// default would make a two-player game see a second player nobody asked for.
     #[test]
-    fn so_a_primeira_porta_nasce_ligada() {
+    fn only_the_first_port_starts_enabled() {
         let controls = Controls::default();
-        let ligadas: Vec<usize> = controls.ligadas().map(|(i, _)| i).collect();
-        assert_eq!(ligadas, vec![0]);
-        assert_eq!(controls.players[1].aparelho, Aparelho::Controle);
+        let enabled_players: Vec<usize> = controls.enabled_players().map(|(i, _)| i).collect();
+        assert_eq!(enabled_players, vec![0]);
+        assert_eq!(controls.players[1].device_kind, Device::Controller);
     }
 
-    /// Um arquivo salvo antes das portas não tem o campo `ligada`, e o jogador dele **não pode**
-    /// aparecer desligado: quem já usava o emulador ficaria sem controle nenhum.
+    /// A file saved before ports existed has no `ligada` field, and its player **must not** show
+    /// up disabled: whoever already used the emulator would be left with no controller at all.
     #[test]
-    fn mapeamento_antigo_continua_ligado() {
-        let antigo = r#"{"players":[{"device":null}]}"#;
-        let mut controls: Controls = serde_json::from_str(antigo).expect("devia ler");
+    fn a_legacy_mapping_stays_bound() {
+        let old = r#"{"players":[{"device":null}]}"#;
+        let mut controls: Controls = serde_json::from_str(old).expect("should read");
         controls.adopt();
-        assert!(controls.players[0].ligada);
-        assert_eq!(controls.players.len(), crate::input::PORTAS);
-        assert!(!controls.players[1].ligada);
+        assert!(controls.players[0].enabled);
+        assert_eq!(controls.players.len(), crate::input::PORTS);
+        assert!(!controls.players[1].enabled);
     }
 
     #[test]
-    fn o_wii_remote_e_um_controle_mapeavel() {
-        // Como Z-Pad ele precisa responder pelos botões dele, no mapeamento da porta, e a porta
-        // deixa de ser de teclado para o console.
+    fn the_wii_remote_is_a_mappable_controller() {
+        // As a Z-Pad it has to respond through its own buttons, in the port's mapping, and the
+        // port stops being a keyboard to the console.
         let mut controls = Controls {
             players: vec![Player {
-                aparelho: Aparelho::Teclado,
+                device_kind: Device::Keyboard,
                 ..Player::with_wiimote("Wii Remote 1".into())
             }],
         };
         controls.adopt();
-        let jogador = &controls.players[0];
-        assert_eq!(jogador.aparelho, Aparelho::Controle);
-        assert!(jogador.buttons["b1"].contains(&Source::button("Wii1")));
-        assert!(jogador.buttons["back"].contains(&Source::button("WiiHome")));
-        // O teclado continua valendo junto.
-        assert!(jogador.buttons["b1"].contains(&Source::key("Z")));
+        let player = &controls.players[0];
+        assert_eq!(player.device_kind, Device::Controller);
+        assert!(player.buttons["b1"].contains(&Source::button("Wii1")));
+        assert!(player.buttons["back"].contains(&Source::button("WiiHome")));
+        // The keyboard still works alongside it.
+        assert!(player.buttons["b1"].contains(&Source::key("Z")));
     }
 
     #[test]
-    fn quem_ja_tinha_um_wii_remote_continua_com_os_botoes_dele() {
-        // Antes os botões se somavam sozinhos e o mapeamento salvo só tinha teclado.
+    fn whoever_already_had_a_wii_remote_keeps_its_buttons() {
+        // Before, the buttons were added on their own and the saved mapping only had the keyboard.
         let mut controls = Controls {
             players: vec![Player {
                 device: Some("Wii Remote 1".into()),
@@ -1133,13 +1156,13 @@ mod tests {
         };
         controls.adopt();
         assert!(controls.players[0].buttons["up"].contains(&Source::button("WiiUp")));
-        // E quem já mapeou à mão não ganha nada a mais.
-        let mut mapeado = Player {
+        // And whoever already mapped by hand gets nothing extra.
+        let mut mapped = Player {
             device: Some("Wii Remote 1".into()),
             ..Player::default()
         };
-        mapeado.bind("b1", Source::button("WiiB"));
-        let mut controls = Controls { players: vec![mapeado] };
+        mapped.bind("b1", Source::button("WiiB"));
+        let mut controls = Controls { players: vec![mapped] };
         controls.adopt();
         assert!(!controls.players[0].buttons["up"].contains(&Source::button("WiiUp")));
     }

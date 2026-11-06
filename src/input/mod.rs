@@ -1,56 +1,58 @@
-//! O controle do Zeebo, independente de onde a entrada vem.
+//! The Zeebo controller, regardless of where the input comes from.
 //!
-//! Os identificadores saem do `hid_devices.original.cfg` do console — a entrada com o VID
-//! `0x1EAA` e o PID `0x0135`, do "New Zeebo Game Controller" — e os nomes dos UIDs, de
-//! `AEEHIDDevice_Joystick.h` do SDK do Zeebo. O jogo identifica cada botão pelo UID, não pelo
-//! índice, então o que precisa estar certo é a tabela.
+//! The identifiers come from the console's `hid_devices.original.cfg` — the entry with VID
+//! `0x1EAA` and PID `0x0135`, the "New Zeebo Game Controller" — and the UID names from
+//! `AEEHIDDevice_Joystick.h` in the Zeebo SDK. The game identifies each button by UID, not by
+//! index, so what has to be right is the table.
 
 pub mod bindings;
 #[cfg(feature = "desktop")]
 pub mod gamepads;
 #[cfg(feature = "desktop")]
 pub mod padview;
-pub mod sensores;
-pub mod toque;
+pub mod sensors;
+pub mod touch;
 pub mod wiimote;
 
-/// Quantas portas de entrada o console tem.
+/// How many input ports the console has.
 ///
-/// São as duas USB da frente do aparelho. Não é número escolhido: o `GetConnectedDevices` da
-/// Z-Wheel passa **dois** como tamanho do vetor de saída, nas duas vezes em que o chama.
-pub const PORTAS: usize = 2;
+/// They are the two USB ports on the front of the unit. It is not a chosen number: the Z-Wheel's
+/// `GetConnectedDevices` passes **two** as the size of the output array, both times it calls it.
+pub const PORTS: usize = 2;
 
-/// O evento de tecla do BREW, que é como o console entrega teclado ao aplicativo.
+/// The BREW key event, which is how the console delivers the keyboard to the application.
 ///
-/// Teclado no BREW **não passa pelo `IHID`**: o `IHID` diz que existe um, e as teclas chegam
-/// como evento ao tratador do aplicativo, com o código virtual no `wParam`. A Z-Wheel confirma:
-/// o tratador do formulário de abertura, em `0x11828`, testa `r1 == 0x100` e compara o `r2` com
-/// `0xe030`, `0xe04a` e outros — que são `AVK_`.
+/// The keyboard in BREW **does not go through `IHID`**: `IHID` says one exists, and the keys
+/// arrive as events at the application's handler, with the virtual code in `wParam`. The Z-Wheel
+/// confirms it: the handler of the opening form, at `0x11828`, tests `r1 == 0x100` and compares
+/// `r2` with `0xe030`, `0xe04a` and others — which are `AVK_`.
 pub const EVT_KEY: u32 = 0x100;
 
-/// A soltura de uma tecla, na numeração do `AEE.h`: `EVT_KEY_PRESS` é `0x101` e
-/// `EVT_KEY_RELEASE` é `0x102`.
+/// The release of a key, in the numbering of `AEE.h`: `EVT_KEY_PRESS` is `0x101` and
+/// `EVT_KEY_RELEASE` is `0x102`.
 ///
-/// **A soltura saía como `0x101`, que é o aperto.** O Quake só lê `0x101` e `0x102` — é ele
-/// mesmo quem confirma a numeração: o tratador em `0x3a8ec` trata `0x101` como aperto e `0x102`
-/// como soltura, e a tradução que ele faz do controle em tecla manda `0x101` no aperto
-/// (`0x49a24`). O botão 2 do controle vira `AVK_CLR`, que o Quake liga ao `togglemenu`: a soltura
-/// dele chegava como um segundo aperto que nunca era solto, a tecla ficava abaixada para sempre,
-/// e todo aperto seguinte era descartado como repetição — o menu não abria mais na fase.
+/// **The release went out as `0x101`, which is the press.** Quake only reads `0x101` and `0x102`
+/// — it is Quake itself that confirms the numbering: the handler at `0x3a8ec` treats `0x101` as a
+/// press and `0x102` as a release, and its own translation of the controller into keys sends
+/// `0x101` on the press (`0x49a24`). Controller button 2 becomes `AVK_CLR`, which Quake binds to
+/// `togglemenu`: its release arrived as a second press that was never released, the key stayed
+/// held down forever, and every following press was discarded as a repeat — the menu no longer
+/// opened during the level.
 ///
-/// O aperto continua só como `EVT_KEY`. Com o `EVT_KEY_PRESS` junto, o botão 2 abriria o menu
-/// do Quake no meio da fase, e no aparelho ele não abre: no longplay, "Sempre correr desligado"
-/// aparece sem menu nenhum.
+/// The press is still only `EVT_KEY`. With `EVT_KEY_PRESS` alongside, button 2 would open Quake's
+/// menu mid-level, and on the unit it does not: in the longplay, "Sempre correr desligado"
+/// ("Always run off") appears without any menu.
 pub const EVT_KEY_RELEASE: u32 = 0x102;
 
-/// Os códigos virtuais do BREW que o console usa, na numeração do `AEEVCodes.h`.
+/// The BREW virtual codes the console uses, in the numbering of `AEEVCodes.h`.
 ///
-/// A numeração foi conferida no módulo da Z-Wheel, que é quem mais depende dela:
+/// The numbering was checked against the Z-Wheel module, which is what depends on it most:
 ///
-/// - a função em `0x44914` é a tradução que a própria Z-Wheel faz do analógico em teclas. Ela leva
-///   os quatro sentidos, na ordem cima, baixo, esquerda, direita, em `0xe031` a `0xe034`;
-/// - os tratadores de `0x11888` e `0x158c0` tratam `0xe030` igual a `0xe04a` (voltar) e `0xe035`
-///   igual a `0xe064` (confirmar) — `AVK_CLR` e `AVK_SELECT` ao lado dos botões do controle.
+/// - the function at `0x44914` is the Z-Wheel's own translation of the analog stick into keys. It
+///   maps the four directions, in the order up, down, left, right, to `0xe031` through `0xe034`;
+/// - the handlers at `0x11888` and `0x158c0` treat `0xe030` the same as `0xe04a` (back) and
+///   `0xe035` the same as `0xe064` (confirm) — `AVK_CLR` and `AVK_SELECT` next to the controller
+///   buttons.
 pub mod avk {
     pub const ZERO: u32 = 0xe021;
     pub const STAR: u32 = 0xe02b;
@@ -61,54 +63,54 @@ pub mod avk {
     pub const LEFT: u32 = 0xe033;
     pub const RIGHT: u32 = 0xe034;
     pub const SELECT: u32 = 0xe035;
-    /// O botão de confirmar do controle. A Z-Wheel o aceita onde aceita o `SELECT`; a tela de
-    /// instruções do z-pad só avança com ele.
-    pub const CONFIRMA: u32 = 0xe064;
+    /// The controller's confirm button. The Z-Wheel accepts it wherever it accepts `SELECT`; the
+    /// z-pad instructions screen only advances with it.
+    pub const CONFIRM: u32 = 0xe064;
 
-    /// O código de um dígito, ou `None` se não for dígito.
-    pub fn digito(n: u32) -> Option<u32> {
+    /// The code of a digit, or `None` if it is not a digit.
+    pub fn digit(n: u32) -> Option<u32> {
         (n <= 9).then_some(ZERO + n)
     }
 
-    /// O código de uma tecla pelo nome que a configuração usa.
-    pub fn por_nome(nome: &str) -> Option<u32> {
-        Some(match nome {
+    /// The code of a key by the name the configuration uses.
+    pub fn by_name(name: &str) -> Option<u32> {
+        Some(match name {
             "up" => UP,
             "down" => DOWN,
             "left" => LEFT,
             "right" => RIGHT,
             "select" | "ok" => SELECT,
-            "confirma" => CONFIRMA,
+            "confirma" => CONFIRM,
             "star" => STAR,
             "pound" => POUND,
             "clr" => CLR,
-            // Um código cru, em hexadecimal, para quando se está descobrindo qual é a tecla:
-            // `0xe063` diz o que `right` ainda não sabe dizer.
-            outro if outro.starts_with("0x") => {
-                return u32::from_str_radix(&outro[2..], 16).ok();
+            // A raw code, in hexadecimal, for when you are finding out which key it is:
+            // `0xe063` says what `right` cannot say yet.
+            other if other.starts_with("0x") => {
+                return u32::from_str_radix(&other[2..], 16).ok();
             }
-            outro => return outro.parse::<u32>().ok().and_then(digito),
+            other => return other.parse::<u32>().ok().and_then(digit),
         })
     }
 }
 
-/// Quantos botões o controle tem.
+/// How many buttons the controller has.
 pub const BUTTONS: usize = 18;
 
-/// UID de cada botão, na ordem em que o console os enumera.
+/// UID of each button, in the order the console enumerates them.
 ///
-/// A lista tem esquisitices — o índice 3 traz o UID de um eixo, e o `Right_Shoulder_Upper`
-/// aparece duas vezes — mas é o que o arquivo do console diz, e é o que os jogos viram quando
-/// foram feitos. Corrigir aqui seria inventar um controle que não existiu.
+/// The list has oddities — index 3 carries the UID of an axis, and `Right_Shoulder_Upper`
+/// appears twice — but it is what the console's file says, and it is what the games saw when
+/// they were made. Fixing it here would be inventing a controller that never existed.
 pub const BUTTON_UIDS: [u32; BUTTONS] = [
-    // **Os quatro botões de face vêm primeiro, na ordem 1, 2, 3, 4.** Quem decidiu isto foi o
-    // jogo: os onze ports de arcade da Data East não esperam evento de botão, eles varrem
-    // `GetButtonInfo` de 0 a 15 a cada quadro e guardam o estado **por índice** (o laço do Bad
-    // Dudes está em `0x1f2a8` no módulo dele). Para quem lê assim, o UID não importa — importa
-    // a posição. Enquanto o `Button_2` abria a lista e o `Right_Shoulder_Upper` vinha logo
-    // atrás, o botão 2 do controle chegava ao arcade como o gatilho direito e o 4 como o 3,
-    // enquanto o nosso `b2` e o nosso `b3`, nas posições 16 e 17, não chegavam a ser lidos.
-    0x0106_c40b, // Button_1 do Z-Pad (o arquivo do console o rotula `Button_2` — ver abaixo)
+    // **The four face buttons come first, in the order 1, 2, 3, 4.** The game decided this: the
+    // eleven Data East arcade ports do not wait for button events, they scan `GetButtonInfo`
+    // from 0 to 15 every frame and store the state **by index** (Bad Dudes' loop is at
+    // `0x1f2a8` in its module). For whoever reads this way, the UID does not matter — the
+    // position does. While `Button_2` opened the list and `Right_Shoulder_Upper` came right
+    // after, controller button 2 reached the arcade as the right trigger and 4 as 3, while our
+    // `b2` and our `b3`, at positions 16 and 17, were never even read.
+    0x0106_c40b, // Z-Pad Button_1 (the console's file labels it `Button_2` — see below)
     0x0106_c40a, // Button_2
     0x0106_c40c, // Button_3
     0x0106_c40d, // Button_4
@@ -120,134 +122,136 @@ pub const BUTTON_UIDS: [u32; BUTTONS] = [
     0x0106_c403, // Back
     0x0106_c404, // Left_Thumbstick
     0x0106_c402, // Start
-    // O direcional não está na lista do arquivo do console, que o descreve como os eixos `X` e
-    // `Y`. Mas é como botão que os jogos o leem: com estes quatro UIDs presentes, o menu do
-    // Quake anda; sem eles, o cursor não sai do lugar por mais que o eixo mude. Um direcional
-    // digital em USB HID costuma ser reportado das duas formas, e é o que fazemos.
+    // The D-pad is not in the list of the console's file, which describes it as the `X` and `Y`
+    // axes. But games read it as buttons: with these four UIDs present, Quake's menu moves;
+    // without them, the cursor does not budge however much the axis changes. A digital D-pad on
+    // USB HID is usually reported both ways, and that is what we do.
     //
-    // **A ordem é a dos UIDs: cima, esquerda, baixo, direita.** Há quem leia o botão pela
-    // posição na lista, e não pelo UID: o `GamepadMgr` das amostras do SDK guarda o estado num
-    // vetor indexado pelo `id` do `GetNextButtonEvent` (`0x16b68` no Dragon Vs Chicken). Na ordem
-    // cima, baixo, esquerda, direita, a demo andava para baixo quando se apertava esquerda.
+    // **The order is that of the UIDs: up, left, down, right.** Some read the button by its
+    // position in the list, not by UID: the `GamepadMgr` of the SDK samples stores the state in
+    // an array indexed by the `id` of `GetNextButtonEvent` (`0x16b68` in Dragon Vs Chicken). In
+    // the order up, down, left, right, the demo moved down when left was pressed.
     0x0106_c3fe, // DPad_Up
     0x0106_c3ff, // DPad_Left
     0x0106_c400, // DPad_Down
     0x0106_c401, // DPad_Right
-    // O que sobra fica **depois** da faixa que os ports varrem. O `lx` guarda o UID de eixo que
-    // o arquivo do console deixou no meio da lista de botões, e o `zrb` é a segunda aparição do
-    // `Right_Shoulder_Upper` no mesmo arquivo: nenhum dos dois é botão do controle, e deixá-los
-    // na frente custava duas posições das dezesseis que o arcade lê.
+    // What is left goes **after** the range the ports scan. `lx` holds the axis UID the console's
+    // file left in the middle of the button list, and `zrb` is the second appearance of
+    // `Right_Shoulder_Upper` in the same file: neither of them is a controller button, and
+    // leaving them in front cost two of the sixteen positions the arcade reads.
     0x0106_c4d0, // LeftThumb_X
-    0x0106_c408, // Right_Shoulder_Upper, de novo
+    0x0106_c408, // Right_Shoulder_Upper, again
 ];
 
-/// Índices dos quatro sentidos do direcional em [`BUTTON_UIDS`], na ordem cima, baixo,
-/// esquerda, direita. Na lista eles ficam na ordem dos UIDs — ver [`BUTTON_UIDS`].
+/// Indices of the four D-pad directions in [`BUTTON_UIDS`], in the order up, down, left, right.
+/// In the list they are in UID order — see [`BUTTON_UIDS`].
 pub const DPAD: [usize; 4] = [12, 14, 13, 15];
 
-/// Os índices do HOME, que o BREW chama de `Back`, e do `Start` em [`BUTTON_UIDS`]. Ver
-/// [`Pad::com_o_home_nos_dois`].
+/// The indices of HOME, which BREW calls `Back`, and of `Start` in [`BUTTON_UIDS`]. See
+/// [`Pad::with_home_on_both`].
 pub const HOME: usize = 9;
 pub const START: usize = 11;
 
-/// Nome de cada botão, para o mapeamento de teclas e para a linha de comando.
-/// O controle tem **um** gatilho de cada lado, o ZL e o ZR, e é o "superior" de cada par que
-/// eles reportam: no Zeeboids, que desenha `ZL` e `ZR` na tela e gira o personagem com eles, o
-/// `Left_Shoulder_Upper` e o `Right_Shoulder_Upper` giram e os "inferiores" não fazem nada. Os
-/// dois inferiores continuam aqui porque estão no arquivo do console, mas não têm botão.
-/// **`b1` fica no UID que o arquivo do console rotula `Button_2`, e isto é deliberado.**
+/// Name of each button, for key mapping and for the command line.
+/// The controller has **one** trigger on each side, ZL and ZR, and they report as the "upper"
+/// one of each pair: in Zeeboids, which draws `ZL` and `ZR` on screen and turns the character
+/// with them, `Left_Shoulder_Upper` and `Right_Shoulder_Upper` turn and the "lower" ones do
+/// nothing. The two lower ones stay here because they are in the console's file, but they have
+/// no button.
+/// **`b1` sits on the UID the console's file labels `Button_2`, and this is deliberate.**
 ///
-/// Os rótulos `Button_N` da entrada do controle no `hid_devices.original.cfg` estão deslocados —
-/// o mesmo arquivo põe um UID de eixo no `BUTTON:3`, então a inconsistência dele já era
-/// conhecida. Quem resolve o deslocamento é o comportamento dos jogos, medido no aparelho: com
-/// `b1` no `0x0106c40a`, o botão sul chegava aos jogos como **2** e o leste como **1**. Como o
-/// sul é o 1 impresso no Z-Pad, o UID do botão 1 é o `0x0106c40b`.
+/// The `Button_N` labels of the controller entry in `hid_devices.original.cfg` are shifted —
+/// the same file puts an axis UID in `BUTTON:3`, so its inconsistency was already known. What
+/// settles the shift is the behavior of the games, measured on the unit: with `b1` on
+/// `0x0106c40a`, the south button reached the games as **2** and the east one as **1**. Since
+/// south is the 1 printed on the Z-Pad, button 1's UID is `0x0106c40b`.
 ///
-/// Os UIDs de `b2`, `b3` e `b4` seguem onde estavam: não há medida deles ainda. O que foi
-/// medido é a **ordem**, e ela vale para quem varre a lista por índice — ver [`BUTTON_UIDS`].
+/// The UIDs of `b2`, `b3` and `b4` stay where they were: there is no measurement of them yet.
+/// What was measured is the **order**, and it holds for whoever scans the list by index — see
+/// [`BUTTON_UIDS`].
 pub const BUTTON_NAMES: [&str; BUTTONS] = [
     "b1", "b2", "b3", "b4", "zr", "l2", "zl", "r2", "rthumb", "back", "lthumb", "start", "up",
     "left", "down", "right", "lx", "zrb",
 ];
 
-/// UID de cada eixo: `X`, `Y`, `Z` e `RZ`.
+/// UID of each axis: `X`, `Y`, `Z` and `RZ`.
 ///
-/// Três deles são **literalmente** os do `hid_devices.original.cfg` do console, na entrada do
-/// controle do Zeebo (`VID:0x1EAA:PID:0x0135`):
+/// Three of them are **literally** those of the console's `hid_devices.original.cfg`, in the
+/// Zeebo controller entry (`VID:0x1EAA:PID:0x0135`):
 ///
 /// ```text
-/// AXIS:X:0x0106C40C      <- este não
+/// AXIS:X:0x0106C40C      <- not this one
 /// AXIS:Y:0x0106C4D1
 /// AXIS:Z:0x0106C4CE
 /// AXIS:RZ:0x0106C4CF
 /// ```
 ///
-/// O arquivo tem uma troca, e ela é visível dos dois lados: o `AXIS:X` recebeu `0x0106C40C`,
-/// que é UID de botão (o `Button_3`), e o `BUTTON:3` da mesma entrada recebeu `0x0106C4D0`,
-/// que é UID de eixo — o `LeftThumb_X` das outras entradas do próprio arquivo.
+/// The file has a swap, and it is visible from both sides: `AXIS:X` got `0x0106C40C`, which is a
+/// button UID (`Button_3`), and `BUTTON:3` of the same entry got `0x0106C4D0`, which is an axis
+/// UID — the `LeftThumb_X` of the file's other entries.
 ///
-/// **Aqui desfazemos a troca, e o que decidiu foi medida, não dedução.** Com `0x0106C40C` no
-/// `X`, o manche não move esquerda e direita em jogo nenhum: o jogo varre a tabela do
-/// `GetAxesInfo` procurando UID de eixo, não acha nenhum para o `X` e nunca guarda o campo
-/// dele — o `Y`, o `Z` e o `RZ` andam, e só o horizontal fica morto. Com `0x0106C4D0` o manche
-/// anda inteiro.
+/// **Here we undo the swap, and what decided it was measurement, not deduction.** With
+/// `0x0106C40C` on `X`, the stick does not move left and right in any game: the game scans the
+/// `GetAxesInfo` table looking for an axis UID, finds none for `X` and never stores its field —
+/// `Y`, `Z` and `RZ` move, and only the horizontal stays dead. With `0x0106C4D0` the whole stick
+/// moves.
 ///
-/// Isto **não** contradiz a lição de que fonte primária ganha de inferência: a pergunta aqui
-/// não é "o que o arquivo diz", é "o que o jogo procura", e quem responde essa é o jogo. O
-/// arquivo continua sendo a fonte de todo o resto da tabela.
+/// This does **not** contradict the lesson that a primary source beats inference: the question
+/// here is not "what does the file say", it is "what does the game look for", and the one who
+/// answers that is the game. The file is still the source for all the rest of the table.
 pub const AXIS_UIDS: [u32; 4] = [0x0106_c4d0, 0x0106_c4d1, 0x0106_c4ce, 0x0106_c4cf];
 
-/// Nome de cada eixo, na ordem de [`Pad::axes`], para o mapeamento e a tela de configuração.
+/// Name of each axis, in the order of [`Pad::axes`], for the mapping and the settings screen.
 pub const AXIS_NAMES: [&str; 4] = ["x", "y", "z", "rz"];
 
-/// Em qual palavra do `AEEHIDPositionInfo` cada eixo cai.
+/// Which word of `AEEHIDPositionInfo` each axis falls into.
 ///
-/// A struct começa com `boolean bRelativeAxes` e segue com `nX`, `nY`, `nZ`, `nRx`, `nRy`,
-/// `nRz` e mais dezoito campos (`inc/AEEIHIDDevice.h` do SDK do Zeebo). O console usa `X`,
-/// `Y`, `Z` e `RZ`, que são as palavras 1, 2, 3 e 6.
+/// The struct starts with `boolean bRelativeAxes` and continues with `nX`, `nY`, `nZ`, `nRx`,
+/// `nRy`, `nRz` and eighteen more fields (`inc/AEEIHIDDevice.h` in the Zeebo SDK). The console
+/// uses `X`, `Y`, `Z` and `RZ`, which are words 1, 2, 3 and 6.
 pub const AXIS_SLOTS: [usize; 4] = [1, 2, 3, 6];
 
-/// Quantas palavras tem o `AEEHIDPositionInfo`: `bRelativeAxes` e vinte e quatro eixos.
+/// How many words `AEEHIDPositionInfo` has: `bRelativeAxes` and twenty-four axes.
 pub const POSITION_INFO_WORDS: usize = 25;
 
-/// Faixa de um eixo **como o console a reporta**: um byte sem sinal, com o repouso no meio.
+/// Range of an axis **as the console reports it**: an unsigned byte, with rest in the middle.
 ///
-/// Isto não é escolha nossa, é medida. O Zeebo F.C. Super League converte cada eixo assim
-/// (`0xfd4c0` no módulo dele, e o mesmo trecho está no Tênis, no Zeeboids e em todo jogo que
-/// usa essa camada do SDK):
+/// This is not our choice, it is measured. Zeebo F.C. Super League converts each axis like this
+/// (`0xfd4c0` in its module, and the same stretch is in Tênis, in Zeeboids and in every game that
+/// uses this SDK layer):
 ///
 /// ```text
 /// mvn   r0, #0x7f        ; r0 = -128
-/// sxtah r4, r0, r4       ; valor = (int16)eixo - 128
+/// sxtah r4, r0, r4       ; value = (int16)axis - 128
 /// ```
 ///
-/// O jogo subtrai **128** do valor cru para achar o centro, então o centro do aparelho é 128 e
-/// a faixa é `0..=255` — o que também é o que reportam os manches USB que o
-/// `hid_devices.original.cfg` lista (Logitech Dual Action, RumblePad2). Enquanto mandávamos
-/// zero, todo jogo dessa camada lia o extremo e andava sozinho para um canto: era o "boneco
-/// andando para cima" com o manche parado.
+/// The game subtracts **128** from the raw value to find the center, so the unit's center is 128
+/// and the range is `0..=255` — which is also what the USB sticks listed in
+/// `hid_devices.original.cfg` report (Logitech Dual Action, RumblePad2). While we sent zero,
+/// every game on this layer read the extreme and walked on its own into a corner: that was the
+/// "character walking up" with the stick at rest.
 ///
-/// O Zeeboids escapava por acidente: ele trata "os quatro eixos exatamente no mínimo" como
-/// "não há manche aqui" e zera tudo — uma defesa contra exatamente o que a gente fazia.
+/// Zeeboids escaped by accident: it treats "all four axes exactly at the minimum" as "there is
+/// no stick here" and zeroes everything — a defense against exactly what we were doing.
 pub const AXIS_MIN: i32 = 0;
 pub const AXIS_MAX: i32 = 255;
 
-/// O repouso, na faixa do console.
-pub const AXIS_CENTRO: i32 = 128;
+/// The rest position, in the console's range.
+pub const AXIS_CENTER: i32 = 128;
 
-/// Quanto [`Pad::axes`] anda para cada lado.
+/// How far [`Pad::axes`] travels to each side.
 ///
-/// Guardamos o eixo **centrado no zero**, que é a forma com que o próprio jogo trabalha depois
-/// da subtração acima; quem traduz para a faixa do aparelho é o `IHIDDevice`, no único lugar em
-/// que o console é quem lê.
-pub const AXIS_CURSO: i32 = 128;
+/// We store the axis **centered on zero**, which is the form the game itself works with after
+/// the subtraction above; the translation to the unit's range is done by `IHIDDevice`, in the
+/// only place where the console is the one reading.
+pub const AXIS_RANGE: i32 = 128;
 
-/// O estado do controle num instante.
+/// The state of the controller at one instant.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Pad {
-    /// Um bit por botão, no índice em que o console o enumera.
+    /// One bit per button, at the index the console enumerates it.
     pub buttons: u32,
-    /// Os eixos `X`, `Y`, `Z` e `RZ`, nessa ordem.
+    /// The `X`, `Y`, `Z` and `RZ` axes, in that order.
     pub axes: [i32; 4],
 }
 
@@ -256,17 +260,19 @@ impl Pad {
         self.buttons & (1 << index) != 0
     }
 
-    /// Aperta ou solta um botão. **O direcional não toca nos eixos**, e a razão é o aparelho.
+    /// Presses or releases a button. **The D-pad does not touch the axes**, and the reason is the
+    /// hardware.
     ///
-    /// O `hid_devices.original.cfg` lista **quatro** eixos — `X`/`Y` e `Z`/`RZ` —, que são dois
-    /// manches. O Z-Pad tem manche analógico e direcional digital: o direcional é botão, e quem
-    /// alimenta `X`/`Y` é o manche esquerdo. A Z-Wheel registra `RegisterForPositionChange`
-    /// porque ela é navegada **pelo manche**.
+    /// `hid_devices.original.cfg` lists **four** axes — `X`/`Y` and `Z`/`RZ` —, which are two
+    /// sticks. The Z-Pad has an analog stick and a digital D-pad: the D-pad is a button, and what
+    /// feeds `X`/`Y` is the left stick. The Z-Wheel registers `RegisterForPositionChange`
+    /// because it is navigated **with the stick**.
     ///
-    /// Jogar um direcional digital nos eixos quebra todo jogo que lê variação em vez de estado:
-    /// soltar a direção manda o eixo de volta ao centro, e essa volta é uma segunda mudança, de
-    /// sinal oposto. No Zeeboids o menu desce uma opção e volta na hora. Isto já foi tentado
-    /// três vezes — espelhado nos dois canais, só nos eixos, e de novo aqui — e falhou nas três.
+    /// Putting a digital D-pad on the axes breaks every game that reads changes instead of state:
+    /// releasing the direction sends the axis back to center, and that return is a second change,
+    /// of opposite sign. In Zeeboids the menu goes down one option and comes right back. This has
+    /// been tried three times — mirrored on both channels, only on the axes, and again here — and
+    /// it failed all three.
     pub fn press(&mut self, index: usize, down: bool) {
         let bit = 1 << index;
         if down {
@@ -276,83 +282,89 @@ impl Pad {
         }
     }
 
-    /// Põe um eixo no valor dado, preso ao curso do manche. O zero é o repouso.
+    /// Sets an axis to the given value, clamped to the stick's travel. Zero is rest.
     pub fn set_axis(&mut self, index: usize, value: i32) {
         if let Some(axis) = self.axes.get_mut(index) {
-            *axis = value.clamp(-AXIS_CURSO, AXIS_CURSO);
+            *axis = value.clamp(-AXIS_RANGE, AXIS_RANGE);
         }
     }
 
-    /// O eixo na faixa do console: o repouso vira 128, e o curso, `0..=255`.
-    pub fn eixo_do_console(&self, index: usize) -> i32 {
-        let valor = self.axes.get(index).copied().unwrap_or(0);
-        (valor + AXIS_CENTRO).clamp(AXIS_MIN, AXIS_MAX)
+    /// The axis in the console's range: rest becomes 128, and the travel, `0..=255`.
+    pub fn console_axis(&self, index: usize) -> i32 {
+        let value = self.axes.get(index).copied().unwrap_or(0);
+        (value + AXIS_CENTER).clamp(AXIS_MIN, AXIS_MAX)
     }
 
-    /// Espelha o direcional nos eixos `X` e `Y`, para jogo que só lê o manche.
+    /// Mirrors the D-pad onto the `X` and `Y` axes, for games that only read the stick.
     ///
-    /// **Não é o padrão, e a razão é medida.** No console o direcional é botão: quem consulta
-    /// estado o vê em `GetButtonInfo`, e quem só escuta o eixo não vê nada. Pôr o direcional nos
-    /// eixos foi o que `e705840` fez, e `4418fe9` desfez — o Zeeboids consulta **os dois canais**
-    /// toda volta (613 `GetNextButtonEvent` e 612 `GetPositionState` em vinte segundos) e passou a
-    /// andar duas casas por toque. Deixá-lo **só** nos eixos foi pior: soltar a direção manda o
-    /// eixo de volta ao centro, e quem lê variação lê essa volta como um passo no sentido contrário.
+    /// **It is not the default, and the reason is measured.** On the console the D-pad is a
+    /// button: whoever polls state sees it in `GetButtonInfo`, and whoever only listens to the
+    /// axis sees nothing. Putting the D-pad on the axes is what `e705840` did, and `4418fe9`
+    /// undid — Zeeboids polls **both channels** every loop (613 `GetNextButtonEvent` and 612
+    /// `GetPositionState` in twenty seconds) and started moving two squares per tap. Leaving it
+    /// **only** on the axes was worse: releasing the direction sends the axis back to center, and
+    /// whoever reads changes reads that return as a step in the opposite direction.
     ///
-    /// Fica aqui, atrás de uma opção desligada por padrão, porque o defeito é **por jogo**: quem só
-    /// lê o manche passa a enxergar o direcional, e quem lê os dois canais segue como estava.
+    /// It stays here, behind an option that is off by default, because the defect is **per
+    /// game**: whoever only reads the stick starts seeing the D-pad, and whoever reads both
+    /// channels stays as it was.
     ///
-    /// Os botões **continuam apertados**: a opção acrescenta o eixo, não troca o canal. Quem lê os
-    /// dois é que anda duas casas, e é o caso que a opção existe para deixar desligada.
+    /// The buttons **stay pressed**: the option adds the axis, it does not switch the channel.
+    /// Whoever reads both is what moves two squares, and that is the case the option exists to
+    /// leave off.
     ///
-    /// Cima é valor **negativo** no `Y` interno: no console o eixo cresce para baixo, e é o valor
-    /// baixo que o jogo lê como cima — ver `cima_no_analogico_e_o_valor_baixo_no_console`.
-    pub fn espelha_o_direcional_nos_eixos(&mut self) {
-        // Os quatro sentidos, na ordem de [`DPAD`]: cima, baixo, esquerda, direita.
+    /// Up is a **negative** value on the internal `Y`: on the console the axis grows downward, and
+    /// the low value is what the game reads as up — see
+    /// `up_on_the_analog_is_the_low_value_on_the_console`.
+    pub fn mirror_dpad_on_axes(&mut self) {
+        // The four directions, in the order of [`DPAD`]: up, down, left, right.
         //
-        // **Soltar devolve o eixo ao centro**, e não o deixa onde estava: sem isso o manche
-        // ficaria empurrado para sempre depois do primeiro toque. É a mesma volta ao centro que o
-        // [`Pad::press`] anota como o risco da ideia — quem lê variação lê essa volta como um
-        // passo no sentido contrário.
+        // **Releasing returns the axis to center**, rather than leaving it where it was: without
+        // that the stick would stay pushed forever after the first tap. It is the same return to
+        // center that [`Pad::press`] notes as the risk of the idea — whoever reads changes reads
+        // that return as a step in the opposite direction.
         //
-        // Os dois sentidos opostos apertados juntos dão centro, e não o último que chegou.
+        // The two opposite directions pressed together give center, not the last one to arrive.
         let vertical = match (self.is_down(DPAD[0]), self.is_down(DPAD[1])) {
-            (true, false) => -AXIS_CURSO,
-            (false, true) => AXIS_CURSO,
+            (true, false) => -AXIS_RANGE,
+            (false, true) => AXIS_RANGE,
             _ => 0,
         };
         let horizontal = match (self.is_down(DPAD[2]), self.is_down(DPAD[3])) {
-            (true, false) => -AXIS_CURSO,
-            (false, true) => AXIS_CURSO,
+            (true, false) => -AXIS_RANGE,
+            (false, true) => AXIS_RANGE,
             _ => 0,
         };
         self.set_axis(1, vertical);
         self.set_axis(0, horizontal);
     }
 
-    /// O controle como o console o entrega: o HOME aperta o `Back` **e** o `Start`.
+    /// The controller as the console delivers it: HOME presses `Back` **and** `Start`.
     ///
-    /// O controle do Zeebo tem um botão só no meio, e os jogos discordam do UID dele. O Double
-    /// Dragon pede "APERTE O BOTÃO HOME" e só reconhece o `Back`: na tela de título, o `back` abre
-    /// o menu e o `start` não faz nada. O Quake pede "Aperte o botão Home para chamar o menu" e só
-    /// reconhece o `Start`: a tabela de UIDs dele (`0x7a4` no módulo) leva o `Start` ao índice 9,
-    /// que vira o `AVK_CLR` e daí a tecla ligada ao `togglemenu`, e manda o `Back` para "botão
-    /// desconhecido". Os dois rodam no mesmo aparelho, então o HOME chega com os dois.
+    /// The Zeebo controller has a single button in the middle, and the games disagree on its UID.
+    /// Double Dragon asks "APERTE O BOTÃO HOME" ("PRESS THE HOME BUTTON") and only recognizes
+    /// `Back`: on the title screen, `back` opens the menu and `start` does nothing. Quake asks
+    /// "Aperte o botão Home para chamar o menu" ("Press the Home button to bring up the menu")
+    /// and only recognizes `Start`: its UID table (`0x7a4` in the module) takes `Start` to index
+    /// 9, which becomes `AVK_CLR` and from there the key bound to `togglemenu`, and sends `Back`
+    /// to "unknown button". Both run on the same unit, so HOME arrives with both.
     ///
-    /// **Não foi medido no console.** O levantamento das tabelas de UID dos jogos — as que partem
-    /// de `0x0106c3fe` — não achou quem dê ações diferentes aos dois: FIFA 09, Need for Speed,
-    /// Quake II e Action Hero 3D só reconhecem o `Back`; Alien Breaker, Tork and Kral e Heavy
-    /// Weapon guardam os dois em bits separados, e não achei consulta ao bit do `Start` em nenhum
-    /// dos três.
+    /// **It was not measured on the console.** The survey of the games' UID tables — the ones
+    /// starting at `0x0106c3fe` — found none that gives the two different actions: FIFA 09, Need
+    /// for Speed, Quake II and Action Hero 3D only recognize `Back`; Alien Breaker, Tork and Kral
+    /// and Heavy Weapon store both in separate bits, and I found no read of the `Start` bit in any
+    /// of the three.
     ///
-    /// Só nesse sentido: o `start` apertado sozinho, por quem o mapeou à mão, continua só `Start`.
-    pub fn com_o_home_nos_dois(mut self) -> Self {
+    /// Only in this direction: `start` pressed alone, by someone who mapped it by hand, is still
+    /// only `Start`.
+    pub fn with_home_on_both(mut self) -> Self {
         if self.is_down(HOME) {
             self.press(START, true);
         }
         self
     }
 
-    /// Os botões que mudaram entre `self` e `next`, com o novo estado de cada um.
+    /// The buttons that changed between `self` and `next`, with the new state of each.
     pub fn changes(&self, next: &Pad) -> Vec<(usize, bool)> {
         (0..BUTTONS)
             .filter(|&i| self.is_down(i) != next.is_down(i))
@@ -360,13 +372,13 @@ impl Pad {
             .collect()
     }
 
-    /// O índice do botão de nome `name`.
+    /// The index of the button named `name`.
     ///
-    /// Aceita `home` como outro nome do `back`. O controle do Zeebo tem um botão **HOME**
-    /// impresso na carcaça, e é ele que o `hid_devices.cfg` do console mapeia no
-    /// `AEEUID_HIDJoystick_Back` — não existe UID de "Home" no `AEEHIDDevice_Joystick.h`. O
-    /// Double Dragon pede "APERTE O BOTÃO HOME" na tela de título, e quem lê isso não tem como
-    /// adivinhar que o botão se chama `back` aqui dentro.
+    /// Accepts `home` as another name for `back`. The Zeebo controller has a **HOME** button
+    /// printed on the shell, and it is the one the console's `hid_devices.cfg` maps to
+    /// `AEEUID_HIDJoystick_Back` — there is no "Home" UID in `AEEHIDDevice_Joystick.h`. Double
+    /// Dragon asks "APERTE O BOTÃO HOME" ("PRESS THE HOME BUTTON") on the title screen, and
+    /// whoever reads that has no way to guess the button is called `back` in here.
     pub fn button_by_name(name: &str) -> Option<usize> {
         let name = match name {
             "home" => "back",
@@ -376,19 +388,19 @@ impl Pad {
     }
 }
 
-/// Converte uma tecla do frontend para o código virtual BREW correspondente.
+/// Converts a frontend key to the corresponding BREW virtual code.
 ///
-/// Fica no motor porque desktop, headless e Android precisam da mesma convenção.
+/// It lives in the engine because desktop, headless and Android need the same convention.
 ///
-/// `Esc` e `P` ficam de fora de propósito: na janela do desktop são encerrar e pausar.
-pub fn avk_de(key: egui::Key) -> Option<u32> {
+/// `Esc` and `P` are left out on purpose: in the desktop window they are quit and pause.
+pub fn avk_for(key: egui::Key) -> Option<u32> {
     use egui::Key::*;
     Some(match key {
         ArrowUp => avk::UP,
         ArrowDown => avk::DOWN,
         ArrowLeft => avk::LEFT,
         ArrowRight => avk::RIGHT,
-        Enter | Space => avk::CONFIRMA,
+        Enter | Space => avk::CONFIRM,
         Backspace | Delete => avk::CLR,
         Num0 | Num1 | Num2 | Num3 | Num4 | Num5 | Num6 | Num7 | Num8 | Num9 =>
             avk::ZERO + (key as u32 - Num0 as u32),
@@ -396,184 +408,187 @@ pub fn avk_de(key: egui::Key) -> Option<u32> {
     })
 }
 
-/// As teclas BREW que valem agora: as do teclado, já em AVK, somadas às que os controles apertam.
+/// The BREW keys that are active now: the keyboard ones, already as AVK, plus the ones the
+/// controllers press.
 ///
-/// Uma seta física pode estar mapeada também no controle, e continua sendo um aperto só: por isso
-/// o resultado é um conjunto, e só a diferença entre dois deles vira evento ([`transicoes`]).
-pub fn avks_ativos(
-    teclado: impl IntoIterator<Item = u32>,
+/// A physical arrow can also be mapped on the controller, and it is still a single press: that is
+/// why the result is a set, and only the difference between two of them becomes an event
+/// ([`transitions`]).
+pub fn active_avks(
+    keyboard: impl IntoIterator<Item = u32>,
     pads: &[Pad],
 ) -> std::collections::HashSet<u32> {
-    let mut ativos: std::collections::HashSet<u32> = teclado.into_iter().collect();
+    let mut active: std::collections::HashSet<u32> = keyboard.into_iter().collect();
     for pad in pads {
-        ativos.extend(
-            teclas_do_controle(&Pad::default(), pad)
+        active.extend(
+            controller_key_events(&Pad::default(), pad)
                 .into_iter()
                 .filter_map(|(key, down)| down.then_some(key)),
         );
     }
-    ativos
+    active
 }
 
-/// Os eventos de tecla que levam de `anteriores` a `atuais`, soltas antes de apertadas, e
-/// `anteriores` passa a ser `atuais`.
+/// The key events that lead from `prior` to `current`, releases before presses, and `prior`
+/// becomes `current`.
 ///
-/// Guardar o conjunto entregue, e não cada fonte, é o que faz soltar o `4` enquanto a seta
-/// continua apertada não soltar o AVK que as duas representam.
-pub fn transicoes(
-    anteriores: &mut std::collections::HashSet<u32>,
-    atuais: std::collections::HashSet<u32>,
+/// Storing the delivered set, and not each source, is what makes releasing `4` while the arrow
+/// is still held not release the AVK that both represent.
+pub fn transitions(
+    prior: &mut std::collections::HashSet<u32>,
+    current: std::collections::HashSet<u32>,
 ) -> Vec<(u32, bool)> {
-    let mut eventos: Vec<_> = anteriores
-        .difference(&atuais)
+    let mut events: Vec<_> = prior
+        .difference(&current)
         .map(|&key| (key, false))
         .collect();
-    eventos.extend(atuais.difference(anteriores).map(|&key| (key, true)));
-    eventos.sort_unstable();
-    *anteriores = atuais;
-    eventos
+    events.extend(current.difference(prior).map(|&key| (key, true)));
+    events.sort_unstable();
+    *prior = current;
+    events
 }
 
-/// As teclas que o controle manda, comparando com o quadro anterior.
+/// The keys the controller sends, compared with the previous frame.
 ///
-/// No console o direcional chega aos aplicativos como as quatro setas do BREW, e é com elas que a
-/// Z-Wheel navega: esquerda e direita giram a roda e trocam a aba da lista, cima e baixo passam as
-/// páginas. O analógico não entra aqui: a Z-Wheel lê a posição e faz a tradução dela sozinha
-/// (`0x44914` no módulo).
+/// On the console the D-pad reaches applications as the four BREW arrows, and those are what the
+/// Z-Wheel navigates with: left and right turn the wheel and switch the list tab, up and down
+/// flip the pages. The analog stick is not handled here: the Z-Wheel reads the position and
+/// translates it by itself (`0x44914` in the module).
 ///
-/// Fica fora da UI porque **todo frontend** precisa desta tradução: a janela do desktop e o core
-/// Libretro entregam o mesmo par de quadros e esperam as mesmas teclas.
-pub fn teclas_do_controle(antes: &Pad, agora: &Pad) -> Vec<(u32, bool)> {
-    // Os dois botões de face seguem a ajuda da própria Z-Wheel (`assets/zeebo/pt/controls.html`):
-    // "Sim (Botão 1)" escolhe e "Voltar (Botão 2)" cancela. Voltar é o `AVK_CLR`, medido: na tela
-    // de ajuda ele volta ao menu, e o `0xe065` não faz nada.
-    const DE_BOTAO: [(&str, u32); 6] = [
+/// It lives outside the UI because **every frontend** needs this translation: the desktop window
+/// and the Libretro core deliver the same pair of frames and expect the same keys.
+pub fn controller_key_events(before: &Pad, now: &Pad) -> Vec<(u32, bool)> {
+    // The two face buttons follow the Z-Wheel's own help (`assets/zeebo/pt/controls.html`):
+    // "Sim (Botão 1)" ("Yes (Button 1)") chooses and "Voltar (Botão 2)" ("Back (Button 2)")
+    // cancels. Back is `AVK_CLR`, measured: on the help screen it goes back to the menu, and
+    // `0xe065` does nothing.
+    const BUTTON_KEYS: [(&str, u32); 6] = [
         ("up", avk::UP),
         ("down", avk::DOWN),
         ("left", avk::LEFT),
         ("right", avk::RIGHT),
-        ("b1", avk::CONFIRMA),
+        ("b1", avk::CONFIRM),
         ("b2", avk::CLR),
     ];
-    let mut teclas = Vec::new();
-    for (nome, codigo) in DE_BOTAO {
-        let Some(indice) = Pad::button_by_name(nome) else {
+    let mut key_events = Vec::new();
+    for (name, code) in BUTTON_KEYS {
+        let Some(index) = Pad::button_by_name(name) else {
             continue;
         };
-        if agora.is_down(indice) != antes.is_down(indice) {
-            teclas.push((codigo, agora.is_down(indice)));
+        if now.is_down(index) != before.is_down(index) {
+            key_events.push((code, now.is_down(index)));
         }
     }
-    teclas
+    key_events
 }
 
-/// Um roteiro de teclas, para exercitar a entrada sem janela.
+/// A key script, to exercise input without a window.
 ///
-/// Existe para poder testar: sem ele, a única forma de saber se a entrada funciona é apertar a
-/// tecla e olhar, e isso não cabe num teste nem numa execução automática.
+/// It exists so things can be tested: without it, the only way to know whether input works is to
+/// press the key and look, and that does not fit in a test or an automated run.
 #[derive(Debug, Default, Clone)]
 pub struct Script {
-    /// Cada entrada é `(início, fim, índice do botão)`, em milissegundos de tempo virtual.
+    /// Each entry is `(start, end, button index)`, in milliseconds of virtual time.
     steps: Vec<(u32, u32, usize)>,
-    /// O mesmo para os eixos: `(início, fim, índice do eixo, valor)`.
+    /// The same for the axes: `(start, end, axis index, value)`.
     ///
-    /// Existe porque nem toda entrada do console é botão. A Z-Wheel registra
-    /// `RegisterForPositionChange` e **só** isso: a roda de jogos anda pelo eixo, e um roteiro
-    /// que só sabe apertar botão não tem como medi-la.
-    eixos: Vec<(u32, u32, usize, i32)>,
+    /// It exists because not every console input is a button. The Z-Wheel registers
+    /// `RegisterForPositionChange` and **only** that: the game wheel moves by the axis, and a
+    /// script that only knows how to press buttons has no way to measure it.
+    axes: Vec<(u32, u32, usize, i32)>,
 }
 
 impl Script {
-    /// Quanto tempo cada tecla fica apertada, quando o roteiro não diz. Um toque humano.
+    /// How long each key stays pressed, when the script does not say. A human tap.
     pub const HOLD_MS: u32 = 120;
 
-    /// Lê um roteiro no formato `ms:tecla[:duração_ms][,...]`.
+    /// Reads a script in the format `ms:key[:duration_ms][,...]`.
     ///
-    /// O tempo é o do relógio virtual do jogo, não o número de voltas do laço: uma volta não
-    /// dura sempre a mesma coisa, e o mesmo roteiro precisa valer entre execuções.
+    /// The time is that of the game's virtual clock, not the number of loop iterations: an
+    /// iteration does not always last the same, and the same script has to hold across runs.
     ///
-    /// As teclas são os nomes dos botões em [`BUTTON_NAMES`], incluindo `up`, `down`, `left` e
-    /// `right` para o direcional.
+    /// The keys are the button names in [`BUTTON_NAMES`], including `up`, `down`, `left` and
+    /// `right` for the D-pad.
     pub fn parse(text: &str) -> Result<Self, String> {
         let mut steps = Vec::new();
-        let mut eixos = Vec::new();
+        let mut axes = Vec::new();
         for item in text.split(',').filter(|s| !s.is_empty()) {
             let mut parts = item.split(':');
             let at = parts.next().unwrap_or_default();
             let key = parts
                 .next()
-                .ok_or_else(|| format!("esperava ms:tecla em {item:?}"))?;
+                .ok_or_else(|| format!("expected ms:key in {item:?}"))?;
             let at: u32 = at
                 .parse()
-                .map_err(|_| format!("instante inválido em {item:?}"))?;
+                .map_err(|_| format!("invalid time in {item:?}"))?;
             let hold: u32 = match parts.next() {
                 Some(text) => text
                     .parse()
-                    .map_err(|_| format!("duração inválida em {item:?}"))?,
+                    .map_err(|_| format!("invalid duration in {item:?}"))?,
                 None => Self::HOLD_MS,
             };
-            let fim = at.saturating_add(hold.max(1));
-            if let Some((eixo, valor)) = eixo_por_nome(key) {
-                eixos.push((at, fim, eixo, valor));
+            let end = at.saturating_add(hold.max(1));
+            if let Some((axis, value)) = axis_from_name(key) {
+                axes.push((at, end, axis, value));
                 continue;
             }
             let index =
-                Pad::button_by_name(key).ok_or_else(|| format!("tecla desconhecida: {key:?}"))?;
-            steps.push((at, fim, index));
+                Pad::button_by_name(key).ok_or_else(|| format!("unknown key: {key:?}"))?;
+            steps.push((at, end, index));
         }
-        Ok(Self { steps, eixos })
+        Ok(Self { steps, axes })
     }
 
-    /// Põe no controle o que o roteiro manda neste instante.
-    /// Um botão fica apertado se **algum** passo o quer apertado agora.
+    /// Puts on the controller what the script says at this instant.
+    /// A button stays pressed if **any** step wants it pressed now.
     ///
-    /// Aplicar passo a passo parece igual e não é: um roteiro que usa o mesmo botão duas vezes —
-    /// e todo roteiro que navega um menu usa, porque confirmar é sempre a mesma tecla — teria o
-    /// primeiro aperto desfeito pelo segundo passo, que ainda não chegou e por isso manda
-    /// soltar. O aperto sumia sem deixar rastro, e o roteiro parecia não ter efeito.
+    /// Applying step by step looks the same and is not: a script that uses the same button twice
+    /// — and every script that navigates a menu does, because confirming is always the same key —
+    /// would have its first press undone by the second step, which has not arrived yet and so says
+    /// release. The press vanished without a trace, and the script seemed to have no effect.
     pub fn apply(&self, now_ms: u32, pad: &mut Pad) {
-        let mut apertados = 0u32;
+        let mut pressed_buttons = 0u32;
         for &(start, end, index) in &self.steps {
             if (start..end).contains(&now_ms) {
-                apertados |= 1 << index;
+                pressed_buttons |= 1 << index;
             }
         }
         for &(_, _, index) in &self.steps {
-            pad.press(index, apertados & (1 << index) != 0);
+            pad.press(index, pressed_buttons & (1 << index) != 0);
         }
-        // O eixo volta ao centro quando nenhum passo o quer deslocado — soltar o analógico é
-        // parte do gesto, e um eixo preso num extremo gira a roda para sempre.
-        for &(_, _, eixo, _) in &self.eixos {
-            let valor = self
-                .eixos
+        // The axis returns to center when no step wants it displaced — releasing the analog stick
+        // is part of the gesture, and an axis stuck at an extreme turns the wheel forever.
+        for &(_, _, axis, _) in &self.axes {
+            let value = self
+                .axes
                 .iter()
-                .find(|&&(inicio, fim, qual, _)| qual == eixo && (inicio..fim).contains(&now_ms))
-                .map_or(0, |&(_, _, _, valor)| valor);
-            pad.set_axis(eixo, valor);
+                .find(|&&(axis_start, axis_end, which, _)| which == axis && (axis_start..axis_end).contains(&now_ms))
+                .map_or(0, |&(_, _, _, value)| value);
+            pad.set_axis(axis, value);
         }
     }
 }
 
-/// Lê `x+`, `x-`, `y+`, `y-`, `z+`, `z-`, `rz+`, `rz-` como `(índice do eixo, valor)`.
+/// Reads `x+`, `x-`, `y+`, `y-`, `z+`, `z-`, `rz+`, `rz-` as `(axis index, value)`.
 ///
-/// Os quatro eixos são os do `hid_devices.cfg` do console, na ordem em que ele os enumera:
-/// `X`, `Y`, `Z` e `RZ`. O sinal diz para que lado, e o valor é o batente — meio caminho não
-/// serve para descobrir se um eixo faz alguma coisa.
-fn eixo_por_nome(nome: &str) -> Option<(usize, i32)> {
-    let (eixo, sinal) = nome.split_at(nome.len().checked_sub(1)?);
-    let valor = match sinal {
-        "+" => AXIS_CURSO,
-        "-" => -AXIS_CURSO,
+/// The four axes are those of the console's `hid_devices.cfg`, in the order it enumerates them:
+/// `X`, `Y`, `Z` and `RZ`. The sign says which way, and the value is the end stop — halfway is
+/// no use for finding out whether an axis does anything.
+fn axis_from_name(name: &str) -> Option<(usize, i32)> {
+    let (axis, sign) = name.split_at(name.len().checked_sub(1)?);
+    let value = match sign {
+        "+" => AXIS_RANGE,
+        "-" => -AXIS_RANGE,
         _ => return None,
     };
-    let eixo = match eixo {
+    let axis = match axis {
         "x" => 0,
         "y" => 1,
         "z" => 2,
         "rz" => 3,
         _ => return None,
     };
-    Some((eixo, valor))
+    Some((axis, value))
 }
 
 #[cfg(test)]
@@ -581,78 +596,79 @@ mod tests {
     use super::*;
 
     #[test]
-    fn teclado_e_controle_compartilham_um_aperto() {
+    fn keyboard_and_controller_share_a_press() {
         use std::collections::HashSet;
-        // O `b1` do controle e o `Enter` do teclado mandam o mesmo `CONFIRMA`: é o par que
-        // compartilha um comando depois de o direcional ter saído da tradução.
+        // The controller's `b1` and the keyboard's `Enter` send the same `CONFIRM`: it is the
+        // pair that shares a command now that the D-pad has left the translation.
         let mut pad = Pad::default();
         pad.press(Pad::button_by_name("b1").unwrap(), true);
-        let teclado = [avk_de(egui::Key::Enter).unwrap()];
-        let mut entregues = HashSet::new();
-        let ativos = avks_ativos(teclado, &[pad]);
-        assert_eq!(transicoes(&mut entregues, ativos.clone()), vec![(avk::CONFIRMA, true)]);
-        assert!(transicoes(&mut entregues, ativos).is_empty());
-        // Soltar o teclado não solta um comando ainda mantido pelo controle.
-        let ativos = avks_ativos([], &[pad]);
-        assert!(transicoes(&mut entregues, ativos).is_empty());
-        assert_eq!(transicoes(&mut entregues, HashSet::new()), vec![(avk::CONFIRMA, false)]);
+        let keyboard = [avk_for(egui::Key::Enter).unwrap()];
+        let mut delivered = HashSet::new();
+        let active = active_avks(keyboard, &[pad]);
+        assert_eq!(transitions(&mut delivered, active.clone()), vec![(avk::CONFIRM, true)]);
+        assert!(transitions(&mut delivered, active).is_empty());
+        // Releasing the keyboard does not release a command still held by the controller.
+        let active = active_avks([], &[pad]);
+        assert!(transitions(&mut delivered, active).is_empty());
+        assert_eq!(transitions(&mut delivered, HashSet::new()), vec![(avk::CONFIRM, false)]);
     }
 
-    /// Os dígitos saem da ordem do `egui::Key`, e do `AVK_0` em diante. As duas listas são
-    /// contíguas hoje; se uma deixar de ser, é aqui que se descobre.
+    /// The digits come from the order of `egui::Key`, and from `AVK_0` onward. Both lists are
+    /// contiguous today; if one stops being so, this is where it shows.
     #[test]
-    fn digitos_viram_avk() {
+    fn digits_become_avks() {
         use egui::Key;
-        assert_eq!(avk_de(Key::Num0), Some(avk::ZERO));
-        assert_eq!(avk_de(Key::Num7), Some(avk::ZERO + 7));
-        assert_eq!(avk_de(Key::Num9), Some(avk::ZERO + 9));
-        assert_eq!(avk_de(Key::Backspace), Some(avk::CLR));
-        assert_eq!(avk_de(Key::Escape), None);
-        assert_eq!(avk_de(Key::P), None);
+        assert_eq!(avk_for(Key::Num0), Some(avk::ZERO));
+        assert_eq!(avk_for(Key::Num7), Some(avk::ZERO + 7));
+        assert_eq!(avk_for(Key::Num9), Some(avk::ZERO + 9));
+        assert_eq!(avk_for(Key::Backspace), Some(avk::CLR));
+        assert_eq!(avk_for(Key::Escape), None);
+        assert_eq!(avk_for(Key::P), None);
     }
 
 
-    /// O botão 1 é o sul, e o UID dele é o que o arquivo do console rotula `Button_2`.
+    /// Button 1 is south, and its UID is the one the console's file labels `Button_2`.
     ///
-    /// Medido no aparelho: com `b1` no `0x0106c40a`, o sul chegava aos jogos como 2 e o leste
-    /// como 1. Ver a nota de [`BUTTON_NAMES`] — este teste existe para que a troca não seja
-    /// desfeita por quem confie no rótulo do arquivo.
+    /// Measured on the unit: with `b1` on `0x0106c40a`, south reached the games as 2 and east
+    /// as 1. See the note on [`BUTTON_NAMES`] — this test exists so the swap is not undone by
+    /// someone who trusts the file's label.
     #[test]
-    fn o_botao_um_usa_o_uid_que_o_arquivo_chama_de_dois() {
-        let um = Pad::button_by_name("b1").expect("b1 existe");
-        let dois = Pad::button_by_name("b2").expect("b2 existe");
-        assert_eq!(BUTTON_UIDS[um], 0x0106_c40b);
-        assert_eq!(BUTTON_UIDS[dois], 0x0106_c40a);
+    fn button_one_uses_the_uid_the_file_calls_two() {
+        let one = Pad::button_by_name("b1").expect("b1 exists");
+        let two = Pad::button_by_name("b2").expect("b2 exists");
+        assert_eq!(BUTTON_UIDS[one], 0x0106_c40b);
+        assert_eq!(BUTTON_UIDS[two], 0x0106_c40a);
     }
 
-    /// Os índices de [`DPAD`] são escritos à mão; este teste impede que eles e [`BUTTON_NAMES`]
-    /// se separem sem ninguém notar.
+    /// The indices of [`DPAD`] are written by hand; this test keeps them and [`BUTTON_NAMES`] from
+    /// drifting apart without anyone noticing.
     #[test]
-    fn os_indices_do_direcional_batem_com_os_nomes() {
-        let [cima, baixo, esquerda, direita] = DPAD;
-        for (indice, nome) in [
-            (cima, "up"),
-            (baixo, "down"),
-            (esquerda, "left"),
-            (direita, "right"),
+    fn the_dpad_indices_match_the_names() {
+        let [up, down, left, right] = DPAD;
+        for (index, name) in [
+            (up, "up"),
+            (down, "down"),
+            (left, "left"),
+            (right, "right"),
         ] {
-            assert_eq!(BUTTON_NAMES[indice], nome, "índice {indice}");
+            assert_eq!(BUTTON_NAMES[index], name, "index {index}");
         }
     }
 
-    /// O código cru serve para descobrir tecla; os nomes continuam valendo.
+    /// The raw code is for finding out keys; the names still work.
     #[test]
-    fn codigo_cru_em_hexadecimal() {
-        assert_eq!(avk::por_nome("0xe034"), Some(0xe034));
-        assert_eq!(avk::por_nome("0xE033"), Some(0xe033));
-        assert_eq!(avk::por_nome("3"), Some(avk::ZERO + 3));
-        assert_eq!(avk::por_nome("clr"), Some(avk::CLR));
-        assert_eq!(avk::por_nome("0xzz"), None);
+    fn raw_code_in_hexadecimal() {
+        assert_eq!(avk::by_name("0xe034"), Some(0xe034));
+        assert_eq!(avk::by_name("0xE033"), Some(0xe033));
+        assert_eq!(avk::by_name("3"), Some(avk::ZERO + 3));
+        assert_eq!(avk::by_name("clr"), Some(avk::CLR));
+        assert_eq!(avk::by_name("0xzz"), None);
     }
 
-    /// As setas na numeração do `AEEVCodes.h`, que é a que a Z-Wheel usa em `0x44914`.
+    /// The arrows in the numbering of `AEEVCodes.h`, which is the one the Z-Wheel uses at
+    /// `0x44914`.
     #[test]
-    fn as_setas_seguem_o_header() {
+    fn the_arrows_follow_the_header() {
         assert_eq!(
             [
                 avk::CLR,
@@ -664,46 +680,47 @@ mod tests {
             ],
             [0xe030, 0xe031, 0xe032, 0xe033, 0xe034, 0xe035]
         );
-        assert_eq!(avk::por_nome("confirma"), Some(0xe064));
+        assert_eq!(avk::by_name("confirma"), Some(0xe064));
     }
 
     #[test]
-    fn o_home_aperta_o_back_e_o_start() {
+    fn home_presses_back_and_start() {
         assert_eq!(BUTTON_NAMES[HOME], "back");
         assert_eq!(BUTTON_NAMES[START], "start");
         let mut home = Pad::default();
         home.press(HOME, true);
-        let visto = home.com_o_home_nos_dois();
-        assert!(visto.is_down(HOME) && visto.is_down(START));
+        let seen = home.with_home_on_both();
+        assert!(seen.is_down(HOME) && seen.is_down(START));
         assert_eq!(
-            Pad::default().changes(&visto),
+            Pad::default().changes(&seen),
             vec![(HOME, true), (START, true)]
         );
 
         let mut start = Pad::default();
         start.press(START, true);
         assert!(
-            !start.com_o_home_nos_dois().is_down(HOME),
-            "o start sozinho não vira HOME"
+            !start.with_home_on_both().is_down(HOME),
+            "start alone does not become HOME"
         );
     }
 
     #[test]
-    fn o_botao_home_e_o_back_por_outro_nome() {
-        // O controle do Zeebo tem HOME impresso na carcaça, e o `hid_devices.cfg` do console o
-        // mapeia no `Back` — não há UID de "Home" no header do joystick. O Double Dragon pede
-        // "APERTE O BOTÃO HOME", e ninguém adivinharia que ele se chama `back` aqui dentro.
+    fn the_home_button_is_back_by_another_name() {
+        // The Zeebo controller has HOME printed on the shell, and the console's `hid_devices.cfg`
+        // maps it to `Back` — there is no "Home" UID in the joystick header. Double Dragon asks
+        // "APERTE O BOTÃO HOME" ("PRESS THE HOME BUTTON"), and nobody would guess it is called
+        // `back` in here.
         assert_eq!(Pad::button_by_name("home"), Pad::button_by_name("back"));
         assert!(Pad::button_by_name("home").is_some());
     }
 
     #[test]
-    fn o_direcional_mexe_no_botao_e_nao_no_eixo() {
+    fn the_dpad_moves_the_button_not_the_axis() {
         let [up, down, left, right] = DPAD;
         let mut pad = Pad::default();
 
-        // O direcional é botão. Nos eixos, um direcional digital desfaz o próprio passo quando
-        // é solto — ver a nota do `press`, e o menu do Zeeboids.
+        // The D-pad is a button. On the axes, a digital D-pad undoes its own step when released
+        // — see the note on `press`, and the Zeeboids menu.
         pad.press(left, true);
         assert!(pad.is_down(left));
         assert_eq!(pad.axes, [0; 4]);
@@ -712,41 +729,42 @@ mod tests {
         pad.press(left, false);
         assert_eq!(pad.axes, [0; 4]);
 
-        // Quem chega aos eixos é o manche, sem passar pelos botões.
-        pad.set_axis(0, AXIS_CURSO);
-        assert_eq!(pad.axes[0], AXIS_CURSO);
+        // What reaches the axes is the stick, without going through the buttons.
+        pad.set_axis(0, AXIS_RANGE);
+        assert_eq!(pad.axes[0], AXIS_RANGE);
         assert!(!pad.is_down(right));
     }
 
     #[test]
-    fn o_eixo_parado_chega_ao_console_como_o_centro_dele() {
-        // O jogo faz `valor = (int16)eixo - 128` (o `0xfd4c0` do Super League). Mandar zero é
-        // mandar o batente: era o boneco andando sozinho para um canto com o manche parado.
+    fn an_idle_axis_reaches_the_console_as_its_center() {
+        // The game does `value = (int16)axis - 128` (Super League's `0xfd4c0`). Sending zero is
+        // sending the end stop: that was the character walking into a corner on its own with the
+        // stick at rest.
         let pad = Pad::default();
-        for eixo in 0..AXIS_NAMES.len() {
-            assert_eq!(pad.eixo_do_console(eixo), AXIS_CENTRO, "eixo {eixo}");
+        for axis in 0..AXIS_NAMES.len() {
+            assert_eq!(pad.console_axis(axis), AXIS_CENTER, "axis {axis}");
             assert_eq!(
-                pad.eixo_do_console(eixo) - AXIS_CENTRO,
+                pad.console_axis(axis) - AXIS_CENTER,
                 0,
-                "o jogo vê parado"
+                "the game sees it at rest"
             );
         }
     }
 
     #[test]
-    fn o_curso_do_manche_cobre_a_faixa_do_console_sem_passar_dela() {
+    fn the_stick_travel_covers_the_console_range_without_exceeding_it() {
         let mut pad = Pad::default();
-        pad.set_axis(0, AXIS_CURSO);
-        pad.set_axis(1, -AXIS_CURSO);
-        assert_eq!(pad.eixo_do_console(0), AXIS_MAX);
-        assert_eq!(pad.eixo_do_console(1), AXIS_MIN);
-        // E um valor além do curso não escapa da faixa que dissemos ao jogo no `GetMax`.
-        pad.set_axis(2, AXIS_CURSO * 4);
-        assert_eq!(pad.eixo_do_console(2), AXIS_MAX);
+        pad.set_axis(0, AXIS_RANGE);
+        pad.set_axis(1, -AXIS_RANGE);
+        assert_eq!(pad.console_axis(0), AXIS_MAX);
+        assert_eq!(pad.console_axis(1), AXIS_MIN);
+        // And a value beyond the travel does not escape the range we told the game in `GetMax`.
+        pad.set_axis(2, AXIS_RANGE * 4);
+        assert_eq!(pad.console_axis(2), AXIS_MAX);
     }
 
     #[test]
-    fn as_mudancas_saem_na_ordem_dos_indices() {
+    fn changes_come_out_in_index_order() {
         let mut before = Pad::default();
         before.press(0, true);
         before.press(11, true);
@@ -756,13 +774,13 @@ mod tests {
         after.press(5, true);
 
         assert_eq!(before.changes(&after), vec![(0, false), (5, true)]);
-        // O botão 11 continua pressionado, então não é mudança.
+        // Button 11 is still pressed, so it is not a change.
         assert!(after.is_down(11));
         assert_eq!(after.changes(&after), vec![]);
     }
 
     #[test]
-    fn o_roteiro_aperta_e_solta_botoes_e_direcoes() {
+    fn the_script_presses_and_releases_buttons_and_directions() {
         let start = Pad::button_by_name("start").unwrap();
         let script = Script::parse("1000:start,2000:right:50").unwrap();
         let mut pad = Pad::default();
@@ -772,20 +790,20 @@ mod tests {
         script.apply(1000 + Script::HOLD_MS, &mut pad);
         assert!(!pad.is_down(start));
 
-        // O direcional é botão, e a duração dada no roteiro vale.
+        // The D-pad is a button, and the duration given in the script holds.
         let right = Pad::button_by_name("right").unwrap();
         script.apply(2000, &mut pad);
         assert!(pad.is_down(right));
         script.apply(2050, &mut pad);
         assert!(!pad.is_down(right));
 
-        // O mesmo botão em dois momentos: o primeiro aperto não pode ser desfeito pelo passo
-        // seguinte, que ainda não chegou.
+        // The same button at two moments: the first press cannot be undone by the next step,
+        // which has not arrived yet.
         let script = Script::parse("1000:b2:200,3000:b2:200").unwrap();
         let b2 = Pad::button_by_name("b2").unwrap();
         let mut pad = Pad::default();
         script.apply(1100, &mut pad);
-        assert!(pad.is_down(b2), "o segundo passo desfez o primeiro aperto");
+        assert!(pad.is_down(b2), "the second step undid the first press");
         script.apply(2000, &mut pad);
         assert!(!pad.is_down(b2));
         script.apply(3100, &mut pad);
@@ -795,97 +813,97 @@ mod tests {
         assert!(Script::parse("start").is_err());
         assert!(Script::parse("10:start:xis").is_err());
 
-        // Um roteiro vazio é válido e não mexe em nada.
+        // An empty script is valid and touches nothing.
         let before = pad;
         Script::parse("").unwrap().apply(20, &mut pad);
         assert_eq!(pad, before);
     }
 
     #[test]
-    fn os_eixos_sao_os_do_arquivo_do_console_menos_a_troca_do_x() {
-        // `Y`, `Z` e `RZ` são transcrição literal da entrada `VID:0x1EAA:PID:0x0135` do
-        // `hid_devices.original.cfg`. O `X` é o `LeftThumb_X`, e não o UID de botão que o
-        // arquivo pôs ali: com o do arquivo, o manche não anda para os lados em jogo nenhum,
-        // porque nenhum jogo procura um UID de botão na tabela de eixos. Medido no aparelho.
+    fn the_axes_are_the_console_files_except_for_the_x_swap() {
+        // `Y`, `Z` and `RZ` are a literal transcription of the `VID:0x1EAA:PID:0x0135` entry of
+        // `hid_devices.original.cfg`. `X` is `LeftThumb_X`, and not the button UID the file put
+        // there: with the file's one, the stick does not move sideways in any game, because no
+        // game looks for a button UID in the axis table. Measured on the unit.
         assert_eq!(
             AXIS_UIDS,
             [0x0106_c4d0, 0x0106_c4d1, 0x0106_c4ce, 0x0106_c4cf]
         );
         assert_eq!(AXIS_NAMES, ["x", "y", "z", "rz"]);
-        // E o UID de eixo não pode ficar também num botão que dispara: seria o mesmo número
-        // chegando ao jogo como duas coisas. O `lx` do arquivo é um botão que não existe no
-        // aparelho e nunca é apertado — mas o teste registra a sobreposição de propósito.
+        // And the axis UID cannot also sit on a button that fires: it would be the same number
+        // reaching the game as two things. The file's `lx` is a button that does not exist on
+        // the unit and is never pressed — but the test records the overlap on purpose.
         let lx = BUTTON_NAMES
             .iter()
             .position(|&n| n == "lx")
-            .expect("o lx está na lista");
+            .expect("lx is in the list");
         assert_eq!(
             BUTTON_UIDS[lx], AXIS_UIDS[0],
-            "a troca do arquivo é espelhada"
+            "the file's swap is mirrored"
         );
-        // E ele fica **fora** das dezesseis primeiras posições, que são as que os ports de
-        // arcade varrem: um botão que não existe no aparelho não pode comer a vaga de um que
-        // existe.
-        assert!(lx >= 16, "o lx não ocupa vaga na faixa que o arcade lê");
+        // And it stays **outside** the first sixteen positions, which are the ones the arcade
+        // ports scan: a button that does not exist on the unit cannot take the slot of one that
+        // does.
+        assert!(lx >= 16, "lx does not take a slot in the range the arcade reads");
     }
 
-    /// A opção do issue #39: o direcional também escreve nos eixos, quando ligada.
+    /// The option from issue #39: the D-pad also writes to the axes, when enabled.
     #[test]
-    fn o_direcional_espelhado_poe_os_eixos_no_curso_e_nao_solta_o_botao() {
+    fn the_mirrored_dpad_moves_the_axes_and_keeps_the_button_held() {
         let mut pad = Pad::default();
-        assert_eq!(pad.axes, [0, 0, 0, 0], "o repouso é o zero interno");
+        assert_eq!(pad.axes, [0, 0, 0, 0], "rest is the internal zero");
 
-        // Cima: negativo no `Y`, porque no console o eixo cresce para baixo.
+        // Up: negative on `Y`, because on the console the axis grows downward.
         pad.press(DPAD[0], true);
-        pad.espelha_o_direcional_nos_eixos();
-        assert_eq!(pad.axes[1], -AXIS_CURSO);
-        assert_eq!(pad.eixo_do_console(1), AXIS_MIN, "cima é o valor baixo");
-        assert!(pad.is_down(DPAD[0]), "o botão continua apertado");
+        pad.mirror_dpad_on_axes();
+        assert_eq!(pad.axes[1], -AXIS_RANGE);
+        assert_eq!(pad.console_axis(1), AXIS_MIN, "up is the low value");
+        assert!(pad.is_down(DPAD[0]), "the button stays pressed");
 
-        // Baixo, no mesmo `Pad`, para provar que um sentido desfaz o outro.
+        // Down, on the same `Pad`, to prove one direction undoes the other.
         pad.press(DPAD[0], false);
         pad.press(DPAD[1], true);
-        pad.espelha_o_direcional_nos_eixos();
-        assert_eq!(pad.axes[1], AXIS_CURSO);
-        assert_eq!(pad.eixo_do_console(1), AXIS_MAX);
+        pad.mirror_dpad_on_axes();
+        assert_eq!(pad.axes[1], AXIS_RANGE);
+        assert_eq!(pad.console_axis(1), AXIS_MAX);
 
-        // Direita e esquerda no `X`.
+        // Right and left on `X`.
         pad.press(DPAD[1], false);
         pad.press(DPAD[3], true);
-        pad.espelha_o_direcional_nos_eixos();
-        assert_eq!(pad.axes[0], AXIS_CURSO);
+        pad.mirror_dpad_on_axes();
+        assert_eq!(pad.axes[0], AXIS_RANGE);
         pad.press(DPAD[3], false);
         pad.press(DPAD[2], true);
-        pad.espelha_o_direcional_nos_eixos();
-        assert_eq!(pad.axes[0], -AXIS_CURSO);
+        pad.mirror_dpad_on_axes();
+        assert_eq!(pad.axes[0], -AXIS_RANGE);
 
-        // Soltar a direção **não** zera o eixo: quem zera é o quadro seguinte, quando o
-        // direcional já não está apertado — e é essa volta ao centro que o `Pad::press` anota.
+        // Releasing the direction does **not** zero the axis: the next frame does, when the
+        // D-pad is no longer pressed — and that return to center is what `Pad::press` notes.
         pad.press(DPAD[2], false);
-        pad.espelha_o_direcional_nos_eixos();
-        pad.espelha_o_direcional_nos_eixos();
+        pad.mirror_dpad_on_axes();
+        pad.mirror_dpad_on_axes();
         assert_eq!(pad.axes[0], 0);
 
-        // E os eixos que não são do manche esquerdo ficam intocados.
+        // And the axes that do not belong to the left stick are left untouched.
         assert_eq!([pad.axes[2], pad.axes[3]], [0, 0]);
     }
 
-    /// O direcional em repouso **centra** os eixos do manche esquerdo, e não toca nos do direito.
+    /// The D-pad at rest **centers** the left stick's axes, and does not touch the right one's.
     ///
-    /// A ordem importa em quem chama: o espelho escreve zero, então ele tem de rodar **antes** do
-    /// laço do analógico — senão o manche de verdade, parado no centro, seria apagado sem que
-    /// ninguém tivesse apertado nada.
+    /// The order matters for the caller: the mirror writes zero, so it has to run **before** the
+    /// analog loop — otherwise the real stick, resting at center, would be wiped out without
+    /// anyone having pressed anything.
     #[test]
-    fn o_direcional_solto_centra_o_manche_esquerdo_e_nao_toca_no_direito() {
+    fn a_released_dpad_centers_the_left_stick_and_leaves_the_right_alone() {
         let mut pad = Pad::default();
-        pad.set_axis(2, AXIS_CURSO);
-        pad.espelha_o_direcional_nos_eixos();
+        pad.set_axis(2, AXIS_RANGE);
+        pad.mirror_dpad_on_axes();
         assert_eq!([pad.axes[0], pad.axes[1]], [0, 0]);
-        assert_eq!(pad.axes[2], AXIS_CURSO, "o `Z` não é do direcional");
+        assert_eq!(pad.axes[2], AXIS_RANGE, "`Z` does not belong to the D-pad");
     }
 
     #[test]
-    fn cada_botao_tem_nome_e_os_nomes_nao_se_repetem() {
+    fn every_button_has_a_name_and_names_do_not_repeat() {
         assert_eq!(BUTTON_NAMES.len(), BUTTON_UIDS.len());
         for (i, name) in BUTTON_NAMES.iter().enumerate() {
             assert_eq!(Pad::button_by_name(name), Some(i));
