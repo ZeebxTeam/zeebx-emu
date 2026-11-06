@@ -1,8 +1,8 @@
-//! A saída gráfica: do framebuffer do console ao rasterizador do OpenGL ES.
+//! The graphics output: from the console framebuffer to the OpenGL ES rasterizer.
 
 pub mod atc;
 #[cfg(feature = "gpu")]
-pub mod contexto;
+pub mod context;
 #[cfg(feature = "gl")]
 pub mod gpu;
 pub mod display;

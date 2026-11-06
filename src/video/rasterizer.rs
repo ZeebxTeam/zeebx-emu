@@ -1,21 +1,21 @@
-//! Rasterizador de software para o OpenGL ES 1.1 do BREW.
+//! Software rasterizer for BREW's OpenGL ES 1.1.
 //!
-//! O console tem uma Adreno 130; aqui a GPU é a CPU do host. O que importa é o contrato: o
-//! jogo entrega vértices em coordenadas de objeto, matrizes de modelagem e projeção, texturas
-//! e um punhado de estados fixos, e espera um quadro de volta.
+//! The console has an Adreno 130; here the GPU is the host CPU. What matters is the contract: the
+//! game hands over vertices in object coordinates, modelview and projection matrices, textures
+//! and a handful of fixed states, and expects a frame back.
 //!
-//! É o pipeline fixo clássico, sem iluminação: transforma, recorta contra o plano próximo,
-//! divide pela perspectiva, mapeia para a tela e preenche triângulos com interpolação
-//! corrigida pela perspectiva, teste de profundidade, mistura e teste de alfa.
+//! It is the classic fixed pipeline, without lighting: transform, clip against the near plane,
+//! perspective divide, map to the screen and fill triangles with perspective-correct
+//! interpolation, depth test, blending and alpha test.
 
 use std::collections::HashMap;
 
 use crate::video::gles;
 
-/// Uma matriz 4×4 na ordem do OpenGL: coluna primeiro, `m[coluna * 4 + linha]`.
+/// A 4×4 matrix in OpenGL order: column first, `m[column * 4 + row]`.
 pub type Matrix = [f32; 16];
 
-/// A identidade.
+/// The identity.
 pub const IDENTITY: Matrix = [
     1.0, 0.0, 0.0, 0.0, //
     0.0, 1.0, 0.0, 0.0, //
@@ -23,7 +23,7 @@ pub const IDENTITY: Matrix = [
     0.0, 0.0, 0.0, 1.0,
 ];
 
-/// `a * b`, na convenção do OpenGL (`b` é aplicada primeiro).
+/// `a * b`, in the OpenGL convention (`b` is applied first).
 pub fn multiply(a: &Matrix, b: &Matrix) -> Matrix {
     let mut out = [0.0; 16];
     for column in 0..4 {
@@ -34,7 +34,7 @@ pub fn multiply(a: &Matrix, b: &Matrix) -> Matrix {
     out
 }
 
-/// Aplica a matriz a um ponto homogéneo.
+/// Applies the matrix to a homogeneous point.
 pub fn transform(m: &Matrix, v: [f32; 4]) -> [f32; 4] {
     let mut out = [0.0; 4];
     for (row, slot) in out.iter_mut().enumerate() {
@@ -43,21 +43,21 @@ pub fn transform(m: &Matrix, v: [f32; 4]) -> [f32; 4] {
     out
 }
 
-/// Matriz de translação.
+/// Translation matrix.
 pub fn translation(x: f32, y: f32, z: f32) -> Matrix {
     let mut m = IDENTITY;
     (m[12], m[13], m[14]) = (x, y, z);
     m
 }
 
-/// Matriz de escala.
+/// Scaling matrix.
 pub fn scaling(x: f32, y: f32, z: f32) -> Matrix {
     let mut m = IDENTITY;
     (m[0], m[5], m[10]) = (x, y, z);
     m
 }
 
-/// Rotação de `angle` graus em torno do eixo `(x, y, z)`, como o `glRotate`.
+/// Rotation of `angle` degrees around the axis `(x, y, z)`, like `glRotate`.
 pub fn rotation(angle: f32, x: f32, y: f32, z: f32) -> Matrix {
     let length = (x * x + y * y + z * z).sqrt();
     if length == 0.0 {
@@ -86,7 +86,7 @@ pub fn rotation(angle: f32, x: f32, y: f32, z: f32) -> Matrix {
     ]
 }
 
-/// Projeção em perspectiva, como o `glFrustum`.
+/// Perspective projection, like `glFrustum`.
 pub fn frustum(l: f32, r: f32, b: f32, t: f32, n: f32, f: f32) -> Matrix {
     let mut m = [0.0; 16];
     m[0] = 2.0 * n / (r - l);
@@ -99,7 +99,7 @@ pub fn frustum(l: f32, r: f32, b: f32, t: f32, n: f32, f: f32) -> Matrix {
     m
 }
 
-/// Projeção ortográfica, como o `glOrtho`.
+/// Orthographic projection, like `glOrtho`.
 pub fn ortho(l: f32, r: f32, b: f32, t: f32, n: f32, f: f32) -> Matrix {
     let mut m = IDENTITY;
     m[0] = 2.0 / (r - l);
@@ -111,251 +111,255 @@ pub fn ortho(l: f32, r: f32, b: f32, t: f32, n: f32, f: f32) -> Matrix {
     m
 }
 
-/// Um vértice já pronto para o pipeline: posição em coordenadas de objeto, cor e coordenada de
-/// textura.
+/// A vertex ready for the pipeline: position in object coordinates, color and texture
+/// coordinate.
 #[derive(Debug, Clone, Copy)]
 pub struct Vertex {
     pub position: [f32; 4],
     pub color: [f32; 4],
-    /// A coordenada de textura `(s, t, r, q)`. São quatro porque a matriz de textura mistura
-    /// todas: o Reckless Racing manda a posição do vértice como coordenada de três componentes
-    /// e deixa a matriz tirar `s` e `t` do `x` e do `z` — com só dois, o `z` sumia, o `t` ficava
-    /// constante e a sombra saía em listras. Depois da etapa de vértice, `s` e `t` já vêm
-    /// divididos por `q`, e só eles interessam aos rasterizadores.
+    /// The texture coordinate `(s, t, r, q)`. There are four because the texture matrix mixes
+    /// all of them: Reckless Racing sends the vertex position as a three-component coordinate
+    /// and lets the matrix derive `s` and `t` from `x` and `z` — with only two, `z` vanished, `t`
+    /// stayed constant and the shadow came out in stripes. After the vertex stage, `s` and `t`
+    /// are already divided by `q`, and only they matter to the rasterizers.
     pub uv: [f32; 4],
-    /// A coordenada de textura da unidade 1. Ver [`UnidadeDeTextura`].
+    /// The texture coordinate of unit 1. See [`TextureUnit`].
     pub uv1: [f32; 4],
-    /// A normal em coordenadas de objeto, para a iluminação. O padrão do OpenGL é `(0, 0, 1)`.
+    /// The normal in object coordinates, for lighting. The OpenGL default is `(0, 0, 1)`.
     pub normal: [f32; 3],
-    /// Quanto da cor do fragmento sobra depois da névoa: 1 é cena limpa, 0 é névoa cheia.
+    /// How much of the fragment color remains after fog: 1 is a clear scene, 0 is full fog.
     ///
-    /// Vem calculado da etapa de vértice, que é onde a distância em coordenadas de olho existe,
-    /// e é interpolado como os outros atributos. Sai daqui pronto porque a etapa de vértice é a
-    /// mesma para os dois rasterizadores — a placa recebe o fator como atributo e só mistura.
+    /// It comes computed from the vertex stage, which is where the eye-space distance exists,
+    /// and is interpolated like the other attributes. It leaves here ready because the vertex
+    /// stage is the same for both rasterizers — the GPU gets the factor as an attribute and only
+    /// blends.
     pub fog: f32,
 }
 
-/// A coordenada de textura de quem não manda uma: `(0, 0, 0, 1)`, o padrão do OpenGL.
-pub const UV_PADRAO: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
+/// The texture coordinate for whoever doesn't send one: `(0, 0, 0, 1)`, the OpenGL default.
+pub const DEFAULT_UV: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 
 impl Default for Vertex {
     fn default() -> Self {
         Self {
             position: [0.0, 0.0, 0.0, 1.0],
             color: [1.0; 4],
-            uv: UV_PADRAO,
-            uv1: UV_PADRAO,
+            uv: DEFAULT_UV,
+            uv1: DEFAULT_UV,
             normal: [0.0, 0.0, 1.0],
             fog: 1.0,
         }
     }
 }
 
-/// O ambiente de textura da unidade 0: o `glTexEnv`, com o modo e a configuração do `GL_COMBINE`.
+/// The texture environment of unit 0: `glTexEnv`, with the mode and the `GL_COMBINE` setup.
 ///
-/// **O `GL_COMBINE` não era atendido, e caía no `GL_MODULATE`.** O motor QX do SDK (o Dragon Vs
-/// Chicken) desenha os personagens com a fonte 0 na textura e a função `GL_REPLACE`: a cor do
-/// vértice não entra, e ele a deixa zerada. Multiplicada pela textura, ela apagava o dragão e as
-/// galinhas — preto transparente, que o teste de alfa descartava.
+/// **`GL_COMBINE` was not handled, and fell through to `GL_MODULATE`.** The SDK's QX engine
+/// (Dragon Vs Chicken) draws the characters with source 0 on the texture and the `GL_REPLACE`
+/// function: the vertex color doesn't take part, and it leaves it zeroed. Multiplied by the
+/// texture, it erased the dragon and the chickens — transparent black, which the alpha test
+/// discarded.
 ///
-/// Os índices `[0]` e `[1]` são o RGB e o alfa. Os padrões são os da especificação.
+/// Indices `[0]` and `[1]` are RGB and alpha. The defaults are the specification's.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TexEnv {
-    pub modo: u32,
-    pub combina: [u32; 2],
-    pub fontes: [[u32; 3]; 2],
-    pub operandos: [[u32; 3]; 2],
-    pub escala: [f32; 2],
-    /// `GL_TEXTURE_ENV_COLOR`, a fonte `GL_CONSTANT`.
-    pub cor: [f32; 4],
+    pub mode: u32,
+    pub combine: [u32; 2],
+    pub sources: [[u32; 3]; 2],
+    pub operands: [[u32; 3]; 2],
+    pub scale: [f32; 2],
+    /// `GL_TEXTURE_ENV_COLOR`, the `GL_CONSTANT` source.
+    pub color: [f32; 4],
 }
 
 impl Default for TexEnv {
     fn default() -> Self {
-        let fontes = [gles::GL_TEXTURE, gles::GL_PREVIOUS, gles::GL_CONSTANT];
+        let sources = [gles::GL_TEXTURE, gles::GL_PREVIOUS, gles::GL_CONSTANT];
         Self {
-            modo: gles::GL_MODULATE,
-            combina: [gles::GL_MODULATE; 2],
-            fontes: [fontes; 2],
-            operandos: [
+            mode: gles::GL_MODULATE,
+            combine: [gles::GL_MODULATE; 2],
+            sources: [sources; 2],
+            operands: [
                 [gles::GL_SRC_COLOR, gles::GL_SRC_COLOR, gles::GL_SRC_ALPHA],
                 [gles::GL_SRC_ALPHA; 3],
             ],
-            escala: [1.0; 2],
-            cor: [0.0; 4],
+            scale: [1.0; 2],
+            color: [0.0; 4],
         }
     }
 }
 
 impl TexEnv {
-    /// Só com o modo, para quem monta um estado à parte (a ponte da placa, os testes).
-    pub fn com_modo(modo: u32) -> Self {
+    /// Mode only, for whoever builds a separate state (the GPU bridge, the tests).
+    pub fn with_mode(mode: u32) -> Self {
         Self {
-            modo,
+            mode,
             ..Self::default()
         }
     }
 
-    /// Aplica um `glTexEnv` que não é o modo nem a cor. Os enums chegam como inteiro mesmo nas
-    /// formas `x` e `f`; as escalas chegam como número.
+    /// Applies a `glTexEnv` that is neither the mode nor the color. Enums arrive as integers even
+    /// in the `x` and `f` forms; scales arrive as numbers.
     ///
-    /// **Função ou fonte que não existe é recusada, e o valor de antes fica.** É o
-    /// `GL_INVALID_ENUM` do driver. O Bóia Cross monta a água com dois erros de digitação:
-    /// `GL_COMBINE_RGB` = `GL_DOT3_RGB` seguido de `GL_COMBINE_RGB` = `GL_TEXTURE0` (queria o
-    /// `GL_SRC0_RGB`), e na unidade 1 `GL_COMBINE_RGB` = `GL_COMBINE`. Aceitos, a unidade 0 saía
-    /// do `DOT3` para a multiplicação — o mapa de normais vezes o vetor da luz, que é azul-roxo —, e
-    /// a água da primeira pista ficava dessa cor. No aparelho ela é marrom.
-    pub fn define(&mut self, pname: u32, enumeracao: u32, numero: f32) {
-        let faixa = |base: u32| {
+    /// **A function or source that doesn't exist is rejected, and the previous value stays.**
+    /// It is the driver's `GL_INVALID_ENUM`. Bóia Cross sets up the water with two typos:
+    /// `GL_COMBINE_RGB` = `GL_DOT3_RGB` followed by `GL_COMBINE_RGB` = `GL_TEXTURE0` (it meant
+    /// `GL_SRC0_RGB`), and on unit 1 `GL_COMBINE_RGB` = `GL_COMBINE`. If accepted, unit 0 went
+    /// from `DOT3` to multiplication — the normal map times the light vector, which is
+    /// blue-purple — and the water of the first track turned that color. On the device it is
+    /// brown.
+    pub fn define(&mut self, pname: u32, enum_value: u32, number: f32) {
+        let strip = |base: u32| {
             pname
                 .checked_sub(base)
                 .filter(|&i| i < 3)
                 .map(|i| i as usize)
         };
         match pname {
-            gles::GL_COMBINE_RGB if funcao_do_combine(enumeracao, true) => {
-                self.combina[0] = enumeracao
+            gles::GL_COMBINE_RGB if is_combine_function(enum_value, true) => {
+                self.combine[0] = enum_value
             }
-            gles::GL_COMBINE_ALPHA if funcao_do_combine(enumeracao, false) => {
-                self.combina[1] = enumeracao
+            gles::GL_COMBINE_ALPHA if is_combine_function(enum_value, false) => {
+                self.combine[1] = enum_value
             }
             gles::GL_COMBINE_RGB | gles::GL_COMBINE_ALPHA => {}
-            gles::GL_RGB_SCALE => self.escala[0] = numero,
-            gles::GL_ALPHA_SCALE => self.escala[1] = numero,
+            gles::GL_RGB_SCALE => self.scale[0] = number,
+            gles::GL_ALPHA_SCALE => self.scale[1] = number,
             _ => {
-                if let Some(i) = faixa(gles::GL_SRC0_RGB) {
-                    if fonte_do_combine(enumeracao) {
-                        self.fontes[0][i] = enumeracao;
+                if let Some(i) = strip(gles::GL_SRC0_RGB) {
+                    if is_combine_source(enum_value) {
+                        self.sources[0][i] = enum_value;
                     }
-                } else if let Some(i) = faixa(gles::GL_SRC0_ALPHA) {
-                    if fonte_do_combine(enumeracao) {
-                        self.fontes[1][i] = enumeracao;
+                } else if let Some(i) = strip(gles::GL_SRC0_ALPHA) {
+                    if is_combine_source(enum_value) {
+                        self.sources[1][i] = enum_value;
                     }
-                } else if let Some(i) = faixa(gles::GL_OPERAND0_RGB) {
-                    self.operandos[0][i] = enumeracao;
-                } else if let Some(i) = faixa(gles::GL_OPERAND0_ALPHA) {
-                    self.operandos[1][i] = enumeracao;
+                } else if let Some(i) = strip(gles::GL_OPERAND0_RGB) {
+                    self.operands[0][i] = enum_value;
+                } else if let Some(i) = strip(gles::GL_OPERAND0_ALPHA) {
+                    self.operands[1][i] = enum_value;
                 }
             }
         }
     }
 
-    /// A cor do fragmento a partir da cor primária e do texel, na unidade 0, sem a unidade 1.
-    pub fn aplica(&self, primaria: [f32; 4], texel: [f32; 4]) -> [f32; 4] {
-        self.aplica_com(primaria, primaria, texel, [Some(texel), None])
+    /// The fragment color from the primary color and the texel, on unit 0, without unit 1.
+    pub fn apply(&self, primary: [f32; 4], texel: [f32; 4]) -> [f32; 4] {
+        self.apply_with(primary, primary, texel, [Some(texel), None])
     }
 
-    /// O mesmo numa unidade qualquer: `anterior` é o que saiu da unidade de antes (a cor
-    /// primária, na unidade 0), e é sobre ela que os modos clássicos agem. `texeis` é o que cada
-    /// unidade amostrou, `None` na desligada — é dali que saem as fontes `GL_TEXTURE0` e
-    /// `GL_TEXTURE1` do `GL_COMBINE`.
-    pub fn aplica_com(
+    /// The same on any unit: `previous` is what came out of the previous unit (the primary
+    /// color, on unit 0), and it is what the classic modes act on. `texels` is what each unit
+    /// sampled, `None` on a disabled one — that is where the `GL_COMBINE` sources `GL_TEXTURE0`
+    /// and `GL_TEXTURE1` come from.
+    pub fn apply_with(
         &self,
-        anterior: [f32; 4],
-        primaria: [f32; 4],
+        previous: [f32; 4],
+        primary: [f32; 4],
         texel: [f32; 4],
-        texeis: Texeis,
+        texels: Texels,
     ) -> [f32; 4] {
-        let primaria_ = primaria;
-        let primaria = anterior;
-        match self.modo {
+        let primary_ = primary;
+        let primary = previous;
+        match self.mode {
             gles::GL_REPLACE => texel,
             gles::GL_DECAL => {
-                let mut out = primaria;
+                let mut out = primary;
                 for c in 0..3 {
-                    out[c] = primaria[c] * (1.0 - texel[3]) + texel[c] * texel[3];
+                    out[c] = primary[c] * (1.0 - texel[3]) + texel[c] * texel[3];
                 }
                 out
             }
             gles::GL_ADD => {
-                let mut out = primaria;
+                let mut out = primary;
                 for c in 0..3 {
-                    out[c] = (primaria[c] + texel[c]).min(1.0);
+                    out[c] = (primary[c] + texel[c]).min(1.0);
                 }
-                out[3] = primaria[3] * texel[3];
+                out[3] = primary[3] * texel[3];
                 out
             }
-            gles::GL_COMBINE => self.combina(anterior, primaria_, texel, texeis),
-            // `GL_MODULATE` é o padrão e o que os jogos usam quase sempre.
-            _ => std::array::from_fn(|c| primaria[c] * texel[c]),
+            gles::GL_COMBINE => self.combine(previous, primary_, texel, texels),
+            // `GL_MODULATE` is the default and what games almost always use.
+            _ => std::array::from_fn(|c| primary[c] * texel[c]),
         }
     }
 
-    /// O `GL_COMBINE`. Na unidade 0, `GL_PREVIOUS` é a cor primária.
-    fn combina(
+    /// `GL_COMBINE`. On unit 0, `GL_PREVIOUS` is the primary color.
+    fn combine(
         &self,
-        anterior: [f32; 4],
-        primaria: [f32; 4],
+        previous: [f32; 4],
+        primary: [f32; 4],
         texel: [f32; 4],
-        texeis: Texeis,
+        texels: Texels,
     ) -> [f32; 4] {
-        // Fonte numa unidade desligada faz esta unidade se comportar como desligada, que é a
-        // regra do `ARB_texture_env_crossbar`. Não foi medida no aparelho: nenhum jogo testado
-        // chegou a fazer isso.
+        // A source on a disabled unit makes this unit behave as disabled, which is the rule of
+        // `ARB_texture_env_crossbar`. It was not measured on the device: no tested game ever did
+        // that.
         //
-        // `texel_da` é `None` para quem não é `GL_TEXTUREn`, e `Some(None)` para a unidade
-        // desligada.
-        let texel_da = |qual: u32| texeis.get(qual.wrapping_sub(gles::GL_TEXTURE0) as usize);
-        let desligada = |&qual: &u32| texel_da(qual) == Some(&None);
-        if self.fontes.iter().flatten().any(desligada) {
-            return anterior;
+        // `texel_of` is `None` for anything that isn't `GL_TEXTUREn`, and `Some(None)` for a
+        // disabled unit.
+        let texel_of = |which: u32| texels.get(which.wrapping_sub(gles::GL_TEXTURE0) as usize);
+        let disabled = |&which: &u32| texel_of(which) == Some(&None);
+        if self.sources.iter().flatten().any(disabled) {
+            return previous;
         }
-        let fonte = |qual: u32| match qual {
+        let source = |which: u32| match which {
             gles::GL_TEXTURE => texel,
-            gles::GL_CONSTANT => self.cor,
-            gles::GL_PRIMARY_COLOR => primaria,
-            // O crossbar: o texel de uma unidade pelo nome dela. A unidade 1 da água do Bóia
-            // Cross tira a cor de `GL_TEXTURE1` e o alfa também; lido como `GL_PREVIOUS`, a cor
-            // marrom da água nunca era amostrada.
-            qual => texel_da(qual).copied().flatten().unwrap_or(anterior),
+            gles::GL_CONSTANT => self.color,
+            gles::GL_PRIMARY_COLOR => primary,
+            // The crossbar: a unit's texel by its name. Unit 1 of Bóia Cross's water takes the
+            // color from `GL_TEXTURE1` and the alpha too; read as `GL_PREVIOUS`, the brown color
+            // of the water was never sampled.
+            which => texel_of(which).copied().flatten().unwrap_or(previous),
         };
-        // O operando de uma fonte, para um canal. No alfa só existem os dois de alfa; um jogo que
-        // manda `GL_SRC_COLOR` ali (o QX manda) recebe o alfa, que é o que o driver faz.
-        let operando = |canal: usize, i: usize| -> f32 {
-            let lado = usize::from(canal == 3);
-            let valor = fonte(self.fontes[lado][i]);
-            match (self.operandos[lado][i], lado) {
-                (gles::GL_SRC_COLOR, 0) => valor[canal],
-                (gles::GL_ONE_MINUS_SRC_COLOR, 0) => 1.0 - valor[canal],
-                (gles::GL_ONE_MINUS_SRC_ALPHA | gles::GL_ONE_MINUS_SRC_COLOR, _) => 1.0 - valor[3],
-                _ => valor[3],
+        // The operand of a source, for one channel. For alpha only the two alpha ones exist; a
+        // game that sends `GL_SRC_COLOR` there (QX does) gets the alpha, which is what the driver
+        // does.
+        let operand = |channel: usize, i: usize| -> f32 {
+            let side = usize::from(channel == 3);
+            let value = source(self.sources[side][i]);
+            match (self.operands[side][i], side) {
+                (gles::GL_SRC_COLOR, 0) => value[channel],
+                (gles::GL_ONE_MINUS_SRC_COLOR, 0) => 1.0 - value[channel],
+                (gles::GL_ONE_MINUS_SRC_ALPHA | gles::GL_ONE_MINUS_SRC_COLOR, _) => 1.0 - value[3],
+                _ => value[3],
             }
         };
-        let funcao = |canal: usize| -> f32 {
-            let lado = usize::from(canal == 3);
-            let a = |i| operando(canal, i);
-            let resultado = match self.combina[lado] {
+        let callback = |channel: usize| -> f32 {
+            let side = usize::from(channel == 3);
+            let a = |i| operand(channel, i);
+            let result = match self.combine[side] {
                 gles::GL_REPLACE => a(0),
                 gles::GL_ADD => a(0) + a(1),
                 gles::GL_ADD_SIGNED => a(0) + a(1) - 0.5,
                 gles::GL_INTERPOLATE => a(0) * a(2) + a(1) * (1.0 - a(2)),
                 gles::GL_SUBTRACT => a(0) - a(1),
                 gles::GL_DOT3_RGB | gles::GL_DOT3_RGBA => {
-                    let produto: f32 = (0..3)
-                        .map(|c| (operando(c, 0) - 0.5) * (operando(c, 1) - 0.5))
+                    let product: f32 = (0..3)
+                        .map(|c| (operand(c, 0) - 0.5) * (operand(c, 1) - 0.5))
                         .sum();
-                    4.0 * produto
+                    4.0 * product
                 }
                 _ => a(0) * a(1),
             };
-            (resultado * self.escala[lado]).clamp(0.0, 1.0)
+            (result * self.scale[side]).clamp(0.0, 1.0)
         };
-        let mut saida: [f32; 4] = std::array::from_fn(funcao);
-        // O `DOT3_RGBA` põe o produto também no alfa, por cima da função de alfa.
-        if self.combina[0] == gles::GL_DOT3_RGBA {
-            saida[3] = saida[0];
+        let mut output: [f32; 4] = std::array::from_fn(callback);
+        // `DOT3_RGBA` puts the product in the alpha too, overriding the alpha function.
+        if self.combine[0] == gles::GL_DOT3_RGBA {
+            output[3] = output[0];
         }
-        saida
+        output
     }
 }
 
-/// O texel que cada unidade amostrou no fragmento, `None` na que não desenha.
-pub type Texeis = [Option<[f32; 4]>; 2];
+/// The texel each unit sampled for the fragment, `None` on one that doesn't draw.
+pub type Texels = [Option<[f32; 4]>; 2];
 
-/// Se `funcao` é uma função do `GL_COMBINE` para o RGB (`rgb`) ou para o alfa. Os `DOT3` só
-/// existem no RGB.
-fn funcao_do_combine(funcao: u32, rgb: bool) -> bool {
-    match funcao {
+/// Whether `callback` is a `GL_COMBINE` function for RGB (`rgb`) or for alpha. The `DOT3` ones
+/// only exist for RGB.
+fn is_combine_function(callback: u32, rgb: bool) -> bool {
+    match callback {
         gles::GL_REPLACE
         | gles::GL_MODULATE
         | gles::GL_ADD
@@ -367,124 +371,127 @@ fn funcao_do_combine(funcao: u32, rgb: bool) -> bool {
     }
 }
 
-/// Se `fonte` é uma fonte do `GL_COMBINE`: as quatro do OpenGL ES 1.1 e, do crossbar, as duas
-/// unidades que temos pelo nome.
+/// Whether `source` is a `GL_COMBINE` source: the four from OpenGL ES 1.1 and, from the crossbar,
+/// the two units we have, by name.
 ///
-/// **O crossbar não é do OpenGL ES 1.1, mas o aparelho o aceita.** A prova é a água do Bóia
-/// Cross: a unidade 1 só lê a textura de cor marrom por `GL_TEXTURE1`, e com a fonte recusada
-/// ela ficaria no `GL_PREVIOUS` padrão, sem marrom nenhum. No longplay capturado do console a
-/// água da primeira pista é marrom.
-fn fonte_do_combine(fonte: u32) -> bool {
+/// **The crossbar is not part of OpenGL ES 1.1, but the device accepts it.** The proof is Bóia
+/// Cross's water: unit 1 only reads the brown color texture through `GL_TEXTURE1`, and with the
+/// source rejected it would stay on the default `GL_PREVIOUS`, with no brown at all. In the
+/// longplay captured from the console, the water of the first track is brown.
+fn is_combine_source(source: u32) -> bool {
     matches!(
-        fonte,
+        source,
         gles::GL_TEXTURE | gles::GL_CONSTANT | gles::GL_PRIMARY_COLOR | gles::GL_PREVIOUS
-    ) || fonte.wrapping_sub(gles::GL_TEXTURE0) < 2
+    ) || source.wrapping_sub(gles::GL_TEXTURE0) < 2
 }
 
-/// A unidade de textura 1: se está ligada, a textura dela e o ambiente dela.
+/// Texture unit 1: whether it is enabled, its texture and its environment.
 ///
-/// **O pipeline desenhava só a unidade 0**, e respondia `GL_MAX_TEXTURE_UNITS` = 1. A Adreno 130
-/// do console tem duas, e a especificação do OpenGL ES 1.1 exige ao menos duas. O motor QX do
-/// SDK (o Dragon Vs Chicken) confere o número e, com menos de duas, desliga o gerenciador de
-/// iluminação — os personagens caíam num caminho de cor zerada e sumiam. Com duas, ele os
-/// ilumina pela textura: `DOT3` entre o mapa de relevo e a cor do vértice na unidade 0, e
-/// `ADD_SIGNED` com a textura de cor na unidade 1.
+/// **The pipeline drew only unit 0**, and answered `GL_MAX_TEXTURE_UNITS` = 1. The console's
+/// Adreno 130 has two, and the OpenGL ES 1.1 specification requires at least two. The SDK's QX
+/// engine (Dragon Vs Chicken) checks the number and, with fewer than two, turns off the lighting
+/// manager — the characters fell into a zeroed-color path and vanished. With two, it lights them
+/// through the texture: `DOT3` between the bump map and the vertex color on unit 0, and
+/// `ADD_SIGNED` with the color texture on unit 1.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct UnidadeDeTextura {
-    pub ligada: bool,
-    pub textura: u32,
+pub struct TextureUnit {
+    pub enabled: bool,
+    pub texture: u32,
     pub env: TexEnv,
 }
 
-/// A névoa de função fixa: o `glFog*` e o `GL_FOG` do OpenGL ES 1.1.
+/// Fixed-function fog: OpenGL ES 1.1's `glFog*` and `GL_FOG`.
 ///
-/// O fator sai da **distância em coordenadas de olho**, e é ele que diz quanto da cor da névoa
-/// entra no fragmento: 1 é a cena limpa, 0 é a névoa cheia.
+/// The factor comes from the **eye-space distance**, and it says how much of the fog color goes
+/// into the fragment: 1 is a clear scene, 0 is full fog.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Neblina {
-    pub ligada: bool,
-    /// `GL_LINEAR`, `GL_EXP` ou `GL_EXP2`.
-    pub curva: u32,
-    pub densidade: f32,
-    pub inicio: f32,
-    pub fim: f32,
-    pub cor: [f32; 4],
-    /// Desligada por quem está jogando, não pelo jogo. Ver [`Rasterizador::define_neblina`].
-    pub permitida: bool,
+pub struct Fog {
+    pub enabled: bool,
+    /// `GL_LINEAR`, `GL_EXP` or `GL_EXP2`.
+    pub curve: u32,
+    pub density: f32,
+    pub start: f32,
+    pub end: f32,
+    pub color: [f32; 4],
+    /// Turned off by the player, not by the game. See [`Rasterizer::set_fog_allowed`].
+    pub allowed: bool,
 }
 
-impl Default for Neblina {
-    /// Os padrões são os do OpenGL: exponencial, densidade 1, de 0 a 1, preta e transparente.
+impl Default for Fog {
+    /// The defaults are OpenGL's: exponential, density 1, from 0 to 1, black and transparent.
     fn default() -> Self {
         Self {
-            ligada: false,
-            curva: gles::GL_EXP,
-            densidade: 1.0,
-            inicio: 0.0,
-            fim: 1.0,
-            cor: [0.0; 4],
-            permitida: true,
+            enabled: false,
+            curve: gles::GL_EXP,
+            density: 1.0,
+            start: 0.0,
+            end: 1.0,
+            color: [0.0; 4],
+            allowed: true,
         }
     }
 }
 
-impl Neblina {
-    /// Quanto da cor original sobra a essa distância do olho: 1 é cena limpa, 0 é névoa cheia.
+impl Fog {
+    /// How much of the original color remains at this distance from the eye: 1 is a clear
+    /// scene, 0 is full fog.
     ///
-    /// Fora da faixa o fator é preso em `[0, 1]`, como manda a especificação — sem isso a névoa
-    /// linear **clareia** o que está mais perto que o `START`, em vez de deixá-lo intacto.
-    pub fn fator(&self, distancia: f32) -> f32 {
-        if !self.ligada || !self.permitida {
+    /// Outside the range the factor is clamped to `[0, 1]`, as the specification requires —
+    /// without that, linear fog **brightens** whatever is closer than `START`, instead of leaving
+    /// it untouched.
+    pub fn factor(&self, distance: f32) -> f32 {
+        if !self.enabled || !self.allowed {
             return 1.0;
         }
-        let f = match self.curva {
+        let f = match self.curve {
             gles::GL_LINEAR => {
-                let faixa = self.fim - self.inicio;
-                match faixa.abs() < f32::EPSILON {
+                let strip = self.end - self.start;
+                match strip.abs() < f32::EPSILON {
                     true => 1.0,
-                    false => (self.fim - distancia) / faixa,
+                    false => (self.end - distance) / strip,
                 }
             }
             gles::GL_EXP2 => {
-                let d = self.densidade * distancia;
+                let d = self.density * distance;
                 (-(d * d)).exp()
             }
-            _ => (-(self.densidade * distancia)).exp(),
+            _ => (-(self.density * distance)).exp(),
         };
         f.clamp(0.0, 1.0)
     }
 }
 
-/// Um nível de redução de uma textura.
+/// One minification level of a texture.
 #[derive(Debug, Clone)]
-pub struct Nivel {
+pub struct Level {
     pub width: usize,
     pub height: usize,
     pub pixels: Vec<[u8; 4]>,
 }
 
-/// Uma textura carregada por `TexImage2D`, sempre convertida para RGBA de 8 bits.
+/// A texture loaded by `TexImage2D`, always converted to 8-bit RGBA.
 #[derive(Debug, Clone)]
 pub struct Texture {
     pub width: usize,
     pub height: usize,
     pub pixels: Vec<[u8; 4]>,
-    /// Os níveis de redução, do 1 em diante — o zero é `width`/`height`/`pixels` acima.
+    /// The minification levels, from 1 onward — zero is `width`/`height`/`pixels` above.
     ///
-    /// **Descartá-los era a causa das listras.** Os modelos do palco da Z-Wheel vêm com a
-    /// cadeia inteira, de 128×128 até 1×1, e são vistos de raspão: a lateral do carro ocupa
-    /// poucos pixels de largura e cobre a textura inteira. Amostrando sempre o nível zero, cada
-    /// pixel cai num texel qualquer e o resultado é o traseiro do carro repetido em colunas.
-    pub mipmaps: Vec<Nivel>,
-    /// Como tratar coordenadas fora de `[0, 1)` em cada eixo.
+    /// **Discarding them was the cause of the stripes.** The Z-Wheel stage models come with the
+    /// whole chain, from 128×128 down to 1×1, and are seen at grazing angles: the side of the car
+    /// takes a few pixels of width and covers the whole texture. Always sampling level zero, each
+    /// pixel lands on an arbitrary texel and the result is the back of the car repeated in
+    /// columns.
+    pub mipmaps: Vec<Level>,
+    /// How to treat coordinates outside `[0, 1)` on each axis.
     pub wrap: [u32; 2],
-    /// Filtro de ampliação, do `GL_TEXTURE_MAG_FILTER`.
+    /// Magnification filter, from `GL_TEXTURE_MAG_FILTER`.
     pub filter: u32,
-    /// Filtro de redução, do `GL_TEXTURE_MIN_FILTER`. É ele que diz se há mipmap e se a
-    /// passagem de um nível para o outro é interpolada.
+    /// Minification filter, from `GL_TEXTURE_MIN_FILTER`. It says whether there is a mipmap and
+    /// whether the transition from one level to the next is interpolated.
     pub min_filter: u32,
-    /// `GL_TEXTURE_CROP_RECT_OES`: qual pedaço da textura o `glDrawTex*OES` desenha, em texels.
-    /// Largura ou altura negativa espelha o eixo, que é como a extensão vira a imagem.
+    /// `GL_TEXTURE_CROP_RECT_OES`: which piece of the texture `glDrawTex*OES` draws, in texels.
+    /// A negative width or height mirrors the axis, which is how the extension flips the image.
     pub crop: [i32; 4],
 }
 
@@ -495,8 +502,8 @@ impl Default for Texture {
             height: 0,
             pixels: Vec::new(),
             mipmaps: Vec::new(),
-            // Os padrões do OpenGL ES: repetir nos dois eixos, ampliar por interpolação e
-            // reduzir com mipmap — o padrão do `MIN_FILTER` é `GL_NEAREST_MIPMAP_LINEAR`.
+            // The OpenGL ES defaults: repeat on both axes, magnify by interpolation and minify
+            // with mipmaps — the `MIN_FILTER` default is `GL_NEAREST_MIPMAP_LINEAR`.
             wrap: [gles::GL_REPEAT; 2],
             filter: gles::GL_LINEAR,
             min_filter: gles::GL_NEAREST_MIPMAP_LINEAR,
@@ -506,16 +513,17 @@ impl Default for Texture {
 }
 
 impl Texture {
-    /// Aplica o modo de repetição de um eixo a um índice de texel.
+    /// Applies an axis's wrap mode to a texel index.
     ///
-    /// `GL_CLAMP_TO_EDGE` prende no último texel e `GL_REPEAT` dá a volta. Tratar tudo como
-    /// repetição faz a borda de uma textura presa aparecer do outro lado — é o serrilhado que
-    /// surgia nas beiradas da pista do Crash.
+    /// `GL_CLAMP_TO_EDGE` clamps to the last texel and `GL_REPEAT` wraps around. Treating
+    /// everything as repeat makes the edge of a clamped texture show up on the other side — it is
+    /// the jagged edge that appeared along the borders of the Crash track.
     #[inline]
     fn wrap(mode: u32, index: i32, size: usize) -> usize {
         let size = size as i32;
-        // O caso comum é a coordenada já estar dentro da textura, e aí não há o que fazer —
-        // vale conferir antes porque o resto custa uma divisão, e isto roda por texel.
+        // The common case is the coordinate already being inside the texture, and then there is
+        // nothing to do — worth checking first because the rest costs a division, and this runs
+        // per texel.
         if index >= 0 && index < size {
             return index as usize;
         }
@@ -525,58 +533,59 @@ impl Texture {
         index.rem_euclid(size) as usize
     }
 
-    /// A largura, a altura e os pixels de um nível de redução.
-    fn nivel(&self, n: usize) -> (usize, usize, &[[u8; 4]]) {
+    /// The width, the height and the pixels of a minification level.
+    fn level(&self, n: usize) -> (usize, usize, &[[u8; 4]]) {
         match n.checked_sub(1).and_then(|i| self.mipmaps.get(i)) {
-            // O tamanho declarado e os pixels precisam combinar: um nível comprimido cujo
-            // decodificador não deu conta chega com menos texels do que diz ter, e ler por
-            // índice ali seria estourar o vetor.
-            Some(nivel) if nivel.width > 0 && nivel.pixels.len() >= nivel.width * nivel.height => {
-                (nivel.width, nivel.height, &nivel.pixels)
+            // The declared size and the pixels must agree: a compressed level whose decoder
+            // couldn't cope arrives with fewer texels than it claims, and indexing into it would
+            // overrun the vector.
+            Some(level) if level.width > 0 && level.pixels.len() >= level.width * level.height => {
+                (level.width, level.height, &level.pixels)
             }
             _ => (self.width, self.height, &self.pixels),
         }
     }
 
-    /// Quantos níveis a cadeia tem, contando o zero.
-    fn niveis(&self) -> usize {
-        // **Só a sequência sem buracos conta.** Um jogo pode mandar os níveis fora de ordem, ou
-        // parar no meio, e a nossa lista fica com uma entrada vazia no lugar que faltou.
-        // Amostrar uma dessas devolvia branco opaco, e a superfície inteira saía chapada — foi
-        // o que aconteceu com parte dos itens da roda quando o mipmap entrou.
+    /// How many levels the chain has, counting zero.
+    fn levels(&self) -> usize {
+        // **Only the sequence without gaps counts.** A game may send the levels out of order, or
+        // stop halfway, and our list ends up with an empty entry where one was missing. Sampling
+        // one of those returned opaque white, and the whole surface came out flat — that is what
+        // happened to some of the wheel's items when mipmapping went in.
         1 + self
             .mipmaps
             .iter()
-            .take_while(|nivel| nivel.width > 0 && nivel.pixels.len() >= nivel.width * nivel.height)
+            .take_while(|level| level.width > 0 && level.pixels.len() >= level.width * level.height)
             .count()
     }
 
-    /// Amostra a textura escolhendo o nível pela redução em tela.
+    /// Samples the texture, choosing the level by the on-screen minification.
     ///
-    /// O `lod` é `log2` de quantos texels cabem num pixel: zero quando um texel é um pixel,
-    /// maior quando a superfície está longe ou de raspão. É a conta que o OpenGL manda fazer, e
-    /// é ela que decide entre ampliar — com o filtro de ampliação — e reduzir.
+    /// `lod` is `log2` of how many texels fit in a pixel: zero when one texel is one pixel,
+    /// larger when the surface is far away or at a grazing angle. It is the computation OpenGL
+    /// prescribes, and it decides between magnifying — with the magnification filter — and
+    /// minifying.
     fn sample_lod(&self, u: f32, v: f32, lod: f32) -> [f32; 4] {
         if self.width == 0 || self.height == 0 {
             return [1.0; 4];
         }
         if lod <= 0.0 {
-            return self.sample_nivel(u, v, 0, self.filter == gles::GL_LINEAR);
+            return self.sample_level(u, v, 0, self.filter == gles::GL_LINEAR);
         }
-        // **Textura sem cadeia não é mipmapeada, mesmo que o filtro peça.** No OpenGL ela é
-        // "incompleta" e o resultado é indefinido; na prática o aparelho cai no filtro de base,
-        // e é o que faz sentido aqui. O padrão do `MIN_FILTER` é `GL_NEAREST_MIPMAP_LINEAR`, e
-        // adotá-lo ao pé da letra passava a amostrar por vizinho mais próximo as vinte e uma
-        // texturas do palco que pedem `GL_LINEAR` e não trazem nível nenhum — o carro inteiro
-        // perdia definição.
-        let base_suave = !matches!(
+        // **A texture without a chain is not mipmapped, even if the filter asks for it.** In
+        // OpenGL it is "incomplete" and the result is undefined; in practice the device falls
+        // back to the base filter, and that is what makes sense here. The `MIN_FILTER` default
+        // is `GL_NEAREST_MIPMAP_LINEAR`, and taking it literally started sampling with nearest
+        // neighbor the twenty-one stage textures that ask for `GL_LINEAR` and bring no levels at
+        // all — the whole car lost definition.
+        let base_smooth = !matches!(
             self.min_filter,
             gles::GL_NEAREST | gles::GL_NEAREST_MIPMAP_NEAREST | gles::GL_NEAREST_MIPMAP_LINEAR
         );
-        if self.niveis() == 1 {
-            return self.sample_nivel(u, v, 0, base_suave);
+        if self.levels() == 1 {
+            return self.sample_level(u, v, 0, base_smooth);
         }
-        let (com_mipmap, entre_niveis, suave) = match self.min_filter {
+        let (mipmapped, between_levels, smooth) = match self.min_filter {
             gles::GL_NEAREST => (false, false, false),
             gles::GL_LINEAR => (false, false, true),
             gles::GL_NEAREST_MIPMAP_NEAREST => (true, false, false),
@@ -585,25 +594,25 @@ impl Texture {
             gles::GL_LINEAR_MIPMAP_LINEAR => (true, true, true),
             _ => (true, true, true),
         };
-        if !com_mipmap {
-            return self.sample_nivel(u, v, 0, suave);
+        if !mipmapped {
+            return self.sample_level(u, v, 0, smooth);
         }
-        let ultimo = (self.niveis() - 1) as f32;
-        let lod = lod.min(ultimo);
-        let baixo = lod.floor();
-        let a = self.sample_nivel(u, v, baixo as usize, suave);
-        if !entre_niveis || baixo >= ultimo {
+        let last = (self.levels() - 1) as f32;
+        let lod = lod.min(last);
+        let down = lod.floor();
+        let a = self.sample_level(u, v, down as usize, smooth);
+        if !between_levels || down >= last {
             return a;
         }
-        let b = self.sample_nivel(u, v, baixo as usize + 1, suave);
-        let t = lod - baixo;
+        let b = self.sample_level(u, v, down as usize + 1, smooth);
+        let t = lod - down;
         std::array::from_fn(|c| a[c] + (b[c] - a[c]) * t)
     }
 
-    /// Amostra um nível, com ou sem interpolação entre texels vizinhos.
+    /// Samples one level, with or without interpolation between neighboring texels.
     #[inline]
-    fn sample_nivel(&self, u: f32, v: f32, nivel: usize, suave: bool) -> [f32; 4] {
-        let (width, height, pixels) = self.nivel(nivel);
+    fn sample_level(&self, u: f32, v: f32, level: usize, smooth: bool) -> [f32; 4] {
+        let (width, height, pixels) = self.level(level);
         if width == 0 || height == 0 {
             return [1.0; 4];
         }
@@ -614,52 +623,53 @@ impl Texture {
             std::array::from_fn::<f32, 4, _>(|i| p[i] as f32 / 255.0)
         };
         let (x, y) = (u * width as f32 - 0.5, v * height as f32 - 0.5);
-        if !suave {
+        if !smooth {
             return texel(x.round() as i32, y.round() as i32);
         }
         let (x0, y0) = (x.floor(), y.floor());
         let (fx, fy) = (x - x0, y - y0);
         let (x0, y0) = (x0 as i32, y0 as i32);
-        let cantos = [
+        let corners = [
             texel(x0, y0),
             texel(x0 + 1, y0),
             texel(x0, y0 + 1),
             texel(x0 + 1, y0 + 1),
         ];
         std::array::from_fn(|c| {
-            let cima = cantos[0][c] + (cantos[1][c] - cantos[0][c]) * fx;
-            let baixo = cantos[2][c] + (cantos[3][c] - cantos[2][c]) * fx;
-            cima + (baixo - cima) * fy
+            let up = corners[0][c] + (corners[1][c] - corners[0][c]) * fx;
+            let down = corners[2][c] + (corners[3][c] - corners[2][c]) * fx;
+            up + (down - up) * fy
         })
     }
 }
 
-/// Estado completo do OpenGL ES que o rasterizador mantém.
-/// Uma das oito luzes do pipeline de função fixa.
+/// Complete OpenGL ES state the rasterizer keeps.
+/// One of the eight lights of the fixed-function pipeline.
 ///
-/// Os padrões são os do OpenGL ES 1.1, e **a luz zero é diferente das outras**: ela nasce com
-/// difusa e especular brancas, as demais com pretas. Isso não é curiosidade de tabela — a
-/// Z-Wheel só chama `glLightxv` para a ambiente da `GL_LIGHT0` e deixa o resto no padrão, então
-/// a difusa branca que ilumina o palco inteiro vem daqui e de mais lugar nenhum.
+/// The defaults are OpenGL ES 1.1's, and **light zero is different from the others**: it starts
+/// with white diffuse and specular, the rest with black. This is not table trivia — Z-Wheel only
+/// calls `glLightxv` for the ambient of `GL_LIGHT0` and leaves the rest at the default, so the
+/// white diffuse that lights the whole stage comes from here and nowhere else.
 #[derive(Debug, Clone, Copy)]
 pub struct Light {
     pub enabled: bool,
     pub ambient: [f32; 4],
     pub diffuse: [f32; 4],
     pub specular: [f32; 4],
-    /// Já em coordenadas de olho: o `glLight` transforma a posição pela modelview do momento
-    /// em que é chamado, e não pela do desenho. O padrão, `(0, 0, 1, 0)`, é direcional.
+    /// Already in eye coordinates: `glLight` transforms the position by the modelview at the
+    /// moment it is called, not by the one at draw time. The default, `(0, 0, 1, 0)`, is
+    /// directional.
     pub position: [f32; 4],
     pub spot_direction: [f32; 3],
     pub spot_exponent: f32,
     pub spot_cutoff: f32,
-    /// Constante, linear e quadrática, nessa ordem.
+    /// Constant, linear and quadratic, in that order.
     pub attenuation: [f32; 3],
 }
 
 impl Light {
-    /// O padrão das luzes de índice um em diante.
-    fn apagada() -> Self {
+    /// The default for lights from index one onward.
+    fn off() -> Self {
         Self {
             enabled: false,
             ambient: [0.0, 0.0, 0.0, 1.0],
@@ -673,17 +683,17 @@ impl Light {
         }
     }
 
-    /// O padrão da `GL_LIGHT0`.
+    /// The `GL_LIGHT0` default.
     fn zero() -> Self {
         Self {
             diffuse: [1.0; 4],
             specular: [1.0; 4],
-            ..Self::apagada()
+            ..Self::off()
         }
     }
 }
 
-/// O material, que no ES 1.x é um só — não há frente e verso separados.
+/// The material, which in ES 1.x is a single one — there are no separate front and back.
 #[derive(Debug, Clone, Copy)]
 pub struct Material {
     pub ambient: [f32; 4],
@@ -705,45 +715,46 @@ impl Default for Material {
     }
 }
 
-/// A fronteira entre o emulador e quem rasteriza.
+/// The boundary between the emulator and whoever rasterizes.
 ///
-/// Tudo o que o despacho de GL faz passa por aqui — e **só** por aqui, desde que os campos do
-/// [`GlState`] deixaram de ser públicos. A lista é o contrato que um segundo rasterizador
-/// precisa cumprir; hoje há uma implementação só, a de software, e é ela que dá a garantia de
-/// quadro reproduzível bit a bit que o `ARCHITECTURE.md` descreve.
+/// Everything the GL dispatch does goes through here — and **only** through here, since the
+/// fields of [`GlState`] stopped being public. The list is the contract a second rasterizer must
+/// fulfill; today there is a single implementation, the software one, and it is what provides
+/// the bit-for-bit reproducible frame guarantee that `ARCHITECTURE.md` describes.
 ///
-/// Os métodos inerentes do [`GlState`] continuam existindo: o trait não muda nenhum ponto de
-/// chamada, ele só escreve o que a fronteira é. Quem for implementar outro backend começa por
-/// esta lista, e o que não estiver nela não é usado pelo emulador.
-pub trait Rasterizador {
-    /// Grava, numa seção por grupo, o estado que as chamadas de GL do jogo mudaram.
+/// The inherent methods of [`GlState`] still exist: the trait changes no call site, it only
+/// writes down what the boundary is. Whoever implements another backend starts from this list,
+/// and whatever isn't on it is not used by the emulator.
+pub trait Rasterizer {
+    /// Writes, one section per group, the state the game's GL calls changed.
     ///
-    /// **É o par de [`Rasterizador::restaura_estado`], e os dois são obrigatórios de propósito.** Um
-    /// rasterizador que não saiba se gravar tem de dizer isso, e não gravar nada em silêncio: um
-    /// save state que perde o estado de desenho volta com a cena errada, e nada aponta para ele.
-    fn grava_estado(&self, destino: &mut crate::save_state::Secoes);
+    /// **It is the counterpart of [`Rasterizer::restore_state`], and both are mandatory on
+    /// purpose.** A rasterizer that doesn't know how to save itself has to say so, not silently
+    /// save nothing: a save state that loses the drawing state comes back with the wrong scene,
+    /// and nothing points to it.
+    fn save_state(&self, dest: &mut crate::save_state::Sections);
 
-    /// Repõe o estado gravado por [`Rasterizador::grava_estado`].
-    fn restaura_estado(
+    /// Restores the state written by [`Rasterizer::save_state`].
+    fn restore_state(
         &mut self,
-        origem: &crate::save_state::Leitor<'_>,
-    ) -> Result<(), crate::save_state::Erro>;
+        origin: &crate::save_state::Reader<'_>,
+    ) -> Result<(), crate::save_state::Error>;
 
-    /// Termina o desenho que estava na fila.
+    /// Finishes the drawing that was queued.
     ///
-    /// Existe por causa do save state, e ele é a resposta certa para o caso comum: um lote de
-    /// triângulos esperando a vez **não é** um desenho pela metade — é trabalho que ia ser feito no
-    /// quadro seguinte de qualquer maneira. Recusar o save por causa dele seria bloquear o jogador
-    /// por algo que o motor resolve sozinho. Depois de drenar, o que sobrar é o desenho de
-    /// verdade interrompido, e aí [`Rasterizador::desenho_em_curso`] responde sim.
-    fn descarrega_o_desenho(&mut self);
+    /// It exists because of save states, and it is the right answer for the common case: a batch
+    /// of triangles waiting its turn **is not** a half-done draw — it is work that would be done
+    /// in the next frame anyway. Refusing the save because of it would block the player over
+    /// something the engine resolves on its own. After draining, what remains is a genuinely
+    /// interrupted draw, and then [`Rasterizer::draw_in_progress`] answers yes.
+    fn flush_draw(&mut self);
 
-    /// Se há um desenho **começado e não terminado**.
+    /// Whether there is a draw **started and not finished**.
     ///
-    /// O frontend serializa entre quadros, nunca dentro de um `retro_run`, então isto responde
-    /// `false` em todo save normal. Quem grava pergunta, e **recusa** quando a resposta é sim: um
-    /// estado salvo no meio de um `glBegin` prometeria um desenho que nunca existiu.
-    fn desenho_em_curso(&self) -> bool;
+    /// The frontend serializes between frames, never inside a `retro_run`, so this answers
+    /// `false` on every normal save. The saver asks, and **refuses** when the answer is yes: a
+    /// state saved in the middle of a `glBegin` would promise a draw that never existed.
+    fn draw_in_progress(&self) -> bool;
 
     fn set_matrix_mode(&mut self, mode: u32);
     fn load_identity(&mut self);
@@ -751,59 +762,59 @@ pub trait Rasterizador {
     fn mult_matrix(&mut self, m: Matrix);
     fn push_matrix(&mut self);
     fn pop_matrix(&mut self);
-    /// A matriz do topo da pilha ativa. Ver [`GlState::matriz_do_topo`].
-    fn matriz_do_topo(&self) -> Matrix;
+    /// The matrix at the top of the active stack. See [`GlState::top_matrix`].
+    fn top_matrix(&self) -> Matrix;
 
     fn set_viewport(&mut self, x: i32, y: i32, width: i32, height: i32);
     fn set_scissor(&mut self, x: i32, y: i32, width: i32, height: i32);
     fn set_surface(&mut self, width: usize, height: usize);
-    /// Como [`Rasterizador::set_surface`], para a superfície que o aparelho estica até a tela
-    /// inteira — a do `EGL_QUALCOMM_surface_scale`. Ver [`GlState::superficie_esticada`].
-    fn set_surface_esticada(&mut self, width: usize, height: usize);
+    /// Like [`Rasterizer::set_surface`], for the surface the device stretches to the whole
+    /// screen — the `EGL_QUALCOMM_surface_scale` one. See [`GlState::stretched_surface`].
+    fn set_stretched_surface(&mut self, width: usize, height: usize);
     fn surface(&self) -> (usize, usize);
     fn frame_size(&self) -> (usize, usize);
 
     fn set_clear_color(&mut self, color: [f32; 4]);
     fn set_clear_depth(&mut self, depth: f32);
-    fn set_clear_stencil(&mut self, valor: i32);
+    fn set_clear_stencil(&mut self, value: i32);
     fn set_color(&mut self, color: [f32; 4]);
     fn current_color(&self) -> [f32; 4];
     fn clear(&mut self, mask: u32);
 
     fn set_capability(&mut self, capability: u32, on: bool);
     fn set_shade_model(&mut self, mode: u32);
-    fn set_light(&mut self, index: usize, pname: u32, valores: [f32; 4]);
-    fn set_material(&mut self, pname: u32, valores: [f32; 4]);
-    fn set_light_model(&mut self, pname: u32, valores: [f32; 4]);
+    fn set_light(&mut self, index: usize, pname: u32, values: [f32; 4]);
+    fn set_material(&mut self, pname: u32, values: [f32; 4]);
+    fn set_light_model(&mut self, pname: u32, values: [f32; 4]);
 
     fn set_blend_func(&mut self, src: u32, dst: u32);
     fn set_alpha_func(&mut self, func: u32, reference: f32);
     fn set_depth_func(&mut self, func: u32);
     fn set_depth_mask(&mut self, on: bool);
-    /// `glDepthRange`: para onde a profundidade normalizada vai no buffer de profundidade.
-    fn set_depth_range(&mut self, perto: f32, longe: f32);
-    /// `glFog*`: um parâmetro da névoa, com até quatro valores (a cor usa os quatro).
-    fn set_fog(&mut self, pname: u32, valores: [f32; 4]);
-    /// Se a névoa do jogo vale. **É escolha de quem joga, não do jogo**: a névoa do console
-    /// costuma esconder o que a distância de desenho dele não alcançava, e aqui a cena chega
-    /// inteira — quem prefere ver longe desliga.
-    fn define_neblina(&mut self, permitida: bool);
+    /// `glDepthRange`: where the normalized depth goes in the depth buffer.
+    fn set_depth_range(&mut self, near: f32, far: f32);
+    /// `glFog*`: one fog parameter, with up to four values (the color uses all four).
+    fn set_fog(&mut self, pname: u32, values: [f32; 4]);
+    /// Whether the game's fog applies. **It is the player's choice, not the game's**: the
+    /// console's fog usually hides what its draw distance couldn't reach, and here the whole
+    /// scene arrives — whoever prefers to see far turns it off.
+    fn set_fog_allowed(&mut self, allowed: bool);
     fn set_color_mask(&mut self, mask: [bool; 4]);
     fn set_cull_face(&mut self, mode: u32);
     fn set_front_face(&mut self, face: u32);
-    fn set_stencil_func(&mut self, func: u32, referencia: i32, mask: u32);
-    fn set_stencil_op(&mut self, falha: u32, falha_z: u32, passa: u32);
+    fn set_stencil_func(&mut self, func: u32, reference: i32, mask: u32);
+    fn set_stencil_op(&mut self, failure: u32, zfail: u32, passes: u32);
     fn set_stencil_mask(&mut self, mask: u32);
 
     fn set_active_texture(&mut self, unit: u32);
     fn set_client_active_texture(&mut self, unit: u32);
-    /// A unidade escolhida pelo `glClientActiveTexture`, a partir de zero.
+    /// The unit chosen by `glClientActiveTexture`, counting from zero.
     fn client_unit(&self) -> u32;
     fn bind_texture(&mut self, name: u32);
     fn bound_texture(&self) -> u32;
     fn set_texture_env(&mut self, mode: u32);
-    fn set_texture_env_param(&mut self, pname: u32, enumeracao: u32, numero: f32);
-    fn set_texture_env_color(&mut self, cor: [f32; 4]);
+    fn set_texture_env_param(&mut self, pname: u32, enum_value: u32, number: f32);
+    fn set_texture_env_color(&mut self, color: [f32; 4]);
     fn set_texture_parameter(&mut self, name: u32, value: u32);
     fn set_texture_crop(&mut self, crop: [i32; 4]);
     fn delete_texture(&mut self, name: u32);
@@ -829,155 +840,159 @@ pub trait Rasterizador {
     fn draw_texture(&mut self, x: f32, y: f32, z: f32, width: f32, height: f32);
 
     fn read_rect(&mut self, x: i32, y: i32, width: usize, height: usize) -> Vec<[u8; 4]>;
-    /// Manda o desenho para um framebuffer de fora — o que o frontend Libretro entrega.
+    /// Sends the drawing to an outside framebuffer — the one the Libretro frontend provides.
     ///
-    /// No contrato do `libretro`, quem apresenta o quadro é o frontend, e o core desenha no
-    /// framebuffer que ele indica (o `get_current_framebuffer` do `retro_hw_render_callback`),
-    /// que pode mudar de um quadro para o outro — daí a função aceitar troca. `Some(0)` é o
-    /// framebuffer padrão do frontend, que no `glow` se escreve `None`.
+    /// In the `libretro` contract, the frontend presents the frame, and the core draws into the
+    /// framebuffer it points to (the `get_current_framebuffer` of `retro_hw_render_callback`),
+    /// which may change from one frame to the next — hence the function accepts a switch.
+    /// `Some(0)` is the frontend's default framebuffer, which in `glow` is written `None`.
     ///
-    /// **No software não há o que fazer**: ele desenha em memória, e o quadro sai pelo
-    /// [`Self::frame_rgb565`] de sempre. É o que permite ao mesmo motor servir aos dois caminhos.
-    fn desenha_no_fbo(&mut self, _fbo: Option<u32>) {}
+    /// **In software there is nothing to do**: it draws in memory, and the frame goes out through
+    /// the usual [`Self::frame_rgb565`]. That is what lets the same engine serve both paths.
+    fn draw_to_fbo(&mut self, _fbo: Option<u32>) {}
 
-    /// A textura do quadro na placa, quando ele não vai ser lido de volta pela CPU.
+    /// The frame texture on the GPU, when it won't be read back by the CPU.
     ///
-    /// O `v` zero dessa textura é o topo da cena: o shader de preenchimento inverte o Y para o
-    /// `glReadPixels` devolver as linhas na ordem da superfície de software. Quem desenha a
-    /// textura na tela precisa desfazer essa inversão. No software não há textura.
-    fn textura_do_quadro(&self) -> Option<u32> {
+    /// The zero `v` of this texture is the top of the scene: the fill shader flips Y so that
+    /// `glReadPixels` returns the rows in the order of the software surface. Whoever draws the
+    /// texture on screen must undo that flip. In software there is no texture.
+    fn frame_texture(&self) -> Option<u32> {
         None
     }
 
-    /// O contexto volta ao motor depois de a janela pintar nele. Ver
-    /// [`GpuState`](crate::video::gpu::GpuState). No software não há contexto.
-    fn retoma_o_contexto(&mut self) {}
+    /// The context comes back to the engine after the window paints on it. See
+    /// [`GpuState`](crate::video::gpu::GpuState). In software there is no context.
+    fn resume_context(&mut self) {}
 
-    /// O quadro acabou e o contexto volta ao frontend, que desenha o FBO na tela com ele.
+    /// The frame is over and the context goes back to the frontend, which draws the FBO on
+    /// screen with it.
     ///
-    /// Ver [`GpuState`](crate::video::gpu::GpuState). No software não há contexto a devolver.
-    fn devolve_ao_frontend(&mut self) {}
+    /// See [`GpuState`](crate::video::gpu::GpuState). In software there is no context to hand
+    /// back.
+    fn hand_back_to_frontend(&mut self) {}
 
-    /// Se trazer o quadro para a memória da CPU custa uma **espera pela placa**.
+    /// Whether bringing the frame into CPU memory costs a **wait for the GPU**.
     ///
-    /// Reduz a resolução interna do 3D, desenhando numa superfície menor e ampliando na
-    /// apresentação. **Só o rasterizador de processador faz isto**: ver
-    /// [`GlState::define_reducao`]. Na placa não há o que fazer — ali o preenchimento a 640×480
-    /// não satura a GPU, e reduzir só estragaria a imagem.
-    fn define_reducao(&mut self, _reducao: usize) {}
+    /// Lowers the internal resolution of the 3D, drawing on a smaller surface and scaling up on
+    /// presentation. **Only the CPU rasterizer does this**: see [`GlState::set_downscale`]. On the
+    /// GPU there is nothing to do — there, filling at 640×480 doesn't saturate the GPU, and
+    /// lowering it would only ruin the image.
+    fn set_downscale(&mut self, _downscale: usize) {}
 
-    /// Chamadas de estado enviadas à placa e quantas o espelho poupou. Zero no software.
+    /// State calls sent to the GPU and how many the mirror spared. Zero in software.
     ///
-    /// Existe para o ganho do espelho ser **verificável**: sem os dois números não há como dizer
-    /// se ele está poupando chamadas ou só repetindo o que já estava lá.
-    fn estado_enviado_e_poupado(&self) -> (u64, u64) {
+    /// It exists so the mirror's gain is **verifiable**: without both numbers there is no way to
+    /// tell whether it is sparing calls or just repeating what was already there.
+    fn state_sent_and_spared(&self) -> (u64, u64) {
         (0, 0)
     }
 
-    /// Diz ao driver que os anexos de profundidade e estêncil podem ser descartados depois do
-    /// quadro. **Experimental, desligado por padrão, e só o rasterizador de placa faz.**
+    /// Tells the driver the depth and stencil attachments may be discarded after the frame.
+    /// **Experimental, off by default, and only the GPU rasterizer does it.**
     ///
-    /// Rende em GPU de tiles — o Mali dos dois portáteis —, onde evita escrever os anexos de volta
-    /// na memória. Um jogo que **não** limpe a profundidade de um quadro para o outro conta com
-    /// ela, e é por isso que não vem ligado. Ver `GpuState::define_descarte_de_tiles`.
-    fn define_descarte_de_tiles(&mut self, _descartar: bool) {}
+    /// It pays off on tile-based GPUs — the Mali of both handhelds — where it avoids writing the
+    /// attachments back to memory. A game that does **not** clear the depth from one frame to the
+    /// next relies on it, and that is why it isn't on by default. See
+    /// `GpuState::set_tile_discard`.
+    fn set_tile_discard(&mut self, _discard: bool) {}
 
-    /// Verdadeiro no rasterizador de placa: ler o quadro de volta obriga a GPU a terminar e
-    /// devolver os pixels, e num GPU de tiles isso é parada. Falso no de processador, onde a
-    /// "leitura" é uma conversão em memória — ali adiar não economiza nada e ainda arrisca o
-    /// frontend apresentar um quadro velho. Ver [`crate::machine::Machine::present_gl`].
-    fn quadro_espera_pela_placa(&self) -> bool {
+    /// True on the GPU rasterizer: reading the frame back forces the GPU to finish and return
+    /// the pixels, and on a tile-based GPU that is a stall. False on the CPU one, where the
+    /// "read" is an in-memory conversion — there, deferring saves nothing and also risks the
+    /// frontend presenting a stale frame. See [`crate::machine::Machine::present_gl`].
+    fn frame_waits_for_gpu(&self) -> bool {
         false
     }
 
-    /// Avisa que o jogo trocou de buffer. Só o rasterizador de placa faz algo: mede o quadro para
-    /// o relatório periódico do log. Ver `GpuState::fecha_quadro`.
-    fn fecha_quadro(&mut self) {}
+    /// Signals that the game swapped buffers. Only the GPU rasterizer does anything: it measures
+    /// the frame for the periodic log report. See `GpuState::end_frame`.
+    fn end_frame(&mut self) {}
 
     fn frame_rgb565(&mut self, width: usize, height: usize, out: &mut Vec<u8>);
-    /// Exporta diretamente em RGB565 nativo para a tela do host, sem passar por bytes.
+    /// Exports directly in native RGB565 for the host screen, without going through bytes.
     fn frame_rgb565_words(&mut self, width: usize, height: usize, out: &mut Vec<u16>);
     fn import_rgb565_changes(&mut self, width: usize, height: usize, old: &[u8], new: &[u8]);
 
-    /// Quantas vezes o quadro é desenhado maior que o do console, por lado. O jogo continua
-    /// vendo 640×480: viewport, leitura de pixels e cópia do quadro são convertidas. Só a placa
-    /// sabe fazer isto; no software o custo cresceria com o quadrado do fator, e ele ignora.
-    fn define_escala(&mut self, _escala: usize) {}
+    /// How many times larger than the console's the frame is drawn, per side. The game still
+    /// sees 640×480: viewport, pixel reads and frame copies are converted. Only the GPU can do
+    /// this; in software the cost would grow with the square of the factor, and it ignores it.
+    fn set_scale(&mut self, _scale: usize) {}
 
-    /// **Experimental.** Renderiza o 3D em perspectiva numa proporção mais larga que o 4:3 do
-    /// console, abrindo o campo de visão na horizontal em vez de esticar. `None` é o nativo.
-    fn define_proporcao(&mut self, _aspecto: Option<f32>) {}
+    /// **Experimental.** Renders perspective 3D at a wider aspect ratio than the console's 4:3,
+    /// widening the horizontal field of view instead of stretching. `None` is native.
+    fn set_aspect_ratio(&mut self, _aspect: Option<f32>) {}
 
-    /// Antialias por amostragem múltipla (MSAA), em amostras por pixel; 1 desliga. Suaviza as
-    /// bordas dos polígonos; transparência recortada por teste de alfa não é afetada.
-    fn define_antialias(&mut self, _amostras: usize) {}
+    /// Multisample antialiasing (MSAA), in samples per pixel; 1 turns it off. Smooths polygon
+    /// edges; transparency cut out by the alpha test is not affected.
+    fn set_antialias(&mut self, _samples: usize) {}
 
-    /// Filtro anisotrópico nas texturas do jogo; 1 desliga. Deixa nítido o que é visto de lado —
-    /// pista, chão, paredes. Sem a extensão na placa, fica desligado.
-    fn define_anisotropico(&mut self, _nivel: usize) {}
+    /// Anisotropic filtering on the game's textures; 1 turns it off. Sharpens what is seen
+    /// edge-on — track, floor, walls. Without the extension on the GPU, it stays off.
+    fn set_anisotropic(&mut self, _level: usize) {}
 
-    /// O quadro na resolução interna, lido da placa em RGBA com a linha 0 no topo. Para conferir
-    /// o upscale sem janela; a janela usa o [`Rasterizador::quadro_na_placa`].
-    fn le_quadro_grande(&mut self) -> Option<(usize, usize, Vec<u8>)> {
+    /// The frame at the internal resolution, read from the GPU as RGBA with row 0 at the top.
+    /// For checking the upscale without a window; the window uses [`Rasterizer::gpu_frame`].
+    fn read_large_frame(&mut self) -> Option<(usize, usize, Vec<u8>)> {
         None
     }
 
-    /// O quadro na resolução interna, como textura da placa, para a janela pintar direto.
-    fn quadro_na_placa(&self) -> Option<QuadroNaPlaca> {
+    /// The frame at the internal resolution, as a GPU texture, for the window to paint directly.
+    fn gpu_frame(&self) -> Option<GpuFrame> {
         None
     }
 
-    /// Devolve ao dono o estado de GL que o rasterizador mexeu.
+    /// Hands back to its owner the GL state the rasterizer touched.
     ///
-    /// **Só faz sentido para quem desenha num contexto emprestado**, e é chamado uma vez por
-    /// fatia de execução, quando o controle volta para a interface — não a cada desenho. Ver
-    /// [`crate::session::Session::step`] e o comentário do `GpuState::submete_com`.
-    fn devolve_o_contexto(&self) {}
+    /// **It only makes sense for whoever draws on a borrowed context**, and it is called once per
+    /// execution slice, when control returns to the UI — not on every draw. See
+    /// [`crate::session::Session::step`] and the comment on `GpuState::submit_with`.
+    fn hand_back_context(&self) {}
 }
 
-/// Uma textura de cor da placa com o quadro já desenhado, e o pedaço dela que é a imagem.
+/// A GPU color texture with the frame already drawn, and the piece of it that is the image.
 #[derive(Debug, Clone, Copy)]
-pub struct QuadroNaPlaca {
-    pub textura: glow::Texture,
-    /// A fração da textura que a superfície do jogo ocupa, em `(u, v)`; a linha 0 é o topo.
-    pub recorte: [f32; 2],
-    /// Largura sobre altura da imagem: 4:3 no nativo, mais larga com a
-    /// [`Rasterizador::define_proporcao`].
-    pub proporcao: f32,
+pub struct GpuFrame {
+    pub texture: glow::Texture,
+    /// The fraction of the texture the game surface takes up, in `(u, v)`; row 0 is the top.
+    pub clip: [f32; 2],
+    /// Width over height of the image: 4:3 when native, wider with
+    /// [`Rasterizer::set_aspect_ratio`].
+    pub ratio: f32,
 }
 
-impl Rasterizador for GlState {
-    fn define_reducao(&mut self, reducao: usize) {
-        GlState::define_reducao(self, reducao)
+impl Rasterizer for GlState {
+    fn set_downscale(&mut self, downscale: usize) {
+        GlState::set_downscale(self, downscale)
     }
 
-    fn grava_estado(&self, destino: &mut crate::save_state::Secoes) {
-        crate::save_state::Guardavel::grava(self, destino);
+    fn save_state(&self, dest: &mut crate::save_state::Sections) {
+        crate::save_state::Saveable::save(self, dest);
     }
 
-    fn restaura_estado(
+    fn restore_state(
         &mut self,
-        origem: &crate::save_state::Leitor<'_>,
-    ) -> Result<(), crate::save_state::Erro> {
-        crate::save_state::Guardavel::restaura(self, origem)
+        origin: &crate::save_state::Reader<'_>,
+    ) -> Result<(), crate::save_state::Error> {
+        crate::save_state::Saveable::restore(self, origin)
     }
 
-    /// Os três acumuladores de um desenho em curso.
+    /// The three accumulators of a draw in progress.
     ///
-    /// `transformed` é o que sobra de um `glBegin` sem `glEnd`, e `batch`/`pending` são o lote
-    /// esperando a vez de ser submetido. Vazios, não há desenho pela metade.
-    fn descarrega_o_desenho(&mut self) {
+    /// `transformed` is what remains of a `glBegin` without `glEnd`, and `batch`/`pending` are
+    /// the batch waiting its turn to be submitted. Empty, there is no half-done draw.
+    fn flush_draw(&mut self) {
         self.flush();
     }
 
-    /// O lote que ainda não foi submetido.
+    /// The batch not yet submitted.
     ///
-    /// **`transformed` fica de fora, e não por esquecimento**: ele é área de **rascunho** da etapa
-    /// de vértice — o `etapa_de_vertice` faz `mem::take` e reaproveita o vetor. Sobra dele é o que
-    /// ficou do último lote, e não um desenho interrompido. Eu o incluí na primeira versão e o
-    /// resultado foi o save state recusado **sempre**: os quatro vértices de um quad ficavam lá
-    /// entre quadros, e gravar virou impossível. Foi o instrumento que mostrou os quatro.
-    fn desenho_em_curso(&self) -> bool {
+    /// **`transformed` is left out, and not by oversight**: it is the vertex stage's **scratch**
+    /// area — `vertex_stage` does `mem::take` and reuses the vector. Leftovers in it are what
+    /// remained of the last batch, not an interrupted draw. I included it in the first version and
+    /// the result was the save state being refused **always**: the four vertices of a quad stayed
+    /// there between frames, and saving became impossible. It was the instrumentation that showed
+    /// the four.
+    fn draw_in_progress(&self) -> bool {
         !self.batch.triangles.is_empty() || !self.pending.triangles.is_empty()
     }
 
@@ -999,8 +1014,8 @@ impl Rasterizador for GlState {
     fn pop_matrix(&mut self) {
         GlState::pop_matrix(self)
     }
-    fn matriz_do_topo(&self) -> Matrix {
-        GlState::matriz_do_topo(self)
+    fn top_matrix(&self) -> Matrix {
+        GlState::top_matrix(self)
     }
     fn set_viewport(&mut self, x: i32, y: i32, width: i32, height: i32) {
         GlState::set_viewport(self, x, y, width, height)
@@ -1011,8 +1026,8 @@ impl Rasterizador for GlState {
     fn set_surface(&mut self, width: usize, height: usize) {
         GlState::set_surface(self, width, height)
     }
-    fn set_surface_esticada(&mut self, width: usize, height: usize) {
-        GlState::set_surface_esticada(self, width, height)
+    fn set_stretched_surface(&mut self, width: usize, height: usize) {
+        GlState::set_stretched_surface(self, width, height)
     }
     fn surface(&self) -> (usize, usize) {
         GlState::surface(self)
@@ -1026,8 +1041,8 @@ impl Rasterizador for GlState {
     fn set_clear_depth(&mut self, depth: f32) {
         GlState::set_clear_depth(self, depth)
     }
-    fn set_clear_stencil(&mut self, valor: i32) {
-        GlState::set_clear_stencil(self, valor)
+    fn set_clear_stencil(&mut self, value: i32) {
+        GlState::set_clear_stencil(self, value)
     }
     fn set_color(&mut self, color: [f32; 4]) {
         GlState::set_color(self, color)
@@ -1044,14 +1059,14 @@ impl Rasterizador for GlState {
     fn set_shade_model(&mut self, mode: u32) {
         GlState::set_shade_model(self, mode)
     }
-    fn set_light(&mut self, index: usize, pname: u32, valores: [f32; 4]) {
-        GlState::set_light(self, index, pname, valores)
+    fn set_light(&mut self, index: usize, pname: u32, values: [f32; 4]) {
+        GlState::set_light(self, index, pname, values)
     }
-    fn set_material(&mut self, pname: u32, valores: [f32; 4]) {
-        GlState::set_material(self, pname, valores)
+    fn set_material(&mut self, pname: u32, values: [f32; 4]) {
+        GlState::set_material(self, pname, values)
     }
-    fn set_light_model(&mut self, pname: u32, valores: [f32; 4]) {
-        GlState::set_light_model(self, pname, valores)
+    fn set_light_model(&mut self, pname: u32, values: [f32; 4]) {
+        GlState::set_light_model(self, pname, values)
     }
     fn set_blend_func(&mut self, src: u32, dst: u32) {
         GlState::set_blend_func(self, src, dst)
@@ -1065,14 +1080,14 @@ impl Rasterizador for GlState {
     fn set_depth_mask(&mut self, on: bool) {
         GlState::set_depth_mask(self, on)
     }
-    fn set_depth_range(&mut self, perto: f32, longe: f32) {
-        self.depth_range = (perto.clamp(0.0, 1.0), longe.clamp(0.0, 1.0));
+    fn set_depth_range(&mut self, near: f32, far: f32) {
+        self.depth_range = (near.clamp(0.0, 1.0), far.clamp(0.0, 1.0));
     }
-    fn set_fog(&mut self, pname: u32, valores: [f32; 4]) {
-        GlState::set_fog(self, pname, valores)
+    fn set_fog(&mut self, pname: u32, values: [f32; 4]) {
+        GlState::set_fog(self, pname, values)
     }
-    fn define_neblina(&mut self, permitida: bool) {
-        self.fog.permitida = permitida;
+    fn set_fog_allowed(&mut self, allowed: bool) {
+        self.fog.allowed = allowed;
     }
     fn set_color_mask(&mut self, mask: [bool; 4]) {
         GlState::set_color_mask(self, mask)
@@ -1083,11 +1098,11 @@ impl Rasterizador for GlState {
     fn set_front_face(&mut self, face: u32) {
         GlState::set_front_face(self, face)
     }
-    fn set_stencil_func(&mut self, func: u32, referencia: i32, mask: u32) {
-        GlState::set_stencil_func(self, func, referencia, mask)
+    fn set_stencil_func(&mut self, func: u32, reference: i32, mask: u32) {
+        GlState::set_stencil_func(self, func, reference, mask)
     }
-    fn set_stencil_op(&mut self, falha: u32, falha_z: u32, passa: u32) {
-        GlState::set_stencil_op(self, falha, falha_z, passa)
+    fn set_stencil_op(&mut self, failure: u32, zfail: u32, passes: u32) {
+        GlState::set_stencil_op(self, failure, zfail, passes)
     }
     fn set_stencil_mask(&mut self, mask: u32) {
         GlState::set_stencil_mask(self, mask)
@@ -1110,11 +1125,11 @@ impl Rasterizador for GlState {
     fn set_texture_env(&mut self, mode: u32) {
         GlState::set_texture_env(self, mode)
     }
-    fn set_texture_env_param(&mut self, pname: u32, enumeracao: u32, numero: f32) {
-        GlState::set_texture_env_param(self, pname, enumeracao, numero)
+    fn set_texture_env_param(&mut self, pname: u32, enum_value: u32, number: f32) {
+        GlState::set_texture_env_param(self, pname, enum_value, number)
     }
-    fn set_texture_env_color(&mut self, cor: [f32; 4]) {
-        GlState::set_texture_env_color(self, cor)
+    fn set_texture_env_color(&mut self, color: [f32; 4]) {
+        GlState::set_texture_env_color(self, color)
     }
     fn set_texture_parameter(&mut self, name: u32, value: u32) {
         GlState::set_texture_parameter(self, name, value)
@@ -1169,44 +1184,44 @@ impl Rasterizador for GlState {
 pub struct GlState {
     pub(crate) width: usize,
     pub(crate) height: usize,
-    /// Cor do quadro, em RGBA de 8 bits — convertida para RGB565 só na apresentação.
+    /// Frame color, in 8-bit RGBA — converted to RGB565 only on presentation.
     pub(crate) color: Vec<[u8; 4]>,
-    /// Profundidade normalizada em `[0, 1]`.
+    /// Normalized depth in `[0, 1]`.
     pub(crate) depth: Vec<f32>,
-    /// O stencil, de oito bits — o tamanho que o `GL_STENCIL_BITS` do console anuncia.
+    /// The stencil, eight bits — the size the console's `GL_STENCIL_BITS` advertises.
     ///
-    /// Existe por causa do reflexo do palco da Z-Wheel: ela marca o chão aqui e desenha o
-    /// modelo espelhado só onde a marca ficou. Sem o buffer, o espelhado saía por fora do chão
-    /// e virava um rastro esticado ao lado do modelo.
+    /// It exists because of the Z-Wheel stage's reflection: it marks the floor here and draws the
+    /// mirrored model only where the mark was left. Without the buffer, the mirrored one spilled
+    /// outside the floor and became a stretched trail beside the model.
     pub(crate) stencil: Vec<u8>,
 
-    /// A redução da resolução interna do 3D: 1 é nativo, 2 é metade, 4 é um quarto. Ver
-    /// [`GlState::define_reducao`].
-    reducao: usize,
+    /// The reduction of the 3D internal resolution: 1 is native, 2 is half, 4 is a quarter. See
+    /// [`GlState::set_downscale`].
+    downscale: usize,
 
     pub(crate) matrix_mode: u32,
     pub(crate) modelview: Vec<Matrix>,
     pub(crate) projection: Vec<Matrix>,
     pub(crate) texture_matrix: Vec<Matrix>,
-    /// A pilha de matriz de textura da unidade 1. **O OpenGL tem uma por unidade**, escolhida
-    /// pelo `glActiveTexture`, e com uma só a matriz da unidade 1 caía por cima da da unidade 0.
-    /// O Reckless Racing projeta a sombra dos carros pela unidade 0 e o mapa de sombra da pista
-    /// pela 1, cada uma com a sua matriz, e as duas partem da posição do vértice.
+    /// The texture matrix stack of unit 1. **OpenGL has one per unit**, chosen by
+    /// `glActiveTexture`, and with only one, unit 1's matrix overwrote unit 0's. Reckless Racing
+    /// projects the cars' shadow through unit 0 and the track's shadow map through unit 1, each
+    /// with its own matrix, and both start from the vertex position.
     pub(crate) texture_matrix1: Vec<Matrix>,
 
     pub(crate) viewport: (i32, i32, i32, i32),
-    /// O `glScissor`, já com o `y` contado do topo, e só quando o `GL_SCISSOR_TEST` está ligado.
+    /// The `glScissor`, with `y` already counted from the top, and only when `GL_SCISSOR_TEST`
+    /// is on.
     ///
-    /// O Peggle desenha a folha de fontes inteira e conta com ele para aparecer uma letra só —
-    /// o mesmo truque que o Pac-Mania faz com o recorte do `IDisplay`. Ignorá-lo punha a folha
-    /// inteira na tela.
-    pub(crate) tesoura: Option<(i32, i32, i32, i32)>,
-    /// O retângulo cru do `glScissor`, com o `y` de baixo para cima, como o jogo o passou.
-    pub(crate) tesoura_crua: (i32, i32, i32, i32),
-    pub(crate) tesoura_ligada: bool,
+    /// Peggle draws the whole font sheet and relies on it to show a single letter — the same
+    /// trick Pac-Mania does with the `IDisplay` clip. Ignoring it put the whole sheet on screen.
+    pub(crate) scissor: Option<(i32, i32, i32, i32)>,
+    /// The raw `glScissor` rectangle, with `y` from bottom to top, as the game passed it.
+    pub(crate) raw_scissor: (i32, i32, i32, i32),
+    pub(crate) scissor_enabled: bool,
     pub(crate) surface: Option<(usize, usize)>,
-    /// Se a superfície vai esticada à tela inteira. Ver [`GlState::superficie_esticada`].
-    pub(crate) esticada: bool,
+    /// Whether the surface is stretched to the whole screen. See [`GlState::stretched_surface`].
+    pub(crate) stretched: bool,
     pub(crate) clear_color: [f32; 4],
     pub(crate) clear_depth: f32,
     pub(crate) current_color: [f32; 4],
@@ -1214,36 +1229,37 @@ pub struct GlState {
     pub(crate) textures: HashMap<u32, Texture>,
     pub(crate) bound_texture: u32,
     pub(crate) texture_env: TexEnv,
-    /// A unidade 1. A 0 são os campos soltos acima, de antes de haver outra.
-    pub(crate) unidade1: UnidadeDeTextura,
+    /// Unit 1. Unit 0 is the loose fields above, from before there was another.
+    pub(crate) unit1: TextureUnit,
 
     pub(crate) texture_2d: bool,
-    /// Unidade de textura ativa, contada de zero. O `glActiveTexture` a escolhe.
+    /// Active texture unit, counted from zero. `glActiveTexture` chooses it.
     ///
-    /// O pipeline lê uma textura por fragmento, então só a unidade zero tem efeito e as outras
-    /// são ignoradas. Ignorar não é o mesmo que não ter multitextura: é a diferença entre
-    /// desenhar a camada base e desenhar branco. O Resident Evil 4 monta o mundo com duas
-    /// unidades e termina cada bloco na unidade 1; como o `glActiveTexture` não era tratado,
-    /// tudo caía num estado só, a última ligação vencia e a textura base era perdida — a vila
-    /// inteira saía branca.
+    /// The pipeline reads one texture per fragment, so only unit zero has an effect and the
+    /// others are ignored. Ignoring is not the same as not having multitexturing: it is the
+    /// difference between drawing the base layer and drawing white. Resident Evil 4 builds the
+    /// world with two units and ends each block on unit 1; since `glActiveTexture` was not
+    /// handled, everything fell into a single state, the last bind won and the base texture was
+    /// lost — the whole village came out white.
     pub(crate) active_unit: u32,
-    /// Unidade escolhida pelo `glClientActiveTexture`, que vale para o vetor de coordenadas.
+    /// Unit chosen by `glClientActiveTexture`, which applies to the coordinate array.
     pub(crate) client_unit: u32,
     pub(crate) depth_test: bool,
     pub(crate) depth_mask: bool,
-    /// A névoa do `glFog*`: ligada, curva, cor e os parâmetros de cada curva.
+    /// The `glFog*` fog: enabled, curve, color and the parameters of each curve.
     ///
-    /// O Resident Evil 4 a usa para escurecer o fundo dos cenários, e é assim que ele separa o
-    /// que está perto do que está longe. Ignorá-la deixava a cena inteira com o mesmo brilho.
-    pub(crate) fog: Neblina,
-    /// O `glDepthRange`: `(perto, longe)`, de 0 a 1.
+    /// Resident Evil 4 uses it to darken the background of the scenery, and that is how it
+    /// separates what is near from what is far. Ignoring it left the whole scene with the same
+    /// brightness.
+    pub(crate) fog: Fog,
+    /// The `glDepthRange`: `(near, far)`, from 0 to 1.
     ///
-    /// **Ignorá-lo fazia a pista do Crash Nitro Kart surgir do nada perto do jogador.** O jogo
-    /// desenha partes da cena em faixas de profundidade diferentes — `(0, 0,985)` e `(0, 1)` —
-    /// para que umas fiquem sempre à frente de outras. Com todas na faixa inteira, um pedaço de
-    /// pista distante perdia o teste de profundidade para o cenário e só aparecia de perto.
+    /// **Ignoring it made the Crash Nitro Kart track pop out of nowhere close to the player.**
+    /// The game draws parts of the scene in different depth ranges — `(0, 0.985)` and `(0, 1)` —
+    /// so that some always stay in front of others. With all of them on the full range, a piece
+    /// of distant track lost the depth test to the scenery and only showed up up close.
     pub(crate) depth_range: (f32, f32),
-    /// Quais canais de cor podem ser escritos, do `glColorMask`.
+    /// Which color channels may be written, from `glColorMask`.
     pub(crate) color_mask: [bool; 4],
     pub(crate) depth_func: u32,
     pub(crate) blend: bool,
@@ -1260,39 +1276,41 @@ pub struct GlState {
     pub(crate) stencil_func: u32,
     pub(crate) stencil_ref: i32,
     pub(crate) stencil_value_mask: u32,
-    /// `glStencilMask` — que bits o desenho pode escrever.
+    /// `glStencilMask` — which bits drawing may write.
     pub(crate) stencil_write_mask: u32,
     /// `glStencilOp(sfail, dpfail, dppass)`.
     pub(crate) stencil_op: [u32; 3],
     pub(crate) clear_stencil: u8,
 
-    /// `GL_LIGHTING`. Com ele ligado a cor do vértice **deixa de valer**, a menos que o
-    /// `GL_COLOR_MATERIAL` diga o contrário: é o que a especificação manda, e o palco da
-    /// Z-Wheel depende disso — os modelos dele chegam com cor de vértice branca e é a luz que
-    /// dá o relevo.
+    /// `GL_LIGHTING`. With it on, the vertex color **no longer applies**, unless
+    /// `GL_COLOR_MATERIAL` says otherwise: that is what the specification requires, and the
+    /// Z-Wheel stage depends on it — its models arrive with white vertex color and it is the
+    /// light that gives the relief.
     pub(crate) lighting: bool,
     pub(crate) color_material: bool,
-    pub(crate) lights: [Light; gles::LUZES],
+    pub(crate) lights: [Light; gles::LIGHTS],
     pub(crate) material: Material,
     pub(crate) light_model_ambient: [f32; 4],
     pub(crate) shade_model: u32,
 
-    /// Lote de triângulos da draw call em curso. Vive na struct só para reaproveitar a
-    /// alocação de uma chamada para a outra.
+    /// Triangle batch of the draw call in progress. It lives in the struct only to reuse the
+    /// allocation from one call to the next.
     batch: Batch,
-    /// O que já foi desenhado neste quadro e ainda não virou pixel. Ver [`GlState::flush`].
+    /// What was already drawn this frame and hasn't become pixels yet. See [`GlState::flush`].
     pending: Pending,
-    /// Os vértices já transformados da draw call em curso. Vive aqui pelo mesmo motivo: o
-    /// Quake faz meio milhão de draw calls em vinte e cinco segundos de jogo, e uma alocação
-    /// por chamada é meio milhão de idas ao alocador para desenhar dois triângulos de cada vez.
+    /// The already-transformed vertices of the draw call in progress. It lives here for the same
+    /// reason: Quake makes half a million draw calls in twenty-five seconds of play, and one
+    /// allocation per call is half a million trips to the allocator to draw two triangles at a
+    /// time.
     transformed: Vec<Vertex>,
-    /// Se o buffer de cor mudou desde a última vez que ele foi entregue convertido.
+    /// Whether the color buffer changed since the last time it was handed out converted.
     ///
-    /// A Z-Wheel desenha num pbuffer e lê o resultado com `eglGetColorBufferQUALCOMM` **duas
-    /// vezes por quadro**: a primeira sempre com a fila vazia — medido, zero jobs e zero
-    /// triângulos em 1.596 quadros. Sem isto, cada uma dessas leituras reconvertia duzentos e
-    /// onze mil pixels de um quadro idêntico ao anterior, 1,46 ms que não produziam nada.
-    sujo: bool,
+    /// Z-Wheel draws into a pbuffer and reads the result with `eglGetColorBufferQUALCOMM` **twice
+    /// per frame**: the first always with the queue empty — measured, zero jobs and zero
+    /// triangles in 1,596 frames. Without this, each of those reads reconverted two hundred and
+    /// eleven thousand pixels of a frame identical to the previous one, 1.46 ms that produced
+    /// nothing.
+    dirty: bool,
 }
 
 impl GlState {
@@ -1307,7 +1325,7 @@ impl GlState {
             color_material: false,
             lights: std::array::from_fn(|i| match i {
                 0 => Light::zero(),
-                _ => Light::apagada(),
+                _ => Light::off(),
             }),
             material: Material::default(),
             light_model_ambient: [0.2, 0.2, 0.2, 1.0],
@@ -1325,25 +1343,25 @@ impl GlState {
             texture_matrix: vec![IDENTITY],
             texture_matrix1: vec![IDENTITY],
             viewport: (0, 0, width as i32, height as i32),
-            tesoura: None,
-            tesoura_crua: (0, 0, width as i32, height as i32),
-            tesoura_ligada: false,
-            reducao: 1,
+            scissor: None,
+            raw_scissor: (0, 0, width as i32, height as i32),
+            scissor_enabled: false,
+            downscale: 1,
             surface: None,
-            esticada: false,
+            stretched: false,
             clear_color: [0.0, 0.0, 0.0, 1.0],
             clear_depth: 1.0,
             current_color: [1.0; 4],
             textures: HashMap::new(),
             bound_texture: 0,
             texture_env: TexEnv::default(),
-            unidade1: UnidadeDeTextura::default(),
+            unit1: TextureUnit::default(),
             texture_2d: false,
             active_unit: 0,
             client_unit: 0,
             depth_test: false,
             depth_mask: true,
-            fog: Neblina::default(),
+            fog: Fog::default(),
             depth_range: (0.0, 1.0),
             color_mask: [true; 4],
             depth_func: gles::GL_LESS,
@@ -1359,22 +1377,22 @@ impl GlState {
             batch: Batch::default(),
             pending: Pending::default(),
             transformed: Vec::new(),
-            sujo: true,
+            dirty: true,
         }
     }
 
-    /// A matriz do topo da pilha ativa, como o `glQueryMatrixxOES` a devolve.
-    pub fn matriz_do_topo(&self) -> Matrix {
-        let pilha = match self.matrix_mode {
+    /// The matrix at the top of the active stack, as `glQueryMatrixxOES` returns it.
+    pub fn top_matrix(&self) -> Matrix {
+        let stack = match self.matrix_mode {
             gles::GL_PROJECTION => &self.projection,
             gles::GL_TEXTURE if self.active_unit == 1 => &self.texture_matrix1,
             gles::GL_TEXTURE => &self.texture_matrix,
             _ => &self.modelview,
         };
-        *pilha.last().expect("pilha nunca fica vazia")
+        *stack.last().expect("stack is never empty")
     }
 
-    /// A pilha de matrizes ativa.
+    /// The active matrix stack.
     fn stack(&mut self) -> &mut Vec<Matrix> {
         match self.matrix_mode {
             gles::GL_PROJECTION => &mut self.projection,
@@ -1384,9 +1402,9 @@ impl GlState {
         }
     }
 
-    /// A matriz do topo da pilha ativa.
+    /// The matrix at the top of the active stack.
     fn top(&mut self) -> &mut Matrix {
-        self.stack().last_mut().expect("pilha nunca fica vazia")
+        self.stack().last_mut().expect("stack is never empty")
     }
 
     pub fn set_matrix_mode(&mut self, mode: u32) {
@@ -1401,7 +1419,7 @@ impl GlState {
         *self.top() = m;
     }
 
-    /// Multiplica a matriz do topo por `m`, na ordem do OpenGL.
+    /// Multiplies the top matrix by `m`, in OpenGL order.
     pub fn mult_matrix(&mut self, m: Matrix) {
         let top = self.top();
         *top = multiply(top, &m);
@@ -1409,10 +1427,10 @@ impl GlState {
 
     pub fn push_matrix(&mut self) {
         let stack = self.stack();
-        // Empilhar sem limite tornaria um `PushMatrix` desbalanceado num vazamento silencioso;
-        // o OpenGL ES garante 16 níveis, e é o que oferecemos.
+        // Pushing without a limit would turn an unbalanced `PushMatrix` into a silent leak;
+        // OpenGL ES guarantees 16 levels, and that is what we offer.
         if stack.len() < MAX_MATRIX_STACK {
-            let top = *stack.last().expect("pilha nunca fica vazia");
+            let top = *stack.last().expect("stack is never empty");
             stack.push(top);
         }
     }
@@ -1424,113 +1442,115 @@ impl GlState {
         }
     }
 
-    /// O retângulo do `glScissor`. Guardado cru e convertido para o topo quando vale.
+    /// The `glScissor` rectangle. Stored raw and converted to top-down when it applies.
     pub fn set_scissor(&mut self, x: i32, y: i32, width: i32, height: i32) {
-        // A tesoura chega em pixels do console, como a viewport, e vale na mesma superfície.
-        let (x, y, width, height) = if self.reducao == 1 {
+        // The scissor arrives in console pixels, like the viewport, and applies to the same
+        // surface.
+        let (x, y, width, height) = if self.downscale == 1 {
             (x, y, width, height)
         } else {
-            let n = self.reducao as i32;
+            let n = self.downscale as i32;
             (
-                self.na_reducao(x),
-                self.na_reducao(y),
+                self.downscaled(x),
+                self.downscaled(y),
                 (width / n).max(0),
                 (height / n).max(0),
             )
         };
-        self.tesoura_crua = (x, y, width, height);
-        self.atualiza_tesoura();
+        self.raw_scissor = (x, y, width, height);
+        self.update_scissor();
     }
 
-    /// Liga ou desliga o `GL_SCISSOR_TEST`.
-    pub fn set_scissor_test(&mut self, ligado: bool) {
-        self.tesoura_ligada = ligado;
-        self.atualiza_tesoura();
+    /// Turns `GL_SCISSOR_TEST` on or off.
+    pub fn set_scissor_test(&mut self, enabled: bool) {
+        self.scissor_enabled = enabled;
+        self.update_scissor();
     }
 
-    /// Converte o retângulo do `glScissor` para a nossa superfície, que conta o `y` do topo.
-    fn atualiza_tesoura(&mut self) {
-        let (x, y, largura, altura) = self.tesoura_crua;
-        self.tesoura = match self.tesoura_ligada {
+    /// Converts the `glScissor` rectangle to our surface, which counts `y` from the top.
+    fn update_scissor(&mut self) {
+        let (x, y, width, height) = self.raw_scissor;
+        self.scissor = match self.scissor_enabled {
             false => None,
             true => {
-                let altura_da_superficie = self.surface().1 as i32;
-                Some((x, altura_da_superficie - y - altura, largura, altura))
+                let surface_height = self.surface().1 as i32;
+                Some((x, surface_height - y - height, width, height))
             }
         };
     }
 
-    /// A redução da resolução interna do 3D: 1 é nativo, 2 é metade, 4 é um quarto.
+    /// The reduction of the 3D internal resolution: 1 is native, 2 is half, 4 is a quarter.
     ///
-    /// **Só o rasterizador de processador reduz.** Aqui o preenchimento custa CPU e escala com a
-    /// área do quadro: desenhar 320×240 é um quarto do trabalho de 640×480. A apresentação
-    /// continua em 640×480 — [`GlState::frame_rgb565`] já sabe reamostrar de uma superfície menor,
-    /// que é o caminho do `EGL_QUALCOMM_surface_scale`.
+    /// **Only the CPU rasterizer reduces.** Here filling costs CPU and scales with the frame
+    /// area: drawing 320×240 is a quarter of the work of 640×480. Presentation stays at 640×480 —
+    /// [`GlState::frame_rgb565`] already knows how to resample from a smaller surface, which is
+    /// the `EGL_QUALCOMM_surface_scale` path.
     ///
-    /// Na placa quem reduz é outro mecanismo, e um fator abaixo de 1 ali não faria sentido: o
-    /// Mali não está saturado a 640×480.
-    pub fn define_reducao(&mut self, reducao: usize) {
-        // A fila foi montada no tamanho antigo; ela vira pixel antes da troca.
+    /// On the GPU, reduction is a different mechanism, and a factor below 1 there would make no
+    /// sense: the Mali is not saturated at 640×480.
+    pub fn set_downscale(&mut self, downscale: usize) {
+        // The queue was built at the old size; it becomes pixels before the switch.
         self.flush();
-        let nova = match reducao {
+        let create = match downscale {
             0 | 1 => 1,
             n => n.min(4),
         };
-        if nova == self.reducao {
+        if create == self.downscale {
             return;
         }
-        self.reducao = nova;
-        // **A viewport inicial também é reduzida.** Ela é o que a superfície deduz quando o jogo
-        // nunca chama `glViewport` — e há jogo assim: a Z-Wheel não o chama nenhuma vez em treze
-        // segundos, medido. Reiniciá-la no tamanho do quadro deixaria a redução sem efeito
-        // justamente em quem depende dela.
-        let (largura, altura) = (self.width / nova, self.height / nova);
+        self.downscale = create;
+        // **The initial viewport is reduced too.** It is what the surface deduces when the game
+        // never calls `glViewport` — and there are games like that: Z-Wheel doesn't call it once
+        // in thirteen seconds, measured. Resetting it to the frame size would leave the reduction
+        // without effect precisely on whoever depends on it.
+        let (width, height) = (self.width / create, self.height / create);
         self.surface = None;
-        self.viewport = (0, 0, largura as i32, altura as i32);
-        self.tesoura_crua = (0, 0, largura as i32, altura as i32);
-        self.atualiza_tesoura();
-        crate::registro!(
-            crate::registro::Nivel::Informacao,
+        self.viewport = (0, 0, width as i32, height as i32);
+        self.raw_scissor = (0, 0, width as i32, height as i32);
+        self.update_scissor();
+        crate::logging!(
+            crate::logging::Level::Info,
             "gl",
-            "resolução interna do 3D reduzida a 1/{nova} do quadro ({}x{})",
-            self.width / nova,
-            self.height / nova
+            "3D internal resolution reduced to 1/{create} of the frame ({}x{})",
+            self.width / create,
+            self.height / create
         );
     }
 
-    /// A redução em vigor. Ver [`GlState::define_reducao`].
-    pub fn reducao(&self) -> usize {
-        self.reducao
+    /// The reduction in effect. See [`GlState::set_downscale`].
+    pub fn downscale(&self) -> usize {
+        self.downscale
     }
 
-    /// Converte uma coordenada do console para a superfície reduzida.
-    fn na_reducao(&self, valor: i32) -> i32 {
-        match self.reducao {
-            1 => valor,
-            n => valor.div_euclid(n as i32),
+    /// Converts a console coordinate to the reduced surface.
+    fn downscaled(&self, value: i32) -> i32 {
+        match self.downscale {
+            1 => value,
+            n => value.div_euclid(n as i32),
         }
     }
 
     pub fn set_viewport(&mut self, x: i32, y: i32, width: i32, height: i32) {
-        // **A viewport é a entrada de tudo.** O jogo diz o retângulo em pixels do console, e é
-        // por ele que o vértice vira pixel; reduzindo aqui, o desenho inteiro cai na superfície
-        // reduzida — e a superfície deduzida logo abaixo sai reduzida junto, sem mais nada.
-        let (x, y, width, height) = if self.reducao == 1 {
+        // **The viewport is the entry point of everything.** The game gives the rectangle in
+        // console pixels, and it is through it that a vertex becomes a pixel; reducing here, the
+        // whole drawing lands on the reduced surface — and the surface deduced right below comes
+        // out reduced along with it, with nothing else.
+        let (x, y, width, height) = if self.downscale == 1 {
             (x, y, width, height)
         } else {
-            let n = self.reducao as i32;
+            let n = self.downscale as i32;
             (
-                self.na_reducao(x),
-                self.na_reducao(y),
+                self.downscaled(x),
+                self.downscaled(y),
                 (width / n).max(1),
                 (height / n).max(1),
             )
         };
         self.viewport = (x, y, width, height);
-        // O jogo desenha numa superfície que pode ser menor que a tela e é ampliada na
-        // apresentação — no console isso é a extensão `EGL_QUALCOMM_surface_scale`. Ele nunca
-        // nos diz o tamanho dessa superfície, mas a maior viewport que ele usa é exatamente
-        // ela: nenhum desenho passa desse retângulo.
+        // The game draws on a surface that may be smaller than the screen and is scaled up on
+        // presentation — on the console that is the `EGL_QUALCOMM_surface_scale` extension. It
+        // never tells us the size of that surface, but the largest viewport it uses is exactly
+        // that: no drawing goes past that rectangle.
         let (seen_x, seen_y) = self.surface.unwrap_or((0, 0));
         self.surface = Some((
             seen_x.max((x + width).max(0) as usize),
@@ -1538,101 +1558,104 @@ impl GlState {
         ));
     }
 
-    /// A viewport com o `y` contado do topo, que é como os nossos quadros são guardados.
+    /// The viewport with `y` counted from the top, which is how our frames are stored.
     ///
-    /// **O `glViewport` conta o `y` de baixo para cima.** Com a viewport da tela inteira isso não
-    /// aparece. O Crash Nitro Kart desenha o trecho seguinte da pista através do portal dele, com
-    /// a viewport no retângulo do portal na tela — um retângulo estreito perto do horizonte. Usado
-    /// como se contasse do topo, o trecho ia parar espelhado na parte de baixo da tela, e o que se
-    /// via era um vazio à frente até o kart atravessar o portal, com o cenário surgindo de baixo
-    /// para cima.
-    fn viewport_do_topo(&self) -> (i32, i32, i32, i32) {
-        let (x, y, largura, altura) = self.viewport;
-        let altura_da_superficie = self.surface().1 as i32;
-        (x, altura_da_superficie - y - altura, largura, altura)
+    /// **`glViewport` counts `y` from bottom to top.** With a full-screen viewport this doesn't
+    /// show. Crash Nitro Kart draws the next stretch of track through its portal, with the
+    /// viewport on the portal's rectangle on screen — a narrow rectangle near the horizon. Used as
+    /// if it counted from the top, the stretch ended up mirrored at the bottom of the screen, and
+    /// what you saw was emptiness ahead until the kart went through the portal, with the scenery
+    /// rising from the bottom up.
+    fn top_down_viewport(&self) -> (i32, i32, i32, i32) {
+        let (x, y, width, height) = self.viewport;
+        let surface_height = self.surface().1 as i32;
+        (x, surface_height - y - height, width, height)
     }
 
-    /// Declara o tamanho da superfície, quando o jogo o informa.
+    /// Declares the surface size, when the game provides it.
     ///
-    /// O `EGL_QUALCOMM_surface_scale` do console é exatamente isso: o jogo desenha pequeno e o
-    /// aparelho amplia. Vale mais que a dedução por viewport — aqui ele **diz** o tamanho, e a
-    /// dedução existe só para quem não diz.
+    /// The console's `EGL_QUALCOMM_surface_scale` is exactly that: the game draws small and the
+    /// device scales up. It takes precedence over the viewport deduction — here it **says** the
+    /// size, and the deduction exists only for whoever doesn't.
     pub fn set_surface(&mut self, width: usize, height: usize) {
-        // O que foi desenhado no tamanho antigo precisa virar pixel antes da troca.
+        // What was drawn at the old size must become pixels before the switch.
         self.flush();
         if width > 0 && height > 0 {
             self.surface = Some((width, height));
         }
-        self.esticada = false;
+        self.stretched = false;
     }
 
-    /// Declara a superfície que o aparelho amplia até a tela inteira.
-    pub fn set_surface_esticada(&mut self, width: usize, height: usize) {
+    /// Declares the surface the device scales up to the whole screen.
+    pub fn set_stretched_surface(&mut self, width: usize, height: usize) {
         self.set_surface(width, height);
-        self.esticada = width > 0 && height > 0;
+        self.stretched = width > 0 && height > 0;
     }
 
-    /// Se a superfície menor que o quadro vai **esticada** à tela, e não num canto dela.
+    /// Whether a surface smaller than the frame is **stretched** to the screen, rather than put in
+    /// a corner of it.
     ///
-    /// São dois casos de superfície menor, e eles só diferem aqui. O `EGL_QUALCOMM_surface_scale`
-    /// amplia: o Quake desenha em 320×400 e o aparelho mostra em 640×480, 4:3. Um pbuffer não
-    /// amplia nada: a Z-Wheel desenha o palco num de 640×330 e o copia para onde quiser. A
-    /// proporção larga só sabe abrir os lados do primeiro.
-    pub fn superficie_esticada(&self) -> bool {
-        self.esticada
+    /// There are two cases of a smaller surface, and they only differ here.
+    /// `EGL_QUALCOMM_surface_scale` scales up: Quake draws at 320×400 and the device shows it at
+    /// 640×480, 4:3. A pbuffer scales nothing: Z-Wheel draws the stage on a 640×330 one and copies
+    /// it wherever it wants. The wide aspect ratio only knows how to open up the sides of the
+    /// first.
+    pub fn stretched_surface(&self) -> bool {
+        self.stretched
     }
 
-    /// O tamanho da superfície em que o jogo desenha, deduzido das viewports usadas.
+    /// The size of the surface the game draws on, deduced from the viewports used.
     ///
-    /// Quem nunca chama `glViewport` fica com a viewport padrão, que o OpenGL define como a
-    /// superfície inteira — e é isso que vale então. Deduzir a superfície de um conjunto vazio
-    /// de viewports dava 1×1, e a apresentação esticava um pixel só por toda a tela: o Zeebo
-    /// Sports Peteca, que desenha em coordenadas de tela e nunca mexe na viewport, saía
-    /// inteiramente branco.
+    /// A game that never calls `glViewport` keeps the default viewport, which OpenGL defines as
+    /// the whole surface — and that is what applies then. Deducing the surface from an empty set
+    /// of viewports gave 1×1, and presentation stretched a single pixel across the whole screen:
+    /// Zeebo Sports Peteca, which draws in screen coordinates and never touches the viewport,
+    /// came out entirely white.
     pub fn surface(&self) -> (usize, usize) {
-        // **O padrão também é reduzido.** Sem isto, um jogo que nunca chama `glViewport` desenharia
-        // na área reduzida e a apresentação copiaria o quadro inteiro — a imagem sairia num canto,
-        // em vez de ampliada. É o caso da Z-Wheel, que não chama `glViewport` nenhuma vez em treze
-        // segundos.
-        let padrao = (self.width / self.reducao, self.height / self.reducao);
-        let (width, height) = self.surface.unwrap_or(padrao);
+        // **The default is reduced too.** Without this, a game that never calls `glViewport`
+        // would draw in the reduced area and presentation would copy the whole frame — the image
+        // would come out in a corner, instead of scaled up. That is the case of Z-Wheel, which
+        // doesn't call `glViewport` once in thirteen seconds.
+        let fallback = (self.width / self.downscale, self.height / self.downscale);
+        let (width, height) = self.surface.unwrap_or(fallback);
         (width.clamp(1, self.width), height.clamp(1, self.height))
     }
 
-    /// Um retângulo do quadro, em RGBA de 8 bits, na ordem que o OpenGL usa.
+    /// A rectangle of the frame, in 8-bit RGBA, in the order OpenGL uses.
     ///
-    /// A origem do `glReadPixels` é o canto **inferior** esquerdo, e a nossa é o superior — daí
-    /// a inversão de linha. Ler sem inverter dá uma imagem de cabeça para baixo, que é o tipo de
-    /// erro que passa por "quase certo".
+    /// The origin of `glReadPixels` is the **lower** left corner, and ours is the upper one —
+    /// hence the row flip. Reading without flipping gives an upside-down image, which is the kind
+    /// of error that passes for "almost right".
     ///
-    /// Fora da superfície devolve preto opaco, como uma leitura de área não desenhada.
+    /// Outside the surface it returns opaque black, like a read of an undrawn area.
     pub fn read_rect(&mut self, x: i32, y: i32, width: usize, height: usize) -> Vec<[u8; 4]> {
-        // Quem lê o quadro precisa dele pintado; o desenho é acumulado até alguém pedir.
+        // Whoever reads the frame needs it painted; drawing is accumulated until someone asks.
         self.flush();
         let (sw, sh) = self.surface();
-        let mut saida = vec![[0, 0, 0, 255]; width * height];
-        // **O pedido vem em pixels do console e a superfície pode estar reduzida.** Cada pixel
-        // daqui vale `reducao` pixels lá, então o retângulo é mapeado e o resultado é replicado:
-        // quem chamou escreve `width * height` pixels na memória do jogo, e devolver menos
-        // deixaria o resto da faixa com o que estava lá.
-        let n = self.reducao as i32;
-        for linha in 0..height {
-            for coluna in 0..width {
-                let fx = self.na_reducao(x + coluna as i32);
-                let fy = self.na_reducao(y + linha as i32);
+        let mut output = vec![[0, 0, 0, 255]; width * height];
+        // **The request comes in console pixels and the surface may be reduced.** Each pixel here
+        // is worth `downscale` pixels there, so the rectangle is mapped and the result is
+        // replicated: the caller writes `width * height` pixels into the game's memory, and
+        // returning fewer would leave the rest of the strip with whatever was there.
+        let n = self.downscale as i32;
+        for line in 0..height {
+            for column in 0..width {
+                let fx = self.downscaled(x + column as i32);
+                let fy = self.downscaled(y + line as i32);
                 if fx < 0 || fy < 0 || fx as usize >= sw || fy as usize >= sh {
                     continue;
                 }
-                // A linha `fy` contada de baixo é a `sh - 1 - fy` no nosso buffer.
-                let origem = (sh - 1 - fy as usize) * self.width + fx as usize;
-                saida[linha * width + coluna] = self.color[origem];
+                // Row `fy` counted from the bottom is row `sh - 1 - fy` in our buffer.
+                let origin = (sh - 1 - fy as usize) * self.width + fx as usize;
+                output[line * width + column] = self.color[origin];
             }
         }
-        // O `n` só é diferente de 1 quando há redução, e aí o laço acima já amostrou a superfície
-        // menor: nada mais a fazer. O `_` existe para o compilador não acusar a variável quando a
-        // redução é 1 — a conta de replicação é a própria amostragem por divisão.
+        // `n` only differs from 1 when there is a reduction, and then the loop above already
+        // sampled the smaller surface: nothing more to do. The `_` exists so the compiler doesn't
+        // flag the variable when the reduction is 1 — the replication is the sampling by
+        // division itself.
         let _ = n;
-        saida
+        output
     }
 
     pub fn set_clear_color(&mut self, color: [f32; 4]) {
@@ -1651,55 +1674,55 @@ impl GlState {
         self.current_color
     }
 
-    /// `glActiveTexture` — escolhe a unidade a que as próximas chamadas de textura se referem.
+    /// `glActiveTexture` — chooses the unit the next texture calls refer to.
     pub fn set_active_texture(&mut self, unit: u32) {
         self.active_unit = unit.wrapping_sub(gles::GL_TEXTURE0);
     }
 
-    /// `glClientActiveTexture` — a mesma escolha, para o vetor de coordenadas de textura.
+    /// `glClientActiveTexture` — the same choice, for the texture coordinate array.
     pub fn set_client_active_texture(&mut self, unit: u32) {
         self.client_unit = unit.wrapping_sub(gles::GL_TEXTURE0);
     }
 
-    /// Se a projeção corrente é em perspectiva, e não ortográfica: a última linha da matriz tem
-    /// o `-z` que faz o `w`. HUD e 2D desenham em ortográfica.
-    pub fn projecao_em_perspectiva(&self) -> bool {
-        let p = self.projection.last().expect("pilha nunca fica vazia");
+    /// Whether the current projection is perspective, not orthographic: the last row of the
+    /// matrix has the `-z` that makes `w`. HUD and 2D draw in orthographic.
+    pub fn is_perspective_projection(&self) -> bool {
+        let p = self.projection.last().expect("stack is never empty");
         p[11] != 0.0 && p[15] == 0.0
     }
 
-    /// Se a unidade ativa é a base — a única que o pipeline desenha.
+    /// Whether the active unit is the base one — the only one the pipeline draws.
     pub fn base_active_unit(&self) -> bool {
         self.active_unit == 0
     }
 
-    /// Se a unidade ativa é uma das duas que desenham.
-    pub fn unidade_ativa_desenha(&self) -> bool {
+    /// Whether the active unit is one of the two that draw.
+    pub fn active_unit_draws(&self) -> bool {
         self.active_unit < 2
     }
 
-    /// Um parâmetro do `glFog*`. O que não conhecemos fica de fora em vez de virar lixo.
-    pub fn set_fog(&mut self, pname: u32, valores: [f32; 4]) {
+    /// A `glFog*` parameter. What we don't know is left out instead of becoming garbage.
+    pub fn set_fog(&mut self, pname: u32, values: [f32; 4]) {
         match pname {
-            gles::GL_FOG_MODE => self.fog.curva = valores[0] as u32,
-            gles::GL_FOG_DENSITY => self.fog.densidade = valores[0].max(0.0),
-            gles::GL_FOG_START => self.fog.inicio = valores[0],
-            gles::GL_FOG_END => self.fog.fim = valores[0],
-            gles::GL_FOG_COLOR => self.fog.cor = valores,
+            gles::GL_FOG_MODE => self.fog.curve = values[0] as u32,
+            gles::GL_FOG_DENSITY => self.fog.density = values[0].max(0.0),
+            gles::GL_FOG_START => self.fog.start = values[0],
+            gles::GL_FOG_END => self.fog.end = values[0],
+            gles::GL_FOG_COLOR => self.fog.color = values,
             _ => {}
         }
     }
 
-    /// A névoa como está agora, para quem precisa repassá-la.
-    pub fn neblina(&self) -> Neblina {
+    /// The fog as it is now, for whoever needs to pass it on.
+    pub fn fog(&self) -> Fog {
         self.fog
     }
 
     pub fn set_capability(&mut self, capability: u32, on: bool) {
         match capability {
-            // Ligar e desligar textura é por unidade; as duas primeiras desenham.
+            // Enabling and disabling texturing is per unit; the first two draw.
             gles::GL_TEXTURE_2D if self.active_unit == 0 => self.texture_2d = on,
-            gles::GL_TEXTURE_2D if self.active_unit == 1 => self.unidade1.ligada = on,
+            gles::GL_TEXTURE_2D if self.active_unit == 1 => self.unit1.enabled = on,
             gles::GL_TEXTURE_2D => {}
             gles::GL_DEPTH_TEST => self.depth_test = on,
             gles::GL_BLEND => self.blend = on,
@@ -1707,78 +1730,79 @@ impl GlState {
             gles::GL_CULL_FACE => self.cull_face = on,
             gles::GL_LIGHTING => self.lighting = on,
             gles::GL_COLOR_MATERIAL => self.color_material = on,
-            // As normais são sempre normalizadas aqui, então ligar ou desligar não muda nada.
-            // Não é desleixo: com a normalização desligada e normais que não são unitárias, o
-            // OpenGL dá um resultado definido e errado, e nenhum jogo pede isso de propósito.
+            // Normals are always normalized here, so turning this on or off changes nothing.
+            // It is not sloppiness: with normalization off and non-unit normals, OpenGL gives a
+            // defined and wrong result, and no game asks for that on purpose.
             gles::GL_NORMALIZE | gles::GL_RESCALE_NORMAL => {}
-            capacidade
-                if (gles::GL_LIGHT0..gles::GL_LIGHT0 + gles::LUZES as u32)
-                    .contains(&capacidade) =>
+            capacity
+                if (gles::GL_LIGHT0..gles::GL_LIGHT0 + gles::LIGHTS as u32)
+                    .contains(&capacity) =>
             {
-                self.lights[(capacidade - gles::GL_LIGHT0) as usize].enabled = on;
+                self.lights[(capacity - gles::GL_LIGHT0) as usize].enabled = on;
             }
-            gles::GL_FOG => self.fog.ligada = on,
+            gles::GL_FOG => self.fog.enabled = on,
             gles::GL_SCISSOR_TEST => self.set_scissor_test(on),
-            // **O stencil ainda não existe, e faz falta medida.** O palco da Z-Wheel arma
-            // `glStencilFunc` e `glStencilOp` duas vezes por quadro, que é a receita do reflexo
-            // plano: marcar o chão no stencil e desenhar o modelo espelhado só onde ele marcou.
-            // Sem o teste, o espelhado sai por fora do chão — desligar os desenhos feitos sob
-            // teste de stencil faz sumir metade dos rastros esticados que aparecem no carro.
-            // Guardar o estado aqui é o primeiro passo, e não faz nada sozinho.
+            // **The stencil doesn't exist yet, and its absence is measurable.** The Z-Wheel stage
+            // sets up `glStencilFunc` and `glStencilOp` twice per frame, which is the recipe for
+            // a planar reflection: mark the floor in the stencil and draw the mirrored model only
+            // where it marked. Without the test, the mirrored one spills outside the floor —
+            // turning off the draws made under the stencil test removes half of the stretched
+            // trails that show up on the car. Storing the state here is the first step, and does
+            // nothing on its own.
             gles::GL_STENCIL_TEST => self.stencil_test = on,
             _ => {}
         }
     }
 
-    /// `glLight*` — um parâmetro de uma luz.
+    /// `glLight*` — one parameter of a light.
     ///
-    /// A posição é o caso especial: o OpenGL a guarda **em coordenadas de olho**, transformada
-    /// pela modelview do instante da chamada. Guardar as coordenadas de objeto e transformar na
-    /// hora do desenho parece igual e não é — a luz andaria junto com cada modelo.
-    pub fn set_light(&mut self, index: usize, pname: u32, valores: [f32; 4]) {
-        let modelview = *self.modelview.last().expect("pilha nunca fica vazia");
-        let Some(luz) = self.lights.get_mut(index) else {
+    /// The position is the special case: OpenGL stores it **in eye coordinates**, transformed by
+    /// the modelview at the moment of the call. Storing the object coordinates and transforming
+    /// at draw time looks the same and isn't — the light would move along with each model.
+    pub fn set_light(&mut self, index: usize, pname: u32, values: [f32; 4]) {
+        let modelview = *self.modelview.last().expect("stack is never empty");
+        let Some(light) = self.lights.get_mut(index) else {
             return;
         };
         match pname {
-            gles::GL_AMBIENT => luz.ambient = valores,
-            gles::GL_DIFFUSE => luz.diffuse = valores,
-            gles::GL_SPECULAR => luz.specular = valores,
-            gles::GL_POSITION => luz.position = transform(&modelview, valores),
+            gles::GL_AMBIENT => light.ambient = values,
+            gles::GL_DIFFUSE => light.diffuse = values,
+            gles::GL_SPECULAR => light.specular = values,
+            gles::GL_POSITION => light.position = transform(&modelview, values),
             gles::GL_SPOT_DIRECTION => {
-                let [x, y, z, _] = transform(&modelview, [valores[0], valores[1], valores[2], 0.0]);
-                luz.spot_direction = [x, y, z];
+                let [x, y, z, _] = transform(&modelview, [values[0], values[1], values[2], 0.0]);
+                light.spot_direction = [x, y, z];
             }
-            gles::GL_SPOT_EXPONENT => luz.spot_exponent = valores[0],
-            gles::GL_SPOT_CUTOFF => luz.spot_cutoff = valores[0],
-            gles::GL_CONSTANT_ATTENUATION => luz.attenuation[0] = valores[0],
-            gles::GL_LINEAR_ATTENUATION => luz.attenuation[1] = valores[0],
-            gles::GL_QUADRATIC_ATTENUATION => luz.attenuation[2] = valores[0],
+            gles::GL_SPOT_EXPONENT => light.spot_exponent = values[0],
+            gles::GL_SPOT_CUTOFF => light.spot_cutoff = values[0],
+            gles::GL_CONSTANT_ATTENUATION => light.attenuation[0] = values[0],
+            gles::GL_LINEAR_ATTENUATION => light.attenuation[1] = values[0],
+            gles::GL_QUADRATIC_ATTENUATION => light.attenuation[2] = values[0],
             _ => {}
         }
     }
 
-    /// `glMaterial*`. A face é ignorada: no ES 1.x o material é um só.
-    pub fn set_material(&mut self, pname: u32, valores: [f32; 4]) {
+    /// `glMaterial*`. The face is ignored: in ES 1.x there is a single material.
+    pub fn set_material(&mut self, pname: u32, values: [f32; 4]) {
         match pname {
-            gles::GL_AMBIENT => self.material.ambient = valores,
-            gles::GL_DIFFUSE => self.material.diffuse = valores,
+            gles::GL_AMBIENT => self.material.ambient = values,
+            gles::GL_DIFFUSE => self.material.diffuse = values,
             gles::GL_AMBIENT_AND_DIFFUSE => {
-                self.material.ambient = valores;
-                self.material.diffuse = valores;
+                self.material.ambient = values;
+                self.material.diffuse = values;
             }
-            gles::GL_SPECULAR => self.material.specular = valores,
-            gles::GL_EMISSION => self.material.emission = valores,
-            gles::GL_SHININESS => self.material.shininess = valores[0],
+            gles::GL_SPECULAR => self.material.specular = values,
+            gles::GL_EMISSION => self.material.emission = values,
+            gles::GL_SHININESS => self.material.shininess = values[0],
             _ => {}
         }
     }
 
-    /// `glLightModel*`. Só a ambiente da cena tem efeito aqui; o `TWO_SIDE` é aceito e ignorado,
-    /// porque o material é um só.
-    pub fn set_light_model(&mut self, pname: u32, valores: [f32; 4]) {
+    /// `glLightModel*`. Only the scene ambient has an effect here; `TWO_SIDE` is accepted and
+    /// ignored, because there is a single material.
+    pub fn set_light_model(&mut self, pname: u32, values: [f32; 4]) {
         if pname == gles::GL_LIGHT_MODEL_AMBIENT {
-            self.light_model_ambient = valores;
+            self.light_model_ambient = values;
         }
     }
 
@@ -1786,118 +1810,120 @@ impl GlState {
         self.shade_model = mode;
     }
 
-    /// A cor de um vértice com a iluminação ligada, na equação do OpenGL ES 1.x.
+    /// The color of a vertex with lighting on, in the OpenGL ES 1.x equation.
     ///
     /// ```text
-    /// cor = emissão
-    ///     + ambiente_do_material * ambiente_da_cena
-    ///     + Σ  atenuação * holofote * ( ambiente_do_material * ambiente_da_luz
-    ///                                 + difusa_do_material  * difusa_da_luz  * max(N·L, 0)
-    ///                                 + especular_do_material * especular_da_luz * max(N·H, 0)^brilho )
+    /// color = emission
+    ///     + material_ambient * scene_ambient
+    ///     + Σ attenuation * spotlight * ( material_ambient * light_ambient
+    ///                                   + material_diffuse  * light_diffuse  * max(N·L, 0)
+    ///                                   + material_specular * light_specular * max(N·H, 0)^shine )
     /// ```
     ///
-    /// O alfa **não** vem da soma: é o da difusa do material, e sair somando alfa de luz deixa
-    /// tudo opaco. Com `GL_COLOR_MATERIAL`, a cor do vértice toma o lugar da ambiente e da
-    /// difusa do material — é o único caminho pelo qual um vetor de cores continua valendo com
-    /// a luz ligada.
-    fn cor_iluminada(
+    /// The alpha does **not** come from the sum: it is the material diffuse's, and summing light
+    /// alpha leaves everything opaque. With `GL_COLOR_MATERIAL`, the vertex color takes the place
+    /// of the material ambient and diffuse — it is the only path through which a color array
+    /// still applies with lighting on.
+    fn lit_color(
         &self,
-        olho: [f32; 4],
+        eye: [f32; 4],
         normal: [f32; 3],
-        cor_do_vertice: [f32; 4],
+        vertex_color: [f32; 4],
     ) -> [f32; 4] {
-        let (ambiente, difusa) = match self.color_material {
-            true => (cor_do_vertice, cor_do_vertice),
+        let (environment, diffuse) = match self.color_material {
+            true => (vertex_color, vertex_color),
             false => (self.material.ambient, self.material.diffuse),
         };
-        let mut saida = [0.0f32; 3];
-        for canal in 0..3 {
-            saida[canal] =
-                self.material.emission[canal] + ambiente[canal] * self.light_model_ambient[canal];
+        let mut output = [0.0f32; 3];
+        for channel in 0..3 {
+            output[channel] =
+                self.material.emission[channel] + environment[channel] * self.light_model_ambient[channel];
         }
-        // A posição do olho é `(0, 0, 0)` em coordenadas de olho, então a direção para o
-        // observador é o próprio ponto, negado e normalizado.
-        let para_o_olho = normaliza([-olho[0], -olho[1], -olho[2]]);
-        for luz in self.lights.iter().filter(|luz| luz.enabled) {
-            let (para_a_luz, distancia) = match luz.position[3] == 0.0 {
-                // Direcional: a posição é uma direção, e não há distância nem atenuação.
+        // The eye position is `(0, 0, 0)` in eye coordinates, so the direction to the viewer is
+        // the point itself, negated and normalized.
+        let to_eye = normalize([-eye[0], -eye[1], -eye[2]]);
+        for light in self.lights.iter().filter(|light| light.enabled) {
+            let (to_light, distance) = match light.position[3] == 0.0 {
+                // Directional: the position is a direction, and there is no distance or
+                // attenuation.
                 true => (
-                    normaliza([luz.position[0], luz.position[1], luz.position[2]]),
+                    normalize([light.position[0], light.position[1], light.position[2]]),
                     None,
                 ),
                 false => {
-                    let bruto = [
-                        luz.position[0] - olho[0],
-                        luz.position[1] - olho[1],
-                        luz.position[2] - olho[2],
+                    let raw = [
+                        light.position[0] - eye[0],
+                        light.position[1] - eye[1],
+                        light.position[2] - eye[2],
                     ];
-                    (normaliza(bruto), Some(comprimento(bruto)))
+                    (normalize(raw), Some(length(raw)))
                 }
             };
-            let atenuacao = match distancia {
+            let attenuation = match distance {
                 None => 1.0,
                 Some(d) => {
-                    let [c, l, q] = luz.attenuation;
+                    let [c, l, q] = light.attenuation;
                     let divisor = c + l * d + q * d * d;
                     if divisor <= 0.0 { 1.0 } else { 1.0 / divisor }
                 }
             };
-            let holofote = holofote(luz, para_a_luz);
-            let peso = atenuacao * holofote;
-            if peso <= 0.0 {
+            let spotlight = spotlight(light, to_light);
+            let weight = attenuation * spotlight;
+            if weight <= 0.0 {
                 continue;
             }
-            let n_l = ponto(normal, para_a_luz).max(0.0);
-            // O meio-vetor de Blinn, que é o que o ES 1.x usa no lugar da reflexão de Phong.
-            let brilho = match n_l > 0.0 && self.material.shininess > 0.0 {
+            let n_l = point(normal, to_light).max(0.0);
+            // The Blinn half-vector, which is what ES 1.x uses instead of Phong reflection.
+            let shine = match n_l > 0.0 && self.material.shininess > 0.0 {
                 false => 0.0,
                 true => {
-                    let meio = normaliza([
-                        para_a_luz[0] + para_o_olho[0],
-                        para_a_luz[1] + para_o_olho[1],
-                        para_a_luz[2] + para_o_olho[2],
+                    let middle = normalize([
+                        to_light[0] + to_eye[0],
+                        to_light[1] + to_eye[1],
+                        to_light[2] + to_eye[2],
                     ]);
-                    ponto(normal, meio).max(0.0).powf(self.material.shininess)
+                    point(normal, middle).max(0.0).powf(self.material.shininess)
                 }
             };
-            for canal in 0..3 {
-                saida[canal] += peso
-                    * (ambiente[canal] * luz.ambient[canal]
-                        + difusa[canal] * luz.diffuse[canal] * n_l
-                        + self.material.specular[canal] * luz.specular[canal] * brilho);
+            for channel in 0..3 {
+                output[channel] += weight
+                    * (environment[channel] * light.ambient[channel]
+                        + diffuse[channel] * light.diffuse[channel] * n_l
+                        + self.material.specular[channel] * light.specular[channel] * shine);
             }
         }
         [
-            saida[0].clamp(0.0, 1.0),
-            saida[1].clamp(0.0, 1.0),
-            saida[2].clamp(0.0, 1.0),
-            difusa[3].clamp(0.0, 1.0),
+            output[0].clamp(0.0, 1.0),
+            output[1].clamp(0.0, 1.0),
+            output[2].clamp(0.0, 1.0),
+            diffuse[3].clamp(0.0, 1.0),
         ]
     }
 
     /// `glStencilFunc(func, ref, mask)`.
     ///
-    /// O `ref` é preso à faixa do buffer, como manda a especificação: o console tem oito bits.
-    pub fn set_stencil_func(&mut self, func: u32, referencia: i32, mask: u32) {
+    /// `ref` is clamped to the buffer's range, as the specification requires: the console has
+    /// eight bits.
+    pub fn set_stencil_func(&mut self, func: u32, reference: i32, mask: u32) {
         self.stencil_func = func;
-        self.stencil_ref = referencia.clamp(0, u8::MAX as i32);
+        self.stencil_ref = reference.clamp(0, u8::MAX as i32);
         self.stencil_value_mask = mask;
     }
 
-    /// `glStencilOp(sfail, dpfail, dppass)` — o que fazer quando o stencil falha, quando ele
-    /// passa e a profundidade falha, e quando os dois passam.
-    pub fn set_stencil_op(&mut self, falha: u32, falha_z: u32, passa: u32) {
-        self.stencil_op = [falha, falha_z, passa];
+    /// `glStencilOp(sfail, dpfail, dppass)` — what to do when the stencil fails, when it passes
+    /// and depth fails, and when both pass.
+    pub fn set_stencil_op(&mut self, failure: u32, zfail: u32, passes: u32) {
+        self.stencil_op = [failure, zfail, passes];
     }
 
-    /// `glStencilMask` — que bits do stencil o desenho pode escrever.
+    /// `glStencilMask` — which stencil bits drawing may write.
     pub fn set_stencil_mask(&mut self, mask: u32) {
         self.stencil_write_mask = mask;
     }
 
     /// `glClearStencil`.
-    pub fn set_clear_stencil(&mut self, valor: i32) {
-        self.clear_stencil = valor.clamp(0, u8::MAX as i32) as u8;
+    pub fn set_clear_stencil(&mut self, value: i32) {
+        self.clear_stencil = value.clamp(0, u8::MAX as i32) as u8;
     }
 
     pub fn set_blend_func(&mut self, src: u32, dst: u32) {
@@ -1912,11 +1938,11 @@ impl GlState {
         self.depth_mask = on;
     }
 
-    /// `glColorMask`: quais canais de cor o desenho pode escrever.
+    /// `glColorMask`: which color channels drawing may write.
     ///
-    /// Ignorar isto não é neutro. Um jogo que desenha uma passada só para o alfa — mascarando
-    /// vermelho, verde e azul — teria a cor pintada por cima do que já estava lá, e o resultado
-    /// é imagem embaralhada sem nenhum erro aparente.
+    /// Ignoring this is not neutral. A game that draws an alpha-only pass — masking red, green
+    /// and blue — would have the color painted over what was already there, and the result is a
+    /// scrambled image with no apparent error.
     pub fn set_color_mask(&mut self, mask: [bool; 4]) {
         self.color_mask = mask;
     }
@@ -1929,58 +1955,58 @@ impl GlState {
         self.cull_mode = mode;
     }
 
-    /// Só `GL_CW` e `GL_CCW` são orientações válidas; qualquer outra coisa o OpenGL recusa, e
-    /// aceitá-la aqui inverteria silenciosamente a decisão de qual face aparece.
+    /// Only `GL_CW` and `GL_CCW` are valid windings; OpenGL rejects anything else, and accepting
+    /// it here would silently invert the decision of which face shows.
     pub fn set_front_face(&mut self, face: u32) {
         if face == gles::GL_CW || face == gles::GL_CCW {
             self.front_face = face;
         }
     }
 
-    /// O ambiente da unidade ativa, se ela é uma das que desenham.
-    fn env_ativo(&mut self) -> Option<&mut TexEnv> {
+    /// The environment of the active unit, if it is one of those that draw.
+    fn active_env(&mut self) -> Option<&mut TexEnv> {
         match self.active_unit {
             0 => Some(&mut self.texture_env),
-            1 => Some(&mut self.unidade1.env),
+            1 => Some(&mut self.unit1.env),
             _ => None,
         }
     }
 
     pub fn set_texture_env(&mut self, mode: u32) {
-        if let Some(env) = self.env_ativo() {
-            env.modo = mode;
+        if let Some(env) = self.active_env() {
+            env.mode = mode;
         }
     }
 
-    /// Um parâmetro do `GL_COMBINE`. Ver [`TexEnv::define`].
-    pub fn set_texture_env_param(&mut self, pname: u32, enumeracao: u32, numero: f32) {
-        if let Some(env) = self.env_ativo() {
-            env.define(pname, enumeracao, numero);
+    /// A `GL_COMBINE` parameter. See [`TexEnv::define`].
+    pub fn set_texture_env_param(&mut self, pname: u32, enum_value: u32, number: f32) {
+        if let Some(env) = self.active_env() {
+            env.define(pname, enum_value, number);
         }
     }
 
-    /// A `GL_TEXTURE_ENV_COLOR`.
-    pub fn set_texture_env_color(&mut self, cor: [f32; 4]) {
-        if let Some(env) = self.env_ativo() {
-            env.cor = cor;
+    /// `GL_TEXTURE_ENV_COLOR`.
+    pub fn set_texture_env_color(&mut self, color: [f32; 4]) {
+        if let Some(env) = self.active_env() {
+            env.color = color;
         }
     }
 
-    /// A unidade 1, para quem repassa o estado.
-    pub fn unidade1(&self) -> UnidadeDeTextura {
-        self.unidade1
+    /// Unit 1, for whoever passes the state on.
+    pub fn unit1(&self) -> TextureUnit {
+        self.unit1
     }
 
-    /// O nome da textura ligada na unidade ativa, se ela é uma das que desenham.
-    fn textura_ativa(&self) -> Option<u32> {
+    /// The name of the texture bound to the active unit, if it is one of those that draw.
+    fn active_texture(&self) -> Option<u32> {
         match self.active_unit {
             0 => Some(self.bound_texture),
-            1 => Some(self.unidade1.textura),
+            1 => Some(self.unit1.texture),
             _ => None,
         }
     }
 
-    /// O ambiente de textura da unidade 0, para quem repassa o estado.
+    /// The texture environment of unit 0, for whoever passes the state on.
     pub fn texture_env(&self) -> TexEnv {
         self.texture_env
     }
@@ -1988,57 +2014,59 @@ impl GlState {
     pub fn bind_texture(&mut self, name: u32) {
         match self.active_unit {
             0 => self.bound_texture = name,
-            1 => self.unidade1.textura = name,
+            1 => self.unit1.texture = name,
             _ => return,
         }
-        // O nome passa a existir já no `BindTexture`: o jogo costuma ajustar os parâmetros
-        // antes de mandar os pixels, e sem a entrada esses ajustes se perderiam.
+        // The name comes into existence already at `BindTexture`: games usually set the
+        // parameters before sending the pixels, and without the entry those settings would be
+        // lost.
         self.textures.entry(name).or_default();
     }
 
-    /// `glTexParameter` na textura ligada.
+    /// `glTexParameter` on the bound texture.
     pub fn set_texture_parameter(&mut self, name: u32, value: u32) {
-        let Some(ligada) = self.textura_ativa() else {
+        let Some(enabled) = self.active_texture() else {
             return;
         };
-        // **O que já foi enfileirado usa os parâmetros de agora.** A fila guarda o *nome* da
-        // textura e vai buscar filtro e repetição só no despejo; mudá-los aqui sem pintar antes
-        // faz um desenho anterior ser amostrado com a configuração de um posterior. É o mesmo
-        // cuidado que o `TexImage2D` já tomava com os pixels, e que faltava aqui.
-        let Some(texture) = self.textures.get(&ligada) else {
+        // **What was already queued uses the current parameters.** The queue stores the texture
+        // *name* and only fetches filter and wrap at flush time; changing them here without
+        // painting first makes an earlier draw get sampled with a later one's configuration. It
+        // is the same care `TexImage2D` already took with the pixels, and that was missing here.
+        let Some(texture) = self.textures.get(&enabled) else {
             return;
         };
-        // Muitos jogos (especialmente NFS) reaplicam o mesmo estado antes de cada sprite.
-        // Não há nada para preservar quando o valor não mudou; evitar o flush mantém a fila
-        // de triângulos e elimina um custo dominante do quadro.
-        let mudou = match name {
+        // Many games (NFS especially) reapply the same state before each sprite. There is
+        // nothing to preserve when the value didn't change; skipping the flush keeps the
+        // triangle queue and removes a dominant cost of the frame.
+        let changed = match name {
             gles::GL_TEXTURE_WRAP_S => texture.wrap[0] != value,
             gles::GL_TEXTURE_WRAP_T => texture.wrap[1] != value,
             gles::GL_TEXTURE_MAG_FILTER => {
-                let filtro = if value == gles::GL_NEAREST {
+                let filter = if value == gles::GL_NEAREST {
                     gles::GL_NEAREST
                 } else {
                     gles::GL_LINEAR
                 };
-                texture.filter != filtro
+                texture.filter != filter
             }
             gles::GL_TEXTURE_MIN_FILTER => texture.min_filter != value,
             _ => false,
         };
-        if !mudou {
+        if !changed {
             return;
         }
         self.flush();
-        let Some(texture) = self.textures.get_mut(&ligada) else {
+        let Some(texture) = self.textures.get_mut(&enabled) else {
             return;
         };
         match name {
             gles::GL_TEXTURE_WRAP_S => texture.wrap[0] = value,
             gles::GL_TEXTURE_WRAP_T => texture.wrap[1] = value,
-            // Sem mipmap, o filtro de redução com mipmap se comporta como o de base, e o que
-            // importa é distinguir vizinho mais próximo de interpolação.
-            // A ampliação só distingue vizinho de interpolação; a redução guarda o valor
-            // inteiro, porque é dele que sai se há mipmap e como passar de um nível a outro.
+            // Without a mipmap, the mipmapped minification filter behaves like the base one, and
+            // what matters is telling nearest neighbor from interpolation.
+            // Magnification only distinguishes nearest from interpolation; minification keeps
+            // the whole value, because it determines whether there is a mipmap and how to go
+            // from one level to the next.
             gles::GL_TEXTURE_MAG_FILTER => {
                 texture.filter = match value {
                     gles::GL_NEAREST => gles::GL_NEAREST,
@@ -2050,43 +2078,43 @@ impl GlState {
         }
     }
 
-    /// `glTexParameteriv(GL_TEXTURE_CROP_RECT_OES, …)` na textura ligada.
+    /// `glTexParameteriv(GL_TEXTURE_CROP_RECT_OES, …)` on the bound texture.
     pub fn set_texture_crop(&mut self, crop: [i32; 4]) {
-        let Some(ligada) = self.textura_ativa() else {
+        let Some(enabled) = self.active_texture() else {
             return;
         };
-        if let Some(texture) = self.textures.get_mut(&ligada) {
+        if let Some(texture) = self.textures.get_mut(&enabled) {
             texture.crop = crop;
         }
     }
 
-    /// A textura ligada na unidade ativa — a que um `glTexImage2D` agora alcançaria.
+    /// The texture bound to the active unit — the one a `glTexImage2D` would reach now.
     pub fn bound_texture(&self) -> u32 {
-        self.textura_ativa().unwrap_or(self.bound_texture)
+        self.active_texture().unwrap_or(self.bound_texture)
     }
 
-    /// O tamanho do quadro — a tela, e não a superfície em que o jogo desenha. Ver
+    /// The frame size — the screen, not the surface the game draws on. See
     /// [`GlState::surface`].
     pub fn frame_size(&self) -> (usize, usize) {
         (self.width, self.height)
     }
 
-    /// Apaga uma textura pelo nome.
+    /// Deletes a texture by name.
     ///
-    /// A fila menciona texturas pelo nome: apagar uma antes de ela ser lida mudaria o que já foi
-    /// desenhado, e por isso a fila é despejada antes.
+    /// The queue refers to textures by name: deleting one before it is read would change what
+    /// was already drawn, and so the queue is flushed first.
     pub fn delete_texture(&mut self, name: u32) {
         self.flush();
         self.textures.remove(&name);
     }
 
-    /// Guarda um nível de textura, criando a textura se ela ainda não existir.
+    /// Stores a texture level, creating the texture if it doesn't exist yet.
     ///
-    /// **O nível zero limpa os menores.** Uma imagem nova no nível base torna a cadeia antiga
-    /// mentira, e servir um mipmap de outra textura é pior do que não ter nenhum.
+    /// **Level zero clears the smaller ones.** A new image on the base level makes the old chain
+    /// a lie, and serving another texture's mipmap is worse than having none.
     ///
-    /// O despejo da fila é daqui, e não de quem chama: trocar o conteúdo de uma textura que a
-    /// fila ainda vai ler mudaria o passado.
+    /// The queue flush belongs here, not to the caller: changing the contents of a texture the
+    /// queue will still read would change the past.
     pub fn upload_level(
         &mut self,
         name: u32,
@@ -2104,26 +2132,27 @@ impl GlState {
             texture.mipmaps.clear();
             return;
         }
-        let indice = level as usize - 1;
-        if texture.mipmaps.len() <= indice {
-            texture.mipmaps.resize_with(indice + 1, || Nivel {
+        let index = level as usize - 1;
+        if texture.mipmaps.len() <= index {
+            texture.mipmaps.resize_with(index + 1, || Level {
                 width: 0,
                 height: 0,
                 pixels: Vec::new(),
             });
         }
-        texture.mipmaps[indice] = Nivel {
+        texture.mipmaps[index] = Level {
             width,
             height,
             pixels,
         };
     }
 
-    /// `glTexSubImage2D` no nível base: troca um retângulo dentro de uma textura que já existe.
+    /// `glTexSubImage2D` on the base level: replaces a rectangle inside an existing texture.
     ///
-    /// Devolve o tamanho da textura quando o retângulo não cabe — recortar seria inventar um
-    /// resultado que o OpenGL não define, e quem chamou precisa do número para o relatório.
-    /// `Err(None)` é textura que não existe, que não é erro nenhum: o jogo pode ter apagado.
+    /// Returns the texture size when the rectangle doesn't fit — clipping would be inventing a
+    /// result OpenGL doesn't define, and the caller needs the number for the report.
+    /// `Err(None)` is a texture that doesn't exist, which is no error at all: the game may have
+    /// deleted it.
     pub fn sub_image(
         &mut self,
         name: u32,
@@ -2141,28 +2170,28 @@ impl GlState {
         if x + width > tw || y + height > th {
             return Err(Some((tw, th)));
         }
-        for linha in 0..height {
-            let destino = ((y + linha) * tw + x) as usize;
-            let origem = (linha * width) as usize;
-            texture.pixels[destino..destino + width as usize]
-                .copy_from_slice(&pixels[origem..origem + width as usize]);
+        for line in 0..height {
+            let dest = ((y + line) * tw + x) as usize;
+            let origin = (line * width) as usize;
+            texture.pixels[dest..dest + width as usize]
+                .copy_from_slice(&pixels[origin..origin + width as usize]);
         }
-        // **Mexer no nível zero invalida a cadeia.** Os níveis menores continuariam mostrando o
-        // que estava ali antes, e quem amostra dois níveis vê os dois conteúdos ao mesmo tempo:
-        // o painel de promoção da Z-Wheel, que troca o texto por aqui, saía com as letras
-        // fantasmas do texto anterior por cima das novas.
+        // **Touching level zero invalidates the chain.** The smaller levels would keep showing
+        // what was there before, and whoever samples two levels sees both contents at once: the
+        // Z-Wheel promo panel, which swaps its text through here, came out with ghost letters of
+        // the previous text over the new ones.
         texture.mipmaps.clear();
         Ok(())
     }
 
     pub fn clear(&mut self, mask: u32) {
-        // Limpar é uma operação sobre o quadro e entra na fila de ordem como qualquer desenho:
-        // o que veio antes precisa estar pintado, senão apagaria o que ainda nem existe.
+        // Clearing is an operation on the frame and takes its place in the order like any draw:
+        // what came before must be painted, otherwise it would erase what doesn't exist yet.
         self.flush();
         if mask & gles::GL_COLOR_BUFFER_BIT != 0 {
             let c = pack(self.clear_color);
             self.color.fill(c);
-            self.sujo = true;
+            self.dirty = true;
         }
         if mask & gles::GL_DEPTH_BUFFER_BIT != 0 {
             self.depth.fill(self.clear_depth);
@@ -2172,67 +2201,67 @@ impl GlState {
         }
     }
 
-    /// Desenha uma sequência de vértices no modo pedido.
-    /// A etapa de vértice: transforma, ilumina e deixa o resultado em `transformed`.
+    /// Draws a sequence of vertices in the requested mode.
+    /// The vertex stage: transforms, lights and leaves the result in `transformed`.
     ///
-    /// Está separada do preenchimento porque **os dois rasterizadores a compartilham**. Matriz
-    /// de modelo-visão, projeção, matriz de textura e iluminação por vértice são a mesma conta
-    /// nos dois, e tê-la em um lugar só é o que torna a comparação entre eles honesta: se a luz
-    /// estiver errada, estará errada igual nos dois, e a diferença que sobrar é do preenchimento.
+    /// It is separate from filling because **both rasterizers share it**. Modelview matrix,
+    /// projection, texture matrix and per-vertex lighting are the same computation in both, and
+    /// having it in a single place is what makes comparing them honest: if the lighting is wrong,
+    /// it will be wrong the same way in both, and whatever difference remains is the filling's.
     ///
-    /// No fim disto os vértices estão em **espaço de recorte**, com cor e `uv` finais — que é
-    /// exatamente o que uma placa espera receber num shader de passagem.
-    pub fn etapa_de_vertice(&mut self, vertices: &[Vertex]) {
+    /// At the end of this the vertices are in **clip space**, with final color and `uv` — which is
+    /// exactly what a GPU expects to receive in a pass-through shader.
+    pub fn vertex_stage(&mut self, vertices: &[Vertex]) {
         let mvp = {
-            let projection = *self.projection.last().expect("pilha nunca fica vazia");
-            let modelview = *self.modelview.last().expect("pilha nunca fica vazia");
+            let projection = *self.projection.last().expect("stack is never empty");
+            let modelview = *self.modelview.last().expect("stack is never empty");
             multiply(&projection, &modelview)
         };
-        // As coordenadas de textura também passam por uma matriz, e ignorá-la não é um detalhe
-        // de acabamento: o Zeebo Sports Peteca manda os `uv` em ponto fixo — a quadra chega com
-        // 32767, o extremo de um inteiro de 16 bits — e é a matriz de textura que os traz de
-        // volta para a faixa `0..1`. Sem ela, o `GL_REPEAT` dava a volta na textura a cada
-        // pixel, e a quadra e a arquibancada saíam como confete das cores certas.
-        let texture_matrix = *self.texture_matrix.last().expect("pilha nunca fica vazia");
-        let texture_matrix1 = *self.texture_matrix1.last().expect("pilha nunca fica vazia");
-        // A iluminação acontece em **coordenadas de olho**, que é onde as posições das luzes
-        // foram guardadas: daí precisarmos da modelview separada, e não só do produto com a
-        // projeção. As normais vão por outra matriz — ver [`matriz_de_normais`].
-        let modelview = *self.modelview.last().expect("pilha nunca fica vazia");
-        let normais = matriz_de_normais(&modelview);
-        let iluminando = self.lighting;
-        let neblina = self.fog;
+        // Texture coordinates also go through a matrix, and ignoring it is not a finishing
+        // detail: Zeebo Sports Peteca sends the `uv` in fixed point — the court arrives with
+        // 32767, the extreme of a 16-bit integer — and it is the texture matrix that brings them
+        // back into the `0..1` range. Without it, `GL_REPEAT` wrapped around the texture on every
+        // pixel, and the court and the stands came out as confetti in the right colors.
+        let texture_matrix = *self.texture_matrix.last().expect("stack is never empty");
+        let texture_matrix1 = *self.texture_matrix1.last().expect("stack is never empty");
+        // Lighting happens in **eye coordinates**, which is where the light positions were
+        // stored: hence we need the modelview separately, not only its product with the
+        // projection. Normals go through another matrix — see [`normal_matrix`].
+        let modelview = *self.modelview.last().expect("stack is never empty");
+        let normals = normal_matrix(&modelview);
+        let lighting = self.lighting;
+        let fog_state = self.fog;
         let mut clip = std::mem::take(&mut self.transformed);
         clip.clear();
         clip.extend(vertices.iter().map(|v| {
-            // `q` é o quarto componente da coordenada de textura; a divisão por ele é o
-            // que permite projeção na textura, e vale 1 no caso comum.
-            let projeta = |matriz: &Matrix, uv: [f32; 4]| {
-                let [s, t, r, q] = transform(matriz, uv);
+            // `q` is the fourth component of the texture coordinate; dividing by it is what
+            // allows projective texturing, and it is 1 in the common case.
+            let project = |matrix: &Matrix, uv: [f32; 4]| {
+                let [s, t, r, q] = transform(matrix, uv);
                 let scale = if q == 0.0 { 1.0 } else { 1.0 / q };
                 [s * scale, t * scale, r, 1.0]
             };
-            // A névoa e a iluminação querem a mesma coisa: o vértice em coordenadas de olho.
-            // Com uma das duas ligada a conta sai uma vez e serve às duas.
-            let olho = (iluminando || neblina.ligada && neblina.permitida)
+            // Fog and lighting want the same thing: the vertex in eye coordinates. With either
+            // one on, the computation is done once and serves both.
+            let eye = (lighting || fog_state.enabled && fog_state.allowed)
                 .then(|| transform(&modelview, v.position));
-            let color = match (iluminando, olho) {
-                (true, Some(olho)) => {
-                    let normal = normaliza(gira_normal(&normais, v.normal));
-                    self.cor_iluminada(olho, normal, v.color)
+            let color = match (lighting, eye) {
+                (true, Some(eye)) => {
+                    let normal = normalize(rotate_normal(&normals, v.normal));
+                    self.lit_color(eye, normal, v.color)
                 }
                 _ => v.color,
             };
-            // A distância do olho é `|z|`, como o OpenGL permite em vez do comprimento do vetor:
-            // é o que toda implementação de função fixa faz, e é o que o jogo espera ver.
-            let fog = match olho {
-                Some(olho) => neblina.fator(olho[2].abs()),
+            // The distance from the eye is `|z|`, as OpenGL allows instead of the vector length:
+            // it is what every fixed-function implementation does, and what the game expects.
+            let fog = match eye {
+                Some(eye) => fog_state.factor(eye[2].abs()),
                 None => 1.0,
             };
             Vertex {
                 position: transform(&mvp, v.position),
-                uv: projeta(&texture_matrix, v.uv),
-                uv1: projeta(&texture_matrix1, v.uv1),
+                uv: project(&texture_matrix, v.uv),
+                uv1: project(&texture_matrix1, v.uv1),
                 color,
                 fog,
                 ..*v
@@ -2241,17 +2270,17 @@ impl GlState {
         self.transformed = clip;
     }
 
-    /// Os vértices que a etapa de vértice deixou prontos.
-    pub fn transformados(&self) -> &[Vertex] {
+    /// The vertices the vertex stage left ready.
+    pub fn transformed(&self) -> &[Vertex] {
         &self.transformed
     }
 
     pub fn draw(&mut self, mode: u32, vertices: &[Vertex]) {
-        self.etapa_de_vertice(vertices);
+        self.vertex_stage(vertices);
         let clip = std::mem::take(&mut self.transformed);
-        // Os triângulos são projetados primeiro e preenchidos depois, todos juntos: é o lote
-        // inteiro que decide se vale dividir o quadro entre threads, e o estado do OpenGL não
-        // muda no meio de uma draw call.
+        // Triangles are projected first and filled afterwards, all together: it is the whole
+        // batch that decides whether splitting the frame across threads is worth it, and the
+        // OpenGL state doesn't change in the middle of a draw call.
         let mut batch = std::mem::take(&mut self.batch);
         batch.clear();
         match mode {
@@ -2262,7 +2291,7 @@ impl GlState {
             }
             gles::GL_TRIANGLE_STRIP => {
                 for (i, window) in clip.windows(3).enumerate() {
-                    // A cada passo a orientação alterna; trocar dois vértices a mantém.
+                    // The winding alternates at each step; swapping two vertices preserves it.
                     if i % 2 == 0 {
                         self.triangle([window[0], window[1], window[2]], &mut batch);
                     } else {
@@ -2277,11 +2306,11 @@ impl GlState {
             }
             gles::GL_LINES | gles::GL_LINE_LOOP | gles::GL_LINE_STRIP => {
                 let ccw = self.front_face != gles::GL_CW;
-                for tri in linhas_em_triangulos(mode, &clip, self.viewport, ccw).chunks_exact(3) {
+                for tri in lines_to_triangles(mode, &clip, self.viewport, ccw).chunks_exact(3) {
                     self.triangle([tri[0], tri[1], tri[2]], &mut batch);
                 }
             }
-            // Pontos continuam sem tratamento: nenhum jogo medido os usa.
+            // Points remain unhandled: no measured game uses them.
             gles::GL_POINTS => {}
             _ => {}
         }
@@ -2290,15 +2319,15 @@ impl GlState {
         self.transformed = clip;
     }
 
-    /// `glDrawTex*OES` — o blit de tela do `GL_OES_draw_texture`.
+    /// `glDrawTex*OES` — the screen blit of `GL_OES_draw_texture`.
     ///
-    /// A extensão desenha um retângulo **em coordenadas de janela**, sem passar pelas matrizes:
-    /// é o caminho que um emulador usa para pôr a tela dele na tela do aparelho, e é o que os
-    /// dez portes de arcade do console fazem. Sem ela, o `InitGLExtensions` deles falha e o
-    /// alvo de renderização nunca é criado.
+    /// The extension draws a rectangle **in window coordinates**, without going through the
+    /// matrices: it is the path an emulator uses to put its screen on the device's screen, and it
+    /// is what the console's ten arcade ports do. Without it, their `InitGLExtensions` fails and
+    /// the render target is never created.
     ///
-    /// O pedaço da textura vem do `GL_TEXTURE_CROP_RECT_OES`, e largura ou altura negativa ali
-    /// espelha o eixo — é assim que a extensão vira a imagem.
+    /// The piece of the texture comes from `GL_TEXTURE_CROP_RECT_OES`, and a negative width or
+    /// height there mirrors the axis — that is how the extension flips the image.
     pub fn draw_texture(&mut self, x: f32, y: f32, z: f32, width: f32, height: f32) {
         let Some(texture) = self.textures.get(&self.bound_texture) else {
             return;
@@ -2308,8 +2337,8 @@ impl GlState {
             return;
         }
         let [ucr, vcr, wcr, hcr] = texture.crop.map(|value| value as f32);
-        // Recorte zerado é a textura inteira: um jogo que não pede recorte quer a imagem toda,
-        // e desenhar nada seria pior que adotar o padrão óbvio.
+        // A zeroed crop is the whole texture: a game that asks for no crop wants the whole
+        // image, and drawing nothing would be worse than adopting the obvious default.
         let (wcr, hcr) = match (wcr, hcr) {
             (0.0, 0.0) => (tw, th),
             _ => (wcr, hcr),
@@ -2317,7 +2346,7 @@ impl GlState {
         let (s0, s1) = (ucr / tw, (ucr + wcr) / tw);
         let (t0, t1) = (vcr / th, (vcr + hcr) / th);
 
-        // A janela do OpenGL tem o zero embaixo; nossa superfície, em cima.
+        // The OpenGL window has zero at the bottom; our surface, at the top.
         let surface_height = self.surface().1 as f32;
         let (left, right) = (x, x + width);
         let (top, bottom) = (surface_height - y - height, surface_height - y);
@@ -2328,7 +2357,7 @@ impl GlState {
             ([right, bottom], [s1, t0]),
             ([right, top], [s1, t1]),
         ];
-        let (vx, vy, vw, vh) = self.viewport_do_topo();
+        let (vx, vy, vw, vh) = self.top_down_viewport();
         if vw <= 0 || vh <= 0 {
             return;
         }
@@ -2336,7 +2365,7 @@ impl GlState {
             .iter()
             .map(|&([sx, sy], uv)| Vertex {
                 normal: [0.0, 0.0, 1.0],
-                uv1: UV_PADRAO,
+                uv1: DEFAULT_UV,
                 fog: 1.0,
                 position: [
                     ((sx - vx as f32) / vw as f32) * 2.0 - 1.0,
@@ -2349,8 +2378,8 @@ impl GlState {
             })
             .collect();
 
-        // O retângulo não tem orientação definida pela extensão, então descartá-lo por face
-        // seria descartar um desenho que o jogo espera ver.
+        // The rectangle has no winding defined by the extension, so culling it by face would be
+        // discarding a draw the game expects to see.
         let culling = self.cull_face;
         self.cull_face = false;
         let mut batch = std::mem::take(&mut self.batch);
@@ -2362,16 +2391,16 @@ impl GlState {
         self.batch = batch;
     }
 
-    /// Recorta contra o plano próximo do frustum e põe o que sobra no lote.
+    /// Clips against the frustum's near plane and puts what remains in the batch.
     ///
-    /// O plano próximo é `z >= -w`, não `w > 0`. Recortar só pelo sinal de `w` deixa passar
-    /// vértices com `w` minúsculo — logo atrás do plano próximo, mas ainda à frente da câmera
-    /// —, e a divisão pela perspectiva multiplica as coordenadas deles por dezenas de
-    /// milhares: o triângulo vira um bloco cobrindo a tela, com a textura tão esticada que sai
-    /// como cor chapada. Era o que sujava a pista do Crash.
+    /// The near plane is `z >= -w`, not `w > 0`. Clipping only by the sign of `w` lets through
+    /// vertices with a tiny `w` — just behind the near plane, but still in front of the camera —,
+    /// and the perspective divide multiplies their coordinates by tens of thousands: the triangle
+    /// becomes a block covering the screen, with the texture so stretched it comes out as a flat
+    /// color. That is what was smearing the Crash track.
     fn triangle(&self, tri: [Vertex; 3], batch: &mut Batch) {
-        // O plano é inclusivo: a interface do Crash é desenhada em ortográfica com `z` bem no
-        // plano próximo, e `z + w` dá zero exato nela.
+        // The plane is inclusive: the Crash UI is drawn in orthographic with `z` right on the
+        // near plane, and `z + w` is exactly zero there.
         let distance = |v: &Vertex| v.position[2] + v.position[3];
         let inside: Vec<usize> = (0..3).filter(|&i| distance(&tri[i]) >= 0.0).collect();
         match inside.len() {
@@ -2380,7 +2409,7 @@ impl GlState {
             1 => {
                 let i = inside[0];
                 let (a, b) = ((i + 1) % 3, (i + 2) % 3);
-                // A ordem (dentro, corte em a, corte em b) mantém o sentido do original.
+                // The order (inside, cut at a, cut at b) keeps the original's winding.
                 self.prepare(
                     [tri[i], clip_near(tri[i], tri[a]), clip_near(tri[i], tri[b])],
                     batch,
@@ -2391,36 +2420,37 @@ impl GlState {
                 let (a, b) = ((out + 1) % 3, (out + 2) % 3);
                 let ea = clip_near(tri[a], tri[out]);
                 let eb = clip_near(tri[b], tri[out]);
-                // O quadrilátero que sobra é `a → b → eb → ea`, na mesma volta do triângulo
-                // original. Percorrê-lo ao contrário inverte a orientação e faz o descarte de
-                // faces jogar fora justamente os triângulos recortados.
+                // The remaining quadrilateral is `a → b → eb → ea`, in the same winding as the
+                // original triangle. Walking it backwards flips the winding and makes face
+                // culling throw away precisely the clipped triangles.
                 self.prepare([tri[a], tri[b], eb], batch);
                 self.prepare([tri[a], eb, ea], batch);
             }
         }
     }
 
-    /// Projeta um triângulo já inteiramente à frente do plano próximo e o guarda no lote.
+    /// Projects a triangle already entirely in front of the near plane and stores it in the
+    /// batch.
     ///
-    /// Tudo o que não depende do pixel — projeção, descarte de face, caixa envolvente,
-    /// atributos divididos por `w` — sai daqui pronto. É o que permite preencher o mesmo
-    /// triângulo em várias faixas da tela ao mesmo tempo sem repetir conta nenhuma.
+    /// Everything that doesn't depend on the pixel — projection, face culling, bounding box,
+    /// attributes divided by `w` — leaves here ready. That is what allows filling the same
+    /// triangle in several screen bands at once without repeating any computation.
     fn prepare(&self, tri: [Vertex; 3], batch: &mut Batch) {
-        let (vx, vy, vw, vh) = self.viewport_do_topo();
+        let (vx, vy, vw, vh) = self.top_down_viewport();
         if vw <= 0 || vh <= 0 {
             return;
         }
-        // Divisão pela perspectiva e mapeamento para a tela. Guardamos `1/w` para corrigir a
-        // interpolação depois: interpolar `u` direto na tela distorce a textura.
+        // Perspective divide and mapping to the screen. We keep `1/w` to correct the
+        // interpolation later: interpolating `u` directly in screen space distorts the texture.
         let mut screen = [[0.0f32; 4]; 3];
         for (slot, vertex) in screen.iter_mut().zip(tri.iter()) {
             let [x, y, z, w] = vertex.position;
             let inv_w = 1.0 / w;
-            let (perto, longe) = self.depth_range;
+            let (near, far) = self.depth_range;
             *slot = [
                 vx as f32 + (x * inv_w * 0.5 + 0.5) * vw as f32,
                 vy as f32 + (0.5 - y * inv_w * 0.5) * vh as f32,
-                perto + (longe - perto) * (z * inv_w * 0.5 + 0.5),
+                near + (far - near) * (z * inv_w * 0.5 + 0.5),
                 inv_w,
             ];
         }
@@ -2429,11 +2459,11 @@ impl GlState {
         if area == 0.0 {
             return;
         }
-        // O sinal da área diz a orientação, mas com o eixo Y já invertido pelo mapeamento
-        // para a tela — então ele é o oposto do sinal em coordenadas de janela do OpenGL, e
-        // área negativa aqui é o sentido anti-horário de lá. Errar este sinal descarta
-        // exatamente as faces que deveriam aparecer: o mundo do Quake ficava preto, com só o
-        // avesso da geometria sendo desenhado.
+        // The sign of the area gives the winding, but with the Y axis already flipped by the
+        // mapping to the screen — so it is the opposite of the sign in OpenGL window
+        // coordinates, and a negative area here is counterclockwise there. Getting this sign
+        // wrong culls exactly the faces that should show: Quake's world went black, with only
+        // the back side of the geometry being drawn.
         let counter_clockwise = area < 0.0;
         let front = (self.front_face == gles::GL_CCW) == counter_clockwise;
         if self.cull_face
@@ -2454,9 +2484,9 @@ impl GlState {
         let max_x = max_x.min(vx + vw).min(self.width as i32);
         let min_y = min_y.max(vy).max(0);
         let max_y = max_y.min(vy + vh).min(self.height as i32);
-        // O `glScissor` entra aqui, junto com a viewport: um retângulo alinhado aos eixos só
-        // precisa apertar a caixa do triângulo, e assim ele não custa nada por pixel.
-        let (min_x, max_x, min_y, max_y) = match self.tesoura {
+        // `glScissor` comes in here, together with the viewport: an axis-aligned rectangle only
+        // needs to tighten the triangle's box, and that way it costs nothing per pixel.
+        let (min_x, max_x, min_y, max_y) = match self.scissor {
             None => (min_x, max_x, min_y, max_y),
             Some((tx, ty, tw, th)) => (
                 min_x.max(tx),
@@ -2469,9 +2499,9 @@ impl GlState {
             return;
         }
 
-        // Os atributos viajam divididos por `w` — é essa divisão que corrige a perspectiva —,
-        // e cada um volta multiplicado pelo `w` interpolado. Fazer a divisão aqui, uma vez por
-        // vértice, tira três multiplicações por fragmento de dentro do laço.
+        // Attributes travel divided by `w` — that division is what corrects the perspective —,
+        // and each comes back multiplied by the interpolated `w`. Doing the division here, once
+        // per vertex, takes three multiplications per fragment out of the loop.
         let mut over_w = [[0.0f32; 9]; 3];
         for i in 0..3 {
             let w = screen[i][3];
@@ -2490,19 +2520,19 @@ impl GlState {
         }
 
         let inv_area = 1.0 / area;
-        // As três funções de aresta são lineares em `x`, então andar um pixel para o lado é
-        // somar uma constante. Calculá-las do zero em cada pixel eram nove multiplicações por
-        // fragmento — e a maioria dos fragmentos da caixa envolvente é descartada sem chegar a
-        // virar cor.
+        // The three edge functions are linear in `x`, so moving one pixel sideways is adding a
+        // constant. Computing them from scratch at each pixel was nine multiplications per
+        // fragment — and most fragments of the bounding box are discarded without ever becoming
+        // color.
         let step = [
             (screen[1][1] - screen[2][1]) * inv_area,
             (screen[2][1] - screen[0][1]) * inv_area,
             (screen[0][1] - screen[1][1]) * inv_area,
         ];
-        // O mesmo para descer uma linha. Só a escolha do nível de mipmap usa este, e usa porque
-        // **a compressão da textura não é sempre horizontal**: numa superfície de raspão ela
-        // pode estar toda na vertical, e medir só para o lado dava nível zero num lugar onde a
-        // textura passa inteira em dois pixels — que era o serrilhado das listras.
+        // The same for moving down one row. Only the mipmap level choice uses this, and it does
+        // because **texture compression is not always horizontal**: on a grazing surface it may
+        // be entirely vertical, and measuring only sideways gave level zero in a place where the
+        // whole texture goes by in two pixels — which was the jaggedness of the stripes.
         let step_y = [
             (screen[2][0] - screen[1][0]) * inv_area,
             (screen[0][0] - screen[2][0]) * inv_area,
@@ -2523,16 +2553,16 @@ impl GlState {
         });
     }
 
-    /// Guarda o lote da draw call para ser pintado no fim do quadro.
+    /// Stores the draw call's batch to be painted at the end of the frame.
     ///
-    /// Pintar draw call a draw call parecia natural e custava caro: o Quake faz meio milhão
-    /// delas em vinte e cinco segundos, com cinco mil fragmentos cada em média. Nesse tamanho
-    /// não há como dividir entre threads — acordá-las custa mais que o trabalho —, então 99%
-    /// dos preenchimentos dele iam em série, e o rasterizador paralelo não fazia nada.
+    /// Painting draw call by draw call seemed natural and was expensive: Quake makes half a
+    /// million of them in twenty-five seconds, with five thousand fragments each on average. At
+    /// that size there is no way to split across threads — waking them costs more than the work
+    /// —, so 99% of its fills ran serially, and the parallel rasterizer did nothing.
     ///
-    /// Acumulando o quadro inteiro, a divisão acontece uma vez sobre um trabalho grande. Cada
-    /// lote carrega o estado do OpenGL que valia quando foi montado, porque ele muda entre uma
-    /// draw call e a seguinte.
+    /// Accumulating the whole frame, the split happens once over a large amount of work. Each
+    /// batch carries the OpenGL state that applied when it was built, because it changes between
+    /// one draw call and the next.
     fn enqueue(&mut self, batch: &mut Batch) {
         if batch.triangles.is_empty() {
             return;
@@ -2543,15 +2573,15 @@ impl GlState {
         self.pending.jobs.push(Job {
             first: start,
             last: self.pending.triangles.len(),
-            // A textura fica pelo nome, não por referência: entre agora e o despejo o jogo
-            // pode ligar outra, e é a deste momento que vale.
+            // The texture is kept by name, not by reference: between now and the flush the game
+            // may bind another, and the one at this moment is what counts.
             texture: match self.texture_2d {
                 true => Some(self.bound_texture),
                 false => None,
             },
             texture_env: self.texture_env,
-            texture1: self.unidade1.ligada.then_some(self.unidade1.textura),
-            env1: self.unidade1.env,
+            texture1: self.unit1.enabled.then_some(self.unit1.texture),
+            env1: self.unit1.env,
             depth_test: self.depth_test,
             depth_mask: self.depth_mask,
             color_mask: self.color_mask,
@@ -2563,9 +2593,9 @@ impl GlState {
             stencil: Stencil {
                 test: self.stencil_test,
                 func: self.stencil_func,
-                referencia: self.stencil_ref as u8,
-                valor_mask: self.stencil_value_mask as u8,
-                escrita_mask: self.stencil_write_mask as u8,
+                reference: self.stencil_ref as u8,
+                value_mask: self.stencil_value_mask as u8,
+                write_mask: self.stencil_write_mask as u8,
                 op: self.stencil_op,
             },
             alpha_test: self.alpha_test,
@@ -2574,20 +2604,21 @@ impl GlState {
         });
     }
 
-    /// Pinta tudo que está na fila, dividindo a tela em faixas horizontais quando compensa.
+    /// Paints everything in the queue, splitting the screen into horizontal bands when it pays
+    /// off.
     ///
-    /// Cada faixa é um pedaço exclusivo do quadro e percorre a fila inteira na ordem em que o
-    /// jogo desenhou, então a transparência empilha na mesma sequência e o resultado é o mesmo
-    /// que o de uma thread só.
+    /// Each band is an exclusive piece of the frame and walks the whole queue in the order the
+    /// game drew, so transparency stacks in the same sequence and the result is the same as with
+    /// a single thread.
     ///
-    /// Precisa ser chamado antes de qualquer coisa que leia o quadro ou mude uma textura que a
-    /// fila mencione — apresentar, limpar, trocar de superfície, carregar ou apagar textura.
+    /// It must be called before anything that reads the frame or changes a texture the queue
+    /// refers to — presenting, clearing, switching surfaces, loading or deleting a texture.
     pub fn flush(&mut self) {
         if self.pending.jobs.is_empty() {
             return;
         }
-        self.sujo = true;
-        // Separar os campos permite ler as texturas e escrever no quadro ao mesmo tempo.
+        self.dirty = true;
+        // Splitting the fields lets us read the textures and write to the frame at the same time.
         let Self {
             color,
             depth,
@@ -2620,11 +2651,11 @@ impl GlState {
         }
 
         let rows = height.div_ceil(bands);
-        // Na Vita as threads nascem uma vez e ficam. Criá-las aqui, a cada quadro, pedia
-        // pilha ao kernel no meio do jogo: quando ele recusava, o `expect` abortava o
-        // processo. A faixa que não tem thread é pintada por quem chamou.
+        // On the Vita the threads are created once and stay. Creating them here, every frame,
+        // asked the kernel for a stack in the middle of the game: when it refused, the `expect`
+        // aborted the process. The band that has no thread is painted by the caller.
         #[cfg(target_os = "vita")]
-        pinta_em_paralelo_vita(
+        paint_parallel_vita(
             color, depth, stencil, jobs, triangles, textures, width, rows,
         );
         #[cfg(not(target_os = "vita"))]
@@ -2639,7 +2670,7 @@ impl GlState {
                 top += (color.len() / width) as i32;
                 let textures = &*textures;
                 scope.spawn(move || {
-                    pinta_faixa(
+                    paint_band(
                         band_top, color, depth, stencil, jobs, triangles, textures, width,
                     );
                 });
@@ -2648,19 +2679,19 @@ impl GlState {
         pending.clear();
     }
 
-    /// O quadro pronto, em RGB565 e no tamanho `(width, height)` pedido.
+    /// The finished frame, in RGB565 and at the requested `(width, height)` size.
     ///
-    /// Aplica escritas diretas no buffer exposto pelo EGL sem restaurar pixels
-    /// antigos sobre desenhos mais recentes. Profundidade e stencil são preservados.
+    /// Applies direct writes to the buffer exposed by EGL without restoring old pixels over
+    /// more recent draws. Depth and stencil are preserved.
     pub fn import_rgb565_changes(&mut self, width: usize, height: usize, old: &[u8], new: &[u8]) {
         self.flush();
         let (sw, sh) = self.surface();
         if width == 0 || height == 0 || old.len() != width * height * 2 || new.len() != old.len() {
             return;
         }
-        /// Um pixel RGB565 do buffer exposto, já em RGB888.
-        fn expande(novo: &[u8], offset: usize) -> [u8; 3] {
-            let pixel = u16::from_le_bytes([novo[offset], novo[offset + 1]]);
+        /// An RGB565 pixel of the exposed buffer, already in RGB888.
+        fn expand(create: &[u8], offset: usize) -> [u8; 3] {
+            let pixel = u16::from_le_bytes([create[offset], create[offset + 1]]);
             let r = ((pixel >> 11) & 31) as u8;
             let g = ((pixel >> 5) & 63) as u8;
             let b = (pixel & 31) as u8;
@@ -2671,30 +2702,30 @@ impl GlState {
             ]
         }
 
-        // **O caminho sem escala é separado de propósito**, pela mesma razão do
-        // [`GlState::frame_rgb565`]: no laço geral são duas divisões inteiras por pixel, e com
-        // 640×330 isso é mais de quatrocentas mil divisões em cada chamada.
+        // **The unscaled path is separate on purpose**, for the same reason as in
+        // [`GlState::frame_rgb565`]: the general loop does two integer divisions per pixel, and
+        // at 640×330 that is over four hundred thousand divisions on each call.
         //
-        // E a linha inteira é comparada de uma vez antes do laço por pixel. O jogo mexe num
-        // retângulo pequeno ou em nada; percorrer pixel a pixel a superfície toda para descobrir
-        // isso custava 3,6 s numa execução de treze segundos da Z-Wheel. Um `!=` entre fatias é
-        // um `memcmp`, e ele sai na primeira diferença.
+        // And the whole row is compared at once before the per-pixel loop. The game touches a
+        // small rectangle or nothing; walking the whole surface pixel by pixel to find that out
+        // cost 3.6 s in a thirteen-second Z-Wheel run. A `!=` between slices is a `memcmp`, and
+        // it exits at the first difference.
         if sw == width && sh == height {
-            let colunas = width.min(self.width);
+            let columns = width.min(self.width);
             for y in 0..height.min(self.height) {
-                let inicio = y * width * 2;
-                let fim = inicio + colunas * 2;
-                if old[inicio..fim] == new[inicio..fim] {
+                let start = y * width * 2;
+                let end = start + columns * 2;
+                if old[start..end] == new[start..end] {
                     continue;
                 }
-                for x in 0..colunas {
-                    let offset = inicio + x * 2;
+                for x in 0..columns {
+                    let offset = start + x * 2;
                     if old[offset..offset + 2] == new[offset..offset + 2] {
                         continue;
                     }
-                    let [r, g, b] = expande(new, offset);
+                    let [r, g, b] = expand(new, offset);
                     let index = y * self.width + x;
-                    self.sujo = true;
+                    self.dirty = true;
                     self.color[index] = [r, g, b, self.color[index][3]];
                 }
             }
@@ -2706,91 +2737,93 @@ impl GlState {
                 if old[offset..offset + 2] == new[offset..offset + 2] {
                     continue;
                 }
-                let [r, g, b] = expande(new, offset);
+                let [r, g, b] = expand(new, offset);
                 let index = y * self.width + x;
-                self.sujo = true;
+                self.dirty = true;
                 self.color[index] = [r, g, b, self.color[index][3]];
             }
         }
     }
 
-    /// A superfície em que o jogo desenha costuma ser menor que a tela — o Quake do Zeebo
-    /// desenha em 320×400 numa tela de 640×480 —, então a apresentação amplia. É o que a
-    /// extensão de escala da Qualcomm faz no console, e sem isso o quadro aparece encolhido
-    /// num canto.
-    /// O quadro em RGB565, escrito num vetor que o chamador reaproveita.
+    /// The surface the game draws on is usually smaller than the screen — Zeebo's Quake draws at
+    /// 320×400 on a 640×480 screen —, so presentation scales it up. That is what Qualcomm's
+    /// scaling extension does on the console, and without it the frame shows up shrunk in a
+    /// corner.
+    /// The frame in RGB565, written into a vector the caller reuses.
     ///
-    /// Existe por causa do `eglGetColorBufferQUALCOMM`, que é chamado duas vezes por quadro e
-    /// entrega os pixels ao jogo pela memória dele: montar um `Vec` novo a cada chamada, e
-    /// depois outro para os bytes, era alocar e copiar oitocentos kilobytes sessenta vezes por
-    /// segundo. Aqui o vetor é o mesmo sempre.
+    /// It exists because of `eglGetColorBufferQUALCOMM`, which is called twice per frame and
+    /// hands the pixels to the game through its memory: building a new `Vec` on each call, and
+    /// then another for the bytes, was allocating and copying eight hundred kilobytes sixty times
+    /// per second. Here the vector is always the same.
     ///
-    /// **O caminho sem escala é separado de propósito.** Quando o pedido tem o tamanho da
-    /// superfície — que é o caso normal —, as duas divisões por pixel do laço geral somam mais
-    /// de quatrocentas mil divisões inteiras por chamada, e elas custavam mais que a conversão.
+    /// **The unscaled path is separate on purpose.** When the request has the size of the
+    /// surface — which is the normal case —, the two divisions per pixel of the general loop add
+    /// up to over four hundred thousand integer divisions per call, and they cost more than the
+    /// conversion.
     pub fn frame_rgb565(&mut self, width: usize, height: usize, out: &mut Vec<u8>) {
         self.flush();
-        // Quadro igual ao que já está em `out`: não há o que reconverter. Ver [`GlState::sujo`].
-        if !self.sujo && out.len() == width * height * 2 {
+        // Frame identical to what is already in `out`: nothing to reconvert. See
+        // [`GlState::dirty`].
+        if !self.dirty && out.len() == width * height * 2 {
             return;
         }
         let (sw, sh) = self.surface();
         out.clear();
         out.resize(width * height * 2, 0);
-        let converte = |p: [u8; 4]| {
+        let convert = |p: [u8; 4]| {
             ((p[0] as u16 >> 3) << 11) | ((p[1] as u16 >> 2) << 5) | (p[2] as u16 >> 3)
         };
-        // Escreve numa fatia já dimensionada. Antes era um `extend` por pixel, e no caminho de
-        // escala isso é uma ida ao `Vec` para cada dois bytes.
+        // Writes into an already-sized slice. It used to be one `extend` per pixel, and on the
+        // scaling path that is a trip to the `Vec` for every two bytes.
         if sw == width && sh == height {
-            for (y, saida) in out.chunks_exact_mut(width * 2).enumerate() {
-                let linha = &self.color[y * self.width..y * self.width + width];
-                for (pixel, par) in linha.iter().zip(saida.chunks_exact_mut(2)) {
-                    par.copy_from_slice(&converte(*pixel).to_le_bytes());
+            for (y, output) in out.chunks_exact_mut(width * 2).enumerate() {
+                let line = &self.color[y * self.width..y * self.width + width];
+                for (pixel, pair) in line.iter().zip(output.chunks_exact_mut(2)) {
+                    pair.copy_from_slice(&convert(*pixel).to_le_bytes());
                 }
             }
         } else {
-            for (y, saida) in out.chunks_exact_mut(width * 2).enumerate() {
-                let linha = &self.color[(y * sh / height) * self.width..][..self.width];
-                for (x, par) in saida.chunks_exact_mut(2).enumerate() {
-                    par.copy_from_slice(&converte(linha[x * sw / width]).to_le_bytes());
+            for (y, output) in out.chunks_exact_mut(width * 2).enumerate() {
+                let line = &self.color[(y * sh / height) * self.width..][..self.width];
+                for (x, pair) in output.chunks_exact_mut(2).enumerate() {
+                    pair.copy_from_slice(&convert(line[x * sw / width]).to_le_bytes());
                 }
             }
         }
-        self.sujo = false;
+        self.dirty = false;
     }
 
-    /// Mesmo quadro da exportação em bytes, mas sem a ida RGB565 -> bytes -> RGB565.
+    /// Same frame as the byte export, but without the RGB565 -> bytes -> RGB565 round trip.
     pub fn frame_rgb565_words(&mut self, width: usize, height: usize, out: &mut Vec<u16>) {
         self.flush();
-        if !self.sujo && out.len() == width * height {
+        if !self.dirty && out.len() == width * height {
             return;
         }
         let (sw, sh) = self.surface();
         out.clear();
         out.resize(width * height, 0);
-        let converte = |p: [u8; 4]| {
+        let convert = |p: [u8; 4]| {
             ((p[0] as u16 >> 3) << 11) | ((p[1] as u16 >> 2) << 5) | (p[2] as u16 >> 3)
         };
         if sw == width && sh == height {
-            for (saida, &pixel) in out.iter_mut().zip(&self.color) {
-                *saida = converte(pixel);
+            for (output, &pixel) in out.iter_mut().zip(&self.color) {
+                *output = convert(pixel);
             }
         } else {
             for y in 0..height {
-                let linha = &self.color[(y * sh / height) * self.width..][..self.width];
+                let line = &self.color[(y * sh / height) * self.width..][..self.width];
                 for x in 0..width {
-                    out[y * width + x] = converte(linha[x * sw / width]);
+                    out[y * width + x] = convert(line[x * sw / width]);
                 }
             }
         }
-        self.sujo = false;
+        self.dirty = false;
     }
 
 #[cfg(test)]
     pub fn present(&mut self, width: usize, height: usize) -> Vec<u16> {
-        // Entregar o quadro é o ponto em que ele precisa estar pintado — quem pede o resultado
-        // não tem por que saber que o desenho é acumulado.
+        // Handing over the frame is the point where it must be painted — whoever asks for the
+        // result has no reason to know drawing is accumulated.
         self.flush();
         let (sw, sh) = self.surface();
         let mut out = vec![0u16; width * height];
@@ -2806,47 +2839,46 @@ impl GlState {
     }
 }
 
-/// Níveis de pilha de matriz. O mínimo que o OpenGL ES 1.1 garante para a modelagem é 16.
+/// Matrix stack levels. The minimum OpenGL ES 1.1 guarantees for the modelview is 16.
 const MAX_MATRIX_STACK: usize = 16;
 
-/// A partir de quantos fragmentos de caixa envolvente vale dividir o lote entre threads.
+/// From how many bounding-box fragments it is worth splitting the batch across threads.
 ///
-/// Abaixo disso o preenchimento termina antes de as threads acabarem de acordar. O número sai
-/// da medição: no Crash e no Alpine Racer, mais de 95% do tempo de preenchimento está em draw
-/// calls que passam bem deste tamanho, e a enxurrada de chamadas pequenas — a maioria delas —
-/// custa junta uma fração do total.
+/// Below this, filling finishes before the threads are done waking up. The number comes from
+/// measurement: in Crash and Alpine Racer, over 95% of fill time is in draw calls well past this
+/// size, and the flood of small calls — most of them — together cost a fraction of the total.
 const PARALLEL_COST: usize = 64_000;
 
-/// Altura mínima de uma faixa, em linhas.
+/// Minimum height of a band, in rows.
 ///
-/// Ela é o **teto real de paralelismo em superfícies baixas**, e não um detalhe de afinação: com
-/// as quarenta linhas de antes, o palco de 640x330 da Z-Wheel dava `330 / 40 = 8` faixas, e numa
-/// máquina de 24 núcleos dois terços dela ficavam parados durante todo o preenchimento.
+/// It is the **real ceiling on parallelism for short surfaces**, not a tuning detail: with the
+/// forty rows from before, Z-Wheel's 640x330 stage gave `330 / 40 = 8` bands, and on a 24-core
+/// machine two thirds of it sat idle during the whole fill.
 ///
-/// Medido, tempo de `flush` na Z-Wheel em treze segundos virtuais: 2474 ms com 40 linhas, 1938
-/// com 16, 1868 com 8. E na pista do Crash, em trinta segundos virtuais, o total de API foi de
-/// 4637 para 3842 e 3622 ms nos mesmos cortes — quem temia que faixas finas custassem caro numa
-/// superfície de 480 linhas estava enganado, porque ali o número de faixas esbarra no número de
-/// núcleos antes de esbarrar nesta constante.
+/// Measured, `flush` time on Z-Wheel over thirteen virtual seconds: 2474 ms with 40 rows, 1938
+/// with 16, 1868 with 8. And on the Crash track, over thirty virtual seconds, the total API time
+/// went from 4637 to 3842 and 3622 ms at the same cutoffs — whoever feared that thin bands would
+/// be expensive on a 480-row surface was wrong, because there the number of bands hits the
+/// number of cores before hitting this constant.
 ///
-/// O preparo por faixa existe e cresce quando ela afina — é por isso que há um piso —, mas até
-/// oito linhas ele continua menor que o trabalho que a faixa ganha.
+/// Per-band setup exists and grows as the band gets thinner — that is why there is a floor —,
+/// but down to eight rows it remains smaller than the work the band gains.
 const MIN_BAND_ROWS: usize = 8;
 
-/// Em quantas faixas horizontais dividir um quadro de `height` linhas.
+/// Into how many horizontal bands to split a frame of `height` rows.
 fn bands(height: usize) -> usize {
     static CORES: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    let cores = *CORES.get_or_init(nucleos_do_preenchimento);
-    cores.min(height / MIN_BAND_ROWS).max(1)
+    let colors = *CORES.get_or_init(fill_cores);
+    colors.min(height / MIN_BAND_ROWS).max(1)
 }
 
-/// Quantos núcleos o preenchimento pode ocupar.
+/// How many cores filling may use.
 ///
-/// Na Vita `available_parallelism` devolve erro: o ramo Unix da std não conhece
-/// `target_os = "vita"` e cai em "não suportado". O `unwrap_or(1)` deixava o
-/// 3D inteiro no núcleo do interpretador. O homebrew tem três núcleos; o
-/// quarto é `SCE_KERNEL_CPU_MASK_SYSTEM`.
-fn nucleos_do_preenchimento() -> usize {
+/// On the Vita `available_parallelism` returns an error: std's Unix branch doesn't know
+/// `target_os = "vita"` and falls into "unsupported". The `unwrap_or(1)` left the
+/// whole 3D on the interpreter's core. Homebrew gets three cores; the
+/// fourth is `SCE_KERNEL_CPU_MASK_SYSTEM`.
+fn fill_cores() -> usize {
     if cfg!(target_os = "vita") {
         return 3;
     }
@@ -2855,8 +2887,8 @@ fn nucleos_do_preenchimento() -> usize {
         .unwrap_or(1)
 }
 
-/// Pinta uma faixa inteira, na ordem em que o jogo desenhou.
-fn pinta_faixa(
+/// Paints a whole band, in the order the game drew.
+fn paint_band(
     top: i32,
     color: &mut [[u8; 4]],
     depth: &mut [f32],
@@ -2880,12 +2912,12 @@ fn pinta_faixa(
     }
 }
 
-/// Ponteiros de uma faixa. Só vale enquanto o quadro que os criou espera as threads.
+/// Pointers of a band. Only valid while the frame that created them waits for the threads.
 ///
-/// `Send` porque a thread leva a faixa para outro núcleo. Quem escreve é só ela, na sua
-/// fatia; o quadro e as texturas ficam parados até ela terminar.
+/// `Send` because the thread takes the band to another core. Only it writes, in its own
+/// slice; the frame and the textures stay still until it finishes.
 #[cfg(target_os = "vita")]
-struct Fatia {
+struct BandSlice {
     top: i32,
     color: *mut [u8; 4],
     color_len: usize,
@@ -2901,118 +2933,118 @@ struct Fatia {
     width: usize,
 }
 
-// SAFETY: ver o comentário de `Fatia`. A thread só lê a faixa que o quadro acabou de publicar.
+// SAFETY: see the comment on `BandSlice`. The thread only reads the band the frame just published.
 #[cfg(target_os = "vita")]
-unsafe impl Send for Fatia {}
+unsafe impl Send for BandSlice {}
 
 #[cfg(target_os = "vita")]
-fn executa_fatia(fatia: &Fatia) {
-    // SAFETY: a faixa foi montada com pedaços que não se sobrepõem, e o quadro não é lido de
-    // volta até todas as threads desta geração terminarem.
+fn run_slice(slice: &BandSlice) {
+    // SAFETY: the band was built from non-overlapping pieces, and the frame is not read back
+    // until all threads of this generation finish.
     unsafe {
-        let color = std::slice::from_raw_parts_mut(fatia.color, fatia.color_len);
-        let depth = std::slice::from_raw_parts_mut(fatia.depth, fatia.depth_len);
-        let stencil = std::slice::from_raw_parts_mut(fatia.stencil, fatia.stencil_len);
-        let jobs = std::slice::from_raw_parts(fatia.jobs, fatia.jobs_len);
-        let triangles = std::slice::from_raw_parts(fatia.triangles, fatia.triangles_len);
-        let textures = &*fatia.textures;
-        pinta_faixa(
-            fatia.top,
+        let color = std::slice::from_raw_parts_mut(slice.color, slice.color_len);
+        let depth = std::slice::from_raw_parts_mut(slice.depth, slice.depth_len);
+        let stencil = std::slice::from_raw_parts_mut(slice.stencil, slice.stencil_len);
+        let jobs = std::slice::from_raw_parts(slice.jobs, slice.jobs_len);
+        let triangles = std::slice::from_raw_parts(slice.triangles, slice.triangles_len);
+        let textures = &*slice.textures;
+        paint_band(
+            slice.top,
             color,
             depth,
             stencil,
             jobs,
             triangles,
             textures,
-            fatia.width,
+            slice.width,
         );
     }
 }
 
-/// As três threads de preenchimento da Vita. Vivem o processo inteiro.
+/// The Vita's three fill threads. They live for the whole process.
 #[cfg(target_os = "vita")]
-struct PoolVita {
-    estado: std::sync::Mutex<EstadoVita>,
-    acordar: std::sync::Condvar,
-    pronto: std::sync::Condvar,
+struct VitaPool {
+    state: std::sync::Mutex<VitaState>,
+    wake: std::sync::Condvar,
+    ready: std::sync::Condvar,
 }
 
 #[cfg(target_os = "vita")]
-struct EstadoVita {
-    geracao: u64,
-    fatias: [Option<Fatia>; 3],
-    feitas: usize,
-    /// Qual índice de fato tem thread. Um buraco no meio não pode receber faixa: a thread
-    /// daquele índice não existe, e o quadro esperaria uma resposta que não vem.
-    vivo: [bool; 3],
+struct VitaState {
+    generation: u64,
+    slices: [Option<BandSlice>; 3],
+    done: usize,
+    /// Which index actually has a thread. A hole in the middle can't receive a band: the thread
+    /// at that index doesn't exist, and the frame would wait for an answer that never comes.
+    live: [bool; 3],
 }
 
 #[cfg(target_os = "vita")]
-fn pool_vita() -> &'static PoolVita {
-    static POOL: std::sync::OnceLock<&'static PoolVita> = std::sync::OnceLock::new();
+fn vita_pool() -> &'static VitaPool {
+    static POOL: std::sync::OnceLock<&'static VitaPool> = std::sync::OnceLock::new();
     POOL.get_or_init(|| {
-        let pool: &'static PoolVita = Box::leak(Box::new(PoolVita {
-            estado: std::sync::Mutex::new(EstadoVita {
-                geracao: 0,
-                fatias: [None, None, None],
-                feitas: 0,
-                vivo: [false; 3],
+        let pool: &'static VitaPool = Box::leak(Box::new(VitaPool {
+            state: std::sync::Mutex::new(VitaState {
+                generation: 0,
+                slices: [None, None, None],
+                done: 0,
+                live: [false; 3],
             }),
-            acordar: std::sync::Condvar::new(),
-            pronto: std::sync::Condvar::new(),
+            wake: std::sync::Condvar::new(),
+            ready: std::sync::Condvar::new(),
         }));
-        let mut vivo = [false; 3];
-        for indice in 0..3 {
+        let mut live = [false; 3];
+        for index in 0..3 {
             let pool = pool;
-            // 2 MiB é o que a std pedia. Cabe no preenchimento, e como a thread não morre
-            // no fim do quadro, o kernel aloca esta pilha uma vez só.
-            let criada = std::thread::Builder::new()
-                .name(format!("preenchimento-{indice}"))
+            // 2 MiB is what std asked for. It fits the fill, and since the thread doesn't die
+            // at the end of the frame, the kernel allocates this stack only once.
+            let created = std::thread::Builder::new()
+                .name(format!("fill-{index}"))
                 .stack_size(2 * 1024 * 1024)
-                .spawn(move || trabalhador_vita(indice, pool));
-            vivo[indice] = criada.is_ok();
+                .spawn(move || vita_worker(index, pool));
+            live[index] = created.is_ok();
         }
-        if vivo == [false; 3] {
-            crate::registro!(
-                crate::registro::Nivel::Aviso,
+        if live == [false; 3] {
+            crate::logging!(
+                crate::logging::Level::Warning,
                 "gl",
-                "a Vita não abriu thread de preenchimento; o quadro fica na thread do jogo"
+                "the Vita opened no fill thread; the frame stays on the game thread"
             );
         }
-        pool.estado
+        pool.state
             .lock()
-            .unwrap_or_else(|erro| erro.into_inner())
-            .vivo = vivo;
+            .unwrap_or_else(|error| error.into_inner())
+            .live = live;
         pool
     })
 }
 
 #[cfg(target_os = "vita")]
-fn trabalhador_vita(indice: usize, pool: &'static PoolVita) {
-    afinidade_vita(indice);
-    let mut vista = 0u64;
+fn vita_worker(index: usize, pool: &'static VitaPool) {
+    vita_affinity(index);
+    let mut view = 0u64;
     loop {
-        let mut estado = pool.estado.lock().unwrap_or_else(|erro| erro.into_inner());
-        while estado.geracao == vista || estado.fatias[indice].is_none() {
-            estado = pool
-                .acordar
-                .wait(estado)
-                .unwrap_or_else(|erro| erro.into_inner());
+        let mut state = pool.state.lock().unwrap_or_else(|error| error.into_inner());
+        while state.generation == view || state.slices[index].is_none() {
+            state = pool
+                .wake
+                .wait(state)
+                .unwrap_or_else(|error| error.into_inner());
         }
-        vista = estado.geracao;
-        let fatia = estado.fatias[indice].take();
-        drop(estado);
-        if let Some(fatia) = fatia {
-            executa_fatia(&fatia);
+        view = state.generation;
+        let slice = state.slices[index].take();
+        drop(state);
+        if let Some(slice) = slice {
+            run_slice(&slice);
         }
-        let mut estado = pool.estado.lock().unwrap_or_else(|erro| erro.into_inner());
-        estado.feitas += 1;
-        pool.pronto.notify_one();
+        let mut state = pool.state.lock().unwrap_or_else(|error| error.into_inner());
+        state.done += 1;
+        pool.ready.notify_one();
     }
 }
 
 #[cfg(target_os = "vita")]
-fn pinta_em_paralelo_vita(
+fn paint_parallel_vita(
     color: &mut [[u8; 4]],
     depth: &mut [f32],
     stencil: &mut [u8],
@@ -3028,19 +3060,19 @@ fn pinta_em_paralelo_vita(
     let color = color.as_mut_ptr();
     let depth = depth.as_mut_ptr();
     let stencil = stencil.as_mut_ptr();
-    let passo = rows.saturating_mul(width);
-    let mut locais = Vec::new();
+    let step = rows.saturating_mul(width);
+    let mut local_slices = Vec::new();
     let mut offset = 0usize;
     let mut top = 0i32;
     while offset < color_len && offset < depth_len && offset < stencil_len {
-        let n = passo
+        let n = step
             .min(color_len - offset)
             .min(depth_len - offset)
             .min(stencil_len - offset);
         if n == 0 {
             break;
         }
-        locais.push(Fatia {
+        local_slices.push(BandSlice {
             top,
             color: unsafe { color.add(offset) },
             color_len: n,
@@ -3059,48 +3091,48 @@ fn pinta_em_paralelo_vita(
         offset += n;
     }
 
-    let pool = pool_vita();
-    let mut estado = pool.estado.lock().unwrap_or_else(|erro| erro.into_inner());
-    let vivo = estado.vivo;
-    estado.feitas = 0;
-    let mut na_principal = Vec::new();
-    let mut enviadas = 0usize;
-    let mut faixas = locais.into_iter();
-    for indice in 0..3 {
-        if !vivo[indice] {
+    let pool = vita_pool();
+    let mut state = pool.state.lock().unwrap_or_else(|error| error.into_inner());
+    let live = state.live;
+    state.done = 0;
+    let mut on_main = Vec::new();
+    let mut sent_count = 0usize;
+    let mut bands = local_slices.into_iter();
+    for index in 0..3 {
+        if !live[index] {
             continue;
         }
-        if let Some(fatia) = faixas.next() {
-            estado.fatias[indice] = Some(fatia);
-            enviadas += 1;
+        if let Some(slice) = bands.next() {
+            state.slices[index] = Some(slice);
+            sent_count += 1;
         }
     }
-    na_principal.extend(faixas);
-    estado.geracao = estado.geracao.wrapping_add(1);
-    pool.acordar.notify_all();
-    drop(estado);
+    on_main.extend(bands);
+    state.generation = state.generation.wrapping_add(1);
+    pool.wake.notify_all();
+    drop(state);
 
-    for fatia in na_principal {
-        executa_fatia(&fatia);
+    for slice in on_main {
+        run_slice(&slice);
     }
 
-    let mut estado = pool.estado.lock().unwrap_or_else(|erro| erro.into_inner());
-    while estado.feitas < enviadas {
-        estado = pool
-            .pronto
-            .wait(estado)
-            .unwrap_or_else(|erro| erro.into_inner());
+    let mut state = pool.state.lock().unwrap_or_else(|error| error.into_inner());
+    while state.done < sent_count {
+        state = pool
+            .ready
+            .wait(state)
+            .unwrap_or_else(|error| error.into_inner());
     }
 }
 
-/// Põe a thread de preenchimento num núcleo de usuário da Vita.
+/// Puts the fill thread on a Vita user core.
 ///
-/// `sceKernelCreateThread` com máscara 0, que é o que o `pthread` da newlib
-/// passa, não espalha o trabalho. As máscaras são as de `psp2/kernel/cpu.h`:
-/// `USER_0`, `USER_1` e `USER_2`.
+/// `sceKernelCreateThread` with mask 0, which is what newlib's `pthread`
+/// passes, doesn't spread the work. The masks are the ones from `psp2/kernel/cpu.h`:
+/// `USER_0`, `USER_1` and `USER_2`.
 #[cfg(target_os = "vita")]
-fn afinidade_vita(indice: usize) {
-    const NUCLEOS: [i32; 3] = [0x0001_0000, 0x0002_0000, 0x0004_0000];
+fn vita_affinity(index: usize) {
+    const CORE_MASKS: [i32; 3] = [0x0001_0000, 0x0002_0000, 0x0004_0000];
     unsafe extern "C" {
         fn sceKernelGetThreadId() -> i32;
         fn sceKernelChangeThreadCpuAffinityMask(thid: i32, mask: i32) -> i32;
@@ -3108,21 +3140,22 @@ fn afinidade_vita(indice: usize) {
     unsafe {
         let id = sceKernelGetThreadId();
         if id > 0 {
-            let _ = sceKernelChangeThreadCpuAffinityMask(id, NUCLEOS[indice % 3]);
+            let _ = sceKernelChangeThreadCpuAffinityMask(id, CORE_MASKS[index % 3]);
         }
     }
 }
 
-/// Um triângulo já projetado na tela, com tudo que não depende do pixel resolvido.
+/// A triangle already projected on screen, with everything that doesn't depend on the pixel
+/// resolved.
 struct Prepared {
-    /// Vértices em coordenadas de tela, com `1/w` no quarto componente.
+    /// Vertices in screen coordinates, with `1/w` in the fourth component.
     screen: [[f32; 4]; 3],
-    /// Cor e coordenada de textura de cada vértice, divididas por `w`.
+    /// Color and texture coordinate of each vertex, divided by `w`.
     over_w: [[f32; 9]; 3],
     inv_area: f32,
-    /// Quanto cada função de aresta anda a cada pixel para a direita.
+    /// How much each edge function advances per pixel to the right.
     step: [f32; 3],
-    /// E a cada linha para baixo. Ver a construção dele.
+    /// And per row downward. See where it is built.
     step_y: [f32; 3],
     min_x: i32,
     max_x: i32,
@@ -3130,43 +3163,43 @@ struct Prepared {
     max_y: i32,
 }
 
-/// Uma draw call à espera de virar pixel: a faixa dela na fila de triângulos, mais o estado do
-/// OpenGL que valia quando foi montada.
-/// O estado do stencil de uma draw call, do jeito que o preenchimento precisa dele.
+/// A draw call waiting to become pixels: its range in the triangle queue, plus the OpenGL state
+/// that applied when it was built.
+/// The stencil state of a draw call, the way filling needs it.
 #[derive(Debug, Clone, Copy)]
 struct Stencil {
     test: bool,
     func: u32,
-    referencia: u8,
-    valor_mask: u8,
-    escrita_mask: u8,
-    /// `[falha, falha_z, passa]`.
+    reference: u8,
+    value_mask: u8,
+    write_mask: u8,
+    /// `[failure, zfail, passes]`.
     op: [u32; 3],
 }
 
 impl Stencil {
-    /// Aplica uma das três operações a um valor do buffer.
+    /// Applies one of the three operations to a buffer value.
     ///
-    /// A máscara de escrita decide bit a bit o que muda: é ela que deixa um desenho marcar o
-    /// chão sem mexer nos bits que outro passe usa.
-    fn aplica(&self, qual: usize, atual: u8) -> u8 {
-        let novo = match self.op[qual] {
-            gles::GL_KEEP => return atual,
+    /// The write mask decides bit by bit what changes: it is what lets one draw mark the floor
+    /// without touching the bits another pass uses.
+    fn apply(&self, which: usize, current: u8) -> u8 {
+        let create = match self.op[which] {
+            gles::GL_KEEP => return current,
             gles::GL_ZERO_OP => 0,
-            gles::GL_REPLACE => self.referencia,
-            gles::GL_INCR => atual.saturating_add(1),
-            gles::GL_DECR => atual.saturating_sub(1),
-            gles::GL_INVERT => !atual,
-            _ => return atual,
+            gles::GL_REPLACE => self.reference,
+            gles::GL_INCR => current.saturating_add(1),
+            gles::GL_DECR => current.saturating_sub(1),
+            gles::GL_INVERT => !current,
+            _ => return current,
         };
-        (atual & !self.escrita_mask) | (novo & self.escrita_mask)
+        (current & !self.write_mask) | (create & self.write_mask)
     }
 
-    /// O teste em si, entre a referência e o que está no buffer, ambos mascarados.
-    fn passa(&self, atual: u8) -> bool {
+    /// The test itself, between the reference and what is in the buffer, both masked.
+    fn passes(&self, current: u8) -> bool {
         let (r, v) = (
-            (self.referencia & self.valor_mask) as f32,
-            (atual & self.valor_mask) as f32,
+            (self.reference & self.value_mask) as f32,
+            (current & self.value_mask) as f32,
         );
         compare(self.func, r, v)
     }
@@ -3175,10 +3208,10 @@ impl Stencil {
 struct Job {
     first: usize,
     last: usize,
-    /// Nome da textura ligada, ou `None` se o desenho não usa textura.
+    /// Name of the bound texture, or `None` if the draw uses no texture.
     texture: Option<u32>,
     texture_env: TexEnv,
-    /// A textura e o ambiente da unidade 1, quando ela está ligada.
+    /// The texture and environment of unit 1, when it is enabled.
     texture1: Option<u32>,
     env1: TexEnv,
     depth_test: bool,
@@ -3191,20 +3224,20 @@ struct Job {
     alpha_test: bool,
     alpha_func: u32,
     alpha_ref: f32,
-    /// O estado do stencil no momento do desenho. Ver [`GlState::stencil_test`].
+    /// The stencil state at draw time. See [`GlState::stencil_test`].
     stencil: Stencil,
-    /// A névoa no momento do desenho. Ver [`Neblina`].
-    fog: Neblina,
+    /// The fog at draw time. See [`Fog`].
+    fog: Fog,
 }
 
 impl Job {
-    /// Resolve o nome da textura e monta o estado que o preenchimento lê.
+    /// Resolves the texture name and builds the state filling reads.
     fn uniforms<'a>(&self, textures: &'a HashMap<u32, Texture>, width: usize) -> Uniforms<'a> {
         let texture = self.texture.and_then(|name| textures.get(&name));
         Uniforms {
             width,
             texture,
-            usa_mipmap: texture.is_some_and(|texture| {
+            uses_mipmap: texture.is_some_and(|texture| {
                 !texture.mipmaps.is_empty()
                     && matches!(
                         texture.min_filter,
@@ -3233,16 +3266,17 @@ impl Job {
     }
 }
 
-/// O quadro em construção: os triângulos de todas as draw calls desde o último despejo, e a
-/// lista de quais pertencem a cada uma.
+/// The frame under construction: the triangles of every draw call since the last flush, and the
+/// list of which belong to each one.
 ///
-/// Os dois vetores vivem entre quadros para não devolver e repedir a mesma memória sessenta
-/// vezes por segundo.
+/// Both vectors live across frames so as not to give back and re-request the same memory sixty
+/// times per second.
 #[derive(Default)]
 struct Pending {
     triangles: Vec<Prepared>,
     jobs: Vec<Job>,
-    /// Soma das caixas envolventes, em fragmentos: é ela que decide se vale acordar as threads.
+    /// Sum of the bounding boxes, in fragments: it decides whether waking the threads is worth
+    /// it.
     cost: usize,
 }
 
@@ -3254,11 +3288,11 @@ impl Pending {
     }
 }
 
-/// Os triângulos de uma draw call, com o custo estimado de preenchê-los.
+/// The triangles of a draw call, with the estimated cost of filling them.
 #[derive(Default)]
 struct Batch {
     triangles: Vec<Prepared>,
-    /// Soma das caixas envolventes, em fragmentos.
+    /// Sum of the bounding boxes, in fragments.
     cost: usize,
 }
 
@@ -3269,18 +3303,18 @@ impl Batch {
     }
 }
 
-/// O estado do OpenGL que vale para o lote inteiro. Só leitura, e por isso compartilhável
-/// entre as threads que preenchem as faixas.
+/// The OpenGL state that applies to the whole batch. Read-only, and therefore shareable among
+/// the threads that fill the bands.
 struct Uniforms<'a> {
     width: usize,
     texture: Option<&'a Texture>,
-    /// Se a textura do lote tem cadeia de mipmaps **e** o filtro pede nível.
+    /// Whether the batch's texture has a mipmap chain **and** the filter asks for a level.
     ///
-    /// Não depende do fragmento, mas era recalculado dentro do laço — um `matches!` de quatro
-    /// constantes em cada pixel aprovado, centenas de milhares de vezes por quadro.
-    usa_mipmap: bool,
+    /// It doesn't depend on the fragment, but was recomputed inside the loop — a `matches!` of
+    /// four constants on every passing pixel, hundreds of thousands of times per frame.
+    uses_mipmap: bool,
     texture_env: TexEnv,
-    /// A textura e o ambiente da unidade 1.
+    /// The texture and environment of unit 1.
     texture1: Option<&'a Texture>,
     env1: TexEnv,
     depth_test: bool,
@@ -3293,38 +3327,39 @@ struct Uniforms<'a> {
     alpha_test: bool,
     alpha_func: u32,
     alpha_ref: f32,
-    /// O estado do stencil no momento do desenho. Ver [`GlState::stencil_test`].
+    /// The stencil state at draw time. See [`GlState::stencil_test`].
     stencil: Stencil,
-    /// A névoa no momento do desenho. Ver [`Neblina`].
-    fog: Neblina,
+    /// The fog at draw time. See [`Fog`].
+    fog: Fog,
 }
 
-/// Uma faixa horizontal do quadro: o pedaço exclusivo de uma thread.
+/// A horizontal band of the frame: a thread's exclusive piece.
 struct Band<'a> {
-    /// Linha da tela que corresponde ao começo da faixa.
+    /// Screen row corresponding to the start of the band.
     top: i32,
     color: &'a mut [[u8; 4]],
     depth: &'a mut [f32],
     stencil: &'a mut [u8],
 }
 
-/// Textura do nível zero, em inteiro. O caminho em ponto flutuante divide e multiplica cada
-/// canal por 255; no Cortex-A9 isso é o grosso do pixel. Contra `pack(sample_nivel)`, o pior
-/// canal medido no teste `a_amostra_inteira_nao_passa_de_dois_niveis` foi dois níveis.
+/// Level-zero texture, in integers. The floating-point path divides and multiplies each channel
+/// by 255; on the Cortex-A9 that is the bulk of the pixel. Against `pack(sample_level)`, the
+/// worst channel measured in the `the_integer_sample_stays_within_two_levels` test was two
+/// levels.
 #[cfg(any(test, target_os = "vita"))]
 struct Texel<'a> {
     pixels: &'a [[u8; 4]],
     width: usize,
     height: usize,
     wrap: [u32; 2],
-    /// `GL_REPEAT` com lado potência de dois vira máscara. O resto paga a divisão de `wrap`.
+    /// `GL_REPEAT` with a power-of-two side becomes a mask. The rest pays `wrap`'s division.
     pot: [bool; 2],
     mask: [usize; 2],
 }
 
 #[cfg(any(test, target_os = "vita"))]
 impl<'a> Texel<'a> {
-    fn novo(texture: &'a Texture) -> Option<Self> {
+    fn create(texture: &'a Texture) -> Option<Self> {
         let width = texture.width;
         let height = texture.height;
         if width == 0 || height == 0 || texture.pixels.len() < width.saturating_mul(height) {
@@ -3345,83 +3380,83 @@ impl<'a> Texel<'a> {
     }
 
     #[inline(always)]
-    fn indice(&self, eixo: usize, valor: i32) -> usize {
-        let tamanho = if eixo == 0 { self.width } else { self.height };
-        if self.pot[eixo] {
-            return (valor as usize) & self.mask[eixo];
+    fn index(&self, axis: usize, value: i32) -> usize {
+        let size = if axis == 0 { self.width } else { self.height };
+        if self.pot[axis] {
+            return (value as usize) & self.mask[axis];
         }
-        Texture::wrap(self.wrap[eixo], valor, tamanho)
+        Texture::wrap(self.wrap[axis], value, size)
     }
 
     #[inline(always)]
-    fn le(&self, x: i32, y: i32) -> [u8; 4] {
-        let (x, y) = (self.indice(0, x), self.indice(1, y));
-        // SAFETY: `indice` devolve `0..lado`, e `novo` exigiu pixels para a textura inteira.
+    fn read(&self, x: i32, y: i32) -> [u8; 4] {
+        let (x, y) = (self.index(0, x), self.index(1, y));
+        // SAFETY: `index` returns `0..side`, and `create` required pixels for the whole texture.
         unsafe { *self.pixels.get_unchecked(y * self.width + x) }
     }
 
     #[inline(always)]
-    fn pega<const SUAVE: bool>(&self, u: f32, v: f32) -> [u8; 4] {
+    fn get<const SMOOTH: bool>(&self, u: f32, v: f32) -> [u8; 4] {
         let x = u * self.width as f32 - 0.5;
         let y = v * self.height as f32 - 0.5;
-        if !SUAVE {
-            return self.le(x.round() as i32, y.round() as i32);
+        if !SMOOTH {
+            return self.read(x.round() as i32, y.round() as i32);
         }
         let (x0, y0) = (x.floor(), y.floor());
         let fx = ((x - x0) * 256.0).clamp(0.0, 255.0) as u32;
         let fy = ((y - y0) * 256.0).clamp(0.0, 255.0) as u32;
         let (x0, y0) = (x0 as i32, y0 as i32);
-        let cantos = [
-            self.le(x0, y0),
-            self.le(x0 + 1, y0),
-            self.le(x0, y0 + 1),
-            self.le(x0 + 1, y0 + 1),
+        let corners = [
+            self.read(x0, y0),
+            self.read(x0 + 1, y0),
+            self.read(x0, y0 + 1),
+            self.read(x0 + 1, y0 + 1),
         ];
-        let mut saida = [0u8; 4];
-        for canal in 0..4 {
-            let cima = u32::from(cantos[0][canal]) * (256 - fx) + u32::from(cantos[1][canal]) * fx;
-            let baixo = u32::from(cantos[2][canal]) * (256 - fx) + u32::from(cantos[3][canal]) * fx;
-            saida[canal] = ((cima * (256 - fy) + baixo * fy + 32_768) >> 16) as u8;
+        let mut output = [0u8; 4];
+        for channel in 0..4 {
+            let up = u32::from(corners[0][channel]) * (256 - fx) + u32::from(corners[1][channel]) * fx;
+            let down = u32::from(corners[2][channel]) * (256 - fx) + u32::from(corners[3][channel]) * fx;
+            output[channel] = ((up * (256 - fy) + down * fy + 32_768) >> 16) as u8;
         }
-        saida
+        output
     }
 }
 
 #[cfg(test)]
 thread_local! {
-    static CAMINHO_AFIM: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    static AFFINE_PATH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
-/// Quatro vértices no mesmo `1/w`: sprite e fundo 2D. A perspectiva por pixel é divisão à
-/// toa, e é ela que o laço opaco ainda fazia.
+/// Four vertices with the same `1/w`: sprites and 2D backgrounds. Per-pixel perspective is a
+/// pointless division, and it is what the opaque loop still did.
 #[cfg(target_os = "vita")]
-fn afim(tri: &Prepared) -> Option<f32> {
+fn affine(tri: &Prepared) -> Option<f32> {
     let w = tri.screen[0][3];
     if w == 0.0 {
         return None;
     }
-    let perto = |outro: f32| (outro - w).abs() <= 1.0e-5 * (1.0 + w.abs());
-    (perto(tri.screen[1][3]) && perto(tri.screen[2][3])).then_some(w)
+    let near = |other: f32| (other - w).abs() <= 1.0e-5 * (1.0 + w.abs());
+    (near(tri.screen[1][3]) && near(tri.screen[2][3])).then_some(w)
 }
 
 #[cfg(target_os = "vita")]
-fn cor_chapada(tri: &Prepared, w: f32) -> Option<[f32; 4]> {
-    let mut cor = [0.0; 4];
-    for canal in 0..4 {
-        let c0 = tri.over_w[0][canal] / w;
-        let c1 = tri.over_w[1][canal] / w;
-        let c2 = tri.over_w[2][canal] / w;
+fn flat_color(tri: &Prepared, w: f32) -> Option<[f32; 4]> {
+    let mut color = [0.0; 4];
+    for channel in 0..4 {
+        let c0 = tri.over_w[0][channel] / w;
+        let c1 = tri.over_w[1][channel] / w;
+        let c2 = tri.over_w[2][channel] / w;
         if (c0 - c1).abs() > 1.0e-4 || (c0 - c2).abs() > 1.0e-4 || !(0.0..=1.0).contains(&c0) {
             return None;
         }
-        cor[canal] = c0;
+        color[channel] = c0;
     }
-    Some(cor)
+    Some(color)
 }
 
-/// `0` não mistura, `1` é `SRC_ALPHA` sobre `ONE_MINUS_SRC_ALPHA`, `2` é aditiva.
+/// `0` doesn't blend, `1` is `SRC_ALPHA` over `ONE_MINUS_SRC_ALPHA`, `2` is additive.
 #[cfg(target_os = "vita")]
-fn mistura_rapida(uniforms: &Uniforms) -> Option<u8> {
+fn fast_blend(uniforms: &Uniforms) -> Option<u8> {
     if !uniforms.blend {
         return Some(0);
     }
@@ -3439,9 +3474,9 @@ fn mistura_rapida(uniforms: &Uniforms) -> Option<u8> {
 
 #[inline(always)]
 #[cfg(target_os = "vita")]
-fn aplica_cor(texel: [u8; 4], cor: [f32; 4]) -> [u8; 4] {
+fn apply_color(texel: [u8; 4], color: [f32; 4]) -> [u8; 4] {
     std::array::from_fn(|i| {
-        let v = cor[i] * f32::from(texel[i]) + 0.5;
+        let v = color[i] * f32::from(texel[i]) + 0.5;
         if v <= 0.0 {
             0
         } else if v >= 255.0 {
@@ -3454,50 +3489,50 @@ fn aplica_cor(texel: [u8; 4], cor: [f32; 4]) -> [u8; 4] {
 
 #[inline(always)]
 #[cfg(target_os = "vita")]
-fn por_cima(src: [u8; 4], dst: [u8; 4], aditiva: bool) -> [u8; 4] {
-    let alfa = u32::from(src[3]);
+fn blend_over(src: [u8; 4], dst: [u8; 4], additive: bool) -> [u8; 4] {
+    let alpha = u32::from(src[3]);
     std::array::from_fn(|i| {
-        let somado = if aditiva {
-            u32::from(src[i]) * alfa + u32::from(dst[i]) * 255
+        let summed = if additive {
+            u32::from(src[i]) * alpha + u32::from(dst[i]) * 255
         } else {
-            u32::from(src[i]) * alfa + u32::from(dst[i]) * (255 - alfa)
+            u32::from(src[i]) * alpha + u32::from(dst[i]) * (255 - alpha)
         };
-        (somado.saturating_add(127) / 255).min(255) as u8
+        (summed.saturating_add(127) / 255).min(255) as u8
     })
 }
 
-/// Preenchimento dos triângulos afins: uma textura, cor constante, sem névoa e sem stencil.
+/// Fill for affine triangles: one texture, constant color, no fog and no stencil.
 ///
-/// O corpo geral — e mesmo o atalho opaco — interpola perspectiva e amostra em ponto
-/// flutuante. Sprite com teste de alfa não entrava no atalho, e é o grosso de um jogo 2D.
-/// Aqui `u` e `v` andam um passo por pixel, a profundidade continua a conta exata a partir
-/// do vértice zero, e o texel é inteiro.
+/// The general body — and even the opaque shortcut — interpolates perspective and samples in
+/// floating point. Sprites with an alpha test didn't take the shortcut, and they are the bulk of
+/// a 2D game. Here `u` and `v` advance one step per pixel, depth is still the exact computation
+/// from vertex zero, and the texel is integer.
 ///
-/// Medido neste Mac, em release, o mesmo quadro de 640×480 com textura linear e teste de
-/// profundidade, preenchido em paralelo: 2,22 ms no corpo geral, 1,09 ms no atalho opaco e
-/// 0,61 ms aqui. Não é um número da Vita.
+/// Measured on this Mac, in release, the same 640×480 frame with linear texture and depth test,
+/// filled in parallel: 2.22 ms in the general body, 1.09 ms in the opaque shortcut and 0.61 ms
+/// here. It is not a Vita number.
 #[cfg(target_os = "vita")]
 #[inline(never)]
-fn fill_afim<const SUAVE: bool>(
+fn fill_affine<const SMOOTH: bool>(
     tri: &Prepared,
     uniforms: &Uniforms,
     band: &mut Band,
     texel: &Texel<'_>,
     w: f32,
-    cor: [f32; 4],
-    copia: bool,
-    mistura: u8,
+    color: [f32; 4],
+    copy: bool,
+    blend: u8,
 ) {
     #[cfg(test)]
-    CAMINHO_AFIM.with(|c| c.set(c.get() + 1));
+    AFFINE_PATH.with(|c| c.set(c.get() + 1));
     let persp = 1.0 / w;
-    let derivada = |canal: usize| {
-        (tri.step[0] * tri.over_w[0][canal]
-            + tri.step[1] * tri.over_w[1][canal]
-            + tri.step[2] * tri.over_w[2][canal])
+    let derivative = |channel: usize| {
+        (tri.step[0] * tri.over_w[0][channel]
+            + tri.step[1] * tri.over_w[1][channel]
+            + tri.step[2] * tri.over_w[2][channel])
             * persp
     };
-    let (du, dv) = (derivada(4), derivada(5));
+    let (du, dv) = (derivative(4), derivative(5));
     let (z0, dz1, dz2) = (
         tri.screen[0][2],
         tri.screen[1][2] - tri.screen[0][2],
@@ -3511,85 +3546,86 @@ fn fill_afim<const SUAVE: bool>(
     let bottom = tri.max_y.min(band.top + rows);
     let depth_test = uniforms.depth_test;
     let depth_func = uniforms.depth_func;
-    let grava_z = depth_test && uniforms.depth_mask;
-    let testa_alfa = uniforms.alpha_test;
-    let alfa_func = uniforms.alpha_func;
-    let alfa_ref = uniforms.alpha_ref;
-    let aditiva = mistura == 2;
+    let write_z = depth_test && uniforms.depth_mask;
+    let alpha_test = uniforms.alpha_test;
+    let alpha_func = uniforms.alpha_func;
+    let alpha_ref = uniforms.alpha_ref;
+    let additive = blend == 2;
     for y in top..bottom {
         let start = [tri.min_x as f32 + 0.5, y as f32 + 0.5, 0.0, 0.0];
-        let mut peso = [
+        let mut weight = [
             edge(tri.screen[1], tri.screen[2], start) * tri.inv_area,
             edge(tri.screen[2], tri.screen[0], start) * tri.inv_area,
             edge(tri.screen[0], tri.screen[1], start) * tri.inv_area,
         ];
         let mut x = tri.min_x;
-        while x < tri.max_x && (peso[0] < 0.0 || peso[1] < 0.0 || peso[2] < 0.0) {
-            peso = [
-                peso[0] + tri.step[0],
-                peso[1] + tri.step[1],
-                peso[2] + tri.step[2],
+        while x < tri.max_x && (weight[0] < 0.0 || weight[1] < 0.0 || weight[2] < 0.0) {
+            weight = [
+                weight[0] + tri.step[0],
+                weight[1] + tri.step[1],
+                weight[2] + tri.step[2],
             ];
             x += 1;
         }
         let row = (y - band.top) as usize * width;
         let mut u = 0.0;
         let mut v = 0.0;
-        let mut fase = 0u32;
-        while x < tri.max_x && peso[0] >= 0.0 && peso[1] >= 0.0 && peso[2] >= 0.0 {
-            // `u += du` ao longo da linha não é a conta do peso, em f32. De 32 em 32
-            // pixels a coordenada volta a sair do peso, e o desvio não atravessa a linha.
-            if fase == 0 {
-                u = (peso[0] * ou[0] + peso[1] * ou[1] + peso[2] * ou[2]) * persp;
-                v = (peso[0] * ov[0] + peso[1] * ov[1] + peso[2] * ov[2]) * persp;
+        let mut phase = 0u32;
+        while x < tri.max_x && weight[0] >= 0.0 && weight[1] >= 0.0 && weight[2] >= 0.0 {
+            // `u += du` along the row is not the weight computation, in f32. Every 32
+            // pixels the coordinate comes from the weight again, and the drift doesn't cross the
+            // row.
+            if phase == 0 {
+                u = (weight[0] * ou[0] + weight[1] * ou[1] + weight[2] * ou[2]) * persp;
+                v = (weight[0] * ov[0] + weight[1] * ov[1] + weight[2] * ov[2]) * persp;
             }
-            let z = z0 + peso[1] * dz1 + peso[2] * dz2;
+            let z = z0 + weight[1] * dz1 + weight[2] * dz2;
             let index = row + x as usize;
-            let passa_z = !depth_test
+            let z_passes = !depth_test
                 || match depth_func {
                     gles::GL_LESS => z < band.depth[index],
                     gles::GL_LEQUAL => z <= band.depth[index],
                     _ => true,
                 };
-            if passa_z {
-                let bruto = texel.pega::<SUAVE>(u, v);
-                let mut cor = if copia { bruto } else { aplica_cor(bruto, cor) };
-                let visivel =
-                    !testa_alfa || compare(alfa_func, f32::from(cor[3]) / 255.0, alfa_ref);
-                if visivel {
-                    if mistura != 0 {
-                        cor = por_cima(cor, band.color[index], aditiva);
+            if z_passes {
+                let raw = texel.get::<SMOOTH>(u, v);
+                let mut color = if copy { raw } else { apply_color(raw, color) };
+                let visible =
+                    !alpha_test || compare(alpha_func, f32::from(color[3]) / 255.0, alpha_ref);
+                if visible {
+                    if blend != 0 {
+                        color = blend_over(color, band.color[index], additive);
                     }
-                    band.color[index] = cor;
-                    if grava_z {
+                    band.color[index] = color;
+                    if write_z {
                         band.depth[index] = z;
                     }
                 }
             }
             u += du;
             v += dv;
-            fase = (fase + 1) & 31;
-            peso = [
-                peso[0] + tri.step[0],
-                peso[1] + tri.step[1],
-                peso[2] + tri.step[2],
+            phase = (phase + 1) & 31;
+            weight = [
+                weight[0] + tri.step[0],
+                weight[1] + tri.step[1],
+                weight[2] + tri.step[2],
             ];
             x += 1;
         }
     }
 }
 
-/// O caminho afim, quando o triângulo e o estado cabem nele. Senão o chamador segue no
-/// preenchimento geral.
+/// The affine path, when the triangle and the state fit it. Otherwise the caller goes on to the
+/// general fill.
 #[cfg(target_os = "vita")]
-fn fill_afim_se_couber(tri: &Prepared, uniforms: &Uniforms, band: &mut Band) -> bool {
+fn try_fill_affine(tri: &Prepared, uniforms: &Uniforms, band: &mut Band) -> bool {
     let Some(texture) = uniforms.texture else {
         return false;
     };
-    if uniforms.usa_mipmap || uniforms.texture1.is_some() || uniforms.stencil.test {
+    if uniforms.uses_mipmap || uniforms.texture1.is_some() || uniforms.stencil.test {
         return false;
     }
-    if uniforms.fog.ligada && uniforms.fog.permitida {
+    if uniforms.fog.enabled && uniforms.fog.allowed {
         return false;
     }
     if uniforms.color_mask != [true, true, true, true] {
@@ -3604,50 +3640,50 @@ fn fill_afim_se_couber(tri: &Prepared, uniforms: &Uniforms, band: &mut Band) -> 
         return false;
     }
     if matches!(
-        uniforms.texture_env.modo,
+        uniforms.texture_env.mode,
         gles::GL_DECAL | gles::GL_ADD | gles::GL_COMBINE
     ) {
         return false;
     }
-    let (Some(w), Some(mistura)) = (afim(tri), mistura_rapida(uniforms)) else {
+    let (Some(w), Some(blend)) = (affine(tri), fast_blend(uniforms)) else {
         return false;
     };
-    let substitui = uniforms.texture_env.modo == gles::GL_REPLACE;
-    let Some(cor) = (if substitui {
+    let replaces = uniforms.texture_env.mode == gles::GL_REPLACE;
+    let Some(color) = (if replaces {
         Some([1.0; 4])
     } else {
-        cor_chapada(tri, w)
+        flat_color(tri, w)
     }) else {
         return false;
     };
-    let Some(texel) = Texel::novo(texture) else {
+    let Some(texel) = Texel::create(texture) else {
         return false;
     };
-    let copia = substitui || cor.iter().all(|c| (*c - 1.0).abs() <= 1.0e-6);
+    let copy = replaces || color.iter().all(|c| (*c - 1.0).abs() <= 1.0e-6);
     if texture.filter == gles::GL_LINEAR {
-        fill_afim::<true>(tri, uniforms, band, &texel, w, cor, copia, mistura);
+        fill_affine::<true>(tri, uniforms, band, &texel, w, color, copy, blend);
     } else {
-        fill_afim::<false>(tri, uniforms, band, &texel, w, cor, copia, mistura);
+        fill_affine::<false>(tri, uniforms, band, &texel, w, color, copy, blend);
     }
     true
 }
 
-/// O preenchimento comum: uma textura, sem névoa, sem mistura, sem stencil e sem teste de
-/// alfa. A função geral carrega tudo isso no mesmo corpo, e no Cortex-A9 da Vita o laço
-/// derrama registradores — o quadro desenhado no aparelho ficou em 95,5 ms contra 6,6 ms sem
-/// pintar.
+/// The common fill: one texture, no fog, no blending, no stencil and no alpha test. The
+/// general function carries all of that in the same body, and on the Vita's Cortex-A9 the loop
+/// spills registers — the frame drawn on the device took 95.5 ms against 6.6 ms without
+/// painting.
 ///
-/// A conta é a mesma. Medido neste Mac, em release, um quadro de 640×480 com textura linear
-/// e teste de profundidade: 2,22 ms no corpo geral e 1,09 ms aqui. Não é um número da Vita.
+/// The computation is the same. Measured on this Mac, in release, a 640×480 frame with linear
+/// texture and depth test: 2.22 ms in the general body and 1.09 ms here. It is not a Vita number.
 #[cfg(target_os = "vita")]
-fn serve_opaco(uniforms: &Uniforms) -> bool {
-    if uniforms.texture.is_none() || uniforms.usa_mipmap || uniforms.texture1.is_some() {
+fn opaque_fits(uniforms: &Uniforms) -> bool {
+    if uniforms.texture.is_none() || uniforms.uses_mipmap || uniforms.texture1.is_some() {
         return false;
     }
     if uniforms.alpha_test || uniforms.blend || uniforms.stencil.test {
         return false;
     }
-    if uniforms.fog.ligada && uniforms.fog.permitida {
+    if uniforms.fog.enabled && uniforms.fog.allowed {
         return false;
     }
     if uniforms.color_mask != [true, true, true, true] {
@@ -3662,59 +3698,59 @@ fn serve_opaco(uniforms: &Uniforms) -> bool {
         return false;
     }
     !matches!(
-        uniforms.texture_env.modo,
+        uniforms.texture_env.mode,
         gles::GL_DECAL | gles::GL_ADD | gles::GL_COMBINE
     )
 }
 
 #[cfg(target_os = "vita")]
-fn fill_opaco(tri: &Prepared, uniforms: &Uniforms, band: &mut Band) {
+fn fill_opaque(tri: &Prepared, uniforms: &Uniforms, band: &mut Band) {
     let Some(texture) = uniforms.texture else {
         return;
     };
-    let substitui = uniforms.texture_env.modo == gles::GL_REPLACE;
-    let suave = texture.filter == gles::GL_LINEAR;
+    let replaces = uniforms.texture_env.mode == gles::GL_REPLACE;
+    let smooth = texture.filter == gles::GL_LINEAR;
     let width = uniforms.width;
     let rows = (band.color.len() / width) as i32;
     let top = tri.min_y.max(band.top);
     let bottom = tri.max_y.min(band.top + rows);
     let depth_test = uniforms.depth_test;
     let depth_func = uniforms.depth_func;
-    let grava_z = depth_test && uniforms.depth_mask;
+    let write_z = depth_test && uniforms.depth_mask;
     for y in top..bottom {
         let start = [tri.min_x as f32 + 0.5, y as f32 + 0.5, 0.0, 0.0];
-        let mut peso = [
+        let mut weight = [
             edge(tri.screen[1], tri.screen[2], start) * tri.inv_area,
             edge(tri.screen[2], tri.screen[0], start) * tri.inv_area,
             edge(tri.screen[0], tri.screen[1], start) * tri.inv_area,
         ];
         let row = (y - band.top) as usize * width;
-        let mut dentro = false;
+        let mut inside = false;
         for x in tri.min_x..tri.max_x {
-            let bary = peso;
-            peso = [
-                peso[0] + tri.step[0],
-                peso[1] + tri.step[1],
-                peso[2] + tri.step[2],
+            let bary = weight;
+            weight = [
+                weight[0] + tri.step[0],
+                weight[1] + tri.step[1],
+                weight[2] + tri.step[2],
             ];
             if bary[0] < 0.0 || bary[1] < 0.0 || bary[2] < 0.0 {
-                if dentro {
+                if inside {
                     break;
                 }
                 continue;
             }
-            dentro = true;
+            inside = true;
             let z = tri.screen[0][2]
                 + bary[1] * (tri.screen[1][2] - tri.screen[0][2])
                 + bary[2] * (tri.screen[2][2] - tri.screen[0][2]);
             let index = row + x as usize;
             if depth_test {
-                let passa = match depth_func {
+                let passes = match depth_func {
                     gles::GL_LESS => z < band.depth[index],
                     gles::GL_LEQUAL => z <= band.depth[index],
                     _ => true,
                 };
-                if !passa {
+                if !passes {
                     continue;
                 }
             }
@@ -3725,43 +3761,43 @@ fn fill_opaco(tri: &Prepared, uniforms: &Uniforms, band: &mut Band) {
                 continue;
             }
             let persp = 1.0 / inv_w;
-            let atr = |k: usize| {
+            let attr = |k: usize| {
                 (bary[0] * tri.over_w[0][k]
                     + bary[1] * tri.over_w[1][k]
                     + bary[2] * tri.over_w[2][k])
                     * persp
             };
-            let texel = texture.sample_nivel(atr(4), atr(5), 0, suave);
-            let cor = if substitui {
+            let texel = texture.sample_level(attr(4), attr(5), 0, smooth);
+            let color = if replaces {
                 texel
             } else {
                 [
-                    atr(0) * texel[0],
-                    atr(1) * texel[1],
-                    atr(2) * texel[2],
-                    atr(3) * texel[3],
+                    attr(0) * texel[0],
+                    attr(1) * texel[1],
+                    attr(2) * texel[2],
+                    attr(3) * texel[3],
                 ]
             };
-            band.color[index] = pack(cor);
-            if grava_z {
+            band.color[index] = pack(color);
+            if write_z {
                 band.depth[index] = z;
             }
         }
     }
 }
 
-/// Preenche a parte de um triângulo que cai dentro da faixa.
+/// Fills the part of a triangle that falls inside the band.
 fn fill_band(tri: &Prepared, uniforms: &Uniforms, band: &mut Band) {
-    // O atalho afim amostra em inteiro e anda o `u`/`v` por soma. No teste o pior
-    // canal ficou a dois níveis do bilinear. Isso muda pixel, então fica na Vita,
-    // onde o preenchimento é o caminho do jogo. Fora dela o laço geral continua.
+    // The affine shortcut samples in integers and advances `u`/`v` by addition. In the test the
+    // worst channel ended up two levels from bilinear. That changes pixels, so it stays on the
+    // Vita, where filling is the game's path. Elsewhere the general loop remains.
     #[cfg(target_os = "vita")]
-    if fill_afim_se_couber(tri, uniforms, band) {
+    if try_fill_affine(tri, uniforms, band) {
         return;
     }
     #[cfg(target_os = "vita")]
-    if serve_opaco(uniforms) {
-        fill_opaco(tri, uniforms, band);
+    if opaque_fits(uniforms) {
+        fill_opaque(tri, uniforms, band);
         return;
     }
     let width = uniforms.width;
@@ -3769,8 +3805,8 @@ fn fill_band(tri: &Prepared, uniforms: &Uniforms, band: &mut Band) {
     let top = tri.min_y.max(band.top);
     let bottom = tri.max_y.min(band.top + rows);
     for y in top..bottom {
-        // Cada linha recomeça do cálculo exato: o erro do acúmulo fica preso dentro da linha
-        // em vez de descer pela imagem toda.
+        // Each row restarts from the exact computation: the accumulation error stays trapped
+        // inside the row instead of running down the whole image.
         let start = [tri.min_x as f32 + 0.5, y as f32 + 0.5, 0.0, 0.0];
         let mut w = [
             edge(tri.screen[1], tri.screen[2], start) * tri.inv_area,
@@ -3778,30 +3814,31 @@ fn fill_band(tri: &Prepared, uniforms: &Uniforms, band: &mut Band) {
             edge(tri.screen[0], tri.screen[1], start) * tri.inv_area,
         ];
         let row = (y - band.top) as usize * width;
-        // A interseção de um triângulo com a linha é um intervalo só: cada
-        // aresta anda num sentido, e depois que o pixel sai não volta. Parar
-        // ali não muda pixel nenhum — só deixa de percorrer o resto da caixa.
+        // The intersection of a triangle with the row is a single interval: each
+        // edge moves in one direction, and once the pixel leaves it doesn't come back. Stopping
+        // there changes no pixel — it only skips walking the rest of the box.
         //
-        // Cortar as pontas com uma divisão por linha foi medido no aparelho: o
-        // quadro foi de 9 para 6. A conta entrou neste laço, que já era o mais
-        // quente. A soma abaixo é o que fica.
-        let mut dentro = false;
+        // Trimming the ends with one division per row was measured on the device: the
+        // frame went from 9 to 6. The computation went into this loop, which was already the
+        // hottest. The addition below is what stays.
+        let mut inside = false;
         for x in tri.min_x..tri.max_x {
             let bary = w;
-            // O passo vem antes do descarte porque o `continue` pularia a soma.
+            // The step comes before the discard because the `continue` would skip the addition.
             w = [w[0] + tri.step[0], w[1] + tri.step[1], w[2] + tri.step[2]];
             if bary[0] < 0.0 || bary[1] < 0.0 || bary[2] < 0.0 {
-                if dentro {
+                if inside {
                     break;
                 }
                 continue;
             }
-            dentro = true;
-            // **A partir do primeiro vértice, e não pela soma dos três pesos.** Os pesos vêm
-            // acumulados ao longo da linha e somam 1 ± ε, e ε muda de um triângulo para o
-            // outro: com z constante, `b·z` saía um pouco acima de z num triângulo e abaixo no
-            // outro. O NFS Carbon desenha o logo da EA em camadas no mesmo z com `GL_LEQUAL`, e
-            // metade de cada quadrilátero era reprovada. Pelas diferenças, z constante é exato.
+            inside = true;
+            // **From the first vertex, not by the sum of the three weights.** The weights come
+            // accumulated along the row and add up to 1 ± ε, and ε changes from one triangle to
+            // the other: with constant z, `b·z` came out slightly above z in one triangle and
+            // below in the other. NFS Carbon draws the EA logo in layers at the same z with
+            // `GL_LEQUAL`, and half of each quad failed. Through the differences, a constant z is
+            // exact.
             let z = tri.screen[0][2]
                 + bary[1] * (tri.screen[1][2] - tri.screen[0][2])
                 + bary[2] * (tri.screen[2][2] - tri.screen[0][2]);
@@ -3820,114 +3857,115 @@ fn fill_band(tri: &Prepared, uniforms: &Uniforms, band: &mut Band) {
                     + bary[2] * tri.over_w[2][k])
                     * w
             };
-            // Montar a cor custa a amostragem da textura, e é o passo caro do fragmento. Sem
-            // teste de alfa ela pode esperar o descarte por profundidade; **com** teste de
-            // alfa, não pode: no OpenGL o alfa é decidido antes do stencil, e um fragmento
-            // reprovado ali não tem direito de mexer no stencil.
-            let montar = || {
+            // Assembling the color costs the texture sampling, and it is the expensive step of the
+            // fragment. Without an alpha test it can wait for the depth discard; **with** an alpha
+            // test, it can't: in OpenGL alpha is decided before the stencil, and a fragment that
+            // fails there has no right to touch the stencil.
+            let assemble = || {
                 let mut source = [attribute(0), attribute(1), attribute(2), attribute(3)];
-                let primaria = source;
+                let primary = source;
                 let texel0 = uniforms.texture.map(|texture| {
-                    // A redução pode acontecer em qualquer eixo da tela. Compare os
-                    // vizinhos da direita e de baixo, usando o maior footprint.
+                    // Minification can happen along either screen axis. Compare the
+                    // neighbors to the right and below, using the larger footprint.
                     let (u, v) = (attribute(4), attribute(5));
-                    // **O pixel vizinho precisa estar do mesmo lado do olho.** Quando o sinal
-                    // de `1/w` vira — o triângulo cruza o horizonte —, a diferença explode e o
-                    // nível escolhido vai para o menor da cadeia, que é uma cor chapada.
-                    let reducao = |step: [f32; 3]| {
-                        let seguinte = std::array::from_fn::<_, 3, _>(|i| bary[i] + step[i]);
-                        let inv_w2 = seguinte[0] * tri.screen[0][3]
-                            + seguinte[1] * tri.screen[1][3]
-                            + seguinte[2] * tri.screen[2][3];
+                    // **The neighboring pixel must be on the same side of the eye.** When the
+                    // sign of `1/w` flips — the triangle crosses the horizon —, the difference
+                    // explodes and the chosen level goes to the smallest of the chain, which is
+                    // a flat color.
+                    let downscale = |step: [f32; 3]| {
+                        let next = std::array::from_fn::<_, 3, _>(|i| bary[i] + step[i]);
+                        let inv_w2 = next[0] * tri.screen[0][3]
+                            + next[1] * tri.screen[1][3]
+                            + next[2] * tri.screen[2][3];
                         match inv_w2 <= 0.0 || inv_w <= 0.0 {
                             true => 0.0,
                             false => {
                                 let w2 = 1.0 / inv_w2;
-                                let vizinho = |k: usize| {
-                                    (seguinte[0] * tri.over_w[0][k]
-                                        + seguinte[1] * tri.over_w[1][k]
-                                        + seguinte[2] * tri.over_w[2][k])
+                                let neighbor = |k: usize| {
+                                    (next[0] * tri.over_w[0][k]
+                                        + next[1] * tri.over_w[1][k]
+                                        + next[2] * tri.over_w[2][k])
                                         * w2
                                 };
-                                let du = (vizinho(4) - u) * texture.width as f32;
-                                let dv = (vizinho(5) - v) * texture.height as f32;
-                                let quadrado = du * du + dv * dv;
-                                match quadrado > 1.0 {
-                                    // `log2(sqrt(x))` é `log2(x)/2`, e uma raiz a menos por pixel.
-                                    true => quadrado.log2() * 0.5,
+                                let du = (neighbor(4) - u) * texture.width as f32;
+                                let dv = (neighbor(5) - v) * texture.height as f32;
+                                let square = du * du + dv * dv;
+                                match square > 1.0 {
+                                    // `log2(sqrt(x))` is `log2(x)/2`, and one less root per pixel.
+                                    true => square.log2() * 0.5,
                                     false => 0.0,
                                 }
                             }
                         }
                     };
-                    // Sem cadeia de mipmaps o amostrador sempre cai no nível zero. Evitar as
-                    // duas derivadas e o log2 por fragmento é decisivo para jogos 3D que usam
-                    // texturas comprimidas sem níveis auxiliares, como o Super League.
-                    let lod = if !uniforms.usa_mipmap {
+                    // Without a mipmap chain the sampler always lands on level zero. Avoiding the
+                    // two derivatives and the log2 per fragment is decisive for 3D games that use
+                    // compressed textures without auxiliary levels, like Super League.
+                    let lod = if !uniforms.uses_mipmap {
                         0.0
                     } else {
-                        reducao(tri.step).max(reducao(tri.step_y))
+                        downscale(tri.step).max(downscale(tri.step_y))
                     };
                     texture.sample_lod(u, v, lod)
                 });
-                // Sem mipmap: nos jogos que usam a unidade 1 ela leva mapa de luz ou a textura de
-                // cor de um relevo, e o nível base basta. Ela é amostrada antes de a 0 combinar
-                // porque o crossbar deixa a 0 ler o texel dela.
+                // No mipmap: in the games that use unit 1 it carries a light map or the color
+                // texture of a bump map, and the base level is enough. It is sampled before unit 0
+                // combines because the crossbar lets unit 0 read its texel.
                 let texel1 = uniforms
                     .texture1
                     .map(|texture| texture.sample_lod(attribute(7), attribute(8), 0.0));
-                let texeis = [texel0, texel1];
+                let texels = [texel0, texel1];
                 if let Some(texel) = texel0 {
                     source = uniforms
                         .texture_env
-                        .aplica_com(source, primaria, texel, texeis);
+                        .apply_with(source, primary, texel, texels);
                 }
-                // A unidade 1 age sobre o que saiu da 0.
+                // Unit 1 acts on what came out of unit 0.
                 if let Some(texel) = texel1 {
-                    source = uniforms.env1.aplica_com(source, primaria, texel, texeis);
+                    source = uniforms.env1.apply_with(source, primary, texel, texels);
                 }
-                // **A névoa entra depois da textura e antes do teste de alfa**, que é a ordem do
-                // OpenGL ES 1.1, e mexe só no RGB: o alfa do fragmento continua sendo o dele.
-                if uniforms.fog.ligada && uniforms.fog.permitida {
+                // **Fog comes after the texture and before the alpha test**, which is the
+                // OpenGL ES 1.1 order, and only touches RGB: the fragment keeps its own alpha.
+                if uniforms.fog.enabled && uniforms.fog.allowed {
                     let f = attribute(6).clamp(0.0, 1.0);
-                    for canal in 0..3 {
-                        source[canal] += (uniforms.fog.cor[canal] - source[canal]) * (1.0 - f);
+                    for channel in 0..3 {
+                        source[channel] += (uniforms.fog.color[channel] - source[channel]) * (1.0 - f);
                     }
                 }
                 source
             };
-            let mut pronta = None;
+            let mut ready = None;
             if uniforms.alpha_test {
-                let source = montar();
+                let source = assemble();
                 if !compare(uniforms.alpha_func, source[3], uniforms.alpha_ref) {
                     continue;
                 }
-                pronta = Some(source);
+                ready = Some(source);
             }
 
-            // **Stencil antes de profundidade, e as três operações aplicadas mesmo quando o
-            // fragmento é descartado.** É esse "mesmo quando descarta" que faz o reflexo
-            // funcionar: a passada que marca o chão costuma escrever no stencil justamente
-            // onde a profundidade reprova.
+            // **Stencil before depth, and the three operations applied even when the fragment
+            // is discarded.** It is that "even when it discards" that makes the reflection work:
+            // the pass that marks the floor usually writes to the stencil precisely where depth
+            // fails.
             let stencil = &uniforms.stencil;
-            let profundidade_passa =
+            let depth_passes =
                 !uniforms.depth_test || compare(uniforms.depth_func, z, band.depth[index]);
             if stencil.test {
-                let atual = band.stencil[index];
-                if !stencil.passa(atual) {
-                    band.stencil[index] = stencil.aplica(0, atual);
+                let current = band.stencil[index];
+                if !stencil.passes(current) {
+                    band.stencil[index] = stencil.apply(0, current);
                     continue;
                 }
-                let qual = usize::from(profundidade_passa) + 1;
-                band.stencil[index] = stencil.aplica(qual, atual);
+                let which = usize::from(depth_passes) + 1;
+                band.stencil[index] = stencil.apply(which, current);
             }
-            if !profundidade_passa {
+            if !depth_passes {
                 continue;
             }
 
-            let source = match pronta {
+            let source = match ready {
                 Some(source) => source,
-                None => montar(),
+                None => assemble(),
             };
 
             let mixed = if uniforms.blend {
@@ -3943,15 +3981,15 @@ fn fill_band(tri: &Prepared, uniforms: &Uniforms, band: &mut Band) {
                 source
             };
 
-            // O `glColorMask` decide canal a canal. Escrever o que ele proibiu apagaria o que
-            // uma passada anterior deixou ali, que é justamente o ponto de mascarar.
-            let anterior = band.color[index];
-            let novo = pack(mixed);
+            // `glColorMask` decides channel by channel. Writing what it forbade would erase what
+            // an earlier pass left there, which is precisely the point of masking.
+            let previous = band.color[index];
+            let create = pack(mixed);
             band.color[index] = std::array::from_fn(|i| {
                 if uniforms.color_mask[i] {
-                    novo[i]
+                    create[i]
                 } else {
-                    anterior[i]
+                    previous[i]
                 }
             });
             if uniforms.depth_test && uniforms.depth_mask {
@@ -3961,54 +3999,54 @@ fn fill_band(tri: &Prepared, uniforms: &Uniforms, band: &mut Band) {
     }
 }
 
-/// Função de aresta: o dobro da área com sinal do triângulo `(a, b, c)`.
+/// Edge function: twice the signed area of the triangle `(a, b, c)`.
 fn edge(a: [f32; 4], b: [f32; 4], c: [f32; 4]) -> f32 {
     (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
 }
 
-/// Interpola `a`→`b` até o plano próximo, onde `z + w` cruza o zero.
-/// Produto escalar de três componentes.
-fn ponto(a: [f32; 3], b: [f32; 3]) -> f32 {
+/// Interpolates `a`→`b` up to the near plane, where `z + w` crosses zero.
+/// Three-component dot product.
+fn point(a: [f32; 3], b: [f32; 3]) -> f32 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
-fn comprimento(v: [f32; 3]) -> f32 {
-    ponto(v, v).sqrt()
+fn length(v: [f32; 3]) -> f32 {
+    point(v, v).sqrt()
 }
 
-/// Um vetor de comprimento um, ou o vetor nulo quando não dá para dizer para onde ele aponta.
-fn normaliza(v: [f32; 3]) -> [f32; 3] {
-    let n = comprimento(v);
+/// A unit-length vector, or the zero vector when there is no telling where it points.
+fn normalize(v: [f32; 3]) -> [f32; 3] {
+    let n = length(v);
     if n <= f32::EPSILON {
         return [0.0, 0.0, 0.0];
     }
     [v[0] / n, v[1] / n, v[2] / n]
 }
 
-/// O fator do cone de um holofote, ou um quando a luz não é holofote.
-fn holofote(luz: &Light, para_a_luz: [f32; 3]) -> f32 {
-    if luz.spot_cutoff >= 180.0 {
+/// The cone factor of a spotlight, or one when the light is not a spotlight.
+fn spotlight(light: &Light, to_light: [f32; 3]) -> f32 {
+    if light.spot_cutoff >= 180.0 {
         return 1.0;
     }
-    // O cosseno é entre a direção do cone e a direção **da luz para o vértice**, que é o
-    // contrário de `para_a_luz`.
-    let cos = ponto(
-        normaliza(luz.spot_direction),
-        [-para_a_luz[0], -para_a_luz[1], -para_a_luz[2]],
+    // The cosine is between the cone direction and the direction **from the light to the
+    // vertex**, which is the opposite of `to_light`.
+    let cos = point(
+        normalize(light.spot_direction),
+        [-to_light[0], -to_light[1], -to_light[2]],
     );
-    if cos < luz.spot_cutoff.to_radians().cos() {
+    if cos < light.spot_cutoff.to_radians().cos() {
         return 0.0;
     }
-    cos.max(0.0).powf(luz.spot_exponent)
+    cos.max(0.0).powf(light.spot_exponent)
 }
 
-/// A matriz que leva uma normal de coordenadas de objeto para coordenadas de olho.
+/// The matrix that takes a normal from object coordinates to eye coordinates.
 ///
-/// É a **transposta da inversa** da parte 3×3 da modelview, e não a modelview: com escala não
-/// uniforme, a normal transformada como se fosse direção deixa de ser perpendicular à
-/// superfície e a luz escorrega pelo modelo. Quando a inversa não existe — matriz degenerada —,
-/// a parte 3×3 crua é o menos errado que dá para devolver.
-fn matriz_de_normais(m: &Matrix) -> [[f32; 3]; 3] {
+/// It is the **inverse transpose** of the 3×3 part of the modelview, not the modelview: with
+/// non-uniform scaling, a normal transformed as if it were a direction stops being perpendicular
+/// to the surface and the light slides across the model. When the inverse doesn't exist — a
+/// degenerate matrix —, the raw 3×3 part is the least wrong thing we can return.
+fn normal_matrix(m: &Matrix) -> [[f32; 3]; 3] {
     let a = [[m[0], m[1], m[2]], [m[4], m[5], m[6]], [m[8], m[9], m[10]]];
     let det = a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1])
         - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0])
@@ -4016,54 +4054,54 @@ fn matriz_de_normais(m: &Matrix) -> [[f32; 3]; 3] {
     if det.abs() <= f32::EPSILON {
         return a;
     }
-    // A transposta da inversa é a matriz de cofatores da 3×3 sobre o determinante. Só que `a`
-    // já é a 3×3 **transposta** — a `Matrix` guarda por coluna, e cada linha de `a` é uma coluna
-    // dela —, então o cofator de `(i, j)` da 3×3 é o de `(j, i)` de `a`. Com `(i, j)` saía a
-    // inversa sem transpor: igual numa escala, mas numa rotação a normal girava ao contrário, e
-    // o terreno do Armageddon Squadron, desenhado em blocos com orientações próprias, ganhava
-    // luz e sombra em retângulos.
-    let cofator = |i: usize, j: usize| {
+    // The inverse transpose is the 3×3's cofactor matrix over the determinant. But `a` is
+    // already the **transposed** 3×3 — `Matrix` is stored by column, and each row of `a` is one
+    // of its columns —, so the cofactor of `(i, j)` of the 3×3 is that of `(j, i)` of `a`. With
+    // `(i, j)` it came out as the untransposed inverse: the same for a scale, but for a rotation
+    // the normal turned the opposite way, and the Armageddon Squadron terrain, drawn in blocks
+    // with their own orientations, got light and shadow in rectangles.
+    let cofactor = |i: usize, j: usize| {
         let (l1, l2) = ((i + 1) % 3, (i + 2) % 3);
         let (c1, c2) = ((j + 1) % 3, (j + 2) % 3);
         a[l1][c1] * a[l2][c2] - a[l1][c2] * a[l2][c1]
     };
-    std::array::from_fn(|i| std::array::from_fn(|j| cofator(j, i) / det))
+    std::array::from_fn(|i| std::array::from_fn(|j| cofactor(j, i) / det))
 }
 
-/// Aplica a matriz de normais.
-fn gira_normal(m: &[[f32; 3]; 3], v: [f32; 3]) -> [f32; 3] {
+/// Applies the normal matrix.
+fn rotate_normal(m: &[[f32; 3]; 3], v: [f32; 3]) -> [f32; 3] {
     std::array::from_fn(|i| m[i][0] * v[0] + m[i][1] * v[1] + m[i][2] * v[2])
 }
 
-/// Troca cada segmento de `GL_LINES`, `GL_LINE_STRIP` ou `GL_LINE_LOOP` por um retângulo de um
-/// pixel de largura, em dois triângulos soltos, no espaço de recorte.
+/// Replaces each segment of `GL_LINES`, `GL_LINE_STRIP` or `GL_LINE_LOOP` with a rectangle one
+/// pixel wide, as two separate triangles, in clip space.
 ///
-/// **Linha vira triângulo para seguir o mesmo caminho de tudo**: recorte, textura, névoa e
-/// mistura saem iguais aos de um triângulo, nos dois rasterizadores, sem uma segunda rotina de
-/// preenchimento para manter em par. O Peggle pinta o degradê do fundo do menu com uma linha
-/// horizontal por pixel; sem elas, o meio da tela ficava preto atrás do logo.
+/// **A line becomes triangles to follow the same path as everything else**: clipping, texture,
+/// fog and blending come out the same as a triangle's, in both rasterizers, without a second fill
+/// routine to keep in sync. Peggle paints the menu background gradient with one horizontal line
+/// per pixel; without them, the middle of the screen was black behind the logo.
 ///
-/// A largura é a de `glLineWidth` padrão, um pixel da viewport. Os triângulos saem na volta
-/// anti-horária da tela quando `ccw`, para que o descarte por face não leve a linha embora.
-pub(crate) fn linhas_em_triangulos(
+/// The width is the default `glLineWidth`, one viewport pixel. The triangles come out in the
+/// screen's counterclockwise winding when `ccw`, so that face culling doesn't take the line away.
+pub(crate) fn lines_to_triangles(
     mode: u32,
     clip: &[Vertex],
     viewport: (i32, i32, i32, i32),
     ccw: bool,
 ) -> Vec<Vertex> {
     let n = clip.len();
-    let pares: Vec<(usize, usize)> = match mode {
+    let pairs: Vec<(usize, usize)> = match mode {
         gles::GL_LINES => (0..n / 2).map(|i| (2 * i, 2 * i + 1)).collect(),
         gles::GL_LINE_STRIP => (1..n).map(|i| (i - 1, i)).collect(),
         gles::GL_LINE_LOOP if n >= 2 => (1..n).map(|i| (i - 1, i)).chain([(n - 1, 0)]).collect(),
         _ => Vec::new(),
     };
     let (vw, vh) = (viewport.2.max(1) as f32, viewport.3.max(1) as f32);
-    let perto = |v: &Vertex| v.position[2] + v.position[3] >= 0.0;
-    let mut saida = Vec::with_capacity(pares.len() * 6);
-    for (i, j) in pares {
+    let near = |v: &Vertex| v.position[2] + v.position[3] >= 0.0;
+    let mut output = Vec::with_capacity(pairs.len() * 6);
+    for (i, j) in pairs {
         let (mut a, mut b) = (clip[i], clip[j]);
-        match (perto(&a), perto(&b)) {
+        match (near(&a), near(&b)) {
             (false, false) => continue,
             (true, false) => b = clip_near(a, b),
             (false, true) => a = clip_near(b, a),
@@ -4073,35 +4111,35 @@ pub(crate) fn linhas_em_triangulos(
         if aw <= 0.0 || bw <= 0.0 {
             continue;
         }
-        // A direção em pixels, e não em NDC: numa viewport 640x480 os dois eixos têm escalas
-        // diferentes, e a perpendicular em NDC sairia torta.
+        // The direction in pixels, not in NDC: on a 640x480 viewport the two axes have different
+        // scales, and the perpendicular in NDC would come out skewed.
         let dx = (b.position[0] / bw - a.position[0] / aw) * vw / 2.0;
         let dy = (b.position[1] / bw - a.position[1] / aw) * vh / 2.0;
-        let comprimento = (dx * dx + dy * dy).sqrt();
-        if comprimento == 0.0 {
+        let length = (dx * dx + dy * dy).sqrt();
+        if length == 0.0 {
             continue;
         }
-        // Meio pixel para cada lado, convertido de volta para NDC.
-        let (ox, oy) = (-dy / comprimento / vw, dx / comprimento / vh);
-        let desloca = |v: Vertex, sinal: f32| {
+        // Half a pixel to each side, converted back to NDC.
+        let (ox, oy) = (-dy / length / vw, dx / length / vh);
+        let shift = |v: Vertex, sign: f32| {
             let mut v = v;
-            v.position[0] += sinal * ox * v.position[3];
-            v.position[1] += sinal * oy * v.position[3];
+            v.position[0] += sign * ox * v.position[3];
+            v.position[1] += sign * oy * v.position[3];
             v
         };
         let (a0, a1, b0, b1) = (
-            desloca(a, 1.0),
-            desloca(a, -1.0),
-            desloca(b, 1.0),
-            desloca(b, -1.0),
+            shift(a, 1.0),
+            shift(a, -1.0),
+            shift(b, 1.0),
+            shift(b, -1.0),
         );
-        // `a1 → b1 → b0` gira no sentido de `(dx, dy)` para `(ox, oy)`, que é anti-horário.
+        // `a1 → b1 → b0` turns from `(dx, dy)` toward `(ox, oy)`, which is counterclockwise.
         match ccw {
-            true => saida.extend([a1, b1, b0, a1, b0, a0]),
-            false => saida.extend([a1, b0, b1, a1, a0, b0]),
+            true => output.extend([a1, b1, b0, a1, b0, a0]),
+            false => output.extend([a1, b0, b1, a1, a0, b0]),
         }
     }
-    saida
+    output
 }
 
 fn clip_near(a: Vertex, b: Vertex) -> Vertex {
@@ -4113,16 +4151,16 @@ fn clip_near(a: Vertex, b: Vertex) -> Vertex {
         color: std::array::from_fn(|i| lerp(a.color[i], b.color[i])),
         uv: std::array::from_fn(|i| lerp(a.uv[i], b.uv[i])),
         uv1: std::array::from_fn(|i| lerp(a.uv1[i], b.uv1[i])),
-        // A normal já foi consumida pela iluminação antes do recorte: aqui ela não muda mais
-        // nada, e interpolá-la seria trabalho para ninguém ler.
+        // The normal was already consumed by lighting before clipping: here it changes nothing
+        // anymore, and interpolating it would be work nobody reads.
         normal: a.normal,
-        // O fator da névoa, ao contrário, ainda vai ser lido: o vértice novo fica onde o plano
-        // cortou, e a névoa dele é a do ponto de corte.
+        // The fog factor, on the other hand, will still be read: the new vertex sits where the
+        // plane cut, and its fog is that of the cut point.
         fog: lerp(a.fog, b.fog),
     }
 }
 
-/// Uma das funções de comparação do OpenGL.
+/// One of OpenGL's comparison functions.
 #[inline]
 fn compare(func: u32, value: f32, reference: f32) -> bool {
     match func {
@@ -4137,8 +4175,8 @@ fn compare(func: u32, value: f32, reference: f32) -> bool {
     }
 }
 
-/// Combina a cor do fragmento com o texel, conforme o `GL_TEXTURE_ENV_MODE`.
-/// O peso de um fator de mistura para o canal `c`.
+/// Combines the fragment color with the texel, according to `GL_TEXTURE_ENV_MODE`.
+/// The weight of a blend factor for channel `c`.
 fn factor(kind: u32, source: [f32; 4], destination: [f32; 4], c: usize) -> f32 {
     match kind {
         gles::GL_ZERO => 0.0,
@@ -4165,11 +4203,11 @@ fn unpack(color: [u8; 4]) -> [f32; 4] {
 #[cfg(test)]
 mod tests {
 
-    /// Quadro cheio com uma textura linear, o caso que a Vita mede em dezenas de
-    /// milissegundos. Ignorado no CI: é relógio, não comportamento.
+    /// A full frame with a linear texture, the case the Vita measures in tens of
+    /// milliseconds. Ignored in CI: it is a clock, not behavior.
     #[test]
     #[ignore]
-    fn mede_o_preenchimento_de_um_quadro() {
+    fn measures_the_fill_of_one_frame() {
         let mut state = super::GlState::new(640, 480);
         state.set_viewport(0, 0, 640, 480);
         state.set_capability(super::gles::GL_DEPTH_TEST, true);
@@ -4197,7 +4235,7 @@ mod tests {
             uv: [u, t, 0.0, 1.0],
             ..Default::default()
         };
-        let desenha = |state: &mut super::GlState| {
+        let draw = |state: &mut super::GlState| {
             state.draw(
                 super::gles::GL_TRIANGLES,
                 &[
@@ -4210,32 +4248,32 @@ mod tests {
                 ],
             );
         };
-        desenha(&mut state);
+        draw(&mut state);
         state.flush();
-        let comeco = std::time::Instant::now();
+        let begin = std::time::Instant::now();
         for _ in 0..4 {
-            desenha(&mut state);
+            draw(&mut state);
             state.flush();
         }
-        let ms = comeco.elapsed().as_secs_f64() * 1000.0 / 4.0;
-        eprintln!("quadro texturizado 640x480: {ms:.2} ms");
+        let ms = begin.elapsed().as_secs_f64() * 1000.0 / 4.0;
+        eprintln!("textured 640x480 frame: {ms:.2} ms");
     }
 
-    /// Textura opaca, o atalho do preenchimento. Mais longe não cobre; mais perto cobre.
+    /// Opaque texture, the fill shortcut. Farther doesn't cover; closer does.
     #[test]
-    fn o_atalho_opaco_respeita_a_profundidade() {
+    fn the_opaque_shortcut_respects_depth() {
         let mut state = super::GlState::new(8, 8);
         state.set_viewport(0, 0, 8, 8);
         state.set_capability(super::gles::GL_DEPTH_TEST, true);
         state.set_depth_func(super::gles::GL_LEQUAL);
         state.clear(super::gles::GL_COLOR_BUFFER_BIT | super::gles::GL_DEPTH_BUFFER_BIT);
-        let pinta = |state: &mut super::GlState, z: f32, cor: [u8; 4]| {
+        let paint = |state: &mut super::GlState, z: f32, color: [u8; 4]| {
             state.textures.insert(
                 1,
                 super::Texture {
                     width: 1,
                     height: 1,
-                    pixels: vec![cor],
+                    pixels: vec![color],
                     filter: super::gles::GL_NEAREST,
                     min_filter: super::gles::GL_NEAREST,
                     ..super::Texture::default()
@@ -4261,17 +4299,17 @@ mod tests {
         };
         state.bind_texture(1);
         state.set_capability(super::gles::GL_TEXTURE_2D, true);
-        pinta(&mut state, 0.0, [255, 0, 0, 255]);
+        paint(&mut state, 0.0, [255, 0, 0, 255]);
         assert_eq!(state.color[8 * 4 + 4], [255, 0, 0, 255]);
-        pinta(&mut state, 0.5, [0, 255, 0, 255]);
+        paint(&mut state, 0.5, [0, 255, 0, 255]);
         assert_eq!(state.color[8 * 4 + 4], [255, 0, 0, 255]);
-        pinta(&mut state, -0.5, [0, 0, 255, 255]);
+        paint(&mut state, -0.5, [0, 0, 255, 255]);
         assert_eq!(state.color[8 * 4 + 4], [0, 0, 255, 255]);
     }
 
-    /// O filtro inteiro não pode se afastar do que o `pack` do caminho antigo gravaria.
+    /// The integer filter must not drift from what the old path's `pack` would write.
     #[test]
-    fn a_amostra_inteira_nao_passa_de_dois_niveis() {
+    fn the_integer_sample_stays_within_two_levels() {
         let mut pixels = vec![[0u8; 4]; 8 * 8];
         for (i, pixel) in pixels.iter_mut().enumerate() {
             *pixel = [
@@ -4281,7 +4319,7 @@ mod tests {
                 (i * 13) as u8,
             ];
         }
-        let textura = super::Texture {
+        let texture = super::Texture {
             width: 8,
             height: 8,
             pixels,
@@ -4289,34 +4327,35 @@ mod tests {
             min_filter: super::gles::GL_LINEAR,
             ..super::Texture::default()
         };
-        let texel = super::Texel::novo(&textura).expect("textura");
-        let mut pior = 0i32;
+        let texel = super::Texel::create(&texture).expect("texture");
+        let mut worst = 0i32;
         let mut u = -0.25f32;
         while u < 1.25 {
             let mut v = -0.25f32;
             while v < 1.25 {
-                for suave in [false, true] {
-                    let inteiro = if suave {
-                        texel.pega::<true>(u, v)
+                for smooth in [false, true] {
+                    let integer = if smooth {
+                        texel.get::<true>(u, v)
                     } else {
-                        texel.pega::<false>(u, v)
+                        texel.get::<false>(u, v)
                     };
-                    let fino = super::pack(textura.sample_nivel(u, v, 0, suave));
-                    for canal in 0..4 {
-                        pior = pior.max((i32::from(inteiro[canal]) - i32::from(fino[canal])).abs());
+                    let fine = super::pack(texture.sample_level(u, v, 0, smooth));
+                    for channel in 0..4 {
+                        worst = worst.max((i32::from(integer[channel]) - i32::from(fine[channel])).abs());
                     }
                 }
                 v += 0.03;
             }
             u += 0.03;
         }
-        assert!(pior <= 2, "a amostra inteira se afastou {pior} níveis");
+        assert!(worst <= 2, "the integer sample drifted {worst} levels");
     }
 
-    /// Sprite afim: o alfa zero não pinta, o de trás não cobre, o da frente cobre.
+    /// Affine sprite: zero alpha doesn't paint, the one behind doesn't cover, the one in front
+    /// does.
     #[test]
-    fn o_sprite_afim_descarta_o_alfa_e_respeita_a_profundidade() {
-        super::CAMINHO_AFIM.with(|c| c.set(0));
+    fn the_affine_sprite_discards_alpha_and_respects_depth() {
+        super::AFFINE_PATH.with(|c| c.set(0));
         let mut state = super::GlState::new(8, 8);
         state.set_viewport(0, 0, 8, 8);
         state.set_capability(super::gles::GL_DEPTH_TEST, true);
@@ -4324,13 +4363,13 @@ mod tests {
         state.set_capability(super::gles::GL_ALPHA_TEST, true);
         state.set_alpha_func(super::gles::GL_GREATER, 0.5);
         state.clear(super::gles::GL_COLOR_BUFFER_BIT | super::gles::GL_DEPTH_BUFFER_BIT);
-        let pinta = |state: &mut super::GlState, z: f32, cor: [u8; 4]| {
+        let paint = |state: &mut super::GlState, z: f32, color: [u8; 4]| {
             state.textures.insert(
                 1,
                 super::Texture {
                     width: 1,
                     height: 1,
-                    pixels: vec![cor],
+                    pixels: vec![color],
                     filter: super::gles::GL_NEAREST,
                     min_filter: super::gles::GL_NEAREST,
                     ..super::Texture::default()
@@ -4356,99 +4395,101 @@ mod tests {
         };
         state.bind_texture(1);
         state.set_capability(super::gles::GL_TEXTURE_2D, true);
-        pinta(&mut state, 0.0, [0, 255, 0, 0]);
+        paint(&mut state, 0.0, [0, 255, 0, 0]);
         assert_eq!(state.color[8 * 4 + 4], [0, 0, 0, 255]);
-        pinta(&mut state, 0.0, [255, 0, 0, 255]);
+        paint(&mut state, 0.0, [255, 0, 0, 255]);
         assert_eq!(state.color[8 * 4 + 4], [255, 0, 0, 255]);
-        pinta(&mut state, 0.5, [0, 255, 0, 255]);
+        paint(&mut state, 0.5, [0, 255, 0, 255]);
         assert_eq!(state.color[8 * 4 + 4], [255, 0, 0, 255]);
-        pinta(&mut state, -0.5, [0, 0, 255, 255]);
+        paint(&mut state, -0.5, [0, 0, 255, 255]);
         assert_eq!(state.color[8 * 4 + 4], [0, 0, 255, 255]);
-        // O atalho só entra na Vita. Fora dela o laço geral tem de dar o mesmo pixel,
-        // e é isso que as comparações acima cobram.
+        // The shortcut only kicks in on the Vita. Elsewhere the general loop must give the same
+        // pixel, and that is what the comparisons above demand.
         #[cfg(target_os = "vita")]
         {
-            let caminhos = super::CAMINHO_AFIM.with(|c| c.get());
+            let paths = super::AFFINE_PATH.with(|c| c.get());
             assert!(
-                caminhos >= 4,
-                "o sprite não foi pelo caminho afim ({caminhos})"
+                paths >= 4,
+                "the sprite did not take the affine path ({paths})"
             );
         }
     }
 
-    /// **Uma linha horizontal pinta uma fileira, e só uma.** É o que o degradê do menu do Peggle
-    /// pede: uma linha por pixel, lado a lado. Com duas fileiras por linha, a de cima cobriria a
-    /// de baixo; com nenhuma, o fundo ficava preto — que era o caso antes das linhas existirem.
+    /// **A horizontal line paints one row, and only one.** That is what Peggle's menu gradient
+    /// asks for: one line per pixel, side by side. With two rows per line, the upper one would
+    /// cover the lower one; with none, the background was black — which was the case before lines
+    /// existed.
     #[test]
-    fn linha_horizontal_pinta_uma_fileira() {
+    fn a_horizontal_line_paints_one_row() {
         let mut state = super::GlState::new(8, 4);
-        let vermelho = |x: f32, y: f32| super::Vertex {
+        let red = |x: f32, y: f32| super::Vertex {
             position: [x, y, 0.0, 1.0],
             color: [1.0, 0.0, 0.0, 1.0],
             ..Default::default()
         };
-        // O centro da fileira 1 de 4 em NDC: (1,5 / 4) * 2 - 1.
+        // The center of row 1 of 4 in NDC: (1.5 / 4) * 2 - 1.
         state.draw(
             super::gles::GL_LINES,
-            &[vermelho(-1.0, -0.25), vermelho(1.0, -0.25)],
+            &[red(-1.0, -0.25), red(1.0, -0.25)],
         );
-        let quadro = state.present(8, 4);
-        let pintados: Vec<usize> = (0..4)
-            .filter(|&linha| {
-                quadro[linha * 8..linha * 8 + 8]
+        let frame = state.present(8, 4);
+        let painted: Vec<usize> = (0..4)
+            .filter(|&line| {
+                frame[line * 8..line * 8 + 8]
                     .iter()
                     .any(|&p| p == 0xf800)
             })
             .collect();
-        assert_eq!(pintados.len(), 1, "fileiras pintadas: {pintados:?}");
-        let linha = pintados[0];
+        assert_eq!(painted.len(), 1, "painted rows: {painted:?}");
+        let line = painted[0];
         assert!(
-            quadro[linha * 8..linha * 8 + 8].iter().all(|&p| p == 0xf800),
-            "a fileira tem de sair inteira"
+            frame[line * 8..line * 8 + 8].iter().all(|&p| p == 0xf800),
+            "the row must come out whole"
         );
     }
 
-    /// **A redução da resolução interna**, e o caso que a teria deixado sem efeito.
+    /// **The internal resolution reduction**, and the case that would have left it without effect.
     ///
-    /// Há jogo que nunca chama `glViewport` — a Z-Wheel não o chama nenhuma vez em treze segundos,
-    /// medido —, e para ele a superfície sai da viewport **inicial**. Se ela fosse reiniciada no
-    /// tamanho do quadro, a redução não valeria justamente em quem depende dela.
+    /// There are games that never call `glViewport` — Z-Wheel doesn't call it once in thirteen
+    /// seconds, measured —, and for them the surface comes from the **initial** viewport. If it
+    /// were reset to the frame size, the reduction wouldn't apply precisely to whoever depends on
+    /// it.
     #[test]
-    fn a_reducao_alcanca_quem_nunca_chama_viewport() {
+    fn downscale_reaches_games_that_never_call_viewport() {
         let mut state = GlState::new(640, 480);
 
-        // Sem redução, a superfície inicial é o quadro inteiro.
+        // Without reduction, the initial surface is the whole frame.
         assert_eq!(state.surface(), (640, 480));
 
-        state.define_reducao(2);
+        state.set_downscale(2);
         assert_eq!(
             state.surface(),
             (320, 240),
-            "a viewport inicial tem de sair reduzida"
+            "the initial viewport must come out reduced"
         );
 
-        // E o jogo que **declara** a viewport do console, como o comum, também é dividido.
+        // And a game that **declares** the console viewport, like the usual one, is divided too.
         state.set_viewport(0, 0, 640, 480);
         assert_eq!(state.surface(), (320, 240));
 
-        // A tesoura passa pela mesma conta.
+        // The scissor goes through the same computation.
         state.set_scissor(0, 0, 640, 480);
         state.set_scissor_test(true);
-        let (_, _, largura, altura) = state.tesoura.unwrap_or((0, 0, 0, 0));
-        assert_eq!((largura, altura), (320, 240));
+        let (_, _, width, height) = state.scissor.unwrap_or((0, 0, 0, 0));
+        assert_eq!((width, height), (320, 240));
 
-        // O quadro entregue continua sendo o do console: quem amplia é a apresentação.
+        // The frame handed out is still the console's: presentation does the scaling up.
         let mut bytes = Vec::new();
         state.frame_rgb565(640, 480, &mut bytes);
-        assert_eq!(bytes.len(), 640 * 480 * 2, "o quadro sai em 640x480");
+        assert_eq!(bytes.len(), 640 * 480 * 2, "the frame comes out at 640x480");
 
-        // E voltar a 1x devolve o tamanho do console — a opção é reversível.
-        state.define_reducao(1);
+        // And going back to 1x restores the console size — the option is reversible.
+        state.set_downscale(1);
         assert_eq!(state.surface(), (640, 480));
     }
 
     #[test]
-    fn escrita_no_buffer_egl_preserva_desenhos_e_profundidade() {
+    fn egl_buffer_write_preserves_drawings_and_depth() {
         let mut state = GlState::new(2, 1);
         let mut exported = Vec::new();
         state.frame_rgb565(2, 1, &mut exported);
@@ -4464,10 +4505,10 @@ mod tests {
         assert_eq!(state.stencil[0], 7);
     }
 
-    /// O caminho **com escala** tem laço próprio, com as divisões por pixel, e é o do Quake:
-    /// superfície menor que a tela. O teste acima cobre só o caminho sem escala.
+    /// The **scaled** path has its own loop, with the per-pixel divisions, and it is Quake's:
+    /// a surface smaller than the screen. The test above only covers the unscaled path.
     #[test]
-    fn escrita_no_buffer_egl_encontra_o_pixel_quando_a_superficie_e_menor() {
+    fn egl_buffer_write_finds_the_pixel_when_the_surface_is_smaller() {
         let mut state = GlState::new(2, 1);
         state.set_viewport(0, 0, 1, 1);
         assert_eq!(state.surface(), (1, 1));
@@ -4480,7 +4521,7 @@ mod tests {
     }
 
     #[test]
-    fn mipmap_considera_reducao_vertical_e_horizontal() {
+    fn mipmap_considers_vertical_and_horizontal_minification() {
         for vertical in [false, true] {
             let mut state = GlState::new(8, 8);
             state.bind_texture(1);
@@ -4494,7 +4535,7 @@ mod tests {
                     mipmaps: (0..6)
                         .map(|level| {
                             let size = 32 >> level;
-                            Nivel {
+                            Level {
                                 width: size,
                                 height: size,
                                 pixels: vec![[0, 255, 0, 255]; size * size],
@@ -4532,12 +4573,12 @@ mod tests {
         }
     }
 
-    /// Um buraco na cadeia não vira branco: o nível inválido cai no que existe.
+    /// A hole in the chain doesn't become white: the invalid level falls back to one that exists.
     ///
-    /// Era o que deixava modelos inteiros chapados — um nível vazio devolvia branco opaco e a
-    /// superfície toda saía de uma cor só.
+    /// It was what left whole models flat — an empty level returned opaque white and the whole
+    /// surface came out a single color.
     #[test]
-    fn nivel_vazio_cai_no_que_existe() {
+    fn an_empty_level_falls_back_to_an_existing_one() {
         let mut t = Texture {
             width: 2,
             height: 1,
@@ -4545,23 +4586,23 @@ mod tests {
             ..Default::default()
         };
         t.min_filter = gles::GL_NEAREST_MIPMAP_NEAREST;
-        t.mipmaps = vec![Nivel {
+        t.mipmaps = vec![Level {
             width: 0,
             height: 0,
             pixels: Vec::new(),
         }];
-        let cor = t.sample_lod(0.5, 0.5, 5.0);
-        assert_eq!(cor[0], 1.0, "vermelho do nível cheio");
-        assert_eq!(cor[1], 0.0, "e não branco: {cor:?}");
+        let color = t.sample_lod(0.5, 0.5, 5.0);
+        assert_eq!(color[0], 1.0, "red from the full level");
+        assert_eq!(color[1], 0.0, "and not white: {color:?}");
     }
 
-    /// Uma textura sem cadeia de redução não é mipmapeada, mesmo que o filtro peça.
+    /// A texture without a minification chain is not mipmapped, even if the filter asks for it.
     ///
-    /// O padrão do `MIN_FILTER` no OpenGL é `GL_NEAREST_MIPMAP_LINEAR`, e adotá-lo ao pé da
-    /// letra passava a amostrar por vizinho mais próximo as vinte e uma texturas do palco da
-    /// Z-Wheel que pedem `GL_LINEAR` e não trazem nível nenhum.
+    /// The `MIN_FILTER` default in OpenGL is `GL_NEAREST_MIPMAP_LINEAR`, and taking it literally
+    /// started sampling with nearest neighbor the twenty-one Z-Wheel stage textures that ask for
+    /// `GL_LINEAR` and bring no levels at all.
     #[test]
-    fn sem_cadeia_vale_o_filtro_de_base() {
+    fn without_a_chain_the_base_filter_applies() {
         let mut t = Texture {
             width: 2,
             height: 1,
@@ -4569,102 +4610,103 @@ mod tests {
             ..Default::default()
         };
         t.min_filter = gles::GL_NEAREST_MIPMAP_LINEAR;
-        // No meio dos dois texels, com vizinho mais próximo, a cor é de um deles.
-        let meio = t.sample_lod(0.5, 0.5, 4.0);
-        assert!(meio[0] == 0.0 || meio[0] == 1.0, "{meio:?}");
+        // Midway between the two texels, with nearest neighbor, the color is one of them.
+        let middle = t.sample_lod(0.5, 0.5, 4.0);
+        assert!(middle[0] == 0.0 || middle[0] == 1.0, "{middle:?}");
         t.min_filter = gles::GL_LINEAR_MIPMAP_LINEAR;
-        let meio = t.sample_lod(0.5, 0.5, 4.0);
-        assert!((meio[0] - 0.5).abs() < 0.01, "interpolado: {meio:?}");
+        let middle = t.sample_lod(0.5, 0.5, 4.0);
+        assert!((middle[0] - 0.5).abs() < 0.01, "interpolated: {middle:?}");
     }
 
-    /// Com cadeia, o nível sai do `lod`: zero é a imagem cheia, e o último é o menor nível.
+    /// With a chain, the level comes from `lod`: zero is the full image, and the last is the
+    /// smallest level.
     #[test]
-    fn o_lod_escolhe_o_nivel() {
+    fn the_lod_picks_the_level() {
         let mut t = Texture {
             width: 2,
             height: 1,
             pixels: vec![[255, 0, 0, 255]; 2],
             ..Default::default()
         };
-        t.mipmaps = vec![Nivel {
+        t.mipmaps = vec![Level {
             width: 1,
             height: 1,
             pixels: vec![[0, 0, 255, 255]],
         }];
         t.min_filter = gles::GL_NEAREST_MIPMAP_NEAREST;
-        let perto = t.sample_lod(0.5, 0.5, 0.0);
-        assert_eq!(perto[0], 1.0, "de perto, o nível cheio: {perto:?}");
-        let longe = t.sample_lod(0.5, 0.5, 3.0);
-        assert_eq!(longe[2], 1.0, "de longe, o nível menor: {longe:?}");
+        let near = t.sample_lod(0.5, 0.5, 0.0);
+        assert_eq!(near[0], 1.0, "up close, the full level: {near:?}");
+        let far = t.sample_lod(0.5, 0.5, 3.0);
+        assert_eq!(far[2], 1.0, "from afar, the smaller level: {far:?}");
     }
 
-    /// O stencil marca onde o desenho passou, e o desenho seguinte só entra onde a marca está.
+    /// The stencil marks where the draw went, and the next draw only goes in where the mark is.
     ///
-    /// É a receita do reflexo do palco da Z-Wheel, reduzida a dois quadrados.
+    /// It is the recipe for the Z-Wheel stage reflection, reduced to two squares.
     #[test]
-    fn a_marca_do_stencil_recorta_o_desenho_seguinte() {
-        let mut estado = GlState::new(4, 4);
-        estado.set_viewport(0, 0, 4, 4);
-        estado.set_capability(gles::GL_STENCIL_TEST, true);
+    fn the_stencil_mark_clips_the_next_draw() {
+        let mut state = GlState::new(4, 4);
+        state.set_viewport(0, 0, 4, 4);
+        state.set_capability(gles::GL_STENCIL_TEST, true);
 
-        // Primeiro passe: escreve 1 no stencil na metade de cima, sem pintar.
-        estado.set_color_mask([false; 4]);
-        estado.set_stencil_func(gles::GL_ALWAYS, 1, 0xff);
-        estado.set_stencil_op(gles::GL_KEEP, gles::GL_KEEP, gles::GL_REPLACE);
-        quadrado(&mut estado, -1.0, 0.0, 1.0, 1.0, [1.0; 4]);
-        estado.flush();
-        assert_eq!(estado.stencil[0], 1, "topo marcado");
-        assert_eq!(estado.stencil[12], 0, "fundo intocado");
+        // First pass: writes 1 to the stencil on the top half, without painting.
+        state.set_color_mask([false; 4]);
+        state.set_stencil_func(gles::GL_ALWAYS, 1, 0xff);
+        state.set_stencil_op(gles::GL_KEEP, gles::GL_KEEP, gles::GL_REPLACE);
+        square(&mut state, -1.0, 0.0, 1.0, 1.0, [1.0; 4]);
+        state.flush();
+        assert_eq!(state.stencil[0], 1, "top marked");
+        assert_eq!(state.stencil[12], 0, "bottom untouched");
 
-        // Segundo passe: pinta de vermelho só onde a marca está.
-        estado.set_color_mask([true; 4]);
-        estado.set_stencil_func(gles::GL_EQUAL, 1, 0xff);
-        estado.set_stencil_op(gles::GL_KEEP, gles::GL_KEEP, gles::GL_KEEP);
-        quadrado(&mut estado, -1.0, -1.0, 1.0, 1.0, [1.0, 0.0, 0.0, 1.0]);
-        estado.flush();
-        assert_eq!(estado.color[0][0], 255, "topo pintado");
-        assert_eq!(estado.color[12][0], 0, "fundo poupado pelo stencil");
+        // Second pass: paints red only where the mark is.
+        state.set_color_mask([true; 4]);
+        state.set_stencil_func(gles::GL_EQUAL, 1, 0xff);
+        state.set_stencil_op(gles::GL_KEEP, gles::GL_KEEP, gles::GL_KEEP);
+        square(&mut state, -1.0, -1.0, 1.0, 1.0, [1.0, 0.0, 0.0, 1.0]);
+        state.flush();
+        assert_eq!(state.color[0][0], 255, "top painted");
+        assert_eq!(state.color[12][0], 0, "bottom spared by the stencil");
     }
 
-    /// A máscara de escrita decide bit a bit o que o desenho pode mudar no stencil.
+    /// The write mask decides bit by bit what drawing may change in the stencil.
     #[test]
-    fn a_mascara_protege_os_bits_de_fora() {
-        let mut estado = GlState::new(2, 2);
-        estado.set_viewport(0, 0, 2, 2);
-        estado.stencil.fill(0b1010_1010);
-        estado.set_capability(gles::GL_STENCIL_TEST, true);
-        estado.set_stencil_func(gles::GL_ALWAYS, 0xff, 0xff);
-        estado.set_stencil_op(gles::GL_KEEP, gles::GL_KEEP, gles::GL_REPLACE);
-        estado.set_stencil_mask(0b0000_1111);
-        quadrado(&mut estado, -1.0, -1.0, 1.0, 1.0, [1.0; 4]);
-        estado.flush();
-        assert_eq!(estado.stencil[0], 0b1010_1111);
+    fn the_mask_protects_the_bits_outside_it() {
+        let mut state = GlState::new(2, 2);
+        state.set_viewport(0, 0, 2, 2);
+        state.stencil.fill(0b1010_1010);
+        state.set_capability(gles::GL_STENCIL_TEST, true);
+        state.set_stencil_func(gles::GL_ALWAYS, 0xff, 0xff);
+        state.set_stencil_op(gles::GL_KEEP, gles::GL_KEEP, gles::GL_REPLACE);
+        state.set_stencil_mask(0b0000_1111);
+        square(&mut state, -1.0, -1.0, 1.0, 1.0, [1.0; 4]);
+        state.flush();
+        assert_eq!(state.stencil[0], 0b1010_1111);
     }
 
-    /// Um desenho reprovado no stencil não pinta, mas **aplica** a operação de falha: é isso
-    /// que deixa um passe contar sem aparecer.
+    /// A draw that fails the stencil doesn't paint, but **applies** the failure operation: that
+    /// is what lets a pass count without showing up.
     #[test]
-    fn a_falha_no_stencil_ainda_mexe_no_buffer() {
-        let mut estado = GlState::new(2, 2);
-        estado.set_viewport(0, 0, 2, 2);
-        estado.set_capability(gles::GL_STENCIL_TEST, true);
-        estado.set_stencil_func(gles::GL_NEVER, 0, 0xff);
-        estado.set_stencil_op(gles::GL_INCR, gles::GL_KEEP, gles::GL_KEEP);
-        quadrado(&mut estado, -1.0, -1.0, 1.0, 1.0, [1.0, 0.0, 0.0, 1.0]);
-        estado.flush();
-        assert_eq!(estado.stencil[0], 1, "a operação de falha valeu");
-        assert_eq!(estado.color[0][0], 0, "e nada foi pintado");
+    fn a_stencil_failure_still_touches_the_buffer() {
+        let mut state = GlState::new(2, 2);
+        state.set_viewport(0, 0, 2, 2);
+        state.set_capability(gles::GL_STENCIL_TEST, true);
+        state.set_stencil_func(gles::GL_NEVER, 0, 0xff);
+        state.set_stencil_op(gles::GL_INCR, gles::GL_KEEP, gles::GL_KEEP);
+        square(&mut state, -1.0, -1.0, 1.0, 1.0, [1.0, 0.0, 0.0, 1.0]);
+        state.flush();
+        assert_eq!(state.stencil[0], 1, "the failure operation applied");
+        assert_eq!(state.color[0][0], 0, "and nothing was painted");
     }
 
-    /// Um quadrado em coordenadas normalizadas, com a cor dada.
-    fn quadrado(estado: &mut GlState, x0: f32, y0: f32, x1: f32, y1: f32, color: [f32; 4]) {
+    /// A square in normalized coordinates, with the given color.
+    fn square(state: &mut GlState, x0: f32, y0: f32, x1: f32, y1: f32, color: [f32; 4]) {
         let v = |x: f32, y: f32| Vertex {
             position: [x, y, 0.0, 1.0],
             color,
-            uv: UV_PADRAO,
+            uv: DEFAULT_UV,
             ..Default::default()
         };
-        estado.draw(
+        state.draw(
             gles::GL_TRIANGLES,
             &[
                 v(x0, y0),
@@ -4677,216 +4719,221 @@ mod tests {
         );
     }
 
-    /// Um estado com a luz zero ligada, material e luz brancos, e nada mais.
-    fn com_luz() -> GlState {
-        let mut estado = GlState::new(4, 4);
-        estado.set_capability(gles::GL_LIGHTING, true);
-        estado.set_capability(gles::GL_LIGHT0, true);
-        estado.set_material(gles::GL_AMBIENT, [0.0, 0.0, 0.0, 1.0]);
-        estado.set_material(gles::GL_DIFFUSE, [1.0, 1.0, 1.0, 1.0]);
-        estado.set_light_model(gles::GL_LIGHT_MODEL_AMBIENT, [0.0, 0.0, 0.0, 1.0]);
-        estado
+    /// A state with light zero on, white material and light, and nothing else.
+    fn lit_state() -> GlState {
+        let mut state = GlState::new(4, 4);
+        state.set_capability(gles::GL_LIGHTING, true);
+        state.set_capability(gles::GL_LIGHT0, true);
+        state.set_material(gles::GL_AMBIENT, [0.0, 0.0, 0.0, 1.0]);
+        state.set_material(gles::GL_DIFFUSE, [1.0, 1.0, 1.0, 1.0]);
+        state.set_light_model(gles::GL_LIGHT_MODEL_AMBIENT, [0.0, 0.0, 0.0, 1.0]);
+        state
     }
 
-    /// A luz zero nasce com difusa branca e direcional em `(0, 0, 1, 0)`: uma face virada para
-    /// o observador recebe tudo, e uma de lado não recebe nada.
+    /// Light zero starts with white diffuse and directional at `(0, 0, 1, 0)`: a face turned
+    /// toward the viewer gets everything, and one sideways gets nothing.
     #[test]
-    fn a_difusa_segue_o_cosseno_da_normal() {
-        let estado = com_luz();
-        let frente = estado.cor_iluminada([0.0, 0.0, -5.0, 1.0], [0.0, 0.0, 1.0], [1.0; 4]);
-        assert!((frente[0] - 1.0).abs() < 1e-5, "de frente: {frente:?}");
-        let lado = estado.cor_iluminada([0.0, 0.0, -5.0, 1.0], [1.0, 0.0, 0.0], [1.0; 4]);
-        assert!(lado[0].abs() < 1e-5, "de lado: {lado:?}");
-        let costas = estado.cor_iluminada([0.0, 0.0, -5.0, 1.0], [0.0, 0.0, -1.0], [1.0; 4]);
-        assert!(costas[0].abs() < 1e-5, "de costas: {costas:?}");
+    fn diffuse_follows_the_cosine_of_the_normal() {
+        let state = lit_state();
+        let front = state.lit_color([0.0, 0.0, -5.0, 1.0], [0.0, 0.0, 1.0], [1.0; 4]);
+        assert!((front[0] - 1.0).abs() < 1e-5, "head-on: {front:?}");
+        let side = state.lit_color([0.0, 0.0, -5.0, 1.0], [1.0, 0.0, 0.0], [1.0; 4]);
+        assert!(side[0].abs() < 1e-5, "sideways: {side:?}");
+        let back = state.lit_color([0.0, 0.0, -5.0, 1.0], [0.0, 0.0, -1.0], [1.0; 4]);
+        assert!(back[0].abs() < 1e-5, "facing away: {back:?}");
     }
 
-    /// O que a Z-Wheel monta: ambiente da cena no padrão, ambiente da luz em 0,5 e material
-    /// ambiente e difuso em 0,949. De frente, isso é `0,949*0,2 + 0,949*0,5 + 0,949*1`, que
-    /// satura; de lado sobram as duas ambientes.
+    /// What Z-Wheel sets up: scene ambient at the default, light ambient at 0.5 and material
+    /// ambient and diffuse at 0.949. Head-on, that is `0.949*0.2 + 0.949*0.5 + 0.949*1`, which
+    /// saturates; sideways the two ambients remain.
     #[test]
-    fn a_conta_do_palco_da_z_wheel() {
-        let mut estado = GlState::new(4, 4);
-        estado.set_capability(gles::GL_LIGHTING, true);
-        estado.set_capability(gles::GL_LIGHT0, true);
-        let cinza = [0.949, 0.949, 0.949, 1.0];
-        estado.set_material(gles::GL_AMBIENT, cinza);
-        estado.set_material(gles::GL_DIFFUSE, cinza);
-        estado.set_light(0, gles::GL_AMBIENT, [0.5, 0.5, 0.5, 1.0]);
-        let lado = estado.cor_iluminada([0.0, 0.0, -5.0, 1.0], [1.0, 0.0, 0.0], [1.0; 4]);
-        assert!((lado[0] - 0.949 * 0.7).abs() < 1e-4, "de lado: {lado:?}");
-        let frente = estado.cor_iluminada([0.0, 0.0, -5.0, 1.0], [0.0, 0.0, 1.0], [1.0; 4]);
-        assert!((frente[0] - 1.0).abs() < 1e-5, "de frente: {frente:?}");
+    fn the_zwheel_stage_lighting_math() {
+        let mut state = GlState::new(4, 4);
+        state.set_capability(gles::GL_LIGHTING, true);
+        state.set_capability(gles::GL_LIGHT0, true);
+        let gray = [0.949, 0.949, 0.949, 1.0];
+        state.set_material(gles::GL_AMBIENT, gray);
+        state.set_material(gles::GL_DIFFUSE, gray);
+        state.set_light(0, gles::GL_AMBIENT, [0.5, 0.5, 0.5, 1.0]);
+        let side = state.lit_color([0.0, 0.0, -5.0, 1.0], [1.0, 0.0, 0.0], [1.0; 4]);
+        assert!((side[0] - 0.949 * 0.7).abs() < 1e-4, "sideways: {side:?}");
+        let front = state.lit_color([0.0, 0.0, -5.0, 1.0], [0.0, 0.0, 1.0], [1.0; 4]);
+        assert!((front[0] - 1.0).abs() < 1e-5, "head-on: {front:?}");
     }
 
-    /// O alfa é o da difusa do material, e não a soma das luzes — somando, tudo fica opaco.
+    /// The alpha is the material diffuse's, not the sum of the lights — summing, everything
+    /// turns opaque.
     #[test]
-    fn o_alfa_vem_do_material() {
-        let mut estado = com_luz();
-        estado.set_material(gles::GL_DIFFUSE, [1.0, 1.0, 1.0, 0.25]);
-        let cor = estado.cor_iluminada([0.0, 0.0, -5.0, 1.0], [0.0, 0.0, 1.0], [1.0; 4]);
-        assert!((cor[3] - 0.25).abs() < 1e-5, "{cor:?}");
+    fn alpha_comes_from_the_material() {
+        let mut state = lit_state();
+        state.set_material(gles::GL_DIFFUSE, [1.0, 1.0, 1.0, 0.25]);
+        let color = state.lit_color([0.0, 0.0, -5.0, 1.0], [0.0, 0.0, 1.0], [1.0; 4]);
+        assert!((color[3] - 0.25).abs() < 1e-5, "{color:?}");
     }
 
-    /// Com `GL_COLOR_MATERIAL`, a cor do vértice toma o lugar do material — é o único jeito de
-    /// um vetor de cores continuar valendo com a luz ligada.
+    /// With `GL_COLOR_MATERIAL`, the vertex color takes the place of the material — it is the
+    /// only way for a color array to still apply with lighting on.
     #[test]
-    fn a_cor_do_vertice_so_vale_com_color_material() {
-        let mut estado = com_luz();
-        let vermelho = [1.0, 0.0, 0.0, 1.0];
-        let sem = estado.cor_iluminada([0.0, 0.0, -5.0, 1.0], [0.0, 0.0, 1.0], vermelho);
-        assert!((sem[1] - 1.0).abs() < 1e-5, "sem color material: {sem:?}");
-        estado.set_capability(gles::GL_COLOR_MATERIAL, true);
-        let com = estado.cor_iluminada([0.0, 0.0, -5.0, 1.0], [0.0, 0.0, 1.0], vermelho);
-        assert!(com[1].abs() < 1e-5, "com color material: {com:?}");
+    fn vertex_color_only_counts_with_color_material() {
+        let mut state = lit_state();
+        let red = [1.0, 0.0, 0.0, 1.0];
+        let without = state.lit_color([0.0, 0.0, -5.0, 1.0], [0.0, 0.0, 1.0], red);
+        assert!((without[1] - 1.0).abs() < 1e-5, "without color material: {without:?}");
+        state.set_capability(gles::GL_COLOR_MATERIAL, true);
+        let com = state.lit_color([0.0, 0.0, -5.0, 1.0], [0.0, 0.0, 1.0], red);
+        assert!(com[1].abs() < 1e-5, "with color material: {com:?}");
     }
 
-    /// A posição da luz é guardada em coordenadas de olho: quem transforma é o `glLight`, com a
-    /// modelview do momento da chamada.
+    /// The light position is stored in eye coordinates: `glLight` does the transforming, with the
+    /// modelview at the moment of the call.
     #[test]
-    fn a_posicao_da_luz_passa_pela_modelview_da_chamada() {
-        let mut estado = GlState::new(4, 4);
-        estado.set_matrix_mode(gles::GL_MODELVIEW);
-        estado.load_matrix(translation(3.0, 0.0, 0.0));
-        estado.set_light(0, gles::GL_POSITION, [1.0, 0.0, 0.0, 1.0]);
-        assert_eq!(estado.lights[0].position, [4.0, 0.0, 0.0, 1.0]);
-        // Mexer na modelview depois não move a luz.
-        estado.load_matrix(translation(10.0, 0.0, 0.0));
-        assert_eq!(estado.lights[0].position, [4.0, 0.0, 0.0, 1.0]);
+    fn the_light_position_uses_the_modelview_at_call_time() {
+        let mut state = GlState::new(4, 4);
+        state.set_matrix_mode(gles::GL_MODELVIEW);
+        state.load_matrix(translation(3.0, 0.0, 0.0));
+        state.set_light(0, gles::GL_POSITION, [1.0, 0.0, 0.0, 1.0]);
+        assert_eq!(state.lights[0].position, [4.0, 0.0, 0.0, 1.0]);
+        // Touching the modelview afterwards doesn't move the light.
+        state.load_matrix(translation(10.0, 0.0, 0.0));
+        assert_eq!(state.lights[0].position, [4.0, 0.0, 0.0, 1.0]);
     }
 
-    /// Com escala não uniforme, a normal precisa da transposta da inversa: transformada como
-    /// direção, ela deixa de ser perpendicular à superfície e a luz escorrega pelo modelo.
+    /// With non-uniform scaling, the normal needs the inverse transpose: transformed as a
+    /// direction, it stops being perpendicular to the surface and the light slides across the
+    /// model.
     #[test]
-    fn a_normal_sobrevive_a_escala_nao_uniforme() {
+    fn the_normal_survives_non_uniform_scale() {
         let m = scaling(1.0, 4.0, 1.0);
-        // Uma superfície inclinada a 45 graus no plano XY: tangente `(1, 1, 0)`, normal
-        // `(1, -1, 0)`. Depois da escala, a tangente vira `(1, 4, 0)`.
-        let normal = normaliza(gira_normal(&matriz_de_normais(&m), [1.0, -1.0, 0.0]));
-        let tangente = normaliza([1.0, 4.0, 0.0]);
-        assert!(ponto(normal, tangente).abs() < 1e-5, "normal {normal:?}");
+        // A surface tilted 45 degrees in the XY plane: tangent `(1, 1, 0)`, normal
+        // `(1, -1, 0)`. After scaling, the tangent becomes `(1, 4, 0)`.
+        let normal = normalize(rotate_normal(&normal_matrix(&m), [1.0, -1.0, 0.0]));
+        let tangent = normalize([1.0, 4.0, 0.0]);
+        assert!(point(normal, tangent).abs() < 1e-5, "normal {normal:?}");
     }
 
-    /// Numa rotação a normal gira junto com o modelo, e para o mesmo lado. A escala acima não
-    /// pega a troca entre a inversa e a transposta dela, porque nela as duas são iguais.
+    /// Under a rotation the normal turns along with the model, and the same way. The scale above
+    /// doesn't catch a swap between the inverse and its transpose, because there both are equal.
     #[test]
-    fn a_normal_gira_junto_com_o_modelo() {
+    fn the_normal_rotates_with_the_model() {
         let m = rotation(90.0, 0.0, 0.0, 1.0);
-        let normal = gira_normal(&matriz_de_normais(&m), [1.0, 0.0, 0.0]);
+        let normal = rotate_normal(&normal_matrix(&m), [1.0, 0.0, 0.0]);
         assert!(normal[0].abs() < 1e-5, "normal {normal:?}");
         assert!((normal[1] - 1.0).abs() < 1e-5, "normal {normal:?}");
 
-        // Rotação com translação e escala uniforme: a direção é a da rotação.
+        // Rotation with translation and uniform scale: the direction is the rotation's.
         let mut m = translation(5.0, -3.0, 2.0);
         m = multiply(&m, &rotation(30.0, 0.0, 1.0, 0.0));
         m = multiply(&m, &scaling(2.0, 2.0, 2.0));
-        let normal = normaliza(gira_normal(&matriz_de_normais(&m), [0.0, 0.0, 1.0]));
-        let esperado = transform(&rotation(30.0, 0.0, 1.0, 0.0), [0.0, 0.0, 1.0, 0.0]);
+        let normal = normalize(rotate_normal(&normal_matrix(&m), [0.0, 0.0, 1.0]));
+        let expected = transform(&rotation(30.0, 0.0, 1.0, 0.0), [0.0, 0.0, 1.0, 0.0]);
         for i in 0..3 {
-            assert!((normal[i] - esperado[i]).abs() < 1e-5, "normal {normal:?}");
+            assert!((normal[i] - expected[i]).abs() < 1e-5, "normal {normal:?}");
         }
     }
 
-    /// Sem `GL_LIGHTING` nada disso acontece: a cor do vértice chega inteira ao rasterizador.
+    /// Without `GL_LIGHTING` none of this happens: the vertex color reaches the rasterizer
+    /// intact.
     #[test]
-    fn sem_luz_a_cor_passa_inteira() {
-        let mut estado = GlState::new(4, 4);
-        assert!(!estado.lighting);
-        estado.set_capability(gles::GL_LIGHTING, true);
-        assert!(estado.lighting);
+    fn without_lighting_the_color_passes_unchanged() {
+        let mut state = GlState::new(4, 4);
+        assert!(!state.lighting);
+        state.set_capability(gles::GL_LIGHTING, true);
+        assert!(state.lighting);
     }
     use super::*;
 
-    /// O `GL_COMBINE` com a fonte 0 na textura e a função `GL_REPLACE` ignora a cor do
-    /// vértice. É o que o motor QX pede, com a cor zerada; tratado como `GL_MODULATE`, o
-    /// resultado era preto transparente.
+    /// `GL_COMBINE` with source 0 on the texture and the `GL_REPLACE` function ignores the vertex
+    /// color. It is what the QX engine asks for, with the color zeroed; treated as `GL_MODULATE`,
+    /// the result was transparent black.
     #[test]
-    fn o_combine_substitui_pela_textura_sem_olhar_o_vertice() {
-        let mut env = TexEnv::com_modo(gles::GL_COMBINE);
+    fn combine_replaces_with_the_texture_ignoring_the_vertex() {
+        let mut env = TexEnv::with_mode(gles::GL_COMBINE);
         env.define(gles::GL_COMBINE_RGB, gles::GL_REPLACE, 0.0);
         env.define(gles::GL_COMBINE_ALPHA, gles::GL_REPLACE, 0.0);
         env.define(gles::GL_SRC0_RGB, gles::GL_TEXTURE, 0.0);
         env.define(gles::GL_SRC0_ALPHA, gles::GL_TEXTURE, 0.0);
-        // O QX manda `GL_SRC_COLOR` no operando de alfa; vale como o alfa.
+        // QX sends `GL_SRC_COLOR` in the alpha operand; it counts as the alpha.
         env.define(gles::GL_OPERAND0_ALPHA, gles::GL_SRC_COLOR, 0.0);
         let texel = [0.2, 0.4, 0.6, 0.8];
-        assert_eq!(env.aplica([0.0; 4], texel), texel);
+        assert_eq!(env.apply([0.0; 4], texel), texel);
     }
 
-    /// A unidade 1 do QX: `ADD_SIGNED` da textura de cor com o que saiu da unidade 0 (o `DOT3`
-    /// da luz), e o alfa da textura vezes a cor constante.
+    /// QX's unit 1: `ADD_SIGNED` of the color texture with what came out of unit 0 (the light's
+    /// `DOT3`), and the texture's alpha times the constant color.
     #[test]
-    fn a_unidade_1_soma_com_sinal_sobre_a_anterior() {
-        let mut env = TexEnv::com_modo(gles::GL_COMBINE);
+    fn unit_1_adds_signed_over_the_previous_one() {
+        let mut env = TexEnv::with_mode(gles::GL_COMBINE);
         env.define(gles::GL_COMBINE_RGB, gles::GL_ADD_SIGNED, 0.0);
         env.define(gles::GL_SRC0_RGB + 1, gles::GL_PREVIOUS, 0.0);
         env.define(gles::GL_SRC0_ALPHA + 1, gles::GL_CONSTANT, 0.0);
-        env.cor = [0.0, 0.0, 0.0, 0.5];
-        let anterior = [0.75, 0.5, 0.25, 1.0];
+        env.color = [0.0, 0.0, 0.0, 0.5];
+        let previous = [0.75, 0.5, 0.25, 1.0];
         let texel = [0.5, 0.5, 0.5, 1.0];
-        let saida = env.aplica_com(anterior, [0.0; 4], texel, [None, Some(texel)]);
-        // 0,5 + anterior − 0,5 = anterior; alfa 1 × 0,5.
-        for (canal, esperado) in [0.75, 0.5, 0.25, 0.5].into_iter().enumerate() {
-            assert!((saida[canal] - esperado).abs() < 1e-6, "{saida:?}");
+        let output = env.apply_with(previous, [0.0; 4], texel, [None, Some(texel)]);
+        // 0.5 + previous − 0.5 = previous; alpha 1 × 0.5.
+        for (channel, expected) in [0.75, 0.5, 0.25, 0.5].into_iter().enumerate() {
+            assert!((output[channel] - expected).abs() < 1e-6, "{output:?}");
         }
     }
 
-    /// Função ou fonte que não existe é `GL_INVALID_ENUM`, e o valor de antes fica. A água do
-    /// Bóia Cross pede `DOT3_RGB` e logo depois manda `GL_TEXTURE0` no `GL_COMBINE_RGB`; aceito,
-    /// o relevo virava multiplicação e a água saía azul-roxa.
+    /// A function or source that doesn't exist is `GL_INVALID_ENUM`, and the previous value
+    /// stays. Bóia Cross's water asks for `DOT3_RGB` and right after sends `GL_TEXTURE0` in
+    /// `GL_COMBINE_RGB`; if accepted, the bump mapping turned into multiplication and the water
+    /// came out blue-purple.
     #[test]
-    fn o_combine_recusa_funcao_e_fonte_que_nao_existem() {
-        let mut env = TexEnv::com_modo(gles::GL_COMBINE);
+    fn combine_rejects_functions_and_sources_that_do_not_exist() {
+        let mut env = TexEnv::with_mode(gles::GL_COMBINE);
         env.define(gles::GL_COMBINE_RGB, gles::GL_DOT3_RGB, 0.0);
         env.define(gles::GL_COMBINE_RGB, gles::GL_TEXTURE0, 0.0);
         env.define(gles::GL_COMBINE_RGB, gles::GL_COMBINE, 0.0);
-        assert_eq!(env.combina[0], gles::GL_DOT3_RGB);
-        // O `DOT3` só existe no RGB.
+        assert_eq!(env.combine[0], gles::GL_DOT3_RGB);
+        // `DOT3` only exists for RGB.
         env.define(gles::GL_COMBINE_ALPHA, gles::GL_DOT3_RGBA, 0.0);
-        assert_eq!(env.combina[1], gles::GL_MODULATE);
+        assert_eq!(env.combine[1], gles::GL_MODULATE);
         env.define(gles::GL_SRC0_RGB + 1, gles::GL_PRIMARY_COLOR, 0.0);
         env.define(gles::GL_SRC0_RGB + 1, gles::GL_DOT3_RGB, 0.0);
         env.define(gles::GL_SRC0_ALPHA, gles::GL_TEXTURE0 + 2, 0.0);
-        assert_eq!(env.fontes[0][1], gles::GL_PRIMARY_COLOR);
-        assert_eq!(env.fontes[1][0], gles::GL_TEXTURE);
+        assert_eq!(env.sources[0][1], gles::GL_PRIMARY_COLOR);
+        assert_eq!(env.sources[1][0], gles::GL_TEXTURE);
     }
 
-    /// O crossbar: `GL_TEXTURE0` e `GL_TEXTURE1` são o texel daquela unidade, não o anterior. É
-    /// a unidade 1 da água do Bóia Cross: o relevo da 0 vezes a cor da 1, com o alfa da 1.
+    /// The crossbar: `GL_TEXTURE0` and `GL_TEXTURE1` are that unit's texel, not the previous
+    /// one. It is unit 1 of Bóia Cross's water: unit 0's bump times unit 1's color, with unit 1's
+    /// alpha.
     #[test]
-    fn o_crossbar_le_o_texel_de_cada_unidade_pelo_nome() {
-        let mut env = TexEnv::com_modo(gles::GL_COMBINE);
+    fn the_crossbar_reads_each_units_texel_by_name() {
+        let mut env = TexEnv::with_mode(gles::GL_COMBINE);
         env.define(gles::GL_SRC0_RGB, gles::GL_PREVIOUS, 0.0);
         env.define(gles::GL_SRC0_RGB + 1, gles::GL_TEXTURE0 + 1, 0.0);
         env.define(gles::GL_COMBINE_ALPHA, gles::GL_REPLACE, 0.0);
         env.define(gles::GL_SRC0_ALPHA, gles::GL_TEXTURE0 + 1, 0.0);
         env.define(gles::GL_SRC0_ALPHA + 1, gles::GL_TEXTURE0, 0.0);
-        let anterior = [0.5, 0.5, 0.5, 0.0];
-        let marrom = [0.6, 0.4, 0.2, 0.8];
-        let saida = env.aplica_com(anterior, [0.0; 4], marrom, [Some([1.0; 4]), Some(marrom)]);
-        for (canal, esperado) in [0.3, 0.2, 0.1, 0.8].into_iter().enumerate() {
-            assert!((saida[canal] - esperado).abs() < 1e-6, "{saida:?}");
+        let previous = [0.5, 0.5, 0.5, 0.0];
+        let brown = [0.6, 0.4, 0.2, 0.8];
+        let output = env.apply_with(previous, [0.0; 4], brown, [Some([1.0; 4]), Some(brown)]);
+        for (channel, expected) in [0.3, 0.2, 0.1, 0.8].into_iter().enumerate() {
+            assert!((output[channel] - expected).abs() < 1e-6, "{output:?}");
         }
-        // Fonte numa unidade que não desenha: esta unidade passa o anterior adiante.
-        let saida = env.aplica_com(anterior, [0.0; 4], marrom, [None, Some(marrom)]);
-        assert_eq!(saida, anterior);
+        // A source on a unit that doesn't draw: this unit passes the previous one along.
+        let output = env.apply_with(previous, [0.0; 4], brown, [None, Some(brown)]);
+        assert_eq!(output, previous);
     }
 
     #[test]
-    fn o_combine_interpola_pela_terceira_fonte() {
-        let mut env = TexEnv::com_modo(gles::GL_COMBINE);
+    fn combine_interpolates_by_the_third_source() {
+        let mut env = TexEnv::with_mode(gles::GL_COMBINE);
         env.define(gles::GL_COMBINE_RGB, gles::GL_INTERPOLATE, 0.0);
         env.define(gles::GL_SRC0_RGB, gles::GL_TEXTURE, 0.0);
         env.define(gles::GL_SRC0_RGB + 1, gles::GL_PRIMARY_COLOR, 0.0);
         env.define(gles::GL_SRC0_RGB + 2, gles::GL_CONSTANT, 0.0);
-        env.cor = [0.25; 4];
-        let saida = env.aplica([1.0, 1.0, 1.0, 1.0], [0.0, 0.0, 0.0, 1.0]);
-        // 0 × 0,25 + 1 × 0,75
-        assert!((saida[0] - 0.75).abs() < 1e-6, "{saida:?}");
+        env.color = [0.25; 4];
+        let output = env.apply([1.0, 1.0, 1.0, 1.0], [0.0, 0.0, 0.0, 1.0]);
+        // 0 × 0.25 + 1 × 0.75
+        assert!((output[0] - 0.75).abs() < 1e-6, "{output:?}");
     }
 
-    /// O quadro depois de pintado. O desenho é acumulado e só vira pixel no despejo — que no
-    /// emulador acontece no `eglSwapBuffers`, e aqui precisa ser pedido.
+    /// The frame after painting. Drawing is accumulated and only becomes pixels on the flush —
+    /// which in the emulator happens at `eglSwapBuffers`, and here has to be requested.
     fn pixels(state: &mut GlState) -> &[[u8; 4]] {
         state.flush();
         &state.color
@@ -4896,7 +4943,7 @@ mod tests {
         let vertex = |x: f32, y: f32| Vertex {
             position: [x, y, z, 1.0],
             color,
-            uv: UV_PADRAO,
+            uv: DEFAULT_UV,
             ..Default::default()
         };
         state.draw(
@@ -4913,13 +4960,13 @@ mod tests {
     }
 
     #[test]
-    fn o_blit_de_tela_poe_a_textura_no_lugar_certo() {
-        // `glDrawTexiOES` desenha em coordenadas de **janela**, cujo zero fica embaixo — o
-        // oposto da nossa superfície. Errar essa inversão põe a imagem de cabeça para baixo, e
-        // num emulador de arcade isso passa por "funcionou".
+    fn the_screen_blit_puts_the_texture_in_the_right_place() {
+        // `glDrawTexiOES` draws in **window** coordinates, whose zero is at the bottom — the
+        // opposite of our surface. Getting that flip wrong puts the image upside down, and in an
+        // arcade emulator that passes for "it worked".
         let mut state = GlState::new(4, 4);
         state.set_viewport(0, 0, 4, 4);
-        // Duas linhas: a de baixo vermelha, a de cima azul (na ordem em que a textura chega).
+        // Two rows: the bottom one red, the top one blue (in the order the texture arrives).
         let texture = Texture {
             width: 1,
             height: 2,
@@ -4932,26 +4979,27 @@ mod tests {
         state.set_capability(gles::GL_TEXTURE_2D, true);
         state.set_texture_crop([0, 0, 1, 2]);
 
-        // Um retângulo de 4x2 encostado na base da janela.
+        // A 4x2 rectangle against the bottom of the window.
         state.draw_texture(0.0, 0.0, 0.0, 4.0, 2.0);
         let frame = state.present(4, 4);
         let at = |x: usize, y: usize| frame[y * 4 + x];
-        let vermelho = (255u16 >> 3) << 11;
-        let azul = 255u16 >> 3;
+        let red = (255u16 >> 3) << 11;
+        let blue = 255u16 >> 3;
 
-        // A metade de cima da tela não foi tocada; a de baixo recebeu o desenho.
-        assert_eq!(at(0, 0), 0, "o topo continua limpo");
+        // The top half of the screen was not touched; the bottom one got the drawing.
+        assert_eq!(at(0, 0), 0, "the top stays clean");
         assert_eq!(at(0, 1), 0);
-        assert_ne!(at(0, 2), 0, "a base recebeu o blit");
+        assert_ne!(at(0, 2), 0, "the bottom got the blit");
         assert_ne!(at(0, 3), 0);
-        // E dentro dele o primeiro texel fica embaixo, como manda a janela do OpenGL.
-        assert_eq!(at(0, 3), vermelho, "o texel 0 é o de baixo");
-        assert_eq!(at(0, 2), azul);
+        // And inside it the first texel is at the bottom, as the OpenGL window requires.
+        assert_eq!(at(0, 3), red, "texel 0 is the bottom one");
+        assert_eq!(at(0, 2), blue);
     }
 
     #[test]
-    fn o_blit_sem_recorte_usa_a_textura_inteira() {
-        // Recorte zerado é a textura toda: desenhar nada seria pior que adotar o padrão óbvio.
+    fn the_unclipped_blit_uses_the_whole_texture() {
+        // A zeroed crop is the whole texture: drawing nothing would be worse than adopting the
+        // obvious default.
         let mut state = GlState::new(2, 2);
         state.set_viewport(0, 0, 2, 2);
         state.textures.insert(
@@ -4967,14 +5015,14 @@ mod tests {
         state.bind_texture(1);
         state.set_capability(gles::GL_TEXTURE_2D, true);
         state.draw_texture(0.0, 0.0, 0.0, 2.0, 2.0);
-        let verde = (255u16 >> 2) << 5;
-        assert_eq!(state.present(2, 2), vec![verde; 4]);
+        let green = (255u16 >> 2) << 5;
+        assert_eq!(state.present(2, 2), vec![green; 4]);
     }
 
     #[test]
-    fn multiplicacao_respeita_a_ordem_do_opengl() {
-        // `translate` depois de `scale` escala a translação — é a ordem do `glTranslate`
-        // aplicado sobre uma matriz que já tem escala.
+    fn multiplication_follows_the_opengl_order() {
+        // `translate` after `scale` scales the translation — it is the order of `glTranslate`
+        // applied over a matrix that already has a scale.
         let m = multiply(&scaling(2.0, 2.0, 2.0), &translation(1.0, 0.0, 0.0));
         assert_eq!(transform(&m, [0.0, 0.0, 0.0, 1.0])[0], 2.0);
         assert_eq!(
@@ -4984,7 +5032,7 @@ mod tests {
     }
 
     #[test]
-    fn rotacao_de_noventa_graus_leva_x_para_y() {
+    fn a_ninety_degree_rotation_takes_x_to_y() {
         let m = rotation(90.0, 0.0, 0.0, 1.0);
         let v = transform(&m, [1.0, 0.0, 0.0, 1.0]);
         assert!((v[0]).abs() < 1e-6, "{v:?}");
@@ -4992,7 +5040,7 @@ mod tests {
     }
 
     #[test]
-    fn preenche_a_tela_e_respeita_o_teste_de_profundidade() {
+    fn fills_the_screen_and_respects_the_depth_test() {
         let mut state = GlState::new(8, 8);
         state.set_capability(gles::GL_DEPTH_TEST, true);
         state.set_depth_func(gles::GL_LESS);
@@ -5001,27 +5049,27 @@ mod tests {
         quad(&mut state, 0.0, [1.0, 0.0, 0.0, 1.0]);
         assert_eq!(pixels(&mut state)[8 * 4 + 4], [255, 0, 0, 255]);
 
-        // Mais longe não passa no teste; mais perto passa.
+        // Farther fails the test; closer passes.
         quad(&mut state, 0.5, [0.0, 1.0, 0.0, 1.0]);
         assert_eq!(pixels(&mut state)[8 * 4 + 4], [255, 0, 0, 255]);
         quad(&mut state, -0.5, [0.0, 0.0, 1.0, 1.0]);
         assert_eq!(pixels(&mut state)[8 * 4 + 4], [0, 0, 255, 255]);
     }
 
-    /// Camadas no mesmo z com `GL_LEQUAL` passam inteiras, nos dois triângulos de cada faixa.
+    /// Layers at the same z with `GL_LEQUAL` pass whole, in both triangles of each strip.
     ///
-    /// É como o NFS Carbon monta o logo da EA: um quadrilátero por cima do outro, de tamanhos
-    /// diferentes, todos em z = 3,8e-6. Com o z somado pelos três pesos, o arredondamento de um
-    /// triângulo passava do z gravado pelo outro e metade de cada camada sumia na diagonal.
+    /// It is how NFS Carbon builds the EA logo: one quad over the other, of different sizes, all
+    /// at z = 3.8e-6. With z summed through the three weights, one triangle's rounding went past
+    /// the z written by the other and half of each layer vanished along the diagonal.
     #[test]
-    fn camadas_no_mesmo_z_passam_inteiras_com_lequal() {
-        let lado = 64;
-        let mut state = GlState::new(lado, lado);
+    fn layers_at_the_same_z_pass_whole_with_lequal() {
+        let side = 64;
+        let mut state = GlState::new(side, side);
         state.set_capability(gles::GL_DEPTH_TEST, true);
         state.set_depth_func(gles::GL_LEQUAL);
         state.clear(gles::GL_COLOR_BUFFER_BIT | gles::GL_DEPTH_BUFFER_BIT);
         let z = 3.814_697_3e-6;
-        let faixa = |state: &mut GlState, x0: f32, y0: f32, x1: f32, y1: f32, color: [f32; 4]| {
+        let strip = |state: &mut GlState, x0: f32, y0: f32, x1: f32, y1: f32, color: [f32; 4]| {
             let v = |x: f32, y: f32| Vertex {
                 position: [x, y, z, 1.0],
                 color,
@@ -5032,76 +5080,76 @@ mod tests {
                 &[v(x0, y1), v(x0, y0), v(x1, y1), v(x1, y0)],
             );
         };
-        let verde = [-0.8127374, -0.7875298, 0.8354998, 0.9214745];
-        let azul = [-0.4027808, -0.3878969, 0.5765068, 0.6939483];
-        faixa(&mut state, -1.0, -1.0, 1.0, 1.0, [1.0, 0.0, 0.0, 1.0]);
-        faixa(
+        let green = [-0.8127374, -0.7875298, 0.8354998, 0.9214745];
+        let blue = [-0.4027808, -0.3878969, 0.5765068, 0.6939483];
+        strip(&mut state, -1.0, -1.0, 1.0, 1.0, [1.0, 0.0, 0.0, 1.0]);
+        strip(
             &mut state,
-            verde[0],
-            verde[1],
-            verde[2],
-            verde[3],
+            green[0],
+            green[1],
+            green[2],
+            green[3],
             [0.0, 1.0, 0.0, 1.0],
         );
-        faixa(
+        strip(
             &mut state,
-            azul[0],
-            azul[1],
-            azul[2],
-            azul[3],
+            blue[0],
+            blue[1],
+            blue[2],
+            blue[3],
             [0.0, 0.0, 1.0, 1.0],
         );
-        // Quantos centros de pixel caem dentro de cada retângulo: é o que cada camada tem de
-        // cobrir, e nenhum dos cantos cai exatamente num centro.
-        let dentro = |r: [f32; 4]| {
-            let centro = |i: usize| (i as f32 + 0.5) / lado as f32 * 2.0 - 1.0;
-            let conta = |a: f32, b: f32| (0..lado).filter(|&i| (a..b).contains(&centro(i))).count();
-            conta(r[0], r[2]) * conta(r[1], r[3])
+        // How many pixel centers fall inside each rectangle: it is what each layer must cover,
+        // and none of the corners falls exactly on a center.
+        let inside = |r: [f32; 4]| {
+            let center = |i: usize| (i as f32 + 0.5) / side as f32 * 2.0 - 1.0;
+            let count = |a: f32, b: f32| (0..side).filter(|&i| (a..b).contains(&center(i))).count();
+            count(r[0], r[2]) * count(r[1], r[3])
         };
-        let quadro = pixels(&mut state);
-        let verdes = quadro.iter().filter(|p| **p == [0, 255, 0, 255]).count();
-        let azuis = quadro.iter().filter(|p| **p == [0, 0, 255, 255]).count();
-        assert_eq!(azuis, dentro(azul), "o azul perdeu pixels para quem estava embaixo");
-        assert_eq!(verdes, dentro(verde) - dentro(azul), "o verde perdeu pixels para o vermelho");
+        let frame = pixels(&mut state);
+        let greens = frame.iter().filter(|p| **p == [0, 255, 0, 255]).count();
+        let blues = frame.iter().filter(|p| **p == [0, 0, 255, 255]).count();
+        assert_eq!(blues, inside(blue), "blue lost pixels to whatever was underneath");
+        assert_eq!(greens, inside(green) - inside(blue), "green lost pixels to red");
     }
 
-    /// O `y` do `glViewport` conta de baixo para cima, e o quadro é guardado de cima para baixo.
+    /// The `y` of `glViewport` counts from the bottom up, and the frame is stored top-down.
     ///
-    /// Uma viewport em `y = 0` com metade da altura é a metade **de baixo** da imagem. Tratar o
-    /// `y` como contado do topo punha o trecho de pista que o Crash Nitro Kart desenha pelo portal
-    /// espelhado na parte de baixo da tela.
+    /// A viewport at `y = 0` with half the height is the **bottom** half of the image. Treating
+    /// `y` as counted from the top put the stretch of track Crash Nitro Kart draws through the
+    /// portal mirrored at the bottom of the screen.
     #[test]
-    fn a_viewport_conta_o_y_de_baixo_para_cima() {
+    fn the_viewport_counts_y_from_the_bottom_up() {
         let mut state = GlState::new(8, 8);
         state.set_viewport(0, 0, 8, 8);
         state.clear(gles::GL_COLOR_BUFFER_BIT);
         state.set_viewport(0, 0, 8, 4);
         quad(&mut state, 0.0, [1.0, 0.0, 0.0, 1.0]);
-        let quadro = pixels(&mut state);
-        assert_eq!(quadro[6 * 8 + 4], [255, 0, 0, 255], "metade de baixo pintada");
-        assert_eq!(quadro[8 + 4], [0, 0, 0, 255], "metade de cima intacta");
+        let frame = pixels(&mut state);
+        assert_eq!(frame[6 * 8 + 4], [255, 0, 0, 255], "bottom half painted");
+        assert_eq!(frame[8 + 4], [0, 0, 0, 255], "top half intact");
     }
 
-    /// O `glDepthRange` decide quem fica na frente entre faixas, não a profundidade normalizada.
+    /// `glDepthRange` decides who stays in front across ranges, not the normalized depth.
     ///
-    /// É assim que o Crash Nitro Kart põe o brilho do kart sempre por cima: o desenho mais
-    /// "longe" em coordenadas normalizadas, mas numa faixa mais perto, tem de passar no teste.
+    /// That is how Crash Nitro Kart keeps the kart's glow always on top: the draw that is
+    /// "farther" in normalized coordinates, but in a closer range, must pass the test.
     #[test]
-    fn a_faixa_de_profundidade_manda_na_ordem() {
+    fn the_depth_range_decides_the_order() {
         let mut state = GlState::new(8, 8);
         state.set_capability(gles::GL_DEPTH_TEST, true);
         state.set_depth_func(gles::GL_LESS);
         state.clear(gles::GL_COLOR_BUFFER_BIT | gles::GL_DEPTH_BUFFER_BIT);
 
-        Rasterizador::set_depth_range(&mut state, 0.9, 1.0);
+        Rasterizer::set_depth_range(&mut state, 0.9, 1.0);
         quad(&mut state, -0.5, [1.0, 0.0, 0.0, 1.0]);
-        Rasterizador::set_depth_range(&mut state, 0.0, 0.1);
+        Rasterizer::set_depth_range(&mut state, 0.0, 0.1);
         quad(&mut state, 0.5, [0.0, 1.0, 0.0, 1.0]);
         assert_eq!(pixels(&mut state)[8 * 4 + 4], [0, 255, 0, 255]);
     }
 
     #[test]
-    fn mistura_com_alfa_pesa_as_duas_cores() {
+    fn alpha_blending_weighs_both_colors() {
         let mut state = GlState::new(4, 4);
         state.set_clear_color([0.0, 0.0, 0.0, 1.0]);
         state.clear(gles::GL_COLOR_BUFFER_BIT);
@@ -5113,7 +5161,7 @@ mod tests {
     }
 
     #[test]
-    fn teste_de_alfa_descarta_o_fragmento() {
+    fn the_alpha_test_discards_the_fragment() {
         let mut state = GlState::new(4, 4);
         state.clear(gles::GL_COLOR_BUFFER_BIT);
         state.set_capability(gles::GL_ALPHA_TEST, true);
@@ -5122,18 +5170,18 @@ mod tests {
         assert_eq!(pixels(&mut state)[4 * 2 + 2], [0, 0, 0, 255]);
     }
 
-    /// A orientação é o detalhe que mais custou: errar o sinal descarta exatamente as faces
-    /// que deveriam aparecer, e o resultado é uma tela preta com a geometria certa por trás.
+    /// Winding is the detail that cost the most: getting the sign wrong culls exactly the faces
+    /// that should show, and the result is a black screen with the right geometry behind it.
     #[test]
-    fn a_face_da_frente_e_a_anti_horaria_em_coordenadas_do_opengl() {
+    fn the_front_face_is_counter_clockwise_in_opengl_coordinates() {
         let triangle = |flip: bool| {
             let vertex = |x: f32, y: f32| Vertex {
                 position: [x, y, 0.0, 1.0],
                 color: [1.0; 4],
-                uv: UV_PADRAO,
+                uv: DEFAULT_UV,
                 ..Default::default()
             };
-            // Em coordenadas do OpenGL, com o Y para cima, esta ordem é anti-horária.
+            // In OpenGL coordinates, with Y up, this order is counterclockwise.
             let mut v = [vertex(-1.0, -1.0), vertex(1.0, -1.0), vertex(0.0, 1.0)];
             if flip {
                 v.swap(0, 1);
@@ -5150,12 +5198,12 @@ mod tests {
         state.draw(gles::GL_TRIANGLES, &triangle(false));
         assert_eq!(pixels(&mut state)[center], [255, 255, 255, 255]);
 
-        // O avesso do mesmo triângulo some.
+        // The back side of the same triangle vanishes.
         state.clear(gles::GL_COLOR_BUFFER_BIT);
         state.draw(gles::GL_TRIANGLES, &triangle(true));
         assert_eq!(pixels(&mut state)[center], [0, 0, 0, 255]);
 
-        // Com `GL_CW` a decisão inverte.
+        // With `GL_CW` the decision flips.
         state.set_front_face(gles::GL_CW);
         state.clear(gles::GL_COLOR_BUFFER_BIT);
         state.draw(gles::GL_TRIANGLES, &triangle(true));
@@ -5163,18 +5211,18 @@ mod tests {
     }
 
     #[test]
-    fn o_recorte_no_plano_proximo_preserva_a_orientacao() {
-        // Um triângulo que atravessa o plano próximo: dois vértices à frente, um atrás. O
-        // recorte parte o que sobra em dois, e se ele percorrer o polígono ao contrário a
-        // orientação inverte — o descarte de faces então joga fora justamente o pedaço
-        // recortado, e o buraco só aparece quando a câmera chega perto da geometria.
+    fn near_plane_clipping_preserves_winding() {
+        // A triangle crossing the near plane: two vertices in front, one behind. Clipping
+        // splits what remains in two, and if it walks the polygon backwards the winding flips —
+        // face culling then throws away precisely the clipped piece, and the hole only shows up
+        // when the camera gets close to the geometry.
         let vertex = |x: f32, y: f32, z: f32, w: f32| Vertex {
             position: [x, y, z, w],
             color: [1.0; 4],
-            uv: UV_PADRAO,
+            uv: DEFAULT_UV,
             ..Default::default()
         };
-        // Anti-horário em coordenadas do OpenGL; o terceiro vértice está atrás da câmera.
+        // Counterclockwise in OpenGL coordinates; the third vertex is behind the camera.
         let tri = [
             vertex(-1.0, -1.0, 1.0, 2.0),
             vertex(1.0, -1.0, 1.0, 2.0),
@@ -5192,14 +5240,14 @@ mod tests {
     }
 
     #[test]
-    fn o_plano_proximo_e_z_mais_w_e_nao_o_sinal_de_w() {
-        // Um triângulo logo atrás do plano próximo, mas ainda com `w` positivo: recortar só
-        // pelo sinal de `w` o deixaria passar, e a divisão pela perspectiva o espalharia por
-        // toda a tela.
+    fn the_near_plane_is_z_plus_w_not_the_sign_of_w() {
+        // A triangle just behind the near plane, but still with a positive `w`: clipping only by
+        // the sign of `w` would let it through, and the perspective divide would spread it across
+        // the whole screen.
         let vertex = |x: f32, y: f32| Vertex {
             position: [x, y, -1.0, 0.001],
             color: [1.0; 4],
-            uv: UV_PADRAO,
+            uv: DEFAULT_UV,
             ..Default::default()
         };
         let tri = [
@@ -5215,24 +5263,24 @@ mod tests {
     }
 
     #[test]
-    fn a_matriz_de_textura_transforma_as_coordenadas() {
-        // O Zeebo Sports Peteca manda os `uv` em ponto fixo e traz de volta para `0..1` pela
-        // matriz de textura. Ignorá-la fazia o `GL_REPEAT` dar a volta na textura a cada pixel,
-        // e a quadra e a arquibancada saíam como confete das cores certas.
+    fn the_texture_matrix_transforms_the_coordinates() {
+        // Zeebo Sports Peteca sends the `uv` in fixed point and brings it back to `0..1` through
+        // the texture matrix. Ignoring it made `GL_REPEAT` wrap around the texture on every pixel,
+        // and the court and the stands came out as confetti in the right colors.
         let mut state = GlState::new(4, 4);
-        let mut textura = Texture {
+        let mut texture = Texture {
             width: 2,
             height: 1,
             pixels: vec![[255, 0, 0, 255], [0, 0, 255, 255]],
             ..Texture::default()
         };
-        textura.filter = gles::GL_NEAREST;
-        state.textures.insert(1, textura);
+        texture.filter = gles::GL_NEAREST;
+        state.textures.insert(1, texture);
         state.bind_texture(1);
         state.set_capability(gles::GL_TEXTURE_2D, true);
 
-        // `u` chega valendo 32767 e a matriz o divide de volta para perto de zero, que é o
-        // texel vermelho. Sem a matriz, o valor cru cairia em qualquer lugar da textura.
+        // `u` arrives as 32767 and the matrix divides it back to near zero, which is the red
+        // texel. Without the matrix, the raw value would land anywhere in the texture.
         state.set_matrix_mode(gles::GL_TEXTURE);
         state.load_matrix(scaling(1.0 / 32767.0, 1.0, 1.0));
         state.set_matrix_mode(gles::GL_MODELVIEW);
@@ -5251,22 +5299,22 @@ mod tests {
         assert_eq!(pixels(&mut state)[2 * 4 + 2], [255, 0, 0, 255]);
     }
 
-    /// **Cada unidade tem a sua matriz de textura, e ela usa os quatro componentes.** É o
-    /// desenho da sombra do Reckless Racing: a posição do vértice vai como coordenada de três
-    /// componentes nas duas unidades, e cada matriz tira `s` e `t` do `x` e do `z`. Com uma pilha
-    /// só, a matriz da unidade 1 caía por cima da 0; sem o `r`, o `t` ficava constante e a
-    /// sombra saía como listras verticais cobrindo os carros.
+    /// **Each unit has its own texture matrix, and it uses all four components.** It is how
+    /// Reckless Racing draws the shadow: the vertex position goes as a three-component coordinate
+    /// on both units, and each matrix derives `s` and `t` from `x` and `z`. With a single stack,
+    /// unit 1's matrix overwrote unit 0's; without `r`, `t` stayed constant and the shadow came
+    /// out as vertical stripes covering the cars.
     #[test]
-    fn cada_unidade_projeta_a_coordenada_pela_sua_matriz() {
+    fn each_unit_projects_the_coordinate_through_its_own_matrix() {
         let mut state = GlState::new(4, 4);
-        // Unidade 0: s = x, t = z. Unidade 1: s = x / 2, t = -z / 2 + 0.5.
+        // Unit 0: s = x, t = z. Unit 1: s = x / 2, t = -z / 2 + 0.5.
         let xz = [
             1.0, 0.0, 0.0, 0.0, //
             0.0, 0.0, 0.0, 0.0, //
             0.0, 1.0, 0.0, 0.0, //
             0.0, 0.0, 0.0, 1.0,
         ];
-        let meio = [
+        let middle = [
             0.5, 0.0, 0.0, 0.0, //
             0.0, 0.0, 0.0, 0.0, //
             0.0, -0.5, 0.0, 0.0, //
@@ -5276,34 +5324,34 @@ mod tests {
         state.set_active_texture(gles::GL_TEXTURE0);
         state.load_matrix(xz);
         state.set_active_texture(gles::GL_TEXTURE0 + 1);
-        state.load_matrix(meio);
+        state.load_matrix(middle);
         state.set_active_texture(gles::GL_TEXTURE0);
         state.set_matrix_mode(gles::GL_MODELVIEW);
 
-        let posicao = [0.25, -3.0, 0.75, 1.0];
-        let vertice = Vertex {
-            uv: posicao,
-            uv1: posicao,
+        let position = [0.25, -3.0, 0.75, 1.0];
+        let vertex = Vertex {
+            uv: position,
+            uv1: position,
             ..Default::default()
         };
-        state.etapa_de_vertice(&[vertice]);
-        let saiu = state.transformados()[0];
-        assert_eq!([saiu.uv[0], saiu.uv[1]], [0.25, 0.75]);
-        assert_eq!([saiu.uv1[0], saiu.uv1[1]], [0.125, 0.125]);
+        state.vertex_stage(&[vertex]);
+        let output = state.transformed()[0];
+        assert_eq!([output.uv[0], output.uv[1]], [0.25, 0.75]);
+        assert_eq!([output.uv1[0], output.uv1[1]], [0.125, 0.125]);
     }
 
     #[test]
-    fn sem_viewport_a_superficie_e_a_tela_inteira() {
-        // O Peteca desenha em coordenadas de tela e nunca chama `glViewport`. Deduzir a
-        // superfície de um conjunto vazio de viewports dava 1×1, e a apresentação esticava um
-        // pixel só por toda a tela: o jogo saía inteiramente branco.
+    fn without_a_viewport_the_surface_is_the_whole_screen() {
+        // Peteca draws in screen coordinates and never calls `glViewport`. Deducing the surface
+        // from an empty set of viewports gave 1×1, and presentation stretched a single pixel
+        // across the whole screen: the game came out entirely white.
         let state = GlState::new(640, 480);
         assert_eq!(state.surface(), (640, 480));
     }
 
     #[test]
-    fn a_superficie_e_a_maior_viewport_que_o_jogo_usou() {
-        // O Quake do Zeebo desenha em 320×400 numa tela de 640×480, e a apresentação amplia.
+    fn the_surface_is_the_largest_viewport_the_game_used() {
+        // Zeebo's Quake draws at 320×400 on a 640×480 screen, and presentation scales it up.
         let mut state = GlState::new(640, 480);
         state.set_viewport(0, 0, 320, 400);
         state.set_viewport(0, 360, 320, 40);
@@ -5311,7 +5359,7 @@ mod tests {
     }
 
     #[test]
-    fn a_pilha_de_matrizes_guarda_e_devolve() {
+    fn the_matrix_stack_pushes_and_pops() {
         let mut state = GlState::new(4, 4);
         state.set_matrix_mode(gles::GL_MODELVIEW);
         state.load_identity();
@@ -5320,141 +5368,142 @@ mod tests {
         assert_eq!(state.top()[12], 5.0);
         state.pop_matrix();
         assert_eq!(state.top()[12], 0.0);
-        // Desempilhar demais não pode esvaziar a pilha.
+        // Popping too many times must not empty the stack.
         state.pop_matrix();
         state.pop_matrix();
         assert_eq!(*state.top(), IDENTITY);
     }
 
     #[test]
-    fn a_apresentacao_e_rgb565() {
+    fn the_presentation_is_rgb565() {
         let mut state = GlState::new(2, 2);
         state.set_clear_color([1.0, 0.0, 0.0, 1.0]);
         state.clear(gles::GL_COLOR_BUFFER_BIT);
         assert_eq!(state.present(2, 2), vec![0xf800; 4]);
     }
 
-    /// A Z-Wheel lê o buffer de cor duas vezes por quadro, e na primeira a fila está sempre
-    /// vazia: era um quadro inteiro reconvertido sem nada ter mudado. A segunda leitura só
-    /// pode reaproveitar o que já está no vetor se de fato nada tocou o buffer.
+    /// Z-Wheel reads the color buffer twice per frame, and on the first the queue is always
+    /// empty: it was a whole frame reconverted with nothing having changed. The second read can
+    /// only reuse what is already in the vector if nothing actually touched the buffer.
     #[test]
-    fn o_quadro_so_e_reconvertido_quando_alguma_coisa_mudou() {
+    fn the_frame_is_reconverted_only_when_something_changed() {
         let mut state = GlState::new(64, 64);
         state.set_clear_color([1.0, 0.0, 0.0, 1.0]);
         state.clear(gles::GL_COLOR_BUFFER_BIT);
 
         let mut bytes = Vec::new();
         state.frame_rgb565(64, 64, &mut bytes);
-        let vermelho = bytes.clone();
+        let red = bytes.clone();
         assert_eq!(bytes.len(), 64 * 64 * 2);
 
-        // Nada mudou: a segunda leitura devolve o mesmo conteúdo, sem reconverter.
+        // Nothing changed: the second read returns the same content, without reconverting.
         bytes.fill(0xAB);
         state.frame_rgb565(64, 64, &mut bytes);
         assert!(
             bytes.iter().all(|&b| b == 0xAB),
-            "sem mudança, o vetor de saída não é tocado"
+            "with no change, the output vector is not touched"
         );
 
-        // Um `clear` mexe no buffer, então a leitura seguinte tem de reconverter.
+        // A `clear` touches the buffer, so the next read must reconvert.
         state.set_clear_color([0.0, 0.0, 1.0, 1.0]);
         state.clear(gles::GL_COLOR_BUFFER_BIT);
         state.frame_rgb565(64, 64, &mut bytes);
-        assert_ne!(bytes, vermelho, "depois do clear o quadro é outro");
+        assert_ne!(bytes, red, "after the clear the frame is different");
         assert!(
             bytes.iter().any(|&b| b != 0xAB),
-            "e foi de fato reconvertido"
+            "and it was actually reconverted"
         );
 
-        // E uma mudança de tamanho não pode cair no atalho.
+        // And a size change must not take the shortcut.
         state.frame_rgb565(32, 32, &mut bytes);
         assert_eq!(bytes.len(), 32 * 32 * 2);
     }
 }
 
-/// O estado de GL que o **guest** mudou, em seções — e a regra de quando não se pode salvar.
+/// The GL state the **guest** changed, in sections — and the rule for when saving is not allowed.
 ///
-/// ## Por que seções pequenas, e não uma lista de números
+/// ## Why small sections, and not a list of numbers
 ///
-/// A primeira versão do estado da máquina usava uma lista corrida de números, e eu errei o índice
-/// dela **duas vezes** — o `pending_launch` voltou com a metade alta do `proximo_serial`, e o
-/// `network` voltou com a largura do retângulo de recorte. Aqui são mais de cem números, então a
-/// lista corrida seria pedir para errar de novo. Cada seção tem o tamanho conferido na leitura, e um
-/// deslocamento dentro dela é recusado em vez de virar valor trocado.
+/// The first version of the machine state used a flat list of numbers, and I got its index wrong
+/// **twice** — `pending_launch` came back with the high half of `next_serial`, and `network` came
+/// back with the width of the clip rectangle. Here there are over a hundred numbers, so a flat
+/// list would be asking to get it wrong again. Each section has its size checked on read, and an
+/// offset within it is rejected instead of becoming a swapped value.
 ///
-/// ## O que entra, e o que fica para depois
+/// ## What goes in, and what is left for later
 ///
-/// Entram os 48 campos que são **estado** — as três pilhas de matriz, o viewport e a tesoura, as
-/// cores, as bandeiras e funções de teste, a névoa, a faixa de profundidade, a máscara de cor, a
-/// unidade de textura e a **iluminação** (oito luzes, o material e o modelo). Ficam de fora, por
-/// enquanto e com motivo:
+/// In go the 48 fields that are **state** — the three matrix stacks, the viewport and the scissor,
+/// the colors, the test flags and functions, the fog, the depth range, the color mask, the texture
+/// unit and **lighting** (eight lights, the material and the model). Left out, for now and with a
+/// reason:
 ///
-/// - `textures`, que precisa de formato próprio por causa das cadeias de mipmap;
-/// - `color`, `depth` e `stencil` — os três buffers de 640×480. Medido: **o de cor não é duplicata
-///   da tela**. A tela que o core apresenta é o bitmap do aparelho, e o buffer de cor é a superfície
-///   de desenho do GL; `eglSwapBuffers` lê um e entrega o outro. Os dois têm de ser gravados, e é
-///   isso que faz o estado crescer cerca de 2,7 MB.
+/// - `textures`, which needs its own format because of the mipmap chains;
+/// - `color`, `depth` and `stencil` — the three 640×480 buffers. Measured: **the color one is not a
+///   duplicate of the screen**. The screen the core presents is the device's bitmap, and the color
+///   buffer is the GL drawing surface; `eglSwapBuffers` reads one and hands over the other. Both
+///   must be saved, and that is what makes the state grow by about 2.7 MB.
 ///
-/// ## A regra do desenho em curso
+/// ## The draw-in-progress rule
 ///
-/// `batch`, `pending` e `transformed` são acumuladores de um desenho **começado e não terminado**.
-/// O frontend chama o serialize **entre quadros**, nunca dentro de um `retro_run`, então no instante
-/// do save eles estão vazios — e é isso que os torna dispensáveis. Confiar nisso seria frágil: quem
-/// grava **pergunta** com [`GlState::desenho_em_curso`] e recusa o save se a resposta for sim. Um
-/// estado salvo no meio de um `glBegin` prometeria um desenho que nunca existiu.
-impl crate::save_state::Guardavel for GlState {
-    fn grava(&self, destino: &mut crate::save_state::Secoes) {
-        let floats = |valores: &[f32]| -> Vec<u32> {
-            valores.iter().map(|v| v.to_bits()).collect()
+/// `batch`, `pending` and `transformed` are accumulators of a draw **started and not finished**.
+/// The frontend calls serialize **between frames**, never inside a `retro_run`, so at the moment of
+/// the save they are empty — and that is what makes them dispensable. Relying on that would be
+/// fragile: the saver **asks** with [`GlState::draw_in_progress`] and refuses the save if the
+/// answer is yes. A state saved in the middle of a `glBegin` would promise a draw that never
+/// existed.
+impl crate::save_state::Saveable for GlState {
+    fn save(&self, dest: &mut crate::save_state::Sections) {
+        let floats = |values: &[f32]| -> Vec<u32> {
+            values.iter().map(|v| v.to_bits()).collect()
         };
 
-        // As pilhas de matriz, cada uma com a contagem na frente. A de textura da unidade 1 vem
-        // por último, e é opcional na leitura: os saves de antes dela têm só as três primeiras.
-        let mut matrizes = vec![self.matrix_mode];
-        for pilha in [
+        // The matrix stacks, each with its count in front. Unit 1's texture stack comes last, and
+        // is optional on read: saves from before it have only the first three.
+        let mut matrices = vec![self.matrix_mode];
+        for stack in [
             &self.modelview,
             &self.projection,
             &self.texture_matrix,
             &self.texture_matrix1,
         ] {
-            matrizes.push(pilha.len() as u32);
-            for matriz in pilha {
-                matrizes.extend(floats(matriz));
+            matrices.push(stack.len() as u32);
+            for matrix in stack {
+                matrices.extend(floats(matrix));
             }
         }
-        destino.poe_u32s("gl.matrizes", matrizes);
+        dest.put_u32s("gl.matrizes", matrices);
 
-        // Onde se desenha.
-        let mut onde = vec![
+        // Where drawing happens.
+        let mut location = vec![
             self.viewport.0 as u32,
             self.viewport.1 as u32,
             self.viewport.2 as u32,
             self.viewport.3 as u32,
-            u32::from(self.tesoura.is_some()),
-            self.tesoura.unwrap_or((0, 0, 0, 0)).0 as u32,
-            self.tesoura.unwrap_or((0, 0, 0, 0)).1 as u32,
-            self.tesoura.unwrap_or((0, 0, 0, 0)).2 as u32,
-            self.tesoura.unwrap_or((0, 0, 0, 0)).3 as u32,
-            self.tesoura_crua.0 as u32,
-            self.tesoura_crua.1 as u32,
-            self.tesoura_crua.2 as u32,
-            self.tesoura_crua.3 as u32,
-            u32::from(self.tesoura_ligada),
+            u32::from(self.scissor.is_some()),
+            self.scissor.unwrap_or((0, 0, 0, 0)).0 as u32,
+            self.scissor.unwrap_or((0, 0, 0, 0)).1 as u32,
+            self.scissor.unwrap_or((0, 0, 0, 0)).2 as u32,
+            self.scissor.unwrap_or((0, 0, 0, 0)).3 as u32,
+            self.raw_scissor.0 as u32,
+            self.raw_scissor.1 as u32,
+            self.raw_scissor.2 as u32,
+            self.raw_scissor.3 as u32,
+            u32::from(self.scissor_enabled),
             u32::from(self.surface.is_some()),
             self.surface.unwrap_or((0, 0)).0 as u32,
             self.surface.unwrap_or((0, 0)).1 as u32,
-            u32::from(self.esticada),
-            u32::from(self.sujo),
+            u32::from(self.stretched),
+            u32::from(self.dirty),
         ];
-        onde.extend(floats(&self.clear_color));
-        onde.push(self.clear_depth.to_bits());
-        onde.extend(floats(&self.current_color));
-        onde.push(u32::from(self.clear_stencil));
-        onde.extend(self.color_mask.iter().map(|m| u32::from(*m)));
-        destino.poe_u32s("gl.onde", onde);
+        location.extend(floats(&self.clear_color));
+        location.push(self.clear_depth.to_bits());
+        location.extend(floats(&self.current_color));
+        location.push(u32::from(self.clear_stencil));
+        location.extend(self.color_mask.iter().map(|m| u32::from(*m)));
+        dest.put_u32s("gl.onde", location);
 
-        // As bandeiras e funções de teste.
-        destino.poe_u32s(
+        // The test flags and functions.
+        dest.put_u32s(
             "gl.testes",
             vec![
                 u32::from(self.depth_test),
@@ -5485,51 +5534,51 @@ impl crate::save_state::Guardavel for GlState {
             ],
         );
 
-        // As texturas ligadas e o ambiente de textura das duas unidades.
-        let mut textura = vec![
+        // The bound textures and the texture environment of both units.
+        let mut texture = vec![
             self.bound_texture,
             u32::from(self.texture_2d),
             self.active_unit,
             self.client_unit,
         ];
-        textura.extend(ambientes_do_texto(&self.texture_env));
-        textura.push(u32::from(self.unidade1.ligada));
-        textura.push(self.unidade1.textura);
-        textura.extend(ambientes_do_texto(&self.unidade1.env));
-        destino.poe_u32s("gl.textura", textura);
+        texture.extend(tex_env_words(&self.texture_env));
+        texture.push(u32::from(self.unit1.enabled));
+        texture.push(self.unit1.texture);
+        texture.extend(tex_env_words(&self.unit1.env));
+        dest.put_u32s("gl.textura", texture);
 
-        // A névoa.
-        let mut nevoa: Vec<u32> = vec![
-            u32::from(self.fog.ligada),
-            self.fog.curva,
-            self.fog.densidade.to_bits(),
-            self.fog.inicio.to_bits(),
-            self.fog.fim.to_bits(),
-            u32::from(self.fog.permitida),
+        // The fog.
+        let mut fog: Vec<u32> = vec![
+            u32::from(self.fog.enabled),
+            self.fog.curve,
+            self.fog.density.to_bits(),
+            self.fog.start.to_bits(),
+            self.fog.end.to_bits(),
+            u32::from(self.fog.allowed),
         ];
-        nevoa.extend(floats(&self.fog.cor));
-        destino.poe_u32s("gl.nevoa", nevoa);
+        fog.extend(floats(&self.fog.color));
+        dest.put_u32s("gl.nevoa", fog);
 
-        // A iluminação: o material, o ambiente do modelo e as oito luzes.
-        let mut luz = floats(&self.material.ambient);
-        luz.extend(floats(&self.material.diffuse));
-        luz.extend(floats(&self.material.specular));
-        luz.extend(floats(&self.material.emission));
-        luz.push(self.material.shininess.to_bits());
-        luz.extend(floats(&self.light_model_ambient));
-        for fonte in &self.lights {
-            luz.push(u32::from(fonte.enabled));
-            luz.extend(floats(&fonte.ambient));
-            luz.extend(floats(&fonte.diffuse));
-            luz.extend(floats(&fonte.specular));
-            luz.extend(floats(&fonte.position));
-            luz.extend(floats(&fonte.spot_direction));
-            luz.push(fonte.spot_exponent.to_bits());
-            luz.push(fonte.spot_cutoff.to_bits());
-            luz.extend(floats(&fonte.attenuation));
+        // Lighting: the material, the model ambient and the eight lights.
+        let mut light = floats(&self.material.ambient);
+        light.extend(floats(&self.material.diffuse));
+        light.extend(floats(&self.material.specular));
+        light.extend(floats(&self.material.emission));
+        light.push(self.material.shininess.to_bits());
+        light.extend(floats(&self.light_model_ambient));
+        for source in &self.lights {
+            light.push(u32::from(source.enabled));
+            light.extend(floats(&source.ambient));
+            light.extend(floats(&source.diffuse));
+            light.extend(floats(&source.specular));
+            light.extend(floats(&source.position));
+            light.extend(floats(&source.spot_direction));
+            light.push(source.spot_exponent.to_bits());
+            light.push(source.spot_cutoff.to_bits());
+            light.extend(floats(&source.attenuation));
         }
-        destino.poe_u32s("gl.iluminacao", luz);
-        destino.poe_u32s(
+        dest.put_u32s("gl.iluminacao", light);
+        dest.put_u32s(
             "gl.buffers",
             [
                 self.width as u32,
@@ -5539,428 +5588,431 @@ impl crate::save_state::Guardavel for GlState {
                 self.stencil.len() as u32,
             ],
         );
-        destino.poe("gl.buffer.cor", bytes_dos_rgba(&self.color));
-        let mut profundidade = Vec::with_capacity(self.depth.len() * 4);
-        for valor in &self.depth {
-            profundidade.extend_from_slice(&valor.to_bits().to_le_bytes());
+        dest.put("gl.buffer.cor", rgba_to_bytes(&self.color));
+        let mut depth = Vec::with_capacity(self.depth.len() * 4);
+        for value in &self.depth {
+            depth.extend_from_slice(&value.to_bits().to_le_bytes());
         }
-        destino.poe("gl.buffer.profundidade", profundidade);
-        destino.poe("gl.buffer.stencil", self.stencil.clone());
-        grava_texturas(&self.textures, destino);
+        dest.put("gl.buffer.profundidade", depth);
+        dest.put("gl.buffer.stencil", self.stencil.clone());
+        save_textures(&self.textures, dest);
     }
 
-    fn restaura(
+    fn restore(
         &mut self,
-        origem: &crate::save_state::Leitor<'_>,
-    ) -> Result<(), crate::save_state::Erro> {
-        use crate::save_state::Erro;
-        let faltando = |nome: &str| Erro::Secao {
-            nome: nome.to_string(),
-            motivo: "a seção não está no arquivo".to_string(),
+        origin: &crate::save_state::Reader<'_>,
+    ) -> Result<(), crate::save_state::Error> {
+        use crate::save_state::Error;
+        let missing = |name: &str| Error::Section {
+            name: name.to_string(),
+            reason: "the section is not in the file".to_string(),
         };
 
-        let matrizes = origem.u32s("gl.matrizes")?;
-        let onde = origem.u32s("gl.onde")?;
-        let testes = origem.u32s("gl.testes")?;
-        let textura = origem.u32s("gl.textura")?;
-        let nevoa = origem.u32s("gl.nevoa")?;
-        let luz = origem.u32s("gl.iluminacao")?;
+        let matrices = origin.u32s("gl.matrizes")?;
+        let location = origin.u32s("gl.onde")?;
+        let tests = origin.u32s("gl.testes")?;
+        let texture = origin.u32s("gl.textura")?;
+        let fog = origin.u32s("gl.nevoa")?;
+        let light = origin.u32s("gl.iluminacao")?;
 
-        let conferir = |nome: &str, veio: usize, esperado: usize| -> Result<(), Erro> {
-            if veio != esperado {
-                return Err(Erro::Secao {
-                    nome: nome.to_string(),
-                    motivo: format!("esperava {esperado} números e veio {veio}"),
+        let check = |name: &str, got: usize, expected: usize| -> Result<(), Error> {
+            if got != expected {
+                return Err(Error::Section {
+                    name: name.to_string(),
+                    reason: format!("expected {expected} numbers and got {got}"),
                 });
             }
             Ok(())
         };
-        // Dezenove do viewport, da tesoura e da superfície; quatro da cor de limpeza; uma da
-        // profundidade; quatro da cor corrente; uma do stencil; quatro da máscara de cor.
-        conferir("gl.onde", onde.len(), 19 + 4 + 1 + 4 + 1 + 4)?;
-        conferir("gl.testes", testes.len(), 25)?;
-        conferir("gl.textura", textura.len(), 4 + AMBIENTES + 2 + AMBIENTES)?;
-        conferir("gl.nevoa", nevoa.len(), 6 + 4)?;
-        // Material (dezesseis floats e o brilho) mais o ambiente do modelo: vinte e um. Cada luz
-        // ocupa vinte e cinco: ligada, quatro de ambiente, quatro de difusa, quatro de especular,
-        // quatro de posição, três de direção do facho, expoente, corte e três de atenuação.
-        conferir(
+        // Nineteen for the viewport, the scissor and the surface; four for the clear color; one
+        // for the depth; four for the current color; one for the stencil; four for the color mask.
+        check("gl.onde", location.len(), 19 + 4 + 1 + 4 + 1 + 4)?;
+        check("gl.testes", tests.len(), 25)?;
+        check("gl.textura", texture.len(), 4 + TEX_ENV_LEN + 2 + TEX_ENV_LEN)?;
+        check("gl.nevoa", fog.len(), 6 + 4)?;
+        // Material (sixteen floats and the shininess) plus the model ambient: twenty-one. Each
+        // light takes twenty-five: enabled, four ambient, four diffuse, four specular, four
+        // position, three spot direction, exponent, cutoff and three attenuation.
+        check(
             "gl.iluminacao",
-            luz.len(),
-            21 + crate::video::gles::LUZES * 25,
+            light.len(),
+            21 + crate::video::gles::LIGHTS * 25,
         )?;
 
-        let f = |valor: u32| f32::from_bits(valor);
-        let booleano = |valor: u32, campo: &str, onde: &str| -> Result<bool, Erro> {
-            match valor {
+        let f = |value: u32| f32::from_bits(value);
+        let boolean = |value: u32, field: &str, location: &str| -> Result<bool, Error> {
+            match value {
                 0 => Ok(false),
                 1 => Ok(true),
-                outro => Err(Erro::Secao {
-                    nome: onde.to_string(),
-                    motivo: format!("o campo `{campo}` vale {outro}, e é booleano"),
+                other => Err(Error::Section {
+                    name: location.to_string(),
+                    reason: format!("field `{field}` is {other}, and it is a boolean"),
                 }),
             }
         };
 
-        // As pilhas de matriz.
+        // The matrix stacks.
         let mut cursor = 0usize;
-        let matrix_mode = matrizes[cursor];
+        let matrix_mode = matrices[cursor];
         cursor += 1;
-        let mut pilhas: Vec<Vec<Matrix>> = Vec::new();
-        for indice in 0..4 {
-            if indice == 3 && matrizes.len() == cursor {
-                pilhas.push(vec![IDENTITY]);
+        let mut stacks: Vec<Vec<Matrix>> = Vec::new();
+        for index in 0..4 {
+            if index == 3 && matrices.len() == cursor {
+                stacks.push(vec![IDENTITY]);
                 break;
             }
-            if matrizes.len() < cursor + 1 {
-                return Err(faltando("gl.matrizes"));
+            if matrices.len() < cursor + 1 {
+                return Err(missing("gl.matrizes"));
             }
-            let quantas = matrizes[cursor] as usize;
+            let matrix_count = matrices[cursor] as usize;
             cursor += 1;
-            if matrizes.len() < cursor + quantas * 16 {
-                return Err(Erro::Secao {
-                    nome: "gl.matrizes".to_string(),
-                    motivo: format!("uma pilha diz ter {quantas} matrizes e o arquivo acaba antes"),
+            if matrices.len() < cursor + matrix_count * 16 {
+                return Err(Error::Section {
+                    name: "gl.matrizes".to_string(),
+                    reason: format!("a stack claims {matrix_count} matrices and the file ends first"),
                 });
             }
-            let mut pilha = Vec::with_capacity(quantas);
-            for _ in 0..quantas {
-                let mut matriz = [0.0f32; 16];
-                for (indice, destino) in matriz.iter_mut().enumerate() {
-                    *destino = f(matrizes[cursor + indice]);
+            let mut stack = Vec::with_capacity(matrix_count);
+            for _ in 0..matrix_count {
+                let mut matrix = [0.0f32; 16];
+                for (index, dest) in matrix.iter_mut().enumerate() {
+                    *dest = f(matrices[cursor + index]);
                 }
                 cursor += 16;
-                pilha.push(matriz);
+                stack.push(matrix);
             }
-            pilhas.push(pilha);
+            stacks.push(stack);
         }
 
-        // Daqui para baixo é aplicação.
+        // From here on it is applying.
         self.matrix_mode = matrix_mode;
-        // **A ordem do escritor, não a que eu lembrava.** Eu tinha posto a projeção primeiro, e o
-        // teste mostrou a troca: a pilha `modelview` voltou com a projeção dentro. Trocar duas
-        // matrizes não dá erro nenhum — dá a cena desenhada no lugar errado, e só se vê olhando.
-        self.modelview = pilhas.remove(0);
-        self.projection = pilhas.remove(0);
-        self.texture_matrix = pilhas.remove(0);
-        self.texture_matrix1 = pilhas.remove(0);
+        // **The writer's order, not the one I remembered.** I had put the projection first, and
+        // the test showed the swap: the `modelview` stack came back with the projection inside.
+        // Swapping two matrices gives no error at all — it gives the scene drawn in the wrong
+        // place, and you only see it by looking.
+        self.modelview = stacks.remove(0);
+        self.projection = stacks.remove(0);
+        self.texture_matrix = stacks.remove(0);
+        self.texture_matrix1 = stacks.remove(0);
 
         self.viewport = (
-            onde[0] as i32,
-            onde[1] as i32,
-            onde[2] as i32,
-            onde[3] as i32,
+            location[0] as i32,
+            location[1] as i32,
+            location[2] as i32,
+            location[3] as i32,
         );
-        self.tesoura = booleano(onde[4], "tesoura", "gl.onde")?.then(|| {
+        self.scissor = boolean(location[4], "scissor", "gl.onde")?.then(|| {
             (
-                onde[5] as i32,
-                onde[6] as i32,
-                onde[7] as i32,
-                onde[8] as i32,
+                location[5] as i32,
+                location[6] as i32,
+                location[7] as i32,
+                location[8] as i32,
             )
         });
-        self.tesoura_crua = (
-            onde[9] as i32,
-            onde[10] as i32,
-            onde[11] as i32,
-            onde[12] as i32,
+        self.raw_scissor = (
+            location[9] as i32,
+            location[10] as i32,
+            location[11] as i32,
+            location[12] as i32,
         );
-        self.tesoura_ligada = booleano(onde[13], "tesoura_ligada", "gl.onde")?;
-        self.surface = booleano(onde[14], "surface", "gl.onde")?
-            .then(|| (onde[15] as usize, onde[16] as usize));
-        self.esticada = booleano(onde[17], "esticada", "gl.onde")?;
-        self.sujo = booleano(onde[18], "sujo", "gl.onde")?;
-        for (indice, valor) in self.clear_color.iter_mut().enumerate() {
-            *valor = f(onde[19 + indice]);
+        self.scissor_enabled = boolean(location[13], "scissor_enabled", "gl.onde")?;
+        self.surface = boolean(location[14], "surface", "gl.onde")?
+            .then(|| (location[15] as usize, location[16] as usize));
+        self.stretched = boolean(location[17], "stretched", "gl.onde")?;
+        self.dirty = boolean(location[18], "dirty", "gl.onde")?;
+        for (index, value) in self.clear_color.iter_mut().enumerate() {
+            *value = f(location[19 + index]);
         }
-        self.clear_depth = f(onde[23]);
-        for (indice, valor) in self.current_color.iter_mut().enumerate() {
-            *valor = f(onde[24 + indice]);
+        self.clear_depth = f(location[23]);
+        for (index, value) in self.current_color.iter_mut().enumerate() {
+            *value = f(location[24 + index]);
         }
-        self.clear_stencil = onde[28] as u8;
-        for (indice, valor) in self.color_mask.iter_mut().enumerate() {
-            *valor = onde[29 + indice] != 0;
-        }
-
-        self.depth_test = booleano(testes[0], "depth_test", "gl.testes")?;
-        self.depth_mask = booleano(testes[1], "depth_mask", "gl.testes")?;
-        self.depth_func = testes[2];
-        self.blend = booleano(testes[3], "blend", "gl.testes")?;
-        self.blend_src = testes[4];
-        self.blend_dst = testes[5];
-        self.alpha_test = booleano(testes[6], "alpha_test", "gl.testes")?;
-        self.alpha_func = testes[7];
-        self.alpha_ref = f(testes[8]);
-        self.cull_face = booleano(testes[9], "cull_face", "gl.testes")?;
-        self.cull_mode = testes[10];
-        self.front_face = testes[11];
-        self.stencil_test = booleano(testes[12], "stencil_test", "gl.testes")?;
-        self.stencil_func = testes[13];
-        self.stencil_ref = testes[14] as i32;
-        self.stencil_value_mask = testes[15];
-        self.stencil_write_mask = testes[16];
-        self.stencil_op = [testes[17], testes[18], testes[19]];
-        self.depth_range = (f(testes[20]), f(testes[21]));
-        self.lighting = booleano(testes[22], "lighting", "gl.testes")?;
-        self.color_material = booleano(testes[23], "color_material", "gl.testes")?;
-        self.shade_model = testes[24];
-
-        self.bound_texture = textura[0];
-        self.texture_2d = booleano(textura[1], "texture_2d", "gl.textura")?;
-        self.active_unit = textura[2];
-        self.client_unit = textura[3];
-        self.texture_env = le_ambiente_do_texto(&textura[4..4 + AMBIENTES]);
-        self.unidade1.ligada = booleano(textura[4 + AMBIENTES], "unidade1.ligada", "gl.textura")?;
-        self.unidade1.textura = textura[5 + AMBIENTES];
-        self.unidade1.env = le_ambiente_do_texto(&textura[6 + AMBIENTES..]);
-
-        self.fog.ligada = booleano(nevoa[0], "fog.ligada", "gl.nevoa")?;
-        self.fog.curva = nevoa[1];
-        self.fog.densidade = f(nevoa[2]);
-        self.fog.inicio = f(nevoa[3]);
-        self.fog.fim = f(nevoa[4]);
-        self.fog.permitida = booleano(nevoa[5], "fog.permitida", "gl.nevoa")?;
-        for (indice, valor) in self.fog.cor.iter_mut().enumerate() {
-            *valor = f(nevoa[6 + indice]);
+        self.clear_stencil = location[28] as u8;
+        for (index, value) in self.color_mask.iter_mut().enumerate() {
+            *value = location[29 + index] != 0;
         }
 
-        // Um cursor por índice, e não por closure que o empresta: a closure mutável não deixa o
-        // contador ser lido no meio, e o compilador disse isso antes de eu errar a conta na mão.
+        self.depth_test = boolean(tests[0], "depth_test", "gl.testes")?;
+        self.depth_mask = boolean(tests[1], "depth_mask", "gl.testes")?;
+        self.depth_func = tests[2];
+        self.blend = boolean(tests[3], "blend", "gl.testes")?;
+        self.blend_src = tests[4];
+        self.blend_dst = tests[5];
+        self.alpha_test = boolean(tests[6], "alpha_test", "gl.testes")?;
+        self.alpha_func = tests[7];
+        self.alpha_ref = f(tests[8]);
+        self.cull_face = boolean(tests[9], "cull_face", "gl.testes")?;
+        self.cull_mode = tests[10];
+        self.front_face = tests[11];
+        self.stencil_test = boolean(tests[12], "stencil_test", "gl.testes")?;
+        self.stencil_func = tests[13];
+        self.stencil_ref = tests[14] as i32;
+        self.stencil_value_mask = tests[15];
+        self.stencil_write_mask = tests[16];
+        self.stencil_op = [tests[17], tests[18], tests[19]];
+        self.depth_range = (f(tests[20]), f(tests[21]));
+        self.lighting = boolean(tests[22], "lighting", "gl.testes")?;
+        self.color_material = boolean(tests[23], "color_material", "gl.testes")?;
+        self.shade_model = tests[24];
+
+        self.bound_texture = texture[0];
+        self.texture_2d = boolean(texture[1], "texture_2d", "gl.textura")?;
+        self.active_unit = texture[2];
+        self.client_unit = texture[3];
+        self.texture_env = read_tex_env(&texture[4..4 + TEX_ENV_LEN]);
+        self.unit1.enabled = boolean(texture[4 + TEX_ENV_LEN], "unit1.enabled", "gl.textura")?;
+        self.unit1.texture = texture[5 + TEX_ENV_LEN];
+        self.unit1.env = read_tex_env(&texture[6 + TEX_ENV_LEN..]);
+
+        self.fog.enabled = boolean(fog[0], "fog.enabled", "gl.nevoa")?;
+        self.fog.curve = fog[1];
+        self.fog.density = f(fog[2]);
+        self.fog.start = f(fog[3]);
+        self.fog.end = f(fog[4]);
+        self.fog.allowed = boolean(fog[5], "fog.allowed", "gl.nevoa")?;
+        for (index, value) in self.fog.color.iter_mut().enumerate() {
+            *value = f(fog[6 + index]);
+        }
+
+        // A cursor by index, not through a closure that borrows it: the mutable closure doesn't
+        // let the counter be read in between, and the compiler said so before I got the count
+        // wrong by hand.
         let mut cursor = 0usize;
-        macro_rules! quatro {
-            ($destino:expr) => {
-                for valor in $destino.iter_mut() {
-                    *valor = f(luz[cursor]);
+        macro_rules! four {
+            ($dest:expr) => {
+                for value in $dest.iter_mut() {
+                    *value = f(light[cursor]);
                     cursor += 1;
                 }
             };
         }
-        quatro!(self.material.ambient);
-        quatro!(self.material.diffuse);
-        quatro!(self.material.specular);
-        quatro!(self.material.emission);
-        self.material.shininess = f(luz[cursor]);
+        four!(self.material.ambient);
+        four!(self.material.diffuse);
+        four!(self.material.specular);
+        four!(self.material.emission);
+        self.material.shininess = f(light[cursor]);
         cursor += 1;
-        quatro!(self.light_model_ambient);
-        for indice in 0..self.lights.len() {
-            self.lights[indice].enabled = booleano(luz[cursor], "luz.enabled", "gl.iluminacao")?;
+        four!(self.light_model_ambient);
+        for index in 0..self.lights.len() {
+            self.lights[index].enabled = boolean(light[cursor], "light.enabled", "gl.iluminacao")?;
             cursor += 1;
-            quatro!(self.lights[indice].ambient);
-            quatro!(self.lights[indice].diffuse);
-            quatro!(self.lights[indice].specular);
-            quatro!(self.lights[indice].position);
-            for posicao in 0..3 {
-                self.lights[indice].spot_direction[posicao] = f(luz[cursor]);
+            four!(self.lights[index].ambient);
+            four!(self.lights[index].diffuse);
+            four!(self.lights[index].specular);
+            four!(self.lights[index].position);
+            for position in 0..3 {
+                self.lights[index].spot_direction[position] = f(light[cursor]);
                 cursor += 1;
             }
-            self.lights[indice].spot_exponent = f(luz[cursor]);
-            self.lights[indice].spot_cutoff = f(luz[cursor + 1]);
+            self.lights[index].spot_exponent = f(light[cursor]);
+            self.lights[index].spot_cutoff = f(light[cursor + 1]);
             cursor += 2;
-            quatro!(self.lights[indice].attenuation);
+            four!(self.lights[index].attenuation);
         }
 
-        // **Os três buffers.** Medido antes de decidir: o de cor NÃO é duplicata da tela. A tela
-        // que o core apresenta é o bitmap do aparelho, e o buffer de cor é a superfície de desenho
-        // do GL — o `eglSwapBuffers` lê um e entrega o outro. Os dois têm de ser gravados.
-        let buffers = origem.u32s("gl.buffers")?;
+        // **The three buffers.** Measured before deciding: the color one is NOT a duplicate of
+        // the screen. The screen the core presents is the device's bitmap, and the color buffer is
+        // the GL drawing surface — `eglSwapBuffers` reads one and hands over the other. Both must
+        // be saved.
+        let buffers = origin.u32s("gl.buffers")?;
         if buffers.len() != 5 {
-            return Err(Erro::Secao {
-                nome: "gl.buffers".to_string(),
-                motivo: format!("esperava 5 números e veio {}", buffers.len()),
+            return Err(Error::Section {
+                name: "gl.buffers".to_string(),
+                reason: format!("expected 5 numbers and got {}", buffers.len()),
             });
         }
-        let (largura, altura) = (buffers[0] as usize, buffers[1] as usize);
-        let teto = largura * altura;
-        // **Um teto no tamanho declarado.** Um arquivo corrompido — ou escrito por uma versão com
-        // outra resolução — não pode fazer o carregamento pedir memória absurda. Acima do tamanho
-        // da superfície é recusa, e não alocação.
-        let conferir_tamanho = |nome: &str, declarado: usize, por_pixel: usize| -> Result<usize, Erro> {
-            if declarado > teto {
-                return Err(Erro::Secao {
-                    nome: nome.to_string(),
-                    motivo: format!(
-                        "o estado diz ter {declarado} element(s) e a superfície é {largura}x{altura}"
+        let (width, height) = (buffers[0] as usize, buffers[1] as usize);
+        let cap = width * height;
+        // **A ceiling on the declared size.** A corrupted file — or one written by a version with
+        // a different resolution — must not make loading request an absurd amount of memory. Above
+        // the surface size it is a refusal, not an allocation.
+        let check_size = |name: &str, declared: usize, per_pixel: usize| -> Result<usize, Error> {
+            if declared > cap {
+                return Err(Error::Section {
+                    name: name.to_string(),
+                    reason: format!(
+                        "the state claims {declared} element(s) and the surface is {width}x{height}"
                     ),
                 });
             }
-            let esperado = declarado * por_pixel;
-            Ok(esperado)
+            let expected = declared * per_pixel;
+            Ok(expected)
         };
-        let quantos = conferir_tamanho("gl.buffer.cor", buffers[2] as usize, 4)?;
-        let cor = secao_do_estado(origem, "gl.buffer.cor")?;
-        if cor.len() != quantos {
-            return Err(Erro::Secao {
-                nome: "gl.buffer.cor".to_string(),
-                motivo: format!("esperava {quantos} bytes e veio {}", cor.len()),
+        let count = check_size("gl.buffer.cor", buffers[2] as usize, 4)?;
+        let color = state_section(origin, "gl.buffer.cor")?;
+        if color.len() != count {
+            return Err(Error::Section {
+                name: "gl.buffer.cor".to_string(),
+                reason: format!("expected {count} bytes and got {}", color.len()),
             });
         }
-        let quantos = conferir_tamanho("gl.buffer.profundidade", buffers[3] as usize, 4)?;
-        let profundidade = secao_do_estado(origem, "gl.buffer.profundidade")?;
-        if profundidade.len() != quantos {
-            return Err(Erro::Secao {
-                nome: "gl.buffer.profundidade".to_string(),
-                motivo: format!("esperava {quantos} bytes e veio {}", profundidade.len()),
+        let count = check_size("gl.buffer.profundidade", buffers[3] as usize, 4)?;
+        let depth = state_section(origin, "gl.buffer.profundidade")?;
+        if depth.len() != count {
+            return Err(Error::Section {
+                name: "gl.buffer.profundidade".to_string(),
+                reason: format!("expected {count} bytes and got {}", depth.len()),
             });
         }
-        let quantos = conferir_tamanho("gl.buffer.stencil", buffers[4] as usize, 1)?;
-        let stencil = secao_do_estado(origem, "gl.buffer.stencil")?;
-        if stencil.len() != quantos {
-            return Err(Erro::Secao {
-                nome: "gl.buffer.stencil".to_string(),
-                motivo: format!("esperava {quantos} bytes e veio {}", stencil.len()),
+        let count = check_size("gl.buffer.stencil", buffers[4] as usize, 1)?;
+        let stencil = state_section(origin, "gl.buffer.stencil")?;
+        if stencil.len() != count {
+            return Err(Error::Section {
+                name: "gl.buffer.stencil".to_string(),
+                reason: format!("expected {count} bytes and got {}", stencil.len()),
             });
         }
-        let cor: Vec<[u8; 4]> = cor.chunks_exact(4).map(|p| [p[0], p[1], p[2], p[3]]).collect();
-        let profundidade: Vec<f32> = profundidade
+        let color: Vec<[u8; 4]> = color.chunks_exact(4).map(|p| [p[0], p[1], p[2], p[3]]).collect();
+        let depth: Vec<f32> = depth
             .chunks_exact(4)
             .map(|p| f32::from_bits(u32::from_le_bytes([p[0], p[1], p[2], p[3]])))
             .collect();
 
-        self.color = cor;
-        self.depth = profundidade;
+        self.color = color;
+        self.depth = depth;
         self.stencil = stencil;
-        self.textures = le_texturas(origem)?;
+        self.textures = load_textures(origin)?;
         Ok(())
     }
 }
 
-/// Grava as texturas: por objeto, os números, os pixels e os níveis de redução.
+/// Saves the textures: per object, the numbers, the pixels and the minification levels.
 ///
-/// A cadeia de mipmaps é o motivo de esta tabela ter formato próprio. Descartá-la foi a causa das
-/// listras nos modelos do palco da Z-Wheel: eles vêm com a cadeia inteira, de 128×128 até 1×1, e
-/// são vistos de raspão — a lateral de um carro ocupa poucos pixels de largura e cobre a textura
-/// toda. Amostrando sempre o nível zero, cada pixel cai num texel qualquer e o resultado é o
-/// traseiro do carro repetido em colunas.
+/// The mipmap chain is the reason this table has its own format. Discarding it was the cause of
+/// the stripes on the Z-Wheel stage models: they come with the whole chain, from 128×128 down to
+/// 1×1, and are seen at grazing angles — the side of a car takes a few pixels of width and covers
+/// the whole texture. Always sampling level zero, each pixel lands on an arbitrary texel and the
+/// result is the back of the car repeated in columns.
 ///
-/// Os pixels vão **crus**, um byte de alpha inclusive: quatro por pixel, na ordem de leitura. É a
-/// tabela que mais pesa no estado, e é onde comprimir valeria mais — mas comprimir é uma decisão
-/// sobre o formato, e o formato já tem versão para receber isso depois.
-fn grava_texturas(
-    texturas: &std::collections::HashMap<u32, Texture>,
-    destino: &mut crate::save_state::Secoes,
+/// The pixels go **raw**, alpha byte included: four per pixel, in reading order. It is the
+/// heaviest table in the state, and where compressing would pay off most — but compressing is a
+/// decision about the format, and the format already has a version to take that later.
+fn save_textures(
+    textures: &std::collections::HashMap<u32, Texture>,
+    dest: &mut crate::save_state::Sections,
 ) {
-    let mut ids: Vec<u32> = texturas.keys().copied().collect();
+    let mut ids: Vec<u32> = textures.keys().copied().collect();
     ids.sort_unstable();
-    destino.poe_u32s("tex.ids", ids.iter().copied());
+    dest.put_u32s("tex.ids", ids.iter().copied());
     for id in ids {
-        let textura = &texturas[&id];
-        destino.poe_u32s(
+        let texture = &textures[&id];
+        dest.put_u32s(
             &format!("tex.{id}.meta"),
             [
-                textura.width as u32,
-                textura.height as u32,
-                textura.wrap[0],
-                textura.wrap[1],
-                textura.filter,
-                textura.min_filter,
-                textura.crop[0] as u32,
-                textura.crop[1] as u32,
-                textura.crop[2] as u32,
-                textura.crop[3] as u32,
-                textura.mipmaps.len() as u32,
+                texture.width as u32,
+                texture.height as u32,
+                texture.wrap[0],
+                texture.wrap[1],
+                texture.filter,
+                texture.min_filter,
+                texture.crop[0] as u32,
+                texture.crop[1] as u32,
+                texture.crop[2] as u32,
+                texture.crop[3] as u32,
+                texture.mipmaps.len() as u32,
             ],
         );
-        destino.poe(
+        dest.put(
             &format!("tex.{id}.pixels"),
-            bytes_dos_pixels(&textura.pixels),
+            pixels_to_bytes(&texture.pixels),
         );
-        // As dimensões de cada nível, e depois todos os pixels deles em seguida.
-        let mut medidas = Vec::with_capacity(textura.mipmaps.len() * 2);
+        // The dimensions of each level, and then all their pixels right after.
+        let mut sizes = Vec::with_capacity(texture.mipmaps.len() * 2);
         let mut pixels = Vec::new();
-        for nivel in &textura.mipmaps {
-            medidas.push(nivel.width as u32);
-            medidas.push(nivel.height as u32);
-            pixels.extend_from_slice(&bytes_dos_pixels(&nivel.pixels));
+        for level in &texture.mipmaps {
+            sizes.push(level.width as u32);
+            sizes.push(level.height as u32);
+            pixels.extend_from_slice(&pixels_to_bytes(&level.pixels));
         }
-        destino.poe_u32s(&format!("tex.{id}.mips"), medidas);
-        destino.poe(&format!("tex.{id}.mip_pixels"), pixels);
+        dest.put_u32s(&format!("tex.{id}.mips"), sizes);
+        dest.put(&format!("tex.{id}.mip_pixels"), pixels);
     }
 }
 
-/// Os pixels RGBA como bytes, num vetor só.
-fn bytes_dos_rgba(pixels: &[[u8; 4]]) -> Vec<u8> {
-    let mut saida = Vec::with_capacity(pixels.len() * 4);
+/// The RGBA pixels as bytes, in a single vector.
+fn rgba_to_bytes(pixels: &[[u8; 4]]) -> Vec<u8> {
+    let mut output = Vec::with_capacity(pixels.len() * 4);
     for pixel in pixels {
-        saida.extend_from_slice(pixel);
+        output.extend_from_slice(pixel);
     }
-    saida
+    output
 }
 
-/// Os pixels RGBA como bytes.
-fn bytes_dos_pixels(pixels: &[[u8; 4]]) -> Vec<u8> {
-    let mut saida = Vec::with_capacity(pixels.len() * 4);
+/// The RGBA pixels as bytes.
+fn pixels_to_bytes(pixels: &[[u8; 4]]) -> Vec<u8> {
+    let mut output = Vec::with_capacity(pixels.len() * 4);
     for pixel in pixels {
-        saida.extend_from_slice(pixel);
+        output.extend_from_slice(pixel);
     }
-    saida
+    output
 }
 
-/// O caminho de volta de [`grava_texturas`], com a conferência que importa.
+/// The way back from [`save_textures`], with the check that matters.
 ///
-/// **O número de pixels tem de casar com as dimensões.** Um arquivo truncado, ou um nível de
-/// mipmap com as medidas trocadas, desenharia listras — e o defeito apareceria como imagem
-/// errada, sem nada apontando para o save state. Aqui é recusa.
-fn le_texturas(
-    origem: &crate::save_state::Leitor<'_>,
-) -> Result<std::collections::HashMap<u32, Texture>, crate::save_state::Erro> {
-    use crate::save_state::Erro;
-    let ids = origem.u32s("tex.ids")?;
-    let mut texturas = std::collections::HashMap::new();
+/// **The number of pixels must match the dimensions.** A truncated file, or a mipmap level with
+/// swapped measurements, would draw stripes — and the defect would show up as a wrong image, with
+/// nothing pointing at the save state. Here it is a refusal.
+fn load_textures(
+    origin: &crate::save_state::Reader<'_>,
+) -> Result<std::collections::HashMap<u32, Texture>, crate::save_state::Error> {
+    use crate::save_state::Error;
+    let ids = origin.u32s("tex.ids")?;
+    let mut textures = std::collections::HashMap::new();
     for id in ids {
-        let meta = origem.u32s(&format!("tex.{id}.meta"))?;
+        let meta = origin.u32s(&format!("tex.{id}.meta"))?;
         if meta.len() != 11 {
-            return Err(Erro::Secao {
-                nome: format!("tex.{id}.meta"),
-                motivo: format!("esperava 11 números e veio {}", meta.len()),
+            return Err(Error::Section {
+                name: format!("tex.{id}.meta"),
+                reason: format!("expected 11 numbers and got {}", meta.len()),
             });
         }
-        let (largura, altura) = (meta[0] as usize, meta[1] as usize);
-        let pixels = pixels_dos_bytes(&secao_do_estado(origem, &format!("tex.{id}.pixels"))?);
-        if pixels.len() != largura * altura {
-            return Err(Erro::Secao {
-                nome: format!("tex.{id}.pixels"),
-                motivo: format!(
-                    "a textura é {largura}x{altura} ({} pixels) e vieram {}",
-                    largura * altura,
+        let (width, height) = (meta[0] as usize, meta[1] as usize);
+        let pixels = bytes_to_pixels(&state_section(origin, &format!("tex.{id}.pixels"))?);
+        if pixels.len() != width * height {
+            return Err(Error::Section {
+                name: format!("tex.{id}.pixels"),
+                reason: format!(
+                    "the texture is {width}x{height} ({} pixels) and {} came",
+                    width * height,
                     pixels.len()
                 ),
             });
         }
-        let medidas = origem.u32s(&format!("tex.{id}.mips"))?;
-        let quantos = meta[10] as usize;
-        if medidas.len() != quantos * 2 {
-            return Err(Erro::Secao {
-                nome: format!("tex.{id}.mips"),
-                motivo: format!("diz ter {quantos} nível(is) e veio {} número(s)", medidas.len()),
+        let sizes = origin.u32s(&format!("tex.{id}.mips"))?;
+        let count = meta[10] as usize;
+        if sizes.len() != count * 2 {
+            return Err(Error::Section {
+                name: format!("tex.{id}.mips"),
+                reason: format!("claims {count} level(s) and got {} number(s)", sizes.len()),
             });
         }
-        let cru = secao_do_estado(origem, &format!("tex.{id}.mip_pixels"))?;
-        let mut mipmaps = Vec::with_capacity(quantos);
+        let raw = state_section(origin, &format!("tex.{id}.mip_pixels"))?;
+        let mut mipmaps = Vec::with_capacity(count);
         let mut cursor = 0usize;
-        for nivel in 0..quantos {
-            let (l, a) = (medidas[nivel * 2] as usize, medidas[nivel * 2 + 1] as usize);
-            let precisa = l * a * 4;
-            if cru.len() < cursor + precisa {
-                return Err(Erro::Secao {
-                    nome: format!("tex.{id}.mip_pixels"),
-                    motivo: format!(
-                        "o nível {nivel} é {l}x{a} e precisa de {precisa} bytes, e restam {}",
-                        cru.len() - cursor
+        for level in 0..count {
+            let (l, a) = (sizes[level * 2] as usize, sizes[level * 2 + 1] as usize);
+            let needed = l * a * 4;
+            if raw.len() < cursor + needed {
+                return Err(Error::Section {
+                    name: format!("tex.{id}.mip_pixels"),
+                    reason: format!(
+                        "level {level} is {l}x{a} and needs {needed} bytes, and {} remain",
+                        raw.len() - cursor
                     ),
                 });
             }
-            mipmaps.push(Nivel {
+            mipmaps.push(Level {
                 width: l,
                 height: a,
-                pixels: pixels_dos_bytes(&cru[cursor..cursor + precisa]),
+                pixels: bytes_to_pixels(&raw[cursor..cursor + needed]),
             });
-            cursor += precisa;
+            cursor += needed;
         }
-        texturas.insert(
+        textures.insert(
             id,
             Texture {
-                width: largura,
-                height: altura,
+                width,
+                height,
                 pixels,
                 mipmaps,
                 wrap: [meta[2], meta[3]],
@@ -5975,301 +6027,302 @@ fn le_texturas(
             },
         );
     }
-    Ok(texturas)
+    Ok(textures)
 }
 
-/// Uma seção de bytes que tem de existir.
-fn secao_do_estado<'a>(
-    origem: &'a crate::save_state::Leitor<'a>,
-    nome: &str,
-) -> Result<Vec<u8>, crate::save_state::Erro> {
-    origem
-        .secao(nome)
+/// A byte section that must exist.
+fn state_section<'a>(
+    origin: &'a crate::save_state::Reader<'a>,
+    name: &str,
+) -> Result<Vec<u8>, crate::save_state::Error> {
+    origin
+        .section(name)
         .map(|bytes| bytes.to_vec())
-        .ok_or_else(|| crate::save_state::Erro::Secao {
-            nome: nome.to_string(),
-            motivo: "a seção não está no arquivo".to_string(),
+        .ok_or_else(|| crate::save_state::Error::Section {
+            name: name.to_string(),
+            reason: "the section is not in the file".to_string(),
         })
 }
 
-/// Bytes RGBA como pixels. Sobra de menos de quatro bytes é descartada, e quem confere o número
-/// é quem chama.
-fn pixels_dos_bytes(bytes: &[u8]) -> Vec<[u8; 4]> {
+/// RGBA bytes as pixels. A remainder of fewer than four bytes is discarded, and the caller is the
+/// one who checks the count.
+fn bytes_to_pixels(bytes: &[u8]) -> Vec<[u8; 4]> {
     bytes
         .chunks_exact(4)
         .map(|p| [p[0], p[1], p[2], p[3]])
         .collect()
 }
 
-/// Quantos números o ambiente de textura ocupa: modo, dois de combinação, seis fontes, seis
-/// operandos, duas escalas e quatro de cor.
-const AMBIENTES: usize = 1 + 2 + 6 + 6 + 2 + 4;
+/// How many numbers the texture environment takes: mode, two combine, six sources, six
+/// operands, two scales and four color.
+const TEX_ENV_LEN: usize = 1 + 2 + 6 + 6 + 2 + 4;
 
-/// O ambiente de textura como números.
-fn ambientes_do_texto(env: &TexEnv) -> Vec<u32> {
-    let mut saida = vec![env.modo];
-    saida.extend(env.combina);
-    saida.extend(env.fontes.iter().flatten().copied());
-    saida.extend(env.operandos.iter().flatten().copied());
-    saida.extend(env.escala.iter().map(|e| e.to_bits()));
-    saida.extend(env.cor.iter().map(|c| c.to_bits()));
-    saida
+/// The texture environment as numbers.
+fn tex_env_words(env: &TexEnv) -> Vec<u32> {
+    let mut output = vec![env.mode];
+    output.extend(env.combine);
+    output.extend(env.sources.iter().flatten().copied());
+    output.extend(env.operands.iter().flatten().copied());
+    output.extend(env.scale.iter().map(|e| e.to_bits()));
+    output.extend(env.color.iter().map(|c| c.to_bits()));
+    output
 }
 
-/// O caminho de volta de [`ambientes_do_texto`].
-fn le_ambiente_do_texto(numeros: &[u32]) -> TexEnv {
+/// The way back from [`tex_env_words`].
+fn read_tex_env(numbers: &[u32]) -> TexEnv {
     let mut cursor = 0usize;
-    let mut proximo = || {
-        let valor = numeros[cursor];
+    let mut next = || {
+        let value = numbers[cursor];
         cursor += 1;
-        valor
+        value
     };
-    let modo = proximo();
-    let combina = [proximo(), proximo()];
-    let mut fontes = [[0u32; 3]; 2];
-    for linha in fontes.iter_mut() {
-        for valor in linha.iter_mut() {
-            *valor = proximo();
+    let mode = next();
+    let combine = [next(), next()];
+    let mut sources = [[0u32; 3]; 2];
+    for line in sources.iter_mut() {
+        for value in line.iter_mut() {
+            *value = next();
         }
     }
-    let mut operandos = [[0u32; 3]; 2];
-    for linha in operandos.iter_mut() {
-        for valor in linha.iter_mut() {
-            *valor = proximo();
+    let mut operands = [[0u32; 3]; 2];
+    for line in operands.iter_mut() {
+        for value in line.iter_mut() {
+            *value = next();
         }
     }
-    let escala = [f32::from_bits(proximo()), f32::from_bits(proximo())];
-    let cor = [
-        f32::from_bits(proximo()),
-        f32::from_bits(proximo()),
-        f32::from_bits(proximo()),
-        f32::from_bits(proximo()),
+    let scale = [f32::from_bits(next()), f32::from_bits(next())];
+    let color = [
+        f32::from_bits(next()),
+        f32::from_bits(next()),
+        f32::from_bits(next()),
+        f32::from_bits(next()),
     ];
     TexEnv {
-        modo,
-        combina,
-        fontes,
-        operandos,
-        escala,
-        cor,
+        mode,
+        combine,
+        sources,
+        operands,
+        scale,
+        color,
     }
 }
 
 #[cfg(test)]
-mod testes_do_estado_de_gl {
+mod gl_state_tests {
     use super::*;
-    use crate::save_state::{Guardavel, Leitor, Secoes};
+    use crate::save_state::{Saveable, Reader, Sections};
 
-    /// **Um save de antes da matriz de textura da unidade 1 continua abrindo.** Ele tem só três
-    /// pilhas em `gl.matrizes`; a quarta volta como identidade, que é o que o jogo tinha.
+    /// **A save from before unit 1's texture matrix still opens.** It has only three stacks in
+    /// `gl.matrizes`; the fourth comes back as identity, which is what the game had.
     #[test]
-    fn save_sem_a_matriz_da_unidade_1_abre_com_identidade() {
-        let mut antes = GlState::new(640, 480);
-        antes.texture_matrix1.push([0.75; 16]);
-        let mut secoes = Secoes::nova();
-        antes.grava(&mut secoes);
-        let tres_pilhas: Vec<u32> = std::iter::once(gles::GL_MODELVIEW)
+    fn a_save_without_the_unit_1_matrix_loads_with_identity() {
+        let mut before = GlState::new(640, 480);
+        before.texture_matrix1.push([0.75; 16]);
+        let mut sections = Sections::create();
+        before.save(&mut sections);
+        let three_stacks: Vec<u32> = std::iter::once(gles::GL_MODELVIEW)
             .chain(
                 (0..3).flat_map(|_| std::iter::once(1).chain(IDENTITY.iter().map(|v| v.to_bits()))),
             )
             .collect();
-        secoes.poe_u32s("gl.matrizes", tres_pilhas);
-        let arquivo = secoes.fecha();
-        let leitor = Leitor::abre(&arquivo).expect("abriu");
+        sections.put_u32s("gl.matrizes", three_stacks);
+        let file = sections.close();
+        let reader = Reader::open(&file).expect("opened");
 
-        let mut depois = GlState::new(640, 480);
-        depois.texture_matrix1.push([0.5; 16]);
-        depois.restaura(&leitor).expect("restaurou");
-        assert_eq!(depois.texture_matrix1, vec![IDENTITY]);
+        let mut after = GlState::new(640, 480);
+        after.texture_matrix1.push([0.5; 16]);
+        after.restore(&reader).expect("restored");
+        assert_eq!(after.texture_matrix1, vec![IDENTITY]);
     }
 
-    /// **O estado de GL vai e volta**, campo por campo.
+    /// **The GL state round-trips**, field by field.
     ///
-    /// Cada seção é conferida pelo tamanho na leitura; este teste confere os **valores**, que é o
-    /// que o tamanho não pega. Ele cobre os quatro grupos de uma vez: as pilhas de matriz, onde se
-    /// desenha, as bandeiras, a textura, a névoa e a iluminação.
+    /// Each section is checked by size on read; this test checks the **values**, which is what the
+    /// size doesn't catch. It covers the four groups at once: the matrix stacks, where drawing
+    /// happens, the flags, the texture, the fog and the lighting.
     #[test]
-    fn o_estado_de_gl_vai_e_volta() {
-        let mut antes = GlState::new(640, 480);
-        antes.matrix_mode = 0x1700;
-        antes.modelview.push([1.5; 16]);
-        antes.projection.push([-2.25; 16]);
-        antes.texture_matrix.push([0.5; 16]);
-        antes.texture_matrix1.push([0.75; 16]);
-        antes.viewport = (1, 2, 640, 480);
-        antes.tesoura = Some((3, 4, 100, 200));
-        antes.tesoura_crua = (5, 6, 7, 8);
-        antes.tesoura_ligada = true;
-        antes.surface = Some((320, 240));
-        antes.esticada = true;
-        antes.sujo = true;
-        antes.clear_color = [0.25, 0.5, 0.75, 1.0];
-        antes.clear_depth = 0.5;
-        antes.current_color = [1.0, 0.0, 0.5, 0.25];
-        antes.clear_stencil = 7;
-        antes.color_mask = [true, false, true, false];
-        antes.depth_test = true;
-        antes.depth_mask = false;
-        antes.depth_func = 0x0203;
-        antes.blend = true;
-        antes.blend_src = 1;
-        antes.blend_dst = 2;
-        antes.alpha_test = true;
-        antes.alpha_func = 0x0204;
-        antes.alpha_ref = 0.375;
-        antes.cull_face = true;
-        antes.cull_mode = 0x0405;
-        antes.front_face = 0x0901;
-        antes.stencil_test = true;
-        antes.stencil_func = 0x0207;
-        antes.stencil_ref = -3;
-        antes.stencil_value_mask = 0xff;
-        antes.stencil_write_mask = 0x0f;
-        antes.stencil_op = [1, 2, 3];
-        antes.depth_range = (0.0, 0.985);
-        antes.lighting = true;
-        antes.color_material = true;
-        antes.shade_model = 0x1d01;
-        antes.bound_texture = 0x1234;
-        antes.texture_2d = true;
-        antes.active_unit = 1;
-        antes.client_unit = 2;
-        antes.texture_env.modo = 0x2100;
-        antes.texture_env.cor = [0.1, 0.2, 0.3, 0.4];
-        antes.unidade1.ligada = true;
-        antes.unidade1.textura = 0x5678;
-        antes.fog.ligada = true;
-        antes.fog.curva = 0x2601;
-        antes.fog.densidade = 0.125;
-        antes.fog.inicio = 10.0;
-        antes.fog.fim = 20.0;
-        antes.fog.permitida = true;
-        antes.fog.cor = [0.5, 0.25, 0.125, 1.0];
-        antes.material.shininess = 12.5;
-        antes.material.ambient = [0.11; 4];
-        antes.light_model_ambient = [0.22; 4];
-        antes.lights[0].enabled = true;
-        antes.lights[0].position = [1.0, 2.0, 3.0, 0.0];
-        antes.lights[0].spot_cutoff = 45.0;
-        antes.lights[0].attenuation = [1.0, 0.5, 0.25];
+    fn the_gl_state_round_trips() {
+        let mut before = GlState::new(640, 480);
+        before.matrix_mode = 0x1700;
+        before.modelview.push([1.5; 16]);
+        before.projection.push([-2.25; 16]);
+        before.texture_matrix.push([0.5; 16]);
+        before.texture_matrix1.push([0.75; 16]);
+        before.viewport = (1, 2, 640, 480);
+        before.scissor = Some((3, 4, 100, 200));
+        before.raw_scissor = (5, 6, 7, 8);
+        before.scissor_enabled = true;
+        before.surface = Some((320, 240));
+        before.stretched = true;
+        before.dirty = true;
+        before.clear_color = [0.25, 0.5, 0.75, 1.0];
+        before.clear_depth = 0.5;
+        before.current_color = [1.0, 0.0, 0.5, 0.25];
+        before.clear_stencil = 7;
+        before.color_mask = [true, false, true, false];
+        before.depth_test = true;
+        before.depth_mask = false;
+        before.depth_func = 0x0203;
+        before.blend = true;
+        before.blend_src = 1;
+        before.blend_dst = 2;
+        before.alpha_test = true;
+        before.alpha_func = 0x0204;
+        before.alpha_ref = 0.375;
+        before.cull_face = true;
+        before.cull_mode = 0x0405;
+        before.front_face = 0x0901;
+        before.stencil_test = true;
+        before.stencil_func = 0x0207;
+        before.stencil_ref = -3;
+        before.stencil_value_mask = 0xff;
+        before.stencil_write_mask = 0x0f;
+        before.stencil_op = [1, 2, 3];
+        before.depth_range = (0.0, 0.985);
+        before.lighting = true;
+        before.color_material = true;
+        before.shade_model = 0x1d01;
+        before.bound_texture = 0x1234;
+        before.texture_2d = true;
+        before.active_unit = 1;
+        before.client_unit = 2;
+        before.texture_env.mode = 0x2100;
+        before.texture_env.color = [0.1, 0.2, 0.3, 0.4];
+        before.unit1.enabled = true;
+        before.unit1.texture = 0x5678;
+        before.fog.enabled = true;
+        before.fog.curve = 0x2601;
+        before.fog.density = 0.125;
+        before.fog.start = 10.0;
+        before.fog.end = 20.0;
+        before.fog.allowed = true;
+        before.fog.color = [0.5, 0.25, 0.125, 1.0];
+        before.material.shininess = 12.5;
+        before.material.ambient = [0.11; 4];
+        before.light_model_ambient = [0.22; 4];
+        before.lights[0].enabled = true;
+        before.lights[0].position = [1.0, 2.0, 3.0, 0.0];
+        before.lights[0].spot_cutoff = 45.0;
+        before.lights[0].attenuation = [1.0, 0.5, 0.25];
 
-        let mut secoes = Secoes::nova();
-        antes.grava(&mut secoes);
-        let arquivo = secoes.fecha();
-        let leitor = Leitor::abre(&arquivo).expect("abriu");
+        let mut sections = Sections::create();
+        before.save(&mut sections);
+        let file = sections.close();
+        let reader = Reader::open(&file).expect("opened");
 
-        let mut depois = GlState::new(640, 480);
-        depois.restaura(&leitor).expect("restaurou");
+        let mut after = GlState::new(640, 480);
+        after.restore(&reader).expect("restored");
 
-        assert_eq!(depois.matrix_mode, 0x1700);
-        // **O topo da pilha e o tamanho dela**, e não a lista inteira: o `GlState::new` já põe uma
-        // identidade em cada pilha, e afirmar a lista supunha quantas havia antes. Foi assim que
-        // este teste me reprovou uma vez, com o valor certo.
-        for (nome, pilha, esperado) in [
-            ("modelview", &depois.modelview, [1.5f32; 16]),
-            ("projection", &depois.projection, [-2.25f32; 16]),
-            ("texture_matrix", &depois.texture_matrix, [0.5f32; 16]),
-            ("texture_matrix1", &depois.texture_matrix1, [0.75f32; 16]),
+        assert_eq!(after.matrix_mode, 0x1700);
+        // **The top of the stack and its size**, not the whole list: `GlState::new` already puts
+        // an identity in each stack, and asserting the list assumed how many there were before.
+        // That is how this test failed me once, with the right value.
+        for (name, stack, expected) in [
+            ("modelview", &after.modelview, [1.5f32; 16]),
+            ("projection", &after.projection, [-2.25f32; 16]),
+            ("texture_matrix", &after.texture_matrix, [0.5f32; 16]),
+            ("texture_matrix1", &after.texture_matrix1, [0.75f32; 16]),
         ] {
-            assert_eq!(pilha.len(), 2, "o tamanho da pilha {nome}");
+            assert_eq!(stack.len(), 2, "the size of the {name} stack");
             assert_eq!(
-                pilha.last().copied(),
-                Some(esperado),
-                "o topo da pilha {nome} não voltou"
+                stack.last().copied(),
+                Some(expected),
+                "the top of the {name} stack did not come back"
             );
         }
-        assert_eq!(depois.viewport, (1, 2, 640, 480));
-        assert_eq!(depois.tesoura, Some((3, 4, 100, 200)));
-        assert_eq!(depois.tesoura_crua, (5, 6, 7, 8));
-        assert!(depois.tesoura_ligada);
-        assert_eq!(depois.surface, Some((320, 240)));
-        assert!(depois.esticada);
-        assert!(depois.sujo);
-        assert_eq!(depois.clear_color, [0.25, 0.5, 0.75, 1.0], "as cores são f32");
-        assert_eq!(depois.clear_depth, 0.5);
-        assert_eq!(depois.current_color, [1.0, 0.0, 0.5, 0.25]);
-        assert_eq!(depois.clear_stencil, 7);
-        assert_eq!(depois.color_mask, [true, false, true, false]);
-        assert!(depois.depth_test);
-        assert!(!depois.depth_mask);
-        assert_eq!(depois.depth_func, 0x0203);
-        assert!(depois.blend);
-        assert_eq!((depois.blend_src, depois.blend_dst), (1, 2));
-        assert!(depois.alpha_test);
-        assert_eq!(depois.alpha_ref, 0.375);
-        assert!(depois.cull_face);
-        assert_eq!(depois.cull_mode, 0x0405);
-        assert_eq!(depois.front_face, 0x0901);
-        assert!(depois.stencil_test);
-        assert_eq!(depois.stencil_ref, -3, "o `ref` do stencil é assinado");
+        assert_eq!(after.viewport, (1, 2, 640, 480));
+        assert_eq!(after.scissor, Some((3, 4, 100, 200)));
+        assert_eq!(after.raw_scissor, (5, 6, 7, 8));
+        assert!(after.scissor_enabled);
+        assert_eq!(after.surface, Some((320, 240)));
+        assert!(after.stretched);
+        assert!(after.dirty);
+        assert_eq!(after.clear_color, [0.25, 0.5, 0.75, 1.0], "colors are f32");
+        assert_eq!(after.clear_depth, 0.5);
+        assert_eq!(after.current_color, [1.0, 0.0, 0.5, 0.25]);
+        assert_eq!(after.clear_stencil, 7);
+        assert_eq!(after.color_mask, [true, false, true, false]);
+        assert!(after.depth_test);
+        assert!(!after.depth_mask);
+        assert_eq!(after.depth_func, 0x0203);
+        assert!(after.blend);
+        assert_eq!((after.blend_src, after.blend_dst), (1, 2));
+        assert!(after.alpha_test);
+        assert_eq!(after.alpha_ref, 0.375);
+        assert!(after.cull_face);
+        assert_eq!(after.cull_mode, 0x0405);
+        assert_eq!(after.front_face, 0x0901);
+        assert!(after.stencil_test);
+        assert_eq!(after.stencil_ref, -3, "the stencil `ref` is signed");
         assert_eq!(
-            (depois.stencil_value_mask, depois.stencil_write_mask),
+            (after.stencil_value_mask, after.stencil_write_mask),
             (0xff, 0x0f)
         );
-        assert_eq!(depois.stencil_op, [1, 2, 3]);
-        assert_eq!(depois.depth_range, (0.0, 0.985), "a faixa do Crash");
-        assert!(depois.lighting);
-        assert!(depois.color_material);
-        assert_eq!(depois.shade_model, 0x1d01);
-        assert_eq!(depois.bound_texture, 0x1234);
-        assert!(depois.texture_2d);
-        assert_eq!((depois.active_unit, depois.client_unit), (1, 2));
-        assert_eq!(depois.texture_env.modo, 0x2100);
-        assert_eq!(depois.texture_env.cor, [0.1, 0.2, 0.3, 0.4]);
-        assert!(depois.unidade1.ligada);
-        assert_eq!(depois.unidade1.textura, 0x5678);
-        assert!(depois.fog.ligada);
-        assert_eq!(depois.fog.curva, 0x2601);
-        assert_eq!(depois.fog.densidade, 0.125);
-        assert_eq!((depois.fog.inicio, depois.fog.fim), (10.0, 20.0));
-        assert!(depois.fog.permitida);
-        assert_eq!(depois.fog.cor, [0.5, 0.25, 0.125, 1.0]);
-        assert_eq!(depois.material.shininess, 12.5);
-        assert_eq!(depois.material.ambient, [0.11; 4]);
-        assert_eq!(depois.light_model_ambient, [0.22; 4]);
-        assert!(depois.lights[0].enabled);
-        assert_eq!(depois.lights[0].position, [1.0, 2.0, 3.0, 0.0]);
-        assert_eq!(depois.lights[0].spot_cutoff, 45.0);
-        assert_eq!(depois.lights[0].attenuation, [1.0, 0.5, 0.25]);
+        assert_eq!(after.stencil_op, [1, 2, 3]);
+        assert_eq!(after.depth_range, (0.0, 0.985), "the Crash range");
+        assert!(after.lighting);
+        assert!(after.color_material);
+        assert_eq!(after.shade_model, 0x1d01);
+        assert_eq!(after.bound_texture, 0x1234);
+        assert!(after.texture_2d);
+        assert_eq!((after.active_unit, after.client_unit), (1, 2));
+        assert_eq!(after.texture_env.mode, 0x2100);
+        assert_eq!(after.texture_env.color, [0.1, 0.2, 0.3, 0.4]);
+        assert!(after.unit1.enabled);
+        assert_eq!(after.unit1.texture, 0x5678);
+        assert!(after.fog.enabled);
+        assert_eq!(after.fog.curve, 0x2601);
+        assert_eq!(after.fog.density, 0.125);
+        assert_eq!((after.fog.start, after.fog.end), (10.0, 20.0));
+        assert!(after.fog.allowed);
+        assert_eq!(after.fog.color, [0.5, 0.25, 0.125, 1.0]);
+        assert_eq!(after.material.shininess, 12.5);
+        assert_eq!(after.material.ambient, [0.11; 4]);
+        assert_eq!(after.light_model_ambient, [0.22; 4]);
+        assert!(after.lights[0].enabled);
+        assert_eq!(after.lights[0].position, [1.0, 2.0, 3.0, 0.0]);
+        assert_eq!(after.lights[0].spot_cutoff, 45.0);
+        assert_eq!(after.lights[0].attenuation, [1.0, 0.5, 0.25]);
     }
 
-    /// Uma seção de tamanho errado é **recusa**, e não leitura deslocada.
+    /// A section with the wrong size is a **refusal**, not a shifted read.
     #[test]
-    fn secao_com_tamanho_errado_e_recusada() {
-        let mut antes = GlState::new(640, 480);
-        antes.depth_test = true;
-        let mut secoes = Secoes::nova();
-        antes.grava(&mut secoes);
-        let mut arquivo = secoes.fecha();
+    fn a_section_with_the_wrong_size_is_rejected() {
+        let mut before = GlState::new(640, 480);
+        before.depth_test = true;
+        let mut sections = Sections::create();
+        before.save(&mut sections);
+        let mut file = sections.close();
 
-        // Tira um número do meio do arquivo: o crc32 deixa de bater, e é a primeira barreira.
-        let meio = arquivo.len() / 2;
-        arquivo[meio] ^= 0xff;
-        match Leitor::abre(&arquivo) {
-            Err(crate::save_state::Erro::Integridade { .. }) => {}
-            outro => panic!("devia recusar por integridade, e devolveu {outro:?}"),
+        // Flips a number in the middle of the file: the crc32 stops matching, and it is the
+        // first barrier.
+        let middle = file.len() / 2;
+        file[middle] ^= 0xff;
+        match Reader::open(&file) {
+            Err(crate::save_state::Error::Integrity { .. }) => {}
+            other => panic!("should have refused on integrity, and returned {other:?}"),
         }
     }
 
-    /// **As texturas vão e voltam, com a cadeia de mipmaps inteira.**
+    /// **Textures round-trip, with the whole mipmap chain.**
     ///
-    /// A cadeia é o motivo de esta tabela ter formato próprio: o teste usa dois níveis, e confere
-    /// que o segundo voltou com as medidas e os pixels dele.
+    /// The chain is the reason this table has its own format: the test uses two levels, and checks
+    /// that the second came back with its measurements and pixels.
     #[test]
-    fn as_texturas_e_os_mipmaps_vem_de_volta() {
-        let mut antes = GlState::new(640, 480);
-        let nivel_zero: Vec<[u8; 4]> = (0..16u8).map(|n| [n, n + 1, n + 2, 255]).collect();
-        let nivel_um: Vec<[u8; 4]> = (0..4u8).map(|n| [n + 100, 0, 0, 128]).collect();
-        antes.textures.insert(
+    fn textures_and_mipmaps_come_back() {
+        let mut before = GlState::new(640, 480);
+        let level_zero: Vec<[u8; 4]> = (0..16u8).map(|n| [n, n + 1, n + 2, 255]).collect();
+        let level_one: Vec<[u8; 4]> = (0..4u8).map(|n| [n + 100, 0, 0, 128]).collect();
+        before.textures.insert(
             0x1000,
             Texture {
                 width: 4,
                 height: 4,
-                pixels: nivel_zero.clone(),
-                mipmaps: vec![Nivel {
+                pixels: level_zero.clone(),
+                mipmaps: vec![Level {
                     width: 2,
                     height: 2,
-                    pixels: nivel_um.clone(),
+                    pixels: level_one.clone(),
                 }],
                 wrap: [0x2901, 0x2900],
                 filter: 0x2601,
@@ -6278,35 +6331,35 @@ mod testes_do_estado_de_gl {
             },
         );
 
-        let mut secoes = Secoes::nova();
-        antes.grava(&mut secoes);
-        let arquivo = secoes.fecha();
-        let leitor = Leitor::abre(&arquivo).expect("abriu");
-        let mut depois = GlState::new(640, 480);
-        depois.restaura(&leitor).expect("restaurou");
+        let mut sections = Sections::create();
+        before.save(&mut sections);
+        let file = sections.close();
+        let reader = Reader::open(&file).expect("opened");
+        let mut after = GlState::new(640, 480);
+        after.restore(&reader).expect("restored");
 
-        let textura = depois.textures.get(&0x1000).expect("a textura voltou");
-        assert_eq!((textura.width, textura.height), (4, 4));
-        assert_eq!(textura.pixels, nivel_zero, "os pixels não voltaram");
-        assert_eq!((textura.wrap[0], textura.wrap[1]), (0x2901, 0x2900));
-        assert_eq!((textura.filter, textura.min_filter), (0x2601, 0x2703));
-        assert_eq!(textura.crop, [1, -2, 3, -4], "o recorte é assinado");
-        assert_eq!(textura.mipmaps.len(), 1, "a cadeia de mipmaps não voltou");
-        assert_eq!((textura.mipmaps[0].width, textura.mipmaps[0].height), (2, 2));
+        let texture = after.textures.get(&0x1000).expect("the texture came back");
+        assert_eq!((texture.width, texture.height), (4, 4));
+        assert_eq!(texture.pixels, level_zero, "the pixels did not come back");
+        assert_eq!((texture.wrap[0], texture.wrap[1]), (0x2901, 0x2900));
+        assert_eq!((texture.filter, texture.min_filter), (0x2601, 0x2703));
+        assert_eq!(texture.crop, [1, -2, 3, -4], "the crop is signed");
+        assert_eq!(texture.mipmaps.len(), 1, "the mipmap chain did not come back");
+        assert_eq!((texture.mipmaps[0].width, texture.mipmaps[0].height), (2, 2));
         assert_eq!(
-            textura.mipmaps[0].pixels, nivel_um,
-            "os pixels do nível um não voltaram"
+            texture.mipmaps[0].pixels, level_one,
+            "level one's pixels did not come back"
         );
     }
 
-    /// Uma textura cujo número de pixels não casa com as dimensões é **recusada**.
+    /// A texture whose pixel count doesn't match its dimensions is **rejected**.
     ///
-    /// É a conferência que importa: um nível de mipmap com as medidas trocadas desenharia listras,
-    /// e o defeito apareceria como imagem errada, sem nada apontando para o save state.
+    /// It is the check that matters: a mipmap level with swapped measurements would draw stripes,
+    /// and the defect would show up as a wrong image, with nothing pointing at the save state.
     #[test]
-    fn textura_com_pixels_a_menos_e_recusada() {
-        let mut antes = GlState::new(640, 480);
-        antes.textures.insert(
+    fn a_texture_with_too_few_pixels_is_rejected() {
+        let mut before = GlState::new(640, 480);
+        before.textures.insert(
             0x1000,
             Texture {
                 width: 4,
@@ -6319,82 +6372,83 @@ mod testes_do_estado_de_gl {
                 crop: [0; 4],
             },
         );
-        let mut secoes = Secoes::nova();
-        antes.grava(&mut secoes);
-        let arquivo = secoes.fecha();
-        let leitor = Leitor::abre(&arquivo).expect("abriu");
-        let mut depois = GlState::new(640, 480);
-        match depois.restaura(&leitor) {
-            Err(crate::save_state::Erro::Secao { nome, motivo }) => {
-                // O identificador entra em decimal no nome da seção, como nas outras tabelas.
-                assert_eq!(nome, "tex.4096.pixels");
-                assert!(motivo.contains("16"), "{motivo}");
+        let mut sections = Sections::create();
+        before.save(&mut sections);
+        let file = sections.close();
+        let reader = Reader::open(&file).expect("opened");
+        let mut after = GlState::new(640, 480);
+        match after.restore(&reader) {
+            Err(crate::save_state::Error::Section { name, reason }) => {
+                // The identifier goes in decimal in the section name, as in the other tables.
+                assert_eq!(name, "tex.4096.pixels");
+                assert!(reason.contains("16"), "{reason}");
             }
-            outro => panic!("devia recusar a textura curta, e devolveu {outro:?}"),
+            other => panic!("should have refused the short texture, and returned {other:?}"),
         }
     }
 
-    /// **Os três buffers vão e voltam** — cor, profundidade e stencil, cada um no seu formato.
+    /// **The three buffers round-trip** — color, depth and stencil, each in its own format.
     ///
-    /// Medido antes de decidir: o buffer de cor **não** é duplicata da tela. A tela que o core
-    /// apresenta é o bitmap do aparelho, e o buffer de cor é a superfície de desenho do GL; o
-    /// `eglSwapBuffers` lê um e entrega o outro. Gravar só um dos dois deixaria a próxima cena
-    /// desenhada sobre nada.
+    /// Measured before deciding: the color buffer is **not** a duplicate of the screen. The screen
+    /// the core presents is the device's bitmap, and the color buffer is the GL drawing surface;
+    /// `eglSwapBuffers` reads one and hands over the other. Saving only one of them would leave the
+    /// next scene drawn over nothing.
     #[test]
-    fn os_buffers_de_cor_profundidade_e_stencil_vem_de_volta() {
-        let mut antes = GlState::new(4, 2);
-        assert_eq!(antes.color.len(), 8, "o estado novo já tem os buffers da superfície");
-        antes.color[0] = [1, 2, 3, 4];
-        antes.color[7] = [5, 6, 7, 8];
-        antes.depth[3] = 0.25;
-        antes.depth[7] = 0.75;
-        antes.stencil[5] = 9;
+    fn the_color_depth_and_stencil_buffers_come_back() {
+        let mut before = GlState::new(4, 2);
+        assert_eq!(before.color.len(), 8, "the new state already has the surface buffers");
+        before.color[0] = [1, 2, 3, 4];
+        before.color[7] = [5, 6, 7, 8];
+        before.depth[3] = 0.25;
+        before.depth[7] = 0.75;
+        before.stencil[5] = 9;
 
-        let mut secoes = Secoes::nova();
-        antes.grava(&mut secoes);
-        let arquivo = secoes.fecha();
-        let leitor = Leitor::abre(&arquivo).expect("abriu");
-        let mut depois = GlState::new(4, 2);
-        depois.restaura(&leitor).expect("restaurou");
+        let mut sections = Sections::create();
+        before.save(&mut sections);
+        let file = sections.close();
+        let reader = Reader::open(&file).expect("opened");
+        let mut after = GlState::new(4, 2);
+        after.restore(&reader).expect("restored");
 
-        assert_eq!(depois.color.len(), 8);
-        assert_eq!(depois.color[0], [1, 2, 3, 4], "o primeiro pixel da cor");
-        assert_eq!(depois.color[7], [5, 6, 7, 8], "o último pixel da cor");
-        assert_eq!(depois.depth.len(), 8);
-        assert_eq!(depois.depth[3], 0.25, "a profundidade é f32");
-        assert_eq!(depois.depth[7], 0.75);
-        assert_eq!(depois.stencil.len(), 8);
-        assert_eq!(depois.stencil[5], 9);
+        assert_eq!(after.color.len(), 8);
+        assert_eq!(after.color[0], [1, 2, 3, 4], "the first color pixel");
+        assert_eq!(after.color[7], [5, 6, 7, 8], "the last color pixel");
+        assert_eq!(after.depth.len(), 8);
+        assert_eq!(after.depth[3], 0.25, "depth is f32");
+        assert_eq!(after.depth[7], 0.75);
+        assert_eq!(after.stencil.len(), 8);
+        assert_eq!(after.stencil[5], 9);
     }
 
-    /// **Um buffer maior que a superfície é recusado**, e não alocado.
+    /// **A buffer larger than the surface is rejected**, not allocated.
     ///
-    /// É o teto que impede um arquivo corrompido — ou escrito por uma versão com outra resolução —
-    /// de fazer o carregamento pedir memória absurda. O teste monta um estado **válido** e estraga
-    /// só o campo do stencil: refazer as seções à mão faria ele medir outra coisa.
+    /// It is the ceiling that keeps a corrupted file — or one written by a version with a
+    /// different resolution — from making loading request an absurd amount of memory. The test
+    /// builds a **valid** state and spoils only the stencil field: rebuilding the sections by hand
+    /// would make it measure something else.
     #[test]
-    fn buffer_maior_que_a_superficie_e_recusado() {
-        let antes = GlState::new(4, 2);
-        let mut secoes = Secoes::nova();
-        antes.grava(&mut secoes);
-        // Os cinco números do cabeçalho dos buffers, com o último mentindo. O primeiro número é a
-        // **contagem** da seção (5), e não um valor: errar isso faz o leitor recusar a seção
-        // inteira, e foi o que o teste mostrou antes de eu acertar.
-        let mut mentiroso = 5u32.to_le_bytes().to_vec();
-        for valor in [4u32, 2, 8, 8, 9999] {
-            mentiroso.extend_from_slice(&valor.to_le_bytes());
+    fn a_buffer_larger_than_the_surface_is_rejected() {
+        let before = GlState::new(4, 2);
+        let mut sections = Sections::create();
+        before.save(&mut sections);
+        // The five numbers of the buffers header, with the last one lying. The first number is
+        // the section's **count** (5), not a value: getting that wrong makes the reader refuse the
+        // whole section, and that is what the test showed before I got it right.
+        let mut lying = 5u32.to_le_bytes().to_vec();
+        for value in [4u32, 2, 8, 8, 9999] {
+            lying.extend_from_slice(&value.to_le_bytes());
         }
-        secoes.troca("gl.buffers", mentiroso);
-        let arquivo = secoes.fecha();
-        let leitor = Leitor::abre(&arquivo).expect("abriu");
+        sections.swap("gl.buffers", lying);
+        let file = sections.close();
+        let reader = Reader::open(&file).expect("opened");
 
-        let mut depois = GlState::new(4, 2);
-        match depois.restaura(&leitor) {
-            Err(crate::save_state::Erro::Secao { nome, motivo }) => {
-                assert_eq!(nome, "gl.buffer.stencil");
-                assert!(motivo.contains("9999"), "{motivo}");
+        let mut after = GlState::new(4, 2);
+        match after.restore(&reader) {
+            Err(crate::save_state::Error::Section { name, reason }) => {
+                assert_eq!(name, "gl.buffer.stencil");
+                assert!(reason.contains("9999"), "{reason}");
             }
-            outro => panic!("devia recusar o buffer gigante, e devolveu {outro:?}"),
+            other => panic!("should have refused the giant buffer, and returned {other:?}"),
         }
     }
 }
