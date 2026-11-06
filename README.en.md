@@ -94,7 +94,7 @@ other folder, and set it in the program's settings.
 ## Documentation
 
 - [Research](docs/en/RESEARCH.md) — the console, BREW platform, file formats and emulation landscape
-- [Implementation guide](docs/en/IMPLEMENTATION.md) — subsystems, decisions and their rationale
+- [Implementation guide (Portuguese)](docs/implementacao/README.md) — subsystems, decisions and their rationale
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) — how the emulator is built
 - [docs/en/INSTALLATION.md](docs/en/INSTALLATION.md) — installing, updating and which release file to download
