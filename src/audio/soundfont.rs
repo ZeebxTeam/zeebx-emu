@@ -1,30 +1,30 @@
-//! Síntese por banco de amostras (SoundFont) para o MIDI.
+//! Sample-bank (SoundFont) synthesis for MIDI.
 //!
-//! **Por que existe.** A comparação com o Zeebulator mediu o que a tabela de timbres pode e o que
-//! ela não pode: depois de refeita contra a medição, o erro de centroide dela caiu de 7635 para
-//! 701 Hz, mas três coisas continuaram fora de alcance, e todas as três são **material de amostra**:
+//! **Why it exists.** The comparison with Zeebulator measured what the wavetable can and can't
+//! do: after it was redone against the measurement, its centroid error dropped from 7635 to
+//! 701 Hz, but three things stayed out of reach, and all three are **sample material**:
 //!
-//! | | amostra real | tabela de timbres |
+//! | | real sample | wavetable |
 //! |---|---|---|
-//! | razão de harmônicos das cordas | 8,37 | 0,60 |
-//! | razão de harmônicos da distorção | 4,58 | 0,84 |
-//! | centroide da bateria | 7092 Hz | 6661 Hz |
+//! | string harmonic ratio | 8.37 | 0.60 |
+//! | distortion harmonic ratio | 4.58 | 0.84 |
+//! | drum centroid | 7092 Hz | 6661 Hz |
 //!
-//! Aqui a partitura é tocada com o banco, e essas três passam a vir do próprio banco.
+//! Here the score is played with the bank, and those three come from the bank itself.
 //!
-//! **Por que `rustysynth` e não o código do Zeebulator.** Mesmo com a licença compatível, o
-//! `rustysynth` é **MIT** e **Rust puro**, então entra no core Libretro sem trazer biblioteca de
-//! host nenhuma, que é a regra do projeto.
+//! **Why `rustysynth` and not Zeebulator's code.** Even with a compatible license, `rustysynth`
+//! is **MIT** and **pure Rust**, so it goes into the Libretro core without bringing in any host
+//! library, which is the project's rule.
 //!
-//! **Por que o banco não vem embutido.** São 32 MB (medido: GeneralUser GS, 32.319.396 B) e a
-//! carga pede +64 MiB de RSS, porque as amostras viram `float`. Embutido, o `.so` do core sairia de
-//! 15,6 MB para ~48 MB em seis alvos de CI — e um core que baixa 48 MB para rodar um jogo de 1 MB
-//! não se paga. O banco é **opcional**, procurado na pasta do aparelho, e sem ele o MIDI volta para
-//! a tabela de timbres, que é o que já toca hoje.
+//! **Why the bank isn't embedded.** It's 32 MB (measured: GeneralUser GS, 32,319,396 B) and
+//! loading it costs +64 MiB of RSS, because the samples become `float`. Embedded, the core's `.so` would go from
+//! 15.6 MB to ~48 MB on six CI targets — and a core that downloads 48 MB to run a 1 MB game
+//! doesn't pay for itself. The bank is **optional**, looked up in the device folder, and without
+//! it MIDI falls back to the wavetable, which is what already plays today.
 //!
-//! O caminho de busca é o mesmo da fonte do sistema: a pasta do aparelho que o frontend entregou
-//! primeiro, e depois o perfil do desktop. `ZEEBX_SOUNDFONT` aponta um arquivo direto, para
-//! experimentar sem instalar nada.
+//! The search path is the same as for the system font: the device folder the frontend handed
+//! over first, and then the desktop profile. `ZEEBX_SOUNDFONT` points straight at a file, for
+//! trying things out without installing anything.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -34,480 +34,492 @@ use std::time::Instant;
 
 use crate::audio::wav::Sound;
 
-/// Teto de duração de uma música sintetizada, em segundos.
+/// Duration cap for a synthesized song, in seconds.
 ///
-/// O mesmo do sintetizador de tabela, e pela mesma razão: uma partitura com defeito não pode
-/// reservar memória sem fim.
+/// The same as the wavetable synthesizer's, and for the same reason: a broken score can't
+/// reserve endless memory.
 ///
-/// **Não é um teto de conveniência: é o mesmo número dos dois caminhos.** A primeira versão tinha
-/// 36 s aqui, e a música do Double Dragon — 47,5 s — saía cortada, o que só apareceu porque a
-/// medição comparou a duração com a da referência. Dois caminhos que dizem tocar a mesma partitura
-/// não podem ter tetos diferentes.
-const MAX_SEGUNDOS: f64 = 300.0;
+/// **It isn't a cap of convenience: it's the same number for both paths.** The first version had
+/// 36 s here, and Double Dragon's music — 47.5 s — came out cut, which only showed up because the
+/// measurement compared the duration with the reference's. Two paths that claim to play the same
+/// score can't have different caps.
+const MAX_SECONDS: f64 = 300.0;
 
-/// Quantos quadros por bloco na renderização. O sequenciador do `rustysynth` trabalha em blocos.
-const BLOCO: usize = 1024;
+/// How many frames per block when rendering. The `rustysynth` sequencer works in blocks.
+const BLOCK: usize = 1024;
 
-/// A taxa em que o banco é sintetizado, em Hz.
+/// The rate the bank is synthesized at, in Hz.
 ///
-/// **Não é a taxa da tabela de timbres, e a diferença é medida.** A tabela sintetiza a 22.050 Hz
-/// porque o que ela produz é soma de harmônicos que ela mesma escolhe, e acima de 11 kHz não há
-/// nada ali. O banco é o contrário: das 920 amostras do `GeneralUser-GS.sf2`, 373 são gravadas a
-/// 44.100 Hz e há amostra a 48.000 — sintetizar a 22.050 joga fora **todo** o conteúdo acima de
-/// 11 kHz, e o misturador, que só interpola linearmente, não tem como devolver o que foi cortado.
-/// O resultado é o brilho que some: prato, chimbau e ataque de metal ficam abafados.
+/// **It isn't the wavetable's rate, and the difference is measured.** The wavetable synthesizes at
+/// 22,050 Hz because what it produces is a sum of harmonics it picks itself, and there is nothing
+/// there above 11 kHz. The bank is the opposite: of the 920 samples in `GeneralUser-GS.sf2`, 373
+/// are recorded at 44,100 Hz and there are samples at 48,000 — synthesizing at 22,050 throws away
+/// **all** content above 11 kHz, and the mixer, which only interpolates linearly, has no way to
+/// bring back what was cut. The result is brightness that disappears: cymbals, hi-hats and metal
+/// attacks come out muffled.
 ///
-/// 44.100 é a taxa do próprio misturador do core (`SAMPLE_RATE` do frontend Libretro), então aqui
-/// não há reamostragem nenhuma no caminho — e é a mesma escolha que o emulador de referência
-/// `zeemu` faz no caminho dele de SoundFont.
-pub const TAXA_BANCO: u32 = 44_100;
+/// 44,100 is the rate of the core's own mixer (`SAMPLE_RATE` in the Libretro frontend), so there
+/// is no resampling at all on this path — and it's the same choice the reference emulator `zeemu`
+/// makes on its SoundFont path.
+pub const BANK_RATE: u32 = 44_100;
 
-/// A taxa escolhida agora, que começa em [`TAXA_BANCO`] e o frontend pode mudar.
+/// The rate currently chosen, which starts at [`BANK_RATE`] and the frontend can change.
 ///
-/// **É um global, e isso é escolha consciente.** A alternativa seria levar a taxa por parâmetro de
-/// `Session::start_*` até `Machine` e daí até aqui, como se fez com a política de sintetizador —
-/// e naquele caso valeu a pena, porque a escolha muda o que a máquina **é** quando nasce. Esta
-/// não: ela vale para a próxima música sintetizada, e uma música já sintetizada não muda de taxa.
-/// Um parâmetro a mais em cinco assinaturas públicas para um valor que ninguém precisa no
-/// nascimento é custo sem troco. Este módulo já guarda um global pelo mesmo motivo — o cache de
-/// bancos abertos.
-static TAXA_ESCOLHIDA: AtomicU32 = AtomicU32::new(TAXA_BANCO);
+/// **It's a global, and that's a deliberate choice.** The alternative would be to carry the rate
+/// as a parameter from `Session::start_*` to `Machine` and from there to here, as was done with
+/// the synthesizer policy — and in that case it was worth it, because the choice changes what the
+/// machine **is** when it's created. This one doesn't: it applies to the next synthesized song,
+/// and a song already synthesized doesn't change rate. One more parameter in five public
+/// signatures for a value nobody needs at creation is cost with no return. This module already
+/// keeps a global for the same reason — the cache of open banks.
+static CHOSEN_RATE: AtomicU32 = AtomicU32::new(BANK_RATE);
 
-/// Muda a taxa em que o banco será sintetizado daqui para a frente.
+/// Changes the rate the bank will be synthesized at from now on.
 ///
-/// Valores fora de 8.000–48.000 são ignorados: o `rustysynth` recusa fora de 16.000–192.000, e uma
-/// taxa absurda vinda de um `.opt` editado à mão não pode derrubar o som.
-pub fn define_taxa(taxa: u32) {
-    if (8_000..=48_000).contains(&taxa) {
-        TAXA_ESCOLHIDA.store(taxa, Ordering::Relaxed);
+/// Values outside 8,000–48,000 are ignored: `rustysynth` refuses outside 16,000–192,000, and an
+/// absurd rate coming from a hand-edited `.opt` can't bring the sound down.
+pub fn set_rate(rate: u32) {
+    if (8_000..=48_000).contains(&rate) {
+        CHOSEN_RATE.store(rate, Ordering::Relaxed);
     }
 }
 
-/// A taxa em que o banco é sintetizado agora.
-pub fn taxa() -> u32 {
-    TAXA_ESCOLHIDA.load(Ordering::Relaxed)
+/// The rate the bank is synthesized at now.
+pub fn rate() -> u32 {
+    CHOSEN_RATE.load(Ordering::Relaxed)
 }
 
-/// As vozes escolhidas agora. Ver [`VOZES`] para o porquê do padrão.
-static VOZES_ESCOLHIDAS: AtomicUsize = AtomicUsize::new(VOZES);
+/// The voices currently chosen. See [`VOICES`] for why the default is what it is.
+static CHOSEN_VOICES: AtomicUsize = AtomicUsize::new(VOICES);
 
-/// Muda o teto de vozes simultâneas daqui para a frente.
+/// Changes the cap on simultaneous voices from now on.
 ///
-/// O `rustysynth` aceita de 8 a 256 e recusa fora disso, então o valor é preso à faixa em vez de
-/// recusado: quem pediu 512 quer o máximo, e falhar a síntese inteira por causa disso seria pior.
-pub fn define_vozes(vozes: usize) {
-    VOZES_ESCOLHIDAS.store(vozes.clamp(8, 256), Ordering::Relaxed);
+/// `rustysynth` accepts 8 to 256 and refuses anything outside that, so the value is clamped to
+/// the range instead of rejected: whoever asked for 512 wants the maximum, and failing the whole
+/// synthesis because of that would be worse.
+pub fn set_voices(voices: usize) {
+    CHOSEN_VOICES.store(voices.clamp(8, 256), Ordering::Relaxed);
 }
 
-/// Se o reverb e o chorus do sintetizador rodam. Ligados por padrão.
+/// Whether the synthesizer's reverb and chorus run. On by default.
 ///
-/// **Quem dosa o efeito é a partitura, não o sintetizador.** O MIDI manda por canal quanto de
-/// reverb (CC91) e de chorus (CC93) cada instrumento leva; o `rustysynth` só fornece a unidade de
-/// efeito. Desligada, esses controles caem no vazio e toda nota termina seca, o que soa como
-/// liberação cortada. Fica a opção de desligar para quem preferir o som seco.
-static EFEITOS_ESCOLHIDOS: AtomicBool = AtomicBool::new(true);
+/// **The score doses the effect, not the synthesizer.** MIDI says per channel how much reverb
+/// (CC91) and chorus (CC93) each instrument gets; `rustysynth` only provides the effect unit.
+/// With it off, those controls go nowhere and every note ends dry, which sounds like a cut-off
+/// release. The option to turn it off stays for those who prefer a dry sound.
+static CHOSEN_EFFECTS: AtomicBool = AtomicBool::new(true);
 
-/// Liga ou desliga o reverb e o chorus da música MIDI daqui para a frente. A música é sintetizada
-/// quando o jogo a carrega, então a troca vale a partir do próximo jogo.
-pub fn define_efeitos(ligados: bool) {
-    EFEITOS_ESCOLHIDOS.store(ligados, Ordering::Relaxed);
+/// Turns MIDI music reverb and chorus on or off from now on. The music is synthesized when the
+/// game loads it, so the change applies from the next game on.
+pub fn set_effects(enabled: bool) {
+    CHOSEN_EFFECTS.store(enabled, Ordering::Relaxed);
 }
 
-/// O banco que o usuário escolheu na configuração ou na linha de comando. `None` é a busca
-/// automática.
+/// The bank the user chose in the settings or on the command line. `None` is the automatic
+/// search.
 ///
-/// Global pelo mesmo motivo da taxa: o banco é aberto quando a máquina nasce, e o frontend
-/// define antes de abrir o jogo. Trocar vale a partir do próximo jogo.
-static BANCO_ESCOLHIDO: Mutex<Option<PathBuf>> = Mutex::new(None);
+/// Global for the same reason as the rate: the bank is opened when the machine is created, and the
+/// frontend sets it before opening the game. A change applies from the next game on.
+static CHOSEN_BANK: Mutex<Option<PathBuf>> = Mutex::new(None);
 
-/// Escolhe o banco dos próximos jogos, ou volta à busca automática com `None`. Um caminho vazio
-/// conta como `None`: é o que um campo apagado na configuração entrega.
-pub fn define_banco(caminho: Option<PathBuf>) {
-    let caminho = caminho.filter(|c| !c.as_os_str().is_empty());
-    if let Ok(mut escolhido) = BANCO_ESCOLHIDO.lock() {
-        *escolhido = caminho;
+/// Chooses the bank for the next games, or goes back to the automatic search with `None`. An
+/// empty path counts as `None`: it's what a cleared settings field delivers.
+pub fn set_soundfont(path: Option<PathBuf>) {
+    let path = path.filter(|c| !c.as_os_str().is_empty());
+    if let Ok(mut chosen) = CHOSEN_BANK.lock() {
+        *chosen = path;
     }
 }
 
-/// O banco escolhido agora, se houver.
-pub fn banco_escolhido() -> Option<PathBuf> {
-    BANCO_ESCOLHIDO.lock().ok().and_then(|escolhido| escolhido.clone())
+/// The bank currently chosen, if any.
+pub fn chosen_bank() -> Option<PathBuf> {
+    CHOSEN_BANK.lock().ok().and_then(|chosen| chosen.clone())
 }
 
-/// Quantas vozes o banco pode tocar ao mesmo tempo.
+/// How many voices the bank can play at once.
 ///
-/// O padrão do `rustysynth` é 64, e a trilha do Double Dragon usa até nove canais simultâneos com
-/// acordes: 64 vozes roubam nota em trecho denso, e roubo de voz soa como nota que some. 128 é o
-/// que o `zeemu` usa, e o teto do `rustysynth` é 256.
-const VOZES: usize = 128;
+/// The `rustysynth` default is 64, and Double Dragon's soundtrack uses up to nine simultaneous
+/// channels with chords: 64 voices steal notes in dense passages, and voice stealing sounds like a
+/// note that vanishes. 128 is what `zeemu` uses, and the `rustysynth` cap is 256.
+const VOICES: usize = 128;
 
-/// O volume mestre do sintetizador, antes de qualquer soma.
+/// The synthesizer's master volume, before any summing.
 ///
-/// **É ganho fixo, e não normalização — essa é a correção.** A versão anterior normalizava o pico
-/// de cada música para 0,8, e isso é medida errada por construção: uma trilha calma e esparsa
-/// subia até encostar no mesmo teto de uma trilha densa e cheia, de modo que o jogo perdia a
-/// diferença de intensidade entre elas e o equilíbrio com os efeitos (que são WAVE e **não** são
-/// normalizados) mudava a cada música que entrava.
+/// **It's fixed gain, not normalization — that is the fix.** The previous version normalized each
+/// song's peak to 0.8, and that's the wrong measure by construction: a calm, sparse track was
+/// raised until it touched the same ceiling as a dense, full one, so the game lost the
+/// difference in intensity between them, and the balance with the effects (which are WAVE and are
+/// **not** normalized) changed with every song that came in.
 ///
-/// Os dois motores de referência usam ganho fixo pela mesma razão: o `zeebulator` aplica -16 dB e
-/// o `zeemu` aplica -8 dB, ambos **antes** da soma interna do sintetizador, que é onde o corte
-/// aconteceria. Aqui o número é o padrão do próprio `rustysynth` (0,5, ou -6 dB), que é o ponto em
-/// que a trilha do Double Dragon foi medida com pico de 0,53 — perto do teto, sem encostar.
+/// Both reference engines use fixed gain for the same reason: `zeebulator` applies -16 dB and
+/// `zeemu` applies -8 dB, both **before** the synthesizer's internal summing, which is where
+/// clipping would happen. Here the number is `rustysynth`'s own default (0.5, or -6 dB), which is
+/// the point at which Double Dragon's soundtrack was measured with a peak of 0.53 — close to the
+/// ceiling, without touching it.
 ///
-/// Fica como constante para ser calibrado de ouvido, que é como os dois motores de referência
-/// chegaram aos números deles.
-const VOLUME_MESTRE: f32 = 0.5;
+/// It stays a constant so it can be calibrated by ear, which is how both reference engines
+/// arrived at their numbers.
+const MASTER_VOLUME: f32 = 0.5;
 
-/// O teto do pico depois da soma.
+/// The peak ceiling after summing.
 ///
-/// Acima disto a onda **corta** no misturador, e corte é distorção. Abaixo, nada é mexido: é
-/// limitador, não normalizador — só desce o que passou do teto, e nunca sobe o que está baixo.
-const TETO: f32 = 0.95;
+/// Above this the waveform **clips** in the mixer, and clipping is distortion. Below it, nothing
+/// is touched: it's a limiter, not a normalizer — it only lowers what went over the ceiling, and
+/// never raises what is low.
+const CAP: f32 = 0.95;
 
-/// Onde o banco é procurado, em ordem de preferência.
+/// Where the bank is looked for, in order of preference.
 ///
-/// `ZEEBX_SOUNDFONT` primeiro porque é o caminho de quem está experimentando; depois a pasta do
-/// aparelho, que é o que o frontend controla; e por último o perfil do desktop.
-pub fn candidatos(aparelho: &Path) -> Vec<PathBuf> {
-    let mut saida = Vec::new();
-    if let Some(caminho) = std::env::var_os("ZEEBX_SOUNDFONT") {
-        saida.push(PathBuf::from(caminho));
+/// `ZEEBX_SOUNDFONT` first because it's the path of someone experimenting; then the device folder,
+/// which is what the frontend controls; and last the desktop profile.
+pub fn candidates(device: &Path) -> Vec<PathBuf> {
+    let mut output = Vec::new();
+    if let Some(path) = std::env::var_os("ZEEBX_SOUNDFONT") {
+        output.push(PathBuf::from(path));
     }
-    saida.extend(candidatos_em(&pastas_padrao(aparelho)));
-    saida
+    output.extend(candidates_in(&default_dirs(device)));
+    output
 }
 
-/// As pastas onde o banco é procurado, na ordem: a do aparelho, que o frontend controla, e a do
-/// perfil do desktop.
+/// The folders where the bank is looked for, in order: the device one, which the frontend
+/// controls, and the desktop profile one.
 ///
-/// Separada de [`candidatos`] para os testes poderem afirmar sem depender do perfil de quem roda.
-/// **Um `.sf2` no `~/.config/zeebx` — que é onde o LEIAME manda pôr — deixava a bateria vermelha**,
-/// porque duas provas perguntavam "não há banco nenhum" com o disco do desenvolvedor cheio.
-pub fn pastas_padrao(aparelho: &Path) -> Vec<PathBuf> {
+/// Split from [`candidates`] so the tests can assert without depending on the profile of whoever
+/// runs them. **A `.sf2` in `~/.config/zeebx` — which is where the README says to put it — turned
+/// the suite red**, because two tests asked "is there no bank at all" with the developer's disk
+/// full of them.
+pub fn default_dirs(device: &Path) -> Vec<PathBuf> {
     vec![
-        aparelho.join("soundfonts"),
+        device.join("soundfonts"),
         crate::config::config_dir().join("aparelho").join("soundfonts"),
     ]
 }
 
-/// Os bancos das pastas dadas, em ordem. Sem o perfil e sem o `ZEEBX_SOUNDFONT`.
-pub fn candidatos_em(pastas: &[PathBuf]) -> Vec<PathBuf> {
-    let mut saida = Vec::new();
-    for base in pastas {
-        for nome in bancos_em(base) {
-            saida.push(nome);
+/// The banks in the given folders, in order. Without the profile and without `ZEEBX_SOUNDFONT`.
+pub fn candidates_in(dirs: &[PathBuf]) -> Vec<PathBuf> {
+    let mut output = Vec::new();
+    for base in dirs {
+        for name in banks_in(base) {
+            output.push(name);
         }
     }
-    saida
+    output
 }
 
-/// Os `.sf2` de uma pasta, em ordem estável.
+/// The `.sf2` files in a folder, in stable order.
 ///
-/// Estável porque dois bancos no mesmo diretório não podem dar resultados diferentes entre
-/// execuções por causa da ordem em que o sistema de arquivos lista — a mesma razão da fonte.
-fn bancos_em(base: &Path) -> Vec<PathBuf> {
-    let Ok(entradas) = std::fs::read_dir(base) else {
+/// Stable because two banks in the same directory can't give different results between runs
+/// because of the order in which the filesystem lists them — the same reason as for the font.
+fn banks_in(base: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(base) else {
         return Vec::new();
     };
-    let mut bancos: Vec<PathBuf> = entradas
+    let mut soundfonts: Vec<PathBuf> = entries
         .filter_map(Result::ok)
-        .map(|entrada| entrada.path())
-        .filter(|caminho| {
-            caminho
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path
                 .extension()
                 .is_some_and(|ext| ext.eq_ignore_ascii_case("sf2"))
         })
         .collect();
-    bancos.sort();
-    bancos
+    soundfonts.sort();
+    soundfonts
 }
 
-/// O banco a usar: o escolhido, depois o do `ZEEBX_SOUNDFONT`, depois o primeiro `.sf2` das
-/// pastas de busca.
+/// The bank to use: the chosen one, then the one from `ZEEBX_SOUNDFONT`, then the first `.sf2` in
+/// the search folders.
 ///
-/// **Um banco escolhido que sumiu não emudece a música.** O arquivo pode ter mudado de lugar
-/// desde que foi escolhido; o registro diz qual, e a busca segue como se nada tivesse sido
-/// escolhido. Silêncio aqui seria "o banco não funciona" sem dizer por quê.
+/// **A chosen bank that vanished doesn't mute the music.** The file may have moved since it was
+/// chosen; the log says which, and the search goes on as if nothing had been chosen. Silence here
+/// would be "the bank doesn't work" without saying why.
 ///
-/// O `ZEEBX_SOUNDFONT` só entrava em [`candidatos`], que ninguém chamava fora das provas: a
-/// variável que o [`relato`] manda usar era ignorada.
-pub fn primeiro_banco(aparelho: &Path) -> Option<PathBuf> {
-    let variavel = std::env::var_os("ZEEBX_SOUNDFONT").map(PathBuf::from);
-    for (origem, caminho) in [("escolhido", banco_escolhido()), ("do ZEEBX_SOUNDFONT", variavel)] {
-        let Some(caminho) = caminho else {
+/// `ZEEBX_SOUNDFONT` only went into [`candidates`], which nobody called outside the tests: the
+/// variable that [`report`] tells people to use was ignored.
+pub fn first_bank(device: &Path) -> Option<PathBuf> {
+    let env_var = std::env::var_os("ZEEBX_SOUNDFONT").map(PathBuf::from);
+    for (origin, path) in [("chosen", chosen_bank()), ("from ZEEBX_SOUNDFONT", env_var)] {
+        let Some(path) = path else {
             continue;
         };
-        if caminho.is_file() {
-            return Some(caminho);
+        if path.is_file() {
+            return Some(path);
         }
-        crate::registro!(
-            crate::registro::Nivel::Aviso,
+        crate::logging!(
+            crate::logging::Level::Warning,
             "soundfont",
-            "o banco {} não existe: {}; seguindo pela busca nas pastas",
-            origem,
-            caminho.display()
+            "the {} bank does not exist: {}; falling back to the folder search",
+            origin,
+            path.display()
         );
     }
-    primeiro_banco_em(&pastas_padrao(aparelho))
+    first_bank_in(&default_dirs(device))
 }
 
-/// O primeiro banco de verdade **só** nas pastas dadas: a busca sem o perfil de quem roda.
-pub fn primeiro_banco_em(pastas: &[PathBuf]) -> Option<PathBuf> {
-    candidatos_em(pastas).into_iter().find(|c| c.is_file())
+/// The first real bank **only** in the given folders: the search without the runner's profile.
+pub fn first_bank_in(dirs: &[PathBuf]) -> Option<PathBuf> {
+    candidates_in(dirs).into_iter().find(|c| c.is_file())
 }
 
-/// O tamanho declarado do bloco `smpl` do `sdta`, em bytes, se o arquivo o declarar.
+/// The declared size of the `sdta`'s `smpl` chunk, in bytes, if the file declares it.
 ///
-/// Percorre a cadeia do RIFF como o `rustysynth` a percorre — `RIFF`/`sfbk` e, dentro do
-/// `LIST`/`sdta`, os sub-blocos — porque é **o `smpl` do `sdta`** que a dependência lê com
-/// `slice::from_raw_parts_mut` (`binary_reader.rs`, `read_wave_data`). Devolve `None` para tudo o
-/// que não chegue até lá: quem julga um arquivo estranho é a biblioteca, não esta varredura, e o
-/// caminho normal (o `.sf2` do usuário) tem de continuar chegando inteiro ao sintetizador.
-fn tamanho_do_smpl(bytes: &[u8]) -> Option<u32> {
-    /// O identificador de quatro letras na posição `pos`, se houver quatro bytes lá.
+/// Walks the RIFF chain the way `rustysynth` walks it — `RIFF`/`sfbk` and, inside the
+/// `LIST`/`sdta`, the sub-chunks — because it's **the `sdta`'s `smpl`** that the dependency reads
+/// with `slice::from_raw_parts_mut` (`binary_reader.rs`, `read_wave_data`). Returns `None` for
+/// anything that doesn't get that far: the library is what judges a strange file, not this scan,
+/// and the normal path (the user's `.sf2`) has to keep reaching the synthesizer intact.
+fn smpl_size(bytes: &[u8]) -> Option<u32> {
+    /// The four-letter identifier at position `pos`, if there are four bytes there.
     fn id(bytes: &[u8], pos: usize) -> Option<&[u8]> {
         bytes.get(pos..pos.checked_add(4)?)
     }
 
-    /// O tamanho declarado na cabeça do bloco que começa em `pos`, em bytes.
-    fn tamanho(bytes: &[u8], pos: usize) -> Option<usize> {
-        let campo: [u8; 4] = bytes.get(pos.checked_add(4)?..pos.checked_add(8)?)?.try_into().ok()?;
-        Some(u32::from_le_bytes(campo) as usize)
+    /// The size declared in the head of the chunk that starts at `pos`, in bytes.
+    fn size(bytes: &[u8], pos: usize) -> Option<usize> {
+        let field: [u8; 4] = bytes.get(pos.checked_add(4)?..pos.checked_add(8)?)?.try_into().ok()?;
+        Some(u32::from_le_bytes(field) as usize)
     }
 
     if id(bytes, 0)? != b"RIFF" || id(bytes, 8)? != b"sfbk" {
         return None;
     }
-    // Os blocos de primeiro nível, a partir do fim do cabeçalho do RIFF. O avanço é o tamanho
-    // declarado mais o preenchimento par do RIFF, como no `bloco` dos testes.
+    // The top-level chunks, from the end of the RIFF header on. The step is the declared size
+    // plus the RIFF even padding, as in the tests' `block`.
     let mut pos = 12usize;
-    while pos.checked_add(8).is_some_and(|fim| fim <= bytes.len()) {
-        let Some(bloco) = id(bytes, pos) else { return None };
-        let Some(declarado) = tamanho(bytes, pos) else { return None };
-        let corpo = pos + 8;
-        if bloco == b"LIST" && id(bytes, corpo) == Some(b"sdta".as_slice()) {
-            // Dentro do `sdta`: o `smpl` das amostras e o `sm24` dos oito bits extras.
-            let fim = corpo.saturating_add(declarado).min(bytes.len());
-            let mut sub = corpo + 4;
-            while sub.checked_add(8).is_some_and(|f| f <= fim) {
-                let (Some(nome), Some(tam)) = (id(bytes, sub), tamanho(bytes, sub)) else {
+    while pos.checked_add(8).is_some_and(|end| end <= bytes.len()) {
+        let Some(block) = id(bytes, pos) else { return None };
+        let Some(declared) = size(bytes, pos) else { return None };
+        let body = pos + 8;
+        if block == b"LIST" && id(bytes, body) == Some(b"sdta".as_slice()) {
+            // Inside the `sdta`: the `smpl` with the samples and the `sm24` with the eight extra bits.
+            let end = body.saturating_add(declared).min(bytes.len());
+            let mut sub = body + 4;
+            while sub.checked_add(8).is_some_and(|f| f <= end) {
+                let (Some(name), Some(chunk_len)) = (id(bytes, sub), size(bytes, sub)) else {
                     break;
                 };
-                if nome == b"smpl" {
-                    return Some(tam as u32);
+                if name == b"smpl" {
+                    return Some(chunk_len as u32);
                 }
-                let Some(proximo) = sub.checked_add(8 + tam + (tam & 1)) else {
+                let Some(next) = sub.checked_add(8 + chunk_len + (chunk_len & 1)) else {
                     break;
                 };
-                sub = proximo;
+                sub = next;
             }
         }
-        let Some(proximo) = corpo.checked_add(declarado) else {
+        let Some(next) = body.checked_add(declared) else {
             return None;
         };
-        pos = proximo + (declarado & 1);
+        pos = next + (declared & 1);
     }
     None
 }
 
-/// Um banco carregado.
+/// A loaded bank.
 ///
-/// Caro de construir (32 MB de amostras convertidas para `float`) e barato de reusar, então fica
-/// guardado por caminho: um jogo que toca doze músicas carrega o banco uma vez.
-pub struct Banco {
-    /// `Arc` porque o `Synthesizer` do `rustysynth` pede a fonte por `Arc`: uma voz nova por
-    /// música, e o banco de 32 MB não é copiado junto.
-    fonte: Arc<rustysynth::SoundFont>,
+/// Expensive to build (32 MB of samples converted to `float`) and cheap to reuse, so it's kept
+/// by path: a game that plays twelve songs loads the bank once.
+pub struct Bank {
+    /// `Arc` because `rustysynth`'s `Synthesizer` takes the font by `Arc`: a new voice per
+    /// song, and the 32 MB bank isn't copied along.
+    source: Arc<rustysynth::SoundFont>,
 }
 
-impl Banco {
-    fn carrega(caminho: &Path) -> Option<Self> {
+impl Bank {
+    fn load(path: &Path) -> Option<Self> {
         let t0 = Instant::now();
-        let bytes = std::fs::read(caminho).ok()?;
+        let bytes = std::fs::read(path).ok()?;
         let read_elapsed = t0.elapsed();
-        // **A guarda contra a escrita de um byte além da alocação.** O `rustysynth` 1.3.6
-        // (`binary_reader.rs`, `read_wave_data`) reserva `Vec<i16>` de `tamanho / 2` elementos e
-        // cria com `slice::from_raw_parts_mut` uma fatia de `tamanho` **bytes**: com o `smpl` de
-        // tamanho ímpar a fatia é um byte maior que a alocação, e a leitura escreve fora dela. É
-        // UB acionada por arquivo do usuário — banco truncado ou montado por outra ferramenta —,
-        // não por jogo, então a recusa é nossa e vem antes do parse. O banco inteiro é recusado, e
-        // `None` faz o MIDI voltar para a tabela de timbres, como em qualquer banco que não abre.
-        if let Some(tamanho) = tamanho_do_smpl(&bytes)
-            && tamanho % 2 == 1
+        // **The guard against writing one byte past the allocation.** `rustysynth` 1.3.6
+        // (`binary_reader.rs`, `read_wave_data`) reserves a `Vec<i16>` of `size / 2` elements and
+        // creates, with `slice::from_raw_parts_mut`, a slice of `size` **bytes**: with an odd-sized
+        // `smpl` the slice is one byte larger than the allocation, and the read writes outside it.
+        // It's UB triggered by a user file — a truncated bank or one built by another tool —, not
+        // by a game, so the refusal is ours and comes before the parse. The whole bank is
+        // rejected, and `None` makes MIDI fall back to the wavetable, as with any bank that won't
+        // open.
+        if let Some(size) = smpl_size(&bytes)
+            && size % 2 == 1
         {
-            crate::registro!(
-                crate::registro::Nivel::Erro,
+            crate::logging!(
+                crate::logging::Level::Error,
                 "soundfont",
-                "banco {} recusado: o bloco `smpl` tem {tamanho} bytes (tamanho ímpar) e o \
-                 `rustysynth` escreveria um byte além da alocação; o bloco `smpl` tem de ter \
-                 tamanho par, e o banco tem de ser regerado",
-                caminho.display()
+                "bank {} rejected: the `smpl` chunk has {size} bytes (odd size) and \
+                 `rustysynth` would write one byte past the allocation; the `smpl` chunk must \
+                 have an even size, and the bank must be regenerated",
+                path.display()
             );
             return None;
         }
         let t_parse = Instant::now();
-        let mut leitor = std::io::Cursor::new(bytes);
-        let fonte = Arc::new(rustysynth::SoundFont::new(&mut leitor).ok()?);
+        let mut reader = std::io::Cursor::new(bytes);
+        let source = Arc::new(rustysynth::SoundFont::new(&mut reader).ok()?);
         let parse_elapsed = t_parse.elapsed();
-        crate::registro!(
-            crate::registro::Nivel::Depuracao,
+        crate::logging!(
+            crate::logging::Level::Debug,
             "midi",
-            "banco {} carregado em {:.1}ms (leitura: {:.1}ms, parse/amostras: {:.1}ms, presets: {})",
-            caminho.display(),
+            "bank {} loaded in {:.1}ms (read: {:.1}ms, parse/samples: {:.1}ms, presets: {})",
+            path.display(),
             t0.elapsed().as_secs_f64() * 1000.0,
             read_elapsed.as_secs_f64() * 1000.0,
             parse_elapsed.as_secs_f64() * 1000.0,
-            fonte.get_presets().len()
+            source.get_presets().len()
         );
-        Some(Self { fonte })
+        Some(Self { source })
     }
 
-    /// Quantos presets o banco tem, para o relatório dizer que ele é um banco de verdade.
+    /// How many presets the bank has, so the report can say it's a real bank.
     pub fn presets(&self) -> usize {
-        self.fonte.get_presets().len()
+        self.source.get_presets().len()
     }
 }
 
-/// O banco já carregado, por caminho. Um só na prática; o mapa tolera que o caminho mude.
-static CACHE: OnceLock<Mutex<HashMap<PathBuf, Arc<Banco>>>> = OnceLock::new();
+/// The bank already loaded, by path. Only one in practice; the map tolerates the path changing.
+static CACHE: OnceLock<Mutex<HashMap<PathBuf, Arc<Bank>>>> = OnceLock::new();
 
-/// Carrega o banco de `caminho`, reusando o que já estiver em memória.
-pub fn abre(caminho: &Path) -> Option<Arc<Banco>> {
-    let guarda = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut mapa = guarda.lock().ok()?;
-    if let Some(banco) = mapa.get(caminho) {
-        crate::registro!(
-            crate::registro::Nivel::Depuracao,
+/// Loads the bank at `path`, reusing whatever is already in memory.
+pub fn open(path: &Path) -> Option<Arc<Bank>> {
+    let guard = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut map = guard.lock().ok()?;
+    if let Some(soundfont) = map.get(path) {
+        crate::logging!(
+            crate::logging::Level::Debug,
             "soundfont",
-            "banco {} reutilizado do cache",
-            caminho.display()
+            "bank {} reused from the cache",
+            path.display()
         );
-        return Some(banco.clone());
+        return Some(soundfont.clone());
     }
-    let comeco = Instant::now();
-    let banco = Arc::new(Banco::carrega(caminho)?);
-    // O tempo de carga do banco é o que explica a demora da primeira música no portátil; ele
-    // vive aqui, e não no mixer, porque é aqui que o trabalho acontece.
-    crate::registro!(
-        crate::registro::Nivel::Informacao,
+    let begin = Instant::now();
+    let soundfont = Arc::new(Bank::load(path)?);
+    // The bank load time is what explains the delay of the first song on the handheld; it lives
+    // here, and not in the mixer, because this is where the work happens.
+    crate::logging!(
+        crate::logging::Level::Info,
         "soundfont",
-        "banco {} de {} preset(s) aberto em {} ms",
-        caminho.display(),
-        banco.presets(),
-        comeco.elapsed().as_millis()
+        "bank {} with {} preset(s) opened in {} ms",
+        path.display(),
+        soundfont.presets(),
+        begin.elapsed().as_millis()
     );
-    mapa.insert(caminho.to_path_buf(), banco.clone());
-    Some(banco)
+    map.insert(path.to_path_buf(), soundfont.clone());
+    Some(soundfont)
 }
 
-/// Toca uma partitura SMF com o banco, devolvendo PCM mono na taxa pedida.
+/// Plays an SMF score with the bank, returning mono PCM at the requested rate.
 ///
-/// `None` quando o banco não abre, quando os bytes não são um SMF que o `rustysynth` aceite, ou
-/// quando não sobra nenhuma amostra — e aí quem chamou segue para a tabela de timbres.
-pub fn toca(banco: &Banco, bytes: &[u8], taxa: u32) -> Option<Sound> {
+/// `None` when the bank doesn't open, when the bytes aren't an SMF that `rustysynth` accepts, or
+/// when no sample is left — and then the caller moves on to the wavetable.
+pub fn play(soundfont: &Bank, bytes: &[u8], rate: u32) -> Option<Sound> {
     let t0 = Instant::now();
-    let mut leitor = std::io::Cursor::new(bytes);
-    let midi = rustysynth::MidiFile::new(&mut leitor).ok()?;
-    let comprimento = midi.get_length().min(MAX_SEGUNDOS);
-    let mut ajustes = rustysynth::SynthesizerSettings::new(taxa as i32);
-    // 1. `block_size = 1024`: reduz em ~1,9x o overhead de blocos e sincronização do sequenciador.
-    // 2. Reverb e chorus: ver [`EFEITOS_ESCOLHIDOS`].
-    ajustes.block_size = BLOCO;
-    ajustes.enable_reverb_and_chorus = EFEITOS_ESCOLHIDOS.load(Ordering::Relaxed);
-    // 3. `maximum_polyphony`: ver [`VOZES`] — o padrão de 64 rouba nota em trecho denso.
-    ajustes.maximum_polyphony = VOZES_ESCOLHIDAS.load(Ordering::Relaxed);
-    let mut sintetizador = rustysynth::Synthesizer::new(&banco.fonte, &ajustes).ok()?;
-    // 4. O volume mestre é fixo, e não vem de normalização depois. Ver [`VOLUME_MESTRE`].
-    sintetizador.set_master_volume(VOLUME_MESTRE);
-    let mut sequencia = rustysynth::MidiFileSequencer::new(sintetizador);
-    sequencia.play(&Arc::new(midi), false);
+    let mut reader = std::io::Cursor::new(bytes);
+    let midi = rustysynth::MidiFile::new(&mut reader).ok()?;
+    let length = midi.get_length().min(MAX_SECONDS);
+    let mut settings_page = rustysynth::SynthesizerSettings::new(rate as i32);
+    // 1. `block_size = 1024`: cuts the sequencer's block and sync overhead by ~1.9x.
+    // 2. Reverb and chorus: see [`CHOSEN_EFFECTS`].
+    settings_page.block_size = BLOCK;
+    settings_page.enable_reverb_and_chorus = CHOSEN_EFFECTS.load(Ordering::Relaxed);
+    // 3. `maximum_polyphony`: see [`VOICES`] — the default of 64 steals notes in dense passages.
+    settings_page.maximum_polyphony = CHOSEN_VOICES.load(Ordering::Relaxed);
+    let mut synthesizer = rustysynth::Synthesizer::new(&soundfont.source, &settings_page).ok()?;
+    // 4. The master volume is fixed, and doesn't come from normalization afterwards. See
+    // [`MASTER_VOLUME`].
+    synthesizer.set_master_volume(MASTER_VOLUME);
+    let mut sequence = rustysynth::MidiFileSequencer::new(synthesizer);
+    sequence.play(&Arc::new(midi), false);
 
-    let total = ((comprimento + 0.5) * f64::from(taxa)) as usize + 1;
-    let mut amostras = Vec::with_capacity(total);
-    let (mut esquerda, mut direita) = (vec![0.0f32; BLOCO], vec![0.0f32; BLOCO]);
-    while amostras.len() < total {
-        sequencia.render(&mut esquerda, &mut direita);
-        for i in 0..BLOCO {
-            if amostras.len() >= total {
+    let total = ((length + 0.5) * f64::from(rate)) as usize + 1;
+    let mut samples = Vec::with_capacity(total);
+    let (mut left, mut right) = (vec![0.0f32; BLOCK], vec![0.0f32; BLOCK]);
+    while samples.len() < total {
+        sequence.render(&mut left, &mut right);
+        for i in 0..BLOCK {
+            if samples.len() >= total {
                 break;
             }
-            // Mono: a média dos dois canais. O console tem uma caixa só, e o mixer duplica depois.
-            amostras.push(0.5 * (esquerda[i] + direita[i]));
+            // Mono: the average of both channels. The console has a single speaker, and the mixer
+            // duplicates it later.
+            samples.push(0.5 * (left[i] + right[i]));
         }
-        if sequencia.end_of_sequence() {
+        if sequence.end_of_sequence() {
             break;
         }
     }
-    // A cauda: o banco pode terminar antes do comprimento declarado, e um som mais curto que a
-    // partitura faria o jogo achar que a música acabou cedo.
-    amostras.resize(total, 0.0);
-    // **Limitar, e não normalizar.** O ganho já foi dado uma vez, fixo, no volume mestre do
-    // sintetizador (ver [`VOLUME_MESTRE`]): o que sobra aqui é só impedir que uma soma densa passe
-    // do teto e corte. Uma música que ficou baixa **continua** baixa, porque é assim que ela é.
-    let pico = limita(&mut amostras);
+    // The tail: the bank may finish before the declared length, and a sound shorter than the
+    // score would make the game think the music ended early.
+    samples.resize(total, 0.0);
+    // **Limit, don't normalize.** The gain was already applied once, fixed, in the synthesizer's
+    // master volume (see [`MASTER_VOLUME`]): all that's left here is keeping a dense sum from
+    // going over the ceiling and clipping. A song that came out quiet **stays** quiet, because
+    // that's how it is.
+    let peak = limit(&mut samples);
     let elapsed = t0.elapsed();
-    crate::registro!(
-        crate::registro::Nivel::Informacao,
+    crate::logging!(
+        crate::logging::Level::Info,
         "midi",
-        "banco: {} bytes de SMF -> {:.1}s de áudio ({} amostras @ {}Hz, pico bruto {:.3}) sintetizados em {:.1}ms ({:.2}x tempo real)",
+        "bank: {} bytes of SMF -> {:.1}s of audio ({} samples @ {}Hz, raw peak {:.3}) synthesized in {:.1}ms ({:.2}x real time)",
         bytes.len(),
-        comprimento,
-        amostras.len(),
-        taxa,
-        pico,
+        length,
+        samples.len(),
+        rate,
+        peak,
         elapsed.as_secs_f64() * 1000.0,
-        if elapsed.as_secs_f64() > 0.0 { comprimento / elapsed.as_secs_f64() } else { 0.0 }
+        if elapsed.as_secs_f64() > 0.0 { length / elapsed.as_secs_f64() } else { 0.0 }
     );
-    Some(Sound::novo(taxa, 1, amostras))
+    Some(Sound::create(rate, 1, samples))
 }
 
-/// Desce o volume só quando o pico passou de [`TETO`]. Devolve o pico **antes** de mexer.
+/// Lowers the volume only when the peak went over [`CAP`]. Returns the peak **before** touching it.
 ///
-/// É o contrário de normalizar: normalizar iguala o pico de toda música, e com isso apaga a
-/// diferença de intensidade entre uma trilha calma e uma cheia. Aqui, música baixa continua baixa,
-/// e só a que encostaria no teto desce — pelo fator da música inteira, o que preserva a proporção
-/// entre as vozes dela.
+/// It's the opposite of normalizing: normalizing evens out every song's peak, and in doing so
+/// erases the difference in intensity between a calm track and a full one. Here, quiet music stays
+/// quiet, and only the one that would touch the ceiling comes down — by a factor for the whole
+/// song, which preserves the proportion between its voices.
 ///
-/// Devolver o pico bruto é o que permite calibrar [`VOLUME_MESTRE`] de ouvido com número na mão:
-/// sem isso, saber se o ganho fixo está perto do teto exige gravar o áudio e medir fora.
-fn limita(amostras: &mut [f32]) -> f32 {
-    let pico = amostras.iter().fold(0.0f32, |a, s| a.max(s.abs()));
-    if pico > TETO {
-        let fator = TETO / pico;
-        for amostra in amostras.iter_mut() {
-            *amostra *= fator;
+/// Returning the raw peak is what lets [`MASTER_VOLUME`] be calibrated by ear with a number in
+/// hand: without it, knowing whether the fixed gain is close to the ceiling requires recording the
+/// audio and measuring it elsewhere.
+fn limit(samples: &mut [f32]) -> f32 {
+    let peak = samples.iter().fold(0.0f32, |a, s| a.max(s.abs()));
+    if peak > CAP {
+        let factor = CAP / peak;
+        for sample in samples.iter_mut() {
+            *sample *= factor;
         }
     }
-    pico
+    peak
 }
 
 
-/// Onde o banco deve ficar, e se já há um — em uma linha, para o frontend mostrar.
+/// Where the bank should go, and whether there already is one — in one line, for the frontend to
+/// show.
 ///
-/// Existe porque a busca é por diretório e a pasta não é óbvia: no core Libretro ela sai da raiz
-/// de sistema que o frontend entregou, e quem instala o core não tem como adivinhar o caminho. A
-/// alternativa — inventar mais um diretório de busca — troca um aviso claro por um palpite, e
-/// palpite em caminho de arquivo é o defeito que se paga com "não funciona e não diz por quê".
-pub fn relato(aparelho: &Path) -> String {
-    relato_de(aparelho, primeiro_banco(aparelho))
+/// It exists because the search is by directory and the folder isn't obvious: in the Libretro
+/// core it comes from the system root the frontend handed over, and whoever installs the core has
+/// no way to guess the path. The alternative — inventing one more search directory — trades a
+/// clear notice for a guess, and a guess at a file path is the defect you pay for with "it doesn't
+/// work and doesn't say why".
+pub fn report(device: &Path) -> String {
+    report_for(device, first_bank(device))
 }
 
-/// O mesmo relato, com o banco já resolvido.
+/// The same report, with the bank already resolved.
 ///
-/// O `Option` entra por parâmetro para a prova do lado "sem banco" não depender do perfil de quem
-/// roda — ver [`pastas_padrao`].
-fn relato_de(aparelho: &Path, banco: Option<PathBuf>) -> String {
-    match banco {
-        Some(caminho) => format!(
-            "Zeebx: banco de amostras do MIDI em {}; a trilha toca com as amostras",
-            caminho.display()
+/// The `Option` comes in as a parameter so the test for the "no bank" side doesn't depend on the
+/// profile of whoever runs it — see [`default_dirs`].
+fn report_for(device: &Path, soundfont: Option<PathBuf>) -> String {
+    match soundfont {
+        Some(path) => format!(
+            "Zeebx: MIDI sample bank at {}; the soundtrack plays with the samples",
+            path.display()
         ),
         None => {
-            let pasta = aparelho.join("soundfonts");
+            let dir = device.join("soundfonts");
             format!(
-                "Zeebx: sem banco de amostras do MIDI; a trilha toca com a tabela de timbres. \
-                 Para ouvir com amostras, ponha um .sf2 em {} (ou aponte ZEEBX_SOUNDFONT)",
-                pasta.display()
+                "Zeebx: no MIDI sample bank; the soundtrack plays with the wavetable. \
+                 To hear it with samples, put a .sf2 in {} (or point ZEEBX_SOUNDFONT at one)",
+                dir.display()
             )
         }
     }
@@ -517,174 +529,176 @@ fn relato_de(aparelho: &Path, banco: Option<PathBuf>) -> String {
 mod tests {
     use super::*;
 
-    /// A taxa e as vozes escolhidas pelo frontend param no que o sintetizador aceita.
+    /// The rate and voices chosen by the frontend stop at what the synthesizer accepts.
     ///
-    /// **O que se cobra é o valor absurdo não passar.** As duas vêm de um arquivo que o usuário
-    /// edita à mão, e o `rustysynth` recusa a criação do sintetizador fora das faixas dele — uma
-    /// recusa que chegaria ao jogo como música que simplesmente não toca, sem dizer por quê.
+    /// **What is checked is that an absurd value doesn't get through.** Both come from a file the
+    /// user edits by hand, and `rustysynth` refuses to create the synthesizer outside its ranges
+    /// — a refusal that would reach the game as music that simply doesn't play, without saying
+    /// why.
     ///
-    /// O teste devolve os padrões no fim porque o estado é global e compartilhado pelos outros
-    /// testes deste módulo (ver [`TAXA_ESCOLHIDA`]); deixá-lo sujo faria a ordem dos testes mudar
-    /// o resultado deles.
+    /// The test restores the defaults at the end because the state is global and shared with the
+    /// other tests in this module (see [`CHOSEN_RATE`]); leaving it dirty would make the test
+    /// order change their results.
     #[test]
-    fn a_taxa_e_as_vozes_escolhidas_ficam_na_faixa_que_o_sintetizador_aceita() {
-        define_taxa(22_050);
-        assert_eq!(taxa(), 22_050);
-        // Fora da faixa é **ignorado**, e não preso: uma taxa absurda costuma ser arquivo
-        // estragado, e herdar a anterior é mais seguro que inventar um número.
-        define_taxa(1);
-        assert_eq!(taxa(), 22_050, "taxa absurda não podia ter passado");
-        define_taxa(999_999);
-        assert_eq!(taxa(), 22_050, "taxa absurda não podia ter passado");
-        define_taxa(TAXA_BANCO);
-        assert_eq!(taxa(), TAXA_BANCO);
+    fn the_chosen_rate_and_voices_stay_within_the_synthesizer_range() {
+        set_rate(22_050);
+        assert_eq!(rate(), 22_050);
+        // Out of range is **ignored**, not clamped: an absurd rate is usually a broken file, and
+        // keeping the previous one is safer than making up a number.
+        set_rate(1);
+        assert_eq!(rate(), 22_050, "an absurd rate should not have gotten through");
+        set_rate(999_999);
+        assert_eq!(rate(), 22_050, "an absurd rate should not have gotten through");
+        set_rate(BANK_RATE);
+        assert_eq!(rate(), BANK_RATE);
 
-        // As vozes são **presas** à faixa, e não ignoradas: quem pede 512 quer o máximo, e o
-        // máximo é um pedido que dá para atender.
-        define_vozes(4);
-        assert_eq!(VOZES_ESCOLHIDAS.load(Ordering::Relaxed), 8);
-        define_vozes(512);
-        assert_eq!(VOZES_ESCOLHIDAS.load(Ordering::Relaxed), 256);
-        define_vozes(48);
-        assert_eq!(VOZES_ESCOLHIDAS.load(Ordering::Relaxed), 48);
-        define_vozes(VOZES);
+        // Voices are **clamped** to the range, not ignored: whoever asks for 512 wants the
+        // maximum, and the maximum is a request that can be met.
+        set_voices(4);
+        assert_eq!(CHOSEN_VOICES.load(Ordering::Relaxed), 8);
+        set_voices(512);
+        assert_eq!(CHOSEN_VOICES.load(Ordering::Relaxed), 256);
+        set_voices(48);
+        assert_eq!(CHOSEN_VOICES.load(Ordering::Relaxed), 48);
+        set_voices(VOICES);
     }
 
-    /// O banco de teste, do harness de comparação que vive fora do repositório.
-    fn banco_de_teste() -> Option<PathBuf> {
-        let candidatos = [
+    /// The test bank, from the comparison harness that lives outside the repository.
+    fn test_bank() -> Option<PathBuf> {
+        let candidates = [
             std::env::var_os("ZEEBX_SOUNDFONT").map(PathBuf::from),
             Some(PathBuf::from(
                 "/home/rafaelfrequiao/zeebx-midi-harness/zbfont/GeneralUser-GS.sf2",
             )),
         ];
-        candidatos.into_iter().flatten().find(|c| c.is_file())
+        candidates.into_iter().flatten().find(|c| c.is_file())
     }
 
-    /// Um SMF de uma nota, para não depender de arquivo.
-    fn uma_nota(programa: u8, nota: u8, _pulsos: u32) -> Vec<u8> {
-        let mut trilha = vec![0x00, 0xc0, programa, 0x00, 0x90, nota, 100];
-        trilha.extend([0x81, 0x70]);
-        trilha.extend([0x80, nota, 0x40, 0x00, 0xff, 0x2f, 0x00]);
+    /// A one-note SMF, so as not to depend on a file.
+    fn one_note(program: u8, note: u8, _ticks: u32) -> Vec<u8> {
+        let mut track = vec![0x00, 0xc0, program, 0x00, 0x90, note, 100];
+        track.extend([0x81, 0x70]);
+        track.extend([0x80, note, 0x40, 0x00, 0xff, 0x2f, 0x00]);
         let mut out = b"MThd".to_vec();
         out.extend(6u32.to_be_bytes());
         out.extend(0u16.to_be_bytes());
         out.extend(1u16.to_be_bytes());
         out.extend(96i16.to_be_bytes());
         out.extend(b"MTrk");
-        out.extend((trilha.len() as u32).to_be_bytes());
-        out.extend(trilha);
+        out.extend((track.len() as u32).to_be_bytes());
+        out.extend(track);
         out
     }
 
-    /// **O banco carrega e toca.** O teste se declara dispensado quando não há banco no disco, e
-    /// diz isso: um teste que passa sem provar nada é pior que um teste ausente.
+    /// **The bank loads and plays.** The test declares itself skipped when there's no bank on
+    /// disk, and says so: a test that passes without proving anything is worse than a missing one.
     #[test]
-    fn o_banco_toca_a_partitura() {
-        let Some(caminho) = banco_de_teste() else {
-            eprintln!("sem banco .sf2 no disco: teste dispensado (use ZEEBX_SOUNDFONT)");
+    fn the_bank_plays_the_score() {
+        let Some(path) = test_bank() else {
+            eprintln!("no .sf2 bank on disk: test skipped (use ZEEBX_SOUNDFONT)");
             return;
         };
-        let banco = abre(&caminho).expect("o banco abre");
+        let soundfont = open(&path).expect("the bank opens");
         assert!(
-            banco.presets() > 100,
-            "um banco General MIDI tem centenas de presets, tem {}",
-            banco.presets()
+            soundfont.presets() > 100,
+            "a General MIDI bank has hundreds of presets, this one has {}",
+            soundfont.presets()
         );
-        let som = toca(&banco, &uma_nota(0, 69, 240), 22_050).expect("toca");
-        assert_eq!(som.rate, 22_050);
-        assert_eq!(som.channels, 1);
-        let pico = som.samples.iter().fold(0.0f32, |a, s| a.max(s.abs()));
-        assert!(pico > 0.01, "o piano tinha de soar, pico {pico}");
+        let sound = play(&soundfont, &one_note(0, 69, 240), 22_050).expect("plays");
+        assert_eq!(sound.rate, 22_050);
+        assert_eq!(sound.channels, 1);
+        let peak = sound.samples.iter().fold(0.0f32, |a, s| a.max(s.abs()));
+        assert!(peak > 0.01, "the piano should have sounded, peak {peak}");
     }
 
 
-    /// Um SoundFont2 mínimo, montado byte a byte, para o teste não depender de arquivo no disco.
+    /// A minimal SoundFont2, built byte by byte, so the test doesn't depend on a file on disk.
     ///
-    /// **Por que isto existe.** Os testes que usam o banco de verdade se dispensam quando não há
-    /// banco na máquina — e no CI não há. Um teste que passa sem provar nada é pior que um teste
-    /// ausente, então o caminho do banco precisa de um caso que **sempre** rode.
+    /// **Why this exists.** The tests that use the real bank skip themselves when there's no bank
+    /// on the machine — and on CI there isn't. A test that passes without proving anything is worse
+    /// than a missing test, so the bank path needs a case that **always** runs.
     ///
-    /// A estrutura não foi adivinhada: ela foi lida do parser do `rustysynth`, porque o formato
-    /// tem duas armadilhas que custaram duas tentativas — o registro de zona tem **4 bytes**
-    /// (`wGenNdx`, `wModNdx`) e não quatro números, e o `SAMPLE_ID` (53) tem de ser o **último**
-    /// gerador da zona, senão o parser trata a primeira zona como zona global e não sobra região
-    /// nenhuma para tocar.
-    fn banco_minimo() -> Vec<u8> {
-        let taxa = 22_050u32;
-        let quadros = 64usize;
-        let cru = amostras_do_banco_minimo(taxa, quadros);
-        banco_minimo_com_smpl(&cru, taxa, quadros)
+    /// The structure wasn't guessed: it was read from `rustysynth`'s parser, because the format
+    /// has two traps that cost two attempts — the zone record is **4 bytes** (`wGenNdx`,
+    /// `wModNdx`) and not four numbers, and `SAMPLE_ID` (53) has to be the **last** generator of
+    /// the zone, otherwise the parser treats the first zone as a global zone and no region is left
+    /// to play.
+    fn minimal_bank() -> Vec<u8> {
+        let rate = 22_050u32;
+        let frames = 64usize;
+        let raw = minimal_bank_samples(rate, frames);
+        minimal_bank_with_smpl(&raw, rate, frames)
     }
 
-    /// As amostras do banco mínimo como bytes crus: 64 quadros de seno a 440 Hz mais os 46 zeros
-    /// que o `smpl` exige no fim.
-    fn amostras_do_banco_minimo(taxa: u32, quadros: usize) -> Vec<u8> {
-        let mut cru = Vec::new();
-        for i in 0..quadros {
-            let angulo = std::f64::consts::TAU * 440.0 * i as f64 / f64::from(taxa);
-            cru.extend(((angulo.sin() * 20_000.0) as i16).to_le_bytes());
+    /// The minimal bank's samples as raw bytes: 64 frames of a 440 Hz sine plus the 46 zeros the
+    /// `smpl` requires at the end.
+    fn minimal_bank_samples(rate: u32, frames: usize) -> Vec<u8> {
+        let mut raw = Vec::new();
+        for i in 0..frames {
+            let angle = std::f64::consts::TAU * 440.0 * i as f64 / f64::from(rate);
+            raw.extend(((angle.sin() * 20_000.0) as i16).to_le_bytes());
         }
-        cru.extend(std::iter::repeat_n(0u8, 46 * 2));
-        cru
+        raw.extend(std::iter::repeat_n(0u8, 46 * 2));
+        raw
     }
 
-    /// O mesmo banco, com os bytes crus do `smpl` entregues por quem chama.
+    /// The same bank, with the raw `smpl` bytes supplied by the caller.
     ///
-    /// **Por que os bytes crus, e não as amostras.** É o que permite montar o `smpl` de tamanho
-    /// **ímpar**, o caso da guarda contra a escrita além da alocação. O resto da estrutura continua
-    /// a de um banco que o parser aceita — sem isso o teste provaria que um arquivo estragado é
-    /// recusado, e não que o bloco ímpar é barrado **antes** de chegar à dependência.
-    fn banco_minimo_com_smpl(cru: &[u8], taxa: u32, quadros: usize) -> Vec<u8> {
-        fn bloco(nome: &[u8; 4], corpo: &[u8]) -> Vec<u8> {
-            let mut out = nome.to_vec();
-            out.extend((corpo.len() as u32).to_le_bytes());
-            out.extend(corpo);
-            if corpo.len() % 2 == 1 {
+    /// **Why the raw bytes, and not the samples.** It's what allows building an **odd**-sized
+    /// `smpl`, the case for the guard against writing past the allocation. The rest of the
+    /// structure stays that of a bank the parser accepts — without that the test would prove that
+    /// a broken file is rejected, and not that the odd chunk is stopped **before** it reaches the
+    /// dependency.
+    fn minimal_bank_with_smpl(raw: &[u8], rate: u32, frames: usize) -> Vec<u8> {
+        fn block(name: &[u8; 4], body: &[u8]) -> Vec<u8> {
+            let mut out = name.to_vec();
+            out.extend((body.len() as u32).to_le_bytes());
+            out.extend(body);
+            if body.len() % 2 == 1 {
                 out.push(0);
             }
             out
         }
 
-        fn lista(tipo: &[u8; 4], partes: &[Vec<u8>]) -> Vec<u8> {
-            let mut corpo = tipo.to_vec();
-            for parte in partes {
-                corpo.extend(parte);
+        fn list(kind: &[u8; 4], parts: &[Vec<u8>]) -> Vec<u8> {
+            let mut body = kind.to_vec();
+            for part in parts {
+                body.extend(part);
             }
-            bloco(b"LIST", &corpo)
+            block(b"LIST", &body)
         }
 
-        fn nome_fixo(nome: &str) -> Vec<u8> {
-            let mut out = nome.as_bytes().to_vec();
+        fn fixed_name(name: &str) -> Vec<u8> {
+            let mut out = name.as_bytes().to_vec();
             out.resize(20, 0);
             out
         }
 
-        /// Um registro de zona: 4 bytes, `wGenNdx` e `wModNdx`.
-        fn zona(geradores: u16, moduladores: u16) -> Vec<u8> {
-            [geradores.to_le_bytes(), moduladores.to_le_bytes()].concat()
+        /// A zone record: 4 bytes, `wGenNdx` and `wModNdx`.
+        fn zone(generators: u16, modulators: u16) -> Vec<u8> {
+            [generators.to_le_bytes(), modulators.to_le_bytes()].concat()
         }
 
-        /// Os geradores de uma zona, com o terminador que o formato pede.
-        fn geradores(itens: &[(u16, u16)]) -> Vec<u8> {
-            let mut corpo = Vec::new();
-            for (tipo, valor) in itens {
-                corpo.extend(tipo.to_le_bytes());
-                corpo.extend(valor.to_le_bytes());
+        /// The generators of a zone, with the terminator the format requires.
+        fn generators(items: &[(u16, u16)]) -> Vec<u8> {
+            let mut body = Vec::new();
+            for (kind, value) in items {
+                body.extend(kind.to_le_bytes());
+                body.extend(value.to_le_bytes());
             }
-            corpo.extend([0u8; 4]);
-            corpo
+            body.extend([0u8; 4]);
+            body
         }
 
-        // --- INFO: só a versão e o nome ---
-        let info = lista(
+        // --- INFO: just the version and the name ---
+        let info = list(
             b"INFO",
             &[
-                bloco(b"ifil", &[2u16.to_le_bytes(), 1u16.to_le_bytes()].concat()),
-                // **`INAM` em maiúsculas, e não `inam`**: o parser aceita só as quatro letras
-                // exatas do formato, e a minúscula derruba a carga inteira com
-                // `ListContainsUnknownId`. Custou uma tentativa.
-                bloco(b"INAM", &{
+                block(b"ifil", &[2u16.to_le_bytes(), 1u16.to_le_bytes()].concat()),
+                // **`INAM` in uppercase, not `inam`**: the parser only accepts the format's exact
+                // four letters, and the lowercase one brings down the whole load with
+                // `ListContainsUnknownId`. It cost one attempt.
+                block(b"INAM", &{
                     let mut n = b"Banco minimo do teste".to_vec();
                     n.push(0);
                     n
@@ -692,279 +706,282 @@ mod tests {
             ],
         );
 
-        // --- sdta: as amostras ---
-        // **Sem o preenchimento par do RIFF, e não pelo `bloco`.** É a única artificialidade do
-        // arquivo, e ela é do teste, não do formato: o `rustysynth` lê os sub-blocos até o tamanho
-        // do `LIST` e **não** pula o preenchimento. Com o `smpl` de tamanho par (o caso do
-        // `banco_minimo`) não há preenchimento nenhum, e o `LIST` sai byte a byte igual ao do
-        // `bloco`; com o `smpl` ímpar do outro teste, o byte de preenchimento ficaria entre as
-        // amostras e o `LIST` da `pdta`, e o parser o leria como o começo do identificador — o
-        // arquivo seria recusado por desalinhamento, e não pela guarda, que é o que se mede aqui.
+        // --- sdta: the samples ---
+        // **Without the RIFF even padding, and not through `block`.** It's the file's only
+        // artificiality, and it belongs to the test, not to the format: `rustysynth` reads the
+        // sub-chunks up to the `LIST` size and does **not** skip the padding. With an even-sized
+        // `smpl` (the `minimal_bank` case) there is no padding at all, and the `LIST` comes out
+        // byte for byte the same as `block`'s; with the other test's odd `smpl`, the padding byte
+        // would sit between the samples and the `pdta` `LIST`, and the parser would read it as the
+        // start of the identifier — the file would be rejected for misalignment, and not by the
+        // guard, which is what is measured here.
         let smpl = {
             let mut out = b"smpl".to_vec();
-            out.extend((cru.len() as u32).to_le_bytes());
-            out.extend(cru);
+            out.extend((raw.len() as u32).to_le_bytes());
+            out.extend(raw);
             out
         };
         let sdta = {
-            let mut corpo = b"sdta".to_vec();
-            corpo.extend(smpl);
+            let mut body = b"sdta".to_vec();
+            body.extend(smpl);
             let mut out = b"LIST".to_vec();
-            out.extend((corpo.len() as u32).to_le_bytes());
-            out.extend(corpo);
+            out.extend((body.len() as u32).to_le_bytes());
+            out.extend(body);
             out
         };
 
         // --- pdta ---
-        // phdr: preset 0 e o terminador. `wPresetBagNdx` do terminador é o número de zonas.
-        let mut phdr = nome_fixo("Piano do teste");
+        // phdr: preset 0 and the terminator. The terminator's `wPresetBagNdx` is the zone count.
+        let mut phdr = fixed_name("Piano do teste");
         phdr.extend(0u16.to_le_bytes()); // wPreset
         phdr.extend(0u16.to_le_bytes()); // wBank
         phdr.extend(0u16.to_le_bytes()); // wPresetBagNdx
         phdr.extend(0u32.to_le_bytes()); // wLibrary
         phdr.extend(0u32.to_le_bytes()); // wGenre
         phdr.extend(0u32.to_le_bytes()); // wMorphology
-        let mut phdr_fim = nome_fixo("EOP");
-        phdr_fim.extend(0u16.to_le_bytes()); // wPreset
-        phdr_fim.extend(0u16.to_le_bytes()); // wBank
-        phdr_fim.extend(1u16.to_le_bytes()); // wPresetBagNdx: uma zona de preset
-        phdr_fim.extend([0u8; 12]); // wLibrary, wGenre, wMorphology
-        let phdr = bloco(b"phdr", &[phdr, phdr_fim].concat());
+        let mut phdr_end = fixed_name("EOP");
+        phdr_end.extend(0u16.to_le_bytes()); // wPreset
+        phdr_end.extend(0u16.to_le_bytes()); // wBank
+        phdr_end.extend(1u16.to_le_bytes()); // wPresetBagNdx: one preset zone
+        phdr_end.extend([0u8; 12]); // wLibrary, wGenre, wMorphology
+        let phdr = block(b"phdr", &[phdr, phdr_end].concat());
 
-        // Uma zona de preset, com a faixa de teclas e o instrumento 0. **O `INSTRUMENT` (41) por
-        // último**, pela mesma razão do `SAMPLE_ID` do lado do instrumento: com ele no meio, o
-        // parser trata esta zona como global e o preset fica sem região — e o sintoma é silêncio,
-        // não erro.
-        let pbag = bloco(b"pbag", &[zona(0, 0), zona(2, 0)].concat());
-        let pmod = bloco(b"pmod", &[0u8; 10]);
-        let pgen = bloco(b"pgen", &geradores(&[(43, 0x7f00), (41, 0)]));
+        // One preset zone, with the key range and instrument 0. **`INSTRUMENT` (41) last**, for
+        // the same reason as `SAMPLE_ID` on the instrument side: with it in the middle, the parser
+        // treats this zone as global and the preset is left with no region — and the symptom is
+        // silence, not an error.
+        let pbag = block(b"pbag", &[zone(0, 0), zone(2, 0)].concat());
+        let pmod = block(b"pmod", &[0u8; 10]);
+        let pgen = block(b"pgen", &generators(&[(43, 0x7f00), (41, 0)]));
 
-        // inst: instrumento 0 e o terminador.
-        let mut inst0 = nome_fixo("Inst do teste");
+        // inst: instrument 0 and the terminator.
+        let mut inst0 = fixed_name("Inst do teste");
         inst0.extend(0u16.to_le_bytes());
-        let mut inst_fim = nome_fixo("EOI");
-        inst_fim.extend(1u16.to_le_bytes());
-        let inst = bloco(b"inst", &[inst0, inst_fim].concat());
+        let mut inst_end = fixed_name("EOI");
+        inst_end.extend(1u16.to_le_bytes());
+        let inst = block(b"inst", &[inst0, inst_end].concat());
 
-        // Uma zona de instrumento. **`SAMPLE_ID` por último**: com ele no meio, o parser trata esta
-        // zona como global e o instrumento fica sem região.
-        let ibag = bloco(b"ibag", &[zona(0, 0), zona(4, 0)].concat());
-        let imod = bloco(b"imod", &[0u8; 10]);
-        let igen = bloco(b"igen", &geradores(&[(43, 0x7f00), (54, 1), (58, 69), (53, 0)]));
+        // One instrument zone. **`SAMPLE_ID` last**: with it in the middle, the parser treats this
+        // zone as global and the instrument is left with no region.
+        let ibag = block(b"ibag", &[zone(0, 0), zone(4, 0)].concat());
+        let imod = block(b"imod", &[0u8; 10]);
+        let igen = block(b"igen", &generators(&[(43, 0x7f00), (54, 1), (58, 69), (53, 0)]));
 
-        // shdr: a amostra 0 e o terminador.
-        let mut shdr = nome_fixo("Amostra do teste");
-        shdr.extend(0u32.to_le_bytes()); // inicio
-        shdr.extend((quadros as u32 - 1).to_le_bytes()); // fim
-        shdr.extend(0u32.to_le_bytes()); // inicio do laço
-        shdr.extend((quadros as u32 - 1).to_le_bytes()); // fim do laço
-        shdr.extend(taxa.to_le_bytes());
-        shdr.push(60); // nota original
-        shdr.push(0); // correção de tom
+        // shdr: sample 0 and the terminator.
+        let mut shdr = fixed_name("Amostra do teste");
+        shdr.extend(0u32.to_le_bytes()); // start
+        shdr.extend((frames as u32 - 1).to_le_bytes()); // end
+        shdr.extend(0u32.to_le_bytes()); // loop start
+        shdr.extend((frames as u32 - 1).to_le_bytes()); // loop end
+        shdr.extend(rate.to_le_bytes());
+        shdr.push(60); // original pitch
+        shdr.push(0); // pitch correction
         shdr.extend(0u16.to_le_bytes()); // link
-        shdr.extend(1u16.to_le_bytes()); // tipo: mono
-        let mut eos = nome_fixo("EOS");
+        shdr.extend(1u16.to_le_bytes()); // type: mono
+        let mut eos = fixed_name("EOS");
         eos.extend([0u8; 26]);
-        let shdr = bloco(b"shdr", &[shdr, eos].concat());
+        let shdr = block(b"shdr", &[shdr, eos].concat());
 
-        let pdta = lista(b"pdta", &[phdr, pbag, pmod, pgen, inst, ibag, imod, igen, shdr]);
+        let pdta = list(b"pdta", &[phdr, pbag, pmod, pgen, inst, ibag, imod, igen, shdr]);
 
         let mut sfbk = b"sfbk".to_vec();
         sfbk.extend(info);
         sfbk.extend(sdta);
         sfbk.extend(pdta);
-        bloco(b"RIFF", &sfbk)
+        block(b"RIFF", &sfbk)
     }
 
 
-    /// **Um banco corrompido não pode derrubar o jogo.** Ele é um arquivo que o usuário baixa e
-    /// copia à mão: um download truncado ou um `.sf2` de outro formato é cenário real, não
-    /// hipótese. O motor tem de seguir com a tabela de timbres e não dizer nada de errado.
+    /// **A corrupted bank can't bring the game down.** It's a file the user downloads and copies
+    /// by hand: a truncated download or a `.sf2` in another format is a real scenario, not a
+    /// hypothesis. The engine has to carry on with the wavetable and not say anything wrong.
     #[test]
-    fn um_banco_estragado_nao_derruba_nada() {
-        let pasta = std::env::temp_dir().join("zeebx-banco-estragado.sf2");
-        // Cabeçalho de RIFF válido e o resto lixo: passa a checagem mais óbvia e falha na leitura
-        // das listas, que é onde um arquivo truncado de verdade falha.
-        let mut lixo = b"RIFF".to_vec();
-        lixo.extend(1_000u32.to_le_bytes());
-        lixo.extend(b"sfbk".to_vec());
-        lixo.extend(vec![0x7f; 4_000]);
-        std::fs::write(&pasta, &lixo).expect("escreve o lixo");
+    fn a_broken_bank_brings_nothing_down() {
+        let dir = std::env::temp_dir().join("zeebx-banco-estragado.sf2");
+        // Valid RIFF header and the rest garbage: it passes the most obvious check and fails when
+        // reading the lists, which is where a really truncated file fails.
+        let mut garbage = b"RIFF".to_vec();
+        garbage.extend(1_000u32.to_le_bytes());
+        garbage.extend(b"sfbk".to_vec());
+        garbage.extend(vec![0x7f; 4_000]);
+        std::fs::write(&dir, &garbage).expect("writes the garbage");
 
         assert!(
-            abre(&pasta).is_none(),
-            "um banco estragado tem de ser recusado, e não aceito pela metade"
+            open(&dir).is_none(),
+            "a broken bank has to be rejected, not half accepted"
         );
-        // Com o banco recusado, o MIDI segue pela tabela de timbres — o caminho de produção
-        // (`machine::media`) pergunta por `banco_de_som`, que é `None`, e cai no sintetizador.
-        let som = crate::audio::midi::decode(&uma_nota(0, 69, 240)).expect("a tabela atende");
-        assert!(som.samples.iter().any(|s| *s != 0.0), "a tabela tinha de soar");
-        let _ = std::fs::remove_file(&pasta);
+        // With the bank rejected, MIDI goes through the wavetable — the production path
+        // (`machine::media`) asks for `sound_bank`, which is `None`, and falls to the synthesizer.
+        let sound = crate::audio::midi::decode(&one_note(0, 69, 240)).expect("the wavetable handles it");
+        assert!(sound.samples.iter().any(|s| *s != 0.0), "the wavetable should have sounded");
+        let _ = std::fs::remove_file(&dir);
     }
 
-    /// **Um `smpl` de tamanho ímpar é recusado antes de chegar à dependência.**
+    /// **An odd-sized `smpl` is rejected before it reaches the dependency.**
     ///
-    /// O `rustysynth` 1.3.6 (`binary_reader.rs`, `read_wave_data`) reserva `Vec<i16>` de
-    /// `tamanho / 2` elementos e cria com `slice::from_raw_parts_mut` uma fatia de `tamanho`
-    /// **bytes**: com o `smpl` de tamanho ímpar a fatia é um byte maior que a alocação, e a leitura
-    /// escreve fora dela. É UB no caminho do banco do usuário — arquivo que ele copia à mão, e o
-    /// defeito está na biblioteca —, então a guarda é nossa e vem antes do parse.
+    /// `rustysynth` 1.3.6 (`binary_reader.rs`, `read_wave_data`) reserves a `Vec<i16>` of
+    /// `size / 2` elements and creates, with `slice::from_raw_parts_mut`, a slice of `size`
+    /// **bytes**: with an odd-sized `smpl` the slice is one byte larger than the allocation, and the
+    /// read writes outside it. It's UB on the user's bank path — a file they copy by hand, and the
+    /// defect is in the library —, so the guard is ours and comes before the parse.
     ///
-    /// **Sem a guarda este teste falha, e é isso que ele mede:** o banco montado aqui é válido em
-    /// tudo o mais (o mesmo do `banco_minimo`), então o `rustysynth` o aceita — com a escrita de um
-    /// byte além da alocação — e `abre` devolve `Some` em vez de `None`.
+    /// **Without the guard this test fails, and that's what it measures:** the bank built here is
+    /// valid in every other way (the same as `minimal_bank`), so `rustysynth` accepts it — writing
+    /// one byte past the allocation — and `open` returns `Some` instead of `None`.
     #[test]
-    fn banco_com_smpl_impar_e_recusado() {
-        let pasta = std::env::temp_dir().join("zeebx-banco-smpl-impar.sf2");
-        let (taxa, quadros) = (22_050u32, 64usize);
-        let mut cru = amostras_do_banco_minimo(taxa, quadros);
-        // O byte a mais: com ele o `smpl` declara um tamanho ímpar, e o `Vec<i16>` do `rustysynth`
-        // passa a ter um byte a menos que a fatia que a biblioteca cria por cima dele.
-        cru.push(0);
-        assert_eq!(cru.len() % 2, 1, "o caso é o do bloco ímpar");
-        std::fs::write(&pasta, banco_minimo_com_smpl(&cru, taxa, quadros)).expect("escreve o banco");
+    fn a_bank_with_an_odd_smpl_is_rejected() {
+        let dir = std::env::temp_dir().join("zeebx-banco-smpl-impar.sf2");
+        let (rate, frames) = (22_050u32, 64usize);
+        let mut raw = minimal_bank_samples(rate, frames);
+        // The extra byte: with it the `smpl` declares an odd size, and `rustysynth`'s `Vec<i16>`
+        // ends up one byte smaller than the slice the library creates over it.
+        raw.push(0);
+        assert_eq!(raw.len() % 2, 1, "the case is the odd chunk");
+        std::fs::write(&dir, minimal_bank_with_smpl(&raw, rate, frames)).expect("writes the bank");
 
         assert!(
-            abre(&pasta).is_none(),
-            "um `smpl` de tamanho ímpar tem de ser recusado antes do parse"
+            open(&dir).is_none(),
+            "an odd-sized `smpl` has to be rejected before the parse"
         );
-        let _ = std::fs::remove_file(&pasta);
+        let _ = std::fs::remove_file(&dir);
     }
 
-    /// **Um caminho que não existe também é recusado em silêncio**, e sem gastar a carga.
+    /// **A path that doesn't exist is also rejected silently**, and without spending a load.
     #[test]
-    fn banco_ausente_nao_e_erro() {
-        let caminho = std::env::temp_dir().join("zeebx-banco-que-nao-existe.sf2");
-        let _ = std::fs::remove_file(&caminho);
-        assert!(abre(&caminho).is_none());
-        // Pelas pastas dadas, e não pelo perfil: com um banco em `~/.config/zeebx` esta afirmação
-        // caía — e é para lá que o LEIAME manda copiar o `.sf2`.
-        assert!(primeiro_banco_em(&[std::env::temp_dir().join("zeebx-sem-pasta")]).is_none());
+    fn a_missing_bank_is_not_an_error() {
+        let path = std::env::temp_dir().join("zeebx-banco-que-nao-existe.sf2");
+        let _ = std::fs::remove_file(&path);
+        assert!(open(&path).is_none());
+        // Through the given folders, not the profile: with a bank in `~/.config/zeebx` this
+        // assertion failed — and that's where the README says to copy the `.sf2`.
+        assert!(first_bank_in(&[std::env::temp_dir().join("zeebx-sem-pasta")]).is_none());
     }
 
 
-    /// **O relato diz onde pôr o banco**, senão "o banco não funciona" fica indistinguível de
-    /// "o arquivo está no lugar errado". Este é o lado da build **com** o sintetizador; o lado
-    /// sem ele é cobrado em `audio::mod`, e os dois existem porque silêncio numa das builds leva à
-    /// conclusão errada.
+    /// **The report says where to put the bank**, otherwise "the bank doesn't work" is
+    /// indistinguishable from "the file is in the wrong place". This is the side of the build
+    /// **with** the synthesizer; the side without it is checked in `audio::mod`, and both exist
+    /// because silence in one of the builds leads to the wrong conclusion.
     #[cfg(feature = "soundfont")]
     #[test]
-    fn o_relato_diz_onde_por_o_banco() {
-        let aparelho = std::env::temp_dir().join("zeebx-aparelho-sem-banco");
-        let _ = std::fs::remove_dir_all(&aparelho);
-        let texto = relato_de(&aparelho, None);
+    fn the_report_says_where_to_put_the_bank() {
+        let device = std::env::temp_dir().join("zeebx-aparelho-sem-banco");
+        let _ = std::fs::remove_dir_all(&device);
+        let text = report_for(&device, None);
         assert!(
-            texto.contains("soundfonts"),
-            "o relato tem de dizer a pasta: {texto}"
+            text.contains("soundfonts"),
+            "the report has to name the folder: {text}"
         );
         assert!(
-            texto.contains("tabela de timbres"),
-            "sem banco, o relato tem de dizer com o que a trilha toca: {texto}"
+            text.contains("wavetable"),
+            "without a bank, the report has to say what the soundtrack plays with: {text}"
         );
     }
 
-    /// **O caminho do banco é exercitado sempre**, com um banco montado aqui.
+    /// **The bank path is always exercised**, with a bank built here.
     ///
-    /// Os outros testes do módulo usam um `.sf2` de verdade e se dispensam quando não há um — e no
-    /// CI não há. Este não se dispensa: monta o banco mínimo, carrega e toca.
+    /// The module's other tests use a real `.sf2` and skip themselves when there isn't one — and on
+    /// CI there isn't. This one doesn't skip: it builds the minimal bank, loads it and plays.
     #[test]
-    fn o_caminho_do_banco_toca_um_banco_minimo() {
-        let pasta = std::env::temp_dir().join("zeebx-banco-minimo.sf2");
-        std::fs::write(&pasta, banco_minimo()).expect("escreve o banco");
-        let banco = abre(&pasta).expect("o banco mínimo abre");
-        assert!(banco.presets() >= 1, "o banco tem de declarar o preset");
-        let som = toca(&banco, &uma_nota(0, 69, 240), 22_050).expect("toca");
-        assert_eq!(som.channels, 1);
-        let pico = som.samples.iter().fold(0.0f32, |a, s| a.max(s.abs()));
-        assert!(pico > 0.01, "o banco mínimo tinha de soar, pico {pico}");
-        // A duração segue a partitura, como no caminho da tabela: som curto demais faria o jogo
-        // achar que a música acabou cedo.
-        let esperado = 22_050 * 2; // nota de 240 pulsos a 96 por batida e 120 por minuto
+    fn the_bank_path_plays_a_minimal_bank() {
+        let dir = std::env::temp_dir().join("zeebx-banco-minimo.sf2");
+        std::fs::write(&dir, minimal_bank()).expect("writes the bank");
+        let soundfont = open(&dir).expect("the minimal bank opens");
+        assert!(soundfont.presets() >= 1, "the bank has to declare the preset");
+        let sound = play(&soundfont, &one_note(0, 69, 240), 22_050).expect("plays");
+        assert_eq!(sound.channels, 1);
+        let peak = sound.samples.iter().fold(0.0f32, |a, s| a.max(s.abs()));
+        assert!(peak > 0.01, "the minimal bank should have sounded, peak {peak}");
+        // The duration follows the score, as on the wavetable path: a sound that's too short
+        // would make the game think the music ended early.
+        let expected = 22_050 * 2; // a 240-tick note at 96 per beat and 120 per minute
         assert!(
-            som.samples.len() >= esperado / 2,
-            "som curto demais: {} amostras",
-            som.samples.len()
+            sound.samples.len() >= expected / 2,
+            "sound too short: {} samples",
+            sound.samples.len()
         );
-        let _ = std::fs::remove_file(&pasta);
+        let _ = std::fs::remove_file(&dir);
     }
 
-    /// **O banco distingue o arco da palheta.** Era o defeito mais audível da tabela de timbres:
-    /// 29 (*overdrive*), 30 (distorcida), 42 (violoncelo) e 48 (cordas) saíam com a **mesma onda**.
+    /// **The bank tells the bow from the pick.** It was the wavetable's most audible defect:
+    /// 29 (*overdrive*), 30 (distortion), 42 (cello) and 48 (strings) came out with the **same
+    /// waveform**.
     ///
-    /// A medida é o **ataque**, e não o centroide: numa nota só os dois têm centroide parecido
-    /// (medido: 435 Hz e 426 Hz), então centroide não separa. O que separa é o comportamento —
-    /// palheta ataca no talo, arco começa macio e cresce. No soundfont de referência a guitarra
-    /// começa em 1,00 do próprio pico e o violoncelo em 0,46.
+    /// The measure is the **attack**, not the centroid: on a single note both have a similar
+    /// centroid (measured: 435 Hz and 426 Hz), so the centroid doesn't separate them. What does is
+    /// the behavior — a pick attacks at full force, a bow starts soft and swells. In the reference
+    /// soundfont the guitar starts at 1.00 of its own peak and the cello at 0.46.
     #[test]
-    fn o_banco_distingue_o_arco_da_palheta() {
-        let Some(caminho) = banco_de_teste() else {
-            eprintln!("sem banco .sf2 no disco: teste dispensado (use ZEEBX_SOUNDFONT)");
+    fn the_bank_tells_the_bow_from_the_pick() {
+        let Some(path) = test_bank() else {
+            eprintln!("no .sf2 bank on disk: test skipped (use ZEEBX_SOUNDFONT)");
             return;
         };
-        let banco = abre(&caminho).expect("o banco abre");
-        let envelope = |programa: u8| -> Vec<f32> {
-            let som = toca(&banco, &uma_nota(programa, 60, 480), 22_050).expect("toca");
-            let janela = som.rate as usize / 5;
-            let mut saida: Vec<f32> = (0..5)
+        let soundfont = open(&path).expect("the bank opens");
+        let envelope = |program: u8| -> Vec<f32> {
+            let sound = play(&soundfont, &one_note(program, 60, 480), 22_050).expect("plays");
+            let window = sound.rate as usize / 5;
+            let mut output: Vec<f32> = (0..5)
                 .map(|i| {
-                    let trecho = &som.samples[i * janela..(i + 1) * janela];
-                    (trecho.iter().map(|s| s * s).sum::<f32>() / janela as f32).sqrt()
+                    let chunk = &sound.samples[i * window..(i + 1) * window];
+                    (chunk.iter().map(|s| s * s).sum::<f32>() / window as f32).sqrt()
                 })
                 .collect();
-            let pico = saida.iter().fold(0.0f32, |a, s| a.max(*s));
-            if pico > 0.0 {
-                for valor in &mut saida {
-                    *valor /= pico;
+            let peak = output.iter().fold(0.0f32, |a, s| a.max(*s));
+            if peak > 0.0 {
+                for value in &mut output {
+                    *value /= peak;
                 }
             }
-            saida
+            output
         };
-        let palheta = envelope(29);
-        let arco = envelope(42);
+        let pick = envelope(29);
+        let bow = envelope(42);
         assert!(
-            arco[0] < palheta[0] * 0.75,
-            "o arco tinha de atacar mais macio que a palheta: {:.2} contra {:.2}",
-            arco[0],
-            palheta[0]
+            bow[0] < pick[0] * 0.75,
+            "the bow should have attacked softer than the pick: {:.2} vs {:.2}",
+            bow[0],
+            pick[0]
         );
     }
 
-    /// O banco escolhido ganha da busca, e um escolhido que sumiu não emudece: a busca segue.
+    /// The chosen bank beats the search, and a chosen one that vanished doesn't mute: the search
+    /// goes on.
     ///
-    /// Mexe no banco global e o devolve a `None` no fim; nenhuma outra prova chama
-    /// [`primeiro_banco`], que é quem o lê — elas usam [`primeiro_banco_em`].
+    /// Touches the global bank and resets it to `None` at the end; no other test calls
+    /// [`first_bank`], which is what reads it — they use [`first_bank_in`].
     #[test]
-    fn o_banco_escolhido_ganha_da_busca_e_um_que_sumiu_nao_emudece() {
-        let pasta = std::env::temp_dir().join("zeebx-banco-escolhido");
-        std::fs::create_dir_all(&pasta).unwrap();
-        let escolhido = pasta.join("firmware.sf2");
-        std::fs::write(&escolhido, b"RIFF").unwrap();
-        let aparelho = pasta.join("aparelho-sem-bancos");
+    fn the_chosen_bank_beats_the_search_and_a_vanished_one_does_not_mute() {
+        let dir = std::env::temp_dir().join("zeebx-banco-escolhido");
+        std::fs::create_dir_all(&dir).unwrap();
+        let chosen = dir.join("firmware.sf2");
+        std::fs::write(&chosen, b"RIFF").unwrap();
+        let device = dir.join("aparelho-sem-bancos");
 
-        define_banco(Some(escolhido.clone()));
-        assert_eq!(banco_escolhido(), Some(escolhido.clone()));
-        assert_eq!(primeiro_banco(&aparelho), Some(escolhido.clone()));
+        set_soundfont(Some(chosen.clone()));
+        assert_eq!(chosen_bank(), Some(chosen.clone()));
+        assert_eq!(first_bank(&device), Some(chosen.clone()));
 
-        let sumiu = pasta.join("nao-existe.sf2");
-        define_banco(Some(sumiu.clone()));
-        assert_ne!(primeiro_banco(&aparelho), Some(sumiu));
+        let vanished = dir.join("nao-existe.sf2");
+        set_soundfont(Some(vanished.clone()));
+        assert_ne!(first_bank(&device), Some(vanished));
 
-        // Um campo apagado na configuração chega como caminho vazio, e vale o automático.
-        define_banco(Some(PathBuf::new()));
-        assert_eq!(banco_escolhido(), None);
-        define_banco(None);
-        let _ = std::fs::remove_dir_all(&pasta);
+        // A cleared settings field arrives as an empty path, and the automatic search applies.
+        set_soundfont(Some(PathBuf::new()));
+        assert_eq!(chosen_bank(), None);
+        set_soundfont(None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn parse_da_politica_midi_backend() {
+    fn the_midi_backend_policy_parses() {
         use crate::audio::MidiBackend;
         use std::str::FromStr;
 
         assert_eq!(MidiBackend::from_str("Auto"), Ok(MidiBackend::Auto));
         assert_eq!(MidiBackend::from_str("automático"), Ok(MidiBackend::Auto));
-        assert_eq!(MidiBackend::from_str("Tabela de timbres"), Ok(MidiBackend::Timbres));
-        assert_eq!(MidiBackend::from_str("timbres"), Ok(MidiBackend::Timbres));
+        assert_eq!(MidiBackend::from_str("Tabela de timbres"), Ok(MidiBackend::Wavetable));
+        assert_eq!(MidiBackend::from_str("timbres"), Ok(MidiBackend::Wavetable));
         assert_eq!(MidiBackend::from_str("SoundFont"), Ok(MidiBackend::SoundFont));
         assert_eq!(MidiBackend::from_str("sf2"), Ok(MidiBackend::SoundFont));
         assert_eq!(MidiBackend::from_str("invalido"), Err(()));
