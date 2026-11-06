@@ -3,7 +3,7 @@ name = "zeebx-libretro"
 version = "0.5.1"
 edition = "2024"
 license = "GPL-2.0-or-later"
-description = "Core Libretro do emulador Zeebx"
+description = "Libretro core of the Zeebx emulator"
 publish = false
 
 [lib]
@@ -11,16 +11,16 @@ name = "zeebx_libretro"
 crate-type = ["cdylib"]
 
 [dependencies]
-# Sem `desktop`: o core não linka janela, placa de som nem controle do host.
+# Without `desktop`: the core doesn't link a window, a sound card or a host controller.
 #
-# **Com `gl`, e sem `gpu`.** `gl` é o desenho na placa e não traz nada de host — só o `glow`, que
-# é o vínculo com a API. `gpu` é abrir contexto próprio e traz o `glutin`, que linka EGL/GLX: um
-# core não pode depender disso, porque quem entrega o contexto é o frontend. É o que a checagem de
-# `ldd` do `libretro.yml` cobra.
-# `soundfont` entra junto: é Rust puro (MIT) e não traz biblioteca de host, então o núcleo pode
-# tocar MIDI com o banco de amostras do aparelho sem quebrar a regra de zero dependências de host.
+# **With `gl`, and without `gpu`.** `gl` is drawing on the GPU and brings nothing from the host —
+# only `glow`, which is the binding to the API. `gpu` is opening a context of its own and brings
+# `glutin`, which links EGL/GLX: a core can't depend on that, because the frontend is what provides
+# the context. It is what the `ldd` check in `libretro.yml` enforces.
+# `soundfont` goes in too: it is pure Rust (MIT) and brings no host library, so the core can play
+# MIDI with the device's sample bank without breaking the zero-host-dependencies rule.
 zeebx = { path = "../..", default-features = false, features = ["gl", "soundfont"] }
-# O mesmo `glow` que o motor usa: o contexto que o frontend entrega é montado com ele.
+# The same `glow` the engine uses: the context the frontend provides is built with it.
 glow = "0.16"
 
 [build-dependencies]
