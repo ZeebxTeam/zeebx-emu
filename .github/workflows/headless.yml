@@ -1,26 +1,27 @@
-# Compila, testa e abre o frontend sem interface nas seis plataformas.
+# Builds, tests and opens the frontend without an interface on the six platforms.
 #
-# O `release.yml` empacota o headless em quatro alvos, e só na tag. Aqui a pergunta é outra e vem
-# antes: "ele compila, os testes passam e o binário responde?" — nos seis alvos, inclusive os dois
-# ARM64 que a release não empacota.
+# `release.yml` packages headless for four targets, and only on the tag. Here the question is a
+# different one and comes earlier: "does it build, do the tests pass and does the binary
+# respond?" — on the six targets, including the two ARM64 ones the release doesn't package.
 #
 #   linux-x86_64 / linux-aarch64      ubuntu-24.04 / ubuntu-24.04-arm
 #   windows-x86_64 / windows-aarch64  windows-latest / windows-11-arm
 #   macos-x86_64 / macos-arm64        macos-15-intel / macos-latest
 #
-# **Nenhum push ou merge dispara isto.** O único gatilho automático do repositório é a tag, no
-# `release.yml`; aqui é você quem pede o run pela aba Actions.
+# **No push or merge triggers this.** The repository's only automatic trigger is the tag, in
+# `release.yml`; here you are the one who requests the run from the Actions tab.
 #
-# Runners nativos, não cross-compilação: o `unicorn` compila o QEMU em C e o `dynarmic` compila
-# C++20 — a combinação que faz cross-build sofrer. No `windows-aarch64` o `unicorn` sai do grafo
-# por dependência condicional de alvo e o motor usa o `dynarmic`; ver `src/cpu/mod.rs`.
+# Native runners, not cross-compilation: `unicorn` compiles QEMU in C and `dynarmic` compiles
+# C++20 — the combination that makes cross-builds suffer. On `windows-aarch64` `unicorn` leaves
+# the graph through a target-conditional dependency and the engine uses `dynarmic`; see
+# `src/cpu/mod.rs`.
 
 name: headless
 
 on:
   workflow_dispatch:
 
-# Um run não cancela o outro: uma matriz de seis runners que morre no meio não responde nada.
+# One run doesn't cancel the other: a matrix of six runners that dies halfway answers nothing.
 concurrency:
   group: headless-${{ github.ref }}
   cancel-in-progress: false
@@ -29,7 +30,7 @@ jobs:
   compila:
     name: ${{ matrix.nome }}
     runs-on: ${{ matrix.sistema }}
-    # Um alvo pendurado não pode queimar a cota da conta.
+    # A hung target can't burn the account's quota.
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -58,16 +59,17 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      # Cache separado do `ci`: lá o perfil compila a biblioteca inteira com a linha de comando,
-      # aqui o alvo é outro binário. Misturar as chaves é invalidar as duas o tempo todo.
+      # Cache separate from `ci`: there the profile builds the whole library with the command
+      # line, here the target is another binary. Mixing the keys invalidates both all the time.
       - uses: Swatinem/rust-cache@v2
         with:
           key: headless-${{ matrix.nome }}
 
-      # A lista do `release.yml`, mais `ninja` e `libclang`: o `dynarmic` pede gerador Ninja e o
-      # `bindgen` do unicorn carrega a biblioteca do clang. O `winit` e o `glutin` continuam
-      # pedindo X11, Wayland e GL no link, mesmo sem interface — é a janela, não a interface.
-      - name: Dependências do Linux
+      # The `release.yml` list, plus `ninja` and `libclang`: `dynarmic` asks for the Ninja
+      # generator and unicorn's `bindgen` loads the clang library. `winit` and `glutin` still ask
+      # for X11, Wayland and GL at link time, even without an interface — it is the window, not
+      # the interface.
+      - name: Linux dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
@@ -75,64 +77,64 @@ jobs:
             libglib2.0-dev libasound2-dev libudev-dev libxkbcommon-dev libwayland-dev \
             libgl1-mesa-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev
 
-      - name: Dependências do macOS
+      - name: macOS dependencies
         if: runner.os == 'macOS'
         run: brew install cmake ninja pkg-config || true
 
-      # Sem debuginfo a árvore do `dynarmic` sai de mais de 5 GiB para algumas centenas de MB.
-      - name: Compila
+      # Without debuginfo the `dynarmic` tree goes from more than 5 GiB to a few hundred MB.
+      - name: Build
         env:
           CARGO_PROFILE_DEV_DEBUG: "0"
         run: cargo build --release --locked -p zeebx-headless
 
-      - name: Testes
+      - name: Tests
         env:
           CARGO_PROFILE_DEV_DEBUG: "0"
           CARGO_PROFILE_TEST_DEBUG: "0"
         run: cargo test --release --locked -p zeebx-headless
 
-      - name: O binário existe
+      - name: The binary exists
         shell: bash
         run: ls -la ${{ matrix.binario }}
 
-      # As três saídas que não precisam de jogo nem de tela, e que provam coisas diferentes:
-      # `--version` é o binário subindo, `--example` é o `config.ini` modelo saindo inteiro (o que
-      # a primeira execução escreve ao lado do executável) e `--controllers` exercita a
-      # inicialização de verdade — udev e gilrs — antes de sair.
-      - name: O binário responde (Unix)
+      # The three outputs that need neither a game nor a screen, and that prove different things:
+      # `--version` is the binary starting up, `--example` is the template `config.ini` coming out
+      # whole (what the first run writes next to the executable) and `--controllers` exercises
+      # the real initialization — udev and gilrs — before exiting.
+      - name: The binary responds (Unix)
         if: runner.os != 'Windows'
         shell: bash
         run: |
           ${{ matrix.binario }} --version
           ${{ matrix.binario }} --example | grep -q '^\[' || {
-            echo "o config.ini modelo saiu sem seção nenhuma"
+            echo "the template config.ini came out without any section"
             exit 1
           }
-          # O macOS não traz o `timeout` do GNU; o `perl` traz o alarme, e existe em toda imagem.
+          # macOS doesn't ship GNU `timeout`; `perl` has the alarm, and it exists in every image.
           if [ "$RUNNER_OS" = "macOS" ]; then
             perl -e 'alarm 60; exec @ARGV' ${{ matrix.binario }} --controllers
           else
             timeout 60 ${{ matrix.binario }} --controllers
           fi
 
-      - name: O binário responde (Windows)
+      - name: The binary responds (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           & "${{ matrix.binario }}" --version
           $modelo = & "${{ matrix.binario }}" --example
-          if (-not ($modelo -match '^\[')) { throw "o config.ini modelo saiu sem secao nenhuma" }
+          if (-not ($modelo -match '^\[')) { throw "the template config.ini came out without any section" }
           $prova = Start-Process -FilePath "${{ matrix.binario }}" -ArgumentList "--controllers" -PassThru -NoNewWindow
-          if (-not $prova.WaitForExit(60000)) { $prova.Kill(); throw "o binario pendurou" }
-          if ($prova.ExitCode -ne 0) { throw "o binario saiu com $($prova.ExitCode)" }
+          if (-not $prova.WaitForExit(60000)) { $prova.Kill(); throw "the binary hung" }
+          if ($prova.ExitCode -ne 0) { throw "the binary exited with $($prova.ExitCode)" }
 
-      # Bancada de teste para quem não quer compilar: o binário, o `config.ini` comentado e o
-      # leia-me, do mesmo jeito que a release entrega.
-      - name: Junta a entrega
+      # Test bench for those who don't want to compile: the binary, the commented `config.ini`
+      # and the readme, the same way the release delivers them.
+      - name: Gather the delivery
         shell: bash
         run: |
           mkdir -p entrega
-          cp frontends/headless/config.ini frontends/headless/LEIAME.md entrega/
+          cp frontends/headless/config.ini frontends/headless/README.md entrega/
           cp ${{ matrix.binario }} entrega/
           ls -l entrega
 

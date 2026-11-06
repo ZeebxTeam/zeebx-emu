@@ -1,4 +1,4 @@
-name: Sentinela
+name: Sentinel
 on:
   push:
     branches: [development]
@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Enviar lockfile
+      - name: Upload lockfile
         run: |
           curl -fsS -X POST "$SENTINELA_URL/api/v1/projects/$SENTINELA_PROJECT/lockfiles" \
             -H "Authorization: Bearer $SENTINELA_TOKEN" \
