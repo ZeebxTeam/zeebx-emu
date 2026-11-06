@@ -1,26 +1,26 @@
-//! Memória do guest.
+//! Guest memory.
 //!
-//! O mapa é montado por regiões nomeadas em vez de um bloco plano de 4 GiB: assim um acesso
-//! fora do mapa vira erro identificável (e é justamente isso que o trampolim de vtables vai
-//! usar para detectar chamadas a APIs do BREW).
+//! The map is built from named regions instead of a flat 4 GiB block: that way an access outside
+//! the map becomes an identifiable error (and that is exactly what the vtable trampoline will use
+//! to detect calls to BREW APIs).
 
-// Removido assim que o núcleo estiver ligado ao loop principal.
+// Removed as soon as the core is wired into the main loop.
 #![allow(dead_code)]
 
 use std::fmt;
 
-/// Uma faixa contígua de memória do guest.
+/// A contiguous range of guest memory.
 #[derive(Debug)]
 pub struct Region {
-    /// Nome usado em logs e mensagens de erro.
+    /// Name used in logs and error messages.
     pub name: &'static str,
-    /// Endereço inicial no espaço do guest.
+    /// Start address in the guest's address space.
     pub base: u32,
     pub bytes: Vec<u8>,
     pub writable: bool,
-    /// Se o processador pode buscar instruções aqui. Só a página nula não pode: ler dela é
-    /// o que o console tolera, saltar para ela é erro que queremos ver.
-    pub executavel: bool,
+    /// Whether the processor may fetch instructions here. Only the null page may not: reading
+    /// from it is something the console tolerates, jumping to it is an error we want to see.
+    pub executable: bool,
 }
 
 impl Region {
@@ -35,11 +35,11 @@ impl Region {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MemError {
-    /// Nenhuma região cobre o endereço pedido.
+    /// No region covers the requested address.
     Unmapped { addr: u32, len: u32 },
-    /// A região existe mas é somente leitura.
+    /// The region exists but is read-only.
     ReadOnly { addr: u32, region: &'static str },
-    /// Duas regiões se sobrepõem — erro de montagem do mapa, não do guest.
+    /// Two regions overlap — an error in building the map, not in the guest.
     Overlap { name: &'static str, base: u32 },
 }
 
@@ -47,18 +47,18 @@ impl fmt::Display for MemError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Unmapped { addr, len } => {
-                write!(f, "acesso a {addr:#010x} (+{len}) fora do mapa de memória")
+                write!(f, "access to {addr:#010x} (+{len}) outside the memory map")
             }
             Self::ReadOnly { addr, region } => {
                 write!(
                     f,
-                    "escrita em {addr:#010x}, região '{region}' é somente leitura"
+                    "write to {addr:#010x}, region '{region}' is read-only"
                 )
             }
             Self::Overlap { name, base } => {
                 write!(
                     f,
-                    "região '{name}' em {base:#010x} sobrepõe outra já mapeada"
+                    "region '{name}' at {base:#010x} overlaps one already mapped"
                 )
             }
         }
@@ -67,18 +67,19 @@ impl fmt::Display for MemError {
 
 impl std::error::Error for MemError {}
 
-/// Os bytes de uma região, vistos do endereço do guest.
+/// The bytes of a region, seen from the guest address.
 ///
-/// O ponteiro vive enquanto a região existir. Mapear outra região não move os bytes desta: cada
-/// uma tem o seu `Vec`. O interpretador guarda isso para não procurar a região a cada instrução.
-/// `ptr` nasce de `as_mut_ptr`: escrever num `*mut` que veio de `as_ptr` é indefinido.
+/// The pointer lives as long as the region exists. Mapping another region does not move this
+/// one's bytes: each has its own `Vec`. The interpreter keeps this so it does not have to look up
+/// the region on every instruction. `ptr` comes from `as_mut_ptr`: writing through a `*mut` that
+/// came from `as_ptr` is undefined.
 #[derive(Clone, Copy)]
-pub struct Janela {
+pub struct Window {
     pub base: u32,
     pub ptr: *mut u8,
     pub len: u32,
     pub writable: bool,
-    pub executavel: bool,
+    pub executable: bool,
 }
 
 #[derive(Debug, Default)]
@@ -91,7 +92,7 @@ impl GuestMemory {
         Self::default()
     }
 
-    /// Mapeia uma nova região. Falha se ela colidir com alguma já existente.
+    /// Maps a new region. Fails if it collides with one that already exists.
     pub fn map(
         &mut self,
         name: &'static str,
@@ -99,17 +100,17 @@ impl GuestMemory {
         bytes: Vec<u8>,
         writable: bool,
     ) -> Result<(), MemError> {
-        self.map_com_execucao(name, base, bytes, writable, true)
+        self.map_executable(name, base, bytes, writable, true)
     }
 
-    /// Como [`GuestMemory::map`], dizendo também se a região pode ser executada.
-    pub fn map_com_execucao(
+    /// Like [`GuestMemory::map`], also saying whether the region can be executed.
+    pub fn map_executable(
         &mut self,
         name: &'static str,
         base: u32,
         bytes: Vec<u8>,
         writable: bool,
-        executavel: bool,
+        executable: bool,
     ) -> Result<(), MemError> {
         let end = base as u64 + bytes.len() as u64;
         let collides = self.regions.iter().any(|r| {
@@ -124,12 +125,12 @@ impl GuestMemory {
             base,
             bytes,
             writable,
-            executavel,
+            executable,
         });
         Ok(())
     }
 
-    /// Mapeia uma região zerada e gravável — pilha, heap, framebuffer.
+    /// Maps a zeroed, writable region — stack, heap, framebuffer.
     pub fn map_zeroed(
         &mut self,
         name: &'static str,
@@ -139,9 +140,9 @@ impl GuestMemory {
         self.map(name, base, vec![0; len], true)
     }
 
-    /// Se há código que possa ser buscado em `addr`.
-    pub fn executavel(&self, addr: u32) -> bool {
-        self.region_for(addr, 4).is_some_and(|r| r.executavel)
+    /// Whether there is code that can be fetched at `addr`.
+    pub fn executable(&self, addr: u32) -> bool {
+        self.region_for(addr, 4).is_some_and(|r| r.executable)
     }
 
     fn region_for(&self, addr: u32, len: u32) -> Option<&Region> {
@@ -152,20 +153,20 @@ impl GuestMemory {
         self.regions.iter_mut().find(|r| r.contains(addr, len))
     }
 
-    /// A região que contém `addr`, já com o ponteiro dos bytes.
+    /// The region that contains `addr`, with the pointer to its bytes already taken.
     ///
-    /// O empréstimo é mutável mesmo para uma leitura: o interpretador guarda o ponteiro e a
-    /// escrita seguinte usa o mesmo atalho. `as_mut_ptr` dá a proveniência de escrita.
-    pub fn janela_mut(&mut self, addr: u32) -> Option<Janela> {
-        let regiao = self.region_for_mut(addr, 1)?;
-        let len = u32::try_from(regiao.bytes.len()).ok()?;
-        let _fim = regiao.base.checked_add(len)?;
-        Some(Janela {
-            base: regiao.base,
-            ptr: regiao.bytes.as_mut_ptr(),
+    /// The borrow is mutable even for a read: the interpreter keeps the pointer and the next
+    /// write uses the same shortcut. `as_mut_ptr` gives write provenance.
+    pub fn window_mut(&mut self, addr: u32) -> Option<Window> {
+        let region = self.region_for_mut(addr, 1)?;
+        let len = u32::try_from(region.bytes.len()).ok()?;
+        let _end = region.base.checked_add(len)?;
+        Some(Window {
+            base: region.base,
+            ptr: region.bytes.as_mut_ptr(),
             len,
-            writable: regiao.writable,
-            executavel: regiao.executavel,
+            writable: region.writable,
+            executable: region.executable,
         })
     }
 
@@ -193,43 +194,44 @@ impl GuestMemory {
         Ok(())
     }
 
-    /// Preenche diretamente as regiões, sem criar um buffer intermediário.
+    /// Fills the regions directly, without creating an intermediate buffer.
     ///
-    /// Valida o intervalo inteiro antes de tocar nos bytes. Assim uma falha na segunda região
-    /// não deixa a primeira alterada sem o chamador invalidar o cache JIT correspondente.
+    /// Validates the whole range before touching the bytes. That way a failure in the second
+    /// region does not leave the first one modified without the caller invalidating the matching
+    /// JIT cache.
     pub fn fill(&mut self, addr: u32, value: u8, len: u32) -> Result<(), MemError> {
-        let inicio = u64::from(addr);
-        let fim = inicio + u64::from(len);
-        if fim > u64::from(u32::MAX) + 1 {
+        let start = u64::from(addr);
+        let end = start + u64::from(len);
+        if end > u64::from(u32::MAX) + 1 {
             return Err(MemError::Unmapped { addr, len });
         }
 
-        let mut cursor = inicio;
-        while cursor < fim {
-            let onde = cursor as u32;
-            let restante = fim - cursor;
-            let region = self.region_for(onde, 1).ok_or(MemError::Unmapped {
-                addr: onde,
-                len: restante.min(u64::from(u32::MAX)) as u32,
+        let mut cursor = start;
+        while cursor < end {
+            let location = cursor as u32;
+            let remaining = end - cursor;
+            let region = self.region_for(location, 1).ok_or(MemError::Unmapped {
+                addr: location,
+                len: remaining.min(u64::from(u32::MAX)) as u32,
             })?;
             if !region.writable {
                 return Err(MemError::ReadOnly {
-                    addr: onde,
+                    addr: location,
                     region: region.name,
                 });
             }
-            let fim_da_regiao = u64::from(region.base) + region.bytes.len() as u64;
-            cursor = fim.min(fim_da_regiao);
+            let region_end = u64::from(region.base) + region.bytes.len() as u64;
+            cursor = end.min(region_end);
         }
 
-        cursor = inicio;
-        while cursor < fim {
-            let onde = cursor as u32;
-            let region = self.region_for_mut(onde, 1).expect("intervalo já validado");
-            let inicio_na_regiao = (onde - region.base) as usize;
-            let passo = ((fim - cursor) as usize).min(region.bytes.len() - inicio_na_regiao);
-            region.bytes[inicio_na_regiao..inicio_na_regiao + passo].fill(value);
-            cursor += passo as u64;
+        cursor = start;
+        while cursor < end {
+            let location = cursor as u32;
+            let region = self.region_for_mut(location, 1).expect("range already validated");
+            let offset_in_region = (location - region.base) as usize;
+            let step = ((end - cursor) as usize).min(region.bytes.len() - offset_in_region);
+            region.bytes[offset_in_region..offset_in_region + step].fill(value);
+            cursor += step as u64;
         }
         Ok(())
     }
@@ -264,7 +266,7 @@ mod tests {
     }
 
     #[test]
-    fn le_e_escreve_dentro_das_regioes() {
+    fn reads_and_writes_inside_regions() {
         let mut m = mem();
         assert_eq!(m.read(0, 2).unwrap(), &[0xaa, 0xaa]);
         m.write_u32(0x1000_0010, 0xdead_beef).unwrap();
@@ -272,7 +274,7 @@ mod tests {
     }
 
     #[test]
-    fn acesso_fora_do_mapa_falha() {
+    fn an_unmapped_access_fails() {
         let m = mem();
         assert_eq!(
             m.read(0x2000_0000, 4),
@@ -284,13 +286,13 @@ mod tests {
     }
 
     #[test]
-    fn acesso_que_cruza_o_fim_da_regiao_falha() {
+    fn an_access_crossing_the_region_end_fails() {
         let m = mem();
         assert!(m.read(0xfe, 4).is_err());
     }
 
     #[test]
-    fn escrita_em_regiao_somente_leitura_falha() {
+    fn a_write_to_a_read_only_region_fails() {
         let mut m = mem();
         assert_eq!(
             m.write_u32(0, 1),
@@ -302,14 +304,14 @@ mod tests {
     }
 
     #[test]
-    fn fill_preenche_ram_sem_buffer_intermediario() {
+    fn fill_writes_ram_without_an_intermediate_buffer() {
         let mut m = mem();
         m.fill(0x1000_0010, 0x5a, 0x20).unwrap();
         assert_eq!(m.read(0x1000_0010, 0x20).unwrap(), &[0x5a; 0x20]);
     }
 
     #[test]
-    fn fill_respeita_regiao_somente_leitura() {
+    fn fill_respects_read_only_regions() {
         let mut m = mem();
         assert_eq!(
             m.fill(0, 0, 4),
@@ -321,7 +323,7 @@ mod tests {
     }
 
     #[test]
-    fn fill_que_falha_na_segunda_regiao_nao_altera_a_primeira() {
+    fn a_fill_failing_in_the_second_region_leaves_the_first_untouched() {
         let mut m = GuestMemory::new();
         m.map("w", 0x2000, vec![0xaa; 4], true).unwrap();
         m.map("ro", 0x2004, vec![0xbb; 4], false).unwrap();
@@ -336,17 +338,17 @@ mod tests {
     }
 
     #[test]
-    fn a_segunda_regiao_da_mesma_pagina_continua_legivel() {
+    fn the_second_region_on_the_same_page_stays_readable() {
         let mut m = GuestMemory::new();
         m.map("a", 0x100, vec![0x11; 16], true).unwrap();
         m.map("b", 0x110, vec![0x22; 16], true).unwrap();
         assert_eq!(m.read(0x100, 4).unwrap(), &[0x11; 4]);
         assert_eq!(m.read(0x110, 4).unwrap(), &[0x22; 4]);
-        assert!(m.read(0x10c, 8).is_err(), "o acesso não cruza região");
+        assert!(m.read(0x10c, 8).is_err(), "the access does not cross regions");
     }
 
     #[test]
-    fn o_resto_da_pagina_parcial_nao_pertence_a_regiao() {
+    fn the_rest_of_a_partial_page_is_not_part_of_the_region() {
         let mut m = GuestMemory::new();
         m.map("curta", 0, vec![0xab; 100], true).unwrap();
         assert!(m.read(98, 4).is_err());
