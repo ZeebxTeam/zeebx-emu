@@ -1,58 +1,60 @@
-//! Parser do `.mif` — o Module Information File, que descreve o que um módulo BREW oferece.
+//! Parser for the `.mif` — the Module Information File, which describes what a BREW module offers.
 //!
-//! O formato não é público. O que está aqui foi levantado comparando 24 arquivos reais: os
-//! `.mif` do BREW SDK 4.0.2 (cujos ClassIDs conhecemos pelos `.bid`), os módulos de sistema do
-//! simulador, os homebrew do OpenZeebo e os títulos do console.
+//! The format is not public. What is here was worked out by comparing 24 real files: the `.mif`
+//! files from BREW SDK 4.0.2 (whose ClassIDs we know from the `.bid` files), the simulator's system
+//! modules, the OpenZeebo homebrew and the console titles.
 //!
-//! Estrutura confirmada:
+//! Confirmed structure:
 //!
 //! ```text
 //! 0x00  u16 magic = 0x0011
-//! 0x02  u16 versão = 1
-//! 0x04  u16 (sempre 1)
-//! 0x06  u16 número de entradas do índice
-//! 0x08  u32 offset do índice          (0x20 em todos os arquivos vistos)
-//! 0x0c  u32 tamanho do índice         (entradas * 8)
-//! 0x10  u32 offset da tabela de seções
-//! 0x14  u32 número de seções
-//! 0x18  u32 offset da primeira seção
-//! 0x1c  u32 tamanho total das seções
+//! 0x02  u16 version = 1
+//! 0x04  u16 (always 1)
+//! 0x06  u16 number of index entries
+//! 0x08  u32 index offset              (0x20 in every file seen)
+//! 0x0c  u32 index size                (entries * 8)
+//! 0x10  u32 section table offset
+//! 0x14  u32 number of sections
+//! 0x18  u32 offset of the first section
+//! 0x1c  u32 total size of the sections
 //! ```
 //!
-//! A tabela de seções tem `n + 1` offsets: cada seção vai de `offs[i]` a `offs[i+1]`, e o
-//! último valor é o tamanho do arquivo.
+//! The section table has `n + 1` offsets: each section runs from `offs[i]` to `offs[i+1]`, and the
+//! last value is the file size.
 //!
-//! O registro de applet tem **20 bytes** e começa com o `AEECLSID`. Em todos os `.mif` de
-//! applet examinados existe exatamente uma seção desse tamanho. A regra foi validada contra
-//! valores conhecidos por outra fonte: `mediaplayer.mif` devolve `0x01010EF6`, o mesmo ClassID
-//! que a engenharia reversa da firmware do Zeebo registrou para o Media Player, e
-//! `274755.mif` (o Z-Wheel) devolve `0x01070798`, o App ID que a firmware chama de "TECTOY".
+//! The applet record is **20 bytes** long and starts with the `AEECLSID`. Every applet `.mif`
+//! examined has exactly one section of that size. The rule was validated against values known
+//! from another source: `mediaplayer.mif` returns `0x01010EF6`, the same ClassID that the reverse
+//! engineering of the Zeebo firmware recorded for the Media Player, and `274755.mif` (the Z-Wheel)
+//! returns `0x01070798`, the App ID the firmware calls "TECTOY".
 
 use std::fmt;
 
 const MAGIC: u16 = 0x0011;
-/// Tamanho do registro que descreve um applet.
+/// Size of the record that describes an applet.
 const APPLET_RECORD_LEN: u32 = 20;
-/// Tamanho do registro que cita uma classe: `<u32 ClassID> <u32 zero>`.
+/// Size of the record that names a class: `<u32 ClassID> <u32 zero>`.
 ///
-/// Ele aparece nos dois lados da mesma relação, com **bytes idênticos**: no `.mif` do jogo, que
-/// declara a classe de que depende, e no `.mif` do módulo que a fornece. Quem distingue não é o
-/// registro, é o arquivo em volta — ver [`MifFile::extensao`].
+/// It appears on both sides of the same relationship, with **identical bytes**: in the game's
+/// `.mif`, which declares the class it depends on, and in the `.mif` of the module that provides
+/// it. What tells them apart is not the record, it is the file around it — see
+/// [`MifFile::extension`].
 const CLASS_RECORD_LEN: u32 = 8;
-/// Palavras do registro de applet que são sempre zero.
+/// Words of the applet record that are always zero.
 ///
-/// O registro é `ClassID`, um zero, um número, outro zero e um campo que varia. São esses dois
-/// zeros que separam um registro de applet de outra seção que por acaso também tenha 20 bytes.
+/// The record is `ClassID`, a zero, a number, another zero and a field that varies. Those two
+/// zeros are what separate an applet record from some other section that happens to also be 20
+/// bytes long.
 const APPLET_ZEROS: [usize; 2] = [4, 12];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MifFile {
-    /// ClassIDs dos applets que o módulo expõe.
+    /// ClassIDs of the applets the module exposes.
     pub applets: Vec<u32>,
-    /// ClassIDs citados nos registros de classe: o que o módulo fornece, quando ele é uma
-    /// extensão, ou o que ele exige, quando é um applet.
+    /// ClassIDs named in the class records: what the module provides, when it is an extension,
+    /// or what it requires, when it is an applet.
     pub classes: Vec<u32>,
-    /// Limites de cada seção, como `(offset, tamanho)`.
+    /// Bounds of each section, as `(offset, size)`.
     pub sections: Vec<(u32, u32)>,
 }
 
@@ -65,9 +67,9 @@ pub enum MifError {
 impl fmt::Display for MifError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::BadMagic { found } => write!(f, "não parece um .mif (magic {found:#06x})"),
+            Self::BadMagic { found } => write!(f, "does not look like a .mif (magic {found:#06x})"),
             Self::Truncated { needed, len } => {
-                write!(f, ".mif truncado: precisa de {needed} bytes, tem {len}")
+                write!(f, "truncated .mif: needs {needed} bytes, has {len}")
             }
         }
     }
@@ -85,15 +87,14 @@ impl MifFile {
         let table_offset = read_u32(data, 0x10)? as usize;
         let section_count = read_u32(data, 0x14)? as usize;
 
-        // A tabela guarda n+1 offsets: o extra fecha a última seção.
+        // The table holds n+1 offsets: the extra one closes the last section.
         let mut bounds = Vec::with_capacity(section_count + 1);
         for i in 0..=section_count {
             bounds.push(read_u32(data, table_offset + i * 4)?);
         }
 
-        // Em todos os arquivos reais examinados o último limite é exatamente o tamanho do
-        // arquivo. Exigir isso evita que um `.mif` truncado passe adiante e simplesmente não
-        // reporte applet nenhum.
+        // In every real file examined the last bound is exactly the file size. Requiring it
+        // keeps a truncated `.mif` from slipping through and simply reporting no applet at all.
         if let Some(&last) = bounds.last() {
             if last as usize > data.len() {
                 return Err(MifError::Truncated {
@@ -121,10 +122,10 @@ impl MifFile {
             .filter(|&&(_, len)| len == CLASS_RECORD_LEN)
             .filter_map(|&(offset, _)| {
                 let clsid = read_u32(data, offset as usize).ok()?;
-                // O registro termina em zero, e há um de 8 bytes **todo** zerado nos arquivos
-                // reais — recusar os dois é o que impede uma lista com um `0x0` dentro.
-                let resto = read_u32(data, offset as usize + 4).ok()?;
-                (clsid != 0 && resto == 0).then_some(clsid)
+                // The record ends in zero, and the real files have an 8-byte one that is
+                // **entirely** zeroed — rejecting both is what keeps a `0x0` out of the list.
+                let rest = read_u32(data, offset as usize + 4).ok()?;
+                (clsid != 0 && rest == 0).then_some(clsid)
             })
             .collect();
 
@@ -135,11 +136,11 @@ impl MifFile {
         })
     }
 
-    /// As imagens do módulo — os ícones do título —, na ordem em que aparecem.
+    /// The module's images — the title's icons —, in the order they appear.
     ///
-    /// Uma seção de imagem começa com `u16` de comprimento **do próprio cabeçalho**, seguido do
-    /// tipo MIME terminado em zero; o arquivo vem logo depois. Os `.mif` reais gravam sempre 12
-    /// e `image/png`, `image/bmp` ou `image/jpg`.
+    /// An image section starts with a `u16` holding the length **of the header itself**, followed
+    /// by the zero-terminated MIME type; the file comes right after. Real `.mif` files always
+    /// write 12 and `image/png`, `image/bmp` or `image/jpg`.
     pub fn images<'d>(&self, data: &'d [u8]) -> Vec<&'d [u8]> {
         self.sections
             .iter()
@@ -154,26 +155,26 @@ impl MifFile {
             .collect()
     }
 
-    /// ClassID do applet principal — o que o emulador instancia.
+    /// ClassID of the main applet — the one the emulator instantiates.
     pub fn main_applet(&self) -> Option<u32> {
         self.applets.first().copied()
     }
 
-    /// As classes que este módulo **fornece**, quando ele é um módulo de extensão.
+    /// The classes this module **provides**, when it is an extension module.
     ///
-    /// Um módulo de extensão não tem applet: ele existe só para exportar classes, e o console o
-    /// carrega quando alguém pede uma delas. Dois títulos que temos dependem disso, e em ambos o
-    /// módulo da extensão vem dentro do próprio pacote:
+    /// An extension module has no applet: it exists only to export classes, and the console loads
+    /// it when someone asks for one of them. Two titles we have depend on this, and in both the
+    /// extension module ships inside the package itself:
     ///
-    /// | título | módulo | classe |
+    /// | title | module | class |
     /// |---|---|---|
     /// | Action Hero 3D | `mod/12875/imicro3d.mod` | `0x010292c3` |
     /// | Kingdom Hearts | `Kingdon Hearts/kh.mod` | `0x0102bbfc` |
     ///
-    /// O registro de classe é o mesmo nos dois `.mif` da relação, então "ter applet" é o que
-    /// separa quem pede de quem fornece. Sem essa distinção, o `.mif` do jogo se ofereceria
-    /// para atender a classe que ele próprio está pedindo.
-    pub fn extensao(&self) -> &[u32] {
+    /// The class record is the same in both `.mif` files of the relationship, so "having an
+    /// applet" is what separates the one asking from the one providing. Without that distinction,
+    /// the game's `.mif` would offer to serve the very class it is asking for.
+    pub fn extension(&self) -> &[u32] {
         if self.applets.is_empty() {
             &self.classes
         } else {
@@ -182,18 +183,18 @@ impl MifFile {
     }
 }
 
-/// Se a seção de 20 bytes em `offset` tem a forma de um registro de applet.
+/// Whether the 20-byte section at `offset` has the shape of an applet record.
 ///
-/// A regra era outra: exigir que o ClassID caísse na faixa `0x01xxxxxx` da Qualcomm. Ela
-/// funcionava para 62 dos 67 registros dos jogos que temos, e deixava de fora o Zenonia
-/// (`0xbf2e2021`) — que não abria por isso. A forma acerta os 67: pega os 62 de antes, mais o
-/// Zenonia e um homebrew de ClassID `0x12345678`, e continua recusando as três seções de 20
-/// bytes que não são applet nenhum (Prey Evil, Reckless Racing e Zeebo App, todas começando em
-/// `0x00xxfeff`).
+/// The rule used to be different: require the ClassID to fall in Qualcomm's `0x01xxxxxx` range.
+/// It worked for 62 of the 67 records in the games we have, and left out Zenonia (`0xbf2e2021`) —
+/// which would not open because of it. The shape gets all 67 right: it takes the 62 from before,
+/// plus Zenonia and a homebrew with ClassID `0x12345678`, and still rejects the three 20-byte
+/// sections that are not applets at all (Prey Evil, Reckless Racing and Zeebo App, all starting
+/// with `0x00xxfeff`).
 fn is_applet_record(data: &[u8], offset: usize) -> bool {
     APPLET_ZEROS
         .iter()
-        .all(|&campo| read_u32(data, offset + campo) == Ok(0))
+        .all(|&field| read_u32(data, offset + field) == Ok(0))
 }
 
 fn read_u16(data: &[u8], offset: usize) -> Result<u16, MifError> {
@@ -222,22 +223,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn as_imagens_saem_das_secoes_que_anunciam_um_tipo_mime() {
-        // O cabeçalho conta o próprio tamanho: ler o comprimento como se fosse só do texto
-        // deixaria dois bytes do arquivo para trás e nenhum decodificador aceitaria a imagem.
+    fn images_come_from_sections_that_declare_a_mime_type() {
+        // The header counts its own size: reading the length as if it covered only the text
+        // would leave two bytes of the file behind and no decoder would accept the image.
         let mut section = Vec::new();
         section.extend_from_slice(&12u16.to_le_bytes());
         section.extend_from_slice(b"image/png\0");
         section.extend_from_slice(b"CONTEUDO");
 
-        let mut outra = Vec::new();
-        outra.extend_from_slice(&12u16.to_le_bytes());
-        outra.extend_from_slice(b"text/plain");
-        outra.extend_from_slice(b"nao e imagem");
+        let mut other = Vec::new();
+        other.extend_from_slice(&12u16.to_le_bytes());
+        other.extend_from_slice(b"text/plain");
+        other.extend_from_slice(b"nao e imagem");
 
         let mut data = vec![0u8; 4];
         let mut sections = Vec::new();
-        for part in [&section, &outra] {
+        for part in [&section, &other] {
             sections.push((data.len() as u32, part.len() as u32));
             data.extend_from_slice(part);
         }
@@ -250,7 +251,7 @@ mod tests {
     }
 
     #[test]
-    fn secao_truncada_nao_vira_imagem() {
+    fn a_truncated_section_does_not_become_an_image() {
         let mif = MifFile {
             applets: Vec::new(),
             classes: Vec::new(),
@@ -259,7 +260,7 @@ mod tests {
         assert!(mif.images(&[0u8; 4]).is_empty());
     }
 
-    /// Monta um `.mif` mínimo com duas seções, sendo a segunda o registro de applet.
+    /// Builds a minimal `.mif` with two sections, the second being the applet record.
     fn mif_with_applet(clsid: u32) -> Vec<u8> {
         let table_offset = 0x20u32;
         let sections = [0x40u32, 0x50, 0x64];
@@ -274,15 +275,15 @@ mod tests {
             let at = table_offset as usize + i * 4;
             data[at..at + 4].copy_from_slice(&offset.to_le_bytes());
         }
-        // Seção 1: 0x40..0x50 (16 bytes, não é applet). Seção 2: 0x50..0x64 (20 bytes).
+        // Section 1: 0x40..0x50 (16 bytes, not an applet). Section 2: 0x50..0x64 (20 bytes).
         data[0x50..0x54].copy_from_slice(&clsid.to_le_bytes());
         data
     }
 
-    /// Monta um `.mif` mínimo com três seções de 8 bytes: um registro de classe, um zerado e
-    /// mais um. É a forma dos dois `.mif` de extensão reais, que trazem o registro seguido de
-    /// uma seção de 8 bytes toda zerada.
-    fn mif_de_extensao(clsid: u32, applet: Option<u32>) -> Vec<u8> {
+    /// Builds a minimal `.mif` with three sections of 8 bytes: a class record, a zeroed one and
+    /// one more. This is the shape of the two real extension `.mif` files, which carry the record
+    /// followed by an 8-byte section that is entirely zeroed.
+    fn extension_mif(clsid: u32, applet: Option<u32>) -> Vec<u8> {
         let table_offset = 0x20u32;
         let sections = [0x40u32, 0x48, 0x50, 0x64];
         let mut data = vec![0u8; 0x64];
@@ -293,67 +294,68 @@ mod tests {
             let at = table_offset as usize + i * 4;
             data[at..at + 4].copy_from_slice(&offset.to_le_bytes());
         }
-        // 0x40..0x48: o registro de classe. 0x48..0x50: os oito bytes zerados.
+        // 0x40..0x48: the class record. 0x48..0x50: the eight zeroed bytes.
         data[0x40..0x44].copy_from_slice(&clsid.to_le_bytes());
-        // 0x50..0x64: vinte bytes, que só viram applet se tiverem a forma de um.
+        // 0x50..0x64: twenty bytes, which only become an applet if they have the shape of one.
         if let Some(applet) = applet {
             data[0x50..0x54].copy_from_slice(&applet.to_le_bytes());
         } else {
-            // Quebra a forma do registro de applet pondo valor num dos campos que são zero.
+            // Breaks the applet record shape by putting a value in one of the fields that are zero.
             data[0x54..0x58].copy_from_slice(&1u32.to_le_bytes());
         }
         data
     }
 
-    /// O registro de 8 bytes é o que nomeia a classe de uma extensão. O de oito bytes **zerado**
-    /// que vem depois dele nos arquivos reais não pode entrar na lista: daria um `0x0` que se
-    /// ofereceria para atender qualquer pedido de ClassID zero.
+    /// The 8-byte record is what names an extension's class. The **zeroed** eight-byte one that
+    /// follows it in the real files must not make it into the list: it would yield a `0x0` that
+    /// would offer to serve any request for ClassID zero.
     #[test]
-    fn o_registro_de_classe_sai_e_o_zerado_nao() {
-        let mif = MifFile::parse(&mif_de_extensao(0x0102_92c3, None)).unwrap();
+    fn the_class_record_comes_out_and_the_zeroed_one_does_not() {
+        let mif = MifFile::parse(&extension_mif(0x0102_92c3, None)).unwrap();
         assert_eq!(mif.classes, vec![0x0102_92c3]);
     }
 
-    /// **A regra que separa quem fornece de quem pede.** Os dois `.mif` da relação trazem o
-    /// mesmo registro, com os mesmos bytes: o do jogo declarando a dependência e o da extensão
-    /// declarando o que fornece. Sem "ter applet" como critério, o manifesto do Action Hero 3D
-    /// se ofereceria para atender a `0x010292c3` que ele próprio está pedindo — e o emulador
-    /// chamaria o `AEEMod_Load` do jogo de novo, de dentro do despacho, para criá-la.
+    /// **The rule that separates the one providing from the one asking.** Both `.mif` files of
+    /// the relationship carry the same record, with the same bytes: the game's declaring the
+    /// dependency and the extension's declaring what it provides. Without "having an applet" as
+    /// the criterion, the Action Hero 3D manifest would offer to serve the `0x010292c3` it is
+    /// itself asking for — and the emulator would call the game's `AEEMod_Load` again, from
+    /// inside the dispatch, to create it.
     #[test]
-    fn so_o_mif_sem_applet_se_oferece_para_fornecer_a_classe() {
-        let extensao = MifFile::parse(&mif_de_extensao(0x0102_92c3, None)).unwrap();
-        assert_eq!(extensao.extensao(), &[0x0102_92c3]);
+    fn only_the_mif_without_an_applet_offers_to_provide_the_class() {
+        let extension = MifFile::parse(&extension_mif(0x0102_92c3, None)).unwrap();
+        assert_eq!(extension.extension(), &[0x0102_92c3]);
 
-        let jogo = MifFile::parse(&mif_de_extensao(0x0102_92c3, Some(0x0108_1970))).unwrap();
-        assert_eq!(jogo.applets, vec![0x0108_1970], "este é o do jogo");
-        assert_eq!(jogo.classes, vec![0x0102_92c3], "e ele cita a mesma classe");
+        let game = MifFile::parse(&extension_mif(0x0102_92c3, Some(0x0108_1970))).unwrap();
+        assert_eq!(game.applets, vec![0x0108_1970], "this is the game's");
+        assert_eq!(game.classes, vec![0x0102_92c3], "and it names the same class");
         assert!(
-            jogo.extensao().is_empty(),
-            "mas não se oferece para fornecê-la"
+            game.extension().is_empty(),
+            "but does not offer to provide it"
         );
     }
 
     #[test]
-    fn extrai_o_classid_do_applet() {
+    fn extracts_the_applet_classid() {
         let mif = MifFile::parse(&mif_with_applet(0x0100_9ff0)).unwrap();
         assert_eq!(mif.applets, vec![0x0100_9ff0]);
         assert_eq!(mif.main_applet(), Some(0x0100_9ff0));
     }
 
-    /// O Zenonia declara o applet dele com ClassID `0xbf2e2021`, e um homebrew do conjunto usa
-    /// `0x12345678`. A regra antiga exigia a faixa `0x01xxxxxx` da Qualcomm e recusava os dois:
-    /// o Zenonia não abria por causa disso.
+    /// Zenonia declares its applet with ClassID `0xbf2e2021`, and a homebrew in the set uses
+    /// `0x12345678`. The old rule required Qualcomm's `0x01xxxxxx` range and rejected both:
+    /// Zenonia would not open because of it.
     #[test]
-    fn aceita_classid_fora_da_faixa_da_qualcomm() {
+    fn accepts_classid_outside_the_qualcomm_range() {
         let mif = MifFile::parse(&mif_with_applet(0xbf2e_2021)).unwrap();
         assert_eq!(mif.main_applet(), Some(0xbf2e_2021));
     }
 
-    /// Nem toda seção de 20 bytes é applet: o Prey Evil, o Reckless Racing e o Zeebo App têm
-    /// uma que começa em `0x00xxfeff` e não é. O que as separa é a forma — o registro de applet
-    /// tem zeros no segundo e no quarto campo.
+    /// Not every 20-byte section is an applet: Prey Evil, Reckless Racing and Zeebo App have one
+    /// that starts with `0x00xxfeff` and is not. What separates them is the shape — the applet
+    /// record has zeros in the second and fourth fields.
     #[test]
-    fn ignora_secao_de_20_bytes_sem_forma_de_applet() {
+    fn ignores_a_20_byte_section_not_shaped_like_an_applet() {
         let mut data = mif_with_applet(0x0050_feff);
         data[0x54..0x58].copy_from_slice(&0x1234_5678u32.to_le_bytes());
         let mif = MifFile::parse(&data).unwrap();
@@ -362,13 +364,13 @@ mod tests {
     }
 
     #[test]
-    fn le_os_limites_das_secoes() {
+    fn reads_the_section_bounds() {
         let mif = MifFile::parse(&mif_with_applet(0x0100_9ff0)).unwrap();
         assert_eq!(mif.sections, vec![(0x40, 0x10), (0x50, 20)]);
     }
 
     #[test]
-    fn recusa_arquivo_com_magic_errado() {
+    fn rejects_file_with_wrong_magic() {
         let mut data = mif_with_applet(0x0100_9ff0);
         data[0] = 0xff;
         assert!(matches!(
@@ -378,7 +380,7 @@ mod tests {
     }
 
     #[test]
-    fn recusa_arquivo_truncado() {
+    fn rejects_truncated_file() {
         let data = mif_with_applet(0x0100_9ff0);
         assert!(matches!(
             MifFile::parse(&data[..0x30]),
