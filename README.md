@@ -1,46 +1,49 @@
 # Zeebx 
 
-Emulador do Zeebo, o console que a TecToy lançou em 2009 no Brasil e no México.
+🇧🇷 [Leia em português](README.pt-BR.md)
 
-O Zeebo era digital-only: os jogos vinham da loja da TecToy, que saiu do ar. Sobraram cerca de
-60 títulos que só rodam em quem ainda tem o aparelho ou por meio de modding no console. 
-Este projeto existe para ajudar a preservar essas pérolas que fizeram parte da nossa história.
+An emulator for the Zeebo, the console TecToy launched in 2009 in Brazil and Mexico.
 
-Em desenvolvimento. Hoje 56 dos 62 títulos de teste passam do carregamento e desenham.
+The Zeebo was digital-only: the games came from TecToy's store, which went offline. About 60
+titles are left, and they only run for those who still have the console or through modding on it.
+This project exists to help preserve these gems that were part of our history.
 
-## Links úteis
+In development. Today 56 of the 62 test titles get past loading and draw.
 
-[Servidor Discord: https://discord.gg/D96HjsKTPa](https://discord.gg/D96HjsKTPa)
+## Useful links
+
+[Discord server: https://discord.gg/D96HjsKTPa](https://discord.gg/D96HjsKTPa)
 
 [GitHub: https://github.com/ZeebxTeam](https://github.com/ZeebxTeam)
 
-## Instalação
+## Installation
 
-As versões prontas ficam nas [releases](https://github.com/ZeebxTeam/zeebx-emu/releases): o
-instalador do Windows, o `.dmg` do macOS, o `.deb` e o AppImage do Linux, a APK do Android e o core
-Libretro. A tabela de qual arquivo é qual está em [Instaladores e releases](#instaladores-e-releases).
+The ready-made builds are in the [releases](https://github.com/ZeebxTeam/zeebx-emu/releases): the
+Windows installer, the macOS `.dmg`, the Linux `.deb` and AppImage, the Android APK and the
+Libretro core. The table of which file is which is in
+[Installers and releases](#installers-and-releases).
 
-No **macOS** e no **Linux** dá para instalar pelo [Homebrew](https://brew.sh), com o
-[tap do projeto](https://github.com/ZeebxTeam/homebrew-tap):
+On **macOS** and **Linux** you can install it through [Homebrew](https://brew.sh), with the
+[project's tap](https://github.com/ZeebxTeam/homebrew-tap):
 
 ```bash
 brew install --cask zeebxteam/tap/zeebx-qt
 ```
 
-No macOS vai para Aplicativos (pede o macOS 13 ou mais novo); no Linux, o AppImage vai para
-`~/Applications/zeebx-qt.AppImage`. A interface antiga, em egui, foi até a 0.4.2: o cask
-`zeebxteam/tap/zeebx` fica nela.
+On macOS it goes to Applications (it needs macOS 13 or newer); on Linux, the AppImage goes to
+`~/Applications/zeebx-qt.AppImage`. The old egui interface lasted until 0.4.2: the
+`zeebxteam/tap/zeebx` cask stays on it.
 
-O emulador se atualiza sozinho no AppImage, no instalador do Windows e no `.app` do macOS: quando
-sai uma versão nova, ele avisa e oferece "Atualizar agora". Nas configurações, em Atualizações, dá
-para desligar a procura ao abrir e escolher se as versões de pré-lançamento contam.
+The emulator updates itself in the AppImage, the Windows installer and the macOS `.app`: when a
+new version comes out, it tells you and offers "Update now". In the settings, under Updates, you
+can turn off the check on startup and choose whether pre-release versions count.
 
-# Notas para Colaboradores
+# Notes for Contributors
 
-Por favor, ao abrir uma PR, sempre aponte para a branch development ou a branch correspondente ao ajuste que está sendo feito.
-Não abra PR para a branch master, visto que é onde organizamos e concentramos nossos CI de build de relases.
+Please, when opening a PR, always target the development branch or the branch matching the change being made.
+Do not open a PR against the master branch, since that is where we organize and concentrate our release build CI.
 
-Para novos targets de frontend, siga sempre a regrinha de mantê-lo dentro da pasta "frontends", exemplo:
+For new frontend targets, always follow the little rule of keeping it inside the "frontends" folder, for example:
 frontends/android/
 frontends/ios/
 frontends/headless/
@@ -48,49 +51,50 @@ frontends/libretro/
 frontends/cli/
 frontends/qt-standalone/
 
-E também ajuste o [.github/workflows/release.yml](release.yml) para apontar um alvo de build durante nosso CI, assim garante que o target seja fornecido junto durante a criação da release!
+And also adjust [.github/workflows/release.yml](.github/workflows/release.yml) to point to a build target during our CI, so that the target is guaranteed to ship along when the release is created!
 
-Esses são detalhes sugeridos apenas para manter a organização do nosso repositório!
+These are suggested details only to keep our repository organized!
 
-## Como funciona
+## How it works
 
-Emular Zeebo não é emular um console: é reimplementar o Qualcomm BREW 4.0.2. O jogo é um binário
-ARM que nunca toca hardware — ele chama interfaces do sistema por tabelas de ponteiros. Então o
-caminho é executar o código ARM num núcleo emulado e atender cada chamada de API no host.
+Emulating the Zeebo is not emulating a console: it is reimplementing Qualcomm BREW 4.0.2. The game
+is an ARM binary that never touches hardware — it calls system interfaces through pointer tables.
+So the way to go is to run the ARM code on an emulated core and serve each API call on the host.
 
-As vtables que entregamos ao jogo apontam para endereços que **não existem** no mapa de memória.
-Quando o jogo chama um método, o núcleo aborta a busca de instrução e o endereço nos diz qual
-interface e qual método foram pedidos. Não há stub, nem código de cola.
+The vtables we hand the game point to addresses that **do not exist** in the memory map. When the
+game calls a method, the core aborts the instruction fetch and the address tells us which
+interface and which method were requested. There is no stub, and no glue code.
 
-O desenho completo está em [ARCHITECTURE.md](ARCHITECTURE.md).
+The full design is in [ARCHITECTURE.md](ARCHITECTURE.md).
 
-## Compatibilidade
+## Compatibility
 
-A maioria das ROMs rodam sem problemas, alguns jogos podem apresentar travamentos antes da inicialização ou durante a execução.
+Most ROMs run without problems; some games may hang before starting up or while running.
 
-Jogos que utilizam do Boomerang podem ser jogados usando Wii Remote e seus sensores de movimento!
+Games that use the Boomerang can be played with a Wii Remote and its motion sensors!
 
-Jogos 3D são compatíveis com recursos de resolução experimentais, podendo atingir resoluções de até 4k em 16:9.
+3D games support experimental resolution features, and can reach resolutions of up to 4K in 16:9.
 
-O estado de cada título, com os endereços de cada parada, está em
-[COMPATIBILIDADE.md](COMPATIBILIDADE.md).
+The state of each title, with the addresses of each stop, is in
+[COMPATIBILITY.md](COMPATIBILITY.md).
 
-Para frontends como Android e Libretro, essa listagem de compatibilidade pode não se aplicar. Pedimos que reportem quaisquer problemas nessas versões também.
+For frontends such as Android and Libretro, this compatibility list may not apply. We ask that you report any problems on those versions too.
 
-## Compilando
+## Building
 
-Rust 1.88 ou mais novo.
+Rust 1.88 or newer.
 
 ```bash
 cargo build --release
 ```
 
-### O que mais precisa estar instalado
+### What else needs to be installed
 
-A interface é o `zeebx-qt`, em **Qt 6** (`frontends/qt-standalone`, Qt 6.4 ou mais novo). A linha de
-comando — `zeebx run`, `zeebx sessao`, `zeebx bench`, para medir e depurar — é o `zeebx`
-(`frontends/cli`), sem Qt. Os dois usam dependências nativas para `dynarmic`, áudio e controles; o
-Qt só a interface pede. A interface em egui saiu depois da 0.4.2. Debian, Ubuntu e derivados:
+The interface is `zeebx-qt`, in **Qt 6** (`frontends/qt-standalone`, Qt 6.4 or newer). The
+command line — `zeebx run`, `zeebx session`, `zeebx bench`, for measuring and debugging — is
+`zeebx` (`frontends/cli`), without Qt. Both use native dependencies for `dynarmic`, audio and
+controllers; only the interface asks for Qt. The egui interface was removed after 0.4.2. Debian,
+Ubuntu and derivatives:
 
 ```bash
 sudo apt install build-essential cmake ninja-build pkg-config python3 clang libclang-dev \
@@ -101,183 +105,186 @@ sudo apt install build-essential cmake ninja-build pkg-config python3 clang libc
     qml6-module-qtquick-templates qml6-module-qtquick-window qml6-module-qtqml-workerscript
 ```
 
-No Arch: `qt6-base qt6-declarative qt6-wayland`. O build acha o Qt pelo `qmake6` ou pelo `qmake`;
-para usar outro, aponte `QMAKE` para ele.
+On Arch: `qt6-base qt6-declarative qt6-wayland`. The build finds Qt through `qmake6` or `qmake`;
+to use another one, point `QMAKE` at it.
 
 ```bash
-cargo build --release -p zeebx-standalone-qt     # target/release/zeebx-qt, a interface
-cargo build --release -p zeebx-cli               # target/release/zeebx, a linha de comando
+cargo build --release -p zeebx-standalone-qt     # target/release/zeebx-qt, the interface
+cargo build --release -p zeebx-cli               # target/release/zeebx, the command line
 ```
 
-O core Libretro não linka a interface desktop nem bibliotecas de áudio/controle do host:
+The Libretro core links neither the desktop interface nor the host audio/controller libraries:
 
 ```bash
 cargo build --release -p zeebx-libretro
 ```
 
-O core da PlayStation Vita é uma biblioteca estática, no mesmo molde do Switch. O script e o
-que o RetroArch espera dele estão em [`frontends/vita/compilar.sh`](frontends/vita/compilar.sh).
+The PlayStation Vita core is a static library, on the same pattern as the Switch one. The script
+and what RetroArch expects of it are in [`frontends/vita/build.sh`](frontends/vita/build.sh).
 
-O aplicativo que abre sozinho na Vita, sem RetroArch, é o VPK de
-[`frontends/vita-standalone`](frontends/vita-standalone/LEIAME.md).
+The app that opens on its own on the Vita, without RetroArch, is the VPK from
+[`frontends/vita-standalone`](frontends/vita-standalone/README.md).
 
-Para conferir dependências antes do build standalone:
+To check the dependencies before the standalone build:
 
 ```bash
-python3 ferramentas/prepara_build.py
+python3 tools/check_build_deps.py
 ```
 
-### Instaladores e releases
+### Installers and releases
 
-Os instaladores saem do [cargo-packager](https://github.com/crabnebula-dev/cargo-packager), com a
-configuração em `[package.metadata.packager]` no `Cargo.toml` de `frontends/qt-standalone/`, rodado
-de dentro da pasta dele. **Ele não implanta o Qt**: cada formato tem o passo dele, e o
-[`release.yml`](.github/workflows/release.yml) é a receita completa.
+The installers come out of [cargo-packager](https://github.com/crabnebula-dev/cargo-packager),
+with the configuration in `[package.metadata.packager]` in the `Cargo.toml` of
+`frontends/qt-standalone/`, run from inside that folder. **It does not deploy Qt**: each format
+has its own step, and [`release.yml`](.github/workflows/release.yml) is the complete recipe.
 
-- **`.deb`**: usa o Qt do sistema, então precisa ser montado contra ele — no Ubuntu 24.04, com os
-  pacotes acima: `cargo packager --release --formats deb`.
-- **AppImage**: leva o próprio Qt, pelo `linuxdeploy-plugin-qt`, com `QMAKE` apontando o Qt,
-  `QML_SOURCES_PATHS` para `frontends/qt-standalone/qml`, `EXTRA_PLATFORM_PLUGINS=libqwayland.so`
-  e `EXTRA_QT_MODULES=waylandcompositor`. Monte num Ubuntu 22.04 com o Qt do `aqtinstall`, como o
-  CI: no Arch, o `strip` do linuxdeploy não reconhece as bibliotecas do sistema, e o Qt de lá traz
-  plugins com dependências que o linuxdeploy não acha.
+- **`.deb`**: uses the system Qt, so it has to be built against it — on Ubuntu 24.04, with the
+  packages above: `cargo packager --release --formats deb`.
+- **AppImage**: carries its own Qt, through `linuxdeploy-plugin-qt`, with `QMAKE` pointing to Qt,
+  `QML_SOURCES_PATHS` set to `frontends/qt-standalone/qml`, `EXTRA_PLATFORM_PLUGINS=libqwayland.so`
+  and `EXTRA_QT_MODULES=waylandcompositor`. Build it on Ubuntu 22.04 with Qt from `aqtinstall`,
+  like the CI: on Arch, linuxdeploy's `strip` does not recognize the system libraries, and the Qt
+  there brings plugins with dependencies linuxdeploy cannot find.
 - **Windows**: `windeployqt --release --no-translations --qmldir frontends/qt-standalone/qml
-  --dir target/qt-implantado target/release/zeebx-qt.exe`, e depois `--formats nsis`.
-- **macOS**: `--formats app`, `macdeployqt` no `.app`, a assinatura ad-hoc refeita com
-  `codesign --force --deep --sign -`, e o `.dmg` pelo `hdiutil`.
+  --dir target/qt-implantado target/release/zeebx-qt.exe`, and then `--formats nsis`.
+- **macOS**: `--formats app`, `macdeployqt` on the `.app`, the ad-hoc signature redone with
+  `codesign --force --deep --sign -`, and the `.dmg` through `hdiutil`.
 
-Os arquivos ficam em `target/pacotes/`.
+The files end up in `target/pacotes/`.
 
-Uma tag de versão (`v0.1.0` ou `0.1.0`) enviada ao GitHub dispara o
-[`release.yml`](.github/workflows/release.yml), que monta a release como rascunho, com o título
-igual à tag. O emulador procura versões novas nessas releases ao abrir.
+A version tag (`v0.1.0` or `0.1.0`) pushed to GitHub triggers
+[`release.yml`](.github/workflows/release.yml), which assembles the release as a draft, with the
+title equal to the tag. The emulator looks for new versions in these releases when it opens.
 
-São dois formatos em cada um dos quatro sistemas, e o nome do arquivo diz qual é qual:
+There are two formats on each of the four systems, and the file name says which is which:
 
 | | |
 |---|---|
-| `zeebx-standalone-qt-linux-x86_64.deb`, `.AppImage` | o emulador com a interface, para instalar |
-| `zeebx-standalone-qt-windows-x86_64-setup.exe` | idem, no Windows |
-| `zeebx-standalone-qt-macos-arm64.dmg`, `-x86_64.dmg` | idem, nos dois Macs |
-| `zeebx-headless-<sistema>.zip` | o binário sem interface, com o `config.ini` e o leia-me |
-| `zeebx-android-arm64-v8a.apk` | o aplicativo de Android |
-| `zeebx-ios-simulator.zip` | o simulador e o leia-me |
-| `zeebx-ios.zip` | o IPA do AltStore clássico e o leia-me |
+| `zeebx-standalone-qt-linux-x86_64.deb`, `.AppImage` | the emulator with the interface, to install |
+| `zeebx-standalone-qt-windows-x86_64-setup.exe` | same, on Windows |
+| `zeebx-standalone-qt-macos-arm64.dmg`, `-x86_64.dmg` | same, on both Macs |
+| `zeebx-headless-<system>.zip` | the binary without an interface, with the `config.ini` and the readme |
+| `zeebx-android-arm64-v8a.apk` | the Android app |
+| `zeebx-ios-simulator.zip` | the simulator build and the readme |
+| `zeebx-ios.zip` | the IPA for classic AltStore and the readme |
 
-No macOS, a primeira abertura avisa que a Apple não pôde verificar o Zeebx: esta build é assinada
-ad-hoc, e não pela Apple. Ela se libera em Ajustes do Sistema > Privacidade e Segurança > "Abrir
-Mesmo Assim", ou com `xattr -dr com.apple.quarantine "/Applications/Zeebx.app"` depois de arrastar
-para Aplicativos (o do Qt se chama `Zeebx Qt.app`). A imagem traz um `LEIA-ME.txt` ao lado do aplicativo. Em Mac com chip da Apple,
-use o `macos-arm64`: o `macos-x86_64` roda pelo Rosetta, e foi nele que os jogos pararam na issue 53.
+On macOS, the first launch warns that Apple could not verify Zeebx: this build is signed ad-hoc,
+not by Apple. It is unblocked in System Settings > Privacy & Security > "Open Anyway", or with
+`xattr -dr com.apple.quarantine "/Applications/Zeebx.app"` after dragging it to Applications (the
+Qt one is called `Zeebx Qt.app`). The image carries a `README.txt` next to the app. On a Mac with
+Apple silicon, use `macos-arm64`: `macos-x86_64` runs through Rosetta, and that was where the
+games stopped in issue 53.
 
-A APK sai assinada com a **chave de depuração**, que é a que o Gradle gera sozinho: serve para
-instalar de lado (`adb install`), não para a Play Store — aquela pede a chave de publicação, que
-não pode morar num repositório público. O mesmo
-[`compilar.sh`](frontends/android/compilar.sh) que se usa na máquina é o que roda no CI; ele
-aceita o `ANDROID_SDK_ROOT` que os runners exportam e o `gradle` que estiver no caminho.
+The APK is signed with the **debug key**, which is the one Gradle generates by itself: it is good
+for sideloading (`adb install`), not for the Play Store — that one requires the release key,
+which cannot live in a public repository. The same [`build.sh`](frontends/android/build.sh) used
+on a local machine is the one that runs in CI; it accepts the `ANDROID_SDK_ROOT` the runners
+export and whatever `gradle` is on the path.
 
-O iOS sai de um Mac com Xcode. O núcleo vira uma biblioteca estática e o Xcode monta o `.app`:
+iOS comes out of a Mac with Xcode. The core becomes a static library and Xcode builds the `.app`:
 
 ```bash
-./frontends/ios/compilar.sh --app
+./frontends/ios/build.sh --app
 ```
 
-O simulador é arm64. No aparelho o mesmo script com `--app-aparelho` pede um time de
-desenvolvimento (`DEVELOPMENT_TEAM`) para instalar direto; sem ele, o `.app` sai sem assinatura
-e o `--pacote` o coloca, como `zeebx-ios.ipa`, dentro de `zeebx-ios.zip`, para o AltStore clássico
-assinar com um Apple ID. Cada zip traz o seu `LEIA-ME.txt`: o do simulador e o do aparelho. O iOS não deixa o
-processo mapear código executável, então nesse alvo o núcleo é o interpretador, não o Dynarmic.
-Ver [`frontends/ios/LEIAME.md`](frontends/ios/LEIAME.md).
+The simulator build is arm64. For the device, the same script with `--app-device` asks for a
+development team (`DEVELOPMENT_TEAM`) to install directly; without it, the `.app` comes out
+unsigned and `--package` puts it, as `zeebx-ios.ipa`, inside `zeebx-ios.zip`, for classic
+AltStore to sign with an Apple ID. Each zip carries its own `README.txt`: the simulator one, with
+the build inside a `simulator/` folder, and the device one. iOS does not let the process map
+executable code, so on this target the core is the interpreter, not Dynarmic. See
+[`frontends/ios/README.md`](frontends/ios/README.md).
 
-## Usando
+## Using it
 
-Sem argumentos, abre a interface. Pela linha de comando:
+With no arguments, it opens the interface. From the command line:
 
 ```bash
 cargo run --release -- run "roms/Quake.zip" --window
 ```
 
-Zips são extraídos para um cache e o `.mod` certo é escolhido sozinho. `--seconds=N` define
-quantos segundos de tempo virtual emular quando não há janela; com janela, roda até você fechar.
+Zips are extracted to a cache and the right `.mod` is picked automatically. `--seconds=N` sets
+how many seconds of virtual time to emulate when there is no window; with a window, it runs until
+you close it.
 
-Os controles no teclado:
+The keyboard controls:
 
-| Tecla | Controle do Zeebo |
+| Key | Zeebo control |
 |---|---|
-| Setas | direcional |
-| Z, X ou Espaço, C, V | botões 1, 2, 3 e 4 |
-| Q, W | ZL e ZR |
-| F, G | analógico esquerdo, direito |
+| Arrows | D-pad |
+| Z, X or Space, C, V | buttons 1, 2, 3 and 4 |
+| Q, W | ZL and ZR |
+| F, G | left, right analog stick |
 | H, Backspace, Enter | HOME |
 
-O `run` informa onde o jogo parou, o que ele pediu e não temos, e o log que os próprios
-desenvolvedores deixaram no binário — por `DBGPRINTF` e por semihosting do ARM. Esse relatório é
-o backlog do projeto. As opções de depuração estão em [ARCHITECTURE.md](ARCHITECTURE.md).
+`run` reports where the game stopped, what it asked for that we don't have, and the log the
+developers themselves left in the binary — through `DBGPRINTF` and through ARM semihosting. That
+report is the project's backlog. The debugging options are in [ARCHITECTURE.md](ARCHITECTURE.md).
 
-### Com um frontend seu
+### With your own frontend
 
-Quem já tem um frontend — um que simula a carcaça do console, uma estante de jogos, um gabinete
-de fliperama — não quer a interface do Zeebx por cima da tela que ele mesmo montou. Para isso há
-um binário sem interface nenhuma, configurado por um `config.ini`:
+Whoever already has a frontend — one that simulates the console's shell, a game shelf, an arcade
+cabinet — does not want Zeebx's interface on top of the screen they built themselves. For that
+there is a binary with no interface at all, configured by a `config.ini`:
 
 ```bash
 cargo build --release -p zeebx-headless
 ./target/release/zeebx-headless "roms/Quake.zip"
 ```
 
-O jogo é obrigatório e não há padrão: este binário é chamado por outro programa, que sabe o que
-quer abrir. Na primeira execução ele escreve um `config.ini` completo e comentado, e diz onde.
-As opções e as chaves do arquivo são em inglês, como os comandos; os comentários são em
-português.
+The game is required and there is no default: this binary is called by another program, which
+knows what it wants to open. On the first run it writes a complete, commented `config.ini`, and
+says where. The options and the keys in the file are in English, like the commands, and so are
+the comments.
 
-Ele abre uma janela só com o jogo — ou nenhuma, mandando os quadros por um cano para o seu
-programa pintar. Gráficos, áudio e controles saem dos mesmos campos que a interface grava, só
-que em INI. Ver [`frontends/headless/LEIAME.md`](frontends/headless/LEIAME.md).
+It opens a window with only the game — or none, sending the frames through a pipe for your
+program to paint. Graphics, audio and controllers come from the same fields the interface saves,
+only in INI. See [`frontends/headless/README.md`](frontends/headless/README.md).
 
-## Core Libretro e muOS
+## Libretro core and muOS
 
-O core Libretro é empacotado com o `.info` e pode ser instalado no RetroArch. O cartão muOS usa o
-core AArch64 em `opt/muos/share/core` e o banco MIDI é opcional. A instalação documentada está em
-[`docs/libretro/LIBRETRO_PLAN.md`](docs/libretro/LIBRETRO_PLAN.md). A playlist, o DAT e as capas de
-Zeebo são gerados pelas ferramentas da pasta `ferramentas/`.
+The Libretro core is packaged with the `.info` and can be installed in RetroArch. The muOS card
+uses the AArch64 core in `opt/muos/share/core`, and the MIDI soundfont is optional. The
+documented installation is in [`docs/libretro/LIBRETRO_PLAN.md`](docs/libretro/LIBRETRO_PLAN.md).
+The Zeebo playlist, DAT and covers are generated by the tools in the `tools/` folder.
 
-## Plataformas
+## Platforms
 
-Linux, Windows e macOS. Mobile está nos planos, mas o foco agora é no desktop!
+Linux, Windows and macOS. Mobile is in the plans, but the focus right now is on desktop!
 
-## Jogos
+## Games
 
-O repositório não distribui jogos. Coloque os seus em `roms/`, que é ignorada pelo git ou em qualquer outra pasta, e defina nas configurações do programa.
+The repository does not distribute games. Put yours in `roms/`, which git ignores, or in any other folder, and set it in the program's settings.
 
-## Documentação
+## Documentation
 
-- [ARCHITECTURE.md](ARCHITECTURE.md) — como o emulador é feito
-- [docs/](docs/README.md) — a pesquisa: o console, a plataforma BREW, os formatos de arquivo e o
-  estado da arte da emulação de Zeebo
-- [docs/implementacao/](docs/implementacao/README.md) — cada subsistema, com as decisões e o
-  porquê de cada uma
-- [TODO.md](TODO.md) — o diário de bordo: o que está pronto, o que falta e o que já custou caro
+- [ARCHITECTURE.md](ARCHITECTURE.md) — how the emulator is built
+- [docs/](docs/README.md) — the research: the console, the BREW platform, the file formats and
+  the state of the art of Zeebo emulation
+- [docs/implementation/](docs/implementation/README.md) — each subsystem, with the decisions and
+  the reason for each one
+- [TODO.md](TODO.md) — the logbook: what is done, what is missing and what has already cost dearly
 
-## Licença
+## License
 
-O código do Zeebx é **GPL-2.0-or-later**: o texto da GPLv2 está em [LICENSE](LICENSE).
+Zeebx's code is **GPL-2.0-or-later**: the GPLv2 text is in [LICENSE](LICENSE).
 
-**Os binários que saem na release são distribuídos sob a GPLv3**, com o texto em
-[LICENSE-GPL3](LICENSE-GPL3). Isso não é uma troca de licença: todos eles ligam bibliotecas que
-são só Apache-2.0 (`ab_glyph`, `sevenz-rust2`, `zopfli`, `cpal`, `winit`…), e a Apache-2.0 combina
-com a GPLv3 mas não com a GPLv2. O "or later" é o que permite essa combinação. O frontend Qt já
-seria GPLv3 de qualquer forma, pelo Qt (ver
-[21-migracao-para-qt.md](docs/implementacao/21-migracao-para-qt.md)).
+**The binaries that ship in the release are distributed under GPLv3**, with the text in
+[LICENSE-GPL3](LICENSE-GPL3). This is not a license change: all of them link libraries that are
+Apache-2.0 only (`ab_glyph`, `sevenz-rust2`, `zopfli`, `cpal`, `winit`…), and Apache-2.0 is
+compatible with GPLv3 but not with GPLv2. The "or later" is what allows this combination. The Qt
+frontend would be GPLv3 anyway, because of Qt (see
+[21-qt-migration.md](docs/implementation/21-qt-migration.md)).
 
-Quem quiser o Zeebx sob a GPLv2 pode compilar o código, mas não com essas dependências.
+Whoever wants Zeebx under GPLv2 can build the code, but not with those dependencies.
 
 
-## Quem faz o Zeebx
+## Who makes Zeebx
 
-Todo mundo que já contribuiu com código para o Zeebx. A lista completa está na
-[aba de contribuidores](https://github.com/ZeebxTeam/zeebx-emu/graphs/contributors) do GitHub.
+Everyone who has ever contributed code to Zeebx. The full list is in GitHub's
+[contributors tab](https://github.com/ZeebxTeam/zeebx-emu/graphs/contributors).
 
-<!-- contribuidores -->
+<!-- contributors -->
 <table>
   <tr>
     <td align="center" valign="top" width="16.67%"><a href="https://github.com/rebquaker"><img src="https://avatars.githubusercontent.com/u/329117678?v=4&s=100" width="100px;" alt="rebquaker"/><br /><sub><b>rebquaker</b></sub></a></td>
@@ -288,14 +295,14 @@ Todo mundo que já contribuiu com código para o Zeebx. A lista completa está n
     <td align="center" valign="top" width="16.67%"><a href="https://github.com/maskofsin"><img src="https://avatars.githubusercontent.com/u/171617836?v=4&s=100" width="100px;" alt="maskofsin"/><br /><sub><b>maskofsin</b></sub></a></td>
   </tr>
 </table>
-<!-- /contribuidores -->
+<!-- /contributors -->
 
-## Menções
+## Thanks
 
-- **tripleoxygen** — engenharia reversa de hardware e firmware do Zeebo, e o material público
-  que torna este projeto possível :)
-- **[Requeijaum](https://github.com/requeijaum)** — grande suporte ao entendimento de boa parte do
-  BREW e resolução de bugs
-- Os grupos **Zeebo Clube** (Facebook) e **Zeebo Eterno** (Telegram), pelas comparações com o
-  console real que trazem fidelidade ao projeto, e toda a comunidade Zeebo que vem apoiando,
-  testando e dando feedback desde o início <3
+- **tripleoxygen** — reverse engineering of the Zeebo's hardware and firmware, and the public
+  material that makes this project possible :)
+- **[Requeijaum](https://github.com/requeijaum)** — great support in understanding a good part of
+  BREW and in fixing bugs
+- The **Zeebo Clube** (Facebook) and **Zeebo Eterno** (Telegram) groups, for the comparisons with
+  the real console that bring fidelity to the project, and the whole Zeebo community that has been
+  supporting, testing and giving feedback since the beginning <3
