@@ -1,7 +1,7 @@
-/* fchown e readlink existem no cabeçalho da newlib da Vita e não na libc.
- * O sqlite guarda o endereço dos dois na tabela de syscalls. O processo do
- * RetroArch não é root, então o fchown não chega a ser chamado; um readlink
- * que falha é o que o sqlite trata como "este caminho não é um symlink". */
+/* fchown and readlink exist in the Vita newlib header but not in the libc.
+ * sqlite stores the address of both in its syscall table. The RetroArch
+ * process is not root, so fchown never actually gets called; a readlink
+ * that fails is what sqlite treats as "this path is not a symlink". */
 #include <errno.h>
 #include <stddef.h>
 #include <sys/types.h>

@@ -1,11 +1,11 @@
-//! Glifos 8×8 de U+0000 a U+007F.
+//! 8×8 glyphs from U+0000 to U+007F.
 //!
-//! Domínio público: o `font8x8` de Daniel Hepper, remontado da fonte VGA de domínio
-//! público da IBM. A lista é desenhada no framebuffer, e uma TTF só para o menu
-//! carregaria o `ab_glyph` e um arquivo a mais. O bit menos significativo de cada
-//! byte é o pixel da esquerda. O acento some na hora de desenhar: `apresentacao`
-//! reduz "ã" a "a".
-pub static FONTE: [[u8; 8]; 128] = [
+//! Public domain: Daniel Hepper's `font8x8`, reassembled from IBM's public-domain
+//! VGA font. The list is drawn into the framebuffer, and a TTF just for the menu
+//! would bring in `ab_glyph` and one more file. The least significant bit of each
+//! byte is the leftmost pixel. Accents are dropped at draw time: `presentation`
+//! reduces "ã" to "a".
+pub static FONT: [[u8; 8]; 128] = [
     [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
     [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
     [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],

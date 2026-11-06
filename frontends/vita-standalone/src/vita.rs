@@ -1,11 +1,12 @@
-//! O aparelho: framebuffer, controle, alto-falante e a pasta `ux0:`.
+//! The device: framebuffer, controller, speaker and the `ux0:` folder.
 //!
-//! O preenchimento vai para a placa quando o vitaGL sobe. O vitaGL traduz OpenGL ES 2, e o
-//! shader do núcleo tem essa versão. Se ele não sobe, o quadro volta a ser o RGB565 pintado no
-//! framebuffer do kernel. O dynarmic não emite ARMv7 — o núcleo aqui é o interpretador.
+//! Filling goes to the GPU when vitaGL comes up. vitaGL translates OpenGL ES 2, and the core's
+//! shader is that version. If it does not come up, the frame goes back to being the RGB565
+//! painted into the kernel framebuffer. dynarmic does not emit ARMv7 — the core here is the
+//! interpreter.
 
-#[path = "placa.rs"]
-mod placa;
+#[path = "gpu.rs"]
+mod gpu;
 
 use std::ffi::{c_char, c_void};
 use std::path::{Path, PathBuf};
@@ -16,56 +17,57 @@ use zeebx::audio::MidiBackend;
 use zeebx::config::ZWheel;
 use zeebx::input::{self, Pad};
 use zeebx::library::{self, Game};
-use zeebx::session::{self, FATIA_MAXIMA, Session, Step};
+use zeebx::session::{self, MAX_SLICE, Session, Step};
 use zeebx::storage::StoragePaths;
-use zeebx::velocidade::{Frameskip, Ritmo};
+use zeebx::speed::{Frameskip, Pace};
 
-use crate::apresentacao::{self, Quadro};
-use crate::entrada::{self, Leitura};
-use crate::lista;
-use crate::som::{self, Anel};
+use crate::presentation::{self, Frame};
+use crate::host_input::{self, Reading};
+use crate::list;
+use crate::sound::{self, Ring};
 
-const RAIZ: &str = "ux0:data/zeebx";
+const ROOT: &str = "ux0:data/zeebx";
 const ROMS: &str = "ux0:data/zeebx/roms";
 const LOG: &str = "ux0:data/zeebx/zeebx.log";
 const LOG_C: &[u8] = b"ux0:data/zeebx/zeebx.log\0";
 
-const LARGURA: usize = 960;
-const ALTURA: usize = 544;
-const PASSO: usize = 960;
-/// Um quadro de 960×544 em 32 bits cabe em 2 MiB. O `PHYCONT` sem cache só existe em múltiplos
-/// de 1 MiB; a CDRAM, em múltiplos de 256 KiB. 2 MiB serve para os dois.
-const ALINHAMENTO: u32 = 1024 * 1024;
+const WIDTH: usize = 960;
+const HEIGHT: usize = 544;
+const STEP: usize = 960;
+/// A 960×544 frame at 32 bits fits in 2 MiB. Uncached `PHYCONT` only comes in multiples of
+/// 1 MiB; CDRAM, in multiples of 256 KiB. 2 MiB works for both.
+const ALIGNMENT: u32 = 1024 * 1024;
 
-/// Scanout fisicamente contínuo e sem cache. A CPU não pinta aqui: cada store sem cache
-/// atravessa o barramento. O desenho vai para `Tela::composto`, com cache, e o `sceDmacMemcpy`
-/// entrega.
-const MEMORIA_DA_TELA: u32 = 0x0D80_8060;
-/// Onde o quadro da Vita costuma morar. Neste aparelho há 112 MiB livres.
+/// Physically contiguous, uncached scanout. The CPU does not paint here: every uncached store
+/// crosses the bus. Drawing goes to `Screen::composite`, which is cached, and `sceDmacMemcpy`
+/// delivers it.
+const SCREEN_MEMORY: u32 = 0x0D80_8060;
+/// Where the Vita's frame usually lives. On this device there are 112 MiB free.
 const CDRAM_RW: u32 = 0x0940_8060;
 
-/// 1×, e o pulo automático de desenho quando a sessão mede atraso.
+/// 1×, and automatic draw skipping when the session measures lag.
 ///
-/// Sem o pulo, um quadro que passa de 16 ms atrasa o jogo na mesma medida: a volta desenha
-/// todos. O automático deixa de preencher o quadro que não vai à tela, desde que ainda caiba
-/// um desenhado na fatia — é a conta que a sessão já faz. A meia resolução do perfil Portátil
-/// fica de fora: mediu 22% naquele outro aparelho e deixa o 3D quadrado.
-const RITMO: Ritmo = Ritmo {
-    proporcao: Some(1.0),
-    frameskip: Frameskip::Automatico,
-    meia_apresentacao: false,
-    abafa_o_som: false,
+/// Without skipping, a frame that goes past 16 ms delays the game by the same amount: the turn
+/// draws all of them. The automatic mode stops filling the frame that does not go to the screen,
+/// as long as a drawn one still fits in the slice — it is the calculation the session already
+/// does. The Portable profile's half resolution is left out: it measured 22% on that other
+/// device and makes the 3D blocky.
+const PACE: Pace = Pace {
+    ratio: Some(1.0),
+    frameskip: Frameskip::Auto,
+    half_rate_present: false,
+    mute_sound: false,
 };
 
-/// O newlib lê este símbolo para dimensionar o `malloc`. O bloco é pedido uma vez e não cresce.
-/// 192 MiB cabem no modo estendido que o `ATTRIBUTE2=12` do `param.sfo` pede (365 MiB de MAIN).
+/// newlib reads this symbol to size `malloc`. The block is requested once and does not grow.
+/// 192 MiB fit in the extended mode that `ATTRIBUTE2=12` in `param.sfo` requests (365 MiB of MAIN).
 ///
-/// O que passa de 1 MiB não mora aqui: o heap do guest na Vita tem 48 MiB, e o Double Dragon
-/// morreu com `sem memoria` com este número. Esses blocos saem por [`Grandes`].
+/// What goes past 1 MiB does not live here: the guest heap on the Vita is 48 MiB, and Double
+/// Dragon died with `without memory` at this number. Those blocks go through [`LargeAllocs`].
 ///
-/// Nada neste binário lê o valor: o `#[used]` impede o LLVM de apagar o símbolo, e o `-Wl,-u` do
-/// `build.rs` impede o `--gc-sections` de apagá-lo de novo. `#[used(linker)]` faria os dois, e
-/// no rustc 1.99 ainda é instável.
+/// Nothing in this binary reads the value: `#[used]` stops LLVM from deleting the symbol, and the
+/// `-Wl,-u` in `build.rs` stops `--gc-sections` from deleting it again. `#[used(linker)]` would do
+/// both, and in rustc 1.99 it is still unstable.
 #[used]
 #[unsafe(no_mangle)]
 #[allow(non_upper_case_globals)]
@@ -78,7 +80,7 @@ struct SceKernelAllocMemBlockOpt {
     attr: u32,
     alignment: u32,
     uid_base: u32,
-    nome: *const c_char,
+    name: *const c_char,
     flags: i32,
     reserved: [i32; 10],
 }
@@ -101,7 +103,7 @@ struct SceCtrlData {
     ly: u8,
     rx: u8,
     ry: u8,
-    resto: [u8; 16],
+    rest: [u8; 16],
 }
 
 unsafe extern "C" {
@@ -110,18 +112,18 @@ unsafe extern "C" {
     fn sceCtrlReadBufferPositive(port: i32, pad: *mut SceCtrlData, count: i32) -> i32;
     fn sceDisplaySetFrameBuf(fb: *const SceDisplayFrameBuf, sync: i32) -> i32;
     fn sceDisplayWaitVblankStart() -> i32;
-    fn sceAudioOutOpenPort(tipo: i32, len: i32, freq: i32, mode: i32) -> i32;
+    fn sceAudioOutOpenPort(kind: i32, len: i32, freq: i32, mode: i32) -> i32;
     fn sceAudioOutOutput(port: i32, buf: *const c_void) -> i32;
     fn sceAudioOutSetVolume(port: i32, ch: i32, vol: *mut i32) -> i32;
     fn sceKernelAllocMemBlock(
         name: *const c_char,
-        tipo: u32,
+        kind: u32,
         size: u32,
         opt: *mut SceKernelAllocMemBlockOpt,
     ) -> i32;
     fn sceKernelGetMemBlockBase(uid: i32, base: *mut *mut c_void) -> i32;
     fn sceKernelFreeMemBlock(uid: i32) -> i32;
-    fn sceKernelGetFreeMemorySize(info: *mut Livre) -> i32;
+    fn sceKernelGetFreeMemorySize(info: *mut FreeMemInfo) -> i32;
     fn sceKernelExitProcess(res: i32) -> i32;
     fn sceDmacMemcpy(dst: *mut c_void, src: *const c_void, size: u32) -> i32;
     fn scePowerGetArmClockFrequency() -> i32;
@@ -132,48 +134,50 @@ unsafe extern "C" {
     fn sceKernelChangeThreadPriority(thid: i32, priority: i32) -> i32;
 }
 
-/// O máximo que o sistema aceita. Sem isto o processo fica no clock em que o shell o deixou.
+/// The maximum the system accepts. Without this the process stays at the clock the shell left it
+/// at.
 const CLOCK_ARM_MHZ: i32 = 444;
-const CLOCK_BARRAMENTO_MHZ: i32 = 222;
+const CLOCK_BUS_MHZ: i32 = 222;
 
-/// Abaixo do padrão da thread principal, e igual nas duas threads: o jogo não passa na frente
-/// do som. Número menor é mais urgente.
-const PRIORIDADE: i32 = 64;
+/// Below the main thread's default, and the same on both threads: the game does not get ahead
+/// of the sound. A lower number is more urgent.
+const PRIORITY: i32 = 64;
 
 const _: () = assert!(std::mem::size_of::<SceDisplayFrameBuf>() == 0x18);
 const _: () = assert!(std::mem::size_of::<SceCtrlData>() == 0x20);
 const _: () = assert!(std::mem::size_of::<SceKernelAllocMemBlockOpt>() == 0x40);
 const _: () = assert!(cfg!(target_pointer_width = "32"));
 
-fn morre(codigo: i32) -> ! {
-    unsafe { sceKernelExitProcess(codigo) };
+fn die(code: i32) -> ! {
+    unsafe { sceKernelExitProcess(code) };
     loop {}
 }
 
-fn sem_memoria(layout: std::alloc::Layout) {
-    // Sem `std::fs`: o gancho roda porque uma alocação já falhou, e abrir o arquivo pelo Rust
-    // alocaria de novo. O `open` do newlib, se não couber, devolve erro em vez de reentrar aqui.
-    // O número é o tamanho que não coube, para o próximo log não dizer só "acabou".
+fn out_of_memory(layout: std::alloc::Layout) {
+    // No `std::fs`: the hook runs because an allocation already failed, and opening the file
+    // through Rust would allocate again. newlib's `open`, if it does not fit, returns an error
+    // instead of reentering here. The number is the size that did not fit, so the next log does
+    // not just say "ran out".
     let mut msg = [0u8; 48];
-    let prefixo = b"sem memoria ";
-    msg[..prefixo.len()].copy_from_slice(prefixo);
+    let prefix = b"out of memory ";
+    msg[..prefix.len()].copy_from_slice(prefix);
     let mut n = layout.size();
-    let mut digitos = [0u8; 20];
+    let mut digits = [0u8; 20];
     let mut i = 0usize;
     if n == 0 {
-        digitos[0] = b'0';
+        digits[0] = b'0';
         i = 1;
     } else {
-        while n > 0 && i < digitos.len() {
-            digitos[i] = b'0' + (n % 10) as u8;
+        while n > 0 && i < digits.len() {
+            digits[i] = b'0' + (n % 10) as u8;
             n /= 10;
             i += 1;
         }
     }
-    let mut p = prefixo.len();
+    let mut p = prefix.len();
     while i > 0 {
         i -= 1;
-        msg[p] = digitos[i];
+        msg[p] = digits[i];
         p += 1;
     }
     msg[p] = b'\n';
@@ -188,80 +192,81 @@ fn sem_memoria(layout: std::alloc::Layout) {
 }
 
 #[repr(C)]
-struct Livre {
+struct FreeMemInfo {
     size: i32,
     user: i32,
     cdram: i32,
     phycont: i32,
 }
 
-fn anota_livre() {
-    let mut info = Livre {
-        size: std::mem::size_of::<Livre>() as i32,
+fn note_free_memory() {
+    let mut info = FreeMemInfo {
+        size: std::mem::size_of::<FreeMemInfo>() as i32,
         user: 0,
         cdram: 0,
         phycont: 0,
     };
     let rc = unsafe { sceKernelGetFreeMemorySize(&mut info) };
     if rc < 0 {
-        anota(&format!("livre recusado ({rc})"));
+        note(&format!("free memory query refused ({rc})"));
         return;
     }
-    anota(&format!(
-        "livre user {} cdram {} phycont {}",
+    note(&format!(
+        "free user {} cdram {} phycont {}",
         info.user, info.cdram, info.phycont
     ));
 }
 
-const BLOCOS: usize = 256;
-const PAGINA: usize = 256 * 1024;
-/// `SCE_KERNEL_MEMBLOCK_TYPE_USER_RW`. Cacheada: o interpretador lê isto o tempo todo.
-/// O quadro na tela usa outro tipo, sem cache, porque o display lê por DMA.
+const BLOCKS: usize = 256;
+const PAGE: usize = 256 * 1024;
+/// `SCE_KERNEL_MEMBLOCK_TYPE_USER_RW`. Cached: the interpreter reads this all the time.
+/// The on-screen frame uses another type, uncached, because the display reads it by DMA.
 const USER_RW: u32 = 0x0c20_d060;
-const NOME_DO_BLOCO: &[u8] = b"zeebx\0";
+const BLOCK_NAME: &[u8] = b"zeebx\0";
 
 #[derive(Clone, Copy)]
-struct Vaga {
+struct Slot {
     ptr: usize,
     uid: i32,
 }
 
-/// Alocações de 1 MiB ou mais, fora do heap fixo do newlib.
+/// Allocations of 1 MiB or more, outside newlib's fixed heap.
 ///
-/// O heap de 192 MiB é pedido inteiro na largada e não devolve o que sobra ao sistema. O mapa
-/// do guest (48 MiB de heap, 16 da região interna, 8 de superfície, 4 de objetos) cabe nele e
-/// deixa pouco contíguo para a textura e para o som. Cada bloco grande pede a sua memória ao
-/// kernel; o `malloc` fica com o que é pequeno. Se o kernel recusar, cai no `malloc` como antes.
-pub struct Grandes {
-    trava: std::sync::atomic::AtomicBool,
-    vagas: std::cell::UnsafeCell<[Vaga; BLOCOS]>,
+/// The 192 MiB heap is requested whole at startup and does not give what is left back to the
+/// system. The guest map (48 MiB of heap, 16 of the internal region, 8 of surface, 4 of objects)
+/// fits in it and leaves little contiguous memory for the texture and the sound. Each large block
+/// asks the kernel for its own memory; `malloc` keeps what is small. If the kernel refuses, it
+/// falls back to `malloc` as before.
+pub struct LargeAllocs {
+    lock: std::sync::atomic::AtomicBool,
+    slot_table: std::cell::UnsafeCell<[Slot; BLOCKS]>,
 }
 
-unsafe impl Sync for Grandes {}
+unsafe impl Sync for LargeAllocs {}
 
-impl Grandes {
-    pub const NOVO: Self = Self {
-        trava: std::sync::atomic::AtomicBool::new(false),
-        vagas: std::cell::UnsafeCell::new([Vaga { ptr: 0, uid: 0 }; BLOCOS]),
+impl LargeAllocs {
+    pub const NEW: Self = Self {
+        lock: std::sync::atomic::AtomicBool::new(false),
+        slot_table: std::cell::UnsafeCell::new([Slot { ptr: 0, uid: 0 }; BLOCKS]),
     };
 
-    fn trava(&self) {
-        while self.trava.swap(true, std::sync::atomic::Ordering::Acquire) {
+    fn lock(&self) {
+        while self.lock.swap(true, std::sync::atomic::Ordering::Acquire) {
             core::hint::spin_loop();
         }
     }
 
-    fn solta(&self) {
-        self.trava
+    fn release(&self) {
+        self.lock
             .store(false, std::sync::atomic::Ordering::Release);
     }
 
-    fn bloco(&self, tamanho: u32) -> Option<*mut u8> {
+    fn block(&self, size: u32) -> Option<*mut u8> {
         let uid = unsafe {
             sceKernelAllocMemBlock(
-                NOME_DO_BLOCO.as_ptr().cast(),
+                BLOCK_NAME.as_ptr().cast(),
                 USER_RW,
-                tamanho,
+                size,
                 std::ptr::null_mut(),
             )
         };
@@ -273,42 +278,42 @@ impl Grandes {
             unsafe { sceKernelFreeMemBlock(uid) };
             return None;
         }
-        self.trava();
-        let vagas = unsafe { &mut *self.vagas.get() };
-        let vaga = vagas.iter_mut().find(|vaga| vaga.ptr == 0);
-        let Some(vaga) = vaga else {
-            self.solta();
+        self.lock();
+        let slot_table = unsafe { &mut *self.slot_table.get() };
+        let slot = slot_table.iter_mut().find(|slot| slot.ptr == 0);
+        let Some(slot) = slot else {
+            self.release();
             unsafe { sceKernelFreeMemBlock(uid) };
             return None;
         };
-        vaga.ptr = base as usize;
-        vaga.uid = uid;
-        self.solta();
+        slot.ptr = base as usize;
+        slot.uid = uid;
+        self.release();
         Some(base.cast())
     }
 
-    fn solta_bloco(&self, ptr: *mut u8) -> bool {
-        self.trava();
-        let vagas = unsafe { &mut *self.vagas.get() };
-        let Some(vaga) = vagas.iter_mut().find(|vaga| vaga.ptr == ptr as usize) else {
-            self.solta();
+    fn free_block(&self, ptr: *mut u8) -> bool {
+        self.lock();
+        let slot_table = unsafe { &mut *self.slot_table.get() };
+        let Some(slot) = slot_table.iter_mut().find(|slot| slot.ptr == ptr as usize) else {
+            self.release();
             return false;
         };
-        let uid = vaga.uid;
-        vaga.ptr = 0;
-        vaga.uid = 0;
-        self.solta();
+        let uid = slot.uid;
+        slot.ptr = 0;
+        slot.uid = 0;
+        self.release();
         unsafe { sceKernelFreeMemBlock(uid) };
         true
     }
 }
 
-unsafe impl std::alloc::GlobalAlloc for Grandes {
+unsafe impl std::alloc::GlobalAlloc for LargeAllocs {
     unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
         if layout.size() >= 1024 * 1024
-            && layout.align() <= PAGINA
-            && let Some(tamanho) = arredonda(layout.size())
-            && let Some(ptr) = self.bloco(tamanho)
+            && layout.align() <= PAGE
+            && let Some(size) = round_up(layout.size())
+            && let Some(ptr) = self.block(size)
         {
             return ptr;
         }
@@ -316,16 +321,16 @@ unsafe impl std::alloc::GlobalAlloc for Grandes {
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
-        if self.solta_bloco(ptr) {
+        if self.free_block(ptr) {
             return;
         }
         unsafe { std::alloc::System.dealloc(ptr, layout) }
     }
 }
 
-fn arredonda(n: usize) -> Option<u32> {
-    let cheio = n.checked_add(PAGINA - 1)?;
-    u32::try_from(cheio & !(PAGINA - 1)).ok()
+fn round_up(n: usize) -> Option<u32> {
+    let full = n.checked_add(PAGE - 1)?;
+    u32::try_from(full & !(PAGE - 1)).ok()
 }
 
 unsafe extern "C" {
@@ -334,166 +339,167 @@ unsafe extern "C" {
     fn close(fd: i32) -> i32;
 }
 
-fn anota(texto: &str) {
-    if let Ok(mut arquivo) = std::fs::OpenOptions::new()
+fn note(text: &str) {
+    if let Ok(mut file) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(LOG)
     {
         use std::io::Write;
-        let _ = writeln!(arquivo, "{texto}");
+        let _ = writeln!(file, "{text}");
     }
 }
 
-fn despeja() {
-    let linhas = zeebx::registro::drena();
-    if linhas.is_empty() {
+fn flush_log() {
+    let lines = zeebx::logging::drain();
+    if lines.is_empty() {
         return;
     }
-    if let Ok(mut arquivo) = std::fs::OpenOptions::new()
+    if let Ok(mut file) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(LOG)
     {
         use std::io::Write;
-        for linha in linhas {
+        for line in lines {
             let _ = writeln!(
-                arquivo,
+                file,
                 "[{}] {}: {}",
-                linha.nivel.etiqueta(),
-                linha.alvo,
-                linha.texto
+                line.level.tag(),
+                line.target,
+                line.text
             );
         }
     }
 }
 
-fn leitura_de(dados: &SceCtrlData) -> Leitura {
-    Leitura {
-        botoes: dados.buttons,
-        lx: dados.lx,
-        ly: dados.ly,
-        rx: dados.rx,
-        ry: dados.ry,
+fn reading_from(data: &SceCtrlData) -> Reading {
+    Reading {
+        buttons: data.buttons,
+        lx: data.lx,
+        ly: data.ly,
+        rx: data.rx,
+        ry: data.ry,
     }
 }
 
-fn le_bloqueante() -> Leitura {
-    let mut dados = SceCtrlData {
+fn read_blocking() -> Reading {
+    let mut data = SceCtrlData {
         time_stamp: 0,
         buttons: 0,
         lx: 128,
         ly: 128,
         rx: 128,
         ry: 128,
-        resto: [0; 16],
+        rest: [0; 16],
     };
-    let n = unsafe { sceCtrlReadBufferPositive(0, &mut dados, 1) };
+    let n = unsafe { sceCtrlReadBufferPositive(0, &mut data, 1) };
     if n < 1 {
-        Leitura {
+        Reading {
             lx: 128,
             ly: 128,
             rx: 128,
             ry: 128,
-            ..Leitura::default()
+            ..Reading::default()
         }
     } else {
-        leitura_de(&dados)
+        reading_from(&data)
     }
 }
 
-fn le_agora() -> Leitura {
-    let mut dados = SceCtrlData {
+fn read_now() -> Reading {
+    let mut data = SceCtrlData {
         time_stamp: 0,
         buttons: 0,
         lx: 128,
         ly: 128,
         rx: 128,
         ry: 128,
-        resto: [0; 16],
+        rest: [0; 16],
     };
-    let n = unsafe { sceCtrlPeekBufferPositive(0, &mut dados, 1) };
+    let n = unsafe { sceCtrlPeekBufferPositive(0, &mut data, 1) };
     if n < 1 {
-        Leitura {
+        Reading {
             lx: 128,
             ly: 128,
             rx: 128,
             ry: 128,
-            ..Leitura::default()
+            ..Reading::default()
         }
     } else {
-        leitura_de(&dados)
+        reading_from(&data)
     }
 }
 
-struct Tela {
+struct Screen {
     base: *mut u32,
-    /// O quadro que a CPU pinta. O início útil é alinhado a 16: o DMA pede isso, e o `Vec<u32>`
-    /// só garante 4.
-    composto: Vec<u32>,
-    inicio: usize,
-    indice: usize,
-    salto: usize,
-    largura: usize,
-    passo: usize,
-    altura: usize,
-    ja_avisou: bool,
-    ja_avisou_dma: bool,
-    /// O vitaGL tomou a tela. O composto sobe como textura; não há scanout do kernel.
-    na_placa: bool,
+    /// The frame the CPU paints. The usable start is aligned to 16: the DMA requires it, and
+    /// `Vec<u32>` only guarantees 4.
+    composite: Vec<u32>,
+    start: usize,
+    index: usize,
+    stride: usize,
+    width: usize,
+    step: usize,
+    height: usize,
+    already_warned: bool,
+    already_warned_dma: bool,
+    /// vitaGL took over the screen. The composite is uploaded as a texture; there is no kernel
+    /// scanout.
+    on_gpu: bool,
 }
 
-fn composto_alinhado(palavras: usize) -> (Vec<u32>, usize) {
-    let composto = vec![apresentacao::PRETO; palavras + 3];
-    let addr = composto.as_ptr() as usize;
-    let falta = (16 - (addr & 15)) & 15;
-    (composto, falta / 4)
+fn aligned_composite(words: usize) -> (Vec<u32>, usize) {
+    let composite = vec![presentation::BLACK; words + 3];
+    let addr = composite.as_ptr() as usize;
+    let remaining = (16 - (addr & 15)) & 15;
+    (composite, remaining / 4)
 }
 
-fn pede_tela(tipo: u32, tamanho: u32) -> Result<i32, i32> {
-    // Sem o `opt`. Pedir alinhamento na estrutura (`attr` 0x4) devolve
-    // `0x80020005` no aparelho, com 256 KiB e com 1 MiB. O Vita3K aceita a
-    // estrutura. O kernel já alinha o bloco pelo tipo quando o ponteiro é nulo.
+fn alloc_screen(kind: u32, size: u32) -> Result<i32, i32> {
+    // Without `opt`. Requesting alignment in the struct (`attr` 0x4) returns
+    // `0x80020005` on the device, with 256 KiB and with 1 MiB. Vita3K accepts the
+    // struct. The kernel already aligns the block by type when the pointer is null.
     let uid = unsafe {
-        sceKernelAllocMemBlock(c"zeebx-fb".as_ptr(), tipo, tamanho, std::ptr::null_mut())
+        sceKernelAllocMemBlock(c"zeebx-fb".as_ptr(), kind, size, std::ptr::null_mut())
     };
     if uid < 0 { Err(uid) } else { Ok(uid) }
 }
 
-impl Tela {
-    fn abre(na_placa: bool) -> Result<Self, String> {
+impl Screen {
+    fn open(on_gpu: bool) -> Result<Self, String> {
         unsafe { sceCtrlSetSamplingMode(1) };
-        if na_placa {
-            let (composto, inicio) = composto_alinhado(PASSO * ALTURA);
-            let mut tela = Self {
+        if on_gpu {
+            let (composite, start) = aligned_composite(STEP * HEIGHT);
+            let mut screen = Self {
                 base: std::ptr::null_mut(),
-                composto,
-                inicio,
-                indice: 0,
-                salto: 0,
-                largura: LARGURA,
-                passo: PASSO,
-                altura: ALTURA,
-                ja_avisou: false,
-                ja_avisou_dma: false,
-                na_placa: true,
+                composite,
+                start,
+                index: 0,
+                stride: 0,
+                width: WIDTH,
+                step: STEP,
+                height: HEIGHT,
+                already_warned: false,
+                already_warned_dma: false,
+                on_gpu: true,
             };
-            tela.apresenta(|q| apresentacao::limpa(q, apresentacao::PRETO));
-            tela.apresenta(|q| apresentacao::limpa(q, apresentacao::PRETO));
-            return Ok(tela);
+            screen.present(|q| presentation::clear(q, presentation::BLACK));
+            screen.present(|q| presentation::clear(q, presentation::BLACK));
+            return Ok(screen);
         }
-        let bytes = ((PASSO * ALTURA * 4) as u32).div_ceil(ALINHAMENTO) * ALINHAMENTO;
-        let tamanho = bytes * 2;
-        let uid = match pede_tela(MEMORIA_DA_TELA, tamanho) {
+        let bytes = ((STEP * HEIGHT * 4) as u32).div_ceil(ALIGNMENT) * ALIGNMENT;
+        let size = bytes * 2;
+        let uid = match alloc_screen(SCREEN_MEMORY, size) {
             Ok(uid) => uid,
-            Err(phy) => match pede_tela(CDRAM_RW, tamanho) {
+            Err(phy) => match alloc_screen(CDRAM_RW, size) {
                 Ok(uid) => {
-                    anota(&format!("tela na cdram; phycont recusada ({phy})"));
+                    note(&format!("screen in cdram; phycont refused ({phy})"));
                     uid
                 }
                 Err(cdram) => {
                     return Err(format!(
-                        "não consegui a memória da tela (phycont {phy}, cdram {cdram})"
+                        "could not get the screen memory (phycont {phy}, cdram {cdram})"
                     ));
                 }
             },
@@ -501,405 +507,407 @@ impl Tela {
         let mut base: *mut c_void = std::ptr::null_mut();
         let rc = unsafe { sceKernelGetMemBlockBase(uid, &mut base) };
         if rc < 0 || base.is_null() {
-            return Err(format!("a memória da tela não tem endereço ({rc})"));
+            return Err(format!("the screen memory has no address ({rc})"));
         }
-        let (composto, inicio) = composto_alinhado(PASSO * ALTURA);
-        let mut tela = Self {
+        let (composite, start) = aligned_composite(STEP * HEIGHT);
+        let mut screen = Self {
             base: base.cast(),
-            composto,
-            inicio,
-            indice: 0,
-            salto: bytes as usize,
-            largura: LARGURA,
-            passo: PASSO,
-            altura: ALTURA,
-            ja_avisou: false,
-            ja_avisou_dma: false,
-            na_placa: false,
+            composite,
+            start,
+            index: 0,
+            stride: bytes as usize,
+            width: WIDTH,
+            step: STEP,
+            height: HEIGHT,
+            already_warned: false,
+            already_warned_dma: false,
+            on_gpu: false,
         };
-        tela.apresenta(|q| apresentacao::limpa(q, apresentacao::PRETO));
-        tela.apresenta(|q| apresentacao::limpa(q, apresentacao::PRETO));
-        Ok(tela)
+        screen.present(|q| presentation::clear(q, presentation::BLACK));
+        screen.present(|q| presentation::clear(q, presentation::BLACK));
+        Ok(screen)
     }
 
-    fn apresenta(&mut self, desenha: impl FnOnce(&mut Quadro<'_>)) {
-        let n = self.passo * self.altura;
-        let inicio = self.inicio;
+    fn present(&mut self, draw: impl FnOnce(&mut Frame<'_>)) {
+        let n = self.step * self.height;
+        let start = self.start;
         {
-            let pixels = &mut self.composto[inicio..inicio + n];
-            let mut quadro = Quadro {
+            let pixels = &mut self.composite[start..start + n];
+            let mut frame = Frame {
                 pixels,
-                largura: self.largura,
-                passo: self.passo,
-                altura: self.altura,
+                width: self.width,
+                step: self.step,
+                height: self.height,
             };
-            desenha(&mut quadro);
+            draw(&mut frame);
         }
-        if self.na_placa {
-            placa::mostra_rgba(
-                &self.composto[inicio..inicio + n],
-                self.largura as i32,
-                self.altura as i32,
+        if self.on_gpu {
+            gpu::show_rgba(
+                &self.composite[start..start + n],
+                self.width as i32,
+                self.height as i32,
             );
             return;
         }
-        let deslocamento = self.indice * (self.salto / 4);
-        let dst = unsafe { self.base.add(deslocamento) };
-        let src = unsafe { self.composto.as_ptr().add(inicio) };
+        let offset = self.index * (self.stride / 4);
+        let dst = unsafe { self.base.add(offset) };
+        let src = unsafe { self.composite.as_ptr().add(start) };
         let bytes = (n * 4) as u32;
         let rc = unsafe { sceDmacMemcpy(dst.cast(), src.cast(), bytes) };
         if rc < 0 {
-            if !self.ja_avisou_dma {
-                self.ja_avisou_dma = true;
-                anota(&format!("o DMA da tela falhou ({rc}); copiando pela CPU"));
+            if !self.already_warned_dma {
+                self.already_warned_dma = true;
+                note(&format!("the screen DMA failed ({rc}); copying with the CPU"));
             }
             unsafe { std::ptr::copy_nonoverlapping(src, dst, n) };
         }
         let fb = SceDisplayFrameBuf {
             size: 0x18,
             base: dst.cast(),
-            pitch: self.passo as u32,
+            pitch: self.step as u32,
             pixelformat: 0,
-            width: self.largura as u32,
-            height: self.altura as u32,
+            width: self.width as u32,
+            height: self.height as u32,
         };
         let rc = unsafe { sceDisplaySetFrameBuf(&fb, 1) };
-        if rc < 0 && !self.ja_avisou {
-            self.ja_avisou = true;
-            anota(&format!("a tela recusou o quadro: {rc}"));
+        if rc < 0 && !self.already_warned {
+            self.already_warned = true;
+            note(&format!("the screen refused the frame: {rc}"));
         }
         unsafe { sceDisplayWaitVblankStart() };
-        self.indice ^= 1;
+        self.index ^= 1;
     }
 }
 
-struct Som {
-    anel: Arc<Anel>,
-    porta: i32,
+struct Sound {
+    ring: Arc<Ring>,
+    port: i32,
 }
 
-impl Som {
-    fn abre() -> Self {
-        let anel = Arc::new(Anel::novo(8_192));
-        let porta = unsafe { sceAudioOutOpenPort(0, som::GRAO as i32, som::TAXA as i32, 1) };
-        if porta < 0 {
-            anota(&format!("sem som: a porta devolveu {porta}"));
-            return Self { anel, porta: -1 };
+impl Sound {
+    fn open() -> Self {
+        let ring = Arc::new(Ring::create(8_192));
+        let port = unsafe { sceAudioOutOpenPort(0, sound::GRAIN as i32, sound::RATE as i32, 1) };
+        if port < 0 {
+            note(&format!("no sound: the port returned {port}"));
+            return Self { ring, port: -1 };
         }
         let mut volume = [0x8000i32, 0x8000];
-        unsafe { sceAudioOutSetVolume(porta, 3, volume.as_mut_ptr()) };
-        let fio = Arc::clone(&anel);
-        let criada = std::thread::Builder::new()
+        unsafe { sceAudioOutSetVolume(port, 3, volume.as_mut_ptr()) };
+        let ring_for_thread = Arc::clone(&ring);
+        let created = std::thread::Builder::new()
             .name("som".into())
             .stack_size(64 * 1024)
-            .spawn(move || fio_de_som(porta, fio));
-        if let Err(erro) = criada {
-            anota(&format!("sem som: {erro}"));
-            return Self { anel, porta: -1 };
+            .spawn(move || audio_thread(port, ring_for_thread));
+        if let Err(error) = created {
+            note(&format!("no sound: {error}"));
+            return Self { ring, port: -1 };
         }
-        Self { anel, porta }
+        Self { ring, port }
     }
 }
 
-fn fio_de_som(porta: i32, anel: Arc<Anel>) {
-    ajusta_prioridade();
-    // Dois blocos: a porta lê o que acabou de receber até a chamada seguinte voltar. Encher o
-    // mesmo bloco de novo, antes disso, troca o som que ainda está tocando.
-    let mut blocos = [
-        som::Bloco {
-            amostras: [0; som::GRAO * 2],
+fn audio_thread(port: i32, ring: Arc<Ring>) {
+    set_priority();
+    // Two blocks: the port reads what it just received until the next call returns. Filling the
+    // same block again before that replaces the sound that is still playing.
+    let mut blocks = [
+        sound::Block {
+            samples: [0; sound::GRAIN * 2],
         },
-        som::Bloco {
-            amostras: [0; som::GRAO * 2],
+        sound::Block {
+            samples: [0; sound::GRAIN * 2],
         },
     ];
-    let mut qual = 0;
+    let mut which = 0;
     loop {
-        anel.puxa(&mut blocos[qual].amostras);
-        let rc = unsafe { sceAudioOutOutput(porta, blocos[qual].amostras.as_ptr().cast()) };
+        ring.pull(&mut blocks[which].samples);
+        let rc = unsafe { sceAudioOutOutput(port, blocks[which].samples.as_ptr().cast()) };
         if rc < 0 {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        qual ^= 1;
+        which ^= 1;
     }
 }
 
-struct Jogo {
-    sessao: Session,
+struct Game {
+    session: Session,
     mixer: zeebx::audio::Mixer,
-    pad_antes: Pad,
-    ultimo: Instant,
-    relogio: u32,
-    ultimo_som: Instant,
+    prev_pad: Pad,
+    last: Instant,
+    clock: u32,
+    last_sound: Instant,
     mix: Vec<f32>,
     pcm: Vec<i16>,
-    corda: Option<Instant>,
-    pela_z_wheel: bool,
-    primeiro: bool,
-    /// O menu ainda está no quadro composto. A primeira apresentação do jogo limpa a faixa.
-    faixa_suja: bool,
+    exit_hold: Option<Instant>,
+    via_z_wheel: bool,
+    first: bool,
+    /// The menu is still in the composite frame. The game's first presentation clears the strip.
+    dirty_band: bool,
 }
 
-struct Aplicativo {
-    jogos: Vec<Game>,
-    instalados: Vec<(u32, String)>,
+struct App {
+    games: Vec<Game>,
+    installed: Vec<(u32, String)>,
     storage: StoragePaths,
     cursor: usize,
-    erro: String,
-    jogo: Option<Jogo>,
-    viu_quadro: bool,
-    saidas_sem_quadro: u32,
+    error: String,
+    game: Option<Game>,
+    saw_frame: bool,
+    exits_without_frame: u32,
 }
 
-impl Aplicativo {
-    fn novo() -> Self {
+impl App {
+    fn create() -> Self {
         let storage =
             StoragePaths::for_frontend(Path::new("ux0:data"), Some(Path::new("ux0:data")));
-        let mut erro = String::new();
-        if let Err(falha) = storage.create_dirs() {
-            erro = format!("não consegui criar as pastas: {falha}");
+        let mut error = String::new();
+        if let Err(failure) = storage.create_dirs() {
+            error = format!("could not create the folders: {failure}");
         }
         let _ = std::fs::create_dir_all(ROMS);
         Self {
-            jogos: Vec::new(),
-            instalados: Vec::new(),
+            games: Vec::new(),
+            installed: Vec::new(),
             storage,
             cursor: 0,
-            erro,
-            jogo: None,
-            viu_quadro: false,
-            saidas_sem_quadro: 0,
+            error,
+            game: None,
+            saw_frame: false,
+            exits_without_frame: 0,
         }
     }
 
-    fn varre(&mut self) {
-        self.jogos = library::scan(Path::new(ROMS));
-        self.instalados = self
-            .jogos
+    fn scan(&mut self) {
+        self.games = library::scan(Path::new(ROMS));
+        self.installed = self
+            .games
             .iter()
-            .filter_map(|jogo| Some((jogo.clsid?, library::id_do_modulo(&jogo.path)?)))
+            .filter_map(|game| Some((game.clsid?, library::module_id(&game.path)?)))
             .collect();
-        if self.jogos.is_empty() {
+        if self.games.is_empty() {
             self.cursor = 0;
-        } else if self.cursor >= self.jogos.len() {
-            self.cursor = self.jogos.len() - 1;
+        } else if self.cursor >= self.games.len() {
+            self.cursor = self.games.len() - 1;
         }
     }
 
-    fn caminho_da_classe(&self, classe: u32) -> Option<PathBuf> {
-        self.jogos
+    fn class_path(&self, class_id: u32) -> Option<PathBuf> {
+        self.games
             .iter()
-            .find(|jogo| jogo.clsid == Some(classe))
-            .map(|jogo| jogo.path.clone())
+            .find(|game| game.clsid == Some(class_id))
+            .map(|game| game.path.clone())
     }
 
-    fn abre_caminho(
+    fn open_path(
         &mut self,
-        caminho: &Path,
-        pela_z_wheel: bool,
-        som: &Som,
+        path: &Path,
+        via_z_wheel: bool,
+        sound: &Sound,
     ) -> Result<(), String> {
-        let instalados = self.instalados.clone();
-        // Com o vitaGL no ar a lista aparece. O quadro do jogo, neste Vita3K,
-        // não volta do framebuffer: desenhar na placa e só trocar os buffers
-        // republica a lista. Sem a devolução, o jogo sai no processador.
-        let guarda = placa::guarda_o_quadro();
-        let contexto = guarda.then(placa::contexto).flatten();
-        let na_placa = contexto.is_some();
+        let installed = self.installed.clone();
+        // With vitaGL up, the list shows. The game's frame, in this Vita3K,
+        // does not come back from the framebuffer: drawing on the GPU and just swapping the
+        // buffers republishes the list. Without the readback, the game goes out on the CPU.
+        let guard = gpu::keeps_frame();
+        let context = guard.then(gpu::context).flatten();
+        let on_gpu = context.is_some();
         match Session::start_with_storage_installed_policy(
-            caminho,
-            zeebx::PORTAS_PADRAO,
+            path,
+            zeebx::DEFAULT_PORTS,
             None,
-            na_placa,
-            contexto,
+            on_gpu,
+            context,
             ZWheel::default(),
             &self.storage,
-            &instalados,
-            MidiBackend::Timbres,
+            &installed,
+            MidiBackend::Wavetable,
         ) {
-            Ok(mut sessao) => {
-                let relogio = sessao.clock_ms();
-                let mixer = sessao.grava_audio(som::TAXA);
-                som.anel.esvazia();
-                self.viu_quadro = false;
-                self.jogo = Some(Jogo {
-                    sessao,
+            Ok(mut session) => {
+                let clock = session.clock_ms();
+                let mixer = session.record_audio(sound::RATE);
+                sound.ring.clear();
+                self.saw_frame = false;
+                self.game = Some(Game {
+                    session,
                     mixer,
-                    pad_antes: Pad::default(),
-                    ultimo: Instant::now(),
-                    relogio,
-                    ultimo_som: Instant::now(),
+                    prev_pad: Pad::default(),
+                    last: Instant::now(),
+                    clock,
+                    last_sound: Instant::now(),
                     mix: Vec::new(),
                     pcm: Vec::new(),
-                    corda: None,
-                    pela_z_wheel,
-                    primeiro: true,
-                    faixa_suja: true,
+                    exit_hold: None,
+                    via_z_wheel,
+                    first: true,
+                    dirty_band: true,
                 });
-                anota(&format!("abriu {}", caminho.display()));
+                note(&format!("opened {}", path.display()));
                 Ok(())
             }
-            Err(erro) => Err(erro.to_string()),
+            Err(error) => Err(error.to_string()),
         }
     }
 
-    fn abre_cursor(&mut self, som: &Som) -> Result<(), String> {
-        let caminho = self
-            .jogos
+    fn open_selected(&mut self, sound: &Sound) -> Result<(), String> {
+        let path = self
+            .games
             .get(self.cursor)
-            .ok_or("não há jogo escolhido")?
+            .ok_or("no game selected")?
             .path
             .clone();
-        self.abre_caminho(&caminho, false, som)
+        self.open_path(&path, false, sound)
     }
 
-    fn volta_ao_menu(&mut self, som: &Som, erro: String) {
-        self.jogo = None;
-        som.anel.esvazia();
-        self.erro = erro;
-        self.viu_quadro = false;
-        // A contagem é de saídas seguidas, no meio da Z-Wheel reabrindo. Voltar à lista zera:
-        // o próximo jogo que o jogador escolhe começa limpo.
-        self.saidas_sem_quadro = 0;
+    fn back_to_menu(&mut self, sound: &Sound, error: String) {
+        self.game = None;
+        sound.ring.clear();
+        self.error = error;
+        self.saw_frame = false;
+        // The count is of consecutive exits, in the middle of the Z-Wheel reopening. Going back
+        // to the list resets it: the next game the player picks starts clean.
+        self.exits_without_frame = 0;
     }
 
-    fn menu(&mut self, tela: &mut Tela) {
-        let mut antes = 0u32;
-        let mut dir_antes = 0i32;
-        let mut dir_desde = Instant::now();
-        let mut dir_passo = Instant::now();
-        let mut sujo = true;
+    fn menu(&mut self, screen: &mut Screen) {
+        let mut before = 0u32;
+        let mut dir_prev = 0i32;
+        let mut dir_since = Instant::now();
+        let mut dir_step = Instant::now();
+        let mut dirty = true;
         loop {
-            despeja();
-            if sujo {
-                let titulos: Vec<&str> =
-                    self.jogos.iter().map(|jogo| jogo.title.as_str()).collect();
-                let erro = self.erro.clone();
+            flush_log();
+            if dirty {
+                let titles: Vec<&str> =
+                    self.games.iter().map(|game| game.title.as_str()).collect();
+                let error = self.error.clone();
                 let cursor = self.cursor;
-                tela.apresenta(|q| apresentacao::desenha_menu(q, &titulos, cursor, &erro));
-                sujo = false;
+                screen.present(|q| presentation::draw_menu(q, &titles, cursor, &error));
+                dirty = false;
             }
-            let leitura = le_bloqueante();
-            let acao = lista::toque(leitura.botoes, antes);
-            let dir = lista::direcao(leitura.botoes);
-            let borda = if dir != dir_antes { dir } else { 0 };
-            if dir != dir_antes {
-                dir_antes = dir;
-                dir_desde = Instant::now();
-                dir_passo = Instant::now();
+            let reading = read_blocking();
+            let action = list::touch(reading.buttons, before);
+            let dir = list::direction(reading.buttons);
+            let border = if dir != dir_prev { dir } else { 0 };
+            if dir != dir_prev {
+                dir_prev = dir;
+                dir_since = Instant::now();
+                dir_step = Instant::now();
             }
-            let delta = lista::passo_da_lista(borda, dir, dir_desde.elapsed(), dir_passo.elapsed());
-            if delta != 0 && borda == 0 {
-                dir_passo = Instant::now();
+            let delta = list::list_step(border, dir, dir_since.elapsed(), dir_step.elapsed());
+            if delta != 0 && border == 0 {
+                dir_step = Instant::now();
             }
-            antes = leitura.botoes;
-            match acao {
-                lista::Toque::Sai => morre(0),
-                lista::Toque::Atualiza => {
-                    tela.apresenta(|q| apresentacao::desenha_menu(q, &[], 0, "Lendo a pasta..."));
-                    self.erro.clear();
-                    self.varre();
-                    sujo = true;
+            before = reading.buttons;
+            match action {
+                list::Press::Quit => die(0),
+                list::Press::Refresh => {
+                    screen.present(|q| presentation::draw_menu(q, &[], 0, "Reading the folder..."));
+                    self.error.clear();
+                    self.scan();
+                    dirty = true;
                 }
-                lista::Toque::Confirma if !self.jogos.is_empty() => return,
+                list::Press::Confirm if !self.games.is_empty() => return,
                 _ => {}
             }
             if delta != 0 {
-                self.cursor = lista::move_cursor(self.cursor, self.jogos.len(), delta);
-                sujo = true;
+                self.cursor = list::move_cursor(self.cursor, self.games.len(), delta);
+                dirty = true;
             }
         }
     }
 
-    fn quadro(&mut self, tela: &mut Tela, som: &Som) {
-        let mut sair = false;
-        let mut passo = Step::Running;
-        let mut pedido = None;
+    fn frame(&mut self, vita_screen: &mut Screen, sound: &Sound) {
+        let mut quit = false;
+        let mut step = Step::Running;
+        let mut request = None;
         let mut normal = false;
-        let mut motivo = String::new();
-        let mut classe = 0u32;
-        let mut pela = false;
-        let mut apresentou = false;
+        let mut reason = String::new();
+        let mut class_id = 0u32;
+        let mut opened_via_z_wheel = false;
+        let mut presented = false;
         {
-            let jogo = self.jogo.as_mut().expect("quadro sem jogo");
-            let leitura = le_agora();
-            if entrada::sai_do_jogo(leitura.botoes) {
-                if jogo.corda.is_none() {
-                    jogo.corda = Some(Instant::now());
+            let game = self.game.as_mut().expect("frame without a game");
+            let reading = read_now();
+            if host_input::is_exit_combo(reading.buttons) {
+                if game.exit_hold.is_none() {
+                    game.exit_hold = Some(Instant::now());
                 }
-                if jogo
-                    .corda
-                    .is_some_and(|desde| entrada::tempo_de_saida(desde.elapsed()))
+                if game
+                    .exit_hold
+                    .is_some_and(|since| host_input::exit_hold_elapsed(since.elapsed()))
                 {
-                    sair = true;
+                    quit = true;
                 }
             } else {
-                jogo.corda = None;
+                game.exit_hold = None;
             }
-            if !sair {
-                let mut para_o_jogo = leitura;
-                para_o_jogo.botoes = entrada::filtra_saida(leitura.botoes);
-                let pad = entrada::para_pad(&para_o_jogo);
-                if jogo.primeiro {
-                    jogo.pad_antes = pad;
-                    jogo.primeiro = false;
+            if !quit {
+                let mut for_game = reading;
+                for_game.buttons = host_input::filter_exit(reading.buttons);
+                let pad = host_input::to_pad(&for_game);
+                if game.first {
+                    game.prev_pad = pad;
+                    game.first = false;
                 }
-                let antes = jogo.pad_antes;
-                jogo.sessao.set_port_pad(0, pad);
-                for (avk, apertada) in input::teclas_do_controle(&antes, &pad) {
-                    jogo.sessao.set_key(avk, apertada);
+                let before = game.prev_pad;
+                game.session.set_port_pad(0, pad);
+                for (avk, pressed) in input::controller_key_events(&before, &pad) {
+                    game.session.set_key(avk, pressed);
                 }
-                jogo.pad_antes = pad;
+                game.prev_pad = pad;
 
-                let agora = Instant::now();
-                let fatia = agora
-                    .saturating_duration_since(jogo.ultimo)
-                    .min(FATIA_MAXIMA);
-                jogo.ultimo = agora;
-                if jogo.faixa_suja {
-                    jogo.faixa_suja = false;
-                    tela.apresenta(|q| apresentacao::limpa(q, apresentacao::PRETO));
-                    // A limpeza troca viewport e programa. O espelho da placa ainda acha que
-                    // o estado de antes está valendo, e o quadro seguinte sairia na tela inteira.
-                    if placa::ativa() {
-                        jogo.sessao.retoma_o_contexto();
+                let frame_now = Instant::now();
+                let slice = frame_now
+                    .saturating_duration_since(game.last)
+                    .min(MAX_SLICE);
+                game.last = frame_now;
+                if game.dirty_band {
+                    game.dirty_band = false;
+                    vita_screen.present(|q| presentation::clear(q, presentation::BLACK));
+                    // The clear changes the viewport and the program. The GPU mirror still thinks
+                    // the previous state is in effect, and the next frame would cover the whole
+                    // screen.
+                    if gpu::is_active() {
+                        game.session.resume_context();
                     }
                 }
-                if placa::ativa() {
-                    placa::prepara_o_quadro();
+                if gpu::is_active() {
+                    gpu::prepare_frame();
                 }
-                let intermediario = jogo.sessao.mostra_quadro_intermediario();
-                if !intermediario {
-                    passo = jogo.sessao.anda(fatia, &RITMO);
+                let intermediate = game.session.show_intermediate_frame();
+                if !intermediate {
+                    step = game.session.advance(slice, &PACE);
                 }
-                if passo == Step::Presented {
-                    apresentou = true;
+                if step == Step::Presented {
+                    presented = true;
                 }
-                pedido = jogo.sessao.take_launch_request();
-                if passo == Step::Stopped {
-                    normal = jogo.sessao.saiu_sozinho();
-                    motivo = jogo.sessao.stopped_reason().unwrap_or_default();
-                    classe = jogo.sessao.classe();
-                    pela = jogo.pela_z_wheel;
+                request = game.session.take_launch_request();
+                if step == Step::Stopped {
+                    normal = game.session.exited_on_its_own();
+                    reason = game.session.stopped_reason().unwrap_or_default();
+                    class_id = game.session.class_id();
+                    opened_via_z_wheel = game.via_z_wheel;
                 }
-                // A imagem sai antes do mix. O som não muda o quadro, e misturá-lo
-                // antes da troca atrasava o comando pelo tempo do render.
-                if intermediario || passo == Step::Presented {
-                    // A textura do destino, 1:1 no centro. Sem a devolução do quadro a
-                    // sessão está no processador, e a imagem sai pela CPU.
-                    let textura = match placa::guarda_o_quadro() && !intermediario {
-                        true => jogo.sessao.textura_do_quadro(),
+                // The image goes out before the mix. The sound does not change the frame, and
+                // mixing it before the swap delayed the command by the render time.
+                if intermediate || step == Step::Presented {
+                    // The target texture, 1:1 in the center. Without the frame readback the
+                    // session is on the CPU, and the image goes out through the CPU.
+                    let texture = match gpu::keeps_frame() && !intermediate {
+                        true => game.session.frame_texture(),
                         false => None,
                     };
-                    if let Some(id) = textura {
-                        placa::mostra_textura(id, 160, 32, 640, 480);
-                        jogo.sessao.retoma_o_contexto();
+                    if let Some(id) = texture {
+                        gpu::show_texture(id, 160, 32, 640, 480);
+                        game.session.resume_context();
                     } else {
-                        tela.apresenta(|q| {
-                            // A cópia só escreve o centro. Sem isto a lista fica na faixa.
-                            apresentacao::limpa(q, apresentacao::PRETO);
-                            let screen = jogo.sessao.screen();
-                            apresentacao::copia_rgb565(
+                        vita_screen.present(|q| {
+                            // The copy only writes the center. Without this the list stays in the
+                            // strip.
+                            presentation::clear(q, presentation::BLACK);
+                            let screen = game.session.screen();
+                            presentation::copy_rgb565(
                                 q,
                                 screen.pixels(),
                                 screen.width(),
@@ -907,161 +915,162 @@ impl Aplicativo {
                             );
                         });
                     }
-                } else if passo == Step::Ahead {
-                    // Adiantado, a volta volta na hora. Sem esta espera o laço gira no vazio.
+                } else if step == Step::Ahead {
+                    // When ahead, the turn returns right away. Without this wait the loop spins
+                    // idle.
                     unsafe { sceDisplayWaitVblankStart() };
                 }
-                if som.porta >= 0 {
-                    let agora_ms = jogo.sessao.clock_ms();
-                    let virt = u64::from(agora_ms.wrapping_sub(jogo.relogio));
-                    jogo.relogio = agora_ms;
-                    let real = jogo.ultimo_som.elapsed().as_millis() as u64;
-                    jogo.ultimo_som = Instant::now();
-                    let devidas = som::amostras_devidas(real, virt, som::TAXA);
-                    jogo.mixer.render_into(devidas, &mut jogo.mix);
-                    jogo.pcm.clear();
-                    jogo.pcm.extend(
-                        jogo.mix
+                if sound.port >= 0 {
+                    let now_ms = game.session.clock_ms();
+                    let virt = u64::from(now_ms.wrapping_sub(game.clock));
+                    game.clock = now_ms;
+                    let real = game.last_sound.elapsed().as_millis() as u64;
+                    game.last_sound = Instant::now();
+                    let due = sound::samples_due(real, virt, sound::RATE);
+                    game.mixer.render_into(due, &mut game.mix);
+                    game.pcm.clear();
+                    game.pcm.extend(
+                        game.mix
                             .iter()
-                            .map(|amostra| (amostra.clamp(-1.0, 1.0) * f32::from(i16::MAX)) as i16),
+                            .map(|sample| (sample.clamp(-1.0, 1.0) * f32::from(i16::MAX)) as i16),
                     );
-                    som.anel.empurra(&jogo.pcm);
+                    sound.ring.push(&game.pcm);
                 }
             }
         }
-        despeja();
-        if sair {
-            anota("voltou à lista");
-            self.volta_ao_menu(som, String::new());
+        flush_log();
+        if quit {
+            note("back to the list");
+            self.back_to_menu(sound, String::new());
             return;
         }
-        if let Some(classe) = pedido {
-            match self.caminho_da_classe(classe) {
-                Some(caminho) => {
-                    let pela_z_wheel = classe != session::Z_WHEEL;
-                    if let Err(erro) = self.abre_caminho(&caminho, pela_z_wheel, som) {
-                        anota(&erro);
-                        self.volta_ao_menu(som, erro);
+        if let Some(class_id) = request {
+            match self.class_path(class_id) {
+                Some(path) => {
+                    let via_z_wheel = class_id != session::Z_WHEEL;
+                    if let Err(error) = self.open_path(&path, via_z_wheel, sound) {
+                        note(&error);
+                        self.back_to_menu(sound, error);
                     }
                 }
                 None => {
-                    let erro = format!("O shell pediu {classe:#010x}, que não está na pasta");
-                    anota(&erro);
-                    self.volta_ao_menu(som, erro);
+                    let error = format!("The shell asked for {class_id:#010x}, which is not in the folder");
+                    note(&error);
+                    self.back_to_menu(sound, error);
                 }
             }
             return;
         }
-        if apresentou {
-            self.viu_quadro = true;
-            self.saidas_sem_quadro = 0;
+        if presented {
+            self.saw_frame = true;
+            self.exits_without_frame = 0;
         }
-        if passo != Step::Stopped {
+        if step != Step::Stopped {
             return;
         }
         if !normal {
-            anota(&motivo);
-            self.volta_ao_menu(som, motivo);
+            note(&reason);
+            self.back_to_menu(sound, reason);
             return;
         }
-        if !self.viu_quadro {
-            self.saidas_sem_quadro += 1;
+        if !self.saw_frame {
+            self.exits_without_frame += 1;
         } else {
-            self.saidas_sem_quadro = 0;
+            self.exits_without_frame = 0;
         }
-        let reabre = classe == session::Z_WHEEL || pela;
-        if reabre && self.saidas_sem_quadro < 3 {
-            if let Some(caminho) = self.caminho_da_classe(session::Z_WHEEL) {
-                if let Err(erro) = self.abre_caminho(&caminho, false, som) {
-                    anota(&erro);
-                    self.volta_ao_menu(som, erro);
+        let reopen = class_id == session::Z_WHEEL || opened_via_z_wheel;
+        if reopen && self.exits_without_frame < 3 {
+            if let Some(path) = self.class_path(session::Z_WHEEL) {
+                if let Err(error) = self.open_path(&path, false, sound) {
+                    note(&error);
+                    self.back_to_menu(sound, error);
                 }
                 return;
             }
         }
-        self.volta_ao_menu(som, String::new());
+        self.back_to_menu(sound, String::new());
     }
 }
 
-fn sobe_o_clock() {
+fn raise_clock() {
     unsafe {
-        let antes_arm = scePowerGetArmClockFrequency();
-        let antes_bus = scePowerGetBusClockFrequency();
+        let before_arm = scePowerGetArmClockFrequency();
+        let before_bus = scePowerGetBusClockFrequency();
         let arm = scePowerSetArmClockFrequency(CLOCK_ARM_MHZ);
-        let bus = scePowerSetBusClockFrequency(CLOCK_BARRAMENTO_MHZ);
-        let agora_arm = scePowerGetArmClockFrequency();
-        let agora_bus = scePowerGetBusClockFrequency();
-        anota(&format!(
-            "clock {antes_arm}/{antes_bus} MHz -> {agora_arm}/{agora_bus} MHz (pedidos {arm}/{bus})"
+        let bus = scePowerSetBusClockFrequency(CLOCK_BUS_MHZ);
+        let now_arm = scePowerGetArmClockFrequency();
+        let now_bus = scePowerGetBusClockFrequency();
+        note(&format!(
+            "clock {before_arm}/{before_bus} MHz -> {now_arm}/{now_bus} MHz (requested {arm}/{bus})"
         ));
     }
 }
 
-fn ajusta_prioridade() {
+fn set_priority() {
     unsafe {
         let id = sceKernelGetThreadId();
-        let rc = sceKernelChangeThreadPriority(id, PRIORIDADE);
+        let rc = sceKernelChangeThreadPriority(id, PRIORITY);
         if rc < 0 {
-            anota(&format!("prioridade {PRIORIDADE} recusada ({rc})"));
+            note(&format!("priority {PRIORITY} refused ({rc})"));
         }
     }
 }
 
-pub fn roda() -> ! {
-    let _ = std::fs::create_dir_all(RAIZ);
-    sobe_o_clock();
-    ajusta_prioridade();
+pub fn run() -> ! {
+    let _ = std::fs::create_dir_all(ROOT);
+    raise_clock();
+    set_priority();
     let log = LOG.to_string();
     std::panic::set_hook(Box::new(move |info| {
-        if let Ok(mut arquivo) = std::fs::OpenOptions::new()
+        if let Ok(mut file) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&log)
         {
             use std::io::Write;
-            let _ = writeln!(arquivo, "pânico: {info}");
+            let _ = writeln!(file, "panic: {info}");
         }
     }));
-    // Falta de memória aborta sem passar pelo pânico. O gancho é `fn`, não closure: no meio
-    // de uma alocação recusada ele não pode capturar nada.
-    std::alloc::set_alloc_error_hook(sem_memoria);
-    unsafe { std::env::set_var("HOME", RAIZ) };
-    zeebx::registro::le_do_ambiente();
-    // 8 MiB de som já decodificado, o teto do perfil Portátil. Acima disso o cache compete com
-    // o jogo pela RAM do aparelho.
-    zeebx::machine::define_teto_do_cache_de_som(8 * 1024 * 1024);
-    anota("Zeebx");
-    anota_livre();
+    // Running out of memory aborts without going through the panic. The hook is a `fn`, not a
+    // closure: in the middle of a refused allocation it cannot capture anything.
+    std::alloc::set_alloc_error_hook(out_of_memory);
+    unsafe { std::env::set_var("HOME", ROOT) };
+    zeebx::logging::from_env();
+    // 8 MiB of already decoded sound, the Portable profile's ceiling. Above that the cache
+    // competes with the game for the device's RAM.
+    zeebx::machine::set_sound_cache_cap(8 * 1024 * 1024);
+    note("Zeebx");
+    note_free_memory();
 
-    let na_placa = match placa::abre() {
-        placa::Abertura::Pronta => true,
-        placa::Abertura::SemPlaca => false,
-        placa::Abertura::TomouATela(erro) => {
-            anota(&erro);
-            morre(1);
+    let on_gpu = match gpu::open() {
+        gpu::Opening::Ready => true,
+        gpu::Opening::NoGpu => false,
+        gpu::Opening::TookScreen(error) => {
+            note(&error);
+            die(1);
         }
     };
-    let mut tela = match Tela::abre(na_placa) {
-        Ok(tela) => tela,
-        Err(erro) => {
-            anota(&erro);
-            morre(1);
+    let mut screen = match Screen::open(on_gpu) {
+        Ok(screen) => screen,
+        Err(error) => {
+            note(&error);
+            die(1);
         }
     };
-    let som = Som::abre();
-    let mut app = Aplicativo::novo();
-    tela.apresenta(|q| apresentacao::desenha_menu(q, &[], 0, "Lendo a pasta..."));
-    app.varre();
-    despeja();
+    let sound = Sound::open();
+    let mut app = App::create();
+    screen.present(|q| presentation::draw_menu(q, &[], 0, "Reading the folder..."));
+    app.scan();
+    flush_log();
     loop {
-        app.menu(&mut tela);
-        if let Err(erro) = app.abre_cursor(&som) {
-            anota(&erro);
-            app.erro = erro;
+        app.menu(&mut screen);
+        if let Err(error) = app.open_selected(&sound) {
+            note(&error);
+            app.error = error;
             continue;
         }
-        while app.jogo.is_some() {
-            app.quadro(&mut tela, &som);
+        while app.game.is_some() {
+            app.frame(&mut screen, &sound);
         }
     }
 }

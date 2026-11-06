@@ -3,7 +3,7 @@ name = "zeebx-vita"
 version = "0.5.1"
 edition = "2024"
 license = "GPL-2.0-or-later"
-description = "O Zeebx na PlayStation Vita, sem Libretro"
+description = "Zeebx on the PlayStation Vita, without Libretro"
 publish = false
 
 [[bin]]
@@ -11,9 +11,9 @@ name = "zeebx-vita"
 path = "src/main.rs"
 
 [dependencies]
-# Sem `desktop` e sem `audio`. O `audio` é o `cpal`, que não tem porta na Vita; o som sai pela
-# `sceAudioOut` daqui. `gl` traz o preenchimento na placa, sem glutin: o contexto é o do vitaGL.
-# `gpu` não entra — ela pede janela de desktop.
+# Without `desktop` and without `audio`. `audio` is `cpal`, which has no Vita port; the sound goes
+# out through `sceAudioOut` here. `gl` brings GPU filling, without glutin: the context is vitaGL's.
+# `gpu` stays out — it asks for a desktop window.
 zeebx = { path = "../..", default-features = false, features = ["gl"] }
 glow = "0.16"
 
