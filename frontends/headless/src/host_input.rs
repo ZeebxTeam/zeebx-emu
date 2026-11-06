@@ -1,12 +1,12 @@
-//! O teclado do winit e os controles do host virando o estado das portas do console.
+//! The winit keyboard and the host controllers turning into the state of the console's ports.
 //!
-//! O mapeamento em si é o do núcleo — [`Player::pad`] — e os nomes de tecla são os do egui, os
-//! mesmos que a tela de controles do desktop grava no `settings.json`. **Isso é de propósito:**
-//! um mapeamento copiado da interface para o `config.ini` tem de valer sem tradução, senão o
-//! jeito mais fácil de descobrir como um botão se chama deixaria de servir.
+//! The mapping itself is the core's — [`Player::pad`] — and the key names are egui's, the same
+//! ones the desktop controls screen writes to `settings.json`. **This is on purpose:** a mapping
+//! copied from the interface into `config.ini` has to work without translation, otherwise the
+//! easiest way to find out what a button is called would stop working.
 //!
-//! Aqui não há egui desenhando nada: o `egui::Key` é usado só como o nome canônico de uma
-//! tecla, que é o que ele já era no arquivo de configuração.
+//! There is no egui drawing anything here: `egui::Key` is used only as the canonical name of a
+//! key, which is what it already was in the configuration file.
 
 use std::collections::HashSet;
 
@@ -15,70 +15,70 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use zeebx::input::bindings::{Player, Source};
 use zeebx::input::{Pad, gamepads::Gamepads};
 
-/// O teclado do host: que teclas estão apertadas agora.
+/// The host keyboard: which keys are pressed right now.
 #[derive(Default)]
-pub struct Teclado {
-    apertadas: HashSet<egui::Key>,
+pub struct Keyboard {
+    pressed: HashSet<egui::Key>,
 }
 
-impl Teclado {
-    /// Anota o que o winit contou. `None` quando a tecla não é uma que se saiba nomear — um
-    /// `F13`, uma tecla de mídia —, e aí não há o que anotar.
-    pub fn evento(&mut self, tecla: PhysicalKey, apertada: bool) {
-        let PhysicalKey::Code(codigo) = tecla else {
+impl Keyboard {
+    /// Records what winit reported. `None` when the key is not one we know how to name — an
+    /// `F13`, a media key —, and then there is nothing to record.
+    pub fn event(&mut self, physical_key: PhysicalKey, pressed: bool) {
+        let PhysicalKey::Code(code) = physical_key else {
             return;
         };
-        let Some(key) = do_winit(codigo) else {
+        let Some(key) = from_winit(code) else {
             return;
         };
-        match apertada {
-            true => self.apertadas.insert(key),
-            false => self.apertadas.remove(&key),
+        match pressed {
+            true => self.pressed.insert(key),
+            false => self.pressed.remove(&key),
         };
     }
 
-    /// A janela perdeu o foco: o que estava apertado não está mais.
+    /// The window lost focus: whatever was pressed is not anymore.
     ///
-    /// Sem isto, sair da janela com uma tecla apertada deixa o jogo achando que ela continua —
-    /// o `keyup` acontece noutra janela e nunca chega aqui.
-    pub fn solta_tudo(&mut self) {
-        self.apertadas.clear();
+    /// Without this, leaving the window with a key held leaves the game thinking it still is —
+    /// the `keyup` happens in another window and never arrives here.
+    pub fn release_all(&mut self) {
+        self.pressed.clear();
     }
 
-    pub fn apertadas(&self) -> &HashSet<egui::Key> {
-        &self.apertadas
+    pub fn pressed(&self) -> &HashSet<egui::Key> {
+        &self.pressed
     }
 
-    fn acionada(&self, source: &Source) -> bool {
+    fn is_triggered(&self, source: &Source) -> bool {
         match source {
             Source::Key { name } => {
-                egui::Key::from_name(name).is_some_and(|key| self.apertadas.contains(&key))
+                egui::Key::from_name(name).is_some_and(|key| self.pressed.contains(&key))
             }
             _ => false,
         }
     }
 }
 
-/// O estado do controle de uma porta, do mapeamento dela.
+/// The controller state of a port, from its mapping.
 ///
-/// Teclado e controle são consultados **juntos**: quem tem os dois pode usar os dois, que é o
-/// que ter mais de uma origem por botão significa.
-pub fn pad_da_porta(player: &Player, teclado: &Teclado, pads: &Gamepads, porta: usize) -> Pad {
+/// Keyboard and controller are queried **together**: whoever has both can use both, which is
+/// what having more than one source per button means.
+pub fn port_pad(player: &Player, keyboard: &Keyboard, pads: &Gamepads, port: usize) -> Pad {
     let device = player.device.as_deref();
     player.pad(
-        |source| teclado.acionada(source) || pads.is_active(device, porta, source),
-        |axis| pads.value(device, porta, axis),
+        |source| keyboard.is_triggered(source) || pads.is_active(device, port, source),
+        |axis| pads.value(device, port, axis),
     )
 }
 
-/// A tecla do winit pelo nome que o egui — e portanto o `config.ini` — dá a ela.
+/// The winit key by the name egui — and therefore `config.ini` — gives it.
 ///
-/// É por código **físico**, não por caractere: o `Z` da configuração é a tecla onde o `Z` fica
-/// num teclado americano, que é o que todo emulador faz. Assim um teclado ABNT2 ou AZERTY joga
-/// com a mesma configuração, com a mão no mesmo lugar.
-fn do_winit(codigo: KeyCode) -> Option<egui::Key> {
+/// It goes by **physical** code, not by character: the `Z` in the configuration is the key where
+/// `Z` sits on a US keyboard, which is what every emulator does. That way an ABNT2 or AZERTY
+/// keyboard plays with the same configuration, with the hand in the same place.
+fn from_winit(code: KeyCode) -> Option<egui::Key> {
     use egui::Key as K;
-    Some(match codigo {
+    Some(match code {
         KeyCode::ArrowUp => K::ArrowUp,
         KeyCode::ArrowDown => K::ArrowDown,
         KeyCode::ArrowLeft => K::ArrowLeft,
@@ -165,15 +165,15 @@ fn do_winit(codigo: KeyCode) -> Option<egui::Key> {
 }
 
 #[cfg(test)]
-mod testes {
+mod tests {
     use super::*;
 
-    /// O nome que o `config.ini` usa precisa achar a tecla que o winit entrega. Se esta tabela
-    /// e a do egui discordarem, `tecla:Z` vira uma linha que não faz nada.
+    /// The name `config.ini` uses has to find the key winit delivers. If this table and egui's
+    /// disagree, `key:Z` becomes a line that does nothing.
     #[test]
-    fn os_nomes_do_arquivo_batem_com_as_teclas_do_winit() {
-        let mut teclado = Teclado::default();
-        for (codigo, nome) in [
+    fn the_file_names_match_the_winit_keys() {
+        let mut keyboard = Keyboard::default();
+        for (code, name) in [
             (KeyCode::KeyZ, "Z"),
             (KeyCode::Space, "Space"),
             (KeyCode::ArrowUp, "ArrowUp"),
@@ -181,21 +181,22 @@ mod testes {
             (KeyCode::Digit1, "1"),
             (KeyCode::Backspace, "Backspace"),
         ] {
-            teclado.evento(PhysicalKey::Code(codigo), true);
+            keyboard.event(PhysicalKey::Code(code), true);
             assert!(
-                teclado.acionada(&Source::key(nome)),
-                "`tecla:{nome}` não vê {codigo:?}"
+                keyboard.is_triggered(&Source::key(name)),
+                "`key:{name}` does not see {code:?}"
             );
-            teclado.evento(PhysicalKey::Code(codigo), false);
-            assert!(!teclado.acionada(&Source::key(nome)), "{nome} ficou presa");
+            keyboard.event(PhysicalKey::Code(code), false);
+            assert!(!keyboard.is_triggered(&Source::key(name)), "{name} got stuck");
+
         }
     }
 
     #[test]
-    fn perder_o_foco_solta_o_que_estava_apertado() {
-        let mut teclado = Teclado::default();
-        teclado.evento(PhysicalKey::Code(KeyCode::KeyZ), true);
-        teclado.solta_tudo();
-        assert!(!teclado.acionada(&Source::key("Z")));
+    fn losing_focus_releases_what_was_pressed() {
+        let mut keyboard = Keyboard::default();
+        keyboard.event(PhysicalKey::Code(KeyCode::KeyZ), true);
+        keyboard.release_all();
+        assert!(!keyboard.is_triggered(&Source::key("Z")));
     }
 }
