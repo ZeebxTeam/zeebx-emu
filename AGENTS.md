@@ -1,204 +1,241 @@
-# Guia para agentes
+# Guide for agents
 
-Este arquivo é para uma IA que vai mexer neste repositório. Ele diz o que não se descobre lendo
-um arquivo por vez: onde as coisas moram, o que não pode quebrar, e como este projeto escreve.
+This file is for an AI that is going to work on this repository. It says what you can't find out
+by reading one file at a time: where things live, what must not break, and how this project
+writes.
 
-Humanos também podem ler — não há nada aqui que seja segredo do código.
+Humans can read it too — nothing here is a secret of the code.
 
-## O que é o Zeebx
+## What Zeebx is
 
-Um emulador do Zeebo, o console que a TecToy lançou em 2009. O aparelho roda **Qualcomm BREW
-4.0.2**, e por isso a emulação é de alto nível: o jogo é um binário ARM que nunca toca hardware,
-ele conversa com o sistema por tabelas de ponteiros de função. O que precisa ser fiel é a
-conversa, não o silício. O desenho geral está em [`ARCHITECTURE.md`](ARCHITECTURE.md), e cada
-subsistema tem o seu em [`docs/implementacao/`](docs/implementacao/README.md).
+An emulator for the Zeebo, the console TecToy launched in 2009. The device runs **Qualcomm BREW
+4.0.2**, so the emulation is high-level: the game is an ARM binary that never touches hardware, it
+talks to the system through tables of function pointers. What has to be faithful is the
+conversation, not the silicon. The overall design is in [`ARCHITECTURE.md`](ARCHITECTURE.md), and
+each subsystem has its own document in [`docs/implementation/`](docs/implementation/README.md).
 
-## O mapa
+## The map
 
 ```
-Cargo.toml          a biblioteca `zeebx` — o emulador inteiro, sem interface
-src/                BREW, CPU, vídeo, áudio, carregador, sessão, save state
-src/ui/             telas e estado compartilhados entre frontends (ver o aviso abaixo)
+Cargo.toml          the `zeebx` library — the whole emulator, with no interface
+src/                BREW, CPU, video, audio, loader, session, save state
+src/ui/             screens and state shared between frontends (see the warning below)
 frontends/
-  qt-standalone/          a interface: o binário `zeebx-qt`, em Qt Quick
-  cli/                    a linha de comando: o binário `zeebx` (`run`, `sessao`, `bench`...), sem Qt
-  headless/               sem interface, configurado por `config.ini`
-  libretro/               o core do RetroArch
-  android/                o aplicativo, sem uma linha de Java
-  ios/                    o aplicativo de iOS: UIKit por cima de uma biblioteca estática
-  switch/                 o `.a` estático que o ROMBundler liga
-  vita/                   o `.a` estático que o RetroArch da Vita liga
-  vita-standalone/        o VPK que abre sozinho, sem RetroArch
-ferramentas/        scripts Python: catálogo, varredura, instalação do core
-docs/               documentação; `patch-notes/` guarda as notas de cada versão
-assets/             ícones, fontes e `lang/` — os idiomas de fábrica
+  qt-standalone/          the interface: the `zeebx-qt` binary, in Qt Quick
+  cli/                    the command line: the `zeebx` binary (`run`, `session`, `bench`...), no Qt
+  headless/               no interface, configured by `config.ini`
+  libretro/               the RetroArch core
+  android/                the app, without a single line of Java
+  ios/                    the iOS app: UIKit on top of a static library
+  switch/                 the static `.a` that ROMBundler links
+  vita/                   the static `.a` that the Vita's RetroArch links
+  vita-standalone/        the VPK that opens on its own, without RetroArch
+tools/              Python scripts: catalog, scan, core installation
+docs/               documentation; `patch-notes/` keeps each version's notes
+assets/             icons, fonts and `lang/` — the built-in languages
 ```
 
-**`src/ui/` não é só interface.** O `library`, o `settings`, o `saves`, o `acervo` e o `i18n`
-moram ali mas são lidos **pelo núcleo** — o `machine`, o `loader` e a `session` falam com eles.
-Só `ui::window` (a janela crua do `zeebx run --window`), `ui::atualizacao` e `ui::discord` são de
-desktop de verdade; a janela da interface mora em `frontends/qt-standalone`.
+**`src/ui/` is not just interface.** `library`, `settings`, `saves`, `zwheel_metadata` and `i18n`
+live there but are read **by the core** — `machine`, `loader` and `session` talk to them. Only
+`ui::window` (the raw window of `zeebx run --window`), `ui::updater` and `ui::discord` are really
+desktop-only; the interface's window lives in `frontends/qt-standalone`.
 
-## As features, e por que elas existem
+## The features, and why they exist
 
-| Feature | O que traz | Quem usa |
+| Feature | What it brings | Who uses it |
 |---|---|---|
-| `desktop` | gilrs, minifb, rfd, Discord, glutin — implica `gpu`, `audio`, `soundfont` | Qt, linha de comando, headless |
-| `audio` | só o `cpal`, que no Android fala com o Oboe | Android, e o `desktop` |
-| `gl` | o desenho na placa; **não puxa nada de host** | core, Android, e o `desktop` |
-| `gpu` | criar contexto próprio (glutin) — implica `gl` | desktop |
-| `soundfont` | MIDI por banco de amostras (rustysynth, Rust puro) | core e desktop |
+| `desktop` | gilrs, minifb, rfd, Discord, glutin — implies `gpu`, `audio`, `soundfont` | Qt, command line, headless |
+| `audio` | only `cpal`, which on Android talks to Oboe | Android, and `desktop` |
+| `gl` | drawing on the GPU; **pulls in nothing from the host** | core, Android, and `desktop` |
+| `gpu` | creating its own context (glutin) — implies `gl` | desktop |
+| `soundfont` | MIDI through a sample bank (rustysynth, pure Rust) | core and desktop |
 
-**A regra da casa: o core Libretro não linka biblioteca de host.** Sem janela, sem placa de som,
-sem controle. Quem entrega vídeo, áudio e entrada é o frontend. O `libretro.yml` cobra isso com
-`ldd`, e um `dep:` novo no lugar errado quebra o build do core.
+**House rule: the Libretro core links no host library.** No window, no sound card, no
+controller. The frontend delivers video, audio and input. `libretro.yml` enforces this with
+`ldd`, and a new `dep:` in the wrong place breaks the core's build.
 
-Antes de pôr um `#[cfg(feature = "desktop")]` em algo, pergunte se aquilo é **mesmo** de desktop.
-Três gates errados já quebraram o build do Android sem ninguém perceber, porque o APK só é montado
-na tag.
+Before putting a `#[cfg(feature = "desktop")]` on something, ask whether it is **really**
+desktop-only. Three wrong gates have already broken the Android build without anyone noticing,
+because the APK is only built on the tag.
 
-## Compilar e provar
+## Building and proving
 
-A interface é o frontend Qt (`zeebx-standalone-qt`, binário `zeebx-qt`), e é ela que sai nos
-instaladores. A linha de comando (`zeebx-cli`, binário `zeebx`) é a bancada de medir e depurar, e
-não pede Qt. A interface do egui saiu depois da 0.4.2. O Qt pede o **Qt 6** (6.4 ou mais novo),
-que o build acha pelo `qmake6`, pelo `qmake` ou pelo `QMAKE`.
-`python3 ferramentas/prepara_build.py` diz o que falta. A interface Qt está em
-[`docs/implementacao/21-migracao-para-qt.md`](docs/implementacao/21-migracao-para-qt.md).
+The interface is the Qt frontend (`zeebx-standalone-qt`, binary `zeebx-qt`), and it is what ships
+in the installers. The command line (`zeebx-cli`, binary `zeebx`) is the bench for measuring and
+debugging, and doesn't need Qt. The egui interface was removed after 0.4.2. Qt requires **Qt 6**
+(6.4 or newer), which the build finds through `qmake6`, `qmake` or `QMAKE`.
+`python3 tools/check_build_deps.py` says what is missing. The Qt interface is described in
+[`docs/implementation/21-qt-migration.md`](docs/implementation/21-qt-migration.md).
 
 ```bash
-cargo build --release --locked -p zeebx-cli                 # o binário `zeebx`
-cargo build --release --locked -p zeebx-standalone-qt       # o binário `zeebx-qt`
+cargo build --release --locked -p zeebx-cli                 # the `zeebx` binary
+cargo build --release --locked -p zeebx-standalone-qt       # the `zeebx-qt` binary
 cargo test  --release --locked -p zeebx -p zeebx-cli -p zeebx-standalone-qt
-timeout 60 ./target/release/zeebx controles                 # sobe de verdade, sem tela
+timeout 60 ./target/release/zeebx controls                  # really starts up, no screen
 
 cargo build --release --locked -p zeebx-headless
-cargo build --release --locked -p zeebx-libretro            # sozinho: ver abaixo
-python3 ferramentas/verifica_core.py target/release/libzeebx_libretro.so
+cargo build --release --locked -p zeebx-libretro            # on its own: see below
+python3 tools/verify_core.py target/release/libzeebx_libretro.so
 ```
 
-**O core Libretro compila num comando só dele.** Junto com outro pacote, o Cargo une as features
-do núcleo que os dois pedem, e o core herda o `audio` do outro: um código que só compila com som
-passa no comando conjunto e quebra no `libretro.yml`, que o compila sozinho. Já aconteceu com o
-`set_audio` da `ui::partida`.
+**The Libretro core builds in a command of its own.** Together with another package, Cargo
+unifies the core features both ask for, and the core inherits the other one's `audio`: code that
+only compiles with sound passes the joint command and breaks in `libretro.yml`, which builds it
+alone. It already happened with `set_audio` in `ui::running_game`.
 
-O `verifica_core.py` abre a biblioteca como o frontend a abre (`dlopen`) e chama a ABI. Não é
-`nm` numa lista de símbolos: ele pega dependência que faltou no link, que a leitura de símbolos
-não pega.
+`verify_core.py` opens the library the way the frontend does (`dlopen`) and calls the ABI. It is
+not `nm` over a list of symbols: it catches a dependency missing from the link, which reading
+symbols doesn't.
 
-**Android** precisa da cadeia no `$HOME`, sem sudo — a tabela está em
-[`frontends/android/LEIAME.md`](frontends/android/LEIAME.md):
+**QML errors only show up at runtime**, and on a Linux desktop Qt sends its messages to journald
+when stderr is not a terminal. To see them in a terminal or a log file, run with
+`QT_FORCE_STDERR_LOGGING=1`, e.g.
+`QT_QPA_PLATFORM=offscreen QT_FORCE_STDERR_LOGGING=1 timeout 12 ./target/release/zeebx-qt`.
+The build's `qmlcachegen` catches some mistakes, not all.
+
+**Android** needs the toolchain in `$HOME`, without sudo — the table is in
+[`frontends/android/README.md`](frontends/android/README.md):
 
 ```bash
 export PATH="$HOME/.cargo/bin:$HOME/Android/gradle/bin:$PATH"
 export JAVA_HOME="$HOME/Android/jdk"
-./frontends/android/compilar.sh --apk
+./frontends/android/build.sh --apk
 ```
 
-**Switch** (o `.a` estático que o ROMBundler liga) mora em
-[`frontends/switch/compilar.sh`](frontends/switch/compilar.sh). O `cfg(zeebx_switch)` desse
-script é o que reduz o cache de código do dynarmic e aumenta o número de sons guardados. No
-Mac a imagem Docker `rombundler-switch` traz o devkitA64 e o rustc; o job `core-switch` do
-`libretro.yml` roda o mesmo script com `--local` dentro da imagem `devkitpro/devkita64`. A
-release faz o mesmo e publica `zeebx_libretro-switch.zip`. O `.a` não liga sozinho: os
-`switch_jit_*` e `switch_spinlock_*` que o patch do dynarmic chama vêm do ROMBundler.
+**Switch** (the static `.a` that ROMBundler links) lives in
+[`frontends/switch/build.sh`](frontends/switch/build.sh). That script's `cfg(zeebx_switch)` is
+what shrinks dynarmic's code cache and raises the number of cached sounds. On a Mac the
+`rombundler-switch` Docker image brings devkitA64 and rustc; the `core-switch` job in
+`libretro.yml` runs the same script with `--local` inside the `devkitpro/devkita64` image. The
+release does the same and publishes `zeebx_libretro-switch.zip`. The `.a` doesn't link on its
+own: the `switch_jit_*` and `switch_spinlock_*` that the dynarmic patch calls come from ROMBundler.
 
-**Vita** (o `.a` estático que o RetroArch liga) mora em
-[`frontends/vita/compilar.sh`](frontends/vita/compilar.sh). O alvo é o
-`armv7-sony-vita-newlibeabihf`, tier 3: a std é recompilada com `-Z build-std` e o
-vitasdk fornece o `arm-vita-eabi-gcc`. O dynarmic fica de fora — ele não emite ARMv7 —,
-então o núcleo é o interpretador, e o desenho fica no processador porque o vitaGL não
-entrega OpenGL ES 3. No Mac a imagem Docker `vitasdk/vitasdk` traz o SDK; o job
-`core-vita` do `libretro.yml` roda o mesmo script com `--local` dentro dessa imagem. A
-release faz o mesmo e publica `zeebx_libretro-vita.zip`. O `.a` não abre sozinho: o
-RetroArch o consome renomeado para `libretro_vita.a`.
+**Vita** (the static `.a` that RetroArch links) lives in
+[`frontends/vita/build.sh`](frontends/vita/build.sh). The target is
+`armv7-sony-vita-newlibeabihf`, tier 3: std is rebuilt with `-Z build-std` and vitasdk provides
+`arm-vita-eabi-gcc`. Dynarmic is left out — it doesn't emit ARMv7 —, so the core is the
+interpreter, and drawing stays on the CPU because vitaGL doesn't provide OpenGL ES 3. On a Mac the
+`vitasdk/vitasdk` Docker image brings the SDK; the `core-vita` job in `libretro.yml` runs the same
+script with `--local` inside that image. The release does the same and publishes
+`zeebx_libretro-vita.zip`. The `.a` doesn't open on its own: RetroArch consumes it renamed to
+`libretro_vita.a`.
 
-O aplicativo, que não passa pelo RetroArch, mora em
-[`frontends/vita-standalone`](frontends/vita-standalone/LEIAME.md). É um VPK: o mesmo alvo e a
-mesma imagem Docker, outro binário. O `vita.yml` é `workflow_dispatch`, como o APK; a release
-publica `zeebx-vita.zip`.
+The app, which doesn't go through RetroArch, lives in
+[`frontends/vita-standalone`](frontends/vita-standalone/README.md). It is a VPK: same target and
+same Docker image, another binary. `vita.yml` is `workflow_dispatch`, like the APK; the release
+publishes `zeebx-vita.zip`.
 
-**A memória na Vita é apertada e não foi medida no aparelho.** O heap do jogo lá é de 48 MiB
-(64 no resto), e a região interna soma mais 16 MiB que a newlib reserva de verdade. Uma região
-nova ou maior em `loader/mod.rs` sai dessa mesma conta. O heap de outro tamanho também faz o
-save state da Vita não abrir nas outras plataformas, e vice-versa. Ver
-[`frontends/vita-standalone/LEIAME.md`](frontends/vita-standalone/LEIAME.md).
+**Memory on the Vita is tight and has not been measured on the device.** The game heap there is
+48 MiB (64 everywhere else), and the internal region adds 16 MiB more that newlib really
+reserves. A new or larger region in `loader/mod.rs` comes out of that same budget. A heap of a
+different size also means a Vita save state doesn't open on the other platforms, and vice versa.
+See [`frontends/vita-standalone/README.md`](frontends/vita-standalone/README.md).
 
-**iOS** precisa de um Mac com Xcode e dos alvos `aarch64-apple-ios` e
-`aarch64-apple-ios-sim` no rustup. O passo a passo está em
-[`frontends/ios/LEIAME.md`](frontends/ios/LEIAME.md):
+**iOS** needs a Mac with Xcode and the `aarch64-apple-ios` and `aarch64-apple-ios-sim` targets
+in rustup. The step-by-step is in [`frontends/ios/README.md`](frontends/ios/README.md):
 
 ```bash
-./frontends/ios/compilar.sh --app
+./frontends/ios/build.sh --app
 ```
 
-## O CI
+## CI
 
-**A tag é o único gatilho automático.** O `release.yml` dispara em `v0.0.0` e monta a release como
-rascunho. O `ci.yml`, o `libretro.yml`, o `headless.yml`, o `android.yml`, o `ios.yml`, o
-`vita.yml` e o `qt.yml` são `workflow_dispatch`: o CI padrão compila a linha de comando — e com ela o núcleo e os
-testes — nas seis plataformas e chama o `qt.yml`, que compila a interface e monta os instaladores. A release chama o mesmo `qt.yml`:
-os passos do Qt moram num lugar só. Onze jobs por execução é caro demais
-para gastar em cada push, e quem decide é quem pede. A exceção é o `discord-issues.yml`, que não
-compila nada: avisa no Discord quando uma issue abre, fecha ou muda de responsável.
+**The tag is the only automatic trigger.** `release.yml` fires on `v0.0.0` and builds the release
+as a draft. `ci.yml`, `libretro.yml`, `headless.yml`, `android.yml`, `ios.yml`, `vita.yml` and
+`qt.yml` are `workflow_dispatch`: the default CI builds the command line — and with it the core
+and the tests — on the six platforms and calls `qt.yml`, which builds the interface and the
+installers. The release calls the same `qt.yml`: the Qt steps live in one place. Eleven jobs per
+run is too expensive to spend on every push, and whoever asks decides. The exceptions are
+`discord-issues.yml`, which builds nothing: it posts to Discord when an issue opens, closes or
+changes assignee; and `sentinel.yml`, which watches the lockfile.
 
-Se você mexeu em algo que só um deles cobre — o APK, o core num alvo ARM —, diga ao humano que
-vale disparar aquele workflow antes da tag. Você não consegue dispará-lo.
+If you changed something only one of them covers — the APK, the core on an ARM target —, tell the
+human it is worth dispatching that workflow before the tag. You can't dispatch it.
 
-## O que não pode quebrar
+## What must not break
 
-- **Os nomes dos binários não mudam.** A interface é o `zeebx-qt` — é o que o atalho, o `.desktop`
-  e o atualizador de quem já a tem instalada apontam —, e a linha de comando é o `zeebx`, que os
-  scripts, o CI e a documentação digitam. O pacote pode mudar de lugar; o que o usuário digita, não.
-- **O `.so` do core e o `zeebx_libretro.info` andam em par.** Um `.info` velho ao lado de um core
-  novo faz o scan do RetroArch marcar `??` em tudo. E os campos de capacidade do `.info` têm de
-  casar com o que a ABI faz.
-- **O código do Zeebx é GPL-2.0-or-later**. O backend de CPU padrão é o Dynarmic, para que
-  frontends GPLv3 como Qt 6 possam linkar o núcleo sem carregar uma dependência GPLv2-only. Antes
-  de propor uma biblioteca nova, cheque a licença dela e as features do binário que vai linká-la.
-  **Os binários já são GPLv3 na prática**: todos ligam crates que são só Apache-2.0, que não
-  combinam com a GPLv2. Por isso uma dependência GPL-2.0-only não entra em binário nenhum.
-- **A `CHAVE_PUBLICA` de `src/ui/atualizacao.rs` e o segredo `ZEEBX_ATUALIZADOR_CHAVE` do GitHub
-  andam em par.** O segredo assina os pacotes da release; a chave embutida é o que o emulador
-  aceita. Trocar um sem o outro faz toda atualização automática ser recusada — e quem já tem a
-  versão velha instalada só sai dela baixando à mão.
-- **O `THIRD-PARTY-NOTICES.txt` acompanha o `Cargo.lock`.** Mudou dependência, rode
-  `python3 ferramentas/avisos_de_terceiros.py` e commite junto; a release confere.
-- **O heap do guest é só do jogo.** Memória que o emulador pede para si no espaço do guest sai
-  do `aloca_interno` (região `0x3400_0000`), nunca do `malloc` nem do `heap.alloc`. Um bloco
-  nosso no heap muda o endereço de tudo o que o jogo aloca depois, e o RetroAchievements lê o
-  heap por endereço. As bases e tamanhos de `loader/mod.rs` são o mesmo contrato.
-- **O `Cargo.lock` é versionado** e o CI usa `--locked`. Membro novo no workspace entra no lock,
-  no mesmo commit.
+- **The binary names don't change.** The interface is `zeebx-qt` — it is what the shortcut, the
+  `.desktop` file and the updater of anyone who already has it installed point to —, and the
+  command line is `zeebx`, which scripts, CI and the documentation type. The package may move;
+  what the user types may not.
+- **What users and scripts already type keeps working.** The `zeebx` subcommands and options and
+  the `ZEEBX_*` environment variables had Portuguese names before the codebase moved to English.
+  The old spellings are hidden aliases: `LEGACY_ARGS` in `frontends/cli/src/main.rs` and
+  `LEGACY_ENV` in `src/config.rs` (read through `zeebx::config::env_var`). Don't remove an entry;
+  add one when you rename an option or a variable.
+- **Stored names are frozen, even when they are Portuguese.** Renaming a Rust field or variant
+  must not change what is on disk: `settings.json`, `catalog.json` and the other serde types keep
+  their old keys through `#[serde(rename = "...")]` (e.g. `"tema"`, `"atalhos"`,
+  `"direcional_nos_eixos"`); theme IDs (`escuro`, `claro`...); the folders under the config
+  directory (`aparelho/`, `temas/`, `relatorios/`, `saves/mod`...); the paths the guest sees
+  (`/perfil/aparelho`, `/perfil/saves/mod`); save-state section names (`gl.matrizes`,
+  `relogio.us`...); libretro core option keys **and values** (`zeebx_perfil`, `desligado`...),
+  which RetroArch stores in each user's `.opt`; the log targets (`registro`, `controles`,
+  `midia`...), which every log line carries and which scripts grep; the `atualizador` Cargo
+  feature. Translate the comment next
+  to such a name, never the name.
+- **Names that cross into QML need an explicit `cxx_name`.** cxx-qt 0.10 doesn't convert names:
+  a bridge property, invokable or signal without `cxx_name` reaches QML with its Rust spelling.
+  Multi-word names get `#[cxx_name = "camelCase"]`, and QML calls that name. Model role names,
+  `image://zeebx/...` URLs and the engine's initial properties are strings on the Rust side and
+  identifiers on the QML side: rename both together.
+- **The core's `.so` and `zeebx_libretro.info` go together.** An old `.info` next to a new core
+  makes RetroArch's scan mark everything `??`. And the `.info` capability fields must match what
+  the ABI does.
+- **Zeebx's code is GPL-2.0-or-later.** The default CPU backend is Dynarmic, so that GPLv3
+  frontends such as Qt 6 can link the core without carrying a GPLv2-only dependency. Before
+  proposing a new library, check its license and the features of the binary that will link it.
+  **The binaries are already GPLv3 in practice**: they all link crates that are Apache-2.0 only,
+  which doesn't mix with GPLv2. That's why a GPL-2.0-only dependency doesn't go into any binary.
+- **`PUBLIC_KEY` in `src/ui/updater.rs` and the GitHub secret `ZEEBX_ATUALIZADOR_CHAVE` go
+  together.** The secret signs the release packages; the embedded key is what the emulator
+  accepts. Changing one without the other makes every automatic update be refused — and anyone
+  who already has the old version installed only gets out of it by downloading by hand.
+- **`THIRD-PARTY-NOTICES.txt` follows `Cargo.lock`.** Changed a dependency: run
+  `python3 tools/third_party_notices.py` and commit them together; the release checks it.
+- **The guest heap belongs to the game only.** Memory the emulator asks for itself in guest space
+  comes from `alloc_internal` (region `0x3400_0000`), never from `malloc` or `heap.alloc`. A block
+  of ours in the heap moves the address of everything the game allocates afterwards, and
+  RetroAchievements reads the heap by address. The bases and sizes in `loader/mod.rs` are the same
+  contract.
+- **`Cargo.lock` is versioned** and CI uses `--locked`. A new workspace member goes into the lock,
+  in the same commit.
 
-## Como este projeto escreve
+## How this project writes
 
-**Comentário explica o porquê, não o quê.** O código já diz o que faz. O que se perde é a razão:
-a medição que derrubou a hipótese, o defeito que a linha previne, o caminho que foi tentado e não
-servia. Há comentários longos aqui, e eles são assim de propósito.
+**English in the code and in the documentation.** Identifiers, comments, messages, commit messages
+and docs are in English. The user-facing text of the interfaces goes through `assets/lang/`
+(`pt-BR`, `en`, `es`, `es-MX`); a new UI string goes into the catalog, not into the code.
 
-**Afirmação vem com medida.** "34× mais rápido", "de 79% para 284%", "1214 quadros por
-milissegundo virtual". Se você não mediu, diga que não mediu — não arredonde para uma impressão.
+**The Portuguese originals are a frozen record.** `README.pt-BR.md` and `docs/pt-BR/` keep the
+documentation as it was in v0.5.1, when the codebase moved to English. They are not updated:
+change the English version only.
 
-**Mensagem de commit é uma frase declarativa em português**, dizendo o que mudou e por quê. Sem
-prefixo de conventional commit no histórico recente. O corpo explica a razão, não repete o diff.
+**A comment explains why, not what.** The code already says what it does. What gets lost is the
+reason: the measurement that killed the hypothesis, the defect the line prevents, the path that
+was tried and didn't work. There are long comments here, and they are like that on purpose.
 
-**Português no código e na documentação; inglês onde o usuário estrangeiro lê** — as opções e
-mensagens do headless, as chaves do `config.ini`, os arquivos de `assets/lang/`.
+**A claim comes with a measurement.** "34× faster", "from 79% to 284%", "1214 frames per virtual
+millisecond". If you didn't measure, say you didn't measure — don't round it up to an impression.
 
-## A lista de contribuidores do README
+**Commit messages follow Conventional Commits, on a single line, in English**:
+`type(scope): what changed`, e.g. `fix(gl): rotate normals by the inverse transpose of the
+modelview`. The types are the usual ones (`feat`, `fix`, `refactor`, `docs`, `build`, `ci`,
+`test`, `perf`, `chore`); the scope is the subsystem.
 
-A tabela "Quem faz o Zeebx" do README é escrita, e não buscada: o README não roda nada. Ela sai
-de `python3 ferramentas/contribuidores.py`, que lê a mesma API do site (`docs/site.js`) e reescreve
-o trecho entre os marcadores `<!-- contribuidores -->`. Refaça quando entrar gente nova.
+## The README's contributor list
 
-## Notas de versão
+The README's contributor table is written, not fetched: the README runs nothing. It comes from
+`python3 tools/contributors.py`, which reads the same API as the site (`docs/site.js`) and
+rewrites the section between the `<!-- contributors -->` markers. Redo it when someone new joins.
 
-Cada versão deixa a sua em [`docs/patch-notes/`](docs/patch-notes/), escrita para quem usa o
-emulador: o que foi corrigido, em linguagem de quem joga, e não de quem programa.
+## Release notes
 
-## Se você não tem certeza
+Each version leaves its own in [`docs/patch-notes/`](docs/patch-notes/), written for the people
+who use the emulator: what was fixed, in a player's language, not a programmer's.
 
-Este repositório prefere uma pergunta a um palpite bem escrito. Se a leitura não fecha — se não dá
-para saber se um controle manda o direcional como tecla ou como eixo, por exemplo —, diga qual
-instrumento resolveria em vez de escolher o caminho mais provável.
+## If you're not sure
+
+This repository prefers a question to a well-written guess. If the reading doesn't add up — if you
+can't tell whether a controller sends the d-pad as keys or as an axis, for example —, say which
+instrument would settle it instead of picking the most likely path.
