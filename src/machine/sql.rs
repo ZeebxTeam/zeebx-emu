@@ -1,14 +1,14 @@
-//! IDatabase e IQuery: o AEECLSID_SQLMGR do console, atendido pelo SQLite de verdade.
+//! IDatabase and IQuery: the console's AEECLSID_SQLMGR, served by real SQLite.
 
 use super::*;
 
 impl<C: CpuBackend> Machine<C> {
-    /// `ISQLMgr` e `ISQLDatabase` — os bancos SQLite do console. Ver [`crate::brew::sql`].
+    /// `ISQLMgr` and `ISQLDatabase` — the console's SQLite databases. See [`crate::brew::sql`].
     ///
-    /// A ordem dos slots não veio de header: veio da observação com o `--sonda`. O Z-Wheel cria
-    /// o gerenciador, chama o slot 3 com `"tt_prefs.db"` e um ponteiro de saída, e no banco que
-    /// recebe chama o slot 3 de novo, agora com `"PRAGMA integrity_check"`. Por isso os dois
-    /// nomes que estão em [`crate::brew::aee_slots::SQL_MGR`] são os únicos com nome.
+    /// The slot order did not come from a header: it came from observation with `--probe`. The
+    /// Z-Wheel creates the manager, calls slot 3 with `"tt_prefs.db"` and an output pointer, and
+    /// on the database it gets back calls slot 3 again, now with `"PRAGMA integrity_check"`. That
+    /// is why the two names in [`crate::brew::aee_slots::SQL_MGR`] are the only named ones.
     pub(super) fn sql_call(
         &mut self,
         iface: Interface,
@@ -22,70 +22,70 @@ impl<C: CpuBackend> Machine<C> {
         let result = match (iface, name) {
             (_, "AddRef") => self.objects.add_ref(this),
             (_, "Release") => {
-                let restantes = self.objects.release(this);
-                if restantes == 0 {
+                let remaining = self.objects.release(this);
+                if remaining == 0 {
                     self.databases.remove(&this);
                 }
-                restantes
+                remaining
             }
             // int OpenDatabase(ISQLMgr *, const char *pszName, ISQLDatabase **ppDB)
             (Interface::SqlMgr, "OpenDatabase") => {
-                let nome = self.cpu.read_cstring(a1, MAX_STRING);
-                // O banco fica ao lado do módulo, como qualquer arquivo do jogo, e passa pelo
-                // VFS pelo mesmo motivo dos outros: nada escreve fora do diretório dele. Um banco
-                // que veio no pacote é copiado para a camada gravável antes de abrir, porque o
-                // SQLite escreve nele.
-                let alvo = self
+                let db_name = self.cpu.read_cstring(a1, MAX_STRING);
+                // The database lives next to the module, like any game file, and goes through
+                // the VFS for the same reason as the others: nothing writes outside its
+                // directory. A database that came in the package is copied to the writable layer
+                // before opening, because SQLite writes to it.
+                let target = self
                     .vfs
-                    .open_target(&nome, crate::brew::vfs::OpenIntent::ReadWrite);
-                let Some(alvo) = alvo else {
+                    .open_target(&db_name, crate::brew::vfs::OpenIntent::ReadWrite);
+                let Some(target) = target else {
                     if self.serial.is_some() {
-                        self.registra_serial(format!("<banco {nome} -> caminho não resolve>"));
+                        self.log_serial(format!("<database {db_name} -> path does not resolve>"));
                     }
-                    self.missing_files.insert(nome);
+                    self.missing_files.insert(db_name);
                     return Ok(Some(EFAILED));
                 };
-                // O catálogo oficial vem no pacote, mas a biblioteca do usuário precisa ser
-                // gravável e sobreviver a uma nova extração do ZIP. Para a Z-Wheel abrimos uma
-                // cópia de perfil já sincronizada com as ROMs que a interface encontrou.
-                let caminho = if nome == "tt_game_info" {
-                    let perfil = crate::loader::archive::device_dir().join("z-wheel/tt_game_info");
-                    let catalogo = crate::library::CatalogIndex::load_from(
+                // The official catalog comes in the package, but the user's library must be
+                // writable and survive a new extraction of the ZIP. For the Z-Wheel we open a
+                // profile copy already synced with the ROMs the interface found.
+                let path = if db_name == "tt_game_info" {
+                    let profile = crate::loader::archive::device_dir().join("z-wheel/tt_game_info");
+                    let catalog = crate::library::CatalogIndex::load_from(
                         &crate::library::catalog_path(),
                     );
-                    let oficial = alvo.copy_from.unwrap_or(alvo.path);
-                    match crate::brew::sql::sync_z_wheel_library(&oficial, &perfil, &catalogo) {
-                        Ok(caminho) => caminho,
-                        Err(erro) => {
+                    let official = target.copy_from.unwrap_or(target.path);
+                    match crate::brew::sql::sync_z_wheel_library(&official, &profile, &catalog) {
+                        Ok(path) => path,
+                        Err(error) => {
                             self.bad_pointers
-                                .insert(format!("SQL: não deu para preparar tt_game_info: {erro}"));
+                                .insert(format!("SQL: could not prepare tt_game_info: {error}"));
                             return Ok(Some(EFAILED));
                         }
                     }
                 } else {
-                    if let Some(pai) = alvo.path.parent() {
-                        let _ = std::fs::create_dir_all(pai);
+                    if let Some(parent) = target.path.parent() {
+                        let _ = std::fs::create_dir_all(parent);
                     }
-                    if let Some(origem) = &alvo.copy_from
-                        && std::fs::copy(origem, &alvo.path).is_err()
+                    if let Some(origin) = &target.copy_from
+                        && std::fs::copy(origin, &target.path).is_err()
                     {
-                        self.missing_files.insert(nome);
+                        self.missing_files.insert(db_name);
                         return Ok(Some(EFAILED));
                     }
-                    alvo.path
+                    target.path
                 };
-                let aberto = crate::brew::sql::Database::open(&caminho);
+                let opened = crate::brew::sql::Database::open(&path);
                 if self.serial.is_some() {
-                    let como = match &aberto {
-                        Ok(_) => "abriu".to_string(),
-                        Err(erro) => format!("falhou: {erro}"),
+                    let outcome = match &opened {
+                        Ok(_) => "opened".to_string(),
+                        Err(error) => format!("failed: {error}"),
                     };
-                    self.registra_serial(format!("<banco {nome} -> {como}>"));
+                    self.log_serial(format!("<database {db_name} -> {outcome}>"));
                 }
-                match aberto {
+                match opened {
                     Ok(db) => {
-                        self.escolhe_idioma(&db);
-                        if nome == "tt_dlqueue.db" {
+                        self.choose_language(&db);
+                        if db_name == "tt_dlqueue.db" {
                             let _ = db.exec("CREATE TABLE IF NOT EXISTS DBINFO(version INTEGER, subversion INTEGER)");
                             let _ = db.exec("INSERT OR IGNORE INTO DBINFO values (1, 0)");
                             let _ = db.exec("CREATE TABLE IF NOT EXISTS DLITEMINFO(item_id INTEGER PRIMARY KEY, price INTEGER, size INTEGER, titletext TEXT, boxart_path TEXT, flags INTEGER, upgrade_id INTEGER)");
@@ -100,37 +100,37 @@ impl<C: CpuBackend> Machine<C> {
                         }
                         SUCCESS
                     }
-                    Err(erro) => {
-                        self.bad_pointers.insert(format!("SQL: {nome}: {erro}"));
+                    Err(error) => {
+                        self.bad_pointers.insert(format!("SQL: {db_name}: {error}"));
                         SUCCESS
                     }
                 }
             }
-            // int Exec(ISQLDatabase *, const char *pszSQL, callback, void *pContexto)
+            // int Exec(ISQLDatabase *, const char *pszSQL, callback, void *pContext)
             (Interface::SqlDatabase, "Exec") => {
                 let sql = self.cpu.read_cstring(a1, MAX_SQL);
                 let Some(db) = self.databases.get(&this) else {
                     return Ok(Some(EBADPARM));
                 };
-                let resultado = db.exec(&sql);
+                let exec_result = db.exec(&sql);
                 if self.serial.is_some() {
-                    let quantas = match &resultado {
-                        Ok(linhas) => format!("{} linha(s)", linhas.len()),
-                        Err(erro) => format!("erro: {erro}"),
+                    let count = match &exec_result {
+                        Ok(lines) => format!("{} row(s)", lines.len()),
+                        Err(error) => format!("error: {error}"),
                     };
-                    self.registra_serial(format!("<sql {sql} -> {quantas}>"));
+                    self.log_serial(format!("<sql {sql} -> {count}>"));
                 }
-                match resultado {
-                    Ok(linhas) => {
-                        // `Exec(this, sql, callback, contexto)`: a sonda mostrou o ponteiro de
-                        // função em `r2` — dentro da faixa de código do módulo — e o contexto
-                        // em `r3`, no heap.
-                        let (callback, contexto) = (a2, self.cpu.read_reg(Reg::R3));
-                        self.sql_deliver(&linhas, callback, contexto)?;
+                match exec_result {
+                    Ok(lines) => {
+                        // `Exec(this, sql, callback, context)`: the probe showed the function
+                        // pointer in `r2` — inside the module's code range — and the context in
+                        // `r3`, on the heap.
+                        let (callback, context) = (a2, self.cpu.read_reg(Reg::R3));
+                        self.sql_deliver(&lines, callback, context)?;
                         SUCCESS
                     }
-                    Err(erro) => {
-                        self.bad_pointers.insert(format!("SQL recusado: {erro}"));
+                    Err(error) => {
+                        self.bad_pointers.insert(format!("SQL rejected: {error}"));
                         SUCCESS
                     }
                 }
@@ -140,39 +140,39 @@ impl<C: CpuBackend> Machine<C> {
         Ok(Some(result))
     }
 
-    /// Entrega as linhas ao callback do jogo, uma chamada por linha.
+    /// Delivers the rows to the game's callback, one call per row.
     ///
-    /// É a forma do `sqlite3_exec`: `callback(contexto, nColunas, azValores, azNomes)`, com os
-    /// dois vetores de `char *` na memória do guest. Sem isso a consulta "funciona" e o jogo
-    /// não recebe nada — foi o que fez o Z-Wheel passar no `PRAGMA integrity_check` e ainda
-    /// assim dizer "Invalid database version".
+    /// It is the shape of `sqlite3_exec`: `callback(context, nColumns, azValues, azNames)`, with
+    /// the two `char *` arrays in guest memory. Without it the query "works" and the game
+    /// receives nothing — that is what made the Z-Wheel pass `PRAGMA integrity_check` and still
+    /// say "Invalid database version".
     ///
-    /// Chamar o guest daqui é reentrância, e por isso segue o mesmo cuidado do `qsort`: salva
-    /// os registradores, respeita o teto de aninhamento e devolve tudo no lugar.
+    /// Calling the guest from here is reentrancy, so it takes the same care as `qsort`: it saves
+    /// the registers, respects the nesting ceiling and puts everything back in place.
     pub(super) fn sql_deliver(
         &mut self,
-        linhas: &[crate::brew::sql::Row],
+        lines: &[crate::brew::sql::Row],
         callback: u32,
-        contexto: u32,
+        context: u32,
     ) -> Result<(), CpuError> {
-        if callback == 0 || linhas.is_empty() {
+        if callback == 0 || lines.is_empty() {
             return Ok(());
         }
         if self.nesting >= MAX_NESTING {
             self.assumptions
-                .insert("uma consulta SQL foi entregue sem callback por aninhamento profundo");
+                .insert("an SQL query was delivered without a callback due to deep nesting");
             return Ok(());
         }
         let saved = SAVED_REGS.map(|reg| self.cpu.read_reg(reg));
         self.nesting += 1;
-        let mut resultado = Ok(());
-        for linha in linhas {
-            match self.sql_deliver_row(linha, callback, contexto) {
+        let mut result = Ok(());
+        for line in lines {
+            match self.sql_deliver_row(line, callback, context) {
                 Ok(true) => {}
-                // Callback que devolve diferente de zero manda parar, como no SQLite.
+                // A callback that returns nonzero means stop, as in SQLite.
                 Ok(false) => break,
                 Err(err) => {
-                    resultado = Err(err);
+                    result = Err(err);
                     break;
                 }
             }
@@ -181,70 +181,70 @@ impl<C: CpuBackend> Machine<C> {
         for (reg, value) in SAVED_REGS.iter().zip(saved) {
             self.cpu.write_reg(*reg, value);
         }
-        resultado
+        result
     }
 
-    /// Monta os dois vetores de `char *` de uma linha e chama o callback. `false` pede parada.
+    /// Builds the two `char *` arrays for a row and calls the callback. `false` asks to stop.
     pub(super) fn sql_deliver_row(
         &mut self,
-        linha: &crate::brew::sql::Row,
+        line: &crate::brew::sql::Row,
         callback: u32,
-        contexto: u32,
+        context: u32,
     ) -> Result<bool, CpuError> {
-        let colunas = linha.names.len() as u32;
-        let valores = self.sql_write_strings(linha.values.iter().map(|v| v.as_deref()))?;
-        let nomes = self.sql_write_strings(linha.names.iter().map(|n| Some(n.as_str())))?;
-        let saida = match (valores, nomes) {
-            (Some(valores), Some(nomes)) => {
+        let columns = line.names.len() as u32;
+        let values = self.sql_write_strings(line.values.iter().map(|v| v.as_deref()))?;
+        let names = self.sql_write_strings(line.names.iter().map(|n| Some(n.as_str())))?;
+        let output = match (values, names) {
+            (Some(values), Some(names)) => {
                 let outcome = self.call_guest(
                     callback,
-                    [contexto, colunas, valores, nomes],
+                    [context, columns, values, names],
                     SQL_CALLBACK_BUDGET,
                 )?;
-                // Só o retorno normal conta; um callback que se perde não interrompe o resto.
-                let seguir = !matches!(outcome, Outcome::Returned { code } if code != 0);
-                self.libera(valores);
-                self.libera(nomes);
-                seguir
+                // Only a normal return counts; a callback that gets lost does not stop the rest.
+                let proceed = !matches!(outcome, Outcome::Returned { code } if code != 0);
+                self.free(values);
+                self.free(names);
+                proceed
             }
             _ => {
                 self.assumptions
-                    .insert("uma linha de consulta SQL não coube na memória do jogo");
+                    .insert("an SQL query row did not fit in the game's memory");
                 false
             }
         };
-        Ok(saida)
+        Ok(output)
     }
 
-    /// Grava as strings no heap do guest e devolve o vetor de ponteiros para elas.
+    /// Writes the strings to the guest heap and returns the array of pointers to them.
     ///
-    /// O vetor e o texto saem do mesmo bloco: um `free` só devolve tudo, e o callback do
-    /// `sqlite3_exec` não guarda os ponteiros depois de retornar.
+    /// The array and the text come out of the same block: a single `free` returns everything,
+    /// and the `sqlite3_exec` callback does not keep the pointers after it returns.
     pub(super) fn sql_write_strings<'a>(
         &mut self,
-        textos: impl Iterator<Item = Option<&'a str>> + Clone,
+        texts: impl Iterator<Item = Option<&'a str>> + Clone,
     ) -> Result<Option<u32>, CpuError> {
-        let contagem = textos.clone().count() as u32;
-        let bytes: usize = textos.clone().map(|t| t.map_or(0, |t| t.len() + 1)).sum();
-        let bloco = self.aloca_interno(contagem * 4 + bytes as u32)?;
-        if bloco == 0 {
+        let count = texts.clone().count() as u32;
+        let bytes: usize = texts.clone().map(|t| t.map_or(0, |t| t.len() + 1)).sum();
+        let block = self.alloc_internal(count * 4 + bytes as u32)?;
+        if block == 0 {
             return Ok(None);
         }
-        let mut texto_em = bloco + contagem * 4;
-        for (i, texto) in textos.enumerate() {
-            let ponteiro = match texto {
-                // Coluna nula é ponteiro nulo, como o SQLite entrega.
+        let mut text_addr = block + count * 4;
+        for (i, text) in texts.enumerate() {
+            let pointer = match text {
+                // A null column is a null pointer, as SQLite delivers it.
                 None => 0,
-                Some(texto) => {
-                    self.cpu.write_mem(texto_em, texto.as_bytes())?;
-                    self.cpu.write_mem(texto_em + texto.len() as u32, &[0])?;
-                    let onde = texto_em;
-                    texto_em += texto.len() as u32 + 1;
-                    onde
+                Some(text) => {
+                    self.cpu.write_mem(text_addr, text.as_bytes())?;
+                    self.cpu.write_mem(text_addr + text.len() as u32, &[0])?;
+                    let location = text_addr;
+                    text_addr += text.len() as u32 + 1;
+                    location
                 }
             };
-            self.cpu.write_u32(bloco + i as u32 * 4, ponteiro)?;
+            self.cpu.write_u32(block + i as u32 * 4, pointer)?;
         }
-        Ok(Some(bloco))
+        Ok(Some(block))
     }
 }

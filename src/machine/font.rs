@@ -1,24 +1,25 @@
-//! `IFont`: as fontes de bitmap do sistema.
+//! `IFont`: the system bitmap fonts.
 //!
-//! O BREW não desenha texto só com a fonte do aparelho: ele tem **classes de fonte** prontas, e o
-//! aplicativo pede uma delas ao `ISHELL_CreateInstance`. São 29 classes em quatro famílias:
+//! BREW does not draw text only with the console's font: it has ready-made **font classes**, and
+//! the application asks `ISHELL_CreateInstance` for one of them. There are 29 classes in four
+//! families:
 //!
-//! | Família | Classes |
+//! | Family | Classes |
 //! |---|---|
 //! | `AEECLSID_FONTSYS*` | `NORMAL`, `LARGE`, `BOLD`, `ITALIC`, `BOLDITALIC`, `LARGEITALIC` |
 //! | `AEECLSID_FONT_STANDARD*` | `11`, `11B`, `15`, `15B`, `18`, `18B`, `23`, `23B`, `26`, `26B`, `36` |
 //! | `AEECLSID_FONT_BASIC*` | `6`, `9`, `10`, `11`, `11B`, `12`, `12B`, `14`, `15` |
-//! | avulsas | `AEECLSID_FONT`, `FONT_FIXED4X6`, `BITFONTFOUNDRY` |
+//! | standalone | `AEECLSID_FONT`, `FONT_FIXED4X6`, `BITFONTFOUNDRY` |
 //!
-//! **Não é o `ITypeface`.** O `ITypeface` cria fontes a partir de um TTF; o `IFont` já **é** a
-//! fonte desenhável. As duas interfaces têm métodos diferentes, e tratá-las como a mesma coisa é o
-//! que fazia o Double Dragon, o Resident Evil 4 e os ports da Data East caírem na tela
-//! "Memory is insufficient. Please delete some files." — a mensagem genérica de falha deles quando
-//! o `CreateInstance` da fonte volta nulo.
+//! **It is not `ITypeface`.** `ITypeface` creates fonts from a TTF; `IFont` already **is** the
+//! drawable font. The two interfaces have different methods, and treating them as the same thing
+//! is what made Double Dragon, Resident Evil 4 and the Data East ports fall into the
+//! "Memory is insufficient. Please delete some files." screen — their generic failure message when
+//! the font's `CreateInstance` comes back null.
 //!
-//! A ordem dos seis métodos e a tabela de métricas vêm do código de referência que já implementa
-//! esta interface (`zeebo-emulator/research/sources/zeemu/brew/BrewFont.cpp`), e a assinatura dos
-//! métodos vem dos próprios exemplos do SDK:
+//! The order of the six methods and the metrics table come from the reference code that already
+//! implements this interface (`zeebo-emulator/research/sources/zeemu/brew/BrewFont.cpp`), and the
+//! method signatures come from the SDK's own examples:
 //!
 //! ```c
 //! IFont_GetInfo(pFont, &info, sizeof(info))
@@ -27,9 +28,9 @@
 
 use super::*;
 
-/// O que uma fonte do sistema diz de si mesma, em pixels.
+/// What a system font says about itself, in pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct Metricas {
+pub struct Metrics {
     pub ascent: u16,
     pub descent: u16,
     pub leading: u16,
@@ -39,11 +40,11 @@ pub struct Metricas {
     pub italic: bool,
 }
 
-/// As classes que respondem por esta interface.
+/// The classes this interface answers for.
 ///
-/// Sem esta lista, o `CreateInstance` dessas classes devolve "não suportado" — e o jogo, que não
-/// distingue "não existe" de "acabou a memória", mostra a tela de falta de memória.
-pub const CLASSES_DE_FONTE: [u32; 29] = [
+/// Without this list, `CreateInstance` for these classes returns "not supported" — and the game,
+/// which does not tell "does not exist" from "out of memory", shows the out-of-memory screen.
+pub const FONT_CLASSES: [u32; 29] = [
     // FONTSYS
     0x0101_2786,
     0x0101_2787,
@@ -81,12 +82,12 @@ pub const CLASSES_DE_FONTE: [u32; 29] = [
     0x0100_a100,
 ];
 
-/// As métricas de cada classe, como a referência as traz.
+/// The metrics of each class, as the reference has them.
 ///
-/// Os números são declarados no `.bid` para algumas (`FONT_STANDARD11` tem ascent 13 e descent 3) e
-/// medidos na referência para o resto. As duas fontes concordam onde se sobrepõem.
-pub fn metricas_da_classe(classe: u32) -> Metricas {
-    let (ascent, descent, leading, max_char_width, height, bold) = match classe {
+/// The numbers are declared in the `.bid` for some (`FONT_STANDARD11` has ascent 13 and descent 3)
+/// and measured in the reference for the rest. The two sources agree where they overlap.
+pub fn class_metrics(class_id: u32) -> Metrics {
+    let (ascent, descent, leading, max_char_width, height, bold) = match class_id {
         0x0100_a001 => (4, 2, 0, 4, 6, false),
         0x0100_a002 => (6, 2, 1, 5, 9, false),
         0x0100_a003 => (9, 3, 1, 6, 13, false),
@@ -98,13 +99,13 @@ pub fn metricas_da_classe(classe: u32) -> Metricas {
         0x0100_a009 => (12, 4, 2, 8, 18, true),
         0x0100_a00a => (15, 4, 2, 10, 21, false),
         0x0101_2787 | 0x0101_402e => (21, 5, 2, 10, 28, false),
-        // A família `FONT_STANDARD`, uma linha por classe, com `ascent` e `descent` **copiados do
-        // `AEEFontsStandard.BID`** e o negrito que o próprio texto do `.bid` declara ("Bolded").
-        // A tabela errava três: a `STANDARD15B` respondia 17/4 — os números da 18B —, e o negrito
-        // da 23B e da 26B vivia num remendo fora da tabela, onde a próxima edição não o veria.
-        // Um jogo que reserva altura pela resposta do `GetInfo` desenha linha em cima de linha
-        // quando ela vem errada, e a diferença de 2 px entre 15/3 e 17/4 é a altura de uma linha
-        // inteira numa tela de 320 pixels.
+        // The `FONT_STANDARD` family, one line per class, with `ascent` and `descent` **copied
+        // from `AEEFontsStandard.BID`** and the bold that the `.bid`'s own text declares
+        // ("Bolded"). The table got three wrong: `STANDARD15B` answered 17/4 — the 18B numbers —,
+        // and the bold of 23B and 26B lived in a patch outside the table, where the next edit
+        // wouldn't see it. A game that reserves height from the `GetInfo` answer draws line over
+        // line when it comes back wrong, and the 2 px difference between 15/3 and 17/4 is the
+        // height of a whole line on a 320-pixel screen.
         0x0102_f679 => (13, 3, 2, 8, 18, false), // STANDARD11
         0x0102_f67a => (13, 3, 2, 8, 18, true),  // STANDARD11B
         0x0103_0852 => (15, 3, 2, 8, 20, false), // STANDARD15
@@ -115,33 +116,34 @@ pub fn metricas_da_classe(classe: u32) -> Metricas {
         0x0102_f67e => (21, 5, 2, 10, 28, true), // STANDARD23B
         0x0102_f67f => (23, 6, 2, 10, 31, false), // STANDARD26
         0x0102_f680 => (23, 6, 2, 10, 31, true), // STANDARD26B
-        // A maior do sistema, usada em títulos grandes.
+        // The largest in the system, used for big titles.
         0x0102_f681 => (38, 10, 2, 12, 50, false), // STANDARD36
         _ => (12, 4, 2, 8, 16, false),
     };
-    let negrito = bold;
-    Metricas {
+    let is_bold = bold;
+    Metrics {
         ascent,
         descent,
         leading,
         max_char_width,
         height,
-        bold: negrito,
-        italic: matches!(classe, 0x0101_402c | 0x0101_402d | 0x0101_402e),
+        bold: is_bold,
+        italic: matches!(class_id, 0x0101_402c | 0x0101_402d | 0x0101_402e),
     }
 }
 
 #[cfg(test)]
-mod testes {
+mod tests {
     use super::*;
 
-    /// **As métricas do `FONT_STANDARD` são transcritas do `.bid`, não inventadas.**
+    /// **The `FONT_STANDARD` metrics are transcribed from the `.bid`, not made up.**
     ///
-    /// O `AEEFontsStandard.BID` declara ascent e descent das onze classes, e diz quais são negrito.
-    /// Este teste é a cópia literal daquele arquivo: se alguém "arrumar" a tabela de memória, ele
-    /// discorda — que é o ponto, porque a memória já errou três linhas uma vez.
+    /// `AEEFontsStandard.BID` declares ascent and descent for the eleven classes, and says which
+    /// are bold. This test is a literal copy of that file: if someone "fixes" the table from
+    /// memory, it disagrees — which is the point, because memory already got three lines wrong
+    /// once.
     #[test]
-    fn as_metricas_do_standard_batem_com_o_bid() {
+    fn the_standard_metrics_match_the_bid() {
         let bid = [
             (0x0102_f679u32, 13u16, 3u16, false), // STANDARD11
             (0x0102_f67a, 13, 3, true),           // STANDARD11B
@@ -155,60 +157,60 @@ mod testes {
             (0x0102_f680, 23, 6, true),           // STANDARD26B
             (0x0102_f681, 38, 10, false),         // STANDARD36
         ];
-        for (classe, ascent, descent, negrito) in bid {
-            let medida = metricas_da_classe(classe);
+        for (class_id, ascent, descent, is_bold) in bid {
+            let measured = class_metrics(class_id);
             assert_eq!(
-                (medida.ascent, medida.descent),
+                (measured.ascent, measured.descent),
                 (ascent, descent),
-                "ascent/descent da classe {classe:#010x}"
+                "ascent/descent of class {class_id:#010x}"
             );
-            assert_eq!(medida.bold, negrito, "negrito da classe {classe:#010x}");
+            assert_eq!(measured.bold, is_bold, "bold of class {class_id:#010x}");
             assert!(
-                medida.height >= medida.ascent + medida.descent,
-                "altura menor que a soma de ascent e descent na {classe:#010x}"
+                measured.height >= measured.ascent + measured.descent,
+                "height smaller than ascent plus descent in {class_id:#010x}"
             );
         }
     }
 
-    /// A `STANDARD15B` responde como a 15, e não como a 18: era o defeito que esteve aqui.
+    /// `STANDARD15B` answers like the 15, not like the 18: that was the defect that was here.
     #[test]
-    fn a_standard15b_nao_herda_os_numeros_da_18b() {
-        let quinze_b = metricas_da_classe(0x0103_0853);
-        let quinze = metricas_da_classe(0x0103_0852);
-        assert_eq!((quinze_b.ascent, quinze_b.descent), (quinze.ascent, quinze.descent));
-        assert_ne!((quinze_b.ascent, quinze_b.descent), (17, 4));
+    fn standard15b_does_not_inherit_the_18b_numbers() {
+        let fifteen_b = class_metrics(0x0103_0853);
+        let fifteen = class_metrics(0x0103_0852);
+        assert_eq!((fifteen_b.ascent, fifteen_b.descent), (fifteen.ascent, fifteen.descent));
+        assert_ne!((fifteen_b.ascent, fifteen_b.descent), (17, 4));
     }
 }
 
 impl<C: CpuBackend> Machine<C> {
-    /// Cria o objeto de uma fonte do sistema, guardando de qual classe ele é.
-    pub(super) fn cria_fonte(&mut self, classe: u32, out: u32) -> Result<u32, CpuError> {
-        let objeto = self.new_object(Interface::Font)?;
-        if objeto == 0 {
+    /// Creates the object of a system font, recording which class it is.
+    pub(super) fn create_font(&mut self, class_id: u32, out: u32) -> Result<u32, CpuError> {
+        let object = self.new_object(Interface::Font)?;
+        if object == 0 {
             return Ok(ENOMEMORY);
         }
-        self.fontes.insert(objeto, metricas_da_classe(classe));
+        self.fonts.insert(object, class_metrics(class_id));
         if out != 0 {
-            self.cpu.write_u32(out, objeto)?;
+            self.cpu.write_u32(out, object)?;
         }
         Ok(SUCCESS)
     }
 
-    /// Atende o `IFont`.
+    /// Serves `IFont`.
     pub(super) fn font_call(&mut self, slot: u32) -> Result<Option<u32>, CpuError> {
         let Some(name) = Interface::Font.method(slot) else {
             return Ok(None);
         };
         let this = self.cpu.read_reg(Reg::R0);
-        let metricas = self.fontes.get(&this).copied().unwrap_or_default();
+        let metrics = self.fonts.get(&this).copied().unwrap_or_default();
         let result = match name {
             "AddRef" => self.objects.add_ref(this),
             "Release" => {
-                let restantes = self.objects.release(this);
-                if restantes == 0 {
-                    self.fontes.remove(&this);
+                let remaining = self.objects.release(this);
+                if remaining == 0 {
+                    self.fonts.remove(&this);
                 }
-                restantes
+                remaining
             }
             // int QueryInterface(IFont *, AEECLSID, void **ppv)
             "QueryInterface" => {
@@ -220,25 +222,25 @@ impl<C: CpuBackend> Machine<C> {
             }
             // int GetInfo(IFont *, AEEFontInfo *pInfo, int nSize)
             //
-            // A struct começa em quatro `int16` — ascent, descent, leading e a largura máxima de
-            // caractere. Só se escreve o que couber no tamanho que o chamador declarou.
+            // The struct starts with four `int16` — ascent, descent, leading and the maximum
+            // character width. Only what fits in the size the caller declared is written.
             "GetInfo" => {
                 let info = self.cpu.read_reg(Reg::R1);
-                let tamanho = self.cpu.read_reg(Reg::R2);
+                let size = self.cpu.read_reg(Reg::R2);
                 if info != 0 {
-                    let campos: [u16; 5] = [
-                        metricas.ascent,
-                        metricas.descent,
-                        metricas.leading,
-                        metricas.max_char_width,
-                        metricas.height,
+                    let fields: [u16; 5] = [
+                        metrics.ascent,
+                        metrics.descent,
+                        metrics.leading,
+                        metrics.max_char_width,
+                        metrics.height,
                     ];
-                    for (i, valor) in campos.iter().enumerate() {
-                        let deslocamento = 4 + i as u32 * 2;
-                        if tamanho != 0 && deslocamento + 2 > tamanho {
+                    for (i, value) in fields.iter().enumerate() {
+                        let offset = 4 + i as u32 * 2;
+                        if size != 0 && offset + 2 > size {
                             break;
                         }
-                        self.cpu.write_mem(info + deslocamento, &valor.to_le_bytes())?;
+                        self.cpu.write_mem(info + offset, &value.to_le_bytes())?;
                     }
                 }
                 SUCCESS
@@ -246,58 +248,59 @@ impl<C: CpuBackend> Machine<C> {
             // int MeasureText(IFont *, const AECHAR *pchText, int nChars, int nMaxWidth,
             //                 int *pnChars, int *pnWidth)
             //
-            // A assinatura vem do exemplo do próprio SDK. `nChars` pode ser `-1`, que quer dizer
-            // "até o terminador".
+            // The signature comes from the SDK's own example. `nChars` may be `-1`, which means
+            // "up to the terminator".
             "MeasureText" => {
-                let texto = self.cpu.read_reg(Reg::R1);
-                let pedidos = self.cpu.read_reg(Reg::R2) as i32;
+                let text = self.cpu.read_reg(Reg::R1);
+                let requested = self.cpu.read_reg(Reg::R2) as i32;
                 let out_chars = self.stack_arg(0)?;
-                let out_largura = self.stack_arg(1)?;
-                let mut quantos = 0u32;
-                if texto != 0 {
-                    let mut cursor = texto;
-                    let limite = match pedidos {
+                let out_width = self.stack_arg(1)?;
+                let mut count = 0u32;
+                if text != 0 {
+                    let mut cursor = text;
+                    let limit = match requested {
                         n if n < 0 => MAX_STRING as u32,
                         n => n as u32,
                     };
-                    while quantos < limite && quantos < MAX_STRING as u32 {
-                        let mut par = [0u8; 2];
-                        self.cpu.read_mem(cursor, &mut par)?;
-                        if u16::from_le_bytes(par) == 0 {
+                    while count < limit && count < MAX_STRING as u32 {
+                        let mut pair = [0u8; 2];
+                        self.cpu.read_mem(cursor, &mut pair)?;
+                        if u16::from_le_bytes(pair) == 0 {
                             break;
                         }
-                        quantos += 1;
+                        count += 1;
                         cursor += 2;
                     }
                 }
                 if out_chars != 0 {
-                    self.cpu.write_u32(out_chars, quantos)?;
+                    self.cpu.write_u32(out_chars, count)?;
                 }
-                if out_largura != 0 {
+                if out_width != 0 {
                     self.cpu
-                        .write_u32(out_largura, quantos * u32::from(metricas.max_char_width))?;
+                        .write_u32(out_width, count * u32::from(metrics.max_char_width))?;
                 }
                 SUCCESS
             }
             // int DrawText(IFont *, const AECHAR *pchText, int nChars, int x, int y, ...)
             //
-            // **O layout dos argumentos ainda não foi medido**, ao contrário dos outros três: a
-            // referência só imprime o texto e não desenha. Aqui se desenha no destino corrente,
-            // que é o que o `IDISPLAY` faz, e a suposição entra no relatório para quem for medir.
+            // **The argument layout has not been measured yet**, unlike the other three: the
+            // reference only prints the text and does not draw. Here we draw to the current
+            // destination, which is what `IDISPLAY` does, and the assumption goes into the report
+            // for whoever measures it.
             "DrawText" => {
-                let texto = self.cpu.read_reg(Reg::R1);
-                let pedidos = self.cpu.read_reg(Reg::R2) as i32;
+                let text = self.cpu.read_reg(Reg::R1);
+                let requested = self.cpu.read_reg(Reg::R2) as i32;
                 let x = self.cpu.read_reg(Reg::R3) as i32;
                 let y = self.stack_arg(0)? as i32;
                 self.assumptions
-                    .insert("IFont::DrawText desenha com layout deduzido, ainda sem medida");
-                if texto != 0 {
-                    let mut units = self.read_aechar_units(texto)?;
-                    if pedidos >= 0 {
-                        units.truncate(pedidos as usize);
+                    .insert("IFont::DrawText draws with an inferred layout, not yet measured");
+                if text != 0 {
+                    let mut units = self.read_aechar_units(text)?;
+                    if requested >= 0 {
+                        units.truncate(requested as usize);
                     }
-                    let texto = String::from_utf16_lossy(&units);
-                    self.draw_text(&texto, x, y)?;
+                    let text = String::from_utf16_lossy(&units);
+                    self.draw_text(&text, x, y)?;
                 }
                 SUCCESS
             }

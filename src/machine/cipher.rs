@@ -1,21 +1,21 @@
-//! Criptografia: o ICipher e o IHash do BREW.
+//! Cryptography: BREW's ICipher and IHash.
 
 use super::*;
 
 impl<C: CpuBackend> Machine<C> {
-    /// `ILicense` (`AEECLSID_LICENSE` = `0x0100100f`), do `QINTERFACE(ILicense)` em
+    /// `ILicense` (`AEECLSID_LICENSE` = `0x0100100f`), from `QINTERFACE(ILicense)` in
     /// `sdk/inc/AEELicense.h`.
     ///
-    /// Responde o que vale para uma ROM legitimamente comprada e instalada no console:
-    /// licença sem expiração (`LT_NONE`) e compra definitiva (`PT_PURCHASE`). Não é
-    /// contornar verificação nenhuma — é a resposta que o próprio aparelho daria para um
-    /// jogo que o dono comprou.
-    /// Rede e criptografia: `IWeb`, `IHash` (`AEECLSID_MD5`), `ICipherFactory` e `ICipher1`.
+    /// Answers what holds for a ROM legitimately bought and installed on the console: a
+    /// license with no expiration (`LT_NONE`) and a permanent purchase (`PT_PURCHASE`). It is
+    /// not bypassing any check — it is the answer the device itself would give for a game
+    /// its owner bought.
+    /// Network and cryptography: `IWeb`, `IHash` (`AEECLSID_MD5`), `ICipherFactory` and `ICipher1`.
     ///
-    /// O Boomerang Sports Dodgeball cria os três em sequência e **não confere o retorno**: se a
-    /// primeira criação falha, ele pula as outras duas e usa o ponteiro que nunca foi escrito.
-    /// Por isso os objetos precisam existir mesmo com o console offline — recusá-los derrubava
-    /// o jogo antes da primeira tela.
+    /// Boomerang Sports Dodgeball creates the three in sequence and **does not check the return
+    /// value**: if the first creation fails, it skips the other two and uses the pointer that was
+    /// never written. That is why the objects must exist even with the console offline — refusing
+    /// them brought the game down before the first screen.
     pub(super) fn crypto_call(
         &mut self,
         iface: Interface,
@@ -28,14 +28,14 @@ impl<C: CpuBackend> Machine<C> {
         let result = match name {
             "AddRef" => self.objects.add_ref(this),
             "Release" => {
-                let restantes = self.objects.release(this);
-                // O endereço volta a ser de outro objeto: um hash novo ali continuaria o MD5
-                // deste.
-                if restantes == 0 {
+                let remaining = self.objects.release(this);
+                // The address goes back to being another object's: a new hash there would continue
+                // this one's MD5.
+                if remaining == 0 {
                     self.hashes.remove(&this);
                     self.ciphers.remove(&this);
                 }
-                restantes
+                remaining
             }
             "QueryInterface" => {
                 let out = self.cpu.read_reg(Reg::R2);
@@ -67,51 +67,51 @@ impl<C: CpuBackend> Machine<C> {
             }
             // int Init(IHashCTX *, void *pCtx, int nCtxSize)
             "Init" if iface == Interface::HashCtx => {
-                let (ctx, tamanho) = (self.arg(1), self.arg(2));
-                if ctx == 0 || tamanho < TAMANHO_DO_MD5_CTX {
+                let (ctx, size) = (self.arg(1), self.arg(2));
+                if ctx == 0 || size < MD5_CTX_SIZE {
                     return Ok(Some(EBADPARM));
                 }
-                self.grava_md5_ctx(ctx, &crate::brew::crypto::Md5::new())?;
+                self.write_md5_ctx(ctx, &crate::brew::crypto::Md5::new())?;
                 SUCCESS
             }
             // int Update(IHashCTX *, void *pCtx, int nCtxSize, const byte *pData, int nLen)
             "Update" if iface == Interface::HashCtx => {
-                let (ctx, tamanho, dados, quantos) =
+                let (ctx, size, data, count) =
                     (self.arg(1), self.arg(2), self.arg(3), self.arg(4));
-                if ctx == 0 || tamanho < TAMANHO_DO_MD5_CTX {
+                if ctx == 0 || size < MD5_CTX_SIZE {
                     return Ok(Some(EBADPARM));
                 }
-                let mut md5 = self.le_md5_ctx(ctx)?;
-                if quantos != 0 {
-                    md5.update(&self.read_bytes(dados, quantos)?);
+                let mut md5 = self.read_md5_ctx(ctx)?;
+                if count != 0 {
+                    md5.update(&self.read_bytes(data, count)?);
                 }
-                self.grava_md5_ctx(ctx, &md5)?;
+                self.write_md5_ctx(ctx, &md5)?;
                 SUCCESS
             }
             // int GetResult(IHashCTX *, void *pCtx, int nCtxSize, byte *pResult, int *pnLen)
             //
-            // Escreve até `*pnLen` bytes do resumo e devolve dezesseis no tamanho, como o
-            // `GetDigest` do `IHash`.
+            // Writes up to `*pnLen` bytes of the digest and returns sixteen in the size, like
+            // `IHash`'s `GetDigest`.
             "GetResult" if iface == Interface::HashCtx => {
-                let (ctx, tamanho, destino, pn) =
+                let (ctx, size, dest, pn) =
                     (self.arg(1), self.arg(2), self.arg(3), self.arg(4));
-                if ctx == 0 || tamanho < TAMANHO_DO_MD5_CTX {
+                if ctx == 0 || size < MD5_CTX_SIZE {
                     return Ok(Some(EBADPARM));
                 }
-                let resumo = self.le_md5_ctx(ctx)?.finish();
-                let cabe = match pn {
-                    0 => resumo.len(),
-                    p => (self.cpu.read_u32(p).unwrap_or(0) as usize).min(resumo.len()),
+                let summary = self.read_md5_ctx(ctx)?.finish();
+                let fits = match pn {
+                    0 => summary.len(),
+                    p => (self.cpu.read_u32(p).unwrap_or(0) as usize).min(summary.len()),
                 };
-                if destino != 0 {
-                    self.cpu.write_mem(destino, &resumo[..cabe])?;
+                if dest != 0 {
+                    self.cpu.write_mem(dest, &summary[..fits])?;
                 }
                 if pn != 0 {
-                    self.cpu.write_u32(pn, resumo.len() as u32)?;
+                    self.cpu.write_u32(pn, summary.len() as u32)?;
                 }
                 SUCCESS
             }
-            // void IHASH_Reset(IHash *) — recomeça o resumo do zero.
+            // void IHASH_Reset(IHash *) — restarts the digest from scratch.
             "Reset" => {
                 self.hashes.insert(this, HashState::default());
                 SUCCESS
@@ -128,26 +128,26 @@ impl<C: CpuBackend> Machine<C> {
             }
             // void GetDigest(IHash *, byte *pBuf, int *pnLen)
             //
-            // O chamador zera um buffer de 33 bytes e põe 17 no tamanho — dezesseis bytes de
-            // resumo e o terminador. Escrevemos os dezesseis e devolvemos dezesseis no tamanho,
-            // respeitando o teto que ele pediu.
+            // The caller zeroes a 33-byte buffer and puts 17 in the size — sixteen bytes of digest
+            // and the terminator. We write the sixteen and return sixteen in the size, honoring the
+            // cap it asked for.
             "GetDigest" => {
-                let (destino, tamanho) = (self.cpu.read_reg(Reg::R1), self.cpu.read_reg(Reg::R2));
-                let resumo = self.hashes.entry(this).or_default().md5.clone().finish();
-                let cabe = match tamanho {
-                    0 => resumo.len() as u32,
+                let (dest, size) = (self.cpu.read_reg(Reg::R1), self.cpu.read_reg(Reg::R2));
+                let summary = self.hashes.entry(this).or_default().md5.clone().finish();
+                let fits = match size {
+                    0 => summary.len() as u32,
                     p => self
                         .cpu
                         .read_u32(p)
                         .unwrap_or(0)
-                        .min(resumo.len() as u32 + 1),
+                        .min(summary.len() as u32 + 1),
                 };
-                let escrever = cabe.min(resumo.len() as u32) as usize;
-                if destino != 0 {
-                    self.cpu.write_mem(destino, &resumo[..escrever])?;
+                let to_write = fits.min(summary.len() as u32) as usize;
+                if dest != 0 {
+                    self.cpu.write_mem(dest, &summary[..to_write])?;
                 }
-                if tamanho != 0 {
-                    self.cpu.write_u32(tamanho, escrever as u32)?;
+                if size != 0 {
+                    self.cpu.write_u32(size, to_write as u32)?;
                 }
                 SUCCESS
             }
@@ -156,43 +156,44 @@ impl<C: CpuBackend> Machine<C> {
             // void IWEB_GetResponse(IWeb *po, IWeb *po, IWebResp **ppResp, AEECallback *pcb,
             //                       const char *pszUrl, ...)
             //
-            // A macro do SDK repete o `po` como primeiro vararg, então o `r1` é o próprio
-            // objeto, o `r2` é o ponteiro de saída da resposta, o `r3` é o callback e a URL vem
-            // da pilha. As opções seguem depois, terminadas por `WEBOPT_END`.
+            // The SDK macro repeats `po` as the first vararg, so `r1` is the object itself, `r2` is
+            // the response's output pointer, `r3` is the callback and the URL comes from the stack.
+            // The options follow after that, terminated by `WEBOPT_END`.
             //
-            // Por ora isto **observa e recusa**. Observar primeiro é deliberado: o formato dos
-            // varargs não está em header nenhum que tenhamos, e implementar HTTP contra um
-            // palpite de layout daria um cliente que erra o endereço sem dizer. Registrado o
-            // que o jogo pede, o passo seguinte é atender de verdade — e aí dar acesso à rede a
-            // um binário de origem externa é decisão de projeto, com autorização explícita.
+            // For now this **observes and refuses**. Observing first is deliberate: the varargs
+            // format is not in any header we have, and implementing HTTP against a guessed layout
+            // would give a client that gets the address wrong without saying so. Once what the game
+            // asks for is recorded, the next step is to serve it for real — and then giving network
+            // access to a binary of external origin is a project decision, with explicit
+            // authorization.
             "GetResponse" => {
-                let (r1, saida) = (self.cpu.read_reg(Reg::R1), self.cpu.read_reg(Reg::R2));
+                let (r1, output) = (self.cpu.read_reg(Reg::R1), self.cpu.read_reg(Reg::R2));
                 let url_ptr = self.stack_arg(0)?;
                 let url = match url_ptr {
                     0 => String::new(),
                     p => self.cpu.read_cstring(p, MAX_STRING),
                 };
                 self.web_requests.insert(match url.is_empty() {
-                    true => format!("(sem URL) r1={r1:#x} r2={saida:#x}"),
+                    true => format!("(no URL) r1={r1:#x} r2={output:#x}"),
                     false => url,
                 });
-                // Ponteiro de saída zerado: o jogo precisa ver que não há resposta, em vez de
-                // seguir com lixo.
-                if saida != 0 {
-                    self.cpu.write_u32(saida, 0)?;
+                // Zeroed output pointer: the game needs to see that there is no response, instead
+                // of carrying on with garbage.
+                if output != 0 {
+                    self.cpu.write_u32(output, 0)?;
                 }
                 SUCCESS
             }
             "QueryCipher" => SUCCESS,
-            // int AddOpt(IWeb *, WebOpt *apWebOpt) — cabeçalhos, tempo limite e afins. Aceitar
-            // não custa nada: quem decide o destino da requisição é o `GetResponse`.
+            // int AddOpt(IWeb *, WebOpt *apWebOpt) — headers, timeout and the like. Accepting costs
+            // nothing: what decides the request's destination is `GetResponse`.
             //
-            // O `AddOptBuffer` é o slot 6, que no firmware monta um descritor na pilha e chama
-            // esta mesma função. Aceitar os dois é a mesma decisão.
+            // `AddOptBuffer` is slot 6, which in the firmware builds a descriptor on the stack and
+            // calls this same function. Accepting both is the same decision.
             "AddOpt" | "AddOptBuffer" => SUCCESS,
-            // Os slots do `IWeb` que a vtable do firmware mostra existir e que ainda não
-            // apareceram em uso. Responder sucesso os deixa aparecer no relatório de chamadas em
-            // vez de derrubar o jogo — que foi como o slot 6 foi encontrado.
+            // The `IWeb` slots that the firmware's vtable shows to exist and that have not shown up
+            // in use yet. Answering success lets them show up in the call report instead of
+            // bringing the game down — which is how slot 6 was found.
             "slot4" | "slot5" | "slot7" | "slot8" | "slot9" | "slot10" | "slot12"
                 if iface == Interface::Web =>
             {
@@ -215,7 +216,7 @@ impl<C: CpuBackend> Machine<C> {
                         }
                         let mut bytes = [0u8; AES_BLOCK];
                         self.cpu.read_mem(param, &mut bytes)?;
-                        let state = self.ciphers.get_mut(&this).expect("acabou de ser achado");
+                        let state = self.ciphers.get_mut(&this).expect("was just found");
                         if id == CIPHER_PARAM_KEY {
                             state.key = Some(bytes);
                         } else {
@@ -227,8 +228,8 @@ impl<C: CpuBackend> Machine<C> {
                         state.padding = self.cpu.read_u32(param)?;
                         SUCCESS
                     }
-                    // A direção e o modo já vieram no `CreateCipher`; repeti-los não muda nada,
-                    // e recusar faria o jogo desistir.
+                    // The direction and the mode already came in `CreateCipher`; repeating them
+                    // changes nothing, and refusing would make the game give up.
                     CIPHER_PARAM_DIRECTION | CIPHER_PARAM_MODE => SUCCESS,
                     _ => EUNSUPPORTED,
                 }
@@ -262,13 +263,13 @@ impl<C: CpuBackend> Machine<C> {
         Ok(Some(result))
     }
 
-    /// `ICipher1_Process` e `ICipher1_ProcessLast`, que só diferem no fecho.
+    /// `ICipher1_Process` and `ICipher1_ProcessLast`, which differ only in how they finish.
     ///
-    /// O `ICipher1` é de fluxo: o jogo entrega quantos bytes quiser, e o que não completa um
-    /// bloco fica guardado para a chamada seguinte. Só o `ProcessLast` preenche o bloco que
-    /// faltou, do jeito que o `padding` pedir.
+    /// `ICipher1` is a stream: the game hands over as many bytes as it wants, and what does not
+    /// complete a block is kept for the next call. Only `ProcessLast` fills the missing block, the
+    /// way `padding` asks.
     pub(super) fn cipher_process(&mut self, this: u32, last: bool) -> Result<u32, CpuError> {
-        // `Process` tem os cinco argumentos; `ProcessLast` só tem a saída e o tamanho dela.
+        // `Process` has the five arguments; `ProcessLast` only has the output and its size.
         let (input, count, out, out_len) = match last {
             false => (
                 self.cpu.read_reg(Reg::R1),
@@ -287,7 +288,7 @@ impl<C: CpuBackend> Machine<C> {
 
         let mut data = state.pending.clone();
         if count > 0 {
-            let mut bytes = vec![0u8; tamanho_do_guest(count)?];
+            let mut bytes = vec![0u8; guest_size(count)?];
             self.cpu.read_mem(input, &mut bytes)?;
             data.extend_from_slice(&bytes);
         }
@@ -295,14 +296,15 @@ impl<C: CpuBackend> Machine<C> {
             match state.padding {
                 CIPHER_PADDING_NONE if data.len() % AES_BLOCK != 0 => return Ok(EBADPARM),
                 CIPHER_PADDING_NONE => {}
-                // `CIPHER_PADDING_ZERO` e o que não conhecemos completam com zeros: é o
-                // preenchimento que o BREW usa por omissão nos cifradores de bloco.
+                // `CIPHER_PADDING_ZERO` and whatever we do not know fill with zeros: it is the
+                // padding BREW uses by default in block ciphers.
                 _ => data.resize(data.len().div_ceil(AES_BLOCK) * AES_BLOCK, 0),
             }
         }
-        // O que o jogo cifra é registrado em claro, e é a coisa mais útil que este método faz
-        // para quem estuda protocolo: o corpo que sai pela rede vai cifrado, e decifrá-lo do
-        // outro lado exige ter a chave e acertar o modo. Aqui ele passa por nós antes disso.
+        // What the game encrypts is recorded in the clear, and it is the most useful thing this
+        // method does for anyone studying the protocol: the body that goes out over the network is
+        // encrypted, and decrypting it on the other side requires having the key and getting the
+        // mode right. Here it goes through us before that.
         if !data.is_empty() {
             if self.plaintexts.len() == PLAINTEXT_MAX {
                 self.plaintexts.pop_front();
@@ -310,7 +312,7 @@ impl<C: CpuBackend> Machine<C> {
             self.plaintexts
                 .push_back(data[..data.len().min(PLAINTEXT_BYTES)].to_vec());
         }
-        // O que não fecha um bloco espera a próxima chamada.
+        // What does not close a block waits for the next call.
         let whole = data.len() / AES_BLOCK * AES_BLOCK;
         let leftover = data.split_off(whole);
 
@@ -321,7 +323,7 @@ impl<C: CpuBackend> Machine<C> {
             state.pending = leftover;
         }
 
-        // A capacidade oferecida chega no mesmo ponteiro que devolve quanto foi escrito.
+        // The offered capacity arrives in the same pointer that returns how much was written.
         let capacity = match out_len {
             0 => data.len(),
             addr => self.cpu.read_u32(addr)? as usize,
@@ -341,58 +343,58 @@ impl<C: CpuBackend> Machine<C> {
         Ok(SUCCESS)
     }
 
-    /// O que o jogo cifrou, em claro, na ordem em que entregou.
+    /// What the game encrypted, in the clear, in the order it handed it over.
     pub fn plaintexts(&self) -> Vec<&[u8]> {
         self.plaintexts.iter().map(Vec::as_slice).collect()
     }
 
-    /// As chaves de cifra que os jogos configuraram, em hexadecimal.
+    /// The cipher keys the games configured, in hexadecimal.
     ///
-    /// Existe por um motivo prático: o Zeeboids **cifra o corpo antes de enviar**, então o
-    /// servidor recebe ruído. A chave é do próprio jogo e passa por nós no `ICipher1::SetParam`;
-    /// sem ela, o registro do servidor não diz nada sobre o protocolo.
+    /// It exists for a practical reason: Zeeboids **encrypts the body before sending**, so the
+    /// server receives noise. The key is the game's own and goes through us in
+    /// `ICipher1::SetParam`; without it, the server's log says nothing about the protocol.
     pub fn cipher_keys(&self) -> Vec<String> {
         let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
         self.ciphers
             .values()
             .filter_map(|c| {
                 c.key
-                    .map(|k| format!("chave {} iv {}", hex(&k), hex(&c.iv)))
+                    .map(|k| format!("key {} iv {}", hex(&k), hex(&c.iv)))
             })
             .collect()
     }
 }
 
-/// O tamanho do `MD5_CTX`: estado (16), contagem de bytes (8) e o bloco pendente (64).
-const TAMANHO_DO_MD5_CTX: u32 = 88;
+/// The size of `MD5_CTX`: state (16), byte count (8) and the pending block (64).
+const MD5_CTX_SIZE: u32 = 88;
 
 impl<C: CpuBackend> Machine<C> {
-    /// O MD5 guardado no contexto do jogo, no layout do `MD5_CTX`.
+    /// The MD5 kept in the game's context, in the `MD5_CTX` layout.
     ///
-    /// **O estado mora na memória do guest, e não aqui**: o `IHashCTX` existe justamente para o
-    /// chamador ter o contexto, e é assim que ele sobrevive a um save state sem estado escondido.
-    pub(super) fn le_md5_ctx(&self, ctx: u32) -> Result<crate::brew::crypto::Md5, CpuError> {
-        let bytes = self.read_bytes(ctx, TAMANHO_DO_MD5_CTX)?;
-        let palavra = |i: usize| u32::from_le_bytes(bytes[i..i + 4].try_into().expect("4 bytes"));
-        let estado = [palavra(0), palavra(4), palavra(8), palavra(12)];
+    /// **The state lives in guest memory, not here**: `IHashCTX` exists precisely so the
+    /// caller holds the context, and that is how it survives a save state without hidden state.
+    pub(super) fn read_md5_ctx(&self, ctx: u32) -> Result<crate::brew::crypto::Md5, CpuError> {
+        let bytes = self.read_bytes(ctx, MD5_CTX_SIZE)?;
+        let word = |i: usize| u32::from_le_bytes(bytes[i..i + 4].try_into().expect("4 bytes"));
+        let state = [word(0), word(4), word(8), word(12)];
         let total = u64::from_le_bytes(bytes[16..24].try_into().expect("8 bytes"));
-        let pendente = (total % 64) as usize;
+        let pending = (total % 64) as usize;
         let mut md5 = crate::brew::crypto::Md5::new();
-        // Um contexto que o jogo nunca iniciou não tem como dar erro de formato: o resto do bloco
-        // é sempre menor que 64 pela conta acima.
-        let _ = md5.restaura_estado(estado, &bytes[24..24 + pendente], total);
+        // A context the game never initialized cannot produce a format error: the rest of the block
+        // is always smaller than 64 by the arithmetic above.
+        let _ = md5.restore_state(state, &bytes[24..24 + pending], total);
         Ok(md5)
     }
 
-    pub(super) fn grava_md5_ctx(&mut self, ctx: u32, md5: &crate::brew::crypto::Md5) -> Result<(), CpuError> {
-        let (estado, pendente, total) = md5.estado();
-        let mut bytes = Vec::with_capacity(TAMANHO_DO_MD5_CTX as usize);
-        for palavra in estado {
-            bytes.extend_from_slice(&palavra.to_le_bytes());
+    pub(super) fn write_md5_ctx(&mut self, ctx: u32, md5: &crate::brew::crypto::Md5) -> Result<(), CpuError> {
+        let (state, pending, total) = md5.state();
+        let mut bytes = Vec::with_capacity(MD5_CTX_SIZE as usize);
+        for word in state {
+            bytes.extend_from_slice(&word.to_le_bytes());
         }
         bytes.extend_from_slice(&total.to_le_bytes());
-        bytes.extend_from_slice(pendente);
-        bytes.resize(TAMANHO_DO_MD5_CTX as usize, 0);
+        bytes.extend_from_slice(pending);
+        bytes.resize(MD5_CTX_SIZE as usize, 0);
         self.cpu.write_mem(ctx, &bytes)
     }
 }

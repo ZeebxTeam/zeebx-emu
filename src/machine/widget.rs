@@ -1,11 +1,11 @@
-//! IWidget, IControl e IForm: a árvore de widgets e a pintura dela.
+//! IWidget, IControl and IForm: the widget tree and how it is painted.
 
 use super::*;
 
 impl<C: CpuBackend> Machine<C> {
-    /// Compatibilidade com a abertura da Z-Wheel distribuída no pacote 274755.
-    /// Usa o atalho do próprio formulário, sem alterar instruções ou dados da ROM.
-    /// A assinatura evita aplicar os endereços medidos a outra versão do applet.
+    /// Compatibility with the Z-Wheel intro shipped in package 274755.
+    /// It uses the form's own shortcut, without changing instructions or data in the ROM.
+    /// The signature keeps the measured addresses from being applied to another applet version.
     pub(super) fn skip_wheel_instructions(&mut self) -> Result<(), CpuError> {
         if self.applet_class != 0x01070798 || self.wheel_boot_skipped {
             return Ok(());
@@ -13,7 +13,7 @@ impl<C: CpuBackend> Machine<C> {
         let Some((function, context)) = self
             .widgets
             .values()
-            .map(|widget| widget.tratador)
+            .map(|widget| widget.handler)
             .find(|(function, _)| *function == 0x11828)
         else {
             return Ok(());
@@ -29,7 +29,7 @@ impl<C: CpuBackend> Machine<C> {
             return Ok(());
         }
         let app = self.cpu.read_u32(context)?;
-        // Durante a transição o formulário ignora entrada; aguarda o próximo tique.
+        // During the transition the form ignores input; wait for the next tick.
         if self.cpu.read_u32(app + 0x2138)? & 1 != 0 {
             return Ok(());
         }
@@ -40,829 +40,841 @@ impl<C: CpuBackend> Machine<C> {
         )?;
         self.wheel_boot_skipped = self.cpu.read_u32(app + 0x3610)? & 0x10000000 != 0;
         if self.wheel_boot_skipped {
-            self.assumptions.insert("a abertura conhecida da Z-Wheel recebe automaticamente o atalho de pular instruções");
+            self.assumptions.insert("the known Z-Wheel intro automatically gets the skip-instructions shortcut");
         }
         Ok(())
     }
 
-    /// Dá a partida na abertura, **uma vez** por tratador registrado.
+    /// Kicks off the intro, **once** per registered handler.
     ///
-    /// Daqui para a frente a `AnimationVideo_Form` anda sozinha, e a corrente inteira está
-    /// lida: a `0x11528` arma um `ISHELL_SetTimer` de mil milissegundos com o retorno de chamada
-    /// `0x114ac`, que é o próprio tique; cada tique olha `[formulário+0x2c]` e avança de estado;
-    /// no estado três a `0x11610` registra um `ISHELL_Resume` para a `0x11750`, que fecha o
-    /// formulário e chama a `0x82464` — e é ela que leva ao menu principal.
+    /// From here on `AnimationVideo_Form` runs on its own, and the whole chain has been read:
+    /// `0x11528` arms an `ISHELL_SetTimer` of one thousand milliseconds with the callback
+    /// `0x114ac`, which is the tick itself; each tick looks at `[form+0x2c]` and advances the
+    /// state; in state three `0x11610` registers an `ISHELL_Resume` for `0x11750`, which closes the
+    /// form and calls `0x82464` — and that is what leads to the main menu.
     ///
-    /// O console dá **um** aviso e o resto é do jogo. O aviso é o par `(0x801, 0x5064)` no
-    /// tratador que o slot 4 registrou, que é a forma que o `0x11828` desvia para o `0x114ac`.
+    /// The console gives **one** notice and the rest is up to the game. The notice is the pair
+    /// `(0x801, 0x5064)` on the handler that slot 4 registered, which is the shape that `0x11828`
+    /// diverts to `0x114ac`.
     ///
-    /// Entregar mais de um seria inventar cadência, e isso já custou uma travada.
-    pub(super) fn parte_animacao(&mut self) -> Result<(), CpuError> {
-        /// O par que a `0x11828` entende como "começou".
-        const PARTIDA: (u32, u32) = (0x801, 0x5064);
+    /// Delivering more than one would be inventing a cadence, and that has already cost a hang.
+    pub(super) fn start_animation(&mut self) -> Result<(), CpuError> {
+        /// The pair `0x11828` understands as "started".
+        const START: (u32, u32) = (0x801, 0x5064);
 
-        let novos: Vec<(u32, (u32, u32))> = self
+        let fresh: Vec<(u32, (u32, u32))> = self
             .widgets
             .iter()
-            .filter(|(_, widget)| widget.tratador.0 != 0 && !widget.partiu)
-            .map(|(&objeto, widget)| (objeto, widget.tratador))
+            .filter(|(_, widget)| widget.handler.0 != 0 && !widget.start_notified)
+            .map(|(&object, widget)| (object, widget.handler))
             .collect();
-        for (objeto, (funcao, contexto)) in novos {
-            if let Some(widget) = self.widgets.get_mut(&objeto) {
-                widget.partiu = true;
+        for (object, (callback, context)) in fresh {
+            if let Some(widget) = self.widgets.get_mut(&object) {
+                widget.start_notified = true;
             }
-            self.call_guest(funcao, [contexto, PARTIDA.0, PARTIDA.1, 1], QSORT_BUDGET)?;
+            self.call_guest(callback, [context, START.0, START.1, 1], QSORT_BUDGET)?;
         }
         Ok(())
     }
 
-    /// Chama o retorno de desenho que o slot 16 registrou, um por widget do formulário atual.
+    /// Calls the draw callback that slot 16 registered, one per widget of the current form.
     ///
-    /// **Quem desenha um `OwnerDrawWidget` é o jogo, e quem manda desenhar é a extensão de
-    /// widgets — nós.** O widget guarda `(função, contexto)`; a chamada é
-    /// `função(contexto, tela, x, y)`, com o canto do widget já em coordenadas de tela.
+    /// **Whoever draws an `OwnerDrawWidget` is the game, and whoever tells it to draw is the widget
+    /// extension — us.** The widget stores `(function, context)`; the call is
+    /// `function(context, screen, x, y)`, with the widget's corner already in screen coordinates.
     ///
-    /// A forma dos argumentos foi lida na `0x7562c`, o desenho do palco: ela guarda `r2` e `r3`
-    /// e os usa, mais adiante, como o par de coordenadas de um traço. O `r1` ela ignora — é o
-    /// outro `OwnerDrawWidget` da tela, na `0x605e4`, que faz dele um `QueryInterface`. Daí
-    /// passarmos um `IDisplay`: para o palco é indiferente, e para o outro a interface que
-    /// faltar aparece no relatório em vez de sumir.
+    /// The shape of the arguments was read at `0x7562c`, the stage drawing: it saves `r2` and `r3`
+    /// and uses them, further on, as the coordinate pair of a stroke. It ignores `r1` — it is the
+    /// other `OwnerDrawWidget` of the screen, at `0x605e4`, that does a `QueryInterface` on it. Hence
+    /// we pass an `IDisplay`: for the stage it makes no difference, and for the other one the
+    /// interface that is missing shows up in the report instead of vanishing.
     ///
-    /// Uma vez por quadro para cada widget visível que registrou desenho — e **não** só os do
-    /// formulário atual, ao contrário do que o `pinta_widgets` faz.
+    /// Once per frame for each visible widget that registered drawing — and **not** only those of
+    /// the current form, unlike what `paint_widgets` does.
     ///
-    /// A restrição por árvore chegou a existir aqui e deixava o palco de fora: o formulário do
-    /// menu fica com zero filho, porque não recebe o conteúdo pelo item `0x5000`, e o que ele
-    /// mostra vira uma raiz solta. Desenho registrado é explícito — quem registrou quer ser
-    /// chamado —, então ele não depende de acertarmos qual é a tela atual. Quando a ligação que
-    /// falta chegar pelo evento `0x7b0a`, vale reconsiderar.
-    pub(super) fn desenha_widgets(&mut self) -> Result<(), CpuError> {
-        // Callbacks de desenho são a própria indicação de que o widget pertence ao palco. A
-        // Z-Wheel mantém a barra inferior numa raiz separada do formulário atual; filtrá-la pela
-        // árvore do formulário apaga a barra mesmo quando ela está visível.
-        let mut chamar: Vec<(u32, (u32, u32))> = self
+    /// The restriction by tree did exist here and left the stage out: the menu form ends up with
+    /// zero children, because it does not receive its content through item `0x5000`, and what it
+    /// shows becomes a loose root. Registered drawing is explicit — whoever registered wants to be
+    /// called — so it does not depend on us getting right which screen is current. When the
+    /// missing link arrives through event `0x7b0a`, it is worth reconsidering.
+    pub(super) fn draw_widgets(&mut self) -> Result<(), CpuError> {
+        // Draw callbacks are themselves the sign that the widget belongs to the stage. The
+        // Z-Wheel keeps the bottom bar in a root separate from the current form; filtering it by
+        // the form's tree erases the bar even when it is visible.
+        let mut to_call: Vec<(u32, (u32, u32))> = self
             .widgets
             .iter()
-            .filter(|(_, no)| no.desenho.0 != 0 && no.visivel)
-            .map(|(&endereco, no)| (endereco, no.desenho))
+            .filter(|(_, node)| node.drawing.0 != 0 && node.visible)
+            .map(|(&address, node)| (address, node.drawing))
             .collect();
-        // **Formulário coberto não desenha.** Com a tela de ajuda por cima, o palco e a roda do
-        // menu — que moram no formulário de baixo — continuavam sendo chamados, e o palco caía
-        // por cima do painel da ajuda. Só o que pertence a um formulário que não é o do topo sai;
-        // o que não está sob formulário nenhum, como a barra de status, segue sendo desenhado.
-        let topo = self.formulario_atual();
-        chamar.retain(|(endereco, _)| match self.formulario_de(*endereco) {
-            Some(formulario) => Some(formulario) == topo,
+        // **A covered form does not draw.** With the help screen on top, the stage and the menu
+        // wheel — which live in the form below — kept being called, and the stage landed on top of
+        // the help panel. Only what belongs to a form that is not the top one is left out; what is
+        // under no form at all, like the status bar, keeps being drawn.
+        let top = self.current_form();
+        to_call.retain(|(address, _)| match self.form_of(*address) {
+            Some(form) => Some(form) == top,
             None => true,
         });
-        if chamar.is_empty() {
+        if to_call.is_empty() {
             return Ok(());
         }
-        // A ordem é a de criação, como no `pinta_widgets`: não é profundidade de verdade, mas é
-        // estável, e desenho instável é pior do que desenho na ordem errada.
-        chamar.sort_by_key(|(endereco, _)| self.widgets[endereco].serial);
-        let tela = self.target()?;
-        for (endereco, (funcao, contexto)) in chamar {
-            let (x, y) = self.posicao_na_tela(endereco);
-            self.call_guest(funcao, [contexto, tela, x as u32, y as u32], QSORT_BUDGET)?;
+        // The order is creation order, as in `paint_widgets`: it is not real depth, but it is
+        // stable, and unstable drawing is worse than drawing in the wrong order.
+        to_call.sort_by_key(|(address, _)| self.widgets[address].serial);
+        let screen = self.target()?;
+        for (address, (callback, context)) in to_call {
+            let (x, y) = self.screen_position(address);
+            self.call_guest(callback, [context, screen, x as u32, y as u32], QSORT_BUDGET)?;
         }
         Ok(())
     }
 
-    /// Marca o formulário que ficou no topo da raiz para ser avisado de que está ativo.
+    /// Marks the form that ended up on top of the root to be told that it is active.
     ///
-    /// O aviso é o `SETPROPERTY(0x5064, 1)` — o `FID_ACTIVE` —, o mesmo par da partida da
-    /// abertura. O tratador do menu (`0x4e0e8`) lê o `0x5064`: com zero, que ele recebe ao ser
-    /// coberto, para o palco e a roda (`0x4e3d0`); com um, devolve o foco à roda, religa o palco
-    /// e o som. A Z-Wheel tira a ajuda com `RemoveForm(raiz, formulário)`, e sem o aviso na volta o
-    /// palco ficava parado e o carrossel de cima não reagia mais às setas.
+    /// The notice is `SETPROPERTY(0x5064, 1)` — `FID_ACTIVE` —, the same pair as the intro
+    /// start. The menu handler (`0x4e0e8`) reads `0x5064`: with zero, which it receives when
+    /// covered, it stops the stage and the wheel (`0x4e3d0`); with one, it gives focus back to the
+    /// wheel, restarts the stage and the sound. The Z-Wheel removes the help with
+    /// `RemoveForm(root, form)`, and without the notice on the way back the stage stayed still and
+    /// the carousel at the top no longer reacted to the arrows.
     ///
-    /// **O aviso sai na volta seguinte do laço, não aqui.** Ao lançar um jogo a Z-Wheel tira o
-    /// formulário de cima (`0x78a94`) e, na mesma chamada, desmonta o resto e sai. Avisar o menu
-    /// no meio disso o reativava por um instante, e a lista de jogos abria uma caixa de mensagem
-    /// vazia em vez de lançar. Ver [`Machine::entrega_ativacao`].
-    fn ativa_o_topo(&mut self, raiz: u32) -> Result<(), CpuError> {
-        self.ativacao_pendente = self
+    /// **The notice goes out on the next lap of the loop, not here.** When launching a game the
+    /// Z-Wheel removes the top form (`0x78a94`) and, in the same call, tears down the rest and
+    /// exits. Notifying the menu in the middle of that reactivated it for an instant, and the game
+    /// list opened an empty message box instead of launching. See [`Machine::deliver_activation`].
+    fn activate_top(&mut self, root: u32) -> Result<(), CpuError> {
+        self.pending_activation = self
             .widgets
-            .get(&raiz)
-            .and_then(|widget| widget.anexados.last().copied())
-            .map(|formulario| (raiz, formulario));
+            .get(&root)
+            .and_then(|widget| widget.attached.last().copied())
+            .map(|form| (root, form));
         Ok(())
     }
 
-    /// Entrega o aviso de [`Machine::ativa_o_topo`], se o formulário ainda estiver no topo.
-    pub(super) fn entrega_ativacao(&mut self) -> Result<(), CpuError> {
-        const GRAVA: u32 = 0x801;
-        const FORM_ATIVO: u32 = 0x5064;
-        let Some((raiz, formulario)) = self.ativacao_pendente.take() else {
+    /// Delivers the notice from [`Machine::activate_top`], if the form is still on top.
+    pub(super) fn deliver_activation(&mut self) -> Result<(), CpuError> {
+        const SET_PROP: u32 = 0x801;
+        const ACTIVE_FORM: u32 = 0x5064;
+        let Some((root, form)) = self.pending_activation.take() else {
             return Ok(());
         };
-        let ainda_no_topo = self
+        let still_on_top = self
             .widgets
-            .get(&raiz)
-            .is_some_and(|widget| widget.anexados.last() == Some(&formulario));
-        let tratador = self
+            .get(&root)
+            .is_some_and(|widget| widget.attached.last() == Some(&form));
+        let handler = self
             .widgets
-            .get(&formulario)
-            .map(|widget| widget.tratador)
-            .filter(|(funcao, _)| *funcao != 0);
-        if let (true, Some((funcao, contexto))) = (ainda_no_topo, tratador) {
-            self.call_guest(funcao, [contexto, GRAVA, FORM_ATIVO, 1], QSORT_BUDGET)?;
+            .get(&form)
+            .map(|widget| widget.handler)
+            .filter(|(callback, _)| *callback != 0);
+        if let (true, Some((callback, context))) = (still_on_top, handler) {
+            self.call_guest(callback, [context, SET_PROP, ACTIVE_FORM, 1], QSORT_BUDGET)?;
         }
         Ok(())
     }
 
-    /// O formulário a que um widget pertence, subindo pelos pais, quando há um.
-    fn formulario_de(&self, widget: u32) -> Option<u32> {
-        /// A árvore vem do jogo; um ciclo não pode prender o desenho.
-        const TETO: usize = 64;
-        let mut atual = widget;
-        for _ in 0..TETO {
-            let no = self.widgets.get(&atual)?;
-            if no.classe == WIDGET_FORMULARIO {
-                return Some(atual);
+    /// The form a widget belongs to, walking up through the parents, when there is one.
+    fn form_of(&self, widget: u32) -> Option<u32> {
+        /// The tree comes from the game; a cycle must not trap the drawing.
+        const CAP: usize = 64;
+        let mut current = widget;
+        for _ in 0..CAP {
+            let node = self.widgets.get(&current)?;
+            if node.class_id == WIDGET_FORM {
+                return Some(current);
             }
-            if no.pai == 0 || no.pai == atual {
+            if node.parent == 0 || node.parent == current {
                 return None;
             }
-            atual = no.pai;
+            current = node.parent;
         }
         None
     }
 
-    /// Lê a posição que o `AdicionarFilho` traz em `r3` e guarda no filho.
+    /// Reads the position that `AdicionarFilho` brings in `r3` and stores it in the child.
     ///
-    /// O terceiro argumento aponta para seis palavras — `{x, y, sinalizador, largura, altura,
-    /// objeto}`. O jogo pendura a imagem de abertura com `{0, 0, 1, 640, 480, …}`, a tela
-    /// inteira, e os pedaços do formulário do z-pad com coordenadas de verdade: `{100, 21}`,
-    /// `{148, 20}`, `{365, 20}`. Enquanto isso era ignorado, tudo era pintado na origem e o
-    /// que sobrava na tela era um amontoado no canto.
+    /// The third argument points to six words — `{x, y, flag, width, height, object}`. The game
+    /// hangs the intro image with `{0, 0, 1, 640, 480, …}`, the whole screen, and the pieces of
+    /// the z-pad form with real coordinates: `{100, 21}`, `{148, 20}`, `{365, 20}`. While this
+    /// was ignored, everything was painted at the origin and what was left on screen was a heap in
+    /// the corner.
     ///
-    /// Largura e altura vêm zeradas quando o widget se mede sozinho, e aí não são gravadas: um
-    /// tamanho zero apagaria o que o slot 7 já disse.
+    /// Width and height come zeroed when the widget measures itself, and then they are not stored:
+    /// a zero size would erase what slot 7 already said.
     ///
-    /// O mesmo slot atende cinco classes da família de widgets, e nem toda chamada tem esta
-    /// forma — algumas passam uma função em `r2` e um objeto em `r3`. Por isso a posição só é
-    /// lida quando `r2` é zero, que é a forma medida, e qualquer leitura que falhe é
-    /// descartada em vez de virar coordenada.
-    pub(super) fn anota_posicao(&mut self, filho: u32) -> Result<(), CpuError> {
-        /// Deslocamentos dentro da estrutura, em palavras.
+    /// The same slot serves five classes of the widget family, and not every call has this shape —
+    /// some pass a function in `r2` and an object in `r3`. That is why the position is only read
+    /// when `r2` is zero, which is the measured shape, and any read that fails is discarded instead
+    /// of becoming a coordinate.
+    pub(super) fn record_position(&mut self, child: u32) -> Result<(), CpuError> {
+        /// Offsets inside the structure, in words.
         const X: u32 = 0;
         const Y: u32 = 4;
-        const LARGURA: u32 = 12;
-        const ALTURA: u32 = 16;
+        const WIDTH: u32 = 12;
+        const HEIGHT: u32 = 16;
 
         if self.cpu.read_reg(Reg::R2) != 0 {
             return Ok(());
         }
-        let onde = self.cpu.read_reg(Reg::R3);
-        let (Ok(x), Ok(y)) = (self.cpu.read_u32(onde + X), self.cpu.read_u32(onde + Y)) else {
+        let location = self.cpu.read_reg(Reg::R3);
+        let (Ok(x), Ok(y)) = (self.cpu.read_u32(location + X), self.cpu.read_u32(location + Y)) else {
             return Ok(());
         };
-        let tamanho = match (
-            self.cpu.read_u32(onde + LARGURA),
-            self.cpu.read_u32(onde + ALTURA),
+        let size = match (
+            self.cpu.read_u32(location + WIDTH),
+            self.cpu.read_u32(location + HEIGHT),
         ) {
-            (Ok(largura), Ok(altura)) if largura != 0 && altura != 0 => Some((largura, altura)),
+            (Ok(width), Ok(height)) if width != 0 && height != 0 => Some((width, height)),
             _ => None,
         };
-        if let Some(widget) = self.widgets.get_mut(&filho) {
-            widget.posicao = (x as i32, y as i32);
-            if let Some(tamanho) = tamanho {
-                widget.tamanho = tamanho;
+        if let Some(widget) = self.widgets.get_mut(&child) {
+            widget.position = (x as i32, y as i32);
+            if let Some(size) = size {
+                widget.size = size;
             }
         }
         Ok(())
     }
 
-    /// Despeja a árvore de widgets na serial, um por linha, com pai, classe e o que carrega.
+    /// Dumps the widget tree to the serial, one per line, with parent, class and what it carries.
     ///
-    /// Existe para o estudo do modelo de widgets: sem ver a árvore inteira não dá para dizer se
-    /// ela é uma ou várias, e é justamente disso que depende saber para quem uma tecla vai.
-    pub fn despeja_widgets(&mut self) {
+    /// It exists for studying the widget model: without seeing the whole tree one cannot say
+    /// whether it is one or several, and that is exactly what knowing whom a key goes to depends on.
+    pub fn dump_widgets(&mut self) {
         if self.serial.is_none() {
             return;
         }
-        let mut linhas: Vec<(u64, String)> = self
+        let mut lines: Vec<(u64, String)> = self
             .widgets
             .iter()
-            .map(|(&endereco, w)| {
-                let filhos = w.filhos.len() + w.anexados.len();
+            .map(|(&address, w)| {
+                let children = w.children.len() + w.attached.len();
                 (
                     w.serial,
                     format!(
-                        "<widget {endereco:#x} pai {:#x} classe {:#x} filhos {filhos} \
-                         tratador {:#x} visível {} tamanho {:?} pos {:?} texto {:?}>",
-                        w.pai, w.classe, w.tratador.0, w.visivel, w.tamanho, w.posicao, w.texto
+                        "<widget {address:#x} parent {:#x} class {:#x} children {children} \
+                         handler {:#x} visible {} size {:?} pos {:?} text {:?}>",
+                        w.parent, w.class_id, w.handler.0, w.visible, w.size, w.position, w.text
                     ),
                 )
             })
             .collect();
-        linhas.sort_unstable();
-        for (_, linha) in linhas {
-            self.registra_serial(linha);
+        lines.sort_unstable();
+        for (_, line) in lines {
+            self.log_serial(line);
         }
     }
 
-    /// Os tratadores que devem ver uma tecla, dizendo de cada um se ele está na tela atual.
+    /// The handlers that should see a key, saying of each one whether it is on the current screen.
     ///
-    /// Primeiro os do formulário atual, do mais novo para o mais velho, e depois os de fora
-    /// dele — onde mora o tratador da abertura, que devolve "tratei" para qualquer aperto e,
-    /// vindo antes, decidia tudo.
-    pub(super) fn tratadores_em_ordem(
+    /// First those of the current form, from newest to oldest, and then those outside it — where
+    /// the intro handler lives, which returns "handled" for any press and, coming first, decided
+    /// everything.
+    pub(super) fn handlers_in_order(
         &self,
-        dentro: &std::collections::HashSet<u32>,
+        inside: &std::collections::HashSet<u32>,
     ) -> Vec<(bool, (u32, u32))> {
-        let mut marcados = Vec::new();
-        let mut vistos = std::collections::HashSet::new();
-        for (&endereco, no) in &self.widgets {
-            if no.tratador.0 == 0 || !dentro.contains(&endereco) {
+        let mut marked = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for (&address, node) in &self.widgets {
+            if node.handler.0 == 0 || !inside.contains(&address) {
                 continue;
             }
-            vistos.insert(endereco);
-            // Um widget num ramo sem foco não vê a tecla. Na lista de jogos a barra de abas e as
-            // capas moram no mesmo container, e as duas tratam esquerda e direita: sem olhar o
-            // foco, a seta andava nas capas e trocava a aba ao mesmo tempo.
-            if self.fora_do_foco(endereco) {
+            seen.insert(address);
+            // A widget in an unfocused branch does not see the key. In the game list the tab bar
+            // and the covers live in the same container, and both handle left and right: without
+            // looking at the focus, the arrow moved through the covers and switched the tab at the
+            // same time.
+            if self.out_of_focus(address) {
                 continue;
             }
-            marcados.push((true, no.tratador, no.serial));
+            marked.push((true, node.handler, node.serial));
         }
-        marcados.sort_by_key(|item| std::cmp::Reverse(item.2));
-        let mut fora: Vec<(bool, (u32, u32), u64)> = self
+        marked.sort_by_key(|item| std::cmp::Reverse(item.2));
+        let mut outside: Vec<(bool, (u32, u32), u64)> = self
             .widgets
             .iter()
-            .filter(|(endereco, no)| no.tratador.0 != 0 && !vistos.contains(*endereco))
-            .map(|(_, no)| (false, no.tratador, no.serial))
+            .filter(|(address, node)| node.handler.0 != 0 && !seen.contains(*address))
+            .map(|(_, node)| (false, node.handler, node.serial))
             .collect();
-        fora.sort_by_key(|item| std::cmp::Reverse(item.2));
-        marcados.extend(fora);
-        marcados.into_iter().map(|(d, par, _)| (d, par)).collect()
+        outside.sort_by_key(|item| std::cmp::Reverse(item.2));
+        marked.extend(outside);
+        marked.into_iter().map(|(d, pair, _)| (d, pair)).collect()
     }
 
-    /// Se algum container acima do widget tem foco definido e o foco não está no caminho até ele.
+    /// Whether some container above the widget has a focus set and the focus is not on the path
+    /// to it.
     ///
-    /// Onde nenhum container definiu foco, nada muda: a tecla continua indo a todos, que é a
-    /// aproximação de antes para as telas cujo foco não passa pelo `EVT_WDG_MOVEFOCUS`.
-    fn fora_do_foco(&self, widget: u32) -> bool {
-        const MOVE_FOCO: u32 = 0x711;
-        /// A árvore vem do jogo; um ciclo nela não pode prender a entrega de teclas.
-        const TETO: usize = 64;
-        let mut filho = widget;
-        for _ in 0..TETO {
-            let Some(pai) = self.widgets.get(&filho).map(|w| w.pai) else {
+    /// Where no container set a focus, nothing changes: the key keeps going to everyone, which is
+    /// the earlier approximation for the screens whose focus does not go through
+    /// `EVT_WDG_MOVEFOCUS`.
+    fn out_of_focus(&self, widget: u32) -> bool {
+        const MOVE_FOCUS: u32 = 0x711;
+        /// The tree comes from the game; a cycle in it must not trap key delivery.
+        const CAP: usize = 64;
+        let mut child = widget;
+        for _ in 0..CAP {
+            let Some(parent) = self.widgets.get(&child).map(|w| w.parent) else {
                 return false;
             };
-            if pai == 0 || pai == filho {
+            if parent == 0 || parent == child {
                 return false;
             }
-            if let Some(container) = self.widgets.get(&pai) {
-                let foco = container.propriedades.get(&MOVE_FOCO).copied();
-                if let Some(foco) = foco.filter(|f| container.anexados.contains(f)) {
-                    if foco != filho && container.anexados.contains(&filho) {
+            if let Some(container) = self.widgets.get(&parent) {
+                let focus = container.properties.get(&MOVE_FOCUS).copied();
+                if let Some(focus) = focus.filter(|f| container.attached.contains(f)) {
+                    if focus != child && container.attached.contains(&child) {
                         return true;
                     }
                 }
             }
-            filho = pai;
+            child = parent;
         }
         false
     }
 
-    /// Os widgets da árvore do formulário atual, incluindo a raiz.
+    /// The widgets of the current form's tree, including the root.
     ///
-    /// Desce da raiz em vez de subir de cada widget. Subir custava uma caminhada por widget
-    /// vivo — e há doze mil deles, porque o jogo remonta o formulário a cada volta e não solta
-    /// o anterior. A árvore do formulário tem uma dúzia de nós, então descer é o barato: com a
-    /// subida, o laço caía de 896 voltas para 57.
-    pub(super) fn arvore_do_formulario(&self) -> std::collections::HashSet<u32> {
-        /// Teto de nós visitados. A árvore vem do jogo, e um ciclo nela não pode prender o
-        /// desenho.
-        const TETO: usize = 4096;
+    /// It walks down from the root instead of up from each widget. Walking up cost one walk per
+    /// live widget — and there are twelve thousand of them, because the game rebuilds the form on
+    /// every lap and does not release the previous one. The form's tree has a dozen nodes, so
+    /// walking down is the cheap way: with the walk up, the loop dropped from 896 laps to 57.
+    pub(super) fn form_tree(&self) -> std::collections::HashSet<u32> {
+        /// Cap on visited nodes. The tree comes from the game, and a cycle in it must not trap the
+        /// drawing.
+        const CAP: usize = 4096;
 
-        let mut dentro = std::collections::HashSet::new();
-        let Some(raiz) = self.formulario_atual() else {
-            return dentro;
+        let mut inside = std::collections::HashSet::new();
+        let Some(root) = self.current_form() else {
+            return inside;
         };
-        let mut fila = vec![raiz];
-        dentro.insert(raiz);
-        while let Some(atual) = fila.pop() {
-            if dentro.len() >= TETO {
+        let mut queue = vec![root];
+        inside.insert(root);
+        while let Some(current) = queue.pop() {
+            if inside.len() >= CAP {
                 break;
             }
-            let Some(no) = self.widgets.get(&atual) else {
+            let Some(node) = self.widgets.get(&current) else {
                 continue;
             };
-            for filho in no.filhos.values().chain(no.anexados.iter()) {
-                if self.widgets.contains_key(filho) && dentro.insert(*filho) {
-                    fila.push(*filho);
+            for child in node.children.values().chain(node.attached.iter()) {
+                if self.widgets.contains_key(child) && inside.insert(*child) {
+                    queue.push(*child);
                 }
             }
         }
-        // A barra inferior da Z-Wheel não é filha do formulário selecionado. Ela vive no
-        // container visual `0x01028e3f`; incluir somente a instância mais nova evita ressuscitar
-        // todas as árvores antigas que o shell deixa alocadas durante o modo de atração.
-        if let Some((&barra, _)) = self
+        // The Z-Wheel bottom bar is not a child of the selected form. It lives in the visual
+        // container `0x01028e3f`; including only the newest instance avoids resurrecting all the
+        // old trees the shell leaves allocated during attract mode.
+        if let Some((&bar, _)) = self
             .widgets
             .iter()
-            .filter(|(endereco, no)| {
-                no.classe == 0x0102_8e3f
-                    && (no.pai == 0 || no.pai == **endereco)
-                    && (no.filhos.len() + no.anexados.len()) > 0
+            .filter(|(address, node)| {
+                node.class_id == 0x0102_8e3f
+                    && (node.parent == 0 || node.parent == **address)
+                    && (node.children.len() + node.attached.len()) > 0
             })
-            .max_by_key(|(_, no)| no.serial)
+            .max_by_key(|(_, node)| node.serial)
         {
-            let mut fila = vec![barra];
-            dentro.insert(barra);
-            while let Some(atual) = fila.pop() {
-                if dentro.len() >= TETO {
+            let mut queue = vec![bar];
+            inside.insert(bar);
+            while let Some(current) = queue.pop() {
+                if inside.len() >= CAP {
                     break;
                 }
-                let Some(no) = self.widgets.get(&atual) else {
+                let Some(node) = self.widgets.get(&current) else {
                     continue;
                 };
-                for filho in no.filhos.values().chain(no.anexados.iter()) {
-                    if self.widgets.contains_key(filho) && dentro.insert(*filho) {
-                        fila.push(*filho);
+                for child in node.children.values().chain(node.attached.iter()) {
+                    if self.widgets.contains_key(child) && inside.insert(*child) {
+                        queue.push(*child);
                     }
                 }
             }
         }
-        dentro
+        inside
     }
 
-    /// Se `filho` está pendurado em `container` pelo slot 5.
-    pub(super) fn e_filho_anexado(&self, container: u32, filho: u32) -> bool {
-        filho != 0
+    /// Whether `child` hangs from `container` through slot 5.
+    pub(super) fn is_attached_child(&self, container: u32, child: u32) -> bool {
+        child != 0
             && self
                 .widgets
                 .get(&container)
-                .is_some_and(|widget| widget.anexados.contains(&filho))
+                .is_some_and(|widget| widget.attached.contains(&child))
     }
 
-    /// A raiz mais nova de todas — o formulário que o jogo acabou de montar.
+    /// The newest root of all — the form the game has just built.
     ///
-    /// **A Z-Wheel nunca esconde nada.** O slot 6 só é chamado com verdadeiro, e o jogo monta um
-    /// formulário novo a cada volta do ciclo em vez de reaproveitar: são 1722 raízes vivas numa
-    /// execução de quinze segundos, cada uma um formulário do z-pad inteiro. No console a
-    /// anterior seria destruída; aqui ela fica, porque o jogo não a solta e não temos por que
-    /// soltar por conta.
+    /// **The Z-Wheel never hides anything.** Slot 6 is only called with true, and the game builds
+    /// a new form on every lap of the cycle instead of reusing one: there are 1722 live roots in a
+    /// fifteen-second run, each one a whole z-pad form. On the console the previous one would be
+    /// destroyed; here it stays, because the game does not release it and we have no reason to
+    /// release it on our own.
     ///
-    /// Pintar todas empilha a tela de boas-vindas de 640×480 — que é a raiz mais **velha** — por
-    /// cima do formulário atual. O console mostra um formulário por vez, e o atual é o último
-    /// montado: é o que esta função devolve.
-    pub(super) fn formulario_atual(&self) -> Option<u32> {
-        let com_filhos: std::collections::HashSet<u32> =
-            self.widgets.values().map(|no| no.pai).collect();
-        // **O formulário mais novo.** Desde que o item `0x5000` passou a pendurar o conteúdo, a
-        // árvore é uma só: a raiz do applet tem os formulários por filhos, e cada formulário tem
-        // o container do que ele mostra. Pintar a raiz inteira desenha a abertura e o z-pad um
-        // por cima do outro — o que apareceu na tela assim que as árvores se juntaram.
+    /// Painting all of them stacks the 640×480 welcome screen — which is the **oldest** root — on
+    /// top of the current form. The console shows one form at a time, and the current one is the
+    /// last built: that is what this function returns.
+    pub(super) fn current_form(&self) -> Option<u32> {
+        let with_children: std::collections::HashSet<u32> =
+            self.widgets.values().map(|node| node.parent).collect();
+        // **The newest form.** Ever since item `0x5000` started hanging the content, there is a
+        // single tree: the applet root has the forms as children, and each form has the container
+        // of what it shows. Painting the whole root draws the intro and the z-pad on top of each
+        // other — which is what showed up on screen as soon as the trees were joined.
         //
-        // Quem está à mostra é o último empilhado, e é o que esta função devolve. Sem nenhum
-        // formulário — antes de a interface existir —, vale a raiz mais nova que tenha filho,
-        // que é o que sustentava a tela até aqui.
-        let formulario = self
+        // What is on display is the last one stacked, and that is what this function returns.
+        // With no form at all — before the interface exists —, the newest root that has a child
+        // counts, which is what held the screen up until here.
+        let form = self
             .widgets
             .iter()
-            .filter(|(endereco, no)| {
-                no.classe == WIDGET_FORMULARIO && com_filhos.contains(endereco)
+            .filter(|(address, node)| {
+                node.class_id == WIDGET_FORM && with_children.contains(address)
             })
-            .max_by_key(|(_, no)| no.serial)
-            .map(|(&endereco, _)| endereco);
-        // **Nem todo formulário recebe o conteúdo pelo item `0x5000`.** O do menu principal não
-        // recebe: ele fica com zero filho, e o que ele mostra vira uma raiz solta — o container
-        // de `0x30000c10`, com a barra de status e o palco dentro. O evento `0x7b0a` já é
-        // encaminhado pela raiz; a ligação de pai em si ainda não foi observada.
+            .max_by_key(|(_, node)| node.serial)
+            .map(|(&address, _)| address);
+        // **Not every form receives its content through item `0x5000`.** The main menu one does
+        // not: it ends up with zero children, and what it shows becomes a loose root — the
+        // container of `0x30000c10`, with the status bar and the stage inside. Event `0x7b0a` is
+        // already forwarded through the root; the parent link itself has not been observed yet.
         //
-        // Enquanto isso, escolher só entre formulários deixava o do z-pad como atual para
-        // sempre, e ele traz a `0x77300` — um tratador que devolve "tratei" para qualquer
-        // tecla. Com ela na frente, nenhuma tecla chegava ao menu: a roda não girava.
+        // Meanwhile, choosing only among forms left the z-pad one as current forever, and it
+        // brings `0x77300` — a handler that returns "handled" for any key. With it in front, no
+        // key reached the menu: the wheel did not turn.
         //
-        // Então a escolha é entre os dois candidatos, e vence o mais novo.
-        let raiz = self.raiz_mais_nova(&com_filhos);
-        match (formulario, raiz) {
+        // So the choice is between the two candidates, and the newest wins.
+        let root = self.newest_root(&with_children);
+        match (form, root) {
             (Some(f), Some(r)) => {
-                let idade = |quem: u32| self.widgets.get(&quem).map_or(0, |no| no.serial);
-                return Some(if idade(r) > idade(f) { r } else { f });
+                let age = |who: u32| self.widgets.get(&who).map_or(0, |node| node.serial);
+                return Some(if age(r) > age(f) { r } else { f });
             }
             (Some(f), None) => return Some(f),
             (None, _) => {}
         }
-        raiz
+        root
     }
 
-    /// A raiz mais nova que tenha filho, que é o que sustentava a tela antes dos formulários.
-    pub(super) fn raiz_mais_nova(
+    /// The newest root that has a child, which is what held up the screen before the forms.
+    pub(super) fn newest_root(
         &self,
-        com_filhos: &std::collections::HashSet<u32>,
+        with_children: &std::collections::HashSet<u32>,
     ) -> Option<u32> {
         self.widgets
             .iter()
-            .filter(|(endereco, no)| {
-                // Raiz é quem não tem pai. **E precisa ter filho**: o jogo cria widgets soltos
-                // que nunca chegam a receber nada, e o mais novo de todos costuma ser um
-                // desses — pintar por ele dava uma tela branca, que foi o que apareceu.
-                (no.pai == 0 || no.pai == **endereco) && com_filhos.contains(endereco)
+            .filter(|(address, node)| {
+                // A root is whoever has no parent. **And it must have a child**: the game creates
+                // loose widgets that never get to receive anything, and the newest of all is
+                // usually one of those — painting from it gave a white screen, which is what showed
+                // up.
+                (node.parent == 0 || node.parent == **address) && with_children.contains(address)
             })
-            .max_by_key(|(_, no)| no.serial)
-            .map(|(&endereco, _)| endereco)
+            .max_by_key(|(_, node)| node.serial)
+            .map(|(&address, _)| address)
     }
 
-    /// A que altura da árvore um widget está — a raiz é zero.
+    /// How deep in the tree a widget is — the root is zero.
     ///
-    /// É o que dá a ordem de desenho: filho por cima de pai. Mesmo teto e mesmo motivo do
-    /// [`Machine::posicao_na_tela`].
-    pub(super) fn profundidade(&self, widget: u32) -> usize {
-        /// Até onde subir na árvore antes de desistir.
-        const FUNDO: usize = 32;
+    /// It is what gives the drawing order: child on top of parent. Same cap and same reason as
+    /// [`Machine::screen_position`].
+    pub(super) fn depth(&self, widget: u32) -> usize {
+        /// How far to climb the tree before giving up.
+        const BACKGROUND: usize = 32;
 
-        let mut atual = widget;
-        for altura in 0..FUNDO {
-            let Some(no) = self.widgets.get(&atual) else {
-                return altura;
+        let mut current = widget;
+        for height in 0..BACKGROUND {
+            let Some(node) = self.widgets.get(&current) else {
+                return height;
             };
-            if no.pai == 0 || no.pai == atual {
-                return altura;
+            if node.parent == 0 || node.parent == current {
+                return height;
             }
-            atual = no.pai;
+            current = node.parent;
         }
-        FUNDO
+        BACKGROUND
     }
 
-    /// Onde um widget cai na tela, somando a posição de cada pai até a raiz.
+    /// Where a widget lands on screen, adding up the position of each parent up to the root.
     ///
-    /// O laço tem teto porque a árvore vem do jogo: um `pai` que aponte para trás travaria o
-    /// desenho, e um quadro torto é melhor que um emulador preso.
-    pub(super) fn posicao_na_tela(&self, widget: u32) -> (i32, i32) {
-        /// Até onde subir na árvore antes de desistir.
-        const FUNDO: usize = 32;
+    /// The loop has a cap because the tree comes from the game: a `parent` that points backwards
+    /// would hang the drawing, and a crooked frame is better than a stuck emulator.
+    pub(super) fn screen_position(&self, widget: u32) -> (i32, i32) {
+        /// How far to climb the tree before giving up.
+        const BACKGROUND: usize = 32;
 
         let (mut x, mut y) = (0, 0);
-        let mut atual = widget;
-        for _ in 0..FUNDO {
-            let Some(no) = self.widgets.get(&atual) else {
+        let mut current = widget;
+        for _ in 0..BACKGROUND {
+            let Some(node) = self.widgets.get(&current) else {
                 break;
             };
-            x += no.posicao.0;
-            y += no.posicao.1;
-            if no.pai == 0 || no.pai == atual {
+            x += node.position.0;
+            y += node.position.1;
+            if node.parent == 0 || node.parent == current {
                 break;
             }
-            atual = no.pai;
+            current = node.parent;
         }
         (x, y)
     }
 
-    /// Pinta as imagens penduradas nos widgets.
+    /// Paints the images hung on the widgets.
     ///
-    /// **Isto é um substituto declarado, não uma emulação.** No console quem desenha a
-    /// interface é a extensão de widgets, que não temos: os nossos guardam a árvore — filhos,
-    /// tamanho, tratador — e não rasterizam nada. Sem alguém pintando, a Z-Wheel monta a tela
-    /// inteira e o quadro fica preto, que foi exatamente o que se via.
+    /// **This is a declared stand-in, not an emulation.** On the console whoever draws the
+    /// interface is the widget extension, which we don't have: ours keep the tree — children,
+    /// size, handler — and rasterize nothing. With nobody painting, the Z-Wheel builds the whole
+    /// screen and the frame stays black, which is exactly what was seen.
     ///
-    /// O que dá para fazer com o que está guardado é isto: toda imagem pendurada num widget vai
-    /// para a tela. Para a abertura da Z-Wheel basta, porque é uma imagem de 640×480 na origem
-    /// — o mesmo tamanho que o jogo manda para o widget no slot 7.
+    /// What can be done with what is stored is this: every image hung on a widget goes to the
+    /// screen. For the Z-Wheel intro that is enough, because it is a 640×480 image at the origin —
+    /// the same size the game sends to the widget in slot 7.
     ///
-    /// A ordem é a dos endereços dos objetos, que no nosso alocador é a de criação. Não é
-    /// profundidade de verdade; é a única ordem estável que temos, e uma ordem estável ao menos
-    /// faz o resultado ser o mesmo a cada execução.
-    pub(super) fn pinta_widgets(&mut self) -> Result<(), CpuError> {
-        let atual = self.formulario_atual();
-        // **Formulário novo apaga o anterior.** A superfície é persistente: o que foi pintado
-        // num quadro continua lá no seguinte. Sem limpar, a tela de boas-vindas de 640×480
-        // ficava por cima de tudo o que veio depois, mesmo depois de deixarmos de desenhá-la.
+    /// The order is that of the object addresses, which in our allocator is creation order. It is
+    /// not real depth; it is the only stable order we have, and a stable order at least makes the
+    /// result the same on every run.
+    pub(super) fn paint_widgets(&mut self) -> Result<(), CpuError> {
+        let current = self.current_form();
+        // **A new form erases the previous one.** The surface is persistent: what was painted in
+        // one frame is still there in the next. Without clearing, the 640×480 welcome screen stayed
+        // on top of everything that came after, even after we stopped drawing it.
         //
-        // Limpar só na troca, e não a cada quadro, porque quem desenha pelo `IDisplay` — que é
-        // a maioria dos jogos — não tem formulário nenhum e não pode ter a tela apagada por
-        // baixo. Sem widget, `atual` é `None` e nada aqui acontece.
-        if let Some(raiz) = atual {
-            if raiz != self.formulario_pintado {
-                self.formulario_pintado = raiz;
-                let alvo = self.target()?;
-                if let Some(surface) = self.bitmaps.get_mut(&alvo) {
-                    let tela = Rect {
+        // Clear only on the switch, and not every frame, because whoever draws through `IDisplay`
+        // — which is most games — has no form at all and cannot have the screen erased from under
+        // it. Without a widget, `current` is `None` and nothing here happens.
+        if let Some(root) = current {
+            if root != self.painted_form {
+                self.painted_form = root;
+                let target = self.target()?;
+                if let Some(surface) = self.bitmaps.get_mut(&target) {
+                    let screen = Rect {
                         x: 0,
                         y: 0,
                         width: surface.width() as i16,
                         height: surface.height() as i16,
                     };
-                    surface.fill_rect(tela, Rgb::WHITE);
+                    surface.fill_rect(screen, Rgb::WHITE);
                 }
             }
         }
-        let dentro = self.arvore_do_formulario();
-        self.pinta_fundos(&dentro)?;
-        let mut imagens: Vec<(u32, u32)> = self
+        let inside = self.form_tree();
+        self.paint_backgrounds(&inside)?;
+        let mut images: Vec<(u32, u32)> = self
             .widgets
             .iter()
-            .filter(|(dono, widget)| widget.visivel && dentro.contains(*dono))
-            .flat_map(|(dono, widget)| widget.anexados.iter().map(|&filho| (filho, *dono)))
-            .filter(|(objeto, _)| self.images.contains_key(objeto))
+            .filter(|(owner, widget)| widget.visible && inside.contains(*owner))
+            .flat_map(|(owner, widget)| widget.attached.iter().map(|&child| (child, *owner)))
+            .filter(|(object, _)| self.images.contains_key(object))
             .collect();
-        // **Filho por cima de pai.** A ordem era a dos endereços dos objetos, que já foi a de
-        // criação e deixou de ser quando o alocador ganhou lista de livres. Com ela, o fundo
-        // de 640×480 da tela de boas-vindas caía por cima do formulário inteiro, e o que
-        // sobrava à vista era o pedaço de um widget que por acaso tinha endereço maior.
+        // **Child on top of parent.** The order used to be that of the object addresses, which
+        // once was creation order and stopped being so when the allocator gained a free list. With
+        // it, the 640×480 background of the welcome screen landed on top of the whole form, and
+        // what was left in view was the piece of a widget that happened to have a higher address.
         //
-        // A altura na árvore é a ordem que a interface quer dizer. O endereço fica como
-        // desempate, para que duas execuções desenhem igual.
-        imagens.sort_unstable_by_key(|&(imagem, dono)| (self.profundidade(dono), imagem));
-        imagens.dedup_by_key(|(imagem, _)| *imagem);
-        for (imagem, dono) in imagens {
-            let (x, y) = self.posicao_na_tela(dono);
-            self.draw_image(imagem, x, y, None)?;
+        // The height in the tree is the order the interface means. The address stays as a
+        // tie-breaker, so that two runs draw the same.
+        images.sort_unstable_by_key(|&(image, owner)| (self.depth(owner), image));
+        images.dedup_by_key(|(image, _)| *image);
+        for (image, owner) in images {
+            let (x, y) = self.screen_position(owner);
+            self.draw_image(image, x, y, None)?;
         }
-        self.pinta_textos()
+        self.paint_texts()
     }
 
-    /// Preenche, a cada quadro, o retângulo dos widgets da tela atual que têm cor de fundo.
+    /// Fills, every frame, the rectangle of the current screen's widgets that have a background
+    /// color.
     ///
-    /// A cor é a [`PROP_COR_DE_FUNDO`], em `RRGGBBAA` como a do texto; alfa zero é "sem fundo",
-    /// que é o que a Z-Wheel grava na maioria dos widgets. O container que cada formulário dela
-    /// pendura em `0x5000` recebe `0xd0d0d0ff`: é o cinza claro atrás do palco, da roda e da
-    /// lista de jogos. Sem ele o fundo ficava no branco da troca de formulário, e o que um quadro
-    /// deixava — o quadrado da seta da grade, os tracinhos sob as abas — nunca era coberto.
+    /// The color is [`PROP_BACKGROUND_COLOR`], in `RRGGBBAA` like the text one; zero alpha means
+    /// "no background", which is what the Z-Wheel writes on most widgets. The container each of
+    /// its forms hangs on `0x5000` gets `0xd0d0d0ff`: it is the light gray behind the stage, the
+    /// wheel and the game list. Without it the background stayed at the white of the form switch,
+    /// and what a frame left behind — the square of the grid arrow, the little dashes under the
+    /// tabs — was never covered.
     ///
-    /// Widget sem tamanho medido ocupa a superfície inteira, que é o caso desse container.
-    fn pinta_fundos(&mut self, dentro: &std::collections::HashSet<u32>) -> Result<(), CpuError> {
-        let mut fundos: Vec<(usize, i32, i32, (u32, u32), u32)> = self
+    /// A widget with no measured size takes up the whole surface, which is the case of that
+    /// container.
+    fn paint_backgrounds(&mut self, inside: &std::collections::HashSet<u32>) -> Result<(), CpuError> {
+        let mut backgrounds: Vec<(usize, i32, i32, (u32, u32), u32)> = self
             .widgets
             .iter()
-            .filter(|(dono, widget)| widget.visivel && dentro.contains(*dono))
-            .filter_map(|(&dono, widget)| {
-                let rgba = *widget.propriedades.get(&PROP_COR_DE_FUNDO)?;
-                (rgba & 0xff != 0).then_some(dono)
+            .filter(|(owner, widget)| widget.visible && inside.contains(*owner))
+            .filter_map(|(&owner, widget)| {
+                let rgba = *widget.properties.get(&PROP_BACKGROUND_COLOR)?;
+                (rgba & 0xff != 0).then_some(owner)
             })
-            .map(|dono| {
-                let (x, y) = self.posicao_na_tela(dono);
-                let no = &self.widgets[&dono];
-                let rgba = no.propriedades[&PROP_COR_DE_FUNDO];
-                (self.profundidade(dono), x, y, no.tamanho, rgba)
+            .map(|owner| {
+                let (x, y) = self.screen_position(owner);
+                let node = &self.widgets[&owner];
+                let rgba = node.properties[&PROP_BACKGROUND_COLOR];
+                (self.depth(owner), x, y, node.size, rgba)
             })
             .collect();
-        if fundos.is_empty() {
+        if backgrounds.is_empty() {
             return Ok(());
         }
-        fundos.sort_unstable_by_key(|f| (f.0, f.2, f.1));
-        let alvo = self.target()?;
-        let Some(surface) = self.bitmaps.get_mut(&alvo) else {
+        backgrounds.sort_unstable_by_key(|f| (f.0, f.2, f.1));
+        let target = self.target()?;
+        let Some(surface) = self.bitmaps.get_mut(&target) else {
             return Ok(());
         };
-        for (_, x, y, (largura, altura), rgba) in fundos {
-            let (largura, altura) = if largura == 0 || altura == 0 {
+        for (_, x, y, (fill_width, fill_height), rgba) in backgrounds {
+            let (fill_width, fill_height) = if fill_width == 0 || fill_height == 0 {
                 (surface.width() as u32, surface.height() as u32)
             } else {
-                (largura, altura)
+                (fill_width, fill_height)
             };
             let area = Rect {
                 x: x as i16,
                 y: y as i16,
-                width: largura.min(i16::MAX as u32) as i16,
-                height: altura.min(i16::MAX as u32) as i16,
+                width: fill_width.min(i16::MAX as u32) as i16,
+                height: fill_height.min(i16::MAX as u32) as i16,
             };
-            let cor = Rgb {
+            let color = Rgb {
                 r: (rgba >> 24) as u8,
                 g: (rgba >> 16) as u8,
                 b: (rgba >> 8) as u8,
             };
-            surface.fill_rect(area, cor);
+            surface.fill_rect(area, color);
         }
         Ok(())
     }
 
-    /// Escreve o texto que os widgets guardam, na posição e na cor deles.
+    /// Writes the text the widgets store, at their position and in their color.
     ///
-    /// Faz parte do mesmo substituto do [`Machine::pinta_widgets`]: o console desenharia isto
-    /// pela extensão de widgets, que não está no dump. O que temos é o texto — que chega pelo
-    /// slot 6 da [`WIDGET_DE_TEXTO`] — e a fonte do próprio pacote do jogo, que já carrega.
+    /// It is part of the same stand-in as [`Machine::paint_widgets`]: the console would draw this
+    /// through the widget extension, which is not in the dump. What we have is the text — which
+    /// arrives through slot 6 of [`WIDGET_TEXT`] — and the font from the game's own package, which
+    /// is already loaded.
     ///
-    /// A cor sai da propriedade [`PROP_COR`], que vem como `RRGGBBAA`; sem ela, preto. O alfa é
-    /// descartado porque a superfície do console não tem canal para ele — mesma razão do
-    /// meio-tom no [`Machine::escreve`].
+    /// The color comes from the [`PROP_COLOR`] property, as `RRGGBBAA`; without it, black. The
+    /// alpha is discarded because the console surface has no channel for it — same reason as the
+    /// half-tone in [`Machine::write`].
     ///
-    /// A ordem é a da árvore, como a das imagens: filho por cima de pai.
-    pub(super) fn pinta_textos(&mut self) -> Result<(), CpuError> {
-        let dentro = self.arvore_do_formulario();
-        let mut escritas: Vec<(usize, i32, i32, u32, String)> = self
+    /// The order is the tree's, like the images': child on top of parent.
+    pub(super) fn paint_texts(&mut self) -> Result<(), CpuError> {
+        let inside = self.form_tree();
+        let mut writes: Vec<(usize, i32, i32, u32, String)> = self
             .widgets
             .iter()
-            .filter(|(dono, widget)| {
-                widget.visivel && !widget.texto.is_empty() && dentro.contains(*dono)
+            .filter(|(owner, widget)| {
+                widget.visible && !widget.text.is_empty() && inside.contains(*owner)
             })
-            .map(|(&dono, widget)| {
-                let (x, y) = self.posicao_na_tela(dono);
-                let cor = widget.propriedades.get(&PROP_COR).copied().unwrap_or(0);
-                (self.profundidade(dono), x, y, cor, widget.texto.clone())
+            .map(|(&owner, widget)| {
+                let (x, y) = self.screen_position(owner);
+                let color = widget.properties.get(&PROP_COLOR).copied().unwrap_or(0);
+                (self.depth(owner), x, y, color, widget.text.clone())
             })
             .collect();
-        // **O mesmo texto, no mesmo lugar, na mesma cor, é um desenho só.** O formulário do
-        // z-pad é remontado a cada volta do ciclo e cada remontagem deixa a árvore anterior
-        // viva: são milhares de cópias do mesmo rótulo empilhadas na mesma coordenada. Pintar
-        // todas dá exatamente o mesmo quadro e fazia um quadro levar mais de um minuto.
-        escritas
+        // **The same text, in the same place, in the same color, is a single drawing.** The z-pad
+        // form is rebuilt on every lap of the cycle and each rebuild leaves the previous tree
+        // alive: there are thousands of copies of the same label stacked on the same coordinate.
+        // Painting all of them gives exactly the same frame and made a frame take over a minute.
+        writes
             .sort_unstable_by(|a, b| (a.1, a.2, &a.4, a.3, a.0).cmp(&(b.1, b.2, &b.4, b.3, b.0)));
-        escritas.dedup_by(|a, b| (a.1, a.2, &a.4, a.3) == (b.1, b.2, &b.4, b.3));
-        // Já sem repetição, a ordem que vale é a da árvore: filho por cima de pai.
-        escritas.sort_unstable_by(|a, b| (a.0, a.2, a.1).cmp(&(b.0, b.2, b.1)));
-        self.pinta_html()?;
-        for (_, x, y, rgba, texto) in escritas {
-            // A cor vem como `RRGGBBAA`. O alfa é descartado porque a superfície do console não
-            // tem canal para ele — mesma razão do meio-tom no `escreve`.
-            let cor = Rgb {
+        writes.dedup_by(|a, b| (a.1, a.2, &a.4, a.3) == (b.1, b.2, &b.4, b.3));
+        // With repeats gone, the order that counts is the tree's: child on top of parent.
+        writes.sort_unstable_by(|a, b| (a.0, a.2, a.1).cmp(&(b.0, b.2, b.1)));
+        self.paint_html()?;
+        for (_, x, y, rgba, text) in writes {
+            // The color comes as `RRGGBBAA`. The alpha is discarded because the console surface
+            // has no channel for it — same reason as the half-tone in `write`.
+            let color = Rgb {
                 r: (rgba >> 24) as u8,
                 g: (rgba >> 16) as u8,
                 b: (rgba >> 8) as u8,
             };
-            self.escreve(&texto, x, y, cor)?;
+            self.write(&text, x, y, color)?;
         }
         Ok(())
     }
 
-    /// Pinta os widgets de HTML da tela atual com o texto do placeholder.
+    /// Paints the current screen's HTML widgets with the placeholder text.
     ///
-    /// **É um desvio, não um renderizador de HTML.** A tela de ajuda da Z-Wheel precisa do widget
-    /// de HTML do firmware (`0x0102dd32`), que não temos. Em vez de interpretar a página que o jogo
-    /// carregaria, cada widget dessa classe mostra o texto de [`caminho_do_html`], quebrado pela
-    /// largura dele. O arquivo mora no aparelho emulado, fora da ROM, e pode ser editado à vontade.
-    fn pinta_html(&mut self) -> Result<(), CpuError> {
-        let dentro = self.arvore_do_formulario();
-        let alvos: Vec<(u32, i32, i32, u32, u32)> = self
+    /// **It is a workaround, not an HTML renderer.** The Z-Wheel help screen needs the firmware's
+    /// HTML widget (`0x0102dd32`), which we don't have. Instead of interpreting the page the game
+    /// would load, each widget of that class shows the text of [`html_path`], wrapped to its width.
+    /// The file lives on the emulated device, outside the ROM, and can be edited freely.
+    fn paint_html(&mut self) -> Result<(), CpuError> {
+        let inside = self.form_tree();
+        let targets: Vec<(u32, i32, i32, u32, u32)> = self
             .widgets
             .iter()
-            .filter(|(dono, widget)| {
-                widget.classe == WIDGET_HTML && widget.visivel && dentro.contains(*dono)
+            .filter(|(owner, widget)| {
+                widget.class_id == WIDGET_HTML && widget.visible && inside.contains(*owner)
             })
-            .map(|(&dono, widget)| {
-                let (x, y) = self.posicao_na_tela(dono);
-                (dono, x, y, widget.tamanho.0, widget.tamanho.1)
+            .map(|(&owner, widget)| {
+                let (x, y) = self.screen_position(owner);
+                (owner, x, y, widget.size.0, widget.size.1)
             })
             .collect();
-        if alvos.is_empty() {
+        if targets.is_empty() {
             return Ok(());
         }
-        for (dono, x, y, largura, altura) in alvos {
-            // A página que a Z-Wheel entregou, quando entregou; sem ela, o placeholder.
-            let paragrafos = match self.paginas_html.get(&dono) {
-                Some(pagina) => texto_do_html(&decodifica_pagina(pagina)),
-                None => texto_do_html(&le_placeholder_html()),
+        for (owner, x, y, width, height) in targets {
+            // The page the Z-Wheel delivered, when it delivered one; without it, the placeholder.
+            let paragraphs = match self.html_pages.get(&owner) {
+                Some(page) => html_text(&decode_page(page)),
+                None => html_text(&read_placeholder_html()),
             };
-            let largura = match largura {
+            let width = match width {
                 0 => 600,
-                l => l.saturating_sub(2 * MARGEM_DO_HTML as u32).max(1),
+                l => l.saturating_sub(2 * HTML_MARGIN as u32).max(1),
             };
-            let Some(fonte) = self.font.as_ref() else {
+            let Some(font) = self.font.as_ref() else {
                 return Ok(());
             };
-            let passo = (fonte.ascent(FONT_SIZE) + fonte.descent(FONT_SIZE)) as i32 + 2;
-            let linhas: Vec<String> = paragrafos
+            let step = (font.ascent(FONT_SIZE) + font.descent(FONT_SIZE)) as i32 + 2;
+            let lines: Vec<String> = paragraphs
                 .iter()
-                .flat_map(|paragrafo| quebra_linhas(paragrafo, largura, |t| fonte.width(t, FONT_SIZE)))
+                .flat_map(|paragraph| wrap_lines(paragraph, width, |t| font.width(t, FONT_SIZE)))
                 .collect();
-            let limite = match altura {
+            let limit = match height {
                 0 => i32::MAX,
-                a => y + a as i32 - passo,
+                a => y + a as i32 - step,
             };
-            // Quantas linhas cabem, e daí até onde a rolagem pode ir.
-            let cabem = match altura {
-                0 => linhas.len(),
-                a => ((a as i32 - MARGEM_DO_HTML - passo) / passo + 1).max(1) as usize,
+            // How many lines fit, and from that how far scrolling can go.
+            let fit_count = match height {
+                0 => lines.len(),
+                a => ((a as i32 - HTML_MARGIN - step) / step + 1).max(1) as usize,
             };
-            let maximo = linhas.len().saturating_sub(cabem);
-            let rolagem = self.rolagem_html.entry(dono).or_insert(0);
-            *rolagem = (*rolagem).min(maximo);
-            self.rolagem_maxima_html.insert(dono, maximo);
-            let pular = *rolagem;
-            let mut linha_y = y + MARGEM_DO_HTML;
-            for linha in linhas.into_iter().skip(pular) {
-                if linha_y > limite {
+            let maximum = lines.len().saturating_sub(fit_count);
+            let scroll = self.html_scroll.entry(owner).or_insert(0);
+            *scroll = (*scroll).min(maximum);
+            self.html_max_scroll.insert(owner, maximum);
+            let skip = *scroll;
+            let mut line_y = y + HTML_MARGIN;
+            for line in lines.into_iter().skip(skip) {
+                if line_y > limit {
                     break;
                 }
-                self.escreve(&linha, x + MARGEM_DO_HTML, linha_y, Rgb::BLACK)?;
-                linha_y += passo;
+                self.write(&line, x + HTML_MARGIN, line_y, Rgb::BLACK)?;
+                line_y += step;
             }
         }
         Ok(())
     }
 
-    /// Rola o widget de HTML em foco na tela atual, se houver um e se ainda houver para onde.
+    /// Scrolls the focused HTML widget on the current screen, if there is one and if there is
+    /// still somewhere to go.
     ///
-    /// No console quem rola é o próprio widget de HTML do firmware, com as setas, enquanto
-    /// tem foco: a Z-Wheel só desenha as setas do painel. Devolve se rolou — no limite, a tecla
-    /// segue para os tratadores, e é assim que subir do topo do texto volta às abas.
-    pub(super) fn rola_html_em_foco(&mut self, para_baixo: bool) -> bool {
-        let dentro = self.arvore_do_formulario();
-        let Some(alvo) = self
+    /// On the console whoever scrolls is the firmware's own HTML widget, with the arrows, while it
+    /// has focus: the Z-Wheel only draws the panel arrows. Returns whether it scrolled — at the
+    /// limit, the key goes on to the handlers, and that is how going up from the top of the text
+    /// returns to the tabs.
+    pub(super) fn scroll_focused_html(&mut self, downward: bool) -> bool {
+        let inside = self.form_tree();
+        let Some(target) = self
             .widgets
             .iter()
-            .filter(|(endereco, no)| {
-                no.classe == WIDGET_HTML && no.visivel && dentro.contains(*endereco)
+            .filter(|(address, node)| {
+                node.class_id == WIDGET_HTML && node.visible && inside.contains(*address)
             })
-            .map(|(&endereco, _)| endereco)
-            .find(|&endereco| self.no_caminho_do_foco(endereco))
+            .map(|(&address, _)| address)
+            .find(|&address| self.on_focus_path(address))
         else {
             return false;
         };
-        let maximo = self.rolagem_maxima_html.get(&alvo).copied().unwrap_or(0);
-        let rolagem = self.rolagem_html.entry(alvo).or_insert(0);
-        match para_baixo {
-            true if *rolagem < maximo => *rolagem += 1,
-            false if *rolagem > 0 => *rolagem -= 1,
+        let maximum = self.html_max_scroll.get(&target).copied().unwrap_or(0);
+        let scroll = self.html_scroll.entry(target).or_insert(0);
+        match downward {
+            true if *scroll < maximum => *scroll += 1,
+            false if *scroll > 0 => *scroll -= 1,
             _ => return false,
         }
         true
     }
 
-    /// Se algum container acima do widget definiu foco e todos os que definiram apontam para o
-    /// caminho até ele. O contrário do [`Machine::fora_do_foco`], mas exigindo foco de verdade:
-    /// sem container nenhum com foco, o widget não está em foco.
-    fn no_caminho_do_foco(&self, widget: u32) -> bool {
-        const MOVE_FOCO: u32 = 0x711;
-        const TETO: usize = 64;
-        // O foco gravado nem sempre é um filho direto: a tela de ajuda grava no container dela o
-        // próprio widget de HTML, que é neto. Vale qualquer nó do caminho já percorrido.
-        let mut caminho = vec![widget];
-        let mut filho = widget;
-        let mut focado = false;
-        for _ in 0..TETO {
-            let Some(pai) = self.widgets.get(&filho).map(|w| w.pai) else {
+    /// Whether some container above the widget set a focus and all those that did point to the
+    /// path to it. The opposite of [`Machine::out_of_focus`], but requiring real focus: with no
+    /// container with focus at all, the widget is not in focus.
+    fn on_focus_path(&self, widget: u32) -> bool {
+        const MOVE_FOCUS: u32 = 0x711;
+        const CAP: usize = 64;
+        // The stored focus is not always a direct child: the help screen stores on its container
+        // the HTML widget itself, which is a grandchild. Any node on the path walked so far counts.
+        let mut path = vec![widget];
+        let mut child = widget;
+        let mut focused = false;
+        for _ in 0..CAP {
+            let Some(parent) = self.widgets.get(&child).map(|w| w.parent) else {
                 break;
             };
-            if pai == 0 || pai == filho {
+            if parent == 0 || parent == child {
                 break;
             }
-            if let Some(container) = self.widgets.get(&pai) {
-                match container.propriedades.get(&MOVE_FOCO).copied() {
-                    Some(foco) if caminho.contains(&foco) => focado = true,
-                    Some(foco) if self.widgets.contains_key(&foco) => return false,
+            if let Some(container) = self.widgets.get(&parent) {
+                match container.properties.get(&MOVE_FOCUS).copied() {
+                    Some(focus) if path.contains(&focus) => focused = true,
+                    Some(focus) if self.widgets.contains_key(&focus) => return false,
                     _ => {}
                 }
             }
-            caminho.push(pai);
-            filho = pai;
+            path.push(parent);
+            child = parent;
         }
-        focado
+        focused
     }
 
-    /// O filho de um widget guardado sob `id`, criado na primeira vez que alguém o pede.
+    /// The child of a widget stored under `id`, created the first time someone asks for it.
     ///
-    /// Guardar é o que faz o acessador ser coerente consigo mesmo: a `0x78acc` pede o `0x5000`,
-    /// configura, pede o `0x5002` e solta os dois no fim. Se cada pedido criasse um objeto
-    /// novo, o jogo soltaria objetos que não são os que usou.
-    pub(super) fn filho_do_widget(&mut self, this: u32, id: u32) -> Result<u32, CpuError> {
-        if let Some(filho) = self
+    /// Storing is what makes the accessor consistent with itself: `0x78acc` asks for `0x5000`,
+    /// configures it, asks for `0x5002` and releases both at the end. If each request created a
+    /// new object, the game would release objects that are not the ones it used.
+    pub(super) fn widget_child(&mut self, this: u32, id: u32) -> Result<u32, CpuError> {
+        if let Some(child) = self
             .widgets
             .get(&this)
-            .and_then(|widget| widget.filhos.get(&id).copied())
+            .and_then(|widget| widget.children.get(&id).copied())
         {
-            // Entregar é emprestar: quem recebe vai soltar.
-            self.objects.add_ref(filho);
-            return Ok(filho);
+            // Handing out is lending: whoever receives it will release it.
+            self.objects.add_ref(child);
+            return Ok(child);
         }
-        let filho = self.new_object(Interface::Widget)?;
-        if filho == 0 {
+        let child = self.new_object(Interface::Widget)?;
+        if child == 0 {
             return Ok(0);
         }
-        self.proximo_serial += 1;
+        self.next_serial += 1;
         self.widgets.insert(
-            filho,
+            child,
             Widget {
-                visivel: true,
-                serial: self.proximo_serial,
+                visible: true,
+                serial: self.next_serial,
                 ..Widget::default()
             },
         );
         if let Some(widget) = self.widgets.get_mut(&this) {
-            widget.filhos.insert(id, filho);
+            widget.children.insert(id, child);
         }
-        // Duas referências: **uma do mapa do pai** e uma de quem pediu. Sem a do pai o objeto
-        // morria no primeiro `Release` do chamador e a entrada no mapa ficava apontando para um
-        // endereço livre — que, com o alocador reusando endereço, é outro objeto.
-        self.objects.add_ref(filho);
-        Ok(filho)
+        // Two references: **one from the parent's map** and one from whoever asked. Without the
+        // parent's, the object died on the caller's first `Release` and the map entry was left
+        // pointing at a free address — which, with the allocator reusing addresses, is another
+        // object.
+        self.objects.add_ref(child);
+        Ok(child)
     }
 
-    /// Atende o widget da Z-Wheel (`0x01028e51`). Ver [`Interface::Widget`].
+    /// Serves the Z-Wheel widget (`0x01028e51`). See [`Interface::Widget`].
     ///
-    /// **O retorno é invertido**: diferente de zero é sucesso. Os invólucros do jogo
-    /// (`0x3f72c` e `0x403c8`) fazem `cmp r0,#0; moveq r0,#3`, transformando zero em erro. Isso
-    /// vale só para o acessador; o `AddRef` e o `Release` continuam devolvendo a contagem, como
-    /// em todo o BREW.
+    /// **The return is inverted**: nonzero is success. The game's wrappers (`0x3f72c` and
+    /// `0x403c8`) do `cmp r0,#0; moveq r0,#3`, turning zero into an error. That holds only for
+    /// the accessor; `AddRef` and `Release` keep returning the count, as everywhere in BREW.
     ///
-    /// O acessador tem dois seletores, e ambos foram lidos no código do jogo:
+    /// The accessor has two selectors, and both were read in the game's code:
     ///
-    /// - `0x800` **pega o filho** de número `id` e escreve o ponteiro no terceiro argumento. O
-    ///   filho é criado na primeira vez e guardado: a `0x78acc` pede o `0x5000`, configura, e
-    ///   depois pede o `0x5002`, e ela solta os dois no fim — se cada pedido criasse um objeto
-    ///   novo, o jogo soltaria objetos que não são os que usou.
-    /// - `0x801` **grava** a propriedade `id`. O que os números querem dizer ainda não sabemos;
-    ///   guardá-los custa nada e é o que permitirá reconhecê-los quando a tela aparecer.
+    /// - `0x800` **gets the child** number `id` and writes the pointer to the third argument. The
+    ///   child is created the first time and stored: `0x78acc` asks for `0x5000`, configures it,
+    ///   and then asks for `0x5002`, and it releases both at the end — if each request created a
+    ///   new object, the game would release objects that are not the ones it used.
+    /// - `0x801` **sets** property `id`. What the numbers mean we don't know yet; storing them
+    ///   costs nothing and is what will let us recognize them when the screen shows up.
     ///
-    /// Um seletor que não seja esses dois é recusado com zero em vez de aceito em silêncio: um
-    /// terceiro seletor é coisa que precisamos ver, não esconder.
-    /// Atende o controle leve usado pelo subsistema de texto do Zenonia. A implementação mantém
-    /// a ABI e as respostas de estado que o jogo consulta, evitando que a criação caia em loop.
+    /// A selector other than these two is refused with zero instead of accepted silently: a third
+    /// selector is something we need to see, not hide.
+    /// Serves the lightweight control used by the Zenonia text subsystem. The implementation keeps
+    /// the ABI and the status answers the game queries, keeping creation from falling into a loop.
     pub(super) fn control_call(&mut self, slot: u32) -> Result<Option<u32>, CpuError> {
         let Some(name) = Interface::Control.method(slot) else {
             return Ok(None);
@@ -872,7 +884,7 @@ impl<C: CpuBackend> Machine<C> {
             "AddRef" => self.objects.add_ref(this),
             "Release" => self.objects.release(this),
             "IsActive" => 1,
-            // Eventos, ativação e reset são operações sem estado observável para o emulador.
+            // Events, activation and reset are operations with no state observable to the emulator.
             "HandleEvent" | "Redraw" | "SetActive" | "SetProperties" | "Reset" => SUCCESS,
             "SetRect" => SUCCESS,
             "GetRect" => {
@@ -895,369 +907,374 @@ impl<C: CpuBackend> Machine<C> {
     }
 
     pub(super) fn widget_call(&mut self, slot: u32) -> Result<Option<u32>, CpuError> {
-        /// Lê um item do widget. O que sai depende do número do item — ver abaixo.
+        /// Reads an item of the widget. What comes out depends on the item number — see below.
         const LE: u32 = 0x800;
-        /// A partir daqui, o item guarda um objeto; abaixo, um número.
-        const PRIMEIRO_OBJETO: u32 = 0x5000;
-        const GRAVA: u32 = 0x801;
-        /// O item do widget de HTML que guarda um objeto abaixo da faixa `0x5000`.
-        const PROP_HTML_OBJETO: u32 = 0x161;
-        /// Sucesso para esta classe. Não é o `SUCCESS` do BREW — ver acima.
+        /// From here up, the item stores an object; below, a number.
+        const FIRST_OBJECT: u32 = 0x5000;
+        const SET_PROP: u32 = 0x801;
+        /// The HTML widget item that stores an object below the `0x5000` range.
+        const PROP_HTML_OBJECT: u32 = 0x161;
+        /// Success for this class. It is not BREW's `SUCCESS` — see above.
         const OK: u32 = 1;
-        /// Define o filho em foco de um container. Ver o braço do acessador.
-        const FOCO_DEFINE: u32 = 0x711;
-        /// `WIDGET_FOCUS_PREV`, o maior dos valores especiais do [`FOCO_DEFINE`].
-        const FOCO_ANTERIOR: u32 = 4;
-        /// Lê o filho em foco definido pelo [`FOCO_DEFINE`].
-        const FOCO_LE: u32 = 0x713;
-        /// Marca o estado de foco do próprio widget (`id` = 1). Ver o braço do `0x702`.
-        const MARCA_FOCO: u32 = 0x700;
-        /// Pergunta, num byte, se o widget pode receber foco.
-        const HABILITADO: u32 = 0x702;
-        /// `FORM_LAST`, o ponteiro especial do `IROOTFORM_RemoveForm` que quer dizer "o do topo".
+        /// Sets the focused child of a container. See the accessor arm.
+        const FOCUS_SET: u32 = 0x711;
+        /// `WIDGET_FOCUS_PREV`, the largest of the special values of [`FOCUS_SET`].
+        const FOCUS_PREVIOUS: u32 = 4;
+        /// Reads the focused child set by [`FOCUS_SET`].
+        const FOCUS_GET: u32 = 0x713;
+        /// Marks the focus state of the widget itself (`id` = 1). See the `0x702` arm.
+        const MARK_FOCUS: u32 = 0x700;
+        /// Asks, in one byte, whether the widget can take focus.
+        const ENABLED: u32 = 0x702;
+        /// `FORM_LAST`, the special pointer of `IROOTFORM_RemoveForm` that means "the top one".
         const FORM_LAST: u32 = 1;
 
         let Some(name) = Interface::Widget.method(slot) else {
             return Ok(None);
         };
-        if aee::e_marcador(name) {
+        if aee::is_placeholder(name) {
             return Ok(None);
         }
         let this = self.cpu.read_reg(Reg::R0);
-        // **A página de cada aba chega ao widget de HTML por aqui.** A `0x3220c` abre o arquivo,
-        // faz dele um `ISource` e o entrega pelo slot 5 (`0x322e0`) do objeto da propriedade
-        // `0x161`, que para nós é o próprio widget. O conteúdo ainda não foi lido por ninguém, e
-        // é ele que o [`Machine::pinta_html`] mostra no lugar do placeholder.
+        // **Each tab's page reaches the HTML widget through here.** `0x3220c` opens the file,
+        // makes an `ISource` of it and hands it over through slot 5 (`0x322e0`) of the object of
+        // property `0x161`, which for us is the widget itself. Nobody has read the content yet, and
+        // it is what [`Machine::paint_html`] shows in place of the placeholder.
         if name == "AdicionarFilho"
-            && self.widgets.get(&this).is_some_and(|w| w.classe == WIDGET_HTML)
+            && self.widgets.get(&this).is_some_and(|w| w.class_id == WIDGET_HTML)
         {
-            if let Some(pagina) = self.sources.get(&self.cpu.read_reg(Reg::R1)) {
-                self.paginas_html.insert(this, pagina.clone());
-                self.rolagem_html.insert(this, 0);
+            if let Some(page) = self.sources.get(&self.cpu.read_reg(Reg::R1)) {
+                self.html_pages.insert(this, page.clone());
+                self.html_scroll.insert(this, 0);
             }
         }
         let result = match name {
             "AddRef" => self.objects.add_ref(this),
-            "Release" => self.solta_widget(this)?,
-            // Zero é sucesso aqui, ao contrário do acessador logo abaixo. Aceitamos qualquer
-            // interface pedida porque, no nosso modelo, a família inteira de widgets **é** uma
-            // interface só — a hipótese fica registrada, que é onde ela deve estar.
-            // O slot 12 tem a mesma forma e a mesma convenção do slot 2. É por ele que a
-            // Z-Wheel pega, de dentro do retorno de chamada da imagem em `0x4d4a4`, o objeto
-            // em que vai pendurar o GIF de abertura: `slot12(IID, &saída)` e, em seguida,
-            // `slot5(saída, imagem)`. Recusá-lo abortava o retorno de chamada inteiro, e a
-            // animação nunca começava — sem erro nenhum no log, porque quem abortou fomos nós.
+            "Release" => self.release_widget(this)?,
+            // Zero is success here, unlike the accessor just below. We accept any interface
+            // asked for because, in our model, the whole widget family **is** a single interface —
+            // the assumption is recorded, which is where it belongs.
+            // Slot 12 has the same shape and the same convention as slot 2. It is through it that
+            // the Z-Wheel gets, from inside the image callback at `0x4d4a4`, the object on which it
+            // will hang the intro GIF: `slot12(IID, &output)` and then `slot5(output, image)`.
+            // Refusing it aborted the whole callback, and the animation never started — with no
+            // error at all in the log, because whoever aborted was us.
             "QueryInterface" | "PegarInterface" => {
-                let saida = self.cpu.read_reg(Reg::R2);
-                if saida != 0 {
-                    self.cpu.write_u32(saida, this)?;
+                let output = self.cpu.read_reg(Reg::R2);
+                if output != 0 {
+                    self.cpu.write_u32(output, this)?;
                 }
                 self.objects.add_ref(this);
                 self.assumptions
-                    .insert("um widget aceitou toda interface que lhe pediram");
+                    .insert("a widget accepted every interface it was asked for");
                 SUCCESS
             }
-            // O slot 6 quer dizer duas coisas, conforme a classe.
+            // Slot 6 means two things, depending on the class.
             //
-            // Na maioria da família é `slot6(this, visível)` — a última coisa que a `0x11750`
-            // faz antes de sair da abertura: esconde o formulário da animação e vai para a
-            // transição. O retorno é ignorado.
+            // In most of the family it is `slot6(this, visible)` — the last thing `0x11750` does
+            // before leaving the intro: it hides the animation form and goes to the transition. The
+            // return is ignored.
             //
-            // Na [`WIDGET_DE_TEXTO`] é `slot6(this, texto, tamanho, …)`, com o texto em
-            // `AECHAR`. Ver a constante para como isso foi medido.
-            // `slot14(this, objeto)`, com o retorno ignorado. Aceitar e não guardar nada é o
-            // mínimo que deixa a montagem seguir; o que o objeto é, ainda não sabemos.
-            // `Slot16(this, trio)` **registra quem desenha o widget**, e devolve o anterior.
+            // In [`WIDGET_TEXT`] it is `slot6(this, text, size, …)`, with the text in `AECHAR`.
+            // See the constant for how that was measured.
+            // `slot14(this, object)`, with the return ignored. Accepting and storing nothing is the
+            // minimum that lets the setup go on; what the object is, we don't know yet.
+            // `Slot16(this, triple)` **registers who draws the widget**, and returns the previous
+            // one.
             //
-            // O `CreateOwnerDrawWidget` em `0x22cd0` monta o trio na própria estrutura antes de
-            // chamar: `[r4+0x14] = 0x5250c`, `[r4+0x18] = r4`, `[r4+0x1c] = 0x52574`, e passa
-            // `r4+0x14` em `r1`. Quem desenha é a `0x5250c`, e ela é um elo de corrente — chama
-            // primeiro `[ctx+0x14]([ctx+0x18], r1, r2, r3)`, que é justamente onde o anterior
-            // precisa ter sido escrito de volta, e depois o desenho próprio do roller, em
-            // `[ctx+0x00]([ctx+0x08], …)`. Sem a devolução ela chamaria a si mesma.
+            // `CreateOwnerDrawWidget` at `0x22cd0` builds the triple in its own structure before
+            // calling: `[r4+0x14] = 0x5250c`, `[r4+0x18] = r4`, `[r4+0x1c] = 0x52574`, and passes
+            // `r4+0x14` in `r1`. Whoever draws is `0x5250c`, and it is a link in a chain — it first
+            // calls `[ctx+0x14]([ctx+0x18], r1, r2, r3)`, which is exactly where the previous one
+            // needs to have been written back, and then the roller's own drawing, in
+            // `[ctx+0x00]([ctx+0x08], …)`. Without the hand-back it would call itself.
             //
-            // A terceira palavra do trio é a `0x52574`, o liberador: guardado, e chamado quando
-            // o widget morre (ver o `Release`).
+            // The third word of the triple is `0x52574`, the releaser: stored, and called when the
+            // widget dies (see `Release`).
             "Slot13" => {
-                // Leitura em 0x24100..0x24198 do tectoy.mod: (&bitmap, w, h),
-                // seguida de QueryInterface no bitmap devolvido. O widget foi usado
-                // como interface de bitmap pelo QueryInterface permissivo acima.
+                // Read at 0x24100..0x24198 of tectoy.mod: (&bitmap, w, h),
+                // followed by QueryInterface on the returned bitmap. The widget was used
+                // as a bitmap interface through the permissive QueryInterface above.
                 let slot = crate::brew::aee_slots::BITMAP
                     .iter()
                     .position(|name| *name == "CreateCompatibleBitmap")
-                    .expect("slot de bitmap");
+                    .expect("bitmap slot");
                 return self.bitmap_call(slot as u32);
             }
             "Slot16" => {
-                let onde = self.cpu.read_reg(Reg::R1);
-                let novo = match (self.cpu.read_u32(onde), self.cpu.read_u32(onde + 4)) {
-                    (Ok(funcao), Ok(contexto)) => (funcao, contexto),
+                let location = self.cpu.read_reg(Reg::R1);
+                let create = match (self.cpu.read_u32(location), self.cpu.read_u32(location + 4)) {
+                    (Ok(callback), Ok(context)) => (callback, context),
                     _ => return Ok(Some(EBADPARM)),
                 };
-                let liberador = self.cpu.read_u32(onde + 8)?;
-                let (anterior, liberador_anterior) = self
+                let free_fn = self.cpu.read_u32(location + 8)?;
+                let (previous, previous_releaser) = self
                     .widgets
                     .get(&this)
-                    .map_or(((0, 0), 0), |w| (w.desenho, w.liberadores.1));
-                self.cpu.write_u32(onde, anterior.0)?;
-                self.cpu.write_u32(onde + 4, anterior.1)?;
-                self.cpu.write_u32(onde + 8, liberador_anterior)?;
+                    .map_or(((0, 0), 0), |w| (w.drawing, w.releasers.1));
+                self.cpu.write_u32(location, previous.0)?;
+                self.cpu.write_u32(location + 4, previous.1)?;
+                self.cpu.write_u32(location + 8, previous_releaser)?;
                 if let Some(widget) = self.widgets.get_mut(&this) {
-                    widget.desenho = novo;
-                    widget.liberadores.1 = liberador;
+                    widget.drawing = create;
+                    widget.releasers.1 = free_fn;
                 }
                 if self.serial.is_some() {
-                    let proprio = (self.cpu.read_u32(novo.1), self.cpu.read_u32(novo.1 + 8));
-                    self.registra_serial(format!(
-                        "<desenho {:#x} ctx {:#x} em {this:#x}; proprio {proprio:x?}>",
-                        novo.0, novo.1
+                    let own = (self.cpu.read_u32(create.1), self.cpu.read_u32(create.1 + 8));
+                    self.log_serial(format!(
+                        "<drawing {:#x} ctx {:#x} on {this:#x}; own {own:x?}>",
+                        create.0, create.1
                     ));
                 }
                 SUCCESS
             }
             "Slot17" => {
-                // `pWidget->Slot17(0x8000, pFont)` em `tectoy_rollerwidget.c` (0x23860,
-                // 0x23d0c). Não é uma notificação: o módulo solta `pFont` após montar o
-                // roller, então a associação precisa possuir uma referência própria.
-                let (id, modelo) = (self.cpu.read_reg(Reg::R1), self.cpu.read_reg(Reg::R2));
-                if modelo == 0 || self.objects.kind_of(modelo).is_none() {
+                // `pWidget->Slot17(0x8000, pFont)` in `tectoy_rollerwidget.c` (0x23860,
+                // 0x23d0c). It is not a notification: the module releases `pFont` after building
+                // the roller, so the association needs to hold its own reference.
+                let (id, model) = (self.cpu.read_reg(Reg::R1), self.cpu.read_reg(Reg::R2));
+                if model == 0 || self.objects.kind_of(model).is_none() {
                     return Ok(Some(EBADPARM));
                 }
-                let Some(anterior) = self
+                let Some(previous) = self
                     .widgets
                     .get_mut(&this)
-                    .map(|widget| widget.modelos.insert(id, modelo))
+                    .map(|widget| widget.models.insert(id, model))
                 else {
                     return Ok(Some(EBADPARM));
                 };
-                if anterior != Some(modelo) {
-                    self.objects.add_ref(modelo);
-                    if let Some(anterior) = anterior {
-                        self.objects.release(anterior);
+                if previous != Some(model) {
+                    self.objects.add_ref(model);
+                    if let Some(previous) = previous {
+                        self.objects.release(previous);
                     }
                 }
                 SUCCESS
             }
-            // `Slot16(this)`, chamado uma vez em `0x22d58`, logo depois de o palco existir.
-            // Recusá-lo não devolvia a execução ao `0x22d5c`: a montagem do menu parava ali, e
-            // o aplicativo ficava no pulso de dez segundos que lê pontos e fila de download sem
-            // desenhar nada. Aceito com zero — o `SUCCESS` do BREW —, o jogo segue: cria a
-            // `0x01028e3c`, gera vinte e cinco texturas e sobe dezenove delas comprimidas em
-            // ATITC, monta o frustum e a matriz. É o palco carregando os próprios cenários.
+            // `Slot16(this)`, called once at `0x22d58`, right after the stage exists. Refusing it
+            // did not return execution to `0x22d5c`: the menu setup stopped there, and the
+            // application stayed in the ten-second pulse that reads points and the download queue
+            // without drawing anything. Accepted with zero — BREW's `SUCCESS` —, the game goes on:
+            // it creates `0x01028e3c`, generates twenty-five textures and uploads nineteen of them
+            // compressed in ATITC, builds the frustum and the matrix. It is the stage loading its
+            // own scenery.
             //
-            // O que ele faz continua sem nome porque não foi lido: só se sabe que recebe o
-            // widget e que o jogo não usa o retorno para nada além de seguir.
+            // What it does remains unnamed because it was not read: all we know is that it
+            // receives the widget and that the game uses the return for nothing but moving on.
             "Anexar" => {
-                // Registrar a ligação, e não só aceitar: sem ela a árvore ficava partida em
-                // duas — os widgets que desenham numa metade e o tratador de tecla na outra —,
-                // e qualquer regra sobre "o formulário atual" escolhia a metade errada.
-                let filho = self.cpu.read_reg(Reg::R1);
-                if self.widgets.contains_key(&filho) {
+                // Record the link, and not just accept it: without it the tree stayed split in
+                // two — the widgets that draw in one half and the key handler in the other —, and
+                // any rule about "the current form" picked the wrong half.
+                let child = self.cpu.read_reg(Reg::R1);
+                if self.widgets.contains_key(&child) {
                     if let Some(widget) = self.widgets.get_mut(&this) {
-                        if !widget.anexados.contains(&filho) && filho != this {
-                            widget.anexados.push(filho);
+                        if !widget.attached.contains(&child) && child != this {
+                            widget.attached.push(child);
                         }
                     }
-                    if let Some(widget) = self.widgets.get_mut(&filho) {
-                        widget.pai = this;
+                    if let Some(widget) = self.widgets.get_mut(&child) {
+                        widget.parent = this;
                     }
                 }
                 SUCCESS
             }
-            // **Nos containers, os slots 6 e 7 são o `IContainer` do BREW**: `Remove(widget)` e
-            // `GetWidget(pwRef, bNext, bWrap)`, com o `Insert` no slot 5 que já é o
-            // `AdicionarFilho`. A família divide a tabela, e as duas leituras se separam pelos
-            // argumentos: `Remove` recebe um filho **deste** container, e `GetWidget` recebe nulo
-            // ou um filho seguido de dois booleanos. Nem um ponteiro de tamanho nem um booleano
-            // de visibilidade é filho do container.
+            // **On containers, slots 6 and 7 are BREW's `IContainer`**: `Remove(widget)` and
+            // `GetWidget(pwRef, bNext, bWrap)`, with `Insert` in slot 5, which is already
+            // `AdicionarFilho`. The family shares the table, and the two readings are told apart by
+            // the arguments: `Remove` receives a child of **this** container, and `GetWidget`
+            // receives null or a child followed by two booleans. Neither a size pointer nor a
+            // visibility boolean is a child of the container.
             //
-            // Sem isto, a `0x80490` — que tira da raiz todos os formulários menos o que vai
-            // abrir, antes de lançar um jogo — pedia o próximo filho, recebia lixo do "tamanho"
-            // e rodava para sempre: dez mil voltas até o orçamento do callback acabar, e o jogo
-            // escolhido na grade nunca abria.
-            // **Na raiz, o slot 6 é o `IROOTFORM_RemoveForm`**, e `1` é o `FORM_LAST` do BREW:
-            // `IROOTFORM_PopForm` é exatamente `RemoveForm(raiz, FORM_LAST)`. A Z-Wheel usa assim
-            // duas vezes — em `0x11770`, para tirar o formulário da animação de abertura, e no
-            // laço de `0x82580`, que tira todos os formulários antes de lançar um jogo. Lido
-            // como "visível", o laço perguntava pelo topo, recebia sempre o mesmo formulário e
-            // girava até o orçamento do callback acabar.
+            // Without this, `0x80490` — which removes from the root every form except the one about
+            // to open, before launching a game — asked for the next child, got garbage from the
+            // "size" and ran forever: ten thousand laps until the callback budget ran out, and the
+            // game chosen on the grid never opened.
+            // **On the root, slot 6 is `IROOTFORM_RemoveForm`**, and `1` is BREW's `FORM_LAST`:
+            // `IROOTFORM_PopForm` is exactly `RemoveForm(root, FORM_LAST)`. The Z-Wheel uses it
+            // that way twice — at `0x11770`, to remove the intro animation form, and in the loop at
+            // `0x82580`, which removes every form before launching a game. Read as "visible", the
+            // loop asked for the top, always got the same form and spun until the callback budget
+            // ran out.
             "DefinirVisivel"
-                if self.widgets.get(&this).map_or(0, |w| w.classe) == WIDGET_RAIZ
+                if self.widgets.get(&this).map_or(0, |w| w.class_id) == WIDGET_ROOT
                     && self.cpu.read_reg(Reg::R1) == FORM_LAST =>
             {
-                // A raiz solta a referência que o `AdicionarFilho` pôs no formulário. Sem isso a
-                // tela removida nunca morria: antes de lançar um jogo, a Z-Wheel tira todos os
-                // formulários e desmonta os próprios dados, e a barra de abas da lista seguia
-                // viva com a animação de 40 ms armada sobre memória já solta. (Uma tentativa
-                // antiga de soltar aqui punha ícones atrás do roller; a causa era o
-                // `ObjectStore` ressuscitar endereços livres, já corrigida.) O `pai` fica.
-                let topo = self.widgets.get_mut(&this).and_then(|widget| widget.anexados.pop());
-                if let Some(formulario) = topo {
-                    self.solta_widget(formulario)?;
+                // The root releases the reference that `AdicionarFilho` put on the form. Without
+                // that the removed screen never died: before launching a game, the Z-Wheel removes
+                // every form and tears down its own data, and the list's tab bar stayed alive with
+                // the 40 ms animation armed over memory already released. (An old attempt to
+                // release here put icons behind the roller; the cause was `ObjectStore`
+                // resurrecting free addresses, already fixed.) The `parent` stays.
+                let top = self.widgets.get_mut(&this).and_then(|widget| widget.attached.pop());
+                if let Some(form) = top {
+                    self.release_widget(form)?;
                 }
-                self.ativa_o_topo(this)?;
+                self.activate_top(this)?;
                 SUCCESS
             }
-            "DefinirVisivel" if self.e_filho_anexado(this, self.cpu.read_reg(Reg::R1)) => {
-                let filho = self.cpu.read_reg(Reg::R1);
-                let era_o_topo = self
+            "DefinirVisivel" if self.is_attached_child(this, self.cpu.read_reg(Reg::R1)) => {
+                let child = self.cpu.read_reg(Reg::R1);
+                let was_top = self
                     .widgets
                     .get(&this)
-                    .is_some_and(|widget| widget.anexados.last() == Some(&filho));
+                    .is_some_and(|widget| widget.attached.last() == Some(&child));
                 if let Some(widget) = self.widgets.get_mut(&this) {
-                    widget.anexados.retain(|&w| w != filho);
+                    widget.attached.retain(|&w| w != child);
                 }
-                if let Some(filho) = self.widgets.get_mut(&filho) {
-                    if filho.pai == this {
-                        filho.pai = 0;
+                if let Some(child) = self.widgets.get_mut(&child) {
+                    if child.parent == this {
+                        child.parent = 0;
                     }
                 }
-                self.solta_widget(filho)?;
-                // Só quando saiu o formulário do topo, como o `RootForm` do BREW: antes de lançar
-                // um jogo a Z-Wheel tira da raiz os formulários de baixo, e reativar o menu a cada
-                // um deles fazia a lista de jogos abrir uma caixa de mensagem vazia em vez de lançar.
-                if era_o_topo && self.widgets.get(&this).map_or(0, |w| w.classe) == WIDGET_RAIZ {
-                    self.ativa_o_topo(this)?;
+                self.release_widget(child)?;
+                // Only when the top form left, like BREW's `RootForm`: before launching a game the
+                // Z-Wheel removes the lower forms from the root, and reactivating the menu for each
+                // of them made the game list open an empty message box instead of launching.
+                if was_top && self.widgets.get(&this).map_or(0, |w| w.class_id) == WIDGET_ROOT {
+                    self.activate_top(this)?;
                 }
                 SUCCESS
             }
             "DefinirTamanho"
                 if {
-                    let (referencia, proximo, volta) = (
+                    let (reference, next, tick) = (
                         self.cpu.read_reg(Reg::R1),
                         self.cpu.read_reg(Reg::R2),
                         self.cpu.read_reg(Reg::R3),
                     );
-                    (referencia == 0 || self.e_filho_anexado(this, referencia))
-                        && proximo <= 1
-                        && volta <= 1
+                    (reference == 0 || self.is_attached_child(this, reference))
+                        && next <= 1
+                        && tick <= 1
                 } =>
             {
-                let (referencia, proximo, volta) = (
+                let (reference, next, tick) = (
                     self.cpu.read_reg(Reg::R1),
                     self.cpu.read_reg(Reg::R2) != 0,
                     self.cpu.read_reg(Reg::R3) != 0,
                 );
-                let filhos = self
+                let children = self
                     .widgets
                     .get(&this)
-                    .map(|widget| widget.anexados.clone())
+                    .map(|widget| widget.attached.clone())
                     .unwrap_or_default();
-                // A pilha vai do primeiro inserido ao último. Sem referência, "próximo" começa
-                // pelo de baixo e "anterior" pelo de cima. O `GetWidget` não dá referência a
-                // quem recebe: é um ponteiro emprestado.
-                vizinho_na_pilha(&filhos, referencia, proximo, volta)
+                // The stack goes from the first inserted to the last. With no reference, "next"
+                // starts from the bottom and "previous" from the top. `GetWidget` gives no
+                // reference to the receiver: it is a borrowed pointer.
+                stack_neighbor(&children, reference, next, tick)
             }
             "DefinirVisivel" => {
-                let classe = self.widgets.get(&this).map_or(0, |widget| widget.classe);
-                if classe == WIDGET_DE_TEXTO {
-                    let texto = self.read_aechar(self.cpu.read_reg(Reg::R1))?;
+                let class_id = self.widgets.get(&this).map_or(0, |widget| widget.class_id);
+                if class_id == WIDGET_TEXT {
+                    let text = self.read_aechar(self.cpu.read_reg(Reg::R1))?;
                     if let Some(widget) = self.widgets.get_mut(&this) {
-                        widget.texto = texto;
+                        widget.text = text;
                     }
                     return Ok(Some(SUCCESS));
                 }
-                let visivel = self.cpu.read_reg(Reg::R1) != 0;
+                let visible = self.cpu.read_reg(Reg::R1) != 0;
                 if let Some(widget) = self.widgets.get_mut(&this) {
-                    widget.visivel = visivel;
+                    widget.visible = visible;
                 }
                 SUCCESS
             }
-            // `slot8(this, &saída)`, chamado a cada tique da abertura pela `0x11578`. O que
-            // sai dali recebe em seguida um `slot3(widget, 0, 0)` e é solto — e slot 3 num
-            // widget é o acessador. Um ponteiro de widget no lugar do seletor não é seletor
-            // nenhum, então a leitura que resta é: **o pai é quem recebe o aviso de que o
-            // filho mudou**, e o acessador recusa o que não conhece, que é o que ele já faz.
+            // `slot8(this, &output)`, called on every intro tick by `0x11578`. What comes out of
+            // it then receives a `slot3(widget, 0, 0)` and is released — and slot 3 on a widget is
+            // the accessor. A widget pointer in place of the selector is no selector at all, so the
+            // reading that remains is: **the parent is whoever gets the notice that the child
+            // changed**, and the accessor refuses what it does not know, which is what it already
+            // does.
             //
-            // **Leitura sem confirmação.** Enquanto ninguém dá a partida na animação, este
-            // slot não é chamado, então não há execução que sustente ou derrube a hipótese.
-            // Fica escrita para o próximo que passar aqui.
+            // **Unconfirmed reading.** While nobody kicks off the animation, this slot is not
+            // called, so there is no run to support or overturn the hypothesis. It stays written
+            // down for the next one who passes by here.
             //
-            // Devolver com contagem, porque quem recebe solta logo depois.
+            // Return it with a count, because whoever receives it releases it right after.
             "PegarPai" => {
-                let saida = self.cpu.read_reg(Reg::R1);
-                let pai = self.widgets.get(&this).map_or(0, |widget| widget.pai);
-                if pai != 0 {
-                    self.objects.add_ref(pai);
+                let output = self.cpu.read_reg(Reg::R1);
+                let parent = self.widgets.get(&this).map_or(0, |widget| widget.parent);
+                if parent != 0 {
+                    self.objects.add_ref(parent);
                 }
-                if saida != 0 {
-                    self.cpu.write_u32(saida, pai)?;
+                if output != 0 {
+                    self.cpu.write_u32(output, parent)?;
                 }
                 SUCCESS
             }
-            // `slot4(this, &tratador)`, visto em `0x11a6c`. O que `r1` aponta é montado logo
-            // acima, em `0x11a60`: o objeto do jogo se põe como contexto em `+0x1c` e o
-            // endereço da função em `+0x20`. É um registro de tratador de eventos.
+            // `slot4(this, &handler)`, seen at `0x11a6c`. What `r1` points to is built just above,
+            // at `0x11a60`: the game object puts itself as context at `+0x1c` and the function
+            // address at `+0x20`. It is the registration of an event handler.
             //
-            // Guardamos o endereço e não chamamos ninguém: quem dispararia estes eventos é a
-            // interface que ainda não desenhamos. Quando ela existir, o tratador está aqui.
-            // `slot4(this, &{função, contexto, liberador})`.
+            // We store the address and call nobody: whoever would fire these events is the
+            // interface we don't draw yet. When it exists, the handler is here.
+            // `slot4(this, &{function, context, free_fn})`.
             //
-            // **Ele devolve o tratador anterior**, escrevendo-o de volta na estrutura que
-            // recebeu. É como o BREW encadeia: quem se registra guarda ali quem estava antes e
-            // desvia para ele o que não tratar. O `ZPad_Keyboard_Instructions_Form.c` faz
-            // exatamente isso — o `0x8f560` lê `[contexto+0x14]` e faz um salto de cauda para
-            // lá quando não trata a tecla.
+            // **It returns the previous handler**, writing it back into the structure it received.
+            // That is how BREW chains: whoever registers keeps there whoever was before and
+            // diverts to it what it does not handle. `ZPad_Keyboard_Instructions_Form.c` does
+            // exactly that — `0x8f560` reads `[context+0x14]` and does a tail jump there when it
+            // does not handle the key.
             //
-            // Sem escrever nada de volta, a estrutura continuava descrevendo **o próprio**
-            // tratador que acabara de se registrar, e o desvio virava recursão infinita: 250
-            // milhões de instruções num quadro só, o laço caindo de 897 voltas para duas e a
-            // janela congelando. Não havia erro no relatório porque não havia erro — havia um
-            // laço.
+            // Without writing anything back, the structure kept describing **the very** handler
+            // that had just registered, and the diversion became infinite recursion: 250 million
+            // instructions in a single frame, the loop dropping from 897 laps to two and the window
+            // freezing. There was no error in the report because there was no error — there was a
+            // loop.
             //
-            // Sem tratador anterior, o que volta é zero, e o `0x8f564` reconhece isso.
+            // With no previous handler, what comes back is zero, and `0x8f564` recognizes that.
             "DefinirTratador" => {
-                let onde = self.cpu.read_reg(Reg::R1);
-                let novo = match (self.cpu.read_u32(onde), self.cpu.read_u32(onde + 4)) {
-                    (Ok(funcao), Ok(contexto)) => (funcao, contexto),
+                let location = self.cpu.read_reg(Reg::R1);
+                let create = match (self.cpu.read_u32(location), self.cpu.read_u32(location + 4)) {
+                    (Ok(callback), Ok(context)) => (callback, context),
                     _ => return Ok(Some(EBADPARM)),
                 };
-                let liberador = self.cpu.read_u32(onde + 8)?;
-                let (anterior, liberador_anterior) = self
+                let free_fn = self.cpu.read_u32(location + 8)?;
+                let (previous, previous_releaser) = self
                     .widgets
                     .get(&this)
-                    .map_or(((0, 0), 0), |w| (w.tratador, w.liberadores.0));
-                self.cpu.write_u32(onde, anterior.0)?;
-                self.cpu.write_u32(onde + 4, anterior.1)?;
-                self.cpu.write_u32(onde + 8, liberador_anterior)?;
+                    .map_or(((0, 0), 0), |w| (w.handler, w.releasers.0));
+                self.cpu.write_u32(location, previous.0)?;
+                self.cpu.write_u32(location + 4, previous.1)?;
+                self.cpu.write_u32(location + 8, previous_releaser)?;
                 if let Some(widget) = self.widgets.get_mut(&this) {
-                    widget.tratador = novo;
-                    widget.liberadores.0 = liberador;
+                    widget.handler = create;
+                    widget.releasers.0 = free_fn;
                 }
                 SUCCESS
             }
-            // `slot5(this, filho, 0, &posição, …)`, visto em `0x11cc0`: o jogo pendura um
-            // widget no outro e solta a referência dele em seguida. O retorno é ignorado — a
-            // instrução seguinte já sobrescreve `r0`.
+            // `slot5(this, child, 0, &position, …)`, seen at `0x11cc0`: the game hangs one widget
+            // on the other and releases its reference right after. The return is ignored — the
+            // next instruction already overwrites `r0`.
             //
-            // Aqui o filho é só registrado. Não há árvore de interface para montar enquanto
-            // ninguém desenha por ela, e guardar a ligação é o que permite reconhecer, quando
-            // isso mudar, que ela já existia.
-            // O slot 5 quer dizer duas coisas, e o **terceiro argumento** separa.
+            // Here the child is only recorded. There is no interface tree to build while nobody
+            // draws through it, and storing the link is what lets us recognize, when that changes,
+            // that it already existed.
+            // Slot 5 means two things, and the **third argument** tells them apart.
             //
-            // Com `r2 == 0` é `slot5(this, filho, 0, &posição, …)`: pendura um widget no outro.
+            // With `r2 == 0` it is `slot5(this, child, 0, &position, …)`: hangs one widget on the
+            // other.
             //
-            // Com `r2 == 4` é um **getter**: `slot5(this, &saída, 4)`, e a saída são duas
-            // meias-palavras. A `0x8fa04` faz essa chamada e em seguida soma as duas
-            // (`0x8fa20`), divide por elas em `0x10a18` e multiplica de volta — é o passo de
-            // uma lista, e a conta `(altura - 20) / passo * passo + 10` diz quantos itens
-            // cabem. Tratando tudo como "pendurar filho", nada era escrito e a soma dava zero:
-            // divisão por zero, que o runtime do jogo imprime por semihosting como
+            // With `r2 == 4` it is a **getter**: `slot5(this, &output, 4)`, and the output is two
+            // half-words. `0x8fa04` makes that call and then adds the two (`0x8fa20`), divides by
+            // them at `0x10a18` and multiplies back — it is the step of a list, and the calculation
+            // `(height - 20) / step * step + 10` says how many items fit. Treating everything as
+            // "hang a child", nothing was written and the sum was zero: a division by zero, which
+            // the game's runtime prints through semihosting as
             // `Arithmetic exception: Divide By Zero`.
             //
-            // O passo que devolvemos é a altura de linha da fonte, que é o que temos. É
-            // hipótese, e está anotada: um passo errado erra o layout, um passo zero derruba.
+            // The step we return is the font's line height, which is what we have. It is an
+            // assumption, and it is recorded: a wrong step gets the layout wrong, a zero step
+            // crashes.
             "AdicionarFilho" if self.cpu.read_reg(Reg::R2) == 4 => {
-                /// Duas meias-palavras, somadas pelo chamador.
-                const PASSO: i16 = FONT_SIZE as i16;
+                /// Two half-words, added up by the caller.
+                const STEP: i16 = FONT_SIZE as i16;
 
-                let saida = self.cpu.read_reg(Reg::R1);
-                if saida != 0 {
-                    self.cpu.write_mem(saida, &PASSO.to_le_bytes())?;
-                    self.cpu.write_mem(saida + 2, &0i16.to_le_bytes())?;
+                let output = self.cpu.read_reg(Reg::R1);
+                if output != 0 {
+                    self.cpu.write_mem(output, &STEP.to_le_bytes())?;
+                    self.cpu.write_mem(output + 2, &0i16.to_le_bytes())?;
                 }
                 self.assumptions.insert(
-                    "o passo de lista que o slot 5 pediu foi respondido com a altura da fonte",
+                    "the list step that slot 5 asked for was answered with the font height",
                 );
                 SUCCESS
             }
@@ -1265,32 +1282,32 @@ impl<C: CpuBackend> Machine<C> {
                 if self
                     .widgets
                     .get(&this)
-                    .is_some_and(|w| matches!(w.classe, WIDGET_DE_TEXTO | 0x01028e19))
+                    .is_some_and(|w| matches!(w.class_id, WIDGET_TEXT | 0x01028e19))
                     && !self.widgets.contains_key(&self.cpu.read_reg(Reg::R1))
                     && !self.images.contains_key(&self.cpu.read_reg(Reg::R1)) =>
             {
-                // IWidget::GetExtent(&{cx, cy}) nas interfaces de texto/imagem.
-                // A barra de status usa cx do rótulo para posicionar os créditos:
-                // em 0x857ec lê cx e em 0x85828 soma 375. Deixar a saída zerada
-                // colocava "10" em cima de "Meus Z-Credits".
+                // IWidget::GetExtent(&{cx, cy}) on the text/image interfaces.
+                // The status bar uses the label's cx to position the credits:
+                // at 0x857ec it reads cx and at 0x85828 it adds 375. Leaving the output zeroed
+                // put "10" on top of "Meus Z-Credits".
                 let widget = &self.widgets[&this];
-                let size = if widget.classe == WIDGET_DE_TEXTO {
+                let size = if widget.class_id == WIDGET_TEXT {
                     self.font
                         .as_ref()
                         .map(|font| {
                             (
-                                font.width(&widget.texto, FONT_SIZE),
+                                font.width(&widget.text, FONT_SIZE),
                                 font.ascent(FONT_SIZE) + font.descent(FONT_SIZE),
                             )
                         })
                         .unwrap_or((0, 0))
                 } else {
                     widget
-                        .anexados
+                        .attached
                         .iter()
                         .find_map(|id| self.images.get(id))
                         .map(|image| (image.width, image.height))
-                        .unwrap_or(widget.tamanho)
+                        .unwrap_or(widget.size)
                 };
                 let out = self.cpu.read_reg(Reg::R1);
                 if out == 0 {
@@ -1301,281 +1318,283 @@ impl<C: CpuBackend> Machine<C> {
                 SUCCESS
             }
             "AdicionarFilho" => {
-                let filho = self.cpu.read_reg(Reg::R1);
-                self.anota_posicao(filho)?;
-                let ja_anexado = self
+                let child = self.cpu.read_reg(Reg::R1);
+                self.record_position(child)?;
+                let already_attached = self
                     .widgets
                     .get(&this)
-                    .is_some_and(|widget| widget.anexados.contains(&filho));
+                    .is_some_and(|widget| widget.attached.contains(&child));
                 if let Some(widget) = self.widgets.get_mut(&this) {
-                    if filho != this && !ja_anexado {
-                        widget.anexados.push(filho);
+                    if child != this && !already_attached {
+                        widget.attached.push(child);
                     }
                 }
-                if let Some(filho) = self.widgets.get_mut(&filho) {
-                    filho.pai = this;
+                if let Some(child) = self.widgets.get_mut(&child) {
+                    child.parent = this;
                 }
-                // Quem guarda, segura. É a convenção do BREW inteiro, e aqui ela não é
-                // teoria: logo depois de pendurar a imagem no widget, a Z-Wheel solta a
-                // referência dela. Sem esta contagem, o objeto morria com a imagem
-                // decodificada dentro — e o que sobrava para pintar era nada.
-                if !ja_anexado && filho != this {
-                    self.objects.add_ref(filho);
+                // Whoever stores, holds. It is the convention of all of BREW, and here it is not
+                // theory: right after hanging the image on the widget, the Z-Wheel releases its
+                // reference. Without this count, the object died with the decoded image inside —
+                // and what was left to paint was nothing.
+                if !already_attached && child != this {
+                    self.objects.add_ref(child);
                 }
                 SUCCESS
             }
-            // `slot7(this, &{largura, altura})`, visto em `0x11c90` com `640 × 480` — a tela
-            // inteira. O jogo ignora o retorno: a instrução seguinte já sobrescreve `r0`.
+            // `slot7(this, &{width, height})`, seen at `0x11c90` with `640 × 480` — the whole
+            // screen. The game ignores the return: the next instruction already overwrites `r0`.
             "DefinirTamanho" => {
-                // O ponteiro nem sempre é ponteiro. Quando a árvore de widgets fica grande, o
-                // jogo chama este slot com `r1` apontando para fora do mapa, e ler dali derruba
-                // o núcleo ARM — apareceu como `READ_UNMAPPED` no relatório da interface.
-                // Ignorar o que não dá para ler é o certo: um tamanho que não veio é um tamanho
-                // que não muda.
-                let par = self.cpu.read_reg(Reg::R1);
-                let tamanho = match (self.cpu.read_u32(par), self.cpu.read_u32(par + 4)) {
-                    (Ok(largura), Ok(altura)) => (largura, altura),
+                // The pointer is not always a pointer. When the widget tree gets large, the game
+                // calls this slot with `r1` pointing outside the map, and reading from there brings
+                // down the ARM core — it showed up as `READ_UNMAPPED` in the interface report.
+                // Ignoring what cannot be read is right: a size that did not come is a size that
+                // does not change.
+                let pair = self.cpu.read_reg(Reg::R1);
+                let new_size = match (self.cpu.read_u32(pair), self.cpu.read_u32(pair + 4)) {
+                    (Ok(width), Ok(height)) => (width, height),
                     _ => return Ok(Some(EBADPARM)),
                 };
                 if let Some(widget) = self.widgets.get_mut(&this) {
-                    widget.tamanho = tamanho;
+                    widget.size = new_size;
                 }
                 SUCCESS
             }
             "Acessador" => {
-                let (seletor, id, terceiro) = (
+                let (selector, id, third) = (
                     self.cpu.read_reg(Reg::R1),
                     self.cpu.read_reg(Reg::R2),
                     self.cpu.read_reg(Reg::R3),
                 );
-                // **O que cada classe de widget recebe, contado por seletor.** É o instrumento
-                // para responder "que comportamento esta classe proprietária espera?" sem sonda e
-                // sem desmonte: a contagem por par `(classe, seletor)` diz o que o jogo usa de
-                // fato, e não o que a família inteira poderia usar. A `0x01028e19` é o caso que
-                // motivou: ela entra na família dos widgets por vizinhança de numeração, e o que
-                // se sabe dela é o que se mediu.
+                // **What each widget class receives, counted per selector.** It is the instrument
+                // to answer "what behavior does this proprietary class expect?" without a probe and
+                // without disassembly: the count per `(class_id, selector)` pair says what the game
+                // actually uses, and not what the whole family could use. `0x01028e19` is the case
+                // that motivated it: it joins the widget family by numbering proximity, and what is
+                // known about it is what was measured.
                 //
-                // **Desligado por padrão**, e a razão é medida: o censo entra no relatório, o
-                // relatório entra na linha de base, e uma seção nova faria os **62 jogos** da
-                // varredura acusarem diferença de uma vez. Ele se liga com `ZEEBX_ROM_SELETORES`,
-                // como o perfil de custo.
-                if self.censo_de_widgets {
-                    let classe = self.widgets.get(&this).map_or(0, |widget| widget.classe);
-                    let vezes = {
-                        let contagem = self.seletores_por_classe.entry((classe, seletor)).or_insert(0);
-                        *contagem += 1;
-                        *contagem
+                // **Off by default**, and the reason is measured: the census goes into the report,
+                // the report goes into the baseline, and a new section would make the scan's
+                // **62 games** flag a difference all at once. It is turned on with
+                // `ZEEBX_ROM_SELECTORS`, like the cost profile.
+                if self.widget_census {
+                    let class_id = self.widgets.get(&this).map_or(0, |widget| widget.class_id);
+                    let times = {
+                        let count = self.selectors_per_class.entry((class_id, selector)).or_insert(0);
+                        *count += 1;
+                        *count
                     };
-                    // **A captura é o relatório de quem não tem relatório.** A varredura imprime o
-                    // censo no relatório dela; o core não tem onde imprimir, e é na captura de
-                    // serial que ele já escreve tudo o mais. Sem esta linha, o censo ligado no core
-                    // ficaria só na memória do processo.
+                    // **The capture is the report of whoever has no report.** The scan prints the
+                    // census in its report; the core has nowhere to print it, and the serial
+                    // capture is where it already writes everything else. Without this line, the
+                    // census turned on in the core would stay only in the process memory.
                     if self.serial.is_some() {
-                        self.registra_serial(format!(
-                            "<acessor classe {classe:#010x} seletor {seletor:#x} ({vezes}x)>"
+                        self.log_serial(format!(
+                            "<accessor class {class_id:#010x} selector {selector:#x} ({times}x)>"
                         ));
                     }
                 }
-                match seletor {
-                    // Algumas classes usam o próprio endereço de um filho como seletor para
-                    // consultar/ligar o estado visual. É uma operação sem valor de retorno;
-                    // reconhecer o endereço mantém a árvore avançando e evita tratá-lo como
-                    // um código de propriedade desconhecido.
-                    _ if self.widgets.contains_key(&seletor) => OK,
-                    // Eventos oferecidos primeiro ao root pelo applet (0x7b418).
-                    // Um retorno verdadeiro interrompe o despacho em 0x7b420, antes dos
-                    // handlers do próprio applet que preenchem as saídas de fonte/recurso.
-                    // Sem handler aqui, devolver falso permite que o applet os resolva.
+                match selector {
+                    // Some classes use a child's own address as the selector to query/toggle the
+                    // visual state. It is an operation with no return value; recognizing the
+                    // address keeps the tree moving and avoids treating it as an unknown property
+                    // code.
+                    _ if self.widgets.contains_key(&selector) => OK,
+                    // Events offered first to the root by the applet (0x7b418).
+                    // A true return interrupts the dispatch at 0x7b420, before the applet's own
+                    // handlers that fill in the font/resource outputs.
+                    // With no handler here, returning false lets the applet resolve them.
                     0x101 | 0x7b0a | 0x7b0e | 0x7b0f => FALSE,
                     LE => {
-                        // **Nem todo `0x800` pede um filho.** O jogo lê e grava pelo mesmo
-                        // seletor coisas de tipos diferentes, e o número do item é que diz
-                        // qual: os do intervalo `0x5000` guardam **objetos** — a `0x88338` lê
-                        // o `0x5000` e o `0x5002` e usa os dois como widgets —, e os de baixo
-                        // são **números**.
+                        // **Not every `0x800` asks for a child.** The game reads and writes things
+                        // of different types through the same selector, and the item number is what
+                        // says which: those in the `0x5000` range store **objects** — `0x88338`
+                        // reads `0x5000` and `0x5002` and uses both as widgets —, and the ones below
+                        // are **numbers**.
                         //
-                        // Isto não é dedução: o retorno de chamada da imagem lê o item `0x347`,
-                        // soma dois e grava de volta. Enquanto a leitura criava um filho para
-                        // qualquer item, o que ele somava dois era um **ponteiro nosso**, e o
-                        // que ele gravava em `[formulário+0x24]` pelo item `0x414` era outro.
-                        // Ponteiro onde o jogo espera número é o começo de uma sequência de
-                        // sintomas que não se parecem com a causa.
-                        // Os itens do widget são **tipados**, e o corte medido é `0x5000`: de
-                        // lá para cima o item guarda objeto, abaixo guarda número.
+                        // This is not deduction: the image callback reads item `0x347`, adds two
+                        // and writes it back. While the read created a child for any item, what it
+                        // added two to was **one of our pointers**, and what it wrote to
+                        // `[form+0x24]` through item `0x414` was another one. A pointer where the
+                        // game expects a number is the start of a sequence of symptoms that do not
+                        // look like the cause.
+                        // The widget items are **typed**, and the measured cut is `0x5000`: from
+                        // there up the item stores an object, below it stores a number.
                         //
-                        // Cheguei a pôr o `0x414` como exceção, achando que ele guardava um
-                        // widget: o retorno de chamada da imagem o lê para `[formulário+0x24]`,
-                        // e a `0x11750` faz `[r0+0x24]->slot6(1)`. Eram campos **diferentes** —
-                        // a `0x11750` recebe o **aplicativo**, não o formulário, e o objeto que
-                        // ela solta é outro. O que o `0x414` guarda é número mesmo, e a
-                        // `0x11668` prova: ela subtrai um e compara.
+                        // I did put `0x414` in as an exception, thinking it stored a widget: the
+                        // image callback reads it into `[form+0x24]`, and `0x11750` does
+                        // `[r0+0x24]->slot6(1)`. They were **different** fields — `0x11750`
+                        // receives the **application**, not the form, and the object it releases
+                        // is another one. What `0x414` stores really is a number, and `0x11668`
+                        // proves it: it subtracts one and compares.
                         //
-                        // A exceção custou caro enquanto durou. Com um ponteiro ali, a
-                        // comparação da `0x11674` nunca era verdadeira e a abertura girava para
-                        // sempre: doze milhões de idas ao acessador e seis milhões de
-                        // temporizadores numa execução só.
-                        // No widget de HTML, a `0x161` também é objeto: a tela de ajuda
-                        // (`0x31c34`) lê o item e faz nele um `QueryInterface(0x102d691)` sem
-                        // conferir o zero. Com um número ali a montagem abortava calada, e o que
-                        // já estava criado ficava solto na tela, sem formulário.
-                        let objeto = id >= PRIMEIRO_OBJETO
-                            || (id == PROP_HTML_OBJETO
-                                && self.widgets.get(&this).is_some_and(|w| w.classe == WIDGET_HTML));
-                        let valor = match objeto {
-                            true => self.filho_do_widget(this, id)?,
+                        // The exception cost dearly while it lasted. With a pointer there, the
+                        // comparison at `0x11674` was never true and the intro spun forever:
+                        // twelve million trips to the accessor and six million timers in a single
+                        // run.
+                        // On the HTML widget, `0x161` is an object too: the help screen
+                        // (`0x31c34`) reads the item and does a `QueryInterface(0x102d691)` on it
+                        // without checking for zero. With a number there the setup aborted
+                        // silently, and what was already created was left loose on screen, with no
+                        // form.
+                        let object = id >= FIRST_OBJECT
+                            || (id == PROP_HTML_OBJECT
+                                && self.widgets.get(&this).is_some_and(|w| w.class_id == WIDGET_HTML));
+                        let value = match object {
+                            true => self.widget_child(this, id)?,
                             false => self
                                 .widgets
                                 .get(&this)
-                                .and_then(|widget| widget.propriedades.get(&id).copied())
+                                .and_then(|widget| widget.properties.get(&id).copied())
                                 .unwrap_or(0),
                         };
-                        if terceiro != 0 {
-                            self.cpu.write_u32(terceiro, valor)?;
+                        if third != 0 {
+                            self.cpu.write_u32(third, value)?;
                         }
                         OK
                     }
-                    GRAVA => {
-                        // As propriedades vão para a serial, que é onde a instrumentação mora.
+                    SET_PROP => {
+                        // The properties go to the serial, which is where the instrumentation lives.
                         if self.serial.is_some() {
-                            self.registra_serial(format!(
-                                "<prop {id:#x}={terceiro:#x} em {this:#x}>"
+                            self.log_serial(format!(
+                                "<prop {id:#x}={third:#x} on {this:#x}>"
                             ));
                         }
-                        // **Gravar um objeto num item da faixa `0x5000` é pendurá-lo.** É por
-                        // aqui que o formulário recebe o que ele mostra: a `0x8ed80` grava
-                        // `0x5000` no formulário do z-pad com o container da barra de status e
-                        // da foto do controle, e a abertura faz o mesmo com o dela.
+                        // **Writing an object to an item in the `0x5000` range is hanging it.** It
+                        // is through here that the form receives what it shows: `0x8ed80` writes
+                        // `0x5000` on the z-pad form with the container of the status bar and of
+                        // the controller photo, and the intro does the same with its own.
                         //
-                        // Sem tratar isso como ligação, a árvore ficava partida em três — os
-                        // formulários numa, o que se desenha noutra — e nenhuma regra sobre "a
-                        // tela atual" tinha como acertar, porque a tecla e o desenho moravam em
-                        // árvores diferentes. Guardávamos o número e perdíamos o parentesco.
-                        if id >= PRIMEIRO_OBJETO && self.widgets.contains_key(&terceiro) {
+                        // Without treating this as a link, the tree stayed split in three — the
+                        // forms in one, what gets drawn in another — and no rule about "the current
+                        // screen" could get it right, because the key and the drawing lived in
+                        // different trees. We kept the number and lost the parentage.
+                        if id >= FIRST_OBJECT && self.widgets.contains_key(&third) {
                             if let Some(widget) = self.widgets.get_mut(&this) {
-                                widget.filhos.insert(id, terceiro);
+                                widget.children.insert(id, third);
                             }
-                            if let Some(filho) = self.widgets.get_mut(&terceiro) {
-                                filho.pai = this;
+                            if let Some(child) = self.widgets.get_mut(&third) {
+                                child.parent = this;
                             }
                         }
                         if let Some(widget) = self.widgets.get_mut(&this) {
-                            widget.propriedades.insert(id, terceiro);
+                            widget.properties.insert(id, third);
                         }
                         OK
                     }
-                    // **`0x711` define o filho em foco de um container, e `0x713` o lê.**
+                    // **`0x711` sets the focused child of a container, and `0x713` reads it.**
                     //
-                    // O par saiu do uso, não de header. A Z-Wheel grava pelo `0x711` um widget
-                    // (`0x30000d90`) no container do roller, e é **nesse mesmo container** que ela
-                    // pergunta pelo `0x713` quando o jogador confirma — por um invólucro em
-                    // `0x3fe5c` que passa `&saída`. Em `0x4eb5c` ela compara a resposta com o
-                    // widget do item que acha selecionado (`[[r4+0x24]+0xb0]`) e só executa a
-                    // ação se os dois baterem. Enquanto o `0x713` era recusado, confirmar não
-                    // fazia nada — nem "Jogar", nem "Ajuda".
+                    // The pair came from usage, not from a header. Through `0x711` the Z-Wheel
+                    // writes a widget (`0x30000d90`) on the roller's container, and it is **on that
+                    // same container** that it asks for `0x713` when the player confirms — through
+                    // a wrapper at `0x3fe5c` that passes `&output`. At `0x4eb5c` it compares the
+                    // answer with the widget of the item it thinks is selected (`[[r4+0x24]+0xb0]`)
+                    // and only runs the action if the two match. While `0x713` was refused,
+                    // confirming did nothing — neither "Jogar" nor "Ajuda".
                     //
-                    // O `0x711` é o `EVT_WDG_MOVEFOCUS`, e o argumento pode não ser um widget: os
-                    // valores de `1` a `4` são `WIDGET_FOCUS_FIRST`, `LAST`, `NEXT` e `PREV`, e o
-                    // `0` é `NONE`. É com o `NEXT` e o `PREV` que a lista de jogos passa o foco da
-                    // barra de abas para as capas (`0x4025c`, chamado com `3`); guardar o `3` como
-                    // se fosse o filho em foco deixava o foco em lugar nenhum e nada se destacava.
-                    FOCO_DEFINE if !self.widgets.contains_key(&terceiro) && terceiro <= FOCO_ANTERIOR => {
-                        u32::from(self.move_foco(this, terceiro)?)
+                    // `0x711` is `EVT_WDG_MOVEFOCUS`, and the argument may not be a widget: the
+                    // values `1` to `4` are `WIDGET_FOCUS_FIRST`, `LAST`, `NEXT` and `PREV`, and
+                    // `0` is `NONE`. It is with `NEXT` and `PREV` that the game list moves the
+                    // focus from the tab bar to the covers (`0x4025c`, called with `3`); storing the
+                    // `3` as if it were the focused child left the focus nowhere and nothing was
+                    // highlighted.
+                    FOCUS_SET if !self.widgets.contains_key(&third) && third <= FOCUS_PREVIOUS => {
+                        u32::from(self.move_focus(this, third)?)
                     }
-                    // Com um widget de verdade, quem sai e quem entra também são avisados. É assim
-                    // que o menu principal dá foco à roda (`MOVEFOCUS(roda)` aos 7 s), e é o aviso
-                    // que liga a moldura azul do item escolhido.
-                    FOCO_DEFINE => {
-                        let anterior = self
+                    // With a real widget, whoever leaves and whoever enters are also notified. That
+                    // is how the main menu gives focus to the wheel (`MOVEFOCUS(run)` at 7 s), and it
+                    // is the notice that turns on the blue frame of the chosen item.
+                    FOCUS_SET => {
+                        let previous = self
                             .widgets
                             .get(&this)
-                            .and_then(|widget| widget.propriedades.get(&FOCO_DEFINE).copied())
+                            .and_then(|widget| widget.properties.get(&FOCUS_SET).copied())
                             .unwrap_or(0);
                         if let Some(widget) = self.widgets.get_mut(&this) {
-                            widget.propriedades.insert(FOCO_DEFINE, terceiro);
+                            widget.properties.insert(FOCUS_SET, third);
                         }
-                        if anterior != terceiro {
-                            if self.widgets.contains_key(&anterior) {
-                                self.avisa_widget(anterior, MARCA_FOCO, 0)?;
+                        if previous != third {
+                            if self.widgets.contains_key(&previous) {
+                                self.notify_widget(previous, MARK_FOCUS, 0)?;
                             }
-                            self.avisa_widget(terceiro, MARCA_FOCO, 1)?;
+                            self.notify_widget(third, MARK_FOCUS, 1)?;
                         }
                         OK
                     }
-                    // `0x702` responde **um byte** — o chamador lê com `ldrb` — e os dois usos o
-                    // tratam como "pode": em `0x394b4` a ação do item só roda se ele for
-                    // verdadeiro, e em `0x399a0` o widget que entra em foco só recebe o `0x700`
-                    // (`acessador(widget, 0x700, 1, 0)`) se ele for verdadeiro. A leitura é
-                    // "habilitado para foco", e todo widget nosso está habilitado; o `0x700`
-                    // fica guardado para quando algo o ler.
-                    HABILITADO => {
-                        if terceiro != 0 {
-                            self.cpu.write_mem(terceiro, &[1])?;
+                    // `0x702` answers **one byte** — the caller reads it with `ldrb` — and both uses
+                    // treat it as "can": at `0x394b4` the item's action only runs if it is true,
+                    // and at `0x399a0` the widget entering focus only receives `0x700`
+                    // (`accessor(widget, 0x700, 1, 0)`) if it is true. The reading is "enabled for
+                    // focus", and every widget of ours is enabled; `0x700` is stored for when
+                    // something reads it.
+                    ENABLED => {
+                        if third != 0 {
+                            self.cpu.write_mem(third, &[1])?;
                         }
                         self.assumptions.insert(
-                            "o seletor 0x702 do widget respondeu habilitado — a leitura é pelo uso, sem header",
+                            "widget selector 0x702 answered enabled — the reading comes from usage, no header",
                         );
                         OK
                     }
-                    // Marcar foco num widget é o que dá foco a ele **dentro do pai**. A grade de
-                    // jogos da Z-Wheel nunca grava o `0x711` no container dela: ao escolher um
-                    // item, ela chama `acessador(item, 0x700, 1, 0)` no widget do item (`0x399d0`)
-                    // e depois, ao confirmar, pergunta pelo `0x713` ao **pai** desse item. Sem
-                    // levar o foco ao pai, a pergunta voltava nula e a confirmação não abria o
-                    // jogo — medido: o item `0x30001250` tem pai `0x30000f10`, e é no `0x30000f10`
-                    // que o `0x713` é feito.
+                    // Marking focus on a widget is what gives it focus **inside the parent**. The
+                    // Z-Wheel game grid never writes `0x711` on its container: when choosing an
+                    // item, it calls `accessor(item, 0x700, 1, 0)` on the item's widget (`0x399d0`)
+                    // and then, on confirming, asks the item's **parent** for `0x713`. Without
+                    // carrying the focus to the parent, the question came back null and confirming
+                    // did not open the game — measured: item `0x30001250` has parent `0x30000f10`,
+                    // and it is on `0x30000f10` that `0x713` is done.
                     //
-                    // **O aviso passa primeiro pelo tratador que o jogo registrou**, como todo
-                    // `HandleEvent` de widget no BREW. É ele que liga o estado de foco do widget
-                    // do jogo: o roller da tela inicial só desenha a moldura azul do item escolhido
-                    // quando o tratador dele (`0x6089c`) recebe o `EVT_WDG_SETFOCUS`. Anotar o
-                    // foco sem avisá-lo deixava a roda sem moldura nenhuma.
-                    MARCA_FOCO => {
-                        self.avisa_widget(this, MARCA_FOCO, id)?;
-                        let pai = self.widgets.get(&this).map_or(0, |widget| widget.pai);
+                    // **The notice goes first through the handler the game registered**, like
+                    // every widget `HandleEvent` in BREW. It is what turns on the focus state of the
+                    // game's widget: the home screen roller only draws the blue frame of the chosen
+                    // item when its handler (`0x6089c`) receives `EVT_WDG_SETFOCUS`. Recording the
+                    // focus without notifying it left the wheel with no frame at all.
+                    MARK_FOCUS => {
+                        self.notify_widget(this, MARK_FOCUS, id)?;
+                        let parent = self.widgets.get(&this).map_or(0, |widget| widget.parent);
                         if let Some(widget) = self.widgets.get_mut(&this) {
-                            widget.propriedades.insert(MARCA_FOCO, id);
+                            widget.properties.insert(MARK_FOCUS, id);
                         }
-                        if pai != 0 && pai != this {
-                            if let Some(container) = self.widgets.get_mut(&pai) {
+                        if parent != 0 && parent != this {
+                            if let Some(container) = self.widgets.get_mut(&parent) {
                                 match id {
                                     0 => {
-                                        if container.propriedades.get(&FOCO_DEFINE) == Some(&this) {
-                                            container.propriedades.remove(&FOCO_DEFINE);
+                                        if container.properties.get(&FOCUS_SET) == Some(&this) {
+                                            container.properties.remove(&FOCUS_SET);
                                         }
                                     }
                                     _ => {
-                                        container.propriedades.insert(FOCO_DEFINE, this);
+                                        container.properties.insert(FOCUS_SET, this);
                                     }
                                 }
                             }
                         }
                         OK
                     }
-                    // Quem lê o foco **solta o que recebeu** — o tratador da grade faz o
-                    // `Release` em `0x39504` —, então a resposta leva uma referência nossa, como
-                    // todo getter de interface do BREW. Sem ela, cada consulta tirava uma
-                    // contagem que ninguém tinha posto. E só sai objeto vivo: um endereço que já
-                    // voltou para a lista de livres é pior que nulo.
-                    FOCO_LE => {
-                        let foco = self
+                    // Whoever reads the focus **releases what it received** — the grid handler does
+                    // the `Release` at `0x39504` —, so the answer carries a reference of ours, like
+                    // every BREW interface getter. Without it, each query took away a count nobody
+                    // had put there. And only a live object comes out: an address that has already
+                    // gone back to the free list is worse than null.
+                    FOCUS_GET => {
+                        let focus = self
                             .widgets
                             .get(&this)
-                            .and_then(|widget| widget.propriedades.get(&FOCO_DEFINE).copied())
-                            .filter(|&foco| self.widgets.contains_key(&foco))
+                            .and_then(|widget| widget.properties.get(&FOCUS_SET).copied())
+                            .filter(|&focus| self.widgets.contains_key(&focus))
                             .unwrap_or(0);
-                        if foco != 0 {
-                            self.objects.add_ref(foco);
+                        if focus != 0 {
+                            self.objects.add_ref(focus);
                         }
-                        if terceiro != 0 {
-                            self.cpu.write_u32(terceiro, foco)?;
+                        if third != 0 {
+                            self.cpu.write_u32(third, focus)?;
                         }
                         OK
                     }
-                    outro => {
-                        let quem = self.cpu.read_reg(Reg::Lr);
-                        let classe = self.widgets.get(&this).map_or(0, |w| w.classe);
+                    other => {
+                        let who = self.cpu.read_reg(Reg::Lr);
+                        let class_id = self.widgets.get(&this).map_or(0, |w| w.class_id);
                         self.missing_apis.insert(format!(
-                            "IWidget::Acessador seletor {outro:#x} (classe {classe:#x}, de {quem:#010x}, {id:#x}, {terceiro:#x})"
+                            "IWidget::Acessador selector {other:#x} (class {class_id:#x}, from {who:#010x}, {id:#x}, {third:#x})"
                         ));
                         0
                     }
@@ -1586,22 +1605,22 @@ impl<C: CpuBackend> Machine<C> {
         Ok(Some(result))
     }
 
-    /// Atende a fonte TrueType. Ver [`Interface::Typeface`].
+    /// Serves the TrueType font. See [`Interface::Typeface`].
     ///
-    /// O único método com corpo é o slot 4, que a `0x7bfc8` chama assim:
-    /// `slot4(this, a, b, c, &saída)`, com a saída no **primeiro argumento de pilha** — os
-    /// quatro registradores já estão ocupados. Zero é sucesso, e o que sai é o objeto de fonte,
-    /// que o jogo entrega ao slot 9 de um contêiner e depois usa.
+    /// The only method with a body is slot 4, which `0x7bfc8` calls like this:
+    /// `slot4(this, a, b, c, &output)`, with the output in the **first stack argument** — the
+    /// four registers are already taken. Zero is success, and what comes out is the font object,
+    /// which the game hands to slot 9 of a container and then uses.
     ///
-    /// Damos um widget. Não é palpite de conveniência: na extensão de interface do console tudo
-    /// que entra numa árvore de tela é widget, e o que o jogo faz com o objeto em seguida — um
-    /// `AddRef` e um slot 6 — é vocabulário de widget. Se ele pedir algo que um widget não tem,
-    /// o slot aparece no relatório, que é como o resto disto foi descoberto.
+    /// We give it a widget. It is not a convenience guess: in the console's interface extension
+    /// everything that goes into a screen tree is a widget, and what the game does with the object
+    /// next — an `AddRef` and a slot 6 — is widget vocabulary. If it asks for something a widget
+    /// does not have, the slot shows up in the report, which is how the rest of this was discovered.
     pub(super) fn typeface_call(&mut self, slot: u32) -> Result<Option<u32>, CpuError> {
         let Some(name) = Interface::Typeface.method(slot) else {
             return Ok(None);
         };
-        if aee::e_marcador(name) {
+        if aee::is_placeholder(name) {
             return Ok(None);
         }
         let this = self.cpu.read_reg(Reg::R0);
@@ -1609,20 +1628,20 @@ impl<C: CpuBackend> Machine<C> {
             "AddRef" => self.objects.add_ref(this),
             "Release" => self.objects.release(this),
             "CriarFonte" => {
-                let saida = self.stack_arg(0)?;
-                let fonte = self.new_object(Interface::Widget)?;
-                if fonte == 0 {
+                let output = self.stack_arg(0)?;
+                let font = self.new_object(Interface::Widget)?;
+                if font == 0 {
                     return Ok(Some(ENOMEMORY));
                 }
                 self.widgets.insert(
-                    fonte,
+                    font,
                     Widget {
-                        visivel: true,
+                        visible: true,
                         ..Widget::default()
                     },
                 );
-                if saida != 0 {
-                    self.cpu.write_u32(saida, fonte)?;
+                if output != 0 {
+                    self.cpu.write_u32(output, font)?;
                 }
                 SUCCESS
             }
@@ -1631,184 +1650,185 @@ impl<C: CpuBackend> Machine<C> {
         Ok(Some(result))
     }
 
-    /// De onde saiu a fonte que está desenhando o texto, se houver uma.
+    /// Where the font drawing the text came from, if there is one.
     pub fn font_source(&self) -> Option<&str> {
         self.font.as_ref().map(|f| f.source.as_str())
     }
 
     #[cfg(debug_assertions)]
-    pub fn retrato_widgets(&self) -> (usize, usize, usize) {
+    pub fn widgets_snapshot(&self) -> (usize, usize, usize) {
         let total = self.widgets.len();
-        let maior = self
+        let largest = self
             .widgets
             .values()
-            .map(|w| w.anexados.len())
+            .map(|w| w.attached.len())
             .max()
             .unwrap_or(0);
-        let repetidos = self
+        let duplicates = self
             .widgets
             .values()
             .map(|w| {
-                let unicos: std::collections::HashSet<_> = w.anexados.iter().collect();
-                w.anexados.len() - unicos.len()
+                let unique: std::collections::HashSet<_> = w.attached.iter().collect();
+                w.attached.len() - unique.len()
             })
             .sum();
-        (total, maior, repetidos)
+        (total, largest, duplicates)
     }
 }
 
 impl<C: CpuBackend> Machine<C> {
-    /// O `EVT_WDG_MOVEFOCUS` com um dos valores especiais: `0` tira o foco, `1` e `2` levam às
-    /// pontas, `3` e `4` ao próximo e ao anterior que aceite foco. Devolve se o foco mudou.
+    /// `EVT_WDG_MOVEFOCUS` with one of the special values: `0` removes the focus, `1` and `2` go
+    /// to the ends, `3` and `4` to the next and the previous that accepts focus. Returns whether the
+    /// focus changed.
     ///
-    /// Quem sai recebe `EVT_WDG_SETFOCUS` com falso, quem entra com verdadeiro — é esse aviso
-    /// que faz o widget do jogo se desenhar como selecionado. Passando da ponta o foco fica onde
-    /// está e a resposta é falsa, para a tecla seguir adiante.
-    fn move_foco(&mut self, container: u32, pedido: u32) -> Result<bool, CpuError> {
-        const MOVE_FOCO: u32 = 0x711;
-        const DEFINE_FOCO: u32 = 0x700;
+    /// Whoever leaves receives `EVT_WDG_SETFOCUS` with false, whoever enters with true — that
+    /// notice is what makes the game's widget draw itself as selected. Going past the end the focus
+    /// stays where it is and the answer is false, so the key goes on.
+    fn move_focus(&mut self, container: u32, request: u32) -> Result<bool, CpuError> {
+        const MOVE_FOCUS: u32 = 0x711;
+        const SET_FOCUS: u32 = 0x700;
         let Some(widget) = self.widgets.get(&container) else {
             return Ok(false);
         };
-        let filhos = widget.anexados.clone();
-        let atual = widget
-            .propriedades
-            .get(&MOVE_FOCO)
+        let children = widget.attached.clone();
+        let current = widget
+            .properties
+            .get(&MOVE_FOCUS)
             .copied()
-            .filter(|foco| filhos.contains(foco))
+            .filter(|focus| children.contains(focus))
             .unwrap_or(0);
-        let ordem: Vec<u32> = match pedido {
+        let order: Vec<u32> = match request {
             0 => Vec::new(),
-            1 => filhos.clone(),
-            2 => filhos.iter().rev().copied().collect(),
+            1 => children.clone(),
+            2 => children.iter().rev().copied().collect(),
             _ => {
-                let posicao = filhos.iter().position(|&f| f == atual);
-                match (pedido, posicao) {
-                    (3, Some(i)) => filhos[i + 1..].to_vec(),
-                    (3, None) => filhos.clone(),
-                    (_, Some(i)) => filhos[..i].iter().rev().copied().collect(),
-                    (_, None) => filhos.iter().rev().copied().collect(),
+                let position = children.iter().position(|&f| f == current);
+                match (request, position) {
+                    (3, Some(i)) => children[i + 1..].to_vec(),
+                    (3, None) => children.clone(),
+                    (_, Some(i)) => children[..i].iter().rev().copied().collect(),
+                    (_, None) => children.iter().rev().copied().collect(),
                 }
             }
         };
-        let mut novo = 0;
-        for candidato in ordem {
-            if self.aceita_foco(candidato)? {
-                novo = candidato;
+        let mut create = 0;
+        for candidate in order {
+            if self.accepts_focus(candidate)? {
+                create = candidate;
                 break;
             }
         }
-        if pedido != 0 && novo == 0 {
+        if request != 0 && create == 0 {
             return Ok(false);
         }
-        if atual != 0 && atual != novo {
-            self.avisa_widget(atual, DEFINE_FOCO, 0)?;
+        if current != 0 && current != create {
+            self.notify_widget(current, SET_FOCUS, 0)?;
         }
         if let Some(widget) = self.widgets.get_mut(&container) {
-            match novo {
-                0 => widget.propriedades.remove(&MOVE_FOCO),
-                novo => widget.propriedades.insert(MOVE_FOCO, novo),
+            match create {
+                0 => widget.properties.remove(&MOVE_FOCUS),
+                create => widget.properties.insert(MOVE_FOCUS, create),
             };
         }
-        if novo != 0 && novo != atual {
-            self.avisa_widget(novo, DEFINE_FOCO, 1)?;
+        if create != 0 && create != current {
+            self.notify_widget(create, SET_FOCUS, 1)?;
         }
         Ok(true)
     }
 
-    /// Se o filho aceita foco, perguntado ao tratador dele com o `EVT_WDG_CANTAKEFOCUS`.
+    /// Whether the child accepts focus, asked of its handler with `EVT_WDG_CANTAKEFOCUS`.
     ///
-    /// Só entra quem se desenha e tem tratador do jogo: o fundo da lista de jogos é um
-    /// container sem desenho próprio, e o nosso `0x702` responde "pode" a todo mundo — deixá-lo
-    /// candidato poria o foco nele ao voltar das capas.
-    fn aceita_foco(&mut self, widget: u32) -> Result<bool, CpuError> {
-        const PODE_TER_FOCO: u32 = 0x702;
-        let Some(dados) = self.widgets.get(&widget) else {
+    /// Only a widget that draws itself and has a game handler qualifies: the game list background
+    /// is a container with no drawing of its own, and our `0x702` answers "can" to everyone — making
+    /// it a candidate would put the focus on it when coming back from the covers.
+    fn accepts_focus(&mut self, widget: u32) -> Result<bool, CpuError> {
+        const CAN_FOCUS: u32 = 0x702;
+        let Some(data) = self.widgets.get(&widget) else {
             return Ok(false);
         };
-        let ((funcao, contexto), desenho) = (dados.tratador, dados.desenho.0);
-        if !dados.visivel || funcao == 0 || desenho == 0 {
+        let ((callback, context), drawing) = (data.handler, data.drawing.0);
+        if !data.visible || callback == 0 || drawing == 0 {
             return Ok(false);
         }
-        let resposta = self.aloca_interno(4)?;
-        if resposta == 0 {
+        let response = self.alloc_internal(4)?;
+        if response == 0 {
             return Ok(false);
         }
-        self.cpu.write_u32(resposta, 0)?;
-        let _ = self.call_guest_aninhado(funcao, [contexto, PODE_TER_FOCO, 0, resposta], QSORT_BUDGET)?;
-        let pode = self.cpu.read_u32(resposta)? & 0xff != 0;
-        self.libera(resposta);
-        Ok(pode)
+        self.cpu.write_u32(response, 0)?;
+        let _ = self.call_guest_nested(callback, [context, CAN_FOCUS, 0, response], QSORT_BUDGET)?;
+        let focusable = self.cpu.read_u32(response)? & 0xff != 0;
+        self.free(response);
+        Ok(focusable)
     }
 
-    /// Entrega um evento ao tratador que o jogo registrou no widget, se houver um.
+    /// Delivers an event to the handler the game registered on the widget, if there is one.
     ///
-    /// Um tratador costuma devolver ao widget o que não trata, e esse caminho volta para cá: a
-    /// trava por widget é o que impede o mesmo evento de dar voltas entre os dois.
-    fn avisa_widget(&mut self, widget: u32, evento: u32, parametro: u32) -> Result<(), CpuError> {
-        let Some((funcao, contexto)) = self.widgets.get(&widget).map(|w| w.tratador) else {
+    /// A handler usually hands back to the widget what it does not handle, and that path comes back
+    /// here: the per-widget lock is what keeps the same event from going round between the two.
+    fn notify_widget(&mut self, widget: u32, event: u32, param: u32) -> Result<(), CpuError> {
+        let Some((callback, context)) = self.widgets.get(&widget).map(|w| w.handler) else {
             return Ok(());
         };
-        if funcao == 0 || !self.widgets_avisando.insert(widget) {
+        if callback == 0 || !self.notifying_widgets.insert(widget) {
             return Ok(());
         }
-        let saida = self.call_guest_aninhado(funcao, [contexto, evento, parametro, 0], QSORT_BUDGET);
-        self.widgets_avisando.remove(&widget);
-        saida?;
+        let output = self.call_guest_nested(callback, [context, event, param, 0], QSORT_BUDGET);
+        self.notifying_widgets.remove(&widget);
+        output?;
         Ok(())
     }
 }
 
 impl<C: CpuBackend> Machine<C> {
-    /// Solta uma referência de um widget e, se era a última, desmonta-o: chama os liberadores
-    /// que o jogo registrou e solta, do mesmo jeito, tudo o que ele segurava. Devolve a contagem
-    /// que sobrou.
+    /// Releases a reference to a widget and, if it was the last one, tears it down: calls the
+    /// releasers the game registered and releases, the same way, everything it held. Returns the
+    /// count that is left.
     ///
-    /// **Quem guarda, solta.** Os filhos que o acessador cria por conta própria e os que o
-    /// `AdicionarFilho` pendura levaram uma contagem nossa; sumir com o widget sem devolvê-la
-    /// vaza os dois — e a Z-Wheel em modo de atração monta e desmonta a abertura sem parar.
+    /// **Whoever stores, releases.** The children the accessor creates on its own and the ones
+    /// `AdicionarFilho` hangs took a count of ours; making the widget vanish without giving it back
+    /// leaks both — and the Z-Wheel in attract mode builds and tears down the intro nonstop.
     ///
-    /// **O liberador de cada trio é chamado quando o widget morre**, como o `HandlerDesc` do BREW
-    /// manda. É ele que desmonta o que o jogo pendurou no widget: o do roller cancela o timer de
-    /// animação de 40 ms (`0x2fc88`), que se rearma sozinho. E a descida vale para os filhos
-    /// também: soltá-los só pela contagem deixava o roller fora do mapa de widgets, sem liberador
-    /// chamado, com o timer armado sobre memória que a Z-Wheel já tinha soltado.
-    pub(super) fn solta_widget(&mut self, alvo: u32) -> Result<u32, CpuError> {
-        /// A árvore vem do jogo; um ciclo não pode prender a desmontagem.
-        const TETO: usize = 4096;
-        let restantes = self.objects.release(alvo);
-        if restantes != 0 {
-            return Ok(restantes);
+    /// **Each triple's releaser is called when the widget dies**, as BREW's `HandlerDesc` says. It
+    /// is what tears down what the game hung on the widget: the roller's one cancels the 40 ms
+    /// animation timer (`0x2fc88`), which rearms itself. And the descent applies to the children
+    /// too: releasing them only by the count left the roller out of the widget map, with no
+    /// releaser called, with the timer armed over memory the Z-Wheel had already released.
+    pub(super) fn release_widget(&mut self, target: u32) -> Result<u32, CpuError> {
+        /// The tree comes from the game; a cycle must not trap the teardown.
+        const CAP: usize = 4096;
+        let remaining = self.objects.release(target);
+        if remaining != 0 {
+            return Ok(remaining);
         }
-        let mut pendentes = vec![alvo];
-        let mut visitados = 0;
-        while let Some(morto) = pendentes.pop() {
-            visitados += 1;
-            if visitados > TETO {
+        let mut pending = vec![target];
+        let mut visited = 0;
+        while let Some(dead) = pending.pop() {
+            visited += 1;
+            if visited > CAP {
                 break;
             }
-            let Some(widget) = self.widgets.remove(&morto) else {
+            let Some(widget) = self.widgets.remove(&dead) else {
                 continue;
             };
-            self.paginas_html.remove(&morto);
-            self.rolagem_html.remove(&morto);
-            self.rolagem_maxima_html.remove(&morto);
-            for (liberador, contexto) in [
-                (widget.liberadores.0, widget.tratador.1),
-                (widget.liberadores.1, widget.desenho.1),
+            self.html_pages.remove(&dead);
+            self.html_scroll.remove(&dead);
+            self.html_max_scroll.remove(&dead);
+            for (free_fn, context) in [
+                (widget.releasers.0, widget.handler.1),
+                (widget.releasers.1, widget.drawing.1),
             ] {
-                if liberador != 0 {
-                    let _ = self.call_guest_aninhado(liberador, [contexto, 0, 0, 0], QSORT_BUDGET)?;
+                if free_fn != 0 {
+                    let _ = self.call_guest_nested(free_fn, [context, 0, 0, 0], QSORT_BUDGET)?;
                 }
             }
-            for filho in widget
-                .filhos
+            for child in widget
+                .children
                 .into_values()
-                .chain(widget.anexados)
-                .chain(widget.modelos.into_values())
+                .chain(widget.attached)
+                .chain(widget.models.into_values())
             {
-                if self.objects.release(filho) == 0 {
-                    pendentes.push(filho);
+                if self.objects.release(child) == 0 {
+                    pending.push(child);
                 }
             }
         }
@@ -1816,134 +1836,135 @@ impl<C: CpuBackend> Machine<C> {
     }
 }
 
-/// O `IContainer_GetWidget`: o vizinho de `referencia` na pilha, ou uma ponta dela.
+/// `IContainer_GetWidget`: the neighbor of `reference` in the stack, or one end of it.
 ///
-/// A pilha vai do primeiro inserido (baixo) ao último (cima). Sem referência, `proximo` começa
-/// por baixo e o contrário por cima. Passando da ponta, `volta` dá a volta; sem ele, zero.
-fn vizinho_na_pilha(filhos: &[u32], referencia: u32, proximo: bool, volta: bool) -> u32 {
-    if filhos.is_empty() {
+/// The stack goes from the first inserted (bottom) to the last (top). With no reference, `next`
+/// starts from the bottom and the opposite from the top. Going past the end, `tick` wraps around;
+/// without it, zero.
+fn stack_neighbor(children: &[u32], reference: u32, next: bool, tick: bool) -> u32 {
+    if children.is_empty() {
         return 0;
     }
-    let ultimo = filhos.len() - 1;
-    let indice = match (filhos.iter().position(|&w| w == referencia), proximo) {
+    let last = children.len() - 1;
+    let index = match (children.iter().position(|&w| w == reference), next) {
         (None, true) => Some(0),
-        (None, false) => Some(ultimo),
-        (Some(i), true) if i < ultimo => Some(i + 1),
-        (Some(_), true) => volta.then_some(0),
-        (Some(0), false) => volta.then_some(ultimo),
+        (None, false) => Some(last),
+        (Some(i), true) if i < last => Some(i + 1),
+        (Some(_), true) => tick.then_some(0),
+        (Some(0), false) => tick.then_some(last),
         (Some(i), false) => Some(i - 1),
     };
-    indice.map_or(0, |i| filhos[i])
+    index.map_or(0, |i| children[i])
 }
 
 #[cfg(test)]
-mod testes_do_container {
-    use super::vizinho_na_pilha;
+mod container_tests {
+    use super::stack_neighbor;
 
     #[test]
-    fn percorre_a_pilha_nos_dois_sentidos_e_para_na_ponta() {
-        let pilha = [10, 20, 30];
-        assert_eq!(vizinho_na_pilha(&pilha, 0, false, false), 30, "sem referência, o de cima");
-        assert_eq!(vizinho_na_pilha(&pilha, 0, true, false), 10, "sem referência, o de baixo");
-        assert_eq!(vizinho_na_pilha(&pilha, 30, false, false), 20);
-        assert_eq!(vizinho_na_pilha(&pilha, 10, false, false), 0, "a ponta termina o laço");
-        assert_eq!(vizinho_na_pilha(&pilha, 10, false, true), 30, "com volta, dá a volta");
-        assert_eq!(vizinho_na_pilha(&pilha, 20, true, false), 30);
-        assert_eq!(vizinho_na_pilha(&[], 0, true, true), 0);
+    fn walks_the_stack_both_ways_and_stops_at_the_ends() {
+        let stack = [10, 20, 30];
+        assert_eq!(stack_neighbor(&stack, 0, false, false), 30, "with no reference, the top one");
+        assert_eq!(stack_neighbor(&stack, 0, true, false), 10, "with no reference, the bottom one");
+        assert_eq!(stack_neighbor(&stack, 30, false, false), 20);
+        assert_eq!(stack_neighbor(&stack, 10, false, false), 0, "the end finishes the loop");
+        assert_eq!(stack_neighbor(&stack, 10, false, true), 30, "with wrap, it wraps around");
+        assert_eq!(stack_neighbor(&stack, 20, true, false), 30);
+        assert_eq!(stack_neighbor(&[], 0, true, true), 0);
     }
 }
 
-/// Distância entre a borda do widget de HTML e o texto, em pixels.
-const MARGEM_DO_HTML: i32 = 8;
+/// Distance between the edge of the HTML widget and the text, in pixels.
+const HTML_MARGIN: i32 = 8;
 
-/// Onde fica o HTML de placeholder da tela de ajuda: no aparelho emulado, ao lado dos outros
-/// arquivos da Z-Wheel.
-pub fn caminho_do_html() -> std::path::PathBuf {
+/// Where the placeholder HTML of the help screen lives: on the emulated device, next to the other
+/// Z-Wheel files.
+pub fn html_path() -> std::path::PathBuf {
     crate::loader::archive::device_dir()
         .join("z-wheel")
         .join("ajuda.html")
 }
 
-/// O conteúdo inicial do placeholder, gravado na primeira vez que a tela de ajuda aparece.
-const HTML_PADRAO: &str = "<html>
+/// The initial content of the placeholder, written the first time the help screen appears.
+const DEFAULT_HTML: &str = "<html>
 <body>
-<h1>Ajuda</h1>
-<p>Esta página é um espaço reservado do Zeebx.</p>
-<p>O console mostrava aqui as páginas de ajuda da Z-Wheel. Enquanto o visualizador de HTML
-não existe no emulador, o texto vem deste arquivo, que pode ser editado livremente.</p>
+<h1>Help</h1>
+<p>This page is a Zeebx placeholder.</p>
+<p>The console showed the Z-Wheel help pages here. Until the HTML viewer exists in the
+emulator, the text comes from this file, which can be edited freely.</p>
 </body>
 </html>
 ";
 
-/// O texto do placeholder, criando o arquivo com o conteúdo padrão quando ele não existe.
-fn le_placeholder_html() -> String {
-    let caminho = caminho_do_html();
-    match std::fs::read_to_string(&caminho) {
-        Ok(texto) => texto,
+/// The placeholder text, creating the file with the default content when it does not exist.
+fn read_placeholder_html() -> String {
+    let path = html_path();
+    match std::fs::read_to_string(&path) {
+        Ok(text) => text,
         Err(_) => {
-            if let Some(pasta) = caminho.parent() {
-                let _ = std::fs::create_dir_all(pasta);
+            if let Some(dir) = path.parent() {
+                let _ = std::fs::create_dir_all(dir);
             }
-            let _ = std::fs::write(&caminho, HTML_PADRAO);
-            HTML_PADRAO.to_string()
+            let _ = std::fs::write(&path, DEFAULT_HTML);
+            DEFAULT_HTML.to_string()
         }
     }
 }
 
-/// Os parágrafos de um HTML simples, como texto corrido.
+/// The paragraphs of a simple HTML, as running text.
 ///
-/// Não é um analisador: blocos (`p`, `br`, `div`, `li`, títulos) viram quebra de parágrafo, o
-/// resto das tags some, espaços se juntam e as entidades mais comuns são traduzidas. É o
-/// suficiente para um texto de ajuda escrito à mão.
-pub fn texto_do_html(html: &str) -> Vec<String> {
-    const BLOCOS: [&str; 14] = [
+/// It is not a parser: blocks (`p`, `br`, `div`, `li`, headings) become paragraph breaks, the rest
+/// of the tags vanish, whitespace is collapsed and the most common entities are translated. It is
+/// enough for a hand-written help text.
+pub fn html_text(html: &str) -> Vec<String> {
+    const BLOCKS: [&str; 14] = [
         "p", "/p", "br", "br/", "div", "/div", "li", "h1", "/h1", "h2", "/h2", "/li", "center",
         "/center",
     ];
-    let mut paragrafos = Vec::new();
-    let mut atual = String::new();
-    let mut resto = html;
-    let fecha = |atual: &mut String, paragrafos: &mut Vec<String>| {
-        let limpo = atual.split_whitespace().collect::<Vec<_>>().join(" ");
-        if !limpo.is_empty() {
-            paragrafos.push(limpo);
+    let mut paragraphs = Vec::new();
+    let mut current = String::new();
+    let mut rest = html;
+    let close = |current: &mut String, paragraphs: &mut Vec<String>| {
+        let clean = current.split_whitespace().collect::<Vec<_>>().join(" ");
+        if !clean.is_empty() {
+            paragraphs.push(clean);
         }
-        atual.clear();
+        current.clear();
     };
-    while let Some(abre) = resto.find('<') {
-        atual.push_str(&resto[..abre]);
-        let Some(fim) = resto[abre..].find('>') else {
-            resto = "";
+    while let Some(open) = rest.find('<') {
+        current.push_str(&rest[..open]);
+        let Some(end) = rest[open..].find('>') else {
+            rest = "";
             break;
         };
-        let tag = resto[abre + 1..abre + fim].trim().to_ascii_lowercase();
-        let nome = tag.split_whitespace().next().unwrap_or("").trim_end_matches('/');
-        if BLOCOS.contains(&nome) || BLOCOS.contains(&tag.as_str()) {
-            fecha(&mut atual, &mut paragrafos);
+        let tag = rest[open + 1..open + end].trim().to_ascii_lowercase();
+        let name = tag.split_whitespace().next().unwrap_or("").trim_end_matches('/');
+        if BLOCKS.contains(&name) || BLOCKS.contains(&tag.as_str()) {
+            close(&mut current, &mut paragraphs);
         }
-        resto = &resto[abre + fim + 1..];
+        rest = &rest[open + end + 1..];
     }
-    atual.push_str(resto);
-    fecha(&mut atual, &mut paragrafos);
-    paragrafos
+    current.push_str(rest);
+    close(&mut current, &mut paragraphs);
+    paragraphs
         .into_iter()
-        .map(|p| decodifica_entidades(&p))
+        .map(|p| decode_entities(&p))
         .collect()
 }
 
-/// O texto de uma página como veio do arquivo: UTF-8 quando é, e Latin-1 quando não é, que é
-/// como as páginas antigas do console foram gravadas.
-fn decodifica_pagina(bytes: &[u8]) -> String {
+/// The text of a page as it came from the file: UTF-8 when it is, and Latin-1 when it is not,
+/// which is how the console's old pages were written.
+fn decode_page(bytes: &[u8]) -> String {
     match std::str::from_utf8(bytes) {
-        Ok(texto) => texto.to_string(),
+        Ok(text) => text.to_string(),
         Err(_) => bytes.iter().map(|&b| char::from(b)).collect(),
     }
 }
 
-/// Troca as entidades de HTML pelo caractere. As páginas da Z-Wheel escrevem os acentos assim
-/// (`n&atilde;o`, `est&aacute;`); as nomeadas que faltam aqui ficam como vieram.
-fn decodifica_entidades(texto: &str) -> String {
-    const NOMEADAS: &[(&str, char)] = &[
+/// Replaces HTML entities with the character. The Z-Wheel pages write accents this way
+/// (`n&atilde;o`, `est&aacute;`); the named ones missing here stay as they came.
+fn decode_entities(text: &str) -> String {
+    const NAMED_ENTITIES: &[(&str, char)] = &[
         ("nbsp", ' '), ("lt", '<'), ("gt", '>'), ("quot", '"'), ("amp", '&'), ("apos", '\''),
         ("aacute", 'á'), ("agrave", 'à'), ("acirc", 'â'), ("atilde", 'ã'), ("auml", 'ä'),
         ("eacute", 'é'), ("egrave", 'è'), ("ecirc", 'ê'), ("iacute", 'í'), ("icirc", 'î'),
@@ -1955,82 +1976,82 @@ fn decodifica_entidades(texto: &str) -> String {
         ("deg", '°'), ("iexcl", '¡'), ("iquest", '¿'), ("trade", '™'), ("hellip", '…'),
         ("ndash", '–'), ("mdash", '—'), ("laquo", '«'), ("raquo", '»'), ("bull", '•'),
     ];
-    let mut saida = String::with_capacity(texto.len());
-    let mut resto = texto;
-    while let Some(inicio) = resto.find('&') {
-        saida.push_str(&resto[..inicio]);
-        let depois = &resto[inicio + 1..];
-        let fim = depois.find(';').filter(|&n| n <= 8);
-        let caractere = fim.and_then(|n| {
-            let nome = &depois[..n];
-            match nome.strip_prefix('#') {
-                Some(numero) => match numero.strip_prefix(['x', 'X']) {
-                    Some(hexa) => u32::from_str_radix(hexa, 16).ok(),
-                    None => numero.parse().ok(),
+    let mut output = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find('&') {
+        output.push_str(&rest[..start]);
+        let after = &rest[start + 1..];
+        let end = after.find(';').filter(|&n| n <= 8);
+        let character = end.and_then(|n| {
+            let name = &after[..n];
+            match name.strip_prefix('#') {
+                Some(number) => match number.strip_prefix(['x', 'X']) {
+                    Some(hex) => u32::from_str_radix(hex, 16).ok(),
+                    None => number.parse().ok(),
                 }
                 .and_then(char::from_u32),
-                None => NOMEADAS.iter().find(|(n, _)| *n == nome).map(|(_, c)| *c),
+                None => NAMED_ENTITIES.iter().find(|(n, _)| *n == name).map(|(_, c)| *c),
             }
         });
-        match (fim, caractere) {
+        match (end, character) {
             (Some(n), Some(c)) => {
-                saida.push(c);
-                resto = &depois[n + 1..];
+                output.push(c);
+                rest = &after[n + 1..];
             }
             _ => {
-                saida.push('&');
-                resto = depois;
+                output.push('&');
+                rest = after;
             }
         }
     }
-    saida.push_str(resto);
-    saida
+    output.push_str(rest);
+    output
 }
 
-/// Quebra um parágrafo em linhas que caibam em `largura`, pela medida da fonte.
-fn quebra_linhas(paragrafo: &str, largura: u32, mede: impl Fn(&str) -> u32) -> Vec<String> {
-    let mut linhas = Vec::new();
-    let mut linha = String::new();
-    for palavra in paragrafo.split_whitespace() {
-        let candidata = match linha.is_empty() {
-            true => palavra.to_string(),
-            false => format!("{linha} {palavra}"),
+/// Breaks a paragraph into lines that fit in `width`, by the font's measure.
+fn wrap_lines(paragraph: &str, width: u32, measure: impl Fn(&str) -> u32) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for word in paragraph.split_whitespace() {
+        let candidate = match line.is_empty() {
+            true => word.to_string(),
+            false => format!("{line} {word}"),
         };
-        if !linha.is_empty() && mede(&candidata) > largura {
-            linhas.push(std::mem::take(&mut linha));
-            linha = palavra.to_string();
+        if !line.is_empty() && measure(&candidate) > width {
+            lines.push(std::mem::take(&mut line));
+            line = word.to_string();
         } else {
-            linha = candidata;
+            line = candidate;
         }
     }
-    if !linha.is_empty() {
-        linhas.push(linha);
+    if !line.is_empty() {
+        lines.push(line);
     }
-    linhas
+    lines
 }
 
 #[cfg(test)]
-mod testes_do_html {
-    use super::{quebra_linhas, texto_do_html};
+mod html_tests {
+    use super::{wrap_lines, html_text};
 
     #[test]
-    fn blocos_viram_paragrafos_e_tags_somem() {
+    fn blocks_become_paragraphs_and_tags_disappear() {
         let html = "<h1>Ajuda</h1><p>Um <b>texto</b>\n  com   espaços &amp; tags.</p>linha<br>outra";
         assert_eq!(
-            texto_do_html(html),
+            html_text(html),
             ["Ajuda", "Um texto com espaços & tags.", "linha", "outra"]
         );
     }
 
     #[test]
-    fn acentos_em_entidade_viram_letras() {
+    fn accented_entities_become_letters() {
         let html = "<center>Iniciando</center>\n<p>n&atilde;o est&aacute; &#233; &amp;c &foo; a&b</p>";
-        assert_eq!(texto_do_html(html), ["Iniciando", "não está é &c &foo; a&b"]);
+        assert_eq!(html_text(html), ["Iniciando", "não está é &c &foo; a&b"]);
     }
 
     #[test]
-    fn a_linha_quebra_pela_largura() {
-        let linhas = quebra_linhas("aa bb cc", 5, |t| t.len() as u32);
-        assert_eq!(linhas, ["aa bb", "cc"]);
+    fn lines_wrap_at_the_width() {
+        let lines = wrap_lines("aa bb cc", 5, |t| t.len() as u32);
+        assert_eq!(lines, ["aa bb", "cc"]);
     }
 }
