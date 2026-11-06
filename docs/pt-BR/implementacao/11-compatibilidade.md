@@ -1,0 +1,588 @@
+> **Registro em português.** Esta é a versão original deste documento, preservada como estava na v0.5.1 e não é mais atualizada. A versão mantida está em inglês: [11-compatibility.md](../../implementation/11-compatibility.md).
+
+# 11 — Compatibilidade
+
+Levantada rodando **as 62 ROMs** por seis segundos virtuais cada, sem janela. O procedimento está
+no fim deste documento e dá para repetir a qualquer momento.
+
+> "Roda" quer dizer **não quebrou em seis segundos**. Não quer dizer que a tela esteja certa nem
+> que o jogo seja jogável. É o piso, não o teto.
+
+## Placar
+
+| Estado | Primeiro levantamento | Depois | Agora |
+|---|---:|---:|---:|
+| roda | 33 | 50 | **56** |
+| terminou sozinho | — | — | 2 |
+| não cria o applet | 8 | 5 | 2 |
+| para no laço de quadros | 7 | 6 | 2 |
+| falha no `EVT_APP_START` | 10 | **0** | 0 |
+| lento demais | 3 | 1 | 0 |
+
+### A varredura mente quando o disco enche
+
+A rodada que produziu a coluna "Agora" foi feita com o disco cheio, e **dois jogos apareceram como
+"não carrega"** com `No space left on device` no motivo — o placar acusou os jogos, e o problema era
+a máquina. Repetidos um de cada vez depois de liberar espaço, o **Zenonia** rodou os seis segundos
+inteiros.
+
+O que ficou do susto, no `src/varredura.rs`:
+
+- a categoria `SemEspaco`, separada de `NaoCarrega`: disco cheio chega como erro de leitura, e é o
+  único erro dessa lista que não diz nada sobre o jogo (28 no Unix, 112 no Windows);
+- uma **prova de escrita de 64 MB** antes de começar, porque a varredura das 62 ROMs extrai cada
+  uma para o cache e gasta perto de 1 GB;
+- um aviso impresso no meio do placar quando o disco enche, porque isso invalida até os jogos que
+  passaram: o relatório de um jogo extraído pela metade não vale.
+
+### O que ainda não roda, e por quê
+
+| Jogo | Estado | Causa medida |
+|---|---|---|
+| Bejeweled Twist | quebrou no laço de quadros | acesso inválido a `0x0`, chamado de `0x32c20` |
+| ~~Zuma's Revenge~~ | **roda** | era `0x0102fd92` (`JPEGDecoderBREW`) recusada e o decodificador só tentando PNG; corrigidos, ele roda com 18.268 cores na tela |
+| Kingdom Hearts V CAST | não cria o applet | nenhum `.mif` ao lado do módulo diz qual applet criar |
+| Zeebo Channels (Opera Mini) | não cria o applet | `CreateInstance` recusou com o erro 1 |
+| Zeebo App, Zeebo Clube | terminou sozinho | são aplicativos do sistema: terminam sem timer armado |
+
+> As tabelas por jogo abaixo são do levantamento **anterior** e envelheceram em pelo menos um ponto
+> já medido: o **Double Dragon** passou a rodar — a `IFont` foi implementada (as três classes que
+> ele pedia deixaram de faltar) e o diretório do save passou a ser criado no `OFM_CREATE`, que era
+> o motivo da tela "Memory is insufficient. Please delete some files.".
+
+Doze jogos mudaram de estado de uma vez, e a causa foi uma só: **o sistema de arquivos do console
+não distingue maiúsculas de minúsculas, e o nosso distinguia.** Os dez ports de arcade pedem
+`font.fnz` e trazem `font.FNZ` no pacote; nenhum deles passava do `EVT_APP_START`, porque a fonte
+não abria e o ponteiro nulo vinha logo depois. Raging Thunder 2 e Reckless Racing caíam no mesmo
+buraco em outros arquivos. No Windows e no macOS isso funcionava por acaso.
+
+Vale registrar como o defeito foi encontrado, porque o caminho não era óbvio: os dez pediam seis
+ClassIDs que não temos, o que parecia ser a causa. **Não era** — eles seguem sem essas classes e
+rodam assim mesmo. Quem entregou o problema foi o `DBGPRINTF` do próprio jogo, com um
+`Failed to open font.fnz file!!!` na última linha do log, e a lista de "arquivos não encontrados"
+do relatório logo abaixo confirmando.
+
+## Por jogo
+
+### Roda limpo (8)
+
+Passou os seis segundos e o relatório não tem nada a apontar: nenhuma classe desconhecida, nenhuma
+API atendida por hipótese, nenhum ponteiro recusado, nenhum arquivo não encontrado, nenhum texto
+que não saibamos desenhar.
+
+- Alien Breaker Deluxe
+- Alpine Racer
+- Treino Cerebral
+- Zeebo F.C. Super League
+- Zeebo Sports Peteca
+- Zeebo Sports Queimada
+- Zeebo Sports Tenis
+- Zeebo Sports Volei
+
+### Roda com ressalvas (37)
+
+Passou os seis segundos, mas o relatório apontou alguma coisa. O balde é conservador: o
+`config.cfg` que o Quake não acha é normal, porque só existe depois de salvar.
+
+| Jogo | Classes que pede e não temos | Outras ressalvas |
+|---|---|---|
+| Armageddon Squadron |  | arquivo não encontrado, ponteiro recusado |
+| Bad Dudes vs. DragonNinja | as seis do grupo de extensões | arquivo não encontrado, ponteiro recusado |
+| Caveman Ninja | as seis do grupo de extensões | arquivo não encontrado, ponteiro recusado |
+| Crash Bandicoot Nitro Kart 3D |  | arquivo não encontrado |
+| Dark Seal | as seis do grupo de extensões | ponteiro recusado |
+| Disney All Star Cards |  | API por hipótese, ponteiro recusado |
+| Double Dragon | `0x0102f679` `0x0102f681` `0x01030852` | ponteiro recusado, texto sem fonte |
+| FIFA 09 | `0x01001029` | arquivo não encontrado |
+| Galaxy on Fire | as seis do grupo de extensões | arquivo não encontrado, ponteiro recusado |
+| Heavy Barrel | as seis do grupo de extensões | arquivo não encontrado, ponteiro recusado |
+| Iron Sight |  | arquivo não encontrado, ponteiro recusado |
+| Karnovs Revenge | as seis do grupo de extensões | arquivo não encontrado, ponteiro recusado |
+| Magical Drop 3 | as seis do grupo de extensões | arquivo não encontrado, ponteiro recusado |
+| Pac-Mania |  | API por hipótese |
+| Powerboat Challenge | `0x01001039` + as seis do grupo de extensões | arquivo não encontrado, ponteiro recusado |
+| Quake | as seis do grupo de extensões | arquivo não encontrado |
+| Quake 2 | as seis do grupo de extensões | arquivo não encontrado |
+| Raging Thunder 2 |  | arquivo não encontrado, ponteiro recusado |
+| Rally Master Pro | as seis do grupo de extensões | arquivo não encontrado, ponteiro recusado |
+| Reckless Racing |  | arquivo não encontrado, ponteiro recusado |
+| Resident Evil 4 - Zeebo Edition | `0x0102f681` | texto sem fonte |
+| Ridge Racer | as seis do grupo de extensões |  |
+| Spin Master | as seis do grupo de extensões | arquivo não encontrado, ponteiro recusado |
+| Street Hoop | as seis do grupo de extensões | arquivo não encontrado, ponteiro recusado |
+| Super BurgerTime | as seis do grupo de extensões | arquivo não encontrado, ponteiro recusado |
+| Tekken 2 |  | API por hipótese |
+| Ultimate Chess 3D | `0x01002000` `0x01005503` | arquivo não encontrado, ponteiro recusado |
+| Um Jogo de Ovos | as seis do grupo de extensões | arquivo não encontrado |
+| Wizard Fire | as seis do grupo de extensões | arquivo não encontrado, ponteiro recusado |
+| Zeebo Clube | `0x0100110a` |  |
+| Zeebo Extreme Baja |  | arquivo não encontrado |
+| Zeebo Extreme Boia Cross |  | arquivo não encontrado |
+| Zeebo Extreme Corrida Aerea |  | arquivo não encontrado |
+| Zeebo Extreme Jetboard |  | arquivo não encontrado |
+| Zeebo Extreme Rolima |  | arquivo não encontrado |
+| Zeebo F.C. Foot Camp |  | arquivo não encontrado |
+| Zeebo Family Pack |  | arquivo não encontrado, ponteiro recusado |
+
+### Não roda (12)
+
+| Jogo | Onde para |
+|---|---|
+| Action Hero 3D - Wild Dog and IMICRO3D | para no laço — acesso inválido a 0x00000000 (pc 0x00055568) |
+| Alice no Pais das Maravilhas | para no laço na volta 204 — acesso inválido a 0x00000000 (pc 0x000105ac) |
+| Bejeweled Twist | para no laço — acesso inválido a 0x00000024 (pc 0x00032b78) |
+| Need For Speed - Carbon - Domine a Cidade | não chega a criar o applet — na varredura; corrigido depois, hoje chega à corrida ([abaixo](#need-for-speed-carbon-não-era-lentidão-era-uma-parada-de-propósito--corrigido)) |
+| Prey Evil | para no laço — salta para o endereço zero (lr 0x000161d8) |
+| Turma da Monica em Vamos Brincar Vol. 1 | para no laço na volta 4 — acesso inválido a 0x00000000 (pc 0x0008a5a0) |
+| Z-Wheel | não chega a criar o applet — pede `AEECLSID_SQLMGR` |
+| Zeebo App | não chega a criar o applet — pede `0x01028e51` |
+| Zeebo Channels - Opera Mini | não chega a criar o applet — pede a classe de rede `0x0100102e` |
+| Zenonia | não chega a criar o applet — pede `0x01003109`, do subsistema de texto dele |
+| Pac-Mania | lento demais — desenha, mas pixel a pixel pela API |
+| Zumas Revenge | para no laço na volta 55 — acesso inválido a 0x0000000c (pc 0x00046b94) |
+
+> **Medições posteriores já derrubaram cinco linhas desta tabela**, e ficam registradas aqui
+> porque a tabela inteira está defasada: o **Zenonia** roda **413 voltas do laço** em seis
+> segundos virtuais — a classe `0x01003109` dele está implementada como `IControl` e ligada ao
+> `CreateInstance`, sem sonda nenhuma; o **Prey Evil** roda **358 quadros** desde que os objetos
+> de buffer do OpenGL existem (ver [06-video-3d.md](06-video-3d.md)); e o **Bejeweled Twist**
+> segue parando, mas por motivo que não é nosso — ver abaixo. E os dois que dependiam de um
+> módulo de extensão do próprio pacote — **Action Hero 3D**, que roda o laço com o relatório
+> limpo, e **Kingdom Hearts**, que faz 405 voltas com a tela desenhada — estão em
+> [03-despacho-de-api.md](03-despacho-de-api.md).
+
+> **Esta tabela é de uma medição anterior.** A varredura de abertura de hoje mostra que
+> Z-Wheel, Zeebo App, Action Hero 3D, Alice, Prey Evil, Turma da Mônica e Zuma's Revenge **criam
+> o applet** — os quatro últimos já criavam, e os dois primeiros deixaram de estar presos aí. Onde
+> cada um para depois disso é medição de execução, e ainda não foi refeita. As três que continuam
+> sem criar o applet estão detalhadas em [As quatro que não abrem](#as-quatro-que-não-abrem-uma-a-uma).
+
+### O `nResID` que não valia nada
+
+`ISHELL_LoadResObject` recebe o arquivo, o **número do recurso** dentro dele e a **classe** que o
+jogo quer de volta. Ignorávamos as duas últimas: pegávamos o caminho, tentávamos decodificar o
+arquivo inteiro como PNG e devolvíamos nulo quando não era.
+
+O Tekken 2 pede a entrada **5034** do `tekken2.bar`, um BMP de 308 KB. Nós tentávamos ler os 734
+KB do `.bar` inteiro como se fosse a imagem. O jogo seguia com uma imagem sem tamanho, e imagem
+sem tamanho é divisão por zero na hora de montar a tela — era o que enchia o log dele de
+`Arithmetic exception: Divide By Zero` no menu e na seleção de personagem.
+
+O relatório dizia isso o tempo todo, numa linha fácil de ler errado:
+
+```
+hipóteses em uso:
+  um recurso pedido por LoadResObject não é um PNG que saibamos ler
+```
+
+Não era "não é um PNG". Era **não é uma imagem** — era o arquivo de recursos inteiro. É a terceira
+vez neste documento que a resposta estava no relatório antes de alguém entender a pergunta.
+
+Três coisas mudaram: o `nResID` passou a valer, o cabeçalho `AEEResBlob` é pulado (o que o
+`RESBLOB_DATA()` do SDK faz), e a classe pedida passou a valer — o Tekken pede `AEEIID_IBITMAP` e
+recebia um `IImage`, o que o fazia chamar um método de `IBitmap` numa vtable de `IImage`.
+
+Três jogos mudaram de estado:
+
+- **Toy Raid** parava no laço de quadros e agora abre com o menu inteiro desenhado.
+- **Pac-Mania** era "roda e não mostra nada"; agora mostra a tela de escolha de idioma inteira e
+  certa. Ficou lento porque passou a ter o que desenhar, e o perfil de API apontou onde: cinco
+  segundos virtuais dele saíram de 174 para 62 de relógio quando o `IIMAGE_Draw` passou a honrar
+  o recorte, e o que sobra é a sincronização de superfície em chamada que não desenha.
+- **Tekken 2** parou de estourar divisão por zero.
+
+### O jogo que insistia
+
+O **Tekken 2** era o último "lento demais": **766 mil `Play` e 766 mil `GetState` em quatro
+segundos virtuais**, e seis segundos de jogo não terminavam em cinco minutos de máquina. Não era
+carga de trabalho. A música dele é MP3, o `IMEDIA_Play` respondia "esse som já acabou", o jogo
+consultava o estado, via "pronto" e mandava tocar de novo. Para sempre.
+
+Com a duração lida do cabeçalho do MP3 — sem decodificá-lo, ver
+[07-audio.md](07-audio.md) —, o som "toca" em silêncio pelo tempo certo e ele anda: **9,7
+segundos** para os mesmos seis virtuais, com a tela de título desenhada. Ele continua sem passar
+dali, e isso é entrada, não desempenho: o jogo registra o sinal de botão, drena dois toques e
+para de responder.
+
+### O `IDIB` que ninguém pediu
+
+Duas entradas saíram desta lista de uma vez, e pelo mesmo motivo. Um `IBitmap` de software do
+BREW **é** um `IDIB`: a struct segue com campos públicos, e o jogo lê o tamanho direto deles,
+sem `QueryInterface`. Nós só preenchíamos esses campos quando a interface era pedida.
+
+O **Peggle** montava cada sprite como um quadrado de lado zero — 76.618 dos 77.208 triângulos de
+um quadro descartados por área nula, tela preta com o jogo desenhando o tempo todo. O log dele
+dizia `-size 0/0`, e a lista de rejeições por motivo do rasterizador confirmou. Hoje ele desenha
+geometria, mas ainda fica preso no carregamento e os sprites saem sem textura.
+
+O **Heavy Weapon** era o "lento demais" de 6 milhões de chamadas de API por quadro. Não era carga
+de trabalho: era o jogo repetindo contra bitmaps que mediam 0×0. Seis segundos virtuais saíram de
+**mais de cinco minutos** (estourando o `timeout`) para **2,1 segundos**, e ele desenha — com as
+cores erradas, o que é o próximo passo dele.
+
+### As seis classes do grupo de extensões
+
+```
+0x0103d8de  0x0103d8eb  0x0103d8ef  0x0103d8f0  0x0103def1  0x010426e3
+```
+
+Pedidas por dezessete jogos, e **nenhum deles precisa delas para rodar**: todos recebem
+`ECLASSNOTSUPPORT` e caem no caminho alternativo. O log do Quake e o dos ports de arcade mostram
+de onde vêm — o `GLES_ext.c` do próprio SDK do BREW, que os jogos linkam:
+
+```
+eglGetProcAddress (NBI) - got V2 EGLSurfaceManip interface
+eglGetProcAddress (NBI) - got V2 GLESImageonExt interface
+```
+
+Ou seja: são as extensões de OpenGL ES do console, e as duas que os jogos anunciam ter conseguido
+são justamente as que já implementamos. O que essas seis fazem, e se alguma muda o desenho na
+tela, ainda não foi levantado — mas nenhuma delas impede jogo nenhum de rodar hoje.
+
+## As quatro que não abrem, uma a uma
+
+Levantadas pela varredura de abertura (`a_rom_indicada_abre`, ver [17-testes.md](17-testes.md)):
+**60 das 63 ROMs criam o applet**; três não. A quarta — Kingdom Hearts — foi corrigida no caminho,
+e vale contar o que era.
+
+### Kingdom Hearts: o manifesto que estava no lugar "errado" — corrigido
+
+`nenhum .mif ao lado do módulo diz qual applet criar`. O `.mif` **estava** no pacote:
+
+```
+Kingdon Hearts/Kingdon Hearts.mif          <- o manifesto
+Kingdon Hearts/Kingdon Hearts_/swv21brew.mod   <- o módulo, numa pasta própria
+```
+
+Nós procurávamos o `.mif` em dois lugares calculados por nome: ao lado do `.mod`, e no
+`<Título>/mif/<id>.mif` da disposição do console. Nenhum dos dois é este. Agora a busca também
+**varre** a pasta do módulo e a de cima, o mais perto primeiro, com ordem estável.
+
+Ele abre, e o obstáculo seguinte já apareceu: o jogo pede `0x0100a004` e `0x0102bbfc`, não as
+encontra, desenha `The application has failed and will close (Error 14)` e sai sozinho. O 14 é
+`0x14` — vinte, o `ECLASSNOTSUPPORT` que devolvemos. Nenhuma das duas está na tabela de classes da
+partição APPS.
+
+### Opera Mini: `CreateInstance` recusa com `EFAILED`
+
+O applet não nasce porque o construtor dele pede a `0x0100102e` e nós não a temos. A interface
+dela agora está **lida**, não suposta: 59 métodos, vtable `0x10a783e4` — ver
+[15-o-que-falta-da-nand.md](15-o-que-falta-da-nand.md), inclusive por que ela não saía antes.
+
+### Zenonia: orçamento esgotado dentro do `CreateInstance`
+
+Mesma família do Need For Speed, e o mesmo desfecho: `b #0x84634`, um salto para si mesmo logo
+depois do `dbgprintf`. Ele também **para de propósito**, e o orçamento acaba em cima disso.
+
+A diferença é a causa: aqui falta mesmo a classe `0x01003109`, o subsistema de texto dele. O
+`ISHELL_CreateInstance` dela devolve `ECLASSNOTSUPPORT` e o log do próprio jogo nomeia o que
+quebrou:
+
+```
+:AF![B:\WIPI\WBLIB\src\WBLCore.cpp:241]:(-268435448):
+:FALSE && "CWBLText::Create() failed!"(0):
+```
+
+A vtable dela está lida: 40 métodos, em `0x10e15c04`. E o firmware diz **o que ela é**: o slot 0
+incrementa `[obj+4]` e o 1 decrementa e destrói no zero; o slot 2 compara o primeiro argumento
+com uma faixa de quatro eventos; o slot 5 devolve `[obj+8] & 1`. É a vtable de um **`IControl`**
+— `AddRef`, `Release`, `HandleEvent`, `Redraw`, `SetActive`, `IsActive`, `SetRect`, `GetRect`,
+`SetProperties`, `GetProperties`, `Reset` — e os argumentos que a sonda capturou confirmam:
+`SetRect` com um ponteiro de pilha, `SetProperties` com `0x80010000`, `SetActive` com 1.
+
+Com a classe respondida por observação e o `IsActive` dizendo "sim"
+(`--sonda=0x01003109 --sonda-resposta=0x01003109:5=1`), o Zenonia cria o applet, recebe o
+`EVT_APP_START`, carrega fontes e partículas, toca som e **roda o laço de quadros**.
+
+### E aí ele desenha — mas num lugar que não vai para a tela
+
+O que veio depois vale como registro, porque a causa é geral e a solução não é barata.
+
+O Zenonia cria uma superfície de 320×240 e escreve os pixels **direto na memória**, sem pedir
+`QueryInterface` antes: ele lê o ponteiro `pBmp` dos campos públicos da struct, que no console
+sempre valem — um `IBitmap` de software *é* um `IDIB`. Nós só preenchemos esses campos quando
+alguém pede o DIB, então ele lia tamanho zero e ponteiro nulo, e caía num caminho que não desenha
+nada: tela preta com o jogo rodando, o mesmo sintoma do Peggle.
+
+Publicando os campos no nascimento de toda superfície, ele **desenha a tela de título inteira** —
+logo, personagens, versão 1.0.8. Dá para ver com `--dump-surfaces=DIR`, que grava um BMP por
+superfície viva.
+
+Só que publicar tudo **não é viável hoje**: a sincronização de superfícies copia, a cada chamada
+de desenho, todas as que estão publicadas. Com 49 superfícies no Pac-Mania, seis segundos
+virtuais não terminam em dez minutos de relógio. Medido.
+
+O que falta, então, não é uma classe: é **sincronizar só o que a chamada toca** — ou marcar as
+superfícies sujas por hook de escrita, que o núcleo já sabe fazer (é como o `--watch` funciona).
+Com isso, publicar no nascimento fica barato, e o Zenonia passa a mostrar o que já desenha.
+
+E sobra uma pergunta em aberto mesmo depois disso: ele desenha em 320×240 e **nunca blita** essa
+superfície para a tela, nem escreve na tela. O que apresenta esse quadro no console ainda não
+sabemos.
+
+### Need For Speed Carbon: não era lentidão, era uma parada de propósito — corrigido
+
+Este é o mais interessante dos quatro, porque o rótulo estava errado. "Orçamento de instruções
+esgotado" soa como jogo pesado; o perfil diz outra coisa — **97,8% das 500 milhões de instruções
+num único bloco**, o `0x001a3c80`. Aquele endereço é isto:
+
+```
+0x1a3c78  mov  r0, #0x32
+0x1a3c7c  blx  r1              <- helper 39, dbgprintf
+0x1a3c80  b    #0x1a3c80       <- e fica aqui para sempre
+```
+
+Um `b` para si mesmo. O jogo **decidiu** parar, e as duas linhas do log são as que ele imprime
+antes: `source\mediacenter\ZeeboSnd.cpp:327` e `BREAKPOINT!`.
+
+Logo acima está o motivo. Ele varre até setenta entradas de uma tabela de sons chamando
+`strstr(entrada, "snd/skid/skid.wav")`, e o rastreamento mostra as setenta devolvendo zero — a
+agulha é sempre o mesmo ponteiro, `0x1a40ec`, e as entradas preenchidas são todas
+`snd/carbon_fe/*.wav`. Não achando o som, ele assume defeito de programação e trava.
+
+E o arquivo **existe** no pacote, e a tabela **também** tem o `snd/skid/skid.wav`, no índice 53.
+A busca é que não achava — e não por causa do skid.
+
+O jogo registra cinco sons de jogo em sequência, e **o terceiro nome da lista é a string vazia**.
+Em C, `strstr(qualquer_coisa, "")` devolve o próprio texto: toda string contém a string vazia, e a
+busca acha o índice 0 na hora. A nossa devolvia "não achou" — o `needle.len().max(1)` procurava
+uma janela de um byte igual a uma agulha de zero bytes, que nunca casa. Aí ele varria as setenta
+entradas, concluía que o som não existe, e travava de propósito.
+
+Uma linha de semântica do C, e o jogo aparecia no relatório como "lento demais". **Hoje ele cria
+o applet, recebe o `EVT_APP_START` e apresenta 181 quadros de OpenGL em seis segundos virtuais**,
+com a abertura da EA na tela.
+
+Vale a lição de método, que é a terceira vez que aparece nesta página: o `--profile` **não
+imprimia nada** quando o jogo morria antes do laço de quadros, que é justamente o caso do Need
+For Speed. Enquanto o perfil só existia no laço, "orçamento esgotado" não tinha como virar
+"parada de propósito na linha tal".
+
+**Da abertura à corrida.** Depois disso vieram mais duas paradas, e hoje o jogo chega à corrida:
+
+- **Acesso inválido a `0x00000006`, em `0x001eefd8`.** As partes das malhas têm nome de quatro
+  bytes **sem terminador**, e o jogo converte esse nome com `atoi`. O nosso `atoi` só aceitava a
+  string inteira como número e devolvia zero para todas; o do C para no primeiro caractere que não
+  é dígito. Com todas as partes no índice zero, a malha não era achada e o jogo lia um campo de um
+  ponteiro nulo.
+- **Salto para `0x00000000` ao pular a cena de abertura.** Pular cria um `IMedia` da classe
+  `AEECLSID_MEDIAMPEG4` (`0x01005505`) e usa o objeto sem conferir o retorno. A classe passou a ser
+  aceita como mídia.
+- **Velocidade.** Na corrida ele rodava a 69% do console no host; a tabela de páginas do Dynarmic e
+  a leitura do quadro em RGB565 levaram a 108%. Os números estão no
+  [19](19-jit-arm-e-renderizadores.md).
+
+Ainda em aberto: o vídeo de abertura sai com triângulos pretos e rasgados, e falta uma referência
+do console para saber o que é esperado ali.
+
+**Da corrida à carreira: o `snprintf` do BREW conta o terminador — corrigido (issue #35).** Depois
+das corridas de introdução, a tela de escolher carro abria com o nome em lixo, as barras de
+velocidade, aceleração e manejo vazias e o carro sem textura, e não havia como seguir. As telas da
+carreira são Flash (o Apt da EA) e pedem os dados ao jogo por `LoadVariables`; o jogo responde
+com uma string `nome=valor&...`, e cada vetor com os itens separados por `0x7f`. Ele monta essa
+string assim:
+
+```
+p += snprintf(p, n, "%s=", "aCarNames") - 1;   // e cada item com "%d%c" ou "%s%c", 0x7f
+```
+
+O `- 1` só fecha se o `snprintf` contar o terminador, e o do BREW conta: devolve os bytes escritos
+com o zero, e com o buffer nulo o tamanho necessário, também com o zero. O nosso devolvia o
+comprimento do C99, e cada item caía em cima do `=` e do separador anterior. O que chegava à
+tela era `aTerritoryNamesPEDREIRA...` e `aTerritoryIDs0123456789101112...`: nenhum vetor com o
+nome certo, e os números colados num só. É também por isso que o relatório pedia `large_portrait_.big` e
+`spline_-1.big`, e a seleção de evento pedia `Career.GetEvents?iTerritoryID=` vazio.
+
+A semântica do BREW veio do resumo da página do `SNPRINTF` na referência do Brew MP 1.0.2, que não
+está mais no ar; a prova é o jogo: com a correção, os vetores chegam inteiros e as telas de
+escolher carro, carro da gangue, mapa e eventos abrem preenchidas. O `vsnprintf` ficou como
+estava: é da mesma família na referência, mas nenhum jogo medido mostrou o que ele espera.
+
+Vieram junto dois defeitos do mesmo formatador:
+
+- **Os `printf` contavam bytes de UTF-8.** O texto do jogo é UTF-8 lido como Latin-1 (herança do
+  PSP), e o `String` do formatador guarda cada byte acima de `0x7f` em dois. "ARMAZÉM" voltava
+  dois bytes mais longo do que tinha sido escrito. Agora contam os bytes da memória do jogo.
+- **O `%S` não existia.** É a string de `AECHAR` no `SPRINTF`. Ele saía como veio e não consumia
+  argumento, e o `%d` seguinte imprimia o ponteiro: o mapa dizia "vença 286973016 corridas na
+  região %S".
+
+O caminho de achar isso também fica registrado. Sem save e sem piloto, chegar à tela custava
+vencer a primeira corrida. O `config.ini` de depuração que a EA deixou no pacote
+(`mod/nfsresources/config.ini`) aceita `TutorialCompleted=True`, que pula o prólogo e leva à
+carreira em trinta segundos, já com o mesmo defeito. E o log do próprio jogo — `AptTrace`, `<< AIP
+>>`, `No LV handler found` — sai pelo `vsprintf`, e não pelo `dbgprintf`: para lê-lo é preciso
+olhar o que o `vsprintf` escreve.
+
+### Um Jogo de Ovos: o chefe 1 não começava — corrigido
+
+Terminada a fase 1-5, o jogo carrega a cena de entrada do chefe (`res/cutscenes/b1i.cut`, dentro
+do `data.pap`) e para ali. Quem diz por quê é o próprio jogo: ele grava um `app.log` no diretório
+de save, e lá estavam 747 linhas de `[Error] Error loading cutscene` no mesmo milissegundo.
+
+Os arquivos da cena existem todos, e o texto dela está bem formado. O defeito é um byte que o jogo
+lê fora do que alocou: ele carrega a cena com `MALLOC(tamanho)` exato, e o analisador
+(`0x5337c` no arquivo) olha o byte seguinte ao fim antes de medir cada token. Com zero ali, recusa
+o token, e o laço que o chama (`0x5392c`) imprime o erro e anda um caractere. O nosso heap entregava
+zero nesse byte. A correção e a medida estão no [02](02-cpu-e-memoria.md#heap-e-objetos).
+
+Para achar a função, a base do módulo é `-0x9c`: as strings do `game.mod` são referenciadas como
+`deslocamento no arquivo - 0x9c`, e não há ponteiro absoluto para elas.
+
+### Peggle e Treino Cerebral na placa: a tesoura que ficava ligada — corrigido (issue #10)
+
+No Peggle, com o 3D na placa, as telas não se apagavam: o menu e o "PLAY" continuavam visíveis
+durante a fase, e o fundo da fase nunca aparecia. No software, tudo certo. O Peggle recorta quase
+todo desenho com `glScissor` e desliga a tesoura para os fundos. Com o contexto emprestado da
+janela, o `devolve_o_contexto` roda a cada lote, registra no espelho de estado que a tesoura ficou
+desligada e **não a desligava** no GL. O fundo, sem tesoura, não reenviava nada, e saía recortado
+pelo retângulo do último sprite. Medido sem janela, com o contexto fora de tela: forçar a tesoura
+a ser reaplicada a cada lote já punha o fundo de volta.
+
+O Treino Cerebral perdia peças pelo mesmo caminho, nos trechos que usam tesoura: a doutora na tela
+de regras, o "TREINO" do logotipo e a fileira de bolas de seleção no minijogo "Bolas".
+
+### Treino Cerebral na placa: as linhas a cada poucos pixels — corrigido (issue #10)
+
+Os botões e os balões do Treino são montados de peças estreitas lado a lado, e na placa cada junta
+saía como uma linha clara, em 1x e em 3x. O jogo pede `GL_NEAREST` para essas texturas, mas pede
+**antes** de mandar a imagem, e a placa só guardava parâmetros de texturas que já existiam nela:
+a textura nascia no `upload_level` com `GL_LINEAR`, e o bilinear puxava para a junta o vizinho do
+atlas. Forçar `CLAMP_TO_EDGE` não mudava nada; forçar `GL_NEAREST` limpava as linhas. Agora a
+textura nasce com o filtro, a repetição e o recorte que o estado do software já guardava.
+
+### FIFA 09: o nome do jogador sumia do HUD — corrigido (issue #12)
+
+O HUD mostra "inicial. sobrenome". O jogo tira a inicial convertendo **um** caractere para um
+buffer de **um** byte com `wstrtoutf8`, e o nosso reservava lugar para o terminador: a inicial
+saía vazia e o nome não aparecia. Só os jogadores de nome único, como "Chris", apareciam. A função
+também escrevia em Latin-1, e não em UTF-8: o "ô" de "Chantôme" virava um byte solto. Agora ela
+escreve UTF-8, um caractere só entra se couber inteiro, e o zero só vai quando sobra lugar.
+
+### Crash Nitro Kart: o cenário que surgia de perto era a viewport — corrigido
+
+O relato era de distância de desenho: um vazio à frente até o kart atravessar, e então o trecho
+seguinte aparecendo de baixo para cima. Não era distância. O jogo desenha o trecho seguinte por um
+portal, com a viewport no retângulo dele, e nós contávamos o `y` do `glViewport` a partir do topo.
+A explicação e a correção estão no [06](06-video-3d.md#a-superfície). Por isso não existe opção de
+distância de desenho: o jogo já desenhava tudo, só que no lugar errado.
+
+## A largura do `printf` era um defeito invisível
+
+Vale registrar porque não aparece como quebra nenhuma nesta tabela.
+
+O `cformat` lia as flags e a largura do especificador e **descartava** — o que serve para o log do
+`DBGPRINTF`, que era o uso original, mas o mesmo formatador atende o `snprintf` e o `vsnprintf`
+do guest. O Resident Evil 4 monta o nome dos arquivos de estágio com `%s_%02d.h2z`; sem a
+largura, o `%02d` de zero saía como `0`, ele procurava `3d_stg02_0.h2z` e o arquivo é
+`3d_stg02_00.h2z`. **Os doze estágios não eram encontrados**, e o jogo rodava sem textura
+nenhuma — sem quebrar, sem erro, sem nada no relatório além de uma lista de "arquivos não
+encontrados" que ninguém tinha lido.
+
+Foi a mesma lista que entregou o `font.fnz` dos ports de arcade, e nas duas vezes ela estava lá
+desde o começo. A lição: **a lista de arquivos não encontrados do relatório é sinal, não ruído.**
+
+## O Bejeweled Twist para, e não é por nada que a gente deva
+
+Vale registrar um diagnóstico que **não** terminou em correção, porque o valor dele é fechar a
+pergunta: o jogo aparece como "para no laço — acesso inválido a `0x00000024`", e a tentação é
+procurar uma API faltando.
+
+Não há nenhuma. O relatório dele sai com **zero** classes desconhecidas, **zero** arquivos não
+encontrados e nenhuma API por hipótese além da superfície própria dele. O que ele faz nos seis
+segundos está inteiro: dezoito imagens, cada uma pelo mesmo ciclo —
+`GetDeviceBitmap` → `QueryInterface(DIB)` → `MEMASTREAM` → `SetEx` → decodificador → `Notify` →
+`SetStream` → `SetDestination(superfície dele)` → `Draw` → `SetDestination(0)` → `GetInfo`. O
+desenho **chega** na superfície dele: o `BltIn` dela pede `QueryInterface(0x01001045)` no nosso
+bitmap de origem e a chamada aparece no rastro, com retorno zero.
+
+A queda é em `0x32b78`, `ldr r2, [r0, #0x14]`, com `r0 = 0x10` — porque `0x3a7c8` é
+`add r0, r0, #0x10; bx lr`, um acessador, e o que ele recebeu foi zero. O zero vem de
+`[this+0x20]`. O chamador em `0x32d04` só entra nesse caminho **quando `[this+0x28]` é zero**, e
+o watchpoint mostra o construtor em `0x17ef0` zerando `0x20`, `0x24` e `0x28` e nada preenchendo
+depois. É estado interno do jogo, não resposta nossa: os três campos ficaram como nasceram.
+
+Onde isso continua, então, é achando quem deveria chamar o setter — não implementando API. Fica
+dito para a próxima pessoa não refazer a escavação até aqui.
+
+## Como repetir, por teste
+
+O mesmo levantamento roda dentro do `cargo test`, no [`src/varredura.rs`](../../../src/scan.rs).
+A diferença que importa não é a comodidade: é que uma regressão passa a aparecer **no commit que
+a causou**, e não na próxima vez que alguém repetir a varredura à mão.
+
+```bash
+# um jogo, com o relatório inteiro na tela
+ZEEBX_ROM="roms/Quake.zip" cargo test --release varredura -- --nocapture
+
+# a varredura inteira, gravando um relatório por jogo e cobrando a linha de base
+ZEEBX_ROM=roms ZEEBX_ROM_SAIDA=saida ZEEBX_ROM_BASE=docs/varredura \
+  cargo test --release varredura -- --nocapture
+```
+
+| Variável | O que faz |
+|---|---|
+| `ZEEBX_ROM` | um `.mod`/`.zip`, uma lista separada por vírgula, ou um diretório |
+| `ZEEBX_ROM_MS` | quanto tempo **virtual** rodar, em ms (padrão 6000, o desta página) |
+
+> **Aqueça o cache antes de comparar.** O **primeiro** jogo aberto de cada extração executa
+> diferente dos seguintes — medido: 760 921 instruções em cache frio contra 760 815 em cache quente,
+> com o heap deslocado 64 bytes. A comparação com a linha de base acusa essa diferença como
+> regressão. Rode o corpus uma vez sem `ZEEBX_ROM_BASE` (a passada que aquece) e só a segunda
+> passada vale como medida. Ver `docs/OPTIMIZING_V0.3.0.md`, seção 33.
+| `ZEEBX_ROM_TETO` | teto de tempo **real** por jogo, em segundos (padrão 90) |
+| `ZEEBX_ROM_SAIDA` | diretório onde gravar o relatório completo de cada jogo |
+| `ZEEBX_ROM_BASE` | diretório da linha de base: o que falta é gravado, o que existe é cobrado |
+
+Nenhuma ROM está na árvore, então sem `ZEEBX_ROM` os dois testes avisam e passam — `cargo test`
+não vira uma varredura de sessenta e cinco jogos sem alguém ter pedido.
+
+São dois testes, e a diferença entre eles é o custo:
+
+- **`a_rom_indicada_abre`** é a pergunta barata: carrega o `.mod`, roda o `AEEMod_Load`, lê o
+  `.mif` e chama o `CreateInstance`. Quem não cria applet falha aqui sem gastar os seis segundos
+  virtuais que nunca iria rodar.
+- **`a_rom_indicada_avanca`** entrega o `EVT_APP_START`, roda o laço de quadros e monta o
+  relatório: estado, desempenho, o que faltou e o log do jogo. A partida vem separada da primeira
+  volta, e é o que distingue as duas linhas desta página — "quebrou no `EVT_APP_START`" e
+  "quebrou no laço de quadros" apontam para trechos de código diferentes.
+
+O teste falha por duas razões, e só por essas duas:
+
+1. **O jogo não chegou ao fim do tempo pedido.** Não carrega, não cria o applet, quebra, ou não
+   cumpre o tempo virtual dentro do teto de tempo real. Pendência não é falha: um jogo que roda
+   pedindo seis classes que não temos continua passando, porque é assim que ele se comporta.
+2. **O resumo mudou em relação à linha de base**, quando ela existe. É o que cobra pendência: uma
+   API que deixou de ser atendida, uma classe que passou a ser pedida ou um arquivo que sumiu
+   aparecem como `+`/`-` na saída do teste.
+
+A linha de base guarda o estado e as pendências, e **nada de desempenho** — nem tempo, nem
+instrução, nem quadro. Se guardasse, trocar de máquina acusaria regressão em todos os jogos de
+uma vez, e um teste que acusa sempre não é lido nunca. Por isso o `--release` também não é
+enfeite: em depuração o núcleo roda uma ordem de grandeza mais devagar, e o teto de tempo real
+classificaria jogo bom como "lento demais".
+
+## Como repetir, à mão
+
+```bash
+for z in roms/*.zip; do
+  n=$(basename "$z" .zip)
+  timeout 90 ./target/release/zeebx run "$z" --seconds=6 > "saida/$n.txt" 2>&1
+done
+```
+
+O emulador extrai o `.zip` sozinho e escolhe o `.mod` certo, então não é mais preciso desempacotar
+à mão. Quem estourar o `timeout` é "lento demais".
+
+O que ler em cada saída, **nesta ordem** — é ela que separa as categorias:
+
+| Linha | Significa |
+|---|---|
+| `applet: nenhum .mif encontrado` | nem chegou a criar o applet |
+| `start: EVT_APP_START → retornou …` | o applet foi criado e recebeu o evento inicial |
+| `start: EVT_APP_START → acesso inválido …` | quebrou no evento inicial, antes do primeiro quadro |
+| `parou na volta N em …` | quebrou já dentro do laço de quadros, na volta N |
+| `arquivos não encontrados:` | **leia sempre** — um nome errado aqui vira tela preta ou quebra, sem erro nenhum |
+| `classes desconhecidas: …` | ClassIDs que o jogo pediu e não temos |
+| `chamadas:` | quantas vezes cada método foi chamado — é o que aponta gargalo |
+| `log do jogo:` | os `DBGPRINTF` do próprio jogo, que costumam nomear o problema |
