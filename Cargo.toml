@@ -15,31 +15,32 @@ resolver = "3"
 name = "zeebx"
 version = "0.5.1"
 edition = "2024"
-# O código do Zeebx é GPLv2 ou posterior. O backend de CPU padrão é o Dynarmic, para manter o
-# núcleo compatível com frontends GPLv3 como Qt 6.
+# Zeebx's code is GPLv2 or later. The default CPU backend is Dynarmic, to keep the core
+# compatible with GPLv3 frontends such as Qt 6.
 authors = ["ZeebxTeam"]
 license = "GPL-2.0-or-later"
 repository = "https://github.com/ZeebxTeam/zeebx-emu"
-description = "O emulador definitivo de Zeebo!"
+description = "The definitive Zeebo emulator!"
 publish = false
 
-# O núcleo também é consumido pelos frontends Android, headless e Libretro.
+# The core is also consumed by the Android, headless and Libretro frontends.
 [lib]
 name = "zeebx"
 path = "src/lib.rs"
 
-# `desktop` reúne o que só a janela, os dispositivos do host e a interface precisam: rfd, minifb,
-# cpal, gilrs, Discord, glutin. O core Libretro compila com `--no-default-features` e não
-# linka nada disso: vídeo, áudio e entrada chegam por callback do frontend.
+# `desktop` gathers what only the window, the host devices and the interface need: rfd, minifb,
+# cpal, gilrs, Discord, glutin. The Libretro core compiles with `--no-default-features` and
+# links none of it: video, audio and input arrive through frontend callbacks.
 [features]
 default = ["desktop"]
 desktop = [
-    # A UI desktop usa o rasterizador na placa: o desktop implica `gpu`.
+    # The desktop UI uses the GPU rasterizer: desktop implies `gpu`.
     "gpu",
-    # A placa de som: o desktop implica `audio`.
+    # The sound card: desktop implies `audio`.
     "audio",
-    # O banco de amostras para o MIDI é Rust puro e sem dependência de host, então entra por
-    # padrão: sem um `.sf2` instalado ele nem é carregado, e sem ele a música é a mesma de antes.
+    # The sample bank for MIDI is pure Rust with no host dependency, so it goes in by
+    # default: without an installed `.sf2` it isn't even loaded, and without it the music is the
+    # same as before.
     "soundfont",
     "dep:discord-rich-presence",
     "dep:gilrs",
@@ -49,137 +50,142 @@ desktop = [
     "dep:rfd",
     "dep:ureq",
 ]
-# Criação de contexto OpenGL fora de tela para o rasterizador na placa sem janela.
-# O desenho na placa: o backend de OpenGL do motor. **Não puxa nada de host** — o `glow` é só o
-# vínculo com a API, e quem entrega o contexto é quem chama. É o que o core Libretro precisa: ele
-# recebe o contexto do frontend e não pode criar um próprio.
+# Offscreen OpenGL context creation for the GPU rasterizer without a window.
+# Drawing on the GPU: the engine's OpenGL backend. **It pulls in nothing from the host** — `glow`
+# is only the binding to the API, and the context is provided by the caller. It is what the
+# Libretro core needs: it receives the context from the frontend and can't create its own.
 gl = []
-# A saída de som pela placa do host, com o `cpal`.
+# Sound output through the host's sound card, with `cpal`.
 #
-# **Separada do `desktop` de propósito.** O `cpal` não é interface: no Android ele fala com o
-# Oboe, que é a saída nativa do aparelho, e o frontend de lá precisa dele sem precisar
-# do gilrs ou do rfd. O core Libretro continua sem: lá quem toca é o frontend, e a regra da casa
-# é que o core não linka placa de som.
+# **Separate from `desktop` on purpose.** `cpal` isn't interface: on Android it talks to
+# Oboe, which is the device's native output, and the frontend there needs it without needing
+# gilrs or rfd. The Libretro core still goes without: there the frontend does the playing, and
+# the house rule is that the core doesn't link a sound card.
 audio = ["dep:cpal"]
 
-# Síntese por banco de amostras (SoundFont) para o MIDI, em vez da tabela de timbres.
+# Sample bank (SoundFont) synthesis for MIDI, instead of the timbre table.
 #
-# O `rustysynth` é Rust puro e MIT, então entra tanto no core Libretro quanto no standalone sem
-# trazer biblioteca de host nenhuma — que é a regra da casa. O **banco** não é embutido: são 32 MB,
-# e o motor procura um `.sf2` na pasta do aparelho, exatamente como faz com a fonte do sistema. Sem
-# banco, o MIDI volta para a tabela de timbres, que é o que já toca hoje.
+# `rustysynth` is pure Rust and MIT, so it goes into both the Libretro core and the standalone
+# without bringing in any host library — which is the house rule. The **bank** isn't embedded:
+# it is 32 MB, and the engine looks for an `.sf2` in the device folder, exactly as it does with
+# the system font. Without a bank, MIDI falls back to the timbre table, which is what already
+# plays today.
 soundfont = ["dep:rustysynth"]
-# Abrir contexto de OpenGL **nosso**, para a janela do desktop e para a linha de comando sem
-# janela. Aqui entra o `glutin`, que linka EGL/GLX — motivo pelo qual o core não usa esta feature:
-# um core não pode depender de biblioteca de interface do host.
+# Open an OpenGL context **of our own**, for the desktop window and for the command line without
+# a window. This is where `glutin` comes in, which links EGL/GLX — the reason the core doesn't use
+# this feature: a core can't depend on a host interface library.
 gpu = ["gl", "dep:glutin", "dep:raw-window-handle"]
-# Baixar e instalar a versão nova sozinho: só os dois frontends desktop, que são os que saem em
-# instalador (AppImage, NSIS, `.app`). Separada do `desktop` porque o headless também o usa, e ele
-# sai num zip que ninguém instala. Traz o `reqwest`, que não pode chegar ao core Libretro.
+# Download and install the new version on its own: only the two desktop frontends, which are the
+# ones shipped as installers (AppImage, NSIS, `.app`). Separate from `desktop` because headless
+# also uses it, and it ships in a zip nobody installs. It brings in `reqwest`, which must not
+# reach the Libretro core.
 atualizador = ["desktop", "dep:cargo-packager-updater"]
-# O binário é a interface desktop: sem a feature ele nem é construído.
+# The binary is the desktop interface: without the feature it isn't even built.
 [dependencies]
-# Tipos de interface compartilhados pelo desktop e pelo frontend Android; não abre janela sozinho.
+# Interface types shared by the desktop and the Android frontend; doesn't open a window by itself.
 egui = { version = "0.33.3", default-features = false, features = ["default_fonts"] }
-# Saída de áudio do host. A decodificação é nossa: os jogos entregam PCM.
-# Contexto de OpenGL fora de tela para o rasterizador na placa: é o que permite a GPU funcionar
-# no `run` e no `sessao` sem janela, onde toda a medição é feita.
+# Host audio output. The decoding is ours: the games hand over PCM.
+# Offscreen OpenGL context for the GPU rasterizer: it is what lets the GPU work
+# in `run` and `session` without a window, where all the measuring is done.
 glutin = { version = "0.32.3", optional = true }
 raw-window-handle = { version = "0.6", optional = true }
-# Contexto de OpenGL. O `glow` é só o vínculo com a API, sem janela: o motor o usa para desenhar
-# na placa, e um frontend que não cria contexto simplesmente não o instancia.
+# OpenGL context. `glow` is only the binding to the API, without a window: the engine uses it to
+# draw on the GPU, and a frontend that doesn't create a context simply doesn't instantiate it.
 glow = "0.16"
 cpal = { version = "0.15", optional = true }
-# Controles de verdade, nos três sistemas.
+# Real controllers, on the three systems.
 gilrs = { version = "0.11", optional = true }
-# Inflate, para o IUnzipAStream do BREW.
+# Inflate, for BREW's IUnzipAStream.
 flate2 = "1"
 minifb = { version = "0.28.0", optional = true }
 png = "0.18.1"
-# Só o seletor de pastas. O `xdg-portal` evita depender do GTK no Linux.
+# Only the folder picker. `xdg-portal` avoids depending on GTK on Linux.
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "async-std"], optional = true }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
-# O cliente HTTP da tela de atualização. Só o desktop chama: o core não tem essa tela, e o
-# `ring` que o `ureq` puxa não compila para `wasm32-unknown-emscripten`.
+# The HTTP client of the update screen. Only the desktop calls it: the core has no such screen,
+# and the `ring` that `ureq` pulls in doesn't compile for `wasm32-unknown-emscripten`.
 ureq = { version = "3", optional = true }
-# Só leitura de zip: `deflate` cobre o que os empacotadores usam.
+# Zip reading only: `deflate` covers what the packagers use.
 zip = { version = "9", default-features = false, features = ["deflate"] }
-# Identidade estável de conteúdo/caches. Tamanho+mtime pode colidir ou mudar numa cópia idêntica.
+# Stable identity for content/caches. Size+mtime can collide or change on an identical copy.
 blake3 = "1"
 resvg = { version = "0.48.1", default-features = false }
-# O `AEECLSID_SQLMGR` do console é SQLite de verdade: os `.db` que a Z-Wheel traz no pacote
-# começam com "SQLite format 3", e as consultas dela usam `INSERT OR REPLACE`, `COLLATE NOCASE`
-# e JOIN. Reimplementar isso seria reinventar mal. A build é embutida para não depender de
-# biblioteca do sistema.
+# The console's `AEECLSID_SQLMGR` is real SQLite: the `.db` files the Z-Wheel carries in its
+# package start with "SQLite format 3", and its queries use `INSERT OR REPLACE`, `COLLATE NOCASE`
+# and JOIN. Reimplementing that would be reinventing it badly. The build is bundled so as not to
+# depend on a system library.
 rusqlite = { version = "0.37", features = ["bundled"] }
-# Rasterização de glifo para o `IDISPLAY_DrawText`: escrever um interpretador de TrueType seria
-# reinventar mal.
+# Glyph rasterization for `IDISPLAY_DrawText`: writing a TrueType interpreter would be
+# reinventing it badly.
 ab_glyph = "0.2"
-# Só o JPEG dos ícones de `.mif`. O resto da decodificação de imagem é nossa.
+# Only the JPEG of the `.mif` icons. The rest of the image decoding is ours.
 zune-jpeg = { version = "0.5.15", default-features = false, features = ["std"] }
-# A música de nove jogos é MP3 — Quake, Quake 2, Galaxy on Fire, Rally Master Pro, Powerboat,
-# Action Hero 3D, Need For Speed, zeetris e a Z-Wheel. Um decodificador de Layer III é Huffman,
-# requantização, IMDCT e banco de síntese, e escrever isso sem uma referência para comparar dá
-# som que toca e sai errado. O symphonia é Rust puro (sem build C) e MPL-2.0, que se combina com
-# a licença GPLv2+ daqui. Só o MP3 entra: o resto dos codecs fica fora.
-# `mp3` é a música da maioria dos jogos; `ogg`/`vorbis` é a de quem entrega Opus/Vorbis —
-# o Turma da Mônica tem **86 sons** em Ogg, e sem a feature o jogo roda em silêncio absoluto
-# (medido: pico 0,000 no relatório da varredura). É o mesmo decodificador, com duas caixas a mais.
+# The music of nine games is MP3 — Quake, Quake 2, Galaxy on Fire, Rally Master Pro, Powerboat,
+# Action Hero 3D, Need For Speed, zeetris and the Z-Wheel. A Layer III decoder is Huffman,
+# requantization, IMDCT and a synthesis filter bank, and writing that without a reference to
+# compare against gives sound that plays and comes out wrong. symphonia is pure Rust (no C build)
+# and MPL-2.0, which is compatible with the GPLv2+ license here. Only MP3 goes in: the rest of the
+# codecs stay out.
+# `mp3` is the music of most games; `ogg`/`vorbis` is that of the ones that ship Opus/Vorbis —
+# Turma da Mônica has **86 sounds** in Ogg, and without the feature the game runs in absolute
+# silence (measured: peak 0.000 in the scan report). It is the same decoder, with two more boxes.
 symphonia = { version = "0.5.5", default-features = false, features = ["mp1", "mp2", "mp3", "ogg", "vorbis"] }
 discord-rich-presence = { version = "1.1", optional = true }
 sevenz-rust2 = "0.23.0"
-# Síntese por banco de amostras, ver a feature `soundfont`. MIT e Rust puro: nada de C, nada de
-# biblioteca de host, e por isso pode entrar no core Libretro.
+# Sample bank synthesis, see the `soundfont` feature. MIT and pure Rust: no C, no host library,
+# and that is why it can go into the Libretro core.
 rustysynth = { version = "1.3.6", optional = true }
-# O que baixa, confere a assinatura minisign e instala a versão nova. É do mesmo projeto que o
-# `cargo packager`, e entende os pacotes que ele gera. MIT ou Apache-2.0.
+# What downloads, checks the minisign signature and installs the new version. It is from the
+# same project as `cargo packager`, and understands the packages it generates. MIT or Apache-2.0.
 cargo-packager-updater = { version = "0.2.3", optional = true }
 
-# O `dynarmic` recompila A32 para o código nativo do host. O Kingdom Hearts precisa dele
-# porque a extensão 3D roda o próprio rasterizador ARM por milhões de pixels. Três alvos ficam
-# de fora, e neles o núcleo é o interpretador em `src/cpu/interpretador.rs`:
+# `dynarmic` recompiles A32 to the host's native code. Kingdom Hearts needs it
+# because the 3D extension runs its own ARM rasterizer over millions of pixels. Three targets are
+# left out, and on them the core is the interpreter in `src/cpu/interpreter.rs`:
 #
-# - no `wasm32` não há para onde recompilar — o navegador não executa o bloco que o JIT emitiria;
-# - no iOS o sistema recusa a página executável que o alocador pede. O oaknut, no
-#   `TARGET_OS_IPHONE`, mapeia a página como executável e depois troca a proteção com `mprotect`,
-#   e isso é privilégio do sistema — o simulador também é iPhone OS;
-# - na Vita o host é Cortex-A9, ARMv7 de 32 bits. O dynarmic só emite x86_64 e AArch64.
+# - on `wasm32` there is nowhere to recompile to — the browser doesn't run the block the JIT
+#   would emit;
+# - on iOS the system refuses the executable page the allocator asks for. oaknut, under
+#   `TARGET_OS_IPHONE`, maps the page as executable and then swaps the protection with `mprotect`,
+#   and that is a system privilege — the simulator is iPhone OS too;
+# - on the Vita the host is a Cortex-A9, 32-bit ARMv7. dynarmic only emits x86_64 and AArch64.
 [target.'cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "vita")))'.dependencies]
 dynarmic = "0.1.3"
 
-# O `ioctl` que lê a escala dos sensores de movimento em `/dev/input`. Já vinha na árvore por
-# várias dependências, então não acrescenta build nenhuma.
+# The `ioctl` that reads the scale of the motion sensors in `/dev/input`. It was already in the
+# tree through several dependencies, so it adds no build at all.
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
 
 
-# O `cargo run` sem `--release` rodava o Quake 6,9x mais devagar — 21,7 s contra 3,2 s para o
-# mesmo trabalho (668 M instruções, 378 voltas). Não é surpresa: o rasterizador e o despacho de
-# API são laços apertados em Rust, e `opt-level = 0` não inlina nada.
+# `cargo run` without `--release` ran Quake 6.9x slower — 21.7 s against 3.2 s for the
+# same work (668 M instructions, 378 laps). No surprise: the rasterizer and the API dispatch
+# are tight loops in Rust, and `opt-level = 0` inlines nothing.
 #
-# Medido nesta árvore, mesmo trabalho, com as dependências em 3:
+# Measured in this tree, same work, with the dependencies at 3:
 #
-#   opt-level   rodar     rebuild incremental
+#   opt-level   run       incremental rebuild
 #           0   21690 ms   3020 ms
 #           1    3427 ms   2572 ms
 #           2    3391 ms   2668 ms
 #     release    3164 ms          —
 #
-# O rebuild incremental não piora — em `opt-level = 0` o LLVM gera mais código, e isso compensa
-# o que a otimização custa. Então o perfil de desenvolvimento fica em 2: 7% mais lento que o
-# release, com as asserções de depuração e os símbolos que o `dev` existe para ter.
+# The incremental rebuild doesn't get worse — at `opt-level = 0` LLVM generates more code, and
+# that offsets what the optimization costs. So the development profile stays at 2: 7% slower
+# than release, with the debug assertions and symbols that `dev` exists to have.
 [profile.dev]
 opt-level = 2
 
-# As dependências não mudam entre uma compilação e outra, então otimizá-las é custo único.
+# The dependencies don't change between one build and the next, so optimizing them is a
+# one-time cost.
 [profile.dev.package."*"]
 opt-level = 3
 
-# O Android e o rasterizador passam por várias camadas/crates pequenas no caminho quente.
-# ThinLTO deixa o LLVM atravessar essas fronteiras no pacote final sem o custo de build do LTO
-# completo. Uma unidade de código dá ao otimizador a visão mais ampla possível no release; só
-# muda tempo/tamanho de compilação, não o comportamento do emulador.
+# Android and the rasterizer go through several small layers/crates on the hot path.
+# ThinLTO lets LLVM cross those boundaries in the final package without the build cost of full
+# LTO. One codegen unit gives the optimizer the widest possible view in release; it only
+# changes compile time/size, not the emulator's behavior.
 [profile.release]
 lto = "thin"
 codegen-units = 1
