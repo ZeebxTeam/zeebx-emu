@@ -1,53 +1,53 @@
-//! Zeebx — a linha de comando do emulador de Zeebo / Qualcomm BREW.
+//! Zeebx — the command line of the Zeebo / Qualcomm BREW emulator.
 //!
-//! Rodar, medir e inspecionar um jogo sem a interface: `run`, `sessao`, `bench`, `info`,
-//! `controles` e `wiimote`. A interface é o `zeebx-qt`, em `frontends/qt-standalone`.
+//! Run, measure and inspect a game without the interface: `run`, `session`, `bench`, `info`,
+//! `controls` and `wiimote`. The interface is `zeebx-qt`, in `frontends/qt-standalone`.
 
-// O binário consome o motor como biblioteca: nada aqui redeclara módulos, e `desktop` decide
-// quais deles entram na compilação.
+// The binary consumes the engine as a library: nothing here redeclares modules, and `desktop`
+// decides which of them go into the build.
 use zeebx::{audio, cpu, input, library, loader, machine, session, ui};
 
 use std::process::ExitCode;
 
 use zeebx::brew::aee;
-use zeebx::cpu::{BackendPadrao, CpuBackend, dynarmic::DynarmicCpu};
+use zeebx::cpu::{DefaultBackend, CpuBackend, dynarmic::DynarmicCpu};
 use zeebx::input::bindings;
 use zeebx::loader::archive;
 use zeebx::loader::modfile::{ModImage, Variant};
 use zeebx::machine::{AppletResult, Machine, Outcome};
 use zeebx::ui::window;
 
-/// Teto de instruções por fatia entre duas chamadas de API — evita que um laço infinito no
-/// guest trave o emulador. Precisa ser generoso: a inicialização do Bejeweled Twist passa
-/// dezenas de milhões de instruções sem chamar API nenhuma.
+/// Cap on instructions per slice between two API calls — keeps an infinite loop in the guest
+/// from hanging the emulator. It has to be generous: Bejeweled Twist's initialization goes tens
+/// of millions of instructions without calling any API.
 const INSTRUCTION_BUDGET: u64 = 500_000_000;
 
-/// Quanto tempo do jogo rodar quando ninguém pede outra coisa.
+/// How much game time to run when nobody asks for something else.
 const DEFAULT_SECONDS: u32 = 10;
-/// Teto de voltas do laço de eventos — uma rede de segurança, não um limite de uso: quem
-/// decide quando parar é o `--seconds` ou o fechar da janela.
+/// Cap on event loop passes — a safety net, not a usage limit: what decides when to stop is
+/// `--seconds` or closing the window.
 const MAX_ROUNDS: u32 = 10_000_000;
 
-/// De quanto em quanto tempo de relógio real a janela é atualizada, no mínimo.
+/// How often, in wall-clock time, the window is refreshed at the least.
 const REFRESH_PERIOD: std::time::Duration = std::time::Duration::from_millis(8);
 
-/// Taxa em que o `--dump-audio` grava. Não precisa ser a da placa: o que se quer é conferir o
-/// que o jogo mandou tocar, e 44100 cobre a maior taxa que os jogos usam.
+/// Rate at which `--dump-audio` records. It does not need to be the sound card's: the point is
+/// to check what the game asked to play, and 44100 covers the highest rate games use.
 const RECORD_RATE: u32 = 44_100;
 
-/// Quantas entradas o perfil de sessão mostra.
+/// How many entries the session profile shows.
 const PROFILE_LINES: usize = 20;
 
-/// Quantas linhas do log por semihosting o relatório mostra.
+/// How many lines of the semihosting log the report shows.
 const SEMIHOSTING_LINES: usize = 40;
 
 fn main() -> ExitCode {
-    // **O nível do registro entra aqui também.** A janela o lê ao abrir (o `zeebx-qt`), e os comandos
-    // de linha de comando não o liam: `ZEEBX_LOG=informacao` era ignorado em `run`, `bench` e
-    // `sessao`, e as linhas de instrumento -- todas de `Informacao` -- não apareciam. Foi assim que
-    // duas medidas minhas saíram vazias antes de eu perceber.
-    zeebx::registro::le_do_ambiente();
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    // **The log level comes in here too.** The window reads it on startup (`zeebx-qt`), and the
+    // command-line commands did not: `ZEEBX_LOG=informacao` was ignored in `run`, `bench` and
+    // `session`, and the instrumentation lines -- all of them `Info` -- did not show up. That is
+    // how two of my measurements came out empty before I noticed.
+    zeebx::logging::from_env();
+    let args: Vec<String> = cli_args();
     match args.first().map(String::as_str) {
         Some("info") if args.len() == 2 => report(info(&args[1])),
         Some("run") if args.len() >= 2 => {
@@ -65,36 +65,37 @@ fn main() -> ExitCode {
                 .find_map(|a| a.strip_prefix("--frames="))
                 .and_then(|n| n.parse().ok())
                 .unwrap_or(MAX_ROUNDS);
-            // `--sonda=0xCLSID[,0xCLSID...]` atende classes desconhecidas com um objeto de
-            // observação, em vez de recusá-las, e diz no fim o que o jogo chamou nele.
+            // `--probe=0xCLSID[,0xCLSID...]` serves unknown classes with an observation object,
+            // instead of refusing them, and says at the end what the game called on it.
             let probe: Vec<u32> = args
                 .iter()
-                .filter_map(|a| a.strip_prefix("--sonda="))
-                .flat_map(|lista| lista.split(','))
+                .filter_map(|a| a.strip_prefix("--probe="))
+                .flat_map(|list| list.split(','))
                 .filter_map(|n| u32::from_str_radix(n.trim().trim_start_matches("0x"), 16).ok())
                 .collect();
-            // `--sonda-resposta=0xCLSID:SLOT=VALOR` combina o que um slot de sonda responde.
-            // Sem isso não há como sair de um laço em que o jogo espera "acabou" — a sonda diz
-            // sucesso para sempre e ele nunca sai.
+            // `--probe-answer=0xCLSID:SLOT=VALUE` sets what a probe slot answers. Without it
+            // there is no way out of a loop where the game waits for "done" — the probe says
+            // success forever and it never leaves.
             let probe_answers: Vec<(u32, u32, u32)> = args
                 .iter()
-                .filter_map(|a| a.strip_prefix("--sonda-resposta="))
+                .filter_map(|a| a.strip_prefix("--probe-answer="))
                 .filter_map(|spec| {
-                    let (classe, resto) = spec.split_once(':')?;
-                    let (slot, valor) = resto.split_once('=')?;
-                    let numero = |t: &str| {
+                    let (class_id, rest) = spec.split_once(':')?;
+                    let (slot, value) = rest.split_once('=')?;
+                    let number = |t: &str| {
                         let t = t.trim();
                         match t.strip_prefix("0x") {
                             Some(hex) => u32::from_str_radix(hex, 16).ok(),
                             None => t.parse().ok(),
                         }
                     };
-                    Some((numero(classe)?, numero(slot)?, numero(valor)?))
+                    Some((number(class_id)?, number(slot)?, number(value)?))
                 })
                 .collect();
-            // `--serial=CAMINHO` grava o que sairia pela UART de depuração do console: cada
-            // `DBGPRINTF` em ordem, com o instante do relógio virtual. O relatório agrupa
-            // repetições; isto não agrupa, que é o que serve para analisar uma sequência.
+            // `--serial=PATH` records what would come out of the console's debug UART: each
+            // `DBGPRINTF` in order, with the virtual clock instant. The report groups
+            // repetitions; this does not, which is what makes it useful for analyzing a
+            // sequence.
             let serial = args
                 .iter()
                 .find_map(|a| a.strip_prefix("--serial="))
@@ -121,12 +122,12 @@ fn main() -> ExitCode {
             let keys = match keys {
                 Ok(keys) => keys.unwrap_or_default(),
                 Err(err) => {
-                    eprintln!("erro: {err}");
+                    eprintln!("error: {err}");
                     return ExitCode::FAILURE;
                 }
             };
-            // Com janela, o padrão é rodar até fecharem; sem ela, alguém precisa dizer
-            // quando parar, e o padrão são poucos segundos de tempo do jogo.
+            // With a window, the default is to run until it is closed; without one, someone has
+            // to say when to stop, and the default is a few seconds of game time.
             let seconds = match (seconds, window) {
                 (limit @ Some(_), _) => limit,
                 (None, true) => None,
@@ -148,152 +149,154 @@ fn main() -> ExitCode {
                     keys,
                     dump_gl,
                     dump_audio,
-                    network: !args.iter().any(|a| a == "--sem-rede"),
+                    network: !args.iter().any(|a| a == "--no-network"),
                     network_to: args
                         .iter()
-                        .find_map(|a| a.strip_prefix("--servidor="))
+                        .find_map(|a| a.strip_prefix("--server="))
                         .map(str::to_owned),
-                    bridge: args.iter().any(|a| a == "--ponte"),
-                    teclas: args
+                    bridge: args.iter().any(|a| a == "--bridge"),
+                    key_events: args
                         .iter()
-                        .find_map(|a| a.strip_prefix("--teclas="))
-                        .map(teclado)
+                        .find_map(|a| a.strip_prefix("--key-names="))
+                        .map(keyboard)
                         .unwrap_or_default(),
-                    instalados: args
+                    installed: args
                         .iter()
-                        .find_map(|a| a.strip_prefix("--instalados="))
-                        .map(instalados)
+                        .find_map(|a| a.strip_prefix("--installed="))
+                        .map(installed)
                         .unwrap_or_default(),
-                    portas: match args.iter().find_map(|a| a.strip_prefix("--portas=")) {
-                        Some(lista) => match aparelhos(lista) {
-                            Some(portas) => portas,
+                    ports: match args.iter().find_map(|a| a.strip_prefix("--ports=")) {
+                        Some(list) => match devices(list) {
+                            Some(ports) => ports,
                             None => {
                                 eprintln!(
-                                    "erro: --portas espera nomes separados por vírgula, entre \
-                                     'controle', 'teclado' e 'nenhum'"
+                                    "error: --ports expects comma-separated names, among \
+                                     'pad', 'keyboard' and 'none'"
                                 );
                                 return ExitCode::FAILURE;
                             }
                         },
-                        None => zeebx::PORTAS_PADRAO,
+                        None => zeebx::DEFAULT_PORTS,
                     },
                 },
             ))
         }
-        // O que o emulador enxerga de controle, para quando a entrada não responde e não dá
-        // para saber se o problema é o aparelho, o nome salvo ou o mapeamento.
-        Some("controles") => {
+        // What the emulator sees of controllers, for when input does not respond and there is
+        // no telling whether the problem is the device, the saved name or the mapping.
+        Some("controls") => {
             let pads = input::gamepads::Gamepads::new();
-            let nomes = pads.names();
-            match nomes.is_empty() {
-                true => println!("nenhum controle visto pelo sistema"),
+            let names = pads.names();
+            match names.is_empty() {
+                true => println!("no controller seen by the system"),
                 false => {
-                    println!("controles vistos, na ordem do sistema:");
-                    for (i, nome) in nomes.iter().enumerate() {
-                        println!("  {i}: {nome}");
+                    println!("controllers seen, in system order:");
+                    for (i, name) in names.iter().enumerate() {
+                        println!("  {i}: {name}");
                     }
                 }
             }
-            // O sensor de movimento de cada controle: é o que alimenta o Boomerang da porta, e
-            // um controle com sensor que não mexe o Boomerang costuma ser o nó sem permissão.
-            let sensores = input::sensores::Sensores::inicia();
+            // Each controller's motion sensor: it is what feeds the port's Boomerang, and a
+            // controller with a sensor that does not move the Boomerang is usually the device
+            // node without permission.
+            let sensors = input::sensors::Sensors::start();
             std::thread::sleep(std::time::Duration::from_millis(1500));
-            for (i, nome) in nomes.iter().enumerate() {
+            for (i, name) in names.iter().enumerate() {
                 let sensor =
-                    pads.identidade(Some(nome), i)
-                        .and_then(|(so, vendor, product, ordem)| {
-                            sensores.do_controle(&so, vendor, product, ordem)
+                    pads.identity(Some(name), i)
+                        .and_then(|(os_name, vendor, product, order)| {
+                            sensors.for_controller(&os_name, vendor, product, order)
                         });
                 match sensor {
-                    Some(s) if s.sem_permissao => {
+                    Some(s) if s.permission_denied => {
                         println!(
-                            "  sensor de {nome}: {} SEM PERMISSÃO — a regra do udev:",
-                            s.nome
+                            "  sensor of {name}: {} NO PERMISSION — the udev rule:",
+                            s.name
                         );
-                        println!("    {}", input::sensores::REGRA_DO_UDEV);
+                        println!("    {}", input::sensors::UDEV_RULE);
                     }
-                    Some(s) if s.com_leitura => println!(
-                        "  sensor de {nome}: {}, [{:+.2} {:+.2} {:+.2}] g",
-                        s.nome, s.aceleracao[0], s.aceleracao[1], s.aceleracao[2]
+                    Some(s) if s.has_reading => println!(
+                        "  sensor of {name}: {}, [{:+.2} {:+.2} {:+.2}] g",
+                        s.name, s.acceleration[0], s.acceleration[1], s.acceleration[2]
                     ),
-                    Some(s) => println!("  sensor de {nome}: {}, sem leitura ainda", s.nome),
+                    Some(s) => println!("  sensor of {name}: {}, no reading yet", s.name),
                     None => {}
                 }
             }
             let settings = ui::settings::Settings::load();
-            for porta in 0..input::PORTAS {
-                let Some(jogador) = settings.controls.player(porta) else {
+            for port in 0..input::PORTS {
+                let Some(player) = settings.controls.player(port) else {
                     continue;
                 };
-                let escolhido = jogador.device.as_deref();
-                let achado = match escolhido {
-                    Some(nome) => match nomes.iter().position(|n| n == nome) {
-                        Some(i) => format!("posição {i}"),
-                        None => "NÃO ESTÁ LIGADO".to_string(),
+                let chosen = player.device.as_deref();
+                let found = match chosen {
+                    Some(name) => match names.iter().position(|n| n == name) {
+                        Some(i) => format!("position {i}"),
+                        None => "NOT CONNECTED".to_string(),
                     },
-                    None => match nomes.len() > porta {
-                        true => format!("posição {porta}, por ser a porta {}", porta + 1),
-                        false => "nenhum nessa posição".to_string(),
+                    None => match names.len() > port {
+                        true => format!("position {port}, for being port {}", port + 1),
+                        false => "none at that position".to_string(),
                     },
                 };
                 println!(
-                    "porta {}: {}, aparelho {:?}, escolhido {:?} -> {achado}",
-                    porta + 1,
-                    match jogador.ligada {
-                        true => "ligada",
-                        false => "desligada",
+                    "port {}: {}, device {:?}, chosen {:?} -> {found}",
+                    port + 1,
+                    match player.enabled {
+                        true => "on",
+                        false => "off",
                     },
-                    jogador.aparelho,
-                    escolhido.unwrap_or("nenhum"),
+                    player.device_kind,
+                    chosen.unwrap_or("none"),
                 );
             }
-            // Com `--ler`, fica um tempo mostrando o que chega: é a única forma de separar
-            // "o controle não é visto" de "o controle é visto e o mapeamento não bate".
-            if args.iter().any(|a| a == "--ler") {
+            // With `--read`, it stays a while showing what comes in: it is the only way to tell
+            // "the controller is not seen" from "the controller is seen and the mapping does not
+            // match".
+            if args.iter().any(|a| a == "--read") {
                 let mut pads = pads;
-                println!("lendo por 15 segundos — aperte os botões");
-                let fim = std::time::Instant::now() + std::time::Duration::from_secs(15);
-                let mut antes: Vec<String> = vec![String::new(); input::PORTAS];
-                let mut antes_cru: Vec<String> = vec![String::new(); nomes.len()];
-                while std::time::Instant::now() < fim {
+                println!("reading for 15 seconds — press the buttons");
+                let end = std::time::Instant::now() + std::time::Duration::from_secs(15);
+                let mut before: Vec<String> = vec![String::new(); input::PORTS];
+                let mut raw_before: Vec<String> = vec![String::new(); names.len()];
+                while std::time::Instant::now() < end {
                     pads.poll();
-                    // Cru, por controle: separa "o sistema não entrega nada" de "entrega e o
-                    // mapeamento da porta não aproveita".
-                    for (i, nome) in nomes.iter().enumerate() {
-                        let bruto = match pads.first_active(Some(nome), i) {
+                    // Raw, per controller: separates "the system delivers nothing" from "it
+                    // delivers and the port's mapping does not use it".
+                    for (i, name) in names.iter().enumerate() {
+                        let raw = match pads.first_active(Some(name), i) {
                             Some(source) => format!("{source:?}"),
                             None => String::new(),
                         };
-                        if bruto != antes_cru[i] {
-                            match bruto.is_empty() {
-                                true => println!("controle {i} ({nome}): nada"),
-                                false => println!("controle {i} ({nome}): {bruto}"),
+                        if raw != raw_before[i] {
+                            match raw.is_empty() {
+                                true => println!("controller {i} ({name}): nothing"),
+                                false => println!("controller {i} ({name}): {raw}"),
                             }
-                            antes_cru[i] = bruto;
+                            raw_before[i] = raw;
                         }
                     }
-                    for porta in 0..input::PORTAS {
-                        let Some(jogador) = settings.controls.player(porta) else {
+                    for port in 0..input::PORTS {
+                        let Some(player) = settings.controls.player(port) else {
                             continue;
                         };
-                        let device = jogador.device.clone();
-                        let pad = jogador.pad(
-                            |source| pads.is_active(device.as_deref(), porta, source),
-                            |axis| pads.value(device.as_deref(), porta, axis),
+                        let device = player.device.clone();
+                        let pad = player.pad(
+                            |source| pads.is_active(device.as_deref(), port, source),
+                            |axis| pads.value(device.as_deref(), port, axis),
                         );
-                        let apertados: Vec<&str> = input::BUTTON_NAMES
+                        let pressed_buttons: Vec<&str> = input::BUTTON_NAMES
                             .iter()
                             .enumerate()
                             .filter(|(i, _)| pad.is_down(*i))
-                            .map(|(_, nome)| *nome)
+                            .map(|(_, name)| *name)
                             .collect();
-                        let agora = apertados.join(" ");
-                        if agora != antes[porta] {
-                            match agora.is_empty() {
-                                true => println!("porta {}: nada", porta + 1),
-                                false => println!("porta {}: {agora}", porta + 1),
+                        let pressed_now = pressed_buttons.join(" ");
+                        if pressed_now != before[port] {
+                            match pressed_now.is_empty() {
+                                true => println!("port {}: nothing", port + 1),
+                                false => println!("port {}: {pressed_now}", port + 1),
                             }
-                            antes[porta] = agora;
+                            before[port] = pressed_now;
                         }
                     }
                     std::thread::sleep(std::time::Duration::from_millis(30));
@@ -316,65 +319,66 @@ fn main() -> ExitCode {
             {
                 Ok(keys) => keys.unwrap_or_default(),
                 Err(err) => {
-                    eprintln!("erro: {err}");
+                    eprintln!("error: {err}");
                     return ExitCode::FAILURE;
                 }
             };
-            let teclas = args
+            let key_events = args
                 .iter()
-                .find_map(|a| a.strip_prefix("--teclas="))
-                .map(teclado)
+                .find_map(|a| a.strip_prefix("--key-names="))
+                .map(keyboard)
                 .unwrap_or_default();
-            let instalados = args
+            let installed = args
                 .iter()
-                .find_map(|a| a.strip_prefix("--instalados="))
-                .map(instalados)
+                .find_map(|a| a.strip_prefix("--installed="))
+                .map(installed)
                 .unwrap_or_default();
-            let superficies = args.iter().find_map(|a| a.strip_prefix("--dump-surfaces="));
+            let surfaces = args.iter().find_map(|a| a.strip_prefix("--dump-surfaces="));
             report(bench_dynarmic(
                 &args[1],
                 seconds,
                 dump,
                 &keys,
-                &teclas,
-                instalados,
-                superficies,
+                &key_events,
+                installed,
+                surfaces,
             ))
         }
-        // Mostra o Wii Remote ao vivo: botões e aceleração, para conferir a leitura sem janela.
+        // Shows the Wii Remote live: buttons and acceleration, to check the reading without a
+        // window.
         Some("wiimote") => {
-            let segundos: u64 = args
+            let wiimote_seconds: u64 = args
                 .iter()
                 .find_map(|a| a.strip_prefix("--seconds="))
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(10);
-            let wiimotes = input::wiimote::Wiimotes::inicia();
-            let fim = std::time::Instant::now() + std::time::Duration::from_secs(segundos);
-            while std::time::Instant::now() < fim {
+            let wiimotes = input::wiimote::Wiimotes::start();
+            let end = std::time::Instant::now() + std::time::Duration::from_secs(wiimote_seconds);
+            while std::time::Instant::now() < end {
                 std::thread::sleep(std::time::Duration::from_millis(250));
-                match wiimotes.estado(0) {
+                match wiimotes.state(0) {
                     Some(e) => {
-                        let apertados: Vec<&str> = input::wiimote::BOTOES
+                        let pressed_buttons: Vec<&str> = input::wiimote::BUTTONS
                             .iter()
-                            .map(|(nome, _)| *nome)
-                            .filter(|nome| e.apertado(nome))
+                            .map(|(name, _)| *name)
+                            .filter(|name| e.pressed(name))
                             .collect();
-                        let [x, y, z] = e.aceleracao;
+                        let [x, y, z] = e.acceleration;
                         println!(
-                            "x {x:+.2} y {y:+.2} z {z:+.2} g  acelerômetro: {}  botões: {apertados:?}",
-                            if e.com_acelerometro {
-                                "sim"
+                            "x {x:+.2} y {y:+.2} z {z:+.2} g  accelerometer: {}  buttons: {pressed_buttons:?}",
+                            if e.with_accelerometer {
+                                "yes"
                             } else {
-                                "ainda não"
+                                "not yet"
                             }
                         );
                     }
-                    None => println!("nenhum Wii Remote"),
+                    None => println!("no Wii Remote"),
                 }
             }
             ExitCode::SUCCESS
         }
-        Some("sessao") if args.len() >= 2 => {
+        Some("session") if args.len() >= 2 => {
             let seconds = args
                 .iter()
                 .find_map(|a| a.strip_prefix("--seconds="))
@@ -389,151 +393,201 @@ fn main() -> ExitCode {
             {
                 Ok(keys) => keys.unwrap_or_default(),
                 Err(err) => {
-                    eprintln!("erro: {err}");
+                    eprintln!("error: {err}");
                     return ExitCode::FAILURE;
                 }
             };
-            let fotos: Vec<u32> = args
+            let shots: Vec<u32> = args
                 .iter()
-                .find_map(|a| a.strip_prefix("--fotos="))
-                .map(|lista| {
-                    lista
+                .find_map(|a| a.strip_prefix("--shots="))
+                .map(|list| {
+                    list
                         .split(',')
                         .filter_map(|t| t.trim().parse().ok())
                         .collect()
                 })
                 .unwrap_or_default();
-            let placa = args.iter().any(|a| a == "--placa");
+            let gpu = args.iter().any(|a| a == "--gpu");
             let serial = args.iter().find_map(|a| a.strip_prefix("--serial="));
-            // Como no `run`: o filtro sozinho não liga nada, e ligar sem filtro mostra tudo.
-// Antes este ramo nem lia a opção, e o `--trace` do uso do `sessao` não fazia nada.
+            // As in `run`: the filter alone turns nothing on, and turning it on without a filter
+            // shows everything. Before, this branch did not even read the option, and the
+            // `--trace` in `session`'s usage did nothing.
             let tracing = args.iter().any(|a| a.starts_with("--trace"));
             let trace_filter = args
                 .iter()
                 .find_map(|a| a.strip_prefix("--trace="))
                 .map(str::to_owned);
-            // Sem nada, valem as preferências da Z-Wheel gravadas; `--fabrica` usa a cfg do pacote
-            // como veio, e os outros dois trocam uma opção só.
-            let mut z_wheel = match args.iter().any(|a| a == "--fabrica") {
+            // With nothing, the saved Z-Wheel preferences apply; `--factory` uses the package's
+            // cfg as it came, and the other two change a single option.
+            let mut z_wheel = match args.iter().any(|a| a == "--factory") {
                 true => ui::settings::ZWheel {
-                    fim_de_vida: true,
-                    transicoes_sempre: false,
+                    end_of_life: true,
+                    always_transitions: false,
                 },
                 false => ui::settings::Settings::load().z_wheel,
             };
-            if args.iter().any(|a| a == "--sem-fim-de-vida") {
-                z_wheel.fim_de_vida = false;
+            if args.iter().any(|a| a == "--no-end-of-life") {
+                z_wheel.end_of_life = false;
             }
-            if args.iter().any(|a| a == "--sem-transicoes") {
-                z_wheel.transicoes_sempre = false;
+            if args.iter().any(|a| a == "--no-transitions") {
+                z_wheel.always_transitions = false;
             }
-            let escala = args
+            let scale = args
                 .iter()
-                .find_map(|a| a.strip_prefix("--escala="))
+                .find_map(|a| a.strip_prefix("--scale="))
                 .and_then(|n| n.parse::<usize>().ok())
                 .unwrap_or(1);
-            let numero = |prefixo: &str| {
+            let number = |prefix: &str| {
                 args.iter()
-                    .find_map(|a| a.strip_prefix(prefixo))
+                    .find_map(|a| a.strip_prefix(prefix))
                     .and_then(|n| n.parse::<usize>().ok())
                     .unwrap_or(1)
             };
-            let melhorias = (numero("--msaa="), numero("--aniso="));
-            // `--perfil` mede tudo; `--perfil=MS` só a partir desse instante virtual.
-            let perfil = args.iter().find_map(|a| match a.as_str() {
-                "--perfil" => Some(0),
-                outro => outro
-                    .strip_prefix("--perfil=")
+            let enhancements = (number("--msaa="), number("--aniso="));
+            // `--profile` measures everything; `--profile=MS` only from that virtual instant on.
+            let profile = args.iter().find_map(|a| match a.as_str() {
+                "--profile" => Some(0),
+                other => other
+                    .strip_prefix("--profile=")
                     .and_then(|n| n.parse::<u32>().ok()),
             });
-            // `--boomerang` põe um Boomerang na porta um; `--movimento=ms:x:y:z,...` diz a
-            // aceleração dele a partir de cada instante, em g.
-            let movimento: Vec<(u32, [f32; 3])> = args
+            // `--boomerang` puts a Boomerang on port one; `--motion=ms:x:y:z,...` gives its
+            // acceleration from each instant on, in g.
+            let motion: Vec<(u32, [f32; 3])> = args
                 .iter()
-                .find_map(|a| a.strip_prefix("--movimento="))
-                .map(|lista| {
-                    lista
+                .find_map(|a| a.strip_prefix("--motion="))
+                .map(|list| {
+                    list
                         .split(',')
                         .filter_map(|item| {
-                            let partes: Vec<&str> = item.split(':').collect();
-                            let [quando, x, y, z] = partes.as_slice() else {
+                            let parts: Vec<&str> = item.split(':').collect();
+                            let [when, x, y, z] = parts.as_slice() else {
                                 return None;
                             };
                             Some((
-                                quando.parse().ok()?,
+                                when.parse().ok()?,
                                 [x.parse().ok()?, y.parse().ok()?, z.parse().ok()?],
                             ))
                         })
                         .collect()
                 })
                 .unwrap_or_default();
-            let boomerang = (args.iter().any(|a| a == "--boomerang") || !movimento.is_empty())
-                .then_some(movimento);
-            // As portas, para testar o que só aparece com dois jogadores. Sem a opção fica o
-            // padrão de sempre: um controle na primeira e a segunda livre.
-            let portas = match args.iter().find_map(|a| a.strip_prefix("--portas=")) {
-                Some(lista) => match aparelhos(lista) {
-                    Some(portas) => Some(portas),
+            let boomerang = (args.iter().any(|a| a == "--boomerang") || !motion.is_empty())
+                .then_some(motion);
+            // The ports, to test what only shows up with two players. Without the option the
+            // usual default stays: a controller on the first and the second free.
+            let ports = match args.iter().find_map(|a| a.strip_prefix("--ports=")) {
+                Some(list) => match devices(list) {
+                    Some(ports) => Some(ports),
                     None => {
                         eprintln!(
-                            "erro: --portas espera nomes separados por vírgula, entre \
-                             'controle', 'zpad', 'teclado', 'boomerang' e 'nenhum'"
+                            "error: --ports expects comma-separated names, among \
+                             'pad', 'zpad', 'keyboard', 'boomerang' and 'none'"
                         );
                         return ExitCode::FAILURE;
                     }
                 },
                 None => None,
             };
-            report(sessao_sem_janela(
-                &args[1], seconds, dump, &keys, &fotos, placa, serial, z_wheel, escala, melhorias,
-                perfil, boomerang, portas, tracing, trace_filter,
+            report(windowless_session(
+                &args[1], seconds, dump, &keys, &shots, gpu, serial, z_wheel, scale, enhancements,
+                profile, boomerang, ports, tracing, trace_filter,
             ))
         }
         _ => {
-            eprintln!("uso: zeebx info <arquivo.mod>     (a interface é o zeebx-qt)");
+            eprintln!("usage: zeebx info <file.mod>     (the interface is zeebx-qt)");
             eprintln!(
-                "     zeebx run <arquivo.mod> [--window] [--seconds=N] [--keys=ms:tecla,...]
-                             [--dump-gl=DIR] [--dump-audio=ARQUIVO.wav]
-                             [--trace[=trecho]] [--serial=CAMINHO] [--dump-heap]
+                "     zeebx run <file.mod> [--window] [--seconds=N] [--keys=ms:key,...]
+                             [--dump-gl=DIR] [--dump-audio=FILE.wav]
+                             [--trace[=filter]] [--serial=PATH] [--dump-heap]
                              [--dump-surfaces=DIR]
-                             [--frames=N] [--sonda=0xCLSID,...]
-                             [--sem-rede] [--servidor=MAQUINA[:PORTA]] [--ponte]
-                             [--portas=controle|teclado|nenhum,...] [--teclas=ms:nome,...]"
+                             [--frames=N] [--probe=0xCLSID,...]
+                             [--no-network] [--server=HOST[:PORT]] [--bridge]
+                             [--ports=pad|keyboard|none,...] [--key-names=ms:name,...]"
             );
             eprintln!(
-                "     zeebx sessao <arquivo.zip> [--seconds=N] [--keys=ms:botão,...] [--dump=QUADRO.bmp] [--fotos=ms,...] [--placa] [--serial=CAMINHO] [--fabrica] [--sem-fim-de-vida] [--sem-transicoes] [--escala=N] [--msaa=N] [--aniso=N] [--perfil[=MS]] [--boomerang] [--movimento=ms:x:y:z,...] [--wiimote] [--proporcao=16:9]
-                             [--portas=controle,controle] [--dpad-nos-eixos]  (a sessão da janela, sem janela)"
+                "     zeebx session <file.zip> [--seconds=N] [--keys=ms:button,...] [--dump=FRAME.bmp] [--shots=ms,...] [--gpu] [--serial=PATH] [--factory] [--no-end-of-life] [--no-transitions] [--scale=N] [--msaa=N] [--aniso=N] [--profile[=MS]] [--boomerang] [--motion=ms:x:y:z,...] [--wiimote] [--aspect=16:9]
+                             [--ports=pad,pad] [--dpad-on-axes]  (the window's session, without a window)"
             );
             eprintln!(
-                "     zeebx bench <arquivo.mod|zip> [--seconds=N] [--keys=ms:tecla,...] [--dump=QUADRO.bmp] [--teclas=ms:nome,...] [--instalados=0xCLSID[:id],...] [--dump-surfaces=DIR] [--dpad-nos-eixos]  (Dynarmic, sem janela)"
+                "     zeebx bench <file.mod|zip> [--seconds=N] [--keys=ms:key,...] [--dump=FRAME.bmp] [--key-names=ms:name,...] [--installed=0xCLSID[:id],...] [--dump-surfaces=DIR] [--dpad-on-axes]  (Dynarmic, without a window)"
             );
             ExitCode::FAILURE
         }
     }
+}
+
+
+/// Subcommands and options that had Portuguese names before the codebase moved to English:
+/// `(legacy, current)`. The legacy spelling is still accepted so existing scripts keep running.
+const LEGACY_ARGS: &[(&str, &str)] = &[
+    ("sessao", "session"),
+    ("controles", "controls"),
+    ("--dpad-nos-eixos", "--dpad-on-axes"),
+    ("--sonda-resposta", "--probe-answer"),
+    ("--sem-fim-de-vida", "--no-end-of-life"),
+    ("--sem-transicoes", "--no-transitions"),
+    ("--sem-rede", "--no-network"),
+    ("--instalados", "--installed"),
+    ("--movimento", "--motion"),
+    ("--proporcao", "--aspect"),
+    ("--servidor", "--server"),
+    ("--fabrica", "--factory"),
+    ("--escala", "--scale"),
+    ("--portas", "--ports"),
+    ("--teclas", "--key-names"),
+    ("--perfil", "--profile"),
+    ("--placa", "--gpu"),
+    ("--ponte", "--bridge"),
+    ("--sonda", "--probe"),
+    ("--fotos", "--shots"),
+    ("--ler", "--read"),
+];
+
+/// The command line without the program name, with legacy spellings rewritten to the current
+/// ones. Everything that reads the command line goes through here, so the aliases live in one
+/// place.
+fn cli_args() -> Vec<String> {
+    std::env::args()
+        .skip(1)
+        .map(|arg| {
+            let (name, value) = match arg.split_once('=') {
+                Some((name, value)) => (name, Some(value)),
+                None => (arg.as_str(), None),
+            };
+            match LEGACY_ARGS.iter().find(|(legacy, _)| *legacy == name) {
+                Some((_, current)) => match value {
+                    Some(value) => format!("{current}={value}"),
+                    None => current.to_string(),
+                },
+                None => arg,
+            }
+        })
+        .collect()
 }
 
 fn report(result: Result<(), Box<dyn std::error::Error>>) -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
-            eprintln!("erro: {err}");
+            eprintln!("error: {err}");
             ExitCode::FAILURE
         }
     }
 }
 
-/// Carrega o módulo e executa a partir de `AEEMod_Load` até um desfecho.
-/// As opções de linha de comando do `run`, reunidas porque quase toda função da execução
-/// precisa de um punhado delas.
+/// Loads the module and runs from `AEEMod_Load` until an outcome.
+/// The command-line options of `run`, gathered together because nearly every function of the
+/// run needs a handful of them.
 struct Options {
     tracing: bool,
     trace_filter: Option<String>,
     rounds: u32,
     seconds: Option<u32>,
-    /// Caminho da captura de serial, com `--serial=CAMINHO`.
+    /// Path of the serial capture, with `--serial=PATH`.
     serial: Option<std::path::PathBuf>,
     dump_heap: bool,
-    /// Onde gravar um BMP por superfície viva, com `--dump-surfaces=DIR`.
+    /// Where to write one BMP per live surface, with `--dump-surfaces=DIR`.
     dump_surfaces: Option<String>,
     probe: Vec<u32>,
     probe_answers: Vec<(u32, u32, u32)>,
@@ -541,65 +595,65 @@ struct Options {
     keys: input::Script,
     dump_gl: Option<String>,
     dump_audio: Option<String>,
-    /// Se o jogo pode falar com a rede. Ligada por padrão; o `--sem-rede` desliga.
+    /// Whether the game may talk to the network. On by default; `--no-network` turns it off.
     network: bool,
-    /// Para onde desviar as conexões, com `--servidor=MAQUINA[:PORTA]`.
+    /// Where to redirect connections, with `--server=HOST[:PORT]`.
     network_to: Option<String>,
-    /// Se a ponte do módulo entrega a resposta ao jogo, com `--ponte`.
+    /// Whether the module's bridge delivers the response to the game, with `--bridge`.
     bridge: bool,
-    /// O que o console vê em cada porta, com `--portas=controle,teclado`.
-    portas: [Option<bindings::Aparelho>; input::PORTAS],
-    /// Teclas a entregar, com `--teclas=ms:nome[,...]`.
-    teclas: Vec<(u32, u32)>,
-    /// Classes que o shell trata como instaladas, com `--instalados=0xCLSID[:id][,...]` — o id é
-    /// a pasta do módulo, que o `EnumNextApplet` entrega. Na janela
-    /// quem diz é a biblioteca; sem ela, é isto que deixa testar o lançamento de um jogo pela
-    /// Z-Wheel.
-    instalados: Vec<(u32, String)>,
+    /// What the console sees on each port, with `--ports=pad,keyboard`.
+    ports: [Option<bindings::Device>; input::PORTS],
+    /// Keys to deliver, with `--key-names=ms:name[,...]`.
+    key_events: Vec<(u32, u32)>,
+    /// Classes the shell treats as installed, with `--installed=0xCLSID[:id][,...]` — the id is
+    /// the module's folder, which `EnumNextApplet` hands out. In the window
+    /// the library says so; without it, this is what lets a game launch through the Z-Wheel be
+    /// tested.
+    installed: Vec<(u32, String)>,
 }
 
-/// Lê `1000:select,2000:down` e devolve `(instante em ms, código AVK)`.
+/// Reads `1000:select,2000:down` and returns `(instant in ms, AVK code)`.
 ///
-/// Os nomes são os de [`input::avk::por_nome`]: `up`, `down`, `left`, `right`, `select`, `clr`,
-/// `star`, `pound` e os dígitos. O que não for reconhecido é descartado com aviso, porque um
-/// roteiro com uma tecla errada ainda vale pelas outras.
-/// Lê `0xCLSID[:id][,...]`. Sem id, o id do módulo é a própria classe em hexadecimal.
-fn instalados(lista: &str) -> Vec<(u32, String)> {
-    lista
+/// The names are those of [`input::avk::by_name`]: `up`, `down`, `left`, `right`, `select`,
+/// `clr`, `star`, `pound` and the digits. Whatever is not recognized is dropped with a warning,
+/// because a script with one wrong key is still good for the others.
+/// Reads `0xCLSID[:id][,...]`. Without an id, the module id is the class itself in hexadecimal.
+fn installed(list: &str) -> Vec<(u32, String)> {
+    list
         .split(',')
         .filter_map(|item| {
-            let (classe, id) = item.split_once(':').unwrap_or((item, ""));
-            let classe = u32::from_str_radix(classe.trim().trim_start_matches("0x"), 16).ok()?;
+            let (class_id, id) = item.split_once(':').unwrap_or((item, ""));
+            let class_id = u32::from_str_radix(class_id.trim().trim_start_matches("0x"), 16).ok()?;
             let id = match id.is_empty() {
-                true => format!("{classe:x}"),
+                true => format!("{class_id:x}"),
                 false => id.to_string(),
             };
-            Some((classe, id))
+            Some((class_id, id))
         })
         .collect()
 }
 
-/// `--proporcao=16:9`: a proporção larga experimental do 3D, largura sobre altura.
-fn proporcao_da_linha() -> Option<f32> {
-    std::env::args()
-        .find_map(|a| a.strip_prefix("--proporcao=").map(str::to_string))
+/// `--aspect=16:9`: the experimental wide aspect ratio for 3D, width over height.
+fn aspect_ratio_from_cli() -> Option<f32> {
+    cli_args().into_iter()
+        .find_map(|a| a.strip_prefix("--aspect=").map(str::to_string))
         .and_then(|p| {
-            let (largura, altura) = p.split_once(':')?;
-            Some(largura.parse::<f32>().ok()? / altura.parse::<f32>().ok()?)
+            let (width, height) = p.split_once(':')?;
+            Some(width.parse::<f32>().ok()? / height.parse::<f32>().ok()?)
         })
 }
 
-fn teclado(lista: &str) -> Vec<(u32, u32)> {
-    lista
+fn keyboard(list: &str) -> Vec<(u32, u32)> {
+    list
         .split(',')
         .filter(|item| !item.is_empty())
         .filter_map(|item| {
-            let (quando, nome) = item.split_once(':')?;
-            let quando = quando.parse().ok()?;
-            match input::avk::por_nome(nome.trim()) {
-                Some(avk) => Some((quando, avk)),
+            let (when, name) = item.split_once(':')?;
+            let when = when.parse().ok()?;
+            match input::avk::by_name(name.trim()) {
+                Some(avk) => Some((when, avk)),
                 None => {
-                    eprintln!("aviso: tecla desconhecida {nome:?}");
+                    eprintln!("warning: unknown key {name:?}");
                     None
                 }
             }
@@ -607,25 +661,25 @@ fn teclado(lista: &str) -> Vec<(u32, u32)> {
         .collect()
 }
 
-/// Lê `controle,teclado` e afins. `None` quando algum nome não existe.
+/// Reads `pad,keyboard` and the like. `None` when some name does not exist.
 ///
-/// Existe para que as duas portas sejam **testáveis sem janela**, que é como tudo aqui se
-/// verifica: sem isso, a única forma de saber se um jogo enxerga o segundo controle seria abrir
-/// a interface e olhar.
-fn aparelhos(lista: &str) -> Option<[Option<bindings::Aparelho>; input::PORTAS]> {
-    let mut portas = [None; input::PORTAS];
-    for (n, nome) in lista.split(',').enumerate() {
-        let porta = portas.get_mut(n)?;
-        *porta = match nome.trim() {
-            "controle" | "pad" | "dragon" => Some(bindings::Aparelho::Controle),
-            "zpad" | "z-pad" => Some(bindings::Aparelho::ZPad),
-            "teclado" | "keyboard" => Some(bindings::Aparelho::Teclado),
-            "boomerang" => Some(bindings::Aparelho::Boomerang),
+/// It exists so that both ports are **testable without a window**, which is how everything here
+/// gets verified: without it, the only way to know whether a game sees the second controller
+/// would be to open the interface and look.
+fn devices(list: &str) -> Option<[Option<bindings::Device>; input::PORTS]> {
+    let mut ports = [None; input::PORTS];
+    for (n, name) in list.split(',').enumerate() {
+        let port = ports.get_mut(n)?;
+        *port = match name.trim() {
+            "controle" | "pad" | "dragon" => Some(bindings::Device::Controller),
+            "zpad" | "z-pad" => Some(bindings::Device::ZPad),
+            "teclado" | "keyboard" => Some(bindings::Device::Keyboard),
+            "boomerang" => Some(bindings::Device::Boomerang),
             "nenhum" | "none" | "" => None,
             _ => return None,
         };
     }
-    Some(portas)
+    Some(ports)
 }
 
 fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
@@ -646,11 +700,11 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
         network,
         network_to,
         bridge,
-        portas,
-        teclas,
-        instalados,
+        ports,
+        key_events,
+        installed,
     } = options;
-    // Um jogo em `.zip` ou `.7z` é extraído para o cache e rodado de lá, como na interface.
+    // A game in `.zip` or `.7z` is extracted to the cache and run from there, as in the interface.
     let extracted;
     let path = match std::path::Path::new(path)
         .extension()
@@ -658,17 +712,17 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
     {
         Some("zip" | "7z") => {
             extracted = archive::extract(std::path::Path::new(path))?;
-            println!("extraído:  {}", extracted.display());
+            println!("extracted: {}", extracted.display());
             extracted.to_str().unwrap_or(path)
         }
         _ => path,
     };
     let image = ModImage::parse(std::fs::read(path)?)?;
-    let extensoes = zeebx::session::extensoes_de(std::path::Path::new(path));
-    for extensao in &extensoes {
+    let extensions = zeebx::session::extensions_of(std::path::Path::new(path));
+    for extension in &extensions {
         println!(
-            "extensão:  fornece {}",
-            extensao
+            "extension: provides {}",
+            extension
                 .classes
                 .iter()
                 .map(|c| format!("{c:#010x}"))
@@ -676,9 +730,9 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
                 .join(" ")
         );
     }
-    let module = loader::load_with(&image, &extensoes)?;
+    let module = loader::load_with(&image, &extensions)?;
 
-    println!("carregado: {path}");
+    println!("loaded:    {path}");
     println!("entry:     {:#010x}", module.entry);
     for region in module.mem.regions() {
         println!(
@@ -690,24 +744,24 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    // A raiz do sistema de arquivos do jogo é o diretório onde o `.mod` está: é lá que o
-    // console guarda os arquivos do título.
+    // The root of the game's file system is the directory where the `.mod` is: that is where
+    // the console keeps the title's files.
     let root = std::path::Path::new(path)
         .parent()
         .map(std::path::Path::to_path_buf)
         .unwrap_or_default();
-    let mut machine = Machine::new(BackendPadrao::new()?, module, root);
-    println!("arquivos:  {}", machine.file_root().display());
+    let mut machine = Machine::new(DefaultBackend::new()?, module, root);
+    println!("files:     {}", machine.file_root().display());
     machine.set_tracing(tracing);
     machine.set_trace_filter(trace_filter);
     if !probe.is_empty() {
         machine.probe_classes(&probe);
     }
-    for (classe, slot, valor) in &probe_answers {
-        machine.probe_answer(*classe, *slot, *valor);
+    for (class_id, slot, value) in &probe_answers {
+        machine.probe_answer(*class_id, *slot, *value);
     }
-    machine.set_portas(portas);
-    machine.set_installed_applets(instalados);
+    machine.set_ports(ports);
+    machine.set_installed_applets(installed);
     machine.set_network(network);
     if network_to.is_some() {
         machine.set_network_to(network_to);
@@ -715,13 +769,13 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
     if bridge {
         machine.set_bridge(true);
     }
-    if let Some(caminho) = &serial {
-        machine.liga_serial(caminho)?;
-        println!("serial:    {}", caminho.display());
+    if let Some(serial_path) = &serial {
+        machine.enable_serial(serial_path)?;
+        println!("serial:    {}", serial_path.display());
     }
     let outcome = machine.run(INSTRUCTION_BUDGET)?;
 
-    print!("parou:     ");
+    print!("stopped:   ");
     describe_outcome(&outcome);
     if let Outcome::Returned { .. } = outcome {
         let out = machine.module().out_module;
@@ -731,30 +785,30 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    // Com o módulo carregado, o próximo passo é instanciar o applet. O ClassID vem do `.mif`
-    // que acompanha o módulo.
-    let mut rodou_quadros = false;
+    // With the module loaded, the next step is to instantiate the applet. The ClassID comes
+    // from the `.mif` that accompanies the module.
+    let mut ran_frames = false;
     if let Outcome::Returned { code: 0 } = outcome {
         match library::applet_clsid(std::path::Path::new(path)) {
             Some(clsid) => {
-                println!("applet:    ClassID {clsid:#010x} (do .mif)");
+                println!("applet:    ClassID {clsid:#010x} (from the .mif)");
                 match machine.create_applet(clsid, INSTRUCTION_BUDGET)? {
                     AppletResult::Called { code, applet } => {
                         println!(
-                            "           CreateInstance retornou {code}, IApplet* = {applet:#010x}"
+                            "           CreateInstance returned {code}, IApplet* = {applet:#010x}"
                         );
                         if code == 0 && applet != 0 {
                             print!("start:     EVT_APP_START → ");
                             let started =
                                 machine.start_applet(applet, clsid, INSTRUCTION_BUDGET)?;
-                            describe_outcome_com_estado(&started, &machine);
-                            // O código de retorno do `HandleEvent` pertence ao applet, não ao
-                            // despachante: Kingdom Hearts devolve 1 no EVT_APP_START e segue
-                            // armando o laço normalmente. A Session já aceita qualquer retorno;
-                            // a linha de comando precisa fazer o mesmo, senão ela nunca chega
-                            // ao trecho que permite perfilar a intro.
+                            describe_outcome_with_state(&started, &machine);
+                            // `HandleEvent`'s return code belongs to the applet, not to the
+                            // dispatcher: Kingdom Hearts returns 1 on EVT_APP_START and goes on
+                            // setting up its loop normally. The Session already accepts any
+                            // return; the command line has to do the same, otherwise it never
+                            // reaches the code that lets the intro be profiled.
                             if matches!(started, Outcome::Returned { .. } | Outcome::Budget) {
-                                rodou_quadros = true;
+                                ran_frames = true;
                                 run_frames(
                                     &mut machine,
                                     rounds,
@@ -763,152 +817,152 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
                                     dump_heap,
                                     window,
                                     &keys,
-                                    &teclas,
+                                    &key_events,
                                     dump_gl.as_deref(),
                                     dump_audio.as_deref(),
                                 )?;
                             }
                         }
                     }
-                    AppletResult::NoModule => println!("           sem IModule* para chamar"),
+                    AppletResult::NoModule => println!("           no IModule* to call"),
                     AppletResult::Stopped(stop) => {
-                        print!("           parou em ");
+                        print!("           stopped at ");
                         describe_outcome(&stop);
                     }
                 }
             }
-            None => println!("applet:    nenhum .mif encontrado ao lado do módulo"),
+            None => println!("applet:    no .mif found next to the module"),
         }
     }
-    // Sem laço de quadros não houve quem despejasse a memória, e é justamente quando o jogo
-    // gastou o orçamento antes de existir que esse retrato mais ajuda.
-    if dump_heap && !rodou_quadros {
-        despeja_memoria(&machine)?;
+    // Without a frame loop nobody dumped the memory, and it is precisely when the game spent its
+    // budget before even existing that this snapshot helps most.
+    if dump_heap && !ran_frames {
+        dump_memory(&machine)?;
     }
     #[cfg(debug_assertions)]
     {
-        let (total, maior, repetidos) = machine.retrato_widgets();
+        let (total, largest, duplicates) = machine.widgets_snapshot();
         println!(
-            "widgets:   {total} vivos, maior lista de anexos {maior}, anexos repetidos {repetidos}"
+            "widgets:   {total} alive, largest attachment list {largest}, repeated attachments {duplicates}"
         );
     }
     if let Some(dir) = &dump_surfaces {
-        despeja_superficies(&machine, dir)?;
+        write_surfaces(&machine, dir)?;
     }
 
-    let (heap, objetos) = (machine.heap_used(), machine.live_objects());
-    println!("heap:      {heap} bytes em uso, {objetos} objetos vivos");
-    // **Quanto sobra não diz como sobra.** Um heap com 30 MB livres em 400 buracos não entrega
-    // uma alocação de 2 MB, e o jogo relata isso como falta de memória; a linha abaixo é o que
-    // separa os dois casos no relatório.
-    let retrato = machine.heap_retrato();
+    let (heap, objects) = (machine.heap_used(), machine.live_objects());
+    println!("heap:      {heap} bytes in use, {objects} live objects");
+    // **How much is left does not say how it is left.** A heap with 30 MB free in 400 holes
+    // cannot serve a 2 MB allocation, and the game reports that as out of memory; the line below
+    // is what separates the two cases in the report.
+    let snapshot = machine.heap_snapshot();
     println!(
-        "           {} buraco(s), maior livre {} de {} livres ({}% do livre preso em buracos), {} blocos vivos de {}",
-        retrato.buracos,
-        retrato.maior_buraco,
-        retrato.livre,
-        u64::from(retrato.perdido_em_buracos()) * 100 / u64::from(retrato.livre.max(1)),
-        retrato.vivos,
-        retrato.teto,
+        "           {} hole(s), largest free {} of {} free ({}% of the free space stuck in holes), {} live blocks of {}",
+        snapshot.holes,
+        snapshot.largest_hole,
+        snapshot.free,
+        u64::from(snapshot.lost_in_holes()) * 100 / u64::from(snapshot.free.max(1)),
+        snapshot.live,
+        snapshot.cap,
     );
-    let recusas = machine.refused_allocations();
-    if let Some((tamanho, lr)) = recusas.first() {
+    let refusals = machine.refused_allocations();
+    if let Some((size, lr)) = refusals.first() {
         println!(
-            "recusado:  {} pedido(s) de malloc sem lugar; o primeiro: {} bytes, pedido em {lr:#010x}",
-            recusas.len(),
-            tamanho
+            "refused:   {} malloc request(s) with no room; the first: {} bytes, requested at {lr:#010x}",
+            refusals.len(),
+            size
         );
     }
-    let checagens = machine.refused_availability_checks();
-    if let Some((tamanho, lr)) = checagens.first() {
+    let checks = machine.refused_availability_checks();
+    if let Some((size, lr)) = checks.first() {
         println!(
-            "recusado:  {} pergunta(s) de memória disponível respondidas com \"não cabe\"; a primeira: {} bytes em {lr:#010x}",
-            checagens.len(),
-            tamanho
+            "refused:   {} available-memory question(s) answered with \"does not fit\"; the first: {} bytes at {lr:#010x}",
+            checks.len(),
+            size
         );
     }
     if !machine.suspicious_objects().is_empty() {
         println!(
-            "atenção:   {} chamadas com ponteiro `this` inesperado",
+            "warning:   {} calls with an unexpected `this` pointer",
             machine.suspicious_objects().len()
         );
     }
-    let toques = machine.pad_log();
-    if !toques.is_empty() {
-        println!("toques:    {} entregue(s) ao jogo", toques.len());
-        for (ms, porta, nome, down) in &toques {
-            let acao = match down {
-                true => "aperta",
-                false => "solta ",
+    let presses = machine.pad_log();
+    if !presses.is_empty() {
+        println!("presses:   {} delivered to the game", presses.len());
+        for (ms, port, entry_name, down) in &presses {
+            let action = match down {
+                true => "press  ",
+                false => "release",
             };
-            println!("  {ms:>7} ms  porta {}  {acao} {nome}", porta + 1);
+            println!("  {ms:>7} ms  port {}  {action} {entry_name}", port + 1);
         }
     }
-    if let Some(classe) = machine.take_launch_request() {
-        println!("lançar:    o shell pediu para abrir {classe:#010x}");
+    if let Some(class_id) = machine.take_launch_request() {
+        println!("launch:    the shell asked to open {class_id:#010x}");
     }
-    let midia = machine.media_log();
-    if !midia.is_empty() {
+    let media = machine.media_log();
+    if !media.is_empty() {
         println!(
-            "som:       {} linha(s) do que o jogo fez com a mídia",
-            midia.len()
+            "sound:     {} line(s) of what the game did with media",
+            media.len()
         );
-        for (ms, objeto, chamada, vezes) in &midia {
-            let repete = match vezes {
+        for (ms, object, call, times) in &media {
+            let repeats = match times {
                 1 => String::new(),
                 n => format!("  ({n}x)"),
             };
-            println!("  {ms:>7} ms  {objeto:#010x}  {chamada}{repete}");
+            println!("  {ms:>7} ms  {object:#010x}  {call}{repeats}");
         }
     }
     let urls = machine.web_requests();
     if !urls.is_empty() {
         println!(
-            "rede:      o jogo pediu {} endereço(s) pelo IWeb",
+            "network:   the game requested {} address(es) through IWeb",
             urls.len()
         );
         for url in &urls {
             println!("  {url}");
         }
     }
-    let resposta = machine.web_response();
-    if !resposta.is_empty() {
-        let texto = String::from_utf8_lossy(resposta);
-        println!("  resposta: {} bytes, {texto:?}", resposta.len());
+    let response = machine.web_response();
+    if !response.is_empty() {
+        let as_text = String::from_utf8_lossy(response);
+        println!("  response: {} bytes, {as_text:?}", response.len());
     }
-    let ignoradas = machine.ignored_gl();
-    if !ignoradas.is_empty() {
-        println!("gl:        atendidas sem fazer nada ({})", ignoradas.len());
-        println!("  {}", ignoradas.join(" "));
+    let ignored = machine.ignored_gl();
+    if !ignored.is_empty() {
+        println!("gl:        served without doing anything ({})", ignored.len());
+        println!("  {}", ignored.join(" "));
     }
-    let entregues = machine.delivered();
-    if !entregues.is_empty() {
-        println!("ponte:     o que ela fez com a resposta");
-        for linha in entregues {
-            println!("  {linha}");
+    let delivered_log = machine.delivered();
+    if !delivered_log.is_empty() {
+        println!("bridge:    what it did with the response");
+        for log_line in delivered_log {
+            println!("  {log_line}");
         }
     }
-    let claros = machine.plaintexts();
-    if !claros.is_empty() {
-        println!("cifrado:   o que o jogo cifrou, em claro");
-        for bloco in &claros {
-            let hex: String = bloco.iter().map(|b| format!("{b:02x}")).collect();
-            println!("  {} bytes  {hex}", bloco.len());
-            println!("    {:?}", String::from_utf8_lossy(bloco));
+    let plaintexts = machine.plaintexts();
+    if !plaintexts.is_empty() {
+        println!("encrypted: what the game encrypted, in plaintext");
+        for block in &plaintexts {
+            let hex: String = block.iter().map(|b| format!("{b:02x}")).collect();
+            println!("  {} bytes  {hex}", block.len());
+            println!("    {:?}", String::from_utf8_lossy(block));
         }
     }
-    let chaves = machine.cipher_keys();
-    if !chaves.is_empty() {
-        println!("cifra:     o jogo cifrou dados com");
-        for chave in &chaves {
-            println!("  {chave}");
+    let key_ids = machine.cipher_keys();
+    if !key_ids.is_empty() {
+        println!("cipher:    the game encrypted data with");
+        for key_id in &key_ids {
+            println!("  {key_id}");
         }
     }
-    if let Some(fonte) = machine.font_source() {
-        println!("fonte:     {fonte}, do próprio pacote do jogo");
+    if let Some(source) = machine.font_source() {
+        println!("font:      {source}, from the game's own package");
     }
     if !machine.pending_text().is_empty() {
-        println!("texto na tela (ainda sem fonte para desenhar):");
+        println!("text on screen (no font to draw it yet):");
         for text in machine.pending_text() {
             println!("  {text:?}");
         }
@@ -918,7 +972,7 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
         let out = out.file_name().map(std::path::Path::new).unwrap_or(&out);
         std::fs::write(out, machine.screen().to_bmp())?;
         println!(
-            "tela:      {} ({}x{}, {} superfícies)",
+            "screen:    {} ({}x{}, {} surfaces)",
             out.display(),
             machine.screen().width(),
             machine.screen().height(),
@@ -930,22 +984,22 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
         let out = out.file_name().map(std::path::Path::new).unwrap_or(&out);
         std::fs::write(out, frame.to_bmp())?;
         println!(
-            "opengl:    {} ({} quadros apresentados)",
+            "opengl:    {} ({} frames presented)",
             out.display(),
             machine.gl_swaps()
         );
     }
-    // O semihosting do ARM é o outro caminho de log que os jogos usam: o `SVC #0xAB` que o
-    // Peggle e o Zuma's Revenge emitem sai por aqui, e não pelo `DBGPRINTF`.
+    // ARM semihosting is the other log path games use: the `SVC #0xAB` that Peggle and Zuma's
+    // Revenge emit comes out here, not through `DBGPRINTF`.
     let semihosting = machine.cpu().semihosting();
     if !semihosting.trim().is_empty() {
-        println!("log por semihosting:");
-        for linha in semihosting.lines().take(SEMIHOSTING_LINES) {
-            println!("  {linha}");
+        println!("semihosting log:");
+        for log_line in semihosting.lines().take(SEMIHOSTING_LINES) {
+            println!("  {log_line}");
         }
     }
     if !machine.debug_output().is_empty() {
-        println!("log do jogo:");
+        println!("game log:");
         for (line, count) in machine.debug_output() {
             match count {
                 1 => println!("  {line}"),
@@ -953,99 +1007,99 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
-    // Entrega o que estiver na fila de sinais: o jogo se registra para eventos e espera os
-    // callbacks. Sem entrada do host ainda, a fila costuma estar vazia.
+    // Delivers whatever is in the signal queue: the game registers for events and waits for the
+    // callbacks. With no host input yet, the queue is usually empty.
     let delivered = machine.deliver_signals(INSTRUCTION_BUDGET)?;
     if !delivered.is_empty() {
-        println!("sinais:    {} callback(s) entregue(s)", delivered.len());
+        println!("signals:   {} callback(s) delivered", delivered.len());
     }
     let played = machine.deliver_callbacks(INSTRUCTION_BUDGET)?;
     if !played.is_empty() {
-        println!("callbacks: {} entregue(s)", played.len());
+        println!("callbacks: {} delivered", played.len());
     }
-    // A região de objetos tem teto, e um jogo que chega perto dele está vazando referência —
-    // o sintoma disso é uma classe qualquer parando de ser criada, que não se parece com a
-    // causa. A lista só aparece quando há muito objeto vivo.
-    let vivos = machine.live_objects_by_kind();
-    let total: usize = vivos.iter().map(|(_, n)| n).sum();
+    // The object region has a ceiling, and a game that gets close to it is leaking references —
+    // the symptom is some arbitrary class no longer being created, which looks nothing like the
+    // cause. The list only shows up when there are many live objects.
+    let live = machine.live_objects_by_kind();
+    let total: usize = live.iter().map(|(_, n)| n).sum();
     if total >= 256 {
-        println!("objetos vivos por interface ({total} ao todo):");
-        for (nome, quantos) in vivos.iter().take(8) {
-            println!("  {quantos:6}x {nome}");
+        println!("live objects per interface ({total} in total):");
+        for (entry_name, live_count) in live.iter().take(8) {
+            println!("  {live_count:6}x {entry_name}");
         }
     }
     if !machine.swallowed_faults().is_empty() {
-        println!("acessos inválidos que o jogo seguiu por cima:");
-        for nota in machine.swallowed_faults() {
-            println!("  {nota}");
+        println!("invalid accesses the game carried on past:");
+        for diagnostic in machine.swallowed_faults() {
+            println!("  {diagnostic}");
         }
     }
     if !machine.missing_apis().is_empty() {
-        println!("APIs que faltaram:");
-        for nota in machine.missing_apis() {
-            println!("  {nota}");
+        println!("missing APIs:");
+        for diagnostic in machine.missing_apis() {
+            println!("  {diagnostic}");
         }
     }
     if !machine.missing_files().is_empty() {
-        println!("arquivos não encontrados:");
+        println!("files not found:");
         for name in machine.missing_files() {
             println!("  {name}");
         }
     }
     if !machine.bad_pointers().is_empty() {
-        println!("ponteiros inválidos recebidos:");
+        println!("invalid pointers received:");
         for line in machine.bad_pointers() {
             println!("  {line}");
         }
     }
     if !machine.assumptions().is_empty() {
-        println!("hipóteses em uso:");
+        println!("assumptions in use:");
         for note in machine.assumptions() {
             println!("  {note}");
         }
     }
     if tracing {
-        println!("rastreamento:");
+        println!("trace:");
         for line in machine.trace() {
             println!("  {line}");
         }
     }
     let unknown = machine.unknown_classes();
     if !unknown.is_empty() {
-        print!("classes desconhecidas:");
+        print!("unknown classes:");
         for clsid in unknown {
             print!(" {clsid:#010x}");
         }
         println!();
     }
-    let sonda = machine.probe_log();
-    if !sonda.is_empty() {
-        println!("sonda:     o que os jogos chamaram nas classes atendidas por observação");
-        let mut objeto_atual = 0;
-        for (clsid, objeto, slot, args, textos, vezes) in sonda {
-            if *objeto != objeto_atual {
-                objeto_atual = *objeto;
-                println!("  classe {clsid:#010x}, objeto {objeto:#x}:");
+    let probe_calls = machine.probe_log();
+    if !probe_calls.is_empty() {
+        println!("probe:     what the games called on the classes served by observation");
+        let mut current_object = 0;
+        for (clsid, object, slot, args, texts, times) in probe_calls {
+            if *object != current_object {
+                current_object = *object;
+                println!("  class {clsid:#010x}, object {object:#x}:");
             }
-            let mostrar = |i: usize| match &textos[i] {
-                Some(texto) => format!("{texto:?}"),
+            let show = |i: usize| match &texts[i] {
+                Some(as_text) => format!("{as_text:?}"),
                 None => format!("{:#x}", args[i]),
             };
-            let repetido = match vezes {
+            let repeated = match times {
                 1 => String::new(),
                 n => format!("   ({n}x)"),
             };
             println!(
-                "    slot[{slot:>2}] ({}, {}, {}){repetido}",
-                mostrar(1),
-                mostrar(2),
-                mostrar(3)
+                "    slot[{slot:>2}] ({}, {}, {}){repeated}",
+                show(1),
+                show(2),
+                show(3)
             );
         }
     }
     let log = machine.call_log();
     if !log.is_empty() {
-        println!("chamadas:");
+        println!("calls:");
         for (name, count) in log {
             println!("  {count:>4}x {name}");
         }
@@ -1053,18 +1107,18 @@ fn run(path: &str, options: Options) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Mede uma ROM inteira no backend padrão, sem janela.
+/// Measures a whole ROM on the default backend, without a window.
 ///
-/// Esta não é uma segunda implementação do comando `run`: é uma bancada estreita para medir
-/// quantos milissegundos virtuais o ARM recompilado consegue entregar por segundo de parede.
+/// This is not a second implementation of the `run` command: it is a narrow bench for measuring
+/// how many virtual milliseconds the recompiled ARM can deliver per wall-clock second.
 fn bench_dynarmic(
     path: &str,
     seconds: u32,
     dump: Option<&str>,
     keys: &input::Script,
-    teclas: &[(u32, u32)],
-    instalados: Vec<(u32, String)>,
-    superficies: Option<&str>,
+    key_events: &[(u32, u32)],
+    installed: Vec<(u32, String)>,
+    surfaces: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let extracted;
     let path = match std::path::Path::new(path)
@@ -1078,26 +1132,26 @@ fn bench_dynarmic(
         _ => std::path::Path::new(path),
     };
     let image = ModImage::parse(std::fs::read(path)?)?;
-    let extensoes = zeebx::session::extensoes_de(path);
-    let module = loader::load_with(&image, &extensoes)?;
+    let extensions = zeebx::session::extensions_of(path);
+    let module = loader::load_with(&image, &extensions)?;
     let root = path
         .parent()
         .map(std::path::Path::to_path_buf)
         .unwrap_or_default();
     let mut machine = Machine::new(DynarmicCpu::new()?, module, root);
-    machine.set_installed_applets(instalados);
+    machine.set_installed_applets(installed);
     let boot = machine.run(INSTRUCTION_BUDGET)?;
     if !matches!(boot, Outcome::Returned { code: 0 }) {
-        return Err(format!("carga parou em {boot:?}").into());
+        return Err(format!("loading stopped at {boot:?}").into());
     }
-    let clsid = library::applet_clsid(path).ok_or("nenhum .mif encontrou o applet")?;
+    let clsid = library::applet_clsid(path).ok_or("no .mif found the applet")?;
     let applet = match machine.create_applet(clsid, INSTRUCTION_BUDGET)? {
         AppletResult::Called { code: 0, applet } if applet != 0 => applet,
-        other => return Err(format!("CreateInstance parou em {other:?}").into()),
+        other => return Err(format!("CreateInstance stopped at {other:?}").into()),
     };
     let start = machine.start_applet(applet, clsid, INSTRUCTION_BUDGET)?;
     if !matches!(start, Outcome::Returned { .. } | Outcome::Budget) {
-        return Err(format!("EVT_APP_START parou em {start:?}").into());
+        return Err(format!("EVT_APP_START stopped at {start:?}").into());
     }
 
     let wall = std::time::Instant::now();
@@ -1106,47 +1160,47 @@ fn bench_dynarmic(
     let until = base_clock.saturating_add(seconds.saturating_mul(1000));
     let mut turns = 0u64;
     let mut pad = input::Pad::default();
-    // Cada tecla vira aperto e soltura quando o relógio passa do instante. Com `--dump`, o quadro
-    // de meio segundo depois de cada uma também é gravado, numerado: é o que mostra a navegação
-    // passo a passo, e não só onde ela terminou.
-    let mut pendentes: std::collections::VecDeque<(u32, u32)> = {
-        let mut ordenadas = teclas.to_vec();
-        ordenadas.sort_by_key(|&(quando, _)| quando);
-        ordenadas.into()
+    // Each key becomes a press and a release when the clock passes its instant. With `--dump`,
+    // the frame half a second after each one is also written, numbered: it is what shows the
+    // navigation step by step, and not only where it ended.
+    let mut pending: std::collections::VecDeque<(u32, u32)> = {
+        let mut sorted = key_events.to_vec();
+        sorted.sort_by_key(|&(when, _)| when);
+        sorted.into()
     };
-    let mut fotos: std::collections::VecDeque<u32> = std::collections::VecDeque::new();
-    let mut numero_da_foto = 0;
-    // Ver o comentário do mesmo interruptor no laço: é o `zeebx_dpad_to_analog_p1` do núcleo.
-    let dpad_nos_eixos = std::env::args().any(|arg| arg == "--dpad-nos-eixos");
+    let mut shots: std::collections::VecDeque<u32> = std::collections::VecDeque::new();
+    let mut shot_number = 0;
+    // See the comment on the same switch in the loop: it is the core's `zeebx_dpad_to_analog_p1`.
+    let dpad_on_axes = cli_args().into_iter().any(|arg| arg == "--dpad-on-axes");
     while machine.clock_ms() < until && !machine.is_idle() {
-        while pendentes
+        while pending
             .front()
-            .is_some_and(|&(quando, _)| machine.clock_ms() >= quando)
+            .is_some_and(|&(when, _)| machine.clock_ms() >= when)
         {
-            let (quando, avk) = pendentes.pop_front().unwrap_or_default();
+            let (when, avk) = pending.pop_front().unwrap_or_default();
             machine.set_key(avk, true);
             machine.set_key(avk, false);
-            fotos.push_back(quando.saturating_add(500));
+            shots.push_back(when.saturating_add(500));
         }
         if let Some(path) = dump {
-            while fotos
+            while shots
                 .front()
-                .is_some_and(|&quando| machine.clock_ms() >= quando)
+                .is_some_and(|&when| machine.clock_ms() >= when)
             {
-                fotos.pop_front();
-                numero_da_foto += 1;
-                let nome = match path.strip_suffix(".bmp") {
-                    Some(base) => format!("{base}.{numero_da_foto}.bmp"),
-                    None => format!("{path}.{numero_da_foto}"),
+                shots.pop_front();
+                shot_number += 1;
+                let shot_file = match path.strip_suffix(".bmp") {
+                    Some(base) => format!("{base}.{shot_number}.bmp"),
+                    None => format!("{path}.{shot_number}"),
                 };
-                std::fs::write(nome, machine.screen().to_bmp())?;
+                std::fs::write(shot_file, machine.screen().to_bmp())?;
             }
         }
-        // `--dpad-nos-eixos` é o mesmo que a opção do núcleo faz a cada quadro, para medir o issue
-        // #39 sem janela. **Antes** do roteiro, de propósito: um passo de eixo do roteiro é um
-        // manche de verdade, e quem tem a última palavra é ele — ver o espelho no `Player::pad`.
-        if dpad_nos_eixos {
-            pad.espelha_o_direcional_nos_eixos();
+        // `--dpad-on-axes` is the same thing the core option does every frame, to measure issue
+        // #39 without a window. **Before** the script, on purpose: a script axis step is a real
+        // stick, and it gets the last word — see the mirror in `Player::pad`.
+        if dpad_on_axes {
+            pad.mirror_dpad_on_axes();
         }
         keys.apply(machine.clock_ms(), &mut pad);
         machine.set_pad(pad);
@@ -1158,7 +1212,7 @@ fn bench_dynarmic(
             .iter()
             .find(|outcome| !matches!(outcome, Outcome::Returned { .. } | Outcome::Budget))
         {
-            return Err(format!("laço parou em {bad:?}").into());
+            return Err(format!("loop stopped at {bad:?}").into());
         }
     }
     let elapsed = wall.elapsed();
@@ -1167,16 +1221,16 @@ fn bench_dynarmic(
     let ratio = virtual_ms as f64 / elapsed.as_secs_f64().max(f64::MIN_POSITIVE) / 10.0;
     println!("backend:   Dynarmic ARMv6K");
     println!(
-        "tempo:     {virtual_ms} ms virtuais em {:.3} s reais ({ratio:.1}% da velocidade)",
+        "time:      {virtual_ms} virtual ms in {:.3} real s ({ratio:.1}% of speed)",
         elapsed.as_secs_f64()
     );
     println!(
-        "cpu:       {} milhões de instruções ({:.1} MIPS)",
+        "cpu:       {} million instructions ({:.1} MIPS)",
         instructions / 1_000_000,
         instructions as f64 / elapsed.as_secs_f64().max(f64::MIN_POSITIVE) / 1_000_000.0
     );
     println!(
-        "laço:      {turns} voltas, {} timer(s), {} quadro(s) GL",
+        "loop:      {turns} passes, {} timer(s), {} GL frame(s)",
         machine.armed_timers(),
         machine.gl_swaps()
     );
@@ -1186,92 +1240,94 @@ fn bench_dynarmic(
         .filter(|(name, _)| name.starts_with("IMedia::"))
         .collect();
     if !media.is_empty() {
-        println!("mídia:");
+        println!("media:");
         for (name, count) in media {
             println!("  {count:>4}x {name}");
         }
     }
-    // **O registro do núcleo, que na janela vai para o log do frontend.** No harness ele é o motivo
-    // de existir: é por estas linhas que se lê o que o motor decidiu -- o som entregue e a duração
-    // decodificada, o fluxo que o jogo para de alimentar, e quem calou cada som. Sem elas, medir
-    // isso exigia abrir o RetroArch, e com ele a navegação de alguém.
+    // **The core's log, which in the window goes to the frontend's log.** In the harness it is
+    // the reason to exist: these lines are how you read what the engine decided -- the sound
+    // delivered and the decoded duration, the stream the game stops feeding, and who silenced
+    // each sound. Without them, measuring that required opening RetroArch, and with it someone's
+    // navigation.
     //
-    // O nível entra por `ZEEBX_LOG` (`aviso` é o padrão): as linhas de instrumento são
-    // `informacao`, e sem a variável elas não aparecem.
-    let registro = zeebx::registro::drena();
-    if !registro.is_empty() {
-        println!("registro:");
-        for linha in registro {
-            println!("  [{}] {}: {}", linha.nivel.etiqueta(), linha.alvo, linha.texto);
+    // The level comes in through `ZEEBX_LOG` (`warning` is the default): the instrumentation
+    // lines are `info`, and without the variable they do not show up.
+    let logging = zeebx::logging::drain();
+    if !logging.is_empty() {
+        println!("log:");
+        for line in logging {
+            println!("  [{}] {}: {}", line.level.tag(), line.target, line.text);
         }
     }
-    // **Dizer o que se perdeu.** Um instrumento que descarta linhas em silêncio mente por omissão:
-    // foi assim que uma medição relatou "zero sons decodificados" com 123 sons pedidos no registro.
-    let descartes = zeebx::registro::descartes();
-    if descartes > 0 {
-        println!("registro:  {descartes} linha(s) foram descartadas pelo anel antes de serem lidas");
+    // **Say what was lost.** An instrument that drops lines silently lies by omission: that is how
+    // a measurement reported "zero sounds decoded" with 123 sounds requested in the log.
+    let dropped = zeebx::logging::dropped();
+    if dropped > 0 {
+        println!("log:       {dropped} line(s) were dropped by the ring before being read");
     }
-    // As chamadas de entrada dizem se o jogo chega a consultar o controle e por qual canal: o de
-    // eventos de botão (`GetNextButtonEvent`) ou o de posição (`GetPositionState`). É a pergunta
-    // que decide se espelhar o direcional nos eixos muda alguma coisa para este jogo.
-    let entrada: Vec<_> = machine
+    // The input calls say whether the game ever queries the controller and through which
+    // channel: button events (`GetNextButtonEvent`) or position (`GetPositionState`). It is the
+    // question that decides whether mirroring the D-pad onto the axes changes anything for this
+    // game.
+    let entry: Vec<_> = machine
         .call_log()
         .into_iter()
         .filter(|(name, _)| {
             name.contains("Position") || name.contains("Button") || name.contains("HID")
         })
         .collect();
-    if !entrada.is_empty() {
-        println!("entrada:");
-        for (name, count) in entrada {
+    if !entry.is_empty() {
+        println!("input:");
+        for (name, count) in entry {
             println!("  {count:>4}x {name}");
         }
     }
-    // A contagem de chamadas diz que o jogo **pergunta**; esta diz que a resposta **chegou**. Sem
-    // ela, um port de arcade que consulta o eixo todo quadro parece igual com o direcional solto e
-    // apertado — e é o número que prova o espelho do direcional (issue #39).
-    let deslocados = machine.leituras_com_eixo_deslocado();
-    if deslocados > 0 {
-        // **Quais** eixos, e não só quantos: `X` e `Y` são do manche esquerdo, `Z` e `RZ` do
-        // direito. É o que responde "o direcional chegou no manche que o jogo lê?".
-        let nomes = machine.eixos_vistos_deslocados().join(", ");
-        println!("eixo:      {deslocados} leitura(s) fora do centro, em {nomes}");
+    // The call count says the game **asks**; this one says the answer **arrived**. Without it,
+    // an arcade port that queries the axis every frame looks the same with the D-pad released
+    // and pressed — and it is the number that proves the D-pad mirror (issue #39).
+    let off_center = machine.off_center_axis_reads();
+    if off_center > 0 {
+        // **Which** axes, not just how many: `X` and `Y` belong to the left stick, `Z` and `RZ`
+        // to the right. It is what answers "did the D-pad reach the stick the game reads?".
+        let names = machine.off_center_axes_seen().join(", ");
+        println!("axis:      {off_center} off-center read(s), on {names}");
     }
     if let Some(path) = dump {
         std::fs::write(path, machine.screen().to_bmp())?;
-        println!("quadro:    {path}");
+        println!("frame:     {path}");
     }
-    if let Some(dir) = superficies {
-        despeja_superficies(&machine, dir)?;
+    if let Some(dir) = surfaces {
+        write_surfaces(&machine, dir)?;
     }
-    if let Some(classe) = machine.take_launch_request() {
-        println!("lançar:    o shell pediu para abrir {classe:#010x}");
+    if let Some(class_id) = machine.take_launch_request() {
+        println!("launch:    the shell asked to open {class_id:#010x}");
     }
     Ok(())
 }
 
-/// Roda um jogo pelo mesmo caminho da janela, sem abri-la.
+/// Runs a game along the same path as the window, without opening it.
 ///
-/// A bancada monta a máquina por conta própria, e o que ela mostra pode não ser o que a janela
-/// mostra: a janela instala todos os jogos da biblioteca, passa o controle pela sessão e traduz o
-/// direcional em teclas. Aqui entram as mesmas peças — `Session`, a biblioteca das configurações
-/// e [`input::teclas_do_controle`] —, e o roteiro é de **botões do controle**, como quem joga.
-/// Com `--dump`, sai um quadro meio segundo depois de cada aperto; o relatório vai inteiro para a
-/// saída no fim.
-fn sessao_sem_janela(
+/// The bench builds the machine on its own, and what it shows may not be what the window shows:
+/// the window installs every game in the library, passes the controller through the session and
+/// translates the D-pad into keys. Here the same pieces come in — `Session`, the settings'
+/// library and [`input::controller_key_events`] — and the script is of **controller buttons**,
+/// like someone playing. With `--dump`, a frame comes out half a second after each press; the
+/// whole report goes to the output at the end.
+fn windowless_session(
     path: &str,
     seconds: u32,
     dump: Option<&str>,
     keys: &input::Script,
-    instantes: &[u32],
-    placa: bool,
+    instants: &[u32],
+    gpu: bool,
     serial: Option<&str>,
     z_wheel: ui::settings::ZWheel,
-    escala: usize,
-    melhorias: (usize, usize),
-    perfil: Option<u32>,
+    scale: usize,
+    enhancements: (usize, usize),
+    profile: Option<u32>,
     boomerang: Option<Vec<(u32, [f32; 3])>>,
-    portas_pedidas: Option<[Option<bindings::Aparelho>; input::PORTAS]>,
+    requested_ports: Option<[Option<bindings::Device>; input::PORTS]>,
     tracing: bool,
     trace_filter: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -1282,66 +1338,67 @@ fn sessao_sem_janela(
         .as_deref()
         .map(library::scan)
         .unwrap_or_default();
-    // `--wiimote` usa o Wii Remote conectado no lugar do roteiro.
-    let wiimote = std::env::args()
+    // `--wiimote` uses the connected Wii Remote instead of the script.
+    let wiimote = cli_args().into_iter()
         .any(|a| a == "--wiimote")
-        .then(input::wiimote::Wiimotes::inicia);
+        .then(input::wiimote::Wiimotes::start);
     let boomerang = boomerang.or(wiimote.as_ref().map(|_| Vec::new()));
-    let portas = match (portas_pedidas, &boomerang) {
-        (Some(portas), _) => portas,
-        (None, Some(_)) => [Some(bindings::Aparelho::Boomerang), None],
-        (None, None) => zeebx::PORTAS_PADRAO,
+    let ports = match (requested_ports, &boomerang) {
+        (Some(ports), _) => ports,
+        (None, Some(_)) => [Some(bindings::Device::Boomerang), None],
+        (None, None) => zeebx::DEFAULT_PORTS,
     };
     let mut session = session::Session::start_with(
         std::path::Path::new(path),
-        portas,
+        ports,
         serial,
-        placa,
+        gpu,
         None,
         z_wheel,
     )
     .map_err(|err| format!("{err:?}"))?;
-    session.define_resolucao_interna(escala);
-    session.define_proporcao(proporcao_da_linha());
-    session.define_melhorias(melhorias.0, melhorias.1);
+    session.set_internal_resolution(scale);
+    session.set_aspect_ratio(aspect_ratio_from_cli());
+    session.set_enhancements(enhancements.0, enhancements.1);
     session.set_tracing(tracing);
     session.set_trace_filter(trace_filter);
-    let mut perfil_ligado_em: Option<(u32, std::time::Instant, u64)> = None;
+    let mut profile_enabled_at: Option<(u32, std::time::Instant, u64)> = None;
     session.set_installed_applets(
         games
             .iter()
-            .filter_map(|game| Some((game.clsid?, library::id_do_modulo(&game.path)?))),
+            .filter_map(|game| Some((game.clsid?, library::module_id(&game.path)?))),
     );
-    let inicio_real = std::time::Instant::now();
-    let mut fim = seconds.saturating_mul(1000);
-    let mut reaberta = false;
+    let real_start = std::time::Instant::now();
+    let mut end = seconds.saturating_mul(1000);
+    let mut reopened = false;
     let mut pad = input::Pad::default();
-    // `--dump-audio=A.wav` também aqui: a sessão é a da janela, e é nela que o som acontece.
-    let gravacao = std::env::args()
+    // `--dump-audio=A.wav` here too: the session is the window's, and that is where sound
+    // happens.
+    let recording = cli_args().into_iter()
         .find_map(|a| a.strip_prefix("--dump-audio=").map(str::to_string))
-        .map(|caminho| (caminho, session.grava_audio(RECORD_RATE)));
-    let mut gravado: Vec<f32> = Vec::new();
-    let mut gravado_ms = 0u64;
-    let mut fotos: std::collections::VecDeque<u32> = instantes.iter().copied().collect();
-    let mut numero = 0;
-    let dpad_nos_eixos = std::env::args().any(|arg| arg == "--dpad-nos-eixos");
-    while session.clock_ms() < fim {
-        if let (Some(desde), None) = (perfil, perfil_ligado_em) {
-            if session.clock_ms() >= desde {
-                session.liga_perfil_de_api();
-                perfil_ligado_em = Some((
+        .map(|wav_path| (wav_path, session.record_audio(RECORD_RATE)));
+    let mut recorded: Vec<f32> = Vec::new();
+    let mut recorded_ms = 0u64;
+    let mut shots: std::collections::VecDeque<u32> = instants.iter().copied().collect();
+    let mut number = 0;
+    let dpad_on_axes = cli_args().into_iter().any(|arg| arg == "--dpad-on-axes");
+    while session.clock_ms() < end {
+        if let (Some(since), None) = (profile, profile_enabled_at) {
+            if session.clock_ms() >= since {
+                session.enable_api_profile();
+                profile_enabled_at = Some((
                     session.clock_ms(),
                     std::time::Instant::now(),
-                    session.instrucoes(),
+                    session.instructions(),
                 ));
             }
         }
-        let antes = pad;
-        if !reaberta {
-            // O mesmo interruptor do `bench`, e pelo mesmo motivo: medir o issue #39 na sessão
-            // sem janela. Antes do roteiro, para o passo de eixo do roteiro vencer.
-            if dpad_nos_eixos {
-                pad.espelha_o_direcional_nos_eixos();
+        let before = pad;
+        if !reopened {
+            // The same switch as in `bench`, and for the same reason: measuring issue #39 in the
+            // windowless session. Before the script, so the script's axis step wins.
+            if dpad_on_axes {
+                pad.mirror_dpad_on_axes();
             }
             keys.apply(session.clock_ms(), &mut pad);
         } else {
@@ -1349,123 +1406,124 @@ fn sessao_sem_janela(
         }
         session.set_port_pad(0, pad);
         if let Some(wiimotes) = &wiimote {
-            // O mesmo giro para o referencial do Boomerang que a janela aplica.
+            // The same rotation into the Boomerang's frame of reference that the window applies.
             let [x, y, z] = wiimotes
-                .estado(0)
-                .filter(|e| e.com_acelerometro)
-                .map_or([0.0, 0.0, 1.0], |e| e.aceleracao);
+                .state(0)
+                .filter(|e| e.with_accelerometer)
+                .map_or([0.0, 0.0, 1.0], |e| e.acceleration);
             session.set_port_motion(0, [y, x, z]);
-        } else if let Some(roteiro) = &boomerang {
-            // O último movimento cujo instante já passou; antes do primeiro, parado de face para
-            // cima.
-            let agora = roteiro
+        } else if let Some(script) = &boomerang {
+            // The last motion whose instant has already passed; before the first one, at rest
+            // face up.
+            let current = script
                 .iter()
                 .rev()
-                .find(|(quando, _)| session.clock_ms() >= *quando)
+                .find(|(when, _)| session.clock_ms() >= *when)
                 .map_or([0.0, 0.0, 1.0], |(_, g)| *g);
-            session.set_port_motion(0, agora);
+            session.set_port_motion(0, current);
         }
-        for (avk, apertada) in input::teclas_do_controle(&antes, &pad) {
-            session.set_key(avk, apertada);
+        for (avk, pressed) in input::controller_key_events(&before, &pad) {
+            session.set_key(avk, pressed);
         }
-        // As telas intermediárias passam como na janela, sem avançar o relógio; não viram foto.
-        if session.mostra_quadro_intermediario() {
+        // Intermediate screens go by as in the window, without advancing the clock; they do not
+        // become shots.
+        if session.show_intermediate_frame() {
             continue;
         }
-        if (0..input::BUTTONS).any(|b| pad.is_down(b) && !antes.is_down(b)) {
-            fotos.push_back(session.clock_ms().saturating_add(500));
-            fotos.make_contiguous().sort_unstable();
+        if (0..input::BUTTONS).any(|b| pad.is_down(b) && !before.is_down(b)) {
+            shots.push_back(session.clock_ms().saturating_add(500));
+            shots.make_contiguous().sort_unstable();
         }
-        let parou = matches!(
+        let stopped = matches!(
             session.step(std::time::Duration::from_millis(16), false),
             session::Step::Stopped
         );
-        if let Some((_, mixer)) = &gravacao {
-            let agora = u64::from(session.clock_ms());
-            let quadros = (agora.saturating_sub(gravado_ms) * u64::from(RECORD_RATE)) / 1000;
-            if quadros > 0 {
-                gravado.extend(mixer.render(quadros as usize));
-                gravado_ms = agora;
+        if let Some((_, mixer)) = &recording {
+            let current = u64::from(session.clock_ms());
+            let frames = (current.saturating_sub(recorded_ms) * u64::from(RECORD_RATE)) / 1000;
+            if frames > 0 {
+                recorded.extend(mixer.render(frames as usize));
+                recorded_ms = current;
             }
         }
         if let Some(path) = dump {
-            while fotos.front().is_some_and(|&t| session.clock_ms() >= t) {
-                fotos.pop_front();
-                numero += 1;
-                let nome = match path.strip_suffix(".bmp") {
-                    Some(base) => format!("{base}.{numero}.bmp"),
-                    None => format!("{path}.{numero}"),
+            while shots.front().is_some_and(|&t| session.clock_ms() >= t) {
+                shots.pop_front();
+                number += 1;
+                let name = match path.strip_suffix(".bmp") {
+                    Some(base) => format!("{base}.{number}.bmp"),
+                    None => format!("{path}.{number}"),
                 };
-                if let Some(gl) = session.quadro_gl() {
-                    std::fs::write(nome.replace(".bmp", ".gl.bmp"), gl.to_bmp())?;
+                if let Some(gl) = session.frame_gl() {
+                    std::fs::write(name.replace(".bmp", ".gl.bmp"), gl.to_bmp())?;
                 }
                 println!(
-                    "foto {numero}:    {} ms virtuais, {} ms reais, {} quadros de GL até aqui",
+                    "shot {number}:    {} virtual ms, {} real ms, {} GL frames so far",
                     session.clock_ms(),
-                    inicio_real.elapsed().as_millis(),
-                    session.quadros_apresentados()
+                    real_start.elapsed().as_millis(),
+                    session.presented_frames()
                 );
-                let na_janela = session.quadro_na_placa().is_some();
-                if let Some(grande) = session.quadro_grande() {
-                    std::fs::write(nome.replace(".bmp", ".grande.bmp"), grande.to_bmp())?;
+                let in_window = session.gpu_frame().is_some();
+                if let Some(large) = session.large_frame() {
+                    std::fs::write(name.replace(".bmp", ".grande.bmp"), large.to_bmp())?;
                     println!(
-                        "grande:    {}x{} aos {} ms, {}",
-                        grande.width(),
-                        grande.height(),
+                        "large:     {}x{} at {} ms, {}",
+                        large.width(),
+                        large.height(),
                         session.clock_ms(),
-                        match na_janela {
-                            true => "a janela mostra este",
-                            false => "a janela mostra a tela de 640×480 (há 2D por cima)",
+                        match in_window {
+                            true => "the window shows this one",
+                            false => "the window shows the 640×480 screen (there is 2D on top)",
                         }
                     );
                 }
-                std::fs::write(nome, session.screen().to_bmp())?;
+                std::fs::write(name, session.screen().to_bmp())?;
             }
         }
-        if let Some(classe) = session.take_launch_request() {
-            let jogo = games.iter().find(|game| game.clsid == Some(classe));
+        if let Some(class_id) = session.take_launch_request() {
+            let matching_game = games.iter().find(|game| game.clsid == Some(class_id));
             println!(
-                "lançar:    {classe:#010x} aos {} ms → {}",
+                "launch:    {class_id:#010x} at {} ms → {}",
                 session.clock_ms(),
-                jogo.map_or(
-                    "nenhum jogo da biblioteca com essa classe".to_string(),
+                matching_game.map_or(
+                    "no game in the library with that class".to_string(),
                     |g| g.path.display().to_string()
                 )
             );
             break;
         }
-        if parou && session.classe() == session::Z_WHEEL && session.saiu_sozinho() {
-            // O mesmo que a janela faz: ver `session::Z_WHEEL`.
+        if stopped && session.class_id() == session::Z_WHEEL && session.exited_on_its_own() {
+            // The same as the window does: see `session::Z_WHEEL`.
             println!(
-                "reabrir:   a Z-Wheel saiu aos {} ms; reabrindo",
+                "reopen:    the Z-Wheel exited at {} ms; reopening",
                 session.clock_ms()
             );
-            let deslocamento = session.clock_ms();
+            let offset = session.clock_ms();
             session = session::Session::start_with(
                 std::path::Path::new(path),
-                zeebx::PORTAS_PADRAO,
+                zeebx::DEFAULT_PORTS,
                 serial,
-                placa,
+                gpu,
                 None,
                 z_wheel,
             )
             .map_err(|err| format!("{err:?}"))?;
-            session.define_resolucao_interna(escala);
-            session.define_proporcao(proporcao_da_linha());
-            session.define_melhorias(melhorias.0, melhorias.1);
+            session.set_internal_resolution(scale);
+            session.set_aspect_ratio(aspect_ratio_from_cli());
+            session.set_enhancements(enhancements.0, enhancements.1);
             session.set_installed_applets(
                 games
                     .iter()
-                    .filter_map(|game| Some((game.clsid?, library::id_do_modulo(&game.path)?))),
+                    .filter_map(|game| Some((game.clsid?, library::module_id(&game.path)?))),
             );
-            let _ = deslocamento;
-            reaberta = true;
-            fim = 4000;
+            let _ = offset;
+            reopened = true;
+            end = 4000;
             continue;
         }
-        if parou {
-            println!("parou:     {:?}", session.stopped_reason());
-            let (regs, pilha, lr) = session.falha();
+        if stopped {
+            println!("stopped:   {:?}", session.stopped_reason());
+            let (regs, stack, lr) = session.failure();
             if let Some(lr) = lr {
                 let regs: Vec<String> = regs
                     .iter()
@@ -1473,8 +1531,8 @@ fn sessao_sem_janela(
                     .map(|(i, v)| format!("r{i}={v:#x}"))
                     .collect();
                 println!("           {} lr={lr:#x}", regs.join(" "));
-                let pilha: Vec<String> = pilha.iter().map(|v| format!("{v:#x}")).collect();
-                println!("           pilha: {}", pilha.join(" "));
+                let stack: Vec<String> = stack.iter().map(|v| format!("{v:#x}")).collect();
+                println!("           stack: {}", stack.join(" "));
             }
             break;
         }
@@ -1482,92 +1540,92 @@ fn sessao_sem_janela(
     if let Some(path) = dump {
         std::fs::write(path, session.screen().to_bmp())?;
     }
-    println!("tempo:     {} ms virtuais", session.clock_ms());
-    let (heap, objetos) = session.memory();
-    println!("heap:      {heap} bytes em uso, {objetos} objetos vivos");
-    // **Quanto sobra não diz como sobra.** Um heap com 30 MB livres em 400 buracos não entrega uma
-    // alocação de 2 MB, e o jogo relata isso como falta de memória: as duas linhas abaixo são o que
-    // separa "encheu" de "se despedaçou" no relatório.
-    let retrato = session.heap_retrato();
+    println!("time:      {} virtual ms", session.clock_ms());
+    let (heap, objects) = session.memory();
+    println!("heap:      {heap} bytes in use, {objects} live objects");
+    // **How much is left does not say how it is left.** A heap with 30 MB free in 400 holes
+    // cannot serve a 2 MB allocation, and the game reports that as out of memory: the two lines
+    // below are what separate "filled up" from "fell to pieces" in the report.
+    let snapshot = session.heap_snapshot();
     println!(
-        "           {} buraco(s), maior livre {} de {} livres ({}% do livre preso em buracos), {} blocos vivos de {}",
-        retrato.buracos,
-        retrato.maior_buraco,
-        retrato.livre,
-        u64::from(retrato.perdido_em_buracos()) * 100 / u64::from(retrato.livre.max(1)),
-        retrato.vivos,
-        retrato.teto,
+        "           {} hole(s), largest free {} of {} free ({}% of the free space stuck in holes), {} live blocks of {}",
+        snapshot.holes,
+        snapshot.largest_hole,
+        snapshot.free,
+        u64::from(snapshot.lost_in_holes()) * 100 / u64::from(snapshot.free.max(1)),
+        snapshot.live,
+        snapshot.cap,
     );
-    let (recusas, checagens) = session.heap_recusas();
-    if let Some((tamanho, lr)) = recusas.first() {
+    let (refusals, checks) = session.heap_refusals();
+    if let Some((size, lr)) = refusals.first() {
         println!(
-            "recusado:  {} pedido(s) de malloc sem lugar; o primeiro: {} bytes, pedido em {lr:#010x}",
-            recusas.len(),
-            tamanho
+            "refused:   {} malloc request(s) with no room; the first: {} bytes, requested at {lr:#010x}",
+            refusals.len(),
+            size
         );
     }
-    if let Some((tamanho, lr)) = checagens.first() {
+    if let Some((size, lr)) = checks.first() {
         println!(
-            "recusado:  {} pergunta(s) de memória disponível respondidas com \"não cabe\"; a primeira: {} bytes em {lr:#010x}",
-            checagens.len(),
-            tamanho
+            "refused:   {} available-memory question(s) answered with \"does not fit\"; the first: {} bytes at {lr:#010x}",
+            checks.len(),
+            size
         );
     }
-    if let (Some((caminho, _)), false) = (&gravacao, gravado.is_empty()) {
-        std::fs::write(caminho, audio::to_wav(&gravado, RECORD_RATE))?;
-        let pico = gravado.iter().fold(0.0f32, |m, s| m.max(s.abs()));
-        println!("áudio:     {caminho} (pico {pico:.3})");
+    if let (Some((wav_path, _)), false) = (&recording, recorded.is_empty()) {
+        std::fs::write(wav_path, audio::to_wav(&recorded, RECORD_RATE))?;
+        let peak = recorded.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        println!("audio:     {wav_path} (peak {peak:.3})");
     }
-    // **O registro do núcleo, com o som junto.** Esta função é a única que grava o áudio misturado
-    // em WAV, então é aqui que os dois se encontram: o WAV diz *o que* tocou, o registro diz *por
-    // quê* -- o som entregue e a duração decodificada, o fluxo que o jogo para de alimentar, e quem
-    // calou cada som. Separá-los foi o que me fez perseguir uma voz cortada sem saber se ela tinha
-    // sido cortada.
-    let registro = zeebx::registro::drena();
-    if !registro.is_empty() {
-        println!("registro:");
-        for linha in registro {
-            println!("  [{}] {}: {}", linha.nivel.etiqueta(), linha.alvo, linha.texto);
+    // **The core's log, with the sound alongside.** This function is the only one that writes
+    // the mixed audio to WAV, so this is where the two meet: the WAV says *what* played, the log
+    // says *why* -- the sound delivered and the decoded duration, the stream the game stops
+    // feeding, and who silenced each sound. Keeping them apart is what had me chasing a cut-off
+    // voice without knowing whether it had been cut off.
+    let logging = zeebx::logging::drain();
+    if !logging.is_empty() {
+        println!("log:");
+        for log_line in logging {
+            println!("  [{}] {}: {}", log_line.level.tag(), log_line.target, log_line.text);
         }
     }
-    // **Dizer o que se perdeu.** Um instrumento que descarta linhas em silêncio mente por omissão:
-    // foi assim que uma medição relatou "zero sons decodificados" com 123 sons pedidos no registro.
-    let descartes = zeebx::registro::descartes();
-    if descartes > 0 {
-        println!("registro:  {descartes} linha(s) foram descartadas pelo anel antes de serem lidas");
+    // **Say what was lost.** An instrument that drops lines silently lies by omission: that is how
+    // a measurement reported "zero sounds decoded" with 123 sounds requested in the log.
+    let dropped = zeebx::logging::dropped();
+    if dropped > 0 {
+        println!("log:       {dropped} line(s) were dropped by the ring before being read");
     }
-    if let Some((desde, inicio, instrucoes_antes)) = perfil_ligado_em {
-        let real = inicio.elapsed();
-        let virtual_ms = session.clock_ms().saturating_sub(desde);
-        let api = session.perfil_de_api();
+    if let Some((since, started_at, instructions_before)) = profile_enabled_at {
+        let real = started_at.elapsed();
+        let virtual_ms = session.clock_ms().saturating_sub(since);
+        let api = session.api_profile();
         let total: u64 = api.iter().map(|(_, ns)| ns).sum();
         println!(
-            "perfil:    desde {desde} ms: {} ms reais para {virtual_ms} ms virtuais ({:.0}% do console), {} ms atendendo a API ({:.0}%)",
+            "profile:   since {since} ms: {} real ms for {virtual_ms} virtual ms ({:.0}% of the console), {} ms serving the API ({:.0}%)",
             real.as_millis(),
             f64::from(virtual_ms) / real.as_millis().max(1) as f64 * 100.0,
             total / 1_000_000,
             total as f64 / real.as_nanos().max(1) as f64 * 100.0,
         );
-        let instrucoes = session.instrucoes().saturating_sub(instrucoes_antes);
+        let instructions = session.instructions().saturating_sub(instructions_before);
         println!(
-            "           {:.0} milhões de instruções ARM: {:.0} por segundo real, {:.0} por segundo virtual (o console faz 528)",
-            instrucoes as f64 / 1e6,
-            instrucoes as f64 / 1e6 / real.as_secs_f64().max(1e-9),
-            instrucoes as f64 / 1e6 / (f64::from(virtual_ms) / 1000.0).max(1e-9),
+            "           {:.0} million ARM instructions: {:.0} per real second, {:.0} per virtual second (the console does 528)",
+            instructions as f64 / 1e6,
+            instructions as f64 / 1e6 / real.as_secs_f64().max(1e-9),
+            instructions as f64 / 1e6 / (f64::from(virtual_ms) / 1000.0).max(1e-9),
         );
-        for (nome, ns) in api.iter().take(PROFILE_LINES) {
+        for (name, ns) in api.iter().take(PROFILE_LINES) {
             println!(
-                "  {:5.1}%  {:>8} ms  {nome}",
+                "  {:5.1}%  {:>8} ms  {name}",
                 *ns as f64 / total.max(1) as f64 * 100.0,
                 ns / 1_000_000
             );
         }
     }
-    for linha in session.log() {
-        println!("{linha}");
+    for log_line in session.log() {
+        println!("{log_line}");
     }
     if tracing {
-        println!("rastreamento:");
+        println!("trace:");
         for line in session.trace() {
             println!("  {line}");
         }
@@ -1575,16 +1633,15 @@ fn sessao_sem_janela(
     Ok(())
 }
 
-/// Grava o heap e a imagem do módulo como estão na memória.
+/// Writes the heap and the module image as they are in memory.
 ///
-/// A imagem do módulo vale a pena junto do heap: em runtime ela já passou pelas relocações que o
-/// stub do `elf2mod` aplica sozinho, e o arquivo em disco ainda não.
+/// The module image is worth having alongside the heap: at runtime it has already gone through
+/// the relocations the `elf2mod` stub applies on its own, and the file on disk has not.
 ///
-/// Como o perfil, isto também serve quando o jogo **não** chega a começar: o Need For Speed monta
-/// a tabela de sons dele antes de o applet existir, e é nessa tabela que está a resposta de por
-/// que ele para.
-fn despeja_memoria(
-    machine: &machine::Machine<BackendPadrao>,
+/// Like the profile, this also helps when the game **never** gets to start: Need For Speed builds
+/// its sound table before the applet exists, and that table holds the answer to why it stops.
+fn dump_memory(
+    machine: &machine::Machine<DefaultBackend>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     std::fs::write(
         "heap.bin",
@@ -1596,37 +1653,38 @@ fn despeja_memoria(
     };
     std::fs::write("module.bin", machine.dump(base, len)?)?;
     println!(
-        "           heap.bin (base {:#010x}) e module.bin (base {:#010x})",
+        "           heap.bin (base {:#010x}) and module.bin (base {:#010x})",
         loader::HEAP_BASE,
         base
     );
     Ok(())
 }
 
-/// Grava um BMP por superfície viva.
+/// Writes one BMP per live surface.
 ///
-/// "O jogo desenha e a tela fica preta" tem duas causas possíveis, e só o conteúdo das
-/// superfícies as separa: ou ele desenhou em algo que não vai para a tela, ou não desenhou. Ver
-/// o conteúdo delas resolveu o texto do Tekken 2 em minutos depois de horas de suposição.
-fn despeja_superficies<C: cpu::CpuBackend>(
+/// "The game draws and the screen stays black" has two possible causes, and only the contents of
+/// the surfaces tell them apart: either it drew onto something that does not go to the screen,
+/// or it did not draw. Looking at their contents solved Tekken 2's text in minutes after hours of
+/// guessing.
+fn write_surfaces<C: cpu::CpuBackend>(
     machine: &machine::Machine<C>,
     dir: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir_all(dir)?;
-    let superficies = machine.superficies();
-    for (addr, largura, altura, bmp) in &superficies {
-        std::fs::write(format!("{dir}/{addr:08x}-{largura}x{altura}.bmp"), bmp)?;
+    let surfaces = machine.surfaces();
+    for (addr, width, height, bmp) in &surfaces {
+        std::fs::write(format!("{dir}/{addr:08x}-{width}x{height}.bmp"), bmp)?;
     }
-    println!("superfícies: {} em {dir}/", superficies.len());
+    println!("surfaces: {} in {dir}/", surfaces.len());
     Ok(())
 }
 
-/// Escreve o desfecho e, quando ele é uma falha de memória, os registradores e a pilha.
+/// Writes the outcome and, when it is a memory fault, the registers and the stack.
 ///
-/// Sem os registradores, "acesso inválido a 0x00000000" diz que alguma coisa era nula e não diz
-/// **qual** — e essa é justamente a pergunta. Eles já eram guardados; faltava mostrá-los também
-/// nas falhas de dentro do `EVT_APP_START`, que é onde os aplicativos morrem.
-fn describe_outcome_com_estado<C: cpu::CpuBackend>(
+/// Without the registers, "invalid access at 0x00000000" says something was null and does not
+/// say **which** — and that is exactly the question. They were already being kept; what was
+/// missing was showing them for the faults inside `EVT_APP_START` too, which is where apps die.
+fn describe_outcome_with_state<C: cpu::CpuBackend>(
     outcome: &Outcome,
     machine: &machine::Machine<C>,
 ) {
@@ -1636,59 +1694,59 @@ fn describe_outcome_com_estado<C: cpu::CpuBackend>(
     }
     let regs = machine.fault_regs();
     print!("           ");
-    for (i, valor) in regs.iter().enumerate() {
-        print!("r{i}={valor:#x} ");
+    for (i, value) in regs.iter().enumerate() {
+        print!("r{i}={value:#x} ");
     }
     println!();
-    let pilha = machine.fault_stack();
-    if !pilha.is_empty() {
-        let itens: Vec<String> = pilha.iter().map(|v| format!("{v:#x}")).collect();
-        println!("           pilha: {}", itens.join(" "));
+    let stack = machine.fault_stack();
+    if !stack.is_empty() {
+        let items: Vec<String> = stack.iter().map(|v| format!("{v:#x}")).collect();
+        println!("           stack: {}", items.join(" "));
     }
 }
 
 fn describe_outcome(outcome: &Outcome) {
     match outcome {
-        Outcome::Returned { code } => println!("retornou {code}"),
+        Outcome::Returned { code } => println!("returned {code}"),
         Outcome::Unimplemented { addr, args, caller } => {
-            println!("API não implementada — {}", aee::describe(*addr));
+            println!("unimplemented API — {}", aee::describe(*addr));
             println!(
-                "           args r0={:#x} r1={:#x} r2={:#x} r3={:#x}  (chamada de {caller:#010x})",
+                "           args r0={:#x} r1={:#x} r2={:#x} r3={:#x}  (called from {caller:#010x})",
                 args[0], args[1], args[2], args[3]
             );
         }
         Outcome::Fault { addr, pc, lr } => {
-            println!("acesso inválido a {addr:#010x} (pc {pc:#010x}, lr {lr:#010x})")
+            println!("invalid access at {addr:#010x} (pc {pc:#010x}, lr {lr:#010x})")
         }
-        Outcome::Exception { pc } => println!("exceção do núcleo ARM em pc {pc:#010x}"),
-        Outcome::Budget => println!("orçamento de instruções esgotado"),
+        Outcome::Exception { pc } => println!("ARM core exception at pc {pc:#010x}"),
+        Outcome::Budget => println!("instruction budget exhausted"),
         Outcome::CallLimit { calls } => {
-            println!("{calls} chamadas de API sem devolver a vez — provável laço de repetição")
+            println!("{calls} API calls without yielding — probably a busy loop")
         }
     }
 }
 
-/// Roda o laço de quadros: avança o relógio virtual, dispara os timers que venceram e entrega
-/// os callbacks pendentes.
+/// Runs the frame loop: advances the virtual clock, fires the timers that expired and delivers
+/// the pending callbacks.
 ///
-/// O jogo desenha dentro do callback do timer que ele mesmo rearma, então é o disparo do timer
-/// que produz cada quadro. Para quando o jogo não tem mais nada armado — sem timer nem callback
-/// pendente, nada mais vai acontecer.
+/// The game draws inside the callback of the timer it re-arms itself, so it is the timer firing
+/// that produces each frame. Stops when the game has nothing else armed — with no timer or
+/// callback pending, nothing else is going to happen.
 #[allow(clippy::too_many_arguments)]
 fn run_frames(
-    machine: &mut Machine<BackendPadrao>,
+    machine: &mut Machine<DefaultBackend>,
     rounds: u32,
     seconds: Option<u32>,
     path: &str,
     dump_heap: bool,
     show: bool,
     keys: &input::Script,
-    teclas: &[(u32, u32)],
+    key_events: &[(u32, u32)],
     dump_gl: Option<&str>,
     dump_audio: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Com janela, o som sai pela placa; sem ela, o que se quer é despejar quadros, e um fluxo
-    // de áudio aberto só atrapalharia.
+    // With a window, sound goes out through the sound card; without one, the goal is dumping
+    // frames, and an open audio stream would only get in the way.
     let speaker = match show {
         true => match audio::Output::open(1.0, false) {
             Ok(output) => {
@@ -1696,7 +1754,7 @@ fn run_frames(
                 Some(output)
             }
             Err(err) => {
-                println!("som:       sem saída de áudio ({err})");
+                println!("sound:     no audio output ({err})");
                 None
             }
         },
@@ -1711,10 +1769,10 @@ fn run_frames(
         false => None,
     };
     let mut drawn = 0;
-    let mut teclas_pendentes: std::collections::VecDeque<(u32, u32)> = {
-        let mut ordenadas = teclas.to_vec();
-        ordenadas.sort_by_key(|&(quando, _)| quando);
-        ordenadas.into()
+    let mut pending_key_events: std::collections::VecDeque<(u32, u32)> = {
+        let mut sorted = key_events.to_vec();
+        sorted.sort_by_key(|&(when, _)| when);
+        sorted.into()
     };
     let mut turns = 0;
     let mut stopped = None;
@@ -1724,9 +1782,9 @@ fn run_frames(
         std::fs::create_dir_all(dir)?;
     }
     let mut dumped = 0;
-    // O som é misturado aqui mesmo, no ritmo do relógio virtual, em vez de sair pela placa: é
-    // assim que dá para **conferir** o áudio sem ouvi-lo — e o arquivo que sai é comparável
-    // com os sons que o jogo entregou.
+    // Sound is mixed right here, at the pace of the virtual clock, instead of going out through
+    // the sound card: that is how the audio can be **checked** without listening to it — and the
+    // file that comes out is comparable with the sounds the game delivered.
     let recorder = dump_audio.map(|_| {
         let mixer = audio::Mixer::silent(RECORD_RATE);
         machine.set_audio(Some(mixer.clone()));
@@ -1736,11 +1794,11 @@ fn run_frames(
     let mut recorded_ms = 0u64;
     let mut shown = 0;
     let mut refreshed = std::time::Instant::now();
-    // O relógio virtual anda sozinho: quando o jogo dorme, `skip_idle_time` adianta o tempo em
-    // vez de gastá-lo, e um trecho ocioso passa em quase nada de tempo real. Isso é o que faz o
-    // tempo que o jogo *mede* ficar certo, mas nada segurava o emulador no ritmo do mundo — o
-    // Crash rodava 12 segundos virtuais em 1,5 real. Só a janela precisa do freio; sem ela, o
-    // que se quer é justamente terminar rápido.
+    // The virtual clock runs on its own: when the game sleeps, `skip_idle_time` jumps time ahead
+    // instead of spending it, and an idle stretch goes by in almost no real time. That is what
+    // keeps the time the game *measures* right, but nothing held the emulator to the world's
+    // pace — Crash ran 12 virtual seconds in 1.5 real ones. Only the window needs the brake;
+    // without it, finishing fast is exactly the point.
     let started = std::time::Instant::now();
     let clock_base = u64::from(machine.clock_ms());
     for round in 0..rounds {
@@ -1754,15 +1812,16 @@ fn run_frames(
             if ahead > 0 {
                 std::thread::sleep(std::time::Duration::from_millis(ahead));
             }
-            // Uma volta do laço não é um quadro: o jogo pode rodar o laço principal inteiro
-            // dentro de um callback só, e cada volta daqui devolve apenas a fatia de
-            // instruções que coube. No Peteca são um milhão e meio de voltas para algumas
-            // dezenas de quadros — redesenhar em todas afoga a janela, que nunca chega a ser
-            // composta e aparece em branco. Quem manda no redesenho é o `eglSwapBuffers`.
+            // One loop pass is not a frame: the game can run its whole main loop inside a
+            // single callback, and each pass here only returns the slice of instructions that
+            // fit. In Peteca that is a million and a half passes for a few dozen frames —
+            // redrawing on all of them drowns the window, which never gets composited and shows
+            // up blank. What drives redrawing is `eglSwapBuffers`.
             let swaps = machine.gl_swaps();
             let presented = swaps != shown;
-            // Um jogo 2D nunca apresenta pelo OpenGL, e mesmo o 3D precisa atender ao teclado
-            // e ao pedido de fechar entre um quadro e outro: daí o intervalo de relógio real.
+            // A 2D game never presents through OpenGL, and even 3D has to handle the keyboard
+            // and the close request between one frame and the next: hence the wall-clock
+            // interval.
             if presented || refreshed.elapsed() >= REFRESH_PERIOD {
                 shown = swaps;
                 refreshed = std::time::Instant::now();
@@ -1770,21 +1829,21 @@ fn run_frames(
                 pad = window.pad();
             }
         }
-        // As teclas do roteiro entram quando o relógio do jogo passa do instante marcado. Cada
-        // uma vai como aperto e soltura seguidos, que é o que um toque é.
-        while teclas_pendentes
+        // The script's keys come in when the game clock passes the marked instant. Each one goes
+        // as a press followed by a release, which is what a tap is.
+        while pending_key_events
             .front()
-            .is_some_and(|&(quando, _)| machine.clock_ms() >= quando)
+            .is_some_and(|&(when, _)| machine.clock_ms() >= when)
         {
-            let (_, avk) = teclas_pendentes.pop_front().unwrap_or_default();
+            let (_, avk) = pending_key_events.pop_front().unwrap_or_default();
             machine.set_key(avk, true);
             machine.set_key(avk, false);
         }
         if deadline.is_some_and(|limit| machine.clock_ms() >= limit) {
             break;
         }
-        // O roteiro entra por cima do teclado: assim dá para conferir a entrada sem janela e,
-        // com ela, ver o que o roteiro faz.
+        // The script goes on top of the keyboard: that way input can be checked without a
+        // window and, with one, you can see what the script does.
         keys.apply(machine.clock_ms(), &mut pad);
         machine.set_pad(pad);
         turns += 1;
@@ -1792,8 +1851,8 @@ fn run_frames(
         machine.deliver_signals(INSTRUCTION_BUDGET)?;
         machine.deliver_callbacks(INSTRUCTION_BUDGET)?;
 
-        // O teto de instruções de um trecho é pedido de vez, não desfecho ruim. Ver a mesma
-        // decisão em `session.rs`.
+        // A slice's instruction cap is a request to yield, not a bad outcome. See the same
+        // decision in `session.rs`.
         if let Some(bad) = outcomes
             .iter()
             .find(|outcome| !matches!(outcome, Outcome::Returned { .. } | Outcome::Budget))
@@ -1801,8 +1860,8 @@ fn run_frames(
             stopped = Some((round, bad.clone()));
             break;
         }
-        // Um quadro por arquivo: comparar dois quadros vizinhos é o que diz se um artefato
-        // é do desenho ou de um estado que ficou preso de um quadro para o outro.
+        // One frame per file: comparing two neighboring frames is what tells whether an artifact
+        // comes from the drawing or from state left stuck from one frame to the next.
         if let Some(dir) = dump_gl {
             while dumped < machine.gl_swaps() {
                 dumped += 1;
@@ -1812,7 +1871,7 @@ fn run_frames(
                 }
             }
         }
-        // Grava o som correspondente ao tempo virtual que passou desde a volta anterior.
+        // Records the sound for the virtual time that passed since the previous pass.
         if let Some(mixer) = &recorder {
             let now = u64::from(machine.clock_ms());
             let frames = (now.saturating_sub(recorded_ms) * u64::from(RECORD_RATE)) / 1000;
@@ -1832,21 +1891,21 @@ fn run_frames(
         std::fs::write(path, audio::to_wav(&recorded, RECORD_RATE))?;
         let loudest = recorded.iter().fold(0.0f32, |m, s| m.max(s.abs()));
         println!(
-            "áudio:     {path} ({:.1} s, pico {loudest:.3})",
+            "audio:     {path} ({:.1} s, peak {loudest:.3})",
             recorded.len() as f32 / (RECORD_RATE * 2) as f32
         );
     }
     println!(
-        "tempo:     {drawn} disparo(s) de timer em {} ms virtuais, {} timer(s) armado(s)",
+        "time:      {drawn} timer firing(s) in {} virtual ms, {} timer(s) armed",
         machine.clock_ms(),
         machine.armed_timers()
     );
     println!(
-        "           {} milhões de instruções em {turns} volta(s) do laço",
+        "           {} million instructions in {turns} loop pass(es)",
         machine.instructions() / 1_000_000,
     );
     if let Some((frame, outcome)) = stopped {
-        print!("           parou na volta {frame} em ");
+        print!("           stopped on pass {frame} at ");
         describe_outcome(&outcome);
         if let Outcome::Fault { .. } = outcome {
             let regs = machine.fault_regs();
@@ -1859,12 +1918,12 @@ fn run_frames(
             let stack = machine.fault_stack();
             if !stack.is_empty() {
                 let trail: Vec<String> = stack.iter().map(|a| format!("{a:#x}")).collect();
-                println!("           pilha: {}", trail.join(" "));
+                println!("           stack: {}", trail.join(" "));
             }
-            // O que explica um ponteiro nulo é a struct que levou até ele, e ela só existe
-            // na memória do guest — daí poder levá-la para fora e analisá-la com calma.
+            // What explains a null pointer is the struct that led to it, and it only exists in
+            // guest memory — hence being able to take it out and analyze it at leisure.
             if dump_heap {
-                despeja_memoria(machine)?;
+                dump_memory(machine)?;
             }
         }
     }
@@ -1872,32 +1931,32 @@ fn run_frames(
         let out = std::path::Path::new(path).with_extension("frames.bmp");
         let out = out.file_name().map(std::path::Path::new).unwrap_or(&out);
         std::fs::write(out, machine.screen().to_bmp())?;
-        println!("           último quadro em {}", out.display());
+        println!("           last frame in {}", out.display());
     }
     Ok(())
 }
 
-/// Imprime o que sabemos ler de um `.mod`.
+/// Prints what we know how to read from a `.mod`.
 fn info(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let data = std::fs::read(path)?;
     let size = data.len();
     let image = ModImage::parse(data)?;
 
-    println!("arquivo:  {path}");
-    println!("tamanho:  {size} bytes ({size:#x})");
+    println!("file:     {path}");
+    println!("size:     {size} bytes ({size:#x})");
     println!(
-        "variante: {}",
+        "variant:  {}",
         match image.variant() {
-            Variant::Raw => "sem cabeçalho (código ARM direto)",
-            Variant::BrewHeader => "cabeçalho BREW",
+            Variant::Raw => "no header (raw ARM code)",
+            Variant::BrewHeader => "BREW header",
         }
     );
     println!("entry:    {:#010x}  (AEEMod_Load)", image.entry());
 
     if let Some(header) = image.header() {
-        println!("versão:   {}", header.version);
+        println!("version:  {}", header.version);
         println!("code_off: {:#x}", header.code_offset);
-        print!("campos não decifrados (0x14..0x3c):");
+        print!("undeciphered fields (0x14..0x3c):");
         for word in header.unknown {
             print!(" {word:#x}");
         }
