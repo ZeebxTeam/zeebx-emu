@@ -1,31 +1,31 @@
 import QtQuick
 
-// Um ícone da Lucide, pelo nome (`"pause"`), desenhado como letra da fonte embutida: a cor é a do
-// texto, e acompanha o tema sem imagem nenhuma para recolorir. Os nomes que existem são os da
-// tabela abaixo; para acrescentar um, ver `ferramentas/icones.py`.
+// A Lucide icon, by name (`"pause"`), drawn as a glyph of the embedded font: the color is the
+// text's, and it follows the theme with no image to recolor. The names that exist are the ones in
+// the table below; to add one, see `tools/icons.py`.
 Text {
-    id: icone
+    id: iconName
 
-    property string nome
-    // O tamanho do ícone, em pixels: a fonte é desenhada num quadrado do tamanho da letra.
-    property real tamanho: 16
+    property string name
+    // The icon size, in pixels: the font is drawn in a square the size of the glyph.
+    property real size: 16
 
-    font.family: carregador.name
-    font.pixelSize: tamanho
+    font.family: fontLoader.name
+    font.pixelSize: size
     horizontalAlignment: Text.AlignHCenter
     verticalAlignment: Text.AlignVCenter
-    // Um nome que não está na tabela não desenha nada, em vez de um quadrado de letra faltando.
-    text: codigos[nome] !== undefined ? String.fromCharCode(codigos[nome]) : ""
+    // A name that is not in the table draws nothing, instead of a missing-glyph box.
+    text: codes[name] !== undefined ? String.fromCharCode(codes[name]) : ""
 
-    // O Qt guarda a fonte pelo endereço: cada ícone pede a mesma, e ela é lida uma vez só.
+    // Qt caches the font by its URL: every icon asks for the same one, and it is read only once.
     FontLoader {
-        id: carregador
+        id: fontLoader
 
         source: "qrc:/zeebx/lucide.ttf"
     }
 
-    // --- a tabela de nomes, escrita por ferramentas/icones.py ---
-    readonly property var codigos: ({
+    // --- a tabela de nomes, escrita por tools/icons.py ---
+    readonly property var codes: ({
         "bug": 0xe20c,
         "calendar-clock": 0xe304,
         "camera": 0xe064,
