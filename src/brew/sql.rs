@@ -1,14 +1,14 @@
-//! O `AEECLSID_SQLMGR` do console, sobre SQLite de verdade.
+//! The console's `AEECLSID_SQLMGR`, on top of real SQLite.
 //!
-//! Não é escolha de conveniência: o console usava SQLite mesmo. O pacote da Z-Wheel traz um
-//! `tt_prefs.db` de 4 KB cujos primeiros bytes são literalmente `SQLite format 3`, e as
-//! instruções que o módulo carrega em texto — `INSERT OR REPLACE`, `COLLATE NOCASE`, JOIN entre
-//! `GAMEINFO` e `TITLETEXT`, `PRAGMA integrity_check` — são o dialeto. Reimplementar isso seria
-//! reinventar mal justamente o que já existe pronto e em domínio público.
+//! This is not a convenience choice: the console really did use SQLite. The Z-Wheel package
+//! ships a 4 KB `tt_prefs.db` whose first bytes are literally `SQLite format 3`, and the
+//! statements the module carries as text — `INSERT OR REPLACE`, `COLLATE NOCASE`, a JOIN between
+//! `GAMEINFO` and `TITLETEXT`, `PRAGMA integrity_check` — are that dialect. Reimplementing it
+//! would be a poor reinvention of exactly what already exists, ready and in the public domain.
 //!
-//! O que este módulo faz é só a ponte: abrir o arquivo que o jogo nomeia, executar a instrução
-//! que ele manda e entregar as linhas de volta na forma que o `sqlite3_exec` usa — uma chamada
-//! ao callback do jogo por linha, com os valores já em texto.
+//! All this module does is the bridge: open the file the game names, run the statement it sends
+//! and hand the rows back in the shape `sqlite3_exec` uses — one call to the game's callback per
+//! row, with the values already as text.
 
 use std::path::{Path, PathBuf};
 
@@ -16,18 +16,18 @@ use rusqlite::params;
 
 use crate::library::CatalogIndex;
 
-/// Prepara a cópia gravável da biblioteca da Z-Wheel e sincroniza as ROMs locais.
+/// Prepares the writable copy of the Z-Wheel library and syncs the local ROMs.
 ///
-/// O banco que vem no pacote é a fonte do catálogo oficial; nunca o modificamos. A cópia de
-/// perfil contém uma tabela nossa de rastreamento, para que uma nova varredura remova somente
-/// registros que o Zeebx criou, sem apagar títulos vindos da NAND ou do pacote.
+/// The database shipped in the package is the source of the official catalog; we never modify
+/// it. The profile copy holds a tracking table of ours, so that a new scan removes only records
+/// Zeebx created, without deleting titles that came from the NAND or the package.
 pub fn sync_z_wheel_library(
     packaged: &Path,
     profile: &Path,
     catalog: &CatalogIndex,
 ) -> Result<PathBuf, String> {
     if !profile.exists() {
-        let parent = profile.parent().ok_or("perfil sem diretório")?;
+        let parent = profile.parent().ok_or("profile has no directory")?;
         std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
         std::fs::copy(packaged, profile).map_err(|err| err.to_string())?;
     }
@@ -61,8 +61,8 @@ pub fn sync_z_wheel_library(
         if entry.source != crate::library::CatalogSource::Rom {
             continue;
         }
-        // ClassID é estável e cabe no INTEGER do SQLite; usá-lo também como game_id evita um
-        // contador local que mudaria quando a pasta é revarrida.
+        // ClassID is stable and fits in SQLite's INTEGER; using it as game_id too avoids a local
+        // counter that would change whenever the folder is rescanned.
         let id = entry.applet_class;
         tx.execute(
             "INSERT OR REPLACE INTO GAMEINFO(game_id,class_id,playcount,dt_download,dt_lastplayed,boxart_path,flags,size) VALUES (?1,?2,0,0,0,'',2,0)",
@@ -83,22 +83,22 @@ pub fn sync_z_wheel_library(
     Ok(profile.to_path_buf())
 }
 
-/// Um banco aberto.
+/// An open database.
 pub struct Database {
     conn: rusqlite::Connection,
-    /// Onde ele mora no host.
+    /// Where it lives on the host.
     ///
-    /// Guardado porque o **conteúdo do banco não está no motor**: ele está no arquivo. É o mesmo
-    /// caso dos arquivos abertos — um save state grava o caminho, e a volta reabre. Sem o caminho
-    /// a volta seria impossível, e a alternativa seria gravar o banco inteiro dentro do save state,
-    /// duplicando o que já está em disco.
-    caminho: std::path::PathBuf,
+    /// Kept because the **database contents are not in the engine**: they are in the file. It is
+    /// the same case as open files — a save state records the path, and loading reopens it.
+    /// Without the path loading would be impossible, and the alternative would be writing the
+    /// whole database into the save state, duplicating what is already on disk.
+    path: std::path::PathBuf,
 }
 
-/// Uma linha de resultado, com os valores e os nomes das colunas já em texto.
+/// One result row, with the values and the column names already as text.
 ///
-/// Texto porque é assim que o `sqlite3_exec` entrega: o callback recebe `char **`. Quem quer
-/// número converte, e é o que o app faz.
+/// Text because that is how `sqlite3_exec` delivers them: the callback receives `char **`.
+/// Whoever wants a number converts it, and that is what the app does.
 #[derive(Debug)]
 pub struct Row {
     pub values: Vec<Option<String>>,
@@ -106,59 +106,59 @@ pub struct Row {
 }
 
 impl Database {
-    /// Abre (ou cria) o banco no caminho do host já resolvido pelo VFS.
+    /// Opens (or creates) the database at the host path already resolved by the VFS.
     pub fn open(path: &Path) -> Result<Self, String> {
         rusqlite::Connection::open(path)
             .map(|conn| Self {
                 conn,
-                caminho: path.to_path_buf(),
+                path: path.to_path_buf(),
             })
             .map_err(|err| err.to_string())
     }
 
-    /// O caminho do banco no host, para o save state reabrir.
-    pub fn caminho(&self) -> &Path {
-        &self.caminho
+    /// The database's host path, for the save state to reopen.
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 
-    /// Executa a instrução e devolve as linhas que ela produziu.
+    /// Runs the statement and returns the rows it produced.
     ///
-    /// Instrução sem resultado — um `CREATE`, um `INSERT` — devolve lista vazia, que é o mesmo
-    /// que o `sqlite3_exec` faz quando nunca chama o callback.
+    /// A statement without results — a `CREATE`, an `INSERT` — returns an empty list, which is
+    /// the same as what `sqlite3_exec` does when it never calls the callback.
     pub fn exec(&self, sql: &str) -> Result<Vec<Row>, String> {
         let mut stmt = self.conn.prepare(sql).map_err(|err| err.to_string())?;
         let names: Vec<String> = stmt.column_names().into_iter().map(String::from).collect();
-        // Sem colunas não há o que percorrer: é comando, não consulta.
+        // With no columns there is nothing to iterate: it is a command, not a query.
         if names.is_empty() {
             stmt.raw_execute().map_err(|err| err.to_string())?;
             return Ok(Vec::new());
         }
-        let mut linhas = Vec::new();
+        let mut lines = Vec::new();
         let mut rows = stmt.raw_query();
         while let Some(row) = rows.next().map_err(|err| err.to_string())? {
             let values = (0..names.len())
                 .map(|i| {
-                    row.get_ref(i).ok().and_then(|valor| match valor {
+                    row.get_ref(i).ok().and_then(|value| match value {
                         rusqlite::types::ValueRef::Null => None,
                         rusqlite::types::ValueRef::Integer(n) => Some(n.to_string()),
                         rusqlite::types::ValueRef::Real(n) => Some(n.to_string()),
                         rusqlite::types::ValueRef::Text(t) => {
                             Some(String::from_utf8_lossy(t).into_owned())
                         }
-                        // Um blob não tem forma de texto; o `sqlite3_exec` entrega os bytes
-                        // como estão, e é o que o app receberia no console.
+                        // A blob has no text form; `sqlite3_exec` hands over the bytes as they
+                        // are, and that is what the app would receive on the console.
                         rusqlite::types::ValueRef::Blob(b) => {
                             Some(String::from_utf8_lossy(b).into_owned())
                         }
                     })
                 })
                 .collect();
-            linhas.push(Row {
+            lines.push(Row {
                 values,
                 names: names.clone(),
             });
         }
-        Ok(linhas)
+        Ok(lines)
     }
 }
 
@@ -167,8 +167,8 @@ mod tests {
     use super::*;
     use crate::library::{CatalogEntry, CatalogSource};
 
-    /// O banco de preferências que a Z-Wheel traz no pacote, montado do zero com o mesmo
-    /// esquema que o módulo dela carrega em texto.
+    /// The preferences database the Z-Wheel ships in its package, built from scratch with the
+    /// same schema its module carries as text.
     fn prefs(dir: &Path) -> Database {
         let db = Database::open(&dir.join("tt_prefs.db")).unwrap();
         db.exec("CREATE TABLE DBINFO(version INTEGER, subversion INTEGER)")
@@ -183,62 +183,62 @@ mod tests {
     }
 
     #[test]
-    fn a_consulta_de_versao_do_zwheel_responde() {
+    fn the_zwheel_version_query_answers() {
         let dir = crate::scratch::TempDir::new("zeebx-sql-versao");
         let db = prefs(dir.path());
 
-        // É a primeira coisa que a Z-Wheel pergunta depois de abrir o banco.
-        let linhas = db.exec("SELECT version, subversion FROM DBINFO").unwrap();
-        assert_eq!(linhas.len(), 1);
-        assert_eq!(linhas[0].names, ["version", "subversion"]);
+        // It is the first thing the Z-Wheel asks after opening the database.
+        let lines = db.exec("SELECT version, subversion FROM DBINFO").unwrap();
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].names, ["version", "subversion"]);
         assert_eq!(
-            linhas[0].values,
+            lines[0].values,
             [Some("1".to_string()), Some("0".to_string())]
         );
     }
 
     #[test]
-    fn o_integrity_check_responde_ok() {
-        // A instrução que aparece na sonda antes de qualquer outra. Um `PRAGMA` devolve linha
-        // como uma consulta qualquer, e é isso que o app confere.
+    fn the_integrity_check_answers_ok() {
+        // The statement that shows up in the probe before any other. A `PRAGMA` returns a row
+        // like any query, and that is what the app checks.
         let dir = crate::scratch::TempDir::new("zeebx-sql-integridade");
         let db = prefs(dir.path());
-        let linhas = db.exec("PRAGMA integrity_check").unwrap();
-        assert_eq!(linhas.len(), 1);
-        assert_eq!(linhas[0].values[0].as_deref(), Some("ok"));
+        let lines = db.exec("PRAGMA integrity_check").unwrap();
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].values[0].as_deref(), Some("ok"));
     }
 
     #[test]
-    fn instrucao_sem_resultado_nao_devolve_linha_e_grava() {
+    fn a_statement_without_results_returns_no_rows_and_writes() {
         let dir = crate::scratch::TempDir::new("zeebx-sql-gravacao");
         let db = prefs(dir.path());
-        let gravou = db
+        let saved = db
             .exec("INSERT OR REPLACE INTO PREFSINFO values ('Initialized', '', 1, 2)")
             .unwrap();
-        assert!(gravou.is_empty());
+        assert!(saved.is_empty());
 
-        // O valor precisa sobreviver à consulta seguinte: é assim que a Z-Wheel evita a tela
-        // de configuração inicial a cada abertura.
-        let linhas = db
+        // The value has to survive the next query: that is how the Z-Wheel avoids the initial
+        // setup screen on every launch.
+        let lines = db
             .exec("SELECT * FROM PREFSINFO WHERE PREFSINFO.name = 'Initialized'")
             .unwrap();
-        assert_eq!(linhas.len(), 1);
-        assert_eq!(linhas[0].values[2].as_deref(), Some("1"));
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].values[2].as_deref(), Some("1"));
     }
 
     #[test]
-    fn instrucao_invalida_vira_erro_com_motivo() {
+    fn an_invalid_statement_becomes_an_error_with_a_reason() {
         let dir = crate::scratch::TempDir::new("zeebx-sql-erro");
         let db = prefs(dir.path());
-        let erro = db.exec("SELECT * FROM NAO_EXISTE").unwrap_err();
+        let error = db.exec("SELECT * FROM NAO_EXISTE").unwrap_err();
         assert!(
-            erro.contains("NAO_EXISTE"),
-            "o motivo precisa dizer o quê: {erro}"
+            error.contains("NAO_EXISTE"),
+            "the reason has to say what: {error}"
         );
     }
 
     #[test]
-    fn biblioteca_do_perfil_preserva_o_oficial_e_atualiza_roms() {
+    fn the_profile_library_keeps_the_official_entries_and_updates_roms() {
         let dir = crate::scratch::TempDir::new("zeebx-sql-biblioteca");
         let package = dir.join("tt_game_info");
         let db = Database::open(&package).unwrap();

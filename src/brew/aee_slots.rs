@@ -1,13 +1,13 @@
-//! Nomes dos métodos de cada interface, na ordem em que ocupam a vtable.
+//! Names of each interface's methods, in the order they occupy the vtable.
 //!
-//! Gerado das declarações dos headers — as macros `INHERIT_*` do BREW SDK 4.0.2, o
-//! `QINTERFACE(IGraphics)` do `AEEGraphics.h` (que usa o estilo antigo, sem macro de herança)
-//! e, para `IHID`/`IHIDDevice`, os headers do SDK do próprio Zeebo. A ordem dos slots é ABI:
-//! errar um desalinha todas as chamadas seguintes. A tabela de `IFileMgr` bate com a vtable
-//! que a engenharia reversa extraiu da firmware do console
+//! Generated from the header declarations — the `INHERIT_*` macros of BREW SDK 4.0.2, the
+//! `QINTERFACE(IGraphics)` of `AEEGraphics.h` (which uses the old style, without an inheritance
+//! macro) and, for `IHID`/`IHIDDevice`, the headers of the Zeebo's own SDK. The slot order is
+//! ABI: getting one wrong misaligns every following call. The `IFileMgr` table matches the vtable
+//! reverse engineering extracted from the console's firmware
 //! (`docs/vendor/tripleoxygen/research/brew/vtbl.ods`).
 
-/// Métodos de `IShell` (52 slots).
+/// Methods of `IShell` (52 slots).
 pub const SHELL: &[&str] = &[
     "AddRef",
     "Release",
@@ -63,13 +63,13 @@ pub const SHELL: &[&str] = &[
     "AppIsInGroup",
 ];
 
-/// Métodos de `IModule` (4 slots).
+/// Methods of `IModule` (4 slots).
 pub const MODULE: &[&str] = &["AddRef", "Release", "CreateInstance", "FreeResources"];
 
-/// Métodos de `IApplet` (3 slots).
+/// Methods of `IApplet` (3 slots).
 pub const APPLET: &[&str] = &["AddRef", "Release", "HandleEvent"];
 
-/// Métodos de `IFileMgr` (21 slots).
+/// Methods of `IFileMgr` (21 slots).
 pub const FILEMGR: &[&str] = &[
     "AddRef",
     "Release",
@@ -94,7 +94,7 @@ pub const FILEMGR: &[&str] = &[
     "GetFreeSpaceEx",
 ];
 
-/// Métodos de `IFile` (12 slots).
+/// Methods of `IFile` (12 slots).
 pub const FILE: &[&str] = &[
     "AddRef",
     "Release",
@@ -110,7 +110,7 @@ pub const FILE: &[&str] = &[
     "Map",
 ];
 
-/// Métodos de `IDisplay` (26 slots).
+/// Methods of `IDisplay` (26 slots).
 pub const DISPLAY: &[&str] = &[
     "AddRef",
     "Release",
@@ -140,7 +140,7 @@ pub const DISPLAY: &[&str] = &[
     "SetPrefs",
 ];
 
-/// Métodos de `IBitmap` (16 slots).
+/// Methods of `IBitmap` (16 slots).
 pub const BITMAP: &[&str] = &[
     "AddRef",
     "Release",
@@ -160,8 +160,8 @@ pub const BITMAP: &[&str] = &[
     "GetTransparencyColor",
 ];
 
-/// Métodos do canvas `0x0101e443`. Só o slot 7 é chamado; os outros ficam como marcador para
-/// que uma chamada inesperada apareça no relatório.
+/// Methods of the canvas `0x0101e443`. Only slot 7 is called; the others stay as placeholders so
+/// that an unexpected call shows up in the report.
 pub const CANVAS: &[&str] = &[
     "AddRef",
     "Release",
@@ -173,7 +173,7 @@ pub const CANVAS: &[&str] = &[
     "GetDisplay",
 ];
 
-/// Métodos de `ITransform` (5 slots), de `AEETransform.h`.
+/// Methods of `ITransform` (5 slots), from `AEETransform.h`.
 pub const TRANSFORM: &[&str] = &[
     "AddRef",
     "Release",
@@ -182,7 +182,7 @@ pub const TRANSFORM: &[&str] = &[
     "TransformBltComplex",
 ];
 
-/// Métodos de `IHID` (8 slots).
+/// Methods of `IHID` (8 slots).
 pub const HID: &[&str] = &[
     "AddRef",
     "Release",
@@ -194,7 +194,7 @@ pub const HID: &[&str] = &[
     "GetConnectedDevices",
 ];
 
-/// Métodos de `IHIDDevice` (19 slots).
+/// Methods of `IHIDDevice` (19 slots).
 pub const HIDDEVICE: &[&str] = &[
     "AddRef",
     "Release",
@@ -217,10 +217,10 @@ pub const HIDDEVICE: &[&str] = &[
     "GetRumbleStatus",
 ];
 
-/// Métodos de `ISignal` (4 slots).
+/// Methods of `ISignal` (4 slots).
 pub const SIGNAL: &[&str] = &["AddRef", "Release", "QueryInterface", "Set"];
 
-/// Métodos de `ISignalCtl` (6 slots).
+/// Methods of `ISignalCtl` (6 slots).
 pub const SIGNALCTL: &[&str] = &[
     "AddRef",
     "Release",
@@ -230,10 +230,10 @@ pub const SIGNALCTL: &[&str] = &[
     "Enable",
 ];
 
-/// Métodos de `ISignalCBFactory` (4 slots).
+/// Methods of `ISignalCBFactory` (4 slots).
 pub const SIGNALCBFACTORY: &[&str] = &["AddRef", "Release", "QueryInterface", "CreateSignal"];
 
-/// Métodos de `IGraphics` (44 slots).
+/// Methods of `IGraphics` (44 slots).
 pub const GRAPHICS: &[&str] = &[
     "AddRef",
     "Release",
@@ -281,7 +281,7 @@ pub const GRAPHICS: &[&str] = &[
     "DrawRoundRectangle",
 ];
 
-/// Métodos de `ISound` (15 slots), da macro `INHERIT_ISound` em `inc/AEEISound.h`.
+/// Methods of `ISound` (15 slots), from the `INHERIT_ISound` macro in `inc/AEEISound.h`.
 pub const SOUND: &[&str] = &[
     "AddRef",
     "Release",
@@ -300,7 +300,7 @@ pub const SOUND: &[&str] = &[
     "GetResourceCtl",
 ];
 
-/// Métodos de `ILicense` (6 slots), do `QINTERFACE(ILicense)` em `sdk/inc/AEELicense.h`.
+/// Methods of `ILicense` (6 slots), from `QINTERFACE(ILicense)` in `sdk/inc/AEELicense.h`.
 pub const LICENSE: &[&str] = &[
     "AddRef",
     "Release",
@@ -310,16 +310,16 @@ pub const LICENSE: &[&str] = &[
     "GetPurchaseInfo",
 ];
 
-/// Métodos de `IMemAStream` (7 slots), de `INHERIT_IMemAStream` em `sdk/inc/AEE.h`: o
-/// `IAStream` (`Readable`, `Read`, `Cancel`) mais `Set` e `SetEx`.
+/// Methods of `IMemAStream` (7 slots), from `INHERIT_IMemAStream` in `sdk/inc/AEE.h`: the
+/// `IAStream` ones (`Readable`, `Read`, `Cancel`) plus `Set` and `SetEx`.
 pub const MEMASTREAM: &[&str] = &[
     "AddRef", "Release", "Readable", "Read", "Cancel", "Set", "SetEx",
 ];
 
-/// Métodos de `IImage` (11 slots), de `INHERIT_IImage` em `inc/AEEIImage.h`.
-/// Métodos de `IEGLSurfaceManip` (27 slots), de `INHERIT_IEGLSurfaceManip` em
-/// `sdk/inc/AEEEGLSurfaceManip.h`: os três do `IQI`, os catorze da V1 e os dez que a V2
-/// acrescenta. A V2 é superconjunto da V1 com o mesmo prefixo, então uma tabela serve às duas.
+/// Methods of `IImage` (11 slots), from `INHERIT_IImage` in `inc/AEEIImage.h`.
+/// Methods of `IEGLSurfaceManip` (27 slots), from `INHERIT_IEGLSurfaceManip` in
+/// `sdk/inc/AEEEGLSurfaceManip.h`: the three of `IQI`, the fourteen of V1 and the ten V2 adds. V2
+/// is a superset of V1 with the same prefix, so one table serves both.
 pub const EGL_SURFACE_MANIP: &[&str] = &[
     "AddRef",
     "Release",
@@ -350,8 +350,8 @@ pub const EGL_SURFACE_MANIP: &[&str] = &[
     "GetSurfaceOverlayCaps",
 ];
 
-/// Métodos de `IGLESImageonExt` (27 slots), de `INHERIT_IGLESImageonExt` em
-/// `sdk/inc/AEEGLESImageonEXT.h`: os extras do ATI Imageon sobre o OpenGL ES 1.0.
+/// Methods of `IGLESImageonExt` (27 slots), from `INHERIT_IGLESImageonExt` in
+/// `sdk/inc/AEEGLESImageonEXT.h`: the ATI Imageon extras on top of OpenGL ES 1.0.
 pub const GLES_IMAGEON_EXT: &[&str] = &[
     "AddRef",
     "Release",
@@ -382,12 +382,12 @@ pub const GLES_IMAGEON_EXT: &[&str] = &[
     "GetTexParameterxv",
 ];
 
-/// Métodos de `IImageDecoder` (5 slots), de `INHERIT_IImageDecoder` em `inc/AEEIImageDecoder.h`:
-/// os três do `IQI` e os dois próprios.
+/// Methods of `IImageDecoder` (5 slots), from `INHERIT_IImageDecoder` in
+/// `inc/AEEIImageDecoder.h`: the three of `IQI` and its own two.
 pub const IMAGE_DECODER: &[&str] = &["AddRef", "Release", "QueryInterface", "GetBitmap", "GetRop"];
 
-/// Métodos de `IForceFeed` (5 slots), de `INHERIT_IForceFeed` em `inc/AEEIForceFeed.h`: os três
-/// do `IQI`, o `Write` e o `Reset`. É por ela que os dados entram num decodificador.
+/// Methods of `IForceFeed` (5 slots), from `INHERIT_IForceFeed` in `inc/AEEIForceFeed.h`: the
+/// three of `IQI`, `Write` and `Reset`. It is how data gets into a decoder.
 pub const FORCE_FEED: &[&str] = &["AddRef", "Release", "QueryInterface", "Write", "Reset"];
 
 pub const IMAGE: &[&str] = &[
@@ -404,8 +404,8 @@ pub const IMAGE: &[&str] = &[
     "Notify",
 ];
 
-/// Métodos de `IThread` (12 slots), de `INHERIT_IThread` em `sdk/inc/AEEThread.h`: os três do
-/// `IQI`, os quatro do `IRscPool` (`inc/AEEIRscPool.h`) e os cinco da própria thread.
+/// Methods of `IThread` (12 slots), from `INHERIT_IThread` in `sdk/inc/AEEThread.h`: the three
+/// of `IQI`, the four of `IRscPool` (`inc/AEEIRscPool.h`) and the thread's own five.
 pub const THREAD: &[&str] = &[
     "AddRef",
     "Release",
@@ -421,12 +421,12 @@ pub const THREAD: &[&str] = &[
     "GetResumeCBK",
 ];
 
-/// Métodos de `IEGL11` (31 slots), de `INHERIT_IEGL10`/`INHERIT_IEGL11` em `sdk/inc/AEEEGL10.h`
-/// e `AEEEGL11.h`.
+/// Methods of `IEGL11` (31 slots), from `INHERIT_IEGL10`/`INHERIT_IEGL11` in
+/// `sdk/inc/AEEEGL10.h` and `AEEEGL11.h`.
 ///
-/// É a forma nova das interfaces do BREW, e a que o Quake usa: cada método recebe o `this`,
-/// devolve um código de erro e entrega o resultado por um ponteiro de saída — o último
-/// argumento. A `IEGL` antiga, de `AEEGL.h`, tem outra convenção e não é esta.
+/// It is the new form of BREW interfaces, and the one Quake uses: each method receives `this`,
+/// returns an error code and delivers the result through an output pointer — the last argument.
+/// The old `IEGL`, from `AEEGL.h`, has another convention and is not this one.
 pub const EGL: &[&str] = &[
     "AddRef",
     "Release",
@@ -461,17 +461,17 @@ pub const EGL: &[&str] = &[
     "SwapInterval",
 ];
 
-/// Métodos de `IGLES11` (148 slots), de `INHERIT_IGLES10`/`INHERIT_IGLES11` em
-/// `sdk/inc/AEEGLES10.h` e `AEEGLES11.h` — o OpenGL ES 1.1 do BREW.
+/// Methods of `IGLES11` (148 slots), from `INHERIT_IGLES10`/`INHERIT_IGLES11` in
+/// `sdk/inc/AEEGLES10.h` and `AEEGLES11.h` — BREW's OpenGL ES 1.1.
 ///
-/// Mesma convenção do [`EGL`]: `this` no primeiro argumento, código de erro no retorno e o
-/// resultado por ponteiro de saída. Um objeto `IGLES11` serve também como `IGLES10`, porque a
-/// segunda tabela apenas estende a primeira.
-/// `IGLES11ExtPak`: as extensões OES do pacote. Ver `AEEGLES11ExtPak.h`.
+/// Same convention as [`EGL`]: `this` in the first argument, an error code as the return value and
+/// the result through an output pointer. An `IGLES11` object also serves as `IGLES10`, because the
+/// second table only extends the first.
+/// `IGLES11ExtPak`: the package's OES extensions. See `AEEGLES11ExtPak.h`.
 ///
-/// Três famílias: a geração de coordenadas de textura (`TexGen`), o blending separado por equação
-/// e os objetos de framebuffer e renderbuffer. **É a última porta entre o Prey Evil e o desenho** —
-/// as outras cinco já foram entregues, cada uma medida.
+/// Three families: texture coordinate generation (`TexGen`), per-equation separate blending and
+/// the framebuffer and renderbuffer objects. **It is the last door between Prey Evil and
+/// drawing** — the other five have already been delivered, each one measured.
 pub const GLES11_EXT_PAK: &[&str] = &[
     "AddRef", "Release", "QueryInterface",
     "GetTexGenfv", "GetTexGeniv", "GetTexGenxv",
@@ -485,20 +485,21 @@ pub const GLES11_EXT_PAK: &[&str] = &[
     "IsFramebufferOES", "IsRenderbufferOES", "RenderbufferStorageOES",
 ];
 
-/// `IGLES11Ext`: as extensões OES do OpenGL ES 1.1, na ordem do `AEEGLES11Ext.h`.
+/// `IGLES11Ext`: the OES extensions of OpenGL ES 1.1, in the order of `AEEGLES11Ext.h`.
 ///
-/// **O Prey Evil pede esta interface por `CreateInstance` e para de desenhar sem ela**: o
-/// levantamento das 62 ROMs mostrou onze métodos de GL, nenhum desenho e tela preta. Os
-/// `DrawTex*` são os que importam para um jogo que monta o quadro numa textura.
-/// `IGLES10Ext`: uma extensão do OpenGL ES 1.0. Ver `AEEGLES10Ext.h`.
+/// **Prey Evil asks for this interface through `CreateInstance` and stops drawing without it**:
+/// the survey of the 62 ROMs showed eleven GL methods, no drawing and a black screen. The
+/// `DrawTex*` ones are what matter for a game that builds the frame in a texture.
+/// `IGLES10Ext`: an OpenGL ES 1.0 extension. See `AEEGLES10Ext.h`.
 ///
-/// Um método só, e é o que o Prey Evil usa para saber que a extensão existe.
+/// A single method, and it is what Prey Evil uses to learn that the extension exists.
 pub const GLES10_EXT: &[&str] = &["AddRef", "Release", "QueryInterface", "QueryMatrixxOES"];
 
-/// `IJoystick`: o joystick USB, na ordem do `AEEJoystick.h`.
+/// `IJoystick`: the USB joystick, in the order of `AEEJoystick.h`.
 ///
-/// **É o que o gerenciador de joystick da Qualcomm pede** (`gamepadmgr.cpp`, que o Prey Evil usa):
-/// ele cria a interface, e sem ela guarda nulo e cai no primeiro `Read`. Seis slots.
+/// **It is what Qualcomm's joystick manager asks for** (`gamepadmgr.cpp`, which Prey Evil uses):
+/// it creates the interface, and without it stores null and crashes on the first `Read`. Six
+/// slots.
 pub const JOYSTICK: &[&str] = &[
     "AddRef",
     "Release",
@@ -508,19 +509,21 @@ pub const JOYSTICK: &[&str] = &[
     "Read",
 ];
 
-/// `IEGLGetPowerLevel`: o nível de bateria. Ver `AEEEGLGetPowerLevel.h`.
+/// `IEGLGetPowerLevel`: the battery level. See `AEEEGLGetPowerLevel.h`.
 pub const EGL_GET_POWER_LEVEL: &[&str] =
     &["AddRef", "Release", "QueryInterface", "GetPowerLevel"];
 
-/// `IEGLGetColorBuffer`: o buffer de cor do EGL. Ver `AEEEGLGetColorBuffer.h`.
+/// `IEGLGetColorBuffer`: EGL's color buffer. See `AEEEGLGetColorBuffer.h`.
 ///
-/// É o par por interface da função `eglGetColorBufferQUALCOMM`, e as duas compartilham o cálculo.
+/// It is the interface counterpart of the `eglGetColorBufferQUALCOMM` function, and the two share
+/// the computation.
 pub const EGL_GET_COLOR_BUFFER: &[&str] =
     &["AddRef", "Release", "QueryInterface", "GetColorBuffer"];
 
-/// `IEGLOESSwapInterval`: o ritmo de quadro pedido pelo jogo. Ver `AEEEGLOESSwapInterval.h`.
+/// `IEGLOESSwapInterval`: the frame pacing the game asks for. See `AEEEGLOESSwapInterval.h`.
 ///
-/// Por **função** o motor já responde `SwapIntervalOES`; aqui é a mesma resposta, pela interface.
+/// As a **function** the engine already answers `SwapIntervalOES`; here it is the same answer,
+/// through the interface.
 pub const EGL_OES_SWAP_INTERVAL: &[&str] = &[
     "AddRef",
     "Release",
@@ -696,8 +699,9 @@ pub const GLES: &[&str] = &[
     "TexParameteriv",
     "TexParameterxv",
     "PointSizePointerOES",
-    // `GL_OES_draw_texture`. Não fazem parte da vtable do `IGLES`: o jogo chega a elas pelo
-    // `eglGetProcAddress`, e por isso ficam no fim — inserir no meio deslocaria os slots reais.
+    // `GL_OES_draw_texture`. They are not part of the `IGLES` vtable: the game reaches them
+    // through `eglGetProcAddress`, and so they go at the end — inserting them in the middle would
+    // shift the real slots.
     "DrawTexsOES",
     "DrawTexiOES",
     "DrawTexxOES",
@@ -708,7 +712,8 @@ pub const GLES: &[&str] = &[
     "DrawTexfvOES",
 ];
 
-/// Métodos de `IMediaUtil` (6 slots), de `AEEINTERFACE(IMediaUtil)` em `sdk/inc/AEEMediaUtil.h`.
+/// Methods of `IMediaUtil` (6 slots), from `AEEINTERFACE(IMediaUtil)` in
+/// `sdk/inc/AEEMediaUtil.h`.
 pub const MEDIAUTIL: &[&str] = &[
     "AddRef",
     "Release",
@@ -718,7 +723,7 @@ pub const MEDIAUTIL: &[&str] = &[
     "CreateMediaEx",
 ];
 
-/// Métodos de `IMedia` (14 slots), de `INHERIT_IMedia` em `inc/AEEIMedia.h`.
+/// Methods of `IMedia` (14 slots), from `INHERIT_IMedia` in `inc/AEEIMedia.h`.
 pub const MEDIA: &[&str] = &[
     "AddRef",
     "Release",
@@ -736,12 +741,12 @@ pub const MEDIA: &[&str] = &[
     "GetState",
 ];
 
-/// Métodos de `IEGL` (28 slots), de `AEEINTERFACE(IEGL)` em `sdk/inc/AEEGL.h`.
+/// Methods of `IEGL` (28 slots), from `AEEINTERFACE(IEGL)` in `sdk/inc/AEEGL.h`.
 ///
-/// É a forma **antiga**: fora dos três do `IQueryInterface`, os métodos não recebem o `this`
-/// — a macro do SDK chama `AEEGETPVTBL(p,IEGL)->eglGetDisplay(a)` sem repassar `p` — e o
-/// resultado é o valor de retorno, não um ponteiro de saída. Tirando o prefixo `egl`, os
-/// nomes coincidem com os de [`EGL`], que é o que permite atender as duas com o mesmo código.
+/// It is the **old** form: apart from the three of `IQueryInterface`, the methods do not receive
+/// `this` — the SDK macro calls `AEEGETPVTBL(p,IEGL)->eglGetDisplay(a)` without passing `p` on —
+/// and the result is the return value, not an output pointer. Dropping the `egl` prefix, the
+/// names match those of [`EGL`], which is what lets the same code serve both.
 pub const EGL_LEGACY: &[&str] = &[
     "AddRef",
     "Release",
@@ -771,25 +776,25 @@ pub const EGL_LEGACY: &[&str] = &[
     "eglWaitNative",
     "eglSwapBuffers",
     "eglCopyBuffers",
-    // `EGL_QUALCOMM_get_color_buffer`. Não faz parte da vtable: o jogo chega a ela pelo
-    // `eglGetProcAddress`, e por isso fica no fim — inserir no meio deslocaria os slots reais,
-    // que é o mesmo cuidado das `DrawTex*OES` na tabela do GLES.
+    // `EGL_QUALCOMM_get_color_buffer`. It is not part of the vtable: the game reaches it through
+    // `eglGetProcAddress`, and so it goes at the end — inserting it in the middle would shift the
+    // real slots, which is the same care taken with the `DrawTex*OES` in the GLES table.
     //
-    // A Z-Wheel desenha o palco num **pbuffer**, não numa janela, e precisa do ponteiro do
-    // buffer de cor para compor com o 2D. Sem esta função ela desiste: o log dela é
-    // `eglGetProcAddress('eglGetColorBufferQUALCOMM') failed.`, seguido de desmontar o contexto
-    // e de `CreateStageWidget failed, proceeding...`.
+    // The Z-Wheel draws the stage into a **pbuffer**, not a window, and needs the color buffer's
+    // pointer to composite it with the 2D. Without this function it gives up: its log says
+    // `eglGetProcAddress('eglGetColorBufferQUALCOMM') failed.`, followed by tearing down the
+    // context and `CreateStageWidget failed, proceeding...`.
     "eglGetColorBufferQUALCOMM",
-    // `EGL_QUALCOMM_surface_scale`, pelo mesmo caminho e pela mesma razão: o jogo resolve os
-    // quatro nomes pelo `eglGetProcAddress` e **testa os quatro contra nulo de uma vez**. Na
-    // Z-Wheel isso está em `0x5d7ac`..`0x5d7c8` do `tectoy.mod`: faltando qualquer um, ela zera
-    // o grupo inteiro e segue por outro caminho.
+    // `EGL_QUALCOMM_surface_scale`, by the same path and for the same reason: the game resolves
+    // the four names through `eglGetProcAddress` and **tests all four against null at once**. In
+    // the Z-Wheel this is at `0x5d7ac`..`0x5d7c8` of `tectoy.mod`: if any one is missing, it
+    // zeroes the whole group and takes another path.
     //
-    // Os métodos já existem na [`EGL_SURFACE_MANIP`], que é a mesma extensão exposta como
-    // interface; aqui eles aparecem na forma de função C, sem `this` e devolvendo o valor.
-    // Resolvido junto com as quatro de escala e guardado no mesmo bloco (`+0x34`), logo antes
-    // delas. Deixá-lo nulo enquanto as outras existem é pior que nulo em todas: o jogo lê esse
-    // campo **depois** de ver o grupo preenchido.
+    // The methods already exist in [`EGL_SURFACE_MANIP`], which is the same extension exposed as
+    // an interface; here they appear as C functions, without `this` and returning the value.
+    // Resolved together with the four scale ones and stored in the same block (`+0x34`), right
+    // before them. Leaving it null while the others exist is worse than null in all of them: the
+    // game reads that field **after** seeing the group filled in.
     "eglSwapIntervalOES",
     "eglSurfaceScaleEnableQUALCOMM",
     "eglSetSurfaceScaleQUALCOMM",
@@ -797,9 +802,9 @@ pub const EGL_LEGACY: &[&str] = &[
     "eglGetSurfaceScaleCapsQUALCOMM",
 ];
 
-/// Métodos de `IGL` (80 slots), de `AEEINTERFACE(IGL)` em `sdk/inc/AEEGL.h` — o OpenGL ES 1.0
-/// Common-Lite —, seguidos das funções que só a [`GLES`] tem. Mesma convenção antiga do [`EGL_LEGACY`]; sem o prefixo `gl`, os nomes
-/// coincidem com os de [`GLES`].
+/// Methods of `IGL` (80 slots), from `AEEINTERFACE(IGL)` in `sdk/inc/AEEGL.h` — OpenGL ES 1.0
+/// Common-Lite —, followed by the functions only [`GLES`] has. Same old convention as
+/// [`EGL_LEGACY`]; without the `gl` prefix, the names match those of [`GLES`].
 pub const GL_LEGACY: &[&str] = &[
     "AddRef",
     "Release",
@@ -881,10 +886,10 @@ pub const GL_LEGACY: &[&str] = &[
     "glTranslatex",
     "glVertexPointer",
     "glViewport",
-    // Daqui em diante não é mais o `AEEGL.h`: são as funções que só a `IGLES11` tem — as de
-    // ponto flutuante, as de buffer e as de extensão —, na mesma convenção sem `this`. É por
-    // elas que o `eglGetProcAddress` entrega um ponteiro de função C de verdade. O começo da
-    // tabela, que é a vtable do `IGL`, não muda.
+    // From here on it is no longer `AEEGL.h`: these are the functions only `IGLES11` has — the
+    // floating-point ones, the buffer ones and the extension ones —, in the same convention
+    // without `this`. They are how `eglGetProcAddress` hands out a real C function pointer. The
+    // start of the table, which is the `IGL` vtable, does not change.
     "glAlphaFunc",
     "glClearColor",
     "glClearDepthf",
@@ -963,26 +968,28 @@ pub const GL_LEGACY: &[&str] = &[
     "glDrawTexfvOES",
 ];
 
-/// Métodos de `IWeb`, lidos da vtable do firmware em `0x1087fde0`.
+/// Methods of `IWeb`, read from the firmware's vtable at `0x1087fde0`.
 ///
-/// O `AEEWeb.h` saiu do SDK 4.0.2 — a interface foi aposentada —, e por muito tempo esta tabela
-/// teve quatro entradas deduzidas do uso. São **treze**, e a dedução errava o principal.
+/// `AEEWeb.h` was dropped from SDK 4.0.2 — the interface was retired —, and for a long time this
+/// table had four entries deduced from usage. There are **thirteen**, and the deduction got the
+/// main thing wrong.
 ///
-/// O que o firmware corrige:
+/// What the firmware corrects:
 ///
-/// - **O slot 2 é o `QueryInterface`**, não o `GetResponse`. A implementação aceita
-///   `0x01000001`, `0x01005004` e `0x01001031` e devolve o próprio objeto. Ou seja, `IWeb`
-///   segue o `IQI` como as outras interfaces, e a hipótese do `DECLARE_IBASE` estava errada.
-/// - **O slot 3 é mesmo o `AddOpt`**: `ldr r0,[r0,#0xc]; blx …`, repassando o ponteiro que
-///   recebe. Era a única das quatro deduções que estava certa, e o Boomerang a apoiava.
-/// - **O slot 6 é um atalho para o `AddOpt`.** Ele monta na pilha o descritor `{id, valor, 0}`
-///   e chama a mesma função do slot 3; antes disso confere um tamanho e devolve `0x1d` se
-///   estourar. É o que o Zeeboids chama ao sincronizar.
-/// - **O slot 11 é o `GetResponse`.** É o único trampolim de varargs da vtable: empilha
-///   `r0`–`r3`, aponta `r3` para o resto dos argumentos e desvia. Um método que recebe a URL
-///   seguida de uma lista de opções variável tem exatamente essa forma.
+/// - **Slot 2 is `QueryInterface`**, not `GetResponse`. The implementation accepts
+///   `0x01000001`, `0x01005004` and `0x01001031` and returns the object itself. In other words,
+///   `IWeb` follows `IQI` like the other interfaces, and the `DECLARE_IBASE` hypothesis was wrong.
+/// - **Slot 3 really is `AddOpt`**: `ldr r0,[r0,#0xc]; blx …`, passing on the pointer it
+///   receives. It was the only one of the four deductions that was right, and the Boomerang
+///   supported it.
+/// - **Slot 6 is a shortcut for `AddOpt`.** It builds the descriptor `{id, value, 0}` on the
+///   stack and calls the same function as slot 3; before that it checks a size and returns `0x1d`
+///   if it overflows. It is what Zeeboids calls when syncing.
+/// - **Slot 11 is `GetResponse`.** It is the only varargs trampoline in the vtable: it pushes
+///   `r0`–`r3`, points `r3` at the rest of the arguments and branches. A method that receives the
+///   URL followed by a variable list of options has exactly that shape.
 ///
-/// Os que continuam sem nome não apareceram em uso nem foram desmontados.
+/// The ones still without a name have not shown up in use nor been disassembled.
 pub const WEB: &[&str] = &[
     "AddRef",
     "Release",
@@ -999,37 +1006,39 @@ pub const WEB: &[&str] = &[
     "slot12",
 ];
 
-/// Métodos de `ISQLMgr` (`AEECLSID_SQLMGR = 0x0102c4e8`), o gerenciador de bancos do console.
+/// Methods of `ISQLMgr` (`AEECLSID_SQLMGR = 0x0102c4e8`), the console's database manager.
 ///
-/// Não há header: a ordem veio da observação com o `--sonda`. O Z-Wheel cria o objeto e chama o
-/// slot 3 com o nome do arquivo e um ponteiro de saída — `"tt_prefs.db"` e o endereço onde ele
-/// espera o banco. Os slots 2 e 4 em diante ainda não apareceram, e por isso não têm nome.
+/// There is no header: the order came from observation with `--probe`. The Z-Wheel creates the
+/// object and calls slot 3 with the file name and an output pointer — `"tt_prefs.db"` and the
+/// address where it expects the database. Slots 2 and 4 onward have not shown up yet, and so they
+/// have no name.
 pub const SQL_MGR: &[&str] = &["AddRef", "Release", "slot2", "OpenDatabase"];
 
-/// Métodos de `ISQLDatabase`, o banco que o [`SQL_MGR`] devolve.
+/// Methods of `ISQLDatabase`, the database [`SQL_MGR`] returns.
 ///
-/// Mesma origem, mesma ressalva. O slot 3 recebe a instrução SQL, um ponteiro de função e um
-/// contexto — a forma do `sqlite3_exec`, que é o que o dialeto e os arquivos do console já
-/// diziam ser. A primeira instrução que o Z-Wheel manda é `PRAGMA integrity_check`.
+/// Same origin, same caveat. Slot 3 receives the SQL statement, a function pointer and a context —
+/// the shape of `sqlite3_exec`, which is what the dialect and the console's files already said it
+/// was. The first statement the Z-Wheel sends is `PRAGMA integrity_check`.
 pub const SQL_DATABASE: &[&str] = &["AddRef", "Release", "slot2", "Exec"];
 
-/// Métodos do formulário raiz (`0x01001011`), lidos da vtable do firmware em `0x10a785e4`.
+/// Methods of the root form (`0x01001011`), read from the firmware's vtable at `0x10a785e4`.
 ///
-/// Os três primeiros são o `IQI` de sempre: o slot 0 incrementa o contador em `+4`, o 1 o
-/// devolve e o 2 é o `QueryInterface`. Os outros quatro foram desmontados um a um:
+/// The first three are the usual `IQI`: slot 0 increments the counter at `+4`, slot 1
+/// decrements it and slot 2 is `QueryInterface`. The other four were disassembled one by one:
 ///
-/// - **slot 3** é um setter e nada mais: `str r1,[r0,#0x10]; str r2,[r0,#0x14]; bx lr`. Guarda
-///   dois valores no objeto e não devolve nada. A Z-Wheel o chama com um objeto e o número
-///   `0xc34`, que é a cara de um par (destinatário, identificador) — daí o nome.
-/// - **slots 5 e 6** delegam: pedem ao objeto interno de `+0xc` a interface `0x01000000` e
-///   chamam nela o slot 27, repassando o argumento. É o gesto de pôr um widget num contêiner.
-/// - **slot 4** faz trabalho próprio, com um argumento.
+/// - **slot 3** is a setter and nothing more: `str r1,[r0,#0x10]; str r2,[r0,#0x14]; bx lr`. It
+///   stores two values in the object and returns nothing. The Z-Wheel calls it with an object and
+///   the number `0xc34`, which looks like a (recipient, identifier) pair — hence the name.
+/// - **slots 5 and 6** delegate: they ask the inner object at `+0xc` for interface `0x01000000`
+///   and call slot 27 on it, passing the argument on. It is the gesture of putting a widget in a
+///   container.
+/// - **slot 4** does work of its own, with one argument.
 ///
-/// Os nomes de 3 a 6 descrevem o que o código faz, não um header — não temos header desta
-/// Métodos da `ISourceUtil` (`0x01001011`), na ordem do `AEESource.h`.
+/// The names 3 to 6 describe what the code does, not a header — we have no header for this
+/// Methods of `ISourceUtil` (`0x01001011`), in the order of `AEESource.h`.
 ///
-/// A vtable do firmware em `0x10a785e4` tem sete, e são estes sete. Ver
-/// [`crate::brew::aee::Interface::SourceUtil`] para como a identificação foi feita.
+/// The firmware's vtable at `0x10a785e4` has seven, and they are these seven. See
+/// [`crate::brew::aee::Interface::SourceUtil`] for how the identification was made.
 pub const SOURCE_UTIL: &[&str] = &[
     "AddRef",
     "Release",
@@ -1040,14 +1049,14 @@ pub const SOURCE_UTIL: &[&str] = &[
     "SourceFromFile",
 ];
 
-/// Métodos do `ISource`. Os três primeiros são de toda interface; o `Read` e o `Readable` vêm
-/// do `AEESource.h`.
+/// Methods of `ISource`. The first three belong to every interface; `Read` and `Readable` come
+/// from `AEESource.h`.
 pub const SOURCE: &[&str] = &["AddRef", "Release", "QueryInterface", "Read", "Readable"];
 
-/// Métodos do `IPeek`, dos quais conhecemos um.
+/// Methods of `IPeek`, of which we know one.
 ///
-/// O slot 8 é o que a Z-Wheel chama para ler o `tectoy.cfg`. Os de baixo ficam sem nome de
-/// propósito: preencher a tabela com nomes plausíveis esconderia a próxima descoberta.
+/// Slot 8 is what the Z-Wheel calls to read `tectoy.cfg`. The ones below stay unnamed on purpose:
+/// filling the table with plausible names would hide the next discovery.
 pub const PEEK: &[&str] = &[
     "AddRef",
     "Release",
@@ -1060,11 +1069,11 @@ pub const PEEK: &[&str] = &[
     "LerLinha",
 ];
 
-/// Métodos do widget da Z-Wheel (`0x01028e51`).
+/// Methods of the Z-Wheel's widget (`0x01028e51`).
 ///
-/// Só o slot 3 tem nome porque só ele foi visto em uso. Os dois primeiros são o `AddRef` e o
-/// `Release` de toda interface do BREW; o 2 fica sem nome de propósito, para que uma chamada
-/// nele apareça no relatório em vez de passar por implementada.
+/// Only slot 3 has a name because only it has been seen in use. The first two are the `AddRef`
+/// and `Release` of every BREW interface; slot 2 stays unnamed on purpose, so that a call to it
+/// shows up in the report instead of passing as implemented.
 pub const WIDGET: &[&str] = &[
     "AddRef",
     "Release",
@@ -1079,23 +1088,24 @@ pub const WIDGET: &[&str] = &[
     "slot10",
     "slot11",
     "PegarInterface",
-    // Usado pelo widget raiz durante a montagem da barra inferior.
+    // Used by the root widget while building the bottom bar.
     "Slot13",
-    // `slot14(this, objeto)`, na `0x8fba0`, com o retorno ignorado. Recusá-lo abortava a
-    // montagem do formulário do z-pad pela metade — o `bl` para a `0x8f580` era entrado 669
-    // vezes e não voltava nenhuma. Tem cara de pendurar um modelo no widget.
+    // `slot14(this, object)`, at `0x8fba0`, with the return value ignored. Refusing it aborted
+    // building the z-pad form halfway — the `bl` to `0x8f580` was entered 669 times and never
+    // returned once. It looks like hanging a model on the widget.
     "Anexar",
     "slot15",
-    // `slot16(this)`, na `0x22d58`, logo depois de o palco ser criado. Recusá-lo não devolve a
-    // execução ao `0x22d5c`: o formulário do menu para de ser montado ali mesmo, e o aplicativo
-    // fica no pulso de dez segundos que consulta pontos e fila de download sem desenhar nada.
+    // `slot16(this)`, at `0x22d58`, right after the stage is created. Refusing it does not
+    // return execution to `0x22d5c`: the menu form stops being built right there, and the
+    // application stays in the ten-second pulse that polls points and the download queue without
+    // drawing anything.
     "Slot16",
-    // `slot17(this, id, modelo)`, na `0x23860` e `0x23d0c` do tectoy.mod: associa o modelo de
-    // fonte (0x8000) ou outro modelo ao widget do roller em `tectoy_rollerwidget.c`.
+    // `slot17(this, id, model)`, at `0x23860` and `0x23d0c` of tectoy.mod: binds the font model
+    // (0x8000) or another model to the roller widget in `tectoy_rollerwidget.c`.
     "Slot17",
 ];
 
-/// Métodos do `IControl` usado pelo subsistema de texto do Zenonia.
+/// Methods of the `IControl` used by Zenonia's text subsystem.
 pub const CONTROL: &[&str] = &[
     "AddRef",
     "Release",
@@ -1140,12 +1150,12 @@ pub const CONTROL: &[&str] = &[
     "ControlMethod40",
 ];
 
-/// Métodos do ZEEBOMCP (`0x01006c05`), da vtable `0x102d47a8` do firmware.
+/// Methods of ZEEBOMCP (`0x01006c05`), from the firmware's vtable `0x102d47a8`.
 ///
-/// São oito. Só os três primeiros têm nome porque só eles foram lidos: `0x11085c5e` e
-/// `0x11085c70` são a contagem para cima e para baixo, e `0x11085c90` compara o IID recebido
-/// com `0x01000001` e `0x01006c05` — um `QueryInterface`. Os cinco de baixo continuam sem nome
-/// até alguém chamá-los.
+/// There are eight. Only the first three have names because only they were read: `0x11085c5e`
+/// and `0x11085c70` are the count up and down, and `0x11085c90` compares the received IID with
+/// `0x01000001` and `0x01006c05` — a `QueryInterface`. The five below stay unnamed until someone
+/// calls them.
 pub const ZEEBO_MCP: &[&str] = &[
     "AddRef",
     "Release",
@@ -1157,22 +1167,22 @@ pub const ZEEBO_MCP: &[&str] = &[
     "UserDataCopyToENAND",
 ];
 
-/// Métodos da `IConfig` (`0x01001027`). Ver [`crate::brew::aee::Interface::Config`].
+/// Methods of `IConfig` (`0x01001027`). See [`crate::brew::aee::Interface::Config`].
 ///
-/// Quatro, não doze: os nomes de 2 e 3 vêm do `ICONFIG_GetItem`/`ICONFIG_SetItem` do SDK, e a
-/// forma da chamada da Z-Wheel confere com a assinatura. Os oito de cima ficam sem nome para
-/// que uma chamada neles apareça no relatório — a vtable do firmware, que os teria, é a que já
-/// se mostrou ser de fachada.
+/// Four, not twelve: the names of 2 and 3 come from the SDK's `ICONFIG_GetItem`/`ICONFIG_SetItem`,
+/// and the shape of the Z-Wheel's call matches the signature. The eight above stay unnamed so that
+/// a call to them shows up in the report — the firmware's vtable, which would have them, is the
+/// one that has already turned out to be a facade.
 pub const CONFIG: &[&str] = &["AddRef", "Release", "GetItem", "SetItem"];
 
-/// Métodos do `LCT_SIMCardCtl` (`0x01006c01`), da vtable `0x113cf854` do firmware.
+/// Methods of `LCT_SIMCardCtl` (`0x01006c01`), from the firmware's vtable `0x113cf854`.
 ///
-/// Quatro. Ver [`crate::brew::aee::Interface::SimCardCtl`].
+/// Four. See [`crate::brew::aee::Interface::SimCardCtl`].
 pub const SIM_CARD_CTL: &[&str] = &["AddRef", "Release", "QueryInterface", "PedirVerificacao"];
 
-/// Métodos do controle de sistema (`0x01006c02`), da vtable `0x10691ea8` do firmware.
+/// Methods of the system control (`0x01006c02`), from the firmware's vtable `0x10691ea8`.
 ///
-/// Sete: o oitavo valor da tabela é `0x86`, que não é endereço. Ver
+/// Seven: the table's eighth value is `0x86`, which is not an address. See
 /// [`crate::brew::aee::Interface::SystemCtl`].
 pub const SYSTEM_CTL: &[&str] = &[
     "AddRef",
@@ -1180,18 +1190,18 @@ pub const SYSTEM_CTL: &[&str] = &[
     "QueryInterface",
     "DefinirModo",
     "slot4",
-    // **O slot 5 tem nome, e o nome vem do firmware.** Desmontado em `1.1.2_APPS.bin` (Thumb,
-    // `0x10e9fe92`): ele recebe `(this, modo, opção)` — a opção com `-1` valendo "a do aparelho",
-    // lida de `0x114287ec` — e **termina chamando o corpo do `DefinirModo`** (`bl 0x10e9fdb6`, o
-    // slot 3). Medido: é a chamada que a Z-Wheel faz no **confirmar** (`0xe064`), e sem ela a
-    // varredura parava em `Unimplemented` na primeira tecla.
+    // **Slot 5 has a name, and the name comes from the firmware.** Disassembled in
+    // `1.1.2_APPS.bin` (Thumb, `0x10e9fe92`): it receives `(this, mode, option)` — the option with
+    // `-1` meaning "the device's", read from `0x114287ec` — and **ends by calling the body of
+    // `DefinirModo`** (`bl 0x10e9fdb6`, slot 3). Measured: it is the call the Z-Wheel makes on
+    // **confirm** (`0xe064`), and without it the scan stopped at `Unimplemented` on the first key.
     "DefinirModoComOpcao",
     "Consultar",
 ];
 
-/// Métodos do `ICM` (`0x01011810`), dos quais conhecemos um.
+/// Methods of `ICM` (`0x01011810`), of which we know one.
 ///
-/// O slot 28 é o único que a Z-Wheel chama. Ver [`crate::brew::aee::Interface::Cm`].
+/// Slot 28 is the only one the Z-Wheel calls. See [`crate::brew::aee::Interface::Cm`].
 pub const CM: &[&str] = &[
     "AddRef",
     "Release",
@@ -1224,9 +1234,9 @@ pub const CM: &[&str] = &[
     "GetSSInfo",
 ];
 
-/// Métodos da `0x01028e3c`, que é um `IValueModel`. Ver
-/// [`crate::brew::aee::Interface::Classe28e3c`].
-pub const CLASSE_28E3C: &[&str] = &[
+/// Methods of `0x01028e3c`, which is an `IValueModel`. See
+/// [`crate::brew::aee::Interface::Class28e3c`].
+pub const CLASS_28E3C: &[&str] = &[
     "AddRef",
     "Release",
     "QueryInterface",
@@ -1236,25 +1246,25 @@ pub const CLASSE_28E3C: &[&str] = &[
     "GetValue",
 ];
 
-/// Métodos da fonte TrueType (`0x01035156`), dos quais conhecemos um.
+/// Methods of the TrueType font (`0x01035156`), of which we know one.
 ///
-/// O slot 4 é o que a `0x7bfc8` chama para obter uma fonte utilizável a partir do tipo. Ver
+/// Slot 4 is what `0x7bfc8` calls to get a usable font from the typeface. See
 /// [`crate::brew::aee::Interface::Typeface`].
 pub const TYPEFACE: &[&str] = &["AddRef", "Release", "slot2", "slot3", "CriarFonte"];
 
-/// Métodos do `IFont` — a fonte de bitmap do sistema.
+/// Methods of `IFont` — the system's bitmap font.
 ///
-/// A ordem é a do código de referência que já implementa esta interface
-/// (`zeebo-emulator/.../zeemu/brew/BrewFont.cpp`) e a dos seis `#define` do `AEEFont.h`:
+/// The order is that of the reference code that already implements this interface
+/// (`zeebo-emulator/.../zeemu/brew/BrewFont.cpp`) and that of the six `#define`s in `AEEFont.h`:
 ///
 /// ```text
 /// AddRef(0)  Release(1)  QueryInterface(2)  DrawText(3)  GetInfo(4)  MeasureText(5)
 /// ```
 ///
-/// **Isto não é o `ITypeface`**, e a diferença é o motivo desta interface existir: o `ITypeface`
-/// cria fontes a partir de um TTF, e o `IFont` **já é** a fonte desenhável. O Double Dragon, o
-/// Resident Evil 4 e os ports da Data East pedem as classes de fonte do sistema; respondê-las como
-/// desconhecidas fazia o jogo cair na tela de aviso "Memory is insufficient".
+/// **This is not `ITypeface`**, and the difference is the reason this interface exists:
+/// `ITypeface` creates fonts from a TTF, and `IFont` **already is** the drawable font. Double
+/// Dragon, Resident Evil 4 and the Data East ports ask for the system font classes; answering them
+/// as unknown made the game fall into the "Memory is insufficient" warning screen.
 pub const FONT: &[&str] = &[
     "AddRef",
     "Release",
@@ -1264,11 +1274,11 @@ pub const FONT: &[&str] = &[
     "MeasureText",
 ];
 
-/// Métodos da lista genérica da Z-Wheel (`0x01028e35`).
+/// Methods of the Z-Wheel's generic list (`0x01028e35`).
 ///
-/// Ver [`crate::brew::aee::Interface::Vetor`] para onde cada nome foi lido. Os seis sem nome nunca
-/// foram chamados.
-pub const VETOR: &[&str] = &[
+/// See [`crate::brew::aee::Interface::Vector`] for where each name was read. The six unnamed ones
+/// have never been called.
+pub const VECTOR: &[&str] = &[
     "AddRef",
     "Release",
     "slot2",
@@ -1284,12 +1294,12 @@ pub const VETOR: &[&str] = &[
     "DefinirLiberador",
 ];
 
-/// Métodos da coleção genérica da Z-Wheel (`0x0102c4e8`… não: `0x0100104f`).
+/// Methods of the Z-Wheel's generic collection (`0x0102c4e8`… no: `0x0100104f`).
 ///
-/// Sem header. Os nomes saíram do uso, observado com o `--sonda`: o app cria a coleção, chama o
-/// slot 5 uma vez e depois alterna o 7 e o 4 até o 4 dizer que acabou — a forma de um cursor.
-/// Os slots sem nome nunca foram chamados; deixá-los sem nome é o que faz uma chamada
-/// inesperada aparecer no relatório em vez de passar por implementada.
+/// No header. The names came from usage, observed with `--probe`: the app creates the collection,
+/// calls slot 5 once and then alternates 7 and 4 until 4 says it is done — the shape of a cursor.
+/// The unnamed slots have never been called; leaving them unnamed is what makes an unexpected
+/// call show up in the report instead of passing as implemented.
 pub const COLLECTION: &[&str] = &[
     "AddRef",
     "Release",
@@ -1304,36 +1314,36 @@ pub const COLLECTION: &[&str] = &[
     "Definir",
 ];
 
-/// Métodos de `IHash` (`AEECLSID_MD5` = `0x01001015`), levantados do uso.
+/// Methods of `IHash` (`AEECLSID_MD5` = `0x01001015`), worked out from usage.
 ///
-/// Esta classe não está na tabela do firmware da partição APPS, então não deu para ler a vtable
-/// como se fez com o `IWeb`. O que decidiu foi o código do Zeeboids em `0x77b50`, onde a
-/// sequência inteira aparece:
+/// This class is not in the firmware table of the APPS partition, so the vtable could not be read
+/// the way it was done with `IWeb`. What settled it was Zeeboids's code at `0x77b50`, where the
+/// whole sequence appears:
 ///
 /// ```text
-/// 0x77b70  ldr r1, [r1, #0x10]   ; slot 4, e nenhum argumento é montado antes -> Reset()
-/// ...      monta uma string e guarda tamanho-1 em [sp+0x38]
-/// 0x77ba4  ldr r3, [r1, #8]      ; slot 2, com (buffer, tamanho)  -> Update()
-/// 0x77bb0  mov r0, #0x11         ; 17 = dezesseis bytes e o terminador
+/// 0x77b70  ldr r1, [r1, #0x10]   ; slot 4, and no argument is built before it -> Reset()
+/// ...      builds a string and stores size-1 at [sp+0x38]
+/// 0x77ba4  ldr r3, [r1, #8]      ; slot 2, with (buffer, size)  -> Update()
+/// 0x77bb0  mov r0, #0x11         ; 17 = sixteen bytes and the terminator
 /// 0x77bc4  memset(sp+0x14, 0, 0x21)
-/// 0x77bdc  ldr r3, [r1, #0xc]    ; slot 3, com (buffer, &tamanho) -> GetDigest()
+/// 0x77bdc  ldr r3, [r1, #0xc]    ; slot 3, with (buffer, &size) -> GetDigest()
 /// ```
 ///
-/// A ordem anterior — `QueryInterface`, `Reset`, `Update`, `GetDigest` — era a do `IQI` mais
-/// uma suposição, e errava tudo do slot 2 em diante: o "QueryInterface" escrevia num campo que
-/// era um tamanho, e o "Update" lia como ponteiro o que não era. Os dois apareciam no relatório
-/// como falha de núcleo, e é assim que o erro foi achado.
+/// The previous order — `QueryInterface`, `Reset`, `Update`, `GetDigest` — was `IQI` plus a
+/// guess, and got everything from slot 2 onward wrong: the "QueryInterface" wrote into a field
+/// that was a size, and the "Update" read as a pointer what was not one. Both showed up in the
+/// report as core faults, and that is how the error was found.
 ///
-/// **Não há `QueryInterface`**: os dois primeiros slots são o `AddRef` e o `Release` do
-/// `DECLARE_IBASE`, e os métodos próprios começam no 2.
+/// **There is no `QueryInterface`**: the first two slots are the `AddRef` and `Release` of
+/// `DECLARE_IBASE`, and its own methods start at 2.
 pub const HASH: &[&str] = &["AddRef", "Release", "Update", "GetDigest", "Reset"];
 
-/// Métodos de `IHashCTX` (6 slots): o resumo com o **contexto na memória do chamador**. Cada
-/// método recebe o contexto e o tamanho dele; o objeto não guarda nada. Ordem lida do uso no
-/// Powerboat Challenge, que chama o 3 com o contexto, o 4 com os dados e o 5 com a saída.
+/// Methods of `IHashCTX` (6 slots): the digest with the **context in the caller's memory**. Each
+/// method receives the context and its size; the object stores nothing. Order read from usage in
+/// Powerboat Challenge, which calls 3 with the context, 4 with the data and 5 with the output.
 pub const HASH_CTX: &[&str] = &["AddRef", "Release", "QueryInterface", "Init", "Update", "GetResult"];
 
-/// Métodos de `ICipherFactory` (6 slots), de `INHERIT_ICipherFactory` em
+/// Methods of `ICipherFactory` (6 slots), from `INHERIT_ICipherFactory` in
 /// `inc/AEEICipherFactory.h`.
 pub const CIPHER_FACTORY: &[&str] = &[
     "AddRef",
@@ -1344,8 +1354,8 @@ pub const CIPHER_FACTORY: &[&str] = &[
     "QueryCipher",
 ];
 
-/// Métodos de `ICipher1` (7 slots), de `INHERIT_ICipher1` em `inc/AEEICipher1.h`. Os dois
-/// primeiros depois do `IQI` vêm do `IParameters`, de onde o `ICipher1` herda.
+/// Methods of `ICipher1` (7 slots), from `INHERIT_ICipher1` in `inc/AEEICipher1.h`. The first
+/// two after `IQI` come from `IParameters`, which `ICipher1` inherits from.
 pub const CIPHER: &[&str] = &[
     "AddRef",
     "Release",
@@ -1356,10 +1366,10 @@ pub const CIPHER: &[&str] = &[
     "ProcessLast",
 ];
 
-/// Métodos de `IHeap` (9 slots), de `QINTERFACE(IHeap)` em `sdk/inc/AEEHeap.h`.
+/// Methods of `IHeap` (9 slots), from `QINTERFACE(IHeap)` in `sdk/inc/AEEHeap.h`.
 ///
-/// A interface usa `DECLARE_IBASE`, então tem só `AddRef` e `Release` antes dos métodos
-/// próprios — não há `QueryInterface`.
+/// The interface uses `DECLARE_IBASE`, so it has only `AddRef` and `Release` before its own
+/// methods — there is no `QueryInterface`.
 pub const HEAP: &[&str] = &[
     "AddRef",
     "Release",
@@ -1372,11 +1382,11 @@ pub const HEAP: &[&str] = &[
     "GetModuleMemStats",
 ];
 
-/// Métodos de `IUnzipAStream` (6 slots), de `QINTERFACE(IUnzipAStream)` em
+/// Methods of `IUnzipAStream` (6 slots), from `QINTERFACE(IUnzipAStream)` in
 /// `sdk/inc/AEEUnzipStream.h`.
 ///
-/// `DECLARE_IBASE` + `DECLARE_IASTREAM` + o método próprio. A ordem do `IAStream` é a mesma do
-/// `IMemAStream`, que já usávamos: `Readable`, `Read`, `Cancel`.
+/// `DECLARE_IBASE` + `DECLARE_IASTREAM` + its own method. The `IAStream` order is the same as
+/// `IMemAStream`'s, which we already used: `Readable`, `Read`, `Cancel`.
 pub const UNZIP_STREAM: &[&str] = &[
     "AddRef",
     "Release",

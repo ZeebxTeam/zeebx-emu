@@ -1,45 +1,46 @@
-//! Objetos que o emulador expõe ao guest.
+//! Objects the emulator exposes to the guest.
 //!
-//! Um objeto BREW é um ponteiro cuja primeira palavra aponta para a vtable. Como as nossas
-//! vtables são fixas por interface e vivem em memória só de leitura, cada objeto precisa de
-//! apenas uma palavra na memória do guest — o resto do estado fica aqui, no host.
+//! A BREW object is a pointer whose first word points to the vtable. Since our vtables are fixed
+//! per interface and live in read-only memory, each object needs only one word of guest memory
+//! — the rest of the state stays here, on the host.
 
 use std::collections::HashMap;
 
 use crate::brew::aee::Interface;
 
-/// Espaço reservado a cada objeto na região do guest.
+/// Space reserved for each object in the guest region.
 ///
-/// A maioria precisa de uma palavra só, o ponteiro da vtable. A exceção é o `IDIB`, que expõe
-/// 36 bytes de campos públicos que o jogo lê direto — daí a folga.
+/// Most need a single word, the vtable pointer. The exception is `IDIB`, which exposes 36 bytes
+/// of public fields the game reads directly — hence the slack.
 const OBJECT_STRIDE: u32 = 64;
 
 #[derive(Debug)]
 pub struct ObjectStore {
     end: u32,
     next: u32,
-    /// Endereços que já foram soltos e podem ser reusados.
+    /// Addresses that have already been released and can be reused.
     ///
-    /// Sem isto a região de objetos é um bloco que só anda para a frente: são 64 KB a 64 bytes
-    /// cada, mil e vinte e quatro objetos, e acabou. Um jogo que crie e solte objetos em laço
-    /// esgota isso em segundos — a Z-Wheel, repetindo a abertura em modo de atração, ficava sem
-    /// e a partir daí **tudo** falhava: `Unable to create vector model`, formulários com erro 3,
-    /// e o jogo girando para sempre porque nada mais podia ser criado.
+    /// Without this the object region is a block that only moves forward: 64 KB at 64 bytes
+    /// each, one thousand and twenty-four objects, and that's it. A game that creates and
+    /// releases objects in a loop exhausts it in seconds — the Z-Wheel, repeating its intro in
+    /// attract mode, ran out, and from then on **everything** failed: `Unable to create vector
+    /// model`, forms with error 3, and the game spinning forever because nothing else could be
+    /// created.
     ///
-    /// Reusar é o que um alocador faz. O ponteiro solto que o jogo guardou por engano passa a
-    /// apontar para outro objeto em vez de para lixo — o que é pior de depurar, sim, mas é
-    /// exatamente o que acontece no console, e o contrário é um teto que nenhum jogo longo
-    /// respeita.
-    livres: Vec<u32>,
-    /// Interface de cada objeto vivo, indexada pelo ponteiro no guest.
+    /// Reusing is what an allocator does. A dangling pointer the game kept by mistake ends up
+    /// pointing at another object instead of at garbage — which is harder to debug, yes, but it
+    /// is exactly what happens on the console, and the alternative is a ceiling no long game
+    /// respects.
+    free_slots: Vec<u32>,
+    /// Interface of each live object, indexed by its guest pointer.
     kinds: HashMap<u32, Interface>,
-    /// Contagem de referências, para responder `AddRef`/`Release` com honestidade.
+    /// Reference count, to answer `AddRef`/`Release` honestly.
     refs: HashMap<u32, u32>,
 }
 
 impl ObjectStore {
-    /// O primeiro endereço nunca usado. Mesma função do [`crate::brew::heap::Heap::proximo`].
-    pub fn proximo(&self) -> u32 {
+    /// The first never-used address. Same role as [`crate::brew::heap::Heap::next`].
+    pub fn next(&self) -> u32 {
         self.next
     }
 
@@ -47,16 +48,16 @@ impl ObjectStore {
         Self {
             end: base + size as u32,
             next: base,
-            livres: Vec::new(),
+            free_slots: Vec::new(),
             kinds: HashMap::new(),
             refs: HashMap::new(),
         }
     }
 
-    /// Reserva o endereço de um novo objeto. Quem chama grava o ponteiro de vtable.
+    /// Reserves the address of a new object. The caller writes the vtable pointer.
     pub fn create(&mut self, iface: Interface) -> Option<u32> {
-        let addr = match self.livres.pop() {
-            Some(reusado) => reusado,
+        let addr = match self.free_slots.pop() {
+            Some(reused) => reused,
             None => {
                 let addr = self.next;
                 if addr.checked_add(OBJECT_STRIDE)? > self.end {
@@ -71,32 +72,32 @@ impl ObjectStore {
         Some(addr)
     }
 
-    /// Marca um endereço já existente como objeto de uma interface — usado para os objetos
-    /// que o carregador monta antes de a máquina existir, como o `IShell`.
+    /// Marks an already existing address as an object of an interface — used for the objects
+    /// the loader builds before the machine exists, such as `IShell`.
     pub fn adopt(&mut self, addr: u32, iface: Interface) {
         self.kinds.insert(addr, iface);
         self.refs.insert(addr, 1);
     }
 
-    /// Interface de um objeto vivo. Devolve `None` para ponteiro que não criamos.
+    /// Interface of a live object. Returns `None` for a pointer we did not create.
     pub fn kind_of(&self, addr: u32) -> Option<Interface> {
         self.kinds.get(&addr).copied()
     }
 
-    /// Quantas referências um objeto tem agora. Zero para quem não existe.
-    pub fn contagem(&self, addr: u32) -> u32 {
+    /// How many references an object has now. Zero for one that doesn't exist.
+    pub fn count(&self, addr: u32) -> u32 {
         self.refs.get(&addr).copied().unwrap_or(0)
     }
 
-    /// Incrementa e devolve a nova contagem.
+    /// Increments and returns the new count.
     ///
-    /// **Um endereço já solto não ressuscita.** Ele está na lista de livres; recriar a contagem
-    /// dele sem tirá-lo de lá faria o `Release` seguinte pô-lo na lista **outra vez**, e dois
-    /// objetos vivos nasceriam no mesmo lugar. Foi assim que o `IGraphics` que a Z-Wheel cria
-    /// para desenhar o aviso de lançamento nasceu em cima de um bitmap: o `SetDestination` dele
-    /// caía no `IBitmap`, e o jogo escolhido nunca abria.
+    /// **An already released address does not come back to life.** It is in the free list;
+    /// recreating its count without taking it out of there would make the next `Release` put it
+    /// on the list **again**, and two live objects would be born in the same place. That is how
+    /// the `IGraphics` the Z-Wheel creates to draw the launch notice was born on top of a bitmap:
+    /// its `SetDestination` landed on the `IBitmap`, and the chosen game never opened.
     pub fn add_ref(&mut self, addr: u32) -> u32 {
-        if !self.refs.contains_key(&addr) && self.livres.contains(&addr) {
+        if !self.refs.contains_key(&addr) && self.free_slots.contains(&addr) {
             return 0;
         }
         let count = self.refs.entry(addr).or_insert(0);
@@ -104,7 +105,7 @@ impl ObjectStore {
         *count
     }
 
-    /// Decrementa e devolve a contagem restante. Chegando a zero, o objeto é esquecido.
+    /// Decrements and returns the remaining count. When it reaches zero, the object is forgotten.
     pub fn release(&mut self, addr: u32) -> u32 {
         let Some(count) = self.refs.get_mut(&addr) else {
             return 0;
@@ -114,9 +115,9 @@ impl ObjectStore {
         if remaining == 0 {
             self.refs.remove(&addr);
             self.kinds.remove(&addr);
-            // Nunca duas vezes o mesmo endereço na lista: seriam dois objetos vivos nele.
-            if !self.livres.contains(&addr) {
-                self.livres.push(addr);
+            // Never the same address twice in the list: that would be two live objects on it.
+            if !self.free_slots.contains(&addr) {
+                self.free_slots.push(addr);
             }
         }
         remaining
@@ -126,85 +127,85 @@ impl ObjectStore {
         self.kinds.len()
     }
 
-    /// Quantos objetos vivos de cada interface, do mais numeroso para o menos.
+    /// How many live objects of each interface, from the most numerous to the least.
     ///
-    /// Serve ao relatório. Um jogo que chega ao teto da região está vazando referência, e sem
-    /// esta lista isso aparece como "uma classe qualquer parou de ser criada" — que foi
-    /// exatamente como o vazamento da Z-Wheel se manifestou.
+    /// It serves the report. A game that reaches the region's ceiling is leaking references, and
+    /// without this list that shows up as "some class stopped being created" — which is exactly
+    /// how the Z-Wheel leak manifested.
     pub fn live_by_kind(&self) -> Vec<(Interface, usize)> {
-        let mut contagem: HashMap<Interface, usize> = HashMap::new();
+        let mut count: HashMap<Interface, usize> = HashMap::new();
         for kind in self.kinds.values() {
-            *contagem.entry(*kind).or_default() += 1;
+            *count.entry(*kind).or_default() += 1;
         }
-        let mut saida: Vec<(Interface, usize)> = contagem.into_iter().collect();
-        saida.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.name().cmp(b.0.name())));
-        saida
+        let mut output: Vec<(Interface, usize)> = count.into_iter().collect();
+        output.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.name().cmp(b.0.name())));
+        output
     }
 }
 
 
-impl crate::save_state::Guardavel for ObjectStore {
-    /// Grava o livro inteiro: o fim da região, o primeiro endereço nunca usado, os endereços
-    /// soltos e, por ponteiro, a interface e a contagem de referências de cada objeto vivo.
+impl crate::save_state::Saveable for ObjectStore {
+    /// Writes the whole ledger: the end of the region, the first never-used address, the released
+    /// addresses and, per pointer, the interface and reference count of each live object.
     ///
-    /// **Sem `kinds` o save state carrega objetos que não sabem o que são**: o ponteiro volta
-    /// apontando para a vtable certa na memória, e o despacho do emulador não sabe qual interface
-    /// atender. A codificação da interface é o discriminante da enumeração, e há teste que cobra a
-    /// volta das 62.
-    fn grava(&self, destino: &mut crate::save_state::Secoes) {
-        destino.poe_u32("objects.end", self.end);
-        destino.poe_u32("objects.next", self.next);
-        destino.poe_u32s("objects.livres", self.livres.iter().copied());
-        destino.poe_mapa(
+    /// **Without `kinds` the save state loads objects that don't know what they are**: the
+    /// pointer comes back pointing at the right vtable in memory, and the emulator's dispatch
+    /// doesn't know which interface to serve. The interface encoding is the enum discriminant,
+    /// and there is a test that checks all 62 round-trip.
+    fn save(&self, dest: &mut crate::save_state::Sections) {
+        dest.put_u32("objects.end", self.end);
+        dest.put_u32("objects.next", self.next);
+        dest.put_u32s("objects.livres", self.free_slots.iter().copied());
+        dest.put_map(
             "objects.kinds",
-            self.kinds.iter().map(|(a, i)| (*a, crate::brew::aee::codigo(*i))),
+            self.kinds.iter().map(|(a, i)| (*a, crate::brew::aee::code(*i))),
         );
-        destino.poe_mapa("objects.refs", self.refs.iter().map(|(a, r)| (*a, *r)));
+        dest.put_map("objects.refs", self.refs.iter().map(|(a, r)| (*a, *r)));
     }
 
-    /// Restaura, e recusa antes de aplicar: o fim da região tem de ser o desta máquina, todo
-    /// endereço vivo tem de saber a interface, e um endereço não pode estar livre e vivo.
-    fn restaura(
+    /// Restores, and rejects before applying: the end of the region has to be this machine's,
+    /// every live address has to know its interface, and an address cannot be both free and live.
+    fn restore(
         &mut self,
-        origem: &crate::save_state::Leitor<'_>,
-    ) -> Result<(), crate::save_state::Erro> {
-        use crate::save_state::Erro;
-        let fim = origem.u32("objects.end")?;
-        if fim != self.end {
-            return Err(Erro::Secao {
-                nome: "objects".to_string(),
-                motivo: format!(
-                    "o estado é de uma região {fim:#010x}.. e esta máquina tem {:#010x}..",
+        origin: &crate::save_state::Reader<'_>,
+    ) -> Result<(), crate::save_state::Error> {
+        use crate::save_state::Error;
+        let end = origin.u32("objects.end")?;
+        if end != self.end {
+            return Err(Error::Section {
+                name: "objects".to_string(),
+                reason: format!(
+                    "the state is from a region {end:#010x}.. and this machine has {:#010x}..",
                     self.end
                 ),
             });
         }
-        let next = origem.u32("objects.next")?;
-        let livres = origem.u32s("objects.livres")?;
-        let kinds_crus = origem.pares("objects.kinds")?;
-        let refs = origem.pares("objects.refs")?;
+        let next = origin.u32("objects.next")?;
+        let free_slots = origin.u32s("objects.livres")?;
+        let raw_kinds = origin.pairs("objects.kinds")?;
+        let refs = origin.pairs("objects.refs")?;
 
         let mut kinds = std::collections::HashMap::new();
-        for (endereco, codigo) in kinds_crus {
-            let iface = crate::brew::aee::de_codigo(codigo).ok_or_else(|| Erro::Secao {
-                nome: "objects.kinds".to_string(),
-                motivo: format!("o objeto {endereco:#010x} diz ser a interface {codigo}, que este motor não conhece"),
+        for (address, code) in raw_kinds {
+            let iface = crate::brew::aee::from_code(code).ok_or_else(|| Error::Section {
+                name: "objects.kinds".to_string(),
+                reason: format!("object {address:#010x} claims to be interface {code}, which this engine does not know"),
             })?;
-            kinds.insert(endereco, iface);
+            kinds.insert(address, iface);
         }
-        if let Some((endereco, _)) = kinds
+        if let Some((address, _)) = kinds
             .keys()
-            .find(|a| livres.contains(a))
+            .find(|a| free_slots.contains(a))
             .map(|a| (*a, 0))
         {
-            return Err(Erro::Secao {
-                nome: "objects".to_string(),
-                motivo: format!("o objeto {endereco:#010x} aparece solto e vivo"),
+            return Err(Error::Section {
+                name: "objects".to_string(),
+                reason: format!("object {address:#010x} appears both released and live"),
             });
         }
 
         self.next = next;
-        self.livres = livres;
+        self.free_slots = free_slots;
         self.kinds = kinds;
         self.refs = refs.into_iter().collect();
         Ok(())
@@ -215,80 +216,81 @@ impl crate::save_state::Guardavel for ObjectStore {
 mod tests {
     use super::*;
 
-    /// **O livro dos objetos volta inteiro**: o próximo endereço, os soltos, a interface de cada
-    /// objeto vivo e a contagem de referências.
+    /// **The object ledger comes back whole**: the next address, the released ones, the interface
+    /// of each live object and the reference count.
     ///
-    /// O que este teste guarda é a diferença entre "o ponteiro voltou" e "o ponteiro voltou
-    /// **sabendo o que é**". Sem a interface, o despacho do emulador não sabe qual vtable atender,
-    /// e o jogo quebra no primeiro método que chamar.
+    /// What this test guards is the difference between "the pointer came back" and "the pointer
+    /// came back **knowing what it is**". Without the interface, the emulator's dispatch doesn't
+    /// know which vtable to serve, and the game breaks on the first method it calls.
     #[test]
-    fn o_livro_dos_objetos_vai_e_volta() {
-        use crate::save_state::{Guardavel, Leitor, Secoes};
+    fn the_object_ledger_round_trips() {
+        use crate::save_state::{Saveable, Reader, Sections};
 
-        let mut antes = ObjectStore::new(0x4000_0000, 4096);
-        let a = antes.create(Interface::Shell).expect("primeiro objeto");
-        let b = antes.create(Interface::Display).expect("segundo objeto");
-        // Um terceiro que **morre**: assim o estado tem uma entrada em `livres` para conferir,
-        // e dois objetos vivos de interfaces diferentes.
-        let morto = antes.create(Interface::Bitmap).expect("terceiro objeto");
-        let _ = antes.add_ref(a);
-        antes.release(morto);
+        let mut before = ObjectStore::new(0x4000_0000, 4096);
+        let a = before.create(Interface::Shell).expect("first object");
+        let b = before.create(Interface::Display).expect("second object");
+        // A third one that **dies**: that way the state has an entry in `free_slots` to check,
+        // and two live objects of different interfaces.
+        let dead = before.create(Interface::Bitmap).expect("third object");
+        let _ = before.add_ref(a);
+        before.release(dead);
 
-        let mut secoes = Secoes::nova();
-        antes.grava(&mut secoes);
-        let arquivo = secoes.fecha();
-        let leitor = Leitor::abre(&arquivo).expect("abriu");
+        let mut sections = Sections::create();
+        before.save(&mut sections);
+        let file = sections.close();
+        let reader = Reader::open(&file).expect("opened");
 
-        let mut depois = ObjectStore::new(0x4000_0000, 4096);
-        depois.restaura(&leitor).expect("restaurou");
+        let mut after = ObjectStore::new(0x4000_0000, 4096);
+        after.restore(&reader).expect("restored");
 
         assert_eq!(
-            depois.kind_of(a),
+            after.kind_of(a),
             Some(Interface::Shell),
-            "a interface de {a:#x} não voltou"
+            "the interface of {a:#x} did not come back"
         );
-        assert_eq!(depois.kind_of(b), Some(Interface::Display));
-        assert_eq!(depois.kind_of(morto), None, "o objeto liberado não devia voltar vivo");
-        assert_eq!(depois.contagem(a), antes.contagem(a), "a conta de {a:#x}");
-        assert_eq!(depois.contagem(b), antes.contagem(b), "a conta de {b:#x}");
-        // E o próximo objeto sai onde sairia antes: é o que faz o jogo continuar de onde parou.
-        assert_eq!(depois.create(Interface::Bitmap), antes.create(Interface::Bitmap));
+        assert_eq!(after.kind_of(b), Some(Interface::Display));
+        assert_eq!(after.kind_of(dead), None, "the released object should not come back alive");
+        assert_eq!(after.count(a), before.count(a), "the count of {a:#x}");
+        assert_eq!(after.count(b), before.count(b), "the count of {b:#x}");
+        // And the next object lands where it would have before: that is what lets the game
+        // carry on from where it stopped.
+        assert_eq!(after.create(Interface::Bitmap), before.create(Interface::Bitmap));
     }
 
     #[test]
-    fn um_livro_de_outra_maquina_e_recusado() {
-        use crate::save_state::{Guardavel, Leitor, Secoes};
+    fn a_ledger_from_another_machine_is_rejected() {
+        use crate::save_state::{Saveable, Reader, Sections};
 
-        let antes = ObjectStore::new(0x4000_0000, 4096);
-        let mut secoes = Secoes::nova();
-        antes.grava(&mut secoes);
-        let arquivo = secoes.fecha();
-        let leitor = Leitor::abre(&arquivo).expect("abriu");
+        let before = ObjectStore::new(0x4000_0000, 4096);
+        let mut sections = Sections::create();
+        before.save(&mut sections);
+        let file = sections.close();
+        let reader = Reader::open(&file).expect("opened");
 
-        let mut outra = ObjectStore::new(0x4000_0000, 8192);
+        let mut other = ObjectStore::new(0x4000_0000, 8192);
         assert!(matches!(
-            outra.restaura(&leitor),
-            Err(crate::save_state::Erro::Secao { .. })
+            other.restore(&reader),
+            Err(crate::save_state::Error::Section { .. })
         ));
     }
 
 
     #[test]
-    fn addref_num_objeto_solto_nao_duplica_o_endereco() {
+    fn addref_on_a_released_object_does_not_duplicate_the_address() {
         let mut store = ObjectStore::new(0x3000_0000, 0x1000);
         let a = store.create(Interface::Bitmap).unwrap();
         assert_eq!(store.release(a), 0);
-        // Alguém ainda tinha o ponteiro e pede uma referência nele: não ressuscita.
+        // Someone still had the pointer and asks for a reference on it: it does not come back.
         assert_eq!(store.add_ref(a), 0);
         assert_eq!(store.release(a), 0);
-        // O endereço volta **uma** vez só: dois objetos novos não podem nascer no mesmo lugar.
+        // The address comes back **once** only: two new objects cannot be born in the same place.
         let b = store.create(Interface::Graphics).unwrap();
         let c = store.create(Interface::Bitmap).unwrap();
         assert_ne!(b, c);
     }
 
     #[test]
-    fn objetos_ganham_enderecos_distintos() {
+    fn objects_get_distinct_addresses() {
         let mut store = ObjectStore::new(0x3000_0000, 0x1000);
         let a = store.create(Interface::Display).unwrap();
         let b = store.create(Interface::FileMgr).unwrap();
@@ -298,7 +300,7 @@ mod tests {
     }
 
     #[test]
-    fn contagem_de_referencias_sobe_e_desce() {
+    fn the_reference_count_goes_up_and_down() {
         let mut store = ObjectStore::new(0x3000_0000, 0x1000);
         let obj = store.create(Interface::Display).unwrap();
         assert_eq!(store.add_ref(obj), 2);
@@ -307,45 +309,45 @@ mod tests {
         assert_eq!(
             store.kind_of(obj),
             None,
-            "objeto some quando a contagem zera"
+            "the object disappears when the count reaches zero"
         );
     }
 
     #[test]
-    /// Soltar devolve o endereço ao alocador. Sem isso a região de objetos é um teto de mil e
-    /// vinte e quatro criações para a execução inteira, e um jogo que cria e solta em laço para
-    /// de conseguir criar qualquer coisa.
-    fn o_endereco_solto_volta_a_ser_usado() {
-        let mut loja = ObjectStore::new(0x3000_0000, 0x10000);
-        let primeiro = loja.create(Interface::Widget).expect("cabe");
-        let segundo = loja.create(Interface::Widget).expect("cabe");
-        assert_ne!(primeiro, segundo);
-        assert_eq!(loja.release(primeiro), 0);
-        assert_eq!(loja.create(Interface::Widget), Some(primeiro));
+    /// Releasing gives the address back to the allocator. Without that the object region is a
+    /// ceiling of one thousand and twenty-four creations for the whole run, and a game that
+    /// creates and releases in a loop stops being able to create anything.
+    fn a_released_address_is_reused() {
+        let mut store = ObjectStore::new(0x3000_0000, 0x10000);
+        let first = store.create(Interface::Widget).expect("fits");
+        let second = store.create(Interface::Widget).expect("fits");
+        assert_ne!(first, second);
+        assert_eq!(store.release(first), 0);
+        assert_eq!(store.create(Interface::Widget), Some(first));
     }
 
     #[test]
-    /// O teto existe, mas é o de objetos **vivos**, não o de criações. Criar e soltar num laço
-    /// tem de poder seguir para sempre.
-    fn criar_e_soltar_em_laco_nao_esgota() {
-        let mut loja = ObjectStore::new(0x3000_0000, 0x400);
+    /// The ceiling exists, but it is on **live** objects, not on creations. Creating and
+    /// releasing in a loop has to be able to go on forever.
+    fn creating_and_releasing_in_a_loop_does_not_exhaust() {
+        let mut store = ObjectStore::new(0x3000_0000, 0x400);
         for _ in 0..10_000 {
-            let objeto = loja
+            let object = store
                 .create(Interface::Widget)
-                .expect("sempre cabe um de cada vez");
-            loja.release(objeto);
+                .expect("one at a time always fits");
+            store.release(object);
         }
-        assert_eq!(loja.live_count(), 0);
+        assert_eq!(store.live_count(), 0);
     }
 
     #[test]
-    fn release_de_objeto_desconhecido_nao_estoura() {
+    fn release_of_an_unknown_object_does_not_panic() {
         let mut store = ObjectStore::new(0x3000_0000, 0x1000);
         assert_eq!(store.release(0xdead), 0);
     }
 
     #[test]
-    fn recusa_quando_a_regiao_enche() {
+    fn refuses_when_the_region_fills_up() {
         let mut store = ObjectStore::new(0x3000_0000, OBJECT_STRIDE as usize);
         assert!(store.create(Interface::Display).is_some());
         assert!(store.create(Interface::Display).is_none());
