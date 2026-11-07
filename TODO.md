@@ -23,10 +23,3 @@ They need to be redesigned on top of Dynarmic's instrumentation and block invali
 **`--trace[=filter]` is not part of this pending item**: it traces BREW calls in the `Machine`,
 not backend instructions, and keeps working with Dynarmic.
 
-## Features
-
-- Save State
-- Fast-Forward
-- Turbo Mode
-- Rewind
-- Cheats
