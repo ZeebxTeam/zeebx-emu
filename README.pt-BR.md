@@ -1,6 +1,6 @@
-> **Registro em português.** Esta é a versão original deste documento, preservada como estava na v0.5.1 e não é mais atualizada. A versão mantida está em inglês: [README.md](README.md).
-
 # Zeebx 
+
+🇺🇸 [Read in english](README.md)
 
 Emulador do Zeebo, o console que a TecToy lançou em 2009 no Brasil e no México.
 
@@ -8,7 +8,7 @@ O Zeebo era digital-only: os jogos vinham da loja da TecToy, que saiu do ar. Sob
 60 títulos que só rodam em quem ainda tem o aparelho ou por meio de modding no console. 
 Este projeto existe para ajudar a preservar essas pérolas que fizeram parte da nossa história.
 
-Em desenvolvimento. Hoje 56 dos 62 títulos de teste passam do carregamento e desenham.
+Em desenvolvimento. Hoje 56 dos 62 títulos passam do carregamento e desenham.
 
 ## Links úteis
 
@@ -70,7 +70,8 @@ O desenho completo está em [ARCHITECTURE.md](ARCHITECTURE.md).
 
 A maioria das ROMs rodam sem problemas, alguns jogos podem apresentar travamentos antes da inicialização ou durante a execução.
 
-Jogos que utilizam do Boomerang podem ser jogados usando Wii Remote e seus sensores de movimento!
+Jogos que utilizam do Boomerang podem ser jogados usando controles compatíveis com sensores de movimento, como o Wii Remote,
+Nintendo Switch Pro Controller, Dualshock 4, Dualsense, etc.
 
 Jogos 3D são compatíveis com recursos de resolução experimentais, podendo atingir resoluções de até 4k em 16:9.
 

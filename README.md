@@ -8,7 +8,7 @@ The Zeebo was digital-only: the games came from TecToy's store, which went offli
 titles are left, and they only run for those who still have the console or through modding on it.
 This project exists to help preserve these gems that were part of our history.
 
-In development. Today 56 of the 62 test titles get past loading and draw.
+In development. Today, 56 of the 62 titles get past loading and draw.
 
 ## Useful links
 
@@ -71,7 +71,8 @@ The full design is in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 Most ROMs run without problems; some games may hang before starting up or while running.
 
-Games that use the Boomerang can be played with a Wii Remote and its motion sensors!
+Games that use the Boomerang can be played with a controller compatible with motion controls, such as Wii Remote, 
+Nintendo Switch Pro Controller, Dualshock 4, Dualsense, etc.
 
 3D games support experimental resolution features, and can reach resolutions of up to 4K in 16:9.
 
