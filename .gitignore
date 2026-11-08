@@ -26,6 +26,9 @@ __pycache__/
 
 # Rust
 /target/
+
+# Python tools drop bytecode next to the scripts.
+__pycache__/
 # cxx-qt-build writes the QML language server configuration with this machine's path.
 .qmlls.ini
 
