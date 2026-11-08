@@ -630,7 +630,9 @@ fn audio_thread(port: i32, ring: Arc<Ring>) {
     }
 }
 
-struct Game {
+/// The game that is open: the session plus the sound and timing this frontend keeps beside it.
+/// Distinct from [`Game`], which is one row of the ROM list.
+struct RunningGame {
     session: Session,
     mixer: zeebx::audio::Mixer,
     prev_pad: Pad,
@@ -652,7 +654,7 @@ struct App {
     storage: StoragePaths,
     cursor: usize,
     error: String,
-    game: Option<Game>,
+    game: Option<RunningGame>,
     saw_frame: bool,
     exits_without_frame: u32,
 }
@@ -728,7 +730,7 @@ impl App {
                 let mixer = session.record_audio(sound::RATE);
                 sound.ring.clear();
                 self.saw_frame = false;
-                self.game = Some(Game {
+                self.game = Some(RunningGame {
                     session,
                     mixer,
                     prev_pad: Pad::default(),
