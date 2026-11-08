@@ -56,10 +56,11 @@ Para frontends como Android e Libretro, essa listagem de compatibilidade pode n�
 
 ## Usando
 
-Sem argumentos, abre a interface. Pela linha de comando:
+A interface Qt é o `zeebx-qt`: é ela que abre a janela. A linha de comando é o `zeebx`
+(`frontends/cli`). Sem subcomando, ele imprime o uso e sai; não abre a interface.
 
 ```bash
-cargo run --release -- run "roms/Quake.zip" --window
+cargo run --release -p zeebx-cli -- run "roms/Quake.zip" --window
 ```
 
 Os controles de teclado, as opções da linha de comando e o relatório de depuração estão em
@@ -80,7 +81,9 @@ as releases são montados está em [docs/INSTALADORES.md](docs/INSTALADORES.md).
 
 ## Plataformas
 
-Linux, Windows e macOS. Mobile está nos planos, mas o foco agora é no desktop!
+Linux, Windows e macOS são o foco da interface de desktop. Android e iOS já saem na release, e a
+PlayStation Vita tem aplicativo próprio. Qual arquivo é qual está em
+[docs/INSTALACAO.md](docs/INSTALACAO.md).
 
 O core Libretro e o cartão muOS têm a própria página: [docs/CORE-LIBRETRO.md](docs/CORE-LIBRETRO.md).
 
@@ -102,6 +105,7 @@ O repositório não distribui jogos. Coloque os seus em `roms/`, que é ignorada
 - [docs/implementacao/](docs/implementacao/README.md) — cada subsistema, com as decisões e o
   porquê de cada uma
 - [TODO.md](TODO.md) — o diário de bordo: o que está pronto, o que falta e o que já custou caro
+- [CONTRIBUTING.md](CONTRIBUTING.md) — pull requests, a branch `development` e frontends novos
 
 ## Licença
 

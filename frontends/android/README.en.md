@@ -8,10 +8,10 @@ This directory is `frontends/android/` because it is **one** frontend, not *the*
 
 ## Platform split
 
-Code that depends on a desktop window is behind `cfg(not(target_os = "android"))`:
+Desktop-only UI modules are behind `#[cfg(feature = "desktop")]` in `src/ui/mod.rs`: `ui::atualizacao`, `ui::discord`, `ui::entrada`, and `ui::window`. The OpenGL painter is `ui::gpu`, behind `#[cfg(feature = "gl")]`. Library, settings, saves, and the language catalog stay ungated, because the core reads them.
 
-| Shared across platforms | Desktop only |
+| Shared across platforms | Desktop feature |
 |---|---|
-| `audio`, `brew`, `cpu`, `input`, `loader`, `machine`, `video`, `session` | `ui::window`, `ui::atualizacao`, `ui::discord` |
+| `audio`, `brew`, `cpu`, `input`, `loader`, `machine`, `video`, `session`, and the ungated `ui` modules the core reads | `ui::window`, `ui::atualizacao`, `ui::discord`, `ui::entrada` (`desktop`); `ui::gpu` (`gl`) |
 
 The Android build uses the Oboe audio backend through `cpal`. Build requirements and commands are in [`LEIAME.md`](LEIAME.md).

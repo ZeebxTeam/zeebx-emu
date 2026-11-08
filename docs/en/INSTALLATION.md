@@ -1,6 +1,6 @@
 # Installation
 
-Ready-made builds are on the [releases](https://github.com/ZeebxTeam/zeebx-emu/releases) page: the Windows installer, macOS `.dmg`, Linux `.deb` and AppImage, Android APK, and Libretro core. On **macOS** and **Linux**, you can also install through [Homebrew](https://brew.sh):
+Ready-made builds are on the [releases](https://github.com/ZeebxTeam/zeebx-emu/releases) page: the Windows installer, macOS `.dmg`, Linux `.deb` and AppImage, Android APK, iOS archives, the Vita VPK, and the Libretro core. On **macOS** and **Linux**, you can also install through [Homebrew](https://brew.sh):
 
 ```bash
 brew install --cask zeebxteam/tap/zeebx-qt
@@ -15,6 +15,9 @@ brew install --cask zeebxteam/tap/zeebx-qt
 | `zeebx-standalone-qt-macos-arm64.dmg`, `-x86_64.dmg` | Desktop interface for Apple Silicon or Intel Macs |
 | `zeebx-headless-<system>.zip` | Headless binary, `config.ini`, and readme |
 | `zeebx-android-arm64-v8a.apk` | Android app |
+| `zeebx-ios-simulator.zip` | iOS Simulator build and its readme |
+| `zeebx-ios.zip` | IPA for classic AltStore, and its readme |
+| `zeebx-vita.zip` | PlayStation Vita app (a VPK), without RetroArch |
 | `zeebx_libretro-<system>.zip` | Libretro core and matching `.info` file |
 
 The `zeebx-qt` Homebrew cask requires macOS 13 or newer. On Linux it installs the AppImage at `~/Applications/zeebx-qt.AppImage`.

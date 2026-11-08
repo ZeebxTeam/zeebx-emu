@@ -1,9 +1,10 @@
 # Usando
 
-Sem argumentos, abre a interface. Pela linha de comando:
+A interface Qt é o `zeebx-qt`. A linha de comando é o `zeebx`: sem subcomando, ele imprime o uso
+e sai.
 
 ```bash
-cargo run --release -- run "roms/Quake.zip" --window
+cargo run --release -p zeebx-cli -- run "roms/Quake.zip" --window
 ```
 
 Zips são extraídos para um cache e o `.mod` certo é escolhido sozinho. `--seconds=N` define
@@ -14,10 +15,16 @@ quantos segundos de tempo virtual emular quando não há janela; com janela, rod
 | Tecla | Controle do Zeebo |
 |---|---|
 | Setas | direcional |
-| Z, X ou Espaço, C, V | botões 1, 2, 3 e 4 |
+| Z | botão 1 |
+| X ou Espaço | botão 2 |
+| C | botão 3 |
+| V | botão 4 |
 | Q, W | ZL e ZR |
-| F, G | analógico esquerdo, direito |
+| F | clique do analógico esquerdo (L3) |
+| G | clique do analógico direito (R3) |
 | H, Backspace, Enter | HOME |
+
+F e G clicam os analógicos (L3 e R3). Elas não os movem. O teclado padrão não tem eixo de analógico.
 
 ## Relatório de depuração
 

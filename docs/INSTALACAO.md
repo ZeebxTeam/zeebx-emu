@@ -30,6 +30,7 @@ São dois formatos em cada um dos quatro sistemas, e o nome do arquivo diz qual 
 | `zeebx-android-arm64-v8a.apk` | o aplicativo de Android |
 | `zeebx-ios-simulator.zip` | o simulador e o leia-me |
 | `zeebx-ios.zip` | o IPA do AltStore clássico e o leia-me |
+| `zeebx-vita.zip` | o aplicativo da Vita, um VPK, sem RetroArch |
 
 ## Atualizações
 

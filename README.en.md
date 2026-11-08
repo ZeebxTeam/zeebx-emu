@@ -3,7 +3,7 @@
 An emulator for the Zeebo, the console TecToy launched in 2009 in Brazil and Mexico.
 
 The Zeebo was digital-only: games came from TecToy's store, which has since gone offline. Roughly
-60 titles remain, and they only run on people who still own the device or through console modding.
+60 titles remain, and they can only be played on surviving consoles or through console modding.
 This project exists to help preserve these gems that were part of our history.
 
 Work in progress. Today 56 of the 62 test titles get past loading and render.
@@ -57,10 +57,10 @@ report any problems on those versions as well.
 
 ## Usage
 
-With no arguments, it opens the interface. From the command line:
+The Qt interface is `zeebx-qt`: that is the program that opens the window. The command-line binary is `zeebx` (`frontends/cli`). With no subcommand it prints usage and exits; it does not open the interface.
 
 ```bash
-cargo run --release -- run "roms/Quake.zip" --window
+cargo run --release -p zeebx-cli -- run "roms/Quake.zip" --window
 ```
 
 Keyboard controls, command-line options and the debugging report are in
@@ -81,7 +81,7 @@ assembled is in [docs/en/INSTALLERS.md](docs/en/INSTALLERS.md).
 
 ## Platforms
 
-Linux, Windows and macOS. Mobile is in the plans, but the focus right now is the desktop!
+Linux, Windows, and macOS are where the desktop interface is focused. Android and iOS already have release builds, and the PlayStation Vita has its own app. Which file is which is in [docs/en/INSTALLATION.md](docs/en/INSTALLATION.md).
 
 The Libretro core and the muOS card have their own page:
 [docs/en/LIBRETRO-CORE.md](docs/en/LIBRETRO-CORE.md).
@@ -94,8 +94,6 @@ other folder, and set it in the program's settings.
 ## Documentation
 
 - [Research](docs/en/RESEARCH.md) — the console, BREW platform, file formats and emulation landscape
-- [Implementation guide (Portuguese)](docs/implementacao/README.md) — subsystems, decisions and their rationale
-
 - [ARCHITECTURE.md](ARCHITECTURE.md) — how the emulator is built
 - [docs/en/INSTALLATION.md](docs/en/INSTALLATION.md) — installing, updating and which release file to download
 - [docs/en/USAGE.md](docs/en/USAGE.md) — command line, controls and the debugging report
@@ -106,8 +104,9 @@ other folder, and set it in the program's settings.
 - [docs/](docs/README.md) — the research: the console, the BREW platform, the file formats and the
   state of the art of Zeebo emulation
 - [docs/implementacao/](docs/implementacao/README.md) — each subsystem, with the decisions and the
-  reasoning behind each one
+  reasoning behind each one (Portuguese)
 - [TODO.md](TODO.md) — the logbook: what is done, what is missing and what has already cost dearly
+- [CONTRIBUTING.en.md](CONTRIBUTING.en.md) — pull requests, the `development` branch, and new frontends
 
 ## License
 

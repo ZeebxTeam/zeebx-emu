@@ -1,9 +1,9 @@
 # Usage
 
-With no arguments, the emulator opens its interface. From the command line:
+The Qt interface is `zeebx-qt`. The command-line binary is `zeebx`: with no subcommand it prints usage and exits.
 
 ```bash
-cargo run --release -- run "roms/Quake.zip" --window
+cargo run --release -p zeebx-cli -- run "roms/Quake.zip" --window
 ```
 
 ZIP files are extracted to a cache, and the correct `.mod` is selected automatically. `--seconds=N` sets how many seconds of virtual time to emulate without a window; with a window, the game runs until you close it.
@@ -13,10 +13,16 @@ ZIP files are extracted to a cache, and the correct `.mod` is selected automatic
 | Key | Zeebo control |
 |---|---|
 | Arrow keys | D-pad |
-| Z, X, Space, C, V | Buttons 1, 2, 3, and 4 |
+| Z | Button 1 |
+| X or Space | Button 2 |
+| C | Button 3 |
+| V | Button 4 |
 | Q, W | ZL and ZR |
-| F, G | Left and right analog sticks |
+| F | Left stick click (L3) |
+| G | Right stick click (R3) |
 | H, Backspace, Enter | HOME |
+
+F and G click the sticks (L3 and R3). They do not move them. The default keyboard map has no stick axes.
 
 ## Debug report
 
