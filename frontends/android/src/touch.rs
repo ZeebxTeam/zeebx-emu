@@ -255,7 +255,7 @@ fn draw(
                 let pressed = match touch_control {
                     TouchControl::Turbo => shortcuts.turbo,
                     TouchControl::FastForward => shortcuts.fast_forward,
-                    TouchControl::Back => shortcuts.back,
+                    TouchControl::Rewind => shortcuts.rewind,
                     _ => touch_control
                         .index()
                         .is_some_and(|index| pressed_buttons & (1 << index) != 0),

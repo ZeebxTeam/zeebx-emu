@@ -36,7 +36,8 @@ impl Emulator {
             })
         };
         let shortcuts = &self.settings.shortcuts;
-        let back = on_screen.back || physical(&shortcuts.back);
+        // `voltar` in the saved shortcuts is rewind, the same field the desktop window reads.
+        let rewind_held = on_screen.rewind || physical(&shortcuts.rewind);
         let fast_forward = on_screen.fast_forward || physical(&shortcuts.fast_forward);
         let player = self.settings.controls.player(0);
         let turbo_pressed = on_screen.turbo
@@ -55,12 +56,12 @@ impl Emulator {
             // Going back one point rebuilds the textures on the GPU, and the window has painted
             // in the same context since the previous step: the same notice as before advancing,
             // just below.
-            if back && self.settings.speed.rewind.enabled {
+            if rewind_held && self.settings.speed.rewind.enabled {
                 session.resume_context();
             }
             let reading =
                 self.rewind
-                    .read(session, back, self.paused, &self.settings.speed.rewind);
+                    .read(session, rewind_held, self.paused, &self.settings.speed.rewind);
             if reading == Reading::Released {
                 self.last = Instant::now();
             }

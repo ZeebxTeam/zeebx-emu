@@ -41,7 +41,9 @@ use zeebx::session::Session;
 use zeebx::storage::StoragePaths;
 use zeebx::ui::save_slots;
 use zeebx::ui::i18n::Catalog;
-use zeebx::ui::library::{self, Game};
+// The screen module in this crate is also named `library`. The core scan stays under
+// `core_library` so the two names do not collide in this file.
+use zeebx::ui::library::{self as core_library, Game};
 use zeebx::ui::settings::{OnScreenControlsMode, Settings};
 
 use host_input::HostInput;
@@ -545,11 +547,11 @@ impl Emulator {
         match std::thread::Builder::new()
             .name("zeebx-library".to_string())
             .spawn(move || {
-                let games = library::scan(&thread_dir);
+                let games = core_library::scan(&thread_dir);
                 let installed = games
                     .iter()
                     .filter_map(|game| {
-                        Some((game.clsid?, library::module_id(&game.path)?))
+                        Some((game.clsid?, core_library::module_id(&game.path)?))
                     })
                     .collect();
                 let _ = tx.send((thread_dir, games, installed));

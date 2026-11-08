@@ -24,17 +24,18 @@ use crate::{Emulator, View, system, widgets};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PhysicalShortcut {
     FastForward,
-    Back,
+    /// Held rewind. The stored shortcut is still `voltar`; see [`Settings`] shortcuts.
+    Rewind,
     Turbo,
 }
 
 impl PhysicalShortcut {
-    const ALL: [Self; 3] = [Self::FastForward, Self::Back, Self::Turbo];
+    const ALL: [Self; 3] = [Self::FastForward, Self::Rewind, Self::Turbo];
 
     fn key_id(self) -> &'static str {
         match self {
             Self::FastForward => "controls.shortcut.fast_forward",
-            Self::Back => "controls.shortcut.rewind",
+            Self::Rewind => "controls.shortcut.rewind",
             Self::Turbo => "button.turbo",
         }
     }
@@ -42,7 +43,7 @@ impl PhysicalShortcut {
     fn origins(self, settings: &Settings) -> Vec<Source> {
         match self {
             Self::FastForward => settings.shortcuts.fast_forward.clone(),
-            Self::Back => settings.shortcuts.back.clone(),
+            Self::Rewind => settings.shortcuts.rewind.clone(),
             Self::Turbo => settings
                 .controls
                 .player(0)
@@ -54,7 +55,7 @@ impl PhysicalShortcut {
     fn origins_mut(self, settings: &mut Settings) -> &mut Vec<Source> {
         match self {
             Self::FastForward => &mut settings.shortcuts.fast_forward,
-            Self::Back => &mut settings.shortcuts.back,
+            Self::Rewind => &mut settings.shortcuts.rewind,
             Self::Turbo => settings
                 .controls
                 .player_mut(0)
