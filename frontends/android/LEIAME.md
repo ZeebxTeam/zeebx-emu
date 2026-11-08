@@ -13,12 +13,15 @@ onde está.
 
 ## O corte
 
-O que depende de uma janela de desktop está atrás de `cfg(not(target_os = "android"))`:
+O que depende de uma janela de desktop está atrás de `#[cfg(feature = "desktop")]` em
+`src/ui/mod.rs`: `ui::atualizacao`, `ui::discord`, `ui::entrada` e `ui::window`. O pintor de
+OpenGL é o `ui::gpu`, atrás de `#[cfg(feature = "gl")]`. A biblioteca, os ajustes, os saves e o
+catálogo de idiomas ficam sem gate, porque o núcleo os lê.
 
-| Fica em toda plataforma | Só no desktop |
+| Fica em toda plataforma | Feature de desktop |
 |---|---|
-| `audio`, `brew`, `cpu`, `input`, `loader`, `machine`, `video`, `session` | `ui::window`, `ui::atualizacao`, `ui::discord` |
-| `ui::settings`, `ui::library`, `ui::acervo`, `ui::saves`, `ui::i18n`, `ui::gpu` | `glutin`, `gilrs`, `minifb`, `rfd`, `ureq`, `discord-rich-presence` |
+| `audio`, `brew`, `cpu`, `input`, `loader`, `machine`, `video`, `session` | `ui::window`, `ui::atualizacao`, `ui::discord`, `ui::entrada` (`desktop`); `ui::gpu` (`gl`) |
+| `ui::settings`, `ui::library`, `ui::acervo`, `ui::saves`, `ui::i18n` | `glutin`, `gilrs`, `minifb`, `rfd`, `ureq`, `discord-rich-presence` |
 
 A segunda linha da primeira coluna é o ponto: a biblioteca de jogos, os ajustes e os saves são
 lidos **pelo núcleo** — o `machine`, o `loader` e a `session` falam com eles —, então não são
