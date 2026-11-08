@@ -14,4 +14,4 @@ The chosen approach is **HLE**. The game only talks to BREW vtables; we implemen
 
 ## Emulator components
 
-The implementation and the reasons behind its decisions are documented in the [implementation guide](IMPLEMENTATION.md).
+The implementation and the reasons behind its decisions are documented in the [implementation guide](../implementacao/README.md) (Portuguese).

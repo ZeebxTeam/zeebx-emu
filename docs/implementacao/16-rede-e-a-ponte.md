@@ -119,9 +119,8 @@ mudança ele cria 248 fontes e lê delas — ainda não desenha, que é outro as
 ## O servidor de estudo
 
 Fica em `zeeboids-server/`, fora deste repositório e com git próprio, porque não é parte do
-emulador. O protocolo levantado do binário está em
-[`zeeboids-server/docs/protocolo.md`](../../zeeboids-server/docs/protocolo.md) — é lá que vai
-tudo o que se documenta sobre a comunicação do Zeeboids.
+emulador. O protocolo levantado do binário está em `zeeboids-server/docs/protocolo.md`, nesse
+outro repositório — é lá que vai tudo o que se documenta sobre a comunicação do Zeeboids.
 
 Um erro que vale registrar porque não foi do emulador: a resposta de importação precisa trazer
 `lid;id;zid`. Sem os três, o jogo lia o IMEI como se fosse o `lid`, criava um Zeeboid de id 0

@@ -6,7 +6,7 @@
 - Site/blog: <https://tuxality.net/projects/infuse_zeebo_emulator>
 - Architecture as described by its author:
   - **HLE**: BREW subsystem reimplemented from scratch through clean-room reverse engineering;
-  - CPU: **[dynarmic](https://github.com/merryhime/dynarmic)** (ARM JIT);
+  - CPU: **[dynarmic](https://github.com/lioncash/dynarmic)** (ARM JIT);
   - Graphics: **OpenGL ES 1.x**;
   - Audio: basic MIDI, PCM/ADPCM, MP3, and multiple-stream mixing with host-independent resampling.
 

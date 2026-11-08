@@ -2,7 +2,7 @@
 
 Levantamento do que existe hoje, publicamente, sobre o Zeebo (TecToy, 2009) e sobre a
 plataforma Qualcomm BREW / MSM7201A que ele usa — com o material relevante espelhado
-localmente em [`vendor/`](vendor/).
+localmente em `docs/vendor/` (só na máquina local; não versionado).
 
 ## Conclusão curta
 
