@@ -244,10 +244,12 @@ impl Emulator {
                     // The search gets whatever is left of the row: it is the field that helps
                     // most in a large collection and least in a small one.
                     let width = ui.available_width().min(280.0);
+                    // Before the field: it borrows `self.search` mutably until it is added.
+                    let hint = format!("🔎  {}", self.tr("nav.search"));
                     let field = egui::TextEdit::singleline(&mut self.search)
                         .desired_width(width)
                         .margin(egui::Margin::symmetric(12, 10))
-                        .hint_text("🔎  Search");
+                        .hint_text(hint);
                     if ui.add(field).changed() {
                         search_changed = true;
                     }
@@ -287,14 +289,17 @@ impl Emulator {
             if no_access {
                 ui.horizontal(|ui| {
                     if ui
-                        .add_sized([200.0, TARGET_SIZE], egui::Button::new("Grant access"))
+                        .add_sized(
+                            [200.0, TARGET_SIZE],
+                            egui::Button::new(self.tr("library.grant_access")),
+                        )
                         .clicked()
                     {
                         system::request_file_access(&self.app);
                     }
                     ui.colored_label(
                         ui.visuals().warn_fg_color,
-                        "Zeebx can only see its own folder.",
+                        self.tr("library.no_access"),
                     );
                 });
             }

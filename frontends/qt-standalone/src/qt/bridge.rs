@@ -552,7 +552,9 @@ impl qobject::GameScreen {
             let result = emu_core.restart();
             let state = match &result {
                 Ok(()) => emu_core.state(),
-                Err(error) => format!("did not restart: {error}"),
+                Err(error) => emu_core
+                    .catalog
+                    .format("play.restart_failed", &[("reason", &error.to_string())]),
             };
             (result, state)
         });

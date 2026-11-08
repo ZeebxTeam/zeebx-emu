@@ -44,7 +44,8 @@ impl Emulator {
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 let width = (ui.available_width() - 24.0) / 2.0;
-                let cancel = ui.add_sized([width, 56.0], egui::Button::new("Cancel"));
+                let cancel =
+                    ui.add_sized([width, 56.0], egui::Button::new(self.tr("common.cancel")));
                 if cancel.clicked() {
                     self.location = View::Settings;
                 }
@@ -55,9 +56,11 @@ impl Emulator {
                     cancel.request_focus();
                 }
                 let label = match modules {
-                    0 => "Use this folder (empty)".to_string(),
-                    1 => "Use this folder (1 game)".to_string(),
-                    n => format!("Use this folder ({n} games)"),
+                    0 => self.tr("selector.use_folder.empty").to_string(),
+                    1 => self.tr("selector.use_folder.one").to_string(),
+                    n => self
+                        .catalog
+                        .format("selector.use_folder.many", &[("count", &n.to_string())]),
                 };
                 if ui
                     .add_sized([width, 56.0], egui::Button::new(label))
@@ -109,8 +112,10 @@ impl Emulator {
 
         egui::TopBottomPanel::bottom("acoes").show(ctx, |ui| {
             ui.add_space(8.0);
-            let cancel =
-                ui.add_sized([ui.available_width(), 56.0], egui::Button::new("Cancel"));
+            let cancel = ui.add_sized(
+                [ui.available_width(), 56.0],
+                egui::Button::new(self.tr("common.cancel")),
+            );
             if cancel.clicked() {
                 self.location = View::Settings;
             }
@@ -166,10 +171,10 @@ impl Emulator {
             // app's folder is the only one that needs no permission.
             let mut dest = None;
             ui.horizontal(|ui| {
-                if ui.button("Storage").clicked() {
+                if ui.button(self.tr("selector.storage")).clicked() {
                     dest = Some(PathBuf::from("/sdcard"));
                 }
-                if ui.button("App folder").clicked() {
+                if ui.button(self.tr("selector.app_folder")).clicked() {
                     dest = Some(self.own_dir.clone());
                 }
             });
@@ -178,9 +183,9 @@ impl Emulator {
             if let Some(error) = unreadable {
                 ui.colored_label(
                     ui.visuals().error_fg_color,
-                    format!("Could not read: {error}"),
+                    self.catalog.format("selector.unreadable", &[("reason", error)]),
                 );
-                ui.label("In Settings › Apps › Zeebx, grant \"access to all files\".");
+                ui.label(self.tr("selector.unreadable.hint"));
             }
 
             egui::ScrollArea::vertical().show(ui, |ui| {

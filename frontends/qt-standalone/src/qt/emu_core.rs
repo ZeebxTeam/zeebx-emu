@@ -1230,7 +1230,9 @@ impl Core {
         if let Some(path) = next {
             tick.state = Some(match self.open(&path) {
                 Ok(()) => self.state(),
-                Err(error) => format!("did not open: {error}"),
+                Err(error) => {
+                    self.catalog.format("play.open_failed", &[("reason", &error.to_string())])
+                }
             });
             if let Some(running_game) = self.running_game.as_mut() {
                 running_game.opened_by_z_wheel |= via_z_wheel;

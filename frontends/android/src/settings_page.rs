@@ -144,8 +144,10 @@ impl Emulator {
             .resizable(false)
             .show(ctx, |ui| {
                 ui.add_space(10.0);
-                let back =
-                    ui.add_sized([ui.available_width(), TARGET_SIZE], egui::Button::new("◀  Back"));
+                let back = ui.add_sized(
+                    [ui.available_width(), TARGET_SIZE],
+                    egui::Button::new(format!("◀  {}", self.tr("common.back"))),
+                );
                 if back.clicked() {
                     self.location = View::Library;
                 }
@@ -458,8 +460,11 @@ impl Emulator {
                 ui.add_space(14.0);
                 ui.label(
                     egui::RichText::new(format!(
-                        "↑  {} must be on for the options below.",
-                        catalog.get("graphics.gpu_rasterizer")
+                        "↑  {}",
+                        catalog.format(
+                            "graphics.gpu_rasterizer.required",
+                            &[("name", catalog.get("graphics.gpu_rasterizer"))],
+                        )
                     ))
                     .small()
                     .color(ui.visuals().warn_fg_color),
@@ -760,7 +765,7 @@ impl Emulator {
         );
         // The panel's rows only make sense with the panel turned on.
         ui.add_enabled_ui(debug.overlay, |ui| {
-            widgets::section(ui, "What to show");
+            widgets::section(ui, catalog.get("debug.show"));
             for (key_id, label, value) in [
                 ("speed", "debug.speed", &mut debug.speed),
                 ("clock", "debug.clock", &mut debug.clock),
