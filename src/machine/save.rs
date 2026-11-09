@@ -137,6 +137,12 @@ impl<C: CpuBackend> Machine<C> {
     }
 
     pub fn save_state(&self) -> Vec<u8> {
+        self.save_state_with(|_| {})
+    }
+
+    /// [`Machine::save_state`] with sections from whoever is above the machine, which its restore
+    /// ignores.
+    pub fn save_state_with(&self, extras: impl FnOnce(&mut Sections)) -> Vec<u8> {
         let mut sections = Sections::create();
         sections.put_u32s(
             "cpu.regs",
@@ -188,6 +194,7 @@ impl<C: CpuBackend> Machine<C> {
         self.objects.save(&mut sections);
         self.surfaces.save_with_prefix("surfaces", &mut sections);
         self.internal_heap.save_with_prefix("internal", &mut sections);
+        extras(&mut sections);
         sections.close()
     }
 
