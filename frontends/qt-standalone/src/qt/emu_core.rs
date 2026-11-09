@@ -89,6 +89,8 @@ pub struct Tick {
     /// The lines of the metrics box in the corner, the first one with the frames per second; empty
     /// with the option off. See [`Core::metrics`].
     pub metrics: Vec<String>,
+    /// This tick's RetroAchievements notices: the recognized game, an achievement.
+    pub achievements: Vec<super::achievements::AchievementNotice>,
 }
 
 /// What to say about a screenshot that finished, already translated.
@@ -222,6 +224,8 @@ pub struct Core {
     /// The save state shortcuts' slot, zero-based. It carries over from one game to the next, as
     /// in PCSX2: someone who keeps everything in 3 does not want to pick 3 again for every game.
     slot: usize,
+    /// The RetroAchievements achievements. See [`super::achievements`].
+    pub achievements: super::achievements::InCore,
 }
 
 impl Core {
@@ -274,6 +278,7 @@ impl Core {
             key_events: HashSet::new(),
             save_results: mpsc::channel(),
             slot: 0,
+            achievements: Default::default(),
         };
         emu_core.search_again();
         // At startup, the question to GitHub, as in egui: the answer arrives through the library's
@@ -337,6 +342,9 @@ impl Core {
         let discord = &self.settings.discord;
         self.presence
             .update(discord.active, &self.catalog, class_id, title, &discord.covers_url);
+        if self.achievements.each_frame(&mut self.settings) {
+            self.save_settings();
+        }
         if let Some(channel) = &self.update_check {
             match channel.try_recv() {
                 Ok(response) => {
@@ -794,8 +802,13 @@ impl Core {
         };
         let previous = self.running_game.as_mut();
         let with_gpu = self.gl.is_some();
-        let running_game = in_context(with_gpu, || RunningGame::open(path, opening, previous))
+        let mut running_game = in_context(with_gpu, || RunningGame::open(path, opening, previous))
             .map_err(|error| error.to_string())?;
+        // The previous one lets go of the game first: unloading afterwards would unload the new one.
+        if let Some(old) = self.running_game.as_mut() {
+            self.achievements.disable(old.session_mut());
+        }
+        self.achievements.enable(running_game.session_mut());
         // The previous one goes away here, and with the context current: its textures live in it.
         self.custom_settings = custom_settings;
         self.open_path = Some(path.to_path_buf());
@@ -806,6 +819,9 @@ impl Core {
     /// Drops the session with its context current: freeing textures with the Qt Quick context
     /// current would delete Qt Quick's.
     pub fn close(&mut self) {
+        if let Some(running_game) = self.running_game.as_mut() {
+            self.achievements.disable(running_game.session_mut());
+        }
         if self.running_game.is_some() {
             in_context(self.gl.is_some(), || self.running_game = None);
             self.custom_settings = None;
@@ -1227,6 +1243,15 @@ impl Core {
             self.report.save(running_game);
         }
         let mut tick = Tick::default();
+        if let Some(running_game) = self.running_game.as_mut() {
+            let paused = running_game.paused();
+            let (notices, changed) =
+                self.achievements.after_step(running_game.session_mut(), paused, &mut self.settings, &self.catalog);
+            tick.achievements = notices;
+            if changed {
+                self.save_settings();
+            }
+        }
         if let Some(path) = next {
             tick.state = Some(match self.open(&path) {
                 Ok(()) => self.state(),
