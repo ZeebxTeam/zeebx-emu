@@ -13,12 +13,14 @@ where it is.
 
 ## The cut
 
-What depends on a desktop window is behind `cfg(not(target_os = "android"))`:
+What depends on a desktop window is behind `#[cfg(feature = "desktop")]` in `src/ui/mod.rs`:
+`ui::updater`, `ui::discord`, `ui::host_input`, and `ui::window`. The OpenGL painter is `ui::gpu`,
+behind `#[cfg(feature = "gl")]`, and the Android frontend uses it too.
 
-| Stays on every platform | Desktop only |
+| Stays on every platform | Desktop feature (`desktop`) |
 |---|---|
-| `audio`, `brew`, `cpu`, `input`, `loader`, `machine`, `video`, `session` | `ui::window`, `ui::updater`, `ui::discord` |
-| `ui::settings`, `ui::library`, `ui::zwheel_metadata`, `ui::saves`, `ui::i18n`, `ui::gpu` | `glutin`, `gilrs`, `minifb`, `rfd`, `ureq`, `discord-rich-presence` |
+| `audio`, `brew`, `cpu`, `input`, `loader`, `machine`, `video`, `session` | `ui::window`, `ui::updater`, `ui::discord`, `ui::host_input` |
+| `ui::settings`, `ui::library`, `ui::zwheel_metadata`, `ui::saves`, `ui::i18n`, `ui::gpu` (`gl`) | `glutin`, `gilrs`, `minifb`, `rfd`, `ureq`, `discord-rich-presence` |
 
 The second row of the first column is the point: the game library, the settings and the saves are
 read **by the core** — `machine`, `loader` and `session` talk to them —, so they are not

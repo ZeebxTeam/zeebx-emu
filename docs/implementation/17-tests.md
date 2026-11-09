@@ -231,13 +231,13 @@ stretch of code.
 cargo run --release -p zeebx-cli -- bench <game.mod>
 
 # a game without a window, with the full report and the call summary
-cargo run --release -- run "roms/Quake.zip" --seconds=6
+cargo run --release -p zeebx-cli -- run "roms/Quake.zip" --seconds=6
 
 # only the calls of one interface
-cargo run --release -- run "roms/Quake.zip" --seconds=6 --trace=Bitmap
+cargo run --release -p zeebx-cli -- run "roms/Quake.zip" --seconds=6 --trace=Bitmap
 
 # one frame per file, to compare two neighbors
-cargo run --release -- run "roms/Quake.zip" --seconds=6 --dump-gl=frames
+cargo run --release -p zeebx-cli -- run "roms/Quake.zip" --seconds=6 --dump-gl=frames
 ```
 
 The `run` report and the scan report say the same thing, by construction: both come from the same

@@ -10,6 +10,8 @@ Este projeto existe para ajudar a preservar essas pérolas que fizeram parte da 
 
 Em desenvolvimento. Hoje 56 dos 62 títulos passam do carregamento e desenham.
 
+![Screenshot](docs/screenshot.png)
+
 ## Links úteis
 
 [Servidor Discord: https://discord.gg/D96HjsKTPa](https://discord.gg/D96HjsKTPa)
@@ -49,10 +51,13 @@ frontends/headless/
 frontends/libretro/
 frontends/cli/
 frontends/qt-standalone/
+frontends/switch/
+frontends/vita/
+frontends/vita-standalone/
 
-E também ajuste o [.github/workflows/release.yml](release.yml) para apontar um alvo de build durante nosso CI, assim garante que o target seja fornecido junto durante a criação da release!
+E também ajuste o [.github/workflows/release.yml](.github/workflows/release.yml) para apontar um alvo de build durante nosso CI, assim garante que o target seja fornecido junto durante a criação da release!
 
-Esses são detalhes sugeridos apenas para manter a organização do nosso repositório!
+As mesmas notas estão em [CONTRIBUTING.md](CONTRIBUTING.md). Esses são detalhes sugeridos apenas para manter a organização do nosso repositório!
 
 ## Como funciona
 
@@ -119,7 +124,7 @@ cargo build --release -p zeebx-libretro
 ```
 
 O core da PlayStation Vita é uma biblioteca estática, no mesmo molde do Switch. O script e o
-que o RetroArch espera dele estão em [`frontends/vita/compilar.sh`](frontends/vita/build.sh).
+que o RetroArch espera dele estão em [`frontends/vita/build.sh`](frontends/vita/build.sh).
 
 O aplicativo que abre sozinho na Vita, sem RetroArch, é o VPK de
 [`frontends/vita-standalone`](frontends/vita-standalone/README.md).
@@ -127,7 +132,7 @@ O aplicativo que abre sozinho na Vita, sem RetroArch, é o VPK de
 Para conferir dependências antes do build standalone:
 
 ```bash
-python3 ferramentas/prepara_build.py
+python3 tools/check_build_deps.py
 ```
 
 ### Instaladores e releases
@@ -166,6 +171,7 @@ São dois formatos em cada um dos quatro sistemas, e o nome do arquivo diz qual 
 | `zeebx-android-arm64-v8a.apk` | o aplicativo de Android |
 | `zeebx-ios-simulator.zip` | o simulador e o leia-me |
 | `zeebx-ios.zip` | o IPA do AltStore clássico e o leia-me |
+| `zeebx-vita.zip` | o aplicativo da Vita, um VPK, sem RetroArch |
 
 No macOS, a primeira abertura avisa que a Apple não pôde verificar o Zeebx: esta build é assinada
 ad-hoc, e não pela Apple. Ela se libera em Ajustes do Sistema > Privacidade e Segurança > "Abrir
@@ -176,28 +182,29 @@ use o `macos-arm64`: o `macos-x86_64` roda pelo Rosetta, e foi nele que os jogos
 A APK sai assinada com a **chave de depuração**, que é a que o Gradle gera sozinho: serve para
 instalar de lado (`adb install`), não para a Play Store — aquela pede a chave de publicação, que
 não pode morar num repositório público. O mesmo
-[`compilar.sh`](frontends/android/build.sh) que se usa na máquina é o que roda no CI; ele
+[`build.sh`](frontends/android/build.sh) que se usa na máquina é o que roda no CI; ele
 aceita o `ANDROID_SDK_ROOT` que os runners exportam e o `gradle` que estiver no caminho.
 
 O iOS sai de um Mac com Xcode. O núcleo vira uma biblioteca estática e o Xcode monta o `.app`:
 
 ```bash
-./frontends/ios/compilar.sh --app
+./frontends/ios/build.sh --app
 ```
 
-O simulador é arm64. No aparelho o mesmo script com `--app-aparelho` pede um time de
+O simulador é arm64. No aparelho o mesmo script com `--app-device` pede um time de
 desenvolvimento (`DEVELOPMENT_TEAM`) para instalar direto; sem ele, o `.app` sai sem assinatura
 e o `--pacote` o coloca, como `zeebx-ios.ipa`, dentro de `zeebx-ios.zip`, para o AltStore clássico
 assinar com um Apple ID. Cada zip traz o seu `LEIA-ME.txt`: o do simulador e o do aparelho. O iOS não deixa o
 processo mapear código executável, então nesse alvo o núcleo é o interpretador, não o Dynarmic.
-Ver [`frontends/ios/LEIAME.md`](frontends/ios/README.md).
+Ver [`frontends/ios/README.md`](frontends/ios/README.md).
 
 ## Usando
 
-Sem argumentos, abre a interface. Pela linha de comando:
+A interface Qt é o `zeebx-qt`: é ela que abre a janela. A linha de comando é o `zeebx`
+(`frontends/cli`). Sem subcomando, ele imprime o uso e sai; não abre a interface.
 
 ```bash
-cargo run --release -- run "roms/Quake.zip" --window
+cargo run --release -p zeebx-cli -- run "roms/Quake.zip" --window
 ```
 
 Zips são extraídos para um cache e o `.mod` certo é escolhido sozinho. `--seconds=N` define
@@ -208,10 +215,16 @@ Os controles no teclado:
 | Tecla | Controle do Zeebo |
 |---|---|
 | Setas | direcional |
-| Z, X ou Espaço, C, V | botões 1, 2, 3 e 4 |
+| Z | botão 1 |
+| X ou Espaço | botão 2 |
+| C | botão 3 |
+| V | botão 4 |
 | Q, W | ZL e ZR |
-| F, G | analógico esquerdo, direito |
+| F | clique do analógico esquerdo (L3) |
+| G | clique do analógico direito (R3) |
 | H, Backspace, Enter | HOME |
+
+F e G clicam os analógicos (L3 e R3). Elas não os movem. O teclado padrão não tem eixo de analógico.
 
 O `run` informa onde o jogo parou, o que ele pediu e não temos, e o log que os próprios
 desenvolvedores deixaram no binário — por `DBGPRINTF` e por semihosting do ARM. Esse relatório é
@@ -235,18 +248,19 @@ português.
 
 Ele abre uma janela só com o jogo — ou nenhuma, mandando os quadros por um cano para o seu
 programa pintar. Gráficos, áudio e controles saem dos mesmos campos que a interface grava, só
-que em INI. Ver [`frontends/headless/LEIAME.md`](frontends/headless/README.md).
+que em INI. Ver [`frontends/headless/README.md`](frontends/headless/README.md).
 
 ## Core Libretro e muOS
 
 O core Libretro é empacotado com o `.info` e pode ser instalado no RetroArch. O cartão muOS usa o
 core AArch64 em `opt/muos/share/core` e o banco MIDI é opcional. A instalação documentada está em
-[`docs/libretro/LIBRETRO_PLAN.md`](docs/pt-BR/libretro/LIBRETRO_PLAN.md). A playlist, o DAT e as capas de
-Zeebo são gerados pelas ferramentas da pasta `ferramentas/`.
+[`docs/pt-BR/libretro/LIBRETRO_PLAN.md`](docs/pt-BR/libretro/LIBRETRO_PLAN.md). A playlist, o DAT e as capas de
+Zeebo são gerados pelas ferramentas da pasta `tools/`.
 
 ## Plataformas
 
-Linux, Windows e macOS. Mobile está nos planos, mas o foco agora é no desktop!
+Linux, Windows e macOS são o foco da interface de desktop. Android e iOS já saem na release, e a
+PlayStation Vita tem aplicativo próprio.
 
 ## Jogos
 
@@ -260,6 +274,7 @@ O repositório não distribui jogos. Coloque os seus em `roms/`, que é ignorada
 - [docs/implementacao/](docs/pt-BR/implementacao/README.md) — cada subsistema, com as decisões e o
   porquê de cada uma
 - [TODO.md](TODO.md) — o diário de bordo: o que está pronto, o que falta e o que já custou caro
+- [CONTRIBUTING.md](CONTRIBUTING.md) — pull requests, a branch `development` e frontends novos
 
 ## Licença
 

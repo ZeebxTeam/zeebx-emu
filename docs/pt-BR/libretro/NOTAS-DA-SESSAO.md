@@ -534,8 +534,8 @@ ZEEBX_ROM_TECLAS="4000:x=-128,10000:b1,11000:" …
 ZEEBX_ROM_PERFIL=1 …
 
 # os dois rasterizadores, lado a lado, sem janela
-cargo run --release -- sessao "roms/Crash.zip" --seconds=3 --dump=software.bmp
-cargo run --release -- sessao "roms/Crash.zip" --seconds=3 --placa --dump=placa.bmp
+cargo run --release -p zeebx-cli -- session "roms/Crash.zip" --seconds=3 --dump=software.bmp
+cargo run --release -p zeebx-cli -- session "roms/Crash.zip" --seconds=3 --gpu --dump=placa.bmp
 
 # o core pela própria ABI, com uma ROM de verdade
 ZEEBX_CORE_ROM="roms/Z-Wheel.zip" cargo test -p zeebx-libretro -- --nocapture

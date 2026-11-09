@@ -228,13 +228,13 @@ errado do código.
 cargo run --release -p zeebx-cli -- bench <jogo.mod>
 
 # um jogo sem janela, com o relatório completo e o resumo de chamadas
-cargo run --release -- run "roms/Quake.zip" --seconds=6
+cargo run --release -p zeebx-cli -- run "roms/Quake.zip" --seconds=6
 
 # só as chamadas de uma interface
-cargo run --release -- run "roms/Quake.zip" --seconds=6 --trace=Bitmap
+cargo run --release -p zeebx-cli -- run "roms/Quake.zip" --seconds=6 --trace=Bitmap
 
 # um quadro por arquivo, para comparar dois vizinhos
-cargo run --release -- run "roms/Quake.zip" --seconds=6 --dump-gl=quadros
+cargo run --release -p zeebx-cli -- run "roms/Quake.zip" --seconds=6 --dump-gl=quadros
 ```
 
 O relatório do `run` e o da varredura dizem a mesma coisa, e por construção: os dois saem dos

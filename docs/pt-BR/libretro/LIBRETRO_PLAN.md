@@ -2117,8 +2117,8 @@ Enquanto o encanamento não existe, dá para **ver** os dois rasterizadores lado
 comando, sem interface — os mesmos dois comandos, mudando só a flag da placa:
 
 ```bash
-cargo run --release -- sessao "roms/Crash.zip" --seconds=3 --dump=software.bmp
-cargo run --release -- sessao "roms/Crash.zip" --seconds=3 --placa --dump=placa.bmp
+cargo run --release -p zeebx-cli -- session "roms/Crash.zip" --seconds=3 --dump=software.bmp
+cargo run --release -p zeebx-cli -- session "roms/Crash.zip" --seconds=3 --gpu --dump=placa.bmp
 ```
 
 Os dois `.bmp` são o mesmo instante virtual do mesmo jogo, um desenhado no processador e outro na

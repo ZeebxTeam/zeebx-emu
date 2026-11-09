@@ -1,8 +1,8 @@
 # Zeebx — research documentation for a Zeebo emulator
 
 A survey of what exists today, publicly, about the Zeebo (TecToy, 2009) and about the Qualcomm
-BREW / MSM7201A platform it uses — with the relevant material mirrored locally in
-[`vendor/`](vendor/).
+BREW / MSM7201A platform it uses — with the relevant material mirrored locally in `docs/vendor/`.
+That directory is local only and is not versioned.
 
 The original Portuguese versions of these documents are archived in [`pt-BR/`](pt-BR/).
 

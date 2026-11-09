@@ -52,7 +52,7 @@ Estas medições ficam no repositório justamente para não precisar adivinhar:
 cargo run --release -p zeebx-cli -- bench <jogo.mod>
 
 # um jogo sem janela, com o resumo de chamadas de API no fim
-cargo run --release -- run caminho/para/jogo.mod --seconds=6 --trace
+cargo run --release -p zeebx-cli -- run caminho/para/jogo.mod --seconds=6 --trace
 
 # a biblioteca inteira, só até o applet existir
 ZEEBX_ROM=roms cargo test --release varredura::tests::a_rom_indicada_abre -- --nocapture

@@ -9,7 +9,7 @@
 - Architecture as stated by the author:
   - **HLE**: a reimplementation of the BREW subsystem written from scratch, by clean reverse
     engineering;
-  - CPU: **[dynarmic](https://github.com/merryhime/dynarmic)** (ARM JIT);
+  - CPU: **[dynarmic](https://github.com/lioncash/dynarmic)** (ARM JIT);
   - Graphics: **OpenGL ES 1.x**;
   - Audio: basic MIDI, PCM/ADPCM, MP3, mixing of multiple streams with host-independent
     resampling; waveOut (Windows), Core Audio (macOS), PulseAudio (Linux), Media Kit (Haiku)

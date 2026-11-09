@@ -4,7 +4,7 @@
 
 Levantamento do que existe hoje, publicamente, sobre o Zeebo (TecToy, 2009) e sobre a
 plataforma Qualcomm BREW / MSM7201A que ele usa — com o material relevante espelhado
-localmente em [`vendor/`](../vendor/).
+localmente em `docs/vendor/` (só na máquina local; não versionado).
 
 ## Conclusão curta
 
@@ -19,7 +19,7 @@ referência de OEM API do BREW, dumps completos da NAND (bootloaders + AMSS + AP
 dumps de RAM/registradores e pesquisa de vtables das interfaces BREW na firmware real.
 
 Esta série `0x` é **pesquisa**: o que se sabe do console e da plataforma. Como o emulador está
-escrito está em [`implementacao/`](../implementation/).
+escrito está em [`implementacao/`](implementacao/).
 
 ## Índice
 
@@ -32,7 +32,7 @@ escrito está em [`implementacao/`](../implementation/).
 | [05-estrategia-de-emulacao.md](05-estrategia-de-emulacao.md) | Arquitetura proposta, fases, riscos, decisões técnicas |
 | [06-fontes.md](06-fontes.md) | Todas as fontes com link |
 | [07-inventario-vendor.md](07-inventario-vendor.md) | O que foi baixado e onde está |
-| [implementacao/](../implementation/) | **Como o emulador é feito por dentro** — módulo a módulo, com as decisões e o porquê de cada uma |
+| [implementacao/](implementacao/) | **Como o emulador é feito por dentro** — módulo a módulo, com as decisões e o porquê de cada uma |
 
 ## Material de teste
 

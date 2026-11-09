@@ -14,7 +14,7 @@
 - [Infuse — página do projeto](https://tuxality.net/projects/infuse_zeebo_emulator)
 - [Infuse A1 development preview (19/05/2024)](https://tuxality.net/)
 - [Tuxality/ggzbrewtools](https://github.com/Tuxality/ggzbrewtools) (aberto)
-- [dynarmic — JIT ARM usado pelo Infuse](https://github.com/merryhime/dynarmic)
+- [dynarmic — JIT ARM usado pelo Infuse](https://github.com/lioncash/dynarmic)
 
 ## Pesquisa aberta (tripleoxygen)
 - [openzeebo](https://github.com/tripleoxygen/openzeebo)
