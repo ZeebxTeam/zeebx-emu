@@ -2,6 +2,8 @@
 //!
 //! The engine is shared by the desktop, Libretro, headless, Android, iOS and the Vita app.
 
+#[cfg(feature = "achievements")]
+pub mod achievements;
 pub mod audio;
 pub mod brew;
 pub mod config;
