@@ -56,6 +56,7 @@ Text {
         "search": 0xe151,
         "settings": 0xe154,
         "square": 0xe167,
+        "trophy": 0xe373,
         "undo-2": 0xe2a1,
         "volume-2": 0xe1ab,
         "x": 0xe1b2,

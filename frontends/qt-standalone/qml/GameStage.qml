@@ -155,6 +155,15 @@ Item {
         onActiveFocusChanged: if (!activeFocus) release()
         // A game that exits on its own with no Z-Wheel to return to closes, as in egui.
         onClosed: stage.closeRequested()
+        onAchievement: (title, text, icon) => achievementToast.show(title, text, icon)
+    }
+
+    AchievementToast {
+        id: achievementToast
+
+        anchors.left: screen.left
+        anchors.bottom: screen.bottom
+        anchors.margins: 16
     }
 
     // The symbol in the middle of the screen, as in a video player: ⏸ while the game is paused; ▶

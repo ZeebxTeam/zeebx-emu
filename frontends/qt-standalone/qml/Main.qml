@@ -637,7 +637,14 @@ ApplicationWindow {
             AppMenuItem { iconName: "monitor"; text: tr("settings.tab.graphics"); onTriggered: settings.open(3) }
             AppMenuItem { iconName: "gauge"; text: tr("settings.tab.speed"); onTriggered: settings.open(4) }
             AppMenuItem { iconName: "volume-2"; text: tr("settings.tab.audio"); onTriggered: settings.open(5) }
-            AppMenuItem { iconName: "bug"; text: tr("settings.tab.debug"); onTriggered: settings.open(6) }
+            AppMenuItem {
+                iconName: "trophy"
+                text: tr("settings.tab.achievements")
+                visible: Achievements.available()
+                height: visible ? implicitHeight : 0
+                onTriggered: settings.open(6)
+            }
+            AppMenuItem { iconName: "bug"; text: tr("settings.tab.debug"); onTriggered: settings.open(7) }
             MenuSeparator {}
             AppMenuItem {
                 text: tr("menu.settings.game")
