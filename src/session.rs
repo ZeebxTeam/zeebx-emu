@@ -168,6 +168,9 @@ pub struct Session {
     sample: Sample,
     /// The recent samples, for the graph. Newest at the end.
     history: std::collections::VecDeque<Sample>,
+    /// The game's hash and the RetroAchievements client. See [`Session::enable_achievements`].
+    #[cfg(feature = "achievements")]
+    pub(crate) achievements: crate::achievements::SessionAchievements,
 }
 
 /// The draw skip as the session decides it: once per frame, at its start.
@@ -610,6 +613,10 @@ impl Session {
             "{} bytes read; parsing the module",
             bytes.len()
         );
+        // From the extracted `.mod`, and not from the package: a `.zip`, a `.7z` and the loose `.mod`
+        // give the same hash.
+        #[cfg(feature = "achievements")]
+        let achievements_hash = crate::achievements::game_hash(path);
         let image = ModImage::parse(bytes).map_err(|e| StartError::NotAModule(e.to_string()))?;
         let extensions = extensions_of(path);
         let module = loader::load_with(&image, &extensions)
@@ -758,6 +765,11 @@ impl Session {
             window,
             sample: Sample::default(),
             history: std::collections::VecDeque::new(),
+            #[cfg(feature = "achievements")]
+            achievements: crate::achievements::SessionAchievements {
+                hash: achievements_hash,
+                ..Default::default()
+            },
         })
     }
 
@@ -1168,6 +1180,8 @@ impl Session {
         self.machine.begin_pass();
         let step = self.advance_once_inner();
         self.machine.end_pass();
+        #[cfg(feature = "achievements")]
+        self.track_achievements();
         step
     }
 
@@ -1611,7 +1625,13 @@ impl Session {
     }
 
     /// Saves the machine state, in the versioned format of [`crate::save_state`].
+    /// With the achievements on, their hit counters go along.
     pub fn save_state(&self) -> Vec<u8> {
+        #[cfg(feature = "achievements")]
+        if let Some(client) = &self.achievements.client {
+            let progress = client.borrow_mut().progress();
+            return self.machine.save_state_with(|sections| sections.put(ACHIEVEMENTS_SECTION, progress));
+        }
         self.machine.save_state()
     }
 
@@ -1644,6 +1664,21 @@ impl Session {
         // The buffer swap counter came back along with the machine: the stored skip decision is
         // for a frame that, for it, has not happened yet.
         self.skip.decided_at = None;
+        // The frame count re-anchors; a state without the section resets the counters.
+        #[cfg(feature = "achievements")]
+        {
+            self.achievements.last_frame = None;
+            if let Some(client) = &self.achievements.client {
+                let progress = crate::save_state::Reader::open(file)
+                    .ok()
+                    .and_then(|reader| reader.section(ACHIEVEMENTS_SECTION))
+                    .unwrap_or_default();
+                let mut client = client.borrow_mut();
+                if !client.restore_progress(progress) {
+                    client.restore_progress(&[]);
+                }
+            }
+        }
         Ok(())
     }
 
@@ -2072,6 +2107,66 @@ impl Session {
     }
 }
 
+#[cfg(feature = "achievements")]
+const ACHIEVEMENTS_SECTION: &str = "achievements";
+
+#[cfg(feature = "achievements")]
+struct MachineMemory<'a>(&'a Machine<SessionCpu>);
+
+#[cfg(feature = "achievements")]
+impl crate::achievements::Memory for MachineMemory<'_> {
+    fn read(&self, address: u32, dest: &mut [u8]) -> bool {
+        crate::cpu::CpuBackend::read_mem(self.0.cpu(), address, dest).is_ok()
+    }
+}
+
+#[cfg(feature = "achievements")]
+impl Session {
+    /// Lends the client to this session and has it load the game by its hash.
+    pub fn enable_achievements(&mut self, client: crate::achievements::Shared) {
+        let Some(hash) = self.achievements.hash.clone() else {
+            return;
+        };
+        client.borrow_mut().load_game(&hash);
+        self.achievements.client = Some(client);
+        self.achievements.last_frame = None;
+    }
+
+    /// Gives the client back and unloads the game.
+    pub fn disable_achievements(&mut self) {
+        if let Some(client) = self.achievements.client.take() {
+            client.borrow_mut().unload_game();
+        }
+    }
+
+    /// With the game paused: the requests move along, without evaluating a frame.
+    pub fn idle_achievements(&mut self) {
+        if let Some(client) = &self.achievements.client {
+            client.borrow_mut().idle(Some(&MachineMemory(&self.machine)));
+        }
+    }
+
+    /// Evaluates the achievements of each 60 Hz frame the virtual clock crossed in this pass: by the
+    /// clock, and not by drawing, frame skip and fast-forward don't change the count. The cap of 60
+    /// is for an anomalous jump of the clock.
+    pub(crate) fn track_achievements(&mut self) {
+        let Some(client) = self.achievements.client.clone() else {
+            return;
+        };
+        let frame = self.machine.clock_us() * 60 / 1_000_000;
+        let previous = *self.achievements.last_frame.get_or_insert(frame);
+        if frame <= previous {
+            return;
+        }
+        self.achievements.last_frame = Some(frame);
+        let memory = MachineMemory(&self.machine);
+        let mut client = client.borrow_mut();
+        for _ in 0..(frame - previous).min(60) {
+            client.frame(&memory);
+        }
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -2129,6 +2224,8 @@ pub(crate) mod tests {
             window,
             sample: Sample::default(),
             history: std::collections::VecDeque::new(),
+            #[cfg(feature = "achievements")]
+            achievements: Default::default(),
         }
     }
 
