@@ -8,6 +8,7 @@ members = [
     "frontends/headless",
     "frontends/ios",
     "frontends/vita-standalone",
+    "rcheevos-sys",
 ]
 resolver = "3"
 
@@ -80,6 +81,10 @@ gpu = ["gl", "dep:glutin", "dep:raw-window-handle"]
 # also uses it, and it ships in a zip nobody installs. It brings in `reqwest`, which must not
 # reach the Libretro core.
 atualizador = ["desktop", "dep:cargo-packager-updater"]
+# RetroAchievements, through the `rcheevos-sys/rcheevos` submodule. **Off in releases** until RA
+# accepts the console. Left out of the Libretro core, where RetroArch is the one that integrates
+# rcheevos.
+achievements = ["dep:rcheevos-sys", "dep:ureq"]
 # The binary is the desktop interface: without the feature it isn't even built.
 [dependencies]
 # Interface types shared by the desktop and the Android frontend; doesn't open a window by itself.
@@ -106,6 +111,7 @@ serde_json = "1.0.151"
 # The HTTP client of the update screen. Only the desktop calls it: the core has no such screen,
 # and the `ring` that `ureq` pulls in doesn't compile for `wasm32-unknown-emscripten`.
 ureq = { version = "3", optional = true }
+rcheevos-sys = { path = "rcheevos-sys", optional = true }
 # Zip reading only: `deflate` covers what the packagers use.
 zip = { version = "9", default-features = false, features = ["deflate"] }
 # Stable identity for content/caches. Size+mtime can collide or change on an identical copy.
