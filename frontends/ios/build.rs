@@ -1,9 +1,11 @@
 fn main() {
-    // Um `staticlib` não repassa `cargo:rustc-link-lib` ao ligador do `.app`. O Xcode tem de
-    // nomear os frameworks na linha dele — ver `OTHER_LDFLAGS` do projeto. Estas linhas existem
-    // para o `cargo test` deste pacote, que liga o binário de teste no host e precisa dos mesmos
-    // frameworks que o `cpal` e o SQLite embutido pedem no Apple. Fora da Apple o rustc recusa
-    // `framework=`, e um `cargo test --workspace` no Linux ou no Windows pararia aqui.
+    // A `staticlib` does not pass `cargo:rustc-link-lib` on to the `.app` linker. Xcode has to
+    // name the frameworks on its own command line — see the project's `OTHER_LDFLAGS`. These
+    // lines exist for this package's `cargo test`, which links the test binary on the host and
+    // needs the same frameworks that `cpal` and the bundled SQLite require on Apple. Outside
+    // Apple rustc rejects `framework=`, and a `cargo test --workspace` on Linux or Windows would
+    // stop here.
+
     if std::env::var("CARGO_CFG_TARGET_VENDOR").as_deref() != Ok("apple") {
         return;
     }

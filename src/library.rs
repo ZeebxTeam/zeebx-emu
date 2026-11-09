@@ -1,9 +1,9 @@
-//! A lista de jogos que o emulador encontra numa pasta.
+//! The list of games the emulator finds in a folder.
 //!
-//! Duas disposições convivem. A do console instala cada título como
-//! `<Título>/mod/<id>/<nome>.mod`, com o `.mif` num `mif/` irmão; os exemplos do SDK deixam o
-//! `.mod` e o `.mif` lado a lado. Como as duas aparecem na prática, a varredura procura
-//! `.mod` em qualquer profundidade razoável e deduz o título de onde o arquivo está.
+//! Two layouts coexist. The console installs each title as
+//! `<Title>/mod/<id>/<name>.mod`, with the `.mif` in a sibling `mif/`; the SDK samples keep the
+//! `.mod` and the `.mif` side by side. Since both show up in practice, the scan looks for
+//! `.mod` files at any reasonable depth and infers the title from where the file is.
 
 use std::path::{Path, PathBuf};
 
@@ -14,36 +14,36 @@ use crate::video::icon::{self, Image};
 use crate::loader::miffile::MifFile;
 use crate::config;
 
-/// Extensões aceitas para uma capa deixada ao lado do jogo.
+/// Extensions accepted for a cover image placed next to the game.
 const COVER_EXTENSIONS: [&str; 4] = ["png", "jpg", "jpeg", "bmp"];
 
-/// Até onde descer a partir da pasta escolhida. Três níveis cobrem `<Título>/mod/<id>/` com
-/// folga; mais que isso só serviria para varrer o disco inteiro por engano.
+/// How deep to descend from the chosen folder. Three levels cover `<Title>/mod/<id>/` with room
+/// to spare; anything more would only serve to scan the whole disk by mistake.
 const MAX_DEPTH: usize = 4;
 
-/// Teto de jogos por varredura, para uma pasta escolhida sem querer não travar a interface.
+/// Cap on games per scan, so that a folder picked by accident does not freeze the interface.
 const MAX_GAMES: usize = 2000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Game {
-    /// Como o jogo aparece na lista.
+    /// How the game appears in the list.
     pub title: String,
-    /// O `.mod` a carregar, ou o `.zip` que o contém.
+    /// The `.mod` to load, or the `.zip` that contains it.
     pub path: PathBuf,
-    /// O ClassID do applet, lido do manifesto inclusive dentro de pacotes `.zip`.
+    /// The applet's ClassID, read from the manifest, including inside `.zip` packages.
     pub clsid: Option<u32>,
-    /// Se o caminho é um pacote que precisa ser extraído antes de rodar.
+    /// Whether the path is a package that needs to be extracted before running.
     pub packed: bool,
-    /// A imagem que representa o jogo na biblioteca. Vem de uma capa deixada ao lado do
-    /// arquivo, ou, na falta dela, do maior ícone que o `.mif` guarda.
+    /// The image that represents the game in the library. It comes from a cover placed next to
+    /// the file or, failing that, from the largest icon the `.mif` holds.
     pub art: Option<Image>,
 }
 
-/// De onde veio a informação de um título no catálogo do console.
+/// Where the information about a title in the console catalog came from.
 ///
-/// A NAND descreve o aparelho como ele saiu de fábrica; ROMs locais completam esse catálogo
-/// com títulos instalados pelo usuário, inclusive homebrews. A origem evita que uma nova
-/// varredura apague registros que extraímos da firmware.
+/// The NAND describes the device as it left the factory; local ROMs complete that catalog with
+/// titles installed by the user, homebrews included. The source keeps a new scan from erasing
+/// records we extracted from the firmware.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CatalogSource {
@@ -51,10 +51,10 @@ pub enum CatalogSource {
     Rom,
 }
 
-/// Um título que o console pode apresentar ou iniciar.
+/// A title the console can show or start.
 ///
-/// O ClassID é a chave: nomes de arquivos e de ZIPs são livres, mas é esse valor do `.mif` que
-/// `ISHELL_StartApplet` recebe e que a Z-Wheel grava nas tabelas dela.
+/// The ClassID is the key: file and ZIP names are arbitrary, but this value from the `.mif` is
+/// what `ISHELL_StartApplet` receives and what the Z-Wheel writes into its tables.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CatalogEntry {
     pub applet_class: u32,
@@ -63,7 +63,7 @@ pub struct CatalogEntry {
     pub source: CatalogSource,
 }
 
-/// Índice persistente que une o inventário da NAND às ROMs escolhidas pelo usuário.
+/// Persistent index that joins the NAND inventory with the ROMs chosen by the user.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CatalogIndex {
@@ -71,7 +71,7 @@ pub struct CatalogIndex {
 }
 
 impl CatalogIndex {
-    /// Incorpora a lista de ROMs atual sem mexer nos títulos que vieram da NAND.
+    /// Merges in the current ROM list without touching the titles that came from the NAND.
     pub fn refresh_roms(&mut self, games: &[Game]) {
         self.titles.retain(|entry| entry.source != CatalogSource::Rom);
         self.titles.extend(games.iter().filter_map(|game| {
@@ -82,8 +82,9 @@ impl CatalogIndex {
                 source: CatalogSource::Rom,
             })
         }));
-        // Dois pacotes podem anunciar o mesmo applet. Manter o primeiro, em ordem de título e
-        // caminho, torna o resultado repetível e deixa a pessoa resolver a duplicata na pasta.
+        // Two packages may announce the same applet. Keeping the first, in title and path
+        // order, makes the result repeatable and leaves the user to sort out the duplicate in
+        // the folder.
         self.titles.sort_by(|a, b| {
             a.applet_class
                 .cmp(&b.applet_class)
@@ -109,12 +110,12 @@ impl CatalogIndex {
     }
 }
 
-/// Caminho estável do catálogo, separado dos ZIPs e de seus caches de extração.
+/// Stable path of the catalog, kept apart from the ZIPs and their extraction caches.
 pub fn catalog_path() -> PathBuf {
     config::config_dir().join("catalog.json")
 }
 
-/// Atualiza e persiste os títulos encontrados na pasta configurada.
+/// Updates and persists the titles found in the configured folder.
 pub fn sync_catalog(games: &[Game]) -> std::io::Result<CatalogIndex> {
     let mut index = CatalogIndex::load_from(&catalog_path());
     index.refresh_roms(games);
@@ -122,7 +123,7 @@ pub fn sync_catalog(games: &[Game]) -> std::io::Result<CatalogIndex> {
     Ok(index)
 }
 
-/// Procura jogos em `root`, em ordem de título.
+/// Looks for games in `root`, in title order.
 pub fn scan(root: &Path) -> Vec<Game> {
     let mut found = Vec::new();
     collect(root, 0, &mut found);
@@ -131,75 +132,75 @@ pub fn scan(root: &Path) -> Vec<Game> {
     games
 }
 
-/// O caminho que abre a Z-Wheel a partir do que a pessoa apontou: o `.zip`, o `.mod` ou uma
-/// pasta que a contenha. `None` quando ali não há Z-Wheel — quem diz é o ClassID do `.mif`.
-pub fn z_wheel_em(caminho: &Path) -> Option<PathBuf> {
+/// The path that opens the Z-Wheel, given what the user pointed at: the `.zip`, the `.mod` or a
+/// folder that contains it. `None` when there is no Z-Wheel there — the `.mif`'s ClassID decides.
+pub fn z_wheel_in(path: &Path) -> Option<PathBuf> {
     let z_wheel = Some(crate::session::Z_WHEEL);
-    if caminho.is_dir() {
-        let mut achados = Vec::new();
-        collect(caminho, 0, &mut achados);
-        return achados
+    if path.is_dir() {
+        let mut found = Vec::new();
+        collect(path, 0, &mut found);
+        return found
             .into_iter()
             .filter_map(describe)
-            .find(|jogo| jogo.clsid == z_wheel)
-            .map(|jogo| jogo.path);
+            .find(|game| game.clsid == z_wheel)
+            .map(|game| game.path);
     }
-    describe(caminho.to_path_buf())
-        .filter(|jogo| jogo.clsid == z_wheel)
-        .map(|jogo| jogo.path)
+    describe(path.to_path_buf())
+        .filter(|game| game.clsid == z_wheel)
+        .map(|game| game.path)
 }
 
-/// De onde abrir a Z-Wheel: o caminho configurado vale primeiro; sem ele, uma Z-Wheel que esteja
-/// entre os jogos da pasta de ROMs serve do mesmo jeito.
+/// Where to open the Z-Wheel from: the configured path wins; without it, a Z-Wheel that is among
+/// the games in the ROM folder works just as well.
 ///
-/// É a regra que as janelas usam para atender o pedido de voltar à Z-Wheel, e por isso mora aqui,
-/// e não em cada uma delas.
-pub fn z_wheel_de(configurada: Option<&Path>, jogos: &[Game]) -> Option<PathBuf> {
-    configurada.and_then(z_wheel_em).or_else(|| {
-        jogos
+/// This is the rule the windows use to serve a request to go back to the Z-Wheel, which is why it
+/// lives here and not in each of them.
+pub fn z_wheel_for(configured: Option<&Path>, games: &[Game]) -> Option<PathBuf> {
+    configured.and_then(z_wheel_in).or_else(|| {
+        games
             .iter()
-            .find(|jogo| jogo.clsid == Some(crate::session::Z_WHEEL))
-            .map(|jogo| jogo.path.clone())
+            .find(|game| game.clsid == Some(crate::session::Z_WHEEL))
+            .map(|game| game.path.clone())
     })
 }
 
-/// Procura a Z-Wheel sem perguntar: primeiro entre os jogos da pasta de ROMs, depois ao lado
-/// dela, em `Downloads` e na pasta pessoal, em tudo que tenha "wheel" ou "tectoy" no nome.
-/// Olhar só esses nomes evita varrer o disco.
-pub fn detecta_z_wheel(roms: Option<&Path>, jogos: &[Game]) -> Option<PathBuf> {
-    if let Some(jogo) = jogos.iter().find(|jogo| jogo.clsid == Some(crate::session::Z_WHEEL)) {
-        return Some(jogo.path.clone());
+/// Looks for the Z-Wheel without asking: first among the games in the ROM folder, then next to
+/// it, in `Downloads` and in the home folder, in anything with "wheel" or "tectoy" in its name.
+/// Looking only at those names avoids scanning the disk.
+pub fn detect_z_wheel(roms: Option<&Path>, games: &[Game]) -> Option<PathBuf> {
+    if let Some(game) = games.iter().find(|game| game.clsid == Some(crate::session::Z_WHEEL)) {
+        return Some(game.path.clone());
     }
-    let casa = std::env::var_os("HOME")
+    let home = std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from);
-    let pastas = [
+    let dirs = [
         roms.map(Path::to_path_buf),
         roms.and_then(Path::parent).map(Path::to_path_buf),
-        casa.as_ref().map(|casa| casa.join("Downloads")),
-        casa,
+        home.as_ref().map(|home| home.join("Downloads")),
+        home,
     ];
-    pastas.into_iter().flatten().find_map(|pasta| {
-        let mut candidatos: Vec<PathBuf> = std::fs::read_dir(&pasta)
+    dirs.into_iter().flatten().find_map(|dir| {
+        let mut candidates: Vec<PathBuf> = std::fs::read_dir(&dir)
             .ok()?
             .flatten()
-            .map(|entrada| entrada.path())
-            .filter(|caminho| {
-                caminho.file_name().and_then(|n| n.to_str()).is_some_and(|nome| {
-                    let nome = nome.to_lowercase();
-                    nome.contains("wheel") || nome.contains("tectoy")
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name().and_then(|n| n.to_str()).is_some_and(|name| {
+                    let name = name.to_lowercase();
+                    name.contains("wheel") || name.contains("tectoy")
                 })
             })
             .collect();
-        candidatos.sort();
-        candidatos.iter().find_map(|caminho| z_wheel_em(caminho))
+        candidates.sort();
+        candidates.iter().find_map(|path| z_wheel_in(path))
     })
 }
 
-/// Transforma um arquivo encontrado em jogo. `None` para o que não é jogo — um `.zip` sem
-/// módulo dentro é só um zip.
+/// Turns a file that was found into a game. `None` for what is not a game — a `.zip` with no
+/// module inside is just a zip.
 fn describe(path: PathBuf) -> Option<Game> {
-    let packed = crate::loader::archive::embalado(&path);
+    let packed = crate::loader::archive::is_packed(&path);
     if !packed {
         return Some(Game {
             title: title_for(&path),
@@ -223,10 +224,10 @@ fn describe(path: PathBuf) -> Option<Game> {
     })
 }
 
-/// Uma imagem deixada ao lado do jogo, com o mesmo nome dele.
+/// An image placed next to the game, with the same name as the game.
 ///
-/// É a saída para quem quer uma capa de verdade: os `.mif` só guardam ícones de menu, que não
-/// passam de 65×42, e nenhuma ROM traz arte maior que isso.
+/// This is the way out for anyone who wants a real cover: the `.mif` files only hold menu icons,
+/// which are no larger than 65×42, and no ROM ships art bigger than that.
 pub fn cover(path: &Path) -> Option<Image> {
     COVER_EXTENSIONS
         .iter()
@@ -236,7 +237,7 @@ pub fn cover(path: &Path) -> Option<Image> {
         .find_map(|data| icon::decode(&data).ok())
 }
 
-/// O maior ícone do `.mif` — o que rende a melhor imagem na tela.
+/// The largest icon in the `.mif` — the one that gives the best image on screen.
 fn manifest_art(data: &[u8]) -> Option<Image> {
     let mif = MifFile::parse(data).ok()?;
     mif.images(data)
@@ -245,7 +246,7 @@ fn manifest_art(data: &[u8]) -> Option<Image> {
         .max_by_key(Image::pixels)
 }
 
-/// O conteúdo do `.mif` que acompanha um `.mod` solto no disco.
+/// The contents of the `.mif` that goes with a loose `.mod` on disk.
 fn manifest(mod_path: &Path) -> Option<Vec<u8>> {
     manifest_paths(mod_path)
         .into_iter()
@@ -259,56 +260,56 @@ fn collect(dir: &Path, depth: usize, found: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
-    // Ordenar deixa a varredura repetível: `read_dir` não promete ordem nenhuma, e uma lista
-    // que muda de posição entre duas aberturas é confusa para quem usa.
+    // Sorting makes the scan repeatable: `read_dir` promises no order at all, and a list that
+    // shuffles between two openings is confusing for the user.
     let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
     paths.sort();
     for path in paths {
         if path.is_dir() {
             collect(&path, depth + 1, found);
         } else if path.extension().and_then(|e| e.to_str()) == Some("mod")
-            || crate::loader::archive::embalado(&path)
+            || crate::loader::archive::is_packed(&path)
         {
             found.push(path);
         }
     }
 }
 
-/// O nome a mostrar para um `.mod`.
+/// The name to show for a `.mod`.
 ///
-/// No layout do console o nome do arquivo é um identificador numérico sem graça, e quem tem o
-/// nome do jogo é a pasta do título, dois níveis acima. Fora desse layout, o nome do arquivo é
-/// o que há.
-/// O id do módulo de um jogo: a pasta em que o `.mod` mora, `mod/<id>/`. É também o nome do
-/// `.mif` dele. Num pacote, sai do caminho interno, sem extrair.
-pub fn id_do_modulo(path: &Path) -> Option<String> {
-    let interno = match crate::loader::archive::embalado(path) {
+/// In the console layout the file name is a dull numeric identifier, and what holds the game's
+/// name is the title folder, two levels up. Outside that layout, the file name is all there
+/// is.
+/// A game's module id: the folder the `.mod` lives in, `mod/<id>/`. It is also the name of its
+/// `.mif`. In a package, it comes from the internal path, without extracting.
+pub fn module_id(path: &Path) -> Option<String> {
+    let internal = match crate::loader::archive::is_packed(path) {
         true => PathBuf::from(crate::loader::archive::find_module(path)?),
         false => path.to_path_buf(),
     };
-    Some(interno.parent()?.file_name()?.to_str()?.to_string())
+    Some(internal.parent()?.file_name()?.to_str()?.to_string())
 }
 
-/// O nome com que as coisas de um jogo só são guardadas, como as configurações dele (ver
-/// [`crate::ui::settings::ConfigDoJogo`]).
+/// The name under which things belonging to a single game are stored, such as its settings
+/// (see [`crate::ui::settings::GameConfig`]).
 ///
-/// O ClassID do applet, quando o manifesto diz: ele é do jogo, e não do arquivo — renomear o
-/// pacote ou mudá-lo de pasta não perde nada. Sem ele, o id do módulo, e por último o nome do
-/// arquivo. Só caracteres que valem em nome de arquivo em qualquer sistema.
-pub fn chave_do_jogo(path: &Path) -> Option<String> {
-    let chave = match applet_clsid(path) {
-        Some(classe) => format!("{classe:08x}"),
-        None => id_do_modulo(path)
+/// The applet's ClassID, when the manifest gives it: it belongs to the game, not to the file —
+/// renaming the package or moving it to another folder loses nothing. Without it, the module
+/// id, and lastly the file name. Only characters that are valid in a file name on any system.
+pub fn game_key(path: &Path) -> Option<String> {
+    let key_id = match applet_clsid(path) {
+        Some(class_id) => format!("{class_id:08x}"),
+        None => module_id(path)
             .or_else(|| Some(path.file_stem()?.to_str()?.to_string()))?,
     };
-    let limpa: String = chave
+    let clear: String = key_id
         .chars()
         .map(|c| match c.is_ascii_alphanumeric() || c == '-' || c == '_' {
             true => c,
             false => '_',
         })
         .collect();
-    (!limpa.is_empty()).then_some(limpa)
+    (!clear.is_empty()).then_some(clear)
 }
 
 pub fn title_for(mod_path: &Path) -> String {
@@ -335,42 +336,44 @@ pub fn title_for(mod_path: &Path) -> String {
     stem.to_string()
 }
 
-/// O nome de uma pasta de extração sem a impressão digital do pacote.
+/// The name of an extraction folder without the package's fingerprint.
 ///
-/// `Zeebo-Extreme-Boia-Cross-21503726-1788761080` vira `Zeebo Extreme Boia Cross`: os dois
-/// números do fim são tamanho e data do `.zip`, e os hífens tomaram o lugar dos espaços. A chave
-/// de hoje é o digest BLAKE3 do conteúdo, 64 dígitos hexadecimais
-/// (`Crash-Bandicoot-Nitro-Kart-3D-0c9aef…`), e sai do mesmo jeito.
-pub fn sem_impressao_digital(nome: &str) -> String {
-    let mut partes: Vec<&str> = nome.split('-').collect();
-    if partes.len() > 1
-        && partes
+/// `Zeebo-Extreme-Boia-Cross-21503726-1788761080` becomes `Zeebo Extreme Boia Cross`: the two
+/// trailing numbers are the `.zip`'s size and date, and the hyphens took the place of the
+/// spaces. Today's key is the BLAKE3 digest of the contents, 64 hex digits
+/// (`Crash-Bandicoot-Nitro-Kart-3D-0c9aef…`), and it is stripped the same way.
+pub fn strip_fingerprint(name: &str) -> String {
+    let mut parts: Vec<&str> = name.split('-').collect();
+    if parts.len() > 1
+        && parts
             .last()
             .is_some_and(|p| p.len() == 64 && p.bytes().all(|b| b.is_ascii_hexdigit()))
     {
-        partes.pop();
+        parts.pop();
     }
     for _ in 0..2 {
-        if partes.len() > 1 && partes.last().is_some_and(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())) {
-            partes.pop();
+        if parts.len() > 1 && parts.last().is_some_and(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())) {
+            parts.pop();
         }
     }
-    partes
+    parts
         .join(" ")
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
 }
 
-/// Procura o `.mif` do título e devolve o ClassID do applet.
+/// Looks for the title's `.mif` and returns the applet's ClassID.
 ///
-/// O layout instalado é `<titulo>/mod/<id>/<nome>.mod` com o `.mif` em `<titulo>/mif/<id>.mif`;
-/// os exemplos do SDK deixam o `.mif` ao lado do `.mod`. Cobrimos os dois casos, e mais um: há
-/// pacote que guarda o módulo numa pasta própria e o manifesto **um nível acima** dela.
+/// The installed layout is `<title>/mod/<id>/<name>.mod` with the `.mif` in
+/// `<title>/mif/<id>.mif`; the SDK samples keep the `.mif` next to the `.mod`. We cover both
+/// cases, plus one more: some packages keep the module in a folder of its own and the manifest
+/// **one level above** it.
 ///
-/// Um `.mif` que não declara applet não serve de resposta: o pacote do Action Hero 3D traz dois
-/// manifestos, e um deles declara só uma classe. Por isso a busca segue pelos candidatos até
-/// achar um que diga qual applet criar, em vez de parar no primeiro que abre.
+/// A `.mif` that declares no applet is not an answer: the Action Hero 3D package ships two
+/// manifests, and one of them declares only a class. That is why the search keeps going through
+/// the candidates until it finds one that says which applet to create, instead of stopping at the
+/// first one that opens.
 pub fn applet_clsid(mod_path: &Path) -> Option<u32> {
     manifest_paths(mod_path)
         .iter()
@@ -379,82 +382,82 @@ pub fn applet_clsid(mod_path: &Path) -> Option<u32> {
         .find_map(|mif| mif.main_applet())
 }
 
-/// Os módulos de **extensão** que acompanham um `.mod` no mesmo pacote.
+/// The **extension** modules that come with a `.mod` in the same package.
 ///
-/// Devolve, para cada um, o caminho e as classes que ele fornece. Um pacote do console pode
-/// trazer mais de um módulo, e quando traz, os que não têm applet existem para exportar classe:
-/// é assim que o Action Hero 3D recebe o `IMICRO3D` e o Kingdom Hearts, o motor 3D da
-/// Superscape. Os dois pedem uma classe que o console não tem em lugar nenhum senão ali.
+/// Returns, for each one, its path and the classes it provides. A console package may ship more
+/// than one module, and when it does, the ones without an applet exist to export a class: that is
+/// how Action Hero 3D gets `IMICRO3D` and Kingdom Hearts gets Superscape's 3D engine. Both ask
+/// for a class the console has nowhere except there.
 ///
-/// A busca começa uma pasta **acima** da do módulo e desce dois níveis, que é o que cobre as
-/// duas disposições reais: `mod/<id>/x.mod` ao lado de `mod/<outro>/y.mod`, e
-/// `<Título>/<Título>/x.mod` ao lado de `<Título>/<Título>_/y.mod`.
-pub fn extensoes(mod_path: &Path) -> Vec<(PathBuf, Vec<u32>)> {
-    let Some(raiz) = mod_path.parent().and_then(Path::parent) else {
+/// The search starts one folder **above** the module's and goes down two levels, which is what
+/// covers the two real layouts: `mod/<id>/x.mod` next to `mod/<other>/y.mod`, and
+/// `<Title>/<Title>/x.mod` next to `<Title>/<Title>_/y.mod`.
+pub fn extensions(mod_path: &Path) -> Vec<(PathBuf, Vec<u32>)> {
+    let Some(root) = mod_path.parent().and_then(Path::parent) else {
         return Vec::new();
     };
-    let mut modulos = Vec::new();
-    colhe_modulos(raiz, 2, &mut modulos);
-    modulos.sort();
-    modulos
+    let mut modules = Vec::new();
+    collect_modules(root, 2, &mut modules);
+    modules.sort();
+    modules
         .into_iter()
-        .filter(|caminho| caminho != mod_path)
-        .filter_map(|caminho| {
-            let mif = mif_da_pasta(&caminho)?;
+        .filter(|path| path != mod_path)
+        .filter_map(|path| {
+            let mif = mif_in_dir(&path)?;
             let data = std::fs::read(mif).ok()?;
-            let classes = MifFile::parse(&data).ok()?.extensao().to_vec();
-            (!classes.is_empty()).then_some((caminho, classes))
+            let classes = MifFile::parse(&data).ok()?.extension().to_vec();
+            (!classes.is_empty()).then_some((path, classes))
         })
         .collect()
 }
 
-/// Os `.mod` sob um diretório, até `profundidade` níveis.
-fn colhe_modulos(dir: &Path, profundidade: usize, achados: &mut Vec<PathBuf>) {
-    let Ok(entradas) = std::fs::read_dir(dir) else {
+/// The `.mod` files under a directory, down to `depth` levels.
+fn collect_modules(dir: &Path, depth: usize, found: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
-    for entrada in entradas.flatten() {
-        let caminho = entrada.path();
-        if caminho.is_dir() {
-            if profundidade > 0 {
-                colhe_modulos(&caminho, profundidade - 1, achados);
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if depth > 0 {
+                collect_modules(&path, depth - 1, found);
             }
-        } else if caminho.extension().and_then(|e| e.to_str()) == Some("mod") {
-            achados.push(caminho);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("mod") {
+            found.push(path);
         }
     }
 }
 
-/// O `.mif` que casa com um `.mod` pelo **nome da pasta** dele.
+/// The `.mif` that matches a `.mod` by the **name of its folder**.
 ///
-/// É a regra do BREW: um módulo instalado mora em `<nome>/` e o manifesto é `<nome>.mif`, ao
-/// lado. Ela é mais estreita que a busca do [`manifest_paths`] de propósito — aqui pareação
-/// errada não dá "manifesto não encontrado", dá **o módulo do jogo se oferecendo para atender a
-/// classe que ele próprio está pedindo**, porque os dois `.mif` da relação citam o mesmo
-/// ClassID no mesmo formato.
-fn mif_da_pasta(mod_path: &Path) -> Option<PathBuf> {
+/// This is the BREW rule: an installed module lives in `<name>/` and the manifest is
+/// `<name>.mif`, next to it. It is narrower than the [`manifest_paths`] search on purpose — here
+/// a wrong pairing does not yield "manifest not found", it yields **the game's module offering to
+/// serve the class it is itself asking for**, because the two `.mif` files involved cite the
+/// same ClassID in the same format.
+fn mif_in_dir(mod_path: &Path) -> Option<PathBuf> {
     let dir = mod_path.parent()?;
-    let nome = dir.file_name()?;
-    let candidatos = [
+    let name = dir.file_name()?;
+    let candidates = [
         mod_path.with_extension("mif"),
-        // `<Título>/<nome>/x.mod` -> `<Título>/<nome>.mif`
-        dir.parent()?.join(nome).with_extension("mif"),
-        // `<Título>/mod/<id>/x.mod` -> `<Título>/mif/<id>.mif`, a disposição do console
+        // `<Title>/<name>/x.mod` -> `<Title>/<name>.mif`
+        dir.parent()?.join(name).with_extension("mif"),
+        // `<Title>/mod/<id>/x.mod` -> `<Title>/mif/<id>.mif`, the console layout
         dir.parent()?
             .parent()?
             .join("mif")
-            .join(nome)
+            .join(name)
             .with_extension("mif"),
     ];
-    candidatos.into_iter().find(|p| p.is_file())
+    candidates.into_iter().find(|p| p.is_file())
 }
 
-/// Onde o `.mif` de um `.mod` pode estar, na ordem em que vale procurar.
+/// Where a `.mod`'s `.mif` may be, in the order worth searching.
 ///
-/// Os dois primeiros candidatos são nomes calculados; os últimos vêm de varrer as pastas, e é o
-/// que cobre pacote com disposição própria — o do Kingdom Hearts guarda o módulo em
-/// `<Título>/<Título>_/swv21brew.mod` e o manifesto em `<Título>/<Título>.mif`, e nenhuma regra
-/// de nome acha isso. Varrer é barato: são duas pastas, e só até o applet ser encontrado.
+/// The first two candidates are computed names; the last ones come from scanning the folders,
+/// which is what covers packages with a layout of their own — Kingdom Hearts keeps the module in
+/// `<Title>/<Title>_/swv21brew.mod` and the manifest in `<Title>/<Title>.mif`, and no naming
+/// rule finds that. Scanning is cheap: it is two folders, and only until the applet is found.
 fn manifest_paths(mod_path: &Path) -> Vec<PathBuf> {
     let mut candidates = vec![mod_path.with_extension("mif")];
     let dir = mod_path.parent();
@@ -465,19 +468,19 @@ fn manifest_paths(mod_path: &Path) -> Vec<PathBuf> {
         // .../mod/<id>/x.mod  ->  .../mif/<id>.mif
         candidates.push(title_dir.join("mif").join(id).with_extension("mif"));
     }
-    // A pasta do módulo primeiro, e a de cima depois: o manifesto mais perto do `.mod` é o que
-    // tem mais chance de ser dele, num pacote que traga mais de um jogo.
-    for pasta in [dir, dir.and_then(Path::parent)].into_iter().flatten() {
-        let Ok(entradas) = std::fs::read_dir(pasta) else {
+    // The module's folder first, and the one above it after: the manifest closest to the `.mod`
+    // is the most likely to be its own, in a package that ships more than one game.
+    for search_dir in [dir, dir.and_then(Path::parent)].into_iter().flatten() {
+        let Ok(entries) = std::fs::read_dir(search_dir) else {
             continue;
         };
-        let mut mifs: Vec<PathBuf> = entradas
+        let mut mifs: Vec<PathBuf> = entries
             .flatten()
-            .map(|entrada| entrada.path())
+            .map(|entry| entry.path())
             .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("mif"))
             .collect();
-        // Ordem estável: sem ela, dois manifestos na mesma pasta dariam respostas diferentes
-        // conforme o sistema de arquivos listasse.
+        // Stable order: without it, two manifests in the same folder would give different
+        // answers depending on how the file system listed them.
         mifs.sort();
         candidates.extend(mifs);
     }
@@ -485,23 +488,23 @@ fn manifest_paths(mod_path: &Path) -> Vec<PathBuf> {
     candidates
 }
 
-/// Se o título tem todas as palavras da busca, em qualquer ordem e em qualquer parte.
+/// Whether the title has every word of the search, in any order and anywhere.
 ///
-/// Maiúsculas, acentos e pontuação não contam: "cnk" acha "C.N.K.", "joao" acha "João" e
-/// "extreme boia" acha "Zeebo Extreme Bóia Cross".
-pub fn casa_com_a_busca(titulo: &str, busca: &str) -> bool {
-    let titulo = sem_acento(titulo);
-    let compacto: String = titulo.split_whitespace().collect();
-    sem_acento(busca)
+/// Case, accents and punctuation do not count: "cnk" finds "C.N.K.", "joao" finds "João" and
+/// "extreme boia" finds "Zeebo Extreme Bóia Cross".
+pub fn matches_search(title: &str, search: &str) -> bool {
+    let title = strip_accent(title);
+    let compact: String = title.split_whitespace().collect();
+    strip_accent(search)
         .split_whitespace()
-        .all(|palavra| titulo.contains(palavra) || compacto.contains(palavra))
+        .all(|word| title.contains(word) || compact.contains(word))
 }
 
-/// O texto em minúsculas, sem acento, com a pontuação trocada por espaço e as siglas com ponto
-/// juntas ("C.N.K." vira "cnk").
-fn sem_acento(texto: &str) -> String {
-    let mut saida = String::with_capacity(texto.len());
-    for c in texto.chars().flat_map(char::to_lowercase) {
+/// The text in lowercase, without accents, with punctuation replaced by spaces and dotted
+/// acronyms joined ("C.N.K." becomes "cnk").
+fn strip_accent(text: &str) -> String {
+    let mut output = String::with_capacity(text.len());
+    for c in text.chars().flat_map(char::to_lowercase) {
         let c = match c {
             'á' | 'à' | 'â' | 'ã' | 'ä' => 'a',
             'é' | 'è' | 'ê' | 'ë' => 'e',
@@ -514,49 +517,49 @@ fn sem_acento(texto: &str) -> String {
             c if c.is_alphanumeric() => c,
             _ => ' ',
         };
-        saida.push(c);
+        output.push(c);
     }
-    saida
+    output
 }
 
 #[cfg(test)]
 mod tests {
 
     #[test]
-    fn a_busca_ignora_caixa_acento_e_pontuacao() {
-        assert!(casa_com_a_busca("Zeebo Extreme Bóia Cross", "boia"));
-        assert!(casa_com_a_busca("Zeebo Extreme Bóia Cross", "EXTREME boia"));
-        assert!(casa_com_a_busca("Zeebo Extreme Bóia Cross", "cross zeebo"));
-        assert!(casa_com_a_busca("C.N.K. 3D", "cnk"));
-        assert!(casa_com_a_busca("Resident Evil 4", "resident evil"));
-        assert!(casa_com_a_busca("Double Dragon", "doubledragon"));
-        assert!(!casa_com_a_busca("Double Dragon", "rolima"));
-        assert!(!casa_com_a_busca("Zeebo Extreme Rolimã", "rolima boia"));
+    fn search_ignores_case_accents_and_punctuation() {
+        assert!(matches_search("Zeebo Extreme Bóia Cross", "boia"));
+        assert!(matches_search("Zeebo Extreme Bóia Cross", "EXTREME boia"));
+        assert!(matches_search("Zeebo Extreme Bóia Cross", "cross zeebo"));
+        assert!(matches_search("C.N.K. 3D", "cnk"));
+        assert!(matches_search("Resident Evil 4", "resident evil"));
+        assert!(matches_search("Double Dragon", "doubledragon"));
+        assert!(!matches_search("Double Dragon", "rolima"));
+        assert!(!matches_search("Zeebo Extreme Rolimã", "rolima boia"));
     }
 
     #[test]
-    fn a_busca_vazia_mostra_todos() {
-        assert!(casa_com_a_busca("Tênis", ""));
-        assert!(casa_com_a_busca("Tênis", "   "));
+    fn empty_search_shows_everything() {
+        assert!(matches_search("Tênis", ""));
+        assert!(matches_search("Tênis", "   "));
     }
     use super::*;
 
     #[test]
-    fn o_digest_do_cache_sai_do_titulo() {
+    fn the_cache_digest_comes_from_the_title() {
         let digest = "0c9aef377a62f6211acb6e1dd1d79ce97c39d5fa2a3db82d36fcf25de2f2222f";
         assert_eq!(
-            sem_impressao_digital(&format!("Crash-Bandicoot-Nitro-Kart-3D-{digest}")),
+            strip_fingerprint(&format!("Crash-Bandicoot-Nitro-Kart-3D-{digest}")),
             "Crash Bandicoot Nitro Kart 3D"
         );
         assert_eq!(
-            sem_impressao_digital("Zeebo-Extreme-Boia-Cross-21503726-1788761080"),
+            strip_fingerprint("Zeebo-Extreme-Boia-Cross-21503726-1788761080"),
             "Zeebo Extreme Boia Cross"
         );
-        // Um nome que é só o digest continua sendo o que há.
-        assert_eq!(sem_impressao_digital(digest), digest);
+        // A name that is only the digest stays as it is, since that is all there is.
+        assert_eq!(strip_fingerprint(digest), digest);
     }
 
-    /// Monta uma árvore de arquivos vazios e devolve a raiz.
+    /// Builds a tree of empty files and returns its root.
     fn tree(name: &str, files: &[&str]) -> PathBuf {
         let root = std::env::temp_dir().join(format!("zeebx-testes-{name}"));
         let _ = std::fs::remove_dir_all(&root);
@@ -569,7 +572,7 @@ mod tests {
     }
 
     #[test]
-    fn catalogo_atualiza_roms_sem_apagar_o_que_veio_da_nand() {
+    fn catalog_refreshes_roms_without_erasing_what_came_from_the_nand() {
         let mut index = CatalogIndex {
             titles: vec![CatalogEntry {
                 applet_class: 7,
@@ -596,13 +599,13 @@ mod tests {
         assert_eq!(index.titles[0].source, CatalogSource::Nand);
     }
 
-    /// O manifesto do Kingdom Hearts fica um nível acima da pasta do módulo.
+    /// Kingdom Hearts' manifest sits one level above the module's folder.
     ///
-    /// `<Título>/<Título>_/swv21brew.mod` com o `.mif` em `<Título>/<Título>.mif`: nenhuma regra
-    /// de nome acha isso, e o jogo não abria por não sabermos qual applet criar. É a razão de a
-    /// busca varrer as pastas em vez de só calcular nomes.
+    /// `<Title>/<Title>_/swv21brew.mod` with the `.mif` in `<Title>/<Title>.mif`: no naming
+    /// rule finds that, and the game would not open because we did not know which applet to
+    /// create. This is why the search scans the folders instead of only computing names.
     #[test]
-    fn o_manifesto_pode_estar_um_nivel_acima_da_pasta_do_modulo() {
+    fn the_manifest_may_be_one_level_above_the_module_dir() {
         let root = tree(
             "mif-acima",
             &[
@@ -611,21 +614,22 @@ mod tests {
             ],
         );
         let modulo = root.join("Kingdon Hearts/Kingdon Hearts_/swv21brew.mod");
-        let candidatos = manifest_paths(&modulo);
+        let candidates = manifest_paths(&modulo);
         assert!(
-            candidatos.contains(&root.join("Kingdon Hearts/Kingdon Hearts.mif")),
-            "{candidatos:?}"
+            candidates.contains(&root.join("Kingdon Hearts/Kingdon Hearts.mif")),
+            "{candidates:?}"
         );
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// A pasta do módulo vem antes da de cima, e a ordem não depende do sistema de arquivos.
+    /// The module's folder comes before the one above it, and the order does not depend on the
+    /// file system.
     ///
-    /// Num pacote com mais de um jogo, o manifesto mais perto do `.mod` é o que tem mais chance
-    /// de ser dele — e dois `.mif` na mesma pasta precisam ser tentados sempre na mesma ordem,
-    /// ou o mesmo jogo abriria diferente em duas máquinas.
+    /// In a package with more than one game, the manifest closest to the `.mod` is the most
+    /// likely to be its own — and two `.mif` files in the same folder must always be tried in the
+    /// same order, or the same game would open differently on two machines.
     #[test]
-    fn o_manifesto_mais_perto_do_modulo_vem_primeiro() {
+    fn the_manifest_closest_to_the_module_comes_first() {
         let root = tree(
             "mif-ordem",
             &[
@@ -635,43 +639,43 @@ mod tests {
                 "jogo/de-cima.mif",
             ],
         );
-        let candidatos = manifest_paths(&root.join("jogo/mod/x.mod"));
-        let so_dentro: Vec<&PathBuf> = candidatos
+        let candidates = manifest_paths(&root.join("jogo/mod/x.mod"));
+        let inside_only: Vec<&PathBuf> = candidates
             .iter()
             .filter(|p| p.starts_with(root.join("jogo/mod")))
             .collect();
         assert_eq!(
-            so_dentro,
+            inside_only,
             [
                 &root.join("jogo/mod/x.mif"),
                 &root.join("jogo/mod/a.mif"),
                 &root.join("jogo/mod/b.mif"),
             ]
         );
-        let de_cima = candidatos
+        let topmost = candidates
             .iter()
             .position(|p| p == &root.join("jogo/de-cima.mif"));
-        assert_eq!(de_cima, Some(candidatos.len() - 1));
+        assert_eq!(topmost, Some(candidates.len() - 1));
         let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
-    fn o_titulo_vem_da_pasta_no_layout_do_console() {
-        // `<Título>/mod/<id>/<nome>.mod` — o nome do arquivo é um identificador, o título está
-        // três níveis acima.
+    fn the_title_comes_from_the_dir_in_the_console_layout() {
+        // `<Title>/mod/<id>/<name>.mod` — the file name is an identifier, the title is three
+        // levels up.
         let path = Path::new("/roms/Zeebo Sports Peteca/mod/279159/zeebopeteca.mod");
         assert_eq!(title_for(path), "Zeebo Sports Peteca");
     }
 
     #[test]
-    fn fora_do_layout_do_console_o_titulo_e_o_nome_do_arquivo() {
+    fn outside_the_console_layout_the_title_is_the_file_name() {
         assert_eq!(title_for(Path::new("/roms/helloworld.mod")), "helloworld");
-        // Uma pasta chamada `mod` no lugar errado não faz do avô um título.
+        // A folder named `mod` in the wrong place does not make the grandparent a title.
         assert_eq!(title_for(Path::new("/mod/x.mod")), "x");
     }
 
     #[test]
-    fn a_varredura_acha_as_duas_disposicoes_e_ordena_por_titulo() {
+    fn the_scan_finds_both_layouts_and_sorts_by_title() {
         let root = tree(
             "biblioteca",
             &[
@@ -686,14 +690,14 @@ mod tests {
         let games = scan(&root);
         let titles: Vec<&str> = games.iter().map(|g| g.title.as_str()).collect();
         assert_eq!(titles, ["avulso", "Crash", "Quake"]);
-        // O `.mif` está vazio, então não há ClassID — mas o jogo continua na lista, porque
-        // quem diz se o módulo presta é o emulador, não a varredura.
+        // The `.mif` is empty, so there is no ClassID — but the game stays in the list, because
+        // whether the module is any good is for the emulator to say, not the scan.
         assert!(games.iter().all(|g| g.clsid.is_none()));
         let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
-    fn pasta_que_nao_existe_devolve_lista_vazia() {
+    fn a_missing_dir_returns_an_empty_list() {
         let games = scan(&std::env::temp_dir().join("zeebx-nao-existe-mesmo"));
         assert!(games.is_empty());
     }

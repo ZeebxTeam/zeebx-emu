@@ -3,17 +3,18 @@ name = "zeebx-ios"
 version = "0.5.1"
 edition = "2024"
 license = "GPL-2.0-or-later"
-description = "O frontend de iOS do Zeebx"
+description = "The iOS frontend of Zeebx"
 publish = false
 
-# O Xcode liga um `.a`. O `rlib` existe para o `cargo test` deste pacote: um crate-type só de
-# `staticlib` não produz binário de teste.
+# Xcode links a `.a`. The `rlib` exists for this package's `cargo test`: a `staticlib`-only
+# crate-type produces no test binary.
 [lib]
 name = "zeebx_ios"
 crate-type = ["staticlib", "rlib"]
 
 [dependencies]
-# `audio` e nada mais: é o `cpal`, que no iOS fala com o Core Audio. Sem a feature `desktop`:
-# eframe, glutin e gilrs não têm o que fazer numa UIKit, e o OpenGL do glutin no iOS é o EAGL,
-# que a Apple já aposentou. O quadro sai do rasterizador de software e a tela o pinta.
+# `audio` and nothing else: it is `cpal`, which on iOS talks to Core Audio. Without the `desktop`
+# feature: eframe, glutin and gilrs have nothing to do in UIKit, and glutin's OpenGL on iOS is
+# EAGL, which Apple has already retired. The frame comes out of the software rasterizer and the
+# screen paints it.
 zeebx = { path = "../..", default-features = false, features = ["audio"] }

@@ -1,29 +1,29 @@
-//! Zeebx Qt — o emulador de Zeebo com a interface em Qt Quick.
+//! Zeebx Qt — the Zeebo emulator with the Qt Quick interface.
 //!
-//! A interface do emulador: `zeebx-qt` abre a biblioteca, e `zeebx-qt <jogo>` abre direto o jogo. A
-//! linha de comando de depuração (`run`, `info`, `bench`...) é o `zeebx`, em `frontends/cli`.
+//! The emulator's interface: `zeebx-qt` opens the library, and `zeebx-qt <game>` opens the game
+//! directly. The debugging command line (`run`, `info`, `bench`...) is `zeebx`, in `frontends/cli`.
 
-// No Windows, a versão de distribuição abre sem a janela de console atrás da interface.
+// On Windows, the release build opens without the console window behind the interface.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod qt;
 
 use std::process::ExitCode;
 
-/// O nome com que o Wayland casa a janela com o `.desktop` instalado, de onde tira o ícone. É o do
-/// binário, que é o nome que o `cargo packager` dá ao `.desktop`.
+/// The name Wayland uses to match the window with the installed `.desktop`, where it gets the icon
+/// from. It is the binary's name, which is the name `cargo packager` gives the `.desktop`.
 const APP_ID: &str = "zeebx-qt";
 
 fn main() -> ExitCode {
-    zeebx::registro::le_do_ambiente();
+    zeebx::logging::from_env();
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
-        // Sai antes de criar o `QGuiApplication`, sem tela: o CI roda isto para provar que o
-        // binário acha as bibliotecas do Qt, que o sistema carrega antes do `main`.
+        // Exits before creating the `QGuiApplication`, with no screen: CI runs this to prove the
+        // binary finds the Qt libraries, which the system loads before `main`.
         Some("--version") => {
             println!("zeebx-qt {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
-        jogo => qt::launch(jogo),
+        game => qt::launch(game),
     }
 }

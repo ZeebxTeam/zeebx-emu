@@ -1,22 +1,22 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- O aplicativo não tem classe própria: a atividade é a NativeActivity do sistema, e o que
-     ela carrega é a `libzeebx_android.so`, pelo `android.app.lib_name`. Daí o hasCode="false". -->
+<!-- The app has no class of its own: the activity is the system's NativeActivity, and what
+     it loads is `libzeebx_android.so`, through `android.app.lib_name`. Hence hasCode="false". -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-feature android:glEsVersion="0x00030000" android:required="true" />
 
-    <!-- Uma coleção de ROMs mora fora do diretório do aplicativo, e desde o Android 11 lê-la
-         exige o "acesso a todos os arquivos". Ele não é concedido na instalação: o usuário o
-         dá em Ajustes › Aplicativos › Zeebx. Sem ele o Zeebx só enxerga a própria pasta. -->
+    <!-- A ROM collection lives outside the app's directory, and since Android 11 reading it
+         requires "all files access". It isn't granted at install time: the user grants it in
+         Settings › Apps › Zeebx. Without it Zeebx only sees its own folder. -->
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
 
-    <!-- `appCategory="game"` não é enfeite de vitrine: é o que **mantém o travamento de
-         orientação valendo**. A partir do Android 16, num alvo 36 ou maior, o sistema passa a
-         ignorar `screenOrientation`, `resizeableActivity` e as razões de aspecto em telas com
-         600dp ou mais de menor lado — tablet, dobrável, desktop —, e o Android 17 tira até a
-         opção de recusar. Jogos são a exceção que sobrou, e um emulador de console é um jogo.
-         Hoje o alvo é 35 e nada disso nos alcança; quando ele subir, esta linha é o que evita a
-         tela girar sozinha no meio de uma corrida. -->
+    <!-- `appCategory="game"` isn't storefront decoration: it is what **keeps the orientation
+         lock in force**. Starting with Android 16, on target 36 or higher, the system starts
+         ignoring `screenOrientation`, `resizeableActivity` and aspect ratios on screens whose
+         smallest side is 600dp or more — tablet, foldable, desktop —, and Android 17 even
+         removes the option to opt out. Games are the exception that remains, and a console
+         emulator is a game. Today the target is 35 and none of this reaches us; when it goes up,
+         this line is what keeps the screen from rotating on its own in the middle of a race. -->
     <application
         android:label="Zeebx"
         android:icon="@mipmap/ic_launcher"

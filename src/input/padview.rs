@@ -1,73 +1,75 @@
-//! O desenho do controle que acende quando um botão é apertado.
+//! The drawing of the controller that lights up when a button is pressed.
 //!
-//! São **duas** peças: a arte, um PNG que só precisa ser bonito, e o mapa, um SVG invisível do
-//! mesmo tamanho em que cada forma tem por `id` o nome de um botão do Zeebo (`up`, `b1`,
-//! `start`...). Separar as duas é o que permite redesenhar o controle sem tocar em código, e
-//! poupa a arte de ter que ser feita com um `id` em cada traço.
+//! There are **two** pieces: the art, a PNG that only has to look good, and the map, an invisible
+//! SVG of the same size in which each shape has as its `id` the name of a Zeebo button (`up`,
+//! `b1`, `start`...). Keeping the two apart is what lets the controller be redrawn without
+//! touching code, and spares the art from having to be made with an `id` on every stroke.
 //!
-//! O mapa é rasterizado **uma vez**, cada forma virando uma silhueta recortada. É dela que
-//! saem as duas coisas que interessam — acender o botão certo e saber em qual deles o cursor
-//! está. Testar o clique pela silhueta, e não por uma caixa retangular, é o que faz um
-//! direcional em cruz e um botão redondo responderem só onde existe botão.
+//! The map is rasterized **once**, each shape becoming a cropped silhouette. Both things that
+//! matter come from it — lighting up the right button and knowing which one the cursor is over.
+//! Hit-testing the click against the silhouette, and not a rectangular box, is what makes a
+//! cross-shaped D-pad and a round button respond only where there is a button.
 //!
-//! Botão que a arte não desenha simplesmente não tem forma no mapa: ele não acende, e continua
-//! configurável pela lista.
+//! A button the art does not draw simply has no shape in the map: it does not light up, and stays
+//! configurable through the list.
 
 use std::fmt;
 
 use resvg::{tiny_skia, usvg};
 
-/// A arte do controle, embutida no binário para a tela funcionar sem arquivo nenhum.
+/// The controller art, embedded in the binary so the screen works without any file.
 pub const DEFAULT_ART: &[u8] = include_bytes!("../../assets/controller.png");
-/// O mapa das regiões da arte embutida.
+/// The map of the regions of the embedded art.
 pub const DEFAULT_MAP: &str = include_str!("../../assets/controller-map.svg");
 
-/// A partir de quanta opacidade a silhueta conta como "aqui tem botão".
+/// From how much opacity the silhouette counts as "there is a button here".
 const HIT_ALPHA: u8 = 96;
 
-/// Até que claridade um pixel de fundo conta como fundo, ao recortar a moldura da arte.
+/// Up to what brightness a background pixel counts as background, when cutting out the art's
+/// frame.
 const BACKDROP_LUMA: u8 = 40;
 
 #[derive(Debug)]
 pub enum ArtError {
     Png(png::DecodingError),
     Svg(usvg::Error),
-    /// A arte e o mapa não têm o mesmo tamanho, ou algum deles não tem tamanho nenhum.
+    /// The art and the map do not have the same size, or one of them has no size at all.
     Size,
 }
 
 impl fmt::Display for ArtError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Png(err) => write!(f, "arte do controle ilegível: {err}"),
-            Self::Svg(err) => write!(f, "mapa do controle ilegível: {err}"),
-            Self::Size => write!(f, "a arte e o mapa do controle não batem de tamanho"),
+            Self::Png(err) => write!(f, "unreadable controller art: {err}"),
+            Self::Svg(err) => write!(f, "unreadable controller map: {err}"),
+            Self::Size => write!(f, "the controller art and map do not match in size"),
         }
     }
 }
 
 impl std::error::Error for ArtError {}
 
-/// A silhueta de um botão, recortada no tamanho dela.
+/// The silhouette of a button, cropped to its own size.
 ///
-/// O recorte não é economia de disco: cada silhueta vira uma textura na placa de vídeo, e
-/// guardá-las do tamanho do controle inteiro custaria dezenas de megabytes para desenhar
-/// botões de poucos pixels.
+/// The crop is not about saving disk space: each silhouette becomes a texture on the graphics
+/// card, and keeping them the size of the whole controller would cost tens of megabytes to draw
+/// buttons a few pixels wide.
 pub struct Part {
-    /// O nome do botão do Zeebo, o mesmo do `id` no desenho.
+    /// The name of the Zeebo button, the same as the `id` in the drawing.
     pub button: String,
-    /// Onde o recorte fica no desenho, em pixels.
+    /// Where the crop sits in the drawing, in pixels.
     pub x: usize,
     pub y: usize,
     pub width: usize,
     pub height: usize,
-    /// Só a opacidade, um byte por pixel do recorte. A cor não importa: a silhueta é pintada
-    /// com a cor que a tela escolher na hora, o que a deixa legível em qualquer desenho.
+    /// Only the opacity, one byte per pixel of the crop. The color does not matter: the
+    /// silhouette is painted with whatever color the screen picks at the time, which keeps it
+    /// readable on any drawing.
     pub alpha: Vec<u8>,
 }
 
 impl Part {
-    /// O lugar da peça no desenho, de 0 a 1, para a tela posicioná-la em qualquer tamanho.
+    /// The piece's place in the drawing, from 0 to 1, for the screen to position it at any size.
     pub fn bounds(&self, art: &PadArt) -> [f32; 4] {
         [
             self.x as f32 / art.width as f32,
@@ -77,7 +79,7 @@ impl Part {
         ]
     }
 
-    /// A opacidade num ponto do desenho, ou zero fora do recorte.
+    /// The opacity at a point of the drawing, or zero outside the crop.
     fn alpha_at(&self, x: usize, y: usize) -> u8 {
         if x < self.x || y < self.y || x >= self.x + self.width || y >= self.y + self.height {
             return 0;
@@ -89,13 +91,13 @@ impl Part {
 pub struct PadArt {
     pub width: usize,
     pub height: usize,
-    /// A arte, RGBA não-premultiplicado — o que a interface espera receber.
+    /// The art, non-premultiplied RGBA — what the interface expects to receive.
     pub base: Vec<u8>,
     parts: Vec<Part>,
 }
 
 impl PadArt {
-    /// Decodifica a arte e rasteriza o mapa em cima dela, no mesmo tamanho.
+    /// Decodes the art and rasterizes the map on top of it, at the same size.
     pub fn parse(art: &[u8], map: &str) -> Result<Self, ArtError> {
         let (mut base, width, height) = decode_png(art)?;
         cut_backdrop(&mut base, width as usize, height as usize);
@@ -105,8 +107,8 @@ impl PadArt {
         if size.width() <= 0.0 || size.height() <= 0.0 {
             return Err(ArtError::Size);
         }
-        // O mapa é esticado até a arte em vez de exigir os mesmos números: o que precisa bater
-        // é a proporção, e um mapa desenhado em metade da escala continua servindo.
+        // The map is stretched to the art instead of requiring the same numbers: what has to
+        // match is the aspect ratio, and a map drawn at half scale still works.
         let transform = tiny_skia::Transform::from_scale(
             width as f32 / size.width(),
             height as f32 / size.height(),
@@ -117,8 +119,9 @@ impl PadArt {
             let Some(node) = tree.node_by_id(button) else {
                 continue;
             };
-            // `render_node` desloca o nó para a origem do destino; devolver o deslocamento aqui
-            // o mantém no lugar em que foi desenhado, que é o que alinha a silhueta ao fundo.
+            // `render_node` moves the node to the target's origin; giving the offset back here
+            // keeps it where it was drawn, which is what aligns the silhouette with the
+            // background.
             let Some(bbox) = node.abs_layer_bounding_box() else {
                 continue;
             };
@@ -142,7 +145,7 @@ impl PadArt {
         })
     }
 
-    /// A arte embutida, com o mapa dela.
+    /// The embedded art, with its map.
     pub fn builtin() -> Result<Self, ArtError> {
         Self::parse(DEFAULT_ART, DEFAULT_MAP)
     }
@@ -151,9 +154,9 @@ impl PadArt {
         &self.parts
     }
 
-    /// O botão sob o ponto `(u, v)`, ambos de 0 a 1 sobre o desenho.
+    /// The button under the point `(u, v)`, both from 0 to 1 over the drawing.
     ///
-    /// Onde duas peças se sobrepõem vence a mais opaca — a de cima, na prática.
+    /// Where two pieces overlap the more opaque one wins — the top one, in practice.
     pub fn hit(&self, u: f32, v: f32) -> Option<&str> {
         if !(0.0..1.0).contains(&u) || !(0.0..1.0).contains(&v) {
             return None;
@@ -171,7 +174,7 @@ impl PadArt {
     }
 }
 
-/// Decodifica a arte, devolvendo RGBA não-premultiplicado e o tamanho.
+/// Decodes the art, returning non-premultiplied RGBA and the size.
 fn decode_png(data: &[u8]) -> Result<(Vec<u8>, u32, u32), ArtError> {
     let decoder = png::Decoder::new(std::io::Cursor::new(data));
     let mut reader = decoder.read_info().map_err(ArtError::Png)?;
@@ -192,10 +195,10 @@ fn decode_png(data: &[u8]) -> Result<(Vec<u8>, u32, u32), ArtError> {
     Ok((rgba, info.width, info.height))
 }
 
-/// Torna transparente o fundo escuro que cerca a arte.
+/// Makes the dark background surrounding the art transparent.
 ///
-/// Só o que encosta na borda some: o traço preto de dentro do desenho é tão escuro quanto o
-/// fundo, e apagá-lo pela cor deixaria o controle sem contorno nenhum.
+/// Only what touches the border goes away: the black stroke inside the drawing is as dark as the
+/// background, and erasing it by color would leave the controller with no outline at all.
 fn cut_backdrop(rgba: &mut [u8], width: usize, height: usize) {
     let dark = |index: usize| -> bool {
         let [r, g, b] = [rgba[index * 4], rgba[index * 4 + 1], rgba[index * 4 + 2]];
@@ -210,8 +213,8 @@ fn cut_backdrop(rgba: &mut [u8], width: usize, height: usize) {
     borders.retain(|&index| !std::mem::replace(&mut seen[index], true) && dark(index));
     queue.extend(borders);
 
-    // A varredura só marca; apagar fica para o fim, porque o teste de escuridão lê as mesmas
-    // cores que o apagamento mudaria.
+    // The sweep only marks; erasing is left for the end, because the darkness test reads the same
+    // colors the erasing would change.
     let mut background = Vec::new();
     while let Some(index) = queue.pop() {
         background.push(index);
@@ -241,8 +244,8 @@ fn cut_backdrop(rgba: &mut [u8], width: usize, height: usize) {
     }
 }
 
-/// Recorta a silhueta no menor retângulo que a contém. `None` se ela está vazia — o que
-/// acontece com um `id` colado numa peça sem traçado.
+/// Crops the silhouette to the smallest rectangle that contains it. `None` if it is empty — which
+/// happens with an `id` attached to a piece with no outline.
 fn crop(button: &str, alpha: &[u8], width: usize, height: usize) -> Option<Part> {
     let (mut x0, mut y0, mut x1, mut y1) = (width, height, 0usize, 0usize);
     for y in 0..height {
@@ -277,7 +280,7 @@ fn crop(button: &str, alpha: &[u8], width: usize, height: usize) -> Option<Part>
 mod tests {
     use super::*;
 
-    /// Uma arte mínima: 20x10 pretos com um quadrado branco no meio.
+    /// A minimal art: 20x10 black with a white square in the middle.
     fn art() -> Vec<u8> {
         let mut rgba = vec![0u8; 20 * 10 * 4];
         for y in 3..7 {
@@ -298,17 +301,17 @@ mod tests {
     }
 
     #[test]
-    fn a_arte_embutida_tem_o_mapa_dos_botoes_que_ela_desenha() {
-        let art = PadArt::builtin().expect("a arte embutida precisa abrir");
-        // O direcional, as ações, os analógicos e o HOME — o botão do meio — estão
-        // desenhados; os gatilhos de baixo não aparecem nesta arte, e por isso não têm forma.
+    fn the_builtin_art_has_the_map_of_the_buttons_it_draws() {
+        let art = PadArt::builtin().expect("the embedded art must open");
+        // The D-pad, the action buttons, the analog sticks and HOME — the middle button — are
+        // drawn; the lower triggers do not appear in this art, and so they have no shape.
         for button in [
             "up", "down", "left", "right", "b1", "b2", "b3", "b4", "lthumb", "rthumb", "back",
             "zl", "zr",
         ] {
             assert!(
                 art.parts().iter().any(|part| part.button == button),
-                "o mapa não tem a peça {button}"
+                "the map has no piece {button}"
             );
         }
         assert_eq!(art.width, 1616);
@@ -316,38 +319,39 @@ mod tests {
     }
 
     #[test]
-    fn o_clique_cai_no_botao_desenhado() {
+    fn the_click_lands_on_the_drawn_button() {
         let art = PadArt::builtin().unwrap();
         let at = |x: f32, y: f32| art.hit(x / 1616.0, y / 973.0);
-        // O centro de cada braço do direcional, e depois os quatro botões de ação.
+        // The center of each arm of the D-pad, and then the four action buttons.
         assert_eq!(at(373.0, 370.0), Some("up"));
         assert_eq!(at(373.0, 620.0), Some("down"));
         assert_eq!(at(230.0, 498.0), Some("left"));
         assert_eq!(at(520.0, 498.0), Some("right"));
-        // O losango, na numeração do aparelho: 1 embaixo, 2 à esquerda, 3 no topo, 4 à direita.
+        // The diamond, in the device's numbering: 1 at the bottom, 2 on the left, 3 at the top,
+        // 4 on the right.
         assert_eq!(at(1246.0, 367.0), Some("b3"));
         assert_eq!(at(1373.0, 465.0), Some("b4"));
         assert_eq!(at(1246.0, 565.0), Some("b1"));
         assert_eq!(at(1119.0, 465.0), Some("b2"));
         assert_eq!(at(619.0, 715.0), Some("lthumb"));
         assert_eq!(at(995.0, 715.0), Some("rthumb"));
-        // O botão do meio é o HOME; o console não tem Start.
+        // The middle button is HOME; the console has no Start.
         assert_eq!(at(807.0, 427.0), Some("back"));
     }
 
     #[test]
-    fn fora_das_pecas_nao_ha_botao() {
+    fn outside_the_touch_controls_there_is_no_button() {
         let art = PadArt::builtin().unwrap();
-        // O miolo do direcional não é direção nenhuma, e o corpo liso não é botão.
+        // The middle of the D-pad is no direction at all, and the plain body is not a button.
         assert_eq!(art.hit(373.0 / 1616.0, 498.0 / 973.0), None);
         assert_eq!(art.hit(0.5, 0.95), None);
-        // Fora do desenho também não.
+        // Outside the drawing neither.
         assert_eq!(art.hit(-0.1, 0.5), None);
         assert_eq!(art.hit(0.5, 1.5), None);
     }
 
     #[test]
-    fn forma_com_id_desconhecido_e_ignorada() {
+    fn a_shape_with_an_unknown_id_is_ignored() {
         let map = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 10">
             <rect id="nao_e_botao" x="0" y="0" width="20" height="10" fill="red"/>
             <rect id="back" x="8" y="4" width="4" height="2" fill="blue"/>
@@ -360,9 +364,10 @@ mod tests {
     }
 
     #[test]
-    fn a_moldura_escura_da_arte_fica_transparente() {
-        // O fundo que cerca o desenho some para o controle não virar um retângulo preto na
-        // tela — mas só o que encosta na borda, senão o traço preto de dentro sumiria junto.
+    fn the_dark_border_of_the_art_becomes_transparent() {
+        // The background surrounding the drawing goes away so the controller does not become a
+        // black rectangle on screen — but only what touches the border, otherwise the black
+        // stroke inside would go too.
         let map = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 10"/>"#;
         let art = PadArt::parse(&art(), map).unwrap();
         let alpha = |x: usize, y: usize| art.base[(y * 20 + x) * 4 + 3];
@@ -372,13 +377,13 @@ mod tests {
     }
 
     #[test]
-    fn a_peca_e_recortada_no_tamanho_dela() {
-        // O recorte precisa cair sobre a forma do mapa, e não sobre a folha inteira: é dele
-        // que sai o lugar em que a silhueta é pintada.
+    fn the_touch_control_is_cropped_to_its_size() {
+        // The crop has to fall on the map's shape, not on the whole sheet: it is what gives the
+        // place where the silhouette is painted.
         let art = PadArt::builtin().unwrap();
         let up = art.parts().iter().find(|part| part.button == "up").unwrap();
         let [u0, v0, u1, v1] = up.bounds(&art);
-        // O `up` é o retângulo 299..447 x 322..432 do mapa.
+        // `up` is the rectangle 299..447 x 322..432 of the map.
         let close = |got: f32, want: f32| (got - want).abs() < 0.01;
         assert!(close(u0, 299.0 / 1616.0), "u0 = {u0}");
         assert!(close(v0, 322.0 / 973.0), "v0 = {v0}");
@@ -388,7 +393,7 @@ mod tests {
     }
 
     #[test]
-    fn arte_ou_mapa_invalido_nao_derruba_nada() {
+    fn invalid_art_or_map_breaks_nothing() {
         assert!(PadArt::parse(b"isto nao e um png", DEFAULT_MAP).is_err());
         assert!(PadArt::parse(&art(), "isto não é um svg").is_err());
     }

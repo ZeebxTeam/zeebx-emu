@@ -1,0 +1,137 @@
+> **Registro em português.** Esta é a versão original deste documento, preservada como estava na v0.5.1 e não é mais atualizada. A versão mantida está em inglês: [04-time.md](../../implementation/04-time.md).
+
+# 04 — Tempo, temporizadores e callbacks
+
+## O relógio é virtual
+
+```
+agora_us = clock_us + instruções_executadas / 528
+```
+
+528 é o clock do ARM11 do MSM7201A em MHz. O tempo do jogo, então, **anda com o trabalho que ele
+faz** — não com o relógio do host. Isso torna a execução repetível: o mesmo jogo, com a mesma
+entrada, produz a mesma sequência de quadros, esteja o host ocupado ou não.
+
+`clock_us` é a parcela que **adiantamos**, e ela existe por dois motivos.
+
+## Uptime não é calendário
+
+O BREW tem duas perguntas de tempo, e elas não são a mesma:
+
+- `GETUPTIMEMS` — quanto tempo desde que o aparelho ligou.
+- `GETTIMESECONDS` e `GETJULIANDATE` — **que dia é hoje**, em segundos desde 6 de janeiro de
+  1980 GMT (a época do GPS, não a do Unix).
+
+Nós respondíamos o relógio virtual nas duas, o que equivale a dizer que hoje é o dia da estreia
+do console. Um jogo não nota; um aplicativo, sim. Hoje o calendário sai do relógio do host,
+capturado **uma vez** quando a máquina é criada, e daí em diante anda com o relógio virtual — um
+jogo que pergunta a data recebe uma que existe, e o tempo que ele *mede* continua sendo o
+virtual, sem depender de quanto o emulador demorou.
+
+## Adiantar o tempo ocioso
+
+`skip_idle_time` — quando não há callback, thread, blit nem sinal pendente, o relógio salta para
+o vencimento do próximo temporizador. É o que o console faz: sem trabalho pendente ele dorme e
+acorda no prazo. Emular o sono instrução por instrução seria emular o nada.
+
+## Pular a espera ocupada
+
+Alguns jogos não armam temporizador para o próximo quadro: ficam num laço lendo o relógio e
+cedendo a vez até o prazo chegar. O Zeebo Sports Peteca faz **69 mil leituras por quadro**,
+14 milhões de instruções gastas só em esperar. No console isso não custa nada, porque o tempo
+passa sozinho enquanto o ARM gira; aqui cada volta é emulada de verdade, e o jogo rodava seis
+vezes mais devagar que o aparelho.
+
+`note_spin` reconhece o padrão. Ele conta chamadas consecutivas que são **só** consulta de
+relógio (`aee_GetTimeMS`, `aee_GetUpTimeMS`, `aee_GetSeconds`) ou cessão da vez
+(`IThread::Suspend`, `IShell::Resume`). Qualquer outra chamada é sinal de trabalho e **zera a
+contagem**. Passadas 64 dessas, cada consulta seguinte adianta o relógio em 250 µs.
+
+O critério importa: um quadro que lê o relógio no meio do que faz continua custando o que custa.
+Só quem *não está progredindo* ganha tempo de graça.
+
+Resultado no Peteca: 101 s reais → 12,4 s, para os mesmos 428 quadros de 17 segundos virtuais.
+
+## Dormir
+
+`MSLEEP` — o `sleep(msecs)` da stdlib — **adianta o relógio**. No console o ARM realmente para e o
+tempo passa sozinho; aqui o relógio anda com as instruções, então quem dorme sem que o relógio
+avance dorme para sempre. O Magical Drop 3 chamava `sleep` cem milhões de vezes num laço que
+nunca vencia.
+
+Há um teto: um valor absurdo, pedido por engano, não pode levar o relógio junto.
+
+## Temporizadores
+
+`ISHELL_SetTimer` guarda `(prazo, callback)`. A cada volta, `advance` recolhe os vencidos e
+chama cada um.
+
+O detalhe que não é óbvio: os vencidos saem da lista **antes** de rodar. O callback tipicamente
+rearma o timer, e o rearmado não pode disparar já no mesmo quadro — seria um laço que nunca
+devolve o controle.
+
+## Reentrar no guest
+
+Vários pontos precisam chamar uma função **do jogo** de dentro de uma chamada de API: um
+callback de timer, um comparador de `qsort`, o `PFNIMAGEINFO` de uma imagem pronta.
+
+Isso funciona porque o despacho acontece **fora** do `emu_start` — o núcleo já parou quando o
+atendemos. Reentrar é seguro desde que:
+
+- os registradores vivos sejam salvos e restaurados (`SAVED_REGS`);
+- haja um teto de aninhamento (`MAX_NESTING`), senão um ciclo prenderia o emulador;
+- a reentrada aconteça numa **fronteira de chamada**, nunca no meio de uma.
+
+`run_pending_callbacks` roda na fronteira entre duas chamadas de API — o único ponto em que dá
+para entrar no guest sem interromper nada pela metade. `CALLBACK_ROUNDS` limita quantas rodadas
+entregar, porque um callback pode enfileirar outro.
+
+## O teto de instruções devolve a vez, e o trecho continua depois
+
+O teto de instruções existe para o laço de quadros poder entregar entrada e conferir o relógio: um
+jogo que nunca devolve a vez seria dono do emulador. Mas cortar não pode ser **perder**.
+
+O **Zeebo Extreme Rolima** roda o carregamento inteiro dentro do `EVT_APP_START`, sem chamar
+`IThread::Suspend` nem voltar entre quadros — os irmãos dele cedem a vez, ele não. O teto cortava o
+trecho, o laço de eventos não achava timer nem callback nenhum, e a sessão terminava sozinha aos 3,8
+segundos, como se o jogo tivesse acabado.
+
+Hoje o corte guarda onde continuar, e a volta seguinte retoma antes de qualquer outra coisa —
+entregar um timer por cima de um quadro pela metade seria entregá-lo fora de hora. Duas
+sutilezas:
+
+- **O modo vai junto.** O endereço de retomada leva o bit 0 ligado quando o guest estava em Thumb,
+  que é como o ARM diz "continue em Thumb". Sem isso, um jogo Thumb volta decodificado como ARM e
+  salta para o endereço zero.
+- **Os registradores também.** Entre o corte e a retomada o emulador ainda entrega os sinais e os
+  callbacks daquela volta, e entrar no guest para isso sobrescreve `r0`-`r3` e o `lr`. O contexto
+  é guardado no corte e restaurado na retomada.
+
+Só o trecho **mais de fora** é retomado: um trecho aninhado — um callback chamado de dentro do
+despacho de uma API — tem quem o espera do lado de cá, e esse quadro já se foi quando a volta
+termina. Aninhado, o teto continua sendo só um pedido de vez.
+
+## Threads cooperativas
+
+`IThread` do BREW não tem preempção: o guest só perde o controle quando chama `Suspend`. É
+exatamente aí que salvamos os registradores, e retomar é restaurá-los e continuar de onde o
+`Suspend` voltaria. É a razão de isto ser viável num emulador de um núcleo só.
+
+## `qsort`
+
+A stdlib do BREW tem `qsort`, e o comparador é código do jogo. Ordenamos **na memória do guest**,
+trocando os elementos de lugar de verdade, para que os ponteiros que o comparador recebe sejam os
+endereços reais dentro do vetor — que é o que o `qsort` do C faz e o que um comparador pode
+observar.
+
+O algoritmo é heapsort: ordena no lugar e faz `n log n` comparações. Como **cada comparação custa
+uma entrada no guest**, o número delas é o que importa; uma ordenação por inserção seria simples
+e quadrática, e um vetor grande custaria caro.
+
+## Acima e abaixo da velocidade do console
+
+O freio que compara o relógio virtual com o do mundo aceita uma proporção: o fast-forward é o
+mesmo freio a 3x, e o limite desligado é sem freio. Trocar de proporção reancora a comparação —
+sem isso, soltar o fast-forward deixava o jogo "adiantado" por tudo o que ele ganhou. O save state
+grava também o `clock_us`, o tempo pulado, que antes ficava de fora e fazia o relógio restaurado
+nascer no "agora". Ver [24-velocidade.md](24-velocidade.md).

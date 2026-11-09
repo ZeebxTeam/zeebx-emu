@@ -1,29 +1,30 @@
-//! IThread, IQueue e o heap do BREW: a cooperação e a memória do jogo.
+//! IThread, IQueue and the BREW heap: the game's cooperation and memory.
 
 use super::*;
 
-/// O que fica nos bytes entre o fim do que o jogo pediu ao `MALLOC` e o próximo bloco.
+/// What goes in the bytes between the end of what the game asked `MALLOC` for and the next
+/// block.
 ///
-/// Todo bloco ganha pelo menos um desses bytes. O Um Jogo de Ovos carrega cada cena com
-/// `MALLOC(tamanho)` exato e o analisador dela lê o byte **depois** do fim: se for zero, recusa
-/// todo token, imprime "Error loading cutscene" uma vez por caractere e a fase do chefe não
-/// começa. No aparelho esse byte não é zero — o jogo saiu assim —, e no nosso heap, com os
-/// blocos colados e o enchimento zerado, era.
+/// Every block gets at least one of these bytes. Um Jogo de Ovos loads each scene with an exact
+/// `MALLOC(size)` and its parser reads the byte **after** the end: if it is zero, it rejects
+/// every token, prints "Error loading cutscene" once per character and the boss stage does not
+/// start. On the device that byte is not zero — the game shipped like that —, and in our heap,
+/// with the blocks packed together and the padding zeroed, it was.
 ///
-/// **Por que quebra de linha, e não um padrão qualquer.** O Alpine Racer também lê além do fim
-/// de um buffer de texto, mas o dele para no primeiro separador: com `0xaa`, ele anexava dois
-/// `ª` a um campo antes de parar. Com `\n` (e com espaço), a sequência de chamadas dele nos
-/// primeiros sete segundos é a mesma de quando ali havia zero. Entre os dois, a quebra de linha
-/// também detém quem lê até o fim da linha. O formato do heap do aparelho não foi conferido.
-pub(super) const FOLGA_DO_BLOCO: u8 = b'\n';
+/// **Why a newline, and not just any pattern.** Alpine Racer also reads past the end of a text
+/// buffer, but its read stops at the first separator: with `0xaa`, it appended two `ª` to a
+/// field before stopping. With `\n` (and with a space), its call sequence in the first seven
+/// seconds is the same as when there was a zero there. Between the two, the newline also stops
+/// whoever reads to the end of the line. The device's heap layout has not been checked.
+pub(super) const BLOCK_PADDING: u8 = b'\n';
 
 impl<C: CpuBackend> Machine<C> {
-    /// `IThread` (`AEECLSID_THREAD` = `0x01001017`), de `sdk/inc/AEEThread.h`.
+    /// `IThread` (`AEECLSID_THREAD` = `0x01001017`), from `sdk/inc/AEEThread.h`.
     ///
-    /// A thread do BREW é cooperativa e se apoia nos callbacks: ela roda até chamar `Suspend`,
-    /// e volta quando o `AEECallback` de `GetResumeCBK` é disparado — tipicamente pelo próprio
-    /// jogo, via `ISHELL_Resume`. Aqui isso vira salvar e restaurar registradores, com uma
-    /// pilha por thread alocada na heap do guest.
+    /// The BREW thread is cooperative and relies on callbacks: it runs until it calls `Suspend`,
+    /// and comes back when the `AEECallback` from `GetResumeCBK` fires — typically from the game
+    /// itself, via `ISHELL_Resume`. Here that becomes saving and restoring registers, with one
+    /// stack per thread allocated on the guest heap.
     pub(super) fn thread_call(&mut self, slot: u32) -> Result<Option<u32>, CpuError> {
         let Some(name) = Interface::Thread.method(slot) else {
             return Ok(None);
@@ -41,8 +42,8 @@ impl<C: CpuBackend> Machine<C> {
                 if remaining == 0 {
                     if let Some(state) = self.threads.remove(&this) {
                         self.resume_callbacks.remove(&state.resume_cb);
-                        self.libera(state.resume_cb);
-                        self.libera(state.stack);
+                        self.free(state.resume_cb);
+                        self.free(state.stack);
                     }
                 }
                 remaining
@@ -55,11 +56,11 @@ impl<C: CpuBackend> Machine<C> {
             }
             "Malloc" => self.malloc(a1)?,
             "Free" => {
-                self.libera(a1);
+                self.free(a1);
                 SUCCESS
             }
-            // O pool de recursos existe para liberar tudo junto no fim da thread; a nossa heap
-            // já sobrevive à thread, então segurar e soltar não muda nada.
+            // The resource pool exists to release everything together at the end of the thread;
+            // our heap already outlives the thread, so holding and releasing changes nothing.
             "HoldRsc" => SUCCESS,
             "ReleaseRsc" => SUCCESS,
             // int Start(IThread *, int nStackSz, PFNTHREAD pfStart, void *pvStart)
@@ -68,12 +69,12 @@ impl<C: CpuBackend> Machine<C> {
                 if state.started {
                     EALREADY
                 } else {
-                    let stack = self.aloca_interno(a1.max(THREAD_MIN_STACK))?;
+                    let stack = self.alloc_internal(a1.max(THREAD_MIN_STACK))?;
                     if stack == 0 {
                         ENOMEMORY
                     } else {
-                        // A pilha do ARM cresce para baixo, então o topo do bloco é o `sp`
-                        // inicial; a AAPCS pede alinhamento de 8.
+                        // The ARM stack grows downward, so the top of the block is the initial
+                        // `sp`; the AAPCS asks for 8-byte alignment.
                         let top = (stack + a1.max(THREAD_MIN_STACK)) & !7;
                         let state = self.threads.entry(this).or_default();
                         state.started = true;
@@ -88,7 +89,8 @@ impl<C: CpuBackend> Machine<C> {
                     }
                 }
             }
-            // int Exit(IThread *, int nRv) — a thread acabou; o controle volta a quem a retomou.
+            // int Exit(IThread *, int nRv) — the thread is done; control returns to whoever
+            // resumed it.
             "Exit" => {
                 self.finish_thread(this, a1)?;
                 self.cpu.write_reg(Reg::Lr, RETURN_MAGIC);
@@ -112,11 +114,11 @@ impl<C: CpuBackend> Machine<C> {
                 }
                 SUCCESS
             }
-            // void Suspend(IThread *) — o único ponto em que a thread devolve o controle.
+            // void Suspend(IThread *) — the only point where the thread gives control back.
             //
-            // Salvamos os registradores como estão e trocamos o endereço de retorno pelo
-            // sentinela: o laço de execução vai parar aí, e quem retomar continua no `lr` que
-            // guardamos.
+            // We save the registers as they are and swap the return address for the sentinel:
+            // the execution loop will stop there, and whoever resumes continues at the `lr` we
+            // stored.
             "Suspend" => {
                 let resume_pc = self.cpu.read_reg(Reg::Lr);
                 let context = THREAD_REGS.map(|reg| self.cpu.read_reg(reg));
@@ -127,14 +129,14 @@ impl<C: CpuBackend> Machine<C> {
                 self.cpu.write_reg(Reg::Lr, RETURN_MAGIC);
                 SUCCESS
             }
-            // AEECallback *GetResumeCBK(IThread *) — o mesmo callback a cada chamada, porque é
-            // por ele que reconhecemos um `ISHELL_Resume` dirigido à thread.
+            // AEECallback *GetResumeCBK(IThread *) — the same callback on every call, because it
+            // is how we recognize an `ISHELL_Resume` aimed at the thread.
             "GetResumeCBK" => {
                 let existing = self.threads.entry(this).or_default().resume_cb;
                 if existing != 0 {
                     existing
                 } else {
-                    let cb = self.aloca_interno(CALLBACK_SIZE)?;
+                    let cb = self.alloc_internal(CALLBACK_SIZE)?;
                     self.threads.entry(this).or_default().resume_cb = cb;
                     if cb != 0 {
                         self.resume_callbacks.insert(cb, this);
@@ -147,7 +149,7 @@ impl<C: CpuBackend> Machine<C> {
         Ok(Some(result))
     }
 
-    /// Encerra uma thread: solta a pilha e libera quem esperava por ela.
+    /// Ends a thread: frees the stack and releases whoever was waiting for it.
     pub(super) fn finish_thread(&mut self, thread: u32, code: u32) -> Result<(), CpuError> {
         let Some(state) = self.threads.get_mut(&thread) else {
             return Ok(());
@@ -156,7 +158,7 @@ impl<C: CpuBackend> Machine<C> {
         state.exit_code = code;
         let stack = std::mem::take(&mut state.stack);
         let joiners = std::mem::take(&mut state.joiners);
-        self.libera(stack);
+        self.free(stack);
         self.pending_threads.retain(|&t| t != thread);
         for (call, out) in joiners {
             if out != 0 {
@@ -167,12 +169,12 @@ impl<C: CpuBackend> Machine<C> {
         Ok(())
     }
 
-    /// Dá uma volta a cada thread que pediu para voltar.
+    /// Gives a turn to each thread that asked to come back.
     ///
-    /// Uma volta por quadro, e só a partir daqui. Uma thread cooperativa cede o controle
-    /// esperando ser retomada na próxima passada do laço de eventos, e o laço de eventos deste
-    /// emulador é o laço de quadros — retomá-la também a cada fronteira entre chamadas de API
-    /// faria o jogo rodar dezenas de quadros internos para cada quadro nosso.
+    /// One turn per frame, and only from here. A cooperative thread yields control expecting to
+    /// be resumed on the next pass of the event loop, and this emulator's event loop is the frame
+    /// loop — also resuming it at every boundary between API calls would make the game run dozens
+    /// of internal frames for each of ours.
     pub(super) fn run_pending_threads(&mut self, budget: u64) -> Result<(), CpuError> {
         if self.pending_threads.is_empty() || self.current_thread.is_some() {
             return Ok(());
@@ -187,7 +189,7 @@ impl<C: CpuBackend> Machine<C> {
         Ok(())
     }
 
-    /// Retoma uma thread do ponto em que ela parou.
+    /// Resumes a thread from the point where it stopped.
     pub(super) fn resume_thread(&mut self, thread: u32, budget: u64) -> Result<(), CpuError> {
         let Some(state) = self.threads.get(&thread) else {
             return Ok(());
@@ -204,8 +206,8 @@ impl<C: CpuBackend> Machine<C> {
         self.current_thread = Some(thread);
         let outcome = self.execute(pc, budget);
         self.current_thread = None;
-        // Voltar sem ter passado por `Suspend` significa que a função de entrada retornou: a
-        // thread acabou, mesmo sem `Exit`.
+        // Coming back without having gone through `Suspend` means the entry function returned:
+        // the thread is done, even without `Exit`.
         match outcome? {
             Outcome::Returned { code } => {
                 let ceded = self
@@ -216,14 +218,14 @@ impl<C: CpuBackend> Machine<C> {
                     self.finish_thread(thread, code)?;
                 }
             }
-            // Um desfecho que não é retorno — API faltando, falha de memória — precisa chegar
-            // ao relatório: é dentro da thread que o jogo passa a maior parte do tempo.
+            // An outcome that is not a return — missing API, memory fault — must reach the
+            // report: the thread is where the game spends most of its time.
             other => self.stalled = Some(other),
         }
         Ok(())
     }
 
-    /// Enfileira um callback do guest para a próxima fronteira entre chamadas.
+    /// Queues a guest callback for the next boundary between calls.
     pub(super) fn queue_call(&mut self, call: Callback) {
         if call.function != 0 {
             self.pending_calls.push(GuestCall {
@@ -233,12 +235,12 @@ impl<C: CpuBackend> Machine<C> {
         }
     }
 
-    /// `IHeap` (`AEECLSID_HEAP` = `0x01001002`), de `sdk/inc/AEEHeap.h`.
+    /// `IHeap` (`AEECLSID_HEAP` = `0x01001002`), from `sdk/inc/AEEHeap.h`.
     ///
-    /// A alocação é a mesma do `MALLOC` dos helpers — é o mesmo heap do guest, só que
-    /// alcançado por outra porta. O que faltava de verdade era o `CheckAvail`: o Double Dragon
-    /// pergunta se cabe o que ele quer antes de começar e, sem ninguém para responder,
-    /// desenhava "Memory is insufficient" em vez do jogo.
+    /// Allocation is the same as the helpers' `MALLOC` — it is the same guest heap, just reached
+    /// through another door. What was really missing was `CheckAvail`: Double Dragon asks whether
+    /// what it wants fits before starting and, with no one to answer, drew "Memory is
+    /// insufficient" instead of the game.
     pub(super) fn heap_call(&mut self, slot: u32) -> Result<Option<u32>, CpuError> {
         let Some(name) = Interface::Heap.method(slot) else {
             return Ok(None);
@@ -255,11 +257,11 @@ impl<C: CpuBackend> Machine<C> {
             "Malloc" => self.malloc(a1 & !ALLOC_NO_ZMEM)?,
             "Realloc" => self.realloc(a1, a2 & !ALLOC_NO_ZMEM)?,
             "Free" => {
-                self.libera(a1);
+                self.free(a1);
                 SUCCESS
             }
             "StrDup" => {
-                // `AECHAR` é UTF-16: a cópia leva o terminador junto.
+                // `AECHAR` is UTF-16: the copy carries the terminator along.
                 let units = self.read_aechar_units(a1)?;
                 let bytes: Vec<u8> = units
                     .iter()
@@ -272,23 +274,24 @@ impl<C: CpuBackend> Machine<C> {
                 }
                 ptr
             }
-            // `boolean`: cabe se ainda há esse tanto livre no heap do guest.
+            // `boolean`: it fits if the guest heap still has that much free.
             "CheckAvail" => {
-                let cabe = self.heap_available() >= a1 as u64;
-                if !cabe {
-                    // Um "não cabe" é o gatilho da tela "Memory is insufficient" em mais de um
-                    // jogo, e sem registrar o pedido não há como saber quanto ele queria.
-                    self.checagens_recusadas
+                let fits = self.heap_available() >= a1 as u64;
+                if !fits {
+                    // A "does not fit" is the trigger for the "Memory is insufficient" screen in
+                    // more than one game, and without recording the request there is no way to
+                    // know how much it wanted.
+                    self.refused_checks
                         .insert((a1, self.cpu.read_reg(Reg::Lr)));
                 }
-                u32::from(cabe)
+                u32::from(fits)
             }
-            // A documentação é explícita: o que sai daqui é o total **em uso**, e o total do
-            // aparelho vem do `ISHELL_GetDeviceInfo`.
+            // The documentation is explicit: what comes out of here is the total **in use**, and
+            // the device's total comes from `ISHELL_GetDeviceInfo`.
             "GetMemStats" => self.heap.used(),
             "GetModuleMemStats" => {
-                // O pico não é acompanhado; devolver o uso corrente nos dois é a resposta
-                // honesta mais próxima, e é o que o jogo compara com o que precisa.
+                // The peak is not tracked; returning the current usage in both is the closest
+                // honest answer, and it is what the game compares against what it needs.
                 let used = self.heap.used();
                 self.write_at(a2, used)?;
                 self.write_at(a3, used)?;
@@ -299,73 +302,73 @@ impl<C: CpuBackend> Machine<C> {
         Ok(Some(result))
     }
 
-    /// Quantos bytes o heap do guest ainda pode entregar.
+    /// How many bytes the guest heap can still hand out.
     pub(super) fn heap_available(&self) -> u64 {
-        // **O que uma alocação única consegue obter**, não a soma do que sobra: ver
-        // [`Heap::maior_bloco`]. A diferença recusava o pedido da Z-Wheel, que pergunta o livre
-        // e pede exatamente ele numa alocação só.
-        u64::from(self.heap.maior_bloco())
+        // **What a single allocation can obtain**, not the sum of what is left: see
+        // [`Heap::largest_block`]. The difference rejected the Z-Wheel's request, which asks for
+        // the free amount and requests exactly that in a single allocation.
+        u64::from(self.heap.largest_block())
     }
 
-    /// `realloc`: aloca o novo tamanho e copia o conteúdo antigo.
+    /// `realloc`: allocates the new size and copies the old contents.
     pub(super) fn realloc(&mut self, ptr: u32, size: u32) -> Result<u32, CpuError> {
         if ptr == 0 {
             return self.malloc(size);
         }
-        // Tamanho zero é `FREE`: o bloco sai e o ponteiro vira nulo. Entregar um bloco novo de
-        // oito bytes deixava o `ERR_REALLOC(0, &p)` com `p` não nulo, e um jogo que confia no
-        // nulo nunca o devolvia.
+        // Size zero is `FREE`: the block goes away and the pointer becomes null. Handing out a
+        // new eight-byte block left `ERR_REALLOC(0, &p)` with a non-null `p`, and a game that
+        // relies on the null never gave it back.
         if size == 0 {
-            self.libera(ptr);
+            self.free(ptr);
             return Ok(0);
         }
-        let old_size = self.tamanho_do_bloco(ptr).unwrap_or(0);
+        let old_size = self.block_size(ptr).unwrap_or(0);
         let new_ptr = self.malloc(size)?;
-        // Sem espaço, o bloco antigo fica como estava: é o que o `realloc` promete, e o jogo
-        // que confere o nulo ainda tem os dados dele.
+        // Without space, the old block stays as it was: that is what `realloc` promises, and the
+        // game that checks for null still has its data.
         if new_ptr == 0 {
             return Ok(0);
         }
         if old_size > 0 {
             self.copy_guest(new_ptr, ptr, old_size.min(size))?;
         }
-        self.libera(ptr);
+        self.free(ptr);
         Ok(new_ptr)
     }
 
-    /// `MALLOC` do BREW: devolve memória, ou 0 se não houver espaço.
+    /// BREW's `MALLOC`: returns memory, or 0 if there is no space.
     ///
-    /// O tamanho pode vir com `ALLOC_NO_ZMEM` (`0x80000000`) no bit alto, pedindo memória
-    /// **sem** zerar — é o que o `malloc` da libc do SDK faz (`MALLOC(size|ALLOC_NO_ZMEM)`).
-    /// Ignorar essa flag faz o emulador tentar alocar dois gigabytes e devolver nulo, e o jogo
-    /// conclui, corretamente, que ficou sem memória.
+    /// The size may come with `ALLOC_NO_ZMEM` (`0x80000000`) in the high bit, asking for memory
+    /// **without** zeroing — that is what the SDK libc's `malloc` does
+    /// (`MALLOC(size|ALLOC_NO_ZMEM)`). Ignoring that flag makes the emulator try to allocate two
+    /// gigabytes and return null, and the game concludes, correctly, that it ran out of memory.
     pub(super) fn malloc(&mut self, size: u32) -> Result<u32, CpuError> {
         let zero = size & ALLOC_NO_ZMEM == 0;
         let size = size & !ALLOC_NO_ZMEM;
-        // Um byte a mais, que vira a folga depois do bloco: ver `FOLGA_DO_BLOCO`.
+        // One extra byte, which becomes the slack after the block: see `BLOCK_PADDING`.
         let Some(addr) = self.heap.alloc(size.saturating_add(1)) else {
-            // Registrado: uma recusa silenciosa vira "o jogo não funciona" sem pista nenhuma no
-            // relatório. `lr` diz quem pediu.
-            self.alocacoes_recusadas
+            // Recorded: a silent refusal turns into "the game does not work" with no clue at all
+            // in the report. `lr` says who asked.
+            self.refused_allocs
                 .insert((size, self.cpu.read_reg(Reg::Lr)));
             return Ok(0);
         };
-        // Blocos reaproveitados carregam lixo do dono anterior; zeramos quando pedido.
+        // Reused blocks carry garbage from the previous owner; we zero them when asked.
         if zero && size > 0 {
             self.cpu.write_mem(addr, &vec![0u8; size as usize])?;
         }
-        let bloco = self.heap.size_of(addr).unwrap_or(size);
+        let block = self.heap.size_of(addr).unwrap_or(size);
         self.cpu
-            .write_mem(addr + size, &vec![FOLGA_DO_BLOCO; (bloco - size) as usize])?;
+            .write_mem(addr + size, &vec![BLOCK_PADDING; (block - size) as usize])?;
         Ok(addr)
     }
 
-    /// Memória para o próprio emulador, na região interna e zerada: ver
-    /// [`loader::INTERNAL_BASE`]. Devolve 0 se a região encheu, como o `malloc`.
-    pub(super) fn aloca_interno(&mut self, size: u32) -> Result<u32, CpuError> {
-        let Some(addr) = self.heap_interno.alloc(size) else {
+    /// Memory for the emulator itself, in the internal region and zeroed: see
+    /// [`loader::INTERNAL_BASE`]. Returns 0 if the region is full, like `malloc`.
+    pub(super) fn alloc_internal(&mut self, size: u32) -> Result<u32, CpuError> {
+        let Some(addr) = self.internal_heap.alloc(size) else {
             self.assumptions
-                .insert("a região interna do emulador encheu");
+                .insert("the emulator's internal region filled up");
             return Ok(0);
         };
         if size > 0 {
@@ -374,43 +377,43 @@ impl<C: CpuBackend> Machine<C> {
         Ok(addr)
     }
 
-    /// Devolve um bloco ao alocador de onde ele saiu, pelo endereço.
+    /// Returns a block to the allocator it came from, by address.
     ///
-    /// Todo `free` passa por aqui, inclusive o do jogo: um bloco nosso pode chegar a ele (e um
-    /// save state de antes da região interna traz os nossos dentro do heap).
-    pub(super) fn libera(&mut self, ptr: u32) -> Option<u32> {
-        if loader::e_interno(ptr) {
-            self.heap_interno.free(ptr)
+    /// Every `free` goes through here, including the game's: one of our blocks can reach it (and
+    /// a save state from before the internal region carries ours inside the heap).
+    pub(super) fn free(&mut self, ptr: u32) -> Option<u32> {
+        if loader::is_internal(ptr) {
+            self.internal_heap.free(ptr)
         } else {
             self.heap.free(ptr)
         }
     }
 
-    /// Tamanho de um bloco vivo, em qualquer dos dois alocadores.
-    pub(super) fn tamanho_do_bloco(&self, ptr: u32) -> Option<u32> {
-        if loader::e_interno(ptr) {
-            self.heap_interno.size_of(ptr)
+    /// Size of a live block, in either of the two allocators.
+    pub(super) fn block_size(&self, ptr: u32) -> Option<u32> {
+        if loader::is_internal(ptr) {
+            self.internal_heap.size_of(ptr)
         } else {
             self.heap.size_of(ptr)
         }
     }
 
-    /// As alocações que o heap recusou, com o tamanho e quem pediu.
+    /// The allocations the heap refused, with the size and who asked.
     pub fn refused_allocations(&self) -> Vec<(u32, u32)> {
-        self.alocacoes_recusadas.iter().copied().collect()
+        self.refused_allocs.iter().copied().collect()
     }
 
-    /// As perguntas de `CheckAvail` respondidas com "não cabe".
+    /// The `CheckAvail` queries answered with "does not fit".
     pub fn refused_availability_checks(&self) -> Vec<(u32, u32)> {
-        self.checagens_recusadas.iter().copied().collect()
+        self.refused_checks.iter().copied().collect()
     }
 
     pub fn heap_used(&self) -> u32 {
         self.heap.used()
     }
 
-    /// O retrato do heap do jogo — buracos, maior bloco, livre e usado.
-    pub fn heap_retrato(&self) -> crate::brew::heap::Retrato {
-        self.heap.retrato()
+    /// The snapshot of the game's heap — holes, largest block, free and used.
+    pub fn heap_snapshot(&self) -> crate::brew::heap::Snapshot {
+        self.heap.snapshot()
     }
 }

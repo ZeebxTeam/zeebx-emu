@@ -1,27 +1,27 @@
-//! Alocador do heap do guest.
+//! The guest heap allocator.
 //!
-//! Serve o `MALLOC`/`FREE` do BREW. A contabilidade fica toda no host — nenhum cabeçalho é
-//! escrito na memória do guest — porque o jogo nunca inspeciona a estrutura interna do heap. Ele
-//! lê, sim, além do fim do que pediu: por isso o `MALLOC` pede aqui um byte a mais e o preenche
-//! (`FOLGA_DO_BLOCO`, em `machine/thread.rs`).
+//! It serves BREW's `MALLOC`/`FREE`. All the bookkeeping stays on the host — no header is written
+//! into guest memory — because the game never inspects the heap's internal structure. It does,
+//! however, read past the end of what it asked for: that is why `MALLOC` asks here for one extra
+//! byte and fills it (`BLOCK_PADDING`, in `machine/thread.rs`).
 
 use std::collections::{BTreeMap, HashMap};
 
-/// Alinhamento dos blocos. O ARM exige 4; usamos 8 para não penalizar acessos de 64 bits.
+/// Block alignment. ARM requires 4; we use 8 so as not to penalize 64-bit accesses.
 const ALIGN: u32 = 8;
 
 #[derive(Debug)]
 pub struct Heap {
     base: u32,
     end: u32,
-    /// Primeiro endereço nunca usado.
+    /// First address never used.
     next: u32,
-    /// Blocos devolvidos por [`Heap::free`], do endereço para o tamanho.
+    /// Blocks returned by [`Heap::free`], from address to size.
     ///
-    /// É mapa ordenado, e não lista, porque o que importa aqui é achar o vizinho de um bloco
-    /// para fundir os dois — ver [`Heap::free`].
+    /// It is an ordered map, not a list, because what matters here is finding a block's neighbor
+    /// to merge the two — see [`Heap::free`].
     free_list: BTreeMap<u32, u32>,
-    /// Blocos em uso, para que `free` saiba o tamanho sem o chamador informar.
+    /// Blocks in use, so `free` knows the size without the caller providing it.
     live: HashMap<u32, u32>,
 }
 
@@ -36,25 +36,25 @@ impl Heap {
         }
     }
 
-    /// Reserva `size` bytes e devolve o endereço, ou `None` se o heap encheu.
+    /// Reserves `size` bytes and returns the address, or `None` if the heap is full.
     ///
-    /// Um `size` zero ainda recebe endereço próprio: o BREW devolve ponteiro válido nesse caso,
-    /// e devolver o mesmo endereço duas vezes confundiria o `free`.
-    /// O primeiro endereço nunca usado.
+    /// A `size` of zero still gets its own address: BREW returns a valid pointer in that case,
+    /// and returning the same address twice would confuse `free`.
+    /// The first address never used.
     ///
-    /// É o que delimita o que vale gravar num save state: abaixo dele está tudo o que o jogo
-    /// pediu, e acima é zero desde a construção da região.
-    pub fn proximo(&self) -> u32 {
+    /// It is what bounds what is worth saving in a save state: below it is everything the game
+    /// asked for, and above it is zero since the region was built.
+    pub fn next(&self) -> u32 {
         self.next
     }
 
     pub fn alloc(&mut self, size: u32) -> Option<u32> {
         let total = size.max(1).div_ceil(ALIGN) * ALIGN;
 
-        // Primeiro ajuste entre os blocos livres.
+        // First fit among the free blocks.
         if let Some((&addr, &len)) = self.free_list.iter().find(|&(_, &len)| len >= total) {
             self.free_list.remove(&addr);
-            // O resto do bloco volta para a lista em vez de virar desperdício.
+            // The rest of the block goes back to the list instead of going to waste.
             if len > total {
                 self.free_list.insert(addr + total, len - total);
             }
@@ -71,190 +71,192 @@ impl Heap {
         Some(addr)
     }
 
-    /// Tamanho de um bloco vivo — usado pelo `realloc` para saber quanto copiar.
+    /// Size of a live block — used by `realloc` to know how much to copy.
     pub fn size_of(&self, ptr: u32) -> Option<u32> {
         self.live.get(&ptr).copied()
     }
 
-    /// O bloco vivo que contém `addr`, como `(início, tamanho)`.
+    /// The live block that contains `addr`, as `(start, size)`.
     ///
-    /// Percorre todos os blocos: é para quem guarda a resposta, como a busca da pilha que o
-    /// jogo alocou para si, e não para cada acesso.
-    pub fn bloco_que_contem(&self, addr: u32) -> Option<(u32, u32)> {
+    /// It walks every block: it is meant for callers that keep the answer, like the search for the
+    /// stack the game allocated for itself, and not for every access.
+    pub fn block_containing(&self, addr: u32) -> Option<(u32, u32)> {
         self.live
             .iter()
-            .find(|&(&inicio, &tamanho)| (inicio..inicio + tamanho).contains(&addr))
-            .map(|(&inicio, &tamanho)| (inicio, tamanho))
+            .find(|&(&start, &size)| (start..start + size).contains(&addr))
+            .map(|(&start, &size)| (start, size))
     }
 
-    /// Devolve um bloco. Retorna o tamanho liberado, ou `None` se o ponteiro não estava vivo
-    /// — inclusive o ponteiro nulo, que `FREE` aceita sem fazer nada.
+    /// Gives a block back. Returns the size freed, or `None` if the pointer was not live —
+    /// including the null pointer, which `FREE` accepts without doing anything.
     ///
-    /// **O bloco é fundido com os vizinhos livres.** Sem isso o heap se despedaça: cada troca
-    /// de tela do Treino Cerebral devolve centenas de blocos pequenos, nenhum deles volta a
-    /// formar uma região grande, e o pedido de um mega que vem na fase seguinte não acha onde
-    /// caber mesmo com dezenas de megas livres — o jogo não confere o ponteiro nulo e morre
-    /// chamando um método em zero.
+    /// **The block is merged with its free neighbors.** Without that the heap falls to pieces:
+    /// every screen change in Treino Cerebral returns hundreds of small blocks, none of them forms
+    /// a large region again, and the one-megabyte request that comes in the next stage finds
+    /// nowhere to fit even with tens of megabytes free — the game does not check for the null
+    /// pointer and dies calling a method at zero.
     pub fn free(&mut self, ptr: u32) -> Option<u32> {
         let size = self.live.remove(&ptr)?;
-        let (mut inicio, mut fim) = (ptr, ptr + size);
-        // O vizinho de baixo, se ele termina exatamente onde este começa.
-        if let Some((&antes, &len)) = self.free_list.range(..inicio).next_back()
-            && antes + len == inicio
+        let (mut start, mut end) = (ptr, ptr + size);
+        // The neighbor below, if it ends exactly where this one starts.
+        if let Some((&before, &len)) = self.free_list.range(..start).next_back()
+            && before + len == start
         {
-            self.free_list.remove(&antes);
-            inicio = antes;
+            self.free_list.remove(&before);
+            start = before;
         }
-        // E o de cima, se começa exatamente onde este termina.
-        if let Some(&len) = self.free_list.get(&fim) {
-            self.free_list.remove(&fim);
-            fim += len;
+        // And the one above, if it starts exactly where this one ends.
+        if let Some(&len) = self.free_list.get(&end) {
+            self.free_list.remove(&end);
+            end += len;
         }
-        // Um bloco que encosta no topo não precisa de lista: o `next` recua e ele vira espaço
-        // novo de novo, do tamanho que for pedido depois.
-        if fim == self.next {
-            self.next = inicio;
+        // A block that touches the top needs no list: `next` moves back and it becomes fresh
+        // space again, of whatever size is asked for later.
+        if end == self.next {
+            self.next = start;
         } else {
-            self.free_list.insert(inicio, fim - inicio);
+            self.free_list.insert(start, end - start);
         }
         Some(size)
     }
 
-    /// Quanto do heap está entregue ao jogo, em bytes.
+    /// How much of the heap is handed out to the game, in bytes.
     ///
-    /// Não é `next - base`: o que está na lista de livres já voltou, e contá-lo faria o
-    /// `GetRAMFree` mentir para quem pergunta antes de alocar.
+    /// It is not `next - base`: what is in the free list has already come back, and counting it
+    /// would make `GetRAMFree` lie to whoever asks before allocating.
     pub fn used(&self) -> u32 {
-        let livres: u32 = self.free_list.values().sum();
-        (self.next - self.base).saturating_sub(livres)
+        let free_slots: u32 = self.free_list.values().sum();
+        (self.next - self.base).saturating_sub(free_slots)
     }
 
-    /// **O maior bloco que uma alocação única consegue obter**, e não a soma do que sobra.
+    /// **The largest block a single allocation can get**, and not the sum of what is left.
     ///
-    /// A diferença não é acadêmica: `MALLOC` pede um bloco **contíguo**, e responde por dois
-    /// caminhos — um buraco da lista de livres do tamanho pedido, ou o ponteiro de avanço. Somar
-    /// os buracos com o que resta à frente responde um número que nenhuma alocação consegue.
+    /// The difference is not academic: `MALLOC` asks for a **contiguous** block, and is served by
+    /// two paths — a hole in the free list of the requested size, or the bump pointer. Adding the
+    /// holes to what remains ahead gives a number no allocation can get.
     ///
-    /// Medido em 22/09/2026 com a Z-Wheel: ela pergunta quanto há livre, pede **isso** numa
-    /// alocação só (o seu próprio `Free(67001392)` vira um `malloc` de 67001488), e a soma
-    /// mentirosa fazia o pedido ser recusado — `check_malloc: Malloc failed in Tectoy.c at line
-    /// 570` — com o heap longe de estar cheio. Quem decide se o aparelho dá conta é o jogo,
-    /// e ele decide pelo número que nós informamos.
-    pub fn maior_bloco(&self) -> u32 {
-        let a_frente = self.end.saturating_sub(self.next);
-        let buraco = self.free_list.values().copied().max().unwrap_or(0);
-        a_frente.max(buraco)
+    /// Measured on 2026-09-22 with the Z-Wheel: it asks how much is free, asks for **that** in a
+    /// single allocation (its own `Free(67001392)` becomes a `malloc` of 67001488), and the lying
+    /// sum made the request be refused — `check_malloc: Malloc failed in Tectoy.c at line 570` —
+    /// with the heap far from full. The game is what decides whether the device can cope, and it
+    /// decides by the number we report.
+    pub fn largest_block(&self) -> u32 {
+        let ahead = self.end.saturating_sub(self.next);
+        let hole = self.free_list.values().copied().max().unwrap_or(0);
+        ahead.max(hole)
     }
 
-    /// **Como o heap está partido**, e não só quanto sobra.
+    /// **How the heap is split up**, and not just how much is left.
     ///
-    /// [`Heap::maior_bloco`] responde o que uma alocação consegue; este retrato responde *por que*
-    /// ela consegue o que consegue. A distância entre o total livre e o maior buraco é a medida da
-    /// fragmentação: com a fusão funcionando ela fica pequena mesmo depois de o jogo passar a vida
-    /// alocando e liberando blocos de tamanhos diferentes. É o número que distingue "o heap encheu"
-    /// de "o heap se despedaçou" — os dois sintomas que o jogo relata como falta de memória.
-    pub fn retrato(&self) -> Retrato {
-        let na_lista: u32 = self.free_list.values().sum();
-        Retrato {
-            buracos: self.free_list.len(),
-            maior_buraco: self.maior_bloco(),
-            livre: na_lista + self.end.saturating_sub(self.next),
-            usado: self.used(),
-            vivos: self.live.len(),
-            teto: self.end - self.base,
+    /// [`Heap::largest_block`] answers what an allocation can get; this snapshot answers *why* it
+    /// gets what it gets. The gap between the total free and the largest hole is the measure of
+    /// fragmentation: with merging working it stays small even after the game spends its whole
+    /// life allocating and freeing blocks of different sizes. It is the number that tells "the
+    /// heap filled up" from "the heap fell to pieces" — the two symptoms the game reports as being
+    /// out of memory.
+    pub fn snapshot(&self) -> Snapshot {
+        let in_list: u32 = self.free_list.values().sum();
+        Snapshot {
+            holes: self.free_list.len(),
+            largest_hole: self.largest_block(),
+            free: in_list + self.end.saturating_sub(self.next),
+            used: self.used(),
+            live: self.live.len(),
+            cap: self.end - self.base,
         }
     }
 }
 
-/// O estado da memória do guest num instante: o que a fragmentação precisa para ser um número.
+/// The state of guest memory at one instant: what fragmentation needs in order to be a number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Retrato {
-    /// Quantos buracos a lista de livres tem.
-    pub buracos: usize,
-    /// O maior bloco que uma alocação única obtém.
-    pub maior_buraco: u32,
-    /// Quanto há livre no total, somados os buracos e o que resta à frente.
-    pub livre: u32,
-    /// Quanto está entregue ao jogo.
-    pub usado: u32,
-    /// Quantos blocos vivos.
-    pub vivos: usize,
-    /// O tamanho da região.
-    pub teto: u32,
+pub struct Snapshot {
+    /// How many holes the free list has.
+    pub holes: usize,
+    /// The largest block a single allocation gets.
+    pub largest_hole: u32,
+    /// How much is free in total, adding up the holes and what remains ahead.
+    pub free: u32,
+    /// How much is handed out to the game.
+    pub used: u32,
+    /// How many live blocks.
+    pub live: usize,
+    /// The size of the region.
+    pub cap: u32,
 }
 
-impl Retrato {
-    /// A parte do total livre que **não** serve para uma alocação única, em bytes.
+impl Snapshot {
+    /// The part of the total free space that is **not** usable by a single allocation, in bytes.
     ///
-    /// Zero quando existe um buraco do tamanho de tudo o que está livre. Quanto maior, mais
-    /// despedaçado está o heap.
-    pub fn perdido_em_buracos(&self) -> u32 {
-        self.livre.saturating_sub(self.maior_buraco)
+    /// Zero when there is a hole the size of everything that is free. The larger it is, the more
+    /// fragmented the heap.
+    pub fn lost_in_holes(&self) -> u32 {
+        self.free.saturating_sub(self.largest_hole)
     }
 }
 
 
 impl Heap {
-    /// Grava com um prefixo de seção.
+    /// Saves under a section prefix.
     ///
-    /// O prefixo existe porque a máquina tem **dois** heaps: a memória do jogo e a região das
-    /// superfícies. Com nome fixo, o segundo sobrescreveria o primeiro no arquivo — e o defeito
-    /// apareceria como "as superfícies voltaram no lugar do heap".
-    pub fn grava_com_prefixo(&self, prefixo: &str, destino: &mut crate::save_state::Secoes) {
-        destino.poe_u32(&format!("{prefixo}.base"), self.base);
-        destino.poe_u32(&format!("{prefixo}.end"), self.end);
-        destino.poe_u32(&format!("{prefixo}.next"), self.next);
-        destino.poe_mapa(
-            &format!("{prefixo}.free_list"),
+    /// The prefix exists because the machine has **two** heaps: the game's memory and the
+    /// surfaces region. With a fixed name, the second would overwrite the first in the file — and
+    /// the defect would show up as "the surfaces came back in place of the heap".
+    pub fn save_with_prefix(&self, prefix: &str, dest: &mut crate::save_state::Sections) {
+        dest.put_u32(&format!("{prefix}.base"), self.base);
+        dest.put_u32(&format!("{prefix}.end"), self.end);
+        dest.put_u32(&format!("{prefix}.next"), self.next);
+        dest.put_map(
+            &format!("{prefix}.free_list"),
             self.free_list.iter().map(|(a, t)| (*a, *t)),
         );
-        destino.poe_mapa(&format!("{prefixo}.live"), self.live.iter().map(|(a, t)| (*a, *t)));
+        dest.put_map(&format!("{prefix}.live"), self.live.iter().map(|(a, t)| (*a, *t)));
     }
 
-    /// Restaura de um prefixo, conferindo que o heap é desta máquina e que o conteúdo é coerente.
-    pub fn restaura_com_prefixo(
+    /// Restores from a prefix, checking that the heap belongs to this machine and that the
+    /// contents are consistent.
+    pub fn restore_with_prefix(
         &mut self,
-        prefixo: &str,
-        origem: &crate::save_state::Leitor<'_>,
-    ) -> Result<(), crate::save_state::Erro> {
-        use crate::save_state::Erro;
-        let base = origem.u32(&format!("{prefixo}.base"))?;
-        let end = origem.u32(&format!("{prefixo}.end"))?;
+        prefix: &str,
+        origin: &crate::save_state::Reader<'_>,
+    ) -> Result<(), crate::save_state::Error> {
+        use crate::save_state::Error;
+        let base = origin.u32(&format!("{prefix}.base"))?;
+        let end = origin.u32(&format!("{prefix}.end"))?;
         if base != self.base || end != self.end {
-            return Err(Erro::Secao { nome: prefixo.to_string(), motivo: format!(
-                "o estado é de uma região {base:#010x}..{end:#010x} e esta máquina tem {:#010x}..{:#010x}",
+            return Err(Error::Section { name: prefix.to_string(), reason: format!(
+                "the state is from a region {base:#010x}..{end:#010x} and this machine has {:#010x}..{:#010x}",
                 self.base, self.end) });
         }
-        let next = origem.u32(&format!("{prefixo}.next"))?;
-        let livres = origem.pares(&format!("{prefixo}.free_list"))?;
-        let vivos = origem.pares(&format!("{prefixo}.live"))?;
-        if let Some((endereco, _)) = vivos.iter().find(|(a, _)| livres.iter().any(|(f, _)| f == a)) {
-            return Err(Erro::Secao {
-                nome: prefixo.to_string(),
-                motivo: format!("o endereço {endereco:#010x} aparece livre e em uso"),
+        let next = origin.u32(&format!("{prefix}.next"))?;
+        let free_slots = origin.pairs(&format!("{prefix}.free_list"))?;
+        let live = origin.pairs(&format!("{prefix}.live"))?;
+        if let Some((address, _)) = live.iter().find(|(a, _)| free_slots.iter().any(|(f, _)| f == a)) {
+            return Err(Error::Section {
+                name: prefix.to_string(),
+                reason: format!("address {address:#010x} appears both free and in use"),
             });
         }
         self.next = next;
-        self.free_list = livres.into_iter().collect();
-        self.live = vivos.into_iter().collect();
+        self.free_list = free_slots.into_iter().collect();
+        self.live = live.into_iter().collect();
         Ok(())
     }
 }
 
-impl crate::save_state::Guardavel for Heap {
-    /// Grava os cinco campos. `base` e `end` não mudam depois da construção, e vão junto de
-    /// propósito: na volta eles servem de **conferência** de que o estado é desta máquina.
-    fn grava(&self, destino: &mut crate::save_state::Secoes) {
-        self.grava_com_prefixo("heap", destino);
+impl crate::save_state::Saveable for Heap {
+    /// Saves the five fields. `base` and `end` do not change after construction, and go along on
+    /// purpose: on the way back they serve as a **check** that the state is from this machine.
+    fn save(&self, dest: &mut crate::save_state::Sections) {
+        self.save_with_prefix("heap", dest);
     }
 
-    /// Restaura, e **recusa** o estado que não for desta máquina ou estiver inconsistente.
+    /// Restores, and **refuses** a state that is not from this machine or is inconsistent.
     ///
-    /// As duas checagens não são enfeite: um heap restaurado com `base` diferente faria todo
-    /// ponteiro do guest apontar para o lugar errado, e o sintoma apareceria muito depois, como
-    /// acesso inválido em endereço sem relação com o save state.
-    fn restaura(&mut self, origem: &crate::save_state::Leitor<'_>) -> Result<(), crate::save_state::Erro> {
-        self.restaura_com_prefixo("heap", origem)
+    /// The two checks are not decoration: a heap restored with a different `base` would make every
+    /// guest pointer point to the wrong place, and the symptom would show up much later, as an
+    /// invalid access at an address unrelated to the save state.
+    fn restore(&mut self, origin: &crate::save_state::Reader<'_>) -> Result<(), crate::save_state::Error> {
+        self.restore_with_prefix("heap", origin)
     }
 }
 
@@ -262,249 +264,252 @@ impl crate::save_state::Guardavel for Heap {
 mod tests {
     use super::*;
 
-    /// **O bloco que contém um endereço é achado pelo meio dele, e some quando é devolvido.**
+    /// **The block that contains an address is found from its middle, and disappears when it is
+    /// given back.**
     ///
-    /// É o que acha a pilha que o Iron Sight alocou para si, a partir do `sp`: um bloco
-    /// devolvido que ainda fosse achado faria o emulador sujar memória que já é de outro.
+    /// It is what finds the stack Iron Sight allocated for itself, from `sp`: a returned block
+    /// that could still be found would make the emulator dirty memory that already belongs to
+    /// someone else.
     #[test]
-    fn o_bloco_que_contem_um_endereco_e_achado_pelo_meio() {
+    fn the_block_containing_an_address_is_found_from_its_middle() {
         let mut heap = Heap::new(0x1000, 0x1000);
         let a = heap.alloc(0x40).unwrap();
         let b = heap.alloc(0x100).unwrap();
-        assert_eq!(heap.bloco_que_contem(b + 0x80), Some((b, 0x100)));
-        assert_eq!(heap.bloco_que_contem(a), Some((a, 0x40)));
-        assert_eq!(heap.bloco_que_contem(b + 0x100), None, "o fim do bloco é exclusivo");
+        assert_eq!(heap.block_containing(b + 0x80), Some((b, 0x100)));
+        assert_eq!(heap.block_containing(a), Some((a, 0x40)));
+        assert_eq!(heap.block_containing(b + 0x100), None, "the block's end is exclusive");
         heap.free(b);
-        assert_eq!(heap.bloco_que_contem(b + 0x80), None);
+        assert_eq!(heap.block_containing(b + 0x80), None);
     }
 
-    /// **"Quanto há livre" para uma alocação única é o maior bloco contíguo.**
+    /// **"How much is free" for a single allocation is the largest contiguous block.**
     ///
-    /// O teste existe por uma medição: a Z-Wheel pergunta quanto há livre e pede isso numa
-    /// alocação só. Somando os buracos ao que resta à frente, a resposta era maior do que qualquer
-    /// alocação consegue — o pedido era recusado com o heap longe de estar cheio, e o jogo
-    /// concluía, corretamente para o número que ouviu, que não havia memória.
+    /// The test exists because of a measurement: the Z-Wheel asks how much is free and asks for
+    /// that in a single allocation. Adding the holes to what remains ahead, the answer was larger
+    /// than any allocation can get — the request was refused with the heap far from full, and the
+    /// game concluded, correctly for the number it heard, that there was no memory.
     #[test]
-    fn o_livre_de_uma_alocacao_unica_e_o_maior_bloco() {
+    fn the_free_space_after_a_single_allocation_is_the_largest_block() {
         let mut heap = Heap::new(0x1000, 0x1000);
         let a = heap.alloc(0x100).unwrap();
         let b = heap.alloc(0x100).unwrap();
         let c = heap.alloc(0x100).unwrap();
         heap.free(b);
-        // 0x1000 no total, 0x300 em uso: à frente restam 0xD00, e o buraco do meio é 0x100.
-        assert_eq!(heap.maior_bloco(), 0xD00, "o buraco não entra na conta");
-        // Com o maior bloco menor que o pedido, o `alloc` recusa — e é isso que o `CheckAvail`
-        // tem de dizer antes, em vez de somar.
+        // 0x1000 in total, 0x300 in use: 0xD00 remains ahead, and the middle hole is 0x100.
+        assert_eq!(heap.largest_block(), 0xD00, "the hole does not count");
+        // With the largest block smaller than the request, `alloc` refuses — and that is what
+        // `CheckAvail` has to say beforehand, instead of adding up.
         assert_eq!(heap.alloc(0xD08), None);
-        // 0xD00 ainda cabe à frente, e é de lá que sai: o buraco do meio é pequeno demais para
-        // este pedido, e o alocador não move blocos vivos.
-        assert_eq!(heap.alloc(0xD00), Some(0x1300), "servido pelo ponteiro de avanço");
-        // O que passa a valer é só o buraco: um pedido maior que ele não cabe em lugar nenhum.
-        assert_eq!(heap.maior_bloco(), 0x100, "resta o buraco do meio");
+        // 0xD00 still fits ahead, and that is where it comes from: the middle hole is too small
+        // for this request, and the allocator does not move live blocks.
+        assert_eq!(heap.alloc(0xD00), Some(0x1300), "served by the bump pointer");
+        // What counts now is only the hole: a request larger than it fits nowhere.
+        assert_eq!(heap.largest_block(), 0x100, "the middle hole remains");
         assert_eq!(heap.alloc(0x108), None);
         let _ = (a, c);
     }
 
-    /// **A fusão impede o heap de se despedaçar.**
+    /// **Merging keeps the heap from falling to pieces.**
     ///
-    /// O padrão é o do relato do Treino Cerebral: blocos pequenos alocados e liberados entre dois
-    /// grandes. O teste **esgota o ponteiro de avanço antes de medir** — sem isso o espaço à frente
-    /// esconde a fragmentação, e o retrato parece saudável justamente quando não é.
+    /// The pattern is the one from the Treino Cerebral report: small blocks allocated and freed
+    /// between two large ones. The test **exhausts the bump pointer before measuring** — without
+    /// that the space ahead hides the fragmentation, and the snapshot looks healthy precisely when
+    /// it is not.
     #[test]
-    fn liberar_blocos_pequenos_devolve_uma_regiao_continua() {
+    fn freeing_small_blocks_returns_a_contiguous_region() {
         let mut heap = Heap::new(0x1000_0000, 1 << 20);
-        let _primeiro = heap.alloc(64 * 1024).unwrap();
-        let pequenos: Vec<u32> = (0..64).map(|_| heap.alloc(4 * 1024).unwrap()).collect();
-        // Enche o que resta à frente: assim o único livre que sobra é o dos buracos do meio.
+        let _first = heap.alloc(64 * 1024).unwrap();
+        let small: Vec<u32> = (0..64).map(|_| heap.alloc(4 * 1024).unwrap()).collect();
+        // Fills what remains ahead: that way the only free space left is the middle holes.
         while heap.alloc(4 * 1024).is_some() {}
-        let antes = heap.retrato();
+        let before = heap.snapshot();
         assert!(
-            antes.maior_buraco < 64 * 1024,
-            "o avanço ainda escondia espaço: o maior bloco é {}",
-            antes.maior_buraco
+            before.largest_hole < 64 * 1024,
+            "the bump pointer still hid space: the largest block is {}",
+            before.largest_hole
         );
-        for p in &pequenos {
+        for p in &small {
             heap.free(*p);
         }
-        let depois = heap.retrato();
+        let after = heap.snapshot();
         assert!(
-            depois.maior_buraco >= 256 * 1024,
-            "os 64 blocos de 4 KiB deviam voltar a formar 256 KiB; o maior é {}",
-            depois.maior_buraco
+            after.largest_hole >= 256 * 1024,
+            "the 64 blocks of 4 KiB should form 256 KiB again; the largest is {}",
+            after.largest_hole
         );
-        assert_eq!(depois.buracos, 1, "e virar um buraco só");
-        // O que sobra à frente (menos de 4 KiB) não serve para nada grande, e é a única parte do
-        // livre que não está num buraco: a fragmentação fica abaixo disso.
+        assert_eq!(after.holes, 1, "and become a single hole");
+        // What is left ahead (under 4 KiB) is of no use for anything large, and it is the only
+        // part of the free space not in a hole: the fragmentation stays below that.
         assert!(
-            depois.perdido_em_buracos() < 8 * 1024,
-            "livre preso em buracos: {} bytes",
-            depois.perdido_em_buracos()
+            after.lost_in_holes() < 8 * 1024,
+            "free space stuck in holes: {} bytes",
+            after.lost_in_holes()
         );
     }
 
     #[test]
-    fn aloca_sequencialmente_e_alinhado() {
+    fn allocates_sequentially_and_aligned() {
         let mut heap = Heap::new(0x1000, 0x1000);
         let a = heap.alloc(4).unwrap();
         let b = heap.alloc(4).unwrap();
         assert_eq!(a, 0x1000);
-        assert_eq!(b, 0x1008, "blocos devem respeitar o alinhamento de {ALIGN}");
+        assert_eq!(b, 0x1008, "blocks must respect the alignment of {ALIGN}");
     }
 
     #[test]
-    fn reaproveita_bloco_liberado() {
+    fn reuses_a_freed_block() {
         let mut heap = Heap::new(0x1000, 0x1000);
         let a = heap.alloc(32).unwrap();
         assert_eq!(heap.free(a), Some(32));
-        assert_eq!(heap.alloc(16), Some(a), "deveria reusar o bloco livre");
-        // O restante do bloco continua disponível.
+        assert_eq!(heap.alloc(16), Some(a), "should reuse the free block");
+        // The rest of the block stays available.
         assert_eq!(heap.alloc(16), Some(a + 16));
     }
 
     #[test]
-    fn free_de_ponteiro_invalido_e_inofensivo() {
+    fn free_of_an_invalid_pointer_is_harmless() {
         let mut heap = Heap::new(0x1000, 0x1000);
         assert_eq!(heap.free(0), None);
         assert_eq!(heap.free(0xdead), None);
     }
 
     #[test]
-    fn nao_entrega_dois_ponteiros_iguais_para_tamanho_zero() {
+    fn does_not_hand_out_two_equal_pointers_for_size_zero() {
         let mut heap = Heap::new(0x1000, 0x1000);
         assert_ne!(heap.alloc(0).unwrap(), heap.alloc(0).unwrap());
     }
 
     #[test]
-    fn blocos_vizinhos_liberados_voltam_a_ser_um_so() {
-        // Sem fundir, três blocos de 32 devolvidos viram três buracos de 32 e um pedido de 96
-        // vai para o topo do heap. É assim que o Treino Cerebral esgotava 64 MB.
+    fn freed_neighbor_blocks_merge_back_into_one() {
+        // Without merging, three returned blocks of 32 become three holes of 32 and a request of
+        // 96 goes to the top of the heap. That is how Treino Cerebral used up 64 MB.
         let mut heap = Heap::new(0x1000, 0x1000);
         let a = heap.alloc(32).unwrap();
         let b = heap.alloc(32).unwrap();
         let c = heap.alloc(32).unwrap();
-        let depois = heap.alloc(8).unwrap();
+        let after = heap.alloc(8).unwrap();
         heap.free(b);
         heap.free(a);
         heap.free(c);
-        assert_eq!(heap.alloc(96), Some(a), "os três deveriam ter virado um só");
-        assert_eq!(heap.free(depois), Some(8));
+        assert_eq!(heap.alloc(96), Some(a), "the three should have become one");
+        assert_eq!(heap.free(after), Some(8));
     }
 
     #[test]
-    fn o_bloco_do_topo_devolve_o_espaco_ao_heap() {
+    fn the_top_block_returns_its_space_to_the_heap() {
         let mut heap = Heap::new(0x1000, 64);
         let a = heap.alloc(32).unwrap();
         heap.free(a);
-        assert_eq!(heap.used(), 0, "nada continua entregue");
-        assert!(heap.alloc(64).is_some(), "o heap inteiro voltou a caber");
+        assert_eq!(heap.used(), 0, "nothing remains handed out");
+        assert!(heap.alloc(64).is_some(), "the whole heap fits again");
     }
 
     #[test]
-    fn o_uso_nao_conta_o_que_ja_voltou() {
+    fn usage_does_not_count_what_was_already_freed() {
         let mut heap = Heap::new(0x1000, 0x1000);
         let a = heap.alloc(64).unwrap();
         let _b = heap.alloc(64).unwrap();
         assert_eq!(heap.used(), 128);
         heap.free(a);
-        assert_eq!(heap.used(), 64, "o bloco livre no meio não está entregue");
+        assert_eq!(heap.used(), 64, "the free block in the middle is not handed out");
     }
 
-    /// Nenhum bloco vivo pode encostar em outro: a fusão mexe em vizinhança, e um erro ali
-    /// entrega o mesmo endereço duas vezes — o jogo escreve por cima do que era dele.
+    /// No live block may touch another: merging works on neighborhoods, and a mistake there hands
+    /// out the same address twice — the game writes over what was its own.
     #[test]
-    fn sob_estresse_nenhum_bloco_vivo_se_sobrepoe() {
+    fn under_stress_no_live_blocks_overlap() {
         let mut heap = Heap::new(0x1000, 0x8000);
-        let mut vivos: Vec<(u32, u32)> = Vec::new();
-        let mut semente: u32 = 12345;
-        let mut sorteia = move || {
-            semente = semente.wrapping_mul(1103515245).wrapping_add(12345);
-            semente >> 8
+        let mut live: Vec<(u32, u32)> = Vec::new();
+        let mut seed: u32 = 12345;
+        let mut next_random = move || {
+            seed = seed.wrapping_mul(1103515245).wrapping_add(12345);
+            seed >> 8
         };
-        for passo in 0..4000 {
-            let solta = !vivos.is_empty() && (passo % 3 == 0 || vivos.len() > 40);
-            if solta {
-                let qual = sorteia() as usize % vivos.len();
-                let (addr, _) = vivos.swap_remove(qual);
+        for step in 0..4000 {
+            let release = !live.is_empty() && (step % 3 == 0 || live.len() > 40);
+            if release {
+                let which = next_random() as usize % live.len();
+                let (addr, _) = live.swap_remove(which);
                 heap.free(addr);
                 continue;
             }
-            let tamanho = 1 + sorteia() % 600;
-            let Some(addr) = heap.alloc(tamanho) else {
+            let size = 1 + next_random() % 600;
+            let Some(addr) = heap.alloc(size) else {
                 continue;
             };
-            let fim = addr + tamanho;
-            for &(outro, outro_tam) in &vivos {
+            let end = addr + size;
+            for &(other, other_size) in &live {
                 assert!(
-                    fim <= outro || addr >= outro + outro_tam,
-                    "bloco {addr:#x}+{tamanho} encosta em {outro:#x}+{outro_tam}"
+                    end <= other || addr >= other + other_size,
+                    "block {addr:#x}+{size} touches {other:#x}+{other_size}"
                 );
             }
-            vivos.push((addr, tamanho));
+            live.push((addr, size));
         }
     }
 
-    /// **O heap volta do save state exatamente como estava**, e um estado de outra máquina é
-    /// recusado em vez de aplicado pela metade.
+    /// **The heap comes back from the save state exactly as it was**, and a state from another
+    /// machine is refused instead of half applied.
     #[test]
-    fn o_heap_vai_e_volta_no_save_state() {
-        use crate::save_state::{Guardavel, Leitor, Secoes};
+    fn the_heap_round_trips_through_the_save_state() {
+        use crate::save_state::{Saveable, Reader, Sections};
 
-        let mut antes = Heap::new(0x2000_0000, 4096);
-        let a = antes.alloc(64).expect("primeiro bloco");
-        let _b = antes.alloc(128).expect("segundo bloco");
-        let c = antes.alloc(32).expect("terceiro bloco");
-        antes.free(c);
-        let _d = antes.alloc(16).expect("reusa o bloco menor");
+        let mut before = Heap::new(0x2000_0000, 4096);
+        let a = before.alloc(64).expect("first block");
+        let _b = before.alloc(128).expect("second block");
+        let c = before.alloc(32).expect("third block");
+        before.free(c);
+        let _d = before.alloc(16).expect("reuses the smaller block");
 
-        let mut secoes = Secoes::nova();
-        antes.grava(&mut secoes);
-        let arquivo = secoes.fecha();
-        let leitor = Leitor::abre(&arquivo).expect("o estado abriu");
+        let mut sections = Sections::create();
+        before.save(&mut sections);
+        let file = sections.close();
+        let reader = Reader::open(&file).expect("the state opened");
 
-        let mut depois = Heap::new(0x2000_0000, 4096);
-        depois.restaura(&leitor).expect("restaurou");
+        let mut after = Heap::new(0x2000_0000, 4096);
+        after.restore(&reader).expect("restored");
 
-        // **A conta não é minha, é dos dois heaps.** Em vez de eu calcular endereços de cabeça, os
-        // dois recebem a mesma sequência de pedidos e têm de responder igual — é a mesma ideia do
-        // teste que compara os dois rasterizadores.
+        // **The arithmetic is not mine, it is the two heaps'.** Instead of me computing addresses
+        // in my head, both receive the same sequence of requests and have to answer the same — it
+        // is the same idea as the test that compares the two rasterizers.
         let _ = a;
-        let mut esperado = Vec::new();
-        let mut obtido = Vec::new();
-        for tamanho in [64u32, 16, 256, 32, 1024, 8] {
-            esperado.push(antes.alloc(tamanho));
-            obtido.push(depois.alloc(tamanho));
+        let mut expected = Vec::new();
+        let mut obtained = Vec::new();
+        for size in [64u32, 16, 256, 32, 1024, 8] {
+            expected.push(before.alloc(size));
+            obtained.push(after.alloc(size));
         }
         assert_eq!(
-            obtido, esperado,
-            "o heap restaurado alocou diferente do original"
+            obtained, expected,
+            "the restored heap allocated differently from the original"
         );
     }
 
     #[test]
-    fn um_heap_de_outra_maquina_e_recusado() {
-        use crate::save_state::{Guardavel, Leitor, Secoes};
+    fn a_heap_from_another_machine_is_rejected() {
+        use crate::save_state::{Saveable, Reader, Sections};
 
-        let antes = Heap::new(0x2000_0000, 4096);
-        let mut secoes = Secoes::nova();
-        antes.grava(&mut secoes);
-        let arquivo = secoes.fecha();
-        let leitor = Leitor::abre(&arquivo).expect("abriu");
+        let before = Heap::new(0x2000_0000, 4096);
+        let mut sections = Sections::create();
+        before.save(&mut sections);
+        let file = sections.close();
+        let reader = Reader::open(&file).expect("opened");
 
-        // Outra máquina: mesmo tamanho, outro endereço. Aplicar isto mandaria todo ponteiro do
-        // guest para o lugar errado.
-        let mut outra = Heap::new(0x3000_0000, 4096);
-        match outra.restaura(&leitor) {
-            Err(crate::save_state::Erro::Secao { nome, motivo }) => {
-                assert_eq!(nome, "heap");
-                assert!(motivo.contains("0x20000000"), "{motivo}");
-                assert!(motivo.contains("0x30000000"), "{motivo}");
+        // Another machine: same size, another address. Applying this would send every guest
+        // pointer to the wrong place.
+        let mut foreign_heap = Heap::new(0x3000_0000, 4096);
+        match foreign_heap.restore(&reader) {
+            Err(crate::save_state::Error::Section { name, reason }) => {
+                assert_eq!(name, "heap");
+                assert!(reason.contains("0x20000000"), "{reason}");
+                assert!(reason.contains("0x30000000"), "{reason}");
             }
-            outro => panic!("devia recusar o heap de outra máquina, e devolveu {outro:?}"),
+            other => panic!("should refuse the heap from another machine, and returned {other:?}"),
         }
     }
 
     #[test]
-    fn recusa_quando_o_heap_enche() {
+    fn refuses_when_the_heap_fills_up() {
         let mut heap = Heap::new(0x1000, 16);
         assert!(heap.alloc(8).is_some());
         assert!(heap.alloc(8).is_some());

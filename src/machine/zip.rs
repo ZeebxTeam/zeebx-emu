@@ -1,17 +1,17 @@
-//! IUnzipAStream e os fluxos: o inflate e a leitura em pedaços.
+//! IUnzipAStream and the streams: the inflate and the chunked reads.
 
 use super::*;
 
 impl<C: CpuBackend> Machine<C> {
-    /// `IUnzipAStream` (`AEECLSID_UNZIPSTREAM` = `0x01001014`), de `sdk/inc/AEEUnzipStream.h`.
+    /// `IUnzipAStream` (`AEECLSID_UNZIPSTREAM` = `0x01001014`), from `sdk/inc/AEEUnzipStream.h`.
     ///
-    /// Estende o `IAStream` para ler um stream comprimido como se fosse texto claro: o jogo
-    /// monta um stream sobre os bytes comprimidos, entrega em `SetStream`, e lê daqui. É o que
-    /// o Double Dragon usa para abrir o `data.ggz` e o `sound.ggz`.
+    /// Extends `IAStream` to read a compressed stream as if it were plain data: the game builds a
+    /// stream over the compressed bytes, hands it over in `SetStream`, and reads from here. It is
+    /// what Double Dragon uses to open `data.ggz` and `sound.ggz`.
     ///
-    /// A descompressão é feita **de uma vez**, na primeira leitura, e o resultado fica guardado.
-    /// O BREW descomprime conforme se lê, mas o efeito visível é o mesmo, e fazer de uma vez
-    /// dispensa manter estado de inflate parcial entre chamadas.
+    /// Decompression is done **all at once**, on the first read, and the result is kept. BREW
+    /// decompresses as it reads, but the visible effect is the same, and doing it at once avoids
+    /// keeping partial inflate state between calls.
     pub(super) fn unzip_call(&mut self, slot: u32) -> Result<Option<u32>, CpuError> {
         let Some(name) = Interface::UnzipStream.method(slot) else {
             return Ok(None);
@@ -38,7 +38,7 @@ impl<C: CpuBackend> Machine<C> {
                 );
                 SUCCESS
             }
-            // O conteúdo já está inteiro na memória, então há sempre o que ler.
+            // The whole content is already in memory, so there is always something to read.
             "Readable" => {
                 if a1 != 0 {
                     self.pending_signals.push(Callback {
@@ -71,17 +71,17 @@ impl<C: CpuBackend> Machine<C> {
         Ok(Some(result))
     }
 
-    /// Lê **tudo** o que resta de um `IAStream` do guest.
+    /// Reads **everything** left in a guest `IAStream`.
     ///
-    /// `None` quando o objeto não é um stream que saibamos ler por dentro — o que é diferente
-    /// de um erro de leitura, que vem como `Some(Err(..))`.
+    /// `None` when the object is not a stream we know how to read from the inside — which is
+    /// different from a read error, which comes as `Some(Err(..))`.
     pub(super) fn drain_stream(&mut self, source: u32) -> Option<Result<Vec<u8>, CpuError>> {
         if let Some(stream) = self.streams.get(&source).copied() {
             let available = stream.size.saturating_sub(stream.position);
             return Some(self.read_bytes(stream.buffer + stream.position, available));
         }
-        // Um `IFile` aberto também é um `IAStream`, e é assim que o Double Dragon entrega o
-        // `data.ggz`: lemos da posição corrente até o fim, como faria uma sequência de `Read`.
+        // An open `IFile` is also an `IAStream`, and that is how Double Dragon hands over
+        // `data.ggz`: we read from the current position to the end, as a sequence of `Read`s would.
         let open = self.open_files.get_mut(&source)?;
         let mut bytes = Vec::new();
         Some(
@@ -92,7 +92,7 @@ impl<C: CpuBackend> Machine<C> {
         )
     }
 
-    /// Descomprime a entrada de um `IUnzipAStream`, uma vez só.
+    /// Decompresses the input of an `IUnzipAStream`, only once.
     pub(super) fn expand_unzip(&mut self, this: u32) -> Result<(), CpuError> {
         let Some(state) = self.unzips.get(&this) else {
             return Ok(());
@@ -105,18 +105,18 @@ impl<C: CpuBackend> Machine<C> {
             state.expanded = true;
         }
 
-        // A entrada é um `IAStream`, e no BREW tanto um bloco de memória quanto um arquivo
-        // aberto servem como um. O Double Dragon entrega o `IFile` do `data.ggz` direto.
+        // The input is an `IAStream`, and in BREW both a memory block and an open file serve as
+        // one. Double Dragon hands over the `IFile` of `data.ggz` directly.
         let Some(compressed) = self.drain_stream(source) else {
-            // Dizer *qual* interface chegou é o que transforma isto de "não funcionou" em uma
-            // pista: a próxima origem a suportar é a que aparecer aqui.
+            // Saying *which* interface arrived is what turns this from "it didn't work" into a
+            // lead: the next source to support is the one that shows up here.
             let kind = self
                 .objects
                 .kind_of(source)
                 .map(Interface::name)
-                .unwrap_or("desconhecida");
+                .unwrap_or("unknown");
             self.bad_pointers.insert(format!(
-                "um IUnzipAStream recebeu como entrada um objeto de {kind}, que ainda não sabemos ler"
+                "an IUnzipAStream received as input an object of {kind}, which we cannot read yet"
             ));
             return Ok(());
         };
@@ -126,24 +126,24 @@ impl<C: CpuBackend> Machine<C> {
                 if let Some(state) = self.unzips.get_mut(&this) {
                     state.output = output;
                 }
-                // O stream de entrada foi consumido inteiro.
+                // The input stream was consumed in full.
                 if let Some(stream) = self.streams.get_mut(&source) {
                     stream.position = stream.size;
                 }
             }
             None => {
                 self.assumptions
-                    .insert("um IUnzipAStream recebeu dados que não descomprimem");
+                    .insert("an IUnzipAStream received data that does not decompress");
             }
         }
         Ok(())
     }
 
-    /// `IMemAStream` (`AEECLSID_MEMASTREAM` = `0x0100100c`), de `sdk/inc/AEE.h`.
+    /// `IMemAStream` (`AEECLSID_MEMASTREAM` = `0x0100100c`), from `sdk/inc/AEE.h`.
     ///
-    /// Apresenta um bloco de memória como stream: é assim que o BREW entrega dados a um
-    /// decodificador de imagem. Aqui o "assíncrono" é trivial — os bytes já estão todos na
-    /// memória, então `Readable` pode avisar o interessado na mesma hora.
+    /// Presents a memory block as a stream: that is how BREW hands data to an image decoder. Here
+    /// the "asynchronous" part is trivial — the bytes are all already in memory, so `Readable` can
+    /// notify the listener right away.
     pub(super) fn stream_call(&mut self, slot: u32) -> Result<Option<u32>, CpuError> {
         let Some(name) = Interface::MemAStream.method(slot) else {
             return Ok(None);
@@ -159,42 +159,43 @@ impl<C: CpuBackend> Machine<C> {
             "Release" => {
                 let remaining = self.objects.release(this);
                 if remaining == 0 {
-                    self.solta_stream(this);
+                    self.release_stream(this);
                 }
                 remaining
             }
             // void Set(IMemAStream *, byte *pBuff, uint32 dwSize, uint32 dwOffset,
             //          boolean bSysMem)
             //
-            // **O buffer passa a ser do stream**, que o devolve ao ser destruído ou ao receber
-            // outro — o `bSysMem` só diz de qual heap ele veio, e aqui os dois são o mesmo. O
-            // Action Hero 3D monta bitmaps de 7616 bytes, vários por quadro, entrega ao stream e
-            // nunca mais o toca: sem isso eram 1,9 MB por segundo de fase, e em três minutos
-            // o `MALLOC` devolvia nulo.
+            // **The buffer becomes the stream's**, and the stream gives it back when destroyed or
+            // when it receives another one — `bSysMem` only says which heap it came from, and here
+            // both are the same. Action Hero 3D builds 7616-byte bitmaps, several per frame, hands
+            // them to the stream and never touches them again: without this it was 1.9 MB per
+            // second of gameplay, and within three minutes `MALLOC` returned null.
             //
-            // O `SetEx` troca o `bSysMem` por um `pfnFree` do jogo, e esse fica de fora: chamar
-            // código do guest no meio de um despacho é o caminho que já derrubou jogo antes.
+            // `SetEx` replaces `bSysMem` with a `pfnFree` from the game, and that one is left out:
+            // calling guest code in the middle of a dispatch is the path that has crashed games
+            // before.
             "Set" | "SetEx" => {
-                // Pôr de novo o mesmo buffer não é trocá-lo.
+                // Setting the same buffer again is not replacing it.
                 if self.streams.get(&this).is_some_and(|s| s.buffer == a1) {
                     self.streams.remove(&this);
                 }
-                self.solta_stream(this);
+                self.release_stream(this);
                 self.streams.insert(
                     this,
                     MemStream {
                         buffer: a1,
                         size: a2,
                         position: a3.min(a2),
-                        dono: name == "Set",
+                        owner: name == "Set",
                     },
                 );
                 SUCCESS
             }
             // void Readable(IAStream *, void (*pfnNotify)(void *), void *pUser)
             //
-            // O stream está sempre pronto, então o callback vai direto para a fila — entregá-lo
-            // aqui seria reentrar no guest no meio do despacho.
+            // The stream is always ready, so the callback goes straight to the queue — delivering
+            // it here would re-enter the guest in the middle of the dispatch.
             "Readable" => {
                 if a1 != 0 {
                     self.pending_signals.push(Callback {
@@ -225,12 +226,13 @@ impl<C: CpuBackend> Machine<C> {
         Ok(Some(result))
     }
 
-    /// Esquece o buffer de um `IMemAStream`, devolvendo-o ao heap quando ele é do stream.
-    fn solta_stream(&mut self, this: u32) {
+    /// Forgets the buffer of an `IMemAStream`, returning it to the heap when it belongs to the
+    /// stream.
+    fn release_stream(&mut self, this: u32) {
         if let Some(stream) = self.streams.remove(&this)
-            && stream.dono
+            && stream.owner
         {
-            self.libera(stream.buffer);
+            self.free(stream.buffer);
         }
     }
 }

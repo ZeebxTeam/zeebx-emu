@@ -1,19 +1,20 @@
-// O ícone e a versão entram no `.exe` do Windows: é o que o Explorer e a barra de tarefas
-// mostram.
+// The icon and the version go into the Windows `.exe`: they are what Explorer and the taskbar
+// show.
 //
-// **Mora neste pacote porque o recurso só chega ao executável se for compilado aqui.** Na raiz
-// ele ficava preso na biblioteca, que não é o que o usuário abre. O `assets/` continua na raiz
-// do repositório, por isso os dois níveis acima.
+// **It lives in this package because the resource only reaches the executable if it is compiled
+// here.** At the root it got stuck in the library, which is not what the user opens. `assets/`
+// is still at the repository root, hence the two levels up.
 fn main() {
-    // O `CARGO_CFG_TARGET_OS` é o do alvo, e não o da máquina que compila: o `cfg!` aqui
-    // responderia pelo sistema em que o build.rs roda.
+    // `CARGO_CFG_TARGET_OS` is the target's, not the one of the machine compiling: `cfg!` here
+    // would answer for the system the build.rs runs on.
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
-        let mut recurso = winresource::WindowsResource::new();
-        recurso.set_icon("../../assets/icones/zeebx.ico");
-        if let Err(erro) = recurso.compile() {
-            println!("cargo:warning=sem ícone no .exe: {erro}");
+        let mut resource = winresource::WindowsResource::new();
+        resource.set_icon("../../assets/icons/zeebx.ico");
+        if let Err(error) = resource.compile() {
+            println!("cargo:warning=no icon in the .exe: {error}");
+
         }
     }
-    println!("cargo:rerun-if-changed=../../assets/icones/zeebx.ico");
+    println!("cargo:rerun-if-changed=../../assets/icons/zeebx.ico");
     println!("cargo:rerun-if-changed=build.rs");
 }

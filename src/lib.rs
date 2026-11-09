@@ -1,6 +1,6 @@
-//! Núcleo reutilizável do Zeebx.
+//! Reusable core of Zeebx.
 //!
-//! O motor é compartilhado pelo desktop, Libretro, headless, Android, iOS e o aplicativo da Vita.
+//! The engine is shared by the desktop, Libretro, headless, Android, iOS and the Vita app.
 
 pub mod audio;
 pub mod brew;
@@ -10,30 +10,30 @@ pub mod input;
 pub mod loader;
 pub mod library;
 pub mod machine;
-pub mod ponte;
-pub mod rede;
-pub mod registro;
+pub mod bridge;
+pub mod net;
+pub mod logging;
 pub mod save_state;
 pub mod session;
 pub mod storage;
 pub mod ui;
-pub mod velocidade;
+pub mod speed;
 pub mod video;
 
-/// O `egui` que o núcleo usa, reexportado para os frontends.
+/// The `egui` the core uses, re-exported for the frontends.
 ///
-/// O núcleo não abre janela com ele: o que fica são os tipos que a interface compartilha — os
-/// nomes de tecla do `egui::Key`, que são o formato gravado no `settings.json`, e o desenho do
-/// [`ui::gpu::Pintor`], que o Android e o headless usam. Reexportar garante um `egui` só na árvore:
-/// a ponte Qt compara teclas com o mesmo `egui::Key` que leu a configuração.
+/// The core does not open a window with it: what remains are the types the interface shares — the
+/// key names of `egui::Key`, which are the format stored in `settings.json`, and the drawing of
+/// [`ui::gpu::GlPainter`], which Android and headless use. Re-exporting guarantees a single `egui`
+/// in the tree: the Qt bridge compares keys with the same `egui::Key` that read the configuration.
 pub use egui;
 
-/// Configuração histórica da linha de comando: um Dragon na primeira porta e segunda livre.
-pub const PORTAS_PADRAO: [Option<input::bindings::Aparelho>; input::PORTAS] =
-    [Some(input::bindings::Aparelho::Controle), None];
+/// Historical command-line configuration: a Dragon on the first port and the second one free.
+pub const DEFAULT_PORTS: [Option<input::bindings::Device>; input::PORTS] =
+    [Some(input::bindings::Device::Controller), None];
 
 #[cfg(test)]
 pub mod scratch;
 
 #[cfg(test)]
-pub mod varredura;
+pub mod scan;

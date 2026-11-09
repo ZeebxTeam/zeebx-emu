@@ -1,11 +1,11 @@
-//! Framebuffer do console e as operações de desenho do `IDisplay`.
+//! The console framebuffer and the `IDisplay` drawing operations.
 //!
-//! A tela do Zeebo é VGA 640×480 em RGB565 — o mesmo formato do framebuffer que a engenharia
-//! reversa capturou do encoder de TV do console (`docs/vendor/tripleoxygen/research/tvenc/`).
-//! Guardamos os pixels nesse formato para que um `BitBlt` de bitmap nativo seja cópia direta.
+//! The Zeebo screen is 640×480 VGA in RGB565 — the same framebuffer format that reverse
+//! engineering captured from the console's TV encoder (`docs/vendor/tripleoxygen/research/tvenc/`).
+//! We store the pixels in that format so that a `BitBlt` of a native bitmap is a straight copy.
 
-/// Cor no formato que o BREW usa em `RGBVAL`: `MAKE_RGB(r,g,b) = (r<<8) | (g<<16) | (b<<24)`,
-/// conforme a documentação do SDK — ou seja, o byte menos significativo não é cor.
+/// A color in the format BREW uses in `RGBVAL`: `MAKE_RGB(r,g,b) = (r<<8) | (g<<16) | (b<<24)`,
+/// per the SDK documentation — that is, the least significant byte is not color.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rgb {
     pub r: u8,
@@ -21,7 +21,7 @@ impl Rgb {
         b: 255,
     };
 
-    /// Converte um `RGBVAL` do guest.
+    /// Converts an `RGBVAL` from the guest.
     pub fn from_rgbval(value: u32) -> Self {
         Self {
             r: (value >> 8) as u8,
@@ -30,13 +30,13 @@ impl Rgb {
         }
     }
 
-    /// Empacota em RGB565, o formato do framebuffer.
+    /// Packs into RGB565, the framebuffer format.
     pub fn to_rgb565(self) -> u16 {
         ((self.r as u16 & 0xf8) << 8) | ((self.g as u16 & 0xfc) << 3) | (self.b as u16 >> 3)
     }
 
     pub fn from_rgb565(value: u16) -> Self {
-        // Replica os bits altos nos baixos para que branco puro continue 255, e não 248.
+        // Replicates the high bits into the low ones so pure white stays 255, not 248.
         let r = ((value >> 11) & 0x1f) as u8;
         let g = ((value >> 5) & 0x3f) as u8;
         let b = (value & 0x1f) as u8;
@@ -48,7 +48,7 @@ impl Rgb {
     }
 }
 
-/// Retângulo do BREW (`AEERect`): quatro `int16` — x, y, largura, altura.
+/// A BREW rectangle (`AEERect`): four `int16` — x, y, width, height.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rect {
     pub x: i16,
@@ -74,16 +74,18 @@ pub struct Framebuffer {
     width: u32,
     height: u32,
     pixels: Vec<u16>,
-    /// Quantos pixels já foram efetivamente escritos — serve para saber se há algo a mostrar.
+    /// How many pixels have actually been written — used to know whether there is anything to
+    /// show.
     touched: u64,
-    /// Um número que nenhuma outra superfície criada nesta execução tem.
-    serie: u64,
-    /// O retângulo `[x0, y0, x1, y1)` que mudou desde a última [`Framebuffer::toma_sujeira`].
-    sujo: Option<[u32; 4]>,
+    /// A number no other surface created in this run has.
+    generation: u64,
+    /// The `[x0, y0, x1, y1)` rectangle that changed since the last
+    /// [`Framebuffer::take_dirty_rect`].
+    dirty: Option<[u32; 4]>,
 }
 
-/// De onde sai a [`Framebuffer::versao`] de cada superfície nova.
-static PROXIMA_SERIE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+/// Where each new surface's [`Framebuffer::generation`] comes from.
+static NEXT_SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 impl Framebuffer {
     pub fn new(width: u32, height: u32) -> Self {
@@ -92,71 +94,73 @@ impl Framebuffer {
             height,
             pixels: vec![0; (width * height) as usize],
             touched: 0,
-            serie: PROXIMA_SERIE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-            sujo: None,
+            generation: NEXT_SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            dirty: None,
         }
     }
 
-    /// Um número que nenhuma outra superfície criada nesta execução tem.
+    /// A number no other surface created in this run has.
     ///
-    /// Separa esta superfície de outra que tenha tomado o lugar dela no mesmo endereço: a caixa
-    /// suja só descreve o que mudou **nesta**.
-    pub fn serie(&self) -> u64 {
-        self.serie
+    /// It tells this surface apart from another one that took its place at the same address: the
+    /// dirty box only describes what changed **in this one**.
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
-    /// Devolve e zera o retângulo `[x0, y0, x1, y1)` escrito desde a última vez.
-    pub fn toma_sujeira(&mut self) -> Option<[u32; 4]> {
-        self.sujo.take()
+    /// Returns and clears the `[x0, y0, x1, y1)` rectangle written since the last time.
+    pub fn take_dirty_rect(&mut self) -> Option<[u32; 4]> {
+        self.dirty.take()
     }
 
-    /// A caixa suja **sem** zerar.
+    /// The dirty box **without** clearing it.
     ///
-    /// Existe para o save state: gravar o que mudou não pode consumir o aviso, senão salvar um
-    /// estado apagaria a única informação que diz ao frontend qual pedaço da tela mudou — e o
-    /// quadro seguinte sairia velho por causa de um `save state` que ninguém pediu para ver.
-    pub fn sujeira(&self) -> Option<[u32; 4]> {
-        self.sujo
+    /// It exists for save states: recording what changed must not consume the notice, otherwise
+    /// saving a state would erase the only information that tells the frontend which part of the
+    /// screen changed — and the next frame would come out stale because of a `save state` nobody
+    /// asked to see.
+    pub fn dirty_rect(&self) -> Option<[u32; 4]> {
+        self.dirty
     }
 
-    /// Os pixels crus, na ordem de leitura.
+    /// The raw pixels, in reading order.
     pub fn pixels(&self) -> &[u16] {
         &self.pixels
     }
 
-    /// Repõe os pixels e o que a superfície já viveu.
+    /// Restores the pixels and the surface's history.
     ///
-    /// É o caminho da volta de um save state: os pixels vêm do arquivo, e `touched` e `serie`
-    /// voltam junto porque é por eles que o frontend sabe o que mudou. Sem a `serie`, esta
-    /// superfície seria confundida com outra que tivesse ocupado o mesmo endereço.
-    pub fn restaura_estado(
+    /// This is the way back from a save state: the pixels come from the file, and `touched` and
+    /// `generation` come back with them because they are how the frontend knows what changed.
+    /// Without the `generation`, this surface would be mistaken for another one that had taken
+    /// the same address.
+    pub fn restore_state(
         &mut self,
         touched: u64,
-        serie: u64,
-        sujo: Option<[u32; 4]>,
+        generation: u64,
+        dirty: Option<[u32; 4]>,
         pixels: Vec<u16>,
     ) {
         debug_assert_eq!(pixels.len(), (self.width * self.height) as usize);
         self.pixels = pixels;
         self.touched = touched;
-        self.serie = serie;
-        self.sujo = sujo;
+        self.generation = generation;
+        self.dirty = dirty;
     }
 
-    /// Os pixels de `inicio` até `fim` (índices de pixel, fim exclusivo), em bytes RGB565.
-    pub fn rgb565_intervalo(&self, inicio: usize, fim: usize) -> Vec<u8> {
-        self.pixels[inicio..fim]
+    /// The pixels from `start` to `end` (pixel indices, end exclusive), as RGB565 bytes.
+    pub fn rgb565_range(&self, start: usize, end: usize) -> Vec<u8> {
+        self.pixels[start..end]
             .iter()
             .flat_map(|p| p.to_le_bytes())
             .collect()
     }
 
-    /// Estende a caixa suja para cobrir `[x0, x1) × [y0, y1)`.
-    fn suja(&mut self, x0: u32, y0: u32, x1: u32, y1: u32) {
+    /// Extends the dirty box to cover `[x0, x1) × [y0, y1)`.
+    fn mark_watches(&mut self, x0: u32, y0: u32, x1: u32, y1: u32) {
         if x0 >= x1 || y0 >= y1 {
             return;
         }
-        self.sujo = Some(match self.sujo {
+        self.dirty = Some(match self.dirty {
             None => [x0, y0, x1, y1],
             Some([a, b, c, d]) => [a.min(x0), b.min(y0), c.max(x1), d.max(y1)],
         });
@@ -170,9 +174,10 @@ impl Framebuffer {
         self.height
     }
 
-    /// Se alguma operação de desenho chegou a tocar a tela.
-    /// Quantas escritas a superfície já recebeu. Serve para saber se ela mudou desde um instante.
-    pub fn escritas(&self) -> u64 {
+    /// Whether any drawing operation has touched the screen.
+    /// How many writes the surface has received. Used to know whether it changed since a given
+    /// moment.
+    pub fn writes(&self) -> u64 {
         self.touched
     }
 
@@ -186,10 +191,10 @@ impl Framebuffer {
         }
         self.pixels[(y as u32 * self.width + x as u32) as usize] = color.to_rgb565();
         self.touched += 1;
-        self.suja(x as u32, y as u32, x as u32 + 1, y as u32 + 1);
+        self.mark_watches(x as u32, y as u32, x as u32 + 1, y as u32 + 1);
     }
 
-    /// Preenche um retângulo, recortando o que sair da tela.
+    /// Fills a rectangle, clipping whatever falls off the screen.
     pub fn fill_rect(&mut self, rect: Rect, color: Rgb) {
         let value = color.to_rgb565();
         let x0 = rect.x.max(0) as u32;
@@ -202,10 +207,10 @@ impl Framebuffer {
                 self.touched += 1;
             }
         }
-        self.suja(x0, y0, x1, y1);
+        self.mark_watches(x0, y0, x1, y1);
     }
 
-    /// Desenha a moldura de um retângulo, um pixel de espessura.
+    /// Draws a rectangle's outline, one pixel thick.
     pub fn draw_frame(&mut self, rect: Rect, color: Rgb) {
         let (x, y) = (rect.x as i32, rect.y as i32);
         let (w, h) = (rect.width as i32, rect.height as i32);
@@ -222,7 +227,7 @@ impl Framebuffer {
         }
     }
 
-    /// Lê um pixel no formato nativo (RGB565). Fora da tela devolve zero.
+    /// Reads a pixel in the native format (RGB565). Off screen it returns zero.
     pub fn get_pixel(&self, x: i32, y: i32) -> u16 {
         if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
             return 0;
@@ -230,17 +235,17 @@ impl Framebuffer {
         self.pixels[(y as u32 * self.width + x as u32) as usize]
     }
 
-    /// Escreve um pixel já em formato nativo.
+    /// Writes a pixel already in the native format.
     pub fn set_pixel_native(&mut self, x: i32, y: i32, value: u16) {
         if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
             return;
         }
         self.pixels[(y as u32 * self.width + x as u32) as usize] = value;
         self.touched += 1;
-        self.suja(x as u32, y as u32, x as u32 + 1, y as u32 + 1);
+        self.mark_watches(x as u32, y as u32, x as u32 + 1, y as u32 + 1);
     }
 
-    /// Preenche um retângulo com cor já em formato nativo.
+    /// Fills a rectangle with a color already in the native format.
     pub fn fill_rect_native(&mut self, rect: Rect, value: u16) {
         let x1 = (rect.x as i32 + rect.width as i32)
             .max(0)
@@ -256,17 +261,17 @@ impl Framebuffer {
             }
         }
         if x0 < x1 && y0 < y1 {
-            self.suja(x0 as u32, y0 as u32, x1 as u32, y1 as u32);
+            self.mark_watches(x0 as u32, y0 as u32, x1 as u32, y1 as u32);
         }
     }
 
-    /// Copia uma região de `src` para dentro desta superfície.
+    /// Copies a region of `src` into this surface.
     ///
-    /// `transparent` marca a cor que deve ser pulada — é assim que o BREW faz sprite com
-    /// `AEE_RO_TRANSPARENT`. Passar `None` copia tudo.
+    /// `transparent` marks the color to skip — that is how BREW does sprites with
+    /// `AEE_RO_TRANSPARENT`. Passing `None` copies everything.
     ///
-    /// A assinatura é larga de propósito: ela espelha o `BltIn` do BREW, e reagrupar os
-    /// parâmetros em structs só afastaria o código da API que ele implementa.
+    /// The signature is wide on purpose: it mirrors BREW's `BltIn`, and regrouping the
+    /// parameters into structs would only move the code away from the API it implements.
     #[allow(clippy::too_many_arguments)]
     pub fn blit(
         &mut self,
@@ -294,7 +299,7 @@ impl Framebuffer {
         }
     }
 
-    /// Traça uma linha pelo algoritmo de Bresenham — só inteiros, como o hardware da época.
+    /// Draws a line with Bresenham's algorithm — integers only, like the hardware of the time.
     pub fn draw_line(&mut self, x0: i32, y0: i32, x1: i32, y1: i32, color: Rgb) {
         let value = color.to_rgb565();
         let (dx, dy) = ((x1 - x0).abs(), -(y1 - y0).abs());
@@ -317,7 +322,7 @@ impl Framebuffer {
         }
     }
 
-    /// Circunferência pelo algoritmo do ponto médio, espelhando os oito octantes.
+    /// A circle outline with the midpoint algorithm, mirroring the eight octants.
     pub fn draw_circle(&mut self, cx: i32, cy: i32, radius: i32, color: Rgb) {
         if radius < 0 {
             return;
@@ -348,7 +353,7 @@ impl Framebuffer {
         }
     }
 
-    /// Preenche um círculo varrendo linha a linha.
+    /// Fills a circle by scanning row by row.
     pub fn fill_circle(&mut self, cx: i32, cy: i32, radius: i32, color: Rgb) {
         let value = color.to_rgb565();
         for dy in -radius..=radius {
@@ -359,7 +364,7 @@ impl Framebuffer {
         }
     }
 
-    /// Preenche um polígono pela regra de paridade das interseções com cada linha.
+    /// Fills a polygon by the parity rule of the intersections with each row.
     pub fn fill_polygon(&mut self, points: &[(i32, i32)], color: Rgb) {
         if points.len() < 3 {
             return;
@@ -393,11 +398,12 @@ impl Framebuffer {
         }
     }
 
-    /// Os pixels em bytes RGB565, na ordem em que o `IDIB` os expõe ao jogo.
-    /// Escreve o quadro em RGB565 no buffer dado, reaproveitando a alocação dele.
+    /// The pixels as RGB565 bytes, in the order `IDIB` exposes them to the game.
+    /// Writes the frame as RGB565 into the given buffer, reusing its allocation.
     ///
-    /// [`Framebuffer::to_rgb565_bytes`] aloca um `Vec` novo a cada quadro; num frontend que
-    /// entrega 60 quadros por segundo isso é lixo a cada 16 ms, e o coletor aparece como engasgo.
+    /// [`Framebuffer::to_rgb565_bytes`] allocates a new `Vec` every frame; in a frontend that
+    /// delivers 60 frames per second that is garbage every 16 ms, and the collector shows up as
+    /// stutter.
     pub fn write_rgb565_into(&self, out: &mut Vec<u8>) {
         out.clear();
         out.reserve(self.pixels.len() * 2);
@@ -406,24 +412,24 @@ impl Framebuffer {
         }
     }
 
-    /// Assinatura barata do conteúdo da tela, para reconhecer quadro repetido.
+    /// A cheap signature of the screen contents, to recognize a repeated frame.
     ///
-    /// Não é hash criptográfico: é o suficiente para dizer "nada mudou" sem custar uma passada
-    /// cara sobre 600 KB por quadro.
+    /// It is not a cryptographic hash: it is enough to say "nothing changed" without paying for
+    /// an expensive pass over 600 KB per frame.
     pub fn signature(&self) -> u64 {
-        let mut valor: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut value: u64 = 0xcbf2_9ce4_8422_2325;
         for pixel in &self.pixels {
-            valor ^= u64::from(*pixel);
-            valor = valor.wrapping_mul(0x100_0000_01b3);
+            value ^= u64::from(*pixel);
+            value = value.wrapping_mul(0x100_0000_01b3);
         }
-        valor
+        value
     }
 
     pub fn to_rgb565_bytes(&self) -> Vec<u8> {
         self.pixels.iter().flat_map(|p| p.to_le_bytes()).collect()
     }
 
-    /// Recarrega os pixels a partir do buffer que o jogo escreveu.
+    /// Reloads the pixels from the buffer the game wrote.
     pub fn load_rgb565_bytes(&mut self, bytes: &[u8]) {
         for (pixel, chunk) in self.pixels.iter_mut().zip(bytes.chunks_exact(2)) {
             let value = u16::from_le_bytes([chunk[0], chunk[1]]);
@@ -434,7 +440,7 @@ impl Framebuffer {
         }
     }
 
-    /// Recarrega uma superfície já convertida em palavras RGB565.
+    /// Reloads a surface already converted to RGB565 words.
     pub fn load_rgb565_words(&mut self, words: &[u16]) {
         for (pixel, &value) in self.pixels.iter_mut().zip(words) {
             if *pixel != value {
@@ -444,65 +450,65 @@ impl Framebuffer {
         }
     }
 
-    /// Bytes por linha no buffer do `IDIB`: a largura em RGB565 alinhada em 4 bytes.
+    /// Bytes per row in the `IDIB` buffer: the RGB565 width aligned to 4 bytes.
     ///
-    /// Numa largura par é o mesmo `largura * 2`; numa ímpar sobra um pixel de enchimento no
-    /// fim de cada linha. O Action Hero 3D anda pelas linhas de uma imagem de largura ímpar
-    /// com passo `cx + 1` — sem o enchimento, o logo de 149 pixels e os retratos de 179 saíam
-    /// com as linhas escorregando e pedaços cortados.
-    pub fn passo_do_dib(&self) -> usize {
+    /// For an even width it is the same `width * 2`; for an odd one there is one padding pixel at
+    /// the end of each row. Action Hero 3D walks the rows of an odd-width image with a stride of
+    /// `cx + 1` — without the padding, the 149-pixel logo and the 179-pixel portraits came out
+    /// with the rows sliding and pieces cut off.
+    pub fn dib_pitch(&self) -> usize {
         (self.width as usize * 2).div_ceil(4) * 4
     }
 
-    /// Como [`Framebuffer::to_rgb565_bytes`], com as linhas no passo do `IDIB`.
+    /// Like [`Framebuffer::to_rgb565_bytes`], with the rows at the `IDIB` stride.
     pub fn to_dib_bytes(&self) -> Vec<u8> {
-        let passo = self.passo_do_dib();
-        let largura = self.width as usize;
-        if passo == largura * 2 {
+        let step = self.dib_pitch();
+        let width = self.width as usize;
+        if step == width * 2 {
             return self.to_rgb565_bytes();
         }
-        let mut bytes = vec![0u8; passo * self.height as usize];
-        for (linha, pixels) in self.pixels.chunks_exact(largura).enumerate() {
-            for (coluna, pixel) in pixels.iter().enumerate() {
-                let at = linha * passo + coluna * 2;
+        let mut bytes = vec![0u8; step * self.height as usize];
+        for (line, pixels) in self.pixels.chunks_exact(width).enumerate() {
+            for (column, pixel) in pixels.iter().enumerate() {
+                let at = line * step + column * 2;
                 bytes[at..at + 2].copy_from_slice(&pixel.to_le_bytes());
             }
         }
         bytes
     }
 
-    /// Escreve o quadro em RGB565 **direto num buffer alheio**, com o passo de linha dele.
+    /// Writes the frame as RGB565 **straight into someone else's buffer**, with its row pitch.
     ///
-    /// Existe pelo `RETRO_ENVIRONMENT_GET_CURRENT_SOFTWARE_FRAMEBUFFER`: o frontend empresta um
-    /// buffer para o core desenhar, e o passo pode não ser `largura * 2`. Sem isto, o quadro
-    /// passaria por um vetor nosso e depois por uma cópia — que é justamente a cópia que o
-    /// empréstimo existe para evitar.
+    /// It exists because of `RETRO_ENVIRONMENT_GET_CURRENT_SOFTWARE_FRAMEBUFFER`: the frontend
+    /// lends the core a buffer to draw into, and the pitch may not be `width * 2`. Without this,
+    /// the frame would go through a vector of ours and then through a copy — which is exactly the
+    /// copy the loan exists to avoid.
     ///
-    /// O `out` vem com o tamanho de `pitch * altura`; o que sobra no fim de cada linha (o passo
-    /// maior que a largura) fica como estava, que é o que o frontend espera.
+    /// `out` comes sized `pitch * height`; whatever is left at the end of each row (the pitch
+    /// being larger than the width) stays as it was, which is what the frontend expects.
     pub fn write_rgb565_with_pitch(&self, out: &mut [u8], pitch: usize) {
-        let largura = self.width as usize;
-        let (linha_em_bytes, passo) = (largura * 2, pitch.max(largura * 2));
-        for (y, linha) in self.pixels.chunks_exact(largura).enumerate() {
-            let inicio = y * passo;
-            let Some(destino) = out.get_mut(inicio..inicio + linha_em_bytes) else {
+        let width = self.width as usize;
+        let (row_bytes, step) = (width * 2, pitch.max(width * 2));
+        for (y, line) in self.pixels.chunks_exact(width).enumerate() {
+            let start = y * step;
+            let Some(dest) = out.get_mut(start..start + row_bytes) else {
                 return;
             };
-            for (par, pixel) in destino.chunks_exact_mut(2).zip(linha) {
-                par.copy_from_slice(&pixel.to_le_bytes());
+            for (pair, pixel) in dest.chunks_exact_mut(2).zip(line) {
+                pair.copy_from_slice(&pixel.to_le_bytes());
             }
         }
     }
 
-    /// Como [`Framebuffer::load_rgb565_bytes`], com as linhas no passo do `IDIB`.
+    /// Like [`Framebuffer::load_rgb565_bytes`], with the rows at the `IDIB` stride.
     pub fn load_dib_bytes(&mut self, bytes: &[u8]) {
-        let passo = self.passo_do_dib();
-        let largura = self.width as usize;
-        if passo == largura * 2 {
+        let step = self.dib_pitch();
+        let width = self.width as usize;
+        if step == width * 2 {
             return self.load_rgb565_bytes(bytes);
         }
-        for (pixels, origem) in self.pixels.chunks_exact_mut(largura).zip(bytes.chunks(passo)) {
-            for (pixel, chunk) in pixels.iter_mut().zip(origem.chunks_exact(2)) {
+        for (pixels, origin) in self.pixels.chunks_exact_mut(width).zip(bytes.chunks(step)) {
+            for (pixel, chunk) in pixels.iter_mut().zip(origin.chunks_exact(2)) {
                 let value = u16::from_le_bytes([chunk[0], chunk[1]]);
                 if *pixel != value {
                     *pixel = value;
@@ -512,13 +518,13 @@ impl Framebuffer {
         }
     }
 
-    /// Os pixels em `0x00RRGGBB`, que é o formato que as janelas do host esperam.
+    /// The pixels as `0x00RRGGBB`, which is the format the host's windows expect.
     pub fn to_argb(&self) -> Vec<u32> {
         self.pixels
             .iter()
             .map(|&p| {
-                // Repetir os bits mais altos nos que faltam espalha o valor por toda a faixa:
-                // é o que faz 0b11111 virar 255 e não 248.
+                // Repeating the highest bits into the missing ones spreads the value over the
+                // whole range: that is what makes 0b11111 become 255 and not 248.
                 let r = ((p >> 11) & 0x1f) as u32;
                 let g = ((p >> 5) & 0x3f) as u32;
                 let b = (p & 0x1f) as u32;
@@ -527,7 +533,7 @@ impl Framebuffer {
             .collect()
     }
 
-    /// Inverte os bits de um retângulo — o `AEE_RO_XOR` do BREW.
+    /// Inverts the bits of a rectangle — BREW's `AEE_RO_XOR`.
     pub fn xor_rect_native(&mut self, rect: Rect, value: u16) {
         for y in rect.y..rect.y + rect.height {
             for x in rect.x..rect.x + rect.width {
@@ -538,10 +544,10 @@ impl Framebuffer {
         }
     }
 
-    /// Serializa como BMP de 24 bits — formato que qualquer visualizador abre e que dá para
-    /// escrever sem dependência nenhuma.
+    /// Serializes as a 24-bit BMP — a format any viewer opens and that can be written with no
+    /// dependency at all.
     pub fn to_bmp(&self) -> Vec<u8> {
-        // Cada linha do BMP é alinhada em 4 bytes, e as linhas vão de baixo para cima.
+        // Each BMP row is aligned to 4 bytes, and the rows go bottom to top.
         let row_padding = (4 - (self.width as usize * 3) % 4) % 4;
         let row_size = self.width as usize * 3 + row_padding;
         let pixel_data = row_size * self.height as usize;
@@ -550,19 +556,19 @@ impl Framebuffer {
         let mut out = Vec::with_capacity(HEADER + pixel_data);
         out.extend_from_slice(b"BM");
         out.extend_from_slice(&((HEADER + pixel_data) as u32).to_le_bytes());
-        out.extend_from_slice(&0u32.to_le_bytes()); // reservado
+        out.extend_from_slice(&0u32.to_le_bytes()); // reserved
         out.extend_from_slice(&(HEADER as u32).to_le_bytes());
-        out.extend_from_slice(&40u32.to_le_bytes()); // tamanho do BITMAPINFOHEADER
+        out.extend_from_slice(&40u32.to_le_bytes()); // size of BITMAPINFOHEADER
         out.extend_from_slice(&(self.width as i32).to_le_bytes());
         out.extend_from_slice(&(self.height as i32).to_le_bytes());
-        out.extend_from_slice(&1u16.to_le_bytes()); // planos
-        out.extend_from_slice(&24u16.to_le_bytes()); // bits por pixel
-        out.extend_from_slice(&0u32.to_le_bytes()); // sem compressão
+        out.extend_from_slice(&1u16.to_le_bytes()); // planes
+        out.extend_from_slice(&24u16.to_le_bytes()); // bits per pixel
+        out.extend_from_slice(&0u32.to_le_bytes()); // no compression
         out.extend_from_slice(&(pixel_data as u32).to_le_bytes());
         out.extend_from_slice(&2835i32.to_le_bytes()); // ~72 dpi
         out.extend_from_slice(&2835i32.to_le_bytes());
-        out.extend_from_slice(&0u32.to_le_bytes()); // cores na paleta
-        out.extend_from_slice(&0u32.to_le_bytes()); // cores importantes
+        out.extend_from_slice(&0u32.to_le_bytes()); // colors in the palette
+        out.extend_from_slice(&0u32.to_le_bytes()); // important colors
 
         for y in (0..self.height).rev() {
             for x in 0..self.width {
@@ -579,36 +585,36 @@ impl Framebuffer {
 mod tests {
 
     #[test]
-    fn largura_impar_ganha_um_pixel_de_enchimento_por_linha_no_dib() {
+    fn odd_width_gets_one_padding_pixel_per_row_in_the_dib() {
         let mut fb = Framebuffer::new(3, 2);
         fb.set_pixel_native(0, 1, 0x1234);
         fb.set_pixel_native(2, 1, 0xabcd);
-        assert_eq!(fb.passo_do_dib(), 8);
+        assert_eq!(fb.dib_pitch(), 8);
         let bytes = fb.to_dib_bytes();
         assert_eq!(bytes.len(), 16);
-        // A segunda linha começa no byte 8, não no 6.
+        // The second row starts at byte 8, not 6.
         assert_eq!(&bytes[8..10], &0x1234u16.to_le_bytes());
         assert_eq!(&bytes[12..14], &0xabcdu16.to_le_bytes());
 
-        let mut volta = Framebuffer::new(3, 2);
-        volta.load_dib_bytes(&bytes);
-        assert_eq!(volta.get_pixel(0, 1), 0x1234);
-        assert_eq!(volta.get_pixel(2, 1), 0xabcd);
-        // Numa largura par nada muda.
-        assert_eq!(Framebuffer::new(4, 1).passo_do_dib(), 8);
+        let mut tick = Framebuffer::new(3, 2);
+        tick.load_dib_bytes(&bytes);
+        assert_eq!(tick.get_pixel(0, 1), 0x1234);
+        assert_eq!(tick.get_pixel(2, 1), 0xabcd);
+        // For an even width nothing changes.
+        assert_eq!(Framebuffer::new(4, 1).dib_pitch(), 8);
     }
 
     #[test]
-    fn a_conversao_para_a_janela_espalha_os_bits_ate_o_fim_da_faixa() {
+    fn conversion_for_the_window_spreads_the_bits_to_the_end_of_the_range() {
         let mut fb = Framebuffer::new(2, 1);
         fb.load_rgb565_bytes(&[0xff, 0xff, 0x00, 0x00]);
-        // Branco em RGB565 tem de virar branco de verdade, não 0xf8fcf8.
+        // White in RGB565 has to become real white, not 0xf8fcf8.
         assert_eq!(fb.to_argb(), vec![0x00ff_ffff, 0x0000_0000]);
     }
     use super::*;
 
     #[test]
-    fn converte_rgbval_do_guest() {
+    fn converts_rgbval_from_guest() {
         // MAKE_RGB(0x12, 0x34, 0x56) = 0x56341200
         let color = Rgb::from_rgbval(0x5634_1200);
         assert_eq!(
@@ -622,7 +628,7 @@ mod tests {
     }
 
     #[test]
-    fn rgb565_preserva_branco_e_preto() {
+    fn rgb565_preserves_white_and_black() {
         assert_eq!(Rgb::BLACK.to_rgb565(), 0x0000);
         assert_eq!(Rgb::WHITE.to_rgb565(), 0xffff);
         assert_eq!(Rgb::from_rgb565(0xffff), Rgb::WHITE);
@@ -630,7 +636,7 @@ mod tests {
     }
 
     #[test]
-    fn preenche_retangulo_recortando_na_borda() {
+    fn fill_rect_clips_at_the_edge() {
         let mut fb = Framebuffer::new(4, 4);
         fb.fill_rect(
             Rect {
@@ -653,7 +659,7 @@ mod tests {
     }
 
     #[test]
-    fn retangulo_fora_da_tela_nao_estoura() {
+    fn offscreen_rect_does_not_overflow() {
         let mut fb = Framebuffer::new(4, 4);
         fb.fill_rect(
             Rect {
@@ -677,7 +683,7 @@ mod tests {
     }
 
     #[test]
-    fn le_aeerect_do_guest() {
+    fn reads_aeerect_from_guest() {
         let rect = Rect::from_bytes([10, 0, 20, 0, 30, 0, 40, 0]);
         assert_eq!(
             rect,
@@ -691,18 +697,18 @@ mod tests {
     }
 
     #[test]
-    fn linha_horizontal_pinta_todos_os_pixels() {
+    fn horizontal_line_paints_every_pixel() {
         let mut fb = Framebuffer::new(8, 8);
         fb.draw_line(1, 3, 6, 3, Rgb::WHITE);
         for x in 1..=6 {
-            assert_eq!(fb.get_pixel(x, 3), 0xffff, "faltou o pixel em x={x}");
+            assert_eq!(fb.get_pixel(x, 3), 0xffff, "missing pixel at x={x}");
         }
         assert_eq!(fb.get_pixel(0, 3), 0);
         assert_eq!(fb.get_pixel(7, 3), 0);
     }
 
     #[test]
-    fn linha_diagonal_liga_as_duas_pontas() {
+    fn diagonal_line_joins_both_ends() {
         let mut fb = Framebuffer::new(8, 8);
         fb.draw_line(0, 0, 7, 7, Rgb::WHITE);
         assert_eq!(fb.get_pixel(0, 0), 0xffff);
@@ -711,46 +717,46 @@ mod tests {
     }
 
     #[test]
-    fn linha_fora_da_tela_nao_estoura() {
+    fn offscreen_line_does_not_overflow() {
         let mut fb = Framebuffer::new(4, 4);
         fb.draw_line(-100, -100, 100, 100, Rgb::WHITE);
         assert_eq!(fb.get_pixel(0, 0), 0xffff);
     }
 
     #[test]
-    fn circulo_toca_os_quatro_extremos() {
+    fn circle_touches_all_four_extremes() {
         let mut fb = Framebuffer::new(16, 16);
         fb.draw_circle(8, 8, 4, Rgb::WHITE);
         assert_eq!(fb.get_pixel(12, 8), 0xffff);
         assert_eq!(fb.get_pixel(4, 8), 0xffff);
         assert_eq!(fb.get_pixel(8, 12), 0xffff);
         assert_eq!(fb.get_pixel(8, 4), 0xffff);
-        assert_eq!(fb.get_pixel(8, 8), 0, "o miolo fica vazio: é só a borda");
+        assert_eq!(fb.get_pixel(8, 8), 0, "the middle stays empty: it is only the outline");
     }
 
     #[test]
-    fn circulo_preenchido_pinta_o_centro() {
+    fn filled_circle_paints_the_center() {
         let mut fb = Framebuffer::new(16, 16);
         fb.fill_circle(8, 8, 4, Rgb::WHITE);
         assert_eq!(fb.get_pixel(8, 8), 0xffff);
-        assert_eq!(fb.get_pixel(8, 15), 0, "fora do raio continua vazio");
+        assert_eq!(fb.get_pixel(8, 15), 0, "outside the radius stays empty");
     }
 
     #[test]
-    fn poligono_preenchido_cobre_o_interior() {
+    fn filled_polygon_covers_the_interior() {
         let mut fb = Framebuffer::new(10, 10);
-        // Um quadrado de (2,2) a (7,7).
+        // A square from (2,2) to (7,7).
         fb.fill_polygon(&[(2, 2), (7, 2), (7, 7), (2, 7)], Rgb::WHITE);
         assert_eq!(fb.get_pixel(4, 4), 0xffff);
         assert_eq!(fb.get_pixel(2, 2), 0xffff);
-        assert_eq!(fb.get_pixel(1, 1), 0, "fora do polígono continua vazio");
+        assert_eq!(fb.get_pixel(1, 1), 0, "outside the polygon stays empty");
     }
 
     #[test]
-    fn blit_copia_regiao_e_respeita_transparencia() {
+    fn blit_copies_region_and_respects_transparency() {
         let mut src = Framebuffer::new(2, 2);
         src.set_pixel_native(0, 0, 0x1234);
-        src.set_pixel_native(1, 0, 0xf81f); // cor marcada como transparente
+        src.set_pixel_native(1, 0, 0xf81f); // color marked as transparent
         src.set_pixel_native(0, 1, 0x4321);
 
         let mut dst = Framebuffer::new(2, 2);
@@ -759,13 +765,13 @@ mod tests {
         assert_eq!(
             dst.get_pixel(1, 0),
             0,
-            "pixel transparente não deve ser copiado"
+            "a transparent pixel must not be copied"
         );
         assert_eq!(dst.get_pixel(0, 1), 0x4321);
     }
 
     #[test]
-    fn blit_recorta_nas_bordas_das_duas_superficies() {
+    fn blit_clips_at_the_edges_of_both_surfaces() {
         let mut src = Framebuffer::new(2, 2);
         src.fill_rect_native(
             Rect {
@@ -777,18 +783,18 @@ mod tests {
             0xffff,
         );
         let mut dst = Framebuffer::new(2, 2);
-        // Origem e destino fora dos limites: não deve estourar nem escrever nada.
+        // Source and destination out of bounds: it must not overflow or write anything.
         dst.blit(-5, -5, 2, 2, &src, 10, 10, None);
         assert!(!dst.is_dirty());
     }
 
     #[test]
-    fn bmp_tem_cabecalho_e_tamanho_certos() {
+    fn bmp_has_correct_header_and_size() {
         let mut fb = Framebuffer::new(2, 2);
         fb.set_pixel(0, 0, Rgb::WHITE);
         let bmp = fb.to_bmp();
         assert_eq!(&bmp[0..2], b"BM");
-        // 2 pixels por linha = 6 bytes, arredondado para 8; duas linhas = 16.
+        // 2 pixels per row = 6 bytes, rounded up to 8; two rows = 16.
         assert_eq!(bmp.len(), 54 + 16);
         assert_eq!(
             u32::from_le_bytes([bmp[2], bmp[3], bmp[4], bmp[5]]),

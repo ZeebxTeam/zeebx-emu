@@ -1,22 +1,22 @@
 #![cfg_attr(target_os = "vita", feature(alloc_error_hook))]
-//! O Zeebx na PlayStation Vita, sem RetroArch.
+//! Zeebx on the PlayStation Vita, without RetroArch.
 //!
-//! Quem emula é a [`zeebx::session::Session`]. Este binário é o que no core o frontend faria:
-//! framebuffer, alto-falante e controle. O `vita.yml` monta o VPK; no desktop o `main` só avisa,
-//! para o `cargo test` deste pacote ter onde compilá-lo.
+//! The emulating is done by [`zeebx::session::Session`]. This binary is what the frontend would do
+//! in the core: framebuffer, speaker and controller. `vita.yml` builds the VPK; on the desktop
+//! `main` only prints a notice, so that this package's `cargo test` has somewhere to compile it.
 
-mod apresentacao;
-mod entrada;
-mod fonte;
-mod lista;
-mod som;
+mod presentation;
+mod host_input;
+mod font;
+mod list;
+mod sound;
 
 fn main() {
     #[cfg(target_os = "vita")]
-    vita::roda();
+    vita::run();
     #[cfg(not(target_os = "vita"))]
     eprintln!(
-        "zeebx-vita é o aplicativo da PlayStation Vita. O VPK sai de frontends/vita-standalone/compilar.sh."
+        "zeebx-vita is the PlayStation Vita app. The VPK comes out of frontends/vita-standalone/build.sh."
     );
 }
 
@@ -25,4 +25,4 @@ mod vita;
 
 #[cfg(target_os = "vita")]
 #[global_allocator]
-static ALOCADOR: vita::Grandes = vita::Grandes::NOVO;
+static ALLOCATOR: vita::LargeAllocs = vita::LargeAllocs::NEW;

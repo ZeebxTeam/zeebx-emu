@@ -1,16 +1,16 @@
-> Abra este PR contra a branch `development`.
+> Open this PR against the `development` branch.
 >
-> A branch `master` recebe apenas merges de release. PRs apontados para `master` podem ser
-> retargetados ou fechados para manter o fluxo de desenvolvimento.
+> The `master` branch only receives release merges. PRs aimed at `master` may be
+> retargeted or closed to keep the development flow.
 
-## O que mudou
-
--
-
-## Como foi testado
+## What changed
 
 -
 
-## Observações
+## How it was tested
+
+-
+
+## Notes
 
 -

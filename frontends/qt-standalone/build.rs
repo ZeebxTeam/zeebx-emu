@@ -1,58 +1,58 @@
-// O ícone e a versão entram no `.exe` do Windows: é o que o Explorer e a barra de tarefas
-// mostram.
+// The icon and the version go into the Windows `.exe`: that is what Explorer and the taskbar
+// show.
 //
-// **Mora neste pacote porque o recurso só chega ao executável se for compilado aqui.** Na raiz
-// ele ficava preso na biblioteca, que não é o que o usuário abre. O `assets/` continua na raiz
-// do repositório, por isso os dois níveis acima.
+// **It lives in this package because the resource only reaches the executable if it is compiled
+// here.** At the root it got stuck in the library, which is not what the user opens. `assets/`
+// stays at the repository root, hence the two levels up.
 fn main() {
-    // O `CARGO_CFG_TARGET_OS` é o do alvo, e não o da máquina que compila: o `cfg!` aqui
-    // responderia pelo sistema em que o build.rs roda.
+    // `CARGO_CFG_TARGET_OS` is the target's, not the build machine's: `cfg!` here would answer
+    // for the system build.rs runs on.
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
-        let mut recurso = winresource::WindowsResource::new();
-        recurso.set_icon("../../assets/icones/zeebx.ico");
-        if let Err(erro) = recurso.compile() {
-            println!("cargo:warning=sem ícone no .exe: {erro}");
+        let mut resource = winresource::WindowsResource::new();
+        resource.set_icon("../../assets/icons/zeebx.ico");
+        if let Err(error) = resource.compile() {
+            println!("cargo:warning=no icon in the .exe: {error}");
         }
     }
-    interface_qt();
-    println!("cargo:rerun-if-changed=../../assets/icones/zeebx.ico");
+    qt_ui();
+    println!("cargo:rerun-if-changed=../../assets/icons/zeebx.ico");
     println!("cargo:rerun-if-changed=build.rs");
 }
 
-/// A ponte com o Qt: os `QObject`s escritos em Rust, a cola em C++ e o módulo QML. Ver
-/// `docs/implementacao/21-migracao-para-qt.md`.
-fn interface_qt() {
+/// The bridge to Qt: the `QObject`s written in Rust, the C++ glue and the QML module. See
+/// `docs/implementation/21-qt-migration.md`.
+fn qt_ui() {
     use cxx_qt_build::{CxxQtBuilder, QmlModule};
 
     CxxQtBuilder::new_qml_module(
         QmlModule::new("zeebx")
-            .qml_files(["qml/Principal.qml", "qml/Jogo.qml", "qml/GradeDaBiblioteca.qml", "qml/SliderDaBiblioteca.qml", "qml/JanelaDeConfiguracoes.qml", "qml/JanelaDeSaves.qml", "qml/JanelaDeLog.qml", "qml/Icone.qml", "qml/PalcoDoJogo.qml"])
+            .qml_files(["qml/Main.qml", "qml/Game.qml", "qml/LibraryGrid.qml", "qml/LibrarySlider.qml", "qml/SettingsWindow.qml", "qml/SavesWindow.qml", "qml/LogWindow.qml", "qml/Icon.qml", "qml/GameStage.qml"])
             .depend("QtQuick"),
     )
-    .files(["src/qt/ponte.rs", "src/qt/biblioteca.rs", "src/qt/configuracoes.rs", "src/qt/auxiliares.rs", "src/qt/tema.rs"])
+    .files(["src/qt/bridge.rs", "src/qt/library.rs", "src/qt/settings.rs", "src/qt/dialogs.rs", "src/qt/theme.rs"])
     .include_dir("src/qt/cpp")
     .cpp_files([
         "src/qt/cpp/gl_qt.cpp",
-        // O cabeçalho entra para o moc: o `ItemDoQuadro` tem `Q_OBJECT`.
-        "src/qt/cpp/quadro.h",
-        "src/qt/cpp/quadro.cpp",
-        "src/qt/cpp/imagens.cpp",
-        "src/qt/cpp/paleta.cpp",
+        // The header goes in for moc: `FrameItem` has `Q_OBJECT`.
+        "src/qt/cpp/frame.h",
+        "src/qt/cpp/frame.cpp",
+        "src/qt/cpp/images.cpp",
+        "src/qt/cpp/palette.cpp",
     ])
-    // A imagem do aviso de calibração, a logo do ícone e a fonte dos ícones da interface, em
-    // `qrc:/zeebx/`. O `assets/` é do projeto, e não deste pacote.
+    // The calibration notice image, the icon logo and the UI icon font, under `qrc:/zeebx/`.
+    // `assets/` belongs to the project, not to this package.
     .qrc_resources(cxx_qt_build::QResources::new().resource(
         cxx_qt_build::QResource::new()
             .prefix("/zeebx")
             .file(qt_build_utils::QResourceFile::new("../../assets/boomerang.png").alias("boomerang.png"))
             .file(qt_build_utils::QResourceFile::new("../../assets/zeebx.png").alias("zeebx.png"))
-            .file(qt_build_utils::QResourceFile::new("../../assets/icones/lucide.ttf").alias("lucide.ttf")),
+            .file(qt_build_utils::QResourceFile::new("../../assets/icons/lucide.ttf").alias("lucide.ttf")),
     ))
     .qt_module("Quick")
-    // O Qt Qml pede o Network no macOS.
+    // Qt Qml requires Network on macOS.
     .qt_module("Network")
     .build();
     println!("cargo:rerun-if-changed=src/qt/cpp/gl_qt.h");
-    println!("cargo:rerun-if-changed=src/qt/cpp/imagens.h");
-    println!("cargo:rerun-if-changed=src/qt/cpp/paleta.h");
+    println!("cargo:rerun-if-changed=src/qt/cpp/images.h");
+    println!("cargo:rerun-if-changed=src/qt/cpp/palette.h");
 }

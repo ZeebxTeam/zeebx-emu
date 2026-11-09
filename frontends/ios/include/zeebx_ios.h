@@ -7,62 +7,64 @@
 extern "C" {
 #endif
 
-/* O que `zeebx_ios_passo` devolve. Os números são o contrato com o Swift. */
-#define ZEEBX_SEM_SESSAO (-1)
-#define ZEEBX_QUADRO 0
-#define ZEEBX_RODANDO 1
-#define ZEEBX_ADIANTADO 2
-#define ZEEBX_PAROU 3
+/* What `zeebx_ios_step` returns. The numbers are the contract with Swift. */
+#define ZEEBX_NO_SESSION (-1)
+#define ZEEBX_FRAME 0
+#define ZEEBX_RUNNING 1
+#define ZEEBX_AHEAD 2
+#define ZEEBX_STOPPED 3
 
-/* Ponteiro opaco. A Swift não olha para dentro. */
+/* Opaque pointer. Swift does not look inside. */
 typedef struct ZeebxIos ZeebxIos;
 
 /*
- * `documentos` é a pasta Documents do aplicativo: as ROMs ficam em `documentos/roms`,
- * que o app de Arquivos enxerga. `suporte` é Library/Application Support: cache, saves
- * e o aparelho virtual. Os dois são caminhos de arquivo, em UTF-8, terminados em zero.
- * Devolve nulo se um dos ponteiros for nulo.
+ * `documents` is the app's Documents folder: the ROMs live in `documents/roms`, which the
+ * Files app can see. `support` is Library/Application Support: cache, saves and the virtual
+ * device. Both are file paths, in UTF-8, zero-terminated.
+ * Returns null if either pointer is null.
  */
-ZeebxIos *zeebx_ios_cria(const char *documentos, const char *suporte);
-void zeebx_ios_destroi(ZeebxIos *app);
+ZeebxIos *zeebx_ios_create(const char *documents, const char *support);
+void zeebx_ios_destroy(ZeebxIos *app);
 
-/* Quantos jogos a última varredura achou. Varre de novo a pasta de ROMs. */
-int32_t zeebx_ios_varre(ZeebxIos *app);
+/* How many games the last scan found. Scans the ROM folder again. */
+int32_t zeebx_ios_scan(ZeebxIos *app);
 
-/* Título do jogo `indice`, válido até a próxima varredura. Nulo se o índice não existe. */
-const char *zeebx_ios_titulo(ZeebxIos *app, int32_t indice);
+/* Title of game `index`, valid until the next scan. Null if the index does not exist. */
+const char *zeebx_ios_title(ZeebxIos *app, int32_t index);
 
 /*
- * Começa o jogo `indice`. 0 quando a sessão subiu; -1 quando não, e a razão fica em
- * `zeebx_ios_erro` até a próxima chamada que a substitua.
+ * Starts game `index`. 0 when the session came up; -1 when it did not, and the reason stays in
+ * `zeebx_ios_error` until the next call that replaces it.
  */
-int32_t zeebx_ios_comeca(ZeebxIos *app, int32_t indice);
-void zeebx_ios_para(ZeebxIos *app);
+int32_t zeebx_ios_start(ZeebxIos *app, int32_t index);
+void zeebx_ios_stop(ZeebxIos *app);
 
 /*
- * Uma volta do laço: entrega o controle, avança o jogo o tempo real que passou e publica
- * o quadro. A chamada é da linha de execução da interface; não é segura de outra linha.
+ * One turn of the loop: delivers the controller, advances the game by the real time that has
+ * passed and publishes the frame. The call belongs to the UI thread; it is not safe from
+ * another thread.
  */
-int32_t zeebx_ios_passo(ZeebxIos *app);
+int32_t zeebx_ios_step(ZeebxIos *app);
 
 /*
- * O quadro corrente, em BGRA8, com a origem no canto superior esquerdo. O ponteiro vale
- * até o próximo `zeebx_ios_passo` ou `zeebx_ios_para`. `largura` e `altura` podem ser nulos.
- * Devolve nulo quando não há quadro.
+ * The current frame, in BGRA8, with the origin at the top-left corner. The pointer is valid
+ * until the next `zeebx_ios_step` or `zeebx_ios_stop`. `width` and `height` may be null.
+ * Returns null when there is no frame.
  */
-const uint8_t *zeebx_ios_quadro(ZeebxIos *app, uint32_t *largura, uint32_t *altura);
+const uint8_t *zeebx_ios_frame(ZeebxIos *app, uint32_t *width, uint32_t *height);
 
-/* `indice` é a posição em `BUTTON_NAMES` do núcleo (`b1` é 0, `up` é 12). `apertado` é 0 ou 1. */
-void zeebx_ios_botao(ZeebxIos *app, uint32_t indice, int32_t apertado);
+/* `index` is the position in the core's `BUTTON_NAMES` (`b1` is 0, `up` is 12). `pressed` is 0/1. */
+void zeebx_ios_button(ZeebxIos *app, uint32_t index, int32_t pressed);
 
-/* Eixo do manche, centrado em zero. `indice` 0 é X, 1 é Y. O curso é -128..=128. */
-void zeebx_ios_eixo(ZeebxIos *app, uint32_t indice, int32_t valor);
+/* Joystick axis, centered on zero. `index` 0 is X, 1 is Y. The travel is -128..=128. */
+void zeebx_ios_axis(ZeebxIos *app, uint32_t index, int32_t value);
 
-/* -1 quando o nome não é botão do Zeebo. */
-int32_t zeebx_ios_botao_por_nome(const char *nome);
+/* -1 when the name is not a Zeebo button. */
+int32_t zeebx_ios_button_by_name(const char *name);
 
-/* Texto da última falha, ou string vazia. Vale até a próxima chamada que o substitua. */
-const char *zeebx_ios_erro(ZeebxIos *app);
+/* Text of the last failure, or an empty string. Valid until the next call that replaces it. */
+
+const char *zeebx_ios_error(ZeebxIos *app);
 
 #ifdef __cplusplus
 }

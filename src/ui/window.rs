@@ -1,8 +1,8 @@
-//! Janela do host, para acompanhar o jogo rodando.
+//! Host window, to follow the running game.
 //!
-//! É a única parte do emulador que fala com o sistema de janelas, e por isso a dependência
-//! fica confinada aqui: o resto do código só entrega um [`Framebuffer`] e pergunta se a janela
-//! continua aberta.
+//! It is the only part of the emulator that talks to the window system, and that is why the
+//! dependency stays confined here: the rest of the code only hands over a [`Framebuffer`] and asks
+//! whether the window is still open.
 
 use minifb::{Key, KeyRepeat, Scale, WindowOptions};
 
@@ -16,7 +16,7 @@ pub struct Window {
 }
 
 impl Window {
-    /// Abre uma janela do tamanho da tela do console.
+    /// Opens a window the size of the console screen.
     pub fn open(title: &str, width: u32, height: u32) -> Result<Self, String> {
         let (width, height) = (width as usize, height as usize);
         let mut inner = minifb::Window::new(
@@ -30,7 +30,7 @@ impl Window {
             },
         )
         .map_err(|err| err.to_string())?;
-        // Sem limite: quem dita o ritmo é o emulador, e segurar aqui só o deixaria mais lento.
+        // No limit: the emulator sets the pace, and holding back here would only make it slower.
         inner.set_target_fps(0);
         Ok(Self {
             inner,
@@ -39,21 +39,21 @@ impl Window {
         })
     }
 
-    /// Se a janela continua aberta. `Esc` fecha, como em qualquer emulador.
+    /// Whether the window is still open. `Esc` closes it, as in any emulator.
     pub fn is_open(&self) -> bool {
         self.inner.is_open() && !self.inner.is_key_down(Key::Escape)
     }
 
-    /// O estado do controle, lido do teclado.
+    /// The controller state, read from the keyboard.
     ///
-    /// As setas movem os eixos `X` e `Y`, que é onde o controle do Zeebo reporta o direcional;
-    /// o resto são botões. Os nomes dos botões são os do controle, não os das teclas — a
-    /// tabela de quem é quem está em [`crate::input`].
+    /// The arrows move the `X` and `Y` axes, which is where the Zeebo controller reports the
+    /// d-pad; the rest are buttons. The button names are the controller's, not the keys' — the
+    /// table of who is who is in [`crate::input`].
     pub fn pad(&self) -> Pad {
         let mut pad = Pad::default();
-        // Uma tecla que foi apertada e solta entre dois quadros não apareceria em
-        // `is_key_down`, e o emulador só olha o teclado uma vez por quadro: sem os eventos de
-        // borda, um toque rápido se perdia.
+        // A key pressed and released between two frames would not show up in `is_key_down`, and
+        // the emulator only looks at the keyboard once per frame: without the edge events, a
+        // quick tap got lost.
         let tapped = self.inner.get_keys_pressed(KeyRepeat::No);
         let held = |key| self.inner.is_key_down(key) || tapped.contains(&key);
 
@@ -76,10 +76,10 @@ impl Window {
         pad
     }
 
-    /// Mostra o quadro.
+    /// Shows the frame.
     pub fn show(&mut self, frame: &Framebuffer) -> Result<(), String> {
         let pixels = frame.to_argb();
-        // A tela do guest pode mudar de tamanho entre um quadro e outro; a janela não.
+        // The guest screen may change size between one frame and the next; the window does not.
         if pixels.len() != self.width * self.height {
             return Ok(());
         }
@@ -89,10 +89,10 @@ impl Window {
     }
 }
 
-/// De qual tecla vem cada botão do controle.
+/// Which key each controller button comes from.
 ///
-/// A escolha é a de qualquer emulador: a mão esquerda nas setas e a direita nas teclas de
-/// ação, com `Enter` e `Backspace` no `Start` e no `Back`.
+/// The choice is that of any emulator: the left hand on the arrows and the right on the action
+/// keys, with `Enter` and `Backspace` on `Start` and `Back`.
 const KEYMAP: [(Key, &str); 12] = [
     (Key::Z, "b1"),
     (Key::Space, "b2"),
@@ -103,7 +103,7 @@ const KEYMAP: [(Key, &str); 12] = [
     (Key::W, "zr"),
     (Key::F, "lthumb"),
     (Key::G, "rthumb"),
-    // O controle do Zeebo não tem Start: o HOME faz esse papel.
+    // The Zeebo controller has no Start: HOME plays that role.
     (Key::Enter, "back"),
     (Key::Backspace, "back"),
     (Key::H, "home"),

@@ -1,76 +1,77 @@
-//! OpenGL ES 1.1: o despacho das chamadas e a ponte para o rasterizador.
+//! OpenGL ES 1.1: call dispatch and the bridge to the rasterizer.
 
 use super::*;
 
-/// Teto do trecho que a leitura em bloco aceita montar de uma vez. Um ponteiro de array
-/// corrompido dá uma extensão absurda, e alocar isso seria trocar uma lentidão por um estouro
-/// de memória. Acima daqui, volta a ler componente a componente — que é lento, mas seguro.
-const TETO_DO_ARRAY: u64 = 8 << 20;
+/// Cap on the span the block read agrees to assemble at once. A corrupted array pointer gives an
+/// absurd extent, and allocating it would trade slowness for running out of memory. Above this,
+/// it goes back to reading component by component — which is slow, but safe.
+const ARRAY_CAP: u64 = 8 << 20;
 
-/// Os nomes em uso de um tipo de objeto do OpenGL ES: texturas ou buffers.
+/// The names in use for one kind of OpenGL ES object: textures or buffers.
 ///
-/// **Nome apagado volta a valer.** Antes os nomes saíam de um contador que só crescia, e a
-/// especificação não proíbe: ela só exige que o `glGen*` entregue nomes fora de uso. Mas o Rally
-/// Master Pro guarda uma flag por textura num vetor de 248 bytes indexado pelo nome dela, e cada
-/// etapa apaga e recria as texturas da cena. Com o contador, o nome passava de 248 depois de
-/// algumas corridas e o jogo escrevia além do vetor, por cima do objeto vizinho no heap. O
-/// destrutor desse vizinho lia depois um ponteiro feito de bytes `0x01` e o jogo parava com
-/// "acesso inválido a `0x0101010d`". Medido: com uma guarda depois de cada bloco, as escritas
-/// fora do lugar caíam todas no fim desse vetor.
+/// **A deleted name becomes valid again.** Names used to come from a counter that only grew, and
+/// the specification does not forbid that: it only requires `glGen*` to hand out names not in use.
+/// But Rally Master Pro keeps a flag per texture in a 248-byte array indexed by the texture's
+/// name, and each stage deletes and recreates the scene's textures. With the counter, the name
+/// went past 248 after a few races and the game wrote beyond the array, over the neighboring
+/// object on the heap. That neighbor's destructor later read a pointer made of `0x01` bytes and
+/// the game stopped with "invalid access at `0x0101010d`". Measured: with a guard after each
+/// block, the stray writes all landed at the end of that array.
 ///
-/// Sai o **menor** nome livre. Não foi medido no aparelho qual nome o driver do Zeebo entrega,
-/// só que ele reaproveita: o jogo roda no console sem cair. O menor livre é o que mantém os nomes
-/// baixos, e nomes baixos são o que o vetor do Rally supõe.
+/// The **smallest** free name comes out. Which name the Zeebo driver hands out was not measured on
+/// the console, only that it reuses them: the game runs on the console without crashing. Smallest
+/// free is what keeps names low, and low names are what Rally's array assumes.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub(crate) struct NomesGl {
-    em_uso: std::collections::BTreeSet<u32>,
+pub(crate) struct GlNames {
+    in_use: std::collections::BTreeSet<u32>,
 }
 
-impl NomesGl {
-    /// Os nomes de uma lista, como um save state os guarda.
-    pub(crate) fn de(nomes: impl IntoIterator<Item = u32>) -> Self {
+impl GlNames {
+    /// The names from a list, as a save state stores them.
+    pub(crate) fn from(names: impl IntoIterator<Item = u32>) -> Self {
         Self {
-            em_uso: nomes.into_iter().filter(|&nome| nome != 0).collect(),
+            in_use: names.into_iter().filter(|&name| name != 0).collect(),
         }
     }
 
-    /// O menor nome livre, que passa a estar em uso. Zero é o objeto padrão e nunca sai daqui.
-    pub(crate) fn gera(&mut self) -> u32 {
-        let mut nome = 1;
-        for &usado in &self.em_uso {
-            if usado != nome {
+    /// The smallest free name, which becomes in use. Zero is the default object and never comes
+    /// out of here.
+    pub(crate) fn generate(&mut self) -> u32 {
+        let mut name = 1;
+        for &used in &self.in_use {
+            if used != name {
                 break;
             }
-            nome += 1;
+            name += 1;
         }
-        self.em_uso.insert(nome);
-        nome
+        self.in_use.insert(name);
+        name
     }
 
-    /// Um nome que o jogo ligou sem ter gerado: o OpenGL o cria na primeira ligação, e daí em
-    /// diante o `glGen*` não pode entregá-lo a mais ninguém.
-    pub(crate) fn usa(&mut self, nome: u32) {
-        if nome != 0 {
-            self.em_uso.insert(nome);
+    /// A name the game bound without generating it: OpenGL creates it on the first bind, and from
+    /// then on `glGen*` cannot hand it to anyone else.
+    pub(crate) fn mark_used(&mut self, name: u32) {
+        if name != 0 {
+            self.in_use.insert(name);
         }
     }
 
-    pub(crate) fn libera(&mut self, nome: u32) {
-        self.em_uso.remove(&nome);
+    pub(crate) fn free(&mut self, name: u32) {
+        self.in_use.remove(&name);
     }
 
-    pub(crate) fn em_uso(&self) -> impl Iterator<Item = u32> + '_ {
-        self.em_uso.iter().copied()
+    pub(crate) fn in_use(&self) -> impl Iterator<Item = u32> + '_ {
+        self.in_use.iter().copied()
     }
 
-    /// O maior nome em uso, ou zero.
-    pub(crate) fn maior(&self) -> u32 {
-        self.em_uso.last().copied().unwrap_or(0)
+    /// The largest name in use, or zero.
+    pub(crate) fn largest(&self) -> u32 {
+        self.in_use.last().copied().unwrap_or(0)
     }
 }
 
 impl<C: CpuBackend> Machine<C> {
-    /// Um ajuste de textura vindo da extensão, com os nomes do OpenGL ES.
+    /// A texture setting coming from the extension, with the OpenGL ES names.
     pub(super) fn apply_texture_setting(&mut self, name: &str, pname: u32, value: u32) {
         match name.starts_with("TexEnv") {
             true if pname == gles::GL_TEXTURE_ENV_MODE => self.gl.set_texture_env(value),
@@ -79,19 +80,19 @@ impl<C: CpuBackend> Machine<C> {
         }
     }
 
-    /// As chamadas de GL que atendemos sem fazer nada.
+    /// The GL calls we serve without doing anything.
     pub fn ignored_gl(&self) -> Vec<&'static str> {
         self.ignored_gl.iter().copied().collect()
     }
 
-    /// O OpenGL ES, nas duas formas em que o BREW o expõe.
+    /// OpenGL ES, in the two forms BREW exposes it in.
     ///
-    /// A nova é o `IGLES11` de `sdk/inc/AEEGLES10.h` e `AEEGLES11.h`; a antiga é o `IGL` de
-    /// `sdk/inc/AEEGL.h`, que não recebe o `this` e devolve o resultado direto. Como no EGL,
-    /// tirando o prefixo `gl` os nomes coincidem, e um tradutor só atende as duas.
+    /// The new one is `IGLES11` from `sdk/inc/AEEGLES10.h` and `AEEGLES11.h`; the old one is `IGL`
+    /// from `sdk/inc/AEEGL.h`, which does not take `this` and returns the result directly. As with
+    /// EGL, once the `gl` prefix is stripped the names match, and a single translator serves both.
     ///
-    /// Aqui não se desenha nada: os argumentos viram estado ou vértices, e quem rasteriza é o
-    /// [`rasterizer`].
+    /// Nothing is drawn here: the arguments become state or vertices, and the one that rasterizes
+    /// is the [`rasterizer`].
     pub(super) fn gles_call(
         &mut self,
         iface: Interface,
@@ -108,8 +109,8 @@ impl<C: CpuBackend> Machine<C> {
         let base = usize::from(!legacy);
         let a: [u32; 10] = std::array::from_fn(|i| self.arg(base + i));
         let this = self.arg(0);
-        // As variantes `x` levam ponto fixo 16.16 e as `f`, `float` de 32 bits — mesma função,
-        // só muda como o número chega.
+        // The `x` variants take 16.16 fixed point and the `f` ones a 32-bit `float` — same
+        // function, only how the number arrives changes.
         let fixed = |v: u32| gles::fixed(v);
         let float = |v: u32| f32::from_bits(v);
         let number = |v: u32| {
@@ -119,8 +120,8 @@ impl<C: CpuBackend> Machine<C> {
                 float(v)
             }
         };
-        // Os poucos métodos que produzem um valor: na forma antiga ele é o retorno, na nova
-        // vai para um ponteiro de saída.
+        // The few methods that produce a value: in the old form it is the return value, in the
+        // new one it goes to an output pointer.
         let mut answer = None;
         match name {
             "AddRef" => return Ok(Some(self.objects.add_ref(this))),
@@ -135,25 +136,26 @@ impl<C: CpuBackend> Machine<C> {
                     gles::GL_VENDOR => "Zeebx",
                     gles::GL_RENDERER => "Zeebx Software Rasterizer",
                     gles::GL_VERSION => "OpenGL ES-CM 1.1",
-                    // Só o que existe de verdade. Anunciar extensão que não temos faria o jogo
-                    // chamar função que não existe — e omitir uma que temos é pior ainda: os
-                    // dez portes de arcade do console conferem o `GL_OES_draw_texture` aqui e
-                    // desistem da inicialização gráfica sem ele.
-                    // O `atitc` entrou porque nós o decodificamos de verdade — ver `atc.rs` e
-                    // o `gles_compressed_tex_image`. A Z-Wheel procura por ele antes de montar
-                    // o palco, cujas texturas (`stage_*.qxt`) são ATITC; sem o nome na lista ela
-                    // desiste do palco inteiro.
+                    // Only what really exists. Advertising an extension we don't have would
+                    // make the game call a function that doesn't exist — and leaving out one we
+                    // do have is even worse: the console's ten arcade ports check for
+                    // `GL_OES_draw_texture` here and give up on graphics initialization without
+                    // it.
+                    // `atitc` went in because we really decode it — see `atc.rs` and
+                    // `gles_compressed_tex_image`. The Z-Wheel looks for it before building the
+                    // stage, whose textures (`stage_*.qxt`) are ATITC; without the name in the
+                    // list it gives up on the whole stage.
                     //
-                    // O `vertex_buffer_object` entrou quando passou a existir: `BindBuffer`,
-                    // `BufferData`, `BufferSubData`, `DeleteBuffers`, `IsBuffer` e
-                    // `GetBufferParameteriv`, com os vetores e a lista de índices lendo de
-                    // dentro do buffer. O nome é o `ARB`, que é o que os jogos procuram — o
-                    // Prey Evil faz `strstr` de `ARB_vertex_buffer_object` na lista e desiste
-                    // de instalar a função de desenho dele sem isso.
+                    // `vertex_buffer_object` went in when it came to exist: `BindBuffer`,
+                    // `BufferData`, `BufferSubData`, `DeleteBuffers`, `IsBuffer` and
+                    // `GetBufferParameteriv`, with the arrays and the index list reading from
+                    // inside the buffer. The name is the `ARB` one, which is what games look
+                    // for — Prey Evil does a `strstr` for `ARB_vertex_buffer_object` in the list
+                    // and gives up on installing its draw function without it.
                     //
-                    // O `point_size_array` continua **de fora**: dele só temos um `SUCCESS` que
-                    // não faz nada, e anunciar o que não existe faz o jogo chamar função que
-                    // não está lá.
+                    // `point_size_array` stays **out**: all we have of it is a `SUCCESS` that
+                    // does nothing, and advertising what doesn't exist makes the game call a
+                    // function that isn't there.
                     gles::GL_EXTENSIONS => {
                         "GL_OES_draw_texture GL_OES_query_matrix GL_ATI_imageon_misc \
                          GL_ATI_texture_compression_atitc GL_ARB_vertex_buffer_object "
@@ -163,15 +165,16 @@ impl<C: CpuBackend> Machine<C> {
                 let addr = self.intern(text)?;
                 answer = Some((1, addr));
             }
-            // Sem onde escrever, nenhum nome sai: o jogo não teria como devolvê-lo. Ver [`NomesGl`].
+            // With nowhere to write, no name comes out: the game would have no way to give it
+            // back. See [`GlNames`].
             "GenTextures" | "GenBuffers" if a[1] != 0 => {
                 let (count, out) = (a[0], a[1]);
                 for i in 0..count {
-                    let nome = match name == "GenTextures" {
-                        true => self.nomes_de_textura.gera(),
-                        false => self.nomes_de_buffer.gera(),
+                    let gl_name = match name == "GenTextures" {
+                        true => self.texture_names.generate(),
+                        false => self.buffer_names.generate(),
                     };
-                    self.cpu.write_u32(out + i * 4, nome)?;
+                    self.cpu.write_u32(out + i * 4, gl_name)?;
                 }
             }
             "GenTextures" | "GenBuffers" => {}
@@ -179,101 +182,103 @@ impl<C: CpuBackend> Machine<C> {
                 for i in 0..a[0] {
                     let name = self.cpu.read_u32(a[1] + i * 4)?;
                     self.gl.delete_texture(name);
-                    self.nomes_de_textura.libera(name);
+                    self.texture_names.free(name);
                 }
             }
 
-            // --- Objetos de buffer ------------------------------------------------------
-            // O `GL_ARB_vertex_buffer_object`, que no OpenGL ES 1.1 já é núcleo. Não é enfeite
-            // de desempenho: o Prey Evil confere as duas extensões que quer na lista do
-            // `glGetString`, e **só instala a função de desenho dele se achar as duas**. Sem o
-            // `vertex_buffer_object` na lista, ele deixa o ponteiro em `[obj+0x274]` valendo
-            // zero e em seguida o chama sem conferir — o salto para o endereço zero que
-            // aparecia no relatório dele como "para no laço".
+            // --- Buffer objects ---------------------------------------------------------
+            // `GL_ARB_vertex_buffer_object`, which in OpenGL ES 1.1 is already core. It is not a
+            // performance nicety: Prey Evil checks for the two extensions it wants in the
+            // `glGetString` list, and **only installs its draw function if it finds both**.
+            // Without `vertex_buffer_object` in the list, it leaves the pointer at `[obj+0x274]`
+            // as zero and then calls it without checking — the jump to address zero that showed
+            // up in its report as "stops in the loop".
             "BindBuffer" => {
-                let (alvo, nome) = (a[0], a[1]);
-                // Ligar um nome que o `glGenBuffers` nunca entregou é legal no OpenGL: o nome
-                // passa a existir, vazio, na primeira ligação.
-                if nome != 0 {
-                    self.gl_buffers.entry(nome).or_default();
+                let (target, gl_name) = (a[0], a[1]);
+                // Binding a name that `glGenBuffers` never handed out is legal in OpenGL: the
+                // name comes into existence, empty, on the first bind.
+                if gl_name != 0 {
+                    self.gl_buffers.entry(gl_name).or_default();
                 }
-                self.nomes_de_buffer.usa(nome);
-                match alvo {
-                    gles::GL_ARRAY_BUFFER => self.gl_array_buffer = nome,
-                    gles::GL_ELEMENT_ARRAY_BUFFER => self.gl_element_buffer = nome,
+                self.buffer_names.mark_used(gl_name);
+                match target {
+                    gles::GL_ARRAY_BUFFER => self.gl_array_buffer = gl_name,
+                    gles::GL_ELEMENT_ARRAY_BUFFER => self.gl_element_buffer = gl_name,
                     _ => {}
                 }
             }
             "BufferData" | "BufferDataQUALCOMM" | "BufferDataATI" => {
-                let (alvo, tamanho, dados) = (a[0], a[1], a[2]);
-                let Some(nome) = self.buffer_ligado(alvo) else {
+                let (target, byte_size, data) = (a[0], a[1], a[2]);
+                let Some(gl_name) = self.bound_buffer(target) else {
                     return Ok(Some(SUCCESS));
                 };
-                // `data` nulo é pedido legítimo: reserva o tamanho e deixa o conteúdo por
-                // definir. O `glBufferSubData` vem depois preencher.
-                // O tamanho é do jogo: `glBufferData(alvo, 0x7fffffff, NULL, uso)` pede 2 GiB
-                // numa linha que cabe no guest, e o `vec!` correspondente aborta o processo. O
-                // teto é o mesmo das leituras, e pelo mesmo motivo.
-                let conteudo = if dados == 0 {
-                    vec![0u8; tamanho_do_guest(tamanho as usize)?]
+                // A null `data` is a legitimate request: it reserves the size and leaves the
+                // contents undefined. `glBufferSubData` comes later to fill it.
+                // The size comes from the game: `glBufferData(target, 0x7fffffff, NULL, usage)`
+                // asks for 2 GiB in one line that fits in the guest, and the matching `vec!`
+                // aborts the process. The cap is the same as for reads, and for the same reason.
+                let content = if data == 0 {
+                    vec![0u8; guest_size(byte_size as usize)?]
                 } else {
-                    self.read_bytes(dados, tamanho)?
+                    self.read_bytes(data, byte_size)?
                 };
-                self.gl_buffers.insert(nome, conteudo);
+                self.gl_buffers.insert(gl_name, content);
             }
             "BufferSubData" | "BufferSubDataQUALCOMM" => {
-                let (alvo, inicio, tamanho, dados) = (a[0], a[1], a[2], a[3]);
-                let Some(nome) = self.buffer_ligado(alvo) else {
+                let (target, start, byte_size, data) = (a[0], a[1], a[2], a[3]);
+                let Some(gl_name) = self.bound_buffer(target) else {
                     return Ok(Some(SUCCESS));
                 };
-                let novo = self.read_bytes(dados, tamanho)?;
-                if let Some(buffer) = self.gl_buffers.get_mut(&nome) {
-                    let fim = inicio as usize + novo.len();
-                    // Escrever fora do buffer é erro do jogo, e o OpenGL manda ignorar em vez
-                    // de crescer: crescer esconderia o defeito e mudaria o `GL_BUFFER_SIZE`.
-                    if fim <= buffer.len() {
-                        buffer[inicio as usize..fim].copy_from_slice(&novo);
+                let create = self.read_bytes(data, byte_size)?;
+                if let Some(buffer) = self.gl_buffers.get_mut(&gl_name) {
+                    let end = start as usize + create.len();
+                    // Writing outside the buffer is a game error, and OpenGL says to ignore it
+                    // instead of growing: growing would hide the defect and change
+                    // `GL_BUFFER_SIZE`.
+                    if end <= buffer.len() {
+                        buffer[start as usize..end].copy_from_slice(&create);
                     }
                 }
             }
             "DeleteBuffers" | "DeleteBuffersQUALCOMM" => {
                 for i in 0..a[0] {
-                    let nome = self.cpu.read_u32(a[1] + i * 4)?;
-                    self.gl_buffers.remove(&nome);
-                    self.nomes_de_buffer.libera(nome);
-                    // Apagar um buffer desliga a ligação dele, e é o que a especificação pede:
-                    // o alvo volta para zero, ou seja, para a memória do jogo.
-                    if self.gl_array_buffer == nome {
+                    let gl_name = self.cpu.read_u32(a[1] + i * 4)?;
+                    self.gl_buffers.remove(&gl_name);
+                    self.buffer_names.free(gl_name);
+                    // Deleting a buffer unbinds it, and that is what the specification asks for:
+                    // the target goes back to zero, that is, to the game's memory.
+                    if self.gl_array_buffer == gl_name {
                         self.gl_array_buffer = 0;
                     }
-                    if self.gl_element_buffer == nome {
+                    if self.gl_element_buffer == gl_name {
                         self.gl_element_buffer = 0;
                     }
                 }
             }
             "IsBuffer" | "IsBufferQUALCOMM" => {
-                let existe = u32::from(self.gl_buffers.contains_key(&a[0]));
-                answer = Some((1, existe));
+                let exists = u32::from(self.gl_buffers.contains_key(&a[0]));
+                answer = Some((1, exists));
             }
             "GetBufferParameteriv" => {
-                let (alvo, pname, saida) = (a[0], a[1], a[2]);
-                let tamanho = self
-                    .buffer_ligado(alvo)
-                    .and_then(|nome| self.gl_buffers.get(&nome))
+                let (target, pname, output) = (a[0], a[1], a[2]);
+                let byte_size = self
+                    .bound_buffer(target)
+                    .and_then(|gl_name| self.gl_buffers.get(&gl_name))
                     .map_or(0, |buffer| buffer.len() as u32);
-                let valor = match pname {
-                    gles::GL_BUFFER_SIZE => tamanho,
-                    // O uso declarado não muda nada aqui, e devolver o que o jogo pediu seria
-                    // inventar: zero é o que o OpenGL define para buffer sem uso declarado.
+                let param_value = match pname {
+                    gles::GL_BUFFER_SIZE => byte_size,
+                    // The declared usage changes nothing here, and returning what the game asked
+                    // for would be making it up: zero is what OpenGL defines for a buffer with no
+                    // declared usage.
                     gles::GL_BUFFER_USAGE => 0,
                     _ => 0,
                 };
-                if saida != 0 {
-                    self.cpu.write_u32(saida, valor)?;
+                if output != 0 {
+                    self.cpu.write_u32(output, param_value)?;
                 }
             }
 
-            // --- Matrizes ---------------------------------------------------------------
+            // --- Matrices ---------------------------------------------------------------
             "MatrixMode" => self.gl.set_matrix_mode(a[0]),
             "LoadIdentity" => self.gl.load_identity(),
             "PushMatrix" => self.gl.push_matrix(),
@@ -309,20 +314,20 @@ impl<C: CpuBackend> Machine<C> {
                 self.gl.mult_matrix(m);
             }
 
-            // --- Estado -----------------------------------------------------------------
-            // **Largura ou altura negativa é `GL_INVALID_VALUE`, e a chamada não muda nada.** O
-            // Quake 2 calcula o viewport da fase em ponto fixo 18.14 e a conta estoura a 640×480:
-            // pede `(0, 68, -179, -67)`. No aparelho o GL recusa e o viewport de antes, o da tela
-            // inteira, continua valendo; aceito, ele mandava o mundo inteiro para fora da tela e só
-            // o HUD aparecia.
+            // --- State ------------------------------------------------------------------
+            // **A negative width or height is `GL_INVALID_VALUE`, and the call changes nothing.**
+            // Quake 2 computes the level's viewport in 18.14 fixed point and the math overflows at
+            // 640×480: it asks for `(0, 68, -179, -67)`. On the console GL refuses it and the
+            // previous viewport, the full-screen one, stays in effect; accepted, it sent the whole
+            // world off screen and only the HUD showed up.
             "Viewport" if (a[2] as i32) < 0 || (a[3] as i32) < 0 => {}
             "Viewport" => self
                 .gl
                 .set_viewport(a[0] as i32, a[1] as i32, a[2] as i32, a[3] as i32),
             // --- Stencil ------------------------------------------------------------
             //
-            // O palco da Z-Wheel arma estes duas vezes por quadro: é o reflexo plano, que marca
-            // o chão no stencil e desenha o modelo espelhado só onde a marca ficou.
+            // The Z-Wheel stage sets these up twice per frame: it is the planar reflection, which
+            // marks the floor in the stencil and draws the mirrored model only where the mark is.
             "StencilFunc" => self.gl.set_stencil_func(a[0], a[1] as i32, a[2]),
             "StencilOp" => self.gl.set_stencil_op(a[0], a[1], a[2]),
             "StencilMask" => self.gl.set_stencil_mask(a[0]),
@@ -331,9 +336,9 @@ impl<C: CpuBackend> Machine<C> {
                 if a[0] & gles::GL_COLOR_BUFFER_BIT != 0 {
                     self.gl_clears = self.gl_clears.saturating_add(1);
                 }
-                // A contagem de limpezas conta mesmo pulando — é diagnóstico do jogo, não do
-                // quadro que a tela mostrou. O que pula é só o preenchimento de verdade.
-                if !self.pula_desenho || self.gl_leitura_de_pixels {
+                // The clear count counts even when skipping — it is a diagnostic of the game, not
+                // of the frame the screen showed. Only the actual fill is skipped.
+                if !self.skip_draw || self.gl_pixels_read {
                     self.gl.clear(a[0]);
                 }
             }
@@ -341,11 +346,11 @@ impl<C: CpuBackend> Machine<C> {
                 let c = std::array::from_fn(|i| number(a[i]));
                 self.gl.set_clear_color(c);
             }
-            // `ClearDepth` já recebe a profundidade em `[0, 1]`, que é a faixa do buffer.
+            // `ClearDepth` already takes the depth in `[0, 1]`, which is the buffer's range.
             "ClearDepthx" | "ClearDepthf" => self.gl.set_clear_depth(number(a[0]).clamp(0.0, 1.0)),
-            // O OpenGL ES 1.1 limita a cor corrente a [0, 1] quando ela é definida. O Alien Breaker
-            // Deluxe pinta com `glColor4f(255, 255, 255, a)`: sem o limite, a textura era
-            // multiplicada por 255 e o título e os menus estouravam para o branco.
+            // OpenGL ES 1.1 clamps the current color to [0, 1] when it is set. Alien Breaker
+            // Deluxe paints with `glColor4f(255, 255, 255, a)`: without the clamp, the texture was
+            // multiplied by 255 and the title and menus blew out to white.
             "Color4x" | "Color4f" => {
                 let c = std::array::from_fn(|i| number(a[i]).clamp(0.0, 1.0));
                 self.gl.set_color(c);
@@ -360,8 +365,8 @@ impl<C: CpuBackend> Machine<C> {
             "DepthFunc" => self.gl.set_depth_func(a[0]),
             "DepthMask" => self.gl.set_depth_mask(a[0] != 0),
             "DepthRangex" | "DepthRangef" => {
-                let fixo = name.ends_with('x');
-                self.gl.set_depth_range(escalar(a[0], fixo), escalar(a[1], fixo));
+                let fixed_point = name.ends_with('x');
+                self.gl.set_depth_range(to_scalar(a[0], fixed_point), to_scalar(a[1], fixed_point));
             }
             "AlphaFuncx" | "AlphaFunc" => self.gl.set_alpha_func(a[0], number(a[1])),
             "CullFace" => self.gl.set_cull_face(a[0]),
@@ -369,13 +374,13 @@ impl<C: CpuBackend> Machine<C> {
             "TexParameterx" | "TexParameteri" | "TexParameterf" => {
                 self.gl.set_texture_parameter(a[1], a[2])
             }
-            // As formas vetoriais trazem o valor por ponteiro. O Crash pede o `GL_REPLACE`
-            // por aqui, e enquanto só a forma escalar era atendida o modo ficava preso no
-            // `GL_MODULATE`: cada textura saía multiplicada pela cor do vértice.
+            // The vector forms bring the value through a pointer. Crash asks for `GL_REPLACE`
+            // this way, and while only the scalar form was served the mode stayed stuck at
+            // `GL_MODULATE`: every texture came out multiplied by the vertex color.
             "TexParameterxv" | "TexParameteriv" | "TexParameterfv" => {
                 match a[1] == gles::GL_TEXTURE_CROP_RECT_OES {
-                    // O recorte são quatro inteiros com sinal, e o sinal importa: largura ou
-                    // altura negativa espelha o eixo.
+                    // The crop is four signed integers, and the sign matters: a negative width
+                    // or height mirrors the axis.
                     true => {
                         let mut crop = [0i32; 4];
                         for (index, slot) in crop.iter_mut().enumerate() {
@@ -389,127 +394,130 @@ impl<C: CpuBackend> Machine<C> {
                     }
                 }
             }
-            // void glDrawTex{sixf}OES(T x, T y, T z, T width, T height) e as formas vetoriais,
-            // que trazem os cinco valores por ponteiro.
+            // void glDrawTex{sixf}OES(T x, T y, T z, T width, T height) and the vector forms,
+            // which bring the five values through a pointer.
             //
-            // `s` é inteiro de 16 bits, `i` de 32, `x` é ponto fixo 16.16 e `f` é float. Todas
-            // desenham a mesma coisa; só muda como o número chega.
+            // `s` is a 16-bit integer, `i` a 32-bit one, `x` is 16.16 fixed point and `f` is a
+            // float. They all draw the same thing; only how the number arrives changes.
             name if name.starts_with("DrawTex") => self.gles_draw_tex(name, base)?,
-            // O modo e os parâmetros do `GL_COMBINE` são enums, e chegam inteiros mesmo pela
-            // variante de ponto fixo ou de `float`; só as escalas são número. Ver `TexEnv`.
+            // The mode and the `GL_COMBINE` parameters are enums, and arrive as integers even
+            // through the fixed-point or `float` variant; only the scales are numbers. See
+            // `TexEnv`.
             "TexEnvx" | "TexEnvi" | "TexEnvf" if a[0] == gles::GL_TEXTURE_ENV => {
-                let numero = match name {
+                let num_value = match name {
                     "TexEnvx" => gles::fixed(a[2]),
                     "TexEnvf" => f32::from_bits(a[2]),
                     _ => a[2] as i32 as f32,
                 };
-                let enumeracao = match name {
+                let enum_value = match name {
                     "TexEnvf" => f32::from_bits(a[2]) as u32,
                     _ => a[2],
                 };
                 match a[1] {
-                    gles::GL_TEXTURE_ENV_MODE => self.gl.set_texture_env(enumeracao),
-                    pname => self.gl.set_texture_env_param(pname, enumeracao, numero),
+                    gles::GL_TEXTURE_ENV_MODE => self.gl.set_texture_env(enum_value),
+                    pname => self.gl.set_texture_env_param(pname, enum_value, num_value),
                 }
             }
             "TexEnvxv" | "TexEnviv" | "TexEnvfv" if a[0] == gles::GL_TEXTURE_ENV => {
                 match a[1] {
                     gles::GL_TEXTURE_ENV_COLOR => {
-                        let mut cor = [0.0f32; 4];
-                        for (i, canal) in cor.iter_mut().enumerate() {
-                            let bruto = self.cpu.read_u32(a[2] + i as u32 * 4)?;
-                            *canal = match name {
-                                "TexEnvxv" => gles::fixed(bruto),
-                                "TexEnvfv" => f32::from_bits(bruto),
-                                // Inteiros vão de 0 ao maior positivo, como toda cor inteira.
-                                _ => (bruto as i32 as f32 / i32::MAX as f32).max(0.0),
+                        let mut color = [0.0f32; 4];
+                        for (i, channel) in color.iter_mut().enumerate() {
+                            let raw = self.cpu.read_u32(a[2] + i as u32 * 4)?;
+                            *channel = match name {
+                                "TexEnvxv" => gles::fixed(raw),
+                                "TexEnvfv" => f32::from_bits(raw),
+                                // Integers go from 0 to the largest positive, like every integer
+                                // color.
+                                _ => (raw as i32 as f32 / i32::MAX as f32).max(0.0),
                             };
                         }
-                        self.gl.set_texture_env_color(cor);
+                        self.gl.set_texture_env_color(color);
                     }
                     gles::GL_TEXTURE_ENV_MODE => {
                         let value = self.cpu.read_u32(a[2])?;
                         self.gl.set_texture_env(value);
                     }
                     pname => {
-                        let bruto = self.cpu.read_u32(a[2])?;
-                        let (enumeracao, numero) = match name {
-                            "TexEnvxv" => (bruto, gles::fixed(bruto)),
-                            "TexEnvfv" => (f32::from_bits(bruto) as u32, f32::from_bits(bruto)),
-                            _ => (bruto, bruto as i32 as f32),
+                        let raw = self.cpu.read_u32(a[2])?;
+                        let (enum_value, num_value) = match name {
+                            "TexEnvxv" => (raw, gles::fixed(raw)),
+                            "TexEnvfv" => (f32::from_bits(raw) as u32, f32::from_bits(raw)),
+                            _ => (raw, raw as i32 as f32),
                         };
-                        self.gl.set_texture_env_param(pname, enumeracao, numero);
+                        self.gl.set_texture_env_param(pname, enum_value, num_value);
                     }
                 }
             }
-            // O ambiente de ponto (`GL_POINT_SPRITE_OES`) não tem nada que desenhemos.
+            // The point environment (`GL_POINT_SPRITE_OES`) has nothing we draw.
             "TexEnvx" | "TexEnvi" | "TexEnvf" | "TexEnvxv" | "TexEnviv" | "TexEnvfv" => {}
             "ActiveTexture" => self.gl.set_active_texture(a[0]),
             "ClientActiveTexture" => self.gl.set_client_active_texture(a[0]),
             "BindTexture" => {
-                self.nomes_de_textura.usa(a[1]);
+                self.texture_names.mark_used(a[1]);
                 self.gl.bind_texture(a[1]);
             }
             "TexImage2D" => self.gles_tex_image(&a)?,
             "TexSubImage2D" => self.gles_tex_sub_image(&a)?,
             "CompressedTexImage2D" => self.gles_compressed_tex_image(&a)?,
 
-            // --- Iluminação de função fixa ---------------------------------------------
+            // --- Fixed-function lighting ------------------------------------------------
             //
-            // O palco da Z-Wheel depende dela: liga `GL_LIGHTING` e `GL_LIGHT0`, põe a ambiente
-            // da luz em 0,5 e o material ambiente e difuso em 0,949, e deixa todo o resto no
-            // padrão — inclusive a difusa branca da luz zero e a posição `(0, 0, 1, 0)`, que é
-            // direcional. Sem nada disso, os modelos saíam com a cor de vértice crua.
+            // The Z-Wheel stage depends on it: it enables `GL_LIGHTING` and `GL_LIGHT0`, sets the
+            // light's ambient to 0.5 and the ambient and diffuse material to 0.949, and leaves
+            // everything else at the default — including light zero's white diffuse and the
+            // position `(0, 0, 1, 0)`, which is directional. Without any of that, the models came
+            // out with the raw vertex color.
             "Lightxv" | "Lightfv" => {
-                let luz = a[0].wrapping_sub(gles::GL_LIGHT0) as usize;
-                let valores = self.le_parametro(a[1], a[2], name.ends_with("xv"))?;
-                self.gl.set_light(luz, a[1], valores);
+                let light = a[0].wrapping_sub(gles::GL_LIGHT0) as usize;
+                let param_values = self.read_param(a[1], a[2], name.ends_with("xv"))?;
+                self.gl.set_light(light, a[1], param_values);
             }
             "Materialxv" | "Materialfv" => {
-                let valores = self.le_parametro(a[1], a[2], name.ends_with("xv"))?;
-                self.gl.set_material(a[1], valores);
+                let param_values = self.read_param(a[1], a[2], name.ends_with("xv"))?;
+                self.gl.set_material(a[1], param_values);
             }
             "LightModelxv" | "LightModelfv" => {
-                let valores = self.le_parametro(a[0], a[1], name.ends_with("xv"))?;
-                self.gl.set_light_model(a[0], valores);
+                let param_values = self.read_param(a[0], a[1], name.ends_with("xv"))?;
+                self.gl.set_light_model(a[0], param_values);
             }
-            // As formas escalares trazem o valor no próprio argumento.
+            // The scalar forms bring the value in the argument itself.
             "Lightx" | "Lightf" => {
-                let luz = a[0].wrapping_sub(gles::GL_LIGHT0) as usize;
-                let valor = escalar(a[2], name.ends_with('x'));
-                self.gl.set_light(luz, a[1], [valor, 0.0, 0.0, 0.0]);
+                let light = a[0].wrapping_sub(gles::GL_LIGHT0) as usize;
+                let param_value = to_scalar(a[2], name.ends_with('x'));
+                self.gl.set_light(light, a[1], [param_value, 0.0, 0.0, 0.0]);
             }
             "Materialx" | "Materialf" => {
-                let valor = escalar(a[2], name.ends_with('x'));
-                self.gl.set_material(a[1], [valor, 0.0, 0.0, 0.0]);
+                let param_value = to_scalar(a[2], name.ends_with('x'));
+                self.gl.set_material(a[1], [param_value, 0.0, 0.0, 0.0]);
             }
             "LightModelx" | "LightModelf" => {
-                let valor = escalar(a[1], name.ends_with('x'));
-                self.gl.set_light_model(a[0], [valor, 0.0, 0.0, 0.0]);
+                let param_value = to_scalar(a[1], name.ends_with('x'));
+                self.gl.set_light_model(a[0], [param_value, 0.0, 0.0, 0.0]);
             }
-            // A névoa. O `GL_FOG_MODE` chega como número — `GL_LINEAR`, `GL_EXP` ou `GL_EXP2`
-            // —, e nas formas `x` ele vem **inteiro**, não em ponto fixo: é uma enumeração, e
-            // convertê-la como escala daria `0x2601/65536`, que não é modo nenhum.
+            // Fog. `GL_FOG_MODE` arrives as a number — `GL_LINEAR`, `GL_EXP` or `GL_EXP2` —, and
+            // in the `x` forms it comes as an **integer**, not fixed point: it is an enumeration,
+            // and converting it as a scale would give `0x2601/65536`, which is no mode at all.
             "Fogxv" | "Fogfv" => {
-                let valores = match a[0] == gles::GL_FOG_MODE {
+                let param_values = match a[0] == gles::GL_FOG_MODE {
                     true => [self.cpu.read_u32(a[1])? as f32, 0.0, 0.0, 0.0],
-                    false => self.le_parametro(a[0], a[1], name.ends_with("xv"))?,
+                    false => self.read_param(a[0], a[1], name.ends_with("xv"))?,
                 };
-                self.gl.set_fog(a[0], valores);
+                self.gl.set_fog(a[0], param_values);
             }
             "Fogx" | "Fogf" => {
-                let valor = match a[0] == gles::GL_FOG_MODE {
+                let param_value = match a[0] == gles::GL_FOG_MODE {
                     true => a[1] as f32,
-                    false => escalar(a[1], name.ends_with('x')),
+                    false => to_scalar(a[1], name.ends_with('x')),
                 };
-                self.gl.set_fog(a[0], [valor, 0.0, 0.0, 0.0]);
+                self.gl.set_fog(a[0], [param_value, 0.0, 0.0, 0.0]);
             }
             "ShadeModel" => self.gl.set_shade_model(a[0]),
             "Normal3x" | "Normal3f" => {
-                let fixo = name.ends_with('x');
-                self.gl_normal_atual = std::array::from_fn(|i| escalar(a[i], fixo));
+                let fixed_point = name.ends_with('x');
+                self.gl_current_normal = std::array::from_fn(|i| to_scalar(a[i], fixed_point));
             }
-            // glNormalPointer(type, stride, pointer) — **sem tamanho**: normal é sempre de três.
+            // glNormalPointer(type, stride, pointer) — **no size**: a normal always has three.
             "NormalPointer" => {
                 let enabled = self.gl_normals.enabled;
                 self.gl_normals = ArrayPointer {
@@ -522,7 +530,7 @@ impl<C: CpuBackend> Machine<C> {
                 };
             }
 
-            // --- Vetores e desenho ------------------------------------------------------
+            // --- Arrays and drawing -----------------------------------------------------
             "VertexPointer" | "ColorPointer" | "TexCoordPointer" => {
                 let pointer = ArrayPointer {
                     size: a[0],
@@ -532,8 +540,8 @@ impl<C: CpuBackend> Machine<C> {
                     enabled: true,
                     buffer: self.gl_array_buffer,
                 };
-                // O vetor de coordenadas pertence à unidade escolhida pelo
-                // `glClientActiveTexture`; só as duas primeiras desenham.
+                // The coordinate array belongs to the unit chosen by `glClientActiveTexture`;
+                // only the first two draw.
                 let slot = match (name, self.gl.client_unit()) {
                     ("VertexPointer", _) => &mut self.gl_vertices,
                     ("ColorPointer", _) => &mut self.gl_colors,
@@ -541,8 +549,8 @@ impl<C: CpuBackend> Machine<C> {
                     (_, 1) => &mut self.gl_texcoords1,
                     _ => return Ok(Some(SUCCESS)),
                 };
-                // `enabled` é do `EnableClientState`, não do ponteiro: trocar o ponteiro não
-                // liga nem desliga o vetor.
+                // `enabled` belongs to `EnableClientState`, not to the pointer: changing the
+                // pointer neither enables nor disables the array.
                 let enabled = slot.enabled;
                 *slot = ArrayPointer { enabled, ..pointer };
             }
@@ -566,17 +574,17 @@ impl<C: CpuBackend> Machine<C> {
             }
             "DrawElements" => {
                 let (mode, count, kind, list) = (a[0], a[1], a[2], a[3]);
-                // A lista inteira num pedido só, pelo mesmo motivo do `read_array`: cada
-                // travessia para o backend custa mais que os dois bytes que ela traz.
-                let largura = if kind == gles::GL_UNSIGNED_BYTE { 1 } else { 2 };
-                // Com um buffer de índices ligado, `list` é deslocamento dentro dele — e aqui
-                // vale a ligação **corrente**, ao contrário dos vetores de vértice.
+                // The whole list in a single request, for the same reason as `read_array`: each
+                // trip to the backend costs more than the two bytes it brings.
+                let width_u32 = if kind == gles::GL_UNSIGNED_BYTE { 1 } else { 2 };
+                // With an index buffer bound, `list` is an offset inside it — and here the
+                // **current** binding applies, unlike the vertex arrays.
                 let bytes =
-                    self.bytes_do_vetor(self.gl_element_buffer, list, count * largura)?;
+                    self.array_bytes(self.gl_element_buffer, list, count * width_u32)?;
                 let indices: Vec<u32> = bytes
-                    .chunks_exact(largura as usize)
+                    .chunks_exact(width_u32 as usize)
                     .map(|c| {
-                        if largura == 1 {
+                        if width_u32 == 1 {
                             c[0] as u32
                         } else {
                             u16::from_le_bytes([c[0], c[1]]) as u32
@@ -587,8 +595,8 @@ impl<C: CpuBackend> Machine<C> {
             }
 
             "GetIntegerv" | "GetFixedv" | "GetBooleanv" => {
-                let (largura, altura) = self.gl.frame_size();
-                let (width, height) = (largura as i32, altura as i32);
+                let (width_u32, height_u32) = self.gl.frame_size();
+                let (width, height) = (width_u32 as i32, height_u32 as i32);
                 let values = gles::integer(a[0], width, height).unwrap_or(&[0]);
                 for (i, &value) in values.iter().enumerate() {
                     if a[1] != 0 {
@@ -596,49 +604,51 @@ impl<C: CpuBackend> Machine<C> {
                     }
                 }
             }
-            // Os outros `Get*v` escrevem no ponteiro do segundo argumento; zerar é melhor que
-            // deixar lixo, e nenhum jogo depende deles ainda.
+            // The other `Get*v` write to the pointer in the second argument; zeroing is better
+            // than leaving garbage, and no game depends on them yet.
             name if name.starts_with("Get") => self.write_at(a[1], 0)?,
-            // O resto é atendido com sucesso e não faz nada. Isso é deliberado para o estado que
-            // o nosso rasterizador não usa — profundidade, névoa, luz —, e recusar derrubaria
-            // jogos por nada. Mas o silêncio esconde as que **mudam o desenho**: o
-            // `TexSubImage2D` estava aqui, e o efeito era textura embaralhada sem uma linha de
-            // aviso. Registrar não custa, e dá por onde começar a investigar um desenho errado.
+            // The rest is served successfully and does nothing. That is deliberate for the state
+            // our rasterizer does not use — depth, fog, light —, and refusing would bring games
+            // down for nothing. But the silence hides the ones that **change the drawing**:
+            // `TexSubImage2D` was here, and the effect was a scrambled texture without a single
+            // line of warning. Logging costs nothing, and gives a place to start investigating a
+            // wrong drawing.
             // glReadPixels(x, y, width, height, format, type, pixels)
             //
-            // É como o jogo faz a foto do boneco: desenha e lê o quadro de volta. Enquanto isto
-            // não existia, ele lia o que estivesse no buffer dele — daí a imagem embaralhada.
+            // It is how the game takes the character's photo: it draws and reads the frame back.
+            // While this didn't exist, it read whatever was in its buffer — hence the scrambled
+            // image.
             "ReadPixels" => self.gles_read_pixels(&a)?,
-            // glScissor(x, y, width, height) — o retângulo fora do qual nada é desenhado, com o
-            // `y` de baixo para cima, como a viewport.
+            // glScissor(x, y, width, height) — the rectangle outside of which nothing is drawn,
+            // with `y` going bottom to top, like the viewport.
             //
-            // O Peggle desenha a folha de fontes inteira e aperta a tesoura para aparecer uma
-            // letra só. Ignorada, a folha inteira ia para a tela por cima do jogo.
-            // Mesma regra do `Viewport`: tamanho negativo é recusado sem mudar o estado.
+            // Peggle draws the whole font sheet and narrows the scissor so a single letter shows.
+            // Ignored, the whole sheet went to the screen on top of the game.
+            // Same rule as `Viewport`: a negative size is refused without changing the state.
             "Scissor" if (a[2] as i32) < 0 || (a[3] as i32) < 0 => {}
             "Scissor" => self
                 .gl
                 .set_scissor(a[0] as i32, a[1] as i32, a[2] as i32, a[3] as i32),
-            // glPixelStorei(pname, param) — por enquanto só o alinhamento de linha na subida de
-            // textura. **É a única chamada de GL que o levantamento das 62 ROMs flagrou como
-            // "atendida sem fazer nada"**: o Double Dragon, o Galaxy on Fire, o Pac-Mania, o
-            // Powerboat Challenge e o Raging Thunder 2 a usam, e ignorá-la desloca as linhas de
-            // uma textura cuja largura em bytes não é múltipla de quatro — a imagem sai
-            // embaralhada em diagonal, e sem uma linha de aviso em lugar nenhum.
+            // glPixelStorei(pname, param) — for now only the row alignment for texture upload.
+            // **It is the only GL call the survey of the 62 ROMs caught as "served without doing
+            // anything"**: Double Dragon, Galaxy on Fire, Pac-Mania, Powerboat Challenge and
+            // Raging Thunder 2 use it, and ignoring it shifts the rows of a texture whose width in
+            // bytes is not a multiple of four — the image comes out scrambled diagonally, without a
+            // line of warning anywhere.
             "PixelStorei" => {
                 if a[0] == gles::GL_UNPACK_ALIGNMENT {
                     self.unpack_alignment = match a[1] {
-                        // Só estes quatro valores são legais no GL; qualquer outro é erro do jogo,
-                        // e ficar com o que estava é mais seguro que passar a ler torto.
+                        // Only these four values are legal in GL; any other is a game error, and
+                        // keeping what was there is safer than starting to read skewed.
                         1 | 2 | 4 | 8 => a[1],
                         _ => self.unpack_alignment,
                     };
                 }
             }
-            // glColorMask(r, g, b, a) — booleanos, um por canal.
+            // glColorMask(r, g, b, a) — booleans, one per channel.
             "ColorMask" => self.gl.set_color_mask(std::array::from_fn(|i| a[i] != 0)),
-            outro => {
-                if !ATENDIDAS_EM_SILENCIO.contains(&outro) {
+            other => {
+                if !SILENTLY_HANDLED.contains(&other) {
                     self.ignored_gl.insert(full);
                 }
             }
@@ -653,21 +663,21 @@ impl<C: CpuBackend> Machine<C> {
         }
     }
 
-    /// Lê os dezesseis números de uma matriz da memória do guest.
+    /// Reads the sixteen numbers of a matrix from guest memory.
     pub(super) fn read_matrix(
         &self,
         address: u32,
         fixed_point: bool,
     ) -> Result<rasterizer::Matrix, CpuError> {
-        // Os dezesseis de uma vez: eram dezesseis travessias para o backend a cada
-        // `LoadMatrix`/`MultMatrix`, e a matriz é contígua por definição. Se qualquer parte
-        // dela estiver fora do mapa, a leitura falha — como falhava antes, no primeiro
-        // componente ruim.
+        // All sixteen at once: it used to be sixteen trips to the backend on every
+        // `LoadMatrix`/`MultMatrix`, and the matrix is contiguous by definition. If any part of
+        // it is outside the map, the read fails — as it failed before, on the first bad
+        // component.
         let mut bytes = [0u8; 64];
         self.cpu.read_mem(address, &mut bytes)?;
         let mut m = rasterizer::IDENTITY;
-        for (slot, palavra) in m.iter_mut().zip(bytes.chunks_exact(4)) {
-            let word = u32::from_le_bytes([palavra[0], palavra[1], palavra[2], palavra[3]]);
+        for (slot, word_bytes) in m.iter_mut().zip(bytes.chunks_exact(4)) {
+            let word = u32::from_le_bytes([word_bytes[0], word_bytes[1], word_bytes[2], word_bytes[3]]);
             *slot = if fixed_point {
                 gles::fixed(word)
             } else {
@@ -678,18 +688,18 @@ impl<C: CpuBackend> Machine<C> {
     }
 
     /// `TexImage2D(target, level, internalformat, width, height, border, format, type,
-    /// pixels)` — nove argumentos, dos quais a maioria chega pela pilha.
+    /// pixels)` — nine arguments, most of which arrive on the stack.
     /// `glCompressedTexImage2D(target, level, internalformat, width, height, border,
     /// imageSize, data)`.
     ///
-    /// Só os formatos ATITC, que são os do Adreno 130 e os únicos que os jogos do console usam
-    /// — o Boomerang Sports Dodgeball carrega todas as texturas dele assim.
+    /// Only the ATITC formats, which are the Adreno 130's and the only ones the console's games
+    /// use — Boomerang Sports Dodgeball loads all its textures this way.
     pub(super) fn gles_compressed_tex_image(&mut self, a: &[u32; 10]) -> Result<(), CpuError> {
         let (level, format, width, height) = (a[1], a[2], a[3], a[4]);
         let (size, pixels) = (a[6], a[7]);
-        // As texturas paletizadas do OES entram pelo mesmo caminho. O `level` delas é não
-        // positivo — zero é só o nível base, e um negativo diz quantos mipmaps vêm depois —,
-        // então a checagem de nível abaixo não vale para elas.
+        // The OES paletted textures come in through the same path. Their `level` is
+        // non-positive — zero is just the base level, and a negative one says how many mipmaps
+        // follow —, so the level check below does not apply to them.
         if let Some(palette) = paltex::Format::from_gl(format) {
             if width == 0 || height == 0 || pixels == 0 {
                 return Ok(());
@@ -697,14 +707,14 @@ impl<C: CpuBackend> Machine<C> {
             let bytes = self.read_bytes(pixels, size)?;
             let Some(decoded) = paltex::decode(&bytes, width as usize, height as usize, palette)
             else {
-                self.anota_ponto_ruim(format!(
-                    "textura paletizada {format:#x} sem paleta completa"
+                self.note_bad_pointer(format!(
+                    "paletted texture {format:#x} without a complete palette"
                 ));
                 return Ok(());
             };
             let name = self.gl.bound_texture();
-            // A paletizada traz a cadeia inteira num bloco só, e o `level` dela conta os
-            // mipmaps em vez de nomeá-los; o decodificador devolve o nível base.
+            // The paletted one brings the whole chain in a single block, and its `level` counts
+            // the mipmaps instead of naming them; the decoder returns the base level.
             self.gl
                 .upload_level(name, 0, width as usize, height as usize, decoded);
             return Ok(());
@@ -713,7 +723,7 @@ impl<C: CpuBackend> Machine<C> {
             gles::GL_ATC_RGB_AMD => false,
             gles::GL_ATC_RGBA_EXPLICIT_ALPHA_AMD => true,
             _ => {
-                self.anota_ponto_ruim(format!("textura comprimida no formato {format:#x}"));
+                self.note_bad_pointer(format!("compressed texture in format {format:#x}"));
                 return Ok(());
             }
         };
@@ -739,33 +749,33 @@ impl<C: CpuBackend> Machine<C> {
         let decoded = if pixels == 0 {
             vec![[255; 4]; texels]
         } else {
-            let bytes = self.le_texels(pixels, width, height, format, kind)?;
+            let bytes = self.read_texels(pixels, width, height, format, kind)?;
             decode_texels(&bytes, format, kind, texels)
         };
-        // Os parâmetros de repetição e filtro sobrevivem a uma nova imagem: no OpenGL eles são
-        // do nome da textura, não do conteúdo, e o jogo costuma defini-los uma vez só.
+        // The wrap and filter parameters survive a new image: in OpenGL they belong to the
+        // texture name, not the content, and the game usually sets them only once.
         let name = self.gl.bound_texture();
         self.gl
             .upload_level(name, level, width as usize, height as usize, decoded);
         Ok(())
     }
 
-    /// `glReadPixels`: copia um retângulo do quadro para a memória do jogo.
+    /// `glReadPixels`: copies a rectangle of the frame to the game's memory.
     ///
-    /// Atendemos os dois formatos que o OpenGL ES 1.1 obriga: `RGBA` de oito bits por canal e
-    /// `RGB` em 565. Qualquer outro é registrado em vez de escrito, porque preencher com o
-    /// formato errado dá uma imagem plausível e falsa — pior que não escrever.
+    /// We serve the two formats OpenGL ES 1.1 mandates: `RGBA` with eight bits per channel and
+    /// `RGB` in 565. Any other is logged instead of written, because filling with the wrong
+    /// format gives a plausible and false image — worse than not writing.
     pub(super) fn gles_read_pixels(&mut self, a: &[u32; 10]) -> Result<(), CpuError> {
         let (x, y) = (a[0] as i32, a[1] as i32);
         let (width, height) = (a[2] as usize, a[3] as usize);
-        let (format, kind, destino) = (a[4], a[5], a[6]);
-        if width == 0 || height == 0 || destino == 0 {
+        let (format, kind, dest) = (a[4], a[5], a[6]);
+        if width == 0 || height == 0 || dest == 0 {
             return Ok(());
         }
-        // A partir daqui frameskip não pode mais pular draw/clear: este jogo observa o
-        // framebuffer, e entregar a imagem anterior deixa de ser perda visual e vira dado errado
-        // na memória do guest.
-        self.gl_leitura_de_pixels = true;
+        // From here on frameskip can no longer skip draw/clear: this game observes the
+        // framebuffer, and handing over the previous image stops being a visual loss and becomes
+        // wrong data in guest memory.
+        self.gl_pixels_read = true;
         let pixels = self.gl.read_rect(x, y, width, height);
         let bytes: Vec<u8> = match (format, kind) {
             (gles::GL_RGBA, gles::GL_UNSIGNED_BYTE) => pixels.concat(),
@@ -779,30 +789,31 @@ impl<C: CpuBackend> Machine<C> {
                 })
                 .collect(),
             _ => {
-                self.anota_ponto_ruim(format!(
-                    "ReadPixels no formato {format:#x}/{kind:#x}, que não sabemos escrever"
+                self.note_bad_pointer(format!(
+                    "ReadPixels in format {format:#x}/{kind:#x}, which we don't know how to write"
                 ));
                 return Ok(());
             }
         };
-        self.cpu.write_mem(destino, &bytes)?;
+        self.cpu.write_mem(dest, &bytes)?;
         Ok(())
     }
 
-    /// `glTexSubImage2D`: troca um retângulo de dentro de uma textura que já existe.
+    /// `glTexSubImage2D`: replaces a rectangle inside a texture that already exists.
     ///
-    /// É como se monta imagem em pedaços — um retrato dentro de um atlas, um número que muda —,
-    /// e enquanto isto não existia a chamada era atendida em silêncio: a textura ficava com o
-    /// conteúdo antigo e o desenho saía embaralhado.
+    /// It is how images are built in pieces — a portrait inside an atlas, a number that changes —,
+    /// and while this didn't exist the call was served silently: the texture kept the old content
+    /// and the drawing came out scrambled.
     ///
-    /// Se o retângulo não couber na textura, não escrevemos nada. Recortar seria inventar um
-    /// resultado que o OpenGL não define.
-    /// Lê os texels de uma imagem do guest, respeitando o alinhamento de linha.
+    /// If the rectangle does not fit in the texture, we write nothing. Clipping would be making up
+    /// a result OpenGL does not define.
+    /// Reads the texels of a guest image, honoring the row alignment.
     ///
-    /// `glPixelStorei(GL_UNPACK_ALIGNMENT, n)` diz com quantos bytes cada linha começa alinhada na
-    /// memória do jogo — o padrão do OpenGL é 4. Sem isto, uma textura de largura ímpar em bytes
-    /// chega com as linhas deslocadas duas a duas: a imagem sai embaralhada em diagonal, sem aviso.
-    fn le_texels(
+    /// `glPixelStorei(GL_UNPACK_ALIGNMENT, n)` says on how many bytes each row starts aligned in
+    /// the game's memory — the OpenGL default is 4. Without this, a texture with an odd width in
+    /// bytes arrives with its rows shifted pair by pair: the image comes out scrambled diagonally,
+    /// without warning.
+    fn read_texels(
         &mut self,
         pixels: u32,
         width: u32,
@@ -810,22 +821,22 @@ impl<C: CpuBackend> Machine<C> {
         format: u32,
         kind: u32,
     ) -> Result<Vec<u8>, CpuError> {
-        let por_texel = bytes_per_texel(format, kind);
-        let apertado = width * por_texel;
-        let passo = arredonda_para(apertado, self.unpack_alignment);
-        if passo == apertado {
-            return self.read_bytes(pixels, apertado * height);
+        let per_texel = bytes_per_texel(format, kind);
+        let pressed = width * per_texel;
+        let step = round_up_to(pressed, self.unpack_alignment);
+        if step == pressed {
+            return self.read_bytes(pixels, pressed * height);
         }
-        // **Uma leitura só**, do bloco alinhado inteiro, e as linhas são compactadas depois: pedir
-        // linha a linha são `height` travessias até a memória do guest, e cada travessia custa
-        // mais que os bytes que traz.
-        let bloco = self.read_bytes(pixels, passo * height)?;
-        let mut saida = Vec::with_capacity((apertado * height) as usize);
-        for linha in 0..height as usize {
-            let inicio = linha * passo as usize;
-            saida.extend_from_slice(&bloco[inicio..inicio + apertado as usize]);
+        // **A single read**, of the whole aligned block, and the rows are packed afterwards:
+        // asking row by row is `height` trips to guest memory, and each trip costs more than the
+        // bytes it brings.
+        let block = self.read_bytes(pixels, step * height)?;
+        let mut output = Vec::with_capacity((pressed * height) as usize);
+        for line in 0..height as usize {
+            let start = line * step as usize;
+            output.extend_from_slice(&block[start..start + pressed as usize]);
         }
-        Ok(saida)
+        Ok(output)
     }
 
     pub(super) fn gles_tex_sub_image(&mut self, a: &[u32; 10]) -> Result<(), CpuError> {
@@ -835,25 +846,26 @@ impl<C: CpuBackend> Machine<C> {
             return Ok(());
         }
         let texels = (width * height) as usize;
-        let bytes = self.le_texels(pixels, width, height, format, kind)?;
-        let novos = decode_texels(&bytes, format, kind, texels);
+        let bytes = self.read_texels(pixels, width, height, format, kind)?;
+        let fresh = decode_texels(&bytes, format, kind, texels);
 
         let name = self.gl.bound_texture();
-        if let Err(Some((tw, th))) = self.gl.sub_image(name, x, y, width, height, &novos) {
-            self.anota_ponto_ruim(format!(
-                "TexSubImage2D de {width}x{height} em ({x},{y}) não cabe numa textura {tw}x{th}"
+        if let Err(Some((tw, th))) = self.gl.sub_image(name, x, y, width, height, &fresh) {
+            self.note_bad_pointer(format!(
+                "TexSubImage2D of {width}x{height} at ({x},{y}) does not fit in a {tw}x{th} texture"
             ));
         }
         Ok(())
     }
 
-    /// Monta os vértices a partir dos vetores do cliente e manda desenhar.
-    /// `glDrawTex{sixf}[v]OES`: um retângulo da textura, recortado pelo `GL_TEXTURE_CROP_RECT_OES`,
-    /// direto em coordenadas de tela.
+    /// Builds the vertices from the client arrays and sends them to be drawn.
+    /// `glDrawTex{sixf}[v]OES`: a rectangle of the texture, cropped by `GL_TEXTURE_CROP_RECT_OES`,
+    /// straight in screen coordinates.
     ///
-    /// `base` é onde está o primeiro argumento: 1 quando o método é de um objeto (`IGLES11` e
-    /// `IGLES11Ext`, com o objeto em `r0`), 0 no GL legado. O `IGLES11Ext` respondia "consegui"
-    /// sem desenhar, e o Ridge Racer monta o menu e o HUD inteiros por ele: sobrava o fundo azul.
+    /// `base` is where the first argument is: 1 when the method belongs to an object (`IGLES11`
+    /// and `IGLES11Ext`, with the object in `r0`), 0 in legacy GL. `IGLES11Ext` answered "done"
+    /// without drawing, and Ridge Racer builds its whole menu and HUD through it: only the blue
+    /// background was left.
     pub(super) fn gles_draw_tex(&mut self, name: &str, base: usize) -> Result<(), CpuError> {
         let vector = name.ends_with("vOES");
         let scale = match name.as_bytes().get(7) {
@@ -878,51 +890,52 @@ impl<C: CpuBackend> Machine<C> {
     }
 
     pub(super) fn gles_draw(&mut self, mode: u32, indices: &[u32]) -> Result<(), CpuError> {
-        if !self.gl_vertices.em_uso() || indices.is_empty() {
+        if !self.gl_vertices.in_use() || indices.is_empty() {
             return Ok(());
         }
-        // **O quadro pulado sai daqui, antes de qualquer leitura de memória do guest.** É o que
-        // faz o pulo economizar de verdade: sem isto, o custo caro — atravessar a FFI do unicorn
-        // para trazer cada vértice — aconteceria do mesmo jeito, e só a rasterização sumiria. O
-        // jogo não vê diferença nenhuma: hardware real também não avisa se o pixel chegou à tela.
-        if self.pula_desenho && !self.gl_leitura_de_pixels {
+        // **A skipped frame leaves here, before any read of guest memory.** That is what makes
+        // skipping really save something: without this, the expensive cost — crossing the unicorn
+        // FFI to bring each vertex — would happen anyway, and only the rasterization would go
+        // away. The game sees no difference at all: real hardware doesn't say whether the pixel
+        // reached the screen either.
+        if self.skip_draw && !self.gl_pixels_read {
             return Ok(());
         }
         let base = self.gl.current_color();
-        // Um bloco por array, não um por componente: é a mesma memória do guest, pedida de
-        // uma vez. Ver [`Self::read_array`].
-        let posicoes = self.read_array(self.gl_vertices, indices, [0.0, 0.0, 0.0, 1.0])?;
-        let cores = self
+        // One block per array, not one per component: it is the same guest memory, asked for at
+        // once. See [`Self::read_array`].
+        let positions = self.read_array(self.gl_vertices, indices, [0.0, 0.0, 0.0, 1.0])?;
+        let colors = self
             .gl_colors
-            .em_uso()
+            .in_use()
             .then(|| self.read_array(self.gl_colors, indices, [0.0, 0.0, 0.0, 1.0]))
             .transpose()?;
         let uvs = self
             .gl_texcoords
-            .em_uso()
-            .then(|| self.read_array(self.gl_texcoords, indices, rasterizer::UV_PADRAO))
+            .in_use()
+            .then(|| self.read_array(self.gl_texcoords, indices, rasterizer::DEFAULT_UV))
             .transpose()?;
         let uvs1 = self
             .gl_texcoords1
-            .em_uso()
-            .then(|| self.read_array(self.gl_texcoords1, indices, rasterizer::UV_PADRAO))
+            .in_use()
+            .then(|| self.read_array(self.gl_texcoords1, indices, rasterizer::DEFAULT_UV))
             .transpose()?;
-        let normais = self
+        let normals = self
             .gl_normals
-            .em_uso()
+            .in_use()
             .then(|| self.read_array(self.gl_normals, indices, [0.0, 0.0, 1.0, 0.0]))
             .transpose()?;
         let vertices: Vec<Vertex> = (0..indices.len())
             .map(|i| Vertex {
-                position: posicoes[i],
-                color: cores.as_ref().map_or(base, |c| c[i]),
-                uv: uvs.as_ref().map_or(rasterizer::UV_PADRAO, |t| t[i]),
-                uv1: uvs1.as_ref().map_or(rasterizer::UV_PADRAO, |t| t[i]),
-                normal: normais
+                position: positions[i],
+                color: colors.as_ref().map_or(base, |c| c[i]),
+                uv: uvs.as_ref().map_or(rasterizer::DEFAULT_UV, |t| t[i]),
+                uv1: uvs1.as_ref().map_or(rasterizer::DEFAULT_UV, |t| t[i]),
+                normal: normals
                     .as_ref()
-                    .map_or(self.gl_normal_atual, |n| [n[i][0], n[i][1], n[i][2]]),
-                // Quem calcula o fator da névoa é a etapa de vértice, que é onde a distância em
-                // coordenadas de olho existe.
+                    .map_or(self.gl_current_normal, |n| [n[i][0], n[i][1], n[i][2]]),
+                // The fog factor is computed by the vertex stage, which is where the distance in
+                // eye coordinates exists.
                 fog: 1.0,
             })
             .collect();
@@ -930,75 +943,75 @@ impl<C: CpuBackend> Machine<C> {
         Ok(())
     }
 
-    /// Lê os componentes de um parâmetro de luz ou material do ponteiro do jogo.
+    /// Reads the components of a light or material parameter from the game's pointer.
     ///
-    /// Quantos ler vem do próprio parâmetro — ver [`gles::componentes`] —, e não quatro sempre:
-    /// o `GL_SHININESS` tem um só, e ler quatro passa por cima do que estiver depois dele na
-    /// pilha do jogo.
-    pub(super) fn le_parametro(
+    /// How many to read comes from the parameter itself — see [`gles::components`] —, not always
+    /// four: `GL_SHININESS` has only one, and reading four runs over whatever comes after it on
+    /// the game's stack.
+    pub(super) fn read_param(
         &self,
         pname: u32,
-        ponteiro: u32,
-        fixo: bool,
+        pointer: u32,
+        fixed_point: bool,
     ) -> Result<[f32; 4], CpuError> {
-        let mut valores = [0.0f32; 4];
-        let quantos = gles::componentes(pname).min(4);
-        if quantos == 0 {
-            return Ok(valores);
+        let mut values = [0.0f32; 4];
+        let count = gles::components(pname).min(4);
+        if count == 0 {
+            return Ok(values);
         }
-        // Um pedido só para os até quatro componentes, pelo mesmo motivo do `read_array`.
+        // A single request for the up to four components, for the same reason as `read_array`.
         let mut bytes = [0u8; 16];
-        self.cpu.read_mem(ponteiro, &mut bytes[..quantos * 4])?;
-        for (valor, palavra) in valores.iter_mut().zip(bytes.chunks_exact(4)).take(quantos) {
-            *valor = escalar(
-                u32::from_le_bytes([palavra[0], palavra[1], palavra[2], palavra[3]]),
-                fixo,
+        self.cpu.read_mem(pointer, &mut bytes[..count * 4])?;
+        for (value, word) in values.iter_mut().zip(bytes.chunks_exact(4)).take(count) {
+            *value = to_scalar(
+                u32::from_le_bytes([word[0], word[1], word[2], word[3]]),
+                fixed_point,
             );
         }
-        Ok(valores)
+        Ok(values)
     }
 
-    /// Lê um elemento de um vetor do cliente, completando os componentes que faltam.
-    /// Lê de uma vez o trecho do array que os índices cobrem, e decodifica dali.
+    /// Reads one element of a client array, filling in the missing components.
+    /// Reads at once the span of the array the indices cover, and decodes from there.
     ///
-    /// O caminho por componente atravessa o backend para copiar quatro bytes, e ele procura a
-    /// região antes de copiar: **57 ns**, contra **0,3 ns** quando os mesmos
-    /// quatro bytes vêm de um `read_mem` de um quilobyte. No Quake são 6,6 milhões de vértices
-    /// em 15 segundos virtuais, cada um com posição e coordenada de textura — e isso era
-    /// **3,2 s dos 3,6 s** que as draw calls custavam, contra 400 ms do rasterizador de fato.
+    /// The per-component path crosses the backend to copy four bytes, and it looks up the region
+    /// before copying: **57 ns**, against **0.3 ns** when the same four bytes come from a
+    /// one-kilobyte `read_mem`. In Quake there are 6.6 million vertices in 15 virtual seconds, each
+    /// with position and texture coordinate — and that was **3.2 s of the 3.6 s** the draw calls
+    /// cost, against 400 ms for the actual rasterizer.
     ///
-    /// Se a leitura em bloco falhar, cai no caminho antigo. O trecho vai do primeiro ao último
-    /// índice, e um array que termine colado no fim da região mapeada pode ter o espaço de
-    /// `stride` do último elemento fora dela — o que valia antes continua valendo.
-    /// Que nome está ligado num alvo de buffer. `None` quando é zero — que não é buffer
-    /// nenhum, e sim "os ponteiros são endereços da memória do jogo".
-    pub(super) fn buffer_ligado(&self, alvo: u32) -> Option<u32> {
-        let nome = match alvo {
+    /// If the block read fails, it falls back to the old path. The span goes from the first to the
+    /// last index, and an array that ends flush against the end of the mapped region may have the
+    /// last element's `stride` padding outside it — what held before still holds.
+    /// Which name is bound to a buffer target. `None` when it is zero — which is no buffer at
+    /// all, but "the pointers are addresses in the game's memory".
+    pub(super) fn bound_buffer(&self, target: u32) -> Option<u32> {
+        let name = match target {
             gles::GL_ARRAY_BUFFER => self.gl_array_buffer,
             gles::GL_ELEMENT_ARRAY_BUFFER => self.gl_element_buffer,
             _ => 0,
         };
-        (nome != 0).then_some(nome)
+        (name != 0).then_some(name)
     }
 
-    /// Bytes de um vetor, venham do objeto de buffer ou da memória do jogo.
+    /// Bytes of an array, whether they come from the buffer object or from the game's memory.
     ///
-    /// É o único lugar que sabe a diferença, e é de propósito: com um buffer ligado, o
-    /// "ponteiro" que o jogo passou não é endereço nenhum — é deslocamento dentro do buffer.
-    /// Ler a memória do jogo naquele número daria lixo ou falha de acesso, e foi o que o
-    /// `glVertexPointer(…, 0)` de um jogo com buffer ligado faria: ler o endereço zero.
-    fn bytes_do_vetor(
+    /// This is the only place that knows the difference, and on purpose: with a buffer bound, the
+    /// "pointer" the game passed is no address at all — it is an offset inside the buffer.
+    /// Reading the game's memory at that number would give garbage or an access fault, and that is
+    /// what `glVertexPointer(…, 0)` from a game with a bound buffer would do: read address zero.
+    fn array_bytes(
         &self,
         buffer: u32,
-        endereco: u32,
-        quantos: u32,
+        address: u32,
+        count: u32,
     ) -> Result<Vec<u8>, CpuError> {
         if buffer == 0 {
-            return self.read_bytes(endereco, quantos);
+            return self.read_bytes(address, count);
         }
-        let vazio = Vec::new();
-        let conteudo = self.gl_buffers.get(&buffer).unwrap_or(&vazio);
-        Ok(fatia_do_buffer(conteudo, endereco, quantos))
+        let empty = Vec::new();
+        let content = self.gl_buffers.get(&buffer).unwrap_or(&empty);
+        Ok(buffer_slice(content, address, count))
     }
 
     pub(super) fn read_array(
@@ -1007,60 +1020,61 @@ impl<C: CpuBackend> Machine<C> {
         indices: &[u32],
         default: [f32; 4],
     ) -> Result<Vec<[f32; 4]>, CpuError> {
-        let avulso = |maquina: &Self| -> Result<Vec<[f32; 4]>, CpuError> {
+        let loose = |machine: &Self| -> Result<Vec<[f32; 4]>, CpuError> {
             indices
                 .iter()
-                .map(|&i| maquina.read_attribute(pointer, i, default))
+                .map(|&i| machine.read_attribute(pointer, i, default))
                 .collect()
         };
         let component = component_size(pointer.kind);
-        let largura = pointer.size.min(4) * component;
+        let width = pointer.size.min(4) * component;
         let stride = if pointer.stride == 0 {
             pointer.size * component
         } else {
             pointer.stride
         };
-        let (Some(&menor), Some(&maior)) = (indices.iter().min(), indices.iter().max()) else {
+        let (Some(&smallest), Some(&largest)) = (indices.iter().min(), indices.iter().max()) else {
             return Ok(Vec::new());
         };
-        // Em u64 porque `maior * stride` estoura u32 num ponteiro corrompido, e aí o teto
-        // abaixo é justamente quem precisa enxergar o número grande para recusar.
-        let extensao = (maior - menor) as u64 * stride as u64 + largura as u64;
-        let inicio = pointer.address as u64 + menor as u64 * stride as u64;
-        if extensao > TETO_DO_ARRAY || inicio + extensao > u32::MAX as u64 {
-            return avulso(self);
+        // In u64 because `largest * stride` overflows u32 with a corrupted pointer, and then the
+        // cap below is precisely what needs to see the big number to refuse it.
+        let extension = (largest - smallest) as u64 * stride as u64 + width as u64;
+        let start = pointer.address as u64 + smallest as u64 * stride as u64;
+        if extension > ARRAY_CAP || start + extension > u32::MAX as u64 {
+            return loose(self);
         }
-        let Ok(bytes) = self.bytes_do_vetor(pointer.buffer, inicio as u32, extensao as u32)
+        let Ok(bytes) = self.array_bytes(pointer.buffer, start as u32, extension as u32)
         else {
-            return avulso(self);
+            return loose(self);
         };
         Ok(indices
             .iter()
             .map(|&index| {
-                let base = (index - menor) as usize * stride as usize;
+                let base = (index - smallest) as usize * stride as usize;
                 let mut out = default;
                 for i in 0..pointer.size.min(4) as usize {
-                    let em = base + i * component as usize;
+                    let at = base + i * component as usize;
                     out[i] = match pointer.kind {
                         gles::GL_FLOAT => f32::from_le_bytes([
-                            bytes[em],
-                            bytes[em + 1],
-                            bytes[em + 2],
-                            bytes[em + 3],
+                            bytes[at],
+                            bytes[at + 1],
+                            bytes[at + 2],
+                            bytes[at + 3],
                         ]),
                         gles::GL_FIXED => gles::fixed(u32::from_le_bytes([
-                            bytes[em],
-                            bytes[em + 1],
-                            bytes[em + 2],
-                            bytes[em + 3],
+                            bytes[at],
+                            bytes[at + 1],
+                            bytes[at + 2],
+                            bytes[at + 3],
                         ])),
-                        gles::GL_SHORT => i16::from_le_bytes([bytes[em], bytes[em + 1]]) as f32,
+                        gles::GL_SHORT => i16::from_le_bytes([bytes[at], bytes[at + 1]]) as f32,
                         gles::GL_UNSIGNED_SHORT => {
-                            u16::from_le_bytes([bytes[em], bytes[em + 1]]) as f32
+                            u16::from_le_bytes([bytes[at], bytes[at + 1]]) as f32
                         }
-                        gles::GL_BYTE => bytes[em] as i8 as f32,
-                        // `GL_UNSIGNED_BYTE` só aparece em cor, e ali o valor é normalizado.
-                        _ => bytes[em] as f32 / 255.0,
+                        gles::GL_BYTE => bytes[at] as i8 as f32,
+                        // `GL_UNSIGNED_BYTE` only shows up in color, and there the value is
+                        // normalized.
+                        _ => bytes[at] as f32 / 255.0,
                     };
                 }
                 out
@@ -1080,36 +1094,36 @@ impl<C: CpuBackend> Machine<C> {
         } else {
             pointer.stride
         };
-        let quantos = pointer.size.min(4);
-        // Um pedido só para o elemento inteiro, em vez de um por componente: é o mesmo motivo
-        // do `read_array`, e agora também o que deixa o buffer entrar por um caminho só.
-        let bytes = self.bytes_do_vetor(
+        let count = pointer.size.min(4);
+        // A single request for the whole element, instead of one per component: it is the same
+        // reason as `read_array`, and now also what lets the buffer come in through one path.
+        let bytes = self.array_bytes(
             pointer.buffer,
             pointer.address + index * stride,
-            quantos * component,
+            count * component,
         )?;
         let mut out = default;
-        for i in 0..quantos as usize {
-            let em = i * component as usize;
-            let Some(campo) = bytes.get(em..em + component as usize) else {
+        for i in 0..count as usize {
+            let at = i * component as usize;
+            let Some(field) = bytes.get(at..at + component as usize) else {
                 break;
             };
             out[i] = match pointer.kind {
-                gles::GL_FLOAT => f32::from_le_bytes([campo[0], campo[1], campo[2], campo[3]]),
+                gles::GL_FLOAT => f32::from_le_bytes([field[0], field[1], field[2], field[3]]),
                 gles::GL_FIXED => gles::fixed(u32::from_le_bytes([
-                    campo[0], campo[1], campo[2], campo[3],
+                    field[0], field[1], field[2], field[3],
                 ])),
-                gles::GL_SHORT => i16::from_le_bytes([campo[0], campo[1]]) as f32,
-                gles::GL_UNSIGNED_SHORT => u16::from_le_bytes([campo[0], campo[1]]) as f32,
-                gles::GL_BYTE => campo[0] as i8 as f32,
-                // `GL_UNSIGNED_BYTE` só aparece em cor, e ali o valor é normalizado.
-                _ => campo[0] as f32 / 255.0,
+                gles::GL_SHORT => i16::from_le_bytes([field[0], field[1]]) as f32,
+                gles::GL_UNSIGNED_SHORT => u16::from_le_bytes([field[0], field[1]]) as f32,
+                gles::GL_BYTE => field[0] as i8 as f32,
+                // `GL_UNSIGNED_BYTE` only shows up in color, and there the value is normalized.
+                _ => field[0] as f32 / 255.0,
             };
         }
         Ok(out)
     }
 
-    /// N-ésimo argumento da AAPCS: `r0..r3` e, daí em diante, palavras da pilha.
+    /// The Nth AAPCS argument: `r0..r3` and, from there on, stack words.
     pub(super) fn arg(&self, index: usize) -> u32 {
         match index {
             0 => self.cpu.read_reg(Reg::R0),
@@ -1123,75 +1137,78 @@ impl<C: CpuBackend> Machine<C> {
         }
     }
 
-    /// Fecha o quadro no `eglSwapBuffers`.
+    /// Closes the frame on `eglSwapBuffers`.
     ///
-    /// **Pinta a fila e não lê o resultado.** São duas coisas diferentes, e separá-las é o ganho:
+    /// **Paints the queue and does not read the result.** These are two different things, and
+    /// separating them is the gain:
     ///
-    /// - pintar a fila é a **rasterização** do quadro, e ela não tem como ser adiada — é o trabalho
-    ///   que o jogo pediu;
-    /// - ler o quadro de volta para a memória da CPU existe para o **desenho 2D por cima** e para
-    ///   quando o guest pede os pixels. Um jogo de 3D puro não faz nenhuma das duas coisas, e no
-    ///   portátil essa leitura obriga a GPU de tiles a terminar e devolver o quadro a cada troca.
+    /// - painting the queue is the frame's **rasterization**, and it cannot be deferred — it is the
+    ///   work the game asked for;
+    /// - reading the frame back to CPU memory exists for **2D drawing on top** and for when the
+    ///   guest asks for the pixels. A pure 3D game does neither, and on the handheld that read
+    ///   forces the tiled GPU to finish and hand back the frame on every swap.
     ///
-    /// Então o quadro fica **pendente**, e [`Machine::materializa_quadro_gl`] o traz quando alguém
-    /// precisar de verdade. Quem decide é o caminho de desenho: qualquer chamada de 2D materializa
-    /// antes de escrever, porque escrever por cima de um quadro velho apagaria a cena.
+    /// So the frame stays **pending**, and [`Machine::materialize_gl_frame`] brings it when someone
+    /// really needs it. The drawing path decides: any 2D call materializes before writing, because
+    /// writing over a stale frame would erase the scene.
     pub(super) fn present_gl(&mut self) {
-        self.gl.descarrega_o_desenho();
-        self.gl.fecha_quadro();
-        self.gl_quadro_pendente = true;
-        self.placa_sem_o_quadro = false;
-        // **O quadro na placa vale para a tela como ela está agora**, mesmo sem ter sido lido. É o
-        // que o [`Machine::quadro_na_placa`] compara, e quem apresenta pela placa nunca materializa
-        // — a textura é justamente o que dispensa a leitura. Marcado só na materialização, o
-        // quadro 3D nunca era dado como intacto nesse caminho: a janela caía na tela da CPU, que
-        // não recebera o quadro, e o jogo saía preto em toda janela que apresenta pela placa —
-        // medido com o Double Dragon, que desenha o título pelo OpenGL. Um desenho 2D depois
-        // disto materializa antes de escrever, e a escrita desfaz a marca, como deve.
-        self.escritas_do_quadro_gl = Some(self.screen().escritas());
-        // **Só a placa adia.** No rasterizador de processador a leitura é uma conversão em
-        // memória: não há espera a economizar, e o frontend lê a tela todo quadro de qualquer
-        // jeito — adiar ali só criaria a chance de ele apresentar um quadro velho.
-        if !self.gl.quadro_espera_pela_placa() {
-            self.materializa_quadro_gl();
+        self.gl.flush_draw();
+        self.gl.end_frame();
+        self.gl_frame_pending = true;
+        self.gpu_without_frame = false;
+        // **The frame on the GPU stands for the screen as it is now**, even without having been
+        // read. It is what [`Machine::gpu_frame`] compares, and whoever presents through the GPU
+        // never materializes — the texture is precisely what makes the read unnecessary. Marked
+        // only on materialization, the 3D frame was never considered intact on this path: the
+        // window fell back to the CPU screen, which hadn't received the frame, and the game came
+        // out black in every window that presents through the GPU — measured with Double Dragon,
+        // which draws its title through OpenGL. A 2D drawing after this materializes before
+        // writing, and the write undoes the mark, as it should.
+        self.gl_frame_writes = Some(self.screen().writes());
+        // **Only the GPU defers.** In the CPU rasterizer the read is an in-memory conversion:
+        // there is no wait to save, and the frontend reads the screen every frame anyway —
+        // deferring there would only create the chance of it presenting a stale frame.
+        if !self.gl.frame_waits_for_gpu() {
+            self.materialize_gl_frame();
         }
     }
 
-    /// Chamadas de estado enviadas à placa e quantas o espelho poupou. Ver
-    /// [`crate::video::gpu::Espelho`].
-    pub fn estado_enviado_e_poupado(&self) -> (u64, u64) {
-        self.gl.estado_enviado_e_poupado()
+    /// State calls sent to the GPU and how many the mirror spared. See
+    /// [`crate::video::gpu::Mirror`].
+    pub fn state_sent_and_spared(&self) -> (u64, u64) {
+        self.gl.state_sent_and_spared()
     }
 
-    /// Quantas vezes o quadro da placa foi trazido para a tela da CPU nesta sessão.
+    /// How many times the GPU frame was brought to the CPU screen in this session.
     ///
-    /// Comparado com [`Machine::gl_swaps`] diz o quanto o adiamento rendeu: cada troca de buffer
-    /// sem materialização é uma leitura de quadro que **não** aconteceu. Serve de número de
-    /// conferência no portátil, onde a leitura é a cara: ver [`Machine::present_gl`].
-    pub fn materializacoes_do_quadro_gl(&self) -> u32 {
-        self.gl_materializacoes
+    /// Compared with [`Machine::gl_swaps`] it says how much the deferral paid off: each buffer
+    /// swap without materialization is a frame read that did **not** happen. It serves as a check
+    /// number on the handheld, where the read is the expensive part: see [`Machine::present_gl`].
+    pub fn gl_frame_materializations(&self) -> u32 {
+        self.gl_materializations
     }
 
-    /// Traz para a tela da CPU o quadro que o `eglSwapBuffers` deixou pendente.
+    /// Brings to the CPU screen the frame `eglSwapBuffers` left pending.
     ///
-    /// Chamado por todo caminho que **lê ou escreve** a tela do console: as três interfaces de
-    /// desenho 2D, a leitura de pixels e o despejo de diagnóstico. Não é chamado pela janela nem
-    /// pelo core quando eles apresentam a textura da placa — esses não querem os pixels, querem a
-    /// textura, e o readback existia para eles por engano.
-    pub fn materializa_quadro_gl(&mut self) {
-        if !self.gl_quadro_pendente {
+    /// Called by every path that **reads or writes** the console screen: the three 2D drawing
+    /// interfaces, the pixel read and the diagnostic dump. It is not called by the window or by the
+    /// core when they present the GPU texture — those don't want the pixels, they want the texture,
+    /// and the readback existed for them by mistake.
+    pub fn materialize_gl_frame(&mut self) {
+        if !self.gl_frame_pending {
             return;
         }
-        self.gl_quadro_pendente = false;
-        self.gl_materializacoes = self.gl_materializacoes.saturating_add(1);
-        // A tela pode ser a superfície do "device bitmap", quando o jogo pediu uma — é ela que
-        // vale, e não o framebuffer de reserva.
+        self.gl_frame_pending = false;
+        self.gl_materializations = self.gl_materializations.saturating_add(1);
+        // The screen may be the "device bitmap" surface, when the game asked for one — that is
+        // the one that counts, not the fallback framebuffer.
         let (width, height) = {
             let target = self.screen();
             (target.width() as usize, target.height() as usize)
         };
-        // O quadro vai direto para o buffer do anterior, em RGB565: sem o vetor de `u16` e a volta
-        // para bytes, e sem conversão nenhuma quando nada foi desenhado desde o último.
+        // The frame goes straight into the previous one's buffer, in RGB565: without the `u16`
+        // vector and the round trip to bytes, and with no conversion at all when nothing was drawn
+        // since the last one.
         let mut words = std::mem::take(&mut self.gl_last_frame_words);
         self.gl.frame_rgb565_words(width, height, &mut words);
         match self.bitmaps.get_mut(&self.device_bitmap) {
@@ -1199,220 +1216,224 @@ impl<C: CpuBackend> Machine<C> {
             None => self.screen.load_rgb565_words(&words),
         }
         self.gl_last_frame_words = words;
-        // **A marca é do instante em que a tela ficou igual ao quadro 3D**, e é por isso que ela
-        // vem aqui e não na troca de buffer: `quadro_na_placa` compara esta contagem com a de
-        // agora para saber se algum 2D desenhou por cima depois disso.
-        self.escritas_do_quadro_gl = Some(self.screen().escritas());
+        // **The mark is from the instant the screen became equal to the 3D frame**, and that is
+        // why it comes here and not at the buffer swap: `gpu_frame` compares this count with the
+        // current one to know whether any 2D drew on top after that.
+        self.gl_frame_writes = Some(self.screen().writes());
     }
 
-    /// A textura do quadro, para um frontend que apresenta na própria placa.
-    pub fn textura_do_quadro(&self) -> Option<u32> {
-        self.gl.textura_do_quadro()
+    /// The frame texture, for a frontend that presents on its own GPU.
+    pub fn frame_texture(&self) -> Option<u32> {
+        self.gl.frame_texture()
     }
 
-    /// O quadro 3D na resolução interna, quando é ele que está na tela.
+    /// The 3D frame at the internal resolution, when it is the one on screen.
     ///
-    /// Só vale enquanto a tela é exatamente o que o último `eglSwapBuffers` pôs lá: qualquer
-    /// desenho 2D depois disso — um HUD pelo `IDisplay`, uma caixa de mensagem — vive só na tela
-    /// do console, e mostrar a textura grande o apagaria. Nesse caso a janela fica com a tela de
-    /// 640×480, como sempre.
+    /// Only valid while the screen is exactly what the last `eglSwapBuffers` put there: any 2D
+    /// drawing after that — a HUD through `IDisplay`, a message box — lives only on the console
+    /// screen, and showing the large texture would erase it. In that case the window keeps the
+    /// 640×480 screen, as always.
     ///
-    /// **Nem logo depois de restaurar um estado.** A textura da placa não entra no save state, e
-    /// volta vazia; a tela da CPU volta com a imagem gravada. Como o contador de escritas da tela
-    /// volta junto, a tela parecia intacta, e a janela mostrava a textura: preto. No rewind, que
-    /// segura o jogo parado em cada ponto, a tela ficava preta do começo ao fim — medido no Magical
-    /// Drop III e no Um Jogo de Ovos, pela placa. Até a próxima troca de buffer vale a tela.
-    pub fn quadro_na_placa(&self) -> Option<crate::video::rasterizer::QuadroNaPlaca> {
-        let intacta = !self.placa_sem_o_quadro
-            && self.escritas_do_quadro_gl == Some(self.screen().escritas());
-        intacta.then(|| self.gl.quadro_na_placa()).flatten()
+    /// **Not right after restoring a state either.** The GPU texture is not part of the save state,
+    /// and comes back empty; the CPU screen comes back with the saved image. Since the screen's
+    /// write counter comes back with it, the screen looked intact, and the window showed the
+    /// texture: black. In rewind, which holds the game still at each point, the screen stayed black
+    /// from start to finish — measured on Magical Drop III and Um Jogo de Ovos, through the GPU.
+    /// Until the next buffer swap the screen applies.
+    pub fn gpu_frame(&self) -> Option<crate::video::rasterizer::GpuFrame> {
+        let intact = !self.gpu_without_frame
+            && self.gl_frame_writes == Some(self.screen().writes());
+        intact.then(|| self.gl.gpu_frame()).flatten()
     }
 
-    /// O quadro 3D na resolução interna, como superfície, para gravar sem janela.
-    pub fn quadro_grande(&mut self) -> Option<Framebuffer> {
-        let (w, h, rgba) = self.quadro_grande_rgba()?;
-        let mut quadro = Framebuffer::new(w as u32, h as u32);
+    /// The 3D frame at the internal resolution, as a surface, for recording without a window.
+    pub fn large_frame(&mut self) -> Option<Framebuffer> {
+        let (w, h, rgba) = self.large_frame_rgba()?;
+        let mut frame = Framebuffer::new(w as u32, h as u32);
         for (i, p) in rgba.chunks_exact(4).enumerate() {
-            let cor = Rgb { r: p[0], g: p[1], b: p[2] };
-            quadro.set_pixel((i % w) as i32, (i / w) as i32, cor);
+            let color = Rgb { r: p[0], g: p[1], b: p[2] };
+            frame.set_pixel((i % w) as i32, (i / w) as i32, color);
         }
-        Some(quadro)
+        Some(frame)
     }
 
-    /// O quadro 3D na resolução interna como a placa o tem: RGBA de oito bits, linhas de cima
-    /// para baixo. O [`Machine::quadro_grande`] o passa a RGB565, e isso tira bits que a placa já
-    /// tinha calculado; o screenshot quer os oito.
-    pub fn quadro_grande_rgba(&mut self) -> Option<(usize, usize, Vec<u8>)> {
-        self.gl.le_quadro_grande()
+    /// The 3D frame at the internal resolution as the GPU has it: eight-bit RGBA, rows top to
+    /// bottom. [`Machine::large_frame`] turns it into RGB565, and that drops bits the GPU had
+    /// already computed; the screenshot wants all eight.
+    pub fn large_frame_rgba(&mut self) -> Option<(usize, usize, Vec<u8>)> {
+        self.gl.read_large_frame()
     }
 
-    /// A resolução interna do rasterizador da placa. Ver [`Rasterizador::define_escala`].
-    pub fn define_resolucao_interna(&mut self, escala: usize) {
-        self.gl.define_escala(escala);
+    /// The internal resolution of the GPU rasterizer. See [`Rasterizer::set_scale`].
+    pub fn set_internal_resolution(&mut self, scale: usize) {
+        self.gl.set_scale(scale);
     }
 
-    /// Faz o desenho sair no framebuffer do frontend, quando ele entrega um.
+    /// Makes drawing go to the frontend's framebuffer, when it provides one.
     ///
-    /// É o que o `libretro` pede de quem usa render em hardware: o core desenha no framebuffer
-    /// que o frontend indica a cada quadro, e é ele que apresenta. Sem framebuffer de fora, o
-    /// motor desenha no próprio e o quadro sai pelo `frame_rgb565`, como sempre.
-    pub fn desenha_no_fbo(&mut self, fbo: Option<u32>) {
-        self.gl.desenha_no_fbo(fbo);
+    /// It is what `libretro` asks of whoever uses hardware rendering: the core draws to the
+    /// framebuffer the frontend points to each frame, and the frontend presents it. Without an
+    /// outside framebuffer, the engine draws to its own and the frame comes out through
+    /// `frame_rgb565`, as always.
+    pub fn draw_to_fbo(&mut self, fbo: Option<u32>) {
+        self.gl.draw_to_fbo(fbo);
     }
 
-    /// A janela pintou no contexto emprestado. Ver [`Rasterizador::retoma_o_contexto`].
-    pub fn retoma_o_contexto(&mut self) {
-        self.gl.retoma_o_contexto();
+    /// The window painted on the borrowed context. See [`Rasterizer::resume_context`].
+    pub fn resume_context(&mut self) {
+        self.gl.resume_context();
     }
 
-    /// O quadro acabou: o contexto volta ao frontend. Ver [`Rasterizador::devolve_ao_frontend`].
-    pub fn devolve_ao_frontend(&mut self) {
-        self.gl.devolve_ao_frontend();
+    /// The frame is over: the context goes back to the frontend. See
+    /// [`Rasterizer::hand_back_to_frontend`].
+    pub fn hand_back_to_frontend(&mut self) {
+        self.gl.hand_back_to_frontend();
     }
 
-    /// Diz ao rasterizador de placa para descartar profundidade e estêncil depois do quadro.
-    /// Ver [`Rasterizador::define_descarte_de_tiles`].
-    pub fn define_descarte_de_tiles(&mut self, descartar: bool) {
-        self.gl.define_descarte_de_tiles(descartar);
+    /// Tells the GPU rasterizer to discard depth and stencil after the frame.
+    /// See [`Rasterizer::set_tile_discard`].
+    pub fn set_tile_discard(&mut self, discard: bool) {
+        self.gl.set_tile_discard(discard);
     }
 
-    /// Reduz a resolução interna do 3D no rasterizador de processador. Ver
-    /// [`Rasterizador::define_reducao`].
-    pub fn define_reducao(&mut self, reducao: usize) {
-        self.gl.define_reducao(reducao);
+    /// Lowers the internal 3D resolution in the CPU rasterizer. See
+    /// [`Rasterizer::set_downscale`].
+    pub fn set_downscale(&mut self, downscale: usize) {
+        self.gl.set_downscale(downscale);
     }
 
-    /// A proporção experimental do 3D. Ver [`Rasterizador::define_proporcao`].
-    pub fn define_proporcao(&mut self, aspecto: Option<f32>) {
-        self.gl.define_proporcao(aspecto);
+    /// The experimental 3D aspect ratio. See [`Rasterizer::set_aspect_ratio`].
+    pub fn set_aspect_ratio(&mut self, aspect: Option<f32>) {
+        self.gl.set_aspect_ratio(aspect);
     }
 
-    /// As melhorias de imagem do rasterizador da placa: antialias e filtro anisotrópico. Ver
-    /// [`Rasterizador::define_antialias`] e [`Rasterizador::define_anisotropico`].
-    pub fn define_melhorias(&mut self, amostras: usize, anisotropico: usize) {
-        self.gl.define_antialias(amostras);
-        self.gl.define_anisotropico(anisotropico);
+    /// The GPU rasterizer's image enhancements: antialiasing and anisotropic filtering. See
+    /// [`Rasterizer::set_antialias`] and [`Rasterizer::set_anisotropic`].
+    pub fn set_enhancements(&mut self, samples: usize, anisotropic: usize) {
+        self.gl.set_antialias(samples);
+        self.gl.set_anisotropic(anisotropic);
     }
 
-    /// Se a névoa do jogo vale. Escolha de quem joga, não do jogo — ver
-    /// [`rasterizer::Rasterizador::define_neblina`].
-    pub fn define_neblina(&mut self, permitida: bool) {
-        self.gl.define_neblina(permitida);
+    /// Whether the game's fog applies. The player's choice, not the game's — see
+    /// [`rasterizer::Rasterizer::set_fog_allowed`].
+    pub fn set_fog_allowed(&mut self, allowed: bool) {
+        self.gl.set_fog_allowed(allowed);
     }
 
-    /// Se o quadro de agora deve pular o desenho — ver o campo `pula_desenho`.
+    /// Whether the current frame should skip drawing — see the `skip_draw` field.
     ///
-    /// Chamado uma vez por quadro, antes do jogo rodar: a decisão vale para todo `gles_draw` e
-    /// `Clear` que acontecerem enquanto o CPU emula este quadro, e é reavaliada no próximo.
-    pub fn define_pula_desenho(&mut self, pula: bool) {
-        self.pula_desenho = pula;
+    /// Called once per frame, before the game runs: the decision applies to every `gles_draw` and
+    /// `Clear` that happen while the CPU emulates this frame, and is re-evaluated on the next.
+    pub fn set_skip_draw(&mut self, skip: bool) {
+        self.skip_draw = skip;
     }
 
-    /// Se o jogo leu pixels do framebuffer e portanto desabilitou frameskip de rasterização.
-    pub fn leu_pixels(&self) -> bool {
-        self.gl_leitura_de_pixels
+    /// Whether the game read pixels from the framebuffer and therefore disabled rasterization
+    /// frameskip.
+    pub fn did_read_pixels(&self) -> bool {
+        self.gl_pixels_read
     }
 
-    /// Devolve ao dono o estado de GL que o rasterizador mexeu. Ver
-    /// [`rasterizer::Rasterizador::devolve_o_contexto`].
-    pub fn devolve_o_contexto(&self) {
-        self.gl.devolve_o_contexto();
+    /// Hands back to its owner the GL state the rasterizer touched. See
+    /// [`rasterizer::Rasterizer::hand_back_context`].
+    pub fn hand_back_context(&self) {
+        self.gl.hand_back_context();
     }
 }
 
-/// A fatia de um objeto de buffer que um vetor pede, ou zeros quando ela não cabe.
+/// The slice of a buffer object an array asks for, or zeros when it doesn't fit.
 ///
-/// Separada da máquina por ser a única regra do caminho de buffer que dá para errar sozinha —
-/// e por dar para cobrar num teste sem levantar um núcleo ARM inteiro.
+/// Kept apart from the machine because it is the only rule of the buffer path that can go wrong
+/// on its own — and because it can be checked in a test without bringing up a whole ARM core.
 ///
-/// Fora do buffer **não** é motivo para derrubar o desenho: o OpenGL deixa o resultado
-/// indefinido, e zero é o indefinido mais inofensivo que dá para escolher. Devolver erro aqui
-/// abortaria o `glDrawElements` inteiro por causa de um vértice, e um jogo que suba a malha em
-/// pedaços passa por esse caso sem estar com defeito.
-fn fatia_do_buffer(conteudo: &[u8], endereco: u32, quantos: u32) -> Vec<u8> {
-    let inicio = endereco as usize;
-    let fim = inicio.saturating_add(quantos as usize);
-    match conteudo.get(inicio..fim) {
-        Some(fatia) => fatia.to_vec(),
-        None => vec![0u8; quantos as usize],
+/// Out of the buffer is **not** a reason to drop the drawing: OpenGL leaves the result undefined,
+/// and zero is the most harmless undefined one can pick. Returning an error here would abort the
+/// whole `glDrawElements` because of one vertex, and a game that uploads its mesh in pieces goes
+/// through this case without being defective.
+fn buffer_slice(content: &[u8], address: u32, count: u32) -> Vec<u8> {
+    let start = address as usize;
+    let end = start.saturating_add(count as usize);
+    match content.get(start..end) {
+        Some(slice) => slice.to_vec(),
+        None => vec![0u8; count as usize],
     }
 }
 
 #[cfg(test)]
-mod testes_dos_nomes {
-    use super::NomesGl;
+mod name_tests {
+    use super::GlNames;
 
-    /// Um nome apagado volta a sair, e sai o menor livre. Sem isso o Rally Master Pro passava de
-    /// 248 texturas em algumas corridas: ver [`NomesGl`].
+    /// A deleted name comes out again, and the smallest free one comes out. Without this Rally
+    /// Master Pro went past 248 textures in a few races: see [`GlNames`].
     #[test]
-    fn o_nome_apagado_volta_a_sair() {
-        let mut nomes = NomesGl::default();
-        assert_eq!([nomes.gera(), nomes.gera(), nomes.gera()], [1, 2, 3]);
-        nomes.libera(2);
-        assert_eq!(nomes.gera(), 2);
-        assert_eq!(nomes.gera(), 4);
+    fn a_deleted_name_is_handed_out_again() {
+        let mut names = GlNames::default();
+        assert_eq!([names.generate(), names.generate(), names.generate()], [1, 2, 3]);
+        names.free(2);
+        assert_eq!(names.generate(), 2);
+        assert_eq!(names.generate(), 4);
     }
 
-    /// Mil ciclos de apagar e recriar a mesma cena não fazem o nome crescer.
+    /// A thousand cycles of deleting and recreating the same scene don't make the name grow.
     #[test]
-    fn recriar_a_cena_nao_faz_o_nome_crescer() {
-        let mut nomes = NomesGl::default();
-        let fixo = nomes.gera();
+    fn recreating_the_scene_does_not_grow_the_name() {
+        let mut names = GlNames::default();
+        let fixed_point = names.generate();
         for _ in 0..1000 {
-            let cena: Vec<u32> = (0..60).map(|_| nomes.gera()).collect();
-            for nome in cena {
-                nomes.libera(nome);
+            let scene: Vec<u32> = (0..60).map(|_| names.generate()).collect();
+            for name in scene {
+                names.free(name);
             }
         }
-        assert_eq!(nomes.maior(), fixo);
-        assert_eq!(nomes.gera(), 2);
+        assert_eq!(names.largest(), fixed_point);
+        assert_eq!(names.generate(), 2);
     }
 
-    /// Um nome ligado sem ter sido gerado passa a existir, e o `glGen*` não o entrega a mais
-    /// ninguém. Zero é o objeto padrão e nunca entra.
+    /// A name bound without having been generated comes into existence, and `glGen*` does not
+    /// hand it to anyone else. Zero is the default object and never goes in.
     #[test]
-    fn o_nome_ligado_sem_gerar_fica_em_uso() {
-        let mut nomes = NomesGl::default();
-        nomes.usa(1);
-        nomes.usa(0);
-        assert_eq!(nomes.gera(), 2);
-        assert_eq!(nomes.em_uso().collect::<Vec<_>>(), vec![1, 2]);
+    fn a_name_bound_without_gen_stays_in_use() {
+        let mut names = GlNames::default();
+        names.mark_used(1);
+        names.mark_used(0);
+        assert_eq!(names.generate(), 2);
+        assert_eq!(names.in_use().collect::<Vec<_>>(), vec![1, 2]);
     }
 }
 
 #[cfg(test)]
-mod testes_do_buffer {
-    use super::fatia_do_buffer;
+mod buffer_tests {
+    use super::buffer_slice;
 
     #[test]
-    fn o_deslocamento_zero_e_o_comeco_do_buffer() {
-        // É o caso que mais aparece: com um buffer ligado, `glVertexPointer(…, 0)` não é
-        // ponteiro nulo — é "do começo do buffer". Ler a memória do jogo no endereço zero era
-        // exatamente o que fazia um jogo com VBO morrer em acesso inválido.
-        let conteudo = [1u8, 2, 3, 4, 5, 6];
-        assert_eq!(fatia_do_buffer(&conteudo, 0, 3), vec![1, 2, 3]);
+    fn offset_zero_is_the_start_of_the_buffer() {
+        // It is the most common case: with a buffer bound, `glVertexPointer(…, 0)` is not a null
+        // pointer — it is "from the start of the buffer". Reading the game's memory at address
+        // zero was exactly what made a game with a VBO die on an invalid access.
+        let content = [1u8, 2, 3, 4, 5, 6];
+        assert_eq!(buffer_slice(&content, 0, 3), vec![1, 2, 3]);
     }
 
     #[test]
-    fn o_deslocamento_anda_dentro_do_buffer() {
-        let conteudo = [1u8, 2, 3, 4, 5, 6];
-        assert_eq!(fatia_do_buffer(&conteudo, 4, 2), vec![5, 6]);
+    fn the_offset_moves_within_the_buffer() {
+        let content = [1u8, 2, 3, 4, 5, 6];
+        assert_eq!(buffer_slice(&content, 4, 2), vec![5, 6]);
     }
 
     #[test]
-    fn o_que_passa_do_fim_sai_zerado_em_vez_de_falhar() {
-        let conteudo = [1u8, 2, 3, 4];
-        assert_eq!(fatia_do_buffer(&conteudo, 3, 4), vec![0, 0, 0, 0]);
-        assert_eq!(fatia_do_buffer(&conteudo, 9, 2), vec![0, 0]);
-        // E um buffer que nem foi preenchido responde igual, sem caso especial.
-        assert_eq!(fatia_do_buffer(&[], 0, 3), vec![0, 0, 0]);
+    fn what_runs_past_the_end_comes_out_zeroed_instead_of_failing() {
+        let content = [1u8, 2, 3, 4];
+        assert_eq!(buffer_slice(&content, 3, 4), vec![0, 0, 0, 0]);
+        assert_eq!(buffer_slice(&content, 9, 2), vec![0, 0]);
+        // And a buffer that was never even filled answers the same, without a special case.
+        assert_eq!(buffer_slice(&[], 0, 3), vec![0, 0, 0]);
     }
 
     #[test]
-    fn o_deslocamento_grande_nao_estoura_a_soma() {
-        // `endereco + quantos` em `usize` de 32 bits daria a volta e a fatia passaria pelo
-        // teste de limite. O `saturating_add` é o que impede isso — e o caso existe: um
-        // ponteiro de vetor corrompido chega aqui como deslocamento enorme.
-        assert_eq!(fatia_do_buffer(&[1, 2, 3], u32::MAX, 8), vec![0u8; 8]);
+    fn a_large_offset_does_not_overflow_the_sum() {
+        // `address + count` in a 32-bit `usize` would wrap around and the slice would pass the
+        // bounds check. `saturating_add` is what prevents that — and the case exists: a corrupted
+        // array pointer arrives here as a huge offset.
+        assert_eq!(buffer_slice(&[1, 2, 3], u32::MAX, 8), vec![0u8; 8]);
     }
 }

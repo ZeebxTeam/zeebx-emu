@@ -1,26 +1,27 @@
-# O cartão de visita do core: é daqui que o RetroArch tira o nome na lista, a associação com o
-# banco No-Intro e o que ele diz ao usuário que o core sabe fazer.
+# The core's business card: this is where RetroArch gets the name in the list, the link to the
+# No-Intro database and what it tells the user the core can do.
 #
-# **Os campos de capacidade têm de casar com o que a ABI faz.** Um `savestate = "false"` num core
-# que serializa esconde o recurso na interface; um `hw_render = "true"` num core que não pede
-# contexto faz o RetroArch preparar uma placa à toa. Cada linha abaixo foi conferida no
-# `src/lib.rs`, e o comentário diz onde.
+# **The capability fields have to match what the ABI does.** A `savestate = "false"` on a core
+# that serializes hides the feature in the interface; a `hw_render = "true"` on a core that asks
+# for no context makes RetroArch prepare a graphics card for nothing. Each line below was checked
+# against `src/lib.rs`, and the comment says where.
 #
-# A forma é a dos arquivos do `libretro-super` (conferida contra o `desmume_libretro.info`
-# instalado): três blocos, e a descrição por último.
+# The shape is that of the `libretro-super` files (checked against the installed
+# `desmume_libretro.info`): three blocks, and the description last.
 
 # Software Information
 display_name = "Zeebx"
 authors = "ZeebxTeam"
-# As mesmas do `valid_extensions` do `retro_get_system_info`.
+# The same as the `valid_extensions` of `retro_get_system_info`.
 supported_extensions = "mod|zip|7z"
 corename = "Zeebx"
-# **`license`, no singular.** `licenses` não é lido por ninguém, e era o que estava aqui.
-# GPLv3, e não GPLv2+: o core liga crates que são só Apache-2.0 (`ab_glyph`, `sevenz-rust2`,
-# `zopfli`), e o binário só pode ser distribuído sob a GPLv3. O código continua GPLv2+.
+# **`license`, singular.** `licenses` isn't read by anyone, and it was what was here.
+# GPLv3, and not GPLv2+: the core links crates that are Apache-2.0 only (`ab_glyph`,
+# `sevenz-rust2`, `zopfli`), and the binary can only be distributed under the GPLv3. The code is
+# still GPLv2+.
 license = "GPLv3"
 permissions = ""
-# Acompanha a versão do crate. Ver o `version` do `Cargo.toml` da raiz.
+# Follows the crate version. See the `version` in the root `Cargo.toml`.
 display_version = "0.5.1"
 categories = "Emulator"
 
@@ -30,45 +31,47 @@ systemname = "Zeebo"
 systemid = "zeebo"
 
 # Libretro Features
-# Banco No-Intro usado para nomear e para achar as capas. Ver `ferramentas/catalogo.py`.
+# No-Intro database used for naming and for finding the covers. See `tools/catalog.py`.
 database = "Mobile - Zeebo"
 supports_no_game = "false"
-# `retro_serialize_size`, `retro_serialize` e `retro_unserialize` entregam o estado inteiro.
+# `retro_serialize_size`, `retro_serialize` and `retro_unserialize` deliver the whole state.
 savestate = "true"
 savestate_features = "serialized"
-# `retro_cheat_set` é um corpo vazio: o console não tem trapaça e o core não inventa uma.
+# `retro_cheat_set` is an empty body: the console has no cheats and the core doesn't make one up.
 cheats = "false"
-# O core chama `SET_INPUT_DESCRIPTORS`: os botões aparecem nomeados no menu de controles.
+# The core calls `SET_INPUT_DESCRIPTORS`: the buttons show up named in the controls menu.
 input_descriptors = "true"
-# `retro_get_memory_data` devolve nulo: os saves do BREW são arquivos, não uma região contínua.
+# `retro_get_memory_data` returns null: BREW saves are files, not a contiguous region.
 memory_descriptors = "false"
-# Os saves vão para a pasta que o `GET_SAVE_DIRECTORY` indica, e não para o lado do jogo.
+# Saves go to the folder `GET_SAVE_DIRECTORY` points to, and not next to the game.
 libretro_saves = "true"
-# O core registra Core Options V2 e fallback SET_VARIABLES. Ver `src/lib.rs`.
+# The core registers Core Options V2 and a SET_VARIABLES fallback. See `src/lib.rs`.
 core_options = "true"
 load_subsystem = "false"
-# O core pede contexto pelo `SET_HW_RENDER` e desenha no framebuffer do frontend. **Quando não
-# consegue, ele volta para o rasterizador de software** -- a linha abaixo é o que o desenho na
-# placa exige, não o que o core exige para rodar.
+# The core asks for a context through `SET_HW_RENDER` and draws into the frontend's framebuffer.
+# **When it can't, it falls back to the software rasterizer** -- the line below is what drawing on
+# the graphics card requires, not what the core requires to run.
 hw_render = "true"
 required_hw_api = "OpenGL Core >= 3.3 | OpenGL ES >= 3.2"
-# Os dois vêm do `retro_get_system_info`: o jogo é aberto por caminho, e o `.zip` é do console,
-# não do frontend -- quem o abre é o BREW.
+# Both come from `retro_get_system_info`: the game is opened by path, and the `.zip` belongs to
+# the console, not the frontend -- BREW is what opens it.
 needs_fullpath = "true"
 block_extract = "true"
 disk_control = "false"
 is_experimental = "false"
 
 # BIOS/Firmware
-# Nenhum: a BIOS do aparelho não é necessária, o motor implementa o BREW.
+# None: the device BIOS isn't needed, the engine implements BREW.
 firmware_count = 0
 
-# As linhas de "Core notes" da página de informação. **O formato não tem campo de endereço** --
-# conferido nos 582 `.info` de uma instalação do RetroArch: nenhum campo de URL, e os 34 que
-# trazem link o põem aqui, no padrão `(!) Homepage: ...`. O `|` separa uma linha da outra.
+# The "Core notes" lines of the information page. **The format has no address field** --
+# checked across the 582 `.info` files of a RetroArch install: no URL field, and the 34 that
+# carry a link put it here, in the `(!) Homepage: ...` pattern. The `|` separates one line from
+# the next.
 #
-# O conteúdo é o mesmo do "Sobre" do desktop e dos ajustes do Android -- repositório e Discord --,
-# mais o que só o usuário do RetroArch precisa saber, porque no core não há tela para dizê-lo.
-notes = "(!) Repositório: https://github.com/ZeebxTeam/zeebx-emu|(!) Discord: https://discord.gg/D96HjsKTPa|(!) A Z-Wheel lista os jogos que estiverem na mesma pasta do que você abriu; sozinho, o menu do console abre vazio|(!) MIDI com banco de amostras: ponha um .sf2 em soundfonts/, na pasta de sistema do frontend; o core escreve o caminho exato no log ao abrir o jogo|(!) Sem contexto de OpenGL o core desenha no processador: nada deixa de funcionar, só fica mais lento|(!) Na PlayStation Vita o desenho fica no processador: o RetroArch de lá não entrega OpenGL ES 3|(!) A imagem é 4:3 e quem a amplia é o frontend: com a escala inteira ligada (Integer Scale) ela só sai em múltiplos de 640x480, e numa tela 1080p isso é 1280x960 com tarja. Desligue a escala inteira para ocupar a tela; nenhum ajuste do core muda esse tamanho"
+# The content is the same as the desktop's "About" and Android's settings -- repository and
+# Discord --, plus what only the RetroArch user needs to know, because the core has no screen to
+# say it.
+notes = "(!) Repository: https://github.com/ZeebxTeam/zeebx-emu|(!) Discord: https://discord.gg/D96HjsKTPa|(!) The Z-Wheel lists the games in the same folder as the one you opened; on its own, the console menu opens empty|(!) MIDI with a sample bank: put an .sf2 in soundfonts/, in the frontend's system folder; the core writes the exact path to the log when the game opens|(!) Without an OpenGL context the core draws on the processor: nothing stops working, it just gets slower|(!) On the PlayStation Vita drawing stays on the processor: the RetroArch there doesn't provide OpenGL ES 3|(!) The image is 4:3 and the frontend is what enlarges it: with Integer Scale on it only comes out in multiples of 640x480, and on a 1080p screen that is 1280x960 with bars. Turn Integer Scale off to fill the screen; no core setting changes that size"
 
-description = "O emulador definitivo de Zeebo! Movido a Qualcomm BREW 4.0.2, carrega o jogo em .mod, .zip ou .7z, desenha no processador ou na placa, e traz a Z-Wheel -- o menu do aparelho -- quando a pasta de jogos está montada."
+description = "The definitive Zeebo emulator! Powered by Qualcomm BREW 4.0.2, it loads the game as .mod, .zip or .7z, draws on the processor or the graphics card, and brings the Z-Wheel -- the device menu -- when the games folder is mounted."

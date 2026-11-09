@@ -1,14 +1,14 @@
-//! ISignal e os callbacks: o que o jogo pediu para ser avisado.
+//! ISignal and the callbacks: what the game asked to be notified of.
 
 use super::*;
 
 impl<C: CpuBackend> Machine<C> {
-    /// Roda os callbacks pendentes na fronteira entre duas chamadas de API."""
+    /// Runs the pending callbacks at the boundary between two API calls.
     ///
-    /// O BREW entrega notificações pelo laço de eventos dele, quando o applet já devolveu o
-    /// controle. Nosso equivalente mais próximo é este ponto: a chamada de API terminou, o
-    /// resultado já está em `r0` e o guest ainda não retomou. Todo o contexto é salvo e
-    /// devolvido, de forma que o chamador não perceba o desvio.
+    /// BREW delivers notifications through its event loop, once the applet has handed back
+    /// control. Our closest equivalent is this point: the API call has finished, the result is
+    /// already in `r0` and the guest has not resumed yet. All the context is saved and restored,
+    /// so that the caller does not notice the detour.
     pub(super) fn run_pending_callbacks(&mut self, budget: u64) -> Result<(), CpuError> {
         self.poll_media()?;
         let idle = self.pending_calls.is_empty()
@@ -47,19 +47,19 @@ impl<C: CpuBackend> Machine<C> {
         Ok(())
     }
 
-    /// Descobre a função a chamar por trás de um par `(pfn, pUser)`.
+    /// Finds the function to call behind a `(pfn, pUser)` pair.
     ///
-    /// O `ISHELL_SetTimerEx` do SDK é uma macro sobre o `SetTimer`, e ela passa **o mesmo
-    /// ponteiro** nos dois argumentos:
+    /// The SDK's `ISHELL_SetTimerEx` is a macro over `SetTimer`, and it passes **the same
+    /// pointer** in both arguments:
     ///
     /// ```c
     /// #define ISHELL_SetTimerEx(p,s,pcb) \
     ///     GET_PVTBL(p,IShell)->SetTimer(p, s, (PFNNOTIFY)(void *)pcb, (void *)pcb)
     /// ```
     ///
-    /// Quando os dois são iguais, o que chegou é um `AEECallback *`, e quem deve ser chamado
-    /// está dentro dele: `pfnNotify` no offset 16 e `pNotifyData` no 20 (`inc/AEECallback.h`).
-    /// Um `pfn` de verdade nunca coincide com o seu `pUser` — um é código, o outro é dado.
+    /// When the two are equal, what arrived is an `AEECallback *`, and what should be called is
+    /// inside it: `pfnNotify` at offset 16 and `pNotifyData` at 20 (`inc/AEECallback.h`).
+    /// A real `pfn` never coincides with its `pUser` — one is code, the other is data.
     pub(super) fn resolve_notify(&mut self, callback: Callback) -> Result<Callback, CpuError> {
         if callback.function == 0 || callback.function != callback.context {
             return Ok(callback);
@@ -71,41 +71,42 @@ impl<C: CpuBackend> Machine<C> {
         })
     }
 
-    /// Entrega os sinais disparados, chamando os callbacks do guest.
+    /// Delivers the fired signals, calling the guest's callbacks.
     ///
-    /// Precisa rodar fora do despacho de uma chamada, quando o guest não está no meio de
-    /// outra — daí a fila.
+    /// Must run outside the dispatch of a call, when the guest is not in the middle of
+    /// another — hence the queue.
     pub fn deliver_signals(&mut self, budget: u64) -> Result<Vec<Outcome>, CpuError> {
-        // A resposta de rede compartilha esta fronteira pelo mesmo motivo dos sinais: entregá-la
-        // pede chamar o alocador do jogo, e isso só é seguro fora do despacho.
+        // The network response shares this boundary for the same reason as the signals:
+        // delivering it requires calling the game's allocator, and that is only safe outside
+        // dispatch.
         self.flush_response()?;
-        // **A interface é redesenhada por quadro, não por volta do laço.** Ver
-        // [`Machine::ultimo_desenho_us`]: o desenho de um `OwnerDrawWidget` é código do jogo, e
-        // chamá-lo mais vezes do que o aparelho chamaria é trabalho que ninguém pediu.
-        let agora = self.now_us();
-        if agora.saturating_sub(self.ultimo_desenho_us) >= VSYNC_PERIOD_US {
-            self.ultimo_desenho_us = agora;
-            self.pinta_widgets()?;
-            self.desenha_widgets()?;
+        // **The UI is redrawn per frame, not per loop turn.** See [`Machine::last_draw_us`]: the
+        // drawing of an `OwnerDrawWidget` is game code, and calling it more often than the
+        // device would is work nobody asked for.
+        let now = self.now_us();
+        if now.saturating_sub(self.last_draw_us) >= VSYNC_PERIOD_US {
+            self.last_draw_us = now;
+            self.paint_widgets()?;
+            self.draw_widgets()?;
         }
-        self.entrega_ativacao()?;
-        self.parte_animacao()?;
+        self.deliver_activation()?;
+        self.start_animation()?;
         self.skip_wheel_instructions()?;
         self.flush_keys()?;
-        self.relatorio_do_boomerang();
-        // Os buffers de som entregues nesta volta são lidos agora, depois de o tratador do jogo
-        // ter terminado de escrevê-los.
-        self.resolve_midias_pendentes()?;
-        // Os avisos do `IMedia` desta volta: ver [`Machine::notify_media`].
+        self.boomerang_report();
+        // The sound buffers delivered on this turn are read now, after the game's handler has
+        // finished writing them.
+        self.resolve_pending_media()?;
+        // This turn's `IMedia` notifications: see [`Machine::notify_media`].
         self.poll_media()?;
-        self.entrega_avisos_de_midia(budget)?;
-        self.bombeia_fluxos_pcm(budget)?;
-        self.bombeia_buffers_vivos()?;
+        self.deliver_media_notifies(budget)?;
+        self.pump_pcm_streams(budget)?;
+        self.pump_live_buffers()?;
         let mut outcomes = Vec::new();
-        // Ver [`Machine::notify_image`]. Um aviso que nasce dentro de outro tratador fica para
-        // a volta seguinte, como no aparelho.
-        for imagem in std::mem::take(&mut self.avisos_de_imagem) {
-            outcomes.extend(self.entrega_aviso_de_imagem(imagem, budget)?);
+        // See [`Machine::notify_image`]. A notification born inside another handler waits for
+        // the next turn, as on the device.
+        for image in std::mem::take(&mut self.image_notify_queue) {
+            outcomes.extend(self.deliver_image_notify(image, budget)?);
         }
         let pending = std::mem::take(&mut self.pending_signals);
         for callback in pending {
@@ -121,14 +122,14 @@ impl<C: CpuBackend> Machine<C> {
         Ok(outcomes)
     }
 
-    /// Entrega os callbacks enfileirados (som, imagem, o que vier).
+    /// Delivers the queued callbacks (sound, image, whatever comes).
     ///
-    /// Mesma razão da fila de sinais: eles rodam no guest, e não dá para reentrar no guest no
-    /// meio do despacho de uma chamada dele.
+    /// Same reason as the signal queue: they run in the guest, and the guest cannot be
+    /// reentered in the middle of dispatching one of its calls.
     pub fn deliver_callbacks(&mut self, budget: u64) -> Result<Vec<Outcome>, CpuError> {
         let mut outcomes = Vec::new();
-        // Um callback pode enfileirar outro, então drena até esvaziar — com teto, para que um
-        // ciclo entre callbacks não prenda o emulador.
+        // A callback can queue another, so drain until empty — with a cap, so that a cycle
+        // between callbacks does not lock up the emulator.
         for _ in 0..CALLBACK_ROUNDS {
             let pending = std::mem::take(&mut self.pending_calls);
             if pending.is_empty() {
@@ -144,17 +145,17 @@ impl<C: CpuBackend> Machine<C> {
         Ok(outcomes)
     }
 
-    /// `ISignal`, `ISignalCtl` e `ISignalCBFactory`.
+    /// `ISignal`, `ISignalCtl` and `ISignalCBFactory`.
     ///
-    /// Um sinal é o aviso "aconteceu alguma coisa". O app cria um pela fábrica, passando uma
-    /// função de callback e um contexto, e entrega o `ISignal` a quem for notificá-lo — o
-    /// gamepad, por exemplo, via `RegisterForButtonEvent`. Quando o sistema chama
-    /// `ISIGNAL_Set`, o callback do app roda.
+    /// A signal is the "something happened" notice. The app creates one through the factory,
+    /// passing a callback function and a context, and hands the `ISignal` to whoever will
+    /// notify it — the gamepad, for example, via `RegisterForButtonEvent`. When the system calls
+    /// `ISIGNAL_Set`, the app's callback runs.
     ///
-    /// Aqui o disparo é adiado em vez de imediato: chamar o guest de dentro do despacho de uma
-    /// chamada do guest seria reentrância, e o BREW também não dispara na hora — ele agenda
-    /// para o laço de eventos do app. Os sinais pendentes ficam registrados até termos esse
-    /// laço.
+    /// Here firing is deferred instead of immediate: calling the guest from inside the dispatch
+    /// of a guest call would be reentrancy, and BREW does not fire right away either — it
+    /// schedules it for the app's event loop. Pending signals stay recorded until we have that
+    /// loop.
     pub(super) fn signal_call(
         &mut self,
         iface: Interface,
@@ -175,9 +176,9 @@ impl<C: CpuBackend> Machine<C> {
                 let remaining = self.objects.release(this);
                 if remaining == 0 {
                     self.signals.remove(&this);
-                    // Um sinal solto não pode continuar registrado para a entrada: o endereço
-                    // volta como outro sinal, e o toque dispararia o callback dele.
-                    self.input_signals.retain(|_, sinal| *sinal != this);
+                    // A released signal cannot stay registered for input: the address comes
+                    // back as another signal, and a press would fire that one's callback.
+                    self.input_signals.retain(|_, sign| *sign != this);
                 }
                 remaining
             }
@@ -195,7 +196,7 @@ impl<C: CpuBackend> Machine<C> {
                 if signal == 0 || control == 0 {
                     return Ok(Some(ENOMEMORY));
                 }
-                // Os dois objetos falam do mesmo sinal, então compartilham o callback.
+                // Both objects refer to the same signal, so they share the callback.
                 let callback = Callback {
                     function: a1,
                     context: a2,
@@ -217,8 +218,8 @@ impl<C: CpuBackend> Machine<C> {
                 }
                 SUCCESS
             }
-            // `Enable` rearma o sinal e `Detach` o desliga da fonte. Sem laço de eventos ainda,
-            // os dois são registro de estado.
+            // `Enable` rearms the signal and `Detach` disconnects it from the source. With no
+            // event loop yet, both are just state bookkeeping.
             "Enable" => SUCCESS,
             "Detach" => {
                 self.signals.remove(&this);
@@ -229,13 +230,14 @@ impl<C: CpuBackend> Machine<C> {
         Ok(Some(result))
     }
 
-    /// Entrega um evento ao applet em execução, e devolve o que ele respondeu.
+    /// Delivers an event to the running applet, and returns what it answered.
     ///
-    /// Só há um applet aqui, então um `cls` que não seja o dele é evento para alguém que não
-    /// existe — e a resposta certa nesse caso é "ninguém tratou", que é o que o BREW responde.
+    /// There is only one applet here, so a `cls` other than its own is an event for someone who
+    /// does not exist — and the right answer in that case is "nobody handled it", which is what
+    /// BREW answers.
     ///
-    /// Chamar o guest daqui é reentrância, com o mesmo cuidado do `qsort` e da entrega de
-    /// linhas de SQL: salva os registradores, respeita o teto de aninhamento, devolve tudo.
+    /// Calling the guest from here is reentrancy, with the same care as `qsort` and the delivery
+    /// of SQL rows: save the registers, respect the nesting cap, restore everything.
     pub(super) fn send_applet_event(
         &mut self,
         cls: u32,
@@ -243,26 +245,26 @@ impl<C: CpuBackend> Machine<C> {
         w: u16,
         dw: u32,
     ) -> Result<u32, CpuError> {
-        // O `current_applet` só é preenchido quando o `EVT_APP_START` é despachado, e há
-        // evento antes disso: a Z-Wheel monta o banco de preferências **durante a
-        // construção** do applet, e para isso manda um evento para a própria classe. Nesse
-        // instante o objeto já existe — o `AEEApplet_New` escreveu o ponteiro de saída antes
-        // de o código do jogo rodar —, então lê-lo de lá é o que o console faz: para o shell,
-        // o applet passa a existir quando é registrado, não quando é iniciado.
+        // `current_applet` is only filled in when `EVT_APP_START` is dispatched, and there are
+        // events before that: the Z-Wheel builds its preferences database **during the
+        // construction** of the applet, and to do so it sends an event to its own class. At
+        // that moment the object already exists — `AEEApplet_New` wrote the output pointer
+        // before the game's code ran —, so reading it from there is what the console does: for
+        // the shell, the applet exists once it is registered, not once it is started.
         //
-        // Sem isto o evento voltava "ninguém tratou", e a Z-Wheel imprimia
-        // `SendEvent to get PrefsDB failed` onze vezes seguidas antes de desistir da
-        // configuração inteira.
+        // Without this the event came back "nobody handled it", and the Z-Wheel printed
+        // `SendEvent to get PrefsDB failed` eleven times in a row before giving up on the whole
+        // configuration.
         let applet = match self.current_applet {
             0 => self.cpu.read_u32(self.module.out_module + 4).unwrap_or(0),
-            vivo => vivo,
+            live => live,
         };
         if applet == 0 || (cls != 0 && cls != self.applet_class) {
             return Ok(FALSE);
         }
         if self.nesting >= MAX_NESTING {
             self.assumptions
-                .insert("um evento de applet não foi entregue por aninhamento profundo");
+                .insert("an applet event was not delivered because of deep nesting");
             return Ok(FALSE);
         }
         let vtable = self.cpu.read_u32(applet)?;
@@ -276,8 +278,8 @@ impl<C: CpuBackend> Machine<C> {
         }
         Ok(match outcome? {
             Outcome::Returned { code } => code,
-            // Um tratador que se perde não derruba quem mandou o evento: para ele, ninguém
-            // tratou.
+            // A handler that goes astray does not take down whoever sent the event: for the
+            // sender, nobody handled it.
             _ => FALSE,
         })
     }

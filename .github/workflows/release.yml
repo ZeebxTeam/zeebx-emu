@@ -1,25 +1,25 @@
-# Gera os pacotes nos três sistemas e monta a release.
+# Builds the packages on the three systems and assembles the release.
 #
-# Dispara com uma tag de versão — `v0.1.0` ou `0.1.0` — ou à mão, pela aba Actions. A release sai
-# como **rascunho**, com o título igual à tag: dá para conferir os arquivos antes de publicar, e o
-# verificador de atualizações do emulador ignora rascunhos até lá.
+# Triggered by a version tag — `v0.1.0` or `0.1.0` — or by hand, from the Actions tab. The release
+# comes out as a **draft**, with the title equal to the tag: you can check the files before
+# publishing, and the emulator's update checker ignores drafts until then.
 #
-# Os nomes dizem qual formato é qual:
+# The names say which format is which:
 #
-#   zeebx-standalone-qt-linux-x86_64.deb     o emulador com a interface Qt, a principal, para instalar
-#   zeebx-headless-linux-x86_64.zip          o binário sem interface, para quem tem frontend próprio
-#   zeebx-android-arm64-v8a.apk              o aplicativo de Android
-#   zeebx-ios-simulator.zip                  o aplicativo de iOS, para o simulador, com o leia-me
-#   zeebx-ios.zip                            o IPA para o AltStore clássico, com o leia-me
-#   zeebx_libretro-linux-aarch64.zip         o core Libretro, com o `.info`, para RetroArch
-#   zeebx_libretro-wasm.zip                  o mesmo core em WebAssembly, para o ROMBundler
-#   zeebx_libretro-switch.zip                o core como `.a` estático, para o ROMBundler ligar no Switch
-#   zeebx_libretro-vita.zip                  o core como `.a` estático, para o RetroArch ligar na Vita
-#   zeebx-vita.zip                           o aplicativo da Vita, um VPK, sem RetroArch
+#   zeebx-standalone-qt-linux-x86_64.deb     the emulator with the Qt interface, the main one, to install
+#   zeebx-headless-linux-x86_64.zip          the binary without an interface, for those with their own frontend
+#   zeebx-android-arm64-v8a.apk              the Android app
+#   zeebx-ios-simulator.zip                  the iOS app, for the simulator, with the readme
+#   zeebx-ios.zip                            the IPA for classic AltStore, with the readme
+#   zeebx_libretro-linux-aarch64.zip         the Libretro core, with the `.info`, for RetroArch
+#   zeebx_libretro-wasm.zip                  the same core in WebAssembly, for ROMBundler
+#   zeebx_libretro-switch.zip                the core as a static `.a`, for ROMBundler to link on the Switch
+#   zeebx_libretro-vita.zip                  the core as a static `.a`, for RetroArch to link on the Vita
+#   zeebx-vita.zip                           the Vita app, a VPK, without RetroArch
 #
-# O APK sai assinado com a chave de depuração, que é a que o Gradle gera sozinho. Serve para
-# instalar de lado (`adb install`), **não** para a Play Store: aquela pede a chave de publicação,
-# que não pode morar num repositório público.
+# The APK comes out signed with the debug key, which is the one Gradle generates on its own. It is
+# good for sideloading (`adb install`), **not** for the Play Store: that one asks for the release
+# key, which can't live in a public repository.
 
 name: release
 
@@ -29,16 +29,16 @@ on:
       - "v[0-9]+.[0-9]+.[0-9]+*"
       - "[0-9]+.[0-9]+.[0-9]+*"
   workflow_dispatch:
-  # Chamado pelo `tag.yml` quando a `master` recebe uma versão nova.
+  # Called by `tag.yml` when `master` receives a new version.
   #
-  # **Por que chamada e não uma tag empurrada:** uma tag criada com o `GITHUB_TOKEN` não dispara
-  # workflow nenhum -- o GitHub bloqueia isso para não haver recursão. O robô criaria a tag e
-  # ninguém montaria os pacotes. Sendo chamado, tudo acontece na mesma execução, e não é preciso
-  # guardar um token de pessoa como segredo.
+  # **Why a call and not a pushed tag:** a tag created with `GITHUB_TOKEN` triggers no workflow at
+  # all -- GitHub blocks that to avoid recursion. The bot would create the tag and nobody would
+  # build the packages. Being called, everything happens in the same run, and there is no need to
+  # keep a personal token as a secret.
   workflow_call:
     inputs:
       versao:
-        description: "A tag da release, já criada pelo chamador (ex.: v0.3.0)"
+        description: "The release tag, already created by the caller (e.g. v0.3.0)"
         required: true
         type: string
 
@@ -46,11 +46,11 @@ permissions:
   contents: write
 
 jobs:
-  # O frontend Qt (`frontends/qt-standalone`, binário `zeebx-qt`), a interface principal:
-  # `zeebx-standalone-qt-*`. Os passos moram no `qt.yml`, que monta e abre cada instalador.
+  # The Qt frontend (`frontends/qt-standalone`, binary `zeebx-qt`), the main interface:
+  # `zeebx-standalone-qt-*`. The steps live in `qt.yml`, which builds and opens each installer.
   standalone-qt:
     uses: ./.github/workflows/qt.yml
-    # Pelo `ZEEBX_ATUALIZADOR_CHAVE`, que assina os pacotes para o atualizador.
+    # For `ZEEBX_ATUALIZADOR_CHAVE`, which signs the packages for the updater.
     secrets: inherit
 
   headless:
@@ -73,14 +73,14 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      # Cache separado do standalone porque os perfis de build diferem — lá o `cargo-packager`
-      # entra na conta. As dependências são quase as mesmas: o `zeebx` é a biblioteca inteira, e
-      # fora do Android ela traz o `rfd`, o Discord e companhia por conta própria.
+      # Cache separate from the standalone because the build profiles differ — there
+      # `cargo-packager` comes into play. The dependencies are almost the same: `zeebx` is the
+      # whole library, and outside Android it brings `rfd`, Discord and company on its own.
       - uses: Swatinem/rust-cache@v2
         with:
           key: headless-${{ matrix.nome }}
 
-      - name: Dependências do Linux
+      - name: Linux dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
@@ -88,29 +88,29 @@ jobs:
             libxkbcommon-dev libwayland-dev libgl1-mesa-dev libx11-dev libxcursor-dev \
             libxrandr-dev libxi-dev
 
-      - name: Dependências do macOS
+      - name: macOS dependencies
         if: runner.os == 'macOS'
         run: brew install cmake || true
 
-      - name: Compilar
+      - name: Build
         run: cargo build --release --locked -p zeebx-headless
 
-      # Os testes do núcleo moram aqui desde que a interface do egui saiu: era o job dela que os
-      # rodava, e este é o que já compila o núcleo sem Qt nos quatro sistemas. A linha de comando
-      # (`zeebx-cli`) entra junto pelo mesmo motivo. Um tropeço aparece no log sem impedir os
-      # pacotes, como antes.
-      - name: Testes
+      # The core tests live here since the egui interface left: its job was the one running them,
+      # and this is the one that already builds the core without Qt on the four systems. The
+      # command line (`zeebx-cli`) comes along for the same reason. A stumble shows up in the log
+      # without blocking the packages, as before.
+      - name: Tests
         continue-on-error: true
         run: cargo test --release --locked -p zeebx -p zeebx-headless -p zeebx-cli
 
-      # O que vai no pacote: o binário, o `config.ini` comentado e o leia-me. O arquivo de
-      # configuração vai junto porque o primeiro lugar em que o emulador o procura é ao lado do
-      # executável — é o que faz uma cópia portátil funcionar sem tocar na máquina.
-      - name: Juntar
+      # What goes in the package: the binary, the commented `config.ini` and the readme. The
+      # configuration file goes along because the first place the emulator looks for it is next
+      # to the executable — that is what makes a portable copy work without touching the machine.
+      - name: Gather
         shell: bash
         run: |
           mkdir -p entrega
-          cp frontends/headless/config.ini frontends/headless/LEIAME.md entrega/
+          cp frontends/headless/config.ini frontends/headless/README.md entrega/
           mkdir -p entrega/licenses && cp LICENSE LICENSE-GPL3 THIRD-PARTY-NOTICES.txt entrega/licenses/
           if [ "$RUNNER_OS" = "Windows" ]; then
             cp target/release/zeebx-headless.exe entrega/
@@ -119,13 +119,13 @@ jobs:
           fi
           ls -l entrega
 
-      # O `zip` existe no Linux e no macOS; no Windows quem compacta é o PowerShell. Nenhum dos
-      # dois precisa ser instalado, que é o motivo de não usar a mesma ferramenta nos três.
-      - name: Compactar (Unix)
+      # `zip` exists on Linux and macOS; on Windows PowerShell does the compressing. Neither of
+      # them needs to be installed, which is the reason for not using the same tool on all three.
+      - name: Compress (Unix)
         if: runner.os != 'Windows'
         run: cd entrega && zip -r "../zeebx-headless-${{ matrix.nome }}.zip" .
 
-      - name: Compactar (Windows)
+      - name: Compress (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: Compress-Archive -Path entrega\* -DestinationPath "zeebx-headless-${{ matrix.nome }}.zip"
@@ -142,8 +142,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Uma ABI só, e é o que o `apk/app/build.gradle.kts` filtra. Acrescentar outra é mexer
-        # nos dois lugares, não só aqui.
+        # A single ABI, and it is what `apk/app/build.gradle.kts` filters. Adding another means
+        # touching both places, not just here.
         include:
           - abi: arm64-v8a
             alvo: aarch64-linux-android
@@ -158,44 +158,44 @@ jobs:
         with:
           key: android-${{ matrix.abi }}
 
-      # O AGP 8.7 pede o JDK 17. O runner traz vários; dizer qual evita depender de qual deles
-      # está como padrão na imagem do mês.
+      # AGP 8.7 asks for JDK 17. The runner ships several; saying which one avoids depending on
+      # which of them is the default in this month's image.
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      # Sem wrapper no projeto, a versão do Gradle é escolhida aqui — e precisa ser uma que o
-      # AGP 8.7.3 aceite. Deixá-la para o que a imagem traz é deixar a build quebrar sozinha no
-      # dia em que a imagem mudar.
+      # With no wrapper in the project, the Gradle version is chosen here — and it has to be one
+      # AGP 8.7.3 accepts. Leaving it to whatever the image ships is letting the build break on
+      # its own the day the image changes.
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.9"
 
-      # O `ninja` é o gerador que o `ndk-toolchain.cmake` usa para o C e o C++ do núcleo — o
-      # unicorn e o dynarmic.
-      - name: Dependências
+      # `ninja` is the generator `ndk-toolchain.cmake` uses for the core's C and C++ — unicorn
+      # and dynarmic.
+      - name: Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build
 
-      # A versão exata que o `compilar.sh` espera. A imagem do runner traz algum NDK, mas qual
-      # muda com ela, e o script monta o caminho a partir do número.
+      # The exact version `build.sh` expects. The runner image ships some NDK, but which one
+      # changes with it, and the script builds the path from the number.
       - name: NDK
         run: |
-          versao=$(grep -oP 'ANDROID_NDK_VERSAO:=\K[0-9.]+' frontends/android/compilar.sh)
-          echo "instalando o NDK $versao"
-          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "ndk;$versao" > /dev/null
+          version=$(grep -oP 'ANDROID_NDK_DEFAULT=\K[0-9.]+' frontends/android/build.sh)
+          echo "installing NDK $version"
+          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "ndk;$version" > /dev/null
 
       - name: cargo-ndk
         run: cargo install cargo-ndk --locked
 
-      # O script acha o SDK pelo `ANDROID_SDK_ROOT` e o Gradle pelo caminho, então não há
-      # caminho nenhum repetido aqui.
-      - name: Compilar e montar a APK
+      # The script finds the SDK through `ANDROID_SDK_ROOT` and Gradle through the PATH, so no
+      # path is repeated here.
+      - name: Build and assemble the APK
         env:
           ZEEBX_ANDROID_ABI: ${{ matrix.abi }}
-        run: frontends/android/compilar.sh --apk
+        run: frontends/android/build.sh --apk
 
       - uses: actions/upload-artifact@v4
         with:
@@ -218,17 +218,17 @@ jobs:
         with:
           key: ios
 
-      # O script é o mesmo da máquina. `--app` monta o simulador; `--app-aparelho` fecha o link
-      # do aparelho sem certificado — instalar no telefone pede DEVELOPMENT_TEAM, que não mora
-      # no repositório.
-      - name: Simulador
-        run: frontends/ios/compilar.sh --app
+      # The script is the same as on the machine. `--app` builds the simulator one; `--app-device`
+      # completes the device link without a certificate — installing on the phone asks for
+      # DEVELOPMENT_TEAM, which doesn't live in the repository.
+      - name: Simulator
+        run: frontends/ios/build.sh --app
 
-      - name: Aparelho
-        run: frontends/ios/compilar.sh --app-aparelho
+      - name: Device
+        run: frontends/ios/build.sh --app-device
 
-      - name: Empacota
-        run: frontends/ios/compilar.sh --pacote
+      - name: Package
+        run: frontends/ios/build.sh --package
 
       - uses: actions/upload-artifact@v4
         with:
@@ -282,43 +282,44 @@ jobs:
         with:
           key: core-${{ matrix.nome }}
 
-      - name: Dependências do Linux
+      - name: Linux dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build pkg-config libclang-dev libglib2.0-dev
 
-      - name: Dependências do macOS
+      - name: macOS dependencies
         if: runner.os == 'macOS'
         run: brew install cmake ninja pkg-config || true
 
-      - name: Compila o core
+      - name: Build the core
         env:
           CARGO_PROFILE_DEV_DEBUG: "0"
-          # A35 é o denominador comum seguro entre RK3326 e H700/A53. AArch64 continua usando
-          # NEON/AdvSIMD, mas o artefato não ganha instrução exclusiva do Cortex-A53.
+          # A35 is the safe common denominator between RK3326 and H700/A53. AArch64 still uses
+          # NEON/AdvSIMD, but the artifact gains no Cortex-A53-only instruction.
           RUSTFLAGS: ${{ matrix.nome == 'linux-aarch64' && '-C target-cpu=cortex-a35' || '' }}
         run: cargo build --release --locked -p zeebx-libretro
 
-      # A mesma prova do `libretro.yml`: abrir a biblioteca como o frontend abre e chamar a ABI.
-      - name: A biblioteca carrega e a ABI responde
-        run: python3 ferramentas/verifica_core.py "${{ matrix.biblioteca }}"
+      # The same proof as `libretro.yml`: open the library the way the frontend opens it and call
+      # the ABI.
+      - name: The library loads and the ABI responds
+        run: python3 tools/verify_core.py "${{ matrix.biblioteca }}"
 
-      # Vídeo, áudio e entrada são do frontend: o artefato que vai para a mão do usuário é o
-      # daqui, então a proibição do `libretro.yml` vale sobretudo no dia da tag.
-      - name: O core não depende de biblioteca de host (Linux)
+      # Video, audio and input belong to the frontend: the artifact that goes into the user's
+      # hands is the one from here, so the `libretro.yml` ban matters above all on tag day.
+      - name: The core doesn't depend on a host library (Linux)
         if: runner.os == 'Linux'
         run: |
           ldd "${{ matrix.biblioteca }}"
           if ldd "${{ matrix.biblioteca }}" | grep -qiE 'libX11|wayland|EGL|libGL|asound|libudev|gtk'; then
-            echo "o core puxou biblioteca de interface: vídeo, áudio e entrada são do frontend"
+            echo "the core pulled in an interface library: video, audio and input belong to the frontend"
             exit 1
           fi
-          echo "só libc, libm, libstdc++ e libgcc"
+          echo "only libc, libm, libstdc++ and libgcc"
 
-      # O pacote que vai para R36S/RG40XX-H deve ser o ELF Linux AArch64, não o artefato do
-      # runner por acidente. Os sistemas handhelds não têm RPATH do ambiente de build.
-      - name: Confere o core Linux AArch64 dos handhelds
+      # The package that goes to R36S/RG40XX-H must be the Linux AArch64 ELF, not the runner's
+      # artifact by accident. The handheld systems don't have the build environment's RPATH.
+      - name: Check the handhelds' Linux AArch64 core
         if: matrix.nome == 'linux-aarch64'
         shell: bash
         run: |
@@ -326,10 +327,10 @@ jobs:
           readelf -h "${{ matrix.biblioteca }}" | grep -E 'Class:.*ELF64|Machine:.*AArch64'
           ! readelf -d "${{ matrix.biblioteca }}" | grep -Eiq 'RPATH|RUNPATH'
 
-      # **Cada sistema empacota com a ferramenta que tem.** O `zip` não existe no runner do
-      # Windows, e o `Compress-Archive` não existe nos outros: um `shell: bash` com `zip` falharia
-      # em um terço dos alvos, no dia da tag.
-      - name: Empacota o core (Linux e macOS)
+      # **Each system packages with the tool it has.** `zip` doesn't exist on the Windows runner,
+      # and `Compress-Archive` doesn't exist on the others: a `shell: bash` with `zip` would fail
+      # on a third of the targets, on tag day.
+      - name: Package the core (Linux and macOS)
         if: runner.os != 'Windows'
         shell: bash
         run: |
@@ -340,7 +341,7 @@ jobs:
           grep -q '^database = "Mobile - Zeebo"' pacote/zeebx_libretro.info
           cd pacote && zip -r "../zeebx_libretro-${{ matrix.nome }}.zip" .
 
-      - name: Empacota o core (Windows)
+      - name: Package the core (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
@@ -350,7 +351,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path pacote/licenses | Out-Null
           Copy-Item LICENSE, LICENSE-GPL3, THIRD-PARTY-NOTICES.txt pacote/licenses/
           if (-not (Select-String -Path "pacote/zeebx_libretro.info" -Pattern '^database = "Mobile - Zeebo"')) {
-            throw "o .info nao aponta para a base 'Mobile - Zeebo'"
+            throw "the .info does not point to the 'Mobile - Zeebo' database"
           }
           Compress-Archive -Path pacote/* -DestinationPath "zeebx_libretro-${{ matrix.nome }}.zip" -Force
 
@@ -359,8 +360,8 @@ jobs:
           name: zeebx_libretro_${{ matrix.nome }}
           path: zeebx_libretro-${{ matrix.nome }}.zip
 
-  # O side module que o ROMBundler faz dlopen. O Emscripten é o 6.0.8 dessa página: um
-  # módulo de outra versão não carrega.
+  # The side module ROMBundler dlopens. Emscripten is that page's 6.0.8: a module from another
+  # version doesn't load.
   wasm:
     name: core-wasm
     runs-on: ubuntu-24.04
@@ -380,10 +381,10 @@ jobs:
         with:
           key: core-wasm
 
-      - name: Compila o side module
-        run: ./ferramentas/compilar_wasm.sh
+      - name: Build the side module
+        run: ./tools/build_wasm.sh
 
-      - name: Empacota o core
+      - name: Package the core
         run: |
           mkdir -p pacote
           cp target/wasm/zeebx_libretro_emscripten.wasm pacote/
@@ -398,9 +399,9 @@ jobs:
           path: zeebx_libretro-wasm.zip
           if-no-files-found: error
 
-  # O devkitA64 não está no runner: o job roda na imagem do devkitPro, como o `core-switch` do
-  # `libretro.yml`. O `.a` não vai sozinho para o console: os `switch_jit_*` e
-  # `switch_spinlock_*` que o patch do dynarmic chama vêm do ROMBundler, na hora de ligar.
+  # devkitA64 isn't on the runner: the job runs in the devkitPro image, like `core-switch` in
+  # `libretro.yml`. The `.a` doesn't go to the console on its own: the `switch_jit_*` and
+  # `switch_spinlock_*` that the dynarmic patch calls come from ROMBundler, at link time.
   switch:
     name: core-switch
     runs-on: ubuntu-24.04
@@ -408,7 +409,7 @@ jobs:
     container:
       image: devkitpro/devkita64:20260219
     steps:
-      - name: Git e CMake
+      - name: Git and CMake
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
@@ -424,24 +425,24 @@ jobs:
         with:
           key: core-switch
 
-      - name: Compila o staticlib
-        run: ./frontends/switch/compilar.sh --local
+      - name: Build the staticlib
+        run: ./frontends/switch/build.sh --local
 
-      - name: O arquivo é AArch64
+      - name: The archive is AArch64
         run: |
           tmp=$(mktemp -d)
-          ( cd "$tmp" && ar x "$GITHUB_WORKSPACE/frontends/switch/saida/libzeebx_libretro.a" )
+          ( cd "$tmp" && ar x "$GITHUB_WORKSPACE/frontends/switch/out/libzeebx_libretro.a" )
           ruim=$(aarch64-none-elf-objdump -f "$tmp"/*.o | grep 'file format' | grep -v elf64-littleaarch64 || true)
           if [ -n "$ruim" ]; then
-            echo "o .a misturou objeto que não é AArch64"
+            echo "the .a mixed in an object that is not AArch64"
             echo "$ruim"
             exit 1
           fi
 
-      - name: Empacota o core
+      - name: Package the core
         run: |
-          mkdir -p frontends/switch/saida/licenses && cp LICENSE LICENSE-GPL3 THIRD-PARTY-NOTICES.txt frontends/switch/saida/licenses/
-          cd frontends/switch/saida
+          mkdir -p frontends/switch/out/licenses && cp LICENSE LICENSE-GPL3 THIRD-PARTY-NOTICES.txt frontends/switch/out/licenses/
+          cd frontends/switch/out
           zip -r "$GITHUB_WORKSPACE/zeebx_libretro-switch.zip" libzeebx_libretro.a licenses
 
       - uses: actions/upload-artifact@v4
@@ -450,13 +451,13 @@ jobs:
           path: zeebx_libretro-switch.zip
           if-no-files-found: error
 
-  # O vitasdk não está no runner: o job roda na imagem oficial, como o `core-vita` do
-  # `libretro.yml`. O `.a` não abre no aparelho: o RetroArch da Vita liga estático e espera
-  # este arquivo renomeado para `libretro_vita.a`.
+  # vitasdk isn't on the runner: the job runs in the official image, like `core-vita` in
+  # `libretro.yml`. The `.a` doesn't open on the device: the Vita's RetroArch links statically and
+  # expects this file renamed to `libretro_vita.a`.
   vita:
     name: core-vita
-    # A Vita não segura as outras plataformas. O job fica no `needs` para o zip
-    # entrar quando compila; se quebrar, a publicação segue — o `if` dela já é
+    # The Vita doesn't hold back the other platforms. The job stays in `needs` so the zip
+    # goes in when it builds; if it breaks, publishing goes on — its `if` is already
     # `!cancelled()`.
     continue-on-error: true
     runs-on: ubuntu-24.04
@@ -464,7 +465,7 @@ jobs:
     container:
       image: vitasdk/vitasdk:2026.08
     steps:
-      - name: Git, curl e o compilador do host
+      - name: Git, curl and the host compiler
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
@@ -472,8 +473,8 @@ jobs:
 
       - uses: actions/checkout@v5
 
-      # 1.99.1 de propósito. Este job recompila a std com `RUSTC_BOOTSTRAP=1`.
-      # Uma estável nova pode recusar isso; a versão sobe quando alguém troca esta linha.
+      # 1.99.1 on purpose. This job rebuilds std with `RUSTC_BOOTSTRAP=1`.
+      # A new stable may reject that; the version goes up when someone changes this line.
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.99.1
@@ -483,13 +484,13 @@ jobs:
         with:
           key: core-vita
 
-      - name: Compila o staticlib
-        run: ./frontends/vita/compilar.sh --local
+      - name: Build the staticlib
+        run: ./frontends/vita/build.sh --local
 
-      - name: Empacota o core
+      - name: Package the core
         run: |
-          mkdir -p frontends/vita/saida/licenses && cp LICENSE LICENSE-GPL3 THIRD-PARTY-NOTICES.txt frontends/vita/saida/licenses/
-          cd frontends/vita/saida
+          mkdir -p frontends/vita/out/licenses && cp LICENSE LICENSE-GPL3 THIRD-PARTY-NOTICES.txt frontends/vita/out/licenses/
+          cd frontends/vita/out
           zip -r "$GITHUB_WORKSPACE/zeebx_libretro-vita.zip" libzeebx_libretro.a licenses
 
       - uses: actions/upload-artifact@v4
@@ -498,19 +499,19 @@ jobs:
           path: zeebx_libretro-vita.zip
           if-no-files-found: error
 
-  # O VPK que abre sozinho. O core acima continua sendo o que o RetroArch liga; este job é o
-  # aplicativo. A imagem e o `build-std` são os mesmos, o diretório de saída não — os dois
-  # compilam o núcleo com features diferentes e não podem dividir o `target`.
+  # The VPK that opens on its own. The core above is still what RetroArch links; this job is the
+  # app. The image and `build-std` are the same, the output directory isn't — the two build the
+  # core with different features and can't share `target`.
   vita-app:
     name: vita-vpk
-    # O mesmo do core: um VPK quebrado não segura Qt, Android e o resto.
+    # Same as the core: a broken VPK doesn't hold back Qt, Android and the rest.
     continue-on-error: true
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     container:
       image: vitasdk/vitasdk:2026.08
     steps:
-      - name: Git, curl e o compilador do host
+      - name: Git, curl and the host compiler
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
@@ -518,8 +519,8 @@ jobs:
 
       - uses: actions/checkout@v5
 
-      # 1.99.1 de propósito. O VPK recompila a std com `RUSTC_BOOTSTRAP=1` e usa
-      # `alloc_error_hook`. Uma estável nova pode recusar os dois.
+      # 1.99.1 on purpose. The VPK rebuilds std with `RUSTC_BOOTSTRAP=1` and uses
+      # `alloc_error_hook`. A new stable may reject both.
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.99.1
@@ -529,16 +530,16 @@ jobs:
         with:
           key: vita-app
 
-      - name: Compila o VPK
-        run: ./frontends/vita-standalone/compilar.sh --local
+      - name: Build the VPK
+        run: ./frontends/vita-standalone/build.sh --local
 
-      - name: Empacota o aplicativo
+      - name: Package the app
         run: |
-          mkdir -p frontends/vita-standalone/saida/licenses
-          cp LICENSE LICENSE-GPL3 THIRD-PARTY-NOTICES.txt frontends/vita-standalone/saida/licenses/
-          cp frontends/vita-standalone/LEIAME.md frontends/vita-standalone/saida/
-          cd frontends/vita-standalone/saida
-          zip -r "$GITHUB_WORKSPACE/zeebx-vita.zip" zeebx.vpk LEIAME.md licenses
+          mkdir -p frontends/vita-standalone/out/licenses
+          cp LICENSE LICENSE-GPL3 THIRD-PARTY-NOTICES.txt frontends/vita-standalone/out/licenses/
+          cp frontends/vita-standalone/README.md frontends/vita-standalone/out/
+          cd frontends/vita-standalone/out
+          zip -r "$GITHUB_WORKSPACE/zeebx-vita.zip" zeebx.vpk README.md licenses
 
       - uses: actions/upload-artifact@v4
         with:
@@ -546,33 +547,35 @@ jobs:
           path: zeebx-vita.zip
           if-no-files-found: error
 
-  # O `THIRD-PARTY-NOTICES.txt` que vai em todos os pacotes é versionado, e não gerado em cada job:
-  # o contêiner do Switch e o runner do Windows não teriam de instalar o `cargo about`. O preço é
-  # ele poder envelhecer com um `cargo update`, e é isto que pega: a release não sai com avisos
-  # de licença de dependências que já não são as que o binário leva.
+  # The `THIRD-PARTY-NOTICES.txt` that goes in every package is versioned, and not generated in
+  # each job: the Switch container and the Windows runner would otherwise have to install
+  # `cargo about`. The price is that it can go stale with a `cargo update`, and this is what
+  # catches it: the release doesn't go out with license notices for dependencies that are no
+  # longer the ones the binary carries.
   licencas:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
-      # A versão casa com a `VERSAO_DO_CARGO_ABOUT` do script: outra formata diferente.
+      # The version matches the script's `CARGO_ABOUT_VERSION`: another one formats differently.
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-about@0.9.2
-      - name: Os avisos de terceiros estão em dia
-        run: python3 ferramentas/avisos_de_terceiros.py --confere
+      - name: The third-party notices are up to date
+        run: python3 tools/third_party_notices.py --check
 
   release:
     needs: [standalone-qt, headless, android, ios, core, wasm, switch, vita, vita-app, licencas]
-    # Sai com o que deu certo: um sistema que falhou não segura os outros.
+    # Goes out with what worked: a system that failed doesn't hold back the others.
     #
-    # A tag vem de dois lugares: do `push` de uma tag, e aí é o `github.ref_name`; ou do
-    # `tag.yml`, e aí é o `inputs.versao` -- ali o `ref` é a `master`, e não a tag.
+    # The tag comes from two places: from the `push` of a tag, and then it is `github.ref_name`;
+    # or from `tag.yml`, and then it is `inputs.versao` -- there the `ref` is `master`, and not
+    # the tag.
     if: ${{ !cancelled() && (inputs.versao != '' || startsWith(github.ref, 'refs/tags/')) }}
     runs-on: ubuntu-latest
     steps:
-      # O repositório entra por causa das notas: o corpo da release sai de um arquivo versionado,
-      # e sem `checkout` este job só tem os artefatos baixados.
+      # The repository comes in because of the notes: the release body comes from a versioned
+      # file, and without `checkout` this job only has the downloaded artifacts.
       - uses: actions/checkout@v5
 
       - uses: actions/download-artifact@v4
@@ -580,42 +583,43 @@ jobs:
           path: pacotes
           merge-multiple: true
 
-      # **O texto da release é o que vocês escreveram, e a lista gerada vem depois dele.** Cada
-      # versão deixa a sua nota em `docs/patch-notes/`, em linguagem de quem joga; era isso que ia
-      # para a página da release na mão.
+      # **The release text is what you wrote, and the generated list comes after it.** Each
+      # version leaves its note in `docs/patch-notes/`, in players' language; that is what used to
+      # go onto the release page by hand.
       #
-      # Os dois convivem, e não é truque nosso: a API do GitHub diz que, com `generate_release_notes`
-      # ligado, um `body` enviado junto é **posto na frente** das notas geradas. Sai a nota, e
-      # embaixo o "What's Changed", o "New Contributors" e o "Full Changelog" -- que é o crédito a
-      # quem contribuiu pela primeira vez, e um arquivo escrito à mão não tem como saber disso.
+      # The two coexist, and it is no trick of ours: the GitHub API says that, with
+      # `generate_release_notes` on, a `body` sent along is **put in front** of the generated
+      # notes. Out comes the note, and below it "What's Changed", "New Contributors" and "Full
+      # Changelog" -- which is the credit to first-time contributors, and a hand-written file has
+      # no way of knowing that.
       #
-      # Sem o arquivo, sobra só a lista gerada: é melhor que uma release muda, e serve de aviso de
-      # que a nota faltou.
-      - name: As notas da versão
+      # Without the file, only the generated list remains: it is better than a mute release, and
+      # it serves as a warning that the note was missing.
+      - name: The version notes
         id: notas
         shell: bash
         run: |
           tag="${{ inputs.versao || github.ref_name }}"
           for caminho in "docs/patch-notes/$tag.MD" "docs/patch-notes/$tag.md"; do
             if [ -f "$caminho" ]; then
-              echo "notas em $caminho"
+              echo "notes in $caminho"
               echo "caminho=$caminho" >> "$GITHUB_OUTPUT"
               exit 0
             fi
           done
-          echo "não há nota para $tag em docs/patch-notes/; a release sai com a lista de commits"
+          echo "there is no note for $tag in docs/patch-notes/; the release goes out with the commit list"
 
-      # O `latest-qt.json` que o atualizador da interface lê nesta release. Os `.sig` entram nele e
-      # saem da pasta.
-      - name: Os manifestos do atualizador
-        run: python3 ferramentas/manifesto_de_atualizacao.py pacotes "${{ inputs.versao || github.ref_name }}"
+      # The `latest-qt.json` the interface's updater reads in this release. The `.sig` files go
+      # into it and leave the folder.
+      - name: The updater manifests
+        run: python3 tools/update_manifest.py pacotes "${{ inputs.versao || github.ref_name }}"
 
       - uses: softprops/action-gh-release@v2
         with:
           name: ${{ inputs.versao || github.ref_name }}
           tag_name: ${{ inputs.versao || github.ref_name }}
           draft: true
-          # Os dois sempre: a nota vira o começo do corpo, e o GitHub acrescenta o resto.
+          # Both always: the note becomes the start of the body, and GitHub adds the rest.
           body_path: ${{ steps.notas.outputs.caminho }}
           generate_release_notes: true
           files: pacotes/*

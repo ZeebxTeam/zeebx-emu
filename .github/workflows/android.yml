@@ -1,15 +1,16 @@
-# Compila o núcleo para Android e monta a APK, sem esperar a tag.
+# Builds the core for Android and assembles the APK, without waiting for the tag.
 #
-# O `release.yml` monta a mesma APK, mas só no dia da tag e junto com tudo o mais. Aqui a APK sai
-# sozinha, à mão, e com duas conferências que a release não faz: a `.so` de dentro é AArch64 e a
-# ABI empacotada é a que se pediu. Um APK que monta mas leva a biblioteca errada instala e quebra
-# no aparelho, e isso é caro de descobrir depois da tag.
+# `release.yml` assembles the same APK, but only on tag day and together with everything else.
+# Here the APK comes out on its own, by hand, and with two checks the release doesn't do: the
+# `.so` inside is AArch64 and the packaged ABI is the one that was asked for. An APK that builds
+# but carries the wrong library installs and breaks on the device, and that is expensive to find
+# out after the tag.
 #
-# **Nenhum push ou merge dispara isto.** O único gatilho automático do repositório é a tag, no
-# `release.yml`; aqui é você quem pede o run pela aba Actions.
+# **No push or merge triggers this.** The repository's only automatic trigger is the tag, in
+# `release.yml`; here you are the one who requests the run from the Actions tab.
 #
-# A APK sai assinada com a chave de depuração, que é a que o Gradle gera sozinho: serve para
-# instalar de lado (`adb install`), não para a Play Store.
+# The APK comes out signed with the debug key, which is the one Gradle generates on its own: it
+# is good for sideloading (`adb install`), not for the Play Store.
 
 name: android
 
@@ -28,8 +29,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Uma ABI só, e é o que o `apk/app/build.gradle.kts` filtra. Acrescentar outra é mexer
-        # nos dois lugares, não só aqui.
+        # A single ABI, and it is what `apk/app/build.gradle.kts` filters. Adding another means
+        # touching both places, not just here.
         include:
           - abi: arm64-v8a
             alvo: aarch64-linux-android
@@ -44,62 +45,62 @@ jobs:
         with:
           key: android-ci-${{ matrix.abi }}
 
-      # O AGP 8.7 pede o JDK 17. O runner traz vários; dizer qual evita depender de qual deles
-      # está como padrão na imagem do mês.
+      # AGP 8.7 asks for JDK 17. The runner ships several; saying which one avoids depending on
+      # which of them is the default in this month's image.
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      # Sem wrapper no projeto, a versão do Gradle é escolhida aqui — e precisa ser uma que o
-      # AGP 8.7.3 aceite.
+      # With no wrapper in the project, the Gradle version is chosen here — and it has to be one
+      # AGP 8.7.3 accepts.
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.9"
 
-      # O `ninja` é o gerador que o `ndk-toolchain.cmake` usa para o C e o C++ do núcleo — o
-      # unicorn e o dynarmic.
-      - name: Dependências
+      # `ninja` is the generator `ndk-toolchain.cmake` uses for the core's C and C++ — unicorn
+      # and dynarmic.
+      - name: Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build
 
-      # A versão exata que o `compilar.sh` espera. A imagem do runner traz algum NDK, mas qual
-      # muda com ela, e o script monta o caminho a partir do número.
+      # The exact version `build.sh` expects. The runner image ships some NDK, but which one
+      # changes with it, and the script builds the path from the number.
       - name: NDK
         run: |
-          versao=$(grep -oP 'ANDROID_NDK_VERSAO:=\K[0-9.]+' frontends/android/compilar.sh)
-          echo "instalando o NDK $versao"
-          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "ndk;$versao" > /dev/null
+          version=$(grep -oP 'ANDROID_NDK_DEFAULT=\K[0-9.]+' frontends/android/build.sh)
+          echo "installing NDK $version"
+          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "ndk;$version" > /dev/null
 
       - name: cargo-ndk
         run: cargo install cargo-ndk --locked
 
-      - name: Compila e monta a APK
+      - name: Build and assemble the APK
         env:
           ZEEBX_ANDROID_ABI: ${{ matrix.abi }}
-        run: frontends/android/compilar.sh --apk
+        run: frontends/android/build.sh --apk
 
-      # O que a release não confere: abrir a APK e olhar a biblioteca que está lá dentro. Uma APK
-      # que monta com a `.so` do host instala e morre no primeiro `System.loadLibrary`.
-      - name: A APK leva a biblioteca certa
+      # What the release doesn't check: open the APK and look at the library inside it. An APK
+      # that builds with the host's `.so` installs and dies at the first `System.loadLibrary`.
+      - name: The APK carries the right library
         shell: bash
         run: |
           apk=frontends/android/apk/app/build/outputs/apk/debug/zeebx-android-${{ matrix.abi }}.apk
           ls -la "$apk"
           unzip -l "$apk" | grep "lib/${{ matrix.abi }}/"
           if unzip -l "$apk" | grep -qE 'lib/(x86|x86_64|armeabi-v7a)/'; then
-            echo "a APK levou ABI que não é a pedida"
+            echo "the APK carried an ABI that is not the one requested"
             exit 1
           fi
           mkdir -p prova && unzip -o -j "$apk" "lib/${{ matrix.abi }}/*.so" -d prova > /dev/null
           for so in prova/*.so; do
             file "$so" | grep -Eiq 'ARM aarch64|aarch64' || {
-              echo "$so não é AArch64"
+              echo "$so is not AArch64"
               exit 1
             }
           done
-          echo "as bibliotecas da APK são AArch64, e só há a ABI ${{ matrix.abi }}"
+          echo "the APK libraries are AArch64, and there is only the ${{ matrix.abi }} ABI"
 
       - uses: actions/upload-artifact@v4
         with:

@@ -1,9 +1,9 @@
-//! ISound e ISoundPlayer: a saída de áudio de baixo nível.
+//! ISound and ISoundPlayer: low-level audio output.
 
 use super::*;
 
 impl<C: CpuBackend> Machine<C> {
-    /// Liga a saída de som. Sem ela o emulador roda igual, mudo.
+    /// Turns on sound output. Without it the emulator runs the same, muted.
     pub fn set_audio(&mut self, mixer: Option<crate::audio::Mixer>) {
         self.audio = mixer;
     }
@@ -31,7 +31,7 @@ impl<C: CpuBackend> Machine<C> {
                 };
                 SUCCESS
             }
-            // int Set(ISound *, const AEESoundInfo *) — cinco `int8`: eDevice, eMethod, eAPath,
+            // int Set(ISound *, const AEESoundInfo *) — five `int8`s: eDevice, eMethod, eAPath,
             // eEarMuteCtl, eMicMuteCtl.
             "Set" => {
                 if a1 != 0 {
@@ -49,8 +49,8 @@ impl<C: CpuBackend> Machine<C> {
                 SUCCESS
             }
             "SetDevice" => SUCCESS,
-            // Tocar é instantâneo e mudo, mas o jogo costuma esperar o callback de conclusão
-            // antes de liberar o recurso de áudio.
+            // Playing is instant and silent, but the game usually waits for the completion
+            // callback before releasing the audio resource.
             "PlayTone" | "PlayToneList" | "PlayFreqTone" => {
                 self.finish_sound(this, AEE_SOUND_STATUS_CB, AEE_SOUND_PLAY_DONE);
                 SUCCESS
@@ -64,14 +64,14 @@ impl<C: CpuBackend> Machine<C> {
                 self.sounds.entry(this).or_default().volume = (a1 as u16).min(AEE_MAX_VOLUME);
                 SUCCESS
             }
-            // `GetVolume` devolve `void`: o valor chega ao jogo pelo callback, com
-            // `AEE_SOUND_VOLUME_CB` e o volume em `dwParam`.
+            // `GetVolume` returns `void`: the value reaches the game through the callback, with
+            // `AEE_SOUND_VOLUME_CB` and the volume in `dwParam`.
             "GetVolume" => {
                 let volume = self.sounds.entry(this).or_default().volume;
                 self.finish_sound_with(this, AEE_SOUND_VOLUME_CB, AEE_SOUND_SUCCESS, volume as u32);
                 SUCCESS
             }
-            // Não há disputa por recurso de áudio num emulador de um jogo só.
+            // There is no contention for the audio resource in an emulator that runs one game.
             "GetResourceCtl" => {
                 if a1 != 0 {
                     self.cpu.write_u32(a1, 0)?;
@@ -83,12 +83,12 @@ impl<C: CpuBackend> Machine<C> {
         Ok(Some(result))
     }
 
-    /// Enfileira o callback de `ISound` sem parâmetro extra.
+    /// Queues the `ISound` callback with no extra parameter.
     pub(super) fn finish_sound(&mut self, sound: u32, kind: u32, status: u32) {
         self.finish_sound_with(sound, kind, status, 0);
     }
 
-    /// Enfileira o `PFNSOUNDSTATUS(pUser, eCBType, eSPStatus, dwParam)` do som.
+    /// Queues the sound's `PFNSOUNDSTATUS(pUser, eCBType, eSPStatus, dwParam)`.
     pub(super) fn finish_sound_with(&mut self, sound: u32, kind: u32, status: u32, param: u32) {
         let Some(state) = self.sounds.get(&sound) else {
             return;

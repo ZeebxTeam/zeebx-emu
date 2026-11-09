@@ -2,15 +2,15 @@ plugins {
     id("com.android.application")
 }
 
-// Não há fonte Java nem Kotlin neste módulo: o aplicativo inteiro é o `.so` que o
-// `compilar.sh` deixa em `src/main/jniLibs`. O Gradle aqui só empacota, assina e alinha.
+// There is no Java or Kotlin source in this module: the whole app is the `.so` that
+// `build.sh` leaves in `src/main/jniLibs`. Gradle here only packages, signs and aligns.
 android {
     namespace = "io.github.zeebxteam.zeebx"
     compileSdk = 35
 
     defaultConfig {
         applicationId = "io.github.zeebxteam.zeebx"
-        // O AAudio, que é a saída de som do `cpal` no Android, chega no 26.
+        // AAudio, which is `cpal`'s sound output on Android, arrives in 26.
         minSdk = 26
         targetSdk = 35
         versionCode = 8
@@ -28,8 +28,8 @@ android {
 
     packaging {
         jniLibs {
-            // O `.so` fica descompactado e alinhado à página, que é o que o Android 15 pede e
-            // o que deixa o sistema mapeá-lo direto do APK, sem cópia.
+            // The `.so` stays uncompressed and page-aligned, which is what Android 15 asks for
+            // and what lets the system map it straight from the APK, without a copy.
             useLegacyPackaging = false
         }
     }
