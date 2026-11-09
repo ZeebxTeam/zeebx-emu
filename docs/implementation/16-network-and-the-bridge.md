@@ -122,8 +122,8 @@ which is another matter.
 
 It lives in `zeeboids-server/`, outside this repository and with its own git, because it is not
 part of the emulator. The protocol worked out from the binary is in
-[`zeeboids-server/docs/protocolo.md`](../../zeeboids-server/docs/protocolo.md) — that is where
-everything documented about Zeeboids' communication goes.
+`zeeboids-server/docs/protocolo.md`, in that other repository — that is where everything
+documented about Zeeboids' communication goes.
 
 An error worth recording because it was not the emulator's: the import response has to carry
 `lid;id;zid`. Without all three, the game read the IMEI as if it were the `lid`, created a
