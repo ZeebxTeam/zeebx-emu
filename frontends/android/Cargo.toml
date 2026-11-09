@@ -3,40 +3,40 @@ name = "zeebx-android"
 version = "0.5.1"
 edition = "2024"
 license = "GPL-2.0-or-later"
-description = "O frontend de Android do Zeebx"
+description = "The Android frontend of Zeebx"
 publish = false
 
-# A `NativeActivity` carrega um `.so` e chama o `android_main` dele. Não há classe Java nossa:
-# o aplicativo inteiro é este Rust, sobre o mesmo núcleo que o desktop usa.
+# `NativeActivity` loads a `.so` and calls its `android_main`. There is no Java class of ours:
+# the whole app is this Rust, on top of the same core the desktop uses.
 [lib]
 name = "zeebx_android"
 crate-type = ["cdylib"]
 
 [dependencies]
-# `audio` é o `cpal`, que no Android fala com o Oboe. Sem ele o `set_audio` da sessão não existe
-# e o aparelho fica mudo -- e sem compilar. `soundfont` é o MIDI tocado com um `.sf2` escolhido
-# nos ajustes: o `rustysynth` é Rust puro, e o banco só ocupa memória (cerca de 64 MiB para um de
-# 32 MB) quando há um.
+# `audio` is `cpal`, which on Android talks to Oboe. Without it the session's `set_audio` doesn't
+# exist and the device stays mute -- and doesn't compile. `soundfont` is MIDI played with an `.sf2`
+# chosen in the settings: `rustysynth` is pure Rust, and the bank only takes memory (about 64 MiB
+# for a 32 MB one) when there is one.
 zeebx = { path = "../..", default-features = false, features = ["audio", "gl", "soundfont"] }
 
-# **Não há eframe aqui, e isso é a razão de este arquivo existir.** O eframe gira o laço pelo
-# winit, e o winit joga fora todo botão de controle: ele traduz os códigos de tecla do Android
-# para `Key::Unidentified`, que o egui descarta, e os eixos do manche nem chegam a virar evento.
-# Falando direto com a `android-activity` nós recebemos a entrada como o Android a entrega —
-# botões, gatilhos, eixos e o "voltar" — e ainda ficamos donos do ciclo de vida da janela.
+# **There is no eframe here, and that is the reason this file exists.** eframe spins the loop
+# through winit, and winit throws away every controller button: it translates Android key codes
+# to `Key::Unidentified`, which egui discards, and the stick axes don't even become events.
+# Talking directly to `android-activity` we receive the input as Android delivers it —
+# buttons, triggers, axes and "back" — and we also own the window's lifecycle.
 android-activity = { version = "0.6", features = ["native-activity"] }
 egui = { version = "0.33.3", default-features = false, features = ["default_fonts"] }
 egui_glow = { version = "0.33.3", default-features = false }
 glow = "0.16"
-# O contexto de GL: a `NativeActivity` dá uma `ANativeWindow`, e o resto é EGL. O glutin já
-# sabe fazer isso no Android e é a mesma caixa que o desktop usa.
+# The GL context: `NativeActivity` gives an `ANativeWindow`, and the rest is EGL. glutin already
+# knows how to do that on Android and it is the same crate the desktop uses.
 glutin = { version = "0.32.3", default-features = false, features = ["egl"] }
 raw-window-handle = "0.6"
 
-# O `MANAGE_EXTERNAL_STORAGE` não é permissão de diálogo: quem a pede abre uma tela do sistema
-# por `Intent`, e isso é uma chamada ao Java. A versão tem de ser a que a `android-activity`
-# resolve, senão são duas JNI diferentes na mesma imagem.
+# `MANAGE_EXTERNAL_STORAGE` isn't a dialog permission: whoever asks for it opens a system screen
+# through an `Intent`, and that is a call into Java. The version has to be the one
+# `android-activity` resolves, otherwise there are two different JNIs in the same image.
 jni = "0.21"
-# Sem isto, um pânico do Rust morre em silêncio: o `adb logcat` não mostra nada.
+# Without this, a Rust panic dies silently: `adb logcat` shows nothing.
 log = "0.4"
 android_logger = "0.14"

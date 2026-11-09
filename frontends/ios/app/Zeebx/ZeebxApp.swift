@@ -2,11 +2,11 @@ import SwiftUI
 
 @main
 struct ZeebxApp: App {
-    @StateObject private var modelo = ZeebxModelo()
+    @StateObject private var model = ZeebxModel()
 
     var body: some Scene {
         WindowGroup {
-            BibliotecaView(modelo: modelo)
+            LibraryView(model: model)
                 .preferredColorScheme(.dark)
         }
     }

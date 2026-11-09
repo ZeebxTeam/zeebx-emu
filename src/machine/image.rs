@@ -1,13 +1,13 @@
-//! IImage e IImageDecoder: decodificar o que o jogo traz e desenhar na tela.
+//! IImage and IImageDecoder: decoding what the game brings and drawing it on screen.
 
 use super::*;
 
 impl<C: CpuBackend> Machine<C> {
-    /// `IImageDecoder` e o `IForceFeed` que o alimenta.
+    /// `IImageDecoder` and the `IForceFeed` that feeds it.
     ///
-    /// O jogo cria o decodificador, pede a ele a interface de entrada, escreve o arquivo em
-    /// pedaços, fecha com uma escrita vazia e busca o bitmap. É o caminho que o Heavy Weapon, o
-    /// Tork and Kral e o Peggle usam para as imagens deles.
+    /// The game creates the decoder, asks it for the input interface, writes the file in chunks,
+    /// closes with an empty write and fetches the bitmap. It is the path Heavy Weapon, Tork and
+    /// Kral and Peggle use for their images.
     pub(super) fn decoder_call(
         &mut self,
         iface: Interface,
@@ -18,7 +18,7 @@ impl<C: CpuBackend> Machine<C> {
         };
         let this = self.cpu.read_reg(Reg::R0);
         let (a1, a2) = (self.cpu.read_reg(Reg::R1), self.cpu.read_reg(Reg::R2));
-        // Um `IForceFeed` trabalha sempre sobre o decodificador que o criou.
+        // An `IForceFeed` always works on the decoder that created it.
         let decoder = match iface {
             Interface::ForceFeed => self.feeds.get(&this).copied().unwrap_or(0),
             _ => this,
@@ -56,20 +56,20 @@ impl<C: CpuBackend> Machine<C> {
             }
             // int Write(IForceFeed *, void *pBuf, int cb)
             //
-            // Escrita vazia é o fim do arquivo — é assim que o exemplo do SDK fecha a entrega.
-            // Nada a fazer aqui: a decodificação acontece no `GetBitmap`, e adiantá-la só
-            // gastaria trabalho se o jogo desistisse no meio.
+            // An empty write is the end of the file — that is how the SDK sample closes the
+            // delivery. Nothing to do here: decoding happens in `GetBitmap`, and doing it early
+            // would only waste work if the game gave up halfway.
             (Interface::ForceFeed, "Write") => {
-                // O tamanho é do jogo: conferido **antes** de alocar e **antes** de acumular, ou um
-                // pedido absurdo aborta o processo em vez de virar erro de API. O teto do que já
-                // foi entregue é conferido no mesmo passo: antes o excesso era detectado depois de
-                // a memória já estar gasta.
-                let count = tamanho_do_guest(a2 as usize)?;
+                // The size comes from the game: checked **before** allocating and **before**
+                // accumulating, or an absurd request aborts the process instead of becoming an API
+                // error. The cap on what was already delivered is checked in the same step: before,
+                // the excess was detected after the memory had already been spent.
+                let count = guest_size(a2 as usize)?;
                 if a1 != 0 && count > 0 {
-                    let ja_entregue = self.decoders.get(&decoder).map_or(0, |state| state.fed.len());
-                    if ja_entregue + count > MAX_DECODED_INPUT {
+                    let already_fed = self.decoders.get(&decoder).map_or(0, |state| state.fed.len());
+                    if already_fed + count > MAX_DECODED_INPUT {
                         return Err(CpuError(format!(
-                            "entrega de imagem passaria de {MAX_DECODED_INPUT} bytes: {ja_entregue} + {count}"
+                            "image delivery would exceed {MAX_DECODED_INPUT} bytes: {already_fed} + {count}"
                         )));
                     }
                     let mut bytes = vec![0u8; count];
@@ -96,7 +96,7 @@ impl<C: CpuBackend> Machine<C> {
                     _ => SUCCESS,
                 }
             }
-            // int GetRop(IImageDecoder *) — com o que desenhar o bitmap devolvido.
+            // int GetRop(IImageDecoder *) — how to draw the returned bitmap.
             (Interface::ImageDecoder, "GetRop") => {
                 self.decoded_bitmap(decoder)?;
                 match self.decoders.get(&decoder).is_some_and(|d| d.transparent) {
@@ -109,7 +109,7 @@ impl<C: CpuBackend> Machine<C> {
         Ok(Some(result))
     }
 
-    /// O bitmap de um decodificador, decodificando na primeira vez que é pedido.
+    /// A decoder's bitmap, decoding it the first time it is requested.
     pub(super) fn decoded_bitmap(&mut self, decoder: u32) -> Result<u32, CpuError> {
         if let Some(state) = self.decoders.get(&decoder) {
             if let Some(bitmap) = state.bitmap {
@@ -119,11 +119,11 @@ impl<C: CpuBackend> Machine<C> {
         let Some(fed) = self.decoders.get(&decoder).map(|d| d.fed.clone()) else {
             return Ok(0);
         };
-        let Some(image) = decode_imagem(&fed) else {
-            // A hipótese nomeia o que o decodificador **não** reconheceu, e não mais "não é um
-            // PNG": ele passou a tentar pelo menos três formatos pela assinatura.
+        let Some(image) = decode_fed_image(&fed) else {
+            // The assumption names what the decoder did **not** recognize, and no longer "it is
+            // not a PNG": it now tries at least three formats by signature.
             self.assumptions.insert(concat!(
-                "um decodificador recebeu dados que não são PNG, BMP nem JPEG"
+                "a decoder received data that is not PNG, BMP or JPEG"
             ));
             return Ok(0);
         };
@@ -131,7 +131,7 @@ impl<C: CpuBackend> Machine<C> {
         if addr == 0 {
             return Ok(0);
         }
-        self.publica_dib_do_png(addr, &fed)?;
+        self.publish_png_dib(addr, &fed)?;
         let transparent = self.transparency.contains_key(&addr);
         if let Some(state) = self.decoders.get_mut(&decoder) {
             state.bitmap = Some(addr);
@@ -140,60 +140,61 @@ impl<C: CpuBackend> Machine<C> {
         Ok(addr)
     }
 
-    /// Publica o `IDIB` de um bitmap do decodificador no formato do PNG: 24 bits por pixel em
-    /// RGB, ou 32 em RGBA quando a imagem tem alfa, linhas contíguas e sem enchimento.
+    /// Publishes the `IDIB` of a decoder bitmap in the PNG's format: 24 bits per pixel in RGB, or
+    /// 32 in RGBA when the image has alpha, contiguous rows with no padding.
     ///
-    /// É o que o decodificador do BREW entrega, e o Alien Breaker Deluxe prova pelo uso: ele lê o
-    /// `nDepth`, trata 8 bits como paleta e, fora isso, copia `nDepth / 8` bytes por pixel direto
-    /// para uma textura `GL_RGB` (3) ou `GL_RGBA`. Com o nosso RGB565 ele copiava dois bytes por
-    /// pixel achando que eram quatro, e os logos saíam como quadrados brancos.
+    /// That is what the BREW decoder delivers, and Alien Breaker Deluxe proves it by use: it reads
+    /// `nDepth`, treats 8 bits as a palette and, otherwise, copies `nDepth / 8` bytes per pixel
+    /// straight into a `GL_RGB` (3) or `GL_RGBA` texture. With our RGB565 it copied two bytes per
+    /// pixel thinking they were four, and the logos came out as white squares.
     ///
-    /// O `nColorScheme` do RGBA também é 888, e não `IDIB_COLORSCHEME_NONE`: no `AEEIDIB.h` o
-    /// zero quer dizer **paleta**. O `BltIn` do Bejeweled Twist (0x139d8) decide por ele — zero
-    /// vai para a conversão de 8 bits indexados, 24 vai para a de truecolor, que olha o `nDepth`
-    /// e só com 32 cria a superfície de alfa. Publicado com zero, o RGBA era lido como índices de
-    /// paleta, a superfície de origem saía sem formato e o blit caía num ponteiro nulo.
+    /// The RGBA's `nColorScheme` is also 888, not `IDIB_COLORSCHEME_NONE`: in `AEEIDIB.h` zero
+    /// means **palette**. Bejeweled Twist's `BltIn` (0x139d8) decides by it — zero goes to the
+    /// 8-bit indexed conversion, 24 goes to the truecolor one, which looks at `nDepth` and only
+    /// with 32 creates the alpha surface. Published with zero, the RGBA was read as palette
+    /// indices, the source surface came out with no format and the blit hit a null pointer.
     ///
-    /// A nossa cópia em RGB565 continua no mapa de superfícies para os blits; este buffer não
-    /// entra na sincronização.
-    pub(super) fn publica_dib_do_png(&mut self, bitmap: u32, png: &[u8]) -> Result<(), CpuError> {
-        let Some((largura, altura, canais, mut bytes)) = decode_dib_bytes(png) else {
+    /// Our RGB565 copy stays in the surface map for blits; this buffer does not take part in
+    /// synchronization.
+    pub(super) fn publish_png_dib(&mut self, bitmap: u32, png: &[u8]) -> Result<(), CpuError> {
+        let Some((width, height, channels, mut bytes)) = decode_dib_bytes(png) else {
             return Ok(());
         };
-        // **Azul no primeiro byte.** O 888 do BREW é `0x00RRGGBB` em little-endian, e o jogo que
-        // sobe o DIB para o GL troca os canais por conta própria. O Peggle faz isso: com R,G,B
-        // aqui, a troca dele deixava o logo azul e o céu cor-de-rosa em vez de laranja e roxo.
-        for pixel in bytes.chunks_exact_mut(canais) {
+        // **Blue in the first byte.** BREW's 888 is `0x00RRGGBB` in little-endian, and a game that
+        // uploads the DIB to GL swaps the channels on its own. Peggle does that: with R,G,B here,
+        // its swap made the logo blue and the sky pink instead of orange and purple.
+        for pixel in bytes.chunks_exact_mut(channels) {
             pixel.swap(0, 2);
         }
-        // Um buffer publicado antes por outro caminho não serve mais: o formato é outro.
-        self.solta_dib(bitmap);
-        let Some((buffer, capacidade)) = self.reserva_superficie(bytes.len() as u32) else {
+        // A buffer published earlier by another path is no longer usable: the format is
+        // different.
+        self.release_dib(bitmap);
+        let Some((buffer, capacity)) = self.reserve_surface(bytes.len() as u32) else {
             return Ok(());
         };
         self.cpu.write_mem(buffer, &bytes)?;
-        self.dib_do_decodificador.insert(bitmap, (buffer, capacidade));
-        let passo = largura as usize * canais;
-        let profundidade = if canais == 4 { 32u8 } else { 24u8 };
-        let esquema = IDIB_COLORSCHEME_888;
+        self.decoder_dib.insert(bitmap, (buffer, capacity));
+        let step = width as usize * channels;
+        let depth = if channels == 4 { 32u8 } else { 24u8 };
+        let color_scheme = IDIB_COLORSCHEME_888;
         self.cpu.write_u32(bitmap + 4, 0)?; // pPaletteMap
         self.cpu.write_u32(bitmap + 8, buffer)?; // pBmp
         self.cpu.write_u32(bitmap + 12, 0)?; // pRGB
         self.cpu
             .write_u32(bitmap + 16, to_rgbval(Rgb::from_rgb565(TRANSPARENT_KEY)))?; // ncTransparent
-        self.cpu.write_mem(bitmap + 20, &(largura as u16).to_le_bytes())?;
-        self.cpu.write_mem(bitmap + 22, &(altura as u16).to_le_bytes())?;
-        self.cpu.write_mem(bitmap + 24, &(passo as i16).to_le_bytes())?;
+        self.cpu.write_mem(bitmap + 20, &(width as u16).to_le_bytes())?;
+        self.cpu.write_mem(bitmap + 22, &(height as u16).to_le_bytes())?;
+        self.cpu.write_mem(bitmap + 24, &(step as i16).to_le_bytes())?;
         self.cpu.write_mem(bitmap + 26, &0u16.to_le_bytes())?; // cntRGB
-        self.cpu.write_mem(bitmap + 28, &[profundidade, esquema])?;
+        self.cpu.write_mem(bitmap + 28, &[depth, color_scheme])?;
         self.cpu.write_mem(bitmap + 30, &[0u8; 6])?;
         Ok(())
     }
 
-    /// Um `IBitmap` com a imagem já decodificada dentro.
+    /// An `IBitmap` with the already decoded image inside.
     ///
-    /// Sai com os campos públicos do `IDIB` preenchidos, porque um `IBitmap` de software do
-    /// BREW é um `IDIB` e o jogo lê esses campos sem pedir a interface.
+    /// It comes out with the public `IDIB` fields filled in, because a BREW software `IBitmap`
+    /// is an `IDIB` and the game reads those fields without asking for the interface.
     pub(super) fn bitmap_from_decoded(&mut self, image: &DecodedImage) -> Result<u32, CpuError> {
         let addr = self.new_object(Interface::Bitmap)?;
         if addr == 0 {
@@ -206,8 +207,9 @@ impl<C: CpuBackend> Machine<C> {
                 let index = (row * image.width + column) as usize;
                 let opaque = image.opaque.get(index).copied().unwrap_or(true);
                 transparent |= !opaque;
-                // Sem canal alfa no destino, o transparente vira a cor reservada — é como o
-                // BREW resolve, e é o que o `GetRop` anuncia ao jogo em seguida.
+                // With no alpha channel in the destination, transparent becomes the reserved
+                // color — that is how BREW solves it, and it is what `GetRop` then announces to
+                // the game.
                 let pixel = match (opaque, image.pixels.get(index)) {
                     (true, Some(&pixel)) => pixel,
                     _ => TRANSPARENT_KEY,
@@ -223,14 +225,14 @@ impl<C: CpuBackend> Machine<C> {
         Ok(addr)
     }
 
-    /// Decodifica a imagem em `buffer` e devolve um `IBitmap` com ela.
+    /// Decodes the image in `buffer` and returns an `IBitmap` holding it.
     ///
-    /// O ponteiro devolvido vai direto para o `IDISPLAY_BitBlt`, que recebe um `IBitmap *` — e
-    /// é por isso que o "formato nativo" aqui é um bitmap nosso, e não um bloco solto de
-    /// pixels: assim o desenho segue pelo mesmo caminho de todo o resto.
+    /// The returned pointer goes straight to `IDISPLAY_BitBlt`, which takes an `IBitmap *` — and
+    /// that is why the "native format" here is one of our bitmaps, not a loose block of pixels:
+    /// that way drawing follows the same path as everything else.
     ///
-    /// O tamanho do bloco não vem por parâmetro: quem diz quanto ler é o cabeçalho da própria
-    /// imagem, e por ora só o BMP — que é o que os jogos passam — declara o seu.
+    /// The block size does not come as a parameter: what says how much to read is the image's
+    /// own header, and for now only BMP — which is what the games pass — declares its own.
     pub(super) fn setup_native_image(
         &mut self,
         buffer: u32,
@@ -238,7 +240,7 @@ impl<C: CpuBackend> Machine<C> {
         realloc: u32,
     ) -> Result<u32, CpuError> {
         if realloc != 0 {
-            // A imagem sai numa alocação nossa, e é isso que este sinalizador informa.
+            // The image comes out in an allocation of ours, and that is what this flag reports.
             self.cpu.write_mem(realloc, &[1])?;
         }
         let Some(len) = self.encoded_image_len(buffer)? else {
@@ -248,7 +250,7 @@ impl<C: CpuBackend> Machine<C> {
         self.cpu.read_mem(buffer, &mut bytes)?;
         let Ok(image) = crate::video::icon::decode(&bytes) else {
             self.assumptions
-                .insert("uma imagem nativa veio num formato que não sabemos ler");
+                .insert("a native image came in a format we cannot read");
             return Ok(0);
         };
 
@@ -275,21 +277,22 @@ impl<C: CpuBackend> Machine<C> {
             let (cx, cy) = (width as u16, height as u16);
             self.cpu.write_mem(info, &cx.to_le_bytes())?;
             self.cpu.write_mem(info + 2, &cy.to_le_bytes())?;
-            // `nColors` é zero para quem tem mais de 65535 cores, e `bAnimated` é falso.
+            // `nColors` is zero for anything with more than 65535 colors, and `bAnimated` is
+            // false.
             self.cpu.write_mem(info + 4, &[0u8; 4])?;
             self.cpu.write_mem(info + 8, &cx.to_le_bytes())?;
         }
         Ok(addr)
     }
 
-    /// Quanto ler de um bloco de imagem, pelo cabeçalho dela.
+    /// How much to read from an image block, according to its header.
     pub(super) fn encoded_image_len(&self, buffer: u32) -> Result<Option<usize>, CpuError> {
         if buffer == 0 {
             return Ok(None);
         }
         let mut header = [0u8; 6];
         self.cpu.read_mem(buffer, &mut header)?;
-        // O BMP declara o tamanho do arquivo na palavra seguinte à assinatura.
+        // BMP declares the file size in the word following the signature.
         if &header[0..2] != b"BM" {
             return Ok(None);
         }
@@ -297,13 +300,13 @@ impl<C: CpuBackend> Machine<C> {
         Ok((size > 0 && size <= MAX_NATIVE_IMAGE).then_some(size))
     }
 
-    /// `IImage` sobre o decodificador de PNG (`AEECLSID_PNG` = `0x01004004`), de
+    /// `IImage` over the PNG decoder (`AEECLSID_PNG` = `0x01004004`), from
     /// `inc/AEEIImage.h`.
     ///
-    /// O jogo alimenta a imagem com um `IMemAStream` (`SetStream`), lê as dimensões com
-    /// `GetInfo` e desenha com `Draw`. A decodificação em si é PNG padrão — não há nada de
-    /// proprietário aqui, ao contrário do que os bytes de alta entropia do `resources.dat`
-    /// sugeriam à primeira vista.
+    /// The game feeds the image with an `IMemAStream` (`SetStream`), reads the dimensions with
+    /// `GetInfo` and draws with `Draw`. The decoding itself is standard PNG — there is nothing
+    /// proprietary here, contrary to what the high-entropy bytes of `resources.dat` suggested at
+    /// first sight.
     pub(super) fn image_call(&mut self, slot: u32) -> Result<Option<u32>, CpuError> {
         let Some(name) = Interface::Image.method(slot) else {
             return Ok(None);
@@ -321,23 +324,24 @@ impl<C: CpuBackend> Machine<C> {
                 if remaining == 0 {
                     self.images.remove(&this);
                     self.image_bitmaps.remove(&this);
-                    self.recortes_de_imagem.remove(&this);
-                    // O endereço volta a ser de outro objeto, que não pode herdar o callback.
+                    self.image_clips.remove(&this);
+                    // The address goes back to belonging to another object, which must not
+                    // inherit the callback.
                     self.image_notify.remove(&this);
-                    self.avisos_de_imagem.retain(|&imagem| imagem != this);
+                    self.image_notify_queue.retain(|&queued_image| queued_image != this);
                     if let Some(info) = self.image_info.remove(&this) {
-                        self.libera(info);
+                        self.free(info);
                     }
                 }
                 remaining
             }
-            // void SetStream(IImage *, IAStream *ps) — consome o stream inteiro de uma vez.
+            // void SetStream(IImage *, IAStream *ps) — consumes the whole stream at once.
             "SetStream" => {
                 self.decode_image(this, a1)?;
                 SUCCESS
             }
             // void GetInfo(IImage *, AEEImageInfo *pi): cx, cy, nColors (uint16), bAnimated
-            // (boolean) e cxFrame (uint16).
+            // (boolean) and cxFrame (uint16).
             "GetInfo" => {
                 let (cx, cy, frame) = match self.images.get(&this) {
                     Some(image) => (image.width as u16, image.height as u16, image.frame_width),
@@ -346,7 +350,7 @@ impl<C: CpuBackend> Machine<C> {
                 if a1 != 0 {
                     self.cpu.write_mem(a1, &cx.to_le_bytes())?;
                     self.cpu.write_mem(a1 + 2, &cy.to_le_bytes())?;
-                    // `nColors` é zero para imagens com mais de 65535 cores, que é o caso.
+                    // `nColors` is zero for images with more than 65535 colors, which is the case.
                     self.cpu.write_mem(a1 + 4, &0u16.to_le_bytes())?;
                     self.cpu.write_mem(a1 + 6, &[0u8, 0])?;
                     self.cpu.write_mem(a1 + 8, &frame.to_le_bytes())?;
@@ -367,7 +371,7 @@ impl<C: CpuBackend> Machine<C> {
                 self.draw_image(this, a2 as i32, a3 as i32, Some(a1))?;
                 SUCCESS
             }
-            // Sem animação, `Start` é um `Draw` e `Stop` não tem o que parar.
+            // Without animation, `Start` is a `Draw` and `Stop` has nothing to stop.
             "Start" => {
                 self.draw_image(this, a1 as i32, a2 as i32, None)?;
                 SUCCESS
@@ -384,16 +388,17 @@ impl<C: CpuBackend> Machine<C> {
                             context: a2,
                         },
                     );
-                    // Uma imagem vinda do `LoadResObject` já está pronta quando o jogo
-                    // registra o callback: a notificação é imediata, não fica esperando
-                    // stream nenhum.
+                    // An image that came from `LoadResObject` is already ready when the game
+                    // registers the callback: the notification is immediate, it does not wait
+                    // for any stream.
                     if self.images.contains_key(&this) {
                         self.notify_image(this)?;
                     }
                 } else {
-                    // Sem função, o `Notify` cancela: o aviso que ainda estava na fila não sai.
+                    // Without a function, `Notify` cancels: the notification still in the queue
+                    // does not go out.
                     self.image_notify.remove(&this);
-                    self.avisos_de_imagem.retain(|&imagem| imagem != this);
+                    self.image_notify_queue.retain(|&queued_image| queued_image != this);
                 }
                 SUCCESS
             }
@@ -402,53 +407,54 @@ impl<C: CpuBackend> Machine<C> {
         Ok(Some(result))
     }
 
-    /// Lê o stream inteiro e decodifica a imagem, seja qual for o formato dela.
+    /// Reads the whole stream and decodes the image, whatever its format.
     pub(super) fn decode_image(&mut self, image: u32, stream: u32) -> Result<(), CpuError> {
         let Some(source) = self.streams.get(&stream).copied() else {
             return Ok(());
         };
         let bytes = self.read_bytes(source.buffer, source.size)?;
-        match decodifica_imagem(&bytes) {
+        match decode_image_bytes(&bytes) {
             Some(decoded) => {
                 self.images.insert(image, std::rc::Rc::new(decoded));
             }
             None => {
                 self.assumptions
-                    .insert("uma imagem do jogo foi recusada pelo decodificador");
+                    .insert("a game image was rejected by the decoder");
             }
         }
         self.notify_image(image)
     }
 
-    /// Enfileira o `PFNIMAGEINFO(pUser, IImage *, AEEImageInfo *, int nErr)` da imagem.
+    /// Queues the image's `PFNIMAGEINFO(pUser, IImage *, AEEImageInfo *, int nErr)`.
     ///
-    /// A imagem já está pronta quando o stream chega — não há decodificação em segundo plano
-    /// aqui —, mas o jogo espera a notificação para seguir carregando.
+    /// The image is already ready when the stream arrives — there is no background decoding
+    /// here —, but the game waits for the notification to keep loading.
     ///
-    /// **O aviso sai na volta do laço de eventos, e não na saída do `SetStream`** — como no
-    /// BREW, que entrega pelo laço depois de o tratador do jogo devolver o controle. O Bejeweled
-    /// Twist conta com essa ordem: registra o `Notify`, chama `SetStream` e, ainda no mesmo
-    /// tratador, pede o `GetInfo` e guarda o tamanho no objeto que espelha a imagem (0x68010).
-    /// Só no aviso ele desenha a imagem na superfície e a espelha (0x7c530), com a largura
-    /// guardada. Entregue na saída do `SetStream`, o aviso chegava antes do `GetInfo`: os 81
-    /// espelhos feitos até o menu rodavam com largura zero, e toda meia-peça da interface — a ponta
-    /// direita dos botões, a metade direita dos anéis do menu — aparecia sem espelhar, igual à
-    /// esquerda.
+    /// **The notification goes out on the next turn of the event loop, not on return from
+    /// `SetStream`** — as in BREW, which delivers through the loop after the game's handler
+    /// returns control. Bejeweled Twist relies on that order: it registers `Notify`, calls
+    /// `SetStream` and, still in the same handler, asks for `GetInfo` and stores the size in the
+    /// object that mirrors the image (0x68010). Only in the notification does it draw the image
+    /// on the surface and mirror it (0x7c530), with the stored width. Delivered on return from
+    /// `SetStream`, the notification arrived before `GetInfo`: the 81 mirrors done up to the menu
+    /// ran with zero width, and every half-piece of the interface — the right end of the
+    /// buttons, the right half of the menu rings — showed up unmirrored, same as the left one.
     ///
-    /// **A fila guarda só a imagem; o aviso é montado na entrega.** Até lá o jogo pode soltar a
-    /// imagem ou trocar o callback, e no BREW soltar a imagem cancela o aviso. Guardar o aviso
-    /// pronto entregava ao tratador um objeto morto e o `AEEImageInfo` que o `Release` já tinha
-    /// devolvido ao heap: no Bejeweled Twist, apertar "Jogar" levava o jogo a um ponteiro de
-    /// lixo, e ele parava lendo 0x006f0092 em 0x1c780.
+    /// **The queue holds only the image; the notification is built at delivery.** Until then the
+    /// game may release the image or swap the callback, and in BREW releasing the image cancels
+    /// the notification. Keeping the notification prebuilt handed the handler a dead object and
+    /// the `AEEImageInfo` that `Release` had already returned to the heap: in Bejeweled Twist,
+    /// pressing "Play" took the game to a garbage pointer, and it stopped reading 0x006f0092 at
+    /// 0x1c780.
     pub(super) fn notify_image(&mut self, image: u32) -> Result<(), CpuError> {
-        if self.image_notify.contains_key(&image) && !self.avisos_de_imagem.contains(&image) {
-            self.avisos_de_imagem.push(image);
+        if self.image_notify.contains_key(&image) && !self.image_notify_queue.contains(&image) {
+            self.image_notify_queue.push(image);
         }
         Ok(())
     }
 
-    /// Entrega o aviso de uma imagem da fila, se ela ainda tem quem o espere.
-    pub(super) fn entrega_aviso_de_imagem(
+    /// Delivers the notification for a queued image, if anyone is still waiting for it.
+    pub(super) fn deliver_image_notify(
         &mut self,
         image: u32,
         budget: u64,
@@ -457,13 +463,13 @@ impl<C: CpuBackend> Machine<C> {
             return Ok(None);
         };
         let decoded = self.images.get(&image).cloned();
-        // `AEEImageInfo` tem 10 bytes; alocamos 12 para manter o alinhamento. Um bloco por
-        // imagem, reaproveitado a cada aviso e devolvido no `Release`: um bloco novo por aviso
-        // nunca voltava ao heap.
+        // `AEEImageInfo` is 10 bytes; we allocate 12 to keep alignment. One block per image,
+        // reused on every notification and returned on `Release`: a new block per notification
+        // never went back to the heap.
         let info = match self.image_info.get(&image) {
             Some(&info) => info,
             None => {
-                let info = self.aloca_interno(12)?;
+                let info = self.alloc_internal(12)?;
                 if info != 0 {
                     self.image_info.insert(image, info);
                 }
@@ -490,7 +496,7 @@ impl<C: CpuBackend> Machine<C> {
         Ok(Some(outcome))
     }
 
-    /// `IPARM_*` de `inc/AEEIImage.h`. Só respondemos aos que mudam o desenho.
+    /// `IPARM_*` from `inc/AEEIImage.h`. We only respond to the ones that change drawing.
     pub(super) fn image_set_parm(
         &mut self,
         image: u32,
@@ -500,16 +506,16 @@ impl<C: CpuBackend> Machine<C> {
     ) -> Result<(), CpuError> {
         match parm {
             IPARM_SIZE => {
-                self.recortes_de_imagem.entry(image).or_default().tamanho =
+                self.image_clips.entry(image).or_default().size =
                     Some((p1 as i32, p2 as i32));
             }
             IPARM_OFFSET => {
-                let recorte = self.recortes_de_imagem.entry(image).or_default();
-                recorte.x = p1 as i32;
-                recorte.y = p2 as i32;
+                let crop = self.image_clips.entry(image).or_default();
+                crop.x = p1 as i32;
+                crop.y = p2 as i32;
             }
             IPARM_ROP => {
-                self.recortes_de_imagem.entry(image).or_default().transparente =
+                self.image_clips.entry(image).or_default().transparent =
                     p1 == AEE_RO_TRANSPARENT;
             }
             IPARM_CXFRAME => {
@@ -524,7 +530,7 @@ impl<C: CpuBackend> Machine<C> {
                     std::rc::Rc::make_mut(info).frame_width = width / frames;
                 }
             }
-            // p1 = ponteiro para receber o `IBitmap *`, p2 = ponteiro para o código de retorno.
+            // p1 = pointer to receive the `IBitmap *`, p2 = pointer to the return code.
             IPARM_GETBITMAP => {
                 let bitmap = self.bitmap_from_image(image)?;
                 if p1 != 0 {
@@ -540,17 +546,18 @@ impl<C: CpuBackend> Machine<C> {
         Ok(())
     }
 
-    /// Materializa a imagem decodificada como uma superfície `IBitmap`.
-    /// Diferente do [`Machine::bitmap_from_decoded`], este caminho **não** publica o `IDIB`.
+    /// Materializes the decoded image as an `IBitmap` surface.
+    /// Unlike [`Machine::bitmap_from_decoded`], this path does **not** publish the `IDIB`.
     ///
-    /// Publicar custa caro onde não é preciso: toda superfície publicada entra no laço que
-    /// sincroniza os pixels a cada chamada que os toca, e o Pac-Mania — que desenha pixel a
-    /// pixel pela API — saiu de "roda" para "lento demais" quando os dois caminhos foram
-    /// unificados. Quem pede o DIB pede pelo `QueryInterface`, e aí ele é publicado.
+    /// Publishing is expensive where it is not needed: every published surface enters the loop
+    /// that synchronizes the pixels on every call that touches them, and Pac-Mania — which draws
+    /// pixel by pixel through the API — went from "runs" to "far too slow" when the two paths
+    /// were unified. Whoever wants the DIB asks for it through `QueryInterface`, and then it is
+    /// published.
     pub(super) fn bitmap_from_image(&mut self, image: u32) -> Result<u32, CpuError> {
-        // A mesma imagem é pedida de novo a cada quadro — o Pac-Mania faz 34 mil
-        // `IPARM_GETBITMAP` em quatro segundos virtuais. Materializar uma superfície nova a
-        // cada pedido gastava sete segundos e deixava trinta e quatro mil objetos vivos.
+        // The same image is requested again every frame — Pac-Mania does 34 thousand
+        // `IPARM_GETBITMAP` in four virtual seconds. Materializing a new surface on every
+        // request took seven seconds and left thirty-four thousand objects alive.
         if let Some(&bitmap) = self.image_bitmaps.get(&image) {
             return Ok(bitmap);
         }
@@ -571,11 +578,11 @@ impl<C: CpuBackend> Machine<C> {
         Ok(addr)
     }
 
-    /// Desenha a imagem na superfície corrente.
+    /// Draws the image on the current surface.
     ///
-    /// Quando o destino é uma superfície do próprio jogo, o desenho não pode ser feito aqui:
-    /// ele vira uma chamada ao `BltIn` dela, e entrar no guest no meio do despacho não é
-    /// seguro. Vai para a fila da fronteira, como os callbacks.
+    /// When the destination is one of the game's own surfaces, the drawing cannot be done here:
+    /// it becomes a call to that surface's `BltIn`, and entering the guest in the middle of
+    /// dispatch is not safe. It goes to the boundary queue, like the callbacks.
     pub(super) fn draw_image(
         &mut self,
         image: u32,
@@ -587,7 +594,7 @@ impl<C: CpuBackend> Machine<C> {
             return Ok(());
         }
         let target = self.target()?;
-        let recorte = self.recortes_de_imagem.get(&image).copied().unwrap_or_default();
+        let crop = self.image_clips.get(&image).copied().unwrap_or_default();
         if !self.bitmaps.contains_key(&target) {
             let Some(info) = self.images.get(&image) else {
                 return Ok(());
@@ -596,12 +603,12 @@ impl<C: CpuBackend> Machine<C> {
                 (Some(_), width) if width > 0 => width as i32,
                 _ => info.width as i32,
             };
-            let (src_x, src_y) = (recorte.x.max(0), recorte.y.max(0));
-            let (largura, altura) = recorte.tamanho.unwrap_or((i32::MAX, i32::MAX));
+            let (src_x, src_y) = (crop.x.max(0), crop.y.max(0));
+            let (crop_width, crop_height) = crop.size.unwrap_or((i32::MAX, i32::MAX));
             let mut first_column = 0;
-            let mut last_column = largura.min(frame_width - src_x);
+            let mut last_column = crop_width.min(frame_width - src_x);
             let mut first_row = 0;
-            let mut last_row = altura.min(info.height as i32 - src_y);
+            let mut last_row = crop_height.min(info.height as i32 - src_y);
             if let Some(clip) = self.clip {
                 first_column = first_column.max(clip.x as i32 - x);
                 last_column = last_column.min(clip.x as i32 + clip.width as i32 - x);
@@ -620,7 +627,7 @@ impl<C: CpuBackend> Machine<C> {
                 src_y: src_y + first_row,
                 width: (last_column - first_column) as u32,
                 height: (last_row - first_row) as u32,
-                rop: match recorte.transparente {
+                rop: match crop.transparent {
                     true => AEE_RO_TRANSPARENT,
                     false => AEE_RO_COPY,
                 },
@@ -629,14 +636,14 @@ impl<C: CpuBackend> Machine<C> {
             return Ok(());
         }
         let clip = self.clip;
-        // **A imagem não é copiada para ser lida.** Ler o mapa de imagens e escrever no de
-        // superfícies são campos diferentes do `self`, e separá-los aqui é o que deixa o
-        // empréstimo passar sem cópia.
+        // **The image is not copied to be read.** Reading the image map and writing to the
+        // surface map are different fields of `self`, and splitting them here is what lets the
+        // borrow through without a copy.
         //
-        // Com o `.cloned()` que estava nesta linha, cada `IIMAGE_Draw` duplicava a imagem
-        // inteira — pixels e máscara de opacidade — só para ler um retângulo dela. No Pac-Mania
-        // são 21.923 chamadas em cinco segundos virtuais, a 0,6 ms cada: 90% de todo o tempo de
-        // API do jogo estava nessa cópia, e não no laço que o recorte já tinha reduzido.
+        // With the `.cloned()` that used to be on this line, every `IIMAGE_Draw` duplicated the
+        // whole image — pixels and opacity mask — just to read a rectangle of it. In Pac-Mania
+        // that is 21,923 calls in five virtual seconds, at 0.6 ms each: 90% of all the game's API
+        // time was in that copy, and not in the loop that clipping had already reduced.
         let Self {
             images, bitmaps, ..
         } = self;
@@ -650,27 +657,27 @@ impl<C: CpuBackend> Machine<C> {
             (Some(n), width) if width > 0 => (width as u32, n * width as u32),
             _ => (info.width, 0),
         };
-        // O recorte não é acabamento aqui: é o que decide o tamanho do trabalho. O Pac-Mania
-        // desenha a **folha de fontes inteira** e conta com o recorte para que só a letra
-        // apareça. Percorrer a imagem toda e conferir pixel a pixel eram 3,9 bilhões de pixels
-        // lidos em quatro segundos virtuais para pôr na tela algumas centenas de milhares — e
-        // ainda punha na tela o que o jogo mandou esconder.
+        // Clipping is not a finishing touch here: it is what decides the size of the work.
+        // Pac-Mania draws the **whole font sheet** and relies on the clip so that only the letter
+        // shows. Walking the whole image and checking pixel by pixel meant 3.9 billion pixels read
+        // in four virtual seconds to put a few hundred thousand on screen — and it still put on
+        // screen what the game had told it to hide.
         //
-        // O pedaço pedido por `IPARM_OFFSET` e `IPARM_SIZE` entra antes de tudo: `(column, row)`
-        // continua sendo a posição **na tela** a partir de `(x, y)`, e o pixel lido é deslocado
-        // pelo canto do pedaço.
-        let (recorte_x, recorte_y) = (recorte.x.max(0), recorte.y.max(0));
-        let (largura, altura) = recorte.tamanho.unwrap_or((i32::MAX, i32::MAX));
+        // The piece requested by `IPARM_OFFSET` and `IPARM_SIZE` comes before everything:
+        // `(column, row)` is still the position **on screen** from `(x, y)`, and the pixel read is
+        // offset by the piece's corner.
+        let (clip_x, clip_y) = (crop.x.max(0), crop.y.max(0));
+        let (crop_width, crop_height) = crop.size.unwrap_or((i32::MAX, i32::MAX));
         let (mut first_column, mut last_column) =
-            (0, largura.min(frame_width as i32 - recorte_x));
-        let (mut first_row, mut last_row) = (0, altura.min(info.height as i32 - recorte_y));
+            (0, crop_width.min(frame_width as i32 - clip_x));
+        let (mut first_row, mut last_row) = (0, crop_height.min(info.height as i32 - clip_y));
         if let Some(clip) = clip {
             first_column = first_column.max(clip.x as i32 - x);
             last_column = last_column.min(clip.x as i32 + clip.width as i32 - x);
             first_row = first_row.max(clip.y as i32 - y);
             last_row = last_row.min(clip.y as i32 + clip.height as i32 - y);
         }
-        // O mesmo vale para as bordas da superfície: o que cai fora nunca precisou ser lido.
+        // The same goes for the surface edges: whatever falls outside never needed to be read.
         first_column = first_column.max(-x).max(0);
         last_column = last_column.min(surface.width() as i32 - x);
         first_row = first_row.max(-y).max(0);
@@ -678,22 +685,22 @@ impl<C: CpuBackend> Machine<C> {
 
         for row in first_row..last_row {
             for column in first_column..last_column {
-                let source = ((row + recorte_y) as u32 * info.width
-                    + (column + recorte_x) as u32
+                let source = ((row + clip_y) as u32 * info.width
+                    + (column + clip_x) as u32
                     + offset) as usize;
                 let Some(&pixel) = info.pixels.get(source) else {
                     continue;
                 };
-                if recorte.transparente && pixel == TRANSPARENT_KEY {
+                if crop.transparent && pixel == TRANSPARENT_KEY {
                     continue;
                 }
-                match info.alfa.get(source).copied() {
+                match info.alpha.get(source).copied() {
                     Some(0) => {}
                     Some(u8::MAX) => surface.set_pixel_native(x + column, y + row, pixel),
-                    Some(alfa) => {
-                        let fundo = surface.get_pixel(x + column, y + row);
-                        let cor = mistura_rgb565(fundo, pixel, alfa);
-                        surface.set_pixel_native(x + column, y + row, cor);
+                    Some(alpha) => {
+                        let background = surface.get_pixel(x + column, y + row);
+                        let color = blend_rgb565(background, pixel, alpha);
+                        surface.set_pixel_native(x + column, y + row, color);
                     }
                     None if info.opaque.get(source).copied().unwrap_or(true) => {
                         surface.set_pixel_native(x + column, y + row, pixel)

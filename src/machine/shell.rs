@@ -1,13 +1,13 @@
-//! IShell: recursos, informação do aparelho e o arranque do applet.
+//! IShell: resources, device information and the applet's startup.
 
 use super::*;
 
 impl<C: CpuBackend> Machine<C> {
-    /// Os três métodos de timer do `IShell`, todos com a assinatura
+    /// The three timer methods of `IShell`, all with the signature
     /// `(IShell *, [int32 dwMsecs,] PFNNOTIFY pfn, void *pUser)`.
     ///
-    /// `PFNNOTIFY` é `void (*)(void *pUser)`; o par `(pfn, pUser)` identifica o timer, e é por
-    /// ele que `CancelTimer` e `GetTimerExpiration` o encontram.
+    /// `PFNNOTIFY` is `void (*)(void *pUser)`; the `(pfn, pUser)` pair identifies the timer, and
+    /// it is by that pair that `CancelTimer` and `GetTimerExpiration` find it.
     pub(super) fn shell_timer_call(&mut self, name: &str) -> Result<u32, CpuError> {
         let (a1, a2, a3) = (
             self.cpu.read_reg(Reg::R1),
@@ -23,32 +23,32 @@ impl<C: CpuBackend> Machine<C> {
                 if callback.function == 0 {
                     return Ok(EBADPARM);
                 }
-                // Rearmar o mesmo par `(pfn, pUser)` substitui o timer anterior, em vez de
-                // acumular dois — é o que o BREW faz, e o que o jogo espera ao rearmar dentro
-                // do próprio callback.
+                // Rearming the same `(pfn, pUser)` pair replaces the previous timer instead of
+                // stacking two — that is what BREW does, and what the game expects when it
+                // rearms inside its own callback.
                 self.timers.retain(|timer| timer.callback != callback);
-                // **O prazo é `int32`, e negativo quer dizer "já venceu".** O laço de quadro de
-                // um jogo arma "duração do quadro menos o que já gastou"; o Powerboat Challenge,
-                // depois de carregar a fase inteira num quadro só, pede -2 ms. Lido sem sinal,
-                // isso era um prazo de 49 dias, o timer nunca vencia e o jogo ficava para
-                // sempre na tela de carregamento.
-                let espera = (a1 as i32).max(0) as u32;
+                // **The deadline is `int32`, and negative means "already expired".** A game's
+                // frame loop arms "frame duration minus what it already spent"; Powerboat
+                // Challenge, after loading the whole stage in a single frame, asks for -2 ms.
+                // Read as unsigned, that was a 49-day deadline, the timer never expired and the
+                // game stayed on the loading screen forever.
+                let wait = (a1 as i32).max(0) as u32;
                 self.timers.push(Timer {
-                    deadline_ms: self.now_ms().saturating_add(espera),
+                    deadline_ms: self.now_ms().saturating_add(wait),
                     callback,
                 });
                 SUCCESS
             }
             "CancelTimer" => {
                 let (function, context) = (a1, a2);
-                // `pfn` nulo cancela todos os timers daquele contexto.
+                // A null `pfn` cancels all the timers of that context.
                 self.timers.retain(|timer| {
                     timer.callback.context != context
                         || (function != 0 && timer.callback.function != function)
                 });
                 SUCCESS
             }
-            // Devolve quanto falta, em milissegundos; zero se não há timer armado.
+            // Returns how much time is left, in milliseconds; zero if no timer is armed.
             _ => {
                 let callback = Callback {
                     function: a1,
@@ -66,13 +66,13 @@ impl<C: CpuBackend> Machine<C> {
     /// `int ISHELL_DetectType(IShell *, const void *cpBuf, uint32 *pdwSize,
     /// const char *cpszName, const char **pcpszMIME)`.
     ///
-    /// Descobre o tipo MIME de um conteúdo. O jogo usa a resposta para achar, no registro do
-    /// BREW, qual classe sabe abrir aquele arquivo.
+    /// Finds out the MIME type of some content. The game uses the answer to look up, in the BREW
+    /// registry, which class knows how to open that file.
     pub(super) fn shell_detect_type(&mut self) -> Result<u32, CpuError> {
         let (buffer, size_ptr, name_ptr, mime_ptr) =
             (self.arg(1), self.arg(2), self.arg(3), self.arg(4));
 
-        // Sem dados e sem nome, a pergunta é "de quantos bytes você precisa?".
+        // With no data and no name, the question is "how many bytes do you need?".
         if buffer == 0 && name_ptr == 0 {
             self.write_at(size_ptr, DETECT_TYPE_BYTES)?;
             return Ok(ENEEDMORE);
@@ -100,11 +100,11 @@ impl<C: CpuBackend> Machine<C> {
         }
     }
 
-    /// `int ISHELL_Resume(IShell *, AEECallback *pcb)` — agenda o callback para a próxima
-    /// volta do laço de eventos.
+    /// `int ISHELL_Resume(IShell *, AEECallback *pcb)` — schedules the callback for the next
+    /// turn of the event loop.
     ///
-    /// É o mecanismo em que as threads cooperativas se apoiam: o jogo pede a retomada por
-    /// aqui e só então chama `Suspend`, para que a thread tenha como voltar.
+    /// It is the mechanism cooperative threads rely on: the game asks for the resume through
+    /// here and only then calls `Suspend`, so that the thread has a way back.
     pub(super) fn shell_resume(&mut self) -> Result<u32, CpuError> {
         let pcb = self.cpu.read_reg(Reg::R1);
         if let Some(&thread) = self.resume_callbacks.get(&pcb) {
@@ -124,18 +124,18 @@ impl<C: CpuBackend> Machine<C> {
     /// `IBase *ISHELL_LoadResObject(IShell *po, const char *pszResFile, uint16 nResID,
     /// AEECLSID cls)`.
     ///
-    /// Com `nResID` zero o arquivo inteiro é o recurso — é assim que o Quake carrega
-    /// `fs:/~/../id1/splash_title.png`. Com `nResID` diferente de zero o que ele nomeia é um
-    /// `.bar`, e a imagem é a entrada daquele número lá dentro.
+    /// With `nResID` zero the whole file is the resource — that is how Quake loads
+    /// `fs:/~/../id1/splash_title.png`. With a nonzero `nResID` what it names is a `.bar`, and
+    /// the image is the entry with that number inside it.
     ///
-    /// Ignorar o `nResID` custou caro: o Tekken 2 pede a entrada 5034 do `tekken2.bar` e nós
-    /// tentávamos decodificar os 734 KB do `.bar` inteiro como PNG. Falhava, devolvia nulo, e o
-    /// jogo seguia com uma imagem sem tamanho — que é divisão por zero na hora de montar a
-    /// tela. O relatório dizia o que estava acontecendo o tempo todo, na linha "um recurso
-    /// pedido por LoadResObject não é um PNG que saibamos ler".
+    /// Ignoring `nResID` cost dearly: Tekken 2 asks for entry 5034 of `tekken2.bar` and we
+    /// tried to decode the whole 734 KB `.bar` as a PNG. It failed, returned null, and the game
+    /// went on with a sizeless image — which is a division by zero when laying out the screen.
+    /// The report said what was happening all along, in the line "a resource requested by
+    /// LoadResObject is not a PNG we can read".
     ///
-    /// Com `cls` zero, o BREW deduz a classe pelo conteúdo; aqui a única que sabemos produzir é
-    /// a imagem, e é só o que os jogos pedem.
+    /// With `cls` zero, BREW infers the class from the content; here the only one we know how to
+    /// produce is the image, and that is all the games ask for.
     pub(super) fn shell_load_res_object(&mut self) -> Result<u32, CpuError> {
         let guest_path = self
             .cpu
@@ -165,9 +165,9 @@ impl<C: CpuBackend> Machine<C> {
                         .insert(format!("{guest_path} (recurso {id})"));
                     return Ok(0);
                 };
-                self.recursos_lidos.insert(id);
-                // O cabeçalho `AEEResBlob` é nosso para pular: quem pediu foi um **objeto** de
-                // imagem, não o bloco bruto que o `LoadResData` entrega.
+                self.resources_read.insert(id);
+                // The `AEEResBlob` header is ours to skip: what was asked for is an image
+                // **object**, not the raw block that `LoadResData` hands out.
                 crate::loader::resfile::blob_data(&raw)
                     .unwrap_or(&raw)
                     .to_vec()
@@ -175,14 +175,14 @@ impl<C: CpuBackend> Machine<C> {
         };
         let Some(decoded) = self.decode_resource_image(&bytes) else {
             self.assumptions
-                .insert("um recurso pedido por LoadResObject veio num formato que não sabemos ler");
+                .insert("a resource requested by LoadResObject came in a format we cannot read");
             return Ok(0);
         };
 
-        // A classe pedida decide o que sai daqui. O Tekken 2 pede `AEEIID_IBITMAP` — ele quer
-        // desenhar com `IDISPLAY_BitBlt`, não com `IIMAGE_Draw` —, e devolver um `IImage` fazia
-        // ele chamar um método de `IBitmap` numa vtable de `IImage`: o slot 12, que em `IImage`
-        // não existe.
+        // The requested class decides what comes out of here. Tekken 2 asks for
+        // `AEEIID_IBITMAP` — it wants to draw with `IDISPLAY_BitBlt`, not with `IIMAGE_Draw` —,
+        // and returning an `IImage` made it call an `IBitmap` method on an `IImage` vtable:
+        // slot 12, which does not exist in `IImage`.
         if cls == AEEIID_IBITMAP {
             return self.bitmap_from_decoded(&decoded);
         }
@@ -193,17 +193,17 @@ impl<C: CpuBackend> Machine<C> {
         Ok(image)
     }
 
-    /// Decodifica uma imagem de recurso pelo que ela é.
+    /// Decodes a resource image according to what it is.
     ///
-    /// O PNG passa pelo caminho próprio, que traz o canal alfa que os jogos usam para recortar
-    /// o sprite. O resto — BMP e JPEG — vem pelo decodificador dos ícones, que já sabe lê-los e
-    /// entrega tudo opaco, que é o que esses dois formatos são.
+    /// PNG goes through its own path, which brings the alpha channel games use to cut out the
+    /// sprite. The rest — BMP and JPEG — comes through the icon decoder, which already knows how
+    /// to read them and delivers everything opaque, which is what those two formats are.
     pub(super) fn decode_resource_image(&mut self, bytes: &[u8]) -> Option<DecodedImage> {
         if let Some(decoded) = decode_png(bytes) {
             return Some(decoded);
         }
-        if let Some(gif) = crate::video::gif::decodifica(bytes) {
-            return Some(tira_de_quadros(&gif));
+        if let Some(gif) = crate::video::gif::decode(bytes) {
+            return Some(frame_strip(&gif));
         }
         let image = crate::video::icon::decode(bytes).ok()?;
         let count = image.width * image.height;
@@ -223,17 +223,18 @@ impl<C: CpuBackend> Machine<C> {
             height: image.height as u32,
             pixels,
             opaque: vec![true; count],
-            alfa: Vec::new(),
+            alpha: Vec::new(),
             frame_width: 0,
         })
     }
 
-    /// Abre o arquivo de recursos que o jogo nomeou.
+    /// Opens the resource file the game named.
     ///
-    /// O nome pode vir nulo, e o Peggle manda nulo: o BREW entende isso como "o arquivo de
-    /// recursos deste applet". Como não há convenção de nome que sirva — o Peggle chama o dele
-    /// de `resources.bar` e o Pac-Mania de `pacmania.bar` —, o que resta é o único `.bar` que
-    /// existe ao lado do módulo. Havendo mais de um, não há como escolher, e ninguém abre.
+    /// The name may be null, and Peggle sends null: BREW takes that as "this applet's resource
+    /// file". Since there is no naming convention that works — Peggle calls its file
+    /// `resources.bar` and Pac-Mania calls its own `pacmania.bar` —, what is left is the only
+    /// `.bar` that exists next to the module. If there is more than one, there is no way to
+    /// choose, and none is opened.
     pub(super) fn open_res_file(
         &mut self,
         pointer: u32,
@@ -254,7 +255,7 @@ impl<C: CpuBackend> Machine<C> {
         self.resources.open(&path)
     }
 
-    /// O único `.bar` ao lado do módulo, se houver exatamente um.
+    /// The only `.bar` next to the module, if there is exactly one.
     pub(super) fn default_res_file(&self) -> Option<std::path::PathBuf> {
         let mut found = std::fs::read_dir(self.vfs.root())
             .ok()?
@@ -268,43 +269,44 @@ impl<C: CpuBackend> Machine<C> {
         }
     }
 
-    /// Escolhe um idioma quando o banco de preferências ainda não tem um.
+    /// Picks a language when the preferences database does not have one yet.
     ///
-    /// A Z-Wheel guarda em `PREFSINFO.Lang` a **etiqueta** do idioma empacotada em quatro
-    /// bytes — `"pt  "` vira `0x20207470` —, e não um índice. Quem monta a tela do z-pad
-    /// percorre a lista de idiomas do módulo comparando a etiqueta de cada um com esse valor;
-    /// sem achar, devolve zero e o jogo repete `Couldn't create z-pad instruction form (6)`
-    /// para sempre. O pacote nasce com `Lang = 0`, que é "ninguém escolheu ainda": no console
-    /// quem preenche isso é a tela de primeira configuração, que ainda não alcançamos.
+    /// The Z-Wheel stores in `PREFSINFO.Lang` the language **tag** packed into four bytes —
+    /// `"pt  "` becomes `0x20207470` —, not an index. Whatever builds the z-pad screen walks the
+    /// module's language list comparing each one's tag with that value; when it finds nothing, it
+    /// returns zero and the game repeats `Couldn't create z-pad instruction form (6)` forever.
+    /// The package ships with `Lang = 0`, which means "nobody has chosen yet": on the console
+    /// what fills it in is the first-setup screen, which we have not reached yet.
     ///
-    /// Escolher por conta é uma hipótese, e fica anotada como tal. É o português porque é o
-    /// idioma do aparelho que a TecToy vendeu, e porque `tectoy_pt.brf` está no pacote.
-    pub(super) fn escolhe_idioma(&mut self, db: &crate::brew::sql::Database) {
-        /// `"pt  "` lido como uma palavra de 32 bits, que é a forma como o módulo compara.
-        const PORTUGUES: u32 = u32::from_le_bytes(*b"pt  ");
-        let sem_escolha = db
+    /// Choosing on our own is an assumption, and it is recorded as such. It is Portuguese
+    /// because that is the language of the device TecToy sold, and because `tectoy_pt.brf` is in
+    /// the package.
+    pub(super) fn choose_language(&mut self, db: &crate::brew::sql::Database) {
+        /// `"pt  "` read as a 32-bit word, which is how the module compares it.
+        const PORTUGUESE: u32 = u32::from_le_bytes(*b"pt  ");
+        let no_choice = db
             .exec("SELECT dwValue FROM PREFSINFO WHERE PREFSINFO.name = 'Lang'")
             .ok()
-            .and_then(|linhas| linhas.into_iter().next())
-            .and_then(|linha| linha.values.into_iter().next().flatten())
-            .is_some_and(|valor| valor == "0");
-        if !sem_escolha {
+            .and_then(|lines| lines.into_iter().next())
+            .and_then(|line| line.values.into_iter().next().flatten())
+            .is_some_and(|value| value == "0");
+        if !no_choice {
             return;
         }
-        let gravou = db.exec(&format!(
-            "UPDATE PREFSINFO SET dwValue = {PORTUGUES} WHERE PREFSINFO.name = 'Lang'"
+        let saved = db.exec(&format!(
+            "UPDATE PREFSINFO SET dwValue = {PORTUGUESE} WHERE PREFSINFO.name = 'Lang'"
         ));
-        if gravou.is_ok() {
+        if saved.is_ok() {
             self.assumptions
-                .insert("o idioma não estava escolhido no banco e assumimos português");
+                .insert("the language was not chosen in the database and we assumed Portuguese");
         }
     }
 
     /// `int ISHELL_LoadResString(IShell *po, const char *pszResFile, int16 nResID,
     /// AECHAR *pBuff, int nSize)`.
     ///
-    /// Devolve **quantos caracteres** foram escritos, e zero quando o recurso não existe — que
-    /// é resposta legítima, não erro.
+    /// Returns **how many characters** were written, and zero when the resource does not exist —
+    /// which is a legitimate answer, not an error.
     pub(super) fn shell_load_res_string(&mut self) -> Result<u32, CpuError> {
         let (file, id) = (
             self.cpu.read_reg(Reg::R1),
@@ -317,7 +319,7 @@ impl<C: CpuBackend> Machine<C> {
         if buffer == 0 || capacity < 2 {
             return Ok(0);
         }
-        // `nSize` é em **bytes**, e cada `AECHAR` ocupa dois; o terminador entra na conta.
+        // `nSize` is in **bytes**, and each `AECHAR` takes two; the terminator counts too.
         let room = (capacity as usize / 2).saturating_sub(1);
         let written = text.len().min(room);
         let bytes: Vec<u8> = text[..written]
@@ -330,10 +332,11 @@ impl<C: CpuBackend> Machine<C> {
     }
 
     /// `void *ISHELL_LoadResData(IShell *po, const char *pszResFile, uint16 nResID,
-    /// ResType nType)` e a variante `Ex`, que ainda recebe `void *pBuf, uint32 *pnBufSize`.
+    /// ResType nType)` and the `Ex` variant, which also takes `void *pBuf, uint32 *pnBufSize`.
     ///
-    /// A documentação é explícita: o que sai daqui é o conteúdo **bruto** do recurso, cabeçalho
-    /// `AEEResBlob` incluído. Quem interpreta é o jogo, com o `RESBLOB_DATA()`.
+    /// The documentation is explicit: what comes out of here is the **raw** content of the
+    /// resource, `AEEResBlob` header included. The game is the one that interprets it, with
+    /// `RESBLOB_DATA()`.
     pub(super) fn shell_load_res_data(&mut self, with_buffer: bool) -> Result<u32, CpuError> {
         let (file, id) = (
             self.cpu.read_reg(Reg::R1),
@@ -350,7 +353,7 @@ impl<C: CpuBackend> Machine<C> {
         let len = data.len() as u32;
 
         if !with_buffer {
-            // Sem buffer do chamador, o BREW aloca — e quem libera é o `FreeResData`.
+            // Without a caller buffer, BREW allocates — and `FreeResData` is what frees it.
             let ptr = self.malloc(len)?;
             if ptr != 0 {
                 self.cpu.write_mem(ptr, &data)?;
@@ -359,7 +362,7 @@ impl<C: CpuBackend> Machine<C> {
         }
 
         let (buffer, size_out) = (self.stack_arg(0)?, self.stack_arg(1)?);
-        // `pBuf` valendo -1 pede só o tamanho, sem copiar nada.
+        // A `pBuf` of -1 asks only for the size, without copying anything.
         if buffer == u32::MAX {
             self.write_at(size_out, len)?;
             return Ok(u32::MAX);
@@ -372,21 +375,21 @@ impl<C: CpuBackend> Machine<C> {
             self.write_at(size_out, len)?;
             return Ok(ptr);
         }
-        // Com buffer do chamador, `*pnBufSize` chega dizendo o tamanho dele. Não cabendo, a
-        // documentação manda devolver nulo.
+        // With a caller buffer, `*pnBufSize` arrives holding its size. If it does not fit, the
+        // documentation says to return null.
         let declared = match size_out {
             0 => 0,
             _ => self.cpu.read_u32(size_out)?,
         };
-        // Nem todo jogo preenche o `*pnBufSize` de entrada. O Peggle consulta o tamanho do
-        // recurso, aloca os 64.629 bytes que a consulta devolveu e chama de novo com o
-        // `*pnBufSize` valendo 6 — o número do tipo, que ficou na variável. Recusar por causa
-        // disso deixava o buffer zerado, e o decodificador recebia sessenta mil bytes de zeros:
-        // o jogo quebrava logo depois, num ponteiro nulo que ele nem confere.
+        // Not every game fills in the input `*pnBufSize`. Peggle queries the resource size,
+        // allocates the 64,629 bytes the query returned and calls again with `*pnBufSize` set
+        // to 6 — the type number, which was left in the variable. Refusing because of that left
+        // the buffer zeroed, and the decoder got sixty thousand bytes of zeros: the game crashed
+        // right after, on a null pointer it does not even check.
         //
-        // O tamanho do bloco no heap é a medida honesta: não é o número que o jogo disse, é o
-        // que ele de fato reservou. Assim a cópia continua limitada ao que existe.
-        let capacity = declared.max(self.tamanho_do_bloco(buffer).unwrap_or(0));
+        // The size of the block on the heap is the honest measure: it is not the number the game
+        // said, it is what it actually reserved. That way the copy stays limited to what exists.
+        let capacity = declared.max(self.block_size(buffer).unwrap_or(0));
         if capacity < len {
             self.write_at(size_out, len)?;
             return Ok(0);
@@ -398,45 +401,46 @@ impl<C: CpuBackend> Machine<C> {
 
     /// `uint32 ISHELL_GetClassItemID(IShell *po, AEECLSID cls)`.
     ///
-    /// O item ID é o número que a loja do BREW dá ao pacote que instalou o módulo — e é
-    /// literalmente o nome do diretório em que o `.mod` vive (`mod/277083/bjt.mod`). Não é
-    /// palpite: é a mesma numeração que aparece no `.mif` e no caminho da ROM.
+    /// The item ID is the number the BREW store gives the package that installed the module —
+    /// and it is literally the name of the directory the `.mod` lives in (`mod/277083/bjt.mod`).
+    /// It is not a guess: it is the same numbering that appears in the `.mif` and in the ROM
+    /// path.
     ///
-    /// A documentação manda devolver 0 quando a classe não é de um módulo baixado, que é o
-    /// que fazemos para qualquer classe que não seja a do applet carregado.
+    /// The documentation says to return 0 when the class is not from a downloaded module, which
+    /// is what we do for any class that is not the loaded applet's.
     pub(super) fn shell_get_class_item_id(&mut self) -> u32 {
         let cls = self.cpu.read_reg(Reg::R1);
-        self.item_id_de(cls)
+        self.item_id_of(cls)
     }
 
-    /// O item ID de uma classe instalada. Ver [`Machine::shell_get_class_item_id`].
+    /// The item ID of an installed class. See [`Machine::shell_get_class_item_id`].
     ///
-    /// **Esta correção não foi a causa do gesto da Z-Wheel, e é bom que fique dito.** Eu cheguei a
-    /// ela lendo o desmonte do tratador de evento da roda, que chama um método por um deslocamento
-    /// de vtable — e o instrumento mostrou que `GetClassItemID` **nunca é despachado**. O
-    /// deslocamento era de outro objeto. O que fica é o que a API manda: o item ID é do módulo
-    /// instalado, e devolver zero para um applet que existe é resposta errada, com ou sem a
-    /// Z-Wheel.
-    fn item_id_de(&self, cls: u32) -> u32 {
-        // **O item ID vale para qualquer applet instalado, e não só para o carregado.** Era aqui
-        // que a Z-Wheel parava: ela pergunta o id do jogo **escolhido**, que por definição não é a
-        // classe dela, e a resposta era sempre zero. Sem o id, o lançamento nunca acontece — ela
-        // navega, a tela muda, e `StartApplet` jamais é chamado. Medido no rastreio do `IShell`,
-        // com a chamada aparecendo a cada tecla e o valor sempre zero.
+    /// **This fix was not the cause of the Z-Wheel gesture, and it is worth saying so.** I got
+    /// to it reading the disassembly of the wheel's event handler, which calls a method through
+    /// a vtable offset — and the instrumentation showed that `GetClassItemID` **is never
+    /// dispatched**. The offset belonged to another object. What stays is what the API says: the
+    /// item ID belongs to the installed module, and returning zero for an applet that exists is
+    /// the wrong answer, with or without the Z-Wheel.
+    fn item_id_of(&self, cls: u32) -> u32 {
+        // **The item ID applies to any installed applet, not just the loaded one.** This is where
+        // the Z-Wheel stopped: it asks for the id of the **chosen** game, which by definition is
+        // not its own class, and the answer was always zero. Without the id, the launch never
+        // happens — it navigates, the screen changes, and `StartApplet` is never called. Measured
+        // in the `IShell` trace, with the call showing up on every key and the value always zero.
         //
-        // O número sai do nome do `.mif`, que é o número da pasta do módulo — a mesma numeração do
-        // caminho e do `ISHELL_GetClassItemID` do console.
-        if let Some((_, nome)) = self
-            .modulos_instalados
+        // The number comes from the `.mif` name, which is the module's folder number — the same
+        // numbering as the path and as the console's `ISHELL_GetClassItemID`.
+        if let Some((_, mif_name)) = self
+            .installed_modules
             .iter()
-            .find(|(classe, _)| *classe == cls)
+            .find(|(class_id, _)| *class_id == cls)
         {
-            if let Ok(id) = nome.parse() {
+            if let Ok(id) = mif_name.parse() {
                 return id;
             }
         }
-        // A classe do applet carregado responde pelo próprio diretório, como antes: é o caso do
-        // jogo que roda sozinho e pergunta o id de si mesmo.
+        // The loaded applet's class answers with its own directory, as before: that is the case
+        // of a game that runs on its own and asks for its own id.
         if cls == self.applet_class {
             return self
                 .vfs
@@ -451,30 +455,30 @@ impl<C: CpuBackend> Machine<C> {
 
     /// `ISHELL_GetDeviceInfo(IShell *po, AEEDeviceInfo *pi)`.
     ///
-    /// Preenchemos só os campos do começo da struct, que têm posição inequívoca: os oito
-    /// `uint16` iniciais. O que vem depois depende de como o compilador empacota bitfields, e
-    /// chutar layout aqui seria pior do que deixar zerado. Os campos a partir de `wStructSize`
-    /// são preenchidos pelo próprio chamador e não são tocados.
+    /// We fill in only the fields at the start of the struct, whose position is unambiguous: the
+    /// first eight `uint16`. What comes after depends on how the compiler packs bitfields, and
+    /// guessing a layout here would be worse than leaving it zeroed. The fields from
+    /// `wStructSize` on are filled in by the caller itself and are not touched.
     pub(super) fn shell_get_device_info(&mut self) -> Result<u32, CpuError> {
         let info = self.cpu.read_reg(Reg::R1);
         if info == 0 {
             return Ok(SUCCESS);
         }
 
-        // O chamador escreve `wStructSize` **antes** da chamada para pedir os campos
-        // estendidos, e o Bejeweled Twist pede: manda 64. Enquanto só preenchíamos os 44
-        // primeiros bytes, ele recebia `wMaxPath = 0` — nenhum caminho de arquivo caberia.
+        // The caller writes `wStructSize` **before** the call to ask for the extended fields,
+        // and Bejeweled Twist does ask: it sends 64. While we only filled in the first 44 bytes,
+        // it got `wMaxPath = 0` — no file path would fit.
         let mut requested = [0u8; 2];
         self.cpu.read_mem(info + 44, &mut requested)?;
         let requested = u16::from_le_bytes(requested) as u32;
 
-        // Zera até `dwLang`, o último campo antes da parte que o chamador preenche.
+        // Zero up to `dwLang`, the last field before the part the caller fills in.
         self.cpu.write_mem(info, &[0u8; 44])?;
 
         let fields: [u16; 8] = [
             SCREEN_WIDTH,
             SCREEN_HEIGHT,
-            0, // cxAltScreen: o Zeebo não tem segunda tela
+            0, // cxAltScreen: the Zeebo has no second screen
             0, // cyAltScreen
             8, // cxScrollBar
             AEE_ENC_ISOLATIN1,
@@ -485,27 +489,27 @@ impl<C: CpuBackend> Machine<C> {
             self.cpu
                 .write_mem(info + i as u32 * 2, &value.to_le_bytes())?;
         }
-        // `dwRAM` — a documentação chama de "tamanho inicial do heap do BREW".
+        // `dwRAM` — the documentation calls it "initial size of the BREW heap".
         self.cpu.write_u32(info + 24, loader::HEAP_SIZE as u32)?;
 
         if requested >= DEVICE_INFO_SIZE {
             self.cpu
                 .write_mem(info + 44, &(DEVICE_INFO_SIZE as u16).to_le_bytes())?;
-            self.cpu.write_u32(info + 48, 0)?; // dwNetLinger: sem rede, nada a manter aberto
-            self.cpu.write_u32(info + 52, 0)?; // dwSleepDefer: o console não dorme
+            self.cpu.write_u32(info + 48, 0)?; // dwNetLinger: no network, nothing to keep open
+            self.cpu.write_u32(info + 52, 0)?; // dwSleepDefer: the console does not sleep
             self.cpu
                 .write_mem(info + 56, &(AEE_MAX_FILE_NAME as u16).to_le_bytes())?;
-            self.cpu.write_u32(info + 60, 0)?; // dwPlatformID: não sabemos o do Zeebo
+            self.cpu.write_u32(info + 60, 0)?; // dwPlatformID: we do not know the Zeebo's
         }
         Ok(SUCCESS)
     }
 
     /// `ISHELL_GetDeviceInfoEx(IShell *po, AEEDeviceItem nItem, void *pBuff, int *pnSize)`.
     ///
-    /// `pnSize` é de entrada e saída: entra com o tamanho do buffer e sai com o que o item
-    /// precisa. Com `pBuff` nulo a chamada serve só para perguntar esse tamanho, e é assim que
-    /// o Zeebo Sports Peteca pede o IMEI — devolver sucesso sem escrever ali deixava o jogo
-    /// alocar com lixo e ler fora da memória.
+    /// `pnSize` is both input and output: it comes in with the buffer size and goes out with
+    /// what the item needs. With a null `pBuff` the call only asks for that size, and that is how
+    /// Zeebo Sports Peteca asks for the IMEI — returning success without writing there left the
+    /// game allocating with garbage and reading outside memory.
     pub(super) fn shell_get_device_info_ex(&mut self) -> Result<u32, CpuError> {
         let (item, buffer, size) = (
             self.cpu.read_reg(Reg::R1),
@@ -515,17 +519,17 @@ impl<C: CpuBackend> Machine<C> {
         if size == 0 {
             return Ok(EBADPARM);
         }
-        // **O item pedido vai para a captura de serial**, e é o que faltava para responder "a
-        // Z-Wheel não monta a loja" com uma medida em vez de um palpite: um `EUNSUPPORTED` sem
-        // registro é indistinguível de nunca ter sido perguntado. O item que interessa aqui é o
-        // `AEE_DEVICEITEM_ADS` (29, do `AEEDeviceItems.h`): o nome do servidor de onde a loja
-        // baixa o catálogo.
+        // **The requested item goes to the serial capture**, and that is what was missing to
+        // answer "the Z-Wheel does not build the store" with a measurement instead of a guess: an
+        // unrecorded `EUNSUPPORTED` is indistinguishable from never having been asked. The item
+        // that matters here is `AEE_DEVICEITEM_ADS` (29, from `AEEDeviceItems.h`): the name of the
+        // server the store downloads the catalog from.
         if self.serial.is_some() {
-            let como = match item {
-                DEVICEITEM_IMEI => "atendido",
-                _ => "não atendido",
+            let outcome = match item {
+                DEVICEITEM_IMEI => "served",
+                _ => "not served",
             };
-            self.registra_serial(format!("<aparelho item {item} -> {como}>"));
+            self.log_serial(format!("<device item {item} -> {outcome}>"));
         }
         let value = match item {
             DEVICEITEM_IMEI => IMEI,
@@ -534,19 +538,19 @@ impl<C: CpuBackend> Machine<C> {
         let capacity = self.cpu.read_u32(size)? as usize;
         self.cpu.write_u32(size, value.len() as u32)?;
         if buffer != 0 {
-            // Cabendo ou não, o que couber é escrito: a documentação prevê o preenchimento
-            // parcial, com `pnSize` dizendo quanto faltou.
+            // Whether it fits or not, whatever fits is written: the documentation allows for
+            // partial filling, with `pnSize` saying how much was missing.
             self.cpu
                 .write_mem(buffer, &value[..capacity.min(value.len())])?;
         }
         Ok(SUCCESS)
     }
 
-    /// Manda `EVT_APP_START` para o applet, que é o que dá partida no jogo.
+    /// Sends `EVT_APP_START` to the applet, which is what starts the game.
     ///
     /// `boolean IAPPLET_HandleEvent(IApplet *po, AEEEvent evt, uint16 wParam, uint32 dwParam)`
-    /// — slot 2 da vtable de `IApplet`. Em `EVT_APP_START`, `dwParam` aponta para um
-    /// `AEEAppStart`, que montamos no heap.
+    /// — slot 2 of the `IApplet` vtable. On `EVT_APP_START`, `dwParam` points to an
+    /// `AEEAppStart`, which we build on the heap.
     pub fn start_applet(
         &mut self,
         applet: u32,
@@ -555,8 +559,8 @@ impl<C: CpuBackend> Machine<C> {
     ) -> Result<Outcome, CpuError> {
         let vtable = self.cpu.read_u32(applet)?;
         let handle_event = self.cpu.read_u32(vtable + 2 * 4)?;
-        // A partir daqui `GetAppInstance` tem o que devolver — e passa a responder sem sair
-        // da CPU.
+        // From here on `GetAppInstance` has something to return — and starts answering without
+        // leaving the CPU.
         self.current_applet = applet;
         self.install_app_instance_stub(applet)?;
 
@@ -567,7 +571,7 @@ impl<C: CpuBackend> Machine<C> {
         }
 
         // AEEAppStart: error, clsApp, pDisplay, rc (4 × int16), pszArgs = 24 bytes.
-        let start = self.aloca_interno(24)?;
+        let start = self.alloc_internal(24)?;
         if start != 0 {
             self.cpu.write_mem(start, &[0u8; 24])?;
             self.cpu.write_u32(start + 4, clsid)?;
@@ -584,48 +588,50 @@ impl<C: CpuBackend> Machine<C> {
         self.call_guest(handle_event, [applet, EVT_APP_START, 0, start], budget)
     }
 
-    /// Enfileira uma tecla do teclado, pelo código virtual do BREW.
+    /// Queues a keyboard key, by its BREW virtual code.
     ///
-    /// Não vai direto: teclado chega ao jogo como **evento**, e evento só pode ser entregue na
-    /// fronteira entre duas chamadas de API — chamar o tratador do jogo no meio de um despacho é
-    /// o caminho que já derrubou o Zeeboids. A fila é esvaziada em [`Machine::deliver_signals`].
-    /// Os applets instalados, cada um com o id do módulo — o nome do `.mif` sem extensão.
+    /// It does not go straight in: the keyboard reaches the game as an **event**, and an event
+    /// can only be delivered at the boundary between two API calls — calling the game's handler
+    /// in the middle of a dispatch is the path that already brought Zeeboids down. The queue is
+    /// drained in [`Machine::deliver_signals`].
+    /// The installed applets, each with the module id — the `.mif` name without extension.
     pub fn set_installed_applets(&mut self, applets: impl IntoIterator<Item = (u32, String)>) {
-        self.modulos_instalados = applets.into_iter().collect();
-        self.installed_applets = self.modulos_instalados.iter().map(|(c, _)| *c).collect();
+        self.installed_modules = applets.into_iter().collect();
+        self.installed_applets = self.installed_modules.iter().map(|(c, _)| *c).collect();
     }
 
-    /// Entrega ao applet um evento com `wParam`, como um widget faria ao ser ativado.
+    /// Delivers an event with `wParam` to the applet, as a widget would when activated.
     ///
-    /// **É instrumento de teste, e só isso.** O evento `0x7000` com `w = 0x4ea` é o que o tratador
-    /// da Z-Wheel lê para chamar `IShell::StartApplet` (medido no desmonte, em `0x7b4c0` e
-    /// `0x7b51c`): quem o manda no console é um widget, e no emulador a lista de widgets da roda
-    /// está vazia. Isto permite exercitar **o resto do ciclo** — o pedido de abertura, a troca de
-    /// sessão e a volta — sem depender do widget que falta.
-    pub fn entrega_evento_ao_applet(&mut self, evt: u32, w: u16) -> Result<u32, CpuError> {
+    /// **It is a test instrument, and only that.** Event `0x7000` with `w = 0x4ea` is what the
+    /// Z-Wheel's handler reads to call `IShell::StartApplet` (measured in the disassembly, at
+    /// `0x7b4c0` and `0x7b51c`): on the console a widget sends it, and in the emulator the
+    /// wheel's widget list is empty. This makes it possible to exercise **the rest of the cycle**
+    /// — the launch request, the session switch and the return — without depending on the
+    /// missing widget.
+    pub fn deliver_event_to_applet(&mut self, evt: u32, w: u16) -> Result<u32, CpuError> {
         self.send_applet_event(self.applet_class, evt, w, 0)
     }
 
-    /// O host troca de sessão depois que a chamada do guest terminou.
+    /// The host switches sessions after the guest call has finished.
     pub fn take_launch_request(&mut self) -> Option<u32> {
         self.pending_launch.take()
     }
 
     /// `ISHELL_CreateInstance(IShell *po, AEECLSID ClsId, void **ppobj)`.
     ///
-    /// É a fábrica de objetos do BREW inteiro. Cada ClassID conhecido vira um objeto nosso com
-    /// a vtable da interface correspondente; o que não conhecemos devolve `ECLASSNOTSUPPORT`,
-    /// que é uma resposta legítima — o jogo trata classe ausente como plataforma sem aquele
-    /// recurso, em vez de quebrar.
+    /// It is the object factory for all of BREW. Each known ClassID becomes one of our objects
+    /// with the vtable of the matching interface; what we do not know returns
+    /// `ECLASSNOTSUPPORT`, which is a legitimate answer — the game treats a missing class as a
+    /// platform without that feature, instead of crashing.
     pub(super) fn shell_create_instance(&mut self) -> Result<u32, CpuError> {
         let clsid = self.cpu.read_reg(Reg::R1);
         let out = self.cpu.read_reg(Reg::R2);
-        // Toda classe pedida entra no relatório, e não só a que não soubemos atender: sem a lista
-        // completa não há como ver que o jogo pediu uma classe que respondemos com a **interface
-        // errada** — que foi o caso das fontes do sistema.
-        *self.classes_pedidas.entry(clsid).or_insert(0) += 1;
+        // Every requested class goes into the report, not just the ones we could not serve:
+        // without the full list there is no way to see that the game asked for a class we
+        // answered with the **wrong interface** — which was the case with the system fonts.
+        *self.requested_classes.entry(clsid).or_insert(0) += 1;
         if self.serial.is_some() {
-            self.registra_serial(format!("<classe {clsid:#010x}>"));
+            self.log_serial(format!("<class {clsid:#010x}>"));
         }
 
         let iface = match clsid {
@@ -639,10 +645,10 @@ impl<C: CpuBackend> Machine<C> {
             AEECLSID_UNZIPSTREAM => Interface::UnzipStream,
             AEECLSID_LICENSE => Interface::License,
             AEECLSID_MEMASTREAM => Interface::MemAStream,
-            // O decodificador é um por formato no console, e todos são `IImage` alimentados por
-            // `IAStream`. O nosso olha a assinatura dos bytes, então os quatro caem no mesmo
-            // lugar — e faltando o JPEG na lista, o Zuma's Revenge recebia recusa e seguia com
-            // um ponteiro nulo até quebrar.
+            // On the console there is one decoder per format, and they are all `IImage` fed by
+            // `IAStream`. Ours looks at the byte signature, so all four land in the same place —
+            // and with JPEG missing from the list, Zuma's Revenge got a refusal and went on with a
+            // null pointer until it crashed.
             AEECLSID_PNG | AEECLSID_BMP | AEECLSID_JPEG | AEECLSID_GIF => Interface::Image,
             AEECLSID_PNGDECODER | AEECLSID_PNGDECODER_BREW | AEECLSID_JPEGDECODER_BREW => {
                 Interface::ImageDecoder
@@ -650,9 +656,9 @@ impl<C: CpuBackend> Machine<C> {
             AEECLSID_THREAD => Interface::Thread,
             AEECLSID_QEGL => Interface::Egl,
             AEECLSID_GLES11EXT => Interface::Gles11Ext,
-            // As outras cinco extensões gráficas, para quem as pedir por `CreateInstance` em vez
-            // de `QueryInterface` — o Prey Evil usa o segundo caminho, mas a fábrica é a porta
-            // documentada do BREW.
+            // The other five graphics extensions, for whoever asks for them through
+            // `CreateInstance` instead of `QueryInterface` — Prey Evil uses the second path, but
+            // the factory is BREW's documented door.
             AEEIID_GLES10EXT => Interface::Gles10Ext,
             AEEIID_GLES11EXTPAK => Interface::Gles11ExtPak,
             AEEIID_EGLGETCOLORBUFFER => Interface::EglGetColorBuffer,
@@ -666,43 +672,44 @@ impl<C: CpuBackend> Machine<C> {
             AEECLSID_COLLECTION => Interface::Collection,
             AEECLSID_SQLMGR => Interface::SqlMgr,
             AEECLSID_SOURCEUTIL => Interface::SourceUtil,
-            _ if FAMILIA_DOS_WIDGETS.contains(&clsid) => Interface::Widget,
+            _ if WIDGET_FAMILY.contains(&clsid) => Interface::Widget,
             AEECLSID_CONTROL => Interface::Control,
             AEECLSID_ZEEBOMCP => Interface::ZeeboMcp,
             AEECLSID_CONFIG => Interface::Config,
-            AEECLSID_VETOR => Interface::Vetor,
-            AEECLSID_28E3C => Interface::Classe28e3c,
+            AEECLSID_VECTOR => Interface::Vector,
+            AEECLSID_28E3C => Interface::Class28e3c,
             AEECLSID_CM => Interface::Cm,
             AEECLSID_SYSTEMCTL => Interface::SystemCtl,
-            // **`0x01006c01` estava de fora**, e a propria Z-Wheel diz o preco: ela registra
+            // **`0x01006c01` was left out**, and the Z-Wheel itself states the cost: it logs
             // `ERROR: Unable to create instance of AEECLSID_LCT_SIMCARDCTL, cannot do SIM check`
-            // (`tectoymain.c:1668`). A interface existe e e atendida desde sempre
-            // ([`Interface::SimCardCtl`]); o que faltava era a fabrica conhecer a classe, como ja
-            // conhecia a vizinha `0x01006c02`. Um `CreateInstance` que devolve nulo vira ponteiro
-            // nulo dentro do applet, e e assim que "falta uma classe" reaparece adiante como
-            // "acesso invalido a 0x0", tres camadas depois.
-            // **`AEECLSID_SIMCARDCTL` fica de FORA, e é medido duas vezes.** O `268d6fb` a pôs
-            // aqui para calar o `tectoymain.c:1668 ERROR: Unable to create instance of
-            // AEECLSID_LCT_SIMCARDCTL, cannot do SIM check`, e o comentário longo da
-            // [`Interface::SimCardCtl`](crate::brew::aee::Interface::SimCardCtl) já dizia que
-            // aquele log **é o jogo tomando o caminho certo**: recusada, a Z-Wheel põe o estado
-            // em `0x27` e o `0x82464` chama a `0x1f7b4`, que avança a interface; oferecida, o
-            // slot 3 (a verificação) responde zero, o estado vira `0x28`, e o `0x82464` **não faz
-            // nada com ele** — a tela fica onde está, calada. Medido no harness sem janela em
-            // 22/09/2026: com a classe oferecida, a roda para depois de 7 s de relógio virtual,
-            // com três widgets na árvore (a raiz e dois objetos vazios), nunca cria o palco
-            // (`0x01028e05`) nem o roller (`0x01028e14`), e sete teclas do roteiro não mudam um
-            // pixel. É o `0x28` que o comentário descreve.
+            // (`tectoymain.c:1668`). The interface exists and has always been served
+            // ([`Interface::SimCardCtl`]); what was missing was for the factory to know the class,
+            // as it already knew its neighbor `0x01006c02`. A `CreateInstance` that returns null
+            // becomes a null pointer inside the applet, and that is how "a class is missing"
+            // reappears further on as "invalid access to 0x0", three layers later.
+            // **`AEECLSID_SIMCARDCTL` stays OUT, and it was measured twice.** `268d6fb` put it
+            // here to silence `tectoymain.c:1668 ERROR: Unable to create instance of
+            // AEECLSID_LCT_SIMCARDCTL, cannot do SIM check`, and the long comment on
+            // [`Interface::SimCardCtl`](crate::brew::aee::Interface::SimCardCtl) already said that
+            // this log **is the game taking the right path**: when refused, the Z-Wheel sets the
+            // state to `0x27` and `0x82464` calls `0x1f7b4`, which advances the interface; when
+            // offered, slot 3 (the check) answers zero, the state becomes `0x28`, and `0x82464`
+            // **does nothing with it** — the screen stays where it is, silent. Measured in the
+            // windowless harness on 2026-09-22: with the class offered, the wheel stops after 7 s
+            // of virtual clock, with three widgets in the tree (the root and two empty objects),
+            // never creates the stage (`0x01028e05`) or the roller (`0x01028e14`), and seven keys
+            // from the script do not change a single pixel. It is the `0x28` the comment
+            // describes.
             // AEECLSID_SIMCARDCTL => Interface::SimCardCtl,
-            // **`IFont`, não `ITypeface`.** O `AEECLSID_ROLLER_FONT` (0x0102f67c) é o
-            // `FONT_STANDARD18B`, uma fonte do sistema — estava mapeado para o `ITypeface`, que é
-            // outra interface, com outros métodos.
-            _ if crate::machine::font::CLASSES_DE_FONTE.contains(&clsid) => {
-                let resultado = self.cria_fonte(clsid, out)?;
-                if resultado != SUCCESS {
+            // **`IFont`, not `ITypeface`.** `AEECLSID_ROLLER_FONT` (0x0102f67c) is
+            // `FONT_STANDARD18B`, a system font — it was mapped to `ITypeface`, which is another
+            // interface, with other methods.
+            _ if crate::machine::font::FONT_CLASSES.contains(&clsid) => {
+                let result = self.create_font(clsid, out)?;
+                if result != SUCCESS {
                     self.unknown_classes.insert(clsid);
                 }
-                return Ok(resultado);
+                return Ok(result);
             }
             AEECLSID_TYPEFACE => Interface::Typeface,
             AEECLSID_MD5 => Interface::Hash,
@@ -711,13 +718,13 @@ impl<C: CpuBackend> Machine<C> {
             AEECLSID_MEDIA | AEECLSID_MEDIAMIDI | AEECLSID_MEDIAMP3 | AEECLSID_MEDIAMIDIOUTMSG
             | AEECLSID_MEDIAADPCM
             | AEECLSID_MEDIAPCM => Interface::Media,
-            _ if AEECLSID_MEDIA_FAMILIA.contains(&clsid) => Interface::Media,
-            // O módulo de extensão entra antes da sonda e antes da recusa, porque ele é a
-            // resposta **certa**: a classe existe, implementada em ARM pelo próprio pacote do
-            // jogo, e é assim que o console a atende.
-            _ if self.tem_extensao_para(clsid) => {
-                let objeto = self.cria_pela_extensao(clsid)?;
-                if objeto == 0 {
+            _ if AEECLSID_MEDIA_FAMILY.contains(&clsid) => Interface::Media,
+            // The extension module comes before the probe and before the refusal, because it is
+            // the **right** answer: the class exists, implemented in ARM by the game's own
+            // package, and that is how the console serves it.
+            _ if self.has_extension_for(clsid) => {
+                let ext_object = self.create_via_extension(clsid)?;
+                if ext_object == 0 {
                     self.unknown_classes.insert(clsid);
                     if out != 0 {
                         self.cpu.write_u32(out, 0)?;
@@ -725,21 +732,22 @@ impl<C: CpuBackend> Machine<C> {
                     return Ok(ECLASSNOTSUPPORT);
                 }
                 if out != 0 {
-                    self.cpu.write_u32(out, objeto)?;
+                    self.cpu.write_u32(out, ext_object)?;
                 }
                 return Ok(SUCCESS);
             }
-            // **`AEECLSID_DOWNLOAD`.** Ver [`AEECLSID_DOWNLOAD`]: a classe do `IDownload`, que
-            // o SDK lista como `AEECLSID_PRIV` (= `QVERSION` = `0x01000000`). Atendida pela
-            // sonda por enquanto — o que a Z-Wheel chama nela sai no relatório com
-            // `ZEEBX_ROM_SONDA`, e é essa medição que diz quais slots valem implementar.
+            // **`AEECLSID_DOWNLOAD`.** See [`AEECLSID_DOWNLOAD`]: the `IDownload` class, which
+            // the SDK lists as `AEECLSID_PRIV` (= `QVERSION` = `0x01000000`). Served by the probe
+            // for now — what the Z-Wheel calls on it shows up in the report with
+            // `ZEEBX_ROM_PROBE`, and that measurement is what says which slots are worth
+            // implementing.
             AEECLSID_DOWNLOAD => {
                 let object = self.new_object(Interface::Probe)?;
                 if object == 0 {
                     return Ok(ENOMEMORY);
                 }
                 self.assumptions.insert(
-                    "a classe do download é atendida por um objeto que responde sucesso a tudo",
+                    "the download class is served by an object that answers success to everything",
                 );
                 self.probe_objects.insert(object, clsid);
                 if out != 0 {
@@ -747,14 +755,14 @@ impl<C: CpuBackend> Machine<C> {
                 }
                 return Ok(SUCCESS);
             }
-            // Uma classe do firmware que o jogo usa sem conferir: ver [`CLASSES_POR_OBSERVACAO`].
-            _ if CLASSES_POR_OBSERVACAO.contains(&clsid) => {
+            // A firmware class the game uses without checking: see [`CLASSES_UNDER_OBSERVATION`].
+            _ if CLASSES_UNDER_OBSERVATION.contains(&clsid) => {
                 let object = self.new_object(Interface::Probe)?;
                 if object == 0 {
                     return Ok(ENOMEMORY);
                 }
                 self.assumptions.insert(
-                    "uma classe do firmware é atendida por um objeto que responde sucesso a tudo",
+                    "a firmware class is served by an object that answers success to everything",
                 );
                 self.probe_objects.insert(object, clsid);
                 if out != 0 {
@@ -762,9 +770,9 @@ impl<C: CpuBackend> Machine<C> {
                 }
                 return Ok(SUCCESS);
             }
-            // A sonda entra antes da recusa: o jogo recebe um objeto que não faz nada e segue,
-            // e o que ele chamar nele vai para o relatório. É como se descobre que interface a
-            // classe é, sem header e sem adivinhação.
+            // The probe comes before the refusal: the game gets an object that does nothing and
+            // moves on, and whatever it calls on it goes to the report. That is how one finds out
+            // which interface the class is, without a header and without guessing.
             _ if self.probe_classes.contains(&clsid) => {
                 let object = self.new_object(Interface::Probe)?;
                 if object == 0 {
@@ -790,28 +798,28 @@ impl<C: CpuBackend> Machine<C> {
         };
         self.cpu.write_u32(obj, loader::vtable_addr(iface))?;
         self.transparency.remove(&obj);
-        // Uma coleção nasce vazia e com o cursor no começo. Sem esse registro ela não existiria
-        // para os métodos, e um `AtEnd` numa coleção desconhecida responderia "acabou" por
-        // acaso — a resposta certa pelo motivo errado.
+        // A collection starts empty with the cursor at the beginning. Without this record it
+        // would not exist for the methods, and an `AtEnd` on an unknown collection would answer
+        // "finished" by accident — the right answer for the wrong reason.
         if iface == Interface::Collection {
             self.collections.insert(obj, (Vec::new(), 0));
         }
-        // Pelo mesmo motivo da coleção: um widget sem registro responderia "não tenho esse
-        // filho" por não existir, e não por não ter o filho.
-        // Mesma razão da coleção: sem o registro, um `Tamanho` numa lista desconhecida
-        // responderia zero por ela não existir, e não por estar vazia.
-        if iface == Interface::Vetor {
-            self.vetores.insert(obj, (Vec::new(), 0));
+        // For the same reason as the collection: an unrecorded widget would answer "I do not
+        // have that child" because it does not exist, not because it lacks the child.
+        // Same reason as the collection: without the record, a `Tamanho` on an unknown list
+        // would answer zero because the list does not exist, not because it is empty.
+        if iface == Interface::Vector {
+            self.vectors.insert(obj, (Vec::new(), 0));
         }
         if iface == Interface::Widget {
-            // Um widget nasce visível: o jogo só chama o slot 6 para **esconder**.
-            self.proximo_serial += 1;
+            // A widget starts out visible: the game only calls slot 6 to **hide** it.
+            self.next_serial += 1;
             self.widgets.insert(
                 obj,
                 Widget {
-                    visivel: true,
-                    classe: clsid,
-                    serial: self.proximo_serial,
+                    visible: true,
+                    class_id: clsid,
+                    serial: self.next_serial,
                     ..Widget::default()
                 },
             );
@@ -822,29 +830,30 @@ impl<C: CpuBackend> Machine<C> {
         Ok(SUCCESS)
     }
 
-    /// Cria a instância do applet chamando `IModule::CreateInstance` no módulo carregado.
+    /// Creates the applet instance by calling `IModule::CreateInstance` on the loaded module.
     ///
-    /// Assinatura, de `AEEModGen.c`:
+    /// Signature, from `AEEModGen.c`:
     /// `int AEEMod_CreateInstance(IModule *po, IShell *pIShell, AEECLSID ClsId, void **ppObj)`.
-    /// `CreateInstance` é o slot 2 da vtable de `IModule` (depois de `AddRef` e `Release`).
-    /// Se algum módulo de extensão do pacote declara fornecer esta classe.
-    fn tem_extensao_para(&self, clsid: u32) -> bool {
+    /// `CreateInstance` is slot 2 of the `IModule` vtable (after `AddRef` and `Release`).
+    /// Whether any extension module in the package declares that it provides this class.
+    fn has_extension_for(&self, clsid: u32) -> bool {
         self.module
             .extensions
             .iter()
             .any(|ext| ext.classes.contains(&clsid))
     }
 
-    /// Cria um objeto pedindo-o ao módulo de extensão que o fornece.
+    /// Creates an object by asking the extension module that provides it.
     ///
-    /// São dois passos, e os mesmos que o console dá: `AEEMod_Load` na primeira vez, para a
-    /// extensão entregar o `IModule*` dela, e depois `IModule::CreateInstance` com o ClassID
-    /// pedido. O objeto que volta é implementado em ARM pela extensão — daí em diante o jogo
-    /// conversa direto com ele, e nós não precisamos saber que interface é.
+    /// There are two steps, the same ones the console takes: `AEEMod_Load` the first time, so
+    /// the extension hands over its `IModule*`, and then `IModule::CreateInstance` with the
+    /// requested ClassID. The object that comes back is implemented in ARM by the extension —
+    /// from then on the game talks to it directly, and we do not need to know which interface it
+    /// is.
     ///
-    /// Devolve zero quando não deu, e o chamador transforma isso em `ECLASSNOTSUPPORT`.
-    fn cria_pela_extensao(&mut self, clsid: u32) -> Result<u32, CpuError> {
-        let budget = self.orcamento.max(1);
+    /// Returns zero when it did not work, and the caller turns that into `ECLASSNOTSUPPORT`.
+    fn create_via_extension(&mut self, clsid: u32) -> Result<u32, CpuError> {
+        let budget = self.budget.max(1);
         let Some(i) = self
             .module
             .extensions
@@ -858,23 +867,24 @@ impl<C: CpuBackend> Machine<C> {
             self.module.extensions[i].out_module,
         );
 
-        // Primeira vez: carrega o módulo. `Some(0)` marca a tentativa que falhou, para um jogo
-        // que peça a classe a cada quadro não pagar a carga toda vez nem enchê-la de log.
+        // First time: load the module. `Some(0)` marks the attempt that failed, so that a game
+        // that asks for the class every frame does not pay for the load every time nor flood it
+        // with logs.
         if self.ext_modules[i].is_none() {
             self.cpu.write_u32(out_module, 0)?;
-            let desfecho = self.call_guest_aninhado(
+            let outcome = self.call_guest_nested(
                 entry,
                 [self.module.shell, self.module.helpers, out_module, 0],
                 budget,
             )?;
-            let ptr = if matches!(desfecho, Outcome::Returned { code: 0 }) {
+            let ptr = if matches!(outcome, Outcome::Returned { code: 0 }) {
                 self.cpu.read_u32(out_module).unwrap_or(0)
             } else {
                 0
             };
             if ptr == 0 {
                 self.assumptions
-                    .insert("um módulo de extensão do pacote não carregou");
+                    .insert("an extension module in the package did not load");
             }
             self.ext_modules[i] = Some(ptr);
         }
@@ -883,20 +893,20 @@ impl<C: CpuBackend> Machine<C> {
             return Ok(0);
         }
 
-        // `IModule::CreateInstance(po, shell, clsid, &saida)` — o slot 2, o mesmo do applet.
+        // `IModule::CreateInstance(po, shell, clsid, &output)` — slot 2, the same as the applet.
         let vtable = self.cpu.read_u32(modulo)?;
         let create_instance = self.cpu.read_u32(vtable + 2 * 4)?;
-        let saida = out_module + 4;
-        self.cpu.write_u32(saida, 0)?;
-        let desfecho = self.call_guest_aninhado(
+        let output = out_module + 4;
+        self.cpu.write_u32(output, 0)?;
+        let outcome = self.call_guest_nested(
             create_instance,
-            [modulo, self.module.shell, clsid, saida],
+            [modulo, self.module.shell, clsid, output],
             budget,
         )?;
-        if !matches!(desfecho, Outcome::Returned { code: 0 }) {
+        if !matches!(outcome, Outcome::Returned { code: 0 }) {
             return Ok(0);
         }
-        self.cpu.read_u32(saida)
+        self.cpu.read_u32(output)
     }
 
     pub fn create_applet(&mut self, clsid: u32, budget: u64) -> Result<AppletResult, CpuError> {
@@ -908,7 +918,7 @@ impl<C: CpuBackend> Machine<C> {
         let vtable = self.cpu.read_u32(module_ptr)?;
         let create_instance = self.cpu.read_u32(vtable + 2 * 4)?;
 
-        // O ponteiro de saída fica logo depois do `IModule*`, na área de objetos.
+        // The output pointer sits right after the `IModule*`, in the object area.
         let out_applet = self.module.out_module + 4;
         self.cpu.write_u32(out_applet, 0)?;
 
@@ -928,17 +938,18 @@ impl<C: CpuBackend> Machine<C> {
 }
 
 #[cfg(test)]
-mod testes_do_item_id {
+mod item_id_tests {
     use super::*;
 
-    /// **O item ID vale para qualquer applet instalado**, e não só para o carregado.
+    /// **The item ID applies to any installed applet**, not just the loaded one.
     ///
-    /// O número é o da pasta do módulo, que é o nome do `.mif`. Devolver zero para um applet que
-    /// existe é resposta errada: a documentação manda zero só para classe que **não** é de módulo
-    /// baixado.
+    /// The number is the module's folder number, which is the `.mif` name. Returning zero for an
+    /// applet that exists is the wrong answer: the documentation says zero only for a class that
+    /// is **not** from a downloaded module.
     #[test]
-    fn o_item_id_sai_para_applet_instalado() {
-        // O menor módulo que o carregador aceita: o alvo aqui é a tabela de applets, não o código.
+    fn the_item_id_comes_out_for_an_installed_applet() {
+        // The smallest module the loader accepts: the target here is the applet table, not the
+        // code.
         let code = [
             0xe3a0_0010u32.to_le_bytes(), // mov r0, #16
             0xe12f_ff1eu32.to_le_bytes(), // bx lr
@@ -946,15 +957,15 @@ mod testes_do_item_id {
         .concat();
         let image = crate::loader::modfile::ModImage::parse(code).unwrap();
         let module = crate::loader::load(&image).unwrap();
-        let mut machine = Machine::new(crate::cpu::BackendPadrao::new().unwrap(), module, ".");
+        let mut machine = Machine::new(crate::cpu::DefaultBackend::new().unwrap(), module, ".");
         machine.cpu.reset(&machine.module.mem).unwrap();
         machine.set_installed_applets([
             (0x0102_8e35u32, "274755".to_string()),
             (0x0102_8e36, "279888".to_string()),
         ]);
-        assert_eq!(machine.item_id_de(0x0102_8e35), 274755);
-        assert_eq!(machine.item_id_de(0x0102_8e36), 279888);
-        // Classe que não é de módulo instalado continua devolvendo zero, como a API manda.
-        assert_eq!(machine.item_id_de(0x0100_0001), 0);
+        assert_eq!(machine.item_id_of(0x0102_8e35), 274755);
+        assert_eq!(machine.item_id_of(0x0102_8e36), 279888);
+        // A class that is not from an installed module still returns zero, as the API says.
+        assert_eq!(machine.item_id_of(0x0100_0001), 0);
     }
 }

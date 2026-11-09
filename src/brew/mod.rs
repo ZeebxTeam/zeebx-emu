@@ -1,4 +1,4 @@
-//! A plataforma BREW reimplementada: o que o jogo enxerga como sistema.
+//! The BREW platform, reimplemented: what the game sees as the system.
 
 pub mod aee;
 pub mod aee_helpers;

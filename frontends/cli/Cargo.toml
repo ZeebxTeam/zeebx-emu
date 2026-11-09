@@ -3,26 +3,26 @@ name = "zeebx-cli"
 version = "0.5.1"
 edition = "2024"
 license = "GPL-2.0-or-later"
-description = "A linha de comando do Zeebx: rodar, medir e inspecionar um jogo sem interface"
+description = "The Zeebx command line: run, measure and inspect a game without an interface"
 authors = ["ZeebxTeam"]
 repository = "https://github.com/ZeebxTeam/zeebx-emu"
 publish = false
 
-# **O nome do binário continua `zeebx`.** Ele era a janela do egui e a linha de comando juntas; a
-# janela saiu (a interface é o `zeebx-qt`, em `frontends/qt-standalone`), e a linha de comando
-# ficou com o nome, que é o que os scripts, o CI e a documentação digitam: `zeebx sessao`,
-# `zeebx bench`, `zeebx run`.
+# **The binary is still named `zeebx`.** It used to be the egui window and the command line
+# together; the window left (the interface is `zeebx-qt`, in `frontends/qt-standalone`), and the
+# command line kept the name, which is what the scripts, CI and the documentation type:
+# `zeebx session`, `zeebx bench`, `zeebx run`.
 #
-# **Sem Qt de propósito.** Estas são as ferramentas de medir e de depurar, e elas precisam compilar
-# numa máquina ou num contêiner sem o Qt instalado. Também não sai em instalador nenhum.
+# **No Qt on purpose.** These are the measuring and debugging tools, and they need to compile on
+# a machine or in a container without Qt installed. It doesn't ship in any installer either.
 [[bin]]
 name = "zeebx"
 path = "src/main.rs"
 
 [dependencies]
-# Os dispositivos do host (gilrs, Wii Remote), a janela crua do `run --window` (minifb) e o contexto
-# fora de tela do `sessao --placa` e do `bench` (glutin) vêm pela feature `desktop` do núcleo, que é
-# a padrão.
+# The host devices (gilrs, Wii Remote), the raw window of `run --window` (minifb) and the offscreen
+# context of `session --gpu` and of `bench` (glutin) come through the core's `desktop` feature,
+# which is the default.
 zeebx = { path = "../.." }
 
 [build-dependencies]

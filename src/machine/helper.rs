@@ -1,18 +1,18 @@
-//! As funções de apoio do BREW: o printf, o qsort e a conversão de string.
+//! BREW's helper functions: printf, qsort and string conversion.
 
 use super::*;
 
 impl<C: CpuBackend> Machine<C> {
-    /// `qsort` da stdlib do BREW, com a comparação feita pelo jogo.
+    /// `qsort` from BREW's stdlib, with the comparison done by the game.
     ///
-    /// Ordena **na memória do guest**, trocando os elementos de lugar de verdade, para que os
-    /// ponteiros que a função de comparação recebe sejam os endereços reais dentro do vetor —
-    /// que é o que o `qsort` do C faz e o que um comparador pode observar.
+    /// Sorts **in guest memory**, really swapping the elements around, so that the pointers the
+    /// comparison function receives are the real addresses inside the array — which is what C's
+    /// `qsort` does and what a comparator can observe.
     ///
-    /// O algoritmo é o heapsort: ordena no lugar, sem memória extra, e faz `n log n`
-    /// comparações. Como cada comparação custa uma entrada no guest, o número delas é o que
-    /// importa aqui — uma ordenação por inserção seria simples mas quadrática, e um vetor
-    /// grande custaria caro.
+    /// The algorithm is heapsort: it sorts in place, with no extra memory, and makes `n log n`
+    /// comparisons. Since each comparison costs an entry into the guest, their number is what
+    /// matters here — an insertion sort would be simple but quadratic, and a large array would
+    /// cost dearly.
     pub(super) fn qsort(
         &mut self,
         base: u32,
@@ -23,10 +23,10 @@ impl<C: CpuBackend> Machine<C> {
         if base == 0 || compare == 0 || size == 0 || count < 2 {
             return Ok(());
         }
-        // Reentrar no guest exige espaço de aninhamento, como nos callbacks.
+        // Re-entering the guest requires nesting room, as with callbacks.
         if self.nesting >= MAX_NESTING {
             self.assumptions
-                .insert("um qsort foi ignorado por aninhamento profundo demais");
+                .insert("a qsort was skipped because of too-deep nesting");
             return Ok(());
         }
         let saved = SAVED_REGS.map(|reg| self.cpu.read_reg(reg));
@@ -56,7 +56,7 @@ impl<C: CpuBackend> Machine<C> {
         Ok(())
     }
 
-    /// Empurra o elemento em `root` para baixo até o monte voltar a valer.
+    /// Pushes the element at `root` down until the heap holds again.
     pub(super) fn sift_down(
         &mut self,
         base: u32,
@@ -83,7 +83,7 @@ impl<C: CpuBackend> Machine<C> {
         }
     }
 
-    /// Chama a função de comparação do jogo com os endereços dos dois elementos.
+    /// Calls the game's comparison function with the addresses of the two elements.
     pub(super) fn compare_elements(
         &mut self,
         base: u32,
@@ -95,7 +95,8 @@ impl<C: CpuBackend> Machine<C> {
         let (pa, pb) = (base + a as u32 * size, base + b as u32 * size);
         let outcome = self.call_guest(compare, [pa, pb, 0, 0], QSORT_BUDGET)?;
         match outcome {
-            // Uma comparação que não retorna deixa a ordem como está, em vez de derrubar tudo.
+            // A comparison that does not return leaves the order as it is, instead of bringing
+            // everything down.
             Outcome::Returned { code } => Ok(code as i32),
             _ => Ok(0),
         }
@@ -119,48 +120,48 @@ impl<C: CpuBackend> Machine<C> {
         Ok(())
     }
 
-    /// Argumento além dos quatro registradores, contado a partir do topo da pilha.
+    /// An argument beyond the four registers, counted from the top of the stack.
     pub(super) fn stack_arg(&self, index: u32) -> Result<u32, CpuError> {
         self.cpu.read_u32(self.cpu.read_reg(Reg::Sp) + index * 4)
     }
 
-    /// Lê uma string `AECHAR` — UTF-16 little-endian terminada em zero, que é como o BREW
-    /// representa texto.
-    /// Lê uma string larga do guest como as unidades UTF-16 cruas.
+    /// Reads an `AECHAR` string — zero-terminated little-endian UTF-16, which is how BREW
+    /// represents text.
+    /// Reads a wide string from the guest as the raw UTF-16 units.
     ///
-    /// Existe separada da versão em `String` porque `wstrchr` e as comparações trabalham em
-    /// cima de `AECHAR`, e converter para `String` perderia a posição de cada caractere.
+    /// It exists apart from the `String` version because `wstrchr` and the comparisons work on
+    /// `AECHAR`, and converting to `String` would lose the position of each character.
     pub(super) fn read_aechar_units(&self, addr: u32) -> Result<Vec<u16>, CpuError> {
         if addr == 0 {
             return Ok(Vec::new());
         }
-        /// Quantas unidades por leitura. Mesmo motivo do `read_cbytes`: cada leitura
-        /// atravessa o backend de CPU, que procura a região antes de copiar — 57 ns para
-        /// trazer dois bytes. Sessenta e quatro unidades cobrem a string típica de uma vez.
-        const BLOCO: usize = 64;
+        /// How many units per read. Same reason as `read_cbytes`: each read
+        /// goes through the CPU backend, which looks up the region before copying — 57 ns to
+        /// bring in two bytes. Sixty-four units cover the typical string in one go.
+        const BLOCK: usize = 64;
 
         let mut units = Vec::new();
         while units.len() < MAX_STRING {
-            let quer = BLOCO.min(MAX_STRING - units.len());
+            let wanted = BLOCK.min(MAX_STRING - units.len());
             let base = addr + units.len() as u32 * 2;
-            let mut bytes = vec![0u8; quer * 2];
+            let mut bytes = vec![0u8; wanted * 2];
             if self.cpu.read_mem(base, &mut bytes).is_err() {
-                // O bloco pode cruzar o fim da região mapeada, e aí a leitura inteira falha
-                // mesmo havendo unidades válidas antes. Duas em duas só neste caso.
-                for i in 0..quer {
-                    let mut par = [0u8; 2];
-                    if self.cpu.read_mem(base + i as u32 * 2, &mut par).is_err() {
+                // The block may cross the end of the mapped region, and then the whole read fails
+                // even when there are valid units before it. Two by two only in this case.
+                for i in 0..wanted {
+                    let mut pair = [0u8; 2];
+                    if self.cpu.read_mem(base + i as u32 * 2, &mut pair).is_err() {
                         return Ok(units);
                     }
-                    match u16::from_le_bytes(par) {
+                    match u16::from_le_bytes(pair) {
                         0 => return Ok(units),
                         unit => units.push(unit),
                     }
                 }
                 continue;
             }
-            for par in bytes.chunks_exact(2) {
-                match u16::from_le_bytes([par[0], par[1]]) {
+            for pair in bytes.chunks_exact(2) {
+                match u16::from_le_bytes([pair[0], pair[1]]) {
                     0 => return Ok(units),
                     unit => units.push(unit),
                 }
@@ -170,13 +171,13 @@ impl<C: CpuBackend> Machine<C> {
     }
 
     pub(super) fn read_aechar(&self, addr: u32) -> Result<String, CpuError> {
-        // Era o mesmo laço do `read_aechar_units` escrito de novo. A única diferença é o
-        // que se faz com as unidades no fim.
+        // It was the same loop as `read_aechar_units` written again. The only difference is
+        // what is done with the units at the end.
         Ok(String::from_utf16_lossy(&self.read_aechar_units(addr)?))
     }
 
-    /// Helpers da stdlib do BREW, despachados pelo nome do slot — a tabela vem de
-    /// `struct AEEHelperFuncs`, no `AEEStdLib.h` do SDK.
+    /// BREW stdlib helpers, dispatched by slot name — the table comes from
+    /// `struct AEEHelperFuncs`, in the SDK's `AEEStdLib.h`.
     pub(super) fn helper_call(&mut self, slot: u32) -> Result<Option<u32>, CpuError> {
         let Some(name) = Interface::Helpers.method(slot) else {
             return Ok(None);
@@ -190,16 +191,16 @@ impl<C: CpuBackend> Machine<C> {
             // void *SetupNativeImage(AEECLSID cls, void *pBuffer, AEEImageInfo *pii,
             //                         boolean *pbRealloc)
             //
-            // Converte uma imagem codificada para o formato nativo do aparelho. É o que está
-            // por trás do `CONVERTBMP` do SDK, e os dois jogos que a chamam passam
-            // `AEECLSID_WINBMP` com um bitmap do Windows.
+            // Converts an encoded image to the device's native format. It is what sits
+            // behind the SDK's `CONVERTBMP`, and the two games that call it pass
+            // `AEECLSID_WINBMP` with a Windows bitmap.
             "SetupNativeImage" => self.setup_native_image(a1, a2, self.cpu.read_reg(Reg::R3))?,
             "malloc" => {
                 let r = self.malloc(a0)?;
                 r
             }
             "free" => {
-                self.libera(a0);
+                self.free(a0);
                 SUCCESS
             }
             "realloc" => self.realloc(a0, a1 & !ALLOC_NO_ZMEM)?,
@@ -209,9 +210,9 @@ impl<C: CpuBackend> Machine<C> {
             }
             "memset" => {
                 if a2 > 0 {
-                    // Em blocos: ver [`CpuBackend::fill_mem`] para o motivo, que é medido.
+                    // In blocks: see [`CpuBackend::fill_mem`] for the reason, which is measured.
                     self.cpu.fill_mem(a0, a1 as u8, a2)?;
-                    self.cpu.marca_sujo(a0, a2);
+                    self.cpu.mark_dirty(a0, a2);
                 }
                 a0
             }
@@ -219,8 +220,8 @@ impl<C: CpuBackend> Machine<C> {
                 let (left, right) = (self.read_bytes(a0, a2)?, self.read_bytes(a1, a2)?);
                 cmp_to_int(left.cmp(&right))
             }
-            // As funções de string do C contam **bytes**, não caracteres: qualquer byte acima
-            // de 0x7f faria a versão em `String` mentir.
+            // C string functions count **bytes**, not characters: any byte above
+            // 0x7f would make the `String` version lie.
             "strlen" => self.cpu.read_cbytes(a0, MAX_STRING).len() as u32,
             "strcpy" => {
                 let mut src = self.cpu.read_cbytes(a1, MAX_STRING);
@@ -244,13 +245,13 @@ impl<C: CpuBackend> Machine<C> {
                 let take = a2 as usize;
                 let left = self.cpu.read_cbytes(a0, MAX_STRING);
                 let right = self.cpu.read_cbytes(a1, MAX_STRING);
-                // `strncmp` compara no máximo `n` bytes; uma string mais curta vale inteira.
+                // `strncmp` compares at most `n` bytes; a shorter string counts in full.
                 cmp_to_int(left[..take.min(left.len())].cmp(&right[..take.min(right.len())]))
             }
             "wstrlen" => self.read_aechar(a0)?.encode_utf16().count() as u32,
             "wstrsize" => (self.read_aechar(a0)?.encode_utf16().count() as u32 + 1) * 2,
-            // AECHAR *strtowstr(const char *pszIn, AECHAR *pDest, int nSize) — `nSize` é em
-            // bytes, não em caracteres.
+            // AECHAR *strtowstr(const char *pszIn, AECHAR *pDest, int nSize) — `nSize` is in
+            // bytes, not characters.
             "strtowstr" => {
                 let text = self.cpu.read_cstring(a0, MAX_STRING);
                 self.write_aechar(a1, &text, a2 as usize / 2)?;
@@ -283,8 +284,8 @@ impl<C: CpuBackend> Machine<C> {
                 let (left, right) = (self.read_aechar(a0)?, self.read_aechar(a1)?);
                 cmp_to_int(left.get(..take).cmp(&right.get(..take)))
             }
-            // char *strncpy(char *dst, const char *src, size_t n) — sem terminador se `src`
-            // não couber, como manda a função original.
+            // char *strncpy(char *dst, const char *src, size_t n) — no terminator if `src`
+            // does not fit, as the original function says.
             "strncpy" => {
                 let n = a2 as usize;
                 let mut bytes = self.cpu.read_cbytes(a1, MAX_STRING);
@@ -305,19 +306,19 @@ impl<C: CpuBackend> Machine<C> {
                 };
                 found.map(|i| a0 + i as u32).unwrap_or(0)
             }
-            // char *strstr(const char *s, const char *agulha)
+            // char *strstr(const char *s, const char *needle)
             //
-            // **Agulha vazia casa no começo.** É o que o C manda — toda string contém a string
-            // vazia — e não é curiosidade de especificação: o Need For Speed registra os sons de
-            // jogo procurando o nome de cada um numa tabela, e um dos cinco nomes dele é a
-            // string vazia. Devolvendo "não achou", ele varria as setenta entradas, concluía que
-            // o som não existe, imprimia `ZeeboSnd.cpp:327 BREAKPOINT!` e entrava num salto para
-            // si mesmo — de propósito. O jogo não estava lento: estava parado, e o orçamento de
-            // instruções acabava em cima disso.
+            // **An empty needle matches at the start.** That is what C says — every string contains
+            // the empty string — and it is not a spec curiosity: Need For Speed registers the
+            // game's sounds by looking up each one's name in a table, and one of its five names is
+            // the empty string. Returning "not found", it scanned the seventy entries, concluded
+            // that the sound does not exist, printed `ZeeboSnd.cpp:327 BREAKPOINT!` and went into a
+            // jump to itself — on purpose. The game was not slow: it was stuck, and the instruction
+            // budget ran out on that.
             "strstr" => {
                 let haystack = self.cpu.read_cbytes(a0, MAX_STRING);
                 let needle = self.cpu.read_cbytes(a1, MAX_STRING);
-                let achou = match needle.is_empty() {
+                let match_addr = match needle.is_empty() {
                     true => a0,
                     false => haystack
                         .windows(needle.len())
@@ -327,9 +328,9 @@ impl<C: CpuBackend> Machine<C> {
                 };
                 if self.serial.is_some() {
                     let n = String::from_utf8_lossy(&needle).into_owned();
-                    self.registra_serial(format!("<strstr {n:?} -> {achou:#x}>"));
+                    self.log_serial(format!("<strstr {n:?} -> {match_addr:#x}>"));
                 }
-                achou
+                match_addr
             }
             "stricmp" => {
                 let fold = |addr| {
@@ -349,7 +350,7 @@ impl<C: CpuBackend> Machine<C> {
                     .map(|i| a0 + i as u32)
                     .unwrap_or(0)
             }
-            // --- Strings largas (`AECHAR`, UTF-16) -------------------------------------
+            // --- Wide strings (`AECHAR`, UTF-16) -------------------------------------
             "wstrchr" | "wstrrchr" => {
                 let units = self.read_aechar_units(a0)?;
                 let needle = a1 as u16;
@@ -399,9 +400,9 @@ impl<C: CpuBackend> Machine<C> {
                 let right = self.read_aechar_units(a1)?;
                 cmp_to_int(fold_case(&left, take).cmp(&fold_case(&right, take)))
             }
-            // `size_t wstrlcpy/wstrlcat(AECHAR *dst, const AECHAR *src, size_t nSize)`: as
-            // versões BSD, que devolvem o tamanho que a origem *teria* ocupado. `nSize` conta
-            // caracteres, não bytes.
+            // `size_t wstrlcpy/wstrlcat(AECHAR *dst, const AECHAR *src, size_t nSize)`: the
+            // BSD versions, which return the size the source *would have* taken. `nSize` counts
+            // characters, not bytes.
             "wstrlcpy" | "wstrlcat" => {
                 let source = self.read_aechar(a1)?;
                 let existing = if name == "wstrlcat" {
@@ -413,15 +414,15 @@ impl<C: CpuBackend> Machine<C> {
                 self.write_aechar(a0 + existing as u32 * 2, &source, room)?;
                 (existing + source.encode_utf16().count()) as u32
             }
-            // `AECHAR *wwritelong(AECHAR *pszBuf, long n)` — escreve o número e devolve o
-            // ponteiro para o terminador, para o chamador continuar dali.
+            // `AECHAR *wwritelong(AECHAR *pszBuf, long n)` — writes the number and returns the
+            // pointer to the terminator, so the caller can continue from there.
             "wwritelong" => {
                 let text = (a1 as i32).to_string();
                 self.write_aechar(a0, &text, usize::MAX)?;
                 a0 + text.len() as u32 * 2
             }
-            // `int wstrncopyn(AECHAR *dst, int cbDest, const AECHAR *src, int lenSource)`:
-            // `cbDest` conta caracteres e `lenSource` limita a origem (-1 = até o terminador).
+            // `int wstrncopyn(AECHAR *dst, int cbDest, const AECHAR *src, int lenSource)`: `cbDest`
+            // counts characters and `lenSource` limits the source (-1 = up to the terminator).
             "wstrncopyn" => {
                 let mut units = self.read_aechar_units(a2)?;
                 let limit = self.cpu.read_reg(Reg::R3) as i32;
@@ -434,11 +435,11 @@ impl<C: CpuBackend> Machine<C> {
                     .count()
                     .min((a1 as usize).saturating_sub(1)) as u32
             }
-            // `void wsprintf(AECHAR *dst, int nSize, const AECHAR *fmt, ...)` — mesma
-            // gramática do `snprintf`, com origem e destino em UTF-16.
+            // `void wsprintf(AECHAR *dst, int nSize, const AECHAR *fmt, ...)` — same
+            // grammar as `snprintf`, with source and destination in UTF-16.
             "wsprintf" => {
                 let fmt = self.read_aechar(a2)?;
-                let text = self.format_largo_from(3, &fmt);
+                let text = self.format_wide_from(3, &fmt);
                 self.write_aechar(a0, &text, a1 as usize / 2)?;
                 SUCCESS
             }
@@ -455,8 +456,8 @@ impl<C: CpuBackend> Machine<C> {
                 let (value, _) = parse_leading_double(&text);
                 self.return_double(value)
             }
-            // `boolean floattowstr(double val, AECHAR *psz, int nSize)`: o `double` ocupa
-            // `r0:r1`, então o destino cai em `r2` e o tamanho em `r3`.
+            // `boolean floattowstr(double val, AECHAR *psz, int nSize)`: the `double` takes
+            // `r0:r1`, so the destination lands in `r2` and the size in `r3`.
             "floattowstr" => {
                 let value = fmath::from_words(a0, a1);
                 let limit = self.cpu.read_reg(Reg::R3) as usize / 2;
@@ -465,10 +466,10 @@ impl<C: CpuBackend> Machine<C> {
             }
             // `boolean utf8towstr(const byte *pszIn, int nLen, AECHAR *pDest, int nSizeBytes)`
             //
-            // O terminador só entra se couber. A Z-Wheel (`0x8afc8`) aloca `(n+1)*2` bytes e
-            // passa `n*2`: conta com os `n` caracteres inteiros e com o zero da memória recém
-            // alocada. Reservar o terminador dentro de `nSizeBytes` comia a última letra de todo
-            // nome de jogo da lista — "Alic", "Alien Breake".
+            // The terminator only goes in if it fits. The Z-Wheel (`0x8afc8`) allocates `(n+1)*2`
+            // bytes and passes `n*2`: it counts on the `n` whole characters and on the zero of the
+            // freshly allocated memory. Reserving the terminator inside `nSizeBytes` ate the last
+            // letter of every game name in the list — "Alic", "Alien Breake".
             "utf8towstr" => {
                 let bytes = if (a1 as i32) < 0 {
                     self.cpu.read_cbytes(a0, MAX_STRING)
@@ -490,28 +491,28 @@ impl<C: CpuBackend> Machine<C> {
             }
             // `boolean wstrtoutf8(const AECHAR *pszIn, int nLen, byte *pDest, int nSizeBytes)`
             //
-            // **UTF-8 de verdade, e o zero só quando cabe.** O FIFA 09 tira a inicial do jogador
-            // convertendo um caractere para um buffer de um byte: reservando lugar para o zero,
-            // a inicial saía vazia, e o HUD não mostrava "K. Chafni" — só os de nome único, como
-            // "Chris". E isto escrevia pelo `write_cstring_limited`, que é Latin-1: o "ô" de
-            // "Chantôme" virava um byte solto. Um caractere que não cabe inteiro fica de fora,
-            // para não deixar meia sequência no fim.
+            // **Real UTF-8, and the zero only when it fits.** FIFA 09 takes the player's initial by
+            // converting one character into a one-byte buffer: reserving room for the zero, the
+            // initial came out empty, and the HUD did not show "K. Chafni" — only those with a
+            // single name, like "Chris". And this wrote through `write_cstring_limited`, which is
+            // Latin-1: the "ô" in "Chantôme" became a stray byte. A character that does not fit
+            // whole is left out, so as not to leave half a sequence at the end.
             "wstrtoutf8" => {
                 let mut units = self.read_aechar_units(a0)?;
                 if (a1 as i32) >= 0 {
                     units.truncate(a1 as usize);
                 }
-                let cabe = self.cpu.read_reg(Reg::R3) as usize;
-                let mut bytes = Vec::with_capacity(cabe);
+                let fits = self.cpu.read_reg(Reg::R3) as usize;
+                let mut bytes = Vec::with_capacity(fits);
                 for c in String::from_utf16_lossy(&units).chars() {
                     let mut buffer = [0u8; 4];
                     let utf8 = c.encode_utf8(&mut buffer).as_bytes();
-                    if bytes.len() + utf8.len() > cabe {
+                    if bytes.len() + utf8.len() > fits {
                         break;
                     }
                     bytes.extend_from_slice(utf8);
                 }
-                if bytes.len() < cabe {
+                if bytes.len() < fits {
                     bytes.push(0);
                 }
                 if a2 != 0 && !bytes.is_empty() {
@@ -520,7 +521,7 @@ impl<C: CpuBackend> Machine<C> {
                 TRUE
             }
 
-            // --- Strings de bytes -----------------------------------------------------
+            // --- Byte strings -----------------------------------------------------
             "strdup" => {
                 let mut bytes = self.cpu.read_cbytes(a0, MAX_STRING);
                 bytes.push(0);
@@ -533,9 +534,9 @@ impl<C: CpuBackend> Machine<C> {
             // void qsort(void *base, size_t nmemb, size_t size, int (*compar)(const void *,
             //            const void *))
             //
-            // A comparação é uma função do **jogo**, então ordenar significa reentrar no guest
-            // a cada par. É o mesmo desvio que os callbacks pendentes fazem, e no mesmo ponto:
-            // a chamada de API terminou e o guest ainda não retomou.
+            // The comparison is a **game** function, so sorting means re-entering the guest for
+            // each pair. It is the same detour the pending callbacks take, and at the same point:
+            // the API call has finished and the guest has not resumed yet.
             "qsort" => {
                 let compare = self.cpu.read_reg(Reg::R3);
                 self.qsort(a0, a1, a2, compare)?;
@@ -563,8 +564,8 @@ impl<C: CpuBackend> Machine<C> {
                     .map(|i| a0 + i as u32)
                     .unwrap_or(0)
             }
-            // `char *memstr(const char *cpHaystack, const char *cpszNeedle, size_t nLen)` — o
-            // palheiro tem tamanho fixo; a agulha continua terminada em NUL.
+            // `char *memstr(const char *cpHaystack, const char *cpszNeedle, size_t nLen)` — the
+            // haystack has a fixed size; the needle is still NUL-terminated.
             "memstr" => {
                 let hay = self.read_bytes(a0, a2)?;
                 let needle = self.cpu.read_cbytes(a1, MAX_STRING);
@@ -572,8 +573,8 @@ impl<C: CpuBackend> Machine<C> {
                     .map(|i| a0 + i as u32)
                     .unwrap_or(0)
             }
-            // `boolean strbegins(const char *cpszPrefix, const char *psz)` e o par `strends`:
-            // o pedaço procurado vem **primeiro**.
+            // `boolean strbegins(const char *cpszPrefix, const char *psz)` and its pair `strends`:
+            // the piece being looked for comes **first**.
             "strbegins" | "strends" | "aee_stribegins" => {
                 let part = self.cpu.read_cbytes(a0, MAX_STRING);
                 let whole = self.cpu.read_cbytes(a1, MAX_STRING);
@@ -586,16 +587,16 @@ impl<C: CpuBackend> Machine<C> {
                 };
                 u32::from(matched)
             }
-            // `char *strchrend(const char *pszSrc, char c)` — como o `strchr`, mas quando não
-            // acha devolve o terminador em vez de zero.
+            // `char *strchrend(const char *pszSrc, char c)` — like `strchr`, but when it does not
+            // find it returns the terminator instead of zero.
             "strchrend" => {
                 let text = self.cpu.read_cbytes(a0, MAX_STRING);
                 let needle = a1 as u8;
                 let at = text.iter().position(|&b| b == needle).unwrap_or(text.len());
                 a0 + at as u32
             }
-            // `char *strchrsend(const char *pszSrc, const char *pszChars)` — o primeiro byte
-            // que aparecer no conjunto, ou o terminador.
+            // `char *strchrsend(const char *pszSrc, const char *pszChars)` — the first byte
+            // that appears in the set, or the terminator.
             "strchrsend" => {
                 let text = self.cpu.read_cbytes(a0, MAX_STRING);
                 let set = self.cpu.read_cbytes(a1, MAX_STRING);
@@ -605,9 +606,9 @@ impl<C: CpuBackend> Machine<C> {
                     .unwrap_or(text.len());
                 a0 + at as u32
             }
-            // A família `mem*` do BREW trabalha sobre um bloco de tamanho fixo: `memrchr` acha
-            // a última ocorrência, `memchrend`/`memrchrbegin` devolvem os limites do bloco
-            // quando não acham.
+            // BREW's `mem*` family works on a fixed-size block: `memrchr` finds
+            // the last occurrence, `memchrend`/`memrchrbegin` return the block's bounds
+            // when they do not find it.
             "memrchr" | "memchrend" | "memrchrbegin" => {
                 let block = self.read_bytes(a0, a2)?;
                 let needle = a1 as u8;
@@ -636,7 +637,7 @@ impl<C: CpuBackend> Machine<C> {
                 }
                 a0
             }
-            // `size_t strlcpy/strlcat(char *dst, const char *src, size_t nSize)`, à moda BSD.
+            // `size_t strlcpy/strlcat(char *dst, const char *src, size_t nSize)`, BSD style.
             "strlcpy" | "strlcat" => {
                 let source = self.cpu.read_cstring(a1, MAX_STRING);
                 let existing = if name == "strlcat" {
@@ -651,43 +652,44 @@ impl<C: CpuBackend> Machine<C> {
             // boolean MAKEPATH(const char *cpszDir, const char *cpszFile, char *pszOut,
             //                  int *pnOutLen)
             //
-            // Junta diretório e arquivo com uma barra. Com `pszOut` nulo só diz o tamanho, com o
-            // terminador — e é assim que a Z-Wheel usa, em duas passadas: mede, aloca, monta.
-            // Faltava, e confirmar em "Jogar" parava aqui, no caminho que abre a lista de jogos.
+            // Joins directory and file with a slash. With a null `pszOut` it only reports the size,
+            // terminator included — and that is how the Z-Wheel uses it, in two passes: measure,
+            // allocate, build. It was missing, and confirming on "Jogar" stopped here, on the path
+            // that opens the game list.
             "aee_makepath" => {
-                let saida_tamanho = self.cpu.read_reg(Reg::R3);
-                let caminho = junta_caminho(
+                let out_size = self.cpu.read_reg(Reg::R3);
+                let joined_path = join_path(
                     &self.cpu.read_cstring(a0, MAX_STRING),
                     &self.cpu.read_cstring(a1, MAX_STRING),
                 );
-                let precisa = caminho.len() as u32 + 1;
-                let cabe = match (a2, saida_tamanho) {
+                let needed = joined_path.len() as u32 + 1;
+                let fits = match (a2, out_size) {
                     (0, _) => true,
                     (_, 0) => {
-                        self.write_cstring_limited(a2, &caminho, precisa as usize)?;
+                        self.write_cstring_limited(a2, &joined_path, needed as usize)?;
                         true
                     }
-                    (_, onde) => {
-                        let espaco = self.cpu.read_u32(onde)?;
-                        if espaco >= precisa {
-                            self.write_cstring_limited(a2, &caminho, precisa as usize)?;
+                    (_, location) => {
+                        let spacing = self.cpu.read_u32(location)?;
+                        if spacing >= needed {
+                            self.write_cstring_limited(a2, &joined_path, needed as usize)?;
                         }
-                        espaco >= precisa
+                        spacing >= needed
                     }
                 };
-                if saida_tamanho != 0 {
-                    self.cpu.write_u32(saida_tamanho, precisa)?;
+                if out_size != 0 {
+                    self.cpu.write_u32(out_size, needed)?;
                 }
-                u32::from(cabe)
+                u32::from(fits)
             }
             "OEMStrLen" => self.cpu.read_cbytes(a0, MAX_STRING).len() as u32,
             "OEMStrSize" => self.cpu.read_cbytes(a0, MAX_STRING).len() as u32 + 1,
             "swapl" => a0.swap_bytes(),
             "swaps" => (a0 as u16).swap_bytes() as u32,
 
-            // --- Memória, versão e depuração ------------------------------------------
+            // --- Memory, version and debugging ------------------------------------------
             "sysfree" => {
-                self.libera(a0);
+                self.free(a0);
                 SUCCESS
             }
             "err_strdup" => {
@@ -702,8 +704,8 @@ impl<C: CpuBackend> Machine<C> {
                     SUCCESS
                 }
             }
-            // `int err_realloc(uint32 uSize, void **pp)` — o `realloc` que devolve código de
-            // erro e só troca o ponteiro se der certo.
+            // `int err_realloc(uint32 uSize, void **pp)` — the `realloc` that returns an error
+            // code and only swaps the pointer if it succeeds.
             "err_realloc" => {
                 let current = self.cpu.read_u32(a1)?;
                 let ptr = self.realloc(current, a0)?;
@@ -714,8 +716,8 @@ impl<C: CpuBackend> Machine<C> {
                     SUCCESS
                 }
             }
-            // `uint32 GetAEEVersion(byte *pszFormatted, int nSize, uint16 wFlags)`: byte alto
-            // da palavra alta é a versão maior, e assim por diante — daí `4.0.2.0`.
+            // `uint32 GetAEEVersion(byte *pszFormatted, int nSize, uint16 wFlags)`: the high byte
+            // of the high word is the major version, and so on — hence `4.0.2.0`.
             "GetAEEVersion" => {
                 if a0 != 0 {
                     if a2 & GAV_LATIN1 != 0 {
@@ -726,8 +728,8 @@ impl<C: CpuBackend> Machine<C> {
                 }
                 AEE_VERSION
             }
-            // `uint32 GetFSFree(uint32 *pdwTotal)` — não temos cota de sistema de arquivos, e
-            // responder um número grande é mais fiel que responder zero.
+            // `uint32 GetFSFree(uint32 *pdwTotal)` — we have no file system quota, and
+            // answering a large number is more faithful than answering zero.
             "GetFSFree" => {
                 if a0 != 0 {
                     self.cpu.write_u32(a0, FS_TOTAL)?;
@@ -735,19 +737,19 @@ impl<C: CpuBackend> Machine<C> {
                 FS_TOTAL
             }
             "aee_GetUTCSeconds" => self.elapsed_ms() / 1000,
-            // `int32 aee_LocalTimeOffset(boolean *pbDaylightSavings)` — o emulador roda em UTC.
+            // `int32 aee_LocalTimeOffset(boolean *pbDaylightSavings)` — the emulator runs in UTC.
             "aee_LocalTimeOffset" => {
                 if a0 != 0 {
                     self.cpu.write_mem(a0, &[0])?;
                 }
                 0
             }
-            // Ganchos de depuração do BREW: existem para o log da plataforma, e o
-            // comportamento correto sem ele é não fazer nada.
+            // BREW's debugging hooks: they exist for the platform's log, and the
+            // correct behavior without it is to do nothing.
             "dumpheap" | "dbgevent" => SUCCESS,
             "dbgheapmark" => a0,
-            // `int lockmem/unlockmem(void **ppHandle)` — o BREW do aparelho pode mover blocos
-            // e por isso trava; a nossa heap é fixa, então travar é sempre um sucesso.
+            // `int lockmem/unlockmem(void **ppHandle)` — the device's BREW may move blocks
+            // and therefore locks them; our heap is fixed, so locking always succeeds.
             "lockmem" | "unlockmem" => TRUE,
             // `char *aee_basename(const char *cpszPath)`
             "aee_basename" => {
@@ -761,11 +763,11 @@ impl<C: CpuBackend> Machine<C> {
             }
             "atoi" => {
                 let text = self.cpu.read_cstring(a0, MAX_NUMBER);
-                atoi_de_c(&text) as u32
+                c_atoi(&text) as u32
             }
-            // A família de ponto flutuante da stdlib. Na AAPCS um `double` ocupa um par de
-            // registradores com a palavra baixa primeiro, então `v1` vem em `r0:r1`, `v2` em
-            // `r2:r3` e o que sobra vai para a pilha.
+            // The stdlib's floating-point family. In AAPCS a `double` takes a pair of
+            // registers with the low word first, so `v1` comes in `r0:r1`, `v2` in
+            // `r2:r3` and the rest goes to the stack.
             "f_op" | "f_cmp" => {
                 let (v1, v2) = (
                     fmath::from_words(a0, a1),
@@ -800,21 +802,21 @@ impl<C: CpuBackend> Machine<C> {
             "f_assignstr" | "strtod" => {
                 let text = self.cpu.read_cstring(a0, MAX_NUMBER);
                 let (value, consumed) = parse_leading_double(&text);
-                // O `strtod` ainda devolve, pelo `char **`, onde parou de ler.
+                // `strtod` also returns, through the `char **`, where it stopped reading.
                 if name == "strtod" && a1 != 0 {
                     self.cpu.write_u32(a1, a0 + consumed as u32)?;
                 }
                 self.return_double(value)
             }
-            // `f_toint` arredonda para zero, como o cast do C; `trunc`/`utrunc` são a mesma
-            // conta com o sinal do resultado mudando.
+            // `f_toint` rounds toward zero, like the C cast; `trunc`/`utrunc` are the same
+            // computation with the result's sign changing.
             "f_toint" | "trunc" => fmath::from_words(a0, a1).trunc() as i32 as u32,
             "utrunc" => fmath::from_words(a0, a1).trunc() as u32,
-            // int vsnprintf(char *dst, int nSize, const char *fmt, va_list args) e
+            // int vsnprintf(char *dst, int nSize, const char *fmt, va_list args) and
             // int vsprintf(char *dst, const char *fmt, va_list args).
             //
-            // Na AAPCS o `va_list` é um ponteiro para a área de argumentos, então basta ler
-            // palavras em sequência a partir dele.
+            // In AAPCS `va_list` is a pointer to the argument area, so it is enough to read
+            // words in sequence starting from it.
             "vsnprintf" | "vsprintf" => {
                 let (fmt_addr, args_addr, limit) = if name == "vsnprintf" {
                     (a2, self.cpu.read_reg(Reg::R3), a1 as usize)
@@ -822,10 +824,10 @@ impl<C: CpuBackend> Machine<C> {
                     (a1, a2, usize::MAX)
                 };
                 let fmt = self.cpu.read_cstring(fmt_addr, MAX_STRING);
-                // `AEEOldVaList` é `int **` no ARM (`inc/AEEOldVaList.h`): o que chega é o
-                // endereço da variável `va_list`, não a área de argumentos. Sem essa
-                // indireção o primeiro `%d` imprime o próprio ponteiro da pilha — foi o que
-                // transformou `inva1_shotgun` em `inva537919380_shotgun` no Quake.
+                // `AEEOldVaList` is `int **` on ARM (`inc/AEEOldVaList.h`): what arrives is the
+                // address of the `va_list` variable, not the argument area. Without that
+                // indirection the first `%d` prints the stack pointer itself — that is what
+                // turned `inva1_shotgun` into `inva537919380_shotgun` in Quake.
                 let mut source = GuestArgs {
                     words: Vec::new(),
                     index: 0,
@@ -834,33 +836,34 @@ impl<C: CpuBackend> Machine<C> {
                 };
                 let text = cformat::format(&fmt, &mut source);
                 self.write_cstring_limited(a0, &text, limit)?;
-                bytes_latin1(&text)
+                latin1_len(&text)
             }
             // int snprintf(char *dst, int nSize, const char *fmt, ...)
             //
-            // **O do BREW conta o terminador**, ao contrário do C99: devolve os bytes escritos no
-            // buffer com o zero, e com `dst` nulo o tamanho que o resultado precisaria, também
-            // com o zero. O Need For Speed monta a resposta das telas da carreira com
-            // `p += snprintf(p, n, "%s=", nome) - 1` e cada item com `"%d%c"` e o separador
-            // `0x7f`. Devolvendo o comprimento do C, cada vetor perdia o `=` e os separadores:
-            // `aCarNames=A\x7fB` chegava como `aCarNamesAB`, a tela de escolher carro abria com
-            // o nome em lixo e os atributos vazios, e a carreira não andava (issue #35).
+            // **BREW's counts the terminator**, unlike C99: it returns the bytes written to the
+            // buffer including the zero, and with a null `dst` the size the result would need, also
+            // including the zero. Need For Speed builds the answer of the career screens with `p +=
+            // snprintf(p, n, "%s=", name) - 1` and each item with `"%d%c"` and the separator
+            // `0x7f`. Returning C's length, each array lost the `=` and the separators:
+            // `aCarNames=A\x7fB` arrived as `aCarNamesAB`, the car selection screen opened with the
+            // name in garbage and the attributes empty, and the career did not progress (issue
+            // #35).
             "snprintf" => {
                 let fmt = self.cpu.read_cstring(a2, MAX_STRING);
                 let text = self.format_from(3, &fmt);
                 self.write_cstring_limited(a0, &text, a1 as usize)?;
-                let com_o_zero = bytes_latin1(&text) + 1;
+                let with_nul = latin1_len(&text) + 1;
                 match a0 {
-                    0 => com_o_zero,
-                    _ => com_o_zero.min(a1),
+                    0 => with_nul,
+                    _ => with_nul.min(a1),
                 }
             }
-            // `sprintf(char *dst, const char *fmt, ...)`: os variádicos começam em `r2`.
+            // `sprintf(char *dst, const char *fmt, ...)`: the variadic arguments start at `r2`.
             "sprintf" => {
                 let fmt = self.cpu.read_cstring(a1, MAX_STRING);
                 let text = self.format_from(2, &fmt);
                 self.write_cstring(a0, &text)?;
-                bytes_latin1(&text)
+                latin1_len(&text)
             }
             "dbgprintf" => {
                 let fmt = self.cpu.read_cstring(a0, MAX_STRING);
@@ -868,42 +871,42 @@ impl<C: CpuBackend> Machine<C> {
                 self.record_debug(text);
                 SUCCESS
             }
-            // `IApplet *GetAppInstance(void)` — sem argumentos, o que explica por que o site
-            // de chamada podia usar `r0` como rascunho para o ponteiro da função.
+            // `IApplet *GetAppInstance(void)` — no arguments, which explains why the call site
+            // could use `r0` as scratch for the function pointer.
             //
-            // O jogo chama isto *durante* a própria criação, depois que `AEEApplet_New` já
-            // gravou o ponteiro no `void **ppObj` que passamos. Então, enquanto não terminamos
-            // de criar o applet, a resposta certa é justamente o conteúdo desse ponteiro.
+            // The game calls this *during* its own creation, after `AEEApplet_New` has already
+            // written the pointer to the `void **ppObj` we passed. So, until we finish
+            // creating the applet, the right answer is precisely the contents of that pointer.
             "GetAppInstance" => match self.current_applet {
                 0 => self.cpu.read_u32(self.module.out_module + 4)?,
                 applet => applet,
             },
-            // `GETUPTIMEMS` é desde que o aparelho ligou; `GETTIMESECONDS` é o **calendário**,
-            // segundos desde 6 de janeiro de 1980. Responder o tempo ligado nos dois era dizer
-            // que hoje é o dia da estreia do console: o Z-Wheel calcula o alarme do "próximo
-            // dia" a partir daí e ficava girando — quinze milhões de voltas em dois métodos.
+            // `GETUPTIMEMS` is since the device was turned on; `GETTIMESECONDS` is the
+            // **calendar**, seconds since January 6, 1980. Answering uptime for both was saying
+            // that today is the console's launch day: the Z-Wheel computes the "next day" alarm
+            // from there and kept spinning — fifteen million iterations in two methods.
             "aee_GetTimeMS" | "aee_GetUpTimeMS" => self.elapsed_ms(),
             "aee_GetSeconds" => self.brew_seconds(),
             // void GETJULIANDATE(uint32 dwSecs, JulianType *pDate)
             //
-            // `dwSecs` é o relógio do BREW: segundos desde 6 de janeiro de 1980, GMT. Zero quer
-            // dizer "agora", e o nosso agora é o relógio virtual — o mesmo que responde ao
-            // `GetSeconds`, para que as duas contas nunca se contradigam.
+            // `dwSecs` is BREW's clock: seconds since January 6, 1980, GMT. Zero means
+            // "now", and our now is the virtual clock — the same one that answers
+            // `GetSeconds`, so that the two computations never contradict each other.
             "aee_GetJulianDate" => {
-                // Helper não tem `this`: o primeiro argumento é o `r0`.
-                let segundos = match a0 {
+                // A helper has no `this`: the first argument is `r0`.
+                let seconds = match a0 {
                     0 => self.brew_seconds(),
-                    dado => dado,
+                    data_byte => data_byte,
                 };
                 if a1 != 0 {
-                    let data = julian_date(segundos);
+                    let data = julian_date(seconds);
                     let bytes: Vec<u8> = data.iter().flat_map(|c| c.to_le_bytes()).collect();
                     self.cpu.write_mem(a1, &bytes)?;
                 }
                 SUCCESS
             }
-            // Gerador simples e determinístico: repetir a mesma sessão tem que dar o mesmo
-            // resultado, senão depurar jogo com aleatoriedade vira loteria.
+            // A simple, deterministic generator: repeating the same session must give the same
+            // result, or else debugging a game with randomness becomes a lottery.
             "aee_GetRand" => {
                 let count = a1;
                 for i in 0..count {
@@ -917,14 +920,14 @@ impl<C: CpuBackend> Machine<C> {
                 SUCCESS
             }
             "GetRAMFree" => (loader::HEAP_SIZE as u32).saturating_sub(self.heap.used()),
-            // Dormir de verdade só atrasaria o emulador: o tempo do guest anda pelo relógio do
-            // host de qualquer jeito.
-            // void sleep(uint32 msecs) — o `MSLEEP` do SDK.
+            // Really sleeping would only delay the emulator: guest time moves with the host's
+            // clock anyway.
+            // void sleep(uint32 msecs) — the SDK's `MSLEEP`.
             //
-            // No console o ARM realmente para e o tempo passa sozinho. Aqui o relógio anda com
-            // as instruções, então quem dorme sem que o relógio avance dorme para sempre: o
-            // Magical Drop 3 chamava isto cem milhões de vezes num laço que nunca vencia.
-            // Adiantar o relógio é o que o aparelho faz.
+            // On the console the ARM really stops and time passes on its own. Here the clock moves
+            // with the instructions, so whoever sleeps without the clock advancing sleeps forever:
+            // Magical Drop 3 called this a hundred million times in a loop that never expired.
+            // Advancing the clock is what the device does.
             "sleep" => {
                 self.clock_us += u64::from(a0.min(MAX_SLEEP_MS)) * 1000;
                 SUCCESS
@@ -936,16 +939,16 @@ impl<C: CpuBackend> Machine<C> {
         Ok(Some(result))
     }
 
-    /// Prepara o retorno de um `double`: a palavra alta vai para `r1`, e a baixa é o valor
-    /// que o despacho grava em `r0`.
+    /// Prepares the return of a `double`: the high word goes to `r1`, and the low one is the value
+    /// the dispatch writes to `r0`.
     pub(super) fn return_double(&mut self, value: f64) -> u32 {
         let (low, high) = fmath::to_words(value);
         self.cpu.write_reg(Reg::R1, high);
         low
     }
 
-    /// Como [`Machine::format_from`], com o `%s` lendo `AECHAR`: o do `WSPRINTF`.
-    pub(super) fn format_largo_from(&self, first: usize, fmt: &str) -> String {
+    /// Like [`Machine::format_from`], with `%s` reading `AECHAR`: the one for `WSPRINTF`.
+    pub(super) fn format_wide_from(&self, first: usize, fmt: &str) -> String {
         let words = [
             self.cpu.read_reg(Reg::R0),
             self.cpu.read_reg(Reg::R1),
@@ -958,10 +961,10 @@ impl<C: CpuBackend> Machine<C> {
             stack: self.cpu.read_reg(Reg::Sp),
             cpu: &self.cpu,
         };
-        cformat::format_largo(fmt, &mut source)
+        cformat::format_wide(fmt, &mut source)
     }
 
-    /// Formata uma string do guest tomando os variádicos a partir do registrador `first`.
+    /// Formats a guest string taking the variadic arguments starting at register `first`.
     pub(super) fn format_from(&self, first: usize, fmt: &str) -> String {
         let words = [
             self.cpu.read_reg(Reg::R0),
@@ -979,27 +982,27 @@ impl<C: CpuBackend> Machine<C> {
     }
 
     pub(super) fn read_bytes(&self, addr: u32, len: u32) -> Result<Vec<u8>, CpuError> {
-        let mut buf = vec![0u8; tamanho_do_guest(len as usize)?];
+        let mut buf = vec![0u8; guest_size(len as usize)?];
         if len > 0 {
             self.cpu.read_mem(addr, &mut buf)?;
         }
         Ok(buf)
     }
 
-    /// Copia dentro da memória do guest. Passa pelo host, então regiões sobrepostas ficam
-    /// corretas — que é justamente o que `memmove` promete.
+    /// Copies within guest memory. It goes through the host, so overlapping regions come out
+    /// right — which is exactly what `memmove` promises.
     pub(super) fn copy_guest(&mut self, dst: u32, src: u32, len: u32) -> Result<(), CpuError> {
         let bytes = self.read_bytes(src, len)?;
         if len > 0 {
             self.cpu.write_mem(dst, &bytes)?;
-            self.cpu.marca_sujo(dst, len);
+            self.cpu.mark_dirty(dst, len);
         }
         Ok(())
     }
 
-    /// Escreve uma string `AECHAR` (UTF-16 little-endian, terminada em zero).
+    /// Writes an `AECHAR` string (little-endian UTF-16, zero-terminated).
     ///
-    /// `max_units` limita quantos `AECHAR` cabem no destino, terminador incluído.
+    /// `max_units` limits how many `AECHAR`s fit in the destination, terminator included.
     pub(super) fn write_aechar(
         &mut self,
         addr: u32,
@@ -1016,7 +1019,7 @@ impl<C: CpuBackend> Machine<C> {
         self.cpu.write_mem(addr, &bytes)
     }
 
-    /// Escreve uma string C respeitando o tamanho do destino.
+    /// Writes a C string honoring the destination's size.
     pub(super) fn write_cstring_limited(
         &mut self,
         addr: u32,
@@ -1026,8 +1029,8 @@ impl<C: CpuBackend> Machine<C> {
         if addr == 0 || max_bytes == 0 {
             return Ok(());
         }
-        // ISO-8859-1, como na leitura: um caractere, um byte. Além de manter o acento, é o
-        // que faz o corte por tamanho cair sempre em fronteira de caractere.
+        // ISO-8859-1, as when reading: one character, one byte. Besides keeping the accent, it is
+        // what makes the size cut always land on a character boundary.
         let mut bytes = crate::cpu::latin1_encode(text);
         bytes.truncate(max_bytes.saturating_sub(1));
         bytes.push(0);
@@ -1039,78 +1042,78 @@ impl<C: CpuBackend> Machine<C> {
         bytes.push(0);
         self.cpu.write_mem(addr, &bytes).map_err(|e| {
             CpuError(format!(
-                "{e} ao escrever {} bytes em {addr:#010x}",
+                "{e} while writing {} bytes at {addr:#010x}",
                 bytes.len()
             ))
         })
     }
 }
 
-/// Quantos bytes o texto ocupa na memória do jogo, que é onde o `printf` conta.
+/// How many bytes the text takes in the game's memory, which is where `printf` counts.
 ///
-/// O `String` do formatador guarda cada caractere acima de `0x7f` em dois bytes de UTF-8, e na
-/// memória ele volta a ser um byte só (ver [`crate::cpu::latin1_encode`]). O `len()` contava os
-/// de UTF-8: os textos do Need For Speed são UTF-8 dentro do Latin-1, e "ARMAZÉM" voltava dois
-/// bytes mais longo do que tinha sido escrito.
-fn bytes_latin1(texto: &str) -> u32 {
-    texto.chars().count() as u32
+/// The formatter's `String` keeps each character above `0x7f` in two UTF-8 bytes, and in
+/// memory it goes back to being a single byte (see [`crate::cpu::latin1_encode`]). `len()` counted
+/// the UTF-8 ones: Need For Speed's texts are UTF-8 inside Latin-1, and "ARMAZÉM" came back two
+/// bytes longer than what had been written.
+fn latin1_len(text: &str) -> u32 {
+    text.chars().count() as u32
 }
 
-/// `MAKEPATH`: o diretório, uma barra só, e o arquivo.
-fn junta_caminho(diretorio: &str, arquivo: &str) -> String {
-    match (diretorio.is_empty(), diretorio.ends_with('/')) {
-        (true, _) => arquivo.to_string(),
-        (false, true) => format!("{diretorio}{arquivo}"),
-        (false, false) => format!("{diretorio}/{arquivo}"),
+/// `MAKEPATH`: the directory, a single slash, and the file.
+fn join_path(dir: &str, file: &str) -> String {
+    match (dir.is_empty(), dir.ends_with('/')) {
+        (true, _) => file.to_string(),
+        (false, true) => format!("{dir}{file}"),
+        (false, false) => format!("{dir}/{file}"),
     }
 }
 
-/// O `atoi` do C: espaço em branco à frente, sinal opcional e os dígitos que vierem, parando no
-/// primeiro que não for dígito. Sem dígito nenhum, zero.
+/// C's `atoi`: leading whitespace, an optional sign and whatever digits follow, stopping at the
+/// first one that is not a digit. With no digit at all, zero.
 ///
-/// **O que vem depois do número não invalida o número.** O Need for Speed procura as partes de
-/// uma malha pelo nome, com `atoi` num campo de quatro bytes sem terminador (`"1   "` seguido do
-/// resto do registro). Exigir o texto inteiro numérico dava zero para todas, a parte `1` nunca era
-/// achada, e o jogo lia um ponteiro nulo em `0x20738`.
-fn atoi_de_c(texto: &str) -> i32 {
-    let resto = texto.trim_start_matches([' ', '\t', '\n', '\r', '\x0b', '\x0c']);
-    let (negativo, resto) = match resto.as_bytes().first() {
-        Some(b'-') => (true, &resto[1..]),
-        Some(b'+') => (false, &resto[1..]),
-        _ => (false, resto),
+/// **What comes after the number does not invalidate the number.** Need for Speed looks up the
+/// parts of a mesh by name, with `atoi` on a four-byte field without a terminator (`"1   "`
+/// followed by the rest of the record). Requiring the whole text to be numeric gave zero for all
+/// of them, part `1` was never found, and the game read a null pointer at `0x20738`.
+fn c_atoi(text: &str) -> i32 {
+    let rest = text.trim_start_matches([' ', '\t', '\n', '\r', '\x0b', '\x0c']);
+    let (negative, rest) = match rest.as_bytes().first() {
+        Some(b'-') => (true, &rest[1..]),
+        Some(b'+') => (false, &rest[1..]),
+        _ => (false, rest),
     };
-    let valor = resto
+    let value = rest
         .bytes()
         .take_while(u8::is_ascii_digit)
         .fold(0i32, |acc, d| acc.wrapping_mul(10).wrapping_add(i32::from(d - b'0')));
-    match negativo {
-        true => valor.wrapping_neg(),
-        false => valor,
+    match negative {
+        true => value.wrapping_neg(),
+        false => value,
     }
 }
 
 #[cfg(test)]
-mod testes_do_atoi {
-    use super::atoi_de_c;
+mod atoi_tests {
+    use super::c_atoi;
 
     #[test]
-    fn para_no_primeiro_nao_digito() {
-        assert_eq!(atoi_de_c("1   \u{10}xyz"), 1);
-        assert_eq!(atoi_de_c("  -42abc"), -42);
-        assert_eq!(atoi_de_c("+7"), 7);
-        assert_eq!(atoi_de_c("abc"), 0);
-        assert_eq!(atoi_de_c(""), 0);
+    fn stops_at_the_first_non_digit() {
+        assert_eq!(c_atoi("1   \u{10}xyz"), 1);
+        assert_eq!(c_atoi("  -42abc"), -42);
+        assert_eq!(c_atoi("+7"), 7);
+        assert_eq!(c_atoi("abc"), 0);
+        assert_eq!(c_atoi(""), 0);
     }
 }
 
 #[cfg(test)]
-mod testes_do_makepath {
-    use super::junta_caminho;
+mod makepath_tests {
+    use super::join_path;
 
     #[test]
-    fn junta_com_uma_barra_so() {
-        assert_eq!(junta_caminho("fs:/mod/274755", "tectoy.cfg"), "fs:/mod/274755/tectoy.cfg");
-        assert_eq!(junta_caminho("fs:/mod/", "a.db"), "fs:/mod/a.db");
-        assert_eq!(junta_caminho("", "a.db"), "a.db");
+    fn joins_with_a_single_slash() {
+        assert_eq!(join_path("fs:/mod/274755", "tectoy.cfg"), "fs:/mod/274755/tectoy.cfg");
+        assert_eq!(join_path("fs:/mod/", "a.db"), "fs:/mod/a.db");
+        assert_eq!(join_path("", "a.db"), "a.db");
     }
 }

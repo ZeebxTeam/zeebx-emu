@@ -1,43 +1,43 @@
-//! Sistema de arquivos visto pelo jogo.
+//! The file system as the game sees it.
 //!
-//! O jogo nunca vê um caminho do host. O que ele pede é traduzido, **só como texto**, para um
-//! caminho do sistema de arquivos virtual do console; o `..` é resolvido ali e para na raiz
-//! virtual. Só depois esse caminho virtual vira caminho do host, por uma de duas camadas:
+//! The game never sees a host path. What it asks for is translated, **as text only**, into a path
+//! in the console's virtual file system; `..` is resolved there and stops at the virtual root.
+//! Only then does that virtual path become a host path, through one of two layers:
 //!
-//! | Camada | Virtual | Host | Acesso |
+//! | Layer | Virtual | Host | Access |
 //! |---|---|---|---|
-//! | pacote | `/mod/...` | a pasta `mod/` do pacote — ou só a do módulo, se ele veio solto | leitura |
-//! | gravável | `/mod/...` | o store de saves, comum a todos os jogos | leitura e escrita |
-//! | gravável | o resto de `/` | o aparelho, comum a todos os jogos | leitura e escrita |
+//! | package | `/mod/...` | the package's `mod/` folder — or only the module's, if it came loose | read |
+//! | writable | `/mod/...` | the save store, shared by every game | read and write |
+//! | writable | the rest of `/` | the device, shared by every game | read and write |
 //!
-//! A leitura procura primeiro na camada gravável e depois no pacote; a escrita vai sempre para a
-//! gravável. É o que o console tem: o pacote instalado embaixo e, por cima, o que os jogos
-//! gravaram. Nada que um jogo peça chega a outro pacote, à biblioteca de ROMs ou ao resto da
-//! máquina — e o pacote dele mesmo não pode ser alterado nem apagado.
+//! Reading looks first in the writable layer and then in the package; writing always goes to the
+//! writable one. That is what the console has: the installed package underneath and, on top of
+//! it, what the games wrote. Nothing a game asks for reaches another package, the ROM library or
+//! the rest of the machine — and its own package cannot be modified or deleted.
 //!
-//! Formas de caminho que aparecem nos jogos e no SDK:
+//! Path forms that appear in the games and in the SDK:
 //!
 //! ```text
-//! arquivo.dat          relativo ao diretório do módulo: /mod/<módulo>/arquivo.dat
-//! fs:/~/arquivo.dat    o "~" é o diretório do próprio módulo
-//! fs:/~/../id1/x       /mod/id1/x — o Quake guarda os dados dele num diretório irmão
-//! fs:/~0x01234567/x    diretório de um módulo pelo ClassID
-//! fs:/shared/x         área compartilhada entre aplicativos
-//! fs:/zeeboiddata/x    **o sistema de arquivos do aparelho**, comum a todos
-//! fs:/mod/<pasta>/x    o diretório de um módulo pelo caminho absoluto
+//! file.dat             relative to the module's directory: /mod/<module>/file.dat
+//! fs:/~/file.dat       "~" is the module's own directory
+//! fs:/~/../id1/x       /mod/id1/x — Quake keeps its data in a sibling directory
+//! fs:/~0x01234567/x    directory of a module by ClassID
+//! fs:/shared/x         area shared between applications
+//! fs:/zeeboiddata/x    **the device's file system**, shared by all
+//! fs:/mod/<dir>/x      the directory of a module by absolute path
 //! ```
 //!
-//! # O `fs:/` é do aparelho, não do jogo
+//! # `fs:/` belongs to the device, not the game
 //!
-//! No console há **um** sistema de arquivos: o Zeeboids grava os bonecos em
-//! `fs:/zeeboiddata/zeeboid.db` e o Zeebo F.C. abre esse mesmo caminho para importá-los. Pelo
-//! mesmo motivo o store de saves é um só: um jogo que procura o save de outro em
-//! `fs:/mod/<pasta>/` encontra o que esse outro gravou.
+//! On the console there is **one** file system: Zeeboids saves the characters to
+//! `fs:/zeeboiddata/zeeboid.db` and Zeebo F.C. opens that same path to import them. For the same
+//! reason there is a single save store: a game that looks for another's save in `fs:/mod/<dir>/`
+//! finds what that other one wrote.
 
 use std::path::{Component, Path, PathBuf};
 
-/// Prefixos que o BREW usa e que removemos antes de resolver, com o que cada um diz: se o
-/// caminho é do aparelho e se pode trazer o ClassID logo depois do `~`.
+/// Prefixes BREW uses and that we strip before resolving, with what each one says: whether the
+/// path belongs to the device and whether it may carry the ClassID right after the `~`.
 const PREFIXES: [(&str, bool); 4] = [
     ("fs:/~/", false),
     ("fs:/~", false),
@@ -45,83 +45,83 @@ const PREFIXES: [(&str, bool); 4] = [
     ("~/", false),
 ];
 
-/// Tira o `<classe>/` que pode vir logo depois do `~`.
+/// Strips the `<class_id>/` that may come right after the `~`.
 ///
-/// O BREW escreve o diretório de um módulo como `fs:/~<ClassID>/`, e a Z-Wheel usa essa forma
-/// para os próprios recursos: `fs:/~0x01070798/tectoyli.brf`. Sem tirar o número, o caminho
-/// virava um **subdiretório** com nome `0x01070798` dentro do diretório do módulo — que não
-/// existe. O arquivo estava no pacote e mesmo assim não abria.
+/// BREW writes a module's directory as `fs:/~<ClassID>/`, and the Z-Wheel uses that form for its
+/// own resources: `fs:/~0x01070798/tectoyli.brf`. Without stripping the number, the path became a
+/// **subdirectory** named `0x01070798` inside the module's directory — which does not exist. The
+/// file was in the package and still did not open.
 ///
-/// Foi o que segurou o formulário de instruções do z-pad da Z-Wheel: ele carrega um recurso do
-/// `tectoyli.brf` por esse caminho, não achava, e devolvia `EUNABLETOLOAD` — o erro 6 que
-/// aparecia milhares de vezes no relatório.
+/// That is what held up the Z-Wheel's z-pad instructions form: it loads a resource from
+/// `tectoyli.brf` through that path, did not find it, and returned `EUNABLETOLOAD` — the error 6
+/// that showed up thousands of times in the report.
 ///
-/// **Aqui só existe um módulo por vez**, então qualquer ClassID leva ao diretório dele. No
-/// console um módulo pode alcançar o diretório de outro por este caminho; quando isso importar,
-/// é aqui que se resolve o número para o diretório certo. O nome da pasta não serve de atalho:
-/// a da Z-Wheel é `274755` e o ClassID dela é `0x01070798`.
-fn sem_classe(resto: &str) -> String {
-    let Some((primeiro, cauda)) = resto.split_once('/') else {
-        return resto.to_string();
+/// **Here there is only one module at a time**, so any ClassID leads to its directory. On the
+/// console a module can reach another's directory through this path; when that matters, this is
+/// where the number gets resolved to the right directory. The folder name is no shortcut: the
+/// Z-Wheel's is `274755` and its ClassID is `0x01070798`.
+fn without_class(rest: &str) -> String {
+    let Some((first, tail)) = rest.split_once('/') else {
+        return rest.to_string();
     };
-    let numero = primeiro
+    let number = first
         .strip_prefix("0x")
-        .or_else(|| primeiro.strip_prefix("0X"))
+        .or_else(|| first.strip_prefix("0X"))
         .map(|hex| !hex.is_empty() && hex.chars().all(|c| c.is_ascii_hexdigit()))
-        .unwrap_or_else(|| !primeiro.is_empty() && primeiro.chars().all(|c| c.is_ascii_digit()));
-    match numero {
-        true => cauda.to_string(),
-        false => resto.to_string(),
+        .unwrap_or_else(|| !first.is_empty() && first.chars().all(|c| c.is_ascii_digit()));
+    match number {
+        true => tail.to_string(),
+        false => rest.to_string(),
     }
 }
-/// Nome da raiz comum, que faz o papel do sistema de arquivos do aparelho.
+/// Name of the shared root, which plays the role of the device's file system.
 const DEVICE_DIR: &str = "aparelho";
-/// Onde os módulos ficam instalados, tanto no aparelho quanto no pacote.
+/// Where the modules are installed, both on the device and in the package.
 const MOD_DIR: &str = "mod";
 
-/// Para que serve uma abertura.
+/// What an open is for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpenIntent {
-    /// Ler um arquivo que precisa existir.
+    /// Read a file that must exist.
     Read,
-    /// Criar um nome novo, sem sobrescrever um existente de caixa diferente.
+    /// Create a new name, without overwriting an existing one with different case.
     Create,
-    /// Ler e escrever o mesmo arquivo, preservando o conteúdo atual.
+    /// Read and write the same file, preserving its current contents.
     ReadWrite,
-    /// Acrescentar ao fim do arquivo.
+    /// Append to the end of the file.
     Append,
 }
 
-/// Onde abrir, e a cópia que precisa preceder a escrita.
+/// Where to open, and the copy that must precede the write.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenTarget {
-    /// Caminho do host a abrir.
+    /// Host path to open.
     pub path: PathBuf,
-    /// Arquivo do pacote a copiar para `path` antes de escrever, no copy-on-write.
+    /// Package file to copy to `path` before writing, for copy-on-write.
     pub copy_from: Option<PathBuf>,
 }
 
-/// Um caminho do sistema de arquivos virtual: os componentes a partir de `/`, já sem `.`, `..`
-/// nem barra vazia.
+/// A path in the virtual file system: the components from `/`, already without `.`, `..` or
+/// empty slashes.
 type Virtual = Vec<String>;
 
 #[derive(Debug)]
 pub struct Vfs {
-    /// Diretório do módulo no host: pacote extraído ou pasta do `.mod` solto. Nunca recebe
-    /// escrita.
+    /// The module's directory on the host: extracted package or folder of the loose `.mod`.
+    /// Never written to.
     root: PathBuf,
-    /// Nome com que o módulo aparece em `/mod/<nome>/`: a pasta dele.
+    /// Name the module appears under in `/mod/<name>/`: its folder.
     module: String,
-    /// A pasta `mod/` do pacote, quando o módulo está numa.
+    /// The package's `mod/` folder, when the module is in one.
     ///
-    /// É ela que deixa o Quake ler `mod/id1/` e o NFS `mod/nfsresources/`, que vêm no mesmo
-    /// zip. Um `.mod` solto não tem pacote em volta, e as pastas vizinhas dele são do usuário:
-    /// nesse caso só o diretório do próprio módulo fica visível.
+    /// It is what lets Quake read `mod/id1/` and NFS `mod/nfsresources/`, which come in the same
+    /// zip. A loose `.mod` has no package around it, and its neighboring folders belong to the
+    /// user: in that case only the module's own directory is visible.
     package_mods: Option<PathBuf>,
-    /// O store de saves, que recebe tudo o que os jogos gravam em `/mod/`. Sem ele, a pasta
-    /// `mod/` do aparelho.
+    /// The save store, which receives everything the games write under `/mod/`. Without it, the
+    /// device's `mod/` folder.
     saves: Option<PathBuf>,
-    /// A raiz comum, que faz o papel do sistema de arquivos do aparelho.
+    /// The shared root, which plays the role of the device's file system.
     device: PathBuf,
 }
 
@@ -130,13 +130,13 @@ impl Vfs {
         let root: PathBuf = root.into();
         let module = root
             .file_name()
-            .map(|nome| nome.to_string_lossy().into_owned())
+            .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| "modulo".to_string());
-        let pai = root.parent().map(Path::to_path_buf);
-        let package_mods = pai
+        let parent = root.parent().map(Path::to_path_buf);
+        let package_mods = parent
             .clone()
-            .filter(|pai| pai.file_name().is_some_and(|n| n.eq_ignore_ascii_case(MOD_DIR)));
-        let device = pai.unwrap_or_else(|| root.clone()).join(DEVICE_DIR);
+            .filter(|parent| parent.file_name().is_some_and(|n| n.eq_ignore_ascii_case(MOD_DIR)));
+        let device = parent.unwrap_or_else(|| root.clone()).join(DEVICE_DIR);
         Self {
             root,
             module,
@@ -146,15 +146,15 @@ impl Vfs {
         }
     }
 
-    /// Aponta o store de saves, que recebe o que os jogos gravam em `/mod/`.
+    /// Sets the save store, which receives what the games write under `/mod/`.
     pub fn set_save_root(&mut self, save: impl Into<PathBuf>) {
         self.saves = Some(save.into());
     }
 
-    /// Aponta a raiz comum para outro lugar.
+    /// Points the shared root somewhere else.
     ///
-    /// Existe para que **todos os jogos** compartilhem o mesmo sistema de arquivos, e não uma
-    /// cópia por instalação: é assim que o Zeebo F.C. encontra os bonecos que o Zeeboids gravou.
+    /// It exists so that **every game** shares the same file system, and not one copy per
+    /// installation: that is how Zeebo F.C. finds the characters Zeeboids saved.
     pub fn set_device_root(&mut self, device: impl Into<PathBuf>) {
         self.device = device.into();
     }
@@ -163,10 +163,10 @@ impl Vfs {
         &self.root
     }
 
-    /// Arquivo de estado criado pelo emulador para um aplicativo do console.
+    /// State file created by the emulator for a console application.
     ///
-    /// Não passa pelo caminho do módulo: é estado do aparelho, portanto sobrevive a uma nova
-    /// extração do ZIP e nunca altera o pacote original.
+    /// It does not go through the module's path: it is device state, so it survives a new
+    /// extraction of the ZIP and never modifies the original package.
     pub fn profile_file(&self, app: &str, name: &str) -> PathBuf {
         self.device.join(app).join(name)
     }
@@ -177,250 +177,253 @@ impl Vfs {
             .unwrap_or_else(|| self.device.join(MOD_DIR))
     }
 
-    /// Traduz o caminho do guest para o caminho virtual, sem tocar no disco.
+    /// Translates the guest path into the virtual path, without touching the disk.
     ///
-    /// Devolve `None` para o que sai da raiz virtual e para o que não é caminho do console:
-    /// componente com `:` (raiz do Windows, outro prefixo) ou com NUL. `allow_root` aceita o
-    /// próprio diretório do módulo e o `/mod/`, que se listam mas não se abrem como arquivo.
+    /// Returns `None` for whatever leaves the virtual root and for what is not a console path: a
+    /// component with `:` (a Windows root, another prefix) or with NUL. `allow_root` accepts the
+    /// module's own directory and `/mod/`, which can be listed but not opened as a file.
     fn virtual_path(&self, guest_path: &str, allow_root: bool) -> Option<Virtual> {
-        let normalizado = guest_path.replace('\\', "/");
-        let (resto, do_aparelho) = PREFIXES
+        let normalized = guest_path.replace('\\', "/");
+        let (rest, from_device) = PREFIXES
             .iter()
             .copied()
-            .find_map(|(prefixo, do_aparelho)| {
-                let resto = normalizado.strip_prefix(prefixo)?;
-                Some(match do_aparelho {
-                    true => (resto.to_string(), true),
-                    false => (sem_classe(resto), false),
+            .find_map(|(prefix, from_device)| {
+                let rest = normalized.strip_prefix(prefix)?;
+                Some(match from_device {
+                    true => (rest.to_string(), true),
+                    false => (without_class(rest), false),
                 })
             })
-            .unwrap_or((normalizado.clone(), false));
-        let inicio: Virtual = match do_aparelho {
+            .unwrap_or((normalized.clone(), false));
+        let start: Virtual = match from_device {
             true => Vec::new(),
             false => vec![MOD_DIR.to_string(), self.module.clone()],
         };
-        // Da pasta do módulo sobe-se até `/mod/`, que é como o Quake alcança os dados dele, e
-        // nem um passo além. Do aparelho não se sobe: ele já é a raiz.
-        let piso = match do_aparelho {
+        // From the module's folder you can go up to `/mod/`, which is how Quake reaches its
+        // data, and not one step further. From the device you cannot go up: it is already the
+        // root.
+        let floor = match from_device {
             true => 0,
             false => 1,
         };
-        let mut caminho = inicio.clone();
-        // Uma barra vazia — `/` no começo ou `//` no meio — ancora o caminho na pasta do
-        // módulo, e dali o `..` não sobe. Os Zeebo Extreme gravam o recorde das pistas em
-        // `./udata/trackinfo.txt` e o releem pelo empacotador, que monta `"%s/%s"` com a raiz
-        // `./`: `.//../udata/trackinfo.txt`. Subindo, a releitura caía em `mod/udata`, a lista
-        // de pistas ficava sem vetor e a largada do Bóia Cross lia o ponteiro nulo.
-        let mut ancorado = false;
-        for parte in resto.split('/') {
-            match parte {
-                "" => ancorado = !do_aparelho,
+        let mut path = start.clone();
+        // An empty slash — `/` at the start or `//` in the middle — anchors the path in the
+        // module's folder, and from there `..` does not go up. The Zeebo Extreme games save the
+        // track records to `./udata/trackinfo.txt` and read them back through the packer, which
+        // builds `"%s/%s"` with the root `./`: `.//../udata/trackinfo.txt`. Going up, the reread
+        // landed in `mod/udata`, the track list was left without a vector and Bóia Cross's start
+        // read the null pointer.
+        let mut anchored = false;
+        for part in rest.split('/') {
+            match part {
+                "" => anchored = !from_device,
                 "." => continue,
-                ".." if ancorado && caminho == inicio => continue,
+                ".." if anchored && path == start => continue,
                 ".." => {
-                    if caminho.len() <= piso {
+                    if path.len() <= floor {
                         return None;
                     }
-                    caminho.pop();
+                    path.pop();
                 }
-                _ if parte.contains(|c| c == ':' || c == '\0') => return None,
-                _ => caminho.push(parte.to_string()),
+                _ if part.contains(|c| c == ':' || c == '\0') => return None,
+                _ => path.push(part.to_string()),
             }
         }
-        let raiz_de_modulos = caminho.len() == 1 && caminho[0].eq_ignore_ascii_case(MOD_DIR);
-        if !allow_root && (caminho.is_empty() || raiz_de_modulos || caminho == inicio) {
+        let modules_root = path.len() == 1 && path[0].eq_ignore_ascii_case(MOD_DIR);
+        if !allow_root && (path.is_empty() || modules_root || path == start) {
             return None;
         }
-        Some(caminho)
+        Some(path)
     }
 
-    /// A camada gravável de um caminho virtual: a raiz dela e o caminho dentro.
-    fn upper(&self, caminho: &[String]) -> (PathBuf, PathBuf) {
-        match caminho.first() {
-            Some(primeiro) if primeiro.eq_ignore_ascii_case(MOD_DIR) => {
-                let raiz = self.saves_dir();
-                let dentro = junta(&raiz, &caminho[1..]);
-                (raiz, dentro)
+    /// The writable layer of a virtual path: its root and the path inside it.
+    fn upper(&self, path: &[String]) -> (PathBuf, PathBuf) {
+        match path.first() {
+            Some(first) if first.eq_ignore_ascii_case(MOD_DIR) => {
+                let root = self.saves_dir();
+                let inside = join_components(&root, &path[1..]);
+                (root, inside)
             }
-            _ => (self.device.clone(), junta(&self.device, caminho)),
+            _ => (self.device.clone(), join_components(&self.device, path)),
         }
     }
 
-    /// A camada do pacote, quando o caminho virtual cai nela.
-    fn lower(&self, caminho: &[String]) -> Option<(PathBuf, PathBuf)> {
-        if !caminho.first()?.eq_ignore_ascii_case(MOD_DIR) {
+    /// The package layer, when the virtual path falls in it.
+    fn lower(&self, path: &[String]) -> Option<(PathBuf, PathBuf)> {
+        if !path.first()?.eq_ignore_ascii_case(MOD_DIR) {
             return None;
         }
         match &self.package_mods {
-            Some(mods) => Some((mods.clone(), junta(mods, &caminho[1..]))),
-            None if caminho.get(1)?.eq_ignore_ascii_case(&self.module) => {
-                Some((self.root.clone(), junta(&self.root, &caminho[2..])))
+            Some(mods) => Some((mods.clone(), join_components(mods, &path[1..]))),
+            None if path.get(1)?.eq_ignore_ascii_case(&self.module) => {
+                Some((self.root.clone(), join_components(&self.root, &path[2..])))
             }
             None => None,
         }
     }
 
-    /// O caminho gravável, com a caixa que o disco já tem.
-    fn upper_existente(&self, caminho: &[String]) -> Option<PathBuf> {
-        let (raiz, dentro) = self.upper(caminho);
-        na_camada(&raiz, match_case(dentro))
+    /// The writable path, with the case the disk already has.
+    fn upper_existing(&self, path: &[String]) -> Option<PathBuf> {
+        let (root, inside) = self.upper(path);
+        in_layer(&root, match_case(inside))
     }
 
-    /// O caminho no pacote, se ele existe lá.
-    fn lower_existente(&self, caminho: &[String]) -> Option<PathBuf> {
-        let (raiz, dentro) = self.lower(caminho)?;
-        na_camada(&raiz, match_case(dentro)).filter(|c| c.exists())
+    /// The path in the package, if it exists there.
+    fn lower_existing(&self, path: &[String]) -> Option<PathBuf> {
+        let (root, inside) = self.lower(path)?;
+        in_layer(&root, match_case(inside)).filter(|c| c.exists())
     }
 
-    /// Traduz um caminho do guest para um caminho do host, para ler.
+    /// Translates a guest path into a host path, for reading.
     ///
-    /// O que o jogo gravou esconde o que veio no pacote: é o que faz o save relido ser o save, e
-    /// não o recurso original. Um caminho que não existe em nenhuma das camadas volta como o
-    /// lugar onde ele nasceria, que é sempre a gravável.
+    /// What the game wrote hides what came in the package: that is what makes the reread save be
+    /// the save, and not the original resource. A path that exists in neither layer comes back as
+    /// the place where it would be created, which is always the writable one.
     pub fn resolve(&self, guest_path: &str) -> Option<PathBuf> {
-        let caminho = self.virtual_path(guest_path, false)?;
-        let gravavel = self.upper_existente(&caminho)?;
-        match gravavel.exists() {
-            true => Some(gravavel),
-            false => self.lower_existente(&caminho).or(Some(gravavel)),
+        let path = self.virtual_path(guest_path, false)?;
+        let writable_path = self.upper_existing(&path)?;
+        match writable_path.exists() {
+            true => Some(writable_path),
+            false => self.lower_existing(&path).or(Some(writable_path)),
         }
     }
 
-    /// Onde abrir um caminho, e de onde copiar antes de escrever.
+    /// Where to open a path, and where to copy from before writing.
     ///
-    /// Ver [`OpenIntent`]. Toda escrita cai na camada gravável; um recurso do pacote aberto para
-    /// escrita é copiado antes, e as escritas seguintes já o encontram lá.
+    /// See [`OpenIntent`]. Every write lands in the writable layer; a package resource opened for
+    /// writing is copied first, and later writes already find it there.
     pub fn open_target(&self, guest_path: &str, intent: OpenIntent) -> Option<OpenTarget> {
-        let caminho = self.virtual_path(guest_path, false)?;
-        let gravavel = self.upper_existente(&caminho)?;
-        let ja_gravado = gravavel.exists();
-        let do_pacote = || self.lower_existente(&caminho);
+        let resolved_path = self.virtual_path(guest_path, false)?;
+        let writable_path = self.upper_existing(&resolved_path)?;
+        let already_written = writable_path.exists();
+        let from_package = || self.lower_existing(&resolved_path);
         Some(match intent {
             OpenIntent::Read => OpenTarget {
-                path: match ja_gravado {
-                    true => gravavel,
-                    false => do_pacote().unwrap_or(gravavel),
+                path: match already_written {
+                    true => writable_path,
+                    false => from_package().unwrap_or(writable_path),
                 },
                 copy_from: None,
             },
             OpenIntent::Create => OpenTarget {
-                path: gravavel,
+                path: writable_path,
                 copy_from: None,
             },
             OpenIntent::ReadWrite | OpenIntent::Append => OpenTarget {
-                copy_from: match ja_gravado {
+                copy_from: match already_written {
                     true => None,
-                    false => do_pacote(),
+                    false => from_package(),
                 },
-                path: gravavel,
+                path: writable_path,
             },
         })
     }
 
-    /// Como [`Vfs::resolve`], mas para **criar** um nome, sempre na camada gravável.
+    /// Like [`Vfs::resolve`], but to **create** a name, always in the writable layer.
     ///
-    /// O nome novo fica exatamente como o guest escreveu: renomear para `save.dat` quando existe
-    /// um `SAVE.DAT` tem de criar o primeiro, não sobrescrever o segundo. Os diretórios que já
-    /// existem continuam seguindo a semântica sem caixa do console; sem isto, `UDATA/save.dat`
-    /// criaria uma segunda pasta ao lado de `udata/` num host Linux.
+    /// The new name stays exactly as the guest wrote it: renaming to `save.dat` when a `SAVE.DAT`
+    /// exists has to create the former, not overwrite the latter. Directories that already exist
+    /// keep following the console's case-insensitive semantics; without this, `UDATA/save.dat`
+    /// would create a second folder next to `udata/` on a Linux host.
     pub fn resolve_new(&self, guest_path: &str) -> Option<PathBuf> {
-        let caminho = self.virtual_path(guest_path, false)?;
-        let (raiz, dentro) = self.upper(&caminho);
-        na_camada(&raiz, match_case_parent(dentro))
+        let path = self.virtual_path(guest_path, false)?;
+        let (root, inside) = self.upper(&path);
+        in_layer(&root, match_case_parent(inside))
     }
 
-    /// O caminho na camada gravável, exista ele ou não.
+    /// The path in the writable layer, whether it exists or not.
     ///
-    /// É para quem vai **remover**, **renomear** ou criar e apagar diretório: o pacote é imutável,
-    /// então só o que está na camada gravável pode ser mexido.
+    /// It is for callers that will **remove**, **rename** or create and delete a directory: the
+    /// package is immutable, so only what is in the writable layer can be touched.
     pub fn writable(&self, guest_path: &str) -> Option<PathBuf> {
-        self.upper_existente(&self.virtual_path(guest_path, false)?)
+        self.upper_existing(&self.virtual_path(guest_path, false)?)
     }
 
-    /// O diretório para listar, no pacote quando ele o tem.
+    /// The directory to list, in the package when it has it.
     ///
-    /// Listar `fs:/~/` é legítimo — é o diretório do jogo —, ainda que abri-lo como arquivo não
-    /// seja. O que o jogo gravou no mesmo diretório vem de [`Vfs::writable_dir`].
+    /// Listing `fs:/~/` is legitimate — it is the game's directory —, even though opening it as a
+    /// file is not. What the game wrote in the same directory comes from [`Vfs::writable_dir`].
     pub fn resolve_dir(&self, guest_path: &str) -> Option<PathBuf> {
-        let caminho = self.virtual_path(guest_path, true)?;
-        let gravavel = self.upper_existente(&caminho)?;
-        self.lower_existente(&caminho)
+        let path = self.virtual_path(guest_path, true)?;
+        let writable_path = self.upper_existing(&path)?;
+        self.lower_existing(&path)
             .filter(|c| c.is_dir())
-            .or(Some(gravavel))
+            .or(Some(writable_path))
     }
 
-    /// O mesmo diretório na camada gravável, quando ele existe lá.
+    /// The same directory in the writable layer, when it exists there.
     ///
-    /// Serve à listagem: o jogo precisa enxergar os arquivos que ele mesmo gravou, e não só os
-    /// que vieram no pacote.
+    /// It serves the listing: the game needs to see the files it wrote itself, and not only the
+    /// ones that came in the package.
     pub fn writable_dir(&self, guest_path: &str) -> Option<PathBuf> {
-        let caminho = self.virtual_path(guest_path, true)?;
-        self.upper_existente(&caminho).filter(|c| c.is_dir())
+        let path = self.virtual_path(guest_path, true)?;
+        self.upper_existing(&path).filter(|c| c.is_dir())
     }
 
-    /// Se o caminho do host está na camada gravável.
+    /// Whether the host path is in the writable layer.
     pub fn is_writable_path(&self, path: &Path) -> bool {
         path.starts_with(self.saves_dir()) || path.starts_with(&self.device)
     }
 
-    /// Se um caminho do host está dentro do que este jogo alcança.
+    /// Whether a host path is within what this game can reach.
     ///
-    /// Para o que vem de fora do VFS e aponta para o host: um save state guarda o caminho dos
-    /// arquivos abertos, e um estado adulterado não pode reabrir um arquivo qualquer da máquina.
+    /// For whatever comes from outside the VFS and points at the host: a save state stores the
+    /// path of the open files, and a tampered state must not reopen an arbitrary file on the
+    /// machine.
     pub fn contains_host(&self, path: &Path) -> bool {
         if path.components().any(|c| matches!(c, Component::ParentDir)) {
             return false;
         }
-        let raizes = [
+        let roots = [
             Some(self.saves_dir()),
             Some(self.device.clone()),
             Some(self.root.clone()),
             self.package_mods.clone(),
         ];
-        raizes
+        roots
             .into_iter()
             .flatten()
-            .any(|raiz| path.starts_with(&raiz) && sem_ligacao(&raiz, path))
+            .any(|root| path.starts_with(&root) && no_symlink(&root, path))
     }
 }
 
-/// `raiz` seguida dos componentes de um caminho virtual.
-fn junta(raiz: &Path, componentes: &[String]) -> PathBuf {
-    let mut caminho = raiz.to_path_buf();
-    caminho.extend(componentes);
-    caminho
+/// `root` followed by the components of a virtual path.
+fn join_components(root: &Path, components: &[String]) -> PathBuf {
+    let mut path = root.to_path_buf();
+    path.extend(components);
+    path
 }
 
-/// O caminho, se nada entre a raiz da camada e ele for ligação simbólica.
+/// The path, if nothing between the layer's root and it is a symbolic link.
 ///
-/// Os componentes já vêm limpos do caminho virtual, mas um link dentro da camada levaria o jogo
-/// para onde ele apontasse. O zip e o 7z já recusam links ao extrair; isto cobre o `.mod` solto,
-/// cuja pasta é do usuário.
-fn na_camada(raiz: &Path, caminho: PathBuf) -> Option<PathBuf> {
-    sem_ligacao(raiz, &caminho).then_some(caminho)
+/// The components already come clean from the virtual path, but a link inside the layer would
+/// take the game wherever it pointed. zip and 7z already refuse links when extracting; this
+/// covers the loose `.mod`, whose folder belongs to the user.
+fn in_layer(root: &Path, path: PathBuf) -> Option<PathBuf> {
+    no_symlink(root, &path).then_some(path)
 }
 
-fn sem_ligacao(raiz: &Path, caminho: &Path) -> bool {
-    let Ok(relativo) = caminho.strip_prefix(raiz) else {
+fn no_symlink(root: &Path, path: &Path) -> bool {
+    let Ok(relative) = path.strip_prefix(root) else {
         return false;
     };
-    let mut atual = raiz.to_path_buf();
-    for parte in relativo.components() {
-        if !matches!(parte, Component::Normal(_)) {
+    let mut current = root.to_path_buf();
+    for part in relative.components() {
+        if !matches!(part, Component::Normal(_)) {
             return false;
         }
-        atual.push(parte);
-        match std::fs::symlink_metadata(&atual) {
+        current.push(part);
+        match std::fs::symlink_metadata(&current) {
             Ok(meta) if meta.file_type().is_symlink() => return false,
             Ok(_) => {}
-            // Daqui para a frente o caminho ainda não existe, e o que não existe não é link.
+            // From here on the path does not exist yet, and what does not exist is not a link.
             Err(_) => break,
         }
     }
     true
 }
 
-/// Resolve só os diretórios de um caminho novo, preservando o último componente para criação.
+/// Resolves only the directories of a new path, keeping the last component for creation.
 fn match_case_parent(path: PathBuf) -> PathBuf {
     let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
         return path;
@@ -428,14 +431,15 @@ fn match_case_parent(path: PathBuf) -> PathBuf {
     match_case(parent.to_path_buf()).join(name)
 }
 
-/// O mesmo caminho, com a caixa que os arquivos têm de verdade no disco.
+/// The same path, with the case the files really have on disk.
 ///
-/// O sistema de arquivos do console não distingue maiúsculas de minúsculas, e os jogos contam
-/// com isso: os dez ports de arcade do Zeebo pedem `font.fnz` e trazem `font.FNZ` no pacote.
-/// Nenhum deles passava do `EVT_APP_START` — a fonte não abria e o ponteiro nulo vinha logo
-/// depois. No Windows e no macOS isso funcionava por acaso; no Linux, não.
+/// The console's file system is case-insensitive, and the games count on that: the Zeebo's ten
+/// arcade ports ask for `font.fnz` and ship `font.FNZ` in the package. None of them got past
+/// `EVT_APP_START` — the font did not open and the null pointer came right after. On Windows and
+/// macOS this worked by accident; on Linux, it did not.
 ///
-/// Um caminho que não existe volta como veio: é o caso de um arquivo que o jogo está criando.
+/// A path that does not exist comes back as it came: that is the case of a file the game is
+/// creating.
 fn match_case(path: PathBuf) -> PathBuf {
     if path.exists() {
         return path;
@@ -443,7 +447,7 @@ fn match_case(path: PathBuf) -> PathBuf {
     let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
         return path;
     };
-    // O diretório também pode estar com outra caixa, então ele é resolvido primeiro.
+    // The directory may also have different case, so it is resolved first.
     let parent = match_case(parent.to_path_buf());
     let exact = parent.join(name);
     if exact.exists() {
@@ -452,15 +456,15 @@ fn match_case(path: PathBuf) -> PathBuf {
     let Ok(entries) = std::fs::read_dir(&parent) else {
         return exact;
     };
-    let alvo = name.to_string_lossy().to_lowercase();
-    // Havendo mais de um candidato — dois arquivos que só diferem na caixa —, fica o primeiro
-    // em ordem alfabética, para a escolha não depender da ordem em que o disco os devolve.
+    let target = name.to_string_lossy().to_lowercase();
+    // With more than one candidate — two files that differ only in case —, the first in
+    // alphabetical order wins, so the choice does not depend on the order the disk returns them.
     entries
         .flatten()
         .map(|entry| entry.file_name())
-        .filter(|nome| nome.to_string_lossy().to_lowercase() == alvo)
+        .filter(|candidate| candidate.to_string_lossy().to_lowercase() == target)
         .min()
-        .map_or(exact, |nome| parent.join(nome))
+        .map_or(exact, |candidate| parent.join(candidate))
 }
 
 #[cfg(test)]
@@ -471,107 +475,107 @@ mod tests {
         Vfs::new("/jogos/mod/bjt")
     }
 
-    /// O caminho virtual como texto, para os testes lerem como o console escreve.
-    fn virtual_de(vfs: &Vfs, guest: &str) -> Option<String> {
+    /// The virtual path as text, so the tests read the way the console writes.
+    fn virtual_of(vfs: &Vfs, guest: &str) -> Option<String> {
         vfs.virtual_path(guest, false)
             .map(|c| format!("/{}", c.join("/")))
     }
 
     #[test]
-    fn o_diretorio_do_modulo_pode_ser_listado_mas_nao_aberto() {
-        // Listar `fs:/~/` é legítimo — é a pasta do jogo. Abri-la como arquivo não é, e a
-        // diferença entre as duas respostas é justamente essa.
+    fn the_module_dir_can_be_listed_but_not_opened() {
+        // Listing `fs:/~/` is legitimate — it is the game's folder. Opening it as a file is not,
+        // and that is precisely the difference between the two answers.
         let vfs = Vfs::new("/roms/jogo");
         assert_eq!(vfs.resolve("fs:/~/"), None);
         assert!(vfs.resolve_dir("fs:/~/").is_some());
-        // Sair da raiz continua proibido nos dois.
+        // Leaving the root is still forbidden in both.
         assert_eq!(vfs.resolve_dir("fs:/~/../../etc"), None);
     }
 
     #[test]
-    fn caminho_relativo_cai_na_pasta_do_modulo() {
-        assert_eq!(virtual_de(&vfs(), "dados.dat").as_deref(), Some("/mod/bjt/dados.dat"));
+    fn a_relative_path_lands_in_the_module_dir() {
+        assert_eq!(virtual_of(&vfs(), "dados.dat").as_deref(), Some("/mod/bjt/dados.dat"));
     }
 
     #[test]
-    fn o_til_e_do_modulo_e_o_resto_e_do_aparelho() {
+    fn the_tilde_is_the_module_and_the_rest_is_the_device() {
         let vfs = vfs();
-        // Com `~`, e sem prefixo nenhum, é a pasta do jogo.
-        let do_jogo = Some("/mod/bjt/dados.dat");
-        assert_eq!(virtual_de(&vfs, "fs:/~/dados.dat").as_deref(), do_jogo);
-        assert_eq!(virtual_de(&vfs, "~/dados.dat").as_deref(), do_jogo);
-        assert_eq!(virtual_de(&vfs, "fs:/~0x01070798/dados.dat").as_deref(), do_jogo);
+        // With `~`, and with no prefix at all, it is the game's folder.
+        let for_game = Some("/mod/bjt/dados.dat");
+        assert_eq!(virtual_of(&vfs, "fs:/~/dados.dat").as_deref(), for_game);
+        assert_eq!(virtual_of(&vfs, "~/dados.dat").as_deref(), for_game);
+        assert_eq!(virtual_of(&vfs, "fs:/~0x01070798/dados.dat").as_deref(), for_game);
 
-        // Sem o `~`, é o sistema de arquivos do aparelho — comum a todos os jogos. É o que
-        // permite ao Zeebo F.C. abrir `fs:/zeeboiddata/zeeboid.db`, que o Zeeboids gravou.
-        assert_eq!(virtual_de(&vfs, "fs:/dados.dat").as_deref(), Some("/dados.dat"));
+        // Without the `~`, it is the device's file system — shared by every game. That is what
+        // lets Zeebo F.C. open `fs:/zeeboiddata/zeeboid.db`, which Zeeboids wrote.
+        assert_eq!(virtual_of(&vfs, "fs:/dados.dat").as_deref(), Some("/dados.dat"));
         assert_eq!(
-            virtual_de(&vfs, "fs:/zeeboiddata/zeeboid.db").as_deref(),
+            virtual_of(&vfs, "fs:/zeeboiddata/zeeboid.db").as_deref(),
             Some("/zeeboiddata/zeeboid.db")
         );
-        // E `fs:/mod/<pasta>/` é a mesma pasta que o `~`.
-        assert_eq!(virtual_de(&vfs, "fs:/mod/bjt/dados.dat").as_deref(), do_jogo);
+        // And `fs:/mod/<dir>/` is the same folder as `~`.
+        assert_eq!(virtual_of(&vfs, "fs:/mod/bjt/dados.dat").as_deref(), for_game);
     }
 
     #[test]
-    fn aceita_barra_invertida_como_separador() {
+    fn accepts_backslash_as_separator() {
         assert_eq!(
-            virtual_de(&vfs(), "imagens\\fundo.bmp").as_deref(),
+            virtual_of(&vfs(), "imagens\\fundo.bmp").as_deref(),
             Some("/mod/bjt/imagens/fundo.bmp")
         );
     }
 
     #[test]
-    fn do_aparelho_nao_se_sobe() {
-        // A raiz do aparelho é raiz: `..` a partir dela sairia para a máquina do usuário.
+    fn cannot_climb_out_of_the_device() {
+        // The device's root is a root: `..` from it would leave for the user's machine.
         let vfs = vfs();
-        assert_eq!(virtual_de(&vfs, "fs:/../x"), None);
-        assert_eq!(virtual_de(&vfs, "fs:/zeeboiddata/../../x"), None);
+        assert_eq!(virtual_of(&vfs, "fs:/../x"), None);
+        assert_eq!(virtual_of(&vfs, "fs:/zeeboiddata/../../x"), None);
     }
 
     #[test]
-    fn sobe_ate_a_raiz_de_modulos_mas_nao_alem() {
+    fn climbs_to_the_modules_root_but_not_beyond() {
         let vfs = Vfs::new("/jogos/mod/274802");
-        // O Quake guarda os dados dele num diretório irmão.
+        // Quake keeps its data in a sibling directory.
         assert_eq!(
-            virtual_de(&vfs, "fs:/~/../id1/splash_title.png").as_deref(),
+            virtual_of(&vfs, "fs:/~/../id1/splash_title.png").as_deref(),
             Some("/mod/id1/splash_title.png")
         );
-        // Mais um nível já sairia da árvore de módulos.
-        assert_eq!(virtual_de(&vfs, "fs:/~/../../outro/x"), None);
-        assert_eq!(virtual_de(&vfs, "../../../etc/passwd"), None);
-        assert_eq!(virtual_de(&vfs, "dados/../../../fora.txt"), None);
+        // One more level would already leave the module tree.
+        assert_eq!(virtual_of(&vfs, "fs:/~/../../outro/x"), None);
+        assert_eq!(virtual_of(&vfs, "../../../etc/passwd"), None);
+        assert_eq!(virtual_of(&vfs, "dados/../../../fora.txt"), None);
     }
 
     #[test]
-    fn recusa_o_que_nao_e_caminho_do_console() {
+    fn rejects_what_is_not_a_console_path() {
         let vfs = vfs();
-        assert_eq!(virtual_de(&vfs, "C:/Windows/system32"), None);
-        assert_eq!(virtual_de(&vfs, "fs:/~/../C:/x"), None);
-        assert_eq!(virtual_de(&vfs, "a\0b"), None);
+        assert_eq!(virtual_of(&vfs, "C:/Windows/system32"), None);
+        assert_eq!(virtual_of(&vfs, "fs:/~/../C:/x"), None);
+        assert_eq!(virtual_of(&vfs, "a\0b"), None);
     }
 
     #[test]
-    fn depois_de_uma_barra_vazia_o_ponto_ponto_nao_sai_do_modulo() {
+    fn after_an_empty_slash_dot_dot_does_not_leave_the_module() {
         let vfs = Vfs::new("/jogos/mod/278285");
-        // O que o Bóia Cross grava e o caminho por onde ele relê.
+        // What Bóia Cross writes and the path it reads it back through.
         assert_eq!(
-            virtual_de(&vfs, "./udata/trackinfo.txt"),
-            virtual_de(&vfs, ".//../udata/trackinfo.txt")
+            virtual_of(&vfs, "./udata/trackinfo.txt"),
+            virtual_of(&vfs, ".//../udata/trackinfo.txt")
         );
         assert_eq!(
-            virtual_de(&vfs, "/../udata/trackinfo.txt").as_deref(),
+            virtual_of(&vfs, "/../udata/trackinfo.txt").as_deref(),
             Some("/mod/278285/udata/trackinfo.txt")
         );
-        // Sem a barra vazia, continua subindo até a raiz de módulos, como o NFS precisa.
+        // Without the empty slash, it still goes up to the modules root, as NFS needs.
         assert_eq!(
-            virtual_de(&vfs, "../nfsresources/x.bar").as_deref(),
+            virtual_of(&vfs, "../nfsresources/x.bar").as_deref(),
             Some("/mod/nfsresources/x.bar")
         );
     }
 
     #[test]
-    fn caminho_vazio_nao_resolve_para_a_propria_raiz() {
+    fn an_empty_path_does_not_resolve_to_the_root_itself() {
         let vfs = vfs();
         assert_eq!(vfs.resolve(""), None);
         assert_eq!(vfs.resolve("fs:/~"), None);
@@ -581,18 +585,19 @@ mod tests {
     }
 
     #[test]
-    fn so_o_modulo_em_pacote_ve_as_pastas_vizinhas() {
-        // Num pacote, `mod/` é do pacote. Fora dele, a pasta de cima é do usuário.
+    fn only_a_packaged_module_sees_the_sibling_dirs() {
+        // In a package, `mod/` belongs to the package. Outside one, the folder above belongs to
+        // the user.
         assert!(Vfs::new("/cache/abc/mod/274802").package_mods.is_some());
         assert!(Vfs::new("/cache/abc/MOD/274802").package_mods.is_some());
         assert!(Vfs::new("/home/kaio/Downloads/jogo").package_mods.is_none());
-        let solto = Vfs::new("/home/kaio/Downloads/jogo");
-        let vizinha = ["mod".to_string(), "outro".to_string(), "x".to_string()];
-        assert_eq!(solto.lower(&vizinha), None);
+        let loose = Vfs::new("/home/kaio/Downloads/jogo");
+        let sibling = ["mod".to_string(), "outro".to_string(), "x".to_string()];
+        assert_eq!(loose.lower(&sibling), None);
     }
 
     #[test]
-    fn o_save_state_so_reabre_o_que_o_jogo_alcanca() {
+    fn the_save_state_only_reopens_what_the_game_can_reach() {
         let mut vfs = Vfs::new("/cache/abc/mod/274802");
         vfs.set_device_root("/perfil/aparelho");
         vfs.set_save_root("/perfil/saves/mod");
@@ -606,242 +611,249 @@ mod tests {
 }
 
 #[cfg(test)]
-mod tests_no_disco {
+mod disk_tests {
     use super::*;
 
-    /// O sistema de arquivos distingue maiúsculas de minúsculas?
+    /// Is the file system case-sensitive?
     ///
-    /// **O APFS do macOS e o NTFS do Windows, por padrão, não distinguem**: `data` e `DATA` são a
-    /// mesma pasta, `font.fnz` e `font.FNZ` são o mesmo arquivo. Nesses sistemas o caminho pedido
-    /// já existe, a resposta do VFS é ele mesmo, e não há duas grafias para comparar — foi assim
-    /// que dois testes desta seção passaram a falhar **só no macOS** no primeiro run de CI que
-    /// chegou até eles. Onde o sistema funde as grafias, o que a busca sem caixa tem de garantir
-    /// vem de graça do próprio sistema de arquivos.
-    fn distingue_caixa(onde: &Path) -> bool {
-        let alta = onde.join("zeebx-CAIXA");
-        let baixa = onde.join("zeebx-caixa");
-        std::fs::write(&alta, b"x").unwrap();
-        let distingue = !baixa.exists();
-        let _ = std::fs::remove_file(&alta);
-        distingue
+    /// **macOS's APFS and Windows's NTFS are not, by default**: `data` and `DATA` are the same
+    /// folder, `font.fnz` and `font.FNZ` are the same file. On those systems the requested path
+    /// already exists, the VFS's answer is that path itself, and there are no two spellings to
+    /// compare — that is how two tests in this section started failing **only on macOS** in the
+    /// first CI run that reached them. Where the system merges the spellings, what the
+    /// case-insensitive lookup has to guarantee comes for free from the file system itself.
+    fn is_case_sensitive(location: &Path) -> bool {
+        let high = location.join("zeebx-CAIXA");
+        let low = location.join("zeebx-caixa");
+        std::fs::write(&high, b"x").unwrap();
+        let case_sensitive = !low.exists();
+        let _ = std::fs::remove_file(&high);
+        case_sensitive
     }
 
-    /// Um pacote extraído, com o aparelho e o store de saves ao lado, como o motor monta.
-    struct Perfil {
-        raiz: PathBuf,
+    /// An extracted package, with the device and the save store next to it, as the engine sets
+    /// them up.
+    struct Profile {
+        root: PathBuf,
         modulo: PathBuf,
         saves: PathBuf,
-        aparelho: PathBuf,
+        device: PathBuf,
     }
 
-    impl Perfil {
-        fn novo(nome: &str, modulo: &str) -> Self {
-            let raiz = std::env::temp_dir().join(format!("zeebx-vfs-{nome}-{}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&raiz);
-            let modulo = raiz.join("cache/abc").join(modulo);
-            let saves = raiz.join("saves/mod");
-            let aparelho = raiz.join("aparelho");
-            for dir in [&modulo, &saves, &aparelho] {
+    impl Profile {
+        fn create(name: &str, modulo: &str) -> Self {
+            let root = std::env::temp_dir().join(format!("zeebx-vfs-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&root);
+            let modulo = root.join("cache/abc").join(modulo);
+            let saves = root.join("saves/mod");
+            let device = root.join("aparelho");
+            for dir in [&modulo, &saves, &device] {
                 std::fs::create_dir_all(dir).unwrap();
             }
-            Self { raiz, modulo, saves, aparelho }
+            Self { root, modulo, saves, device }
         }
 
         fn vfs(&self) -> Vfs {
             let mut vfs = Vfs::new(&self.modulo);
-            vfs.set_device_root(&self.aparelho);
+            vfs.set_device_root(&self.device);
             vfs.set_save_root(&self.saves);
             vfs
         }
     }
 
-    impl Drop for Perfil {
+    impl Drop for Profile {
         fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.raiz);
+            let _ = std::fs::remove_dir_all(&self.root);
         }
     }
 
-    /// Os dez ports de arcade pedem `font.fnz` e trazem `font.FNZ`. No console dá na mesma.
+    /// The ten arcade ports ask for `font.fnz` and ship `font.FNZ`. On the console it makes no
+    /// difference.
     #[test]
-    fn acha_o_arquivo_com_outra_caixa() {
-        let perfil = Perfil::novo("caixa", "mod/279233");
-        let modulo = &perfil.modulo;
+    fn finds_the_file_with_different_case() {
+        let profile = Profile::create("caixa", "mod/279233");
+        let modulo = &profile.modulo;
         std::fs::write(modulo.join("font.FNZ"), b"fonte").unwrap();
 
-        let vfs = perfil.vfs();
-        let distingue = distingue_caixa(modulo);
-        if distingue {
+        let vfs = profile.vfs();
+        let case_sensitive = is_case_sensitive(modulo);
+        if case_sensitive {
             assert_eq!(vfs.resolve("font.fnz"), Some(modulo.join("font.FNZ")));
         } else {
-            // Sistema que funde as duas grafias: a resposta é o nome pedido, e o arquivo é o
-            // mesmo. A prova que interessa aqui é que a resposta abre o conteúdo do pacote.
-            let achado = vfs.resolve("font.fnz").expect("respondeu pelo arquivo");
-            assert_eq!(std::fs::read(&achado).unwrap(), b"fonte");
+            // A system that merges the two spellings: the answer is the requested name, and the
+            // file is the same. The check that matters here is that the answer opens the
+            // package's contents.
+            let found = vfs.resolve("font.fnz").expect("answered with the file");
+            assert_eq!(std::fs::read(&found).unwrap(), b"fonte");
         }
-        // O que não existe volta como o lugar onde nasceria, que é o store de saves.
+        // What does not exist comes back as the place where it would be created, which is the
+        // save store.
         assert_eq!(
             vfs.resolve("save.dat"),
-            Some(perfil.saves.join("279233/save.dat"))
+            Some(profile.saves.join("279233/save.dat"))
         );
-        // Uma criação preserva o nome do arquivo, mas acha diretórios existentes sem caixa.
-        let udata = perfil.saves.join("279233/udata");
+        // A creation keeps the file name, but finds existing directories case-insensitively.
+        let udata = profile.saves.join("279233/udata");
         std::fs::create_dir_all(&udata).unwrap();
-        if distingue {
+        if case_sensitive {
             assert_eq!(vfs.resolve_new("UDATA/save.dat"), Some(udata.join("save.dat")));
         } else {
             assert!(vfs.resolve_new("UDATA/save.dat").is_some());
         }
     }
 
-    /// O store guarda o que o jogo grava, sem tocar no conteúdo do pacote.
+    /// The store keeps what the game writes, without touching the package's contents.
     #[test]
-    fn a_escrita_vai_para_o_store_e_esconde_o_recurso_do_pacote() {
-        let perfil = Perfil::novo("overlay", "mod/1");
-        let modulo = &perfil.modulo;
-        let save = perfil.saves.join("1");
+    fn a_write_goes_to_the_store_and_hides_the_package_resource() {
+        let profile = Profile::create("overlay", "mod/1");
+        let modulo = &profile.modulo;
+        let save = profile.saves.join("1");
         std::fs::write(modulo.join("config.ini"), b"do pacote").unwrap();
-        let vfs = perfil.vfs();
+        let vfs = profile.vfs();
 
-        // Leitura: o pacote é encontrado enquanto não há nada no store.
+        // Read: the package is found while there is nothing in the store.
         assert_eq!(vfs.resolve("config.ini"), Some(modulo.join("config.ini")));
 
-        // Escrita de recurso existente: copia antes e depois o store vence.
-        let alvo = vfs
+        // Write to an existing resource: copy first, and from then on the store wins.
+        let target = vfs
             .open_target("config.ini", OpenIntent::ReadWrite)
             .unwrap();
-        assert_eq!(alvo.path, save.join("config.ini"));
-        assert_eq!(alvo.copy_from, Some(modulo.join("config.ini")));
+        assert_eq!(target.path, save.join("config.ini"));
+        assert_eq!(target.copy_from, Some(modulo.join("config.ini")));
         std::fs::create_dir_all(&save).unwrap();
-        std::fs::write(&alvo.path, b"do save").unwrap();
+        std::fs::write(&target.path, b"do save").unwrap();
         assert_eq!(vfs.resolve("config.ini"), Some(save.join("config.ini")));
         assert_eq!(
             std::fs::read(modulo.join("config.ini")).unwrap(),
             b"do pacote"
         );
 
-        // Arquivo novo: nasce no store.
-        let novo = vfs
+        // New file: created in the store.
+        let create = vfs
             .open_target("udata/recorde.dat", OpenIntent::Create)
             .unwrap();
-        assert_eq!(novo.path, save.join("udata/recorde.dat"));
-        assert_eq!(novo.copy_from, None);
+        assert_eq!(create.path, save.join("udata/recorde.dat"));
+        assert_eq!(create.copy_from, None);
 
-        // O aparelho tem a raiz dele.
-        let dispositivo = vfs
+        // The device has its own root.
+        let device = vfs
             .open_target("fs:/zeeboiddata/zeeboid.db", OpenIntent::Create)
             .unwrap();
-        assert_eq!(dispositivo.path, perfil.aparelho.join("zeeboiddata/zeeboid.db"));
+        assert_eq!(device.path, profile.device.join("zeeboiddata/zeeboid.db"));
     }
 
-    /// O Quake lê `mod/id1/` do pacote, e o que ele grava ali vai para o store.
+    /// Quake reads `mod/id1/` from the package, and what it writes there goes to the store.
     #[test]
-    fn o_diretorio_irmao_e_lido_do_pacote_e_gravado_no_store() {
-        let perfil = Perfil::novo("irmao", "mod/274802");
-        let id1 = perfil.modulo.parent().unwrap().join("id1");
+    fn the_sibling_dir_is_read_from_the_package_and_written_to_the_store() {
+        let profile = Profile::create("irmao", "mod/274802");
+        let id1 = profile.modulo.parent().unwrap().join("id1");
         std::fs::create_dir_all(&id1).unwrap();
         std::fs::write(id1.join("pak0.pak"), b"pak").unwrap();
-        let vfs = perfil.vfs();
+        let vfs = profile.vfs();
 
         assert_eq!(vfs.resolve("fs:/~/../id1/pak0.pak"), Some(id1.join("pak0.pak")));
         let config = vfs
             .open_target("fs:/~/../id1/config.cfg", OpenIntent::Create)
             .unwrap();
-        assert_eq!(config.path, perfil.saves.join("id1/config.cfg"));
-        // Apagar o pak mira o store, onde ele não existe: o do pacote fica.
+        assert_eq!(config.path, profile.saves.join("id1/config.cfg"));
+        // Deleting the pak targets the store, where it does not exist: the package's stays.
         assert_eq!(
             vfs.writable("fs:/~/../id1/pak0.pak"),
-            Some(perfil.saves.join("id1/pak0.pak"))
+            Some(profile.saves.join("id1/pak0.pak"))
         );
         assert!(!vfs.is_writable_path(&id1.join("pak0.pak")));
     }
 
-    /// O que o jogo gravou pode ser apagado e renomeado; o pacote não.
+    /// What the game wrote can be deleted and renamed; the package cannot.
     #[test]
-    fn o_store_protege_o_pacote_de_remocao_e_renomeio() {
-        let perfil = Perfil::novo("rm", "mod/1");
-        let modulo = &perfil.modulo;
+    fn the_store_protects_the_package_from_removal_and_rename() {
+        let profile = Profile::create("rm", "mod/1");
+        let modulo = &profile.modulo;
         std::fs::write(modulo.join("recurso.pak"), b"do pacote").unwrap();
-        let vfs = perfil.vfs();
+        let vfs = profile.vfs();
 
-        // O alvo de remoção de um recurso do pacote é o caminho no store, não o do pacote.
-        let no_store = perfil.saves.join("1/recurso.pak");
-        assert_eq!(vfs.writable("recurso.pak"), Some(no_store.clone()));
+        // The removal target of a package resource is the path in the store, not the package's.
+        let in_store = profile.saves.join("1/recurso.pak");
+        assert_eq!(vfs.writable("recurso.pak"), Some(in_store.clone()));
         assert!(!vfs.is_writable_path(&modulo.join("recurso.pak")));
 
-        // Depois de copiado para o store, o alvo passa a ser dele.
-        std::fs::create_dir_all(no_store.parent().unwrap()).unwrap();
-        std::fs::write(&no_store, b"do save").unwrap();
+        // Once copied to the store, the target becomes the store's.
+        std::fs::create_dir_all(in_store.parent().unwrap()).unwrap();
+        std::fs::write(&in_store, b"do save").unwrap();
         assert!(vfs.is_writable_path(&vfs.resolve("recurso.pak").unwrap()));
     }
 
-    /// O OpenTyrian abre `fs:/mod/opentyrian_zeebo/data/tyrian1.lvl`: é a pasta dele no console.
+    /// OpenTyrian opens `fs:/mod/opentyrian_zeebo/data/tyrian1.lvl`: it is its folder on the
+    /// console.
     #[test]
-    fn fs_mod_acha_a_pasta_do_modulo_solto() {
-        let perfil = Perfil::novo("mod", "tyrian");
-        let modulo = &perfil.modulo;
+    fn fs_mod_finds_the_loose_module_dir() {
+        let profile = Profile::create("mod", "tyrian");
+        let modulo = &profile.modulo;
         std::fs::create_dir_all(modulo.join("data")).unwrap();
-        std::fs::create_dir_all(perfil.saves.join("tyrian")).unwrap();
+        std::fs::create_dir_all(profile.saves.join("tyrian")).unwrap();
         std::fs::write(modulo.join("data/tyrian1.lvl"), b"fase").unwrap();
         std::fs::write(modulo.join("tyrian.cfg"), b"pacote").unwrap();
-        std::fs::write(perfil.saves.join("tyrian/tyrian.cfg"), b"gravado").unwrap();
-        // Uma pasta vizinha do `.mod` solto é do usuário, não do jogo.
-        let vizinha = modulo.parent().unwrap().join("outro");
-        std::fs::create_dir_all(&vizinha).unwrap();
-        std::fs::write(vizinha.join("segredo"), b"x").unwrap();
+        std::fs::write(profile.saves.join("tyrian/tyrian.cfg"), b"gravado").unwrap();
+        // A folder next to the loose `.mod` belongs to the user, not to the game.
+        let sibling = modulo.parent().unwrap().join("outro");
+        std::fs::create_dir_all(&sibling).unwrap();
+        std::fs::write(sibling.join("segredo"), b"x").unwrap();
 
-        let vfs = perfil.vfs();
-        if distingue_caixa(&perfil.raiz) {
+        let vfs = profile.vfs();
+        if is_case_sensitive(&profile.root) {
             assert_eq!(
                 vfs.resolve("fs:/mod/tyrian/DATA/tyrian1.lvl"),
                 Some(modulo.join("data/tyrian1.lvl"))
             );
         } else {
-            let achado = vfs
+            let found = vfs
                 .resolve("fs:/mod/tyrian/DATA/tyrian1.lvl")
-                .expect("respondeu pela pasta");
-            assert_eq!(std::fs::read(&achado).unwrap(), b"fase");
+                .expect("answered with the folder");
+            assert_eq!(std::fs::read(&found).unwrap(), b"fase");
         }
-        // O que o jogo gravou vence o que veio com ele.
+        // What the game wrote wins over what came with it.
         assert_eq!(
             vfs.resolve("fs:/mod/tyrian/tyrian.cfg"),
-            Some(perfil.saves.join("tyrian/tyrian.cfg"))
+            Some(profile.saves.join("tyrian/tyrian.cfg"))
         );
         assert_eq!(
             vfs.resolve("fs:/mod/tyrian/novo.sav"),
-            Some(perfil.saves.join("tyrian/novo.sav"))
+            Some(profile.saves.join("tyrian/novo.sav"))
         );
         assert_eq!(
             vfs.resolve_dir("fs:/mod/tyrian/data"),
             Some(modulo.join("data"))
         );
-        // A vizinha não aparece: `../outro/segredo` cai no store, onde não há nada.
+        // The neighbor does not show up: `../outro/segredo` lands in the store, where there is
+        // nothing.
         assert_eq!(
             vfs.resolve("../outro/segredo"),
-            Some(perfil.saves.join("outro/segredo"))
+            Some(profile.saves.join("outro/segredo"))
         );
         assert_eq!(vfs.resolve("fs:/mod/../../segredo"), None);
     }
 
-    /// Um link dentro da pasta do módulo não leva o jogo para fora dela.
+    /// A link inside the module's folder does not take the game outside it.
     #[cfg(unix)]
     #[test]
-    fn ligacao_simbolica_nao_sai_da_camada() {
-        let perfil = Perfil::novo("link", "tyrian");
-        let fora = perfil.raiz.join("fora");
-        std::fs::create_dir_all(&fora).unwrap();
-        std::fs::write(fora.join("segredo"), b"x").unwrap();
-        std::os::unix::fs::symlink(&fora, perfil.modulo.join("atalho")).unwrap();
-        let vfs = perfil.vfs();
+    fn a_symlink_does_not_escape_the_layer() {
+        let profile = Profile::create("link", "tyrian");
+        let outside = profile.root.join("fora");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("segredo"), b"x").unwrap();
+        std::os::unix::fs::symlink(&outside, profile.modulo.join("atalho")).unwrap();
+        let vfs = profile.vfs();
 
-        // No pacote: o link é ignorado, e o caminho cai no store, onde não há nada.
+        // In the package: the link is ignored, and the path lands in the store, where there is
+        // nothing.
         assert_eq!(
             vfs.resolve("atalho/segredo"),
-            Some(perfil.saves.join("tyrian/atalho/segredo"))
+            Some(profile.saves.join("tyrian/atalho/segredo"))
         );
-        assert!(!vfs.contains_host(&perfil.modulo.join("atalho/segredo")));
+        assert!(!vfs.contains_host(&profile.modulo.join("atalho/segredo")));
 
-        // No store: nem ler, nem criar, nem apagar.
-        std::os::unix::fs::symlink(&fora, perfil.saves.join("tyrian")).unwrap();
+        // In the store: no reading, no creating, no deleting.
+        std::os::unix::fs::symlink(&outside, profile.saves.join("tyrian")).unwrap();
         assert_eq!(vfs.resolve("segredo"), None);
         assert_eq!(vfs.open_target("x.sav", OpenIntent::Create), None);
         assert_eq!(vfs.writable("segredo"), None);

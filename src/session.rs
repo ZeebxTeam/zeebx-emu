@@ -1,21 +1,21 @@
-//! Um jogo em execução, do arquivo até os quadros na tela.
+//! A running game, from the file to the frames on screen.
 //!
-//! Existe para separar o ciclo de vida do BREW — carregar o módulo, criar o applet, entregar o
-//! `EVT_APP_START`, girar o laço de eventos — de quem o observa. A linha de comando roda esse
-//! laço até um limite e imprime o resultado; a interface o toca um pedaço por quadro desenhado.
-//! O que muda é quem chama [`Session::step`], não o que ele faz.
+//! It exists to separate the BREW lifecycle — loading the module, creating the applet, delivering
+//! `EVT_APP_START`, spinning the event loop — from whoever observes it. The command line runs that
+//! loop up to a limit and prints the result; the interface drives it one piece per drawn frame.
+//! What changes is who calls [`Session::step`], not what it does.
 
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-/// No desktop e no core nativo a sessão recompila os blocos. No `wasm32` o bloco emitido não
-/// roda no navegador. No iOS o sistema recusa a página executável que o Dynarmic aloca — o
-/// simulador também é `TARGET_OS_IPHONE`. Na Vita o host é Cortex-A9 e o dynarmic não emite
-/// ARMv7. Nesses três, o interpretador ocupa o mesmo lugar.
+/// On desktop and in the native core the session recompiles the blocks. On `wasm32` the emitted
+/// block does not run in the browser. On iOS the system refuses the executable page Dynarmic
+/// allocates — the simulator is also `TARGET_OS_IPHONE`. On the Vita the host is a Cortex-A9 and
+/// dynarmic does not emit ARMv7. In those three, the interpreter takes the same place.
 #[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "vita")))]
-use crate::cpu::dynarmic::DynarmicCpu as CpuDaSessao;
+use crate::cpu::dynarmic::DynarmicCpu as SessionCpu;
 #[cfg(any(target_arch = "wasm32", target_os = "ios", target_os = "vita"))]
-use crate::cpu::interpretador::Interpretador as CpuDaSessao;
+use crate::cpu::interpreter::Interpreter as SessionCpu;
 use crate::input::Pad;
 use crate::library;
 use crate::loader;
@@ -23,569 +23,572 @@ use crate::loader::archive;
 use crate::loader::modfile::ModImage;
 use crate::machine::{AppletResult, Machine, Outcome};
 use crate::storage::StoragePaths;
-use crate::velocidade::{ContadorDePulo, Pulo, Ritmo};
+use crate::speed::{SkipCounter, Skip, Pace};
 use crate::video::display::Framebuffer;
 
-/// Maior fatia de tempo real que os frontends podem pedir em uma volta.
+/// Largest slice of real time the frontends may ask for in one pass.
 ///
-/// Compartilhada para que desktop, headless e Android não reintroduzam um teto de 16 ms e
-/// reduzam jogos rápidos como Crash Nitro Kart a uma fração da velocidade.
-pub const FATIA_MAXIMA: Duration = Duration::from_millis(100);
+/// Shared so that desktop, headless and Android do not reintroduce a 16 ms ceiling and reduce
+/// fast games like Crash Nitro Kart to a fraction of their speed.
+pub const MAX_SLICE: Duration = Duration::from_millis(100);
 
-/// Teto de instruções por fatia entre duas chamadas de API — evita que um laço infinito no
-/// guest trave o emulador.
+/// Instruction ceiling per slice between two API calls — keeps an infinite loop in the guest from
+/// hanging the emulator.
 const INSTRUCTION_BUDGET: u64 = 500_000_000;
 
-/// Sobre quanto tempo real medir a velocidade mostrada na interface.
+/// Over how much real time to measure the speed shown in the interface.
 ///
-/// Meio segundo é curto o bastante para a leitura acompanhar a troca de tela e longo o bastante
-/// para não tremer a cada quadro.
+/// Half a second is short enough for the reading to follow a screen change and long enough not to
+/// jitter every frame.
 const SPEED_WINDOW_MS: u64 = 500;
 
-/// Quantas amostras o gráfico guarda. A meio segundo cada, é um minuto de história.
+/// How many samples the graph keeps. At half a second each, that is one minute of history.
 const HISTORY: usize = 120;
 
-/// Quantos quadros do jogo uma volta da janela pode rodar para alcançar o relógio do mundo.
-/// Ver [`Session::step`].
-const QUADROS_POR_VOLTA: u32 = 4;
+/// How many game frames one window pass may run to catch up with the wall clock.
+/// See [`Session::step`].
+const FRAMES_PER_PASS: u32 = 4;
 
-/// O atraso a partir do qual o jogo recupera quadros: um quadro de 60 Hz.
-const ATRASO_PARA_RECUPERAR_MS: u64 = 17;
+/// The lag from which the game catches up frames: one 60 Hz frame.
+const CATCH_UP_LAG_MS: u64 = 17;
 
-/// A fatia de tempo real que uma volta sem freio — ou acima de 1x — pode gastar emulando.
+/// The slice of real time an unthrottled pass — or one above 1x — may spend emulating.
 ///
-/// **Sem este teto a janela desaba.** O orçamento que o frontend passa é o tempo real desde a
-/// volta anterior; uma volta que o gastasse inteiro passaria do retraço, a seguinte receberia o
-/// dobro, e em poucas voltas a janela estaria no teto de [`FATIA_MAXIMA`], a 10 quadros por
-/// segundo. Doze milissegundos deixam quatro para a janela desenhar num retraço de 60 Hz. O número
-/// é a conta do retraço, **não** uma medição: o quanto a janela de fato precisa não foi medido.
-const FATIA_SEM_FREIO: Duration = Duration::from_millis(12);
+/// **Without this ceiling the window collapses.** The budget the frontend passes is the real time
+/// since the previous pass; a pass that spent all of it would overrun the vsync, the next one
+/// would get twice as much, and within a few passes the window would be at the [`MAX_SLICE`]
+/// ceiling, at 10 frames per second. Twelve milliseconds leave four for the window to draw in a
+/// 60 Hz vsync. The number is the vsync arithmetic, **not** a measurement: how much the window
+/// actually needs was not measured.
+const UNTHROTTLED_SLICE: Duration = Duration::from_millis(12);
 
-/// Milissegundos de um quadro a 60 Hz: o passo que um frontend Libretro avança por chamada.
+/// Milliseconds of a frame at 60 Hz: the step a Libretro frontend advances per call.
 const FRAME_MS: u64 = 16;
 
-/// Teto de voltas internas por quadro virtual, contra um guest que não avança nem apresenta.
+/// Ceiling of inner passes per virtual frame, against a guest that neither advances nor presents.
 const MAX_STEPS_PER_FRAME: u32 = 200_000;
 
-/// O maior atraso que o jogo recupera. Além dele o atraso é perdoado, e não corrido atrás: uma
-/// pausa, um carregamento ou a janela arrastada param o relógio virtual enquanto o real anda, e
-/// recuperar tudo depois faria o jogo disparar.
-const ATRASO_MAXIMO_MS: u64 = 250;
+/// The largest lag the game catches up. Beyond it the lag is forgiven, not chased: a pause, a
+/// load or a dragged window stop the virtual clock while the real one runs, and catching up all of
+/// it afterwards would make the game race.
+const MAX_LAG_MS: u64 = 250;
 
-/// Por que um jogo não conseguiu começar.
+/// Why a game could not start.
 #[derive(Debug)]
 pub enum StartError {
-    /// O arquivo não pôde ser lido.
+    /// The file could not be read.
     Unreadable(std::io::Error),
-    /// Não é um `.mod` que saibamos ler.
+    /// Not a `.mod` we know how to read.
     NotAModule(String),
-    /// O módulo não coube na memória do guest.
+    /// The module did not fit in guest memory.
     NotLoadable(String),
-    /// O emulador parou antes de o jogo começar.
+    /// The emulator stopped before the game started.
     Stopped(Outcome),
-    /// Não há `.mif` ao lado do módulo, então não sabemos qual applet criar.
+    /// There is no `.mif` next to the module, so we do not know which applet to create.
     NoApplet,
-    /// `CreateInstance` recusou, com o erro do BREW.
+    /// `CreateInstance` refused, with the BREW error.
     Refused(u32),
 }
 
 impl std::fmt::Display for StartError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Unreadable(err) => write!(f, "não deu para ler o arquivo: {err}"),
-            Self::NotAModule(err) => write!(f, "não é um módulo válido: {err}"),
-            Self::NotLoadable(err) => write!(f, "não deu para carregar o módulo: {err}"),
-            Self::Stopped(outcome) => write!(f, "parou antes de começar ({outcome:?})"),
-            Self::NoApplet => write!(f, "nenhum .mif ao lado do módulo diz qual applet criar"),
-            Self::Refused(code) => write!(f, "CreateInstance recusou com o erro {code}"),
+            Self::Unreadable(err) => write!(f, "could not read the file: {err}"),
+            Self::NotAModule(err) => write!(f, "not a valid module: {err}"),
+            Self::NotLoadable(err) => write!(f, "could not load the module: {err}"),
+            Self::Stopped(outcome) => write!(f, "stopped before starting ({outcome:?})"),
+            Self::NoApplet => write!(f, "no .mif next to the module says which applet to create"),
+            Self::Refused(code) => write!(f, "CreateInstance refused with error {code}"),
         }
     }
 }
 
-/// O que uma fatia de execução produziu.
+/// What a slice of execution produced.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Step {
-    /// O jogo apresentou pelo menos um quadro novo.
+    /// The game presented at least one new frame.
     Presented,
-    /// A fatia acabou sem quadro novo — normal, o jogo continua.
+    /// The slice ended without a new frame — normal, the game goes on.
     Running,
-    /// O jogo está adiantado em relação ao relógio do mundo e foi segurado.
+    /// The game is ahead of the wall clock and was held back.
     Ahead,
-    /// O jogo terminou ou quebrou. O motivo está em [`Session::stopped`].
+    /// The game ended or crashed. The reason is in [`Session::stopped`].
     Stopped,
 }
 
 pub struct Session {
-    /// O mesmo agendador BREW usado pela bancada e pela linha de comando, com o núcleo que
-    /// recompila os blocos ARM do módulo. O Kingdom Hearts desenha a intro no seu próprio
-    /// rasterizador ARM; por isso a sessão usa o JIT diretamente. No `wasm32` esse lugar é o
-    /// interpretador.
-    machine: Machine<CpuDaSessao>,
-    /// O applet criado e ainda **não** iniciado, com o ClassID dele.
+    /// The same BREW scheduler used by the bench and the command line, with the core that
+    /// recompiles the module's ARM blocks. Kingdom Hearts draws its intro in its own ARM
+    /// rasterizer; that is why the session uses the JIT directly. On `wasm32` that place is the
+    /// interpreter.
+    machine: Machine<SessionCpu>,
+    /// The applet created and **not yet** started, with its ClassID.
     ///
-    /// O `EVT_APP_START` é despachado na primeira volta do laço, não aqui. Rodá-lo dentro do
-    /// `start` fazia o jogo começar antes de existir janela e antes de haver saída de som: a
-    /// Z-Wheel toca o `sounds_loading.wav` na partida, e ele saía com a tela vazia — ou, depois
-    /// que o som passou a ser ligado só com a janela pronta, não saía de jeito nenhum, porque o
-    /// jogo já tinha tocado.
-    partida: Option<(u32, u32)>,
-    /// A saída de som do host. Um frontend Libretro não tem esta peça: ele recebe o mixer.
+    /// `EVT_APP_START` is dispatched on the first pass of the loop, not here. Running it inside
+    /// `start` made the game begin before there was a window and before there was sound output:
+    /// the Z-Wheel plays `sounds_loading.wav` at startup, and it came out with an empty screen —
+    /// or, after sound started being turned on only once the window was ready, it did not come out
+    /// at all, because the game had already played it.
+    running_game: Option<(u32, u32)>,
+    /// The host sound output. A Libretro frontend does not have this piece: it receives the mixer.
     #[cfg(feature = "audio")]
     audio: Option<crate::audio::Output>,
     title: String,
-    /// A identidade do arquivo que o frontend abriu, quando o perfil tem overlay. É a pasta dos
-    /// saves e dos slots de save state do jogo. Ver [`Session::conteudo`].
-    conteudo: Option<crate::storage::ContentId>,
-    /// O ClassID do applet desta sessão.
-    classe: u32,
-    /// A tela intermediária à mostra, quando há uma. Ver [`Session::mostra_quadro_intermediario`].
-    intermediario: Option<Framebuffer>,
-    /// Instante e leitura do relógio virtual quando a execução começou, que é o par com que se
-    /// mede se o jogo está adiantado.
+    /// The identity of the file the frontend opened, when the profile has an overlay. It is the
+    /// folder for the game's saves and save state slots. See [`Session::content`].
+    content: Option<crate::storage::ContentId>,
+    /// The ClassID of this session's applet.
+    class_id: u32,
+    /// The intermediate screen on display, when there is one.
+    /// See [`Session::show_intermediate_frame`].
+    intermediate: Option<Framebuffer>,
+    /// Instant and virtual clock reading when execution started, which is the pair used to
+    /// measure whether the game is ahead.
     started: Instant,
     clock_base: u64,
-    /// A proporção com que [`Session::started`] e [`Session::clock_base`] foram ancorados.
-    /// `None` é sem freio. Trocar de proporção **reancora**: ver [`Session::ajusta_proporcao`].
-    proporcao: Option<f32>,
-    /// O pulo de desenho do quadro em curso. Ver [`PuloDaSessao`].
-    pulo: PuloDaSessao,
-    /// A velocidade que o som segue. Ver [`Session::acompanha_o_som`].
-    som_do_avanco: SomDoAvanco,
-    /// O som parado pela pausa. Ver [`Session::congela_o_som`].
-    som_congelado: bool,
-    /// A vigia do jogo que fica para trás. Ver [`VigiaDaVelocidade`].
-    vigia: VigiaDaVelocidade,
-    /// O turbo: o controle cru de cada porta e os botões que pulsam. Ver [`Session::pulsa`].
-    turbo: TurboDaSessao,
+    /// The ratio [`Session::started`] and [`Session::clock_base`] were anchored with.
+    /// `None` is unthrottled. Changing the ratio **re-anchors**: see [`Session::set_ratio`].
+    ratio: Option<f32>,
+    /// The draw skip of the current frame. See [`SessionSkip`].
+    skip: SessionSkip,
+    /// The speed the sound follows. See [`Session::sync_sound`].
+    fast_forward_sound: FastForwardSound,
+    /// The sound stopped by the pause. See [`Session::freeze_audio`].
+    sound_frozen: bool,
+    /// The watchdog for a game that falls behind. See [`SpeedWatchdog`].
+    watch: SpeedWatchdog,
+    /// The turbo: each port's raw controller and the buttons that pulse. See [`Session::pulse`].
+    turbo: SessionTurbo,
     stopped: Option<Outcome>,
-    /// Começo da janela de medição: o instante real, o relógio virtual, as instruções e os
-    /// quadros de então. Tudo que o painel de depuração mostra sai da diferença entre duas
-    /// dessas leituras.
-    window: Marca,
-    /// A última amostra fechada.
+    /// Start of the measurement window: the real instant, the virtual clock, the instructions and
+    /// the frames at that time. Everything the debug panel shows comes from the difference between
+    /// two of these readings.
+    window: Mark,
+    /// The last closed sample.
     sample: Sample,
-    /// As amostras recentes, para o gráfico. A mais nova no fim.
+    /// The recent samples, for the graph. Newest at the end.
     history: std::collections::VecDeque<Sample>,
 }
 
-/// O pulo de desenho como a sessão o decide: uma vez por quadro, no começo dele.
+/// The draw skip as the session decides it: once per frame, at its start.
 ///
-/// **No começo, e não a cada volta.** Um quadro pode atravessar duas voltas da janela — a fatia
-/// acaba antes do `eglSwapBuffers` —, e decidir de novo no meio dele desenharia metade da cena.
-/// Por isso a decisão guarda o número da troca de buffer em que foi tomada, e só a troca seguinte
-/// abre a próxima.
+/// **At the start, not on every pass.** A frame can span two window passes — the slice ends before
+/// `eglSwapBuffers` —, and deciding again in the middle of it would draw half the scene. That is
+/// why the decision keeps the buffer swap number it was taken at, and only the next swap opens the
+/// next one.
 #[derive(Debug, Clone, Copy, Default)]
-struct PuloDaSessao {
-    contador: ContadorDePulo,
-    /// O `gl_swaps` em que a decisão em vigor foi tomada.
-    decidido_em: Option<u32>,
-    /// A decisão em vigor.
-    atual: Pulo,
-    /// Quanto tempo real levou o último quadro pulado, e o último desenhado.
+struct SessionSkip {
+    counter: SkipCounter,
+    /// The `gl_swaps` at which the decision in force was taken.
+    decided_at: Option<u32>,
+    /// The decision in force.
+    current: Skip,
+    /// How much real time the last skipped frame took, and the last drawn one.
     ///
-    /// **Separados, porque um quadro pulado custa uma fração do desenhado**, e é isso que a
-    /// previsão do automático pergunta: "pulando este, ainda cabe um desenhado na fatia?". Com
-    /// uma medida só, a do último quadro desenhado, a previsão nunca via sobra num jogo pesado —
-    /// medido no Rolima, o sem limite ficava em 3,95x, abaixo dos 8,27x do 10x.
-    duracao_pulado: Duration,
-    duracao_desenhado: Duration,
+    /// **Separate, because a skipped frame costs a fraction of a drawn one**, and that is what the
+    /// auto prediction asks: "skipping this one, does a drawn one still fit in the slice?". With a
+    /// single measure, that of the last drawn frame, the prediction never saw slack in a heavy game
+    /// — measured on Rolima, unlimited stayed at 3.95x, below the 8.27x of 10x.
+    skipped_duration: Duration,
+    drawn_duration: Duration,
 }
 
-/// Quantos quadros uma volta pode rodar com a proporção dada.
+/// How many frames one pass may run at the given ratio.
 ///
-/// A 1x é o [`QUADROS_POR_VOLTA`] de sempre, para alcançar o relógio. Acima, cresce na mesma
-/// proporção: a 10x, uma volta precisa de dez quadros só para andar em dia. Sem freio, quem
-/// limita é a fatia.
-fn teto_de_quadros(proporcao: Option<f32>) -> u32 {
-    match proporcao {
-        Some(proporcao) => (QUADROS_POR_VOLTA as f32 * proporcao.max(1.0)).ceil() as u32,
+/// At 1x it is the usual [`FRAMES_PER_PASS`], to catch up with the clock. Above, it grows in the
+/// same proportion: at 10x, a pass needs ten frames just to keep up. Unthrottled, the slice is
+/// what limits it.
+fn frame_cap(ratio: Option<f32>) -> u32 {
+    match ratio {
+        Some(ratio) => (FRAMES_PER_PASS as f32 * ratio.max(1.0)).ceil() as u32,
         None => u32::MAX,
     }
 }
 
-/// O turbo como a sessão o aplica. Ver [`crate::velocidade::turbo`].
+/// The turbo as the session applies it. See [`crate::speed::turbo`].
 #[derive(Debug, Clone, Copy)]
-struct TurboDaSessao {
-    /// O controle de cada porta como o frontend o entregou, antes do turbo.
-    cru: [Pad; crate::input::PORTAS],
-    /// O cru da última vez que as teclas foram conferidas: o que mudou desde então, o frontend
-    /// já transformou em tecla.
-    cru_visto: [Pad; crate::input::PORTAS],
-    /// Os botões que pulsam em cada porta.
-    pulsando: [u32; crate::input::PORTAS],
-    toques: u8,
-    /// Se o frontend transforma o controle em tecla BREW. Ver [`Session::turbo_nas_teclas`].
-    nas_teclas: bool,
-    /// As teclas que a sessão afirmou por cima do frontend, por bit do botão, e o valor de cada.
-    afirmadas: [u32; crate::input::PORTAS],
-    valores: [u32; crate::input::PORTAS],
+struct SessionTurbo {
+    /// Each port's controller as the frontend delivered it, before the turbo.
+    raw: [Pad; crate::input::PORTS],
+    /// The raw state the last time the keys were checked: whatever changed since then, the
+    /// frontend has already turned into a key.
+    raw_seen: [Pad; crate::input::PORTS],
+    /// The buttons that pulse on each port.
+    pulsing: [u32; crate::input::PORTS],
+    presses: u8,
+    /// Whether the frontend turns the controller into BREW keys. See [`Session::turbo_on_keys`].
+    on_keys: bool,
+    /// The keys the session asserted over the frontend, per button bit, and the value of each.
+    asserted: [u32; crate::input::PORTS],
+    values: [u32; crate::input::PORTS],
 }
 
-impl Default for TurboDaSessao {
+impl Default for SessionTurbo {
     fn default() -> Self {
         Self {
-            cru: Default::default(),
-            cru_visto: Default::default(),
-            pulsando: [0; crate::input::PORTAS],
-            toques: crate::velocidade::turbo::TOQUES_PADRAO,
-            nas_teclas: false,
-            afirmadas: [0; crate::input::PORTAS],
-            valores: [0; crate::input::PORTAS],
+            raw: Default::default(),
+            raw_seen: Default::default(),
+            pulsing: [0; crate::input::PORTS],
+            presses: crate::speed::turbo::DEFAULT_PRESSES,
+            on_keys: false,
+            asserted: [0; crate::input::PORTS],
+            values: [0; crate::input::PORTS],
         }
     }
 }
 
-/// Os botões que também chegam ao jogo como tecla BREW, e a tecla de cada um. É a mesma tabela de
-/// [`crate::input::teclas_do_controle`], menos o direcional, que nunca pulsa.
-const BOTOES_COM_TECLA: [(&str, u32); 2] = [
-    ("b1", crate::input::avk::CONFIRMA),
+/// The buttons that also reach the game as a BREW key, and each one's key. It is the same table as
+/// [`crate::input::controller_key_events`], minus the d-pad, which never pulses.
+const BUTTONS_WITH_KEY: [(&str, u32); 2] = [
+    ("b1", crate::input::avk::CONFIRM),
     ("b2", crate::input::avk::CLR),
 ];
 
-/// O que o som do fast-forward precisa lembrar entre duas voltas. Ver
-/// [`Session::acompanha_o_som`].
+/// What the fast-forward sound needs to remember between two passes. See
+/// [`Session::sync_sound`].
 #[derive(Debug, Clone, Copy)]
-struct SomDoAvanco {
-    /// O instante real e o relógio virtual da volta anterior.
-    ultima: Option<(Instant, u64)>,
-    /// A velocidade alcançada, em média. `None` antes da primeira medida do sem limite.
+struct FastForwardSound {
+    /// The real instant and the virtual clock of the previous pass.
+    last: Option<(Instant, u64)>,
+    /// The speed reached, on average. `None` before the first unlimited measurement.
     media: Option<f64>,
-    /// A proporção pedida na volta anterior: trocar de proporção recomeça a média dela.
-    pedida: Option<Option<f32>>,
-    /// A última proporção acima de 1x e a média em que ela parou: é por onde o próximo aperto
-    /// com a mesma proporção começa.
-    lembrada: Option<(Option<f32>, f64)>,
-    /// O último ritmo e o último abafado entregues ao mixer.
-    enviado: Option<(f32, bool)>,
-    /// Calado pelo rewind. Ver [`Session::cala`].
-    calado: bool,
-    /// Se o ritmo da última volta pedia silêncio — o "sem som" do fast-forward.
-    abafado_pelo_ritmo: bool,
+    /// The ratio requested on the previous pass: changing the ratio restarts its average.
+    requested: Option<Option<f32>>,
+    /// The last ratio above 1x and the average it stopped at: it is where the next press with the
+    /// same ratio starts.
+    remembered: Option<(Option<f32>, f64)>,
+    /// The last pace and the last muffle delivered to the mixer.
+    sent: Option<(f32, bool)>,
+    /// Silenced by the rewind. See [`Session::mute`].
+    muted: bool,
+    /// Whether the last pass's pace asked for silence — the fast-forward "no sound".
+    muted_by_pace: bool,
 }
 
-impl Default for SomDoAvanco {
+impl Default for FastForwardSound {
     fn default() -> Self {
         Self {
-            ultima: None,
+            last: None,
             media: Some(1.0),
-            pedida: None,
-            lembrada: None,
-            enviado: None,
-            calado: false,
-            abafado_pelo_ritmo: false,
+            requested: None,
+            remembered: None,
+            sent: None,
+            muted: false,
+            muted_by_pace: false,
         }
     }
 }
 
-/// O que a sessão observa para dizer no registro que o jogo ficou para trás.
+/// What the session watches to say in the log that the game fell behind.
 ///
-/// **É o diagnóstico do frameskip que "congelava" no Qt** (NFS numa máquina com EndeavourOS: com
-/// qualquer escolha fora do automático, imagem e som paravam e a janela seguia respondendo). Não
-/// se reproduziu, e a suspeita é o jogo rodar abaixo do tempo real nessa máquina: o automático é a
-/// única escolha que pula quadro quando o jogo atrasa. Quando o jogo anda menos da metade do que o
-/// ritmo pede, a linha do registro diz com que escolhas, a que velocidade e quanto custou cada
-/// quadro — o que separa "lento demais" de "parado de verdade".
+/// **It is the diagnosis for the frameskip that "froze" in Qt** (NFS on an EndeavourOS machine:
+/// with any choice other than auto, image and sound stopped while the window kept responding). It
+/// did not reproduce, and the suspicion is that the game runs below real time on that machine:
+/// auto is the only choice that skips frames when the game lags. When the game advances less than
+/// half of what the pace asks, the log line says with which choices, at what speed and how much
+/// each frame cost — which tells "too slow" from "really stopped".
 #[derive(Debug, Clone, Copy, Default)]
-struct VigiaDaVelocidade {
-    /// O começo da janela de medida: o instante real e o relógio virtual.
-    inicio: Option<(Instant, u64)>,
-    /// A última volta, para ver um buraco — pausa, rewind, janela arrastada — e recomeçar.
-    ultima: Option<Instant>,
-    /// Voltas na janela, e quantas delas o jogo estava adiantado.
-    voltas: u32,
-    adiantadas: u32,
-    /// Se o aviso de lento já saiu e espera a recuperação.
-    lento: bool,
+struct SpeedWatchdog {
+    /// The start of the measurement window: the real instant and the virtual clock.
+    start: Option<(Instant, u64)>,
+    /// The last pass, to spot a gap — pause, rewind, dragged window — and start over.
+    last: Option<Instant>,
+    /// Passes in the window, and in how many of them the game was ahead.
+    laps: u32,
+    ahead_count: u32,
+    /// Whether the slow warning has already gone out and is waiting for recovery.
+    slow: bool,
 }
 
-/// A janela da vigia, em tempo real.
-const JANELA_DA_VIGIA: Duration = Duration::from_secs(1);
+/// The watchdog window, in real time.
+const WATCHDOG_WINDOW: Duration = Duration::from_secs(1);
 
-/// A constante de tempo da média da velocidade que o som segue, em segundos. Meio segundo é o
-/// mesmo [`SPEED_WINDOW_MS`] que o painel usa: curto para acompanhar a troca de cena, longo para
-/// não tremer. Não foi afinado de ouvido.
-const MEDIA_DO_SOM_S: f64 = 0.5;
+/// The time constant of the speed average the sound follows, in seconds. Half a second is the same
+/// [`SPEED_WINDOW_MS`] the panel uses: short to follow a scene change, long so as not to jitter.
+/// It was not tuned by ear.
+const SOUND_AVERAGE_S: f64 = 0.5;
 
-/// Acima disto, o tempo entre duas voltas é buraco, e não velocidade.
-const LACUNA_DO_SOM_S: f64 = 0.25;
+/// Above this, the time between two passes is a gap, not speed.
+const SOUND_GAP_S: f64 = 0.25;
 
-/// Uma leitura dos contadores num instante.
+/// A reading of the counters at one instant.
 #[derive(Debug, Clone, Copy)]
-struct Marca {
+struct Mark {
     real: Instant,
     clock_ms: u64,
     instructions: u64,
     frames: u32,
 }
 
-/// O que aconteceu numa janela de medição.
+/// What happened in a measurement window.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Sample {
-    /// Fração da velocidade do console, em porcentagem.
+    /// Fraction of the console's speed, in percent.
     pub speed: u32,
-    /// Quadros apresentados por segundo de tempo real.
+    /// Frames presented per second of real time.
     pub fps: u32,
-    /// Instruções do guest executadas por segundo de tempo real.
+    /// Guest instructions executed per second of real time.
     ///
-    /// Não é em milhões: numa tela de espera o jogo cede a vez e quase não executa, e
-    /// arredondar para milhões mostraria zero justamente quando o número interessa.
+    /// Not in millions: on a waiting screen the game yields and barely executes, and rounding to
+    /// millions would show zero exactly when the number matters.
     pub ips: u64,
 }
 
 impl Session {
-    /// Carrega o módulo, cria o applet e entrega o `EVT_APP_START`.
+    /// Loads the module, creates the applet and delivers `EVT_APP_START`.
     ///
-    /// Um `.zip` é extraído para o cache antes: o jogo grava (o Peteca tem um `.sav`), e
-    /// escrever de volta num pacote não é coisa que se queira fazer.
-    /// Como [`Session::start`], mas com o aparelho já configurado antes de o jogo começar.
+    /// A `.zip` is extracted to the cache first: the game writes (Peteca has a `.sav`), and writing
+    /// back into a package is not something you want to do.
+    /// Like [`Session::start`], but with the device already configured before the game starts.
     ///
-    /// **A ordem importa.** O `start` roda o `AEEMod_Load`, cria o applet e despacha o
-    /// `EVT_APP_START` — tudo antes de devolver. Um jogo que enumera o `IHID` na partida, como a
-    /// Z-Wheel, já perguntou o que está ligado antes de qualquer ajuste feito depois: com as
-    /// portas aplicadas só na volta, ela via um controle e nenhum teclado, por mais que a
-    /// configuração dissesse o contrário.
+    /// **The order matters.** `start` runs `AEEMod_Load`, creates the applet and dispatches
+    /// `EVT_APP_START` — all before returning. A game that enumerates `IHID` at startup, like the
+    /// Z-Wheel, has already asked what is connected before any adjustment made afterwards: with
+    /// the ports applied only on the pass, it saw a controller and no keyboard, however much the
+    /// configuration said otherwise.
     pub fn start_with(
         path: &Path,
-        portas: [Option<crate::input::bindings::Aparelho>; crate::input::PORTAS],
+        ports: [Option<crate::input::bindings::Device>; crate::input::PORTS],
         serial: Option<&Path>,
-        placa: bool,
-        contexto: Option<std::sync::Arc<glow::Context>>,
+        gpu: bool,
+        context: Option<std::sync::Arc<glow::Context>>,
         z_wheel: crate::config::ZWheel,
     ) -> Result<Self, StartError> {
-        Self::start_inner(path, Some(portas), serial, placa, contexto, z_wheel, &[])
+        Self::start_inner(path, Some(ports), serial, gpu, context, z_wheel, &[])
     }
 
-    /// Como [`Session::start_with`], mas instala os módulos antes do boot do guest.
+    /// Like [`Session::start_with`], but installs the modules before the guest boots.
     ///
-    /// A Z-Wheel enumera os jogos durante `EVT_APP_START`. Instalar depois que a sessão já existe
-    /// é tarde demais: a lista dela nasce vazia e o gesto nunca pode escolher um jogo.
+    /// The Z-Wheel enumerates the games during `EVT_APP_START`. Installing after the session
+    /// already exists is too late: its list is born empty and the gesture can never pick a game.
     pub fn start_with_installed(
         path: &Path,
-        portas: [Option<crate::input::bindings::Aparelho>; crate::input::PORTAS],
+        ports: [Option<crate::input::bindings::Device>; crate::input::PORTS],
         serial: Option<&Path>,
-        placa: bool,
-        contexto: Option<std::sync::Arc<glow::Context>>,
+        gpu: bool,
+        context: Option<std::sync::Arc<glow::Context>>,
         z_wheel: crate::config::ZWheel,
-        instalados: &[(u32, String)],
+        installed: &[(u32, String)],
     ) -> Result<Self, StartError> {
-        Self::start_inner(path, Some(portas), serial, placa, contexto, z_wheel, instalados)
+        Self::start_inner(path, Some(ports), serial, gpu, context, z_wheel, installed)
     }
 
-    /// Como [`Session::start_with`], mas recebe a raiz persistente explicitamente.
+    /// Like [`Session::start_with`], but receives the persistent root explicitly.
     ///
-    /// É a fronteira que o frontend Libretro usará: cache de pacote e `fs:/` deixam de depender
-    /// da configuração da UI desktop.
-    #[allow(dead_code)] // consumido por `frontends/libretro`, ainda não criado.
+    /// It is the boundary the Libretro frontend will use: package cache and `fs:/` stop depending
+    /// on the desktop UI configuration.
+    #[allow(dead_code)] // consumed by `frontends/libretro`, not yet created.
     pub fn start_with_storage(
         path: &Path,
-        portas: [Option<crate::input::bindings::Aparelho>; crate::input::PORTAS],
+        ports: [Option<crate::input::bindings::Device>; crate::input::PORTS],
         serial: Option<&Path>,
-        placa: bool,
-        contexto: Option<std::sync::Arc<glow::Context>>,
+        gpu: bool,
+        context: Option<std::sync::Arc<glow::Context>>,
         z_wheel: crate::config::ZWheel,
         storage: &StoragePaths,
     ) -> Result<Self, StartError> {
         Self::start_inner_with_storage(
             path,
-            Some(portas),
+            Some(ports),
             serial,
-            placa,
-            contexto,
+            gpu,
+            context,
             z_wheel,
             storage,
             &[],
         )
     }
 
-    /// Como [`Session::start_with_storage`], com os applets instalados antes do boot.
+    /// Like [`Session::start_with_storage`], with the applets installed before the boot.
     ///
-    /// O core Libretro usa esta entrada para a Z-Wheel: ela enumera a biblioteca no primeiro
-    /// `EVT_APP_START`, portanto `set_installed_applets` depois do retorno não basta.
+    /// The Libretro core uses this entry point for the Z-Wheel: it enumerates the library on the
+    /// first `EVT_APP_START`, so `set_installed_applets` after the return is not enough.
     #[allow(dead_code)]
     pub fn start_with_storage_installed(
         path: &Path,
-        portas: [Option<crate::input::bindings::Aparelho>; crate::input::PORTAS],
+        ports: [Option<crate::input::bindings::Device>; crate::input::PORTS],
         serial: Option<&Path>,
-        placa: bool,
-        contexto: Option<std::sync::Arc<glow::Context>>,
+        gpu: bool,
+        context: Option<std::sync::Arc<glow::Context>>,
         z_wheel: crate::config::ZWheel,
         storage: &StoragePaths,
-        instalados: &[(u32, String)],
+        installed: &[(u32, String)],
     ) -> Result<Self, StartError> {
         Self::start_inner_with_storage(
             path,
-            Some(portas),
+            Some(ports),
             serial,
-            placa,
-            contexto,
+            gpu,
+            context,
             z_wheel,
             storage,
-            instalados,
+            installed,
         )
     }
 
-    /// Inicia o motor sem janela, dispositivo de áudio ou contexto gráfico do host.
+    /// Starts the engine without a window, audio device or host graphics context.
     ///
-    /// Sem chamador até `frontends/libretro` existir; o aviso de código morto está silenciado
-    /// de propósito.
+    /// No caller until `frontends/libretro` exists; the dead code warning is silenced on
+    /// purpose.
     ///
-    /// Esta é a entrada do core Libretro: vídeo, áudio e input são fornecidos por callbacks do
-    /// frontend, e o armazenamento já vem delimitado em [`StoragePaths`].
-    #[allow(dead_code)] // consumido por `frontends/libretro`, ainda não criado.
+    /// This is the Libretro core's entry point: video, audio and input are provided by frontend
+    /// callbacks, and storage already comes scoped in [`StoragePaths`].
+    #[allow(dead_code)] // consumed by `frontends/libretro`, not yet created.
     pub fn start_software_with_storage(
         path: &Path,
-        portas: [Option<crate::input::bindings::Aparelho>; crate::input::PORTAS],
+        ports: [Option<crate::input::bindings::Device>; crate::input::PORTS],
         z_wheel: crate::config::ZWheel,
         storage: &StoragePaths,
     ) -> Result<Self, StartError> {
-        Self::start_inner_with_storage(path, Some(portas), None, false, None, z_wheel, storage, &[])
+        Self::start_inner_with_storage(path, Some(ports), None, false, None, z_wheel, storage, &[])
     }
 
-    /// Variante software de [`Session::start_software_with_storage`] com a biblioteca conhecida.
+    /// Software variant of [`Session::start_software_with_storage`] with the known library.
     #[allow(dead_code)]
     pub fn start_software_with_storage_installed(
         path: &Path,
-        portas: [Option<crate::input::bindings::Aparelho>; crate::input::PORTAS],
+        ports: [Option<crate::input::bindings::Device>; crate::input::PORTS],
         z_wheel: crate::config::ZWheel,
         storage: &StoragePaths,
-        instalados: &[(u32, String)],
+        installed: &[(u32, String)],
     ) -> Result<Self, StartError> {
         Self::start_software_with_storage_installed_policy(
             path,
-            portas,
+            ports,
             z_wheel,
             storage,
-            instalados,
+            installed,
             crate::audio::MidiBackend::Auto,
         )
     }
 
-    /// Variante software recebendo explicitamente a política MIDI.
+    /// Software variant receiving the MIDI policy explicitly.
     #[allow(dead_code)]
     pub fn start_software_with_storage_installed_policy(
         path: &Path,
-        portas: [Option<crate::input::bindings::Aparelho>; crate::input::PORTAS],
+        ports: [Option<crate::input::bindings::Device>; crate::input::PORTS],
         z_wheel: crate::config::ZWheel,
         storage: &StoragePaths,
-        instalados: &[(u32, String)],
+        installed: &[(u32, String)],
         midi_policy: crate::audio::MidiBackend,
     ) -> Result<Self, StartError> {
         Self::start_inner_with_storage_policy(
             path,
-            Some(portas),
+            Some(ports),
             None,
             false,
             None,
             z_wheel,
             storage,
-            instalados,
+            installed,
             midi_policy,
         )
     }
 
-    /// Variante com aceleração por hardware recebendo explicitamente a política MIDI.
+    /// Hardware-accelerated variant receiving the MIDI policy explicitly.
     #[allow(dead_code)]
     pub fn start_with_storage_installed_policy(
         path: &Path,
-        portas: [Option<crate::input::bindings::Aparelho>; crate::input::PORTAS],
+        ports: [Option<crate::input::bindings::Device>; crate::input::PORTS],
         serial: Option<&Path>,
-        placa: bool,
-        contexto: Option<std::sync::Arc<glow::Context>>,
+        gpu: bool,
+        context: Option<std::sync::Arc<glow::Context>>,
         z_wheel: crate::config::ZWheel,
         storage: &StoragePaths,
-        instalados: &[(u32, String)],
+        installed: &[(u32, String)],
         midi_policy: crate::audio::MidiBackend,
     ) -> Result<Self, StartError> {
         Self::start_inner_with_storage_policy(
             path,
-            Some(portas),
+            Some(ports),
             serial,
-            placa,
-            contexto,
+            gpu,
+            context,
             z_wheel,
             storage,
-            instalados,
+            installed,
             midi_policy,
         )
     }
 
-    /// A serial entra **antes de o módulo ser criado**, e não depois de a sessão existir.
+    /// The serial goes in **before the module is created**, not after the session exists.
     ///
-    /// O construtor do applet roda dentro do `CreateInstance`, aqui dentro: ligar a captura só
-    /// depois deixava de fora tudo o que ele faz ao nascer — inclusive o `Zeeboids v 1.1.1402`,
-    /// que aparecia no relatório e não na captura. Uma captura com buraco no começo é pior que
-    /// nenhuma, porque não se sabe que há buraco.
+    /// The applet constructor runs inside `CreateInstance`, in here: turning capture on only
+    /// afterwards left out everything it does at birth — including `Zeeboids v 1.1.1402`, which
+    /// showed up in the report and not in the capture. A capture with a hole at the start is worse
+    /// than none, because nobody knows there is a hole.
     fn start_inner(
         path: &Path,
-        portas: Option<[Option<crate::input::bindings::Aparelho>; crate::input::PORTAS]>,
+        ports: Option<[Option<crate::input::bindings::Device>; crate::input::PORTS]>,
         serial: Option<&Path>,
-        placa: bool,
-        contexto: Option<std::sync::Arc<glow::Context>>,
+        gpu: bool,
+        context: Option<std::sync::Arc<glow::Context>>,
         z_wheel: crate::config::ZWheel,
-        instalados: &[(u32, String)],
+        installed: &[(u32, String)],
     ) -> Result<Self, StartError> {
         let storage = StoragePaths::from_root(crate::config::config_dir());
-        // Até a 0.4.0 o desktop gravava o save dentro da extração, no cache. Copiar para o
-        // overlay tira o save do alcance da poda; a origem fica, e o overlay nunca é sobrescrito.
-        // Falhar aqui não impede o jogo: o VFS ainda lê a cópia antiga quando o overlay não tem.
+        // Up to 0.4.0 the desktop wrote the save inside the extraction, in the cache. Copying it to
+        // the overlay takes the save out of the pruning's reach; the source stays, and the overlay
+        // is never overwritten. Failing here does not stop the game: the VFS still reads the old
+        // copy when the overlay does not have it.
         if let Ok(id) = storage.content_id(path) {
             match storage.migrate_legacy_package_writes(path, &id) {
-                Ok(bytes) if bytes > 0 => crate::registro!(
-                    crate::registro::Nivel::Informacao,
+                Ok(bytes) if bytes > 0 => crate::logging!(
+                    crate::logging::Level::Info,
                     "session",
-                    "{bytes} bytes de saves antigos copiados do cache para {}",
+                    "{bytes} bytes of old saves copied from the cache to {}",
                     storage.save_for(&id).display()
                 ),
                 Ok(_) => {}
-                Err(erro) => crate::registro!(
-                    crate::registro::Nivel::Aviso,
+                Err(error) => crate::logging!(
+                    crate::logging::Level::Warning,
                     "session",
-                    "não deu para copiar os saves antigos do cache: {erro}"
+                    "could not copy the old saves from the cache: {error}"
                 ),
             }
         }
-        Self::start_inner_with_storage(path, portas, serial, placa, contexto, z_wheel, &storage, instalados)
+        Self::start_inner_with_storage(path, ports, serial, gpu, context, z_wheel, &storage, installed)
     }
 
     fn start_inner_with_storage(
         path: &Path,
-        portas: Option<[Option<crate::input::bindings::Aparelho>; crate::input::PORTAS]>,
+        ports: Option<[Option<crate::input::bindings::Device>; crate::input::PORTS]>,
         serial: Option<&Path>,
-        placa: bool,
-        contexto: Option<std::sync::Arc<glow::Context>>,
+        gpu: bool,
+        context: Option<std::sync::Arc<glow::Context>>,
         z_wheel: crate::config::ZWheel,
         storage: &StoragePaths,
-        instalados: &[(u32, String)],
+        installed: &[(u32, String)],
     ) -> Result<Self, StartError> {
         Self::start_inner_with_storage_policy(
             path,
-            portas,
+            ports,
             serial,
-            placa,
-            contexto,
+            gpu,
+            context,
             z_wheel,
             storage,
-            instalados,
+            installed,
             crate::audio::MidiBackend::Auto,
         )
     }
 
     fn start_inner_with_storage_policy(
         path: &Path,
-        portas: Option<[Option<crate::input::bindings::Aparelho>; crate::input::PORTAS]>,
+        ports: Option<[Option<crate::input::bindings::Device>; crate::input::PORTS]>,
         serial: Option<&Path>,
-        placa: bool,
-        contexto: Option<std::sync::Arc<glow::Context>>,
+        gpu: bool,
+        context: Option<std::sync::Arc<glow::Context>>,
         z_wheel: crate::config::ZWheel,
         storage: &StoragePaths,
-        instalados: &[(u32, String)],
+        installed: &[(u32, String)],
         midi_policy: crate::audio::MidiBackend,
     ) -> Result<Self, StartError> {
-        // Caminho escolhido no frontend, antes de extrair: é ele que identifica o conteúdo.
-        let conteudo = path;
+        // Path chosen in the frontend, before extracting: it is what identifies the content.
+        let content = path;
         let extracted;
         let path = match path.extension().and_then(|e| e.to_str()) {
-            // O `.7z` extrai pelo mesmo caminho: quem separa os formatos é o descompactador.
+            // `.7z` extracts through the same path: the unpacker is what tells the formats apart.
             Some("zip" | "7z") => {
                 extracted =
                     archive::extract_in(path, &storage.cache).map_err(StartError::Unreadable)?;
@@ -593,92 +596,93 @@ impl Session {
             }
             _ => path,
         };
-        crate::registro!(
-            crate::registro::Nivel::Depuracao,
+        crate::logging!(
+            crate::logging::Level::Debug,
             "session",
-            "conteúdo {} resolvido para {}",
-            conteudo.display(),
+            "content {} resolved to {}",
+            content.display(),
             path.display()
         );
         let bytes = std::fs::read(path).map_err(StartError::Unreadable)?;
-        crate::registro!(
-            crate::registro::Nivel::Depuracao,
+        crate::logging!(
+            crate::logging::Level::Debug,
             "session",
-            "{} bytes lidos; analisando o módulo",
+            "{} bytes read; parsing the module",
             bytes.len()
         );
         let image = ModImage::parse(bytes).map_err(|e| StartError::NotAModule(e.to_string()))?;
-        let extensoes = extensoes_de(path);
-        let module = loader::load_with(&image, &extensoes)
+        let extensions = extensions_of(path);
+        let module = loader::load_with(&image, &extensions)
             .map_err(|e| StartError::NotLoadable(e.to_string()))?;
 
-        // A raiz do sistema de arquivos do jogo é o diretório onde o `.mod` está: é lá que o
-        // console guarda os arquivos do título.
+        // The root of the game's file system is the directory the `.mod` is in: that is where
+        // the console keeps the title's files.
         let root = path.parent().map(Path::to_path_buf).unwrap_or_default();
-        // O hash é do arquivo escolhido pelo frontend (`.zip` ou `.mod`), antes de qualquer
-        // extração. Ele já não nomeia o save — o store é compartilhado, por pasta de módulo —,
-        // mas ainda acha o overlay antigo a migrar e o título a mostrar.
-        let id_do_conteudo = match storage.overlay {
+        // The hash is of the file chosen by the frontend (`.zip` or `.mod`), before any
+        // extraction. It no longer names the save — the store is shared, per module folder —,
+        // but it still finds the old overlay to migrate and the title to show.
+        let content_id = match storage.overlay {
             true => {
                 let id = storage
-                    .content_id(conteudo)
+                    .content_id(content)
                     .map_err(|e| StartError::Unreadable(e))?;
-                grava_titulo(storage, &id, conteudo);
+                write_title(storage, &id, content);
                 Some(id)
             }
             false => None,
         };
-        // O nome com que o VFS mostra o módulo em `/mod/<pasta>/`, e a pasta dele no store.
-        let pasta_do_modulo = root.file_name().map(|n| n.to_string_lossy().into_owned());
-        if let (Some(id), Some(pasta)) = (&id_do_conteudo, &pasta_do_modulo) {
-            grava_titulo_do_modulo(storage, pasta, conteudo);
-            match storage.migrate_to_shared_saves(id, pasta) {
-                Ok(bytes) if bytes > 0 => crate::registro!(
-                    crate::registro::Nivel::Informacao,
+        // The name under which the VFS shows the module in `/mod/<dir>/`, and its folder in the
+        // store.
+        let module_dir = root.file_name().map(|n| n.to_string_lossy().into_owned());
+        if let (Some(id), Some(dir_name)) = (&content_id, &module_dir) {
+            write_module_title(storage, dir_name, content);
+            match storage.migrate_to_shared_saves(id, dir_name) {
+                Ok(bytes) if bytes > 0 => crate::logging!(
+                    crate::logging::Level::Info,
                     "session",
-                    "{bytes} bytes de saves antigos copiados para {}",
+                    "{bytes} bytes of old saves copied to {}",
                     storage.mod_saves().display()
                 ),
                 Ok(_) => {}
-                Err(erro) => crate::registro!(
-                    crate::registro::Nivel::Aviso,
+                Err(error) => crate::logging!(
+                    crate::logging::Level::Warning,
                     "session",
-                    "não deu para copiar os saves antigos para o store compartilhado: {erro}"
+                    "could not copy the old saves to the shared store: {error}"
                 ),
             }
         }
         let save_root = Some(storage.mod_saves());
-        let cpu = CpuDaSessao::new().map_err(|e| StartError::NotLoadable(e.to_string()))?;
+        let cpu = SessionCpu::new().map_err(|e| StartError::NotLoadable(e.to_string()))?;
         let mut machine = Machine::new_with_storage_policy(cpu, module, root, storage, save_root, midi_policy);
-        // A lista precisa existir antes de `run` e `create_applet`: a Z-Wheel a enumera no boot.
-        machine.set_installed_applets(instalados.iter().cloned());
-        // Antes de qualquer desenho: ver [`Machine::usa_placa`].
-        let tem_contexto = contexto.is_some();
-        machine.usa_placa(placa, contexto);
-        machine.configura_z_wheel(z_wheel);
-        // A tela com que o console abre a Z-Wheel. Ver [`SPLASH_DA_Z_WHEEL`].
+        // The list must exist before `run` and `create_applet`: the Z-Wheel enumerates it at boot.
+        machine.set_installed_applets(installed.iter().cloned());
+        // Before any drawing: see [`Machine::use_gpu`].
+        let has_context = context.is_some();
+        machine.use_gpu(gpu, context);
+        machine.configure_z_wheel(z_wheel);
+        // The screen the console opens the Z-Wheel with. See [`ZWHEEL_SPLASH`].
         if library::applet_clsid(path) == Some(Z_WHEEL) {
-            if let Some(imagem) = path
+            if let Some(splash) = path
                 .parent()
-                .and_then(|dir| std::fs::read(dir.join(SPLASH_DA_Z_WHEEL)).ok())
+                .and_then(|dir| std::fs::read(dir.join(ZWHEEL_SPLASH)).ok())
             {
-                machine.pinta_tela_rgb565(&imagem);
+                machine.paint_screen_rgb565(&splash);
             }
         }
-        if let Some(caminho) = serial {
-            if let Some(dir) = caminho.parent() {
+        if let Some(serial_path) = serial {
+            if let Some(dir) = serial_path.parent() {
                 let _ = std::fs::create_dir_all(dir);
             }
-            if let Err(erro) = machine.liga_serial(caminho) {
-                crate::registro!(
-                    crate::registro::Nivel::Aviso,
+            if let Err(error) = machine.enable_serial(serial_path) {
+                crate::logging!(
+                    crate::logging::Level::Warning,
                     "session",
-                    "a captura de serial não abriu: {erro}"
+                    "the serial capture did not open: {error}"
                 );
             }
         }
-        if let Some(portas) = portas {
-            machine.set_portas(portas);
+        if let Some(ports) = ports {
+            machine.set_ports(ports);
         }
 
         let outcome = machine
@@ -699,33 +703,35 @@ impl Session {
             AppletResult::NoModule => return Err(StartError::NoApplet),
         };
         let title = library::title_for(path);
-        // **Uma linha de INFO por sessão, com o que responde "o que está rodando e como".** É o
-        // par que faltava no relatório do core: o título dizia o jogo e nada dizia o rasterizador.
-        crate::registro!(
-            crate::registro::Nivel::Informacao,
+        // **One INFO line per session, with what answers "what is running and how".** It is the
+        // pair missing from the core's report: the title said the game and nothing said the
+        // rasterizer.
+        crate::logging!(
+            crate::logging::Level::Info,
             "session",
-            "abriu {} (classe {clsid:#010x}) com o {} e {} applet(s) instalado(s)",
-            // O nome do **conteúdo pedido**, e não o `title`: num `.zip` o título da sessão sai
-            // da pasta do cache, que carrega tamanho e data e não diz nada a quem lê o log.
-            conteudo
+            "opened {} (class {clsid:#010x}) with the {} and {} applet(s) installed",
+            // The name of the **requested content**, not `title`: in a `.zip` the session title
+            // comes from the cache folder, which carries size and date and tells nothing to whoever
+            // reads the log.
+            content
                 .file_name()
-                .map(|nome| nome.to_string_lossy().into_owned())
-                .unwrap_or_else(|| conteudo.display().to_string()),
-            match placa {
-                true => "rasterizador de placa",
-                false => "rasterizador de processador",
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| content.display().to_string()),
+            match gpu {
+                true => "GPU rasterizer",
+                false => "CPU rasterizer",
             },
-            instalados.len()
+            installed.len()
         );
-        if placa && !tem_contexto {
-            crate::registro!(
-                crate::registro::Nivel::Aviso,
+        if gpu && !has_context {
+            crate::logging!(
+                crate::logging::Level::Warning,
                 "session",
-                "pediram a placa sem contexto de GL: o desenho fica no processador"
+                "GPU requested without a GL context: drawing stays on the CPU"
             );
         }
         let clock_base = u64::from(machine.clock_ms());
-        let window = Marca {
+        let window = Mark {
             real: Instant::now(),
             clock_ms: clock_base,
             instructions: machine.instructions(),
@@ -733,21 +739,21 @@ impl Session {
         };
         Ok(Self {
             machine,
-            partida: Some((applet, clsid)),
+            running_game: Some((applet, clsid)),
             #[cfg(feature = "audio")]
             audio: None,
             title,
-            conteudo: id_do_conteudo,
-            classe: clsid,
-            intermediario: None,
+            content: content_id,
+            class_id: clsid,
+            intermediate: None,
             started: Instant::now(),
             clock_base,
-            proporcao: Some(1.0),
-            pulo: PuloDaSessao::default(),
-            som_do_avanco: SomDoAvanco::default(),
-            som_congelado: false,
-            vigia: VigiaDaVelocidade::default(),
-            turbo: TurboDaSessao::default(),
+            ratio: Some(1.0),
+            skip: SessionSkip::default(),
+            fast_forward_sound: FastForwardSound::default(),
+            sound_frozen: false,
+            watch: SpeedWatchdog::default(),
+            turbo: SessionTurbo::default(),
             stopped: None,
             window,
             sample: Sample::default(),
@@ -755,232 +761,235 @@ impl Session {
         })
     }
 
-    /// Avança o jogo até apresentar um quadro, gastar `budget` de tempo real, ou parar.
+    /// Advances the game until it presents a frame, spends `budget` of real time, or stops.
     ///
-    /// O teto de tempo real é o que mantém a interface viva: uma volta do laço do jogo pode ser
-    /// uma fatia minúscula de instruções, e devolver o controle regularmente é o que permite
-    /// redesenhar e atender o teclado enquanto o jogo roda.
+    /// The real-time ceiling is what keeps the interface alive: one pass of the game loop can be a
+    /// tiny slice of instructions, and handing control back regularly is what allows redrawing
+    /// and serving the keyboard while the game runs.
     ///
-    /// É o [`Session::anda`] com o ritmo de sempre: a velocidade do console, ou sem freio.
+    /// It is [`Session::advance`] with the usual pace: the console's speed, or unthrottled.
     pub fn step(&mut self, budget: Duration, speed_limit: bool) -> Step {
-        let ritmo = match speed_limit {
-            true => Ritmo::CONSOLE,
-            false => Ritmo::SEM_FREIO,
+        let pace = match speed_limit {
+            true => Pace::CONSOLE,
+            false => Pace::UNTHROTTLED,
         };
-        self.anda(budget, &ritmo)
+        self.advance(budget, &pace)
     }
 
-    /// O [`Session::step`] com o ritmo inteiro: a proporção, o pulo de desenho e a meia
-    /// apresentação. Ver [`crate::velocidade`].
+    /// [`Session::step`] with the whole pace: the ratio, the draw skip and the half-rate
+    /// presentation. See [`crate::speed`].
     ///
-    /// **Uma volta pode rodar vários quadros, e só o último vai para a tela.** É o que deixa o
-    /// jogo alcançar o relógio quando a janela fica abaixo do retraço, e é o que deixa ele correr
-    /// acima de 1x: a 3x, uma volta de 16 ms reais precisa de três quadros do jogo.
-    pub fn anda(&mut self, budget: Duration, ritmo: &Ritmo) -> Step {
-        let passo = self.anda_sem_som(budget, ritmo);
-        self.acompanha_o_som(ritmo);
-        self.vigia(ritmo, passo);
-        passo
+    /// **One pass can run several frames, and only the last one goes to the screen.** It is what
+    /// lets the game catch up with the clock when the window falls below the vsync, and what lets
+    /// it run above 1x: at 3x, a pass of 16 real ms needs three game frames.
+    pub fn advance(&mut self, budget: Duration, pace: &Pace) -> Step {
+        let step = self.advance_without_sound(budget, pace);
+        self.sync_sound(pace);
+        self.watch(pace, step);
+        step
     }
 
-    /// Diz no registro quando o jogo anda menos da metade do que o ritmo pede, e quando volta.
-    /// Ver [`VigiaDaVelocidade`].
-    fn vigia(&mut self, ritmo: &Ritmo, passo: Step) {
-        let agora = Instant::now();
-        let relogio = u64::from(self.machine.clock_ms());
-        let vigia = &mut self.vigia;
-        let buraco = vigia
-            .ultima
-            .is_none_or(|ultima| (agora - ultima).as_secs_f64() > LACUNA_DO_SOM_S);
-        vigia.ultima = Some(agora);
-        // Sem freio não há meta para ficar para trás; parado, não há jogo.
-        let Some(alvo) = ritmo.proporcao.filter(|_| passo != Step::Stopped) else {
-            vigia.inicio = None;
+    /// Says in the log when the game advances less than half of what the pace asks, and when it
+    /// recovers. See [`SpeedWatchdog`].
+    fn watch(&mut self, pace: &Pace, step: Step) {
+        let now = Instant::now();
+        let clock = u64::from(self.machine.clock_ms());
+        let watch = &mut self.watch;
+        let hole = watch
+            .last
+            .is_none_or(|last| (now - last).as_secs_f64() > SOUND_GAP_S);
+        watch.last = Some(now);
+        // Unthrottled there is no target to fall behind; stopped, there is no game.
+        let Some(target) = pace.ratio.filter(|_| step != Step::Stopped) else {
+            watch.start = None;
             return;
         };
-        if buraco {
-            *vigia = VigiaDaVelocidade {
-                inicio: Some((agora, relogio)),
-                ultima: Some(agora),
-                lento: vigia.lento,
-                ..VigiaDaVelocidade::default()
+        if hole {
+            *watch = SpeedWatchdog {
+                start: Some((now, clock)),
+                last: Some(now),
+                slow: watch.slow,
+                ..SpeedWatchdog::default()
             };
             return;
         }
-        vigia.voltas += 1;
-        if passo == Step::Ahead {
-            vigia.adiantadas += 1;
+        watch.laps += 1;
+        if step == Step::Ahead {
+            watch.ahead_count += 1;
         }
-        let Some((inicio, relogio_inicio)) = vigia.inicio else {
-            vigia.inicio = Some((agora, relogio));
+        let Some((start, start_clock)) = watch.start else {
+            watch.start = Some((now, clock));
             return;
         };
-        let passou = agora - inicio;
-        if passou < JANELA_DA_VIGIA {
+        let elapsed = now - start;
+        if elapsed < WATCHDOG_WINDOW {
             return;
         }
-        let velocidade = relogio.saturating_sub(relogio_inicio) as f64 / passou.as_millis() as f64;
-        let fracao = velocidade / f64::from(alvo);
+        let speed = clock.saturating_sub(start_clock) as f64 / elapsed.as_millis() as f64;
+        let fraction = speed / f64::from(target);
         let ms = |d: Duration| d.as_secs_f64() * 1000.0;
-        if fracao < 0.5 && !vigia.lento {
-            vigia.lento = true;
-            crate::registro!(
-                crate::registro::Nivel::Aviso,
+        if fraction < 0.5 && !watch.slow {
+            watch.slow = true;
+            crate::logging!(
+                crate::logging::Level::Warning,
                 "velocidade",
-                "o jogo andou {:.0}% do pedido no último segundo ({velocidade:.2}x de {alvo}x): \
-                 frameskip {:?}, meia apresentação {}, quadro desenhado {:.1} ms, pulado {:.1} ms, \
-                 {} volta(s), {} adiantada(s)",
-                fracao * 100.0,
-                ritmo.frameskip,
-                ritmo.meia_apresentacao,
-                ms(self.pulo.duracao_desenhado),
-                ms(self.pulo.duracao_pulado),
-                vigia.voltas,
-                vigia.adiantadas
+                "the game ran {:.0}% of the request in the last second ({speed:.2}x of {target}x): \
+                 frameskip {:?}, half-rate presentation {}, drawn frame {:.1} ms, \
+                 skipped {:.1} ms, {} pass(es), {} ahead",
+                fraction * 100.0,
+                pace.frameskip,
+                pace.half_rate_present,
+                ms(self.skip.drawn_duration),
+                ms(self.skip.skipped_duration),
+                watch.laps,
+                watch.ahead_count
             );
-        } else if fracao >= 0.9 && vigia.lento {
-            vigia.lento = false;
-            crate::registro!(
-                crate::registro::Nivel::Informacao,
+        } else if fraction >= 0.9 && watch.slow {
+            watch.slow = false;
+            crate::logging!(
+                crate::logging::Level::Info,
                 "velocidade",
-                "o jogo voltou a {:.0}% do pedido ({velocidade:.2}x), com frameskip {:?}",
-                fracao * 100.0,
-                ritmo.frameskip
+                "the game is back to {:.0}% of the request ({speed:.2}x), with frameskip {:?}",
+                fraction * 100.0,
+                pace.frameskip
             );
         }
-        vigia.inicio = Some((agora, relogio));
-        vigia.voltas = 0;
-        vigia.adiantadas = 0;
+        watch.start = Some((now, clock));
+        watch.laps = 0;
+        watch.ahead_count = 0;
     }
 
-    /// O som acompanha a velocidade que o jogo **alcançou**, e não a pedida.
+    /// The sound follows the speed the game **reached**, not the requested one.
     ///
-    /// Com o avanço em 10x e o host chegando a 4x, um passo de 10 deixaria o som duas vezes e meia
-    /// na frente do jogo: os efeitos acabariam antes do `Stop` dele, e a fila dos fluxos secaria
-    /// aos estalos. A velocidade medida, numa média de meio segundo, mantém os dois juntos; ela
-    /// oscila de quadro leve para quadro pesado, e a média é o que impede a altura de tremer.
+    /// With fast-forward at 10x and the host reaching 4x, a pace of 10 would leave the sound two
+    /// and a half times ahead of the game: the effects would end before its `Stop`, and the stream
+    /// queue would run dry in pops. The measured speed, on a half-second average, keeps the two
+    /// together; it swings from light frame to heavy frame, and the average is what keeps the pitch
+    /// from wobbling.
     ///
-    /// **A média parte da proporção pedida, e não de 1x.** Partindo de 1x, ela levava um segundo e
-    /// meio para chegar perto dos 3x: o jogo acelerava na hora — medido no Action Hero 3D, 2,8x
-    /// já nos primeiros 100 ms —, e o som e o rótulo subiam devagar atrás dele, e o fast-forward
-    /// parecia gradual. Partindo do pedido, os dois saltam junto com o jogo, e a média só desce
-    /// quando o host não acompanha. Do segundo aperto em diante, com a mesma proporção, ela parte
-    /// de onde parou da última vez: no mesmo Action Hero a 10x o host chega a 6,7x, e partir de 10
-    /// a cada aperto fazia a altura escorregar por um segundo e meio. O sem limite não tem pedido:
-    /// parte da última vez, ou da primeira medida.
+    /// **The average starts from the requested ratio, not from 1x.** Starting from 1x, it took a
+    /// second and a half to get near 3x: the game sped up at once — measured on Action Hero 3D,
+    /// 2.8x already in the first 100 ms —, and the sound and the label climbed slowly behind it,
+    /// and fast-forward felt gradual. Starting from the request, both jump together with the game,
+    /// and the average only comes down when the host cannot keep up. From the second press on, with
+    /// the same ratio, it starts from where it stopped last time: on the same Action Hero at 10x
+    /// the host reaches 6.7x, and starting from 10 on each press made the pitch slide for a second
+    /// and a half. Unlimited has no request: it starts from the last time, or from the first
+    /// measurement.
     ///
-    /// A 1x o som fica em exatamente 1: a medida oscila em torno disso, e seguir a oscilação
-    /// desafinaria a música de quem nem está avançando.
-    fn acompanha_o_som(&mut self, ritmo: &Ritmo) {
-        let agora = Instant::now();
-        let relogio = u64::from(self.machine.clock_ms());
-        let som = &mut self.som_do_avanco;
-        if som.pedida != Some(ritmo.proporcao) {
-            if let (Some(pedida), Some(media)) = (som.pedida, som.media)
-                && pedida != Some(1.0)
+    /// At 1x the sound stays at exactly 1: the measurement swings around it, and following the
+    /// swing would put the music out of tune for someone who is not even fast-forwarding.
+    fn sync_sound(&mut self, pace: &Pace) {
+        let now = Instant::now();
+        let clock = u64::from(self.machine.clock_ms());
+        let sound = &mut self.fast_forward_sound;
+        if sound.requested != Some(pace.ratio) {
+            if let (Some(requested), Some(media)) = (sound.requested, sound.media)
+                && requested != Some(1.0)
             {
-                som.lembrada = Some((pedida, media));
+                sound.remembered = Some((requested, media));
             }
-            som.pedida = Some(ritmo.proporcao);
-            som.media = match som.lembrada {
-                Some((pedida, media)) if pedida == ritmo.proporcao => Some(media),
-                _ => ritmo.proporcao.map(f64::from),
+            sound.requested = Some(pace.ratio);
+            sound.media = match sound.remembered {
+                Some((requested, media)) if requested == pace.ratio => Some(media),
+                _ => pace.ratio.map(f64::from),
             };
-            som.ultima = None;
+            sound.last = None;
         }
-        let alvo = match ritmo.proporcao {
+        let target = match pace.ratio {
             Some(1.0) => 1.0,
             _ => {
-                if let Some((antes, relogio_antes)) = som.ultima {
-                    let dt = (agora - antes).as_secs_f64();
-                    // Um buraco grande — pausa, janela arrastada — não é velocidade: só recomeça
-                    // a medida, sem puxar a média para baixo.
-                    if dt > 0.0 && dt <= LACUNA_DO_SOM_S {
-                        let instante = relogio.saturating_sub(relogio_antes) as f64 / 1000.0 / dt;
-                        let peso = dt / (MEDIA_DO_SOM_S + dt);
-                        som.media = Some(match som.media {
-                            Some(media) => media + (instante - media) * peso,
-                            None => instante,
+                if let Some((before, clock_before)) = sound.last {
+                    let dt = (now - before).as_secs_f64();
+                    // A large gap — pause, dragged window — is not speed: it only restarts the
+                    // measurement, without pulling the average down.
+                    if dt > 0.0 && dt <= SOUND_GAP_S {
+                        let instant = clock.saturating_sub(clock_before) as f64 / 1000.0 / dt;
+                        let weight = dt / (SOUND_AVERAGE_S + dt);
+                        sound.media = Some(match sound.media {
+                            Some(media) => media + (instant - media) * weight,
+                            None => instant,
                         });
                     }
                 }
-                som.ultima = Some((agora, relogio));
-                som.media
+                sound.last = Some((now, clock));
+                sound.media
                     .unwrap_or(1.0)
-                    .clamp(0.25, f64::from(crate::velocidade::Avanco::MAIOR) + 2.0)
+                    .clamp(0.25, f64::from(crate::speed::FastForward::MAX) + 2.0)
             }
         };
-        som.abafado_pelo_ritmo = ritmo.abafa_o_som;
-        let pedido = (alvo as f32, ritmo.abafa_o_som || som.calado);
-        // Meio por cento de diferença não se ouve, e poupa o cadeado da linha de áudio.
-        let muda = som.enviado.is_none_or(|(enviado, abafado)| {
-            abafado != pedido.1 || (enviado - pedido.0).abs() > enviado * 0.005
+        sound.muted_by_pace = pace.mute_sound;
+        let request = (target as f32, pace.mute_sound || sound.muted);
+        // Half a percent of difference cannot be heard, and it spares the audio line's lock.
+        let changed = sound.sent.is_none_or(|(sent, silenced)| {
+            silenced != request.1 || (sent - request.0).abs() > sent * 0.005
         });
-        if !muda {
+        if !changed {
             return;
         }
-        som.enviado = Some(pedido);
+        sound.sent = Some(request);
         #[cfg(feature = "audio")]
         if let Some(audio) = &self.audio {
-            audio.mixer().define_avanco(pedido.0, pedido.1);
+            audio.mixer().set_fast_forward(request.0, request.1);
         }
     }
 
-    /// O [`Session::anda`] sem o acompanhamento do som.
-    fn anda_sem_som(&mut self, budget: Duration, ritmo: &Ritmo) -> Step {
+    /// [`Session::advance`] without the sound tracking.
+    fn advance_without_sound(&mut self, budget: Duration, pace: &Pace) -> Step {
         if self.stopped.is_some() {
             return Step::Stopped;
         }
         self.sample_speed();
-        self.ajusta_proporcao(ritmo.proporcao);
-        let inicio = Instant::now();
-        // Até 1x vale o orçamento que o frontend deu, como sempre valeu: a volta só o gasta
-        // inteiro quando está atrasada. Acima disso — ou sem freio — ela o gastaria sempre.
-        let fatia = match ritmo.proporcao {
-            Some(proporcao) if proporcao <= 1.0 => budget,
-            _ => budget.min(FATIA_SEM_FREIO),
+        self.set_ratio(pace.ratio);
+        let start = Instant::now();
+        // Up to 1x the budget the frontend gave applies, as it always did: the pass only spends
+        // all of it when it is behind. Above that — or unthrottled — it would always spend it.
+        let slice = match pace.ratio {
+            Some(ratio) if ratio <= 1.0 => budget,
+            _ => budget.min(UNTHROTTLED_SLICE),
         };
-        let deadline = inicio + fatia;
-        let teto = teto_de_quadros(ritmo.proporcao);
+        let deadline = start + slice;
+        let cap = frame_cap(pace.ratio);
         let mut before = self.machine.gl_swaps();
-        let mut quadros = 0;
-        let mut comeco_do_quadro = inicio;
-        let mut desenhou = false;
-        self.decide_pulo(ritmo, quadros, teto, deadline, desenhou);
+        let mut frames = 0;
+        let mut frame_start = start;
+        let mut drew = false;
+        self.decide_skip(pace, frames, cap, deadline, drew);
         loop {
-            if ritmo.proporcao.is_some() && self.ahead_ms() > 0 {
+            if pace.ratio.is_some() && self.ahead_ms() > 0 {
                 return Step::Ahead;
             }
             match self.advance_once() {
                 Some(step) => return step,
                 None if self.machine.gl_swaps() != before => {
-                    // **Um quadro por volta da janela era o teto do jogo.** Com a janela abaixo de
-                    // 60 quadros por segundo — a emulação e a interface somadas passando do
-                    // retraço —, o jogo andava na mesma proporção, liso e lento: o Quake rodava
-                    // em câmera lenta sem engasgar. Atrasado, ele roda mais quadros nesta volta, e
-                    // só o último vai para a tela.
+                    // **One frame per window pass was the game's ceiling.** With the window below
+                    // 60 frames per second — emulation and interface together overrunning the
+                    // vsync —, the game advanced in the same proportion, smooth and slow: Quake ran
+                    // in slow motion without stuttering. When behind, it runs more frames in this
+                    // pass, and only the last one goes to the screen.
                     //
-                    // Sem freio vale o mesmo, até a fatia acabar. Antes ele voltava no primeiro
-                    // quadro, e o "sem freio" da janela ficava preso ao retraço do monitor.
-                    quadros += 1;
-                    let agora = Instant::now();
-                    match self.pulo.atual.algum() {
-                        true => self.pulo.duracao_pulado = agora - comeco_do_quadro,
+                    // Unthrottled, the same applies until the slice ends. Before, it returned on
+                    // the first frame, and the window's "unthrottled" was tied to the monitor's
+                    // vsync.
+                    frames += 1;
+                    let now = Instant::now();
+                    match self.skip.current.any() {
+                        true => self.skip.skipped_duration = now - frame_start,
                         false => {
-                            self.pulo.duracao_desenhado = agora - comeco_do_quadro;
-                            desenhou = true;
+                            self.skip.drawn_duration = now - frame_start;
+                            drew = true;
                         }
                     }
-                    comeco_do_quadro = agora;
+                    frame_start = now;
                     before = self.machine.gl_swaps();
-                    let continua = quadros < teto
-                        && agora < deadline
-                        && match ritmo.proporcao {
-                            Some(_) => self.atraso_ms() > ATRASO_PARA_RECUPERAR_MS,
+                    let keep_going = frames < cap
+                        && now < deadline
+                        && match pace.ratio {
+                            Some(_) => self.lag_ms() > CATCH_UP_LAG_MS,
                             None => true,
                         };
-                    self.decide_pulo(ritmo, quadros, teto, deadline, desenhou);
-                    if !continua {
+                    self.decide_skip(pace, frames, cap, deadline, drew);
+                    if !keep_going {
                         return Step::Presented;
                     }
                 }
@@ -990,147 +999,150 @@ impl Session {
         }
     }
 
-    /// Decide se o quadro que vai começar é desenhado. Ver [`PuloDaSessao`].
+    /// Decides whether the frame about to start is drawn. See [`SessionSkip`].
     ///
-    /// O automático pula o quadro que **sobra**: o que não precisa ir à tela.
+    /// Auto skips the **surplus** frame: the one that does not need to reach the screen.
     ///
-    /// **Um quadro desenhado por volta basta.** Depois dele, pular os seguintes deixa na tela o
-    /// que ele desenhou, uns quadros mais velho, e é isso que o fast-forward mostra. Antes dele,
-    /// um quadro só sobra se, pulado, ainda deixar tempo para um desenhado na fatia — e, com
-    /// freio, se o jogo continuar atrasado depois dele e a volta não tiver batido no teto.
+    /// **One drawn frame per pass is enough.** After it, skipping the following ones leaves on
+    /// screen what it drew, a few frames older, and that is what fast-forward shows. Before it, a
+    /// frame is only surplus if, skipped, it still leaves time for a drawn one in the slice — and,
+    /// when throttled, if the game is still behind after it and the pass has not hit the ceiling.
     ///
-    /// As duas metades foram medidas. Pular tudo o que não batia no teto levava o Rolima a 8,27x
-    /// a 10x, mas o último quadro da volta saía pulado quase sempre, e a tela parava. Pular só o
-    /// que deixava caber um desenhado mantinha a tela, e derrubava o mesmo 10x para 4,11x.
-    /// O que sobra de erro não quebra nada: um quadro desenhado à toa custa o que sempre custou.
-    fn decide_pulo(
+    /// Both halves were measured. Skipping everything that did not hit the ceiling took Rolima to
+    /// 8.27x at 10x, but the pass's last frame came out skipped almost always, and the screen
+    /// froze. Skipping only what left room for a drawn one kept the screen, and dropped the same
+    /// 10x to 4.11x. Whatever error remains breaks nothing: a frame drawn needlessly costs what it
+    /// always cost.
+    fn decide_skip(
         &mut self,
-        ritmo: &Ritmo,
-        quadros: u32,
-        teto: u32,
+        pace: &Pace,
+        frames: u32,
+        cap: u32,
         deadline: Instant,
-        desenhou: bool,
+        drew: bool,
     ) {
-        let trocas = self.machine.gl_swaps();
-        if self.pulo.decidido_em == Some(trocas) {
+        let swaps = self.machine.gl_swaps();
+        if self.skip.decided_at == Some(swaps) {
             return;
         }
-        let cabe_outro =
-            Instant::now() + self.pulo.duracao_pulado + self.pulo.duracao_desenhado < deadline;
-        let sobra = (desenhou || cabe_outro)
-            && match ritmo.proporcao {
+        let fits_another =
+            Instant::now() + self.skip.skipped_duration + self.skip.drawn_duration < deadline;
+        let surplus = (drew || fits_another)
+            && match pace.ratio {
                 Some(_) => {
-                    quadros + 1 < teto
-                        && self.atraso_ms() > ATRASO_PARA_RECUPERAR_MS + FRAME_MS
+                    frames + 1 < cap
+                        && self.lag_ms() > CATCH_UP_LAG_MS + FRAME_MS
                 }
                 None => true,
             };
-        let pulo = self.pulo.contador.decide(ritmo, sobra);
-        self.pulo.decidido_em = Some(trocas);
-        self.pulo.atual = pulo;
-        // O jogo que lê a tela de volta não pula nunca: ver [`crate::velocidade::Frameskip`].
+        let skip = self.skip.counter.decide(pace, surplus);
+        self.skip.decided_at = Some(swaps);
+        self.skip.current = skip;
+        // A game that reads the screen back never skips: see [`crate::speed::Frameskip`].
         self.machine
-            .define_pula_desenho(pulo.algum() && !self.machine.leu_pixels());
+            .set_skip_draw(skip.any() && !self.machine.did_read_pixels());
     }
 
-    /// Ancora de novo o relógio quando a proporção muda.
+    /// Anchors the clock again when the ratio changes.
     ///
-    /// **Sem isto, soltar o fast-forward congelava o jogo.** A 3x o relógio virtual corre na
-    /// frente do real; medido de volta a 1x desde a mesma âncora, ele aparece adiantado por tudo o
-    /// que ganhou, e o freio o segura em [`Step::Ahead`] até o mundo alcançar — o mesmo que já
-    /// acontecia ao religar o limite depois de um tempo sem ele. A âncora nova começa no instante
-    /// de agora, e o que passou não é cobrado de ninguém.
-    fn ajusta_proporcao(&mut self, proporcao: Option<f32>) {
-        if self.proporcao == proporcao {
+    /// **Without this, releasing fast-forward froze the game.** At 3x the virtual clock runs ahead
+    /// of the real one; measured back at 1x from the same anchor, it appears ahead by everything
+    /// it gained, and the throttle holds it in [`Step::Ahead`] until the world catches up — the
+    /// same that already happened when turning the limit back on after a while without it. The new
+    /// anchor starts at the current instant, and what has passed is charged to no one.
+    fn set_ratio(&mut self, ratio: Option<f32>) {
+        if self.ratio == ratio {
             return;
         }
-        self.proporcao = proporcao;
-        self.ancora();
+        self.ratio = ratio;
+        self.anchor();
     }
 
-    /// O instante real de agora passa a corresponder ao relógio virtual de agora.
-    fn ancora(&mut self) {
+    /// The current real instant now corresponds to the current virtual clock.
+    fn anchor(&mut self) {
         self.started = Instant::now();
         self.clock_base = u64::from(self.machine.clock_ms());
     }
 
-    /// Avança **um quadro virtual**, sem consultar o relógio de parede.
+    /// Advances **one virtual frame**, without consulting the wall clock.
     ///
-    /// É a unidade que um frontend repete: o tempo do jogo anda pelo relógio virtual, e nenhuma
-    /// decisão depende de quão rápido o host executa. [`Session::step`] continua sendo o caminho
-    /// da janela, que precisa devolver o controle ao sistema operacional de tempos em tempos.
-    pub fn run_frame(&mut self, limita_velocidade: bool) -> Step {
+    /// It is the unit a frontend repeats: game time advances by the virtual clock, and no decision
+    /// depends on how fast the host executes. [`Session::step`] remains the window's path, which
+    /// has to hand control back to the operating system from time to time.
+    pub fn run_frame(&mut self, limit_speed: bool) -> Step {
         if self.stopped.is_some() {
             return Step::Stopped;
         }
-        self.ajusta_proporcao(limita_velocidade.then_some(1.0));
-        if limita_velocidade {
-            // O desktop faz o mesmo freio devolvendo `Step::Ahead` para a janela. O Libretro não
-            // tem uma volta assíncrona que possa receber "volte depois": `retro_run` tem de
-            // devolver um quadro nesta chamada. Dormir **antes** de avançar é a tradução correta
-            // do mesmo contrato: o áudio do quadro anterior toca enquanto espera, e o próximo
-            // quadro só nasce quando o relógio real alcançou o virtual.
+        self.set_ratio(limit_speed.then_some(1.0));
+        if limit_speed {
+            // The desktop applies the same throttle by returning `Step::Ahead` to the window.
+            // Libretro has no asynchronous pass that can receive "come back later": `retro_run`
+            // has to return a frame in this call. Sleeping **before** advancing is the correct
+            // translation of the same contract: the previous frame's audio plays while waiting,
+            // and the next frame is only born when the real clock has caught up with the virtual
+            // one.
             //
-            // Cinquenta ms é teto defensivo contra um salto anômalo do relógio virtual durante
-            // carregamento. No caso normal o adiantamento é um período (16–17 ms); sem o teto
-            // uma ROM que se adiantasse segundos congelaria o frontend numa chamada só.
-            let espera = self.ahead_ms().min(50);
-            if espera > 0 {
-                std::thread::sleep(Duration::from_millis(espera));
+            // Fifty ms is a defensive ceiling against an anomalous jump of the virtual clock during
+            // loading. In the normal case the lead is one period (16–17 ms); without the ceiling a
+            // ROM that got seconds ahead would freeze the frontend in a single call.
+            let wait = self.ahead_ms().min(50);
+            if wait > 0 {
+                std::thread::sleep(Duration::from_millis(wait));
             }
         }
-        let inicio = u64::from(self.machine.clock_ms());
+        let start = u64::from(self.machine.clock_ms());
         for _ in 0..MAX_STEPS_PER_FRAME {
             match self.advance_once() {
                 Some(step) => return step,
                 None => {
-                    if u64::from(self.machine.clock_ms()).saturating_sub(inicio) >= FRAME_MS {
+                    if u64::from(self.machine.clock_ms()).saturating_sub(start) >= FRAME_MS {
                         return Step::Presented;
                     }
                 }
             }
         }
-        // Um guest que não avança o relógio nem apresenta nada: devolver o controle é melhor que
-        // travar o frontend para sempre.
+        // A guest that neither advances the clock nor presents anything: handing control back is
+        // better than hanging the frontend forever.
         Step::Running
     }
 
-    /// Quantos milissegundos o jogo está atrasado em relação ao relógio do mundo.
+    /// How many milliseconds the game is behind the wall clock.
     ///
-    /// Um atraso maior que [`ATRASO_MAXIMO_MS`] é perdoado aqui mesmo: o começo da medição anda
-    /// para a frente até sobrar só o máximo.
-    fn atraso_ms(&mut self) -> u64 {
-        let atraso = (-self.adiantamento_ms()).max(0) as u64;
-        if atraso > ATRASO_MAXIMO_MS {
-            // O perdão anda com a âncora real, e a 3x cada milissegundo real vale três do jogo.
-            let proporcao = f64::from(self.proporcao.unwrap_or(1.0));
-            let perdao = (atraso - ATRASO_MAXIMO_MS) as f64 / proporcao;
-            self.started += Duration::from_secs_f64(perdao / 1000.0);
-            return ATRASO_MAXIMO_MS;
+    /// A lag greater than [`MAX_LAG_MS`] is forgiven right here: the start of the measurement
+    /// moves forward until only the maximum is left.
+    fn lag_ms(&mut self) -> u64 {
+        let lag = (-self.lead_ms()).max(0) as u64;
+        if lag > MAX_LAG_MS {
+            // The forgiveness moves with the real anchor, and at 3x each real millisecond is worth
+            // three of the game's.
+            let ratio = f64::from(self.ratio.unwrap_or(1.0));
+            let forgiven = (lag - MAX_LAG_MS) as f64 / ratio;
+            self.started += Duration::from_secs_f64(forgiven / 1000.0);
+            return MAX_LAG_MS;
         }
-        atraso
+        lag
     }
 
-    /// Quanto o jogo está adiantado (positivo) ou atrasado (negativo) desde a âncora, pela
-    /// proporção em vigor. Ver [`crate::velocidade::adiantamento_ms`].
-    fn adiantamento_ms(&self) -> i64 {
-        crate::velocidade::adiantamento_ms(
+    /// How far the game is ahead (positive) or behind (negative) since the anchor, at the ratio
+    /// in force. See [`crate::speed::lead_ms`].
+    fn lead_ms(&self) -> i64 {
+        crate::speed::lead_ms(
             u64::from(self.machine.clock_ms()).saturating_sub(self.clock_base),
             self.started.elapsed().as_millis() as u64,
-            self.proporcao,
+            self.ratio,
         )
     }
 
-    /// A partida do jogo: o `EVT_APP_START` entregue ao applet, **uma vez**.
+    /// The game's start: `EVT_APP_START` delivered to the applet, **once**.
     ///
-    /// `Some(Step::Stopped)` quando ela quebrou; `None` quando foi bem ou já tinha acontecido.
+    /// `Some(Step::Stopped)` when it crashed; `None` when it went fine or had already happened.
     ///
-    /// Fica separada da volta do laço porque as duas apontam para lugares diferentes: quebrar no
-    /// evento inicial é problema do que o applet faz ao nascer, e quebrar na primeira volta é
-    /// problema do laço de quadros dele. A varredura de ROMs classifica por essa diferença, e
-    /// misturá-las fazia um jogo que morre no laço aparecer como morto na partida.
-    fn parte(&mut self) -> Option<Step> {
-        let (applet, clsid) = self.partida.take()?;
+    /// It is kept apart from the loop pass because the two point to different places: crashing on
+    /// the initial event is a problem with what the applet does at birth, and crashing on the
+    /// first pass is a problem with its frame loop. The ROM scan classifies by that difference, and
+    /// mixing them made a game that dies in the loop show up as dead at start.
+    fn part(&mut self) -> Option<Step> {
+        let (applet, clsid) = self.running_game.take()?;
         let started = match self.machine.start_applet(applet, clsid, INSTRUCTION_BUDGET) {
             Ok(started) => started,
             Err(_) => {
@@ -1145,24 +1157,24 @@ impl Session {
         None
     }
 
-    /// Uma volta do laço de eventos. `Some` quando há desfecho, `None` para continuar.
+    /// One pass of the event loop. `Some` when there is an outcome, `None` to continue.
     fn advance_once(&mut self) -> Option<Step> {
-        self.pulsa();
-        // Telas intermediárias da volta anterior ainda não mostradas: a janela as mostra antes
-        // de o jogo andar. Ver [`Session::mostra_quadro_intermediario`].
-        if self.machine.tem_quadros_do_update() {
+        self.pulse();
+        // Intermediate screens from the previous pass not yet shown: the window shows them before
+        // the game advances. See [`Session::show_intermediate_frame`].
+        if self.machine.has_update_frames() {
             return Some(Step::Presented);
         }
-        self.machine.comeca_volta();
-        let passo = self.advance_once_inner();
-        self.machine.fecha_volta();
-        passo
+        self.machine.begin_pass();
+        let step = self.advance_once_inner();
+        self.machine.end_pass();
+        step
     }
 
     fn advance_once_inner(&mut self) -> Option<Step> {
-        // A partida do jogo é a primeira coisa desta volta, e não do `start`: assim ela
-        // acontece com a janela já na tela e o som já ligado.
-        if let Some(step) = self.parte() {
+        // The game's start is the first thing of this pass, not of `start`: that way it happens
+        // with the window already on screen and the sound already on.
+        if let Some(step) = self.part() {
             return Some(step);
         }
 
@@ -1180,10 +1192,10 @@ impl Session {
             self.stopped = Some(Outcome::Exception { pc: 0 });
             return Some(Step::Stopped);
         }
-        // O teto de instruções de um trecho **não** é fim de jogo: é o pedido de vez que o
-        // laço de quadros faz para poder entregar a entrada e conferir o relógio. Tratá-lo como
-        // desfecho ruim parava a Z-Wheel na primeira volta — ela repete a abertura enquanto
-        // ninguém toca, e cada repetição gasta orçamento.
+        // A stretch's instruction ceiling is **not** the end of the game: it is the yield the frame
+        // loop makes so it can deliver input and check the clock. Treating it as a bad outcome
+        // stopped the Z-Wheel on the first pass — it repeats the opening while nobody touches it,
+        // and each repetition spends budget.
         if let Some(bad) = outcomes
             .iter()
             .find(|outcome| !matches!(outcome, Outcome::Returned { .. } | Outcome::Budget))
@@ -1191,14 +1203,14 @@ impl Session {
             self.stopped = Some(bad.clone());
             return Some(Step::Stopped);
         }
-        // O applet pediu para fechar: recebe o `EVT_APP_STOP` e a sessão termina como uma saída
-        // normal, que é o que a janela lê para voltar à Z-Wheel.
-        if self.machine.pediu_para_fechar() {
-            let _ = self.machine.encerra_applet();
+        // The applet asked to close: it receives `EVT_APP_STOP` and the session ends as a normal
+        // exit, which is what the window reads to go back to the Z-Wheel.
+        if self.machine.close_requested() {
+            let _ = self.machine.stop_applet();
             self.stopped = Some(Outcome::Returned { code: 0 });
             return Some(Step::Stopped);
         }
-        // Sem timer armado nem trabalho pendente, nada mais vai acontecer.
+        // With no timer armed and no pending work, nothing else is going to happen.
         if outcomes.is_empty() && self.machine.is_idle() {
             self.stopped = Some(Outcome::Returned { code: 0 });
             return Some(Step::Stopped);
@@ -1206,226 +1218,227 @@ impl Session {
         None
     }
 
-    /// Quantos milissegundos o jogo está adiantado em relação ao relógio do mundo.
+    /// How many milliseconds the game is ahead of the wall clock.
     ///
-    /// O relógio virtual adianta o tempo ocioso em vez de gastá-lo — é o que mantém honesto o
-    /// tempo que o jogo *mede* —, e sem esse freio o emulador termina antes da hora: o Crash
-    /// rodava doze segundos de jogo em um e meio de relógio real.
+    /// The virtual clock skips idle time instead of spending it — it is what keeps the time the
+    /// game *measures* honest —, and without this throttle the emulator finishes early: Crash ran
+    /// twelve seconds of game in one and a half of real time.
     fn ahead_ms(&self) -> u64 {
-        self.adiantamento_ms().max(0) as u64
+        self.lead_ms().max(0) as u64
     }
 
-    /// Fecha a janela de medição quando ela vence e guarda a velocidade do trecho.
+    /// Closes the measurement window when it expires and stores the stretch's speed.
     ///
-    /// A conta é sobre os últimos [`SPEED_WINDOW_MS`], não sobre a sessão inteira. Uma média
-    /// desde o início demora minutos para reagir a uma tela mais pesada: o número desce devagar
-    /// muito depois de a queda ter acontecido, e parece uma piora contínua onde o jogo já está
-    /// rodando estável.
+    /// The computation is over the last [`SPEED_WINDOW_MS`], not over the whole session. An
+    /// average since the start takes minutes to react to a heavier screen: the number goes down
+    /// slowly long after the drop happened, and looks like a continuous decline where the game is
+    /// already running stable.
     fn sample_speed(&mut self) {
-        let agora = Marca {
+        let now = Mark {
             real: Instant::now(),
             clock_ms: u64::from(self.machine.clock_ms()),
             instructions: self.machine.instructions(),
-            frames: self.machine.quadros(),
+            frames: self.machine.frames(),
         };
-        let elapsed = (agora.real - self.window.real).as_millis() as u64;
+        let elapsed = (now.real - self.window.real).as_millis() as u64;
         if elapsed < SPEED_WINDOW_MS {
             return;
         }
-        let por_segundo = |quanto: u64| quanto * 1000 / elapsed;
+        let per_second = |amount: u64| amount * 1000 / elapsed;
         self.sample = Sample {
-            speed: (por_segundo(agora.clock_ms.saturating_sub(self.window.clock_ms)) / 10).min(999)
+            speed: (per_second(now.clock_ms.saturating_sub(self.window.clock_ms)) / 10).min(999)
                 as u32,
-            fps: por_segundo(u64::from(agora.frames.saturating_sub(self.window.frames))) as u32,
-            ips: por_segundo(agora.instructions.saturating_sub(self.window.instructions)),
+            fps: per_second(u64::from(now.frames.saturating_sub(self.window.frames))) as u32,
+            ips: per_second(now.instructions.saturating_sub(self.window.instructions)),
         };
         if self.history.len() >= HISTORY {
             self.history.pop_front();
         }
         self.history.push_back(self.sample);
-        self.window = agora;
+        self.window = now;
     }
 
-    /// A última amostra fechada.
+    /// The last closed sample.
     pub fn sample(&self) -> Sample {
         self.sample
     }
 
-    /// As amostras recentes, da mais antiga para a mais nova.
+    /// The recent samples, from oldest to newest.
     pub fn history(&self) -> impl ExactSizeIterator<Item = &Sample> {
         self.history.iter()
     }
 
-    /// Chamadas de API atendidas desde que o jogo abriu.
+    /// API calls served since the game opened.
     pub fn api_calls(&self) -> u64 {
         self.machine.api_calls()
     }
 
-    /// Bytes do heap do guest já entregues, e quantos objetos nossos estão vivos.
+    /// Bytes of the guest heap already handed out, and how many of our objects are alive.
     pub fn memory(&self) -> (u32, usize) {
         (self.machine.heap_used(), self.machine.live_objects())
     }
 
-    /// O retrato do heap do jogo: buracos, maior bloco, livre e usado.
+    /// The snapshot of the game's heap: holes, largest block, free and used.
     ///
-    /// `memory()` diz **quanto** está em uso; este diz **como** o que sobra está repartido — e é
-    /// isso que separa "o heap encheu" de "o heap se despedaçou".
-    pub fn heap_retrato(&self) -> crate::brew::heap::Retrato {
-        self.machine.heap_retrato()
+    /// `memory()` says **how much** is in use; this one says **how** what is left is divided — and
+    /// that is what tells "the heap filled up" from "the heap fell to pieces".
+    pub fn heap_snapshot(&self) -> crate::brew::heap::Snapshot {
+        self.machine.heap_snapshot()
     }
 
-    /// As alocações e as checagens que o heap recusou, com o tamanho pedido e quem pediu.
-    pub fn heap_recusas(&self) -> (Vec<(u32, u32)>, Vec<(u32, u32)>) {
+    /// The allocations and checks the heap refused, with the requested size and who asked.
+    pub fn heap_refusals(&self) -> (Vec<(u32, u32)>, Vec<(u32, u32)>) {
         (
             self.machine.refused_allocations(),
             self.machine.refused_availability_checks(),
         )
     }
 
-    /// O relógio do jogo, em milissegundos.
+    /// The game's clock, in milliseconds.
     pub fn clock_ms(&self) -> u32 {
         self.machine.clock_ms()
     }
 
-    /// Liga o censo do acessador por classe de widget: o que cada classe recebe, por seletor.
+    /// Turns on the accessor census per widget class: what each class receives, per selector.
     ///
-    /// É o mesmo que a varredura liga por `ZEEBX_ROM_SELETORES`, e o core não tinha como pedir —
-    /// `Machine` é privado do motor. Serve para responder, **no aparelho**, o que a família de
-    /// widgets não distingue: o que cada classe proprietária espera.
-    pub fn liga_censo_de_widgets(&mut self) {
-        self.machine.liga_censo_de_widgets();
+    /// It is the same thing the scan turns on with `ZEEBX_ROM_SELECTORS`, and the core had no way
+    /// to ask for it — `Machine` is private to the engine. It serves to answer, **on the device**,
+    /// what the widget family does not distinguish: what each proprietary class expects.
+    pub fn enable_widget_census(&mut self) {
+        self.machine.enable_widget_census();
     }
 
-    /// Liga a captura de serial: onde a **instrumentação** do motor escreve.
+    /// Turns on serial capture: where the engine's **instrumentation** writes.
     ///
-    /// Classes criadas, bancos abertos, SQL, propriedades de widget e a árvore de widgets da
-    /// primeira tecla saem por aqui, sem se misturar com o log do jogo. A varredura e o `run` têm
-    /// isso por `ZEEBX_ROM_SERIAL` e `--serial` desde sempre; o core não tinha, e é a diferença
-    /// entre poder olhar o que o applet faz **no aparelho** e só poder supor.
-    pub fn liga_serial(&mut self, caminho: &std::path::Path) -> std::io::Result<()> {
-        self.machine.liga_serial(caminho)
+    /// Created classes, opened databases, SQL, widget properties and the widget tree of the first
+    /// key come out here, without mixing with the game's log. The scan and `run` have had this
+    /// through `ZEEBX_ROM_SERIAL` and `--serial` since forever; the core did not, and it is the
+    /// difference between being able to look at what the applet does **on the device** and only
+    /// being able to guess.
+    pub fn enable_serial(&mut self, path: &std::path::Path) -> std::io::Result<()> {
+        self.machine.enable_serial(path)
     }
 
-    /// O log da execução.
+    /// The execution log.
     ///
-    /// Junta o que o jogo escreveu com o que o emulador tem a dizer sobre ele. A parte do
-    /// emulador é a que quase sempre existe: a maioria dos jogos não usa `DBGPRINTF`, e uma
-    /// janela vazia não ajuda ninguém a entender o que está acontecendo.
+    /// It joins what the game wrote with what the emulator has to say about it. The emulator's
+    /// part is the one that almost always exists: most games do not use `DBGPRINTF`, and an empty
+    /// window helps nobody understand what is going on.
     ///
-    /// As repetições do log do jogo vêm agrupadas, que é como o emulador as guarda — um jogo
-    /// que escreve a mesma linha por quadro encheria a janela sem dizer mais nada.
+    /// Repetitions in the game's log come grouped, which is how the emulator stores them — a game
+    /// that writes the same line every frame would fill the window without saying anything more.
     pub fn log(&self) -> Vec<String> {
-        let mut linhas = Vec::new();
+        let mut lines = Vec::new();
 
-        // A rede vem primeiro porque é o que se está caçando: quem abre a janela de log depois
-        // de mandar sincronizar quer ver o endereço que o jogo pediu, não rolar até o fim.
+        // The network comes first because it is what is being hunted: whoever opens the log window
+        // after asking to sync wants to see the address the game requested, not scroll to the end.
         let urls = self.machine.web_requests();
         if !urls.is_empty() {
-            linhas.push("— endereços que o jogo pediu pelo IWeb —".to_string());
-            linhas.extend(urls.iter().map(|url| format!("  {url}")));
+            lines.push("— addresses the game requested through IWeb —".to_string());
+            lines.extend(urls.iter().map(|url| format!("  {url}")));
         }
-        let ignoradas = self.machine.ignored_gl();
-        if !ignoradas.is_empty() {
-            linhas.push("— GL atendido sem fazer nada —".to_string());
-            linhas.push(format!("  {}", ignoradas.join(" ")));
+        let ignored = self.machine.ignored_gl();
+        if !ignored.is_empty() {
+            lines.push("— GL served without doing anything —".to_string());
+            lines.push(format!("  {}", ignored.join(" ")));
         }
-        let entregues = self.machine.delivered();
-        if !entregues.is_empty() {
-            linhas.push("— a ponte, e o que ela fez com a resposta —".to_string());
-            linhas.extend(entregues.iter().map(|l| format!("  {l}")));
+        let delivered = self.machine.delivered();
+        if !delivered.is_empty() {
+            lines.push("— the bridge, and what it did with the response —".to_string());
+            lines.extend(delivered.iter().map(|l| format!("  {l}")));
         }
-        let claros = self.machine.plaintexts();
-        if !claros.is_empty() {
-            linhas.push("— o que o jogo cifrou, em claro —".to_string());
-            for bloco in &claros {
-                let hex: String = bloco.iter().map(|b| format!("{b:02x}")).collect();
-                linhas.push(format!("  {} bytes  {hex}", bloco.len()));
-                linhas.push(format!("    {:?}", String::from_utf8_lossy(bloco)));
+        let plaintexts = self.machine.plaintexts();
+        if !plaintexts.is_empty() {
+            lines.push("— what the game encrypted, in plaintext —".to_string());
+            for block in &plaintexts {
+                let hex: String = block.iter().map(|b| format!("{b:02x}")).collect();
+                lines.push(format!("  {} bytes  {hex}", block.len()));
+                lines.push(format!("    {:?}", String::from_utf8_lossy(block)));
             }
         }
-        let toques = self.machine.pad_log();
-        if !toques.is_empty() {
-            linhas.push("— toques entregues ao jogo —".to_string());
-            // A porta entra no registro porque, com duas ligadas nas mesmas teclas, o mesmo
-            // toque aparece duas vezes — e sem dizer de onde veio, isso parece defeito.
-            linhas.extend(toques.iter().map(|&(ms, porta, nome, down)| {
-                let acao = match down {
-                    true => "aperta",
-                    false => "solta ",
+        let presses = self.machine.pad_log();
+        if !presses.is_empty() {
+            lines.push("— presses delivered to the game —".to_string());
+            // The port goes into the log because, with two connected to the same keys, the same
+            // press shows up twice — and without saying where it came from, that looks like a bug.
+            lines.extend(presses.iter().map(|&(ms, port, name, down)| {
+                let action = match down {
+                    true => "press  ",
+                    false => "release",
                 };
-                format!("  {ms:>7} ms  porta {}  {acao} {nome}", porta + 1)
+                format!("  {ms:>7} ms  port {}  {action} {name}", port + 1)
             }));
         }
-        let midia = self.machine.media_log();
-        if !midia.is_empty() {
-            linhas.push("— o que o jogo fez com o som —".to_string());
-            linhas.extend(midia.iter().map(|(ms, objeto, chamada, vezes)| {
-                let repete = match vezes {
+        let media = self.machine.media_log();
+        if !media.is_empty() {
+            lines.push("— what the game did with the sound —".to_string());
+            lines.extend(media.iter().map(|(ms, object, call, times)| {
+                let repeats = match times {
                     1 => String::new(),
                     n => format!("  ({n}x)"),
                 };
-                format!("  {ms:>7} ms  {objeto:#010x}  {chamada}{repete}")
+                format!("  {ms:>7} ms  {object:#010x}  {call}{repeats}")
             }));
         }
         let classes = self.machine.unknown_classes();
         if !classes.is_empty() {
-            linhas.push("— classes que o jogo pediu e não temos —".to_string());
-            linhas.extend(classes.iter().map(|id| format!("  {id:#010x}")));
+            lines.push("— classes the game requested that we do not have —".to_string());
+            lines.extend(classes.iter().map(|id| format!("  {id:#010x}")));
         }
-        let falhas = self.machine.swallowed_faults();
-        if !falhas.is_empty() {
-            linhas.push("— acessos inválidos que o jogo seguiu por cima —".to_string());
-            linhas.extend(falhas.iter().map(|nota| format!("  {nota}")));
+        let faults = self.machine.swallowed_faults();
+        if !faults.is_empty() {
+            lines.push("— invalid accesses the game carried on past —".to_string());
+            lines.extend(faults.iter().map(|note| format!("  {note}")));
         }
         let apis = self.machine.missing_apis();
         if !apis.is_empty() {
-            linhas.push("— APIs que faltaram —".to_string());
-            linhas.extend(apis.iter().map(|nota| format!("  {nota}")));
+            lines.push("— missing APIs —".to_string());
+            lines.extend(apis.iter().map(|note| format!("  {note}")));
         }
-        let arquivos = self.machine.missing_files();
-        if !arquivos.is_empty() {
-            linhas.push("— arquivos não encontrados —".to_string());
-            linhas.extend(arquivos.iter().map(|nome| format!("  {nome}")));
+        let files = self.machine.missing_files();
+        if !files.is_empty() {
+            lines.push("— files not found —".to_string());
+            lines.extend(files.iter().map(|name| format!("  {name}")));
         }
-        let hipoteses = self.machine.assumptions();
-        if !hipoteses.is_empty() {
-            linhas.push("— APIs atendidas por hipótese —".to_string());
-            linhas.extend(hipoteses.iter().map(|nota| format!("  {nota}")));
+        let assumptions = self.machine.assumptions();
+        if !assumptions.is_empty() {
+            lines.push("— APIs served on assumption —".to_string());
+            lines.extend(assumptions.iter().map(|note| format!("  {note}")));
         }
-        let ponteiros = self.machine.bad_pointers();
-        if !ponteiros.is_empty() {
-            linhas.push("— ponteiros recusados —".to_string());
-            linhas.extend(ponteiros.iter().map(|nota| format!("  {nota}")));
+        let pointers = self.machine.bad_pointers();
+        if !pointers.is_empty() {
+            lines.push("— refused pointers —".to_string());
+            lines.extend(pointers.iter().map(|note| format!("  {note}")));
         }
 
-        let jogo = self.machine.debug_output();
-        if !jogo.is_empty() {
-            linhas.push("— log do jogo —".to_string());
-            linhas.extend(jogo.iter().map(|(linha, vezes)| match vezes {
-                1 => format!("  {linha}"),
-                n => format!("  {linha}   ({n}x)"),
+        let game = self.machine.debug_output();
+        if !game.is_empty() {
+            lines.push("— game log —".to_string());
+            lines.extend(game.iter().map(|(line, times)| match times {
+                1 => format!("  {line}"),
+                n => format!("  {line}   ({n}x)"),
             }));
         }
         let semihosting = self.machine.cpu().semihosting();
         if !semihosting.trim().is_empty() {
-            linhas.push("— log por semihosting —".to_string());
-            linhas.extend(semihosting.lines().map(|linha| format!("  {linha}")));
+            lines.push("— semihosting log —".to_string());
+            lines.extend(semihosting.lines().map(|line| format!("  {line}")));
         }
-        linhas
+        lines
     }
 
-    /// Mistura o som num `Mixer` sem placa, para gravar: quem chama pede os quadros com
-    /// `render` no ritmo do relógio virtual.
-    pub fn grava_audio(&mut self, taxa: u32) -> crate::audio::Mixer {
-        let mixer = crate::audio::Mixer::silent(taxa);
+    /// Mixes the sound into a `Mixer` without a sound card, for recording: the caller asks for
+    /// the frames with `render` at the pace of the virtual clock.
+    pub fn record_audio(&mut self, rate: u32) -> crate::audio::Mixer {
+        let mixer = crate::audio::Mixer::silent(rate);
         self.machine.set_audio(Some(mixer.clone()));
         mixer
     }
 
-    /// Liga ou desliga o som, com o volume em `0..=100`.
+    /// Turns sound on or off, with the volume in `0..=100`.
     ///
-    /// Um host sem placa de áudio não pode impedir o jogo de rodar: o motivo é devolvido para
-    /// quem quiser mostrá-lo, e o emulador segue mudo.
+    /// A host without a sound card cannot keep the game from running: the reason is returned to
+    /// whoever wants to show it, and the emulator carries on muted.
     #[cfg(feature = "audio")]
     pub fn set_audio(&mut self, enabled: bool, volume: u8) -> Option<String> {
         let level = f32::from(volume.min(100)) / 100.0;
@@ -1440,10 +1453,11 @@ impl Session {
         }
         match crate::audio::Output::open(level, false) {
             Ok(output) => {
-                // A saída nova nasce em 1x e audível: o que foi entregue à anterior não vale. A
-                // pausa, sim: trocar o volume com o jogo pausado não pode soltar a música.
-                self.som_do_avanco.enviado = None;
-                output.mixer().congela(self.som_congelado);
+                // The new output is born at 1x and audible: what was delivered to the previous one
+                // no longer applies. The pause does: changing the volume with the game paused must
+                // not release the music.
+                self.fast_forward_sound.sent = None;
+                output.mixer().freeze(self.sound_frozen);
                 self.machine.set_audio(Some(output.mixer()));
                 self.audio = Some(output);
                 None
@@ -1452,123 +1466,125 @@ impl Session {
         }
     }
 
-    /// O controle de uma porta, como o jogador o segura. O turbo, se houver, entra por cima: ver
-    /// [`Session::define_turbo`].
-    pub fn set_port_pad(&mut self, porta: usize, pad: Pad) {
-        let Some(cru) = self.turbo.cru.get_mut(porta) else {
+    /// The controller of one port, as the player holds it. The turbo, if any, goes on top: see
+    /// [`Session::set_turbo`].
+    pub fn set_port_pad(&mut self, port: usize, pad: Pad) {
+        let Some(raw) = self.turbo.raw.get_mut(port) else {
             return;
         };
-        *cru = pad;
-        self.pulsa_a_porta(porta, false);
+        *raw = pad;
+        self.pulse_port(port, false);
     }
 
-    /// Os botões que pulsam numa porta, como máscara do [`Pad`]. Zero desliga o turbo dela.
+    /// The buttons that pulse on a port, as a [`Pad`] mask. Zero turns its turbo off.
     ///
-    /// Quem decide **quais** botões é o frontend, pelo modo de cada jogador
-    /// ([`crate::velocidade::turbo::TurboDaPorta`]); quem decide **quando** eles estão apertados é
-    /// a sessão, pelo relógio do jogo, antes de cada volta do laço de eventos.
-    pub fn define_turbo(&mut self, porta: usize, pulsando: u32) {
-        let Some(mascara) = self.turbo.pulsando.get_mut(porta) else {
+    /// The frontend decides **which** buttons, through each player's mode
+    /// ([`crate::speed::turbo::PortTurbo`]); the session decides **when** they are pressed, by the
+    /// game's clock, before each pass of the event loop.
+    pub fn set_turbo(&mut self, port: usize, pulsing: u32) {
+        let Some(mask) = self.turbo.pulsing.get_mut(port) else {
             return;
         };
-        if std::mem::replace(mascara, pulsando) != pulsando {
-            // Na hora, e não na próxima volta do laço: um turbo solto na fase "apertado" deixaria
-            // o botão apertado até lá, e o [`Session::pulsa`] nem olha a porta sem turbo.
-            self.pulsa_a_porta(porta, false);
+        if std::mem::replace(mask, pulsing) != pulsing {
+            // Right away, not on the next loop pass: a turbo released in the "pressed" phase would
+            // leave the button pressed until then, and [`Session::pulse`] does not even look at a
+            // port without turbo.
+            self.pulse_port(port, false);
         }
     }
 
-    /// Quantos toques por segundo o turbo dá, no relógio do jogo.
-    pub fn define_toques_do_turbo(&mut self, toques: u8) {
-        self.turbo.toques = toques;
+    /// How many presses per second the turbo gives, on the game's clock.
+    pub fn set_turbo_rate(&mut self, presses: u8) {
+        self.turbo.presses = presses;
     }
 
-    /// Diz que o frontend transforma o controle em tecla BREW — o confirmar (`0xe064`) do botão
-    /// 1, o `AVK_CLR` do 2 —, como a janela do desktop faz e o core Libretro não.
+    /// Says that the frontend turns the controller into BREW keys — confirm (`0xe064`) for button
+    /// 1, `AVK_CLR` for 2 —, as the desktop window does and the Libretro core does not.
     ///
-    /// **Só então a sessão mexe nas teclas.** O turbo pulsa o estado do controle, e um jogo que lê
-    /// o botão 1 pelo `EVT_KEY` não veria pulso nenhum. Com o frontend entregando a tecla do
-    /// estado cru, a sessão afirma por cima a tecla dos botões que pulsam, e devolve ao cru quando
-    /// eles param. Sem o frontend entregando, não há o que corrigir — e afirmar seria inventar uma
-    /// tecla que o frontend nunca solta.
-    pub fn turbo_nas_teclas(&mut self, ligado: bool) {
-        self.turbo.nas_teclas = ligado;
+    /// **Only then does the session touch the keys.** The turbo pulses the controller state, and a
+    /// game that reads button 1 through `EVT_KEY` would see no pulse at all. With the frontend
+    /// delivering the key from the raw state, the session asserts on top the key of the buttons
+    /// that pulse, and hands back to the raw state when they stop. Without the frontend delivering,
+    /// there is nothing to fix — and asserting would invent a key the frontend never releases.
+    pub fn turbo_on_keys(&mut self, enabled: bool) {
+        self.turbo.on_keys = enabled;
     }
 
-    /// Aplica a fase do turbo a todas as portas. Chamado antes de cada volta do laço de eventos,
-    /// que é a menor unidade em que o relógio do jogo anda.
-    fn pulsa(&mut self) {
-        for porta in 0..crate::input::PORTAS {
-            if self.turbo.pulsando[porta] != 0 || self.turbo.afirmadas[porta] != 0 {
-                self.pulsa_a_porta(porta, true);
+    /// Applies the turbo phase to all ports. Called before each pass of the event loop, which is
+    /// the smallest unit in which the game's clock advances.
+    fn pulse(&mut self) {
+        for port in 0..crate::input::PORTS {
+            if self.turbo.pulsing[port] != 0 || self.turbo.asserted[port] != 0 {
+                self.pulse_port(port, true);
             }
         }
     }
 
-    /// Entrega o controle da porta com o turbo por cima, e — com `teclas` — corrige as teclas BREW
-    /// dos botões que pulsam. As teclas só se corrigem dentro do laço, depois de o frontend ter
-    /// entregue as dele para esta volta: ver [`Session::turbo_nas_teclas`].
-    fn pulsa_a_porta(&mut self, porta: usize, teclas: bool) {
-        let fase = crate::velocidade::turbo::fase_apertada(self.machine.clock_ms(), self.turbo.toques);
+    /// Delivers the port's controller with the turbo on top, and — with `key_events` — fixes the
+    /// BREW keys of the buttons that pulse. Keys are only fixed inside the loop, after the frontend
+    /// has delivered its own for this pass: see [`Session::turbo_on_keys`].
+    fn pulse_port(&mut self, port: usize, key_events: bool) {
+        let phase = crate::speed::turbo::pressed_phase(self.machine.clock_ms(), self.turbo.presses);
         let turbo = &mut self.turbo;
-        let pulsando = turbo.pulsando[porta];
-        let cru = turbo.cru[porta];
-        let efetivo = crate::velocidade::turbo::modula(cru, pulsando, fase);
-        self.machine.set_port_pad(porta, efetivo);
-        if !teclas || !turbo.nas_teclas {
+        let pulsing = turbo.pulsing[port];
+        let raw = turbo.raw[port];
+        let effective = crate::speed::turbo::modulate(raw, pulsing, phase);
+        self.machine.set_port_pad(port, effective);
+        if !key_events || !turbo.on_keys {
             return;
         }
-        let visto = std::mem::replace(&mut turbo.cru_visto[porta], cru);
-        for (nome, tecla) in BOTOES_COM_TECLA {
-            let Some(indice) = Pad::button_by_name(nome) else {
+        let seen = std::mem::replace(&mut turbo.raw_seen[port], raw);
+        for (name, key) in BUTTONS_WITH_KEY {
+            let Some(index) = Pad::button_by_name(name) else {
                 continue;
             };
-            let bit = 1u32 << indice;
-            let cru_apertado = cru.is_down(indice);
-            // O que o jogo tem agora: o que a sessão afirmou, a menos que o frontend tenha
-            // entregue uma tecla nova desde então — a do cru, que passa a valer.
-            let mudou_no_frontend = visto.is_down(indice) != cru_apertado;
-            let atual = match turbo.afirmadas[porta] & bit != 0 && !mudou_no_frontend {
-                true => turbo.valores[porta] & bit != 0,
-                false => cru_apertado,
+            let bit = 1u32 << index;
+            let raw_pressed = raw.is_down(index);
+            // What the game has now: what the session asserted, unless the frontend has delivered
+            // a new key since then — the raw one, which takes over.
+            let changed_in_frontend = seen.is_down(index) != raw_pressed;
+            let current = match turbo.asserted[port] & bit != 0 && !changed_in_frontend {
+                true => turbo.values[port] & bit != 0,
+                false => raw_pressed,
             };
-            let desejado = match pulsando & bit != 0 {
-                true => fase,
-                false => cru_apertado,
+            let desired = match pulsing & bit != 0 {
+                true => phase,
+                false => raw_pressed,
             };
-            if desejado != atual {
-                self.machine.set_key(tecla, desejado);
+            if desired != current {
+                self.machine.set_key(key, desired);
             }
-            match pulsando & bit != 0 {
+            match pulsing & bit != 0 {
                 true => {
-                    turbo.afirmadas[porta] |= bit;
-                    match desejado {
-                        true => turbo.valores[porta] |= bit,
-                        false => turbo.valores[porta] &= !bit,
+                    turbo.asserted[port] |= bit;
+                    match desired {
+                        true => turbo.values[port] |= bit,
+                        false => turbo.values[port] &= !bit,
                     }
                 }
-                false => turbo.afirmadas[porta] &= !bit,
+                false => turbo.asserted[port] &= !bit,
             }
         }
     }
 
-    /// As calibrações do movimento que o jogo começou e terminou. Ver
-    /// [`crate::machine::Machine::calibracao`].
-    pub fn calibracao(&self) -> (u32, u32) {
-        self.machine.calibracao()
+    /// The motion calibrations the game started and finished. See
+    /// [`crate::machine::Machine::calibration`].
+    pub fn calibration(&self) -> (u32, u32) {
+        self.machine.calibration()
     }
 
-    /// A aceleração de uma porta com Boomerang. Ver [`crate::machine::Machine::set_port_motion`].
-    pub fn set_port_motion(&mut self, porta: usize, aceleracao: [f32; 3]) {
-        self.machine.set_port_motion(porta, aceleracao);
+    /// The acceleration of a port with a Boomerang. See
+    /// [`crate::machine::Machine::set_port_motion`].
+    pub fn set_port_motion(&mut self, port: usize, acceleration: [f32; 3]) {
+        self.machine.set_port_motion(port, acceleration);
     }
 
-    /// Uma tecla do teclado, apertada ou solta.
+    /// A keyboard key, pressed or released.
     ///
-    /// O console tem teclado além dos dois controles, e o BREW o entrega como evento ao
-    /// aplicativo, não pelo `IHID` — ver [`crate::input::EVT_KEY`]. A Z-Wheel depende disso: o
-    /// formulário de abertura só sai do lugar com `AVK_0` ou `AVK_CLR`, que botão de controle
-    /// nenhum produz.
+    /// The console has a keyboard besides the two controllers, and BREW delivers it as an event to
+    /// the application, not through `IHID` — see [`crate::input::EVT_KEY`]. The Z-Wheel depends on
+    /// it: the opening form only moves with `AVK_0` or `AVK_CLR`, which no controller button
+    /// produces.
     pub fn set_installed_applets(&mut self, classes: impl IntoIterator<Item = (u32, String)>) {
         self.machine.set_installed_applets(classes);
     }
@@ -1577,221 +1593,225 @@ impl Session {
         self.machine.take_launch_request()
     }
 
-    /// Entrega um evento de widget ao applet. Ver [`Machine::entrega_evento_ao_applet`].
-    pub fn entrega_evento_ao_applet(&mut self, evt: u32, w: u16) -> Result<u32, crate::cpu::CpuError> {
-        self.machine.entrega_evento_ao_applet(evt, w)
+    /// Delivers a widget event to the applet. See [`Machine::deliver_event_to_applet`].
+    pub fn deliver_event_to_applet(&mut self, evt: u32, w: u16) -> Result<u32, crate::cpu::CpuError> {
+        self.machine.deliver_event_to_applet(evt, w)
     }
 
-    pub fn set_key(&mut self, avk: u32, apertada: bool) {
-        self.machine.set_key(avk, apertada);
+    pub fn set_key(&mut self, avk: u32, pressed: bool) {
+        self.machine.set_key(avk, pressed);
     }
 
-    /// Diz que aparelho o console vê em cada porta.
-    pub fn set_portas(
+    /// Says which device the console sees on each port.
+    pub fn set_ports(
         &mut self,
-        portas: [Option<crate::input::bindings::Aparelho>; crate::input::PORTAS],
+        ports: [Option<crate::input::bindings::Device>; crate::input::PORTS],
     ) {
-        self.machine.set_portas(portas);
+        self.machine.set_ports(ports);
     }
 
-    /// Grava o estado da máquina, no formato versionado de [`crate::save_state`].
-    pub fn grava_estado(&self) -> Vec<u8> {
-        self.machine.grava_estado()
+    /// Saves the machine state, in the versioned format of [`crate::save_state`].
+    pub fn save_state(&self) -> Vec<u8> {
+        self.machine.save_state()
     }
 
-    /// Põe de volta um estado gravado por [`Session::grava_estado`].
-    pub fn restaura_estado(&mut self, arquivo: &[u8]) -> Result<(), crate::save_state::Erro> {
-        self.machine.restaura_estado(arquivo)?;
+    /// Puts back a state saved by [`Session::save_state`].
+    pub fn restore_state(&mut self, file: &[u8]) -> Result<(), crate::save_state::Error> {
+        self.machine.restore_state(file)?;
 
-        // O save state guarda o relógio do console, não os relógios do host. Se mantivermos
-        // started/clock_base do instante anterior ao Load, o limitador compara o relógio
-        // restaurado com uma linha do tempo que já não existe: voltar dez minutos pode parecer
-        // dez minutos atrasado; avançar para um estado mais novo pode parecer adiantado e travar
-        // em Step::Ahead. A nova âncora começa exatamente no instante virtual restaurado.
-        self.ancora();
-        let agora = self.started;
+        // The save state keeps the console clock, not the host clocks. If we kept
+        // started/clock_base from the instant before the Load, the limiter would compare the
+        // restored clock with a timeline that no longer exists: going back ten minutes could look
+        // ten minutes behind; moving to a newer state could look ahead and get stuck in
+        // Step::Ahead. The new anchor starts exactly at the restored virtual instant.
+        self.anchor();
+        let now = self.started;
         let clock_ms = self.clock_base;
-        self.window = Marca {
-            real: agora,
+        self.window = Mark {
+            real: now,
             clock_ms,
             instructions: self.machine.instructions(),
-            frames: self.machine.quadros(),
+            frames: self.machine.frames(),
         };
         self.sample = Sample::default();
         self.history.clear();
 
-        // Estas duas peças vivem na Session, não na Machine: ambas descrevem o que o host
-        // estava mostrando depois do ponto salvo. A máquina restaurada volta a ser a fonte da
-        // verdade no próximo quadro.
-        self.intermediario = None;
+        // These two pieces live in the Session, not in the Machine: both describe what the host
+        // was showing after the saved point. The restored machine becomes the source of truth
+        // again on the next frame.
+        self.intermediate = None;
         self.stopped = None;
-        // O contador de trocas de buffer voltou junto com a máquina: a decisão de pulo guardada
-        // é de um quadro que, para ela, ainda não aconteceu.
-        self.pulo.decidido_em = None;
+        // The buffer swap counter came back along with the machine: the stored skip decision is
+        // for a frame that, for it, has not happened yet.
+        self.skip.decided_at = None;
         Ok(())
     }
 
-    /// Se dá para gravar agora. Ver [`crate::machine::Machine::pode_salvar`].
-    pub fn pode_salvar(&mut self) -> Result<(), String> {
-        self.machine.pode_salvar()
+    /// Whether it is possible to save now. See [`crate::machine::Machine::can_save`].
+    pub fn can_save(&mut self) -> Result<(), String> {
+        self.machine.can_save()
     }
 
-    /// Se dá para marcar um ponto do rewind agora: o que o [`Session::pode_salvar`] pede, e
-    /// nenhum arquivo aberto para escrita. Ver [`crate::machine::Machine::tem_arquivo_para_escrita`].
-    pub fn pode_marcar_ponto(&mut self) -> Result<(), String> {
-        self.machine.pode_salvar()?;
-        match self.machine.tem_arquivo_para_escrita() {
-            true => Err("há um arquivo aberto para escrita".to_string()),
+    /// Whether a rewind point can be marked now: what [`Session::can_save`] asks, and no file open
+    /// for writing. See [`crate::machine::Machine::has_writable_file`].
+    pub fn can_mark_point(&mut self) -> Result<(), String> {
+        self.machine.can_save()?;
+        match self.machine.has_writable_file() {
+            true => Err("there is a file open for writing".to_string()),
             false => Ok(()),
         }
     }
 
-    /// Recomeça a medida contra o relógio do mundo: o tempo real que passou até aqui não é para o
-    /// jogo correr atrás. É o que o fim do rewind pede — o jogo ficou parado enquanto ele voltava.
-    pub fn recomeca_o_relogio(&mut self) {
-        self.ancora();
+    /// Restarts the measurement against the wall clock: the real time that passed up to here is not
+    /// for the game to chase. It is what the end of the rewind asks — the game stood still while it
+    /// went back.
+    pub fn restart_clock(&mut self) {
+        self.anchor();
     }
 
-    /// Cala o som, à parte do fast-forward: o rewind volta pontos sem o jogo andar, e o que a
-    /// placa toca nesse meio tempo é o resto do ponto anterior.
-    pub fn cala(&mut self, calado: bool) {
-        if self.som_do_avanco.calado == calado {
+    /// Silences the sound, apart from fast-forward: the rewind goes back points without the game
+    /// advancing, and what the card plays in the meantime is the rest of the previous point.
+    pub fn mute(&mut self, muted: bool) {
+        if self.fast_forward_sound.muted == muted {
             return;
         }
-        self.som_do_avanco.calado = calado;
-        let ritmo = self.som_do_avanco.enviado.map_or(1.0, |(ritmo, _)| ritmo);
-        let abafado = calado || self.som_do_avanco.abafado_pelo_ritmo;
-        self.som_do_avanco.enviado = Some((ritmo, abafado));
+        self.fast_forward_sound.muted = muted;
+        let pace = self.fast_forward_sound.sent.map_or(1.0, |(pace, _)| pace);
+        let silenced = muted || self.fast_forward_sound.muted_by_pace;
+        self.fast_forward_sound.sent = Some((pace, silenced));
         #[cfg(feature = "audio")]
         if let Some(audio) = &self.audio {
-            audio.mixer().define_avanco(ritmo, abafado);
+            audio.mixer().set_fast_forward(pace, silenced);
         }
     }
 
-    /// Para o som onde ele está, ou o solta: é a pausa da janela. Ver
-    /// [`crate::audio::Mixer::congela`].
+    /// Stops the sound where it is, or releases it: it is the window's pause. See
+    /// [`crate::audio::Mixer::freeze`].
     ///
-    /// Diferente do [`Session::cala`]: calado, o som corre sem sair; congelado, ele espera o jogo.
-    pub fn congela_o_som(&mut self, congelado: bool) {
-        if self.som_congelado == congelado {
+    /// Different from [`Session::mute`]: muted, the sound runs without coming out; frozen, it waits
+    /// for the game.
+    pub fn freeze_audio(&mut self, frozen: bool) {
+        if self.sound_frozen == frozen {
             return;
         }
-        self.som_congelado = congelado;
+        self.sound_frozen = frozen;
         #[cfg(feature = "audio")]
         if let Some(audio) = &self.audio {
-            audio.mixer().congela(congelado);
+            audio.mixer().freeze(frozen);
         }
     }
 
-    /// A velocidade que o jogo alcança, em vezes a do console, pela mesma média que o som segue
-    /// fora de 1x; a 1x, ou antes da primeira medida do sem limite, a da [`Session::sample`].
+    /// The speed the game reaches, in multiples of the console's, by the same average the sound
+    /// follows outside 1x; at 1x, or before the first unlimited measurement, that of
+    /// [`Session::sample`].
     ///
-    /// É o número do rótulo ▶▶. A amostra mede janelas de meio segundo, e no aperto do
-    /// fast-forward mostrava 1x subindo até o pedido. Ver [`Session::acompanha_o_som`].
-    pub fn velocidade_alcancada(&self) -> f32 {
-        let media = match self.som_do_avanco.pedida {
+    /// It is the number of the ▶▶ label. The sample measures half-second windows, and on a
+    /// fast-forward press it showed 1x climbing up to the request. See [`Session::sync_sound`].
+    pub fn reached_speed(&self) -> f32 {
+        let media = match self.fast_forward_sound.requested {
             Some(Some(1.0)) | None => None,
-            Some(_) => self.som_do_avanco.media,
+            Some(_) => self.fast_forward_sound.media,
         };
         media.map_or(self.sample.speed as f32 / 100.0, |media| media as f32)
     }
 
-    /// Assinatura do conteúdo da tela, para o frontend evitar reenvio de quadro repetido.
+    /// Signature of the screen contents, so the frontend can avoid resending a repeated frame.
     pub fn screen_signature(&self) -> u64 {
         self.screen().signature()
     }
 
-    /// A identidade do arquivo aberto: o hash do `.zip`, do `.7z` ou do `.mod` escolhido, antes
-    /// da extração. `None` só num perfil montado à mão, sem overlay.
+    /// The identity of the opened file: the hash of the chosen `.zip`, `.7z` or `.mod`, before
+    /// extraction. `None` only in a hand-built profile, without overlay.
     ///
-    /// Existe para os slots de save state ([`crate::ui::estados`]): a sessão já calculou o hash
-    /// para achar a pasta dos saves, e calcular de novo leria o pacote inteiro outra vez a cada
-    /// jogo aberto — e a cada um que a Z-Wheel lança.
-    pub fn conteudo(&self) -> Option<&crate::storage::ContentId> {
-        self.conteudo.as_ref()
+    /// It exists for the save state slots ([`crate::ui::states`]): the session already computed
+    /// the hash to find the saves folder, and computing it again would read the whole package
+    /// once more for every game opened — and for every one the Z-Wheel launches.
+    pub fn content(&self) -> Option<&crate::storage::ContentId> {
+        self.content.as_ref()
     }
 
-    /// A raiz do sistema de arquivos do jogo: onde a extração vive.
+    /// The root of the game's file system: where the extraction lives.
     ///
-    /// O frontend precisa dela para podar o cache sem apagar o jogo em execução.
+    /// The frontend needs it to prune the cache without deleting the running game.
     pub fn content_root(&self) -> &Path {
         self.machine.file_root()
     }
 
-    /// Traz para a tela da CPU o quadro que o `eglSwapBuffers` deixou pendente.
+    /// Brings to the CPU screen the frame `eglSwapBuffers` left pending.
     ///
-    /// **Quem lê os pixels da tela precisa chamar isto antes.** O desenho 2D chama sozinho, e a
-    /// janela que apresenta a textura da placa não precisa dos pixels. Quem converte a tela para
-    /// bytes — o despejo de quadro, um frontend de fora, a análise da varredura — precisa, senão
-    /// recebe o quadro anterior. Ver [`crate::machine::Machine::present_gl`].
-    pub fn materializa_quadro_gl(&mut self) {
-        self.machine.materializa_quadro_gl();
+    /// **Whoever reads the screen pixels must call this first.** 2D drawing calls it on its own,
+    /// and the window that presents the GPU texture does not need the pixels. Whoever converts the
+    /// screen to bytes — the frame dump, an outside frontend, the scan's analysis — does, or else
+    /// it gets the previous frame. See [`crate::machine::Machine::present_gl`].
+    pub fn materialize_gl_frame(&mut self) {
+        self.machine.materialize_gl_frame();
     }
 
-    /// Quantas trocas de buffer houve e quantas delas precisaram trazer o quadro para a CPU.
-    pub fn leituras_do_quadro_gl(&self) -> (u32, u32) {
+    /// How many buffer swaps there were and how many of them had to bring the frame to the CPU.
+    pub fn gl_frame_readbacks(&self) -> (u32, u32) {
         (
             self.machine.gl_swaps(),
-            self.machine.materializacoes_do_quadro_gl(),
+            self.machine.gl_frame_materializations(),
         )
     }
 
-    /// Chamadas de estado enviadas à placa e quantas o espelho poupou.
-    pub fn estado_enviado_e_poupado(&self) -> (u64, u64) {
-        self.machine.estado_enviado_e_poupado()
+    /// State calls sent to the GPU and how many the mirror spared.
+    pub fn state_sent_and_spared(&self) -> (u64, u64) {
+        self.machine.state_sent_and_spared()
     }
 
-    /// A tela, como está agora.
+    /// The screen, as it is now.
     pub fn screen(&self) -> &Framebuffer {
-        self.intermediario
+        self.intermediate
             .as_ref()
             .unwrap_or_else(|| self.machine.screen())
     }
 
-    /// Põe à mostra a próxima tela intermediária, se houver, e diz se pôs.
+    /// Puts the next intermediate screen on display, if there is one, and says whether it did.
     ///
-    /// Enquanto houver, quem mostra a sessão deve exibir uma por quadro sem avançar o jogo:
-    /// é o que faz uma animação síncrona, como a transição da Z-Wheel, aparecer. Ver
-    /// [`crate::machine::Machine::toma_quadro_do_update`].
-    pub fn mostra_quadro_intermediario(&mut self) -> bool {
-        self.intermediario = self.machine.toma_quadro_do_update();
-        self.intermediario.is_some()
+    /// While there are any, whoever shows the session should display one per frame without
+    /// advancing the game: it is what makes a synchronous animation, like the Z-Wheel transition,
+    /// appear. See [`crate::machine::Machine::take_update_frame`].
+    pub fn show_intermediate_frame(&mut self) -> bool {
+        self.intermediate = self.machine.take_update_frame();
+        self.intermediate.is_some()
     }
 
-    /// A parada foi uma **saída normal**, e não uma quebra.
+    /// The stop was a **normal exit**, not a crash.
     ///
-    /// `Outcome::Returned` é o applet que pediu para fechar (`EVT_APP_STOP`) ou que acabou sem
-    /// nada pendente — o mesmo desfecho que a janela lê para voltar à Z-Wheel. Os outros são
-    /// falha de verdade: API que não existe aqui, salto para endereço inválido.
+    /// `Outcome::Returned` is the applet that asked to close (`EVT_APP_STOP`) or that ended with
+    /// nothing pending — the same outcome the window reads to go back to the Z-Wheel. The others
+    /// are real failures: an API that does not exist here, a jump to an invalid address.
     ///
-    /// Existe porque o [`stopped_reason`](Self::stopped_reason) devolve só texto, e quem só tem
-    /// o texto não consegue escolher entre "voltei ao menu" e "quebrou" — era o que fazia a saída
-    /// limpa de um jogo aparecer como erro no Android.
-    pub fn saiu_normalmente(&self) -> bool {
+    /// It exists because [`stopped_reason`](Self::stopped_reason) returns only text, and whoever
+    /// only has the text cannot choose between "back to the menu" and "crashed" — that is what
+    /// made a game's clean exit show up as an error on Android.
+    pub fn exited_normally(&self) -> bool {
         matches!(self.stopped, Some(Outcome::Returned { .. }))
     }
 
-    /// O motivo da parada, se o jogo parou, em texto que sirva para quem está olhando a tela.
+    /// The reason for the stop, if the game stopped, in text useful to whoever is looking at the
+    /// screen.
     ///
-    /// O `Debug` do desfecho traz endereços crus, e "método não implementado em `0xf0014034`"
-    /// não diz nada a ninguém — o nome da interface e do método, sim.
+    /// The outcome's `Debug` carries raw addresses, and "method not implemented at `0xf0014034`"
+    /// says nothing to anyone — the name of the interface and the method does.
     pub fn stopped_reason(&self) -> Option<String> {
         Some(match self.stopped.as_ref()? {
-            Outcome::Returned { .. } => "o jogo terminou".to_string(),
+            Outcome::Returned { .. } => "the game ended".to_string(),
             Outcome::Unimplemented { addr, caller, .. } => format!(
-                "o jogo chamou {}, que ainda não existe aqui (de {caller:#010x})",
+                "the game called {}, which does not exist here yet (from {caller:#010x})",
                 crate::brew::aee::describe(*addr)
             ),
-            // O `lr` entra junto: num salto para o endereço zero o `pc` não diz nada, e quem
-            // chamou é a única pista de qual ponteiro estava vazio.
+            // `lr` goes along: on a jump to address zero `pc` says nothing, and the caller is the
+            // only clue to which pointer was empty.
             Outcome::Fault { addr, pc, lr } => {
-                format!("acesso inválido a {addr:#010x}, em {pc:#010x} (de {lr:#010x})")
+                format!("invalid access to {addr:#010x}, at {pc:#010x} (from {lr:#010x})")
             }
-            Outcome::Exception { pc } => format!("exceção do núcleo ARM em {pc:#010x}"),
-            Outcome::Budget => "o jogo passou do orçamento de instruções".to_string(),
+            Outcome::Exception { pc } => format!("ARM core exception at {pc:#010x}"),
+            Outcome::Budget => "the game exceeded the instruction budget".to_string(),
             Outcome::CallLimit { calls } => {
                 format!(
-                    "{calls} chamadas de API sem devolver a vez — provável laço de repetição"
+                    "{calls} API calls without yielding — likely an infinite loop"
                 )
             }
         })
@@ -1801,14 +1821,14 @@ impl Session {
         &self.title
     }
 
-    /// O último quadro do rasterizador GL, quando há um. Serve para separar o que o 3D desenhou
-    /// do que chegou à tela composto.
-    pub fn quadro_gl(&mut self) -> Option<Framebuffer> {
+    /// The last frame of the GL rasterizer, when there is one. It serves to separate what the 3D
+    /// drew from what reached the screen composited.
+    pub fn frame_gl(&mut self) -> Option<Framebuffer> {
         self.machine.gl_frame()
     }
 
-    /// Os registradores `r0`–`r11` e os prováveis endereços de retorno na pilha, da última falha.
-    pub fn falha(&self) -> ([u32; 12], &[u32], Option<u32>) {
+    /// Registers `r0`–`r11` and the likely return addresses on the stack, from the last fault.
+    pub fn failure(&self) -> ([u32; 12], &[u32], Option<u32>) {
         let lr = match self.stopped {
             Some(Outcome::Fault { lr, .. }) => Some(lr),
             _ => None,
@@ -1816,224 +1836,229 @@ impl Session {
         (self.machine.fault_regs(), self.machine.fault_stack(), lr)
     }
 
-    /// A textura do quadro na placa. Ver [`Machine::textura_do_quadro`].
-    pub fn textura_do_quadro(&self) -> Option<u32> {
-        match self.intermediario {
+    /// The frame texture on the GPU. See [`Machine::frame_texture`].
+    pub fn frame_texture(&self) -> Option<u32> {
+        match self.intermediate {
             Some(_) => None,
-            None => self.machine.textura_do_quadro(),
+            None => self.machine.frame_texture(),
         }
     }
 
-    /// O quadro 3D na resolução interna, quando é ele que está à mostra. Ver
-    /// [`crate::machine::Machine::quadro_na_placa`].
-    pub fn quadro_na_placa(&self) -> Option<crate::video::rasterizer::QuadroNaPlaca> {
-        match self.intermediario {
+    /// The 3D frame at the internal resolution, when it is the one on display. See
+    /// [`crate::machine::Machine::gpu_frame`].
+    pub fn gpu_frame(&self) -> Option<crate::video::rasterizer::GpuFrame> {
+        match self.intermediate {
             Some(_) => None,
-            None => self.machine.quadro_na_placa(),
+            None => self.machine.gpu_frame(),
         }
     }
 
-    /// O quadro 3D na resolução interna, para gravar sem janela.
-    pub fn quadro_grande(&mut self) -> Option<Framebuffer> {
-        self.machine.quadro_grande()
+    /// The 3D frame at the internal resolution, for recording without a window.
+    pub fn large_frame(&mut self) -> Option<Framebuffer> {
+        self.machine.large_frame()
     }
 
-    /// O quadro que a janela mostra, em RGB de oito bits por canal: largura, altura e os bytes.
+    /// The frame the window shows, in RGB with eight bits per channel: width, height and the bytes.
     ///
-    /// **O grande só quando é ele que está à mostra**, pela mesma pergunta do
-    /// [`Session::quadro_na_placa`]. O [`Session::quadro_grande`] sozinho lê a placa mesmo com um
-    /// HUD desenhado depois, e o print sairia sem o HUD. Fora disso vale a tela do console, em
-    /// 640×480. Com a placa, é GL: quem chama deixa o contexto do rasterizador corrente. Ver
-    /// `docs/implementacao/22-screenshots.md`.
-    pub fn captura(&mut self) -> (u32, u32, Vec<u8>) {
-        if self.quadro_na_placa().is_some()
-            && let Some((largura, altura, rgba)) = self.machine.quadro_grande_rgba()
+    /// **The large one only when it is the one on display**, by the same question as
+    /// [`Session::gpu_frame`]. [`Session::large_frame`] alone reads the GPU even with a HUD drawn
+    /// afterwards, and the screenshot would come out without the HUD. Otherwise the console screen
+    /// applies, at 640×480. With the GPU, it is GL: the caller leaves the rasterizer's context
+    /// current. See `docs/implementation/22-screenshots.md`.
+    pub fn capture(&mut self) -> (u32, u32, Vec<u8>) {
+        if self.gpu_frame().is_some()
+            && let Some((width, height, rgba)) = self.machine.large_frame_rgba()
         {
-            // Sem o alfa: há jogo que limpa o fundo com alfa zero, e o print sairia transparente.
+            // Without the alpha: some games clear the background with zero alpha, and the
+            // screenshot would come out transparent.
             let rgb = rgba.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
-            return (largura as u32, altura as u32, rgb);
+            return (width as u32, height as u32, rgb);
         }
-        let tela = self.screen();
-        let rgb = tela
+        let screen = self.screen();
+        let rgb = screen
             .to_argb()
             .into_iter()
             .flat_map(|p| [(p >> 16) as u8, (p >> 8) as u8, p as u8])
             .collect();
-        (tela.width(), tela.height(), rgb)
+        (screen.width(), screen.height(), rgb)
     }
 
-    /// Liga a contagem de tempo real por método de API. Ver [`Session::perfil_de_api`].
-    pub fn liga_perfil_de_api(&mut self) {
+    /// Turns on real-time counting per API method. See [`Session::api_profile`].
+    pub fn enable_api_profile(&mut self) {
         self.machine.enable_api_profile();
     }
 
-    /// Quanto tempo real cada método de API custou, do mais caro para o mais barato, em ns.
-    pub fn perfil_de_api(&self) -> Vec<(String, u64)> {
+    /// How much real time each API method cost, from most to least expensive, in ns.
+    pub fn api_profile(&self) -> Vec<(String, u64)> {
         self.machine.api_profile()
     }
 
-    /// Quantas instruções ARM o jogo já executou.
-    pub fn instrucoes(&self) -> u64 {
+    /// How many ARM instructions the game has executed.
+    pub fn instructions(&self) -> u64 {
         self.machine.instructions()
     }
 
-    /// Quantos quadros de GL o jogo já apresentou.
-    pub fn quadros_apresentados(&self) -> u64 {
+    /// How many GL frames the game has presented.
+    pub fn presented_frames(&self) -> u64 {
         u64::from(self.machine.gl_swaps())
     }
 
-    /// Quantos quadros o jogo desenhou na placa — **trocas de buffer ou `glClear`**.
+    /// How many frames the game drew on the GPU — **buffer swaps or `glClear`**.
     ///
-    /// É diferente de [`Session::quadros_apresentados`], que conta só trocas: a Z-Wheel desenha o
-    /// palco num pbuffer e nunca troca buffer, e um contador de trocas diria que ela não desenha
-    /// nada. Quem pergunta "a placa desenhou neste quadro?" precisa deste.
-    pub fn quadros_da_placa(&self) -> u32 {
-        self.machine.quadros()
+    /// It differs from [`Session::presented_frames`], which counts only swaps: the Z-Wheel draws
+    /// the stage in a pbuffer and never swaps buffers, and a swap counter would say it draws
+    /// nothing. Whoever asks "did the GPU draw in this frame?" needs this one.
+    pub fn gpu_frames(&self) -> u32 {
+        self.machine.frames()
     }
 
-    /// Antialias (amostras por pixel) e filtro anisotrópico do 3D na placa; valem na hora.
-    pub fn define_melhorias(&mut self, amostras: usize, anisotropico: usize) {
-        self.machine.define_melhorias(amostras, anisotropico);
+    /// Antialiasing (samples per pixel) and anisotropic filtering of the 3D on the GPU; they apply
+    /// right away.
+    pub fn set_enhancements(&mut self, samples: usize, anisotropic: usize) {
+        self.machine.set_enhancements(samples, anisotropic);
     }
 
-    /// Se a névoa do jogo vale; vale na hora.
-    pub fn define_neblina(&mut self, permitida: bool) {
-        self.machine.define_neblina(permitida);
+    /// Whether the game's fog applies; it applies right away.
+    pub fn set_fog_allowed(&mut self, allowed: bool) {
+        self.machine.set_fog_allowed(allowed);
     }
 
-    /// Se o quadro de agora deve pular o desenho 3D e a limpeza de tela. Ver
-    /// [`crate::machine::Machine::define_pula_desenho`].
-    pub fn define_pula_desenho(&mut self, pula: bool) {
-        self.machine.define_pula_desenho(pula);
+    /// Whether the current frame should skip 3D drawing and screen clearing. See
+    /// [`crate::machine::Machine::set_skip_draw`].
+    pub fn set_skip_draw(&mut self, skip: bool) {
+        self.machine.set_skip_draw(skip);
     }
 
-    /// Se o jogo já usou `glReadPixels` e, por segurança, desabilitou frameskip de rasterização.
-    pub fn leu_pixels(&self) -> bool {
-        self.machine.leu_pixels()
+    /// Whether the game has already used `glReadPixels` and, to be safe, disabled rasterization
+    /// frameskip.
+    pub fn did_read_pixels(&self) -> bool {
+        self.machine.did_read_pixels()
     }
 
-    /// Liga o registro de todas as chamadas do jogo, na ordem. Ver
+    /// Turns on logging of every call the game makes, in order. See
     /// [`crate::machine::Machine::set_tracing`].
     pub fn set_tracing(&mut self, on: bool) {
         self.machine.set_tracing(on);
     }
 
-    /// Restringe o rastreamento às chamadas cujo nome contém `part`. Ver
+    /// Restricts tracing to the calls whose name contains `part`. See
     /// [`crate::machine::Machine::set_trace_filter`].
     pub fn set_trace_filter(&mut self, part: Option<String>) {
         self.machine.set_trace_filter(part);
     }
 
-    /// As chamadas registradas, na ordem. Ver [`crate::machine::Machine::trace`].
+    /// The logged calls, in order. See [`crate::machine::Machine::trace`].
     pub fn trace(&self) -> &[String] {
         self.machine.trace()
     }
 
-    /// Muda a resolução interna do 3D; vale a partir do próximo quadro.
-    pub fn define_resolucao_interna(&mut self, escala: usize) {
-        self.machine.define_resolucao_interna(escala);
+    /// Changes the 3D internal resolution; it applies from the next frame.
+    pub fn set_internal_resolution(&mut self, scale: usize) {
+        self.machine.set_internal_resolution(scale);
     }
 
-    /// Diz ao rasterizador de placa para descartar profundidade e estêncil depois do quadro.
-    pub fn define_descarte_de_tiles(&mut self, descartar: bool) {
-        self.machine.define_descarte_de_tiles(descartar);
+    /// Tells the GPU rasterizer to discard depth and stencil after the frame.
+    pub fn set_tile_discard(&mut self, discard: bool) {
+        self.machine.set_tile_discard(discard);
     }
 
-    /// Reduz a resolução interna do 3D no rasterizador de **processador**, desenhando numa
-    /// superfície menor e ampliando na apresentação. Ver [`Rasterizador::define_reducao`].
-    pub fn define_reducao(&mut self, reducao: usize) {
-        self.machine.define_reducao(reducao);
+    /// Reduces the 3D internal resolution in the **CPU** rasterizer, drawing on a smaller surface
+    /// and scaling up at presentation. See [`Rasterizer::set_downscale`].
+    pub fn set_downscale(&mut self, downscale: usize) {
+        self.machine.set_downscale(downscale);
     }
 
-    /// A proporção experimental do 3D, largura sobre altura; `None` é o 4:3 do console.
-    /// Faz o desenho sair no framebuffer do frontend, quando ele entrega um.
+    /// The experimental 3D aspect ratio, width over height; `None` is the console's 4:3.
+    /// Makes the drawing go out to the frontend's framebuffer, when it provides one.
     ///
-    /// **É o que o core precisa para o `SET_HW_RENDER`**, e por isso tem caminho público: o motor
-    /// já sabe desenhar no framebuffer de fora (`Machine::desenha_no_fbo`, verificado pelo teste
-    /// `o_motor_desenha_no_framebuffer_do_frontend`), mas quem tem o framebuffer em mãos é o core,
-    /// a cada quadro, pelo `get_current_framebuffer` do `retro_hw_render_callback`.
+    /// **It is what the core needs for `SET_HW_RENDER`**, and that is why it has a public path: the
+    /// engine already knows how to draw into an outside framebuffer (`Machine::draw_to_fbo`,
+    /// verified by the test `the_engine_draws_into_the_frontend_framebuffer`), but whoever has the
+    /// framebuffer at hand is the core, every frame, through `get_current_framebuffer` of
+    /// `retro_hw_render_callback`.
     ///
-    /// `Some(0)` é o framebuffer padrão do frontend; `None` devolve o desenho ao framebuffer do
-    /// próprio motor, que é o caminho de sempre.
-    pub fn desenha_no_fbo(&mut self, fbo: Option<u32>) {
-        self.machine.desenha_no_fbo(fbo);
+    /// `Some(0)` is the frontend's default framebuffer; `None` hands the drawing back to the
+    /// engine's own framebuffer, which is the usual path.
+    pub fn draw_to_fbo(&mut self, fbo: Option<u32>) {
+        self.machine.draw_to_fbo(fbo);
     }
 
-    /// Avisa que a janela pintou no contexto de GL emprestado desde o último passo.
+    /// Signals that the window painted on the borrowed GL context since the last step.
     ///
-    /// Quem divide o contexto com o motor chama isto uma vez por quadro, antes de o jogo andar:
-    /// o que a janela mudou na placa deixa de ser o que o motor acha que está lá.
-    pub fn retoma_o_contexto(&mut self) {
-        self.machine.retoma_o_contexto();
+    /// Whoever shares the context with the engine calls this once per frame, before the game
+    /// advances: what the window changed on the GPU stops being what the engine thinks is there.
+    pub fn resume_context(&mut self) {
+        self.machine.resume_context();
     }
 
-    /// Fecha o quadro do lado da placa antes de o frontend apresentar o framebuffer dele.
+    /// Closes the frame on the GPU side before the frontend presents its framebuffer.
     ///
-    /// O par do [`Session::desenha_no_fbo`]: aquele pega o contexto no começo do quadro, este o
-    /// devolve no fim, sem os objetos do motor ligados.
-    pub fn devolve_ao_frontend(&mut self) {
-        self.machine.devolve_ao_frontend();
+    /// The pair of [`Session::draw_to_fbo`]: that one takes the context at the start of the frame,
+    /// this one hands it back at the end, without the engine's objects bound.
+    pub fn hand_back_to_frontend(&mut self) {
+        self.machine.hand_back_to_frontend();
     }
 
-    pub fn define_proporcao(&mut self, aspecto: Option<f32>) {
-        self.machine.define_proporcao(aspecto);
+    pub fn set_aspect_ratio(&mut self, aspect: Option<f32>) {
+        self.machine.set_aspect_ratio(aspect);
     }
 
-    /// O ClassID do applet que roda nesta sessão.
-    pub fn classe(&self) -> u32 {
-        self.classe
+    /// The ClassID of the applet running in this session.
+    pub fn class_id(&self) -> u32 {
+        self.class_id
     }
 
-    /// Começa com a tela que o applet anterior deixou, antes do primeiro desenho deste.
+    /// Starts with the screen the previous applet left, before this one's first drawing.
     ///
-    /// O framebuffer do aparelho não é apagado na troca de applet. Ao abrir um jogo, a Z-Wheel
-    /// deixa na tela o "Aguarde enquanto o aplicativo é carregado" (ver [`SPLASH_DA_Z_WHEEL`]), e
-    /// é ele que se vê até o jogo desenhar o primeiro quadro.
-    pub fn herda_tela(&mut self, rgb565: &[u8]) {
-        self.machine.pinta_tela_rgb565(rgb565);
+    /// The device framebuffer is not cleared on an applet switch. When opening a game, the Z-Wheel
+    /// leaves "Aguarde enquanto o aplicativo é carregado" on screen (see [`ZWHEEL_SPLASH`]), and
+    /// that is what is seen until the game draws its first frame.
+    pub fn inherit_screen(&mut self, rgb565: &[u8]) {
+        self.machine.paint_screen_rgb565(rgb565);
     }
 
-    /// Se o applet saiu por conta própria, e não por falha.
-    pub fn saiu_sozinho(&self) -> bool {
+    /// Whether the applet exited on its own, and not through a failure.
+    pub fn exited_on_its_own(&self) -> bool {
         matches!(self.stopped, Some(Outcome::Returned { .. }))
     }
 }
 
-/// O ClassID da Z-Wheel, a tela inicial do console.
+/// The ClassID of the Z-Wheel, the console's home screen.
 ///
-/// **Escolher um jogo nela é fechá-la.** O caminho está no módulo: ao confirmar, ela grava o
-/// marcador `ttgmrun.tmp` e o `StringLastAppRan`, desmonta as telas e, no timer de `0x81c38`,
-/// sai. O console a reabre por ser a tela inicial, e na partida ela vê o marcador (`0x81904`),
-/// apaga-o e abre o jogo gravado dois segundos depois. Quem roda a Z-Wheel precisa reabri-la
-/// quando ela sai sozinha — sem isso o jogo escolhido nunca abria.
+/// **Choosing a game in it is closing it.** The path is in the module: on confirm, it writes the
+/// marker `ttgmrun.tmp` and `StringLastAppRan`, tears down the screens and, on the `0x81c38`
+/// timer, exits. The console reopens it because it is the home screen, and at startup it sees the
+/// marker (`0x81904`), deletes it and opens the saved game two seconds later. Whoever runs the
+/// Z-Wheel has to reopen it when it exits on its own — without that the chosen game never opened.
 pub const Z_WHEEL: u32 = 0x0107_0798;
 
-/// A imagem RGB565 de 640×480 que o console mostra ao abrir a Z-Wheel, no diretório dela.
+/// The 640×480 RGB565 image the console shows when opening the Z-Wheel, in its directory.
 ///
-/// No boot é o "Bem-Vindo ao Zeebo". **Para abrir um jogo, a Z-Wheel troca o arquivo antes de
-/// sair**: se existe `gamestartrgb.sav`, ela renomeia este para `zeebosplash.rgb565.sav` e o
-/// `gamestartrgb.sav` para este nome (`0x81db0`), e na reabertura desfaz a troca logo no
-/// primeiro milissegundo (`0x822bc`). Quem lê o arquivo entre as duas é o console, ao
-/// reabri-la — e o que aparece é "Aguarde enquanto o aplicativo é carregado", que fica na tela
-/// nos dois segundos até o jogo abrir, porque a Z-Wheel reaberta não desenha nada nesse tempo.
-pub const SPLASH_DA_Z_WHEEL: &str = "zeebosplash.rgb565.raw";
+/// At boot it is "Bem-Vindo ao Zeebo". **To open a game, the Z-Wheel swaps the file before
+/// exiting**: if `gamestartrgb.sav` exists, it renames this one to `zeebosplash.rgb565.sav` and
+/// `gamestartrgb.sav` to this name (`0x81db0`), and on reopening it undoes the swap right in the
+/// first millisecond (`0x822bc`). Whoever reads the file between the two is the console, when
+/// reopening it — and what shows up is "Aguarde enquanto o aplicativo é carregado", which stays on
+/// screen for the two seconds until the game opens, because the reopened Z-Wheel draws nothing in
+/// that time.
+pub const ZWHEEL_SPLASH: &str = "zeebosplash.rgb565.raw";
 
-/// A execução por dentro, para a varredura de ROMs — ver [`crate::varredura`].
+/// Execution from the inside, for the ROM scan — see [`crate::scan`].
 ///
-/// O [`Session::log`] monta texto para a janela; o levantamento precisa das listas cruas e do
-/// desfecho como enum, para classificar e comparar com o que já se sabia do jogo. Só o teste
-/// usa isto, e por isso não faz parte da interface da sessão.
+/// [`Session::log`] builds text for the window; the survey needs the raw lists and the outcome as
+/// an enum, to classify and compare with what was already known about the game. Only the test
+/// uses this, and that is why it is not part of the session's interface.
 #[cfg(test)]
 impl Session {
-    /// O motor, para quem precisa ligar uma medição antes de rodar.
+    /// The engine, for whoever needs to turn on a measurement before running.
     ///
-    /// Existe para o perfil de tempo por método: ligar o cronômetro por chamada é coisa que se faz
-    /// **antes** do laço, e a varredura precisa fazer isso de fora da sessão.
-    pub(crate) fn machine_mut(&mut self) -> &mut Machine<CpuDaSessao> {
+    /// It exists for the per-method time profile: turning on the per-call stopwatch is done
+    /// **before** the loop, and the scan needs to do it from outside the session.
+    pub(crate) fn machine_mut(&mut self) -> &mut Machine<SessionCpu> {
         &mut self.machine
     }
 
-    pub(crate) fn machine(&self) -> &Machine<CpuDaSessao> {
+    pub(crate) fn machine(&self) -> &Machine<SessionCpu> {
         &self.machine
     }
 
@@ -2041,9 +2066,9 @@ impl Session {
         self.stopped.as_ref()
     }
 
-    /// A partida, sem a volta do laço que vem junto no [`Session::step`].
-    pub(crate) fn partida(&mut self) -> Option<Step> {
-        self.parte()
+    /// The start, without the loop pass that comes along in [`Session::step`].
+    pub(crate) fn running_game(&mut self) -> Option<Step> {
+        self.part()
     }
 }
 
@@ -2051,12 +2076,12 @@ impl Session {
 pub(crate) mod tests {
     use super::*;
 
-    /// Uma sessão sem jogo, com memória mínima: o bastante para gravar e restaurar estado.
-    pub(crate) fn sessao_minima_para_save_state() -> Session {
+    /// A session without a game, with minimal memory: enough to save and restore state.
+    pub(crate) fn minimal_session_for_save_state() -> Session {
         let mut mem = crate::cpu::mem::GuestMemory::new();
-        let mut codigo = 0xe12f_ff1eu32.to_le_bytes().to_vec(); // bx lr
-        codigo.resize(0x1000, 0);
-        mem.map("code", 0, codigo, true).unwrap();
+        let mut code = 0xe12f_ff1eu32.to_le_bytes().to_vec(); // bx lr
+        code.resize(0x1000, 0);
+        mem.map("code", 0, code, true).unwrap();
         mem.map_zeroed("data", 0x1000, 0x1000).unwrap();
         mem.map_zeroed("stack", loader::STACK_BASE, loader::STACK_SIZE)
             .unwrap();
@@ -2068,38 +2093,38 @@ pub(crate) mod tests {
             out_module: loader::OBJECT_BASE,
             extensions: Vec::new(),
         };
-        let mut cpu = CpuDaSessao::new().unwrap();
+        let mut cpu = SessionCpu::new().unwrap();
         crate::cpu::CpuBackend::reset(&mut cpu, &modulo.mem).unwrap();
         let machine = Machine::new(
             cpu,
             modulo,
             std::env::temp_dir().join("zeebx-session-state-clock"),
         );
-        let agora = Instant::now();
+        let now = Instant::now();
         let clock_ms = u64::from(machine.clock_ms());
-        let window = Marca {
-            real: agora,
+        let window = Mark {
+            real: now,
             clock_ms,
             instructions: machine.instructions(),
-            frames: machine.quadros(),
+            frames: machine.frames(),
         };
         Session {
             machine,
-            partida: None,
+            running_game: None,
             #[cfg(feature = "audio")]
             audio: None,
             title: "teste".to_string(),
-            conteudo: None,
-            classe: 0,
-            intermediario: None,
-            started: agora,
+            content: None,
+            class_id: 0,
+            intermediate: None,
+            started: now,
             clock_base: clock_ms,
-            proporcao: Some(1.0),
-            pulo: PuloDaSessao::default(),
-            som_do_avanco: SomDoAvanco::default(),
-            som_congelado: false,
-            vigia: VigiaDaVelocidade::default(),
-            turbo: TurboDaSessao::default(),
+            ratio: Some(1.0),
+            skip: SessionSkip::default(),
+            fast_forward_sound: FastForwardSound::default(),
+            sound_frozen: false,
+            watch: SpeedWatchdog::default(),
+            turbo: SessionTurbo::default(),
             stopped: None,
             window,
             sample: Sample::default(),
@@ -2108,220 +2133,223 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn restaurar_estado_reancora_o_relogio_real_da_sessao() {
-        let mut sessao = sessao_minima_para_save_state();
-        let estado = sessao.grava_estado();
+    fn restoring_state_reanchors_the_session_wall_clock() {
+        let mut session = minimal_session_for_save_state();
+        let state = session.save_state();
 
-        // Simula uma sessão que continuou muito tempo depois do ponto salvo. Estas peças são do
-        // host e não entram no arquivo ZBXS; se sobreviverem ao Load, o limitador compara duas
-        // linhas do tempo diferentes e pode acelerar ou segurar o jogo indevidamente.
-        sessao.started = Instant::now() - Duration::from_secs(30);
-        sessao.clock_base = 123_456;
-        sessao.window.real = Instant::now() - Duration::from_secs(5);
-        sessao.window.clock_ms = 987_654;
-        sessao.sample = Sample {
+        // Simulates a session that kept going long after the saved point. These pieces belong to
+        // the host and do not go into the ZBXS file; if they survive the Load, the limiter
+        // compares two different timelines and may speed up or hold back the game wrongly.
+        session.started = Instant::now() - Duration::from_secs(30);
+        session.clock_base = 123_456;
+        session.window.real = Instant::now() - Duration::from_secs(5);
+        session.window.clock_ms = 987_654;
+        session.sample = Sample {
             speed: 321,
             fps: 99,
             ips: 123,
         };
-        sessao.history.push_back(sessao.sample);
-        sessao.intermediario = Some(Framebuffer::new(2, 2));
-        sessao.stopped = Some(Outcome::Budget);
+        session.history.push_back(session.sample);
+        session.intermediate = Some(Framebuffer::new(2, 2));
+        session.stopped = Some(Outcome::Budget);
 
-        sessao.restaura_estado(&estado).unwrap();
+        session.restore_state(&state).unwrap();
 
-        assert_eq!(sessao.clock_base, u64::from(sessao.machine.clock_ms()));
-        assert_eq!(sessao.ahead_ms(), 0, "o estado restaurado não pode nascer adiantado");
-        assert!(sessao.atraso_ms() < 100, "o estado restaurado nasceu artificialmente atrasado");
-        assert!(sessao.history.is_empty());
-        assert_eq!(sessao.sample.speed, 0);
-        assert_eq!(sessao.sample.fps, 0);
-        assert_eq!(sessao.sample.ips, 0);
-        assert!(sessao.intermediario.is_none());
-        assert!(sessao.stopped.is_none());
+        assert_eq!(session.clock_base, u64::from(session.machine.clock_ms()));
+        assert_eq!(session.ahead_ms(), 0, "the restored state must not be born ahead");
+        assert!(session.lag_ms() < 100, "the restored state was born artificially behind");
+        assert!(session.history.is_empty());
+        assert_eq!(session.sample.speed, 0);
+        assert_eq!(session.sample.fps, 0);
+        assert_eq!(session.sample.ips, 0);
+        assert!(session.intermediate.is_none());
+        assert!(session.stopped.is_none());
     }
 
-    /// Trocar de proporção recomeça a medição: soltar o fast-forward não pode deixar o jogo
-    /// "adiantado" por tudo o que ele ganhou, nem ligá-lo cobrar um atraso que não existia.
+    /// Changing the ratio restarts the measurement: releasing fast-forward must not leave the game
+    /// "ahead" by everything it gained, nor turning it on charge a lag that did not exist.
     #[test]
-    fn trocar_a_proporcao_reancora_o_relogio() {
-        let mut sessao = sessao_minima_para_save_state();
-        // Trinta segundos reais sem o jogo andar: a 1x, isso é atraso.
-        sessao.started = Instant::now() - Duration::from_secs(30);
-        assert!(sessao.adiantamento_ms() < -29_000);
+    fn changing_the_ratio_reanchors_the_clock() {
+        let mut session = minimal_session_for_save_state();
+        // Thirty real seconds without the game advancing: at 1x, that is lag.
+        session.started = Instant::now() - Duration::from_secs(30);
+        assert!(session.lead_ms() < -29_000);
 
-        sessao.ajusta_proporcao(Some(3.0));
-        assert_eq!(sessao.proporcao, Some(3.0));
-        assert_eq!(sessao.ahead_ms(), 0);
-        assert!(sessao.atraso_ms() < 100);
+        session.set_ratio(Some(3.0));
+        assert_eq!(session.ratio, Some(3.0));
+        assert_eq!(session.ahead_ms(), 0);
+        assert!(session.lag_ms() < 100);
 
-        // Sem freio não há meta: nem adiantado, nem atrasado.
-        sessao.ajusta_proporcao(None);
-        sessao.clock_base = 0;
-        sessao.started = Instant::now() - Duration::from_secs(30);
-        assert_eq!(sessao.adiantamento_ms(), 0);
+        // Unthrottled there is no target: neither ahead nor behind.
+        session.set_ratio(None);
+        session.clock_base = 0;
+        session.started = Instant::now() - Duration::from_secs(30);
+        assert_eq!(session.lead_ms(), 0);
 
-        // A mesma proporção não reancora: a medição continua de onde estava.
-        sessao.ajusta_proporcao(Some(1.0));
-        let antes = sessao.started;
-        sessao.ajusta_proporcao(Some(1.0));
-        assert_eq!(sessao.started, antes);
+        // The same ratio does not re-anchor: the measurement continues from where it was.
+        session.set_ratio(Some(1.0));
+        let before = session.started;
+        session.set_ratio(Some(1.0));
+        assert_eq!(session.started, before);
     }
 
-    /// O turbo entra por cima do controle cru, na fase do relógio do jogo, e sai quando a máscara
-    /// zera — sem mexer no que o jogador segura.
+    /// The turbo goes on top of the raw controller, in the game clock's phase, and goes away when
+    /// the mask is zeroed — without touching what the player holds.
     #[test]
-    fn o_turbo_pulsa_por_cima_do_controle_cru() {
-        let mut sessao = sessao_minima_para_save_state();
+    fn turbo_pulses_over_the_raw_controller() {
+        let mut session = minimal_session_for_save_state();
         let b1 = Pad::button_by_name("b1").unwrap();
         let up = Pad::button_by_name("up").unwrap();
-        let mut cru = Pad::default();
-        cru.press(up, true);
+        let mut raw = Pad::default();
+        raw.press(up, true);
 
-        sessao.define_turbo(0, 1 << b1);
-        sessao.set_port_pad(0, cru);
-        // O relógio da máquina nova está no começo de um período: a fase é "apertado".
-        assert!(crate::velocidade::turbo::fase_apertada(sessao.machine.clock_ms(), 10));
-        let visto = sessao.machine.pad_da_porta(0);
-        assert!(visto.is_down(b1), "o botão que pulsa está apertado nesta fase");
-        assert!(visto.is_down(up), "o que o jogador segura continua");
+        session.set_turbo(0, 1 << b1);
+        session.set_port_pad(0, raw);
+        // The new machine's clock is at the start of a period: the phase is "pressed".
+        assert!(crate::speed::turbo::pressed_phase(session.machine.clock_ms(), 10));
+        let seen = session.machine.port_pad(0);
+        assert!(seen.is_down(b1), "the pulsing button is pressed in this phase");
+        assert!(seen.is_down(up), "what the player holds stays");
 
-        sessao.define_turbo(0, 0);
-        let visto = sessao.machine.pad_da_porta(0);
-        assert!(!visto.is_down(b1), "sem turbo, volta ao cru");
-        assert!(visto.is_down(up));
+        session.set_turbo(0, 0);
+        let seen = session.machine.port_pad(0);
+        assert!(!seen.is_down(b1), "without turbo, back to raw");
+        assert!(seen.is_down(up));
     }
 
-    /// O jogo vê o HOME como `Back` e `Start` juntos, e soltá-lo solta os dois. Ver
-    /// [`Pad::com_o_home_nos_dois`].
+    /// The game sees HOME as `Back` and `Start` together, and releasing it releases both. See
+    /// [`Pad::with_home_on_both`].
     #[test]
-    fn o_jogo_ve_o_home_como_back_e_start() {
-        let mut sessao = sessao_minima_para_save_state();
+    fn the_game_sees_home_as_back_and_start() {
+        let mut session = minimal_session_for_save_state();
         let mut home = Pad::default();
         home.press(crate::input::HOME, true);
-        sessao.set_port_pad(0, home);
-        let visto = sessao.machine.pad_da_porta(0);
-        assert!(visto.is_down(crate::input::HOME) && visto.is_down(crate::input::START));
+        session.set_port_pad(0, home);
+        let seen = session.machine.port_pad(0);
+        assert!(seen.is_down(crate::input::HOME) && seen.is_down(crate::input::START));
 
-        sessao.set_port_pad(0, Pad::default());
-        let visto = sessao.machine.pad_da_porta(0);
-        assert!(!visto.is_down(crate::input::HOME) && !visto.is_down(crate::input::START));
+        session.set_port_pad(0, Pad::default());
+        let seen = session.machine.port_pad(0);
+        assert!(!seen.is_down(crate::input::HOME) && !seen.is_down(crate::input::START));
     }
 
-    /// O fast-forward começa na proporção pedida: a média do som e do rótulo não sobe de 1x aos
-    /// poucos. Sem pedido — o sem limite —, ela espera a primeira medida.
+    /// Fast-forward starts at the requested ratio: the average of the sound and the label does not
+    /// climb from 1x little by little. Without a request — unlimited —, it waits for the first
+    /// measurement.
     #[test]
-    fn o_avanco_comeca_na_proporcao_pedida() {
-        let mut sessao = sessao_minima_para_save_state();
-        assert_eq!(sessao.velocidade_alcancada(), 0.0, "a 1x vale a amostra, ainda vazia");
+    fn fast_forward_starts_at_the_requested_ratio() {
+        let mut session = minimal_session_for_save_state();
+        assert_eq!(session.reached_speed(), 0.0, "at 1x the sample applies, still empty");
 
-        let tres = Ritmo { proporcao: Some(3.0), ..Ritmo::CONSOLE };
-        sessao.acompanha_o_som(&tres);
-        assert_eq!(sessao.velocidade_alcancada(), 3.0);
-        assert_eq!(sessao.som_do_avanco.enviado, Some((3.0, false)));
+        let three = Pace { ratio: Some(3.0), ..Pace::CONSOLE };
+        session.sync_sound(&three);
+        assert_eq!(session.reached_speed(), 3.0);
+        assert_eq!(session.fast_forward_sound.sent, Some((3.0, false)));
 
-        // Voltar a 1x zera a média, e o pedido seguinte parte dele de novo.
-        sessao.acompanha_o_som(&Ritmo::CONSOLE);
-        assert_eq!(sessao.som_do_avanco.enviado, Some((1.0, false)));
-        let dez = Ritmo { proporcao: Some(10.0), ..Ritmo::CONSOLE };
-        sessao.acompanha_o_som(&dez);
-        assert_eq!(sessao.velocidade_alcancada(), 10.0);
+        // Going back to 1x resets the average, and the next request starts from it again.
+        session.sync_sound(&Pace::CONSOLE);
+        assert_eq!(session.fast_forward_sound.sent, Some((1.0, false)));
+        let ten = Pace { ratio: Some(10.0), ..Pace::CONSOLE };
+        session.sync_sound(&ten);
+        assert_eq!(session.reached_speed(), 10.0);
 
-        // O próximo aperto com a mesma proporção parte de onde ela parou.
-        sessao.som_do_avanco.media = Some(6.5);
-        sessao.acompanha_o_som(&Ritmo::CONSOLE);
-        sessao.acompanha_o_som(&dez);
-        assert_eq!(sessao.velocidade_alcancada(), 6.5);
-        sessao.acompanha_o_som(&tres);
-        assert_eq!(sessao.velocidade_alcancada(), 3.0, "a lembrança é da proporção dela");
+        // The next press with the same ratio starts from where it stopped.
+        session.fast_forward_sound.media = Some(6.5);
+        session.sync_sound(&Pace::CONSOLE);
+        session.sync_sound(&ten);
+        assert_eq!(session.reached_speed(), 6.5);
+        session.sync_sound(&three);
+        assert_eq!(session.reached_speed(), 3.0, "the memory belongs to its own ratio");
 
-        sessao.acompanha_o_som(&Ritmo::SEM_FREIO);
-        assert_eq!(sessao.som_do_avanco.media, None, "sem limite não tem por onde começar");
+        session.sync_sound(&Pace::UNTHROTTLED);
+        assert_eq!(session.fast_forward_sound.media, None, "unlimited has nowhere to start from");
     }
 
-    /// Um segundo sem o relógio andar, a 1x, é "lento"; um buraco entre as voltas — a pausa, o
-    /// rewind — recomeça a medida sem acusar nada; e sem freio não há meta.
+    /// One second without the clock advancing, at 1x, is "slow"; a gap between passes — the pause,
+    /// the rewind — restarts the measurement without flagging anything; and unthrottled there is
+    /// no target.
     #[test]
-    fn a_vigia_acusa_o_jogo_parado_e_nao_a_pausa() {
-        let mut sessao = sessao_minima_para_save_state();
-        let relogio = u64::from(sessao.machine.clock_ms());
-        let agora = Instant::now();
+    fn the_watchdog_flags_a_stalled_game_not_a_pause() {
+        let mut session = minimal_session_for_save_state();
+        let clock = u64::from(session.machine.clock_ms());
+        let now = Instant::now();
 
-        sessao.vigia = VigiaDaVelocidade {
-            inicio: Some((agora - Duration::from_millis(1100), relogio)),
-            ultima: Some(agora - Duration::from_millis(16)),
-            ..VigiaDaVelocidade::default()
+        session.watch = SpeedWatchdog {
+            start: Some((now - Duration::from_millis(1100), clock)),
+            last: Some(now - Duration::from_millis(16)),
+            ..SpeedWatchdog::default()
         };
-        sessao.vigia(&Ritmo::CONSOLE, Step::Running);
-        assert!(sessao.vigia.lento, "um segundo parado a 1x não foi acusado");
-        assert_eq!(sessao.vigia.voltas, 0, "a janela não recomeçou");
+        session.watch(&Pace::CONSOLE, Step::Running);
+        assert!(session.watch.slow, "one second stalled at 1x was not flagged");
+        assert_eq!(session.watch.laps, 0, "the window did not restart");
 
-        // A última volta foi há um segundo: é buraco, e não lentidão.
-        sessao.vigia = VigiaDaVelocidade {
-            inicio: Some((agora - Duration::from_millis(1100), relogio)),
-            ultima: Some(agora - Duration::from_secs(1)),
-            ..VigiaDaVelocidade::default()
+        // The last pass was one second ago: it is a gap, not slowness.
+        session.watch = SpeedWatchdog {
+            start: Some((now - Duration::from_millis(1100), clock)),
+            last: Some(now - Duration::from_secs(1)),
+            ..SpeedWatchdog::default()
         };
-        sessao.vigia(&Ritmo::CONSOLE, Step::Running);
-        assert!(!sessao.vigia.lento, "a pausa foi acusada");
+        session.watch(&Pace::CONSOLE, Step::Running);
+        assert!(!session.watch.slow, "the pause was flagged");
 
-        sessao.vigia = VigiaDaVelocidade {
-            inicio: Some((agora - Duration::from_millis(1100), relogio)),
-            ultima: Some(agora - Duration::from_millis(16)),
-            ..VigiaDaVelocidade::default()
+        session.watch = SpeedWatchdog {
+            start: Some((now - Duration::from_millis(1100), clock)),
+            last: Some(now - Duration::from_millis(16)),
+            ..SpeedWatchdog::default()
         };
-        sessao.vigia(&Ritmo::SEM_FREIO, Step::Running);
-        assert!(!sessao.vigia.lento && sessao.vigia.inicio.is_none(), "sem freio não tem meta");
+        session.watch(&Pace::UNTHROTTLED, Step::Running);
+        assert!(!session.watch.slow && session.watch.start.is_none(), "unthrottled has no target");
     }
 
     #[test]
-    fn o_teto_de_quadros_cresce_com_a_proporcao() {
-        assert_eq!(teto_de_quadros(Some(1.0)), QUADROS_POR_VOLTA);
-        // Abaixo de 1x não encolhe: recuperar atraso continua precisando dos mesmos quadros.
-        assert_eq!(teto_de_quadros(Some(0.5)), QUADROS_POR_VOLTA);
-        assert_eq!(teto_de_quadros(Some(3.0)), 3 * QUADROS_POR_VOLTA);
-        assert_eq!(teto_de_quadros(Some(2.5)), 10);
-        assert_eq!(teto_de_quadros(None), u32::MAX);
+    fn the_frame_cap_grows_with_the_ratio() {
+        assert_eq!(frame_cap(Some(1.0)), FRAMES_PER_PASS);
+        // Below 1x it does not shrink: catching up on lag still needs the same frames.
+        assert_eq!(frame_cap(Some(0.5)), FRAMES_PER_PASS);
+        assert_eq!(frame_cap(Some(3.0)), 3 * FRAMES_PER_PASS);
+        assert_eq!(frame_cap(Some(2.5)), 10);
+        assert_eq!(frame_cap(None), u32::MAX);
     }
 
-/// **O motor desenha no framebuffer que o frontend entrega, e o teste prova isso.**
+/// **The engine draws into the framebuffer the frontend provides, and the test proves it.**
 ///
-/// É a peça que faltava para o item 5: no `libretro`, quem apresenta o quadro é o frontend, e o
-/// core desenha no framebuffer que ele indica. Aqui o teste cria um framebuffer **próprio**, manda
-/// o motor desenhar nele e lê os pixels **dele** — não do framebuffer interno do motor. Se o
-/// desenho não estivesse indo para lá, o framebuffer de fora continuaria com o conteúdo
-/// indefinido com que nasceu, e a leitura devolveria preto.
+/// It is the missing piece for item 5: in `libretro`, the frontend is who presents the frame, and
+/// the core draws into the framebuffer it points to. Here the test creates its **own** framebuffer,
+/// tells the engine to draw into it and reads the pixels **from it** — not from the engine's
+/// internal framebuffer. If the drawing were not going there, the outside framebuffer would keep
+/// the undefined content it was born with, and the read would return black.
 ///
-/// A comparação é contra o rasterizador de software no mesmo instante virtual, como no teste
-/// irmão [`os_dois_rasterizadores_desenham_o_mesmo_quadro`].
+/// The comparison is against the software rasterizer at the same virtual instant, as in the
+/// sibling test [`both_rasterizers_draw_the_same_frame`].
 #[cfg(feature = "gpu")]
 #[test]
-fn o_motor_desenha_no_framebuffer_do_frontend() {
+fn the_engine_draws_into_the_frontend_framebuffer() {
     use glow::HasContext;
     use std::time::Duration;
 
-    let Ok(rom) = std::env::var("ZEEBX_TESTE_ROM") else {
-        eprintln!("sem ZEEBX_TESTE_ROM: nada a comparar");
+    let Ok(rom) = crate::config::env_var("ZEEBX_TEST_ROM") else {
+        eprintln!("no ZEEBX_TEST_ROM: nothing to compare");
         return;
     };
-    let ms: u64 = std::env::var("ZEEBX_TESTE_MS")
+    let ms: u64 = crate::config::env_var("ZEEBX_TEST_MS")
         .ok()
         .and_then(|n| n.parse().ok())
         .unwrap_or(3000);
-    let contexto = match crate::video::contexto::Contexto::novo() {
-        Ok(contexto) => contexto,
-        Err(porque) => {
-            eprintln!("sem placa fora de tela: {porque}");
+    let context = match crate::video::context::GlContext::create() {
+        Ok(context) => context,
+        Err(reason) => {
+            eprintln!("no offscreen GPU: {reason}");
             return;
         }
     };
-    let gl = contexto.gl.clone();
+    let gl = context.gl.clone();
 
-    // O framebuffer de fora, com a textura de cor: é ele que faz o papel do que o frontend daria.
-    let (fbo, textura) = unsafe {
-        let fbo = gl.create_framebuffer().expect("framebuffer de fora");
-        let textura = gl.create_texture().expect("textura de fora");
-        gl.bind_texture(glow::TEXTURE_2D, Some(textura));
+    // The outside framebuffer, with the color texture: it plays the part of what the frontend
+    // would provide.
+    let (fbo, texture) = unsafe {
+        let fbo = gl.create_framebuffer().expect("outside framebuffer");
+        let texture = gl.create_texture().expect("outside texture");
+        gl.bind_texture(glow::TEXTURE_2D, Some(texture));
         gl.tex_image_2d(
             glow::TEXTURE_2D,
             0,
@@ -2338,44 +2366,44 @@ fn o_motor_desenha_no_framebuffer_do_frontend() {
             glow::FRAMEBUFFER,
             glow::COLOR_ATTACHMENT0,
             glow::TEXTURE_2D,
-            Some(textura),
+            Some(texture),
             0,
         );
-        // Nasce com conteúdo indefinido: pintar de verde garante que qualquer pixel não-preto
-        // depois seja desenho de verdade, e não sobra de alocação.
+        // It is born with undefined content: painting it green guarantees that any non-black pixel
+        // afterwards is real drawing, and not allocation leftovers.
         gl.clear_color(0.0, 1.0, 0.0, 1.0);
         gl.clear(glow::COLOR_BUFFER_BIT);
         gl.bind_framebuffer(glow::FRAMEBUFFER, None);
-        (fbo, textura)
+        (fbo, texture)
     };
 
     let mut session = Session::start_with(
         &std::path::PathBuf::from(&rom),
-        crate::PORTAS_PADRAO,
+        crate::DEFAULT_PORTS,
         None,
         true,
         Some(gl.clone()),
         Default::default(),
     )
-    .expect("a sessão de placa abriu");
-    session.machine_mut().desenha_no_fbo(Some(fbo.0.get()));
+    .expect("the GPU session opened");
+    session.machine_mut().draw_to_fbo(Some(fbo.0.get()));
 
     let base = session.clock_ms();
-    // **A cerca.** Metade do tempo depois, o framebuffer de fora volta a ser pintado de verde.
-    // Sem isto o teste não pega o defeito que existiu: o alvo do frontend era respeitado só na
-    // **criação** do destino, e todo quadro seguinte religava o framebuffer interno — o de fora
-    // ficava com o que o primeiro quadro deixou, e uma verificação de "mudou alguma coisa" passava
-    // com a tela preta no frontend. Com a cerca, o verde só desaparece se os quadros **novos**
-    // estiverem indo para lá.
-    let cerca = ms / 2;
-    let mut ja_cercou = false;
+    // **The fence.** Halfway through, the outside framebuffer is painted green again. Without this
+    // the test does not catch the defect that existed: the frontend's target was respected only
+    // at the **creation** of the destination, and every following frame bound the internal
+    // framebuffer again — the outside one kept what the first frame left, and a "something
+    // changed" check passed with a black screen in the frontend. With the fence, the green only
+    // disappears if the **new** frames are going there.
+    let fence = ms / 2;
+    let mut fenced = false;
     loop {
-        let decorrido = session.clock_ms().saturating_sub(base);
-        if decorrido >= ms as u32 {
+        let elapsed = session.clock_ms().saturating_sub(base);
+        if elapsed >= ms as u32 {
             break;
         }
-        if !ja_cercou && decorrido >= cerca as u32 {
-            ja_cercou = true;
+        if !fenced && elapsed >= fence as u32 {
+            fenced = true;
             unsafe {
                 gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
                 gl.clear_color(0.0, 1.0, 0.0, 1.0);
@@ -2386,13 +2414,13 @@ fn o_motor_desenha_no_framebuffer_do_frontend() {
         match session.step(Duration::ZERO, false) {
             Step::Stopped => break,
             Step::Presented => {
-                while session.mostra_quadro_intermediario() {}
+                while session.show_intermediate_frame() {}
             }
             Step::Running | Step::Ahead => {}
         }
     }
 
-    // Lê do framebuffer **de fora**: é o que prova que o desenho foi para lá.
+    // Reads from the **outside** framebuffer: it is what proves the drawing went there.
     let mut pixels = vec![0u8; 640 * 480 * 4];
     unsafe {
         gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
@@ -2407,69 +2435,70 @@ fn o_motor_desenha_no_framebuffer_do_frontend() {
         );
         gl.bind_framebuffer(glow::FRAMEBUFFER, None);
     }
-    let verdes = pixels
+    let greens = pixels
         .chunks_exact(4)
         .filter(|p| p[0] == 0 && p[1] == 255 && p[2] == 0 && p[3] == 255)
         .count();
     let total = 640 * 480;
     eprintln!(
-        "framebuffer de fora: {} de {total} pixel(s) ainda com a cor de nascença ({:.1}%)",
-        verdes,
-        verdes as f64 * 100.0 / total as f64
+        "outside framebuffer: {} of {total} pixel(s) still in their initial color ({:.1}%)",
+        greens,
+        greens as f64 * 100.0 / total as f64
     );
     assert!(
-        verdes < total,
-        "nada foi desenhado no framebuffer do frontend: ele ficou como nasceu"
+        greens < total,
+        "nothing was drawn into the frontend's framebuffer: it stayed as it was born"
     );
-    // E o que mais importa: os quadros **posteriores à cerca** também foram para lá.
+    // And what matters most: the frames **after the fence** also went there.
     assert!(
-        verdes < total / 10,
-        "o framebuffer do frontend ficou com a cor da cerca: os quadros novos não foram para lá"
+        greens < total / 10,
+        "the frontend's framebuffer kept the fence color: the new frames did not go there"
     );
 
     unsafe {
         gl.delete_framebuffer(fbo);
-        gl.delete_texture(textura);
+        gl.delete_texture(texture);
     }
 }
 
 
-/// **Salvar e carregar no rasterizador de placa dá o mesmo quadro.**
+/// **Saving and loading in the GPU rasterizer gives the same frame.**
 ///
-/// É a prova que faltava do item 6: a via de gravação do `GpuState` estava ligada e sem teste. O
-/// teste segue a sequência que o RetroArch faz, e vai além do "os campos voltam": ele **exige que o
-/// desenho continue igual**.
+/// It is the missing proof for item 6: the `GpuState` save path was wired up and untested. The
+/// test follows the sequence RetroArch performs, and goes beyond "the fields come back": it
+/// **requires the drawing to stay the same**.
 ///
-/// O caminho é este: roda um trecho, **salva**; roda mais um trecho, e guarda o quadro (é o que o
-/// jogo faz depois do save); **carrega** o estado e roda o mesmo trecho de novo. Os dois quadros têm
-/// de ser idênticos — mesma matriz, mesmas texturas, mesmo quadro. Sem isso o save state "volta" e a
-/// cena sai diferente, que é o modo de falhar mais caro de descobrir.
+/// The path is this: run a stretch, **save**; run one more stretch, and keep the frame (it is what
+/// the game does after the save); **load** the state and run the same stretch again. The two
+/// frames have to be identical — same matrix, same textures, same frame. Without that the save
+/// state "comes back" and the scene comes out different, which is the most expensive way to fail
+/// to discover.
 #[cfg(feature = "gpu")]
 #[test]
-fn o_estado_da_placa_continua_o_mesmo_desenho() {
+fn the_gpu_state_continues_the_same_drawing() {
     use glow::HasContext;
     use std::time::Duration;
 
-    let Ok(rom) = std::env::var("ZEEBX_TESTE_ROM") else {
-        eprintln!("sem ZEEBX_TESTE_ROM: nada a comparar");
+    let Ok(rom) = crate::config::env_var("ZEEBX_TEST_ROM") else {
+        eprintln!("no ZEEBX_TEST_ROM: nothing to compare");
         return;
     };
-    let ms: u64 = std::env::var("ZEEBX_TESTE_MS")
+    let ms: u64 = crate::config::env_var("ZEEBX_TEST_MS")
         .ok()
         .and_then(|n| n.parse().ok())
         .unwrap_or(2000);
-    let contexto = match crate::video::contexto::Contexto::novo() {
-        Ok(contexto) => contexto,
-        Err(porque) => {
-            eprintln!("sem placa fora de tela: {porque}");
+    let context = match crate::video::context::GlContext::create() {
+        Ok(context) => context,
+        Err(reason) => {
+            eprintln!("no offscreen GPU: {reason}");
             return;
         }
     };
-    let gl = contexto.gl.clone();
-    let (fbo, textura) = unsafe {
-        let fbo = gl.create_framebuffer().expect("framebuffer de fora");
-        let textura = gl.create_texture().expect("textura de fora");
-        gl.bind_texture(glow::TEXTURE_2D, Some(textura));
+    let gl = context.gl.clone();
+    let (fbo, texture) = unsafe {
+        let fbo = gl.create_framebuffer().expect("outside framebuffer");
+        let texture = gl.create_texture().expect("outside texture");
+        gl.bind_texture(glow::TEXTURE_2D, Some(texture));
         gl.tex_image_2d(
             glow::TEXTURE_2D,
             0,
@@ -2486,32 +2515,32 @@ fn o_estado_da_placa_continua_o_mesmo_desenho() {
             glow::FRAMEBUFFER,
             glow::COLOR_ATTACHMENT0,
             glow::TEXTURE_2D,
-            Some(textura),
+            Some(texture),
             0,
         );
         gl.bind_framebuffer(glow::FRAMEBUFFER, None);
-        (fbo, textura)
+        (fbo, texture)
     };
 
     let mut session = Session::start_with(
         &std::path::PathBuf::from(&rom),
-        crate::PORTAS_PADRAO,
+        crate::DEFAULT_PORTS,
         None,
         true,
         Some(gl.clone()),
         Default::default(),
     )
-    .expect("a sessão de placa abriu");
-    session.machine_mut().desenha_no_fbo(Some(fbo.0.get()));
+    .expect("the GPU session opened");
+    session.machine_mut().draw_to_fbo(Some(fbo.0.get()));
 
-    // Roda `ms` virtuais e lê o quadro do framebuffer de fora.
-    let roda_e_le = |session: &mut Session, ms: u64| -> Vec<u8> {
+    // Runs `ms` virtual and reads the frame from the outside framebuffer.
+    let run_and_read = |session: &mut Session, ms: u64| -> Vec<u8> {
         let base = session.clock_ms();
         while session.clock_ms().saturating_sub(base) < ms as u32 {
             match session.step(Duration::ZERO, false) {
                 Step::Stopped => break,
                 Step::Presented => {
-                    while session.mostra_quadro_intermediario() {}
+                    while session.show_intermediate_frame() {}
                 }
                 Step::Running | Step::Ahead => {}
             }
@@ -2533,77 +2562,78 @@ fn o_estado_da_placa_continua_o_mesmo_desenho() {
         pixels
     };
 
-    // 1) Um trecho, e o ponto de salvamento.
-    let _ = roda_e_le(&mut session, ms);
-    assert!(session.pode_salvar().is_ok(), "o motor recusou salvar no fim do quadro");
-    let estado = session.grava_estado();
-    assert!(estado.len() > 1024, "o estado saiu pequeno demais: {}", estado.len());
+    // 1) A stretch, and the save point.
+    let _ = run_and_read(&mut session, ms);
+    assert!(session.can_save().is_ok(), "the engine refused to save at the end of the frame");
+    let state = session.save_state();
+    assert!(state.len() > 1024, "the state came out too small: {}", state.len());
 
-    // 2) Mais um trecho, e o quadro que o jogo mostra depois do save.
-    let esperado = roda_e_le(&mut session, ms);
+    // 2) One more stretch, and the frame the game shows after the save.
+    let expected = run_and_read(&mut session, ms);
 
-    // 3) Volta ao ponto de salvamento, e o mesmo trecho de novo.
-    session.restaura_estado(&estado).expect("carregou");
-    let depois = roda_e_le(&mut session, ms);
+    // 3) Back to the save point, and the same stretch again.
+    session.restore_state(&state).expect("loaded");
+    let after = run_and_read(&mut session, ms);
 
-    let iguais = esperado.iter().zip(depois.iter()).filter(|(a, b)| a == b).count();
-    let total = esperado.len();
+    let equal = expected.iter().zip(after.iter()).filter(|(a, b)| a == b).count();
+    let total = expected.len();
     eprintln!(
-        "o quadro depois do save e o quadro depois de carregar: {iguais} de {total} byte(s) iguais \
+        "the frame after the save and the frame after loading: {equal} of {total} byte(s) equal \
          ({:.2}%)",
-        iguais as f64 * 100.0 / total as f64
+        equal as f64 * 100.0 / total as f64
     );
     assert_eq!(
-        iguais, total,
-        "o desenho não continuou igual depois de carregar o estado"
+        equal, total,
+        "the drawing did not stay the same after loading the state"
     );
 
     unsafe {
         gl.delete_framebuffer(fbo);
-        gl.delete_texture(textura);
+        gl.delete_texture(texture);
     }
 }
 
-/// **O mesmo jogo pelos dois rasterizadores, no mesmo instante virtual.**
+/// **The same game through both rasterizers, at the same virtual instant.**
 ///
-/// É a verificação que faltava para o render em hardware. Com a janela fechada, os dois caminhos
-/// rodam o mesmo conteúdo pelo mesmo tempo virtual, e os quadros são comparados byte a byte. Sem
-/// isto, ligar o render em hardware seria trocar um caminho medido por um caminho que ninguém
-/// olhou — e é por isso que o `SET_HW_RENDER` fica por fazer no core até esta conta existir.
+/// It is the check that was missing for hardware rendering. With the window closed, both paths
+/// run the same content for the same virtual time, and the frames are compared byte by byte.
+/// Without this, turning on hardware rendering would be swapping a measured path for a path nobody
+/// looked at — and that is why `SET_HW_RENDER` stays undone in the core until this check exists.
 ///
-/// **Sem `ZEEBX_TESTE_ROM` não roda**, e **sem placa também não**: num terminal sem EGL o caminho
-/// fora de tela responde que não existe, e isso é o caso normal, não uma falha do teste.
+/// **Without `ZEEBX_TEST_ROM` it does not run**, and **without a GPU neither**: on a terminal
+/// without EGL the offscreen path answers that it does not exist, and that is the normal case, not
+/// a test failure.
 #[cfg(feature = "gpu")]
 #[test]
-fn os_dois_rasterizadores_desenham_o_mesmo_quadro() {
+fn both_rasterizers_draw_the_same_frame() {
     use std::time::Duration;
 
-    let Ok(rom) = std::env::var("ZEEBX_TESTE_ROM") else {
-        eprintln!("sem ZEEBX_TESTE_ROM: nada a comparar");
+    let Ok(rom) = crate::config::env_var("ZEEBX_TEST_ROM") else {
+        eprintln!("no ZEEBX_TEST_ROM: nothing to compare");
         return;
     };
-    let origem = std::path::PathBuf::from(&rom);
-    let ms: u64 = std::env::var("ZEEBX_TESTE_MS")
+    let origin = std::path::PathBuf::from(&rom);
+    let ms: u64 = crate::config::env_var("ZEEBX_TEST_MS")
         .ok()
         .and_then(|n| n.parse().ok())
         .unwrap_or(3000);
 
-    // O contexto precisa ficar vivo enquanto a sessão roda: as funções de GL moram nele.
-    let contexto = match crate::video::contexto::Contexto::novo() {
-        Ok(contexto) => contexto,
-        Err(porque) => {
-            eprintln!("sem placa fora de tela: {porque}");
+    // The context must stay alive while the session runs: the GL functions live in it.
+    let context = match crate::video::context::GlContext::create() {
+        Ok(context) => context,
+        Err(reason) => {
+            eprintln!("no offscreen GPU: {reason}");
             return;
         }
     };
 
-    let tela_de = |placa: bool, contexto: Option<std::sync::Arc<glow::Context>>| {
+    let screen_of = |gpu: bool, context: Option<std::sync::Arc<glow::Context>>| {
         let mut session = Session::start_with(
-            &origem,
-            crate::PORTAS_PADRAO,
+            &origin,
+            crate::DEFAULT_PORTS,
             None,
-            placa,
-            contexto,
+            gpu,
+            context,
             Default::default(),
         )
         .ok()?;
@@ -2612,50 +2642,51 @@ fn os_dois_rasterizadores_desenham_o_mesmo_quadro() {
             match session.step(Duration::ZERO, false) {
                 Step::Stopped => break,
                 Step::Presented => {
-                    while session.mostra_quadro_intermediario() {}
+                    while session.show_intermediate_frame() {}
                 }
                 Step::Running | Step::Ahead => {}
             }
         }
-        // O quadro do OpenGL pode estar pendente — ver [`Session::materializa_quadro_gl`]. Sem
-        // isto, o caminho de placa entregaria a tela anterior, e a comparação lá embaixo seria
-        // entre duas telas velhas: passaria sem comparar imagem nenhuma.
-        session.materializa_quadro_gl();
-        let (trocas, leituras) = session.leituras_do_quadro_gl();
-        let (enviadas, poupadas) = session.estado_enviado_e_poupado();
+        // The OpenGL frame may be pending — see [`Session::materialize_gl_frame`]. Without this,
+        // the GPU path would deliver the previous screen, and the comparison down below would be
+        // between two stale screens: it would pass without comparing any image.
+        session.materialize_gl_frame();
+        let (swaps, readbacks) = session.gl_frame_readbacks();
+        let (sent_count, spared) = session.state_sent_and_spared();
         eprintln!(
-            "  {}: {trocas} troca(s) de buffer, {leituras} leitura(s) do quadro para a CPU, \
-{enviadas} estado(s) enviado(s) e {poupadas} poupado(s) pelo espelho",
-            match placa {
-                true => "placa",
-                false => "processador",
+            "  {}: {swaps} buffer swap(s), {readbacks} frame readback(s) to the CPU, \
+{sent_count} state(s) sent and {spared} spared by the mirror",
+            match gpu {
+                true => "GPU",
+                false => "CPU",
             }
         );
-        let tela = session.screen();
-        let (largura, altura) = (tela.width(), tela.height());
+        let screen = session.screen();
+        let (width, height) = (screen.width(), screen.height());
         let mut bytes = Vec::new();
-        tela.write_rgb565_into(&mut bytes);
-        Some((largura, altura, bytes))
+        screen.write_rgb565_into(&mut bytes);
+        Some((width, height, bytes))
     };
 
-    let software = tela_de(false, None).expect("a sessão de software abriu");
-    let placa = tela_de(true, Some(contexto.gl.clone())).expect("a sessão de placa abriu");
+    let software = screen_of(false, None).expect("the software session opened");
+    let gpu = screen_of(true, Some(context.gl.clone())).expect("the GPU session opened");
 
     assert_eq!(
         (software.0, software.1),
-        (placa.0, placa.1),
-        "os dois caminhos desenham em tamanhos diferentes"
+        (gpu.0, gpu.1),
+        "the two paths draw at different sizes"
     );
-    assert_eq!(software.2.len(), placa.2.len());
+    assert_eq!(software.2.len(), gpu.2.len());
 
-    // Comparação de pixel RGB565: quantos diferem e por quanto. Um rasterizador na placa e outro
-    // no processador não dão o **mesmo** quadro — a diferença é arredondamento e ordem de
-    // operações. O que se cobra aqui é que desenhem a mesma imagem, e não que sejam idênticos.
-    let mut diferentes = 0usize;
-    let mut grosseiras = 0usize;
-    let mut soma = 0u64;
-    let mut pior = 0u16;
-    for (a, b) in software.2.chunks_exact(2).zip(placa.2.chunks_exact(2)) {
+    // RGB565 pixel comparison: how many differ and by how much. A rasterizer on the GPU and another
+    // on the CPU do not give the **same** frame — the difference is rounding and order of
+    // operations. What is required here is that they draw the same image, not that they be
+    // identical.
+    let mut differing = 0usize;
+    let mut coarse = 0usize;
+    let mut sum = 0u64;
+    let mut worst = 0u16;
+    for (a, b) in software.2.chunks_exact(2).zip(gpu.2.chunks_exact(2)) {
         let (a, b) = (
             u16::from_le_bytes([a[0], a[1]]),
             u16::from_le_bytes([b[0], b[1]]),
@@ -2666,54 +2697,54 @@ fn os_dois_rasterizadores_desenham_o_mesmo_quadro() {
             + (g1.abs_diff(g2) as u64)
             + (b1.abs_diff(b2) as u64);
         if d > 0 {
-            diferentes += 1;
+            differing += 1;
         }
-        // Um passo de canal em 565 é o **arredondamento** dos dois conversores, e não imagem
-        // diferente: o rasterizador de software trunca (`>> 3`), e o `glReadPixels` em
-        // `UNSIGNED_SHORT_5_6_5` arredonda. Medido no Crash: 98,33% dos pixels diferem por 1 ou 2
-        // passos, com pior 2 e média 1,93 — mesma imagem. O que a conta abaixo guarda é a
-        // diferença que **não** é arredondamento.
+        // One channel step in 565 is the **rounding** of the two converters, not a different
+        // image: the software rasterizer truncates (`>> 3`), and `glReadPixels` in
+        // `UNSIGNED_SHORT_5_6_5` rounds. Measured on Crash: 98.33% of the pixels differ by 1 or 2
+        // steps, with worst 2 and average 1.93 — same image. What the count below keeps is the
+        // difference that is **not** rounding.
         if d > 2 {
-            grosseiras += 1;
+            coarse += 1;
         }
-        soma += d;
-        pior = pior.max(d as u16);
+        sum += d;
+        worst = worst.max(d as u16);
     }
     let total = software.2.len() / 2;
-    // **Guarda contra passe vazio.** Se as duas telas estiverem apagadas, a comparação abaixo
-    // passa sem ter comparado imagem nenhuma — foi o que aconteceu quando o quadro da placa
-    // passou a ser adiado e este teste não materializava antes de ler.
-    let acesos = software
+    // **Guard against an empty pass.** If both screens are blank, the comparison below passes
+    // without having compared any image — that is what happened when the GPU frame started being
+    // deferred and this test did not materialize before reading.
+    let lit = software
         .2
         .chunks_exact(2)
         .filter(|p| p[0] != 0 || p[1] != 0)
         .count();
     assert!(
-        acesos > total / 100,
-        "o quadro saiu apagado ({acesos} de {total} pixel(is) aceso(s)): não há imagem para comparar"
+        lit > total / 100,
+        "the frame came out blank ({lit} of {total} pixel(s) lit): there is no image to compare"
     );
-    let percentual = diferentes as f64 * 100.0 / total as f64;
-    let grosseiro = grosseiras as f64 * 100.0 / total as f64;
-    let media = soma as f64 / total as f64;
+    let percent = differing as f64 * 100.0 / total as f64;
+    let coarse_pct = coarse as f64 * 100.0 / total as f64;
+    let media = sum as f64 / total as f64;
     eprintln!(
-        "software x placa: {diferentes} de {total} pixel(s) diferentes ({percentual:.2}%), \
-         diferença média {media:.3} por pixel, pior {pior}, acima de 2 passos: {grosseiro:.2}%"
+        "software x GPU: {differing} of {total} pixel(s) differ ({percent:.2}%), \
+         average difference {media:.3} per pixel, worst {worst}, above 2 steps: {coarse_pct:.2}%"
     );
-    // **O que este teste guarda é a imagem, não o arredondamento.** Uma imagem diferente erra por
-    // muito mais que dois passos de canal; o arredondamento dos dois conversores erra por um ou
-    // dois. Sem esta separação o teste ficava vermelho por 1,9 passo de média — e um teste que
-    // ninguém pode deixar verde deixa de guardar coisa alguma.
+    // **What this test guards is the image, not the rounding.** A different image is off by much
+    // more than two channel steps; the rounding of the two converters is off by one or two.
+    // Without this separation the test was red over an average of 1.9 steps — and a test nobody
+    // can make green stops guarding anything.
     assert!(
-        grosseiro < 1.0,
-        "os dois rasterizadores desenham imagens diferentes: {grosseiro:.2}% dos pixels diferem \
-         por mais de 2 passos de canal (média {media:.3}, pior {pior})"
+        coarse_pct < 1.0,
+        "the two rasterizers draw different images: {coarse_pct:.2}% of the pixels differ \
+         by more than 2 channel steps (average {media:.3}, worst {worst})"
     );
-    assert!(media <= 2.0, "diferença média de {media:.3} passos por pixel");
+    assert!(media <= 2.0, "average difference of {media:.3} steps per pixel");
 }
 
 
     #[test]
-    fn um_arquivo_que_nao_existe_diz_que_nao_deu_para_ler() {
+    fn a_missing_file_says_it_could_not_be_read() {
         let err = Session::start_inner(
             &std::env::temp_dir().join("zeebx-nao-existe.mod"),
             None,
@@ -2727,63 +2758,64 @@ fn os_dois_rasterizadores_desenham_o_mesmo_quadro() {
     }
 
     #[test]
-    fn um_arquivo_que_nao_e_modulo_e_recusado_com_motivo() {
-        // O que importa não é em qual etapa o lixo é barrado — o cabeçalho do `.mod` é frouxo,
-        // e quem recusa acaba sendo o carregador —, e sim que a recusa venha com um motivo
-        // legível, porque é ele que a interface mostra.
+    fn a_file_that_is_not_a_module_is_rejected_with_a_reason() {
+        // What matters is not at which stage the garbage is stopped — the `.mod` header is loose,
+        // and the one that refuses ends up being the loader —, but that the refusal comes with a
+        // readable reason, because that is what the interface shows.
         let path = std::env::temp_dir().join("zeebx-teste-lixo.mod");
         std::fs::write(&path, b"isto nao e um modulo").unwrap();
         let Err(err) = Session::start_inner(&path, None, None, false, None, Default::default(), &[])
         else {
-            panic!("um arquivo de lixo não podia virar uma sessão");
+            panic!("a garbage file could not turn into a session");
         };
         assert!(!err.to_string().is_empty());
         let _ = std::fs::remove_file(&path);
     }
 }
 
-/// Guarda o nome do arquivo escolhido ao lado do overlay, para a lista de saves.
+/// Stores the name of the chosen file next to the overlay, for the save list.
 ///
-/// A pasta do overlay se chama pelo hash, que não diz nada a quem vai apagar um save, e o
-/// `.mod` solto nem tem extração no cache de onde tirar um rótulo. Não sobrescreve: o primeiro
-/// nome vale, e é um arquivo a menos para escrever a cada abertura.
-fn grava_titulo(storage: &StoragePaths, id: &crate::storage::ContentId, conteudo: &Path) {
-    let destino = storage.metadata.join(format!("{}.titulo", id.as_str()));
-    if destino.exists() {
+/// The overlay folder is named by the hash, which tells nothing to someone about to delete a
+/// save, and a loose `.mod` does not even have an extraction in the cache to take a label from.
+/// It does not overwrite: the first name sticks, and it is one less file to write on every open.
+fn write_title(storage: &StoragePaths, id: &crate::storage::ContentId, content: &Path) {
+    let dest = storage.metadata.join(format!("{}.titulo", id.as_str()));
+    if dest.exists() {
         return;
     }
-    let Some(titulo) = conteudo.file_stem().map(|s| s.to_string_lossy().into_owned()) else {
+    let Some(title) = content.file_stem().map(|s| s.to_string_lossy().into_owned()) else {
         return;
     };
     let _ = std::fs::create_dir_all(&storage.metadata);
-    let _ = std::fs::write(destino, titulo);
+    let _ = std::fs::write(dest, title);
 }
 
-/// O título de uma pasta do store de saves, para a lista de saves mostrar o jogo e não o número.
+/// The title of a folder in the save store, so the save list shows the game and not the number.
 ///
-/// O primeiro conteúdo a abrir a pasta dá o nome; outra versão do mesmo jogo não o troca.
-fn grava_titulo_do_modulo(storage: &StoragePaths, pasta: &str, conteudo: &Path) {
-    let destino = storage.metadata.join(crate::storage::module_title_file(pasta));
-    if destino.exists() {
+/// The first content to open the folder gives the name; another version of the same game does not
+/// change it.
+fn write_module_title(storage: &StoragePaths, dir: &str, content: &Path) {
+    let dest = storage.metadata.join(crate::storage::module_title_file(dir));
+    if dest.exists() {
         return;
     }
-    let Some(titulo) = conteudo.file_stem().map(|s| s.to_string_lossy().into_owned()) else {
+    let Some(title) = content.file_stem().map(|s| s.to_string_lossy().into_owned()) else {
         return;
     };
     let _ = std::fs::create_dir_all(&storage.metadata);
-    let _ = std::fs::write(destino, titulo);
+    let _ = std::fs::write(dest, title);
 }
 
-/// Lê os módulos de extensão que acompanham um `.mod` e os deixa prontos para o carregador.
+/// Reads the extension modules that come with a `.mod` and leaves them ready for the loader.
 ///
-/// Um `.mod` que não abra é ignorado em silêncio: a extensão é um extra do pacote, e recusar o
-/// jogo inteiro porque um módulo secundário está corrompido seria trocar um jogo que roda em
-/// parte por um que não roda.
-pub fn extensoes_de(mod_path: &std::path::Path) -> Vec<loader::ExtensionImage> {
-    crate::library::extensoes(mod_path)
+/// A `.mod` that does not open is silently ignored: the extension is an extra of the package, and
+/// refusing the whole game because a secondary module is corrupted would be trading a game that
+/// partly runs for one that does not run.
+pub fn extensions_of(mod_path: &std::path::Path) -> Vec<loader::ExtensionImage> {
+    crate::library::extensions(mod_path)
         .into_iter()
-        .filter_map(|(caminho, classes)| {
-            let bytes = std::fs::read(caminho).ok()?;
+        .filter_map(|(path, classes)| {
+            let bytes = std::fs::read(path).ok()?;
             let image = ModImage::parse(bytes).ok()?;
             Some(loader::ExtensionImage { image, classes })
         })

@@ -1,62 +1,62 @@
-//! Arquivos de recurso do BREW — os `.bar`.
+//! BREW resource files — the `.bar` files.
 //!
-//! É o **mesmo contêiner do `.mif`**: cabeçalho `0x0011`, tabela de seções com `n + 1` offsets,
-//! e o conteúdo colado no fim. A diferença é o índice, que o `.mif` não usa: uma tabela de
-//! entradas de 8 bytes que diz em que seção cada recurso mora.
+//! It is the **same container as the `.mif`**: header `0x0011`, section table with `n + 1`
+//! offsets, and the content stuck at the end. The difference is the index, which the `.mif` does
+//! not use: a table of 8-byte entries that says which section each resource lives in.
 //!
 //! ```text
-//! 0x06  u16 número de entradas do índice
-//! 0x08  u32 offset do índice
-//! 0x0c  u32 tamanho do índice (entradas * 8)
-//! 0x10  u32 offset da tabela de seções
-//! 0x14  u32 número de seções
+//! 0x06  u16 number of index entries
+//! 0x08  u32 index offset
+//! 0x0c  u32 index size (entries * 8)
+//! 0x10  u32 section table offset
+//! 0x14  u32 number of sections
 //! ```
 //!
-//! Cada entrada é `u16 tipo, u16 id, u16 a, u16 b`, e cobre uma **faixa** de recursos: os ids
-//! `id..=id + a` moram nas seções `b..=b + a`. A regra foi confirmada nos dois `.bar` reais que
-//! temos: no `pacmania.bar` a última entrada dá exatamente as seções 126 a 142, e o arquivo tem
-//! 143; no `resources.bar` do Peggle o começo de cada entrada é o fim da anterior mais um, do
-//! primeiro ao último recurso.
+//! Each entry is `u16 kind, u16 id, u16 a, u16 b`, and covers a **range** of resources: the ids
+//! `id..=id + a` live in the sections `b..=b + a`. The rule was confirmed in the two real `.bar`
+//! files we have: in `pacmania.bar` the last entry gives exactly the sections 126 to 142, and
+//! the file has 143; in Peggle's `resources.bar` the start of each entry is the end of the
+//! previous one plus one, from the first resource to the last.
 //!
-//! Os tipos são os do `ResType` de `AEEShell.h`: `RESTYPE_STRING = 1`,
-//! `RESTYPE_IMAGE = 6` (dados com cabeçalho `AEEResBlob`) e `RESTYPE_BINARY = 0x5000`.
+//! The types are those of `ResType` in `AEEShell.h`: `RESTYPE_STRING = 1`,
+//! `RESTYPE_IMAGE = 6` (data with an `AEEResBlob` header) and `RESTYPE_BINARY = 0x5000`.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 const MAGIC: u16 = 0x0011;
 
-/// `RESTYPE_STRING`, de `AEEShell.h`.
+/// `RESTYPE_STRING`, from `AEEShell.h`.
 pub const RESTYPE_STRING: u16 = 1;
 
-/// `RESTYPE_IMAGE`, de `AEEShell.h`.
+/// `RESTYPE_IMAGE`, from `AEEShell.h`.
 pub const RESTYPE_IMAGE: u16 = 6;
 
-/// O conteúdo de um recurso de imagem, sem o cabeçalho `AEEResBlob` que vem na frente.
+/// The content of an image resource, without the `AEEResBlob` header that comes in front.
 ///
-/// O cabeçalho é um `uint16` com o deslocamento até os dados, seguido do tipo MIME terminado em
-/// zero — é o que o `RESBLOB_DATA()` do SDK pula. No `tekken2.bar` a entrada 5034 começa com
-/// `0c 00` e `"image/bmp\0"`, e o `BM` vem no byte 12.
+/// The header is a `uint16` with the offset to the data, followed by the zero-terminated MIME
+/// type — it is what the SDK's `RESBLOB_DATA()` skips. In `tekken2.bar` entry 5034 starts with
+/// `0c 00` and `"image/bmp\0"`, and the `BM` comes at byte 12.
 ///
-/// Quem chama o `LoadResData` recebe o bloco inteiro, cabeçalho incluído, porque a documentação
-/// diz que é isso que sai de lá. Quem pede um **objeto** de imagem, não: aí o cabeçalho é nosso
-/// para interpretar.
+/// Whoever calls `LoadResData` gets the whole block, header included, because the documentation
+/// says that is what comes out of it. Whoever asks for an image **object** does not: there the
+/// header is ours to interpret.
 pub fn blob_data(raw: &[u8]) -> Option<&[u8]> {
     let offset = u16::from_le_bytes([*raw.first()?, *raw.get(1)?]) as usize;
-    // O byte anterior aos dados é o zero que termina o tipo MIME. Sem essa conferência, um
-    // recurso que não seja um blob viraria um recorte arbitrário do próprio conteúdo.
+    // The byte before the data is the zero that terminates the MIME type. Without this check, a
+    // resource that is not a blob would become an arbitrary slice of its own content.
     match raw.get(offset.checked_sub(1)?) == Some(&0) {
         true => raw.get(offset..),
         false => None,
     }
 }
 
-/// Uma faixa de recursos do índice.
+/// A range of resources from the index.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Range {
     kind: u16,
     first_id: u16,
-    /// Quantos recursos a faixa cobre. É `a + 1` no arquivo.
+    /// How many resources the range covers. It is `a + 1` in the file.
     count: u32,
     first_section: u16,
 }
@@ -64,7 +64,7 @@ struct Range {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResFile {
     data: Vec<u8>,
-    /// Limites de cada seção, como `(offset, tamanho)`.
+    /// Bounds of each section, as `(offset, size)`.
     sections: Vec<(u32, u32)>,
     ranges: Vec<Range>,
 }
@@ -78,8 +78,8 @@ pub enum ResError {
 impl std::fmt::Display for ResError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::BadMagic { found } => write!(f, "não parece um .bar (magic {found:#06x})"),
-            Self::Truncated => write!(f, "arquivo de recursos truncado"),
+            Self::BadMagic { found } => write!(f, "does not look like a .bar (magic {found:#06x})"),
+            Self::Truncated => write!(f, "truncated resource file"),
         }
     }
 }
@@ -95,7 +95,7 @@ impl ResFile {
         let table_offset = u32(&data, 0x10)? as usize;
         let section_count = u32(&data, 0x14)? as usize;
 
-        // A tabela guarda n+1 offsets: o extra fecha a última seção.
+        // The table holds n+1 offsets: the extra one closes the last section.
         let mut bounds = Vec::with_capacity(section_count + 1);
         for i in 0..=section_count {
             bounds.push(u32(&data, table_offset + i * 4)?);
@@ -128,7 +128,7 @@ impl ResFile {
         })
     }
 
-    /// O conteúdo bruto do recurso `(kind, id)`.
+    /// The raw content of resource `(kind, id)`.
     pub fn get(&self, kind: u16, id: u16) -> Option<&[u8]> {
         let section = self.section_of(kind, id)?;
         let &(offset, len) = self.sections.get(section)?;
@@ -149,27 +149,27 @@ impl ResFile {
         })
     }
 
-    /// O texto de um recurso de string, em UTF-16 como o BREW entrega.
+    /// The text of a string resource, in UTF-16 as BREW delivers it.
     ///
-    /// A seção diz a própria codificação no começo. Duas aparecem nos arquivos que temos:
+    /// The section states its own encoding at the start. Two show up in the files we have:
     ///
-    /// - **UTF-16**, marcada por um BOM — `FF FE` para menor primeiro, `FE FF` para maior. É a
-    ///   do `tectoy_pt.brf` da Z-Wheel, e o texto vem em unidades de dois bytes.
-    /// - **ISO-Latin-1**, com um byte de codificação na frente e um ponto de código por byte.
-    ///   É a dos `.bar` dos jogos.
+    /// - **UTF-16**, marked by a BOM — `FF FE` for little-endian, `FE FF` for big-endian. It is
+    ///   the one in the Z-Wheel's `tectoy_pt.brf`, and the text comes in two-byte units.
+    /// - **ISO-Latin-1**, with an encoding byte in front and one code point per byte. It is the
+    ///   one in the games' `.bar` files.
     ///
-    /// Ler tudo como Latin-1 fazia o BOM virar texto e o primeiro byte alto do primeiro
-    /// caractere terminar a cadeia no zero seguinte: `"Meus Z-Credits"` saía como `"þM"`, e era
-    /// isso que a Z-Wheel punha nos widgets do formulário do z-pad.
+    /// Reading everything as Latin-1 turned the BOM into text and made the high byte of the first
+    /// character end the string at the following zero: `"Meus Z-Credits"` came out as `"þM"`, and
+    /// that is what the Z-Wheel put in the widgets of the z-pad form.
     ///
-    /// O texto pode trazer vários itens separados por `^`, mas isso é empacotamento do próprio
-    /// jogo: o que o BREW entrega é a seção inteira.
+    /// The text may carry several items separated by `^`, but that is the game's own packing:
+    /// what BREW delivers is the whole section.
     pub fn string(&self, id: u16) -> Option<Vec<u16>> {
         let raw = self.get(RESTYPE_STRING, id)?;
-        let largo = |pares: &[u8], grande: bool| {
-            pares
+        let wide = |pairs: &[u8], large: bool| {
+            pairs
                 .chunks_exact(2)
-                .map(|p| match grande {
+                .map(|p| match large {
                     true => u16::from_be_bytes([p[0], p[1]]),
                     false => u16::from_le_bytes([p[0], p[1]]),
                 })
@@ -177,8 +177,8 @@ impl ResFile {
                 .collect()
         };
         match raw {
-            [0xff, 0xfe, resto @ ..] => Some(largo(resto, false)),
-            [0xfe, 0xff, resto @ ..] => Some(largo(resto, true)),
+            [0xff, 0xfe, rest @ ..] => Some(wide(rest, false)),
+            [0xfe, 0xff, rest @ ..] => Some(wide(rest, true)),
             _ => {
                 let (_encoding, text) = raw.split_first()?;
                 Some(
@@ -192,17 +192,18 @@ impl ResFile {
     }
 }
 
-/// Guarda os `.bar` já abertos, para não reler um arquivo de treze megabytes a cada recurso.
+/// Keeps the `.bar` files already opened, so as not to reread a thirteen-megabyte file for every
+/// resource.
 #[derive(Debug, Default)]
 pub struct ResCache {
     files: HashMap<PathBuf, Option<ResFile>>,
 }
 
 impl ResCache {
-    /// O arquivo de recursos em `path`, lido na primeira vez que for pedido.
+    /// The resource file at `path`, read the first time it is requested.
     ///
-    /// O que não abre fica marcado como ausente, e não é tentado de novo: um jogo que pede o
-    /// mesmo recurso a cada quadro não pode gerar uma leitura de disco por quadro.
+    /// Whatever does not open is marked as absent, and is not tried again: a game that asks for
+    /// the same resource every frame cannot cause one disk read per frame.
     pub fn open(&mut self, path: &Path) -> Option<&ResFile> {
         self.files
             .entry(path.to_path_buf())
@@ -229,8 +230,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn o_cabecalho_do_blob_e_pulado_pelo_deslocamento() {
-        // A entrada 5034 do `tekken2.bar`, do jeito que ela começa no arquivo.
+    fn the_blob_header_is_skipped_by_the_offset() {
+        // Entry 5034 of `tekken2.bar`, the way it starts in the file.
         let mut raw = vec![0x0c, 0x00];
         raw.extend(b"image/bmp\0");
         raw.extend(b"BM\x38\xb4");
@@ -238,14 +239,14 @@ mod tests {
     }
 
     #[test]
-    fn o_que_nao_e_blob_nao_vira_recorte_arbitrario() {
-        // Um PNG solto: o deslocamento leria lixo, e o zero que termina o MIME não está lá.
+    fn non_blobs_do_not_become_arbitrary_slices() {
+        // A loose PNG: the offset would read garbage, and the zero that ends the MIME is not there.
         assert_eq!(blob_data(&[0x89, b'P', b'N', b'G', 1, 2, 3, 4]), None);
         assert_eq!(blob_data(&[]), None);
         assert_eq!(blob_data(&[0x0c, 0x00]), None);
     }
 
-    /// Monta um `.bar` com as faixas e seções dadas.
+    /// Builds a `.bar` with the given ranges and sections.
     fn build(ranges: &[(u16, u16, u16, u16)], sections: &[&[u8]]) -> Vec<u8> {
         let index_offset = 0x20usize;
         let table_offset = index_offset + ranges.len() * 8;
@@ -287,27 +288,27 @@ mod tests {
         out
     }
 
-    /// A seção 44 do `tectoy_pt.brf` da Z-Wheel, como ela está no arquivo: BOM e UTF-16LE.
+    /// Section 44 of the Z-Wheel's `tectoy_pt.brf`, as it is in the file: BOM and UTF-16LE.
     #[test]
-    fn a_secao_com_bom_e_lida_como_utf16() {
-        let mut secao = vec![0xff, 0xfe];
+    fn a_section_with_bom_is_read_as_utf16() {
+        let mut section = vec![0xff, 0xfe];
         for u in "Meus Z-Credits".encode_utf16() {
-            secao.extend_from_slice(&u.to_le_bytes());
+            section.extend_from_slice(&u.to_le_bytes());
         }
-        let bar = build(&[(RESTYPE_STRING, 1049, 0, 0)], &[&secao]);
+        let bar = build(&[(RESTYPE_STRING, 1049, 0, 0)], &[&section]);
         let res = ResFile::parse(bar).unwrap();
-        let lido = String::from_utf16_lossy(&res.string(1049).unwrap());
-        assert_eq!(lido, "Meus Z-Credits");
+        let loaded = String::from_utf16_lossy(&res.string(1049).unwrap());
+        assert_eq!(loaded, "Meus Z-Credits");
     }
 
-    /// O outro sentido do BOM, que nenhum arquivo nosso usa e o formato permite.
+    /// The other direction of the BOM, which none of our files use and the format allows.
     #[test]
-    fn o_bom_ao_contrario_tambem_e_lido() {
-        let mut secao = vec![0xfe, 0xff];
+    fn a_reversed_bom_is_also_read() {
+        let mut section = vec![0xfe, 0xff];
         for u in "Idioma".encode_utf16() {
-            secao.extend_from_slice(&u.to_be_bytes());
+            section.extend_from_slice(&u.to_be_bytes());
         }
-        let bar = build(&[(RESTYPE_STRING, 1045, 0, 0)], &[&secao]);
+        let bar = build(&[(RESTYPE_STRING, 1045, 0, 0)], &[&section]);
         let res = ResFile::parse(bar).unwrap();
         assert_eq!(
             String::from_utf16_lossy(&res.string(1045).unwrap()),
@@ -315,12 +316,12 @@ mod tests {
         );
     }
 
-    /// Sem BOM continua sendo Latin-1 com um byte de codificação na frente, que é o que os
-    /// `.bar` dos jogos trazem.
+    /// Without a BOM it is still Latin-1 with an encoding byte in front, which is what the games'
+    /// `.bar` files carry.
     #[test]
-    fn sem_bom_continua_latin1() {
-        let mut secao = vec![0x01];
-        secao.extend_from_slice(
+    fn without_bom_stays_latin1() {
+        let mut section = vec![0x01];
+        section.extend_from_slice(
             "Ação\0"
                 .as_bytes()
                 .iter()
@@ -328,28 +329,28 @@ mod tests {
                 .collect::<Vec<_>>()
                 .as_slice(),
         );
-        let bar = build(&[(RESTYPE_STRING, 7, 0, 0)], &[&secao]);
+        let bar = build(&[(RESTYPE_STRING, 7, 0, 0)], &[&section]);
         let res = ResFile::parse(bar).unwrap();
-        let lido = String::from_utf16_lossy(&res.string(7).unwrap());
-        assert!(lido.starts_with('A'), "{lido:?}");
+        let loaded = String::from_utf16_lossy(&res.string(7).unwrap());
+        assert!(loaded.starts_with('A'), "{loaded:?}");
     }
 
     #[test]
-    fn uma_faixa_cobre_ids_consecutivos_em_secoes_consecutivas() {
-        // `a = 2` significa três recursos: os ids 100, 101 e 102 nas seções 0, 1 e 2.
+    fn a_range_covers_consecutive_ids_in_consecutive_sections() {
+        // `a = 2` means three resources: ids 100, 101 and 102 in sections 0, 1 and 2.
         let bar = build(&[(6, 100, 2, 0)], &[b"zero", b"um", b"dois"]);
         let res = ResFile::parse(bar).unwrap();
         assert_eq!(res.get(6, 100), Some(&b"zero"[..]));
         assert_eq!(res.get(6, 101), Some(&b"um"[..]));
         assert_eq!(res.get(6, 102), Some(&b"dois"[..]));
-        // Fora da faixa, nada.
+        // Outside the range, nothing.
         assert_eq!(res.get(6, 103), None);
-        // E o tipo faz parte da chave.
+        // And the type is part of the key.
         assert_eq!(res.get(1, 100), None);
     }
 
     #[test]
-    fn faixas_de_tipos_diferentes_convivem() {
+    fn ranges_of_different_types_coexist() {
         let bar = build(
             &[(1, 4000, 0, 0), (0x5000, 3000, 1, 1)],
             &[b"\x03texto", b"bin0", b"bin1"],
@@ -360,24 +361,24 @@ mod tests {
     }
 
     #[test]
-    fn a_string_perde_o_byte_de_codificacao_e_para_no_terminador() {
+    fn the_string_drops_the_encoding_byte_and_stops_at_the_terminator() {
         let bar = build(&[(1, 7, 0, 0)], &[b"\x03NEW GAME\0lixo depois"]);
         let res = ResFile::parse(bar).unwrap();
         assert_eq!(res.string(7), Some("NEW GAME".encode_utf16().collect()));
     }
 
     #[test]
-    fn um_arquivo_que_nao_e_bar_e_recusado() {
+    fn a_file_that_is_not_a_bar_is_rejected() {
         let err = ResFile::parse(b"nao sou um bar".to_vec());
         assert!(matches!(err, Err(ResError::BadMagic { .. })));
     }
 
     #[test]
-    fn um_bar_truncado_nao_estoura() {
+    fn a_truncated_bar_does_not_overflow() {
         let mut bar = build(&[(6, 1, 0, 0)], &[b"dados"]);
         bar.truncate(bar.len() - 3);
-        // Ou recusa na abertura, ou devolve menos do que a tabela promete — o que não pode é
-        // ler fora do vetor.
+        // Either it refuses on open, or it returns less than the table promises — what it must
+        // not do is read outside the vector.
         if let Ok(res) = ResFile::parse(bar) {
             assert!(res.get(6, 1).is_none_or(|d| d.len() <= 5));
         }

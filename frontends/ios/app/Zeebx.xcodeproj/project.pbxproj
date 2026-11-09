@@ -8,14 +8,14 @@
 
 /* Begin PBXBuildFile section */
 		A1000000000000000000000C /* ZeebxApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000001 /* ZeebxApp.swift */; };
-		A1000000000000000000000D /* BibliotecaView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000002 /* BibliotecaView.swift */; };
-		A1000000000000000000000E /* JogoView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000003 /* JogoView.swift */; };
+		A1000000000000000000000D /* LibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000002 /* LibraryView.swift */; };
+		A1000000000000000000000E /* GameView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000003 /* GameView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		A10000000000000000000001 /* ZeebxApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZeebxApp.swift; sourceTree = "<group>"; };
-		A10000000000000000000002 /* BibliotecaView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BibliotecaView.swift; sourceTree = "<group>"; };
-		A10000000000000000000003 /* JogoView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JogoView.swift; sourceTree = "<group>"; };
+		A10000000000000000000002 /* LibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryView.swift; sourceTree = "<group>"; };
+		A10000000000000000000003 /* GameView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GameView.swift; sourceTree = "<group>"; };
 		A10000000000000000000004 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A10000000000000000000005 /* Zeebx-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "Zeebx-Bridging-Header.h"; sourceTree = "<group>"; };
 		A10000000000000000000009 /* Zeebx.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Zeebx.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -36,8 +36,8 @@
 			isa = PBXGroup;
 			children = (
 				A10000000000000000000001 /* ZeebxApp.swift */,
-				A10000000000000000000002 /* BibliotecaView.swift */,
-				A10000000000000000000003 /* JogoView.swift */,
+				A10000000000000000000002 /* LibraryView.swift */,
+				A10000000000000000000003 /* GameView.swift */,
 				A10000000000000000000005 /* Zeebx-Bridging-Header.h */,
 				A10000000000000000000004 /* Info.plist */,
 			);
@@ -67,7 +67,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = A10000000000000000000016 /* Build configuration list for PBXNativeTarget "Zeebx" */;
 			buildPhases = (
-				A10000000000000000000011 /* Compila o núcleo */,
+				A10000000000000000000011 /* Build the core */,
 				A1000000000000000000000F /* Sources */,
 				A10000000000000000000010 /* Frameworks */,
 			);
@@ -114,7 +114,7 @@
 /* End PBXProject section */
 
 /* Begin PBXShellScriptBuildPhase section */
-		A10000000000000000000011 /* Compila o núcleo */ = {
+		A10000000000000000000011 /* Build the core */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
 			buildActionMask = 2147483647;
@@ -122,13 +122,13 @@
 			);
 			inputPaths = (
 			);
-			name = "Compila o núcleo";
+			name = "Build the core";
 			outputPaths = (
 				"$(BUILT_PRODUCTS_DIR)/libzeebx_ios.a",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/bash;
-			shellScript = "\"$SRCROOT/../compilar.sh\" --na-fase\n";
+			shellScript = "\"$SRCROOT/../build.sh\" --build-phase\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -138,8 +138,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				A1000000000000000000000C /* ZeebxApp.swift in Sources */,
-				A1000000000000000000000D /* BibliotecaView.swift in Sources */,
-				A1000000000000000000000E /* JogoView.swift in Sources */,
+				A1000000000000000000000D /* LibraryView.swift in Sources */,
+				A1000000000000000000000E /* GameView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

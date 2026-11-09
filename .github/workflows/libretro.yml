@@ -1,27 +1,28 @@
-# Compila o core Libretro e confere que ele é carregável e completo.
+# Builds the Libretro core and checks that it is loadable and complete.
 #
-# O core é um pacote separado (`frontends/libretro`) e o build dele **não** usa biblioteca de
-# interface: sem ALSA, sem udev, sem Wayland ou X11. As provas, em ordem de força:
+# The core is a separate package (`frontends/libretro`) and its build does **not** use an
+# interface library: no ALSA, no udev, no Wayland or X11. The proofs, in order of strength:
 #
-# 1. a biblioteca **carrega** de verdade (`ctypes` = `dlopen`/`LoadLibrary`, como o frontend faz) —
-#    isso apanha dependência que faltou no link, que uma lista de símbolos não apanha;
-# 2. os 25 símbolos `retro_*` respondem, `retro_api_version` devolve 1 e `retro_get_system_info`
-#    preenche a struct com `Zeebx`, `mod|zip`, `need_fullpath` e `block_extract`;
-# 3. no Linux, `ldd` mostra que não há `libX11`, Wayland, EGL, ALSA, udev nem GTK pendurados.
+# 1. the library really **loads** (`ctypes` = `dlopen`/`LoadLibrary`, as the frontend does) —
+#    that catches a dependency missing at link time, which a symbol list doesn't catch;
+# 2. the 25 `retro_*` symbols respond, `retro_api_version` returns 1 and `retro_get_system_info`
+#    fills the struct with `Zeebx`, `mod|zip`, `need_fullpath` and `block_extract`;
+# 3. on Linux, `ldd` shows there is no `libX11`, Wayland, EGL, ALSA, udev or GTK hanging on.
 #
-# Cada alvo roda no seu próprio runner: AArch64 Linux e Windows em runner ARM64 nativo, porque
-# cross-build de `unicorn` (QEMU em C) e `dynarmic` (C++20 com CMake) exigiria toolchain e sysroot
-# que ninguém quer manter só para empacotar. Duas exceções saem de imagem, pelo script do
-# frontend: o Switch, da `devkitpro/devkita64`; a Vita, da `vitasdk/vitasdk`.
+# Each target runs on its own runner: AArch64 Linux and Windows on a native ARM64 runner, because
+# cross-building `unicorn` (QEMU in C) and `dynarmic` (C++20 with CMake) would require a toolchain
+# and sysroot nobody wants to maintain just to package. Two exceptions come from an image, through
+# the frontend script: the Switch, from `devkitpro/devkita64`; the Vita, from `vitasdk/vitasdk`.
 
 name: libretro
 
-# **Só à mão, pela aba Actions.** Nenhum push ou merge dispara isto: quem gasta runner sozinho é
-# o `release.yml`, na tag. Rode daqui quando quiser conferir o core antes de marcar uma versão.
+# **Only by hand, from the Actions tab.** No push or merge triggers this: what spends runners on
+# its own is `release.yml`, on the tag. Run it from here when you want to check the core before
+# tagging a version.
 on:
   workflow_dispatch:
 
-# Uma execução nova espera a anterior do mesmo ref terminar, em vez de derrubá-la no meio.
+# A new run waits for the previous one on the same ref to finish, instead of killing it halfway.
 concurrency:
   group: libretro-${{ github.ref }}
   cancel-in-progress: false
@@ -33,7 +34,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Disparo à mão é sempre a matriz inteira: quem pede o run quer a resposta dos seis alvos.
+        # A manual trigger is always the whole matrix: whoever requests the run wants the answer
+        # for the six targets.
         alvo:
           - linux-x86_64
           - linux-aarch64
@@ -60,10 +62,11 @@ jobs:
           - alvo: windows-aarch64
             nome: windows-aarch64
             sistema: windows-11-arm
-            # Windows ARM64 **não** tem o `unicorn` (falta montador MASM para ARM64 e o QEMU do Windows
-            # monta um `.asm` com o `ml` do MSVC, que só existe para x86 e x64). O alvo compila assim
-            # mesmo: o `unicorn-engine` sai do grafo por dependência condicional de alvo e o motor usa o
-            # `dynarmic`, que recompila os blocos A32. Ver `src/cpu/mod.rs`, `BackendPadrao`.
+            # Windows ARM64 does **not** have `unicorn` (there is no MASM assembler for ARM64, and
+            # QEMU on Windows assembles a `.asm` with MSVC's `ml`, which only exists for x86 and
+            # x64). The target builds anyway: `unicorn-engine` leaves the graph through a
+            # target-conditional dependency and the engine uses `dynarmic`, which recompiles the A32
+            # blocks. See `src/cpu/mod.rs`, `DefaultBackend`.
             biblioteca: target/release/zeebx_libretro.dll
             pacote: zeebx_libretro.dll
           - alvo: macos-x86_64
@@ -85,10 +88,10 @@ jobs:
         with:
           key: libretro-${{ matrix.nome }}
 
-      # As duas dependências nativas: o `unicorn-engine` compila o QEMU em C e usa o `bindgen`
-      # (que carrega o `libclang`), e o `dynarmic` compila C++20 com CMake e Ninja. Depender do que
-      # a imagem do runner já traz funciona até o dia em que não traz.
-      - name: Dependências do build (Linux)
+      # The two native dependencies: `unicorn-engine` compiles QEMU in C and uses `bindgen`
+      # (which loads `libclang`), and `dynarmic` compiles C++20 with CMake and Ninja. Depending on
+      # what the runner image already ships works until the day it doesn't.
+      - name: Build dependencies (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
@@ -96,50 +99,50 @@ jobs:
             build-essential cmake ninja-build pkg-config python3 \
             libclang-dev libglib2.0-dev
 
-      - name: Dependências do build (macOS)
+      - name: Build dependencies (macOS)
         if: runner.os == 'macOS'
         run: brew install cmake ninja pkg-config || true
 
-      # Sem debuginfo a árvore do `dynarmic` sai de mais de 5 GiB para algumas centenas de MB.
-      - name: Compila o core
+      # Without debuginfo the `dynarmic` tree goes from more than 5 GiB to a few hundred MB.
+      - name: Build the core
         env:
           CARGO_PROFILE_DEV_DEBUG: "0"
-          # A35 é o denominador comum seguro entre RK3326 e H700/A53. AArch64 continua usando
-          # NEON/AdvSIMD, mas o artefato não ganha instrução exclusiva do Cortex-A53.
+          # A35 is the safe common denominator between RK3326 and H700/A53. AArch64 still uses
+          # NEON/AdvSIMD, but the artifact gains no Cortex-A53-only instruction.
           RUSTFLAGS: ${{ matrix.alvo == 'linux-aarch64' && '-C target-cpu=cortex-a35' || '' }}
         run: cargo build --release --locked -p zeebx-libretro
 
-      # A prova principal: abrir a biblioteca como o frontend abre e chamar a ABI.
-      - name: A biblioteca carrega e a ABI responde
-        run: python3 ferramentas/verifica_core.py "${{ matrix.biblioteca }}"
+      # The main proof: open the library the way the frontend opens it and call the ABI.
+      - name: The library loads and the ABI responds
+        run: python3 tools/verify_core.py "${{ matrix.biblioteca }}"
 
-      - name: O core não depende de biblioteca de host (Linux)
+      - name: The core doesn't depend on a host library (Linux)
         if: runner.os == 'Linux'
         run: |
           ldd "${{ matrix.biblioteca }}"
           if ldd "${{ matrix.biblioteca }}" | grep -qiE 'libX11|wayland|EGL|libGL|asound|libudev|gtk'; then
-            echo "o core puxou biblioteca de interface: vídeo, áudio e entrada são do frontend"
+            echo "the core pulled in an interface library: video, audio and input belong to the frontend"
             exit 1
           fi
-          echo "só libc, libm, libstdc++ e libgcc"
+          echo "only libc, libm, libstdc++ and libgcc"
 
-      # R36S/R35S/RGB20S (ArkOS, AeolusUX, dArkOS e dArkOSen) e RG40XX-H (muOS Pixie ou
-      # posterior) carregam o mesmo core Linux AArch64. Não basta o nome do job: confira o ELF
-      # que será copiado para o cartão e rejeite um artefato x86 ou uma biblioteca com RPATH da
-      # máquina de build. A checagem de dependências acima continua proibindo bibliotecas desktop.
-      - name: O artefato handheld é AArch64 portátil
+      # R36S/R35S/RGB20S (ArkOS, AeolusUX, dArkOS and dArkOSen) and RG40XX-H (muOS Pixie or
+      # later) load the same Linux AArch64 core. The job name isn't enough: check the ELF that
+      # will be copied to the card and reject an x86 artifact or a library with an RPATH from the
+      # build machine. The dependency check above still forbids desktop libraries.
+      - name: The handheld artifact is portable AArch64
         if: matrix.alvo == 'linux-aarch64'
         shell: bash
         run: |
           file "${{ matrix.biblioteca }}" | grep -Eiq 'ARM aarch64|aarch64'
           readelf -h "${{ matrix.biblioteca }}" | grep -E 'Class:.*ELF64|Machine:.*AArch64'
           if readelf -d "${{ matrix.biblioteca }}" | grep -Eiq 'RPATH|RUNPATH'; then
-            echo "o core não pode carregar caminho da máquina de build"
+            echo "the core must not carry a path from the build machine"
             exit 1
           fi
-          echo "ELF Linux AArch64 sem caminho absoluto de build"
+          echo "Linux AArch64 ELF with no absolute build path"
 
-      - name: Monta o pacote do core
+      - name: Assemble the core package
         shell: bash
         run: |
           mkdir -p pacote
@@ -153,8 +156,8 @@ jobs:
           name: zeebx_libretro_${{ matrix.nome }}
           path: pacote/
 
-  # Biblioteca estática para o ROMBundler / RetroArch web ligar como SIDE_MODULE. A std é
-  # recompilada com panic=abort (precisa de rust-src): o módulo principal não exporta unwind.
+  # Static library for ROMBundler / RetroArch web to link as a SIDE_MODULE. std is
+  # rebuilt with panic=abort (needs rust-src): the main module doesn't export unwind.
   wasm:
     name: core-wasm
     runs-on: ubuntu-24.04
@@ -170,26 +173,26 @@ jobs:
         with:
           version: "6.0.8"
 
-      - name: Compila o side module
-        run: ./ferramentas/compilar_wasm.sh
+      - name: Build the side module
+        run: ./tools/build_wasm.sh
 
       - uses: actions/upload-artifact@v4
         with:
           name: zeebx_libretro_emscripten
           path: target/wasm/
 
-  # Biblioteca estática para o ROMBundler ligar no Horizon. O devkitA64 não está no runner:
-  # o job inteiro roda na imagem oficial, e o `compilar.sh --local` aplica o cfg, o patch do
-  # JIT e o empacotamento do dynarmic no `.a`.
+  # Static library for ROMBundler to link on Horizon. devkitA64 isn't on the runner:
+  # the whole job runs in the official image, and `build.sh --local` applies the cfg, the JIT
+  # patch and the packing of dynarmic into the `.a`.
   switch:
     name: core-switch
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     container:
-      # Tag datada, não `latest`: a imagem nova entra quando alguém muda esta linha.
+      # Dated tag, not `latest`: the new image goes in when someone changes this line.
       image: devkitpro/devkita64:20260219
     steps:
-      - name: Git e CMake
+      - name: Git and CMake
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
@@ -205,39 +208,39 @@ jobs:
         with:
           key: libretro-switch
 
-      - name: Compila o staticlib
-        run: ./frontends/switch/compilar.sh --local
+      - name: Build the staticlib
+        run: ./frontends/switch/build.sh --local
 
-      - name: O arquivo é AArch64
+      - name: The archive is AArch64
         run: |
           tmp=$(mktemp -d)
-          ( cd "$tmp" && ar x "$GITHUB_WORKSPACE/frontends/switch/saida/libzeebx_libretro.a" )
+          ( cd "$tmp" && ar x "$GITHUB_WORKSPACE/frontends/switch/out/libzeebx_libretro.a" )
           ruim=$(aarch64-none-elf-objdump -f "$tmp"/*.o | grep 'file format' | grep -v elf64-littleaarch64 || true)
           if [ -n "$ruim" ]; then
-            echo "o .a misturou objeto que não é AArch64"
+            echo "the .a mixed in an object that is not AArch64"
             echo "$ruim"
             exit 1
           fi
-          echo "libzeebx_libretro.a é ELF AArch64"
+          echo "libzeebx_libretro.a is AArch64 ELF"
 
       - uses: actions/upload-artifact@v4
         with:
           name: zeebx_libretro_switch
-          path: frontends/switch/saida/libzeebx_libretro.a
+          path: frontends/switch/out/libzeebx_libretro.a
 
-  # Biblioteca estática para o RetroArch da Vita ligar. O vitasdk não está no runner: o job
-  # inteiro roda na imagem oficial, e o `compilar.sh --local` recompila a std (o alvo é tier 3)
-  # e confere que o `.a` é ARM de 32 bits e exporta a ABI. O arquivo não abre sozinho: o
-  # RetroArch o consome como `libretro_vita.a`.
+  # Static library for the Vita's RetroArch to link. vitasdk isn't on the runner: the whole
+  # job runs in the official image, and `build.sh --local` rebuilds std (the target is tier 3)
+  # and checks that the `.a` is 32-bit ARM and exports the ABI. The archive doesn't open on its
+  # own: RetroArch consumes it as `libretro_vita.a`.
   vita:
     name: core-vita
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     container:
-      # Tag datada, não `latest`: a imagem nova entra quando alguém muda esta linha.
+      # Dated tag, not `latest`: the new image goes in when someone changes this line.
       image: vitasdk/vitasdk:2026.08
     steps:
-      - name: Git, curl e o compilador do host
+      - name: Git, curl and the host compiler
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
@@ -245,8 +248,8 @@ jobs:
 
       - uses: actions/checkout@v5
 
-      # 1.99.1 de propósito. O core recompila a std com `RUSTC_BOOTSTRAP=1`.
-      # Uma estável nova pode recusar isso; a versão sobe quando alguém troca esta linha.
+      # 1.99.1 on purpose. The core rebuilds std with `RUSTC_BOOTSTRAP=1`.
+      # A new stable may reject that; the version goes up when someone changes this line.
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.99.1
@@ -256,10 +259,10 @@ jobs:
         with:
           key: libretro-vita
 
-      - name: Compila o staticlib
-        run: ./frontends/vita/compilar.sh --local
+      - name: Build the staticlib
+        run: ./frontends/vita/build.sh --local
 
       - uses: actions/upload-artifact@v4
         with:
           name: zeebx_libretro_vita
-          path: frontends/vita/saida/libzeebx_libretro.a
+          path: frontends/vita/out/libzeebx_libretro.a

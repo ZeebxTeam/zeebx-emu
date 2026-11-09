@@ -1,12 +1,12 @@
-//! IHID e o teclado: as portas, os eixos e a entrega das teclas.
+//! IHID and the keyboard: the ports, the axes and key delivery.
 
 use super::*;
 
 impl<C: CpuBackend> Machine<C> {
-    /// `IHID` e `IHIDDevice` — o gamepad do Zeebo.
+    /// `IHID` and `IHIDDevice` — the Zeebo gamepad.
     ///
-    /// Apresentamos um controle sempre conectado, com os doze botões e os quatro eixos que o
-    /// `hid_devices.cfg` do console descreve. O que o jogador aperta chega por
+    /// We present an always-connected controller, with the twelve buttons and the four axes that
+    /// the console's `hid_devices.cfg` describes. What the player presses arrives through
     /// [`Machine::set_pad`].
     pub(super) fn hid_call(
         &mut self,
@@ -23,17 +23,17 @@ impl<C: CpuBackend> Machine<C> {
         );
         let this = self.cpu.read_reg(Reg::R0);
         let result = match name {
-            // `IHID` herda de `IQI`, então AddRef e Release ficam nos mesmos slots 0 e 1.
+            // `IHID` inherits from `IQI`, so AddRef and Release sit in the same slots 0 and 1.
             "AddRef" => self.objects.add_ref(this),
             "Release" => {
-                let restantes = self.objects.release(this);
-                if restantes == 0 {
-                    self.portas_de_aparelho.remove(&this);
+                let remaining = self.objects.release(this);
+                if remaining == 0 {
+                    self.device_ports.remove(&this);
                 }
-                restantes
+                remaining
             }
-            // QueryInterface: devolvemos o próprio objeto, já que cada objeto nosso tem uma
-            // interface só.
+            // QueryInterface: we return the object itself, since each of our objects has a
+            // single interface.
             "QueryInterface" => {
                 if a2 != 0 {
                     self.cpu.write_u32(a2, this)?;
@@ -41,91 +41,92 @@ impl<C: CpuBackend> Machine<C> {
                 SUCCESS
             }
             // GetConnectedDevices(int nDeviceType, int *pnHandles, int nLen, int *pnLenReq).
-            // O quarto argumento não cabe nos registradores e vem da pilha.
+            // The fourth argument does not fit in the registers and comes from the stack.
             "GetConnectedDevices" => {
                 let wanted = a1;
                 let handles = a2;
                 let capacity = a3;
                 let out_needed = self.stack_arg(0)?;
-                // O `nLenReq` é o que o aparelho **tem**, e o vetor recebe o que couber. A
-                // Z-Wheel passa capacidade dois nas duas chamadas, que é o número de USB do
-                // console.
-                let quais = match wanted {
-                    // Um receptor atende os dois Boomerangs, então ele entra uma vez só, na
-                    // primeira porta que tem um.
+                // `nLenReq` is what the device **has**, and the array gets whatever fits. The
+                // Z-Wheel passes a capacity of two in both calls, which is the console's number
+                // of USB ports.
+                let which = match wanted {
+                    // One receiver serves both Boomerangs, so it goes in only once, at the
+                    // first port that has one.
                     UID_JOYSTICK_DEVICE => {
-                        let mut portas =
-                            self.portas_com(crate::input::bindings::Aparelho::Controle);
-                        portas.extend(self.portas_com(crate::input::bindings::Aparelho::ZPad));
-                        portas.extend(
-                            self.portas_com(crate::input::bindings::Aparelho::Boomerang)
+                        let mut ports =
+                            self.ports_with(crate::input::bindings::Device::Controller);
+                        ports.extend(self.ports_with(crate::input::bindings::Device::ZPad));
+                        ports.extend(
+                            self.ports_with(crate::input::bindings::Device::Boomerang)
                                 .first(),
                         );
-                        portas.sort_unstable();
-                        portas
+                        ports.sort_unstable();
+                        ports
                     }
                     UID_KEYBOARD_DEVICE => {
-                        self.portas_com(crate::input::bindings::Aparelho::Teclado)
+                        self.ports_with(crate::input::bindings::Device::Keyboard)
                     }
                     _ => Vec::new(),
                 };
                 if out_needed != 0 {
-                    self.cpu.write_u32(out_needed, quais.len() as u32)?;
+                    self.cpu.write_u32(out_needed, which.len() as u32)?;
                 }
                 if handles != 0 {
-                    for (i, &porta) in quais.iter().take(capacity as usize).enumerate() {
+                    for (i, &port) in which.iter().take(capacity as usize).enumerate() {
                         self.cpu
-                            .write_u32(handles + i as u32 * 4, handle_da_porta(porta))?;
+                            .write_u32(handles + i as u32 * 4, port_handle(port))?;
                     }
                 }
                 SUCCESS
             }
             // CreateDevice(int nDevHandle, IHIDDevice **ppDevice)
             //
-            // O identificador é o que saiu do `GetConnectedDevices`, e é aqui que ele vira
-            // porta: sem guardar essa ligação, os dois aparelhos leriam o mesmo controle.
+            // The handle is the one that came out of `GetConnectedDevices`, and this is where
+            // it becomes a port: without keeping that link, both devices would read the same
+            // controller.
             "CreateDevice" => {
                 let device = self.new_object(Interface::HidDevice)?;
                 if device == 0 {
                     return Ok(Some(ENOMEMORY));
                 }
-                let porta = (a1.saturating_sub(1) as usize).min(input::PORTAS - 1);
-                self.portas_de_aparelho.insert(device, porta);
+                let port = (a1.saturating_sub(1) as usize).min(input::PORTS - 1);
+                self.device_ports.insert(device, port);
                 if a2 != 0 {
                     self.cpu.write_u32(a2, device)?;
                 }
                 SUCCESS
             }
             // GetDeviceInfo(AEEHIDDeviceInfo *pInfo): { AEEUID type; uint16 pid; uint16 vid;
-            // boolean bluetooth }. Em IHID a struct vem no segundo argumento.
+            // boolean bluetooth }. In IHID the struct comes in the second argument.
             //
-            // O `type` é o **UID do tipo de dispositivo**, o mesmo que o jogo passa ao
-            // `GetConnectedDevices`, e não um número pequeno. O Bad Dudes vs. DragonNinja
-            // compara o campo com `0x0106c3fd` antes de criar o aparelho: com o `1` que
-            // respondíamos ele nunca chamava o `CreateDevice`, e o menu não via botão nenhum.
+            // `type` is the **UID of the device type**, the same one the game passes to
+            // `GetConnectedDevices`, not a small number. Bad Dudes vs. DragonNinja compares the
+            // field against `0x0106c3fd` before creating the device: with the `1` we used to
+            // answer, it never called `CreateDevice`, and the menu saw no buttons at all.
             "GetDeviceInfo" => {
                 let out = if iface == Interface::Hid { a2 } else { a1 };
-                // No `IHID` o identificador da porta vem em `r1`; no `IHIDDevice` é o próprio
-                // objeto que diz de qual porta ele é.
-                let porta = match iface == Interface::Hid {
-                    true => (a1.saturating_sub(1) as usize).min(input::PORTAS - 1),
-                    false => self.porta_do(this),
+                // In `IHID` the port handle comes in `r1`; in `IHIDDevice` it is the object
+                // itself that says which port it belongs to.
+                let port = match iface == Interface::Hid {
+                    true => (a1.saturating_sub(1) as usize).min(input::PORTS - 1),
+                    false => self.port_of(this),
                 };
-                let tipo = match self.portas[porta] {
-                    Some(crate::input::bindings::Aparelho::Teclado) => UID_KEYBOARD_DEVICE,
+                let kind = match self.ports[port] {
+                    Some(crate::input::bindings::Device::Keyboard) => UID_KEYBOARD_DEVICE,
                     _ => UID_JOYSTICK_DEVICE,
                 };
-                let (vendedor, produto) = match self.portas[porta] {
-                    Some(crate::input::bindings::Aparelho::Boomerang) => {
+                let (vendor, product) = match self.ports[port] {
+                    Some(crate::input::bindings::Device::Boomerang) => {
                         (BOOMERANG_VENDOR_ID, BOOMERANG_PRODUCT_ID)
                     }
-                    Some(crate::input::bindings::Aparelho::ZPad) => (ZPAD_VENDOR_ID, ZPAD_PRODUCT_ID),
+                    Some(crate::input::bindings::Device::ZPad) => (ZPAD_VENDOR_ID, ZPAD_PRODUCT_ID),
                     _ => (GAMEPAD_VENDOR_ID, GAMEPAD_PRODUCT_ID),
                 };
                 if out != 0 {
-                    self.cpu.write_u32(out, tipo)?;
-                    self.cpu.write_mem(out + 4, &produto.to_le_bytes())?;
-                    self.cpu.write_mem(out + 6, &vendedor.to_le_bytes())?;
+                    self.cpu.write_u32(out, kind)?;
+                    self.cpu.write_mem(out + 4, &product.to_le_bytes())?;
+                    self.cpu.write_mem(out + 6, &vendor.to_le_bytes())?;
                     self.cpu.write_u32(out + 8, 0)?;
                 }
                 SUCCESS
@@ -137,9 +138,9 @@ impl<C: CpuBackend> Machine<C> {
                 SUCCESS
             }
             // GetButtonInfo(int nButtonID, AEEHIDButtonInfo *pInfo):
-            // { id, estado, UID, mínimo, máximo }
+            // { id, state, UID, minimum, maximum }
             "GetButtonInfo" => {
-                // O jogo passa um UID, não um índice — aceitamos as duas formas.
+                // The game passes a UID, not an index — we accept both forms.
                 let (index, uid) = match input::BUTTON_UIDS.iter().position(|&u| u == a1) {
                     Some(i) => (i as u32, a1),
                     None => match input::BUTTON_UIDS.get(a1 as usize) {
@@ -147,9 +148,9 @@ impl<C: CpuBackend> Machine<C> {
                         None => return Ok(Some(EBADPARM)),
                     },
                 };
-                // O estado tem de ser o de agora: um jogo que consulta em vez de esperar o
-                // evento só enxerga a tecla por aqui.
-                let state = u32::from(self.pads[self.porta_do(this)].is_down(index as usize));
+                // The state has to be the current one: a game that polls instead of waiting for
+                // the event only sees the key through here.
+                let state = u32::from(self.pads[self.port_of(this)].is_down(index as usize));
                 if a2 != 0 {
                     for (i, value) in [index, state, uid, 0, 1].iter().enumerate() {
                         self.cpu.write_u32(a2 + i as u32 * 4, *value)?;
@@ -163,50 +164,51 @@ impl<C: CpuBackend> Machine<C> {
                 }
                 SUCCESS
             }
-            // A posição corrente de cada eixo.
-            "GetPositionState" if self.e_boomerang(self.porta_do(this)) => {
-                self.pacote_do_boomerang(a1)?;
+            // The current position of each axis.
+            "GetPositionState" if self.is_boomerang(self.port_of(this)) => {
+                self.boomerang_packet(a1)?;
                 SUCCESS
             }
             "GetPositionState" => {
-                let pad = self.pads[self.porta_do(this)];
-                let axes = [0, 1, 2, 3].map(|i| pad.eixo_do_console(i));
-                // Um jogo que consulta o eixo todo quadro lê o centro quase sempre. O contador
-                // separa "lê o eixo" de "o eixo chegou deslocado", que é o que o espelho do
-                // direcional muda — e o que dá para medir sem olhar a tela.
-                let mut fora = 0u32;
-                for (indice, &valor) in axes.iter().enumerate() {
-                    if valor != input::AXIS_CENTRO {
-                        fora |= 1 << indice;
+                let pad = self.pads[self.port_of(this)];
+                let axes = [0, 1, 2, 3].map(|i| pad.console_axis(i));
+                // A game that polls the axis every frame reads the center almost always. The
+                // counter separates "reads the axis" from "the axis arrived off center", which is
+                // what the d-pad mirror changes — and what can be measured without looking at the
+                // screen.
+                let mut outside = 0u32;
+                for (axis_index, &axis_value) in axes.iter().enumerate() {
+                    if axis_value != input::AXIS_CENTER {
+                        outside |= 1 << axis_index;
                     }
                 }
-                if fora != 0 {
-                    self.eixos_deslocados += 1;
-                    self.mascara_de_eixos_deslocados |= fora;
+                if outside != 0 {
+                    self.off_center_axes += 1;
+                    self.off_center_axes_mask |= outside;
                 }
                 self.write_position_info(a1, &axes)?;
                 SUCCESS
             }
-            // `GetAxesInfo` não devolve valores: devolve, em cada campo, o UID do eixo que
-            // ocupa aquele campo. É assim que o `AEEHIDThumbsticks.c` do SDK descobre onde
-            // está cada direção — e enquanto respondíamos zeros, ele não achava nenhuma.
+            // `GetAxesInfo` does not return values: it returns, in each field, the UID of the
+            // axis that occupies that field. That is how the SDK's `AEEHIDThumbsticks.c` finds
+            // out where each direction is — and while we answered zeros, it found none.
             "GetAxesInfo" => {
-                // O receptor do Boomerang troca Z e RZ em relação ao controle, como diz a entrada
-                // dele no `hid_devices.cfg`. O Crash Nitro Kart lê o acelerômetro pelos analógicos
-                // e acha a gravidade pelo UID: com a tabela do controle, ela caía no campo errado e
-                // a calibração nunca aceitava a leitura.
-                let uids = match self.e_boomerang(self.porta_do(this)) {
+                // The Boomerang receiver swaps Z and RZ relative to the controller, as its entry
+                // in `hid_devices.cfg` says. Crash Nitro Kart reads the accelerometer through the
+                // analog sticks and finds gravity by UID: with the controller's table, gravity
+                // landed in the wrong field and the calibration never accepted the reading.
+                let uids = match self.is_boomerang(self.port_of(this)) {
                     true => [0x0106_c4d0, 0x0106_c4d1, 0x0106_c4cf, 0x0106_c4ce],
                     false => input::AXIS_UIDS,
                 };
                 self.write_axes_info(a1, &uids.map(|uid| uid as i32))?;
                 SUCCESS
             }
-            // Os limites valem para **todos** os eixos da struct, não só os quatro que o
-            // console usa. Preenchendo apenas quatro, os outros vinte ficavam com mínimo e
-            // máximo iguais a zero, e um jogo que normalize um eixo desses — `(valor - min) /
-            // (max - min)` — divide por zero e trava a direção num extremo. Era o que prendia
-            // o carro do Crash virando para a esquerda.
+            // The limits apply to **all** the axes in the struct, not just the four the console
+            // uses. Filling in only four, the other twenty were left with minimum and maximum
+            // both zero, and a game that normalizes one of those axes — `(value - min) /
+            // (max - min)` — divides by zero and locks the direction at one end. That was what
+            // kept Crash's car turning left.
             "GetMinPositionInfo" => {
                 self.write_axis_range(a1, input::AXIS_MIN)?;
                 SUCCESS
@@ -217,10 +219,10 @@ impl<C: CpuBackend> Machine<C> {
             }
             // GetNextButtonEvent(AEEHIDButtonInfo *, uint32 *pdwTimestamp, boolean *pbDropped).
             //
-            // A fila é de eventos, não de estado: cada aperto e cada soltura vira uma entrada,
-            // e o jogo lê até a fila esvaziar. `EFAILED` é o "não há mais nada".
+            // The queue holds events, not state: each press and each release becomes an entry,
+            // and the game reads until the queue is empty. `EFAILED` is the "nothing more".
             "GetNextButtonEvent" => {
-                let Some((index, down)) = self.pad_events[self.porta_do(this)].pop_front() else {
+                let Some((index, down)) = self.pad_events[self.port_of(this)].pop_front() else {
                     if a1 != 0 {
                         self.cpu.write_mem(a1, &[0u8; 20])?;
                     }
@@ -234,7 +236,7 @@ impl<C: CpuBackend> Machine<C> {
                 };
                 let uid = input::BUTTON_UIDS.get(index).copied().unwrap_or(0);
                 if a1 != 0 {
-                    // `AEEHIDButtonInfo`: id, estado, UID, mínimo, máximo.
+                    // `AEEHIDButtonInfo`: id, state, UID, minimum, maximum.
                     let info = [index as u32, u32::from(down), uid, 0, 1];
                     for (i, value) in info.iter().enumerate() {
                         self.cpu.write_u32(a1 + i as u32 * 4, *value)?;
@@ -251,11 +253,11 @@ impl<C: CpuBackend> Machine<C> {
             // GetNextConnectEvent(int *pnDevHandle, int *pnStatus, boolean *pbDropped).
             // GetNextConnectEvent(uint32 *pdwHandle, boolean *pbConnected, uint32 *pdwTimestamp)
             //
-            // **A fila está sempre vazia, e vazia responde `EFAILED`** — é o "não há mais evento"
-            // do BREW, o mesmo do `GetNextButtonEvent`. Respondendo sucesso com os campos
-            // zerados, o jogo entendia que havia um evento de conexão a cada pergunta: os Zeebo
-            // Extreme ficavam em `GetNextConnectEvent` e `GetDeviceInfo` para sempre, sem armar
-            // timer nem desenhar, e a sessão terminava por falta do que fazer.
+            // **The queue is always empty, and empty answers `EFAILED`** — it is BREW's "no more
+            // events", the same as in `GetNextButtonEvent`. Answering success with zeroed fields,
+            // the game took it that there was a connection event on every query: the Zeebo
+            // Extreme games stayed in `GetNextConnectEvent` and `GetDeviceInfo` forever, without
+            // arming a timer or drawing, and the session ended for lack of anything to do.
             "GetNextConnectEvent" => {
                 for out in [a1, a2, a3] {
                     if out != 0 {
@@ -264,24 +266,25 @@ impl<C: CpuBackend> Machine<C> {
                 }
                 EFAILED
             }
-            // Os `RegisterFor*` recebem um `ISignal` que devemos disparar quando houver evento.
-            // Guardamos qual é; disparar de fato depende de ligar a entrada do host.
+            // The `RegisterFor*` calls receive an `ISignal` that we must raise when there is an
+            // event. We store which one it is; actually raising it depends on wiring up the
+            // host's input.
             "RegisterForConnectEvents"
             | "RegisterForStatusChange"
             | "RegisterForButtonEvent"
             | "RegisterForPositionChange" => {
                 if a1 != 0 {
-                    self.input_signals.insert((name, self.porta_do(this)), a1);
+                    self.input_signals.insert((name, self.port_of(this)), a1);
                 }
-                // **O registro de posição já vale um aviso.** No console o controle está
-                // conectado e parado quando o jogo registra, e o driver entrega logo a
-                // primeira posição; o jogo usa esse aviso para perguntar a faixa dos eixos
-                // (`GetMinPositionInfo`, `GetMaxPositionInfo`) e onde eles estão. Enquanto o
-                // aviso só saía no primeiro movimento, quem nunca encostasse no analógico
-                // jogava com os eixos sem calibrar — o Ridge Racer chega ao título e não
-                // pergunta nada antes disso.
+                // **Registering for position already earns a notification.** On the console the
+                // controller is connected and at rest when the game registers, and the driver
+                // delivers the first position right away; the game uses that notification to
+                // ask for the axis range (`GetMinPositionInfo`, `GetMaxPositionInfo`) and where
+                // the axes are. While the notification only went out on the first movement,
+                // anyone who never touched the analog stick played with uncalibrated axes —
+                // Ridge Racer reaches the title screen without asking anything before that.
                 if name == "RegisterForPositionChange" {
-                    self.raise_input_signal(name, self.porta_do(this));
+                    self.raise_input_signal(name, self.port_of(this));
                 }
                 SUCCESS
             }
@@ -297,14 +300,14 @@ impl<C: CpuBackend> Machine<C> {
         Ok(Some(result))
     }
 
-    /// Preenche um `AEEHIDPositionInfo` com a posição de cada eixo.
+    /// Fills an `AEEHIDPositionInfo` with the position of each axis.
     ///
-    /// A struct é `boolean bRelativeAxes` seguido de vinte e quatro inteiros, um por eixo
-    /// possível. O controle do Zeebo usa quatro deles — `X`, `Y`, `Z` e `RZ`.
+    /// The struct is `boolean bRelativeAxes` followed by twenty-four integers, one per possible
+    /// axis. The Zeebo controller uses four of them — `X`, `Y`, `Z` and `RZ`.
     ///
-    /// **Os outros vinte ficam no centro, não em zero.** Zero é o mínimo da faixa do aparelho,
-    /// e um jogo que leia um eixo que não usamos o encontraria encostado no batente em vez de
-    /// parado. Os eixos são absolutos, então `bRelativeAxes` continua zero.
+    /// **The other twenty stay at the center, not at zero.** Zero is the minimum of the device's
+    /// range, and a game that reads an axis we don't use would find it pushed against the stop
+    /// instead of at rest. The axes are absolute, so `bRelativeAxes` stays zero.
     pub(super) fn write_position_info(
         &mut self,
         addr: u32,
@@ -313,7 +316,7 @@ impl<C: CpuBackend> Machine<C> {
         if addr == 0 {
             return Ok(());
         }
-        let mut words = [input::AXIS_CENTRO as u32; input::POSITION_INFO_WORDS];
+        let mut words = [input::AXIS_CENTER as u32; input::POSITION_INFO_WORDS];
         words[0] = 0;
         for (slot, value) in input::AXIS_SLOTS.iter().zip(values) {
             words[*slot] = *value as u32;
@@ -321,17 +324,17 @@ impl<C: CpuBackend> Machine<C> {
         let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
         self.cpu.write_mem(addr, &bytes).map_err(|e| {
             CpuError(format!(
-                "{e} ao escrever {} bytes em {addr:#010x}",
+                "{e} while writing {} bytes at {addr:#010x}",
                 bytes.len()
             ))
         })
     }
 
-    /// Escreve a tabela do `GetAxesInfo`: em cada campo, o UID do eixo que o ocupa.
+    /// Writes the `GetAxesInfo` table: in each field, the UID of the axis that occupies it.
     ///
-    /// Aqui os campos que sobram ficam **zerados**, e é o contrário do que faz a posição: zero
-    /// não é um valor de eixo, é "não há eixo neste campo", e é assim que o jogo para de
-    /// procurar.
+    /// Here the leftover fields are **zeroed**, the opposite of what the position does: zero is
+    /// not an axis value, it is "there is no axis in this field", and that is how the game stops
+    /// searching.
     pub(super) fn write_axes_info(
         &mut self,
         addr: u32,
@@ -348,11 +351,11 @@ impl<C: CpuBackend> Machine<C> {
         self.cpu.write_mem(addr, &bytes)
     }
 
-    /// Escreve `value` em todos os campos de eixo do `AEEHIDPositionInfo`.
+    /// Writes `value` into every axis field of the `AEEHIDPositionInfo`.
     ///
-    /// O primeiro campo da struct não é eixo: é o `boolean bRelativeAxes`, e ele fica em zero —
-    /// os eixos do controle são absolutos, e dizer o contrário faria o jogo tratar cada leitura
-    /// como um deslocamento e acumular.
+    /// The first field of the struct is not an axis: it is `boolean bRelativeAxes`, and it stays
+    /// zero — the controller's axes are absolute, and saying otherwise would make the game treat
+    /// each reading as a displacement and accumulate it.
     pub(super) fn write_axis_range(&mut self, addr: u32, value: i32) -> Result<(), CpuError> {
         if addr == 0 {
             return Ok(());
@@ -363,179 +366,183 @@ impl<C: CpuBackend> Machine<C> {
         self.cpu.write_mem(addr, &bytes)
     }
 
-    /// Entrega um novo estado do controle.
+    /// Delivers a new controller state.
     ///
-    /// Cada botão que mudou vira um evento na fila, e a mudança acorda o jogo pelos `ISignal`
-    /// que ele registrou — sem isso o jogo só veria a tecla na próxima vez que resolvesse
-    /// perguntar, e alguns nunca perguntam.
+    /// Each button that changed becomes an event in the queue, and the change wakes the game up
+    /// through the `ISignal`s it registered — without that the game would only see the key the
+    /// next time it decided to ask, and some never ask.
     pub fn set_pad(&mut self, pad: Pad) {
         self.set_port_pad(0, pad);
     }
 
-    /// O controle que o jogo vê agora numa porta. Só para os testes da sessão, que precisam ver
-    /// o turbo por cima do controle cru.
+    /// The controller the game currently sees on a port. Only for the session tests, which need to
+    /// see the turbo on top of the raw controller.
     #[cfg(test)]
-    pub(crate) fn pad_da_porta(&self, porta: usize) -> Pad {
-        self.pads[porta]
+    pub(crate) fn port_pad(&self, port: usize) -> Pad {
+        self.pads[port]
     }
 
-    /// O mesmo, para uma porta escolhida.
-    pub fn set_port_pad(&mut self, porta: usize, pad: Pad) {
-        let pad = pad.com_o_home_nos_dois();
-        if porta >= input::PORTAS || pad == self.pads[porta] {
+    /// The same, for a chosen port.
+    pub fn set_port_pad(&mut self, port: usize, pad: Pad) {
+        let pad = pad.with_home_on_both();
+        if port >= input::PORTS || pad == self.pads[port] {
             return;
         }
-        let changes = self.pads[porta].changes(&pad);
-        let moved = pad.axes != self.pads[porta].axes;
-        self.pads[porta] = pad;
-        self.pad_events[porta].extend(changes.iter().copied());
-        // Só o `GetNextButtonEvent` esvazia esta fila, e o jogo que lê o controle por
-        // `GetState` ou por `EVT_KEY` nunca o chama: ela crescia a cada toque pela sessão
-        // inteira. Os mais antigos saem primeiro, que é o que uma fila de hardware faz ao
-        // transbordar.
-        let excesso = self.pad_events[porta].len().saturating_sub(PAD_EVENTS_MAX);
-        self.pad_events[porta].drain(..excesso);
-        let agora = self.elapsed_ms();
+        let changes = self.pads[port].changes(&pad);
+        let moved = pad.axes != self.pads[port].axes;
+        self.pads[port] = pad;
+        self.pad_events[port].extend(changes.iter().copied());
+        // Only `GetNextButtonEvent` drains this queue, and a game that reads the controller via
+        // `GetState` or `EVT_KEY` never calls it: the queue grew with every press for the whole
+        // session. The oldest go first, which is what a hardware queue does when it
+        // overflows.
+        let excess = self.pad_events[port].len().saturating_sub(PAD_EVENTS_MAX);
+        self.pad_events[port].drain(..excess);
+        let now = self.elapsed_ms();
         for &(index, down) in &changes {
             if self.pad_log.len() == PAD_LOG_MAX {
                 self.pad_log.pop_front();
             }
-            self.pad_log.push_back((agora, porta, index, down));
+            self.pad_log.push_back((now, port, index, down));
         }
 
         if !changes.is_empty() {
-            self.raise_input_signal("RegisterForButtonEvent", porta);
+            self.raise_input_signal("RegisterForButtonEvent", port);
         }
-        // **O retorno ao centro também é mudança de posição.** Soltar o manche precisa acordar
-        // o callback como empurrá-lo: quem lê o eixo só de dentro do callback — e é como um
-        // menu orientado a evento se escreve — guarda a última direção e nunca descobre que o
-        // jogador soltou. O sintoma é o manche "preso" no último sentido para sempre. A
-        // navegação dobrada que isto parecia causar era outra coisa, e está resolvida em
-        // [`Machine::raise_input_signal`].
+        // **Returning to center is also a change of position.** Releasing the stick has to wake
+        // the callback just like pushing it: whoever reads the axis only from inside the
+        // callback — and that is how an event-driven menu is written — keeps the last direction
+        // and never finds out the player let go. The symptom is the stick "stuck" in the last
+        // direction forever. The doubled navigation this seemed to cause was something else, and
+        // is solved in [`Machine::raise_input_signal`].
         if moved {
-            self.raise_input_signal("RegisterForPositionChange", porta);
+            self.raise_input_signal("RegisterForPositionChange", port);
         }
     }
 
-    /// A aceleração de uma porta com Boomerang, em g no referencial dele: `x` ao longo do
-    /// controle, `y` para a frente e `z` saindo da face dos botões. Parado com a face para cima,
+    /// The acceleration of a port with a Boomerang, in g in its own frame: `x` along the
+    /// controller, `y` forward and `z` out of the button face. At rest face up,
     /// `[0, 0, 1]`.
-    pub fn set_port_motion(&mut self, porta: usize, aceleracao: [f32; 3]) {
-        if let Some(movimento) = self.movimento.get_mut(porta) {
-            *movimento = aceleracao;
+    pub fn set_port_motion(&mut self, port: usize, acceleration: [f32; 3]) {
+        if let Some(motion) = self.motion.get_mut(port) {
+            *motion = acceleration;
         }
     }
 
-    /// O receptor do Boomerang manda relatório sem parar, e cada um acorda quem registrou
-    /// `RegisterForPositionChange`, mesmo com a aceleração igual. O Crash Nitro Kart só lê a
-    /// posição dentro desse aviso: sem ele, a calibração recebia uma leitura e esperava as outras
-    /// para sempre. O ritmo é o do tempo virtual, e não o de quem entrega o movimento.
-    pub(super) fn relatorio_do_boomerang(&mut self) {
-        let agora = self.now_us();
-        if agora.saturating_sub(self.ultimo_relatorio_boomerang_us) < BOOMERANG_PERIODO_US {
+    /// The Boomerang receiver sends reports nonstop, and each one wakes whoever registered
+    /// `RegisterForPositionChange`, even with the same acceleration. Crash Nitro Kart only reads
+    /// the position inside that notification: without it, the calibration got one reading and
+    /// waited for the others forever. The pace is that of virtual time, not that of whoever
+    /// delivers the motion.
+    pub(super) fn boomerang_report(&mut self) {
+        let now = self.now_us();
+        if now.saturating_sub(self.last_boomerang_report_us) < BOOMERANG_PERIOD_US {
             return;
         }
-        self.ultimo_relatorio_boomerang_us = agora;
-        for porta in 0..input::PORTAS {
-            if self.e_boomerang(porta) {
-                self.raise_input_signal("RegisterForPositionChange", porta);
+        self.last_boomerang_report_us = now;
+        for port in 0..input::PORTS {
+            if self.is_boomerang(port) {
+                self.raise_input_signal("RegisterForPositionChange", port);
             }
         }
     }
 
-    /// `(começadas, terminadas)`: as calibrações do movimento que o jogo fez até agora.
+    /// `(started, finished)`: the motion calibrations the game has done so far.
     ///
-    /// Nenhum jogo avisa o sistema, então isto é o que dá para ver de fora: as mensagens de
-    /// depuração do jogo ("calib" ou o `ACCEL 1` do Crash Nitro Kart começam; o `ACCEL…CENTER`
-    /// dele termina). A
-    /// interface completa o resto olhando se o controle está parado.
+    /// No game tells the system, so this is what can be seen from outside: the game's debug
+    /// messages ("calib" or Crash Nitro Kart's `ACCEL 1` start one; its `ACCEL…CENTER` ends it).
+    /// The
+    /// interface fills in the rest by checking whether the controller is at rest.
     ///
-    /// **A primeira leitura do Boomerang não serve de sinal.** Todo jogo lê o controle na
-    /// abertura, e os da Boomerang Sports só calibram depois da escolha de personagem: o aviso
-    /// abria no lugar errado. Eles também não deixam rastro de texto na hora — o nome das telas
-    /// de calibração só passa pelas funções do BREW na pré-carga —, e o estado da calibração fica
-    /// num objeto cujo layout muda de jogo para jogo.
-    pub fn calibracao(&self) -> (u32, u32) {
-        self.calibracoes
+    /// **The Boomerang's first reading is no signal.** Every game reads the controller at
+    /// startup, and the Boomerang Sports games only calibrate after character selection: the
+    /// notice opened in the wrong place. They also leave no text trail at that moment — the
+    /// names of the calibration screens only go through the BREW functions during preload —, and
+    /// the calibration state lives in an object whose layout changes from game to game.
+    pub fn calibration(&self) -> (u32, u32) {
+        self.calibrations
     }
 
-    /// Lê uma mensagem de depuração do jogo à procura de calibração.
-    pub(super) fn procura_calibracao(&mut self, mensagem: &str) {
-        let minuscula = mensagem.to_ascii_lowercase();
-        // O Crash Nitro Kart escreve "ACCEL 1" ao reconhecer o Boomerang, e abre a calibração em
-        // seguida.
-        if minuscula.contains("calib") || matches!(mensagem.trim(), "ACCEL 1" | "ACCEL 2") {
-            self.calibracoes.0 += 1;
+    /// Reads a debug message from the game looking for calibration.
+    pub(super) fn find_calibration(&mut self, message: &str) {
+        let lowercase = message.to_ascii_lowercase();
+        // Crash Nitro Kart writes "ACCEL 1" when it recognizes the Boomerang, and opens the
+        // calibration right after.
+        if lowercase.contains("calib") || matches!(message.trim(), "ACCEL 1" | "ACCEL 2") {
+            self.calibrations.0 += 1;
         }
-        if minuscula.contains("center =") {
-            self.calibracoes.1 += 1;
+        if lowercase.contains("center =") {
+            self.calibrations.1 += 1;
         }
     }
 
-    pub(super) fn e_boomerang(&self, porta: usize) -> bool {
-        self.portas.get(porta).copied().flatten() == Some(crate::input::bindings::Aparelho::Boomerang)
+    pub(super) fn is_boomerang(&self, port: usize) -> bool {
+        self.ports.get(port).copied().flatten() == Some(crate::input::bindings::Device::Boomerang)
     }
 
-    /// Escreve no `AEEHIDPositionInfo` um pacote do receptor do Boomerang.
+    /// Writes a Boomerang receiver packet into the `AEEHIDPositionInfo`.
     ///
-    /// O Boomerang não usa a estrutura como eixos: ela é o relatório bruto do receptor, e o
-    /// jogo o desmonta. Lido no Zeebo Sports Queimada (`0x4231c`, `0x42458`, `0x40b0c`,
-    /// `0x413d0`, `0x412f4`), com os campos contados a partir do primeiro inteiro depois do
+    /// The Boomerang does not use the structure as axes: it is the receiver's raw report, and the
+    /// game takes it apart. Read in Zeebo Sports Queimada (`0x4231c`, `0x42458`, `0x40b0c`,
+    /// `0x413d0`, `0x412f4`), with the fields counted from the first integer after
     /// `bRelativeAxes`:
     ///
-    /// - **Campos 1, 2 e 3: o acelerômetro**, um byte por eixo centrado em `0x80`. O jogo gira X
-    ///   e Y em 20° (`0,94` e `0,342`) antes de usar — o sensor fica torto dentro do braço — e
-    ///   calibra zero e escala com o controle parado de face para cima e depois para baixo.
-    /// - **Campo 4: os botões**, em lógica invertida (bit em zero é apertado): bit 0 o botão 1,
-    ///   1 o botão 2, 2 o HOME, 3 esquerda, 4 baixo, 5 direita e 6 cima.
-    /// - **Campo 5: o jogador e o tipo.** O bit 0 diz de qual dos dois Boomerangs é o pacote; o
-    ///   resto é o tipo. Tipo 0 é "desconectado"; de 1 a 4 conecta, e o campo 6 leva um dado do
-    ///   aparelho que muda com o tipo.
-    /// - **Campo 8: o contador**, de 8 bits. O jogo espera que ele ande de um em um; um pulo
-    ///   marca pacote perdido, e na partida ele espera o contador mudar para dar o receptor como
-    ///   vivo. Parado, o jogo fica preso nesse laço.
+    /// - **Fields 1, 2 and 3: the accelerometer**, one byte per axis centered at `0x80`. The game
+    ///   rotates X and Y by 20° (`0.94` and `0.342`) before using them — the sensor sits crooked
+    ///   inside the arm — and calibrates zero and scale with the controller at rest face up and
+    ///   then face down.
+    /// - **Field 4: the buttons**, in inverted logic (a zero bit is pressed): bit 0 button 1,
+    ///   1 button 2, 2 HOME, 3 left, 4 down, 5 right and 6 up.
+    /// - **Field 5: the player and the type.** Bit 0 says which of the two Boomerangs the packet
+    ///   belongs to; the rest is the type. Type 0 is "disconnected"; 1 to 4 connects, and field 6
+    ///   carries a device value that changes with the type.
+    /// - **Field 8: the counter**, 8 bits wide. The game expects it to step by one; a jump marks a
+    ///   lost packet, and at startup it waits for the counter to change before considering the
+    ///   receiver alive. If it stands still, the game gets stuck in that loop.
     ///
-    /// Um pacote novo a cada [`BOOMERANG_PERIODO_US`], alternando os dois jogadores.
-    pub(super) fn pacote_do_boomerang(&mut self, addr: u32) -> Result<(), CpuError> {
+    /// A new packet every [`BOOMERANG_PERIOD_US`], alternating the two players.
+    pub(super) fn boomerang_packet(&mut self, addr: u32) -> Result<(), CpuError> {
         if addr == 0 {
             return Ok(());
         }
-        // 1 g em unidades do sensor. A calibração do Crash Nitro Kart só aceita a gravidade entre
-        // 162 e 220, o que centra 1 g perto de 63; o Queimada normaliza pela leitura parada.
-        const ESCALA: f32 = 60.0;
+        // 1 g in sensor units. Crash Nitro Kart's calibration only accepts gravity between 162 and
+        // 220, which centers 1 g near 63; Queimada normalizes by the at-rest reading.
+        const SCALE: f32 = 60.0;
         const COS: f32 = 0.94;
-        const SEN: f32 = 0.342;
-        // **Um pacote novo por período do receptor, não por leitura.** O Queimada lê três vezes por
-        // quadro e só processa os botões de um jogador numa leitura sem pacote novo dele: com um
-        // pacote a cada leitura, nenhum aperto chegava. Dentro do período, a leitura repete o
-        // último pacote.
-        let agora = self.now_us();
-        if agora.saturating_sub(self.ultimo_pacote_boomerang_us) >= BOOMERANG_PERIODO_US {
-            self.ultimo_pacote_boomerang_us = agora;
-            self.boomerang_sequencia = self.boomerang_sequencia.wrapping_add(1);
+        const SIN: f32 = 0.342;
+        // **One new packet per receiver period, not per read.** Queimada reads three times per
+        // frame and only processes a player's buttons on a read with no new packet from them: with
+        // a packet on every read, no press ever got through. Within the period, a read repeats the
+        // last packet.
+        let now = self.now_us();
+        if now.saturating_sub(self.last_boomerang_packet_us) >= BOOMERANG_PERIOD_US {
+            self.last_boomerang_packet_us = now;
+            self.boomerang_sequence = self.boomerang_sequence.wrapping_add(1);
         }
-        let sequencia = self.boomerang_sequencia;
-        // Os dois jogadores se alternam sempre; o que não tem controle vai como "desconectado".
-        // O Queimada precisa dessa alternância para processar os botões.
-        let boomerangs = self.portas_com(crate::input::bindings::Aparelho::Boomerang);
-        let jogador = usize::from(sequencia & 1);
-        let porta = boomerangs.get(jogador).copied();
-        let mut campos = [0u32; input::POSITION_INFO_WORDS];
-        // **O jogador desconectado leva a aceleração do primeiro.** O Crash Nitro Kart lê o
-        // acelerômetro sem olhar de quem é o pacote: com o segundo jogador entrando parado a cada
-        // relatório, a direção pulava entre o movimento e o repouso, o kart virava a esmo e a
-        // calibração passava sem esperar. O Queimada ignora a aceleração de quem está desconectado.
-        let [x, y, z] = porta
+        let sequence = self.boomerang_sequence;
+        // The two players always alternate; the one without a controller goes as "disconnected".
+        // Queimada needs this alternation to process the buttons.
+        let boomerangs = self.ports_with(crate::input::bindings::Device::Boomerang);
+        let player = usize::from(sequence & 1);
+        let port = boomerangs.get(player).copied();
+        let mut fields = [0u32; input::POSITION_INFO_WORDS];
+        // **The disconnected player carries the first one's acceleration.** Crash Nitro Kart reads
+        // the accelerometer without checking whose packet it is: with the second player coming in
+        // at rest on every report, the steering jumped between motion and rest, the kart turned at
+        // random and the calibration went through without waiting. Queimada ignores the
+        // acceleration of a disconnected player.
+        let [x, y, z] = port
             .or(boomerangs.first().copied())
-            .map_or([0.0, 0.0, 1.0], |p| self.movimento[p]);
-        // O inverso do giro que o jogo aplica: assim ele chega à aceleração que entregamos.
-        let bruto = [COS * x - SEN * y, SEN * x + COS * y, z];
-        for (campo, valor) in campos[1..4].iter_mut().zip(bruto) {
-            *campo = (0x80 as f32 + valor * ESCALA).round().clamp(0.0, 255.0) as u32;
+            .map_or([0.0, 0.0, 1.0], |p| self.motion[p]);
+        // The inverse of the rotation the game applies: that way it arrives at the acceleration
+        // we deliver.
+        let raw = [COS * x - SIN * y, SIN * x + COS * y, z];
+        for (field, value) in fields[1..4].iter_mut().zip(raw) {
+            *field = (0x80 as f32 + value * SCALE).round().clamp(0.0, 255.0) as u32;
         }
-        let mut soltos = 0x7fu32;
-        if let Some(porta) = porta {
-            let pad = self.pads[porta];
+        let mut loose = 0x7fu32;
+        if let Some(port) = port {
+            let pad = self.pads[port];
             const BITS: [(&str, u32); 7] = [
                 ("b1", 0),
                 ("b2", 1),
@@ -545,221 +552,223 @@ impl<C: CpuBackend> Machine<C> {
                 ("right", 5),
                 ("up", 6),
             ];
-            for (nome, bit) in BITS {
-                if Pad::button_by_name(nome).is_some_and(|i| pad.is_down(i)) {
-                    soltos &= !(1 << bit);
+            for (name, bit) in BITS {
+                if Pad::button_by_name(name).is_some_and(|i| pad.is_down(i)) {
+                    loose &= !(1 << bit);
                 }
             }
         }
-        campos[4] = soltos;
-        let tipo = match porta {
+        fields[4] = loose;
+        let kind = match port {
             Some(_) => 1,
             None => 0,
         };
-        campos[5] = (tipo << 1) | jogador as u32;
-        campos[8] = u32::from(sequencia);
-        let bytes: Vec<u8> = campos.iter().flat_map(|w| w.to_le_bytes()).collect();
+        fields[5] = (kind << 1) | player as u32;
+        fields[8] = u32::from(sequence);
+        let bytes: Vec<u8> = fields.iter().flat_map(|w| w.to_le_bytes()).collect();
         self.cpu.write_mem(addr, &bytes)
     }
 
-    /// A porta de um `IHIDDevice`, ou a primeira quando o objeto não foi registrado.
+    /// The port of an `IHIDDevice`, or the first one when the object was not registered.
     ///
-    /// O caminho sem janela e os testes criam aparelho sem passar pelo `CreateDevice` com
-    /// identificador; para eles a porta um é a resposta certa, porque é a única que existe.
-    pub(super) fn porta_do(&self, aparelho: u32) -> usize {
-        self.portas_de_aparelho
-            .get(&aparelho)
+    /// The windowless path and the tests create devices without going through `CreateDevice` with
+    /// a handle; for them port one is the right answer, because it is the only one that exists.
+    pub(super) fn port_of(&self, device: u32) -> usize {
+        self.device_ports
+            .get(&device)
             .copied()
             .unwrap_or(0)
-            .min(input::PORTAS - 1)
+            .min(input::PORTS - 1)
     }
 
-    /// Quais portas estão ligadas com o aparelho pedido, na ordem.
-    pub(super) fn portas_com(&self, aparelho: crate::input::bindings::Aparelho) -> Vec<usize> {
-        (0..input::PORTAS)
-            .filter(|&n| self.portas[n] == Some(aparelho))
+    /// Which ports are connected to the requested device, in order.
+    pub(super) fn ports_with(&self, device: crate::input::bindings::Device) -> Vec<usize> {
+        (0..input::PORTS)
+            .filter(|&n| self.ports[n] == Some(device))
             .collect()
     }
 
     pub fn set_key(&mut self, avk: u32, down: bool) {
-        self.teclas.push_back((avk, down));
+        self.key_events.push_back((avk, down));
     }
 
-    /// Entrega as teclas enfileiradas.
+    /// Delivers the queued keys.
     ///
-    /// O evento é o `EVT_KEY` do BREW, com o código virtual no `wParam`. A soltura vai como
-    /// [`input::EVT_KEY_RELEASE`]: um jogo que só olhe o aperto ignora a segunda sem prejuízo, e
-    /// um que conte as duas precisa das duas.
+    /// The event is BREW's `EVT_KEY`, with the virtual code in `wParam`. The release goes as
+    /// [`input::EVT_KEY_RELEASE`]: a game that only looks at the press ignores the second one at no
+    /// cost, and one that counts both needs both.
     ///
-    /// **Quem recebe tecla primeiro é o widget, não o aplicativo.** No BREW é a extensão de
-    /// interface que roteia a entrada para quem está em foco, e o tratador do formulário de
-    /// abertura da Z-Wheel prova: ele testa `evt == 0x100` e compara o `wParam` com códigos
-    /// `AVK_`. Mandar direto ao aplicativo devolve zero — medido.
+    /// **The widget gets the key first, not the application.** In BREW it is the UI extension
+    /// that routes input to whoever has focus, and the handler of the Z-Wheel's opening form
+    /// proves it: it tests `evt == 0x100` and compares `wParam` against `AVK_` codes. Sending it
+    /// straight to the application returns zero — measured.
     ///
-    /// A ordem é a do BREW: o widget tem a primeira chance e, se ninguém tratou, o evento sobe
-    /// para o aplicativo. Um evento que ninguém trata não faz nada, e é por isso que entregar
-    /// tecla é seguro de um jeito que inventar evento de propriedade não era.
+    /// The order is BREW's: the widget gets the first chance and, if nobody handled it, the event
+    /// goes up to the application. An event nobody handles does nothing, and that is why
+    /// delivering keys is safe in a way that inventing property events was not.
     pub(super) fn flush_keys(&mut self) -> Result<(), CpuError> {
-        // A árvore inteira vai para a serial na primeira tecla: é o retrato do modelo no momento
-        // em que a pergunta "para quem isto vai?" aparece.
-        if !self.teclas.is_empty() && !self.despejou {
-            self.despejou = true;
-            self.despeja_widgets();
+        // The whole tree goes to the serial on the first key: it is the snapshot of the model at
+        // the moment the question "who does this go to?" comes up.
+        if !self.key_events.is_empty() && !self.widgets_dumped {
+            self.widgets_dumped = true;
+            self.dump_widgets();
         }
-        while let Some((avk, down)) = self.teclas.pop_front() {
-            // **A saída da fila, antes de qualquer atalho.** A linha da entrega, mais abaixo, só
-            // aparece para quem chega aos tratadores: uma seta consumida pelo rolamento do HTML sai
-            // do laço sem deixar rastro, e "não chegou" fica indistinguível de "foi consumida".
+        while let Some((avk, down)) = self.key_events.pop_front() {
+            // **The exit from the queue, before any shortcut.** The delivery line, further down,
+            // only shows up for keys that reach the handlers: an arrow consumed by HTML scrolling
+            // leaves the loop without a trace, and "did not arrive" becomes indistinguishable from
+            // "was consumed".
             if self.serial.is_some() {
-                self.registra_serial(format!(
-                    "<fila {avk:#x} {} sai do despacho, {} na fila>",
+                self.log_serial(format!(
+                    "<queue {avk:#x} {} leaves dispatch, {} in queue>",
                     match down {
-                        true => "aperta",
-                        false => "solta",
+                        true => "press",
+                        false => "release",
                     },
-                    self.teclas.len()
+                    self.key_events.len()
                 ));
             }
-            let evento = match down {
+            let event = match down {
                 true => input::EVT_KEY,
                 false => input::EVT_KEY_RELEASE,
             };
-            let mut tratado = false;
-            // Com o painel de HTML em foco, as setas verticais são dele enquanto houver texto
-            // para rolar. Ver [`Machine::rola_html_em_foco`].
+            let mut handled = false;
+            // With the HTML panel in focus, the vertical arrows belong to it while there is text
+            // left to scroll. See [`Machine::scroll_focused_html`].
             if matches!(avk, input::avk::UP | input::avk::DOWN) {
-                let para_baixo = avk == input::avk::DOWN;
-                if down && self.rola_html_em_foco(para_baixo) {
-                    self.teclas_da_rolagem.insert(avk);
+                let downward = avk == input::avk::DOWN;
+                if down && self.scroll_focused_html(downward) {
+                    self.scroll_keys.insert(avk);
                     continue;
                 }
-                if !down && self.teclas_da_rolagem.remove(&avk) {
+                if !down && self.scroll_keys.remove(&avk) {
                     continue;
                 }
             }
-            // **O mais novo primeiro.** Os formulários se empilham e nenhum é destruído aqui,
-            // então a lista tem o tratador da abertura ao lado do da tela atual. O da abertura
-            // devolve 1 para qualquer aperto — ele trata a tecla 0 e a CLR —, e vindo antes
-            // ele decidia tudo: o formulário do z-pad registrava o dele e nunca via uma tecla.
+            // **Newest first.** Forms stack up and none is destroyed here, so the list has the
+            // opening form's handler next to the current screen's. The opening one returns 1
+            // for any press — it handles key 0 and CLR —, and coming first it decided
+            // everything: the z-pad form registered its own and never saw a key.
             //
-            // Ordenar pela ordem de criação é o que um empilhamento de formulários faz: quem
-            // está por cima tem a primeira chance, e o que ele não consumir desce.
-            // A ordem aqui ainda não tem modelo, e três heurísticas já falharam: todos os
-            // widgets, só a árvore do formulário atual, do mais novo para o mais velho e o
-            // contrário. Em todas quem responde é um tratador que é literalmente
-            // `mov r0,#1; bx lr` — a `0x77300` do jogo, que devolve "tratei" para qualquer
-            // tecla. No console quem recebe é o widget **com foco**, e foco é coisa que ainda
-            // não sabemos ler. Enquanto não soubermos, fica a ordem do mapa, que é a que
-            // estava aqui antes de eu começar a mexer.
-            // **Dentro do formulário atual, todo tratador vê a tecla.** Parar no primeiro que
-            // devolve não-zero parecia o certo — é o que um container do BREW faz —, mas a
-            // `0x77300` é `mov r0,#1; bx lr`: ela diz "tratei" para qualquer coisa que lhe
-            // cheguem, e está registrada na **barra de status**, um container de 640×50 que no
-            // console não recebe tecla nenhuma. Com ela na frente, o palco nunca via um aperto
-            // e a roda não girava.
+            // Sorting by creation order is what a form stack does: whoever is on top gets the
+            // first chance, and whatever it doesn't consume goes down.
+            // The order here still has no model, and three heuristics have already failed: all
+            // widgets, only the current form's tree, newest to oldest and the reverse. In all
+            // of them the one that answers is a handler that is literally
+            // `mov r0,#1; bx lr` — the game's `0x77300`, which returns "handled" for any
+            // key. On the console the one that receives is the widget **with focus**, and focus
+            // is something we still can't read. Until we can, the map order stays, which is the
+            // one that was here before I started touching it.
+            // **Inside the current form, every handler sees the key.** Stopping at the first one
+            // that returns non-zero seemed right — it is what a BREW container does —, but
+            // `0x77300` is `mov r0,#1; bx lr`: it says "handled" to anything that reaches it,
+            // and it is registered on the **status bar**, a 640×50 container that on the console
+            // receives no keys at all. With it in front, the stage never saw a press and the
+            // wheel didn't turn.
             //
-            // Quem recebe no console é o widget **com foco**, e foco continua sendo coisa que
-            // não sabemos ler. Entregar a todos os da tela atual é a aproximação que não
-            // depende de saber: um tratador que não reconhece o evento não faz nada, e o que
-            // reconhece age. Os de fora da tela seguem valendo só quando ninguém de dentro
-            // respondeu, que é o que impede a abertura de responder por cima do menu.
-            let dentro = self.arvore_do_formulario();
-            let (na_tela, fora): (Vec<_>, Vec<_>) = self
-                .tratadores_em_ordem(&dentro)
+            // On the console the one that receives is the widget **with focus**, and focus is
+            // still something we can't read. Delivering to all of the current screen's handlers
+            // is the approximation that doesn't depend on knowing: a handler that doesn't
+            // recognize the event does nothing, and one that does acts. The off-screen ones still
+            // count only when nobody inside answered, which is what keeps the opening form from
+            // answering on top of the menu.
+            let inside = self.form_tree();
+            let (on_screen, outside): (Vec<_>, Vec<_>) = self
+                .handlers_in_order(&inside)
                 .into_iter()
-                .partition(|(esta_dentro, _)| *esta_dentro);
-            // As contagens e os endereços saem antes dos laços: depois deles as listas foram
-            // consumidas. **Os endereços são o que responde "a tecla chegou ao tratador da lista?"**
-            // — a lista de jogos da Z-Wheel é o roller `0x30000ad0`, tratador `0x75724`.
-            let (quantos_na_tela, quantos_fora) = (na_tela.len(), fora.len());
-            let quem: Vec<String> = na_tela
+                .partition(|(is_inside, _)| *is_inside);
+            // The counts and the addresses are taken before the loops: after them the lists have
+            // been consumed. **The addresses are what answers "did the key reach the list's
+            // handler?"** — the Z-Wheel's game list is the roller `0x30000ad0`, handler `0x75724`.
+            let (onscreen_count, offscreen_count) = (on_screen.len(), outside.len());
+            let who: Vec<String> = on_screen
                 .iter()
-                .chain(fora.iter())
+                .chain(outside.iter())
                 .take(4)
-                .map(|(_, (funcao, _))| format!("{funcao:#x}"))
+                .map(|(_, (callback, _))| format!("{callback:#x}"))
                 .collect();
-            for (_, (funcao, contexto)) in na_tela {
-                let saida = self.call_guest(funcao, [contexto, evento, avk, 0], QSORT_BUDGET)?;
-                if matches!(saida, Outcome::Returned { code } if code != 0) {
-                    tratado = true;
+            for (_, (callback, context)) in on_screen {
+                let output = self.call_guest(callback, [context, event, avk, 0], QSORT_BUDGET)?;
+                if matches!(output, Outcome::Returned { code } if code != 0) {
+                    handled = true;
                 }
             }
-            if !tratado {
-                for (_, (funcao, contexto)) in fora {
-                    let saida =
-                        self.call_guest(funcao, [contexto, evento, avk, 0], QSORT_BUDGET)?;
-                    if matches!(saida, Outcome::Returned { code } if code != 0) {
-                        tratado = true;
+            if !handled {
+                for (_, (callback, context)) in outside {
+                    let output =
+                        self.call_guest(callback, [context, event, avk, 0], QSORT_BUDGET)?;
+                    if matches!(output, Outcome::Returned { code } if code != 0) {
+                        handled = true;
                         break;
                     }
                 }
             }
-            // **A entrega da tecla vai para a captura de serial.** É o instrumento que responde
-            // as duas perguntas que sobram quando um applet reage à primeira tecla e ignora as
-            // seguintes: **a quem** ela foi entregue, e se alguém a tratou. Medido: no caminho do
-            // core a segunda tecla não produz efeito nenhum, com a árvore de widgets idêntica à da
-            // varredura — sem esta linha, "a tecla não chegou" e "chegou e ninguém tratou" são
-            // indistinguíveis.
+            // **Key delivery goes to the serial capture.** It is the instrument that answers the
+            // two questions left when an applet reacts to the first key and ignores the following
+            // ones: **to whom** it was delivered, and whether anyone handled it. Measured: on the
+            // core path the second key has no effect at all, with the widget tree identical to the
+            // scan's — without this line, "the key did not arrive" and "it arrived and nobody
+            // handled it" are indistinguishable.
             if self.serial.is_some() {
-                self.registra_serial(format!(
-                    "<tecla {avk:#x} {} para {} tratador(es) na tela e {} fora ({}){}>",
+                self.log_serial(format!(
+                    "<key {avk:#x} {} to {} handler(s) on screen and {} off ({}){}>",
                     match down {
-                        true => "aperta",
-                        false => "solta",
+                        true => "press",
+                        false => "release",
                     },
-                    quantos_na_tela,
-                    quantos_fora,
-                    quem.join(" "),
-                    match tratado {
-                        true => ", tratada",
-                        false => ", ninguém tratou",
+                    onscreen_count,
+                    offscreen_count,
+                    who.join(" "),
+                    match handled {
+                        true => ", handled",
+                        false => ", nobody handled",
                     }
                 ));
             }
-            if !tratado {
-                let _ = self.send_applet_event(self.applet_class, evento, avk as u16, 0)?;
+            if !handled {
+                let _ = self.send_applet_event(self.applet_class, event, avk as u16, 0)?;
             }
         }
         Ok(())
     }
 
-    /// Diz que aparelho o console vê em cada porta. `None` desliga a porta.
-    pub fn set_portas(
+    /// Says which device the console sees on each port. `None` disconnects the port.
+    pub fn set_ports(
         &mut self,
-        portas: [Option<crate::input::bindings::Aparelho>; input::PORTAS],
+        ports: [Option<crate::input::bindings::Device>; input::PORTS],
     ) {
-        self.portas = portas;
+        self.ports = ports;
     }
 
-    /// Dispara o sinal registrado num dos `RegisterFor*` do `IHIDDevice`.
-    /// O `porta` é parte da chave porque o registro é feito **no objeto do aparelho**, um por
-    /// controle: com dois ligados, guardar só pelo nome do registro fazia o segundo apagar o
-    /// primeiro e todo evento acordar o callback do controle dois.
-    pub(super) fn raise_input_signal(&mut self, register: &'static str, porta: usize) {
-        let Some(&signal) = self.input_signals.get(&(register, porta)) else {
+    /// Raises the signal registered in one of the `IHIDDevice` `RegisterFor*` calls.
+    /// `port` is part of the key because registration is done **on the device object**, one per
+    /// controller: with two connected, keying only by the registration name made the second
+    /// overwrite the first and every event wake controller two's callback.
+    pub(super) fn raise_input_signal(&mut self, register: &'static str, port: usize) {
+        let Some(&signal) = self.input_signals.get(&(register, port)) else {
             return;
         };
         if let Some(&callback) = self.signals.get(&signal) {
-            // Um sinal BREW é um aviso de "há trabalho", não um evento contado. O host pode
-            // atualizar mais de uma porta (ou mover o eixo e logo voltar ao centro) antes de o
-            // scheduler entregar o callback. Enfileirar a mesma função duas vezes faz muitos
-            // menus processarem a mesma navegação em sentidos opostos. Coalescer aqui preserva
-            // todas as mudanças no estado consultável pelo jogo e elimina a reentrada espúria.
+            // A BREW signal is a "there is work" notice, not a counted event. The host may update
+            // more than one port (or move the axis and return to center right away) before the
+            // scheduler delivers the callback. Queuing the same function twice makes many menus
+            // process the same navigation in opposite directions. Coalescing here preserves every
+            // change in the state the game can query and removes the spurious reentry.
             if !self.pending_signals.contains(&callback) {
                 self.pending_signals.push(callback);
             }
         }
     }
 
-    /// As URLs que o jogo tentou buscar pelo `IWeb`.
-    /// Os últimos toques entregues ao jogo, como `(instante, nome do botão, apertado)`.
+    /// The URLs the game tried to fetch through `IWeb`.
+    /// The last presses delivered to the game, as `(instant, button name, pressed)`.
     pub fn pad_log(&self) -> Vec<(u32, usize, &'static str, bool)> {
         self.pad_log
             .iter()
-            .map(|&(ms, porta, index, down)| {
+            .map(|&(ms, port, index, down)| {
                 (
                     ms,
-                    porta,
+                    port,
                     input::BUTTON_NAMES.get(index).copied().unwrap_or("?"),
                     down,
                 )

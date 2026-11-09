@@ -1,8 +1,9 @@
 fn main() {
-    // **O ícone do `.exe` não mora aqui.** Um recurso do Windows só chega ao executável se for
-    // compilado no pacote que o produz: o `frontends/qt-standalone` e o `frontends/cli`.
+    // **The `.exe` icon does not live here.** A Windows resource only reaches the executable if
+    // it is compiled in the package that produces it: `frontends/qt-standalone` and `frontends/cli`.
     println!("cargo:rerun-if-changed=build.rs");
-    // O `frontends/switch/compilar.sh` passa `--cfg zeebx_switch`. Sem este aviso o rustc
-    // trata o nome como desconhecido.
+    // `frontends/switch/build.sh` passes `--cfg zeebx_switch`. Without this declaration rustc
+    // treats the name as unknown.
+
     println!("cargo::rustc-check-cfg=cfg(zeebx_switch)");
 }

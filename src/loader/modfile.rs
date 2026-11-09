@@ -1,51 +1,51 @@
-//! Parser do formato `.mod` — o módulo executável do BREW.
+//! Parser for the `.mod` format — BREW's executable module.
 //!
-//! Um `.mod` é gerado pelo `elf2mod` da Qualcomm a partir de um ELF ARM linkado com
-//! `elf2mod.x`, que fixa `ro-base = 0x0` e força `.text.AEEMod_Load` no início da `.text`.
-//! Como a imagem é linkada na base zero, carregá-la no endereço 0 do guest dispensa
-//! qualquer relocação — é o que fazemos hoje.
+//! A `.mod` is produced by Qualcomm's `elf2mod` from an ARM ELF linked with `elf2mod.x`, which
+//! sets `ro-base = 0x0` and forces `.text.AEEMod_Load` to the start of `.text`. Since the image
+//! is linked at base zero, loading it at guest address 0 needs no relocation at all — which is
+//! what we do today.
 //!
-//! Duas variantes aparecem nos arquivos reais:
+//! Two variants show up in the real files:
 //!
-//! - `Raw`: o arquivo começa direto no código ARM (`AEEMod_Load`). É o que os exemplos do
-//!   BREW SDK 4.0.2 usam.
-//! - `BrewHeader`: os títulos do Zeebo trazem dois branches ARM, a assinatura `BREW` e um
-//!   cabeçalho de 0x40 bytes antes do código.
+//! - `Raw`: the file starts directly with ARM code (`AEEMod_Load`). This is what the BREW SDK
+//!   4.0.2 samples use.
+//! - `BrewHeader`: the Zeebo titles carry two ARM branches, the `BREW` signature and a 0x40-byte
+//!   header before the code.
 //!
-//! O significado da maioria dos campos do cabeçalho `BREW` ainda não foi confirmado — eles
-//! são expostos em [`BrewHeader::unknown`] em vez de receberem nomes inventados.
+//! The meaning of most fields of the `BREW` header has not been confirmed yet — they are exposed
+//! in [`BrewHeader::unknown`] instead of being given made-up names.
 
 use std::fmt;
 
-/// Assinatura que identifica a variante com cabeçalho.
+/// Signature that identifies the variant with a header.
 const MAGIC: &[u8; 4] = b"BREW";
-/// Deslocamento da assinatura dentro do arquivo.
+/// Offset of the signature within the file.
 const MAGIC_OFFSET: usize = 0x08;
-/// Tamanho do cabeçalho `BREW`, em bytes. O código começa logo depois.
+/// Size of the `BREW` header, in bytes. The code starts right after it.
 const HEADER_LEN: usize = 0x40;
 
-/// Codificação de uma instrução `B <label>` do ARM (condição `AL`, sem link).
+/// Encoding of an ARM `B <label>` instruction (condition `AL`, no link).
 const ARM_BRANCH_MASK: u32 = 0xff00_0000;
 const ARM_BRANCH_AL: u32 = 0xea00_0000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Variant {
-    /// Arquivo começa direto no código ARM.
+    /// File starts directly with ARM code.
     Raw,
-    /// Arquivo traz o cabeçalho `BREW` de 0x40 bytes.
+    /// File carries the 0x40-byte `BREW` header.
     BrewHeader,
 }
 
-/// Cabeçalho da variante `BREW`, lido em bruto.
+/// Header of the `BREW` variant, read raw.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BrewHeader {
-    /// Campo em 0x0C. Vale 1 em todos os módulos observados.
+    /// Field at 0x0C. It is 1 in every module observed.
     pub version: u32,
-    /// Campo em 0x10. Vale 0x40 em todos os módulos observados — o início do código.
+    /// Field at 0x10. It is 0x40 in every module observed — the start of the code.
     pub code_offset: u32,
-    /// Campos de 0x14 a 0x3C, ainda não decifrados.
+    /// Fields from 0x14 to 0x3C, not yet deciphered.
     ///
-    /// Valores observados (bjt.mod / tectoy.mod):
+    /// Observed values (bjt.mod / tectoy.mod):
     /// `0x101 0x200 {0x7a120,0x8fdf0} {0x70,0x20} {0x234,0xa0} {0x690,0x40} 0x90 0x0
     ///  {0x7a120,0x8fdf0} {0x8000,0x0}`.
     pub unknown: [u32; 10],
@@ -53,11 +53,11 @@ pub struct BrewHeader {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParseError {
-    /// Arquivo pequeno demais para conter sequer um cabeçalho.
+    /// File too small to hold even a header.
     TooSmall { len: usize },
-    /// O arquivo tem a assinatura `BREW` mas não cabe o cabeçalho inteiro.
+    /// The file has the `BREW` signature but the whole header does not fit.
     TruncatedHeader { len: usize },
-    /// A primeira instrução não é um branch ARM nem um prólogo plausível.
+    /// The first instruction is neither an ARM branch nor a plausible prologue.
     NotArmCode { first_word: u32 },
 }
 
@@ -65,15 +65,15 @@ impl fmt::Display for ParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::TooSmall { len } => {
-                write!(f, "arquivo pequeno demais para um .mod ({len} bytes)")
+                write!(f, "file too small for a .mod ({len} bytes)")
             }
             Self::TruncatedHeader { len } => {
-                write!(f, "cabeçalho BREW truncado (arquivo tem {len} bytes)")
+                write!(f, "truncated BREW header (file has {len} bytes)")
             }
             Self::NotArmCode { first_word } => {
                 write!(
                     f,
-                    "primeira palavra {first_word:#010x} não parece código ARM"
+                    "first word {first_word:#010x} does not look like ARM code"
                 )
             }
         }
@@ -82,7 +82,7 @@ impl fmt::Display for ParseError {
 
 impl std::error::Error for ParseError {}
 
-/// Um `.mod` carregado na memória do host, pronto para ser mapeado no guest.
+/// A `.mod` loaded in host memory, ready to be mapped into the guest.
 #[derive(Debug, Clone)]
 pub struct ModImage {
     data: Vec<u8>,
@@ -92,7 +92,7 @@ pub struct ModImage {
 }
 
 impl ModImage {
-    /// Interpreta os bytes de um arquivo `.mod`.
+    /// Interprets the bytes of a `.mod` file.
     pub fn parse(data: Vec<u8>) -> Result<Self, ParseError> {
         if data.len() < 8 {
             return Err(ParseError::TooSmall { len: data.len() });
@@ -111,8 +111,8 @@ impl ModImage {
             for (i, slot) in unknown.iter_mut().enumerate() {
                 *slot = read_u32(&data, 0x14 + i * 4);
             }
-            // O branch em 0x00 aponta para o ponto de entrada real; `code_offset` é a
-            // segunda opinião sobre o mesmo endereço.
+            // The branch at 0x00 points to the real entry point; `code_offset` is the second
+            // opinion on the same address.
             let entry = branch_target(read_u32(&data, 0), 0).unwrap_or(code_offset);
             return Ok(Self {
                 data,
@@ -126,9 +126,9 @@ impl ModImage {
             });
         }
 
-        // Sem assinatura: a imagem começa direto em AEEMod_Load. Exigimos que a primeira
-        // palavra ao menos tenha condição válida (nibble alto != 0xF) para não aceitar
-        // qualquer arquivo como módulo.
+        // No signature: the image starts directly at AEEMod_Load. We require the first word to
+        // at least have a valid condition (high nibble != 0xF) so that we do not accept any file
+        // as a module.
         let first_word = read_u32(&data, 0);
         if first_word >> 28 == 0xf {
             return Err(ParseError::NotArmCode { first_word });
@@ -141,8 +141,8 @@ impl ModImage {
         })
     }
 
-    /// Bytes da imagem, na ordem em que devem ser mapeados no guest.
-    // Passa a ser usado quando o loader mapear o módulo na memória do guest.
+    /// Bytes of the image, in the order they must be mapped into the guest.
+    // Comes into use when the loader maps the module into guest memory.
     #[allow(dead_code)]
     pub fn image(&self) -> &[u8] {
         &self.data
@@ -156,16 +156,16 @@ impl ModImage {
         self.header.as_ref()
     }
 
-    /// Deslocamento de `AEEMod_Load` dentro da imagem.
+    /// Offset of `AEEMod_Load` within the image.
     ///
-    /// Como a imagem é linkada em ro-base 0, esse valor também é o endereço absoluto do
-    /// ponto de entrada quando o módulo é carregado no endereço 0 do guest.
+    /// Since the image is linked at ro-base 0, this value is also the absolute address of the
+    /// entry point when the module is loaded at guest address 0.
     pub fn entry(&self) -> u32 {
         self.entry
     }
 }
 
-/// Lê um `u32` little-endian. O chamador garante que `offset + 4 <= data.len()`.
+/// Reads a little-endian `u32`. The caller guarantees that `offset + 4 <= data.len()`.
 fn read_u32(data: &[u8], offset: usize) -> u32 {
     u32::from_le_bytes([
         data[offset],
@@ -175,15 +175,15 @@ fn read_u32(data: &[u8], offset: usize) -> u32 {
     ])
 }
 
-/// Resolve o destino de um `B <label>` ARM situado em `pc`.
+/// Resolves the target of an ARM `B <label>` located at `pc`.
 ///
-/// O offset é de 24 bits com sinal, em palavras, relativo a `pc + 8` por causa do pipeline.
+/// The offset is a signed 24-bit value, in words, relative to `pc + 8` because of the pipeline.
 fn branch_target(word: u32, pc: u32) -> Option<u32> {
     if word & ARM_BRANCH_MASK != ARM_BRANCH_AL {
         return None;
     }
     let imm24 = word & 0x00ff_ffff;
-    // Estende o sinal de 24 para 32 bits e converte de palavras para bytes.
+    // Sign-extends from 24 to 32 bits and converts from words to bytes.
     let offset = ((imm24 << 8) as i32 >> 8) * 4;
     Some(pc.wrapping_add(8).wrapping_add(offset as u32))
 }
@@ -192,10 +192,10 @@ fn branch_target(word: u32, pc: u32) -> Option<u32> {
 mod tests {
     use super::*;
 
-    /// Monta um `.mod` sintético com cabeçalho BREW e código a partir de 0x40.
+    /// Builds a synthetic `.mod` with a BREW header and code starting at 0x40.
     fn brew_mod() -> Vec<u8> {
         let mut data = vec![0u8; 0x50];
-        // b 0x40  ->  offset em palavras = (0x40 - 0 - 8) / 4 = 0x0e
+        // b 0x40  ->  offset in words = (0x40 - 0 - 8) / 4 = 0x0e
         data[0x00..0x04].copy_from_slice(&0xea00_000eu32.to_le_bytes());
         // b 0x48
         data[0x04..0x08].copy_from_slice(&0xea00_000fu32.to_le_bytes());
@@ -207,7 +207,7 @@ mod tests {
     }
 
     #[test]
-    fn le_cabecalho_brew_e_resolve_o_entry_pelo_branch() {
+    fn reads_brew_header_and_resolves_entry_from_branch() {
         let image = ModImage::parse(brew_mod()).unwrap();
         assert_eq!(image.variant(), Variant::BrewHeader);
         assert_eq!(image.entry(), 0x40);
@@ -218,8 +218,8 @@ mod tests {
     }
 
     #[test]
-    fn modulo_sem_assinatura_entra_em_zero() {
-        // push {lr} — primeira instrução dos exemplos do BREW SDK.
+    fn unsigned_module_enters_at_zero() {
+        // push {lr} — first instruction of the BREW SDK samples.
         let data = 0xe52d_e004u32.to_le_bytes().repeat(4);
         let image = ModImage::parse(data).unwrap();
         assert_eq!(image.variant(), Variant::Raw);
@@ -227,7 +227,7 @@ mod tests {
     }
 
     #[test]
-    fn recusa_arquivo_que_nao_comeca_com_instrucao_valida() {
+    fn rejects_file_not_starting_with_a_valid_instruction() {
         let data = 0xf000_0000u32.to_le_bytes().repeat(4);
         assert!(matches!(
             ModImage::parse(data),
@@ -236,7 +236,7 @@ mod tests {
     }
 
     #[test]
-    fn recusa_arquivo_curto_demais() {
+    fn rejects_file_too_short() {
         assert!(matches!(
             ModImage::parse(vec![0, 1, 2]),
             Err(ParseError::TooSmall { len: 3 })
@@ -244,8 +244,8 @@ mod tests {
     }
 
     #[test]
-    fn branch_negativo_volta_para_tras() {
-        // b -8 : offset em palavras = -4  ->  0xea_fffffc, a partir de pc = 0x20
+    fn negative_branch_jumps_backwards() {
+        // b -8 : offset in words = -4  ->  0xea_fffffc, starting from pc = 0x20
         assert_eq!(branch_target(0xeaff_fffc, 0x20), Some(0x18));
     }
 }

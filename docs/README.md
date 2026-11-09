@@ -1,45 +1,48 @@
-# Zeebx — documentação de pesquisa para um emulador de Zeebo
+# Zeebx — research documentation for a Zeebo emulator
 
-Levantamento do que existe hoje, publicamente, sobre o Zeebo (TecToy, 2009) e sobre a
-plataforma Qualcomm BREW / MSM7201A que ele usa — com o material relevante espelhado
-localmente em `docs/vendor/` (só na máquina local; não versionado).
+A survey of what exists today, publicly, about the Zeebo (TecToy, 2009) and about the Qualcomm
+BREW / MSM7201A platform it uses — with the relevant material mirrored locally in `docs/vendor/`.
+That directory is local only and is not versioned.
 
-## Conclusão curta
+The original Portuguese versions of these documents are archived in [`pt-BR/`](pt-BR/).
 
-Emular Zeebo **não é emular um console**, é **reimplementar o Qualcomm BREW 4.0.2**.
-O jogo é um binário ARM (`.mod`) que não fala com hardware: ele chama interfaces COM-like
-(`IShell`, `IDisplay`, `IGraphics`, `IHID`, `ISound`, `IFileMgr`, OpenGL ES via extensão BREW).
-Isso favorece **HLE** — executar o código ARM do jogo num interpretador/JIT e interceptar as
-chamadas de API, traduzindo para o host. É exatamente o caminho do Infuse, do Tuxality.
+## Short conclusion
 
-O material público é surpreendentemente bom: SDK oficial do Zeebo, Developer Guide,
-referência de OEM API do BREW, dumps completos da NAND (bootloaders + AMSS + APPS),
-dumps de RAM/registradores e pesquisa de vtables das interfaces BREW na firmware real.
+Emulating the Zeebo **is not emulating a console**, it is **reimplementing Qualcomm BREW 4.0.2**.
+The game is an ARM binary (`.mod`) that does not talk to hardware: it calls COM-like interfaces
+(`IShell`, `IDisplay`, `IGraphics`, `IHID`, `ISound`, `IFileMgr`, OpenGL ES through a BREW
+extension). That favors **HLE** — running the game's ARM code on an interpreter/JIT and
+intercepting the API calls, translating them for the host. It is exactly the path of Tuxality's
+Infuse.
 
-Esta série `0x` é **pesquisa**: o que se sabe do console e da plataforma. Como o emulador está
-escrito está em [`implementacao/`](implementacao/).
+The public material is surprisingly good: the official Zeebo SDK, the Developer Guide, the BREW
+OEM API reference, complete NAND dumps (bootloaders + AMSS + APPS), RAM/register dumps and
+research on the vtables of the BREW interfaces in the real firmware.
 
-## Índice
+This `0x` series is **research**: what is known about the console and the platform. How the
+emulator is written is in [`implementation/`](implementation/).
 
-| Doc | Conteúdo |
+## Index
+
+| Doc | Contents |
 |---|---|
-| [01-hardware.md](01-hardware.md) | Especificações do console, MSM7201A, Adreno 130, memória, JTAG |
-| [02-plataforma-brew.md](02-plataforma-brew.md) | BREW 4.0.2, AEE, modelo de execução, APIs que importam |
-| [03-formatos-e-seguranca.md](03-formatos-e-seguranca.md) | `.mod`, `.mif`, `.bar`, `.sig`, `.bid`, GGZ, assinatura, `61u.key` |
-| [04-estado-da-arte.md](04-estado-da-arte.md) | Infuse, OpenZeebo, ports homebrew, romsets, comunidade |
-| [05-estrategia-de-emulacao.md](05-estrategia-de-emulacao.md) | Arquitetura proposta, fases, riscos, decisões técnicas |
-| [06-fontes.md](06-fontes.md) | Todas as fontes com link |
-| [07-inventario-vendor.md](07-inventario-vendor.md) | O que foi baixado e onde está |
-| [implementacao/](implementacao/) | **Como o emulador é feito por dentro** — módulo a módulo, com as decisões e o porquê de cada uma |
+| [01-hardware.md](01-hardware.md) | Console specifications, MSM7201A, Adreno 130, memory, JTAG |
+| [02-brew-platform.md](02-brew-platform.md) | BREW 4.0.2, AEE, execution model, the APIs that matter |
+| [03-formats-and-security.md](03-formats-and-security.md) | `.mod`, `.mif`, `.bar`, `.sig`, `.bid`, GGZ, signing, `61u.key` |
+| [04-state-of-the-art.md](04-state-of-the-art.md) | Infuse, OpenZeebo, homebrew ports, romsets, community |
+| [05-emulation-strategy.md](05-emulation-strategy.md) | Proposed architecture, phases, risks, technical decisions |
+| [06-sources.md](06-sources.md) | All the sources, with links |
+| [07-vendor-inventory.md](07-vendor-inventory.md) | What was downloaded and where it is |
+| [implementation/](implementation/) | **How the emulator is built inside** — module by module, with the decisions and the reason for each one |
 
-## Material de teste
+## Test material
 
-`roms/` guarda os títulos usados no desenvolvimento (também fora do git). Já posicionado:
-**Z-Wheel** (App ID `274755`), o shell/menu do próprio console — ver
-[03-formatos-e-seguranca.md](03-formatos-e-seguranca.md) para a anatomia dele.
+`roms/` holds the titles used in development (also outside git). Already in place:
+**Z-Wheel** (App ID `274755`), the console's own shell/menu — see
+[03-formats-and-security.md](03-formats-and-security.md) for its anatomy.
 
-## Aviso
+## Warning
 
-`vendor/` contém material de terceiros (documentação Qualcomm/Zeebo confidencial na origem,
-dumps de firmware, SDKs) espelhado para pesquisa e preservação. Não redistribua; e não commite
-essa pasta num repositório público — o `.gitignore` já a exclui.
+`vendor/` contains third-party material (Qualcomm/Zeebo documentation that was confidential at
+the source, firmware dumps, SDKs) mirrored for research and preservation. Do not redistribute it;
+and do not commit that folder to a public repository — `.gitignore` already excludes it.

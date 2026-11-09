@@ -1,38 +1,38 @@
-//! Formatação estilo `printf` para o `DBGPRINTF` do BREW.
+//! `printf`-style formatting for BREW's `DBGPRINTF`.
 //!
-//! O guest passa a string de formato e os argumentos pela AAPCS; aqui só traduzimos. É um
-//! subconjunto deliberado — o suficiente para o que os jogos usam em log — e qualquer
-//! especificador desconhecido é copiado como veio, para nunca perdermos informação.
+//! The guest passes the format string and the arguments through the AAPCS; here we only
+//! translate. It is a deliberate subset — enough for what games use in logs — and any unknown
+//! specifier is copied as it came, so we never lose information.
 
-/// De onde vêm os argumentos variádicos e como ler strings do guest.
+/// Where the variadic arguments come from and how to read guest strings.
 pub trait ArgSource {
-    /// Próximo argumento de 32 bits.
+    /// Next 32-bit argument.
     fn next_word(&mut self) -> u32;
-    /// String terminada em zero no endereço dado.
+    /// Zero-terminated string at the given address.
     fn read_cstring(&mut self, addr: u32) -> String;
-    /// String de `AECHAR` (UTF-16) terminada em zero no endereço dado: o `%s` do `WSPRINTF`.
+    /// Zero-terminated `AECHAR` (UTF-16) string at the given address: the `%s` of `WSPRINTF`.
     fn read_wide_string(&mut self, addr: u32) -> String;
 }
 
-/// Flags, largura e precisão de um especificador.
+/// Flags, width and precision of a specifier.
 #[derive(Default)]
 struct Spec {
-    /// `-`: alinha à esquerda.
+    /// `-`: left-align.
     left: bool,
-    /// `0`: completa com zeros em vez de espaços.
+    /// `0`: pad with zeros instead of spaces.
     zero: bool,
-    /// `+`: sinal explícito nos positivos.
+    /// `+`: explicit sign on positives.
     plus: bool,
-    /// ` `: espaço no lugar do sinal nos positivos.
+    /// ` `: a space in place of the sign on positives.
     space: bool,
-    /// `#`: prefixo `0x` no hexadecimal.
+    /// `#`: `0x` prefix on hexadecimal.
     alt: bool,
     width: usize,
     precision: Option<usize>,
 }
 
 impl Spec {
-    /// Aplica largura e alinhamento a um campo já pronto.
+    /// Applies width and alignment to a finished field.
     fn pad(&self, body: String) -> String {
         if body.chars().count() >= self.width {
             return body;
@@ -44,8 +44,8 @@ impl Spec {
         }
     }
 
-    /// Monta um número: precisão é o mínimo de dígitos, e o zero à esquerda só vale quando não
-    /// há precisão nem alinhamento à esquerda — é o que o C faz.
+    /// Builds a number: precision is the minimum number of digits, and zero padding only applies
+    /// when there is neither precision nor left alignment — that is what C does.
     fn number(&self, sign: &str, digits: String) -> String {
         let least = self.precision.unwrap_or(0);
         let mut digits = match digits.len() < least {
@@ -62,20 +62,20 @@ impl Spec {
     }
 }
 
-/// Aplica `fmt` consumindo argumentos de `args`.
+/// Applies `fmt`, consuming arguments from `args`.
 pub fn format(fmt: &str, args: &mut impl ArgSource) -> String {
-    format_com(fmt, args, false)
+    format_with(fmt, args, false)
 }
 
-/// O `WSPRINTF`: o mesmo formato, mas o `%s` é uma string de `AECHAR`.
+/// `WSPRINTF`: the same format, but `%s` is an `AECHAR` string.
 ///
-/// Lido como string de C, o `%s` parava no zero do segundo byte da primeira letra: o menu do
-/// Prey Evil formata `L"- %s -"` com os nomes dos episódios, e cada item saía com uma letra só.
-pub fn format_largo(fmt: &str, args: &mut impl ArgSource) -> String {
-    format_com(fmt, args, true)
+/// Read as a C string, `%s` stopped at the zero in the second byte of the first letter: Prey
+/// Evil's menu formats `L"- %s -"` with the episode names, and each item came out as one letter.
+pub fn format_wide(fmt: &str, args: &mut impl ArgSource) -> String {
+    format_with(fmt, args, true)
 }
 
-fn format_com(fmt: &str, args: &mut impl ArgSource, largo: bool) -> String {
+fn format_with(fmt: &str, args: &mut impl ArgSource, wide: bool) -> String {
     let mut out = String::new();
     let mut chars = fmt.chars().peekable();
 
@@ -85,8 +85,8 @@ fn format_com(fmt: &str, args: &mut impl ArgSource, largo: bool) -> String {
             continue;
         }
 
-        // O texto original do especificador é guardado para poder ser devolvido inteiro se a
-        // conversão no fim dele for uma que não conhecemos.
+        // The specifier's original text is kept so it can be returned whole if the conversion
+        // at its end is one we don't know.
         let mut spec = String::from('%');
         let mut f = Spec::default();
         while let Some(&next) = chars.peek() {
@@ -101,8 +101,8 @@ fn format_com(fmt: &str, args: &mut impl ArgSource, largo: bool) -> String {
             spec.push(next);
             chars.next();
         }
-        // Largura. `*` a toma do próprio argumento, e uma largura negativa por essa via é o
-        // mesmo que o flag `-`.
+        // Width. `*` takes it from the argument itself, and a negative width given that way is
+        // the same as the `-` flag.
         if chars.peek() == Some(&'*') {
             spec.push('*');
             chars.next();
@@ -139,8 +139,8 @@ fn format_com(fmt: &str, args: &mut impl ArgSource, largo: bool) -> String {
                 f.precision = Some(value);
             }
         }
-        // Modificadores de tamanho. Todos os inteiros do ARM chegam em palavras de 32 bits, e
-        // `%lld` não aparece nos jogos, então eles só precisam ser consumidos.
+        // Size modifiers. Every ARM integer arrives in 32-bit words, and `%lld` does not show up
+        // in the games, so they only need to be consumed.
         while let Some(&next) = chars.peek() {
             if !"lhzjt".contains(next) {
                 break;
@@ -149,7 +149,7 @@ fn format_com(fmt: &str, args: &mut impl ArgSource, largo: bool) -> String {
             chars.next();
         }
 
-        /// O sinal a imprimir num número positivo, conforme os flags.
+        /// The sign to print on a positive number, according to the flags.
         fn positive(f: &Spec) -> &'static str {
             match (f.plus, f.space) {
                 (true, _) => "+",
@@ -197,23 +197,24 @@ fn format_com(fmt: &str, args: &mut impl ArgSource, largo: bool) -> String {
                 let value = args.next_word();
                 out.push_str(&f.pad(char::from_u32(value).unwrap_or('?').to_string()));
             }
-            // `%S` é a outra largura: string de `AECHAR` no `SPRINTF`. No `WSPRINTF` vale o
-            // espelho, `char`, como no printf da Microsoft — esse lado não foi visto em jogo. Sem ele o especificador saía como veio e não consumia argumento, e o `%d` seguinte
-            // imprimia o ponteiro: o mapa do Need For Speed dizia "vença 286973016 corridas".
+            // `%S` is the other width: an `AECHAR` string in `SPRINTF`. In `WSPRINTF` the mirror
+            // holds, `char`, as in Microsoft's printf — that side has not been seen in a game.
+            // Without it the specifier came out as it was and consumed no argument, and the next
+            // `%d` printed the pointer: the Need For Speed map said "vença 286973016 corridas".
             Some(conv @ ('s' | 'S')) => {
                 let addr = args.next_word();
-                let mut text = match largo ^ (conv == 'S') {
+                let mut text = match wide ^ (conv == 'S') {
                     true => args.read_wide_string(addr),
                     false => args.read_cstring(addr),
                 };
-                // Na string a precisão é teto, não piso: ela corta.
+                // On a string the precision is a ceiling, not a floor: it truncates.
                 if let Some(limit) = f.precision {
                     text = text.chars().take(limit).collect();
                 }
                 out.push_str(&f.pad(text));
             }
-            // Especificador que não conhecemos: devolve o texto original em vez de sumir com
-            // ele, e não consome argumento — consumir errado desalinharia todo o resto.
+            // A specifier we don't know: return the original text instead of dropping it, and
+            // consume no argument — consuming the wrong one would misalign everything after it.
             Some(other) => {
                 out.push_str(&spec);
                 out.push(other);
@@ -249,8 +250,8 @@ mod tests {
                 .unwrap_or_default()
         }
 
-        // O falso guarda as strings já decodificadas; o que o teste do largo cobra é **qual**
-        // leitura o `%s` escolhe, e por isso a larga devolve a mesma string marcada.
+        // The fake keeps the strings already decoded; what the wide test checks is **which**
+        // read `%s` picks, so the wide one returns the same string, tagged.
         fn read_wide_string(&mut self, addr: u32) -> String {
             format!("L:{}", self.read_cstring(addr))
         }
@@ -265,8 +266,8 @@ mod tests {
     }
 
     #[test]
-    fn formata_a_mensagem_real_do_z_wheel() {
-        // A primeira chamada de DBGPRINTF do Z-Wheel, com os argumentos que ele passa.
+    fn formats_the_real_z_wheel_message() {
+        // The Z-Wheel's first DBGPRINTF call, with the arguments it passes.
         let mut args = fake(
             &[4, 0x532c4, 0x71],
             &[(0x532c4, "..\\..\\common\\tectoy_prefsDB.c")],
@@ -278,38 +279,38 @@ mod tests {
     }
 
     #[test]
-    fn cobre_os_especificadores_basicos() {
+    fn covers_the_basic_specifiers() {
         let mut args = fake(&[0xffff_ffff, 42, 0xbeef, 65], &[]);
         assert_eq!(format("%d %u %x %c", &mut args), "-1 42 beef A");
     }
 
     #[test]
-    fn porcento_literal_nao_consome_argumento() {
+    fn a_literal_percent_does_not_consume_an_argument() {
         let mut args = fake(&[7], &[]);
         assert_eq!(format("100%% de %d", &mut args), "100% de 7");
     }
 
     #[test]
-    fn largura_precisao_e_alinhamento() {
-        // Precisão é o mínimo de dígitos, largura é o do campo, e `-` alinha à esquerda. O
-        // zero à esquerda perde para a precisão, como no C.
+    fn width_precision_and_alignment() {
+        // Precision is the minimum number of digits, width is the field's, and `-` left-aligns.
+        // Zero padding loses to precision, as in C.
         let mut args = fake(&[5], &[]);
         assert_eq!(format("[%-08.3ld]", &mut args), "[005     ]");
         let mut args = fake(&[5, 5, 5, -3i32 as u32], &[]);
         assert_eq!(format("%04d|%4d|%-4d|%+d", &mut args), "0005|   5|5   |-3");
     }
 
-    /// O Resident Evil 4 monta o nome dos arquivos de estágio com `%s_%02d.h2z`. Descartar a
-    /// largura dava `3d_stg02_0.h2z`, e o arquivo em disco é `3d_stg02_00.h2z`: o jogo não
-    /// achava nenhum dos doze estágios.
+    /// Resident Evil 4 builds the stage file names with `%s_%02d.h2z`. Dropping the width gave
+    /// `3d_stg02_0.h2z`, and the file on disk is `3d_stg02_00.h2z`: the game found none of the
+    /// twelve stages.
     #[test]
-    fn zero_a_esquerda_no_nome_de_arquivo() {
+    fn leading_zero_in_a_file_name() {
         let mut args = fake(&[0x100, 0], &[(0x100, "3d_stg02")]);
         assert_eq!(format("%s_%02d.h2z", &mut args), "3d_stg02_00.h2z");
     }
 
     #[test]
-    fn largura_por_argumento_e_precisao_corta_string() {
+    fn width_from_argument_and_precision_truncates_string() {
         let mut args = fake(&[6, 42], &[]);
         assert_eq!(format("[%*d]", &mut args), "[    42]");
         let mut args = fake(&[0x200], &[(0x200, "abcdef")]);
@@ -317,22 +318,22 @@ mod tests {
     }
 
     #[test]
-    fn especificador_desconhecido_sobrevive_sem_consumir_argumento() {
+    fn an_unknown_specifier_survives_without_consuming_an_argument() {
         let mut args = fake(&[9], &[]);
         assert_eq!(format("%q %d", &mut args), "%q 9");
     }
 
     #[test]
-    fn no_formato_largo_o_s_le_aechar() {
+    fn in_wide_format_s_reads_aechar() {
         let mut args = fake(&[0x100], &[(0x100, "Escavação")]);
-        assert_eq!(format_largo("- %s -", &mut args), "- L:Escavação -");
+        assert_eq!(format_wide("- %s -", &mut args), "- L:Escavação -");
         let mut args = fake(&[0x100], &[(0x100, "Escavação")]);
         assert_eq!(format("- %s -", &mut args), "- Escavação -");
     }
 
-    /// O desafio do mapa do Need For Speed. Sem o `%S`, o `%d` lia o ponteiro do nome do chefe.
+    /// The Need For Speed map challenge. Without `%S`, `%d` read the pointer to the boss's name.
     #[test]
-    fn o_s_maiusculo_e_a_outra_largura_e_consome_argumento() {
+    fn uppercase_s_is_the_other_width_and_consumes_an_argument() {
         let mut args = fake(
             &[0x100, 4, 0x200],
             &[(0x100, "MARCUS"), (0x200, "MONTANHAS")],
@@ -342,7 +343,7 @@ mod tests {
             "Para desafiar L:MARCUS, vença 4 corridas na região L:MONTANHAS."
         );
         let mut args = fake(&[0x100], &[(0x100, "MARCUS")]);
-        assert_eq!(format_largo("[%S]", &mut args), "[MARCUS]");
+        assert_eq!(format_wide("[%S]", &mut args), "[MARCUS]");
     }
 
 }

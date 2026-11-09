@@ -1,13 +1,13 @@
-//! A tabela de helpers da stdlib do BREW, na ordem em que os ponteiros aparecem.
+//! The BREW stdlib helper table, in the order the pointers appear.
 //!
-//! Gerado de `struct AEEHelperFuncs`, em `sdk/inc/AEEStdLib.h` do BREW SDK 4.0.2. É a tabela
-//! que o módulo recebe do carregador: o header define
-//! `GET_HELPER() = *((AEEHelperFuncs **)AEEMod_Load - 1)`, ou seja, o ponteiro fica na palavra
-//! imediatamente **antes** da base do módulo — exatamente o que a engenharia reversa do
-//! `tectoy.mod` tinha mostrado antes de acharmos esta declaração.
+//! Generated from `struct AEEHelperFuncs`, in `sdk/inc/AEEStdLib.h` of the BREW SDK 4.0.2. It is
+//! the table the module receives from the loader: the header defines
+//! `GET_HELPER() = *((AEEHelperFuncs **)AEEMod_Load - 1)`, that is, the pointer sits in the word
+//! immediately **before** the module base — exactly what reverse engineering of `tectoy.mod`
+//! had shown before we found this declaration.
 //!
-//! O índice é o deslocamento em palavras: `malloc` é o slot 26 (offset 0x68), que é o valor
-//! que os módulos reais pedem.
+//! The index is the offset in words: `malloc` is slot 26 (offset 0x68), which is the value real
+//! modules ask for.
 
 pub const HELPERS: &[&str] = &[
     "memmove",

@@ -1,11 +1,11 @@
-//! A interface em Qt Quick. Ver `docs/implementacao/21-migracao-para-qt.md`.
+//! The Qt Quick interface. See `docs/implementation/21-qt-migration.md`.
 
-mod auxiliares;
-mod biblioteca;
-mod configuracoes;
-mod nucleo;
-mod ponte;
-mod tema;
+mod dialogs;
+mod library;
+mod settings;
+mod emu_core;
+mod bridge;
+mod theme;
 
 use std::process::ExitCode;
 
@@ -13,42 +13,43 @@ use cxx_qt::casting::Upcast;
 
 use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QString, QUrl, QVariant};
 
-pub fn launch(jogo: Option<&str>) -> ExitCode {
-    // Antes do `QGuiApplication`: depois dele a API gráfica e o formato já estão escolhidos.
-    ponte::qobject::prepara_gl();
-    let mut app_dono = QGuiApplication::new();
-    let mut engine_dono = QQmlApplicationEngine::new();
-    let (Some(mut app), Some(mut engine)) = (app_dono.as_mut(), engine_dono.as_mut()) else {
-        eprintln!("erro: o Qt não abriu");
+pub fn launch(game: Option<&str>) -> ExitCode {
+    // Before the `QGuiApplication`: after it, the graphics API and the format are already chosen.
+    bridge::qobject::prepare_gl();
+    let mut owned_app = QGuiApplication::new();
+    let mut owned_engine = QQmlApplicationEngine::new();
+    let (Some(mut app), Some(mut engine)) = (owned_app.as_mut(), owned_engine.as_mut()) else {
+        eprintln!("error: Qt did not open");
         return ExitCode::FAILURE;
     };
-    // Antes da primeira janela. No Wayland não existe ícone em pixels: o compositor casa este
-    // nome com o `zeebx.desktop` instalado e tira o ícone de lá, como o `app_id` do egui.
+    // Before the first window. On Wayland there is no icon in pixels: the compositor matches this
+    // name with the installed `zeebx.desktop` and takes the icon from there, like egui's `app_id`.
     app.as_mut().set_application_name(&QString::from("Zeebx"));
     QGuiApplication::set_desktop_file_name(&QString::from(crate::APP_ID));
-    ponte::qobject::aplica_icone();
-    let mut propriedades = cxx_qt_lib::QMap::<cxx_qt_lib::QMapPair_QString_QVariant>::default();
-    let jogo = QString::from(jogo.unwrap_or_default());
-    propriedades.insert(QString::from("jogoInicial"), QVariant::from(&jogo));
-    engine.as_mut().set_initial_properties(&propriedades);
-    // As capas, os logos e as classificações da biblioteca: `image://zeebx/…`.
-    biblioteca::registra_imagens(engine.as_mut().upcast_pin());
-    engine.load(&QUrl::from("qrc:/qt/qml/zeebx/qml/Principal.qml"));
-    // **O tema depois do `load`, e antes de a primeira janela aparecer.** Aplicado antes, só os
-    // itens soltos (os cartões da grade) o seguiam: as janelas e os controles do Fusion nascem com
-    // a paleta do estilo, tirada do sistema, e só passam à do programa quando ela muda com eles já
-    // criados. Medido no Qt 6.4 e no 6.12. Aqui as janelas existem e ainda não foram mostradas.
-    tema::aplica();
-    let saida = app.exec();
-    // **A ordem é a correção.** Primeiro a engine; depois o jogo, solto com o contexto de GL
-    // ainda vivo, porque as texturas dele moram lá; depois o contexto; e só então o
-    // `QGuiApplication`. Deixado para o fim do processo, o contexto fora de tela morria depois do
-    // Qt, e fechar a janela terminava em SIGSEGV dentro do `~QOffscreenSurface`.
-    drop(engine_dono);
-    nucleo::encerra();
-    ponte::qobject::gl_destroi();
-    drop(app_dono);
-    match saida {
+    bridge::qobject::apply_icon();
+    let mut properties = cxx_qt_lib::QMap::<cxx_qt_lib::QMapPair_QString_QVariant>::default();
+    let game = QString::from(game.unwrap_or_default());
+    properties.insert(QString::from("initialGame"), QVariant::from(&game));
+    engine.as_mut().set_initial_properties(&properties);
+    // The library's covers, logos and ratings: `image://zeebx/…`.
+    library::register_images(engine.as_mut().upcast_pin());
+    engine.load(&QUrl::from("qrc:/qt/qml/zeebx/qml/Main.qml"));
+    // **The theme after `load`, and before the first window appears.** Applied earlier, only the
+    // loose items (the grid cards) followed it: the windows and the Fusion controls are born with
+    // the style's palette, taken from the system, and only switch to the program's when it changes
+    // with them already created. Measured on Qt 6.4 and 6.12. Here the windows exist and have not
+    // been shown yet.
+    theme::apply();
+    let output = app.exec();
+    // **The order is the fix.** First the engine; then the game, released with the GL context
+    // still alive, because its textures live there; then the context; and only then the
+    // `QGuiApplication`. Left to the end of the process, the offscreen context died after Qt,
+    // and closing the window ended in SIGSEGV inside `~QOffscreenSurface`.
+    drop(owned_engine);
+    emu_core::shutdown();
+    bridge::qobject::gl_destroy();
+    drop(owned_app);
+    match output {
         0 => ExitCode::SUCCESS,
         _ => ExitCode::FAILURE,
     }

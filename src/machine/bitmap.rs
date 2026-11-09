@@ -1,15 +1,15 @@
-//! IBitmap e o DIB: as superfícies, o blit e a sincronia com a memória do jogo.
+//! IBitmap and the DIB: the surfaces, the blit and the sync with the game's memory.
 
 use super::*;
 
 impl<C: CpuBackend> Machine<C> {
-    /// Desenha uma imagem numa superfície do jogo chamando o `BltIn` dela.
+    /// Draws an image on a game surface by calling its `BltIn`.
     ///
-    /// É a mesma coreografia do BREW: montamos um `IBitmap` nosso com a imagem decodificada e
-    /// passamos como origem. O `BltIn` do jogo então pede `QueryInterface(AEECLSID_DIB)` no
-    /// nosso bitmap e lê os pixels pelos campos públicos, que é justamente o que o `IDIB`
-    /// existe para oferecer. Conferido na desmontagem: o `BltIn` do Bejeweled Twist faz esse
-    /// `QueryInterface` com `0x01001045` e depois lê `cx`, `cy` e `nColorScheme`.
+    /// It is the same choreography as BREW: we build an `IBitmap` of our own with the decoded image
+    /// and pass it as the source. The game's `BltIn` then asks our bitmap for
+    /// `QueryInterface(AEECLSID_DIB)` and reads the pixels through the public fields, which is
+    /// exactly what `IDIB` exists to offer. Checked in the disassembly: Bejeweled Twist's `BltIn`
+    /// does that `QueryInterface` with `0x01001045` and then reads `cx`, `cy` and `nColorScheme`.
     pub(super) fn blit_into_foreign(
         &mut self,
         blit: PendingBlit,
@@ -24,27 +24,28 @@ impl<C: CpuBackend> Machine<C> {
         };
         let src_x = blit.src_x.max(0) as u32;
         let src_y = blit.src_y.max(0) as u32;
-        let largura = blit.width.min(frame_width.saturating_sub(src_x));
-        let altura = blit.height.min(info.height.saturating_sub(src_y));
-        if largura == 0 || altura == 0 {
+        let blit_width = blit.width.min(frame_width.saturating_sub(src_x));
+        let blit_height = blit.height.min(info.height.saturating_sub(src_y));
+        if blit_width == 0 || blit_height == 0 {
             return Ok(());
         }
 
-        // A origem é uma superfície nossa, criada só para esta chamada.
+        // The source is a surface of ours, created only for this call.
         let source = self.new_object(Interface::Bitmap)?;
         if source == 0 {
             return Ok(());
         }
-        let mut surface = Framebuffer::new(largura, altura);
-        for row in 0..altura {
-            for column in 0..largura {
+        let mut surface = Framebuffer::new(blit_width, blit_height);
+        for row in 0..blit_height {
+            for column in 0..blit_width {
                 let index =
                     ((row + src_y) * info.width + column + src_x + offset) as usize;
                 let opaque = info.opaque.get(index).copied().unwrap_or(true);
                 let pixel = match (opaque, info.pixels.get(index)) {
                     (true, Some(&pixel)) => pixel,
-                    // Sem canal alfa no destino, o transparente vira uma cor reservada — é
-                    // como o BREW resolve, e o `BltIn` respeita a `ncTransparent` do `IDIB`.
+                    // With no alpha channel in the destination, transparent becomes a reserved
+                    // color — that is how BREW handles it, and `BltIn` honors the `IDIB`'s
+                    // `ncTransparent`.
                     _ => TRANSPARENT_KEY,
                 };
                 surface.set_pixel_native(column as i32, row as i32, pixel);
@@ -52,43 +53,43 @@ impl<C: CpuBackend> Machine<C> {
         }
         self.bitmaps.insert(source, surface);
         self.transparency.insert(source, TRANSPARENT_KEY);
-        self.publica_origem_888(source, &info, largura, altura, src_x + offset, src_y)?;
+        self.publish_source_888(source, &info, blit_width, blit_height, src_x + offset, src_y)?;
 
         let vtable = self.cpu.read_u32(blit.target)?;
         let blt_in = self.cpu.read_u32(vtable + BITMAP_BLT_IN_SLOT * 4)?;
         // BltIn(po, xDst, yDst, dx, dy, pSrc, xSrc, ySrc, rop)
         let outcome = self.call_guest_with_stack(
             blt_in,
-            [blit.target, blit.x as u32, blit.y as u32, largura],
-            &[altura, source, 0, 0, blit.rop],
+            [blit.target, blit.x as u32, blit.y as u32, blit_width],
+            &[blit_height, source, 0, 0, blit.rop],
             budget,
         )?;
         if !matches!(outcome, Outcome::Returned { code: 0 }) {
             self.assumptions
-                .insert("o BltIn de uma superfície do jogo recusou o desenho");
+                .insert("a game surface's BltIn refused the draw");
         }
 
         self.objects.release(source);
         self.bitmaps.remove(&source);
-        // **O buffer volta para a região pelo caminho normal.** Tirando só o `dib_buffers` aqui,
-        // a capacidade anotada ficava para trás: o próximo bitmap a nascer neste endereço via a
-        // anotação, concluía que o buffer dele já cabia e publicava um `IDIB` com `pBmp` nulo. O
-        // Bejeweled Twist morria nisso — o `BltIn` dele monta a tabela de linhas a partir do
-        // `pBmp`, e sem ela o objeto de origem ficava sem pixels e o jogo caía no primeiro
-        // desenho.
-        self.solta_dib(source);
+        // **The buffer goes back to the region through the normal path.** Removing only the
+        // `dib_buffers` entry here left the recorded capacity behind: the next bitmap born at this
+        // address saw the record, concluded its buffer already fit and published an `IDIB` with a
+        // null `pBmp`. Bejeweled Twist died of this — its `BltIn` builds the row table from
+        // `pBmp`, and without it the source object had no pixels and the game crashed on the first
+        // draw.
+        self.release_dib(source);
         self.cpu.unwatch_dirty(source);
         self.transparency.remove(&source);
         Ok(())
     }
 
-    /// Compoe uma superfície temporária nossa numa superfície do jogo pelo `BltIn` dela.
+    /// Composites a temporary surface of ours onto a game surface through its `BltIn`.
     pub(super) fn blit_surface_into_foreign(
         &mut self,
         blit: PendingSurfaceBlit,
         budget: u64,
     ) -> Result<(), CpuError> {
-        self.publica_framebuffer_888(blit.source)?;
+        self.publish_framebuffer_888(blit.source)?;
 
         let vtable = self.cpu.read_u32(blit.target)?;
         let blt_in = self.cpu.read_u32(vtable + BITMAP_BLT_IN_SLOT * 4)?;
@@ -100,107 +101,107 @@ impl<C: CpuBackend> Machine<C> {
         )?;
         if !matches!(outcome, Outcome::Returned { code: 0 }) {
             self.assumptions
-                .insert("o BltIn de uma superfície do jogo recusou uma primitiva 2D");
+                .insert("a game surface's BltIn refused a 2D primitive");
         }
 
         self.objects.release(blit.source);
         self.bitmaps.remove(&blit.source);
-        self.solta_dib(blit.source);
+        self.release_dib(blit.source);
         self.cpu.unwatch_dirty(blit.source);
         self.transparency.remove(&blit.source);
         Ok(())
     }
 
-    /// Publica o `IDIB` da origem de um `BltIn` estrangeiro em 888: 24 bits por pixel, ou 32
-    /// com o alfa no quarto byte quando a imagem tem transparência.
+    /// Publishes the `IDIB` of a foreign `BltIn`'s source in 888: 24 bits per pixel, or 32 with
+    /// alpha in the fourth byte when the image has transparency.
     ///
-    /// **Não pode ser o nosso 565.** O `BltIn` do Bejeweled Twist (0x139d8) só aceita
-    /// `nColorScheme` 0, que ele lê como paleta de 8 bits, ou 24; qualquer outro valor desiste
-    /// sem criar a superfície de origem, e o primeiro blit dela saltava para o endereço zero
-    /// (0x32c1c) ou lia 0x24. É o formato em que o decodificador do BREW entrega a imagem.
+    /// **It cannot be our 565.** Bejeweled Twist's `BltIn` (0x139d8) only accepts
+    /// `nColorScheme` 0, which it reads as an 8-bit palette, or 24; any other value gives up
+    /// without creating the source surface, and its first blit jumped to address zero
+    /// (0x32c1c) or read 0x24. It is the format in which BREW's decoder delivers the image.
     ///
-    /// A ordem é B, G, R, A — o `0x00RRGGBB` do BREW em little-endian. Conferido na conversão
-    /// dele para 565 (0x23798): o byte 2 vai para o vermelho e o byte 0 para o azul. Expandir o
-    /// nosso 565 não perde nada: o jogo converte de volta para o formato da tela.
-    fn publica_origem_888(
+    /// The order is B, G, R, A — BREW's `0x00RRGGBB` in little-endian. Checked in its conversion
+    /// to 565 (0x23798): byte 2 goes to red and byte 0 to blue. Expanding our 565 loses nothing:
+    /// the game converts back to the screen's format.
+    fn publish_source_888(
         &mut self,
         source: u32,
         info: &DecodedImage,
-        largura: u32,
-        altura: u32,
+        width: u32,
+        height: u32,
         offset_x: u32,
         offset_y: u32,
     ) -> Result<(), CpuError> {
         let total = (info.width * info.height) as usize;
-        let com_alfa = !info.alfa.is_empty() || info.opaque.iter().take(total).any(|&o| !o);
-        let canais: usize = if com_alfa { 4 } else { 3 };
-        let mut bytes = Vec::with_capacity(largura as usize * altura as usize * canais);
-        for row in 0..altura {
-            for column in 0..largura {
+        let has_alpha = !info.alpha.is_empty() || info.opaque.iter().take(total).any(|&o| !o);
+        let channels: usize = if has_alpha { 4 } else { 3 };
+        let mut bytes = Vec::with_capacity(width as usize * height as usize * channels);
+        for row in 0..height {
+            for column in 0..width {
                 let index = ((row + offset_y) * info.width + column + offset_x) as usize;
-                let cor = Rgb::from_rgb565(info.pixels.get(index).copied().unwrap_or(0));
-                bytes.extend_from_slice(&[cor.b, cor.g, cor.r]);
-                if com_alfa {
-                    let opaco = info.opaque.get(index).copied().unwrap_or(true);
-                    let alfa = match info.alfa.get(index) {
-                        Some(&alfa) => alfa,
-                        None if opaco => 0xff,
+                let color = Rgb::from_rgb565(info.pixels.get(index).copied().unwrap_or(0));
+                bytes.extend_from_slice(&[color.b, color.g, color.r]);
+                if has_alpha {
+                    let opaque = info.opaque.get(index).copied().unwrap_or(true);
+                    let alpha = match info.alpha.get(index) {
+                        Some(&alpha) => alpha,
+                        None if opaque => 0xff,
                         None => 0,
                     };
-                    bytes.push(alfa);
+                    bytes.push(alpha);
                 }
             }
         }
-        let Some((buffer, capacidade)) = self.reserva_superficie(bytes.len() as u32) else {
+        let Some((buffer, capacity)) = self.reserve_surface(bytes.len() as u32) else {
             return Ok(());
         };
         self.cpu.write_mem(buffer, &bytes)?;
-        // Registrado como o `IDIB` de um decodificador: o `expose_dib` do `QueryInterface` não
-        // o reescreve em 565, e o `solta_dib` da limpeza devolve o buffer.
-        self.dib_do_decodificador.insert(source, (buffer, capacidade));
-        let passo = largura as usize * canais;
+        // Registered as a decoder's `IDIB`: the `QueryInterface`'s `expose_dib` does not
+        // rewrite it in 565, and the cleanup's `release_dib` returns the buffer.
+        self.decoder_dib.insert(source, (buffer, capacity));
+        let step = width as usize * channels;
         self.cpu.write_u32(source + 4, 0)?; // pPaletteMap
         self.cpu.write_u32(source + 8, buffer)?; // pBmp
         self.cpu.write_u32(source + 12, 0)?; // pRGB
         self.cpu
             .write_u32(source + 16, to_rgbval(Rgb::from_rgb565(TRANSPARENT_KEY)))?; // ncTransparent
-        self.cpu.write_mem(source + 20, &(largura as u16).to_le_bytes())?;
-        self.cpu.write_mem(source + 22, &(altura as u16).to_le_bytes())?;
-        self.cpu.write_mem(source + 24, &(passo as i16).to_le_bytes())?;
+        self.cpu.write_mem(source + 20, &(width as u16).to_le_bytes())?;
+        self.cpu.write_mem(source + 22, &(height as u16).to_le_bytes())?;
+        self.cpu.write_mem(source + 24, &(step as i16).to_le_bytes())?;
         self.cpu.write_mem(source + 26, &0u16.to_le_bytes())?; // cntRGB
         self.cpu
-            .write_mem(source + 28, &[(canais * 8) as u8, IDIB_COLORSCHEME_888])?;
+            .write_mem(source + 28, &[(channels * 8) as u8, IDIB_COLORSCHEME_888])?;
         self.cpu.write_mem(source + 30, &[0u8; 6])?;
         Ok(())
     }
 
-    /// Publica um framebuffer temporário como `IDIB` 888 para o `BltIn` do jogo.
-    fn publica_framebuffer_888(&mut self, source: u32) -> Result<(), CpuError> {
+    /// Publishes a temporary framebuffer as an 888 `IDIB` for the game's `BltIn`.
+    fn publish_framebuffer_888(&mut self, source: u32) -> Result<(), CpuError> {
         let Some(fb) = self.bitmaps.get(&source) else {
             return Ok(());
         };
-        let (largura, altura) = (fb.width(), fb.height());
-        let mut bytes = Vec::with_capacity(largura as usize * altura as usize * 3);
-        for row in 0..altura {
-            for column in 0..largura {
-                let cor = Rgb::from_rgb565(fb.get_pixel(column as i32, row as i32));
-                bytes.extend_from_slice(&[cor.b, cor.g, cor.r]);
+        let (width, height) = (fb.width(), fb.height());
+        let mut bytes = Vec::with_capacity(width as usize * height as usize * 3);
+        for row in 0..height {
+            for column in 0..width {
+                let color = Rgb::from_rgb565(fb.get_pixel(column as i32, row as i32));
+                bytes.extend_from_slice(&[color.b, color.g, color.r]);
             }
         }
-        let Some((buffer, capacidade)) = self.reserva_superficie(bytes.len() as u32) else {
+        let Some((buffer, capacity)) = self.reserve_surface(bytes.len() as u32) else {
             return Ok(());
         };
         self.cpu.write_mem(buffer, &bytes)?;
-        self.dib_do_decodificador.insert(source, (buffer, capacidade));
-        let passo = largura as usize * 3;
+        self.decoder_dib.insert(source, (buffer, capacity));
+        let step = width as usize * 3;
         self.cpu.write_u32(source + 4, 0)?; // pPaletteMap
         self.cpu.write_u32(source + 8, buffer)?; // pBmp
         self.cpu.write_u32(source + 12, 0)?; // pRGB
         self.cpu
             .write_u32(source + 16, to_rgbval(Rgb::from_rgb565(TRANSPARENT_KEY)))?; // ncTransparent
-        self.cpu.write_mem(source + 20, &(largura as u16).to_le_bytes())?;
-        self.cpu.write_mem(source + 22, &(altura as u16).to_le_bytes())?;
-        self.cpu.write_mem(source + 24, &(passo as i16).to_le_bytes())?;
+        self.cpu.write_mem(source + 20, &(width as u16).to_le_bytes())?;
+        self.cpu.write_mem(source + 22, &(height as u16).to_le_bytes())?;
+        self.cpu.write_mem(source + 24, &(step as i16).to_le_bytes())?;
         self.cpu.write_mem(source + 26, &0u16.to_le_bytes())?; // cntRGB
         self.cpu
             .write_mem(source + 28, &[24, IDIB_COLORSCHEME_888])?;
@@ -208,12 +209,12 @@ impl<C: CpuBackend> Machine<C> {
         Ok(())
     }
 
-    /// Descobre onde ficam os pixels de um `IBitmap` implementado pelo próprio jogo.
+    /// Finds out where the pixels of an `IBitmap` implemented by the game itself are.
     ///
-    /// É o mesmo caminho que o BREW usa: `QueryInterface(AEECLSID_DIB)` no objeto, e o `IDIB`
-    /// que volta traz `pBmp`, `cx`, `cy` e `nPitch` como campos públicos. Com isso a superfície
-    /// do jogo entra no mesmo mecanismo de sincronização das nossas — desenhamos no host e o
-    /// resultado é copiado para a memória dele.
+    /// It is the same path BREW uses: `QueryInterface(AEECLSID_DIB)` on the object, and the `IDIB`
+    /// that comes back carries `pBmp`, `cx`, `cy` and `nPitch` as public fields. With that, the
+    /// game's surface joins the same sync mechanism as ours — we draw on the host and the result
+    /// is copied to its memory.
     pub(super) fn probe_foreign_surface(
         &mut self,
         target: u32,
@@ -225,13 +226,13 @@ impl<C: CpuBackend> Machine<C> {
         let Ok(query) = self.cpu.read_u32(vtable + BITMAP_QUERY_INTERFACE_SLOT * 4) else {
             return Ok(());
         };
-        // O ponteiro de saída precisa viver na memória do guest.
-        let out = self.aloca_interno(4)?;
+        // The output pointer must live in guest memory.
+        let out = self.alloc_internal(4)?;
         if out == 0 {
             return Ok(());
         }
-        // O `IDIB` tem dois IIDs: o atual e o que o BREW 2.0 usava. Um bitmap escrito para a
-        // plataforma antiga só reconhece o segundo.
+        // `IDIB` has two IIDs: the current one and the one BREW 2.0 used. A bitmap written for
+        // the old platform only recognizes the second.
         let mut dib = 0;
         let mut outcome = Outcome::Returned { code: EFAILED };
         for iid in [AEECLSID_DIB, AEEIID_DIB_20] {
@@ -242,15 +243,15 @@ impl<C: CpuBackend> Machine<C> {
                 break;
             }
         }
-        self.libera(out);
+        self.free(out);
 
         let failed = !matches!(outcome, Outcome::Returned { code: 0 });
         if failed || dib == 0 {
-            // O Bejeweled Twist é assim: o `QueryInterface` da superfície dele é literalmente
-            // `mov r0, #0x14; bx lr` — devolve `ECLASSNOTSUPPORT` sempre. Nessa superfície o
-            // único método de desenho implementado de verdade é o `BltIn`.
+            // Bejeweled Twist is like this: its surface's `QueryInterface` is literally
+            // `mov r0, #0x14; bx lr` — it always returns `ECLASSNOTSUPPORT`. On that surface the
+            // only drawing method really implemented is `BltIn`.
             self.assumptions
-                .insert("uma superfície do jogo não expõe IDIB; o desenho nela passa pelo BltIn quando possível");
+                .insert("a game surface does not expose IDIB; drawing on it goes through BltIn when possible");
             return Ok(());
         }
 
@@ -262,8 +263,8 @@ impl<C: CpuBackend> Machine<C> {
         let pitch = i16::from_le_bytes([fields[4], fields[5]]) as i32;
         let depth = fields[8];
 
-        // Só sabemos tratar o formato da tela do console: RGB565, linhas contíguas e para
-        // baixo. Qualquer outra coisa é melhor recusar do que desenhar torto.
+        // We only know how to handle the console's screen format: RGB565, contiguous rows going
+        // down. Anything else is better refused than drawn crooked.
         if cx == 0
             || cy == 0
             || buffer == 0
@@ -271,20 +272,20 @@ impl<C: CpuBackend> Machine<C> {
             || pitch != ((cx * 2).div_ceil(4) * 4) as i32
         {
             self.assumptions
-                .insert("uma superfície do jogo usa um formato que ainda não sabemos desenhar");
+                .insert("a game surface uses a format we cannot draw yet");
             return Ok(());
         }
 
         self.bitmaps.insert(target, Framebuffer::new(cx, cy));
         self.dib_buffers.insert(target, buffer);
-        // Aqui o buffer é do próprio jogo, e é dele que os pixels vêm.
-        self.dib_herdados.remove(&target);
+        // Here the buffer belongs to the game itself, and the pixels come from it.
+        self.inherited_dibs.remove(&target);
         self.cpu.watch_dirty(target, buffer, pitch as u32 * cy)?;
         self.sync_from_guest(target)?;
         Ok(())
     }
 
-    /// O bitmap da tela, criado na primeira vez que alguém pede.
+    /// The screen bitmap, created the first time someone asks for it.
     pub(super) fn device_bitmap(&mut self) -> Result<u32, CpuError> {
         if self.device_bitmap != 0 {
             return Ok(self.device_bitmap);
@@ -295,41 +296,41 @@ impl<C: CpuBackend> Machine<C> {
             self.bitmaps.insert(addr, screen);
             self.device_bitmap = addr;
             self.display_target = addr;
-            // **Uma referência nossa, que nunca é solta.** Quem pede o bitmap da tela solta o
-            // que recebeu, como manda a convenção; mas o dono dele é o display, não quem
-            // pediu. Sem esta contagem o endereço voltava para a lista de livres e o
-            // `CreateCompatibleBitmap` seguinte gravava a superfície dele por cima da tela: a
-            // Z-Wheel entrou no Stage, criou uma superfície de 214×34, e era ela que aparecia
-            // na janela no lugar dos 640×480.
+            // **A reference of ours, which is never released.** Whoever asks for the screen bitmap
+            // releases what they got, as convention says; but its owner is the display, not whoever
+            // asked. Without this count the address went back to the free list and the next
+            // `CreateCompatibleBitmap` wrote its surface over the screen: the Z-Wheel entered the
+            // Stage, created a 214×34 surface, and that was what showed up in the window instead of
+            // the 640×480.
             self.objects.add_ref(addr);
         }
         Ok(addr)
     }
 
-    /// O canvas `0x0101e443`: um bitmap visto como lugar onde um `IDisplay` desenha.
+    /// The `0x0101e443` canvas: a bitmap seen as a place where an `IDisplay` draws.
     ///
-    /// A Z-Wheel pede este canvas ao bitmap em que desenha uma subárvore de widgets (`0x4166c`),
-    /// chama o slot 7 com `&saída` e usa o que sai como `IDisplay` — slots 14, 15 e 19, que são
-    /// `SetDestination`, `GetDestination` e `GetClipRect`. Com o display na mão ela lê o destino,
-    /// cria um bitmap compatível do tamanho do widget e desenha nele. Recusado, a `0x41d68`
-    /// recebia nulo e desreferenciava: era o acesso a `0x00000000` em `0x41dbc` depois de
-    /// confirmar em "Jogar".
+    /// The Z-Wheel asks the bitmap it draws a widget subtree on for this canvas (`0x4166c`),
+    /// calls slot 7 with `&out` and uses what comes out as an `IDisplay` — slots 14, 15 and 19,
+    /// which are `SetDestination`, `GetDestination` and `GetClipRect`. With the display in hand it
+    /// reads the destination, creates a compatible bitmap the size of the widget and draws on it.
+    /// When this was refused, `0x41d68` got null and dereferenced it: that was the access to
+    /// `0x00000000` at `0x41dbc` after confirming on "Jogar".
     pub(super) fn canvas_call(&mut self, slot: u32) -> Result<Option<u32>, CpuError> {
         let Some(name) = Interface::Canvas.method(slot) else {
             return Ok(None);
         };
-        if aee::e_marcador(name) {
+        if aee::is_placeholder(name) {
             return Ok(None);
         }
         let this = self.cpu.read_reg(Reg::R0);
         let result = match name {
             "AddRef" => self.objects.add_ref(this),
             "Release" => {
-                let restam = self.objects.release(this);
-                if restam == 0 {
+                let remaining = self.objects.release(this);
+                if remaining == 0 {
                     self.canvases.remove(&this);
                 }
-                restam
+                remaining
             }
             "GetDisplay" => {
                 let Some(&bitmap) = self.canvases.get(&this) else {
@@ -340,11 +341,11 @@ impl<C: CpuBackend> Machine<C> {
                 if display == 0 {
                     return Ok(Some(ENOMEMORY));
                 }
-                // O display do canvas desenha no bitmap dele. Os nossos displays compartilham um
-                // destino só, então entregar um é apontar esse destino para o bitmap.
+                // The canvas's display draws on its bitmap. Our displays share a single
+                // destination, so handing one out means pointing that destination at the bitmap.
                 self.display_target = bitmap;
                 self.assumptions.insert(
-                    "o canvas 0x0101e443 entregou um IDisplay apontado para o bitmap dele — leitura pelo uso",
+                    "the 0x0101e443 canvas handed out an IDisplay pointed at its bitmap — reading from usage",
                 );
                 if out != 0 {
                     self.cpu.write_u32(out, display)?;
@@ -356,7 +357,7 @@ impl<C: CpuBackend> Machine<C> {
         Ok(Some(result))
     }
 
-    /// Métodos de `ITransform`.
+    /// `ITransform` methods.
     pub(super) fn transform_call(&mut self, slot: u32) -> Result<Option<u32>, CpuError> {
         let Some(name) = Interface::Transform.method(slot) else {
             return Ok(None);
@@ -365,68 +366,69 @@ impl<C: CpuBackend> Machine<C> {
         let result = match name {
             "AddRef" => self.objects.add_ref(this),
             "Release" => {
-                let restam = self.objects.release(this);
-                if restam == 0 {
-                    self.transformacoes.remove(&this);
+                let remaining = self.objects.release(this);
+                if remaining == 0 {
+                    self.transforms.remove(&this);
                 }
-                restam
+                remaining
             }
             // int TransformBltSimple(ITransform *p, int x, int y, IBitmap *pSrc, int xSrc,
             //                        int ySrc, unsigned dx, unsigned dy, uint16 unTransform,
             //                        uint8 nComposite)
             //
-            // As mesmas regras do `TransformBltComplex`, com a matriz montada das flags: rotação
-            // em quartos de volta nos bits 0-1, espelho em X no bit 2 e a escala a partir do bit
-            // 3. O Action Hero 3D passa `unTransform = 8` com `x = 160`, `y = 120` e um canvas
-            // 320x240 — o quadro dobrado centrado na tela 640x480, então `8` é a escala 2x.
+            // The same rules as `TransformBltComplex`, with the matrix built from the flags:
+            // rotation in quarter turns in bits 0-1, X mirror in bit 2 and the scale from bit 3 up.
+            // Action Hero 3D passes `unTransform = 8` with `x = 160`, `y = 120` and a 320x240
+            // canvas — the frame doubled and centered on the 640x480 screen, so `8` is the 2x
+            // scale.
             "TransformBltSimple" => {
-                let Some(&destino) = self.transformacoes.get(&this) else {
+                let Some(&dest) = self.transforms.get(&this) else {
                     return Ok(Some(EBADPARM));
                 };
                 let (x, y) = (
                     self.cpu.read_reg(Reg::R1) as i32,
                     self.cpu.read_reg(Reg::R2) as i32,
                 );
-                let origem = self.cpu.read_reg(Reg::R3);
-                let x_origem = self.stack_arg(0)? as i32;
-                let y_origem = self.stack_arg(1)? as i32;
-                let largura = self.stack_arg(2)? as i32;
-                let altura = self.stack_arg(3)? as i32;
+                let origin = self.cpu.read_reg(Reg::R3);
+                let source_x = self.stack_arg(0)? as i32;
+                let source_y = self.stack_arg(1)? as i32;
+                let width = self.stack_arg(2)? as i32;
+                let height = self.stack_arg(3)? as i32;
                 let flags = self.stack_arg(4)? & 0xffff;
-                let escala = match (flags >> 3) & 0x7 {
+                let scale = match (flags >> 3) & 0x7 {
                     0 => 1.0,
                     1 => 2.0,
                     _ => {
                         self.assumptions.insert(
-                            "ITransform::TransformBltSimple com uma escala além de 1x e 2x — desenhada em 1x",
+                            "ITransform::TransformBltSimple with a scale other than 1x and 2x — drawn at 1x",
                         );
                         1.0
                     }
                 };
-                let espelho = if flags & 0x4 != 0 { -1.0 } else { 1.0 };
-                // Rotação no sentido horário, com o y da tela crescendo para baixo.
+                let mirror = if flags & 0x4 != 0 { -1.0 } else { 1.0 };
+                // Clockwise rotation, with screen y growing downward.
                 let (cos, sin) = match flags & 0x3 {
                     0 => (1.0, 0.0),
                     1 => (0.0, 1.0),
                     2 => (-1.0, 0.0),
                     _ => (0.0, -1.0),
                 };
-                // R · espelho · escala
+                // R · mirror · scale
                 let m = [
-                    cos * espelho * escala,
-                    -sin * escala,
-                    sin * espelho * escala,
-                    cos * escala,
+                    cos * mirror * scale,
+                    -sin * scale,
+                    sin * mirror * scale,
+                    cos * scale,
                 ];
-                self.transforma(TransformBlt {
-                    destino,
-                    origem,
+                self.apply_transform(TransformBlt {
+                    dest,
+                    origin,
                     x,
                     y,
-                    x_origem,
-                    y_origem,
-                    largura,
-                    altura,
+                    source_x,
+                    source_y,
+                    width,
+                    height,
                     m,
                 })
             }
@@ -434,37 +436,38 @@ impl<C: CpuBackend> Machine<C> {
             //                         int ySrc, unsigned dx, unsigned dy,
             //                         const AEETransformMatrix *pMatrix, uint8 nComposite)
             //
-            // A matriz é `{ int16 A, B, C, D }` em ponto fixo 8.8, aplicada **em volta do centro**
-            // do retângulo de origem, e `(x, y)` é onde o canto dele cairia sem transformação.
-            // A leitura sai do uso: o Zenonia passa `x = 160`, `y = 120`, um canvas 320x240 e
-            // escala 1,9; o centro do resultado fica em (320, 240), no meio da tela 640x480.
+            // The matrix is `{ int16 A, B, C, D }` in 8.8 fixed point, applied **around the
+            // center** of the source rectangle, and `(x, y)` is where its corner would land without
+            // transformation. The reading comes from usage: Zenonia passes `x = 160`, `y = 120`, a
+            // 320x240 canvas and scale 1.9; the center of the result lands at (320, 240), in the
+            // middle of the 640x480 screen.
             "TransformBltComplex" => {
-                let Some(&destino) = self.transformacoes.get(&this) else {
+                let Some(&dest) = self.transforms.get(&this) else {
                     return Ok(Some(EBADPARM));
                 };
                 let (x, y) = (
                     self.cpu.read_reg(Reg::R1) as i32,
                     self.cpu.read_reg(Reg::R2) as i32,
                 );
-                let origem = self.cpu.read_reg(Reg::R3);
-                let x_origem = self.stack_arg(0)? as i32;
-                let y_origem = self.stack_arg(1)? as i32;
-                let largura = self.stack_arg(2)? as i32;
-                let altura = self.stack_arg(3)? as i32;
-                let matriz = self.stack_arg(4)?;
-                let mut campos = [0u8; 8];
-                self.cpu.read_mem(matriz, &mut campos)?;
-                let campo = |i: usize| i16::from_le_bytes([campos[i], campos[i + 1]]) as f32 / 256.0;
-                let m = [campo(0), campo(2), campo(4), campo(6)];
-                self.transforma(TransformBlt {
-                    destino,
-                    origem,
+                let origin = self.cpu.read_reg(Reg::R3);
+                let source_x = self.stack_arg(0)? as i32;
+                let source_y = self.stack_arg(1)? as i32;
+                let width = self.stack_arg(2)? as i32;
+                let height = self.stack_arg(3)? as i32;
+                let matrix = self.stack_arg(4)?;
+                let mut fields = [0u8; 8];
+                self.cpu.read_mem(matrix, &mut fields)?;
+                let field = |i: usize| i16::from_le_bytes([fields[i], fields[i + 1]]) as f32 / 256.0;
+                let m = [field(0), field(2), field(4), field(6)];
+                self.apply_transform(TransformBlt {
+                    dest,
+                    origin,
                     x,
                     y,
-                    x_origem,
-                    y_origem,
-                    largura,
-                    altura,
+                    source_x,
+                    source_y,
+                    width,
+                    height,
                     m,
                 })
             }
@@ -473,104 +476,106 @@ impl<C: CpuBackend> Machine<C> {
         Ok(Some(result))
     }
 
-    /// Desenha `origem` em `destino` pela matriz, amostrando o pixel mais próximo.
+    /// Draws `origin` onto `dest` through the matrix, sampling the nearest pixel.
     ///
-    /// Percorre o destino, não a origem: com escala maior que um, andar pela origem deixaria
-    /// buracos entre os pixels. Cada pixel do destino volta pela inversa da matriz até a origem.
-    fn transforma(&mut self, t: TransformBlt) -> u32 {
+    /// It walks the destination, not the source: with a scale larger than one, walking the source
+    /// would leave holes between the pixels. Each destination pixel goes back through the inverse
+    /// matrix to the source.
+    fn apply_transform(&mut self, t: TransformBlt) -> u32 {
         let [a, b, c, d] = t.m;
         let det = a * d - b * c;
-        if det.abs() < f32::EPSILON || t.largura <= 0 || t.altura <= 0 {
+        if det.abs() < f32::EPSILON || t.width <= 0 || t.height <= 0 {
             return EBADPARM;
         }
-        let inversa = [d / det, -b / det, -c / det, a / det];
-        let Some(fonte) = self.bitmaps.get(&t.origem) else {
+        let inverse = [d / det, -b / det, -c / det, a / det];
+        let Some(source) = self.bitmaps.get(&t.origin) else {
             return EBADPARM;
         };
-        let (meio_w, meio_h) = (t.largura as f32 / 2.0, t.altura as f32 / 2.0);
-        // Copiar o retângulo de origem primeiro deixa ler e escrever quando os dois são o mesmo
-        // mapa de superfícies — e quando origem e destino são o mesmo bitmap.
-        let mut pixels = Vec::with_capacity((t.largura * t.altura) as usize);
-        for linha in 0..t.altura {
-            for coluna in 0..t.largura {
-                pixels.push(fonte.get_pixel(t.x_origem + coluna, t.y_origem + linha));
+        let (half_w, half_h) = (t.width as f32 / 2.0, t.height as f32 / 2.0);
+        // Copying the source rectangle first allows reading and writing when both are the same
+        // surface map — and when source and destination are the same bitmap.
+        let mut pixels = Vec::with_capacity((t.width * t.height) as usize);
+        for line in 0..t.height {
+            for column in 0..t.width {
+                pixels.push(source.get_pixel(t.source_x + column, t.source_y + line));
             }
         }
-        let Some(alvo) = self.bitmaps.get_mut(&t.destino) else {
+        let Some(target) = self.bitmaps.get_mut(&t.dest) else {
             return EBADPARM;
         };
-        let (centro_x, centro_y) = (t.x as f32 + meio_w, t.y as f32 + meio_h);
-        // A caixa do resultado: os quatro cantos da origem transformados.
-        let cantos = [(-meio_w, -meio_h), (meio_w, -meio_h), (-meio_w, meio_h), (meio_w, meio_h)];
+        let (center_x, center_y) = (t.x as f32 + half_w, t.y as f32 + half_h);
+        // The result's box: the four corners of the source, transformed.
+        let corners = [(-half_w, -half_h), (half_w, -half_h), (-half_w, half_h), (half_w, half_h)];
         let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
-        for (u, v) in cantos {
-            let (px, py) = (a * u + b * v + centro_x, c * u + d * v + centro_y);
+        for (u, v) in corners {
+            let (px, py) = (a * u + b * v + center_x, c * u + d * v + center_y);
             x0 = x0.min(px);
             y0 = y0.min(py);
             x1 = x1.max(px);
             y1 = y1.max(py);
         }
-        let limite_x = alvo.width() as i32;
-        let limite_y = alvo.height() as i32;
-        for py in (y0.floor() as i32).max(0)..(y1.ceil() as i32).min(limite_y) {
-            for px in (x0.floor() as i32).max(0)..(x1.ceil() as i32).min(limite_x) {
-                let (u, v) = (px as f32 + 0.5 - centro_x, py as f32 + 0.5 - centro_y);
-                let sx = (inversa[0] * u + inversa[1] * v + meio_w).floor() as i32;
-                let sy = (inversa[2] * u + inversa[3] * v + meio_h).floor() as i32;
-                if sx < 0 || sy < 0 || sx >= t.largura || sy >= t.altura {
+        let limit_x = target.width() as i32;
+        let limit_y = target.height() as i32;
+        for py in (y0.floor() as i32).max(0)..(y1.ceil() as i32).min(limit_y) {
+            for px in (x0.floor() as i32).max(0)..(x1.ceil() as i32).min(limit_x) {
+                let (u, v) = (px as f32 + 0.5 - center_x, py as f32 + 0.5 - center_y);
+                let sx = (inverse[0] * u + inverse[1] * v + half_w).floor() as i32;
+                let sy = (inverse[2] * u + inverse[3] * v + half_h).floor() as i32;
+                if sx < 0 || sy < 0 || sx >= t.width || sy >= t.height {
                     continue;
                 }
-                alvo.set_pixel_native(px, py, pixels[(sy * t.largura + sx) as usize]);
+                target.set_pixel_native(px, py, pixels[(sy * t.width + sx) as usize]);
             }
         }
         SUCCESS
     }
 
-    /// Métodos de `IBitmap`, despachados pelo nome do slot.
+    /// `IBitmap` methods, dispatched by slot name.
     pub(super) fn bitmap_call(&mut self, slot: u32) -> Result<Option<u32>, CpuError> {
-        // Blitar para a tela é desenhar por cima dela: o quadro do OpenGL tem de estar nela
-        // antes. Ver [`Machine::materializa_quadro_gl`].
-        self.materializa_quadro_gl();
+        // Blitting to the screen is drawing on top of it: the OpenGL frame must be in it
+        // beforehand. See [`Machine::materialize_gl_frame`].
+        self.materialize_gl_frame();
         let Some(name) = Interface::Bitmap.method(slot) else {
             return Ok(None);
         };
         let this = self.cpu.read_reg(Reg::R0);
         let result = match name {
-            // `IBitmap` tem `QueryInterface`, então AddRef e Release precisam ser tratados aqui:
-            // o braço genérico do despacho só alcança interfaces que não têm tratamento próprio.
+            // `IBitmap` has `QueryInterface`, so AddRef and Release need to be handled here: the
+            // dispatch's generic arm only reaches interfaces with no handling of their own.
             "AddRef" => self.objects.add_ref(this),
             "Release" => {
-                // **O bitmap da tela não morre.** O dono dele é o display, não quem pediu; um
-                // `Release` a mais devolvia o endereço para a lista de livres com a superfície
-                // ainda viva, e o objeto seguinte nascia por cima da tela. A trava vale mesmo
-                // com o `GetDestination` já contando: é o endereço da tela que não pode ser
-                // reciclado, e qualquer caminho novo que o entregue sem contar reabriria isto.
-                if this == self.device_bitmap && self.objects.contagem(this) <= 1 {
+                // **The screen bitmap does not die.** Its owner is the display, not whoever asked;
+                // an extra `Release` returned the address to the free list with the surface still
+                // alive, and the next object was born on top of the screen. The guard holds even
+                // with `GetDestination` already counting: it is the screen's address that must not
+                // be recycled, and any new path that hands it out without counting would reopen
+                // this.
+                if this == self.device_bitmap && self.objects.count(this) <= 1 {
                     if self.serial.is_some() {
-                        self.registra_serial(format!(
-                            "<release a mais no bitmap da tela {this:#x}; segurando>"
+                        self.log_serial(format!(
+                            "<extra release on the screen bitmap {this:#x}; holding on>"
                         ));
                     }
                     return Ok(Some(1));
                 }
-                let restantes = self.objects.release(this);
-                if restantes == 0 {
-                    self.solta_dib(this);
+                let remaining = self.objects.release(this);
+                if remaining == 0 {
+                    self.release_dib(this);
                 }
-                restantes
+                remaining
             }
-            // int QueryInterface(IBitmap *, AEECLSID, void **) — o jogo usa isto para pedir um
-            // `IDIB`, que dá acesso direto aos pixels. Ainda não oferecemos essa interface, e
-            // `ECLASSNOTSUPPORT` é a resposta correta para isso: o BREW espera que o app tenha
-            // caminho alternativo quando a plataforma não expõe o DIB.
+            // int QueryInterface(IBitmap *, AEECLSID, void **) — the game uses this to ask for an
+            // `IDIB`, which gives direct access to the pixels. We do not offer that interface yet,
+            // and `ECLASSNOTSUPPORT` is the correct answer for that: BREW expects the app to have
+            // an alternative path when the platform does not expose the DIB.
             "QueryInterface" => {
                 let requested = self.cpu.read_reg(Reg::R1);
                 let out = self.cpu.read_reg(Reg::R2);
                 let answer = match requested {
                     AEEIID_IBITMAP => Some(this),
-                    // Um `IDIB` *é* um `IBitmap` — a struct começa com a vtable de `IBitmap` e
-                    // só acrescenta campos públicos. Então o próprio objeto serve, desde que
-                    // os campos estejam preenchidos.
+                    // An `IDIB` *is* an `IBitmap` — the struct starts with the `IBitmap` vtable and
+                    // only adds public fields. So the object itself will do, as long as the
+                    // fields are filled in.
                     AEECLSID_DIB | AEEIID_DIB_20 => {
                         self.expose_dib(this)?;
                         Some(this)
@@ -586,13 +591,13 @@ impl<C: CpuBackend> Machine<C> {
                         }
                         return Ok(Some(SUCCESS));
                     }
-                    // O `ITransform` é outro objeto, que desenha **neste** bitmap.
+                    // `ITransform` is another object, which draws **on this** bitmap.
                     AEEIID_TRANSFORM => {
                         let transform = self.new_object(Interface::Transform)?;
                         if transform == 0 {
                             return Ok(Some(ENOMEMORY));
                         }
-                        self.transformacoes.insert(transform, this);
+                        self.transforms.insert(transform, this);
                         if out != 0 {
                             self.cpu.write_u32(out, transform)?;
                         }
@@ -617,7 +622,7 @@ impl<C: CpuBackend> Machine<C> {
                     }
                 }
             }
-            // NativeColor no nosso caso é o próprio RGB565 do framebuffer.
+            // In our case NativeColor is the framebuffer's own RGB565.
             "RGBToNative" => Rgb::from_rgbval(self.cpu.read_reg(Reg::R1)).to_rgb565() as u32,
             "NativeToRGB" => {
                 let native = self.cpu.read_reg(Reg::R1) as u16;
@@ -633,8 +638,8 @@ impl<C: CpuBackend> Machine<C> {
                 if let Some(fb) = self.bitmaps.get_mut(&this) {
                     fb.set_pixel_native(x, y, color);
                 }
-                // O buffer do jogo é a fonte da verdade quando ele existe, então o pixel vai
-                // para os dois lugares — e só ele, não a superfície inteira.
+                // The game's buffer is the source of truth when it exists, so the pixel goes to
+                // both places — and only the pixel, not the whole surface.
                 if let Some(at) = self.dib_pixel(this, x, y) {
                     self.cpu.write_mem(at, &color.to_le_bytes())?;
                 }
@@ -643,22 +648,22 @@ impl<C: CpuBackend> Machine<C> {
             // int SetPixels(IBitmap *po, unsigned cnt, AEEPoint *pPoint, NativeColor color,
             //               AEERasterOp rop)
             //
-            // O `DrawPixel` em lote: `cnt` pontos `{ int16 x; int16 y }`, todos na mesma cor. O
-            // Zenonia usa isto no meio do jogo, e sem ele parava — nos dois motores, no mesmo
-            // ponto, depois de quase 1.400 voltas.
+            // `DrawPixel` in bulk: `cnt` points `{ int16 x; int16 y }`, all in the same color.
+            // Zenonia uses this mid-game, and without it it stopped — on both engines, at the same
+            // point, after almost 1,400 iterations.
             "SetPixels" => {
-                let quantos = self.cpu.read_reg(Reg::R1);
-                let pontos = self.cpu.read_reg(Reg::R2);
+                let count = self.cpu.read_reg(Reg::R1);
+                let points = self.cpu.read_reg(Reg::R2);
                 let color = self.cpu.read_reg(Reg::R3) as u16;
-                if pontos == 0 {
+                if points == 0 {
                     return Ok(Some(EBADPARM));
                 }
-                // Um contador absurdo vindo do guest não pode virar um laço de bilhões.
-                for i in 0..quantos.min(1 << 20) {
-                    let mut ponto = [0u8; 4];
-                    self.cpu.read_mem(pontos + i * 4, &mut ponto)?;
-                    let x = i16::from_le_bytes([ponto[0], ponto[1]]) as i32;
-                    let y = i16::from_le_bytes([ponto[2], ponto[3]]) as i32;
+                // An absurd count coming from the guest must not turn into a loop of billions.
+                for i in 0..count.min(1 << 20) {
+                    let mut point = [0u8; 4];
+                    self.cpu.read_mem(points + i * 4, &mut point)?;
+                    let x = i16::from_le_bytes([point[0], point[1]]) as i32;
+                    let y = i16::from_le_bytes([point[2], point[3]]) as i32;
                     if let Some(fb) = self.bitmaps.get_mut(&this) {
                         fb.set_pixel_native(x, y, color);
                     }
@@ -673,7 +678,7 @@ impl<C: CpuBackend> Machine<C> {
                     self.cpu.read_reg(Reg::R1) as i32,
                     self.cpu.read_reg(Reg::R2) as i32,
                 );
-                // Do buffer do jogo, quando há um: ele pode ter escrito ali direto.
+                // From the game's buffer, when there is one: it may have written there directly.
                 let value = match self.dib_pixel(this, x, y) {
                     Some(at) => {
                         let mut bytes = [0u8; 2];
@@ -708,24 +713,24 @@ impl<C: CpuBackend> Machine<C> {
             // int FillRect(IBitmap *po, const AEERect *prc, NativeColor color, AEERasterOp rop)
             // int FillRect(IBitmap *po, const AEERect *prc, NativeColor color, AEERasterOp rop)
             //
-            // `IBITMAP_FillRect.htm`: só `AEE_RO_COPY` e `AEE_RO_XOR` valem; qualquer outra
-            // operação é `EUNSUPPORTED` e **não desenha**. Enquanto ignorávamos o `rop`, o
-            // Bejeweled Twist pintava a tela inteira de preto uma vez por quadro com um
-            // `AEE_RO_TRANSPARENT` que o console teria recusado.
+            // `IBITMAP_FillRect.htm`: only `AEE_RO_COPY` and `AEE_RO_XOR` are valid; any other
+            // operation is `EUNSUPPORTED` and **does not draw**. While we ignored `rop`, Bejeweled
+            // Twist painted the whole screen black once per frame with an `AEE_RO_TRANSPARENT` the
+            // console would have refused.
             "FillRect" => {
                 let rop = self.cpu.read_reg(Reg::R3);
                 let rect = self.read_rect(self.cpu.read_reg(Reg::R1))?;
                 let color = self.cpu.read_reg(Reg::R2) as u16;
-                // Com `AEE_RO_TRANSPARENT`, preencher com a própria cor transparente não
-                // escreve nada. Ignorar o `rop` custava caro: o Bejeweled Twist chama exatamente
-                // assim, com cor zero, e a tela inteira era apagada uma vez por quadro.
+                // With `AEE_RO_TRANSPARENT`, filling with the transparent color itself writes
+                // nothing. Ignoring `rop` was costly: Bejeweled Twist calls exactly
+                // like that, with color zero, and the whole screen was erased once per frame.
                 let transparent = self.transparency.get(&this).copied().unwrap_or(0);
                 if rop == AEE_RO_TRANSPARENT && color == transparent {
                     return Ok(Some(SUCCESS));
                 }
                 if let (Some(rect), Some(fb)) = (rect, self.bitmaps.get_mut(&this)) {
-                    // `AEE_RO_COPY` é o normal; qualquer outra operação que chegue aqui ainda
-                    // pinta, porque recusar o desenho é pior do que pintar demais.
+                    // `AEE_RO_COPY` is the normal case; any other operation that gets here still
+                    // paints, because refusing to draw is worse than painting too much.
                     if rop == AEE_RO_XOR {
                         fb.xor_rect_native(rect, color);
                     } else {
@@ -748,7 +753,7 @@ impl<C: CpuBackend> Machine<C> {
                 self.blit(this, dst, size, src, origin, rop);
                 SUCCESS
             }
-            // BltOut inverte os papéis: a fonte é `po` e o destino vem no argumento.
+            // BltOut swaps the roles: the source is `po` and the destination comes in the argument.
             "BltOut" => {
                 let dst_pos = (
                     self.cpu.read_reg(Reg::R1) as i32,
@@ -785,23 +790,24 @@ impl<C: CpuBackend> Machine<C> {
                 if addr == 0 {
                     return Ok(Some(ENOMEMORY));
                 }
-                // **Nasce com a cor transparente, e não preto.** O Toy Raid monta cada sprite
-                // virado num par de bitmaps compatíveis: `BltIn` transparente do atlas para o
-                // primeiro, cópia espelhada pelo `IDIB` para o segundo, e `BitBlt` transparente
-                // do segundo na tela. O fundo que sobra do primeiro vai junto, e tem de ser a
-                // chave: nascido preto, cada helicóptero virado para a direita, avião e explosão
-                // saía dentro de um retângulo preto.
-                let mut novo = Framebuffer::new(width, height);
-                novo.fill_rect_native(
+                // **It is born with the transparent color, not black.** Toy Raid builds each
+                // flipped sprite in a pair of compatible bitmaps: a transparent `BltIn` from the
+                // atlas to the first, a mirrored copy through the `IDIB` to the second, and a
+                // transparent `BitBlt` of the second onto the screen. The leftover background of
+                // the first goes along, and it must be the key: born black, every right-facing
+                // helicopter, plane and explosion came out inside a black rectangle.
+                let mut create = Framebuffer::new(width, height);
+                create.fill_rect_native(
                     Rect { x: 0, y: 0, width: width as i16, height: height as i16 },
                     TRANSPARENT_KEY,
                 );
-                self.bitmaps.insert(addr, novo);
-                // **O bitmap compatível já nasce `IDIB`, com os campos públicos preenchidos.** O
-                // Zenonia cria o canvas 320x240 assim e lê `cx`, `cy` e `pBmp` direto da struct,
-                // sem `QueryInterface` nenhum. Com os campos zerados o canvas tinha tamanho zero:
-                // o jogo desenhava pixel a pixel por `SetPixels` — 197 mil chamadas em trinta
-                // segundos — e apresentava um retângulo vazio, com a tela preta.
+                self.bitmaps.insert(addr, create);
+                // **The compatible bitmap is born an `IDIB`, with the public fields filled in.**
+                // Zenonia creates its 320x240 canvas this way and reads `cx`, `cy` and `pBmp`
+                // straight from the struct, without any `QueryInterface`. With the fields zeroed
+                // the canvas had zero size: the game drew pixel by pixel through `SetPixels` — 197
+                // thousand calls in thirty seconds — and presented an empty rectangle, with the
+                // screen black.
                 self.expose_dib(addr)?;
                 if out != 0 {
                     self.cpu.write_u32(out, addr)?;
@@ -826,96 +832,95 @@ impl<C: CpuBackend> Machine<C> {
         Ok(Some(result))
     }
 
-    /// Prepara um bitmap para ser usado como `IDIB`: reserva o buffer de pixels na memória do
-    /// guest, copia o conteúdo atual para lá e preenche os campos públicos da struct.
+    /// Prepares a bitmap to be used as an `IDIB`: reserves the pixel buffer in guest memory,
+    /// copies the current contents there and fills in the struct's public fields.
     ///
-    /// Layout, de `inc/AEEIDIB.h`: `pvt`, `pPaletteMap`, `pBmp`, `pRGB`, `ncTransparent`,
-    /// `cx`, `cy`, `nPitch`, `cntRGB`, `nDepth`, `nColorScheme` e seis bytes reservados.
+    /// Layout, from `inc/AEEIDIB.h`: `pvt`, `pPaletteMap`, `pBmp`, `pRGB`, `ncTransparent`,
+    /// `cx`, `cy`, `nPitch`, `cntRGB`, `nDepth`, `nColorScheme` and six reserved bytes.
     pub(super) fn expose_dib(&mut self, bitmap: u32) -> Result<(), CpuError> {
-        // O `IDIB` do decodificador já está publicado, no formato dele.
-        if self.dib_do_decodificador.contains_key(&bitmap) {
+        // The decoder's `IDIB` is already published, in its own format.
+        if self.decoder_dib.contains_key(&bitmap) {
             return Ok(());
         }
         let Some(fb) = self.bitmaps.get(&bitmap) else {
             return Ok(());
         };
         let cy = fb.height();
-        let precisa = fb.passo_do_dib() as u32 * cy;
-        // **O cabeçalho é reescrito toda vez, e não só na primeira.** O endereço de um objeto
-        // volta a ser usado quando o anterior é liberado, e o bitmap novo tem outro tamanho:
-        // com a checagem por endereço, o `IDIB` de uma imagem nova continuava anunciando o
-        // tamanho da imagem anterior.
+        let needed = fb.dib_pitch() as u32 * cy;
+        // **The header is rewritten every time, not only the first.** An object's address is
+        // reused when the previous one is freed, and the new bitmap has another size: with the
+        // check by address, a new image's `IDIB` kept announcing the size of the previous image.
         //
-        // Foi o que quebrou o texto do Tekken 2. Ele decodifica nove imagens em sequência,
-        // liberando cada uma antes da seguinte — todas nasceram no mesmo endereço. O `IDIB`
-        // dizia 200x112 para todas, então o jogo criava uma página de 200x112 para uma folha de
-        // letras de 360x280, copiava só o canto dela e depois pedia cada glifo por coordenada
-        // da folha inteira. O que caía fora virava bloco: o menu inteiro saía com as palavras
-        // como retângulos laranja.
+        // That is what broke Tekken 2's text. It decodes nine images in sequence, freeing each
+        // one before the next — all of them were born at the same address. The `IDIB` said
+        // 200x112 for all of them, so the game created a 200x112 page for a 360x280 sheet of
+        // letters, copied only its corner and then asked for each glyph by coordinates in the
+        // whole sheet. What fell outside became a block: the whole menu came out with the words
+        // as orange rectangles.
         //
-        // O buffer é reaproveitado quando cabe. Reservar outro a cada exposição também acerta o
-        // tamanho, mas a região de superfícies **não recicla**: um jogo que decodifique centenas
-        // de imagens a esgotaria.
-        let cabe = self
+        // The buffer is reused when it fits. Reserving another one on each exposure also gets the
+        // size right, but the surface region **does not recycle**: a game that decodes hundreds
+        // of images would exhaust it.
+        let fits = self
             .dib_capacity
             .get(&bitmap)
-            .is_some_and(|&tinha| tinha >= precisa);
-        if !cabe {
-            // O buffer que não cabe mais volta para a região antes de pedir outro.
-            // Só com capacidade registrada o buffer é nosso; sem ela, é do jogo.
-            if let (Some(&antigo), Some(_)) =
+            .is_some_and(|&had| had >= needed);
+        if !fits {
+            // The buffer that no longer fits goes back to the region before asking for another.
+            // The buffer is ours only with a recorded capacity; without it, it belongs to the game.
+            if let (Some(&old), Some(_)) =
                 (self.dib_buffers.get(&bitmap), self.dib_capacity.get(&bitmap))
             {
-                self.solta_superficie(antigo);
+                self.release_surface(old);
             }
-            let Some((buffer, capacidade)) = self.reserva_superficie(precisa) else {
+            let Some((buffer, capacity)) = self.reserve_surface(needed) else {
                 self.dib_buffers.remove(&bitmap);
                 self.dib_capacity.remove(&bitmap);
                 return Ok(());
             };
             self.dib_buffers.insert(bitmap, buffer);
-            self.dib_capacity.insert(bitmap, capacidade);
-            self.dib_publicado.remove(&bitmap);
-            self.cpu.watch_dirty(bitmap, buffer, precisa)?;
-            // A primeira exposição precisa publicar os pixels atuais. Exposições seguintes
-            // apenas atualizam o cabeçalho: reescrever a superfície inteira em cada
-            // QueryInterface apagava alterações feitas pelo guest e custava dezenas de ms em
-            // jogos que consultam o bitmap a cada quadro.
+            self.dib_capacity.insert(bitmap, capacity);
+            self.published_dib.remove(&bitmap);
+            self.cpu.watch_dirty(bitmap, buffer, needed)?;
+            // The first exposure needs to publish the current pixels. Later exposures only
+            // update the header: rewriting the whole surface on every QueryInterface erased
+            // changes made by the guest and cost tens of ms in games that query the bitmap
+            // every frame.
             self.sync_to_guest(bitmap)?;
-        } else if self.dib_herdados.contains(&bitmap) {
-            // O buffer cabe, mas é do objeto que morreu aqui: para este bitmap, esta **é** a
-            // primeira exposição.
+        } else if self.inherited_dibs.contains(&bitmap) {
+            // The buffer fits, but it belongs to the object that died here: for this bitmap, this
+            // **is** the first exposure.
             self.sync_to_guest(bitmap)?;
         }
         self.write_dib_header(bitmap)
     }
 
-    /// Escreve os campos públicos do `IDIB` de um bitmap: tamanho, passo, profundidade e o
-    /// ponteiro para os pixels — este último só quando eles já existem.
+    /// Writes the public fields of a bitmap's `IDIB`: size, pitch, depth and the pointer to the
+    /// pixels — the latter only when they already exist.
     ///
-    /// Um `IBitmap` de software do BREW **é** um `IDIB`: a struct começa com a vtable de
-    /// `IBitmap` e segue com campos públicos, e o jogo lê esses campos direto, sem pedir nada.
-    /// O Peggle é o caso: ele decodifica o PNG, pergunta o tamanho pelos campos e imprime
-    /// `-size 0/0` no log dele quando não acha. Aí monta cada sprite como um quadrado de lado
-    /// zero — 76.618 dos 77.208 triângulos de um quadro saíam degenerados, e a tela ficava
-    /// preta com o jogo desenhando o tempo todo.
+    /// A BREW software `IBitmap` **is** an `IDIB`: the struct starts with the `IBitmap` vtable
+    /// and goes on with public fields, and the game reads those fields directly, without asking for
+    /// anything. Peggle is the case: it decodes the PNG, asks for the size through the fields and
+    /// prints `-size 0/0` in its log when it does not find it. Then it builds each sprite as a
+    /// square with zero sides — 76,618 of the 77,208 triangles in a frame came out degenerate, and
+    /// the screen stayed black with the game drawing the whole time.
     ///
-    /// Fora do decodificador, os pixels continuam sendo alocados só no `QueryInterface`, que é
-    /// quando o jogo declara que vai mexer neles: a região de superfícies não recicla, e toda
-    /// superfície publicada entra no laço que sincroniza os pixels a cada chamada que os toca.
-    /// Escrever o cabeçalho sem os pixels seria pior que não escrever nada — o jogo passa a
-    /// confiar no `pBmp` e desreferencia o zero.
+    /// Outside the decoder, the pixels are still allocated only in `QueryInterface`, which is when
+    /// the game declares it will touch them: the surface region does not recycle, and every
+    /// published surface joins the loop that syncs the pixels on each call that touches them.
+    /// Writing the header without the pixels would be worse than writing nothing — the game starts
+    /// trusting `pBmp` and dereferences zero.
     pub(super) fn write_dib_header(&mut self, bitmap: u32) -> Result<(), CpuError> {
         let Some(fb) = self.bitmaps.get(&bitmap) else {
             return Ok(());
         };
         let (cx, cy) = (fb.width(), fb.height());
-        let pitch = fb.passo_do_dib() as u32;
+        let pitch = fb.dib_pitch() as u32;
         let buffer = self.dib_buffers.get(&bitmap).copied().unwrap_or(0);
         let transparent = self.transparency.get(&bitmap).copied().unwrap_or(TRANSPARENT_KEY) as u32;
         self.cpu.write_u32(bitmap + 4, 0)?; // pPaletteMap
         self.cpu.write_u32(bitmap + 8, buffer)?; // pBmp
-        self.cpu.write_u32(bitmap + 12, 0)?; // pRGB: RGB565 não tem paleta
+        self.cpu.write_u32(bitmap + 12, 0)?; // pRGB: RGB565 has no palette
         self.cpu.write_u32(bitmap + 16, transparent)?;
         self.cpu
             .write_mem(bitmap + 20, &(cx as u16).to_le_bytes())?;
@@ -924,114 +929,114 @@ impl<C: CpuBackend> Machine<C> {
         self.cpu
             .write_mem(bitmap + 24, &(pitch as i16).to_le_bytes())?;
         self.cpu.write_mem(bitmap + 26, &0u16.to_le_bytes())?; // cntRGB
-        // `nDepth` em bits e `nColorScheme` com o código de `AEEIDIB.h`. Sem o esquema correto o
-        // jogo não sabe como interpretar os pixels e desiste.
+        // `nDepth` in bits and `nColorScheme` with the code from `AEEIDIB.h`. Without the right
+        // scheme the game does not know how to interpret the pixels and gives up.
         self.cpu
             .write_mem(bitmap + 28, &[COLOR_DEPTH as u8, IDIB_COLORSCHEME_565])?;
         self.cpu.write_mem(bitmap + 30, &[0u8; 6])?;
         Ok(())
     }
 
-    /// Devolve à região o buffer de um bitmap que morreu.
+    /// Returns to the region the buffer of a bitmap that died.
     ///
-    /// Só os buffers que **nós** reservamos voltam — os que têm capacidade anotada. O de uma
-    /// superfície do jogo (`IDIB` dele) é memória dele.
-    pub(super) fn solta_dib(&mut self, bitmap: u32) {
-        if let Some((buffer, _)) = self.dib_do_decodificador.remove(&bitmap) {
-            self.solta_superficie(buffer);
+    /// Only the buffers that **we** reserved go back — the ones with a recorded capacity. That of
+    /// a game surface (its own `IDIB`) is its own memory.
+    pub(super) fn release_dib(&mut self, bitmap: u32) {
+        if let Some((buffer, _)) = self.decoder_dib.remove(&bitmap) {
+            self.release_surface(buffer);
         }
-        // Sem capacidade registrada o buffer não é nosso — é a superfície do próprio jogo.
+        // Without a recorded capacity the buffer is not ours — it is the game's own surface.
         if self.dib_capacity.remove(&bitmap).is_none() {
             return;
         }
         if let Some(buffer) = self.dib_buffers.remove(&bitmap) {
-            self.solta_superficie(buffer);
+            self.release_surface(buffer);
         }
-        self.dib_herdados.remove(&bitmap);
-        self.dib_publicado.remove(&bitmap);
+        self.inherited_dibs.remove(&bitmap);
+        self.published_dib.remove(&bitmap);
         self.cpu.unwatch_dirty(bitmap);
     }
 
-    /// Devolve um buffer à região de superfícies.
+    /// Returns a buffer to the surface region.
     ///
-    /// **A região de superfícies não reciclava, e a Z-Wheel a esgotava.** A barra de abas cria um
-    /// bitmap por quadro, alternando 440 e 441 de largura, e cada página da lista decodifica
-    /// capas novas; medido, os 8 MB acabavam aos 27 s de navegação. Dali em diante o canvas da
-    /// caixa de mensagem não tinha pixels, a caixa não abria, e confirmar um jogo derrubava a
-    /// Z-Wheel num salto para o endereço zero em vez de lançá-lo.
+    /// **The surface region did not recycle, and the Z-Wheel exhausted it.** The tab bar creates
+    /// one bitmap per frame, alternating between 440 and 441 wide, and each page of the list
+    /// decodes new covers; measured, the 8 MB ran out after 27 s of browsing. From then on the
+    /// message box's canvas had no pixels, the box did not open, and confirming a game crashed the
+    /// Z-Wheel with a jump to address zero instead of launching it.
     ///
-    /// Reciclar só o bloco inteiro também não bastava: sem fundir vizinhos nem dividir blocos,
-    /// buracos pequenos não serviam a pedidos grandes e a região esgotava do mesmo jeito, só
-    /// mais devagar. Por isso ela usa o mesmo [`Heap`] do jogo.
-    pub(super) fn solta_superficie(&mut self, endereco: u32) {
-        self.superficies.free(endereco);
+    /// Recycling only whole blocks was not enough either: without merging neighbors or splitting
+    /// blocks, small holes did not serve large requests and the region ran out just the same, only
+    /// more slowly. That is why it uses the same [`Heap`] as the game.
+    pub(super) fn release_surface(&mut self, address: u32) {
+        self.surfaces.free(address);
     }
 
-    /// Reserva um buffer na região de superfícies. Devolve endereço e capacidade.
-    pub(super) fn reserva_superficie(&mut self, bytes: u32) -> Option<(u32, u32)> {
-        let endereco = self.superficies.alloc(bytes)?;
-        Some((endereco, self.superficies.size_of(endereco).unwrap_or(bytes)))
+    /// Reserves a buffer in the surface region. Returns address and capacity.
+    pub(super) fn reserve_surface(&mut self, bytes: u32) -> Option<(u32, u32)> {
+        let address = self.surfaces.alloc(bytes)?;
+        Some((address, self.surfaces.size_of(address).unwrap_or(bytes)))
     }
 
-    /// Copia os pixels do host para o buffer que o jogo enxerga.
+    /// Copies the pixels from the host to the buffer the game sees.
     pub(super) fn sync_to_guest(&mut self, bitmap: u32) -> Result<(), CpuError> {
         let Some(&buffer) = self.dib_buffers.get(&bitmap) else {
             return Ok(());
         };
-        let herdado = self.dib_herdados.contains(&bitmap);
-        let publicado = self.dib_publicado.get(&bitmap).copied();
+        let inherited = self.inherited_dibs.contains(&bitmap);
+        let published = self.published_dib.get(&bitmap).copied();
         let Some(fb) = self.bitmaps.get_mut(&bitmap) else {
             return Ok(());
         };
-        let serie = fb.serie();
-        let sujeira = fb.toma_sujeira();
-        // **Só o que mudou vai para o jogo.** Esta superfície já foi publicada inteira, e o
-        // buffer só ficou para trás no retângulo que desenhamos desde então. Um sprite muda
-        // alguns milhares de pixels; reescrever os 600 KB dela a cada `IIMAGE_Draw` era 92% do
-        // tempo de API do Pac-Mania, que desenha 160 mil sprites em cinco segundos virtuais.
+        let generation = fb.generation();
+        let dirty_rect = fb.take_dirty_rect();
+        // **Only what changed goes to the game.** This surface has already been published whole,
+        // and the buffer only fell behind in the rectangle we have drawn since. A sprite changes
+        // a few thousand pixels; rewriting its 600 KB on every `IIMAGE_Draw` was 92% of
+        // Pac-Mania's API time, and it draws 160 thousand sprites in five virtual seconds.
         //
-        // A faixa escrita vai do primeiro pixel da caixa ao último, inclusive o que fica entre
-        // as linhas fora dela: ali os dois lados já são iguais, porque a importação roda antes
-        // de todo desenho, e uma escrita contígua sai mais barata que uma por linha.
-        if !herdado && publicado == Some(serie) {
-            let Some([x0, y0, x1, y1]) = sujeira else {
+        // The written span goes from the first pixel of the box to the last, including what lies
+        // between the rows outside it: there both sides are already equal, because the import runs
+        // before every draw, and one contiguous write is cheaper than one per row.
+        if !inherited && published == Some(generation) {
+            let Some([x0, y0, x1, y1]) = dirty_rect else {
                 return Ok(());
             };
-            let largura = fb.width() as usize;
-            let passo = fb.passo_do_dib();
-            if passo == largura * 2 {
-                let inicio = y0 as usize * largura + x0 as usize;
-                let fim = (y1 as usize - 1) * largura + x1 as usize;
-                let bytes = fb.rgb565_intervalo(inicio, fim);
-                self.cpu.write_mem(buffer + inicio as u32 * 2, &bytes)?;
+            let width = fb.width() as usize;
+            let step = fb.dib_pitch();
+            if step == width * 2 {
+                let start = y0 as usize * width + x0 as usize;
+                let end = (y1 as usize - 1) * width + x1 as usize;
+                let bytes = fb.rgb565_range(start, end);
+                self.cpu.write_mem(buffer + start as u32 * 2, &bytes)?;
             } else {
-                // Com enchimento no fim da linha, a faixa contígua não bate com o buffer: vai
-                // linha a linha.
-                for linha in y0 as usize..y1 as usize {
-                    let inicio = linha * largura + x0 as usize;
-                    let bytes = fb.rgb565_intervalo(inicio, linha * largura + x1 as usize);
-                    let destino = linha * passo + x0 as usize * 2;
-                    self.cpu.write_mem(buffer + destino as u32, &bytes)?;
+                // With padding at the end of the row, the contiguous span does not match the
+                // buffer: go row by row.
+                for line in y0 as usize..y1 as usize {
+                    let start = line * width + x0 as usize;
+                    let bytes = fb.rgb565_range(start, line * width + x1 as usize);
+                    let dest = line * step + x0 as usize * 2;
+                    self.cpu.write_mem(buffer + dest as u32, &bytes)?;
                 }
             }
         } else {
             let bytes = fb.to_dib_bytes();
             self.cpu.write_mem(buffer, &bytes)?;
         }
-        self.dib_herdados.remove(&bitmap);
-        self.dib_publicado.insert(bitmap, serie);
-        // A superfície do guest acabou de ficar **idêntica** à nossa — e foi a escrita acima que
-        // ligou o sinalizador. Limpar aqui é o que permite pular a importação seguinte: sem
-        // isto toda saída sujaria tudo de novo e a vigia não economizaria nada.
+        self.inherited_dibs.remove(&bitmap);
+        self.published_dib.insert(bitmap, generation);
+        // The guest's surface just became **identical** to ours — and it was the write above that
+        // set the flag. Clearing it here is what allows skipping the next import: without
+        // this every exit would dirty everything again and the watch would save nothing.
         self.cpu.take_dirty(bitmap);
         Ok(())
     }
 
-    /// Traz de volta o que o jogo escreveu direto no buffer.
-    /// O endereço de um pixel dentro do buffer que o jogo enxerga, quando ele existe.
+    /// Brings back what the game wrote directly into the buffer.
+    /// The address of a pixel inside the buffer the game sees, when it exists.
     ///
-    /// É o que permite `DrawPixel` e `GetPixel` mexerem em dois bytes em vez de mandarem a
-    /// superfície inteira de um lado para o outro.
+    /// It is what lets `DrawPixel` and `GetPixel` touch two bytes instead of shipping the
+    /// whole surface from one side to the other.
     pub(super) fn dib_pixel(&self, bitmap: u32, x: i32, y: i32) -> Option<u32> {
         let &buffer = self.dib_buffers.get(&bitmap)?;
         let fb = self.bitmaps.get(&bitmap)?;
@@ -1039,7 +1044,7 @@ impl<C: CpuBackend> Machine<C> {
         if x < 0 || y < 0 || x >= width || y >= height {
             return None;
         }
-        Some(buffer + (y as usize * fb.passo_do_dib()) as u32 + x as u32 * 2)
+        Some(buffer + (y as usize * fb.dib_pitch()) as u32 + x as u32 * 2)
     }
 
     pub(super) fn sync_from_guest(&mut self, bitmap: u32) -> Result<(), CpuError> {
@@ -1049,33 +1054,34 @@ impl<C: CpuBackend> Machine<C> {
         let Some(fb) = self.bitmaps.get(&bitmap) else {
             return Ok(());
         };
-        let tamanho = fb.passo_do_dib() * fb.height() as usize;
-        // Bytes do objeto anterior: o host está à frente, e não há nada do jogo para trazer.
-        if self.dib_herdados.contains(&bitmap) {
+        let size = fb.dib_pitch() * fb.height() as usize;
+        // Bytes of the previous object: the host is ahead, and there is nothing from the game to
+        // bring.
+        if self.inherited_dibs.contains(&bitmap) {
             return Ok(());
         }
-        // **Só lê quando o guest escreveu nesta superfície.** É a mesma economia que o color
-        // buffer do pbuffer já tinha, agora por superfície: a Z-Wheel copiava 1,57 GB em treze
-        // segundos virtuais só para descobrir que quase nada tinha mudado.
+        // **It only reads when the guest wrote to this surface.** It is the same saving the
+        // pbuffer's color buffer already had, now per surface: the Z-Wheel copied 1.57 GB in
+        // thirteen virtual seconds only to find out that almost nothing had changed.
         if !self.cpu.take_dirty(bitmap) {
             return Ok(());
         }
-        let mut bytes = vec![0u8; tamanho];
+        let mut bytes = vec![0u8; size];
         self.cpu.read_mem(buffer, &mut bytes)?;
         if let Some(fb) = self.bitmaps.get_mut(&bitmap) {
             fb.load_dib_bytes(&bytes);
-            // Acabamos de copiar o buffer inteiro por cima da nossa cópia: os dois lados estão
-            // iguais, e nada do que desenhamos antes ainda precisa ir para o jogo.
-            fb.toma_sujeira();
-            self.dib_publicado.insert(bitmap, fb.serie());
+            // We just copied the whole buffer over our copy: both sides are equal, and nothing we
+            // drew before still needs to go to the game.
+            fb.take_dirty_rect();
+            self.published_dib.insert(bitmap, fb.generation());
         }
         Ok(())
     }
 
-    /// Sincroniza todas as superfícies que o jogo pode ter alterado direto.
+    /// Syncs every surface the game may have changed directly.
     ///
-    /// Chamado só nas interfaces que mexem em pixels: um jogo faz dezenas de milhares de
-    /// chamadas de outras APIs, e copiar 600 KB em cada uma seria inviável.
+    /// Called only from the interfaces that touch pixels: a game makes tens of thousands of
+    /// calls to other APIs, and copying 600 KB on each one would be unworkable.
     pub(super) fn sync_surfaces_in(&mut self) -> Result<(), CpuError> {
         for bitmap in self.dib_buffers.keys().copied().collect::<Vec<_>>() {
             self.sync_from_guest(bitmap)?;
@@ -1090,8 +1096,9 @@ impl<C: CpuBackend> Machine<C> {
         Ok(())
     }
 
-    /// Copia de uma superfície para outra, respeitando a cor transparente quando o raster op
-    /// pede. Precisa tirar o destino do mapa antes para não ter duas referências mutáveis.
+    /// Copies from one surface to another, honoring the transparent color when the raster op
+    /// asks for it. It needs to take the destination out of the map first so as not to hold two
+    /// mutable references.
     pub(super) fn blit(
         &mut self,
         dst: u32,
@@ -1109,10 +1116,10 @@ impl<C: CpuBackend> Machine<C> {
         };
         if let Some(source) = self.bitmaps.get(&src) {
             let transparent = if rop == AEE_RO_TRANSPARENT {
-                // Sem cor pedida, vale a do BREW: `RGB_MASK_COLOR`, o magenta. O Action Hero 3D
-                // desenha cada letra com `AEE_RO_TRANSPARENT` de uma folha de fundo magenta
-                // sem nunca chamar `SetTransparencyColor`; sem o padrão, a folha inteira
-                // aparecia na tela a cada letra.
+                // With no color requested, BREW's applies: `RGB_MASK_COLOR`, magenta. Action Hero
+                // 3D draws each letter with `AEE_RO_TRANSPARENT` from a sheet with a magenta
+                // background without ever calling `SetTransparencyColor`; without the default, the
+                // whole sheet showed up on screen with every letter.
                 Some(self.transparency.get(&src).copied().unwrap_or(TRANSPARENT_KEY))
             } else {
                 None
@@ -1131,7 +1138,7 @@ impl<C: CpuBackend> Machine<C> {
         self.bitmaps.insert(dst, target);
     }
 
-    /// Lê um `AEERect` da memória do guest. `None` quando o ponteiro é nulo.
+    /// Reads an `AEERect` from guest memory. `None` when the pointer is null.
     pub(super) fn clip_rect(&self, rect: Rect) -> Option<Rect> {
         clip_rect(self.clip, rect)
     }
@@ -1154,12 +1161,13 @@ impl<C: CpuBackend> Machine<C> {
         Ok(Some(Rect::from_bytes(bytes)))
     }
 
-    /// Cada superfície viva como um BMP, para inspeção: endereço, tamanho e bytes.
+    /// Every live surface as a BMP, for inspection: address, size and bytes.
     ///
-    /// Existe porque "o jogo desenha e a tela fica preta" tem duas causas possíveis, e só o
-    /// conteúdo das superfícies as separa: ou o jogo desenhou em algo que não vai para a tela,
-    /// ou não desenhou. Descobrir isso por instrumentação temporária custou duas investigações.
-    pub fn superficies(&self) -> Vec<(u32, u32, u32, Vec<u8>)> {
+    /// It exists because "the game draws and the screen stays black" has two possible causes, and
+    /// only the contents of the surfaces tell them apart: either the game drew on something that
+    /// does not go to the screen, or it did not draw. Finding that out through temporary
+    /// instrumentation cost two investigations.
+    pub fn surfaces(&self) -> Vec<(u32, u32, u32, Vec<u8>)> {
         self.bitmaps
             .iter()
             .map(|(&addr, fb)| (addr, fb.width(), fb.height(), fb.to_bmp()))
@@ -1167,16 +1175,16 @@ impl<C: CpuBackend> Machine<C> {
     }
 }
 
-/// Os argumentos de um `TransformBltComplex`, já lidos do guest.
+/// The arguments of a `TransformBltComplex`, already read from the guest.
 struct TransformBlt {
-    destino: u32,
-    origem: u32,
+    dest: u32,
+    origin: u32,
     x: i32,
     y: i32,
-    x_origem: i32,
-    y_origem: i32,
-    largura: i32,
-    altura: i32,
-    /// `A, B, C, D`, já fora do ponto fixo.
+    source_x: i32,
+    source_y: i32,
+    width: i32,
+    height: i32,
+    /// `A, B, C, D`, already out of fixed point.
     m: [f32; 4],
 }

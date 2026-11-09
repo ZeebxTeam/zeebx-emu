@@ -1,40 +1,40 @@
-//! As preferências do usuário, guardadas em disco.
+//! The user's preferences, stored on disk.
 //!
-//! Tudo aqui é opcional e tem um padrão razoável: um arquivo faltando, truncado ou de uma
-//! versão mais nova do emulador precisa deixar o programa abrir, não impedi-lo. Por isso cada
-//! campo é `#[serde(default)]` e a leitura nunca falha — no pior caso, volta o padrão.
+//! Everything here is optional and has a reasonable default: a missing file, a truncated one or
+//! one from a newer version of the emulator must let the program open, not stop it. That is why
+//! every field is `#[serde(default)]` and reading never fails — at worst, the default comes back.
 
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use crate::input::bindings::Source;
-use crate::velocidade::rewind::AjustesDoRewind;
-use crate::velocidade::{Avanco, Frameskip, LimiteFps, Ritmo};
+use crate::speed::rewind::RewindSettings;
+use crate::speed::{FastForward, Frameskip, FpsLimit, Pace};
 
 const FILE_NAME: &str = "settings.json";
 
-/// Reexportado para preservar a API desktop durante a migração para configuração neutra.
+/// Re-exported to preserve the desktop API during the migration to neutral configuration.
 pub use crate::config::config_dir;
 
-/// Como a imagem do console preenche a janela.
+/// How the console image fills the window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Scaling {
-    /// Só múltiplos inteiros do tamanho original. Nunca borra, mas sobra borda.
+    /// Only integer multiples of the original size. Never blurs, but leaves a border.
     Integer,
-    /// O maior tamanho que cabe na janela, mantendo a proporção. É o padrão: numa janela
-    /// maximizada o pixel inteiro deixa uma moldura larga à toa.
+    /// The largest size that fits in the window, keeping the aspect ratio. It is the default: in a
+    /// maximized window integer pixels leave a wide frame for nothing.
     #[default]
     Fit,
-    /// Preenche a janela inteira, custe o que custar à proporção.
+    /// Fills the whole window, whatever it costs the aspect ratio.
     Stretch,
 }
 
 impl Scaling {
     pub const ALL: [Self; 3] = [Self::Integer, Self::Fit, Self::Stretch];
 
-    /// A chave do texto que descreve esta opção.
+    /// The key of the text that describes this option.
     pub fn key(self) -> &'static str {
         match self {
             Self::Integer => "graphics.scaling.integer",
@@ -44,61 +44,69 @@ impl Scaling {
     }
 }
 
-/// Como uma janela abre.
+/// How a window opens.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ModoDaJanela {
-    /// Do tamanho que o emulador escolhe.
-    Janela,
+pub enum WindowMode {
+    /// At the size the emulator picks.
+    #[serde(rename = "janela")]
+    Window,
     #[default]
-    Maximizada,
-    TelaCheia,
+    #[serde(rename = "maximizada")]
+    Maximized,
+    #[serde(rename = "tela_cheia")]
+    Fullscreen,
 }
 
-impl ModoDaJanela {
-    pub const TODOS: [Self; 3] = [Self::Janela, Self::Maximizada, Self::TelaCheia];
+impl WindowMode {
+    pub const ALL: [Self; 3] = [Self::Window, Self::Maximized, Self::Fullscreen];
 
-    pub fn chave(self) -> &'static str {
+    pub fn key_id(self) -> &'static str {
         match self {
-            Self::Janela => "graphics.window.windowed",
-            Self::Maximizada => "graphics.window.maximized",
-            Self::TelaCheia => "graphics.window.fullscreen",
+            Self::Window => "graphics.window.windowed",
+            Self::Maximized => "graphics.window.maximized",
+            Self::Fullscreen => "graphics.window.fullscreen",
         }
     }
 }
 
-/// O que o painel de depuração mostra durante a execução.
+/// What the debug panel shows while running.
 ///
-/// Tudo desligado por padrão: é ferramenta de quem está caçando um problema, e informação
-/// sobre o quadro atrapalha quem só quer jogar.
+/// Everything off by default: it is a tool for someone hunting a problem, and information about
+/// the frame gets in the way of someone who just wants to play.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DebugView {
-    /// Liga o painel. Sem ele, nada do que está abaixo aparece.
+    /// Turns the panel on. Without it, nothing below shows up.
     pub overlay: bool,
-    /// Velocidade em relação ao console e quadros por segundo.
+    /// Speed relative to the console, and frames per second.
     pub speed: bool,
-    /// Instruções do guest por segundo, e o relógio virtual.
+    /// Guest instructions per second, and the virtual clock.
     pub clock: bool,
-    /// Heap do jogo e objetos vivos.
+    /// The game's heap and live objects.
     pub memory: bool,
-    /// O gráfico com a história recente.
+    /// The chart with the recent history.
     pub timeline: bool,
-    /// A caixa do canto de cima à direita, por cima do jogo: quadros por segundo, velocidade e
-    /// onde o jogo desenha. Não depende do painel, que é uma faixa embaixo e encolhe o jogo.
-    pub metricas: bool,
-    /// A janela separada com o log da execução.
+    /// The box in the top right corner, over the game: frames per second, speed and where the
+    /// game draws. It does not depend on the panel, which is a strip at the bottom and shrinks the
+    /// game.
+    #[serde(rename = "metricas")]
+    pub metrics: bool,
+    /// The separate window with the run's log.
     pub log: bool,
-    /// Grava cada execução num arquivo próprio, com carimbo de hora em cada linha. Ver
-    /// [`crate::ui::partida::caminho_da_sessao`].
-    pub gravar_sessao: bool,
-    /// Até que nível o **núcleo** registra: `aviso` (padrão), `informacao`, `depuracao`,
-    /// `erro`, `fatal` ou `desligado`. Ver [`crate::registro`].
+    /// Writes each run to its own file, with a timestamp on each line. See
+    /// [`crate::ui::running_game::session_path`].
+    #[serde(rename = "gravar_sessao")]
+    pub record_session: bool,
+    /// Up to which level the **core** logs: `warning` (the default), `info`, `debug`, `error`,
+    /// `fatal` or `off`. See [`crate::logging`].
     ///
-    /// É texto e não um `enum` de propósito: o mesmo vocabulário vale no `config.ini` do
-    /// headless, na opção `zeebx_log` do core Libretro e na variável `ZEEBX_LOG`, e converter
-    /// num lugar só ([`crate::registro::Ajuste::de_texto`]) evita quatro tabelas que divergem.
-    pub nivel_de_log: String,
+    /// It is text and not an `enum` on purpose: the same vocabulary applies in the headless
+    /// `config.ini`, in the Libretro core's `zeebx_log` option and in the `ZEEBX_LOG` variable,
+    /// and converting in one place ([`crate::logging::Threshold::from_text`]) avoids four tables
+    /// that drift apart.
+    #[serde(rename = "nivel_de_log")]
+    pub log_level: String,
 }
 
 impl Default for DebugView {
@@ -109,10 +117,10 @@ impl Default for DebugView {
             clock: true,
             memory: true,
             timeline: true,
-            metricas: false,
+            metrics: false,
             log: false,
-            gravar_sessao: false,
-            nivel_de_log: "aviso".to_string(),
+            record_session: false,
+            log_level: "aviso".to_string(),
         }
     }
 }
@@ -120,113 +128,131 @@ impl Default for DebugView {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Graphics {
-    /// Como a janela principal abre.
-    pub janela: ModoDaJanela,
-    /// Como a janela do jogo abre. Com o jogo na janela principal, é como ela fica enquanto ele
-    /// roda; fechado o jogo, ela volta ao que era.
-    pub janela_do_jogo: ModoDaJanela,
-    /// O jogo numa janela só dele, como até a 0.4.2, em vez de desenhado na principal no lugar da
-    /// biblioteca. O "Render to Separate Window" do PCSX2. Vale no próximo jogo aberto: um jogo
-    /// rodando não troca de janela.
-    pub jogo_separado: bool,
-    /// Perguntar antes de fechar o jogo — pelo Esc, pelo menu, pela barra ou pelo fechar da
-    /// janela —, como o "Confirm Shutdown" do PCSX2. Um Esc a mais não joga fora o que não foi
-    /// salvo. A Z-Wheel e o jogo que sai sozinho fecham sem perguntar.
-    pub confirmar_ao_fechar: bool,
-    /// O tamanho em que a janela principal estava quando foi fechada, em pontos.
+    /// How the main window opens.
+    #[serde(rename = "janela")]
+    pub window: WindowMode,
+    /// How the game window opens. With the game in the main window, it is how that window stays
+    /// while the game runs; once the game closes, it goes back to what it was.
+    #[serde(rename = "janela_do_jogo")]
+    pub game_window: WindowMode,
+    /// The game in a window of its own, as up to 0.4.2, instead of drawn in the main one in place
+    /// of the library. PCSX2's "Render to Separate Window". Applies to the next game opened: a
+    /// running game does not switch windows.
+    #[serde(rename = "jogo_separado")]
+    pub separate_game_window: bool,
+    /// Ask before closing the game — via Esc, the menu, the toolbar or the window's close button
+    /// —, like PCSX2's "Confirm Shutdown". One Esc too many does not throw away what was not
+    /// saved. Z-Wheel and a game that exits on its own close without asking.
+    #[serde(rename = "confirmar_ao_fechar")]
+    pub confirm_on_close: bool,
+    /// The size the main window had when it was closed, in points.
     ///
-    /// `None` é o padrão de fábrica (960×720). Só vale em modo janela: maximizada ou em tela
-    /// cheia, o tamanho da tela não é escolha do usuário e não é guardado.
-    pub tamanho_da_janela: Option<[f32; 2]>,
-    /// O mesmo, para a janela do jogo.
-    pub tamanho_da_janela_do_jogo: Option<[f32; 2]>,
+    /// `None` is the factory default (960×720). It only applies in windowed mode: maximized or
+    /// fullscreen, the screen size is not the user's choice and is not stored.
+    #[serde(rename = "tamanho_da_janela")]
+    pub window_size: Option<[f32; 2]>,
+    /// The same, for the game window.
+    #[serde(rename = "tamanho_da_janela_do_jogo")]
+    pub game_window_size: Option<[f32; 2]>,
     pub scaling: Scaling,
-    /// Interpolar ao ampliar. Desligado, o pixel do console aparece como bloco.
+    /// Interpolate when scaling up. Off, the console's pixel shows up as a block.
     pub smooth: bool,
-    /// Manter os 4:3 da tela do Zeebo.
+    /// Keep the Zeebo screen's 4:3.
     pub keep_aspect: bool,
-    /// O `speed_limit` de antes do limite de quadros, **só para ler** um arquivo antigo.
+    /// The `speed_limit` from before the frame limit, **only for reading** an old file.
     ///
-    /// Desligado virava [`crate::velocidade::LimiteFps::Desligado`]; ver
-    /// [`Settings::load_from`]. Nunca é gravado: o arquivo novo diz o mesmo em
-    /// [`Velocidade::limite_fps`].
+    /// Off became [`crate::speed::FpsLimit::Off`]; see
+    /// [`Settings::load_from`]. It is never written: the new file says the same in
+    /// [`Speed::fps_limit`].
     #[serde(rename = "speed_limit", skip_serializing)]
-    pub limite_antigo: Option<bool>,
-    /// Pôr o quadro na tela pelo GL da janela, em vez de mandá-lo como textura do egui.
+    pub legacy_limit: Option<bool>,
+    /// Put the frame on screen through the window's GL, instead of sending it as an egui texture.
     ///
-    /// Pela placa o quadro sobe em RGB565, que é o formato em que ele já está, e quem amplia é
-    /// ela. O caminho antigo converte para ARGB e depois para RGBA a cada repaint. **Não muda o
-    /// desenho do jogo** — o 3D continua sendo rasterizado em software —, e por isso a diferença
-    /// de desempenho é pequena; existe para ser o lugar em que um backend de GPU entraria.
+    /// Through the GPU the frame is uploaded as RGB565, the format it is already in, and the GPU
+    /// does the scaling. The old path converts to ARGB and then to RGBA on every repaint. **It
+    /// does not change how the game is drawn** — the 3D is still rasterized in software —, and
+    /// that is why the performance difference is small; it exists to be the place where a GPU
+    /// backend would go.
     ///
-    /// Um driver que recuse os shaders faz o emulador voltar sozinho ao caminho antigo.
+    /// A driver that rejects the shaders makes the emulator fall back to the old path on its own.
     pub gpu_present: bool,
-    /// Preencher o 3D do console na placa, em vez de na CPU.
+    /// Fill the console's 3D on the GPU, instead of on the CPU.
     ///
-    /// Isto **muda quem rasteriza**, e não só como o quadro pronto chega à tela. A etapa de
-    /// vértice continua na CPU e é a mesma nos dois — matrizes, matriz de textura e iluminação
-    /// —; o que vai para a placa é o preenchimento, que é onde a medição mostrou o tempo.
+    /// This **changes who rasterizes**, not just how the finished frame reaches the screen. The
+    /// vertex stage stays on the CPU and is the same in both — matrices, texture matrix and
+    /// lighting —; what goes to the GPU is the fill, which is where the measurement showed the
+    /// time.
     ///
-    /// Medido, tempo de API: Z-Wheel de 4340 para 2805 ms (-35%) em treze segundos virtuais, e o
-    /// Crash na pista de 3438 para 2793 ms (-19%) em trinta.
+    /// Measured, API time: Z-Wheel from 4340 to 2805 ms (-35%) over thirteen virtual seconds, and
+    /// Crash on the track from 3438 to 2793 ms (-19%) over thirty.
     ///
-    /// O desenho **não** é idêntico ao de software: regra de borda e arredondamento divergem por
-    /// construção. Medido na Z-Wheel, 1% dos pixels difere além de oito níveis e 0,06% além de
-    /// trinta e dois; sete das nove superfícies saem byte a byte iguais, porque não passam pelo
-    /// rasterizador. Sem placa alcançável o emulador segue em software e diz o motivo.
+    /// The drawing is **not** identical to software: edge rules and rounding diverge by
+    /// construction. Measured on Z-Wheel, 1% of the pixels differ by more than eight levels and
+    /// 0.06% by more than thirty-two; seven of the nine surfaces come out byte-for-byte equal,
+    /// because they do not go through the rasterizer. Without a reachable GPU the emulator carries
+    /// on in software and says why.
     pub gpu_rasterizer: bool,
-    /// A resolução interna do 3D preenchido na placa, em múltiplos de 640×480 por lado.
+    /// The internal resolution of the 3D filled on the GPU, in multiples of 640×480 per side.
     ///
-    /// Só tem efeito com o [`Graphics::gpu_rasterizer`]: o jogo continua vendo 640×480, e o
-    /// quadro grande só chega à janela quando nada 2D foi desenhado sobre ele — ver
-    /// [`crate::machine::Machine::quadro_na_placa`]. Nos outros casos a imagem é a de sempre.
-    pub resolucao_interna: u8,
-    /// Antialias do 3D na placa, em amostras por pixel (1 é desligado).
+    /// Only has an effect with [`Graphics::gpu_rasterizer`]: the game still sees 640×480, and the
+    /// large frame only reaches the window when nothing 2D was drawn over it — see
+    /// [`crate::machine::Machine::gpu_frame`]. In other cases the image is the usual one.
+    #[serde(rename = "resolucao_interna")]
+    pub internal_resolution: u8,
+    /// Antialiasing of the 3D on the GPU, in samples per pixel (1 is off).
     pub antialias: u8,
-    /// Filtro anisotrópico das texturas do 3D na placa (1 é desligado).
-    pub anisotropico: u8,
-    /// **Experimental.** A proporção em que o 3D na placa é renderizado.
-    pub proporcao: Proporcao,
-    /// Deixar a névoa do jogo valer.
+    /// Anisotropic filtering of the 3D textures on the GPU (1 is off).
+    #[serde(rename = "anisotropico")]
+    pub anisotropic: u8,
+    /// **Experimental.** The aspect ratio the 3D on the GPU is rendered at.
+    #[serde(rename = "proporcao")]
+    pub ratio: AspectRatio,
+    /// Let the game's fog apply.
     ///
-    /// Vale nos dois rasterizadores. No console a névoa costuma esconder o que a distância de
-    /// desenho não alcançava, e aqui a cena chega inteira — quem prefere ver longe desliga. Fica
-    /// **ligada** por omissão: o jogo pediu a névoa, e em muitos ela é o efeito, não o remendo.
-    pub neblina: bool,
+    /// Applies to both rasterizers. On the console the fog usually hides what the draw distance
+    /// did not reach, and here the whole scene arrives — whoever prefers to see far turns it off.
+    /// It is **on** by default: the game asked for the fog, and in many it is the effect, not the
+    /// patch.
+    #[serde(rename = "neblina")]
+    pub fog: bool,
 }
 
-/// A proporção do 3D renderizado na placa. Fora do nativo, a cena em perspectiva ganha lados em
-/// vez de ser esticada; HUD e 2D ficam em 4:3 no centro.
+/// The aspect ratio of the 3D rendered on the GPU. Outside native, the perspective scene gains
+/// sides instead of being stretched; HUD and 2D stay at 4:3 in the center.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Proporcao {
+pub enum AspectRatio {
     #[default]
-    Nativa,
-    Larga16x9,
-    Larga16x10,
-    /// A da janela do jogo.
-    Janela,
+    #[serde(rename = "nativa")]
+    Native,
+    #[serde(rename = "larga16x9")]
+    Wide16x9,
+    #[serde(rename = "larga16x10")]
+    Wide16x10,
+    /// The game window's.
+    #[serde(rename = "janela")]
+    Window,
 }
 
-impl Proporcao {
-    pub const TODAS: [Self; 4] = [Self::Nativa, Self::Larga16x9, Self::Larga16x10, Self::Janela];
+impl AspectRatio {
+    pub const ALL: [Self; 4] = [Self::Native, Self::Wide16x9, Self::Wide16x10, Self::Window];
 
-    pub fn chave(self) -> &'static str {
+    pub fn key_id(self) -> &'static str {
         match self {
-            Self::Nativa => "graphics.aspect.native",
-            Self::Larga16x9 => "graphics.aspect.16x9",
-            Self::Larga16x10 => "graphics.aspect.16x10",
-            Self::Janela => "graphics.aspect.window",
+            Self::Native => "graphics.aspect.native",
+            Self::Wide16x9 => "graphics.aspect.16x9",
+            Self::Wide16x10 => "graphics.aspect.16x10",
+            Self::Window => "graphics.aspect.window",
         }
     }
 
-    /// Largura sobre altura, com a da janela quando é o caso. `None` é o nativo.
-    pub fn aspecto(self, janela: f32) -> Option<f32> {
+    /// Width over height, with the window's when that applies. `None` is native.
+    pub fn aspect(self, window: f32) -> Option<f32> {
         match self {
-            Self::Nativa => None,
-            Self::Larga16x9 => Some(16.0 / 9.0),
-            Self::Larga16x10 => Some(16.0 / 10.0),
-            Self::Janela => Some(janela),
+            Self::Native => None,
+            Self::Wide16x9 => Some(16.0 / 9.0),
+            Self::Wide16x10 => Some(16.0 / 10.0),
+            Self::Window => Some(window),
         }
     }
 }
@@ -234,26 +260,26 @@ impl Proporcao {
 impl Default for Graphics {
     fn default() -> Self {
         Self {
-            janela: ModoDaJanela::Maximizada,
-            janela_do_jogo: ModoDaJanela::Maximizada,
-            jogo_separado: false,
-            confirmar_ao_fechar: true,
-            tamanho_da_janela: None,
-            tamanho_da_janela_do_jogo: None,
+            window: WindowMode::Maximized,
+            game_window: WindowMode::Maximized,
+            separate_game_window: false,
+            confirm_on_close: true,
+            window_size: None,
+            game_window_size: None,
             scaling: Scaling::default(),
             smooth: false,
             keep_aspect: true,
-            limite_antigo: None,
+            legacy_limit: None,
             gpu_present: true,
-            // Desligado por padrão: é um rasterizador novo, e a revisão jogo a jogo é de quem
-            // usa. Nos dois títulos medidos ele ganha, mas isso não é licença para trocar o
-            // desenho de todos os outros sem que alguém os tenha olhado.
+            // Off by default: it is a new rasterizer, and the game-by-game review is up to whoever
+            // uses it. On the two titles measured it wins, but that is no license to change the
+            // drawing of all the others without someone having looked at them.
             gpu_rasterizer: false,
-            resolucao_interna: 1,
+            internal_resolution: 1,
             antialias: 1,
-            anisotropico: 1,
-            proporcao: Proporcao::Nativa,
-            neblina: true,
+            anisotropic: 1,
+            ratio: AspectRatio::Native,
+            fog: true,
         }
     }
 }
@@ -262,16 +288,16 @@ impl Default for Graphics {
 #[serde(default)]
 pub struct Audio {
     pub enabled: bool,
-    /// De 0 a 100.
+    /// From 0 to 100.
     pub volume: u8,
-    /// O banco `.sf2` com que o MIDI toca. `None` é a busca automática: o primeiro `.sf2` da pasta
-    /// `soundfonts` do aparelho. Ver [`crate::audio::soundfont::primeiro_banco`].
+    /// The `.sf2` bank MIDI plays with. `None` is the automatic search: the first `.sf2` in the
+    /// device's `soundfonts` folder. See [`crate::audio::soundfont::first_bank`].
     ///
-    /// Existe para quem tem o banco do firmware do console, ou outro de gosto, e não quer mexer
-    /// na pasta do aparelho. Uma configuração salva antes dele abre com `None`.
+    /// It exists for whoever has the console firmware's bank, or another of their liking, and does
+    /// not want to touch the device folder. A configuration saved before it opens with `None`.
     pub soundfont: Option<PathBuf>,
-    /// O reverb e o chorus que a partitura pede, quando ela toca pelo banco `.sf2`. Ver
-    /// [`crate::audio::soundfont::define_efeitos`].
+    /// The reverb and chorus the score asks for, when it plays through the `.sf2` bank. See
+    /// [`crate::audio::soundfont::set_effects`].
     pub midi_effects: bool,
 }
 
@@ -289,630 +315,676 @@ impl Default for Audio {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
-    /// Idioma da interface. `None` significa "o do sistema".
+    /// Interface language. `None` means "the system's".
     pub language: Option<String>,
-    /// O tema da interface, pela chave do arquivo (`rubi`). `None` é a paleta do sistema, que era
-    /// a única até os temas existirem. Ver [`crate::ui::temas`].
-    pub tema: Option<String>,
-    /// Onde procurar os jogos.
+    /// The interface theme, by the file's key (`rubi`). `None` is the system palette, which was the
+    /// only one until themes existed. See [`crate::ui::themes`].
+    #[serde(rename = "tema")]
+    pub theme: Option<String>,
+    /// Where to look for games.
     pub roms_dir: Option<PathBuf>,
-    /// O pacote da Z-Wheel: abre pela barra de cima e empresta as capas à biblioteca.
+    /// The Z-Wheel package: opens from the top bar and lends its covers to the library.
     pub z_wheel_path: Option<PathBuf>,
-    /// Onde os screenshots são gravados. `None` é a pasta padrão, ver
-    /// [`crate::ui::screenshot::pasta_padrao`].
+    /// Where screenshots are written. `None` is the default folder, see
+    /// [`crate::ui::screenshot::default_dir`].
     pub screenshots_dir: Option<PathBuf>,
-    pub atalhos: Atalhos,
-    /// Como a biblioteca mostra os jogos.
-    pub biblioteca: ModoDaBiblioteca,
-    pub movimento: Movimento,
-    /// As barras da janela principal que se escondem pelo menu Exibir.
-    pub barras: Barras,
-    pub controles_na_tela: ControlesNaTela,
+    #[serde(rename = "atalhos")]
+    pub shortcuts: Shortcuts,
+    /// How the library shows the games.
+    #[serde(rename = "biblioteca")]
+    pub library: LibraryMode,
+    #[serde(rename = "movimento")]
+    pub motion: Motion,
+    /// The main window's bars that are hidden via the View menu.
+    #[serde(rename = "barras")]
+    pub bars: Bars,
+    #[serde(rename = "controles_na_tela")]
+    pub on_screen_controls: OnScreenControls,
     pub graphics: Graphics,
-    pub velocidade: Velocidade,
+    #[serde(rename = "velocidade")]
+    pub speed: Speed,
     pub debug: DebugView,
     pub audio: Audio,
     pub controls: crate::input::bindings::Controls,
     pub z_wheel: ZWheel,
     pub discord: Discord,
-    pub atualizacoes: Atualizacoes,
-    /// A versão em que o aviso de abertura foi dispensado de vez. Outra versão mostra de novo.
-    pub aviso_dispensado_na_versao: Option<String>,
+    #[serde(rename = "atualizacoes")]
+    pub updates: Updates,
+    /// The version in which the startup notice was dismissed for good. Another version shows it again.
+    #[serde(rename = "aviso_dispensado_na_versao")]
+    pub notice_dismissed_in_version: Option<String>,
 }
 
-/// As teclas da janela do jogo que se trocam, pelo nome de tecla do mapeamento (`F9`).
+/// The game window's keys that can be changed, by the mapping's key name (`F9`).
 ///
-/// Esc, P e F11 continuam fixos na janela; é aqui que eles entram se um dia forem trocáveis. Ver
-/// `docs/implementacao/22-screenshots.md`.
+/// Esc, P and F11 stay fixed in the window; this is where they go if they ever become changeable.
+/// See `docs/implementation/22-screenshots.md`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct Atalhos {
+pub struct Shortcuts {
     pub screenshot: String,
-    /// O fast-forward: tecla ou botão de controle, de qualquer controle ligado. Ver
-    /// [`crate::velocidade::Avanco`].
+    /// Fast-forward: a key or a controller button, from any connected controller. See
+    /// [`crate::speed::FastForward`].
     ///
-    /// **Uma lista, e de `Source`**, ao contrário do screenshot: quem joga com controle precisa
-    /// de um botão, e o mapeamento dos botões do jogo já sabe guardar um. Um botão que está aqui
-    /// não chega ao jogo — ver [`Atalhos::reservadas`].
-    pub avancar: Vec<Source>,
-    /// O rewind, que se segura: tecla ou botão, como o [`Atalhos::avancar`]. Ver
-    /// [`crate::velocidade::rewind`].
-    pub voltar: Vec<Source>,
-    /// Reiniciar o jogo aberto, na hora. Só de teclado, como o screenshot; vazio é sem tecla.
-    pub reiniciar: String,
-    /// Os save states da janela do jogo: gravar no slot escolhido, carregar dele, trocar de slot
-    /// e desfazer o último carregar. Ver [`crate::ui::estados`].
+    /// **A list, and of `Source`**, unlike the screenshot: whoever plays with a controller needs a
+    /// button, and the game's button mapping already knows how to store one. A button that is here
+    /// does not reach the game — see [`Shortcuts::reserved`].
+    #[serde(rename = "avancar")]
+    pub fast_forward: Vec<Source>,
+    /// Rewind, which is held: a key or a button, like [`Shortcuts::fast_forward`]. See
+    /// [`crate::speed::rewind`].
+    #[serde(rename = "voltar")]
+    pub rewind: Vec<Source>,
+    /// Restart the open game, right away. Keyboard only, like the screenshot; empty is no key.
+    #[serde(rename = "reiniciar")]
+    pub restart: String,
+    /// The game window's save states: save to the chosen slot, load from it, switch slots and undo
+    /// the last load. See [`crate::ui::save_slots`].
     ///
-    /// **Uma [`Combinacao`], e não uma tecla só**, ao contrário dos de cima: no Mac as teclas F
-    /// são de brilho, de volume e do Mission Control, e o padrão de lá é com o ⌘. Só de teclado,
-    /// como o screenshot: um botão de controle que grava ou carrega estado é fácil de apertar sem
-    /// querer. Vazio é sem tecla.
-    pub salvar_estado: String,
-    pub carregar_estado: String,
-    pub proximo_slot: String,
-    pub slot_anterior: String,
-    pub desfazer_carregar: String,
+    /// **A [`KeyCombo`], and not a single key**, unlike the ones above: on the Mac the F keys are
+    /// for brightness, volume and Mission Control, and the convention there uses ⌘. Keyboard only,
+    /// like the screenshot: a controller button that saves or loads a state is easy to press by
+    /// accident. Empty is no key.
+    #[serde(rename = "salvar_estado")]
+    pub save_state: String,
+    #[serde(rename = "carregar_estado")]
+    pub load_state: String,
+    #[serde(rename = "proximo_slot")]
+    pub next_slot: String,
+    #[serde(rename = "slot_anterior")]
+    pub previous_slot: String,
+    #[serde(rename = "desfazer_carregar")]
+    pub undo_load: String,
 }
 
-impl Atalhos {
-    pub const SCREENSHOT_PADRAO: &str = "F9";
-    /// F10 segurado é o fast-forward desde o primeiro desenho dele, no PR #83; quem já se
-    /// acostumou não perde o hábito.
-    pub const AVANCAR_PADRAO: &str = "F10";
-    /// O Backspace, que seria a escolha óbvia, já é o `AVK_CLR` do jogo.
-    pub const VOLTAR_PADRAO: &str = "F8";
-    /// O R de "reset", que nenhum botão do teclado de fábrica usa.
-    pub const REINICIAR_PADRAO: &str = "R";
+impl Shortcuts {
+    pub const DEFAULT_SCREENSHOT: &str = "F9";
+    /// Holding F10 has been fast-forward since its first design, in PR #83; whoever got used to it
+    /// keeps the habit.
+    pub const DEFAULT_FAST_FORWARD: &str = "F10";
+    /// Backspace, which would be the obvious choice, is already the game's `AVK_CLR`.
+    pub const DEFAULT_REWIND: &str = "F8";
+    /// R for "reset", which no button of the factory keyboard mapping uses.
+    pub const DEFAULT_RESET: &str = "R";
 
-    pub fn avancar_padrao() -> Vec<Source> {
-        vec![Source::key(Self::AVANCAR_PADRAO)]
+    pub fn default_fast_forward() -> Vec<Source> {
+        vec![Source::key(Self::DEFAULT_FAST_FORWARD)]
     }
 
-    /// Os do save state seguem o PCSX2 no Windows e no Linux — F1 grava, F3 carrega, F2 troca de
-    /// slot — e o costume do Mac fora dele, onde ⌘S e ⌘L são o gravar e o abrir de todo programa
-    /// e o OpenEmu faz o mesmo. Nenhum jogo usa o ⌘, então nada colide com os botões.
-    pub const SALVAR_ESTADO_PADRAO: &str = match cfg!(target_os = "macos") {
+    /// The save state ones follow PCSX2 on Windows and Linux — F1 saves, F3 loads, F2 switches
+    /// slot — and the Mac convention on the Mac, where ⌘S and ⌘L are every program's save and
+    /// open, and OpenEmu does the same. No game uses ⌘, so nothing collides with the buttons.
+    pub const DEFAULT_SAVE_STATE: &str = match cfg!(target_os = "macos") {
         true => "Cmd+S",
         false => "F1",
     };
-    pub const CARREGAR_ESTADO_PADRAO: &str = match cfg!(target_os = "macos") {
+    pub const DEFAULT_LOAD_STATE: &str = match cfg!(target_os = "macos") {
         true => "Cmd+L",
         false => "F3",
     };
-    pub const PROXIMO_SLOT_PADRAO: &str = match cfg!(target_os = "macos") {
+    pub const DEFAULT_NEXT_SLOT: &str = match cfg!(target_os = "macos") {
         true => "Cmd+CloseBracket",
         false => "F2",
     };
-    pub const SLOT_ANTERIOR_PADRAO: &str = match cfg!(target_os = "macos") {
+    pub const DEFAULT_PREVIOUS_SLOT: &str = match cfg!(target_os = "macos") {
         true => "Cmd+OpenBracket",
         false => "Shift+F2",
     };
-    /// O F4 fica ao lado dos três; o ⌘Z é o desfazer de todo programa do Mac.
-    pub const DESFAZER_CARREGAR_PADRAO: &str = match cfg!(target_os = "macos") {
+    /// F4 sits next to the three; ⌘Z is every Mac program's undo.
+    pub const DEFAULT_UNDO_LOAD: &str = match cfg!(target_os = "macos") {
         true => "Cmd+Z",
         false => "F4",
     };
 
-    /// As origens que são de atalho e por isso não chegam ao jogo.
+    /// The sources that belong to shortcuts and therefore do not reach the game.
     ///
-    /// Um botão de controle ligado a um atalho e também a um botão do Zeebo faria as duas coisas
-    /// ao mesmo tempo: avançar e, digamos, pular. O atalho ganha, e o editor avisa do conflito.
-    pub fn reservadas(&self) -> impl Iterator<Item = &Source> {
-        self.avancar.iter().chain(&self.voltar)
+    /// A controller button bound to a shortcut and also to a Zeebo button would do both things at
+    /// once: fast-forward and, say, jump. The shortcut wins, and the editor warns about the
+    /// conflict.
+    pub fn reserved(&self) -> impl Iterator<Item = &Source> {
+        self.fast_forward.iter().chain(&self.rewind)
     }
 }
 
-impl Default for Atalhos {
+impl Default for Shortcuts {
     fn default() -> Self {
         Self {
-            screenshot: Self::SCREENSHOT_PADRAO.to_string(),
-            avancar: Self::avancar_padrao(),
-            voltar: vec![Source::key(Self::VOLTAR_PADRAO)],
-            reiniciar: Self::REINICIAR_PADRAO.to_string(),
-            salvar_estado: Self::SALVAR_ESTADO_PADRAO.to_string(),
-            carregar_estado: Self::CARREGAR_ESTADO_PADRAO.to_string(),
-            proximo_slot: Self::PROXIMO_SLOT_PADRAO.to_string(),
-            slot_anterior: Self::SLOT_ANTERIOR_PADRAO.to_string(),
-            desfazer_carregar: Self::DESFAZER_CARREGAR_PADRAO.to_string(),
+            screenshot: Self::DEFAULT_SCREENSHOT.to_string(),
+            fast_forward: Self::default_fast_forward(),
+            rewind: vec![Source::key(Self::DEFAULT_REWIND)],
+            restart: Self::DEFAULT_RESET.to_string(),
+            save_state: Self::DEFAULT_SAVE_STATE.to_string(),
+            load_state: Self::DEFAULT_LOAD_STATE.to_string(),
+            next_slot: Self::DEFAULT_NEXT_SLOT.to_string(),
+            previous_slot: Self::DEFAULT_PREVIOUS_SLOT.to_string(),
+            undo_load: Self::DEFAULT_UNDO_LOAD.to_string(),
         }
     }
 }
 
-/// Os modificadores de uma [`Combinacao`].
+/// The modifiers of a [`KeyCombo`].
 ///
-/// **O `cmd` é o ⌘ no Mac.** Fora dele é a tecla do sistema (a do Windows, o Super), que o Qt
-/// chama de Meta nos dois casos — mas no Mac o Qt troca os nomes, e o que ele chama de Control é
-/// o ⌘. Quem lê o teclado de um toolkit é quem desfaz a troca.
+/// **`cmd` is ⌘ on the Mac.** Elsewhere it is the system key (the Windows key, Super), which Qt
+/// calls Meta in both cases — but on the Mac Qt swaps the names, and what it calls Control is ⌘.
+/// Whoever reads the keyboard from a toolkit is the one who undoes the swap.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct Modificadores {
+pub struct Modifiers {
     pub ctrl: bool,
     pub alt: bool,
     pub shift: bool,
     pub cmd: bool,
 }
 
-impl Modificadores {
-    pub fn nenhum(&self) -> bool {
+impl Modifiers {
+    pub fn is_empty(&self) -> bool {
         *self == Self::default()
     }
 }
 
-/// Uma tecla e os modificadores que vão com ela: `F1`, `Shift+F2`, `Cmd+S`.
+/// A key and the modifiers that go with it: `F1`, `Shift+F2`, `Cmd+S`.
 ///
-/// Gravada como texto, com o nome de tecla do `egui::Key` no fim e os modificadores na frente,
-/// separados por `+`. Uma tecla sozinha é escrita como sempre foi (`F9`), e por isso o mesmo texto
-/// serve aos atalhos de uma tecla só. Os nomes do egui não têm `+`: o da tecla de mais é `Plus`.
+/// Stored as text, with the `egui::Key` key name at the end and the modifiers in front, separated
+/// by `+`. A lone key is written as it always was (`F9`), so the same text serves single-key
+/// shortcuts. egui's names have no `+`: the plus key's is `Plus`.
 ///
-/// **Bate só com os mesmos modificadores.** O F2 troca para o próximo slot e o Shift+F2 para o
-/// anterior: aceitar modificadores a mais faria o Shift+F2 também andar para a frente.
+/// **Matches only with the same modifiers.** F2 switches to the next slot and Shift+F2 to the
+/// previous one: accepting extra modifiers would make Shift+F2 also move forward.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Combinacao {
-    pub tecla: egui::Key,
-    pub modificadores: Modificadores,
+pub struct KeyCombo {
+    pub key: egui::Key,
+    pub modifiers: Modifiers,
 }
 
-impl Combinacao {
-    /// Lê o texto gravado. `None` para o vazio, para um modificador desconhecido ou para uma
-    /// tecla que o egui não conhece.
-    pub fn le(texto: &str) -> Option<Self> {
-        let mut partes: Vec<&str> = texto.split('+').map(str::trim).collect();
-        let tecla = egui::Key::from_name(partes.pop()?)?;
-        let mut modificadores = Modificadores::default();
-        for parte in partes {
-            let campo = match parte {
-                "Ctrl" => &mut modificadores.ctrl,
-                "Alt" => &mut modificadores.alt,
-                "Shift" => &mut modificadores.shift,
-                "Cmd" => &mut modificadores.cmd,
+impl KeyCombo {
+    /// Reads the stored text. `None` for empty text, for an unknown modifier or for a key egui
+    /// does not know.
+    pub fn read(text: &str) -> Option<Self> {
+        let mut parts: Vec<&str> = text.split('+').map(str::trim).collect();
+        let key = egui::Key::from_name(parts.pop()?)?;
+        let mut modifiers = Modifiers::default();
+        for part in parts {
+            let field = match part {
+                "Ctrl" => &mut modifiers.ctrl,
+                "Alt" => &mut modifiers.alt,
+                "Shift" => &mut modifiers.shift,
+                "Cmd" => &mut modifiers.cmd,
                 _ => return None,
             };
-            *campo = true;
+            *field = true;
         }
         Some(Self {
-            tecla,
-            modificadores,
+            key,
+            modifiers,
         })
     }
 
-    /// O texto que se grava: os modificadores na ordem do Ctrl+Alt+Shift+Cmd, e a tecla.
-    pub fn nome(&self) -> String {
-        let m = &self.modificadores;
-        let mut nome = String::new();
-        for (ligado, texto) in [
+    /// The text that is stored: the modifiers in Ctrl+Alt+Shift+Cmd order, and the key.
+    pub fn name(&self) -> String {
+        let m = &self.modifiers;
+        let mut name = String::new();
+        for (enabled, text) in [
             (m.ctrl, "Ctrl+"),
             (m.alt, "Alt+"),
             (m.shift, "Shift+"),
             (m.cmd, "Cmd+"),
         ] {
-            if ligado {
-                nome.push_str(texto);
+            if enabled {
+                name.push_str(text);
             }
         }
-        nome.push_str(self.tecla.name());
-        nome
+        name.push_str(self.key.name());
+        name
     }
 
-    /// O que se mostra a quem lê: no Mac, os símbolos de lá (`⇧⌘S`); fora dele, `Shift+F2`. A
-    /// tecla vai pelo símbolo quando tem um: `]`, e não `CloseBracket`.
-    pub fn rotulo(&self) -> String {
-        let m = &self.modificadores;
-        let tecla = self.tecla.symbol_or_name();
+    /// What is shown to the reader: on the Mac, its symbols (`⇧⌘S`); elsewhere, `Shift+F2`. The
+    /// key goes by its symbol when it has one: `]`, not `CloseBracket`.
+    pub fn label(&self) -> String {
+        let m = &self.modifiers;
+        let key = self.key.symbol_or_name();
         if cfg!(target_os = "macos") {
-            let mut rotulo = String::new();
-            for (ligado, simbolo) in [(m.ctrl, "⌃"), (m.alt, "⌥"), (m.shift, "⇧"), (m.cmd, "⌘")]
+            let mut label = String::new();
+            for (enabled, symbol) in [(m.ctrl, "⌃"), (m.alt, "⌥"), (m.shift, "⇧"), (m.cmd, "⌘")]
             {
-                if ligado {
-                    rotulo.push_str(simbolo);
+                if enabled {
+                    label.push_str(symbol);
                 }
             }
-            rotulo.push_str(tecla);
-            return rotulo;
+            label.push_str(key);
+            return label;
         }
-        let sistema = match cfg!(target_os = "windows") {
+        let system = match cfg!(target_os = "windows") {
             true => "Win+",
             false => "Super+",
         };
-        let mut rotulo = String::new();
-        for (ligado, texto) in [
+        let mut label = String::new();
+        for (enabled, text) in [
             (m.ctrl, "Ctrl+"),
             (m.alt, "Alt+"),
             (m.shift, "Shift+"),
-            (m.cmd, sistema),
+            (m.cmd, system),
         ] {
-            if ligado {
-                rotulo.push_str(texto);
+            if enabled {
+                label.push_str(text);
             }
         }
-        rotulo.push_str(tecla);
-        rotulo
+        label.push_str(key);
+        label
     }
 }
 
-/// A procura por versões novas. Ver [`crate::ui::atualizacao`].
+/// The search for new versions. See [`crate::ui::updater`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct Atualizacoes {
-    /// Perguntar ao GitHub na abertura.
-    pub ao_abrir: bool,
-    /// Se uma release marcada como pré-lançamento conta como versão nova. **Ligado de fábrica**:
-    /// até a 0.4.1 todas as releases saíram assim, e desligado ninguém seria avisado de nada.
-    pub pre_lancamentos: bool,
+pub struct Updates {
+    /// Ask GitHub at launch.
+    #[serde(rename = "ao_abrir")]
+    pub on_launch: bool,
+    /// Whether a release marked as pre-release counts as a new version. **On by default**: up to
+    /// 0.4.1 every release came out that way, and with it off nobody would be told anything.
+    #[serde(rename = "pre_lancamentos")]
+    pub prereleases: bool,
 }
 
-impl Default for Atualizacoes {
+impl Default for Updates {
     fn default() -> Self {
-        Self { ao_abrir: true, pre_lancamentos: true }
+        Self { on_launch: true, prereleases: true }
     }
 }
 
-/// O Rich Presence do Discord. Ver [`crate::ui::discord`].
+/// The Discord Rich Presence. See [`crate::ui::discord`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Discord {
-    pub ativo: bool,
-    /// Onde as capas estão publicadas, com `{clsid}` ou `{chave}` no lugar do jogo. Vazio usa
-    /// as imagens cadastradas no próprio aplicativo.
-    pub capas_url: String,
+    #[serde(rename = "ativo")]
+    pub active: bool,
+    /// Where the covers are published, with `{clsid}` or `{chave}` in place of the game. Empty
+    /// uses the images registered in the application itself.
+    #[serde(rename = "capas_url")]
+    pub covers_url: String,
 }
 
 impl Default for Discord {
     fn default() -> Self {
         Self {
-            ativo: true,
-            capas_url: String::new(),
+            active: true,
+            covers_url: String::new(),
         }
     }
 }
 
-/// As barras da janela principal, como o PCSX2 deixa esconder: a de ferramentas, embaixo do menu,
-/// e a de status, no pé da janela. As duas aparecem de fábrica.
+/// The main window's bars, which PCSX2 lets you hide: the toolbar, below the menu, and the status
+/// bar, at the bottom of the window. Both show by default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct Barras {
-    pub ferramentas: bool,
+pub struct Bars {
+    #[serde(rename = "ferramentas")]
+    pub tools: bool,
     pub status: bool,
 }
 
-impl Default for Barras {
+impl Default for Bars {
     fn default() -> Self {
         Self {
-            ferramentas: true,
+            tools: true,
             status: true,
         }
     }
 }
 
-/// O controle de movimento, fora do mapeamento de cada porta.
+/// The motion controller, outside each port's mapping.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct Movimento {
-    /// O aviso no canto do jogo enquanto ele calibra o Boomerang.
-    pub aviso_de_calibracao: bool,
+pub struct Motion {
+    /// The notice in the corner of the game while it calibrates the Boomerang.
+    #[serde(rename = "aviso_de_calibracao")]
+    pub calibration_notice: bool,
 }
 
-impl Default for Movimento {
+impl Default for Motion {
     fn default() -> Self {
         Self {
-            aviso_de_calibracao: true,
+            calibration_notice: true,
         }
     }
 }
 
-/// Quando os controles desenhados na tela aparecem.
+/// When the controls drawn on screen appear.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ModoDosControlesNaTela {
-    /// Aparecem até chegar um aperto de controle físico, e voltam no próximo toque na tela. É o
-    /// padrão porque serve aos dois jeitos de jogar sem pedir que ninguém escolha.
+pub enum OnScreenControlsMode {
+    /// They show until a physical controller press arrives, and come back on the next screen
+    /// touch. It is the default because it serves both ways of playing without asking anyone to
+    /// choose.
     #[default]
-    Automatico,
-    Sempre,
-    Nunca,
+    #[serde(rename = "automatico")]
+    Auto,
+    #[serde(rename = "sempre")]
+    Always,
+    #[serde(rename = "nunca")]
+    Never,
 }
 
-impl ModoDosControlesNaTela {
-    pub const TODOS: [Self; 3] = [Self::Automatico, Self::Sempre, Self::Nunca];
+impl OnScreenControlsMode {
+    pub const ALL: [Self; 3] = [Self::Auto, Self::Always, Self::Never];
 
-    pub fn chave(self) -> &'static str {
+    pub fn key_id(self) -> &'static str {
         match self {
-            Self::Automatico => "touch.mode.auto",
-            Self::Sempre => "touch.mode.always",
-            Self::Nunca => "touch.mode.never",
+            Self::Auto => "touch.mode.auto",
+            Self::Always => "touch.mode.always",
+            Self::Never => "touch.mode.never",
         }
     }
 }
 
-/// Os controles desenhados na tela de um celular. Só o Android os desenha; os outros frontends
-/// carregam e gravam de volta sem mexer. Ver [`crate::input::toque`].
+/// The controls drawn on a phone screen. Only Android draws them; the other frontends load them
+/// and write them back without touching. See [`crate::input::touch`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct ControlesNaTela {
-    pub modo: ModoDosControlesNaTela,
-    /// O tamanho das peças, em porcento do de fábrica.
-    pub escala: u8,
-    /// Em porcento. Opaco de fábrica não: a peça fica por cima do jogo.
-    pub opacidade: u8,
-    /// Onde o usuário pôs cada peça, pela [`crate::input::toque::Peca::chave`], em **fração** da
-    /// tela. Fração, e não ponto, porque o mesmo arquivo pode ir de um celular para um tablet. A
-    /// peça que não está aqui fica no lugar de fábrica, e "restaurar" é esvaziar o mapa.
-    pub posicoes: std::collections::BTreeMap<String, [f32; 2]>,
-    /// O tamanho de cada peça, em porcento, por cima da [`Self::escala`]. Mesma chave das
-    /// posições; a peça que não está aqui fica em 100.
-    pub tamanhos: std::collections::BTreeMap<String, u8>,
-    /// Mostrar as peças de atalho. O turbo e o rewind, além disso, só aparecem com a função em
-    /// uso — ver [`ControlesNaTela::mostra`].
-    pub mostrar_avancar: bool,
-    pub mostrar_voltar: bool,
-    pub mostrar_turbo: bool,
+pub struct OnScreenControls {
+    #[serde(rename = "modo")]
+    pub mode: OnScreenControlsMode,
+    /// The size of the pieces, in percent of the default.
+    #[serde(rename = "escala")]
+    pub scale: u8,
+    /// In percent. Not opaque by default: the piece sits on top of the game.
+    #[serde(rename = "opacidade")]
+    pub opacity: u8,
+    /// Where the user put each piece, by [`crate::input::touch::TouchControl::key_id`], as a
+    /// **fraction** of the screen. A fraction, not a point, because the same file may go from a
+    /// phone to a tablet. A piece that is not here stays in its default place, and "restore" is
+    /// emptying the map.
+    #[serde(rename = "posicoes")]
+    pub positions: std::collections::BTreeMap<String, [f32; 2]>,
+    /// The size of each piece, in percent, on top of [`Self::scale`]. Same key as the positions;
+    /// a piece that is not here stays at 100.
+    #[serde(rename = "tamanhos")]
+    pub sizes: std::collections::BTreeMap<String, u8>,
+    /// Show the shortcut pieces. The turbo and the rewind, besides that, only show with the
+    /// function in use — see [`OnScreenControls::show`].
+    #[serde(rename = "mostrar_avancar")]
+    pub show_fast_forward: bool,
+    #[serde(rename = "mostrar_voltar")]
+    pub show_rewind: bool,
+    #[serde(rename = "mostrar_turbo")]
+    pub show_turbo: bool,
 }
 
-impl Default for ControlesNaTela {
+impl Default for OnScreenControls {
     fn default() -> Self {
         Self {
-            modo: ModoDosControlesNaTela::default(),
-            escala: 100,
-            opacidade: 55,
-            posicoes: Default::default(),
-            tamanhos: Default::default(),
-            mostrar_avancar: true,
-            mostrar_voltar: true,
-            mostrar_turbo: true,
+            mode: OnScreenControlsMode::default(),
+            scale: 100,
+            opacity: 55,
+            positions: Default::default(),
+            sizes: Default::default(),
+            show_fast_forward: true,
+            show_rewind: true,
+            show_turbo: true,
         }
     }
 }
 
-impl ControlesNaTela {
-    /// Se a peça aparece na tela.
+impl OnScreenControls {
+    /// Whether the piece shows on screen.
     ///
-    /// **O turbo e o rewind só aparecem com a função em uso**: o rewind vem desligado, e quem
-    /// nunca o ligou não ganha um botão que não faz nada. O fast-forward não tem ajuste de ligar,
-    /// só a velocidade, e por isso aparece sempre — no celular não existe F10, e sem a peça ele
-    /// ficaria escondido de quem não procura nos ajustes. Cada um se esconde pela chave dele.
-    pub fn mostra(&self, peca: crate::input::toque::Peca, settings: &Settings) -> bool {
-        use crate::input::toque::Peca;
-        match peca {
-            Peca::Avancar => self.mostrar_avancar,
-            Peca::Voltar => self.mostrar_voltar && settings.velocidade.rewind.ligado,
-            Peca::Turbo => {
-                let modo = settings.controls.player(0).map(|jogador| jogador.turbo);
-                self.mostrar_turbo
-                    && modo.is_some_and(|modo| modo != crate::velocidade::turbo::ModoDoTurbo::Desligado)
+    /// **The turbo and the rewind only show with the function in use**: the rewind ships off, and
+    /// someone who never turned it on does not get a button that does nothing. Fast-forward has no
+    /// on switch, only the speed, and that is why it always shows — on a phone there is no F10, and
+    /// without the piece it would stay hidden from anyone who does not search the settings. Each
+    /// one hides by its own key.
+    pub fn show(&self, touch_control: crate::input::touch::TouchControl, settings: &Settings) -> bool {
+        use crate::input::touch::TouchControl;
+        match touch_control {
+            TouchControl::FastForward => self.show_fast_forward,
+            TouchControl::Rewind => self.show_rewind && settings.speed.rewind.enabled,
+            TouchControl::Turbo => {
+                let mode = settings.controls.player(0).map(|player| player.turbo);
+                self.show_turbo
+                    && mode.is_some_and(|mode| mode != crate::speed::turbo::TurboMode::Off)
             }
             _ => true,
         }
     }
 }
 
-/// A disposição da biblioteca na tela principal.
+/// The library layout on the main screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ModoDaBiblioteca {
-    /// Cartões lado a lado, quantos couberem na largura.
+pub enum LibraryMode {
+    /// Cards side by side, as many as fit in the width.
     #[default]
-    Grade,
-    /// Um jogo por vez, no jeito da Z-Wheel: o rolo de logos em cima e as caixas passando.
+    #[serde(rename = "grade")]
+    Grid,
+    /// One game at a time, Z-Wheel style: the logo reel on top and the boxes passing by.
     Slider,
 }
 
-/// O ritmo do jogo: o limite de quadros e o pulo de desenho. Ver [`crate::velocidade`].
+/// The game's pace: the frame limit and the draw skip. See [`crate::speed`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct Velocidade {
-    pub limite_fps: LimiteFps,
+pub struct Speed {
+    #[serde(rename = "limite_fps")]
+    pub fps_limit: FpsLimit,
     pub frameskip: Frameskip,
-    pub avanco: Avanco,
-    /// Quantos toques por segundo o turbo dá, no relógio do jogo. Um só para todos os jogadores:
-    /// o modo e o botão é que são de cada um. Ver [`crate::velocidade::turbo`].
-    pub turbo_por_segundo: u8,
-    pub rewind: AjustesDoRewind,
+    #[serde(rename = "avanco")]
+    pub fast_forward: FastForward,
+    /// How many presses per second the turbo gives, on the game's clock. A single one for all
+    /// players: the mode and the button are what belong to each one. See [`crate::speed::turbo`].
+    #[serde(rename = "turbo_por_segundo")]
+    pub turbo_per_second: u8,
+    pub rewind: RewindSettings,
 }
 
-impl Default for Velocidade {
+impl Default for Speed {
     fn default() -> Self {
         Self {
-            limite_fps: LimiteFps::default(),
+            fps_limit: FpsLimit::default(),
             frameskip: Frameskip::default(),
-            avanco: Avanco::default(),
-            turbo_por_segundo: crate::velocidade::turbo::TOQUES_PADRAO,
-            rewind: AjustesDoRewind::default(),
+            fast_forward: FastForward::default(),
+            turbo_per_second: crate::speed::turbo::DEFAULT_PRESSES,
+            rewind: RewindSettings::default(),
         }
     }
 }
 
-impl Velocidade {
-    /// O ritmo destas escolhas, para entregar à sessão.
-    pub fn ritmo(&self) -> Ritmo {
-        Ritmo::das_escolhas(self.limite_fps, self.frameskip)
+impl Speed {
+    /// The pace of these choices, to hand to the session.
+    pub fn pace(&self) -> Pace {
+        Pace::from_choices(self.fps_limit, self.frameskip)
     }
 
-    /// O ritmo de agora: o das escolhas, ou o do fast-forward por cima dele.
-    pub fn ritmo_com(&self, avancando: bool) -> Ritmo {
-        match avancando {
-            true => self.ritmo().acelerado(&self.avanco),
-            false => self.ritmo(),
+    /// The current pace: that of the choices, or fast-forward's on top of it.
+    pub fn pace_with(&self, fast_forwarding: bool) -> Pace {
+        match fast_forwarding {
+            true => self.pace().fast_forwarded(&self.fast_forward),
+            false => self.pace(),
         }
     }
 }
 
-/// As configurações de um jogo só, quando ele tem as próprias: áudio, gráficos, velocidade e
-/// controles.
+/// The settings of a single game, when it has its own: audio, graphics, speed and controls.
 ///
-/// Guardadas em `<config>/jogos/<chave>.json`, uma por jogo; **o arquivo existir é o "usar
-/// configurações personalizadas"**. Cada seção é uma cópia inteira da global no momento em que a
-/// opção foi ligada, e não só a diferença: mudar a global depois não mexe no jogo, que é o que
-/// "personalizado" quer dizer. A chave é a de [`crate::library::chave_do_jogo`].
+/// Stored in `<config>/jogos/<key_id>.json`, one per game; **the file existing is the "use custom
+/// settings"**. Each section is a whole copy of the global one at the moment the option was turned
+/// on, not just the difference: changing the global one afterwards does not touch the game, which
+/// is what "custom" means. The key is that of [`crate::library::game_key`].
 ///
-/// Dos gráficos, o que é da janela — modo e tamanho das duas, e o caminho de apresentação —
-/// continua global, mesmo estando no arquivo: ver [`ConfigDoJogo::sobre`].
+/// Of the graphics, what belongs to the window — mode and size of both, and the presentation path
+/// — stays global, even being in the file: see [`GameConfig::about`].
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
-pub struct ConfigDoJogo {
+pub struct GameConfig {
     pub audio: Audio,
     pub graphics: Graphics,
-    pub velocidade: Velocidade,
+    #[serde(rename = "velocidade")]
+    pub speed: Speed,
     pub controls: crate::input::bindings::Controls,
 }
 
-impl ConfigDoJogo {
-    /// As seções do jogo, copiadas de `settings`.
-    pub fn das(settings: &Settings) -> Self {
+impl GameConfig {
+    /// The game's sections, copied from `settings`.
+    pub fn from_settings(settings: &Settings) -> Self {
         Self {
             audio: settings.audio.clone(),
             graphics: settings.graphics.clone(),
-            velocidade: settings.velocidade.clone(),
+            speed: settings.speed.clone(),
             controls: settings.controls.clone(),
         }
     }
 
-    /// A configuração que vale para o jogo: a `global`, com as seções do jogo por cima.
-    pub fn sobre(&self, global: &Settings) -> Settings {
-        let janela = &global.graphics;
+    /// The configuration that applies to the game: the `global` one, with the game's sections on
+    /// top.
+    pub fn about(&self, global: &Settings) -> Settings {
+        let window = &global.graphics;
         Settings {
             audio: self.audio.clone(),
             graphics: Graphics {
-                janela: janela.janela,
-                janela_do_jogo: janela.janela_do_jogo,
-                jogo_separado: janela.jogo_separado,
-                confirmar_ao_fechar: janela.confirmar_ao_fechar,
-                tamanho_da_janela: janela.tamanho_da_janela,
-                tamanho_da_janela_do_jogo: janela.tamanho_da_janela_do_jogo,
-                gpu_present: janela.gpu_present,
-                limite_antigo: None,
+                window: window.window,
+                game_window: window.game_window,
+                separate_game_window: window.separate_game_window,
+                confirm_on_close: window.confirm_on_close,
+                window_size: window.window_size,
+                game_window_size: window.game_window_size,
+                gpu_present: window.gpu_present,
+                legacy_limit: None,
                 ..self.graphics.clone()
             },
-            velocidade: self.velocidade.clone(),
+            speed: self.speed.clone(),
             controls: self.controls.clone(),
             ..global.clone()
         }
     }
 
-    /// As do jogo de `chave`, se ele tem. Ilegível conta como não ter: o jogo abre com a global.
-    pub fn carrega(chave: &str) -> Option<Self> {
-        Self::carrega_de(&caminho_do_jogo(chave))
+    /// Those of the `key_id` game, if it has them. Unreadable counts as not having them: the game
+    /// opens with the global one.
+    pub fn load(key_id: &str) -> Option<Self> {
+        Self::try_load_from(&game_settings_path(key_id))
     }
 
-    pub fn carrega_de(path: &Path) -> Option<Self> {
-        let texto = std::fs::read_to_string(path).ok()?;
-        let mut config: Self = serde_json::from_str(&texto).ok()?;
+    pub fn try_load_from(path: &Path) -> Option<Self> {
+        let text = std::fs::read_to_string(path).ok()?;
+        let mut config: Self = serde_json::from_str(&text).ok()?;
         config.controls.adopt();
         Some(config)
     }
 
-    pub fn grava(&self, chave: &str) -> std::io::Result<()> {
-        self.grava_em(&caminho_do_jogo(chave))
+    pub fn save(&self, key_id: &str) -> std::io::Result<()> {
+        self.write_to(&game_settings_path(key_id))
     }
 
-    pub fn grava_em(&self, path: &Path) -> std::io::Result<()> {
+    pub fn write_to(&self, path: &Path) -> std::io::Result<()> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let texto = serde_json::to_string_pretty(self).map_err(std::io::Error::other)?;
-        std::fs::write(path, texto)
+        let text = serde_json::to_string_pretty(self).map_err(std::io::Error::other)?;
+        std::fs::write(path, text)
     }
 
-    /// Desliga as configurações do jogo: ele volta à global.
-    pub fn apaga(chave: &str) -> std::io::Result<()> {
-        match std::fs::remove_file(caminho_do_jogo(chave)) {
-            Err(erro) if erro.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            resultado => resultado,
+    /// Turns the game's settings off: it goes back to the global one.
+    pub fn remove(key_id: &str) -> std::io::Result<()> {
+        match std::fs::remove_file(game_settings_path(key_id)) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            result => result,
         }
     }
 }
 
-/// Onde moram as configurações do jogo de `chave`. Ver [`ConfigDoJogo`].
-pub fn caminho_do_jogo(chave: &str) -> PathBuf {
-    config_dir().join("jogos").join(format!("{chave}.json"))
+/// Where the settings of the `key_id` game live. See [`GameConfig`].
+pub fn game_settings_path(key_id: &str) -> PathBuf {
+    config_dir().join("jogos").join(format!("{key_id}.json"))
 }
 
-/// Reexportado pela UI para não quebrar preferências serializadas e chamadas desktop.
+/// Re-exported by the UI so as not to break serialized preferences and desktop calls.
 pub use crate::config::ZWheel;
 
 impl Settings {
-    /// Lê as preferências de `path`. Arquivo ausente ou ilegível devolve o padrão — abrir com
-    /// as opções de fábrica é sempre melhor que não abrir.
+    /// Reads the preferences from `path`. A missing or unreadable file returns the default —
+    /// opening with the factory options is always better than not opening.
     pub fn load_from(path: &Path) -> Self {
-        let texto = std::fs::read_to_string(path).ok();
-        let mut settings: Self = texto
+        let json_text = std::fs::read_to_string(path).ok();
+        let mut settings: Self = json_text
             .as_deref()
             .and_then(|text| serde_json::from_str(text).ok())
             .unwrap_or_default();
-        // Um arquivo de uma versão anterior não traz o que ela não conhecia, e o padrão de um
-        // campo novo nem sempre é o vazio.
+        // A file from an earlier version does not carry what that version did not know, and the
+        // default of a new field is not always empty.
         settings.controls.adopt();
-        settings.adota_o_limite_antigo();
-        if let Some(texto) = &texto {
-            settings.adota_os_atalhos_novos(texto, path);
+        settings.adopt_legacy_limit();
+        if let Some(json_text) = &json_text {
+            settings.adopt_new_shortcuts(json_text, path);
         }
         settings
     }
 
-    /// Um atalho novo chega sem tecla para quem já usa a tecla de fábrica dele num botão do Zeebo.
+    /// A new shortcut arrives without a key for anyone who already uses its default key on a
+    /// Zeebo button.
     ///
-    /// O R de reiniciar e o F1 a F4 do save state não estão em nenhum botão do teclado de fábrica,
-    /// mas quem remapeou pode tê-los posto num: o atalho, perguntado antes do jogo, roubaria o
-    /// botão, e um toque nele reiniciaria a partida ou carregaria um estado. Só vale para o arquivo
-    /// que ainda não conhecia o atalho — quem o escolheu depois escolheu. Uma combinação com
-    /// modificador (o Shift+F2, o ⌘S) não colide com botão nenhum, e chega sempre.
+    /// The R for restart and F1 to F4 for save state are not on any button of the default keyboard
+    /// mapping, but someone who remapped may have put them on one: the shortcut, checked before
+    /// the game, would steal the button, and a press on it would restart the game or load a state.
+    /// It only applies to the file that did not know the shortcut yet — whoever chose it afterwards
+    /// made a choice. A combination with a modifier (Shift+F2, ⌘S) does not collide with any
+    /// button, and always arrives.
     ///
-    /// **As configurações de cada jogo contam também.** O atalho é um só, e um jogo com a tecla num
-    /// botão perderia o botão do mesmo jeito. Elas moram em `jogos/`, ao lado de `path`.
-    fn adota_os_atalhos_novos(&mut self, texto: &str, path: &Path) {
-        let valor = serde_json::from_str::<serde_json::Value>(texto).ok();
-        let atalhos = &mut self.atalhos;
-        let novos: Vec<&mut String> = [
-            ("reiniciar", &mut atalhos.reiniciar),
-            ("salvar_estado", &mut atalhos.salvar_estado),
-            ("carregar_estado", &mut atalhos.carregar_estado),
-            ("proximo_slot", &mut atalhos.proximo_slot),
-            ("slot_anterior", &mut atalhos.slot_anterior),
-            ("desfazer_carregar", &mut atalhos.desfazer_carregar),
+    /// **Each game's settings count too.** The shortcut is a single one, and a game with the key
+    /// on a button would lose the button the same way. They live in `jogos/`, next to `path`.
+    fn adopt_new_shortcuts(&mut self, text: &str, path: &Path) {
+        let value = serde_json::from_str::<serde_json::Value>(text).ok();
+        let shortcuts = &mut self.shortcuts;
+        let fresh: Vec<&mut String> = [
+            ("reiniciar", &mut shortcuts.restart),
+            ("salvar_estado", &mut shortcuts.save_state),
+            ("carregar_estado", &mut shortcuts.load_state),
+            ("proximo_slot", &mut shortcuts.next_slot),
+            ("slot_anterior", &mut shortcuts.previous_slot),
+            ("desfazer_carregar", &mut shortcuts.undo_load),
         ]
         .into_iter()
-        .filter(|(campo, _)| {
-            let conhecia = valor
+        .filter(|(field, _)| {
+            let knew = value
                 .as_ref()
-                .is_some_and(|valor| valor.pointer(&format!("/atalhos/{campo}")).is_some());
-            !conhecia
+                .is_some_and(|value| value.pointer(&format!("/atalhos/{field}")).is_some());
+            !knew
         })
-        .map(|(_, atalho)| atalho)
-        .filter(|atalho| !atalho.contains('+'))
+        .map(|(_, shortcut)| shortcut)
+        .filter(|shortcut| !shortcut.contains('+'))
         .collect();
-        if novos.is_empty() {
+        if fresh.is_empty() {
             return;
         }
-        let usa = |controles: &crate::input::bindings::Controls, tecla: &str| {
-            controles.players.iter().any(|jogador| {
-                jogador
+        let mark_used = |controls: &crate::input::bindings::Controls, key: &str| {
+            controls.players.iter().any(|player| {
+                player
                     .buttons
                     .values()
                     .flatten()
-                    .any(|fonte| matches!(fonte, Source::Key { name } if name == tecla))
+                    .any(|source| matches!(source, Source::Key { name } if name == key))
             })
         };
-        let jogos: Vec<ConfigDoJogo> = path
+        let games: Vec<GameConfig> = path
             .parent()
             .map(|dir| dir.join("jogos"))
-            .and_then(|pasta| std::fs::read_dir(pasta).ok())
+            .and_then(|games_dir| std::fs::read_dir(games_dir).ok())
             .into_iter()
             .flatten()
             .flatten()
-            .filter_map(|entrada| ConfigDoJogo::carrega_de(&entrada.path()))
+            .filter_map(|entry| GameConfig::try_load_from(&entry.path()))
             .collect();
-        for atalho in novos {
-            let tecla = atalho.clone();
-            if usa(&self.controls, &tecla) || jogos.iter().any(|jogo| usa(&jogo.controls, &tecla)) {
-                atalho.clear();
+        for shortcut in fresh {
+            let key = shortcut.clone();
+            if mark_used(&self.controls, &key) || games.iter().any(|game| mark_used(&game.controls, &key)) {
+                shortcut.clear();
             }
         }
     }
 
-    /// O `speed_limit` desligado de um arquivo antigo vira o limite de quadros desligado.
+    /// The `speed_limit` off of an old file becomes the frame limit off.
     ///
-    /// Ligado não muda nada: era o padrão, e o padrão do limite novo é o mesmo freio. O campo
-    /// antigo some na leitura, e a próxima gravação já sai sem ele.
-    fn adota_o_limite_antigo(&mut self) {
-        if self.graphics.limite_antigo.take() == Some(false) {
-            self.velocidade.limite_fps = LimiteFps::Desligado;
+    /// On changes nothing: it was the default, and the new limit's default is the same throttle.
+    /// The old field disappears on reading, and the next save already comes out without it.
+    fn adopt_legacy_limit(&mut self) {
+        if self.graphics.legacy_limit.take() == Some(false) {
+            self.speed.fps_limit = FpsLimit::Off;
         }
     }
 
@@ -933,38 +1005,38 @@ impl Settings {
     }
 }
 
-/// O rótulo de um fator de resolução interna: o fator, o tamanho e a referência de mercado.
-pub fn rotulo_da_resolucao(fator: u8) -> String {
-    let (largura, altura) = (640 * u32::from(fator), 480 * u32::from(fator));
-    let referencia = match fator {
-        1 => "nativa",
+/// The label of an internal resolution factor: the factor, the size and the market reference.
+pub fn resolution_label(factor: u8) -> String {
+    let (width, height) = (640 * u32::from(factor), 480 * u32::from(factor));
+    let reference = match factor {
+        1 => "native",
         2 => "~720p",
         3 => "~1080p",
         4 => "~1440p",
         _ => "~4K",
     };
-    format!("{fator}x · {largura}×{altura} · {referencia}")
+    format!("{factor}x · {width}×{height} · {reference}")
 }
 
-/// O rótulo de uma escolha de pulo de desenho: "Desligado", "Automático", ou quantos quadros são
-/// desenhados no fixo — "1 de 3" diz mais a quem joga que o `n` da conta.
-pub fn rotulo_do_frameskip(frameskip: Frameskip, catalogo: &crate::ui::i18n::Catalog) -> String {
+/// The label of a draw skip choice: "Off", "Auto", or how many frames are drawn in fixed mode —
+/// "1 of 3" tells the player more than the `n` of the formula.
+pub fn frameskip_label(frameskip: Frameskip, catalog: &crate::ui::i18n::Catalog) -> String {
     match frameskip {
-        Frameskip::Desligado => catalogo.get("common.off").to_string(),
-        Frameskip::Automatico => catalogo.get("speed.frameskip.auto").to_string(),
-        Frameskip::Fixo(n) => format!(
+        Frameskip::Off => catalog.get("common.off").to_string(),
+        Frameskip::Auto => catalog.get("speed.frameskip.auto").to_string(),
+        Frameskip::Fixed(n) => format!(
             "{} 1/{}",
-            catalogo.get("speed.frameskip.fixed"),
+            catalog.get("speed.frameskip.fixed"),
             u32::from(n) + 1
         ),
     }
 }
 
-/// O rótulo de um nível de antialias ou de anisotrópico: 1 é desligado.
-pub fn rotulo_de_nivel(nivel: u8, sigla: &str, desligado: &str) -> String {
-    match nivel {
-        0 | 1 => desligado.to_string(),
-        n => format!("{n}x {sigla}"),
+/// The label of an antialiasing or anisotropic level: 1 is off.
+pub fn level_label(level: u8, abbrev: &str, off: &str) -> String {
+    match level {
+        0 | 1 => off.to_string(),
+        n => format!("{n}x {abbrev}"),
     }
 }
 
@@ -972,10 +1044,10 @@ pub fn settings_path() -> PathBuf {
     config_dir().join(FILE_NAME)
 }
 
-/// Onde procurar idiomas soltos: ao lado do executável e na pasta de configuração.
+/// Where to look for loose languages: next to the executable and in the configuration folder.
 ///
-/// A primeira serve para uma cópia portátil do emulador; a segunda, para quem quer acrescentar
-/// um idioma sem mexer na instalação.
+/// The first serves a portable copy of the emulator; the second, whoever wants to add a language
+/// without touching the installation.
 pub fn language_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
@@ -992,68 +1064,68 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ida_e_volta_pelo_disco_preserva_tudo() {
+    fn a_round_trip_through_disk_preserves_everything() {
         let dir = std::env::temp_dir().join("zeebx-testes-settings");
         let path = dir.join("settings.json");
         let _ = std::fs::remove_dir_all(&dir);
 
         let settings = Settings {
             language: Some("pt-BR".into()),
-            tema: Some("esmeralda".into()),
+            theme: Some("esmeralda".into()),
             roms_dir: Some(PathBuf::from("/jogos/zeebo")),
             z_wheel_path: Some(PathBuf::from("/jogos/Z-Wheel.zip")),
             screenshots_dir: Some(PathBuf::from("/imagens/zeebo")),
-            atalhos: Atalhos {
+            shortcuts: Shortcuts {
                 screenshot: "F12".into(),
-                avancar: vec![Source::key("F7"), Source::button("LeftThumb")],
-                voltar: vec![Source::button("RightThumb")],
-                reiniciar: "Home".into(),
-                salvar_estado: "Ctrl+S".into(),
-                carregar_estado: "F6".into(),
-                proximo_slot: "Alt+Shift+CloseBracket".into(),
-                slot_anterior: String::new(),
-                desfazer_carregar: "Cmd+Z".into(),
+                fast_forward: vec![Source::key("F7"), Source::button("LeftThumb")],
+                rewind: vec![Source::button("RightThumb")],
+                restart: "Home".into(),
+                save_state: "Ctrl+S".into(),
+                load_state: "F6".into(),
+                next_slot: "Alt+Shift+CloseBracket".into(),
+                previous_slot: String::new(),
+                undo_load: "Cmd+Z".into(),
             },
-            biblioteca: ModoDaBiblioteca::Slider,
-            movimento: Movimento {
-                aviso_de_calibracao: false,
+            library: LibraryMode::Slider,
+            motion: Motion {
+                calibration_notice: false,
             },
-            barras: Barras {
-                ferramentas: false,
+            bars: Bars {
+                tools: false,
                 status: true,
             },
-            controles_na_tela: ControlesNaTela {
-                modo: ModoDosControlesNaTela::Nunca,
-                escala: 130,
-                opacidade: 80,
-                posicoes: [("botoes".to_string(), [0.75, 0.5])].into(),
-                tamanhos: [("dpad".to_string(), 140)].into(),
-                mostrar_avancar: false,
-                mostrar_voltar: true,
-                mostrar_turbo: false,
+            on_screen_controls: OnScreenControls {
+                mode: OnScreenControlsMode::Never,
+                scale: 130,
+                opacity: 80,
+                positions: [("botoes".to_string(), [0.75, 0.5])].into(),
+                sizes: [("dpad".to_string(), 140)].into(),
+                show_fast_forward: false,
+                show_rewind: true,
+                show_turbo: false,
             },
             graphics: Graphics {
                 scaling: Scaling::Fit,
                 ..Graphics::default()
             },
-            velocidade: Velocidade {
-                limite_fps: LimiteFps::Trinta,
-                frameskip: Frameskip::Fixo(2),
-                avanco: Avanco {
-                    proporcao: 0,
-                    modo: crate::velocidade::ModoDoAtalho::Alternar,
-                    sem_som: true,
+            speed: Speed {
+                fps_limit: FpsLimit::Thirty,
+                frameskip: Frameskip::Fixed(2),
+                fast_forward: FastForward {
+                    ratio: 0,
+                    mode: crate::speed::ShortcutMode::Toggle,
+                    mute: true,
                 },
-                turbo_por_segundo: 15,
-                rewind: AjustesDoRewind {
-                    ligado: true,
-                    intervalo_ms: 2000,
-                    memoria_mb: 512,
+                turbo_per_second: 15,
+                rewind: RewindSettings {
+                    enabled: true,
+                    interval_ms: 2000,
+                    memory_mb: 512,
                 },
             },
             debug: DebugView {
                 overlay: true,
-                metricas: true,
+                metrics: true,
                 ..DebugView::default()
             },
             audio: Audio {
@@ -1062,15 +1134,15 @@ mod tests {
             },
             controls: crate::input::bindings::Controls::default(),
             z_wheel: ZWheel {
-                fim_de_vida: false,
+                end_of_life: false,
                 ..ZWheel::default()
             },
             discord: Discord {
-                ativo: false,
-                capas_url: "https://exemplo/{chave}.png".into(),
+                active: false,
+                covers_url: "https://exemplo/{chave}.png".into(),
             },
-            atualizacoes: Atualizacoes { ao_abrir: false, pre_lancamentos: false },
-            aviso_dispensado_na_versao: Some("0.1.0".into()),
+            updates: Updates { on_launch: false, prereleases: false },
+            notice_dismissed_in_version: Some("0.1.0".into()),
         };
         settings.save_to(&path).unwrap();
 
@@ -1078,189 +1150,191 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Quem tem um `settings.json` de antes do tamanho de janela ganha `None` nos dois
-    /// campos novos, e o que foi guardado volta igual do disco.
+    /// Whoever has a `settings.json` from before the window size gets `None` in both new fields,
+    /// and what was stored comes back from disk unchanged.
     #[test]
-    fn o_tamanho_da_janela_vai_e_volta_e_falta_nas_versoes_antigas() {
+    fn the_window_size_round_trips_and_is_missing_in_old_versions() {
         let dir = std::env::temp_dir().join("zeebx-testes-janela");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("settings.json");
 
-        let antigo: Settings =
+        let old: Settings =
             serde_json::from_str(r#"{ "graphics": { "janela": "maximizada" } }"#).unwrap();
-        assert_eq!(antigo.graphics.tamanho_da_janela, None);
-        assert_eq!(antigo.graphics.tamanho_da_janela_do_jogo, None);
+        assert_eq!(old.graphics.window_size, None);
+        assert_eq!(old.graphics.game_window_size, None);
 
-        let mut novo = Settings::default();
-        novo.graphics.tamanho_da_janela = Some([1280.0, 800.0]);
-        novo.graphics.tamanho_da_janela_do_jogo = Some([640.0, 512.0]);
-        novo.save_to(&path).unwrap();
-        assert_eq!(Settings::load_from(&path), novo);
+        let mut create = Settings::default();
+        create.graphics.window_size = Some([1280.0, 800.0]);
+        create.graphics.game_window_size = Some([640.0, 512.0]);
+        create.save_to(&path).unwrap();
+        assert_eq!(Settings::load_from(&path), create);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Quem tem um `settings.json` de antes do screenshot ganha o F9 e a pasta padrão, sem
-    /// perder o resto.
+    /// Whoever has a `settings.json` from before the screenshot gets F9 and the default folder,
+    /// without losing the rest.
     #[test]
-    fn um_arquivo_de_antes_dos_atalhos_ganha_o_f9() {
-        let lido: Settings = serde_json::from_str(r#"{ "roms_dir": "/jogos" }"#).unwrap();
-        assert_eq!(lido.atalhos.screenshot, "F9");
-        assert_eq!(lido.atalhos.avancar, [Source::key("F10")]);
-        assert_eq!(lido.screenshots_dir, None);
-        assert_eq!(lido.roms_dir, Some(PathBuf::from("/jogos")));
-        // Um arquivo que já tinha o F9 trocado, de antes do fast-forward, ganha o F10 também.
-        let trocado: Settings =
+    fn a_file_from_before_shortcuts_gets_f9() {
+        let loaded: Settings = serde_json::from_str(r#"{ "roms_dir": "/jogos" }"#).unwrap();
+        assert_eq!(loaded.shortcuts.screenshot, "F9");
+        assert_eq!(loaded.shortcuts.fast_forward, [Source::key("F10")]);
+        assert_eq!(loaded.screenshots_dir, None);
+        assert_eq!(loaded.roms_dir, Some(PathBuf::from("/jogos")));
+        // A file that already had F9 changed, from before fast-forward, gets F10 too.
+        let changed: Settings =
             serde_json::from_str(r#"{ "atalhos": { "screenshot": "F12" } }"#).unwrap();
-        assert_eq!(trocado.atalhos.screenshot, "F12");
-        assert_eq!(trocado.atalhos.avancar, [Source::key("F10")]);
+        assert_eq!(changed.shortcuts.screenshot, "F12");
+        assert_eq!(changed.shortcuts.fast_forward, [Source::key("F10")]);
     }
 
-    /// O `speed_limit` desligado de antes do limite de quadros continua desligado, e o campo
-    /// antigo não volta a ser gravado.
+    /// The `speed_limit` off from before the frame limit stays off, and the old field is not
+    /// written again.
     #[test]
-    fn o_speed_limit_antigo_vira_o_limite_de_quadros() {
+    fn the_legacy_speed_limit_becomes_the_frame_limit() {
         let dir = std::env::temp_dir().join("zeebx-testes-speed-limit");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("settings.json");
 
         std::fs::write(&path, r#"{"graphics": {"speed_limit": false, "smooth": true}}"#).unwrap();
-        let lido = Settings::load_from(&path);
-        assert_eq!(lido.velocidade.limite_fps, LimiteFps::Desligado);
-        assert!(lido.graphics.smooth);
-        assert_eq!(lido.graphics.limite_antigo, None);
-        lido.save_to(&path).unwrap();
+        let loaded = Settings::load_from(&path);
+        assert_eq!(loaded.speed.fps_limit, FpsLimit::Off);
+        assert!(loaded.graphics.smooth);
+        assert_eq!(loaded.graphics.legacy_limit, None);
+        loaded.save_to(&path).unwrap();
         assert!(!std::fs::read_to_string(&path).unwrap().contains("speed_limit"));
 
         std::fs::write(&path, r#"{"graphics": {"speed_limit": true}}"#).unwrap();
-        assert_eq!(Settings::load_from(&path).velocidade.limite_fps, LimiteFps::Sessenta);
+        assert_eq!(Settings::load_from(&path).speed.fps_limit, FpsLimit::Sixty);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// O R de reiniciar chega para quem não o usa, e não rouba o botão de quem já o mapeou. Quem
-    /// já conhecia o atalho fica com o que escolheu.
+    /// The R for restart arrives for whoever does not use it, and does not steal the button from
+    /// whoever already mapped it. Whoever already knew the shortcut keeps what they chose.
     #[test]
-    fn o_atalho_de_reiniciar_nao_rouba_um_botao() {
+    fn the_reset_shortcut_does_not_steal_a_button() {
         let dir = std::env::temp_dir().join(format!("zeebx-testes-reiniciar-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("settings.json");
 
         std::fs::write(&path, r#"{ "roms_dir": "/jogos" }"#).unwrap();
-        assert_eq!(Settings::load_from(&path).atalhos.reiniciar, "R");
+        assert_eq!(Settings::load_from(&path).shortcuts.restart, "R");
 
-        let mut com_r = Settings::default();
-        com_r.controls.player_mut(0).bind("b4", Source::key("R"));
-        let mut valor = serde_json::to_value(&com_r).unwrap();
-        valor["atalhos"].as_object_mut().unwrap().remove("reiniciar");
-        std::fs::write(&path, valor.to_string()).unwrap();
-        assert_eq!(Settings::load_from(&path).atalhos.reiniciar, "", "o R do b4 virou reinício");
+        let mut with_r = Settings::default();
+        with_r.controls.player_mut(0).bind("b4", Source::key("R"));
+        let mut value = serde_json::to_value(&with_r).unwrap();
+        value["atalhos"].as_object_mut().unwrap().remove("reiniciar");
+        std::fs::write(&path, value.to_string()).unwrap();
+        assert_eq!(Settings::load_from(&path).shortcuts.restart, "", "b4's R became restart");
 
-        // Gravado com o atalho, ele vale mesmo com o R num botão: foi escolha.
-        com_r.save_to(&path).unwrap();
-        assert_eq!(Settings::load_from(&path).atalhos.reiniciar, "R");
+        // Saved with the shortcut, it applies even with R on a button: it was a choice.
+        with_r.save_to(&path).unwrap();
+        assert_eq!(Settings::load_from(&path).shortcuts.restart, "R");
 
-        // O R num botão de um jogo só, com as gerais sem ele, também deixa o atalho sem tecla.
-        let mut jogo = ConfigDoJogo::das(&Settings::default());
-        jogo.controls.player_mut(0).bind("b4", Source::key("R"));
-        jogo.grava_em(&dir.join("jogos").join("01234567.json")).unwrap();
+        // R on a button of a single game, with the general settings without it, also leaves the
+        // shortcut without a key.
+        let mut game = GameConfig::from_settings(&Settings::default());
+        game.controls.player_mut(0).bind("b4", Source::key("R"));
+        game.write_to(&dir.join("jogos").join("01234567.json")).unwrap();
         std::fs::write(&path, r#"{ "roms_dir": "/jogos" }"#).unwrap();
-        assert_eq!(Settings::load_from(&path).atalhos.reiniciar, "", "o R do jogo virou reinício");
+        assert_eq!(Settings::load_from(&path).shortcuts.restart, "", "the game's R became restart");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// O F1 do save state segue a regra do R: chega para quem não o usa, e não rouba o botão de
-    /// quem o pôs num. A combinação com modificador chega sempre.
+    /// The save state F1 follows the R rule: it arrives for whoever does not use it, and does not
+    /// steal the button from whoever put it on one. A combination with a modifier always arrives.
     #[test]
-    fn os_atalhos_do_save_state_nao_roubam_um_botao() {
+    fn the_save_state_shortcuts_do_not_steal_a_button() {
         let dir = std::env::temp_dir().join(format!("zeebx-testes-estado-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("settings.json");
 
-        let mut com_f1 = Settings::default();
-        com_f1.controls.player_mut(0).bind("b1", Source::key("F1"));
-        com_f1.controls.player_mut(0).bind("b2", Source::key("F2"));
-        let mut valor = serde_json::to_value(&com_f1).unwrap();
-        for campo in [
+        let mut with_f1 = Settings::default();
+        with_f1.controls.player_mut(0).bind("b1", Source::key("F1"));
+        with_f1.controls.player_mut(0).bind("b2", Source::key("F2"));
+        let mut value = serde_json::to_value(&with_f1).unwrap();
+        for field in [
             "salvar_estado",
             "carregar_estado",
             "proximo_slot",
             "slot_anterior",
             "desfazer_carregar",
         ] {
-            valor["atalhos"].as_object_mut().unwrap().remove(campo);
+            value["atalhos"].as_object_mut().unwrap().remove(field);
         }
-        std::fs::write(&path, valor.to_string()).unwrap();
-        let lido = Settings::load_from(&path).atalhos;
-        assert_eq!(lido.carregar_estado, Atalhos::CARREGAR_ESTADO_PADRAO);
-        assert_eq!(lido.slot_anterior, Atalhos::SLOT_ANTERIOR_PADRAO);
+        std::fs::write(&path, value.to_string()).unwrap();
+        let loaded = Settings::load_from(&path).shortcuts;
+        assert_eq!(loaded.load_state, Shortcuts::DEFAULT_LOAD_STATE);
+        assert_eq!(loaded.previous_slot, Shortcuts::DEFAULT_PREVIOUS_SLOT);
         if cfg!(target_os = "macos") {
-            assert_eq!(lido.salvar_estado, "Cmd+S");
+            assert_eq!(loaded.save_state, "Cmd+S");
         } else {
-            assert_eq!(lido.salvar_estado, "", "o F1 do b1 virou save state");
-            assert_eq!(lido.proximo_slot, "", "o F2 do b2 virou troca de slot");
+            assert_eq!(loaded.save_state, "", "b1's F1 became save state");
+            assert_eq!(loaded.next_slot, "", "b2's F2 became slot switch");
         }
 
-        // Gravado com o atalho, ele vale mesmo com a tecla num botão: foi escolha.
-        com_f1.save_to(&path).unwrap();
+        // Saved with the shortcut, it applies even with the key on a button: it was a choice.
+        with_f1.save_to(&path).unwrap();
         assert_eq!(
-            Settings::load_from(&path).atalhos.salvar_estado,
-            Atalhos::SALVAR_ESTADO_PADRAO
+            Settings::load_from(&path).shortcuts.save_state,
+            Shortcuts::DEFAULT_SAVE_STATE
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Quem vem da 0.4.x não tinha a opção, e passa a jogar na janela principal: é a repaginada
-    /// que todo mundo vê. A janela separada continua a um clique, em Gráficos.
+    /// Whoever comes from 0.4.x did not have the option, and starts playing in the main window: it
+    /// is the redesign everyone sees. The separate window is still one click away, in Graphics.
     #[test]
-    fn um_arquivo_de_antes_joga_na_janela_principal() {
-        let antigo: Settings =
+    fn an_old_file_plays_in_the_main_window() {
+        let old: Settings =
             serde_json::from_str(r#"{ "graphics": { "janela_do_jogo": "tela_cheia" } }"#).unwrap();
-        assert!(!antigo.graphics.jogo_separado);
-        assert_eq!(antigo.graphics.janela_do_jogo, ModoDaJanela::TelaCheia);
+        assert!(!old.graphics.separate_game_window);
+        assert_eq!(old.graphics.game_window, WindowMode::Fullscreen);
     }
 
     #[test]
-    fn a_combinacao_vai_ao_texto_e_volta() {
-        let shift_f2 = Combinacao::le("Shift+F2").unwrap();
-        assert_eq!(shift_f2.tecla, egui::Key::F2);
-        assert!(shift_f2.modificadores.shift && !shift_f2.modificadores.cmd);
-        assert_eq!(shift_f2.nome(), "Shift+F2");
+    fn the_combination_round_trips_through_text() {
+        let shift_f2 = KeyCombo::read("Shift+F2").unwrap();
+        assert_eq!(shift_f2.key, egui::Key::F2);
+        assert!(shift_f2.modifiers.shift && !shift_f2.modifiers.cmd);
+        assert_eq!(shift_f2.name(), "Shift+F2");
 
-        let so_a_tecla = Combinacao::le("F9").unwrap();
-        assert!(so_a_tecla.modificadores.nenhum());
-        assert_eq!(so_a_tecla.nome(), "F9");
+        let key_only = KeyCombo::read("F9").unwrap();
+        assert!(key_only.modifiers.is_empty());
+        assert_eq!(key_only.name(), "F9");
 
-        // A ordem de quem escreveu à mão não importa; a gravada é sempre a mesma.
+        // The order of whoever wrote it by hand does not matter; the stored one is always the
+        // same.
         assert_eq!(
-            Combinacao::le("Cmd+Shift+]").unwrap().nome(),
+            KeyCombo::read("Cmd+Shift+]").unwrap().name(),
             "Shift+Cmd+CloseBracket"
         );
-        assert_eq!(Combinacao::le("Ctrl+Plus").unwrap().tecla, egui::Key::Plus);
+        assert_eq!(KeyCombo::read("Ctrl+Plus").unwrap().key, egui::Key::Plus);
 
-        assert_eq!(Combinacao::le(""), None);
-        assert_eq!(Combinacao::le("Hyper+F1"), None);
-        assert_eq!(Combinacao::le("Shift+"), None);
+        assert_eq!(KeyCombo::read(""), None);
+        assert_eq!(KeyCombo::read("Hyper+F1"), None);
+        assert_eq!(KeyCombo::read("Shift+"), None);
 
-        for padrao in [
-            Atalhos::SALVAR_ESTADO_PADRAO,
-            Atalhos::CARREGAR_ESTADO_PADRAO,
-            Atalhos::PROXIMO_SLOT_PADRAO,
-            Atalhos::SLOT_ANTERIOR_PADRAO,
-            Atalhos::DESFAZER_CARREGAR_PADRAO,
+        for fallback in [
+            Shortcuts::DEFAULT_SAVE_STATE,
+            Shortcuts::DEFAULT_LOAD_STATE,
+            Shortcuts::DEFAULT_NEXT_SLOT,
+            Shortcuts::DEFAULT_PREVIOUS_SLOT,
+            Shortcuts::DEFAULT_UNDO_LOAD,
         ] {
             assert_eq!(
-                Combinacao::le(padrao).map(|c| c.nome()).as_deref(),
-                Some(padrao)
+                KeyCombo::read(fallback).map(|c| c.name()).as_deref(),
+                Some(fallback)
             );
         }
     }
 
     #[test]
-    fn arquivo_ausente_ou_estragado_devolve_o_padrao() {
-        // Abrir com as opções de fábrica é sempre melhor que não abrir.
-        let ausente = std::env::temp_dir().join("zeebx-nao-existe-mesmo/settings.json");
-        assert_eq!(Settings::load_from(&ausente), Settings::default());
+    fn a_missing_or_corrupt_file_returns_the_default() {
+        // Opening with the factory options is always better than not opening.
+        let missing = std::env::temp_dir().join("zeebx-nao-existe-mesmo/settings.json");
+        assert_eq!(Settings::load_from(&missing), Settings::default());
 
         let dir = std::env::temp_dir().join("zeebx-testes-estragado");
         std::fs::create_dir_all(&dir).unwrap();
@@ -1271,10 +1345,10 @@ mod tests {
     }
 
     #[test]
-    fn um_controle_salvo_antes_dos_eixos_ganha_os_eixos_ao_abrir() {
-        // Este é o caminho que o emulador usa de verdade: um arquivo escrito por uma versão
-        // que não conhecia os eixos deixaria os manches mudos, e o padrão de um campo novo nem
-        // sempre é o vazio.
+    fn a_controller_saved_before_axes_gets_the_axes_on_load() {
+        // This is the path the emulator really uses: a file written by a version that did not
+        // know the axes would leave the sticks dead, and the default of a new field is not always
+        // empty.
         let dir = std::env::temp_dir().join("zeebx-testes-eixos");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("settings.json");
@@ -1291,9 +1365,9 @@ mod tests {
     }
 
     #[test]
-    fn campo_que_falta_no_arquivo_usa_o_padrao() {
-        // Um arquivo escrito por uma versão anterior não tem os campos novos, e ele precisa
-        // continuar valendo.
+    fn a_field_missing_from_the_file_uses_the_default() {
+        // A file written by an earlier version does not have the new fields, and it must keep
+        // working.
         let dir = std::env::temp_dir().join("zeebx-testes-parcial");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("settings.json");
@@ -1307,50 +1381,51 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// O jogo personalizado leva as quatro seções dele, e o resto — inclusive a janela, que mora
-    /// nos gráficos — continua sendo o da global.
+    /// The custom game takes its four sections, and the rest — including the window, which lives
+    /// in the graphics — stays the global one's.
     #[test]
-    fn as_do_jogo_trocam_so_as_secoes_do_jogo() {
-        let mut do_jogo = Settings::default();
-        do_jogo.audio.volume = 20;
-        do_jogo.graphics.resolucao_interna = 3;
-        do_jogo.graphics.janela = ModoDaJanela::TelaCheia;
-        do_jogo.velocidade.limite_fps = LimiteFps::Trinta;
-        do_jogo.controls.players[0].ligada = false;
-        let config = ConfigDoJogo::das(&do_jogo);
+    fn per_game_settings_replace_only_the_game_sections() {
+        let mut for_game = Settings::default();
+        for_game.audio.volume = 20;
+        for_game.graphics.internal_resolution = 3;
+        for_game.graphics.window = WindowMode::Fullscreen;
+        for_game.speed.fps_limit = FpsLimit::Thirty;
+        for_game.controls.players[0].enabled = false;
+        let config = GameConfig::from_settings(&for_game);
 
         let mut global = Settings::default();
         global.language = Some("es".into());
-        global.graphics.tamanho_da_janela = Some([800.0, 600.0]);
-        let vale = config.sobre(&global);
+        global.graphics.window_size = Some([800.0, 600.0]);
+        let applies = config.about(&global);
 
-        assert_eq!(vale.audio.volume, 20);
-        assert_eq!(vale.graphics.resolucao_interna, 3);
-        assert_eq!(vale.velocidade.limite_fps, LimiteFps::Trinta);
-        assert!(!vale.controls.players[0].ligada);
-        assert_eq!(vale.language.as_deref(), Some("es"), "o idioma é da global");
-        assert_eq!(vale.graphics.janela, global.graphics.janela, "o modo da janela é da global");
-        assert_eq!(vale.graphics.tamanho_da_janela, Some([800.0, 600.0]));
-        // E as do jogo voltam inteiras de uma configuração já montada.
-        assert_eq!(ConfigDoJogo::das(&vale).audio, config.audio);
+        assert_eq!(applies.audio.volume, 20);
+        assert_eq!(applies.graphics.internal_resolution, 3);
+        assert_eq!(applies.speed.fps_limit, FpsLimit::Thirty);
+        assert!(!applies.controls.players[0].enabled);
+        assert_eq!(applies.language.as_deref(), Some("es"), "the language is the global one's");
+        assert_eq!(applies.graphics.window, global.graphics.window, "the window mode is global");
+        assert_eq!(applies.graphics.window_size, Some([800.0, 600.0]));
+        // And the game's come back whole from an already built configuration.
+        assert_eq!(GameConfig::from_settings(&applies).audio, config.audio);
     }
 
-    /// O arquivo do jogo vai e volta do disco; sem arquivo, ou ilegível, o jogo não tem as dele.
+    /// The game's file goes to disk and back; without a file, or unreadable, the game has none of
+    /// its own.
     #[test]
-    fn as_do_jogo_vao_e_voltam_e_sem_arquivo_nao_ha() {
+    fn per_game_settings_round_trip_and_without_a_file_there_are_none() {
         let dir = std::env::temp_dir().join("zeebx-testes-config-do-jogo");
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join("jogos").join("01234567.json");
-        assert_eq!(ConfigDoJogo::carrega_de(&path), None);
+        assert_eq!(GameConfig::try_load_from(&path), None);
 
-        let mut config = ConfigDoJogo::default();
+        let mut config = GameConfig::default();
         config.audio.volume = 55;
-        config.velocidade.frameskip = Frameskip::Fixo(1);
-        config.grava_em(&path).unwrap();
-        assert_eq!(ConfigDoJogo::carrega_de(&path), Some(config));
+        config.speed.frameskip = Frameskip::Fixed(1);
+        config.write_to(&path).unwrap();
+        assert_eq!(GameConfig::try_load_from(&path), Some(config));
 
         std::fs::write(&path, "{ isto não é json").unwrap();
-        assert_eq!(ConfigDoJogo::carrega_de(&path), None);
+        assert_eq!(GameConfig::try_load_from(&path), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

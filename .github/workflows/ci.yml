@@ -1,34 +1,38 @@
-# Compila, testa e abre o desktop. A interface (`frontends/qt-standalone`, binário `zeebx-qt`) vem
-# do `qt.yml`, chamado pelo job `qt` lá embaixo: ele também monta e abre os instaladores. A linha de
-# comando (`frontends/cli`, binário `zeebx`) compila no job `compila`, nas seis plataformas abaixo —
-# e com ela o núcleo e os testes dele, inclusive nos dois alvos ARM64 em que o Qt não é montado.
+# Builds, tests and opens the desktop. The interface (`frontends/qt-standalone`, binary `zeebx-qt`)
+# comes from `qt.yml`, called by the `qt` job down below: it also builds and opens the installers.
+# The command line (`frontends/cli`, binary `zeebx`) builds in the `compila` job, on the six
+# platforms below — and with it the core and its tests, including on the two ARM64 targets where
+# Qt isn't built.
 #
-# O que este trabalho responde é "o binário sai, os testes passam e ele abre?", que o `release.yml`
-# **não** responde: ele roda em tag, empacota, e não pode segurar os instaladores por causa de um
-# teste. A release continua sendo só por tag — nenhum PR dispara release.
+# What this job answers is "does the binary come out, do the tests pass and does it open?", which
+# `release.yml` does **not** answer: it runs on tag, packages, and can't hold back the installers
+# because of a test. The release is still tag-only — no PR triggers a release.
 #
-# Seis alvos, três sistemas × duas arquiteturas:
+# Six targets, three systems × two architectures:
 #
 #   linux-x86_64 / linux-aarch64      ubuntu-24.04 / ubuntu-24.04-arm
 #   macos-x86_64 / macos-arm64        macos-15-intel / macos-latest
 #
-# **Runners nativos, não cross-compilação**: o `unicorn` compila o QEMU em C e o `dynarmic` compila
-# C++20, que é justamente a combinação que cross-build faz sofrer (toolchain C++ e sysroot). Runner
-# ARM64 nativo existe para Linux, Windows e macOS, e sai mais barato que manter cross.
+# **Native runners, not cross-compilation**: `unicorn` compiles QEMU in C and `dynarmic` compiles
+# C++20, which is precisely the combination cross-builds suffer from (C++ toolchain and sysroot).
+# Native ARM64 runners exist for Linux, Windows and macOS, and come out cheaper than maintaining
+# cross.
 #
-# Custo: cada alvo compila o QEMU e o JIT, uns 15 minutos por runner. Os seis jobs da linha de
-# comando e os cinco do Qt por execução são caros demais para gastar em cada push — por isso este trabalho **só roda à mão**, pela aba Actions.
+# Cost: each target compiles QEMU and the JIT, about 15 minutes per runner. The six command line
+# jobs and the five Qt ones per run are too expensive to spend on every push — that is why this
+# job **only runs by hand**, from the Actions tab.
 
 name: ci
 
-# **Nenhum push ou merge dispara isto.** O único gatilho automático do repositório é a tag, no
-# `release.yml`; aqui é você quem pede o run, quando quer a resposta antes de marcar uma versão.
+# **No push or merge triggers this.** The repository's only automatic trigger is the tag, in
+# `release.yml`; here you are the one who requests the run, when you want the answer before
+# tagging a version.
 on:
   workflow_dispatch:
 
-# **Um run não cancela o outro.** Medido: quatro execuções seguidas do `ci` terminaram "cancelled"
-# porque a nova derrubava o build de seis alvos que estava no meio — e nenhuma delas chegou a dizer
-# se o standalone compila no Windows ou no macOS.
+# **One run doesn't cancel the other.** Measured: four back-to-back `ci` runs ended "cancelled"
+# because the new one killed the six-target build that was halfway through — and none of them
+# got to say whether the standalone builds on Windows or macOS.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: false
@@ -37,15 +41,16 @@ jobs:
   compila:
     name: ${{ matrix.nome }}
     runs-on: ${{ matrix.sistema }}
-    # Um alvo que ficou pendurado não pode queimar a cota da conta: seis horas de espera viram uma
-    # hora de falha.
+    # A target that hung can't burn the account's quota: six hours of waiting become one hour of
+    # failure.
     timeout-minutes: 60
     env:
       BINARIO: target/release/zeebx${{ matrix.exe }}
     strategy:
       fail-fast: false
       matrix:
-        # Disparo à mão é sempre a matriz inteira: quem pede o run quer a resposta dos seis alvos.
+        # A manual trigger is always the whole matrix: whoever requests the run wants the answer
+        # for the six targets.
         alvo:
           - linux-x86_64
           - linux-aarch64
@@ -69,10 +74,11 @@ jobs:
           - alvo: windows-aarch64
             nome: windows-aarch64
             sistema: windows-11-arm
-            # Windows ARM64 **não** tem o `unicorn` (falta montador MASM para ARM64 e o QEMU do Windows
-            # monta um `.asm` com o `ml` do MSVC, que só existe para x86 e x64). O alvo compila assim
-            # mesmo: o `unicorn-engine` sai do grafo por dependência condicional de alvo e o motor usa o
-            # `dynarmic`, que recompila os blocos A32. Ver `src/cpu/mod.rs`, `BackendPadrao`.
+            # Windows ARM64 does **not** have `unicorn` (there is no MASM assembler for ARM64, and
+            # QEMU on Windows assembles a `.asm` with MSVC's `ml`, which only exists for x86 and
+            # x64). The target builds anyway: `unicorn-engine` leaves the graph through a
+            # target-conditional dependency and the engine uses `dynarmic`, which recompiles the A32
+            # blocks. See `src/cpu/mod.rs`, `DefaultBackend`.
             exe: .exe
           - alvo: macos-x86_64
             nome: macos-x86_64
@@ -91,10 +97,10 @@ jobs:
         with:
           key: ci-${{ matrix.nome }}
 
-      # A lista do Linux é a do `release.yml`, mais `ninja` e `libclang` de propósito: o `dynarmic`
-      # pede gerador Ninja e o `bindgen` do unicorn carrega a biblioteca do clang. Depender do que a
-      # imagem do runner já traz funciona até o dia em que não traz.
-      - name: Dependências do Linux
+      # The Linux list is the `release.yml` one, plus `ninja` and `libclang` on purpose: `dynarmic`
+      # asks for the Ninja generator and unicorn's `bindgen` loads the clang library. Depending on
+      # what the runner image already ships works until the day it doesn't.
+      - name: Linux dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
@@ -102,34 +108,34 @@ jobs:
             libglib2.0-dev libasound2-dev libudev-dev libxkbcommon-dev libwayland-dev \
             libgl1-mesa-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev
 
-      - name: Dependências do macOS
+      - name: macOS dependencies
         if: runner.os == 'macOS'
         run: brew install cmake ninja pkg-config || true
 
-      # Sem debuginfo a árvore passa de mais de 5 GiB para algumas centenas de MB — o mesmo motivo
-      # que fez o build local encher o disco.
-      # O pacote da raiz é só biblioteca desde a 0.3.0: quem produz o binário é o frontend, e sem
-      # nomeá-lo não sai binário nenhum para provar.
-      - name: Compila
+      # Without debuginfo the tree goes from more than 5 GiB to a few hundred MB — the same reason
+      # the local build filled the disk.
+      # The root package is library-only since 0.3.0: the frontend is what produces the binary,
+      # and without naming it no binary comes out to prove anything.
+      - name: Build
         shell: bash
         env:
           CARGO_PROFILE_DEV_DEBUG: "0"
         run: cargo build --release --locked -p zeebx-cli
 
-      - name: Testes
+      - name: Tests
         shell: bash
         env:
           CARGO_PROFILE_DEV_DEBUG: "0"
           CARGO_PROFILE_TEST_DEBUG: "0"
         run: cargo test --release --locked -p zeebx -p zeebx-cli
 
-      - name: O binário existe
+      - name: The binary exists
         shell: bash
         run: ls -la "$BINARIO"
 
-      # O CI também é uma bancada de teste para quem não quer compilar. Cada alvo entrega o seu
-      # executável, `zeebx-cli-*`. O core Libretro é publicado pelo workflow libretro.yml.
-      - name: Entrega a linha de comando
+      # CI is also a test bench for those who don't want to compile. Each target delivers its
+      # executable, `zeebx-cli-*`. The Libretro core is published by the libretro.yml workflow.
+      - name: Deliver the command line
         uses: actions/upload-artifact@v4
         with:
           name: zeebx-cli-${{ matrix.nome }}
@@ -137,34 +143,34 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      # `controles` lista o que o sistema vê de controle e sai: é o comando mais barato que
-      # exercita a inicialização de verdade (udev, gilrs) sem precisar de tela. Em cada sistema,
-      # com o comando de tempo limite que ele tem.
-      - name: O binário abre (Linux)
+      # `controls` lists the controllers the system sees and exits: it is the cheapest command
+      # that exercises the real initialization (udev, gilrs) without needing a screen. On each
+      # system, with the timeout command it has.
+      - name: The binary opens (Linux)
         if: runner.os == 'Linux'
         shell: bash
         run: |
           file "$BINARIO"
           ldd "$BINARIO" | head -20
-          timeout 60 "$BINARIO" controles
+          timeout 60 "$BINARIO" controls
 
-      - name: O binário abre (macOS)
+      - name: The binary opens (macOS)
         if: runner.os == 'macOS'
         shell: bash
         run: |
           file "$BINARIO"
           otool -L "$BINARIO" | head -20
-          # O macOS não traz o `timeout` do GNU; o `perl` traz o alarme, e existe em toda imagem.
-          perl -e 'alarm 60; exec @ARGV' "$BINARIO" controles
+          # macOS doesn't ship GNU `timeout`; `perl` has the alarm, and it exists in every image.
+          perl -e 'alarm 60; exec @ARGV' "$BINARIO" controls
 
-      - name: O binário abre (Windows)
+      - name: The binary opens (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $prova = Start-Process -FilePath "$env:BINARIO" -ArgumentList "controles" -PassThru -NoNewWindow
-          if (-not $prova.WaitForExit(60000)) { $prova.Kill(); throw "o binario pendurou" }
-          if ($prova.ExitCode -ne 0) { throw "o binario saiu com $($prova.ExitCode)" }
+          $prova = Start-Process -FilePath "$env:BINARIO" -ArgumentList "controls" -PassThru -NoNewWindow
+          if (-not $prova.WaitForExit(60000)) { $prova.Kill(); throw "the binary hung" }
+          if ($prova.ExitCode -ne 0) { throw "the binary exited with $($prova.ExitCode)" }
 
-  # O Qt, com os instaladores, pelos mesmos passos da release. Ver o `qt.yml`.
+  # Qt, with the installers, through the same steps as the release. See `qt.yml`.
   qt:
     uses: ./.github/workflows/qt.yml

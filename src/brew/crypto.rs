@@ -1,10 +1,10 @@
-//! O AES-128 em CBC, que é o que o BREW entrega pelo `AEECLSID_BlockAES128`.
+//! AES-128 in CBC, which is what BREW provides through `AEECLSID_BlockAES128`.
 //!
-//! Escrito aqui em vez de vir de uma dependência porque é pequeno, fechado e verificável: os
-//! testes usam os vetores das próprias especificações — o FIPS-197 para o bloco e o NIST
-//! SP 800-38A para o encadeamento.
+//! Written here instead of coming from a dependency because it is small, self-contained and
+//! verifiable: the tests use the vectors from the specifications themselves — FIPS-197 for the
+//! block and NIST SP 800-38A for the chaining.
 
-/// Caixa de substituição do AES, da tabela 4 do FIPS-197.
+/// The AES substitution box, from table 4 of FIPS-197.
 const SBOX: [u8; 256] = [
     0x63, 0x7c, 0x77, 0x7b, 0xf2, 0x6b, 0x6f, 0xc5, 0x30, 0x01, 0x67, 0x2b, 0xfe, 0xd7, 0xab, 0x76,
     0xca, 0x82, 0xc9, 0x7d, 0xfa, 0x59, 0x47, 0xf0, 0xad, 0xd4, 0xa2, 0xaf, 0x9c, 0xa4, 0x72, 0xc0,
@@ -24,7 +24,7 @@ const SBOX: [u8; 256] = [
     0x8c, 0xa1, 0x89, 0x0d, 0xbf, 0xe6, 0x42, 0x68, 0x41, 0x99, 0x2d, 0x0f, 0xb0, 0x54, 0xbb, 0x16,
 ];
 
-/// Multiplicação no corpo do AES, `GF(2^8)` com o polinômio `x^8 + x^4 + x^3 + x + 1`.
+/// Multiplication in the AES field, `GF(2^8)` with the polynomial `x^8 + x^4 + x^3 + x + 1`.
 fn xtime(value: u8) -> u8 {
     (value << 1) ^ if value & 0x80 != 0 { 0x1b } else { 0 }
 }
@@ -41,7 +41,7 @@ fn multiply(a: u8, b: u8) -> u8 {
     out
 }
 
-/// Cifra de bloco AES-128, com as chaves de rodada já expandidas.
+/// AES-128 block cipher, with the round keys already expanded.
 #[derive(Debug, Clone)]
 pub struct Aes128 {
     round_keys: [[u8; 16]; 11],
@@ -71,7 +71,7 @@ impl Aes128 {
         Self { round_keys }
     }
 
-    /// Cifra um bloco de 16 bytes no lugar.
+    /// Encrypts a 16-byte block in place.
     pub fn encrypt_block(&self, block: &mut [u8; 16]) {
         add_round_key(block, &self.round_keys[0]);
         for round in 1..11 {
@@ -93,8 +93,8 @@ fn add_round_key(block: &mut [u8; 16], key: &[u8; 16]) {
     }
 }
 
-/// O estado do AES é uma matriz preenchida por colunas, então a linha `r` do byte `i` é
-/// `i % 4` — e deslocar a linha `r` por `r` posições mexe em bytes espalhados pelo bloco.
+/// The AES state is a matrix filled by columns, so the row `r` of byte `i` is `i % 4` — and
+/// shifting row `r` by `r` positions touches bytes scattered across the block.
 fn shift_rows(block: &mut [u8; 16]) {
     let original = *block;
     for column in 0..4 {
@@ -106,7 +106,7 @@ fn shift_rows(block: &mut [u8; 16]) {
 
 fn mix_columns(block: &mut [u8; 16]) {
     for column in block.chunks_exact_mut(4) {
-        let c: [u8; 4] = column.try_into().expect("chunk de quatro");
+        let c: [u8; 4] = column.try_into().expect("chunk of four");
         column[0] = multiply(c[0], 2) ^ multiply(c[1], 3) ^ c[2] ^ c[3];
         column[1] = c[0] ^ multiply(c[1], 2) ^ multiply(c[2], 3) ^ c[3];
         column[2] = c[0] ^ c[1] ^ multiply(c[2], 2) ^ multiply(c[3], 3);
@@ -114,14 +114,14 @@ fn mix_columns(block: &mut [u8; 16]) {
     }
 }
 
-/// Cifra `data` em CBC, no lugar, avançando `iv`. O comprimento precisa ser múltiplo de 16 —
-/// o preenchimento é decidido pelo `ICipher1`, não aqui.
+/// Encrypts `data` in CBC, in place, advancing `iv`. The length must be a multiple of 16 — the
+/// padding is decided by `ICipher1`, not here.
 pub fn cbc_encrypt(cipher: &Aes128, iv: &mut [u8; 16], data: &mut [u8]) {
     for block in data.chunks_exact_mut(16) {
         for (byte, previous) in block.iter_mut().zip(iv.iter()) {
             *byte ^= previous;
         }
-        let mut current: [u8; 16] = block.try_into().expect("chunk de dezesseis");
+        let mut current: [u8; 16] = block.try_into().expect("chunk of sixteen");
         cipher.encrypt_block(&mut current);
         block.copy_from_slice(&current);
         *iv = current;
@@ -137,8 +137,8 @@ mod tests {
     }
 
     #[test]
-    fn aes128_bate_com_o_vetor_do_fips_197() {
-        // Apêndice B do FIPS-197.
+    fn aes128_matches_the_fips_197_vector() {
+        // Appendix B of FIPS-197.
         let key: [u8; 16] = [
             0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6, 0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf,
             0x4f, 0x3c,
@@ -152,7 +152,7 @@ mod tests {
     }
 
     #[test]
-    fn aes128_bate_com_o_exemplo_c1_do_fips_197() {
+    fn aes128_matches_fips_197_example_c1() {
         let key: [u8; 16] = std::array::from_fn(|i| i as u8);
         let mut block: [u8; 16] = std::array::from_fn(|i| (i as u8) * 0x11);
         Aes128::new(&key).encrypt_block(&mut block);
@@ -160,8 +160,8 @@ mod tests {
     }
 
     #[test]
-    fn cbc_encadeia_os_blocos() {
-        // Vetor do NIST SP 800-38A, F.2.1: os dois primeiros blocos do CBC-AES128.
+    fn cbc_chains_the_blocks() {
+        // Vector from NIST SP 800-38A, F.2.1: the first two blocks of CBC-AES128.
         let key: [u8; 16] = [
             0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6, 0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf,
             0x4f, 0x3c,
@@ -180,21 +180,21 @@ mod tests {
     }
 }
 
-/// Resumo MD5, da RFC 1321.
+/// MD5 digest, from RFC 1321.
 ///
-/// O BREW expõe isto como `IHash` sob o `AEECLSID_MD5`. Os jogos usam para conferir integridade
-/// dos próprios dados — o Zeeboids calcula o resumo de uma string e compara com o que ele
-/// guarda —, então o que importa é bater com a especificação, não ser rápido.
+/// BREW exposes this as `IHash` under `AEECLSID_MD5`. Games use it to check the integrity of
+/// their own data — Zeeboids computes the digest of a string and compares it with the one it
+/// keeps —, so what matters is matching the specification, not being fast.
 ///
-/// A implementação é de fluxo: `update` pode ser chamado quantas vezes for, com pedaços de
-/// qualquer tamanho, porque é assim que a interface do BREW é usada.
+/// The implementation is streaming: `update` can be called any number of times, with chunks of
+/// any size, because that is how the BREW interface is used.
 #[derive(Debug, Clone)]
 pub struct Md5 {
-    /// Os quatro registradores de estado, `A`, `B`, `C` e `D`.
+    /// The four state registers, `A`, `B`, `C` and `D`.
     state: [u32; 4],
-    /// Bytes que ainda não completaram um bloco de 64.
+    /// Bytes that have not yet filled a 64-byte block.
     buffer: Vec<u8>,
-    /// Total de bytes vistos, que entra no preenchimento final.
+    /// Total bytes seen, which goes into the final padding.
     length: u64,
 }
 
@@ -204,7 +204,7 @@ impl Default for Md5 {
     }
 }
 
-/// Deslocamentos de rotação, uma linha por rodada (tabela da seção 3.4 da RFC).
+/// Rotation amounts, one row per round (table in section 3.4 of the RFC).
 const MD5_SHIFTS: [[u32; 4]; 4] = [
     [7, 12, 17, 22],
     [5, 9, 14, 20],
@@ -221,25 +221,25 @@ impl Md5 {
         }
     }
 
-    /// O estado interno, para o save state: os quatro registradores, os bytes que ainda não
-    /// completaram um bloco de 64 e o total visto.
+    /// The internal state, for the save state: the four registers, the bytes that have not yet
+    /// filled a 64-byte block, and the total seen.
     ///
-    /// **Um MD5 no meio de um cálculo é estado de verdade.** Sem isto, um jogo que salve entre dois
-    /// `Update` de um resumo perde o que já tinha somado — e o resumo sai errado depois, sem nada
-    /// apontando para o save state. O estado cabe em poucos bytes: são quatro palavras e, no
-    /// máximo, sessenta e três bytes de resto.
-    pub fn estado(&self) -> ([u32; 4], &[u8], u64) {
+    /// **An MD5 in the middle of a computation is real state.** Without this, a game that saves
+    /// between two `Update` calls of a digest loses what it had already accumulated — and the
+    /// digest comes out wrong later, with nothing pointing at the save state. The state fits in a
+    /// few bytes: four words and, at most, sixty-three bytes of remainder.
+    pub fn state(&self) -> ([u32; 4], &[u8], u64) {
         (self.state, &self.buffer, self.length)
     }
 
-    /// Repõe o estado gravado por [`Md5::estado`].
+    /// Restores the state recorded by [`Md5::state`].
     ///
-    /// Recusa um resto de bloco maior que sessenta e três bytes: não é estado de MD5, é arquivo
-    /// errado — e um resto assim faria o próximo `compress` ler o que não devia.
-    pub fn restaura_estado(&mut self, state: [u32; 4], buffer: &[u8], length: u64) -> Result<(), String> {
+    /// Rejects a block remainder larger than sixty-three bytes: that is not MD5 state, it is the
+    /// wrong file — and such a remainder would make the next `compress` read what it shouldn't.
+    pub fn restore_state(&mut self, state: [u32; 4], buffer: &[u8], length: u64) -> Result<(), String> {
         if buffer.len() >= 64 {
             return Err(format!(
-                "o resto de bloco tem {} bytes, e o MD5 guarda no máximo 63",
+                "the block remainder has {} bytes, and MD5 keeps at most 63",
                 buffer.len()
             ));
         }
@@ -249,7 +249,7 @@ impl Md5 {
         Ok(())
     }
 
-    /// A constante `T[i]`, definida na RFC como `floor(2^32 * abs(sin(i + 1)))`.
+    /// The constant `T[i]`, defined in the RFC as `floor(2^32 * abs(sin(i + 1)))`.
     fn t(i: usize) -> u32 {
         ((i as f64 + 1.0).sin().abs() * 4_294_967_296.0) as u32
     }
@@ -258,29 +258,29 @@ impl Md5 {
         self.length += data.len() as u64;
         self.buffer.extend_from_slice(data);
         while self.buffer.len() >= 64 {
-            let bloco: [u8; 64] = self.buffer[..64].try_into().expect("64 bytes");
-            self.compress(&bloco);
+            let block: [u8; 64] = self.buffer[..64].try_into().expect("64 bytes");
+            self.compress(&block);
             self.buffer.drain(..64);
         }
     }
 
-    /// Fecha o resumo. Consome o estado porque um MD5 fechado não recebe mais nada.
+    /// Finalizes the digest. Consumes the state because a finalized MD5 takes nothing more.
     pub fn finish(mut self) -> [u8; 16] {
-        // O preenchimento é um bit 1, zeros até faltarem oito bytes no bloco, e o comprimento
-        // em bits como inteiro de 64 bits little-endian.
+        // The padding is a 1 bit, zeros until eight bytes are left in the block, and the length
+        // in bits as a 64-bit little-endian integer.
         let bits = self.length.wrapping_mul(8);
         self.buffer.push(0x80);
         while self.buffer.len() % 64 != 56 {
             self.buffer.push(0);
         }
         self.buffer.extend_from_slice(&bits.to_le_bytes());
-        let pendente = std::mem::take(&mut self.buffer);
-        for bloco in pendente.chunks_exact(64) {
-            self.compress(bloco.try_into().expect("64 bytes"));
+        let pending = std::mem::take(&mut self.buffer);
+        for block in pending.chunks_exact(64) {
+            self.compress(block.try_into().expect("64 bytes"));
         }
         let mut out = [0u8; 16];
-        for (i, palavra) in self.state.iter().enumerate() {
-            out[i * 4..i * 4 + 4].copy_from_slice(&palavra.to_le_bytes());
+        for (i, word) in self.state.iter().enumerate() {
+            out[i * 4..i * 4 + 4].copy_from_slice(&word.to_le_bytes());
         }
         out
     }
@@ -296,22 +296,22 @@ impl Md5 {
         });
         let [mut a, mut b, mut c, mut d] = self.state;
         for i in 0..64 {
-            // Cada rodada de dezesseis passos tem a sua função e a sua forma de escolher a
-            // palavra da mensagem.
+            // Each round of sixteen steps has its own function and its own way of picking the
+            // message word.
             let (f, g) = match i / 16 {
                 0 => ((b & c) | (!b & d), i),
                 1 => ((d & b) | (!d & c), (5 * i + 1) % 16),
                 2 => (b ^ c ^ d, (3 * i + 5) % 16),
                 _ => (c ^ (b | !d), (7 * i) % 16),
             };
-            let soma = a
+            let sum = a
                 .wrapping_add(f)
                 .wrapping_add(Self::t(i))
                 .wrapping_add(m[g]);
             a = d;
             d = c;
             c = b;
-            b = b.wrapping_add(soma.rotate_left(MD5_SHIFTS[i / 16][i % 4]));
+            b = b.wrapping_add(sum.rotate_left(MD5_SHIFTS[i / 16][i % 4]));
         }
         self.state[0] = self.state[0].wrapping_add(a);
         self.state[1] = self.state[1].wrapping_add(b);
@@ -324,56 +324,56 @@ impl Md5 {
 mod md5_tests {
     use super::*;
 
-    fn resumo(entrada: &[u8]) -> String {
+    fn summary(entry: &[u8]) -> String {
         let mut h = Md5::new();
-        h.update(entrada);
+        h.update(entry);
         h.finish().iter().map(|b| format!("{b:02x}")).collect()
     }
 
-    /// Os vetores do apêndice A.5 da RFC 1321.
+    /// The vectors from appendix A.5 of RFC 1321.
     #[test]
-    fn bate_com_os_vetores_da_rfc() {
-        assert_eq!(resumo(b""), "d41d8cd98f00b204e9800998ecf8427e");
-        assert_eq!(resumo(b"a"), "0cc175b9c0f1b6a831c399e269772661");
-        assert_eq!(resumo(b"abc"), "900150983cd24fb0d6963f7d28e17f72");
+    fn matches_the_rfc_vectors() {
+        assert_eq!(summary(b""), "d41d8cd98f00b204e9800998ecf8427e");
+        assert_eq!(summary(b"a"), "0cc175b9c0f1b6a831c399e269772661");
+        assert_eq!(summary(b"abc"), "900150983cd24fb0d6963f7d28e17f72");
         assert_eq!(
-            resumo(b"message digest"),
+            summary(b"message digest"),
             "f96b697d7cb7938d525a2f31aaf161d0"
         );
         assert_eq!(
-            resumo(b"abcdefghijklmnopqrstuvwxyz"),
+            summary(b"abcdefghijklmnopqrstuvwxyz"),
             "c3fcd3d76192e4007dfb496cca67e13b"
         );
         assert_eq!(
-            resumo(
+            summary(
                 b"12345678901234567890123456789012345678901234567890123456789012345678901234567890"
             ),
             "57edf4a22be3c955ac49da2e2107b67a"
         );
     }
 
-    /// A interface do BREW entrega os dados aos pedaços, e o resultado tem de ser o mesmo.
+    /// The BREW interface delivers the data in chunks, and the result has to be the same.
     #[test]
-    fn entregar_aos_pedacos_da_o_mesmo_resumo() {
-        let inteiro = resumo(b"abcdefghijklmnopqrstuvwxyz");
+    fn feeding_in_pieces_gives_the_same_digest() {
+        let integer = summary(b"abcdefghijklmnopqrstuvwxyz");
         let mut h = Md5::new();
-        for pedaco in b"abcdefghijklmnopqrstuvwxyz".chunks(7) {
-            h.update(pedaco);
+        for chunk in b"abcdefghijklmnopqrstuvwxyz".chunks(7) {
+            h.update(chunk);
         }
-        let partido: String = h.finish().iter().map(|b| format!("{b:02x}")).collect();
-        assert_eq!(partido, inteiro);
+        let chunked: String = h.finish().iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(chunked, integer);
     }
 
-    /// Mais de um bloco de 64 bytes, para exercitar a compressão em sequência.
+    /// More than one 64-byte block, to exercise compression in sequence.
     #[test]
-    fn mensagem_longa_atravessa_varios_blocos() {
-        let entrada = vec![b'x'; 1000];
+    fn a_long_message_spans_several_blocks() {
+        let entry = vec![b'x'; 1000];
         let mut h = Md5::new();
-        h.update(&entrada);
+        h.update(&entry);
         let a: String = h.finish().iter().map(|b| format!("{b:02x}")).collect();
         let mut h = Md5::new();
-        for pedaco in entrada.chunks(64) {
-            h.update(pedaco);
+        for chunk in entry.chunks(64) {
+            h.update(chunk);
         }
         let b: String = h.finish().iter().map(|b| format!("{b:02x}")).collect();
         assert_eq!(a, b);

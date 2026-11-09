@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Ícone adaptativo: o sistema recorta o formato que o lançador usar. O primeiro plano vem
-     com a margem de segurança já embutida — o recorte come até um terço da borda. -->
+<!-- Adaptive icon: the system crops it to whatever shape the launcher uses. The foreground comes
+     with the safe margin already built in — the crop eats up to a third of the edge. -->
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
     <background android:drawable="@color/ic_launcher_background" />
     <foreground android:drawable="@drawable/ic_launcher_foreground" />

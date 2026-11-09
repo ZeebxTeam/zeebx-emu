@@ -22,7 +22,7 @@ if [[ ${#natives[@]} -eq 0 ]]; then
 fi
 
 # Only this target's staticlib. A search over the whole tree would also pick up
-# archives from other targets or a previous copy under frontends/switch/saida.
+# archives from other targets or a previous copy under frontends/switch/out.
 arts=(target/aarch64-unknown-linux-gnu/release/libzeebx_libretro.a)
 
 if [[ ! -f "${arts[0]}" ]]; then

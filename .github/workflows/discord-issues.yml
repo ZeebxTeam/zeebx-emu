@@ -1,18 +1,22 @@
-# Avisa no Discord quando uma issue abre, fecha, reabre ou muda de responsável.
+# Posts to Discord when an issue opens, closes, reopens or changes assignee.
 #
-# O objetivo é que ninguém comece uma funcionalidade que outra pessoa já pegou: a issue atribuída
-# é o registro de quem está fazendo o quê, e o canal é onde todo mundo vê isso sem abrir o GitHub.
+# The goal is that nobody starts a feature someone else already took: the assigned issue is the
+# record of who is doing what, and the channel is where everyone sees it without opening GitHub.
 #
-# **Isto é uma exceção à regra de que só a tag dispara workflow sozinha.** A regra existe por
-# causa dos seis runners de build; aqui é um `curl` num ubuntu, que termina em segundos.
+# **This is an exception to the rule that only the tag triggers a workflow on its own.** The rule
+# exists because of the six build runners; this is a `curl` on an ubuntu, which ends in seconds.
 #
-# **O webhook fica no segredo `DISCORD_WEBHOOK_ISSUES`** (Settings > Secrets and variables >
-# Actions). Quem tem a URL posta no canal, então ela não pode aparecer no repositório. Sem o
-# segredo o job não roda, em vez de falhar em cada issue -- é o caso de quem faz fork.
+# **The webhook lives in the `DISCORD_WEBHOOK_ISSUES` secret** (Settings > Secrets and variables >
+# Actions). Whoever has the URL posts to the channel, so it can't appear in the repository.
+# Without the secret the job doesn't run, instead of failing on every issue -- that is the case
+# for forks.
 #
-# **Os campos da issue entram por `env` e o JSON é montado pelo `jq`.** Título e nome de usuário
-# são texto de qualquer pessoa; interpolados com `${{ }}` direto no shell, um título com aspas ou
-# `$(...)` viraria comando.
+# **The issue fields come in through `env` and the JSON is built by `jq`.** Title and user name
+# are anyone's text; interpolated with `${{ }}` straight into the shell, a title with quotes or
+# `$(...)` would become a command.
+#
+# The text posted to the channel stays in Portuguese on purpose: it is read by the community on
+# the Discord server, not by contributors in the repository.
 
 name: discord-issues
 
@@ -24,71 +28,71 @@ permissions: {}
 
 jobs:
   avisar:
-    name: avisar no Discord
+    name: notify on Discord
     runs-on: ubuntu-latest
     env:
       WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_ISSUES }}
     steps:
-      - name: enviar
+      - name: send
         if: env.WEBHOOK != ''
         env:
-          ACAO: ${{ github.event.action }}
-          MOTIVO: ${{ github.event.issue.state_reason }}
-          NUMERO: ${{ github.event.issue.number }}
-          TITULO: ${{ github.event.issue.title }}
+          ACTION: ${{ github.event.action }}
+          REASON: ${{ github.event.issue.state_reason }}
+          NUMBER: ${{ github.event.issue.number }}
+          TITLE: ${{ github.event.issue.title }}
           URL: ${{ github.event.issue.html_url }}
-          QUEM: ${{ github.event.sender.login }}
+          SENDER: ${{ github.event.sender.login }}
           AVATAR: ${{ github.event.sender.avatar_url }}
-          ALVO: ${{ github.event.assignee.login }}
-          RESPONSAVEIS: ${{ join(github.event.issue.assignees.*.login, ', ') }}
-          ROTULOS: ${{ join(github.event.issue.labels.*.name, ', ') }}
+          TARGET: ${{ github.event.assignee.login }}
+          ASSIGNEES: ${{ join(github.event.issue.assignees.*.login, ', ') }}
+          LABELS: ${{ join(github.event.issue.labels.*.name, ', ') }}
         run: |
-          # Cor no formato decimal que o Discord espera: verde abre, roxo conclui, cinza descarta,
-          # azul é atribuição, laranja é quando a issue fica sem alguém que estava nela.
-          case "$ACAO" in
-            opened)     texto="abriu a issue";                           cor=3066993 ;;
-            reopened)   texto="reabriu a issue";                         cor=3066993 ;;
+          # Color in the decimal format Discord expects: green opens, purple completes, grey
+          # discards, blue is assignment, orange is when the issue loses someone who was on it.
+          case "$ACTION" in
+            opened)     text="abriu a issue";                           color_code=3066993 ;;
+            reopened)   text="reabriu a issue";                         color_code=3066993 ;;
             closed)
-              if [ "$MOTIVO" = "not_planned" ]; then
-                texto="fechou a issue como não planejada";               cor=9807270
+              if [ "$REASON" = "not_planned" ]; then
+                text="fechou a issue como não planejada";               color_code=9807270
               else
-                texto="fechou a issue como concluída";                   cor=10181046
+                text="fechou a issue como concluída";                   color_code=10181046
               fi ;;
             assigned)
-              if [ "$ALVO" = "$QUEM" ]; then
-                texto="assumiu a issue"
+              if [ "$TARGET" = "$SENDER" ]; then
+                text="assumiu a issue"
               else
-                texto="atribuiu a issue a **$ALVO**"
-              fi;                                                        cor=3447003 ;;
+                text="atribuiu a issue a **$TARGET**"
+              fi;                                                        color_code=3447003 ;;
             unassigned)
-              if [ "$ALVO" = "$QUEM" ]; then
-                texto="largou a issue"
+              if [ "$TARGET" = "$SENDER" ]; then
+                text="largou a issue"
               else
-                texto="tirou **$ALVO** da issue"
-              fi;                                                        cor=15105570 ;;
+                text="tirou **$TARGET** da issue"
+              fi;                                                        color_code=15105570 ;;
           esac
 
           jq -n \
-            --arg titulo "#$NUMERO $TITULO" \
+            --arg title "#$NUMBER $TITLE" \
             --arg url "$URL" \
-            --arg quem "$QUEM" \
+            --arg sender "$SENDER" \
             --arg avatar "$AVATAR" \
-            --arg texto "$texto" \
-            --argjson cor "$cor" \
-            --arg responsaveis "${RESPONSAVEIS:-ninguém}" \
-            --arg rotulos "$ROTULOS" \
+            --arg text "$text" \
+            --argjson color_code "$color_code" \
+            --arg assignees "${ASSIGNEES:-ninguém}" \
+            --arg labels "$LABELS" \
             '{
               username: "Zeebx Issues",
               allowed_mentions: { parse: [] },
               embeds: [{
-                title: ($titulo | .[0:256]),
+                title: ($title | .[0:256]),
                 url: $url,
-                color: $cor,
-                author: { name: $quem, icon_url: $avatar, url: ("https://github.com/" + $quem) },
-                description: ("**" + $quem + "** " + $texto),
+                color: $color_code,
+                author: { name: $sender, icon_url: $avatar, url: ("https://github.com/" + $sender) },
+                description: ("**" + $sender + "** " + $text),
                 fields: (
-                  [{ name: "Responsáveis", value: $responsaveis, inline: true }]
-                  + (if $rotulos == "" then [] else [{ name: "Rótulos", value: $rotulos, inline: true }] end)
+                  [{ name: "Responsáveis", value: $assignees, inline: true }]
+                  + (if $labels == "" then [] else [{ name: "Rótulos", value: $labels, inline: true }] end)
                 )
               }]
             }' > payload.json

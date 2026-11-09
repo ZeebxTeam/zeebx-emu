@@ -1,14 +1,14 @@
-//! Ponto flutuante da stdlib do BREW.
+//! Floating point of the BREW stdlib.
 //!
-//! Um módulo BREW é compilado sem unidade de ponto flutuante disponível para a biblioteca: em
-//! vez de chamar `sin`, o código chama `GET_HELPER()->f_calc(x, FCALC_SIN)`. Toda a família
-//! `f_*` funciona assim — um único ponto de entrada com um código de operação —, e os códigos
-//! saem de `sdk/inc/AEEStdLib.h`, onde `FO_*`, `FCALC_*` e `FGET_*` dividem a mesma numeração.
+//! A BREW module is compiled with no floating-point unit available to the library: instead of
+//! calling `sin`, the code calls `GET_HELPER()->f_calc(x, FCALC_SIN)`. The whole `f_*` family
+//! works like this — a single entry point with an operation code —, and the codes come from
+//! `sdk/inc/AEEStdLib.h`, where `FO_*`, `FCALC_*` and `FGET_*` share the same numbering.
 //!
-//! O `double` viaja na AAPCS em par de registradores (`r0:r1` e `r2:r3`), com a palavra baixa
-//! primeiro; quem faz essa tradução é o chamador destas funções.
+//! The `double` travels in the AAPCS as a register pair (`r0:r1` and `r2:r3`), low word first;
+//! the caller of these functions does that translation.
 
-/// Operações de `f_op` e `f_cmp`, e códigos de `f_calc` e `f_get`.
+/// Operations of `f_op` and `f_cmp`, and codes of `f_calc` and `f_get`.
 pub const FO_ADD: u32 = 0;
 pub const FO_SUB: u32 = 1;
 pub const FO_MUL: u32 = 2;
@@ -68,11 +68,11 @@ pub fn calc(x: f64, kind: u32) -> Option<f64> {
     })
 }
 
-/// `double f_get(uint32 fgetType)` — as constantes de limite do `float.h`.
+/// `double f_get(uint32 fgetType)` — the limit constants from `float.h`.
 ///
-/// São os limites do `float` de 32 bits, não os do `double`: os nomes no header são
-/// `FGETFLT_MAX`/`FGETFLT_MIN`, e é com eles que o jogo compara valores que vai guardar como
-/// `float`.
+/// They are the limits of the 32-bit `float`, not those of `double`: the names in the header are
+/// `FGETFLT_MAX`/`FGETFLT_MIN`, and they are what the game compares against values it is going
+/// to store as `float`.
 pub fn get(kind: u32) -> Option<f64> {
     Some(match kind {
         FGET_HUGEVAL => f64::INFINITY,
@@ -82,12 +82,12 @@ pub fn get(kind: u32) -> Option<f64> {
     })
 }
 
-/// Monta um `double` a partir do par de palavras da AAPCS (baixa primeiro).
+/// Builds a `double` from the AAPCS word pair (low first).
 pub fn from_words(low: u32, high: u32) -> f64 {
     f64::from_bits(((high as u64) << 32) | low as u64)
 }
 
-/// Desmonta um `double` no par de palavras da AAPCS: `(baixa, alta)`.
+/// Splits a `double` into the AAPCS word pair: `(low, high)`.
 pub fn to_words(value: f64) -> (u32, u32) {
     let bits = value.to_bits();
     (bits as u32, (bits >> 32) as u32)
@@ -99,8 +99,8 @@ mod tests {
 
     #[test]
     fn word_pair_roundtrip() {
-        // 180.0 é uma das constantes que o Quake carrega com `ldrd` para converter graus em
-        // radianos — serve de âncora para a ordem das palavras.
+        // 180.0 is one of the constants Quake loads with `ldrd` to convert degrees to radians —
+        // it serves as an anchor for the word order.
         assert_eq!(to_words(180.0), (0x0000_0000, 0x4066_8000));
         assert_eq!(from_words(0x0000_0000, 0x4066_8000), 180.0);
         assert_eq!(from_words(0x5444_2d18, 0x4009_21fb), std::f64::consts::PI);

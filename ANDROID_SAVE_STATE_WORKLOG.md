@@ -51,9 +51,9 @@ Do not serialize Machine state in the Android frontend.
 
 Use the v0.3.0 public Session API directly:
 
-- `Session::pode_salvar()`
-- `Session::grava_estado()`
-- `Session::restaura_estado()`
+- `Session::can_save()`
+- `Session::save_state()`
+- `Session::restore_state()`
 
 Android adds only:
 
@@ -111,7 +111,7 @@ After a successful Load, the Android physical Pad state is reset to neutral and 
 
 Reason: the button used to choose Load belongs to the frontend UI, not to the emulated instant. Without clearing it, that UI button/direction could leak into the first restored guest frame.
 
-The Android rendering caches (`textura`, `quadro`, `quadro_565`) are invalidated after Load so the restored frame is uploaded again.
+The Android rendering caches (`texture`, `frame`, `frame_565`) are invalidated after Load so the restored frame is uploaded again.
 
 ### Validation completed so far
 
@@ -159,7 +159,7 @@ Result:
 
 This run includes the upstream `machine::save::*`, `save_state::*`, GL-state round-trip, input/timer/file/database state, module-mismatch rejection, corruption/truncation checks, and the previously merged Android audio regression tests.
 
-The Android ARM64 cross-check was rerun after switching thumbnails to `Session::quadro_grande()` for hardware-3D states and still passes.
+The Android ARM64 cross-check was rerun after switching thumbnails to `Session::large_frame()` for hardware-3D states and still passes.
 
 ### Final validation and artifact
 
@@ -176,9 +176,9 @@ Result:
 - 0 failed
 - 2 ignored
 
-This final run includes `session::tests::restaurar_estado_reancora_o_relogio_real_da_sessao`.
+This final run includes `session::tests::restoring_state_reanchors_the_session_wall_clock`.
 
-A standalone/Android pacing gap was found during review: upstream `Session::restaura_estado()` restored the console clock but retained the old host-time anchors (`started`, `clock_base`, speed-sampling window). This can make a state restored to an older virtual instant look artificially late, or a newer one look ahead and return `Step::Ahead`.
+A standalone/Android pacing gap was found during review: upstream `Session::restore_state()` restored the console clock but retained the old host-time anchors (`started`, `clock_base`, speed-sampling window). This can make a state restored to an older virtual instant look artificially late, or a newer one look ahead and return `Step::Ahead`.
 
 Fix added in `src/session.rs` after a successful machine restore:
 
@@ -190,7 +190,7 @@ Fix added in `src/session.rs` after a successful machine restore:
 
 Focused regression test:
 
-`session::tests::restaurar_estado_reancora_o_relogio_real_da_sessao`
+`session::tests::restoring_state_reanchors_the_session_wall_clock`
 
 Result: 1 passed, 0 failed.
 

@@ -1,35 +1,35 @@
-//! Trampolim de chamadas para as APIs do BREW.
+//! Call trampoline for the BREW APIs.
 //!
-//! Um objeto BREW é um ponteiro para uma struct cuja primeira palavra aponta para a vtable.
-//! Chamar `ISHELL_CreateInstance(shell, ...)` no guest vira, em código ARM, um load do
-//! ponteiro de vtable, um load do slot e um `blx` para o endereço lido.
+//! A BREW object is a pointer to a struct whose first word points to the vtable. Calling
+//! `ISHELL_CreateInstance(shell, ...)` in the guest becomes, in ARM code, a load of the vtable
+//! pointer, a load of the slot and a `blx` to the address read.
 //!
-//! Aproveitamos isso: os endereços que colocamos nos slots ficam numa faixa **não mapeada**,
-//! escolhida de forma que o próprio endereço codifique qual método foi chamado. O núcleo ARM
-//! aborta o fetch, e [`decode`] devolve a interface e o slot.
+//! We take advantage of that: the addresses we put in the slots sit in an **unmapped** range,
+//! chosen so that the address itself encodes which method was called. The ARM core aborts the
+//! fetch, and [`decode`] returns the interface and the slot.
 
 use crate::brew::aee_helpers;
 use crate::brew::aee_slots;
 use crate::cpu::API_BASE;
 
-/// Quantos bits do endereço identificam a interface.
+/// How many bits of the address identify the interface.
 const IFACE_SHIFT: u32 = 12;
-/// Espaço reservado a cada interface — 1024 slots, muito além do necessário.
+/// Space reserved for each interface — 1024 slots, far more than needed.
 const IFACE_STRIDE: u32 = 1 << IFACE_SHIFT;
 
-/// A interface **como número**, para o save state, e a volta.
+/// The interface **as a number**, for the save state, and back.
 ///
-/// O número é o discriminante da enumeração, que já era explícito no código — não é uma tabela
-/// nova que alguém precisa manter em paralelo. A volta é escrita à mão porque Rust não desfaz um
-/// `as u32` sozinho, e o teste abaixo cobra a lista inteira: variante nova sem entrada aqui deixa
-/// o teste vermelho, que é o que se quer de um formato gravado em disco.
-pub fn codigo(iface: Interface) -> u32 {
+/// The number is the enum's discriminant, which was already explicit in the code — it is not a
+/// new table someone has to maintain in parallel. The way back is written by hand because Rust
+/// does not undo an `as u32` by itself, and the test below checks the whole list: a new variant
+/// with no entry here turns the test red, which is what you want from a format stored on disk.
+pub fn code(iface: Interface) -> u32 {
     iface as u32
 }
 
-/// A interface de volta pelo número. `None` para número que não é de interface nenhuma.
-pub fn de_codigo(valor: u32) -> Option<Interface> {
-    Some(match valor {
+/// The interface back from its number. `None` for a number that belongs to no interface.
+pub fn from_code(value: u32) -> Option<Interface> {
+    Some(match value {
         0 => Interface::Shell,
         1 => Interface::Module,
         2 => Interface::Applet,
@@ -75,8 +75,8 @@ pub fn de_codigo(valor: u32) -> Option<Interface> {
         42 => Interface::Config,
         43 => Interface::Source,
         44 => Interface::Peek,
-        45 => Interface::Vetor,
-        46 => Interface::Classe28e3c,
+        45 => Interface::Vector,
+        46 => Interface::Class28e3c,
         47 => Interface::Cm,
         48 => Interface::SystemCtl,
         49 => Interface::Typeface,
@@ -97,16 +97,17 @@ pub fn de_codigo(valor: u32) -> Option<Interface> {
 }
 
 #[cfg(test)]
-mod testes_da_codificacao {
+mod encoding_tests {
     use super::*;
 
-    /// **Toda** variante vai e volta, e cada uma tem número próprio.
+    /// **Every** variant goes and comes back, and each one has its own number.
     ///
-    /// A lista é escrita à mão de propósito: se alguém acrescentar uma interface e esquecer a volta,
-    /// a contagem abaixo não bate e o teste falha **antes** de um save state ficar ilegível.
+    /// The list is written by hand on purpose: if someone adds an interface and forgets the way
+    /// back, the count below does not match and the test fails **before** a save state becomes
+    /// unreadable.
     #[test]
-    fn toda_interface_tem_numero_e_volta() {
-        let todas: [(u32, &str); 62] = [
+    fn every_interface_has_a_number_and_round_trips() {
+        let all: [(u32, &str); 62] = [
         (0, "Shell"),
         (1, "Module"),
         (2, "Applet"),
@@ -152,8 +153,8 @@ mod testes_da_codificacao {
         (42, "Config"),
         (43, "Source"),
         (44, "Peek"),
-        (45, "Vetor"),
-        (46, "Classe28e3c"),
+        (45, "Vector"),
+        (46, "Class28e3c"),
         (47, "Cm"),
         (48, "SystemCtl"),
         (49, "Typeface"),
@@ -170,16 +171,16 @@ mod testes_da_codificacao {
         (60, "Gles11ExtPak"),
         (61, "Joystick"),
         ];
-        for (valor, nome) in todas {
-            let iface = de_codigo(valor).unwrap_or_else(|| panic!("{nome} ({valor}) não voltou"));
-            assert_eq!(codigo(iface), valor, "{nome} não voltou ao mesmo número");
-            assert_eq!(format!("{iface:?}"), nome, "a variante de {valor} não é {nome}");
+        for (value, name) in all {
+            let iface = from_code(value).unwrap_or_else(|| panic!("{name} ({value}) did not come back"));
+            assert_eq!(code(iface), value, "{name} did not come back to the same number");
+            assert_eq!(format!("{iface:?}"), name, "the variant for {value} is not {name}");
         }
-        assert_eq!(de_codigo(9999), None, "número inventado devia devolver nada");
+        assert_eq!(from_code(9999), None, "a made-up number should return nothing");
     }
 }
 
-/// Interfaces que o emulador conhece. O valor numérico entra no endereço do trampolim.
+/// Interfaces the emulator knows. The numeric value goes into the trampoline address.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u32)]
 pub enum Interface {
@@ -190,321 +191,320 @@ pub enum Interface {
     File = 4,
     Display = 5,
     Bitmap = 7,
-    /// Gamepad do Zeebo — extensão do console, declarada no SDK dele.
+    /// Zeebo gamepad — a console extension, declared in its SDK.
     Hid = 8,
     HidDevice = 9,
-    /// Sinais: o mecanismo pelo qual o BREW avisa o app de que algo aconteceu.
+    /// Signals: the mechanism by which BREW tells the app that something happened.
     Signal = 10,
     SignalCtl = 11,
     SignalCbFactory = 12,
-    /// API 2D do BREW: linhas, círculos, polígonos, viewport.
+    /// BREW's 2D API: lines, circles, polygons, viewport.
     Graphics = 13,
-    /// Som básico do BREW: tons, vibração e volume.
+    /// BREW's basic sound: tones, vibration and volume.
     Sound = 14,
-    /// Licença do módulo em execução: tipo, expiração e forma de compra.
+    /// License of the running module: type, expiration and purchase method.
     License = 15,
-    /// Stream assíncrono sobre um bloco de memória — é como o BREW alimenta os decodificadores
-    /// de imagem.
+    /// Asynchronous stream over a block of memory — it is how BREW feeds the image
+    /// decoders.
     MemAStream = 16,
-    /// Imagem decodificada de um stream (PNG, no caso dos jogos do console).
+    /// Image decoded from a stream (PNG, in the case of the console's games).
     Image = 17,
-    /// Thread cooperativa do BREW: não há preempção, o guest cede o controle sozinho.
+    /// BREW's cooperative thread: there is no preemption, the guest yields control by itself.
     Thread = 18,
-    /// EGL — a ponte entre o OpenGL ES e a tela do console.
+    /// EGL — the bridge between OpenGL ES and the console's screen.
     Egl = 19,
-    /// OpenGL ES 1.1, na forma que o BREW expõe.
+    /// OpenGL ES 1.1, in the form BREW exposes.
     Gles = 20,
-    /// Fábrica de objetos de mídia.
+    /// Factory of media objects.
     MediaUtil = 21,
-    /// Reprodução de áudio e vídeo — no console, os `.mp3` da trilha sonora.
+    /// Audio and video playback — on the console, the soundtrack's `.mp3` files.
     Media = 22,
-    /// EGL na forma antiga de `AEEGL.h`, sem `this` e com retorno direto.
+    /// EGL in the old `AEEGL.h` form, without `this` and with a direct return.
     EglLegacy = 23,
-    /// OpenGL ES 1.0 na forma antiga de `AEEGL.h`.
+    /// OpenGL ES 1.0 in the old `AEEGL.h` form.
     GlLegacy = 24,
-    /// HTTP do BREW. O console está sempre offline aqui, mas o objeto precisa existir: os
-    /// jogos criam os três de rede em sequência e não conferem o retorno.
+    /// BREW's HTTP. The console is always offline here, but the object has to exist: the
+    /// games create the three network ones in sequence and do not check the return.
     Web = 25,
-    /// Resumo criptográfico — `AEECLSID_MD5`.
+    /// Cryptographic digest — `AEECLSID_MD5`.
     Hash = 26,
-    /// Fábrica de cifradores, de `inc/AEEICipherFactory.h`.
+    /// Cipher factory, from `inc/AEEICipherFactory.h`.
     CipherFactory = 27,
-    /// Cifrador de bloco, de `inc/AEEICipher1.h`.
+    /// Block cipher, from `inc/AEEICipher1.h`.
     Cipher = 28,
-    /// Memória do sistema, de `sdk/inc/AEEHeap.h`.
+    /// System memory, from `sdk/inc/AEEHeap.h`.
     Heap = 29,
-    /// Stream que descomprime deflate, de `sdk/inc/AEEUnzipStream.h`.
+    /// Stream that inflates deflate, from `sdk/inc/AEEUnzipStream.h`.
     UnzipStream = 30,
-    /// Decodificador de imagem, de `inc/AEEIImageDecoder.h`. É a interface padrão das classes
-    /// de decodificação — `AEECLSID_PNGDecoderBREW` entre elas.
+    /// Image decoder, from `inc/AEEIImageDecoder.h`. It is the standard interface of the decoding
+    /// classes — `AEECLSID_PNGDecoderBREW` among them.
     ImageDecoder = 31,
-    /// Entrada de dados de um decodificador, de `inc/AEEIForceFeed.h`. O jogo pede esta
-    /// interface ao decodificador e escreve o arquivo nela, pedaço a pedaço.
+    /// A decoder's data input, from `inc/AEEIForceFeed.h`. The game asks the decoder for this
+    /// interface and writes the file into it, piece by piece.
     ForceFeed = 32,
-    /// Escala, rotação e transparência da superfície EGL, de `sdk/inc/AEEEGLSurfaceManip.h`.
-    /// É o `EGL_QUALCOMM_surface_scale` do console.
+    /// Scaling, rotation and transparency of the EGL surface, from `sdk/inc/AEEEGLSurfaceManip.h`.
+    /// It is the console's `EGL_QUALCOMM_surface_scale`.
     EglSurfaceManip = 33,
-    /// Os extras do ATI Imageon sobre o OpenGL ES, de `sdk/inc/AEEGLESImageonEXT.h`.
+    /// ATI Imageon's extras on top of OpenGL ES, from `sdk/inc/AEEGLESImageonEXT.h`.
     GlesImageonExt = 34,
-    /// `AEEIID_GLES11EXT`: as extensões OES do OpenGL ES 1.1. Ver [`aee_slots::GLES11_EXT`].
+    /// `AEEIID_GLES11EXT`: the OpenGL ES 1.1 OES extensions. See [`aee_slots::GLES11_EXT`].
     ///
-    /// O Prey Evil só desenha se ela existir: sem a interface, ele monta matrizes e texturas e
-    /// para — onze métodos de GL no relatório, nenhum `Draw` e tela preta.
+    /// Prey Evil only draws if it exists: without the interface, it builds matrices and textures
+    /// and stops — eleven GL methods in the report, no `Draw` and a black screen.
     Gles11Ext = 55,
-    /// `AEEIID_GLES10EXT`: `QueryMatrixxOES`. Ver [`aee_slots::GLES10_EXT`].
+    /// `AEEIID_GLES10EXT`: `QueryMatrixxOES`. See [`aee_slots::GLES10_EXT`].
     Gles10Ext = 56,
-    /// `AEEIID_EGLGETPOWERLEVEL`: o nível de energia do aparelho. Ver
+    /// `AEEIID_EGLGETPOWERLEVEL`: the device's power level. See
     /// [`aee_slots::EGL_GET_POWER_LEVEL`].
     EglGetPowerLevel = 57,
-    /// `AEEIID_EGLOESSWAPINTERVAL`: o ritmo de quadro, por interface. Ver
+    /// `AEEIID_EGLOESSWAPINTERVAL`: the frame pacing, by interface. See
     /// [`aee_slots::EGL_OES_SWAP_INTERVAL`].
     EglOesSwapInterval = 58,
-    /// `AEEIID_EGLGETCOLORBUFFER`: o buffer de cor do EGL, por interface. Ver
+    /// `AEEIID_EGLGETCOLORBUFFER`: the EGL color buffer, by interface. See
     /// [`aee_slots::EGL_GET_COLOR_BUFFER`].
     EglGetColorBuffer = 59,
-    /// `AEEIID_GLES11EXTPAK`: `TexGen`, blending separado e objetos de framebuffer. Ver
+    /// `AEEIID_GLES11EXTPAK`: `TexGen`, separate blending and framebuffer objects. See
     /// [`aee_slots::GLES11_EXT_PAK`].
     Gles11ExtPak = 60,
-    /// `AEECLSID_IJOYSTICK`: o joystick USB. Ver [`aee_slots::JOYSTICK`].
+    /// `AEECLSID_IJOYSTICK`: the USB joystick. See [`aee_slots::JOYSTICK`].
     Joystick = 61,
-    /// A `0x01001039`: MD5 com o contexto na memória do jogo. Ver [`aee_slots::HASH_CTX`].
+    /// The `0x01001039`: MD5 with the context in the game's memory. See [`aee_slots::HASH_CTX`].
     HashCtx = 62,
-    /// `AEECLSID_SQLMGR` do console: abre bancos SQLite. Ver [`crate::brew::sql`].
+    /// The console's `AEECLSID_SQLMGR`: opens SQLite databases. See [`crate::brew::sql`].
     SqlMgr = 36,
-    /// Um banco aberto pelo [`Interface::SqlMgr`].
+    /// A database opened by [`Interface::SqlMgr`].
     SqlDatabase = 37,
-    /// A coleção genérica da Z-Wheel (`0x0100104f`): guarda itens e é percorrida.
+    /// The Z-Wheel's generic collection (`0x0100104f`): it stores items and is iterated.
     Collection = 38,
-    /// `0x01001011` = **`AEECLSID_SOURCEUTIL`**, a fábrica de `ISource` do BREW.
+    /// `0x01001011` = **`AEECLSID_SOURCEUTIL`**, BREW's `ISource` factory.
     ///
-    /// Ela se chamava `RootForm` aqui, e o nome estava errado: veio da mensagem
-    /// `Could not create root form` da Z-Wheel, que na verdade é sobre a [`Interface::Widget`].
-    /// A identificação certa saiu de dois jogos que a usam de maneiras que pareciam
-    /// incompatíveis — e não são, quando os slots têm os nomes do `AEESource.h`:
+    /// It used to be called `RootForm` here, and the name was wrong: it came from the Z-Wheel's
+    /// `Could not create root form` message, which is actually about [`Interface::Widget`].
+    /// The right identification came from two games that use it in ways that looked
+    /// incompatible — and are not, once the slots have the names from `AEESource.h`:
     ///
-    /// | slot | método | quem usa |
+    /// | slot | method | who uses it |
     /// |---|---|---|
-    /// | 3 | `PeekSourceFromSource(po, ISource*, nMax, IPeek**)` | Z-Wheel, para ler o `tectoy.cfg` linha a linha |
-    /// | 5 | `SourceFromMemory(po, pBuf, nSize, pfn, pUser, ISource**)` | Zeeboids, para embrulhar o corpo do POST |
-    /// | 6 | `SourceFromFile(po, IFile*, ISource**)` | Z-Wheel, sobre o arquivo recém-aberto |
+    /// | 3 | `PeekSourceFromSource(po, ISource*, nMax, IPeek**)` | Z-Wheel, to read `tectoy.cfg` line by line |
+    /// | 5 | `SourceFromMemory(po, pBuf, nSize, pfn, pUser, ISource**)` | Zeeboids, to wrap the POST body |
+    /// | 6 | `SourceFromFile(po, IFile*, ISource**)` | Z-Wheel, over the freshly opened file |
     ///
-    /// O `SourceFromMemory` é o que fecha a conta: são **seis** parâmetros, e o ponteiro de
-    /// saída é o segundo da pilha — exatamente onde o código do Zeeboids o lia, num trecho que
-    /// tínhamos batizado de "envio". Ele não envia nada: embrulha o corpo para entregar à
-    /// `IWeb`. É de lá que a ponte do Zeeboids pega o corpo, e é por isso que ela funciona.
+    /// `SourceFromMemory` is what settles it: it has **six** parameters, and the output pointer
+    /// is the second on the stack — exactly where Zeeboids' code read it, in a stretch we had
+    /// named "send". It sends nothing: it wraps the body to hand it to `IWeb`. That is where the
+    /// Zeeboids bridge takes the body from, and that is why it works.
     ///
-    /// São sete métodos, e a vtable do firmware em `0x10a785e4` também tem sete.
+    /// There are seven methods, and the firmware vtable at `0x10a785e4` also has seven.
     SourceUtil = 39,
-    /// `0x01028e51`, o widget da interface da Z-Wheel — inclusive o formulário raiz.
+    /// `0x01028e51`, the Z-Wheel's interface widget — the root form included.
     ///
-    /// A classe não está na tabela do `1.1.2_APPS.bin`, então não há vtable de firmware para
-    /// copiar. O que se sabe dela veio do código do jogo, e é pouco e claro: o único método
-    /// usado é o **slot 3**, um acessador genérico `slot3(this, seletor, id, valor)`. O jogo o
-    /// chama por dois invólucros, e os dois dizem qual é o seletor:
+    /// The class is not in the `1.1.2_APPS.bin` table, so there is no firmware vtable to copy.
+    /// What is known about it came from the game's code, and it is little and clear: the only
+    /// method used is **slot 3**, a generic accessor `slot3(this, selector, id, value)`. The game
+    /// calls it through two wrappers, and both say what the selector is:
     ///
-    /// - `0x3f72c(obj, id, saida)` chama `slot3(obj, 0x800, id, saida)` — **pega o filho** de
-    ///   número `id` e escreve o ponteiro em `saida`.
-    /// - `0x403c8(obj, valor)` chama `slot3(obj, 0x801, 0x130, valor)` — **grava** a
-    ///   propriedade `0x130`.
+    /// - `0x3f72c(obj, id, output)` calls `slot3(obj, 0x800, id, output)` — **gets the child**
+    ///   number `id` and writes the pointer to `output`.
+    /// - `0x403c8(obj, value)` calls `slot3(obj, 0x801, 0x130, value)` — **sets** the property
+    ///   `0x130`.
     ///
-    /// O retorno é ao contrário do BREW: **diferente de zero é sucesso**. Os dois invólucros
-    /// fazem `cmp r0,#0; moveq r0,#3`, ou seja, transformam zero em `EBADCLASS`. Responder
-    /// `SUCCESS` aqui — que vale zero — é dizer "falhou", e foi exatamente o que fez a
-    /// `tectoymain.c:1001` imprimir `Could not create root form(20)` e depois morrer num nulo.
+    /// The return is the opposite of BREW's: **non-zero is success**. Both wrappers do
+    /// `cmp r0,#0; moveq r0,#3`, that is, they turn zero into `EBADCLASS`. Answering `SUCCESS`
+    /// here — which is zero — means "failed", and that is exactly what made
+    /// `tectoymain.c:1001` print `Could not create root form(20)` and then die on a null.
     ///
-    /// **O retorno invertido vale só para o acessador.** O slot 2 é um `QueryInterface` comum,
-    /// e ali zero é sucesso: em `0x11c58` o jogo faz `movs r5,r0; bne <erro>`. Misturar as duas
-    /// convenções seria fácil, e por isso elas estão escritas lado a lado aqui. O slot 12 segue
-    /// a mesma convenção do 2, e a mesma forma `(IID, &saída)`.
+    /// **The inverted return applies only to the accessor.** Slot 2 is an ordinary
+    /// `QueryInterface`, and there zero is success: at `0x11c58` the game does
+    /// `movs r5,r0; bne <error>`. Mixing up the two conventions would be easy, and that is why
+    /// they are written side by side here. Slot 12 follows the same convention as 2, and the same
+    /// `(IID, &output)` form.
     Widget = 40,
-    /// Controle básico usado pelo Zenonia (`AEECLSID 0x01003109`).
+    /// Basic control used by Zenonia (`AEECLSID 0x01003109`).
     Control = 51,
-    /// Escala e rotação de um bitmap sobre outro, de `AEETransform.h` (`AEEIID_TRANSFORM`).
+    /// Scaling and rotation of one bitmap over another, from `AEETransform.h` (`AEEIID_TRANSFORM`).
     ///
-    /// É como o Zenonia apresenta o quadro: desenha em 320x240 e pede ao bitmap da tela que
-    /// escale o canvas para ela.
+    /// It is how Zenonia presents the frame: it draws at 320x240 and asks the screen bitmap to
+    /// scale the canvas to it.
     Transform = 52,
-    /// O "canvas" de um bitmap: a interface `0x0101e443`, que a Z-Wheel pede ao bitmap onde
-    /// desenha uma subárvore de widgets. O único método usado é o slot 7, que entrega um
-    /// `IDisplay` desenhando naquele bitmap. Nome e número saíram do uso, não de header.
+    /// A bitmap's "canvas": the interface `0x0101e443`, which the Z-Wheel asks of the bitmap
+    /// where it draws a widget subtree. The only method used is slot 7, which hands over an
+    /// `IDisplay` drawing on that bitmap. Name and number came from usage, not from a header.
     Canvas = 53,
-    /// `0x01006c05`, o **ZEEBOMCP** — o objeto único que a Z-Wheel pede a cada partida.
+    /// `0x01006c05`, the **ZEEBOMCP** — the single object the Z-Wheel asks for at every launch.
     ///
-    /// O nome sai do próprio jogo: a `Tectoy.c` imprime `Cannot create instance of ZEEBOMCP`
-    /// quando a criação falha. No firmware ele é o singleton de `0x11085cb8`, que aloca oito
-    /// bytes — vtable e contagem — e, se já existir, só incrementa a contagem.
+    /// The name comes from the game itself: `Tectoy.c` prints `Cannot create instance of ZEEBOMCP`
+    /// when creation fails. In the firmware it is the singleton at `0x11085cb8`, which allocates
+    /// eight bytes — vtable and count — and, if it already exists, only increments the count.
     ///
-    /// O construtor é `0x11085cb8` e a vtable é `0x102d47a8`, com oito métodos — no mesmo
-    /// trecho que carrega `fs:/card3` e `fs:/mcp/`, que é o que um MCP faria.
+    /// The constructor is `0x11085cb8` and the vtable is `0x102d47a8`, with eight methods — in the
+    /// same stretch that loads `fs:/card3` and `fs:/mcp/`, which is what an MCP would do.
     ///
-    /// Foi esta classe que revelou um erro na leitura da tabela de classes do firmware. O
-    /// `firmware.py` lia as entradas deslocadas de uma palavra e devolvia, para cada CLSID, o
-    /// construtor da entrada **anterior** — aqui, o `LCT_SIMCardCtl_New`, que começa comparando
-    /// o CLSID recebido com `0x01006c01`. Foi essa comparação que denunciou o deslocamento. A
-    /// ferramenta está corrigida, e a tabela agora aponta para o mesmo construtor que eu tinha
-    /// achado a pé.
+    /// It was this class that revealed an error in the reading of the firmware's class table.
+    /// `firmware.py` read the entries shifted by one word and returned, for each CLSID, the
+    /// constructor of the **previous** entry — here, `LCT_SIMCardCtl_New`, which starts by
+    /// comparing the received CLSID with `0x01006c01`. That comparison is what gave the shift
+    /// away. The tool is fixed, and the table now points to the same constructor I had found by
+    /// hand.
     ///
-    /// Os três primeiros slots foram lidos: contagem, contagem, e um `QueryInterface` que
-    /// compara o IID com `0x01000001` e com `0x01006c05`. Os cinco restantes ficam sem nome de
-    /// propósito — a Z-Wheel, até agora, só cria e solta o objeto, e uma chamada num deles é
-    /// coisa para aparecer no relatório, não para ser atendida por adivinhação.
+    /// The first three slots were read: count, count, and a `QueryInterface` that compares the
+    /// IID with `0x01000001` and with `0x01006c05`. The remaining five are left unnamed on
+    /// purpose — the Z-Wheel, so far, only creates and releases the object, and a call to one of
+    /// them is something to show up in the report, not to be answered by guesswork.
     ZeeboMcp = 41,
-    /// `0x01001027`, a `IConfig` do BREW — os itens de configuração do aparelho.
+    /// `0x01001027`, BREW's `IConfig` — the device's configuration items.
     ///
-    /// A `Tectoy_SetLanguagePref` da Z-Wheel chama o **slot 3** com `(0x3f, ponteiro, 4)`, que
-    /// é a forma do `ICONFIG_SetItem(pMe, nItem, pBuff, nSize)` do SDK; o slot 2 é o
-    /// `GetItem` correspondente. É isso que está implementado: os itens ficam guardados por
-    /// número, e quem grava relê o que gravou.
+    /// The Z-Wheel's `Tectoy_SetLanguagePref` calls **slot 3** with `(0x3f, pointer, 4)`, which
+    /// is the shape of the SDK's `ICONFIG_SetItem(pMe, nItem, pBuff, nSize)`; slot 2 is the
+    /// matching `GetItem`. That is what is implemented: the items are stored by number, and
+    /// whoever writes reads back what it wrote.
     ///
-    /// **A vtable do firmware não serviu, e a razão mudou depois que eu a entendi.** Eu tinha
-    /// copiado uma tabela de doze métodos em que nove eram `movs r0,#0x14; bx lr` — devolvem
-    /// `EUNSUPPORTED` e nada mais, o `SetItem` inclusive —, e o resultado foi o jogo trocar
-    /// `Unable to create instance of IConfig, error 20` por `Unable to set language to config,
-    /// error 20`: o mesmo vinte, um passo adiante.
+    /// **The firmware vtable did not work, and the reason changed after I understood it.** I had
+    /// copied a table of twelve methods in which nine were `movs r0,#0x14; bx lr` — they return
+    /// `EUNSUPPORTED` and nothing else, `SetItem` included —, and the result was the game
+    /// trading `Unable to create instance of IConfig, error 20` for `Unable to set language to
+    /// config, error 20`: the same twenty, one step further.
     ///
-    /// Aquela tabela era de outra classe: o `firmware.py` lia as entradas deslocadas de uma
-    /// palavra. Corrigida a leitura, o que sobra para a `0x01001027` é uma entrada com
-    /// sinalizadores `0xffff0008` e um "construtor" cuja vtable tem um método só, que nem
-    /// endereço é — ou seja, **falso positivo**: esta classe não está registrada neste
-    /// firmware.
+    /// That table belonged to another class: `firmware.py` read the entries shifted by one word.
+    /// With the reading fixed, what is left for `0x01001027` is an entry with flags `0xffff0008`
+    /// and a "constructor" whose vtable has a single method, which is not even an address — that
+    /// is, a **false positive**: this class is not registered in this firmware.
     ///
-    /// Por isso os nomes vêm do SDK, e só os quatro slots que a Z-Wheel exercita. Os oito de
-    /// cima ficam de fora: sobre eles não há fonte nenhuma.
+    /// That is why the names come from the SDK, and only the four slots the Z-Wheel exercises.
+    /// The eight above are left out: there is no source at all about them.
     Config = 42,
-    /// Um `ISource` do BREW: bytes com um cursor. Criado pela [`Interface::SourceUtil`].
+    /// A BREW `ISource`: bytes with a cursor. Created by [`Interface::SourceUtil`].
     Source = 43,
-    /// Um `IPeek` do BREW: a leitura por linhas sobre um [`Interface::Source`].
+    /// A BREW `IPeek`: line-by-line reading over an [`Interface::Source`].
     ///
-    /// Do `IPeek` só conhecemos o **slot 8**, porque é o único que a Z-Wheel chama: ela passa o
-    /// endereço de um par `{ponteiro, tamanho}` e o número 3, e espera receber a próxima linha.
-    /// Os outros ficam sem nome — uma chamada neles precisa aparecer no relatório.
+    /// Of `IPeek` we only know **slot 8**, because it is the only one the Z-Wheel calls: it passes
+    /// the address of a `{pointer, size}` pair and the number 3, and expects to receive the next
+    /// line. The others stay unnamed — a call to them needs to show up in the report.
     Peek = 44,
-    /// `0x01028e35`, a lista genérica da Z-Wheel — o que o jogo chama de "vector model".
+    /// `0x01028e35`, the Z-Wheel's generic list — what the game calls a "vector model".
     ///
-    /// Não está na tabela de classes do firmware, então os slots saíram do código do jogo, e
-    /// cada um tem duas leituras que concordam: o carregador do `tectoy.cfg` em `0x88338`
-    /// enche a lista, e o laço em `0x7f164` a percorre.
+    /// It is not in the firmware's class table, so the slots came from the game's code, and each
+    /// one has two readings that agree: the `tectoy.cfg` loader at `0x88338` fills the list, and
+    /// the loop at `0x7f164` iterates it.
     ///
-    /// | slot | método | onde se lê |
+    /// | slot | method | where it is read |
     /// |---|---|---|
-    /// | 5 | tamanho | `0x7f170`, e o resultado vira o teto do laço |
-    /// | 6 | pegar em | `0x7f190`, com `(índice, &saída)`; o jogo testa se o texto começa com `#` |
-    /// | 7 | substituir em | `0x38ec4`, com `(índice, item)`, num ordenamento por inserção |
-    /// | 8 | inserir em | `0x884f0`, com índice `-1` — inserir no fim |
-    /// | 9 | remover em | `0x7d788`, com índice `0`, no laço que esvazia a lista item a item |
-    /// | 10 | esvaziar | `0x80010`, uma vez, logo antes do `Release` |
-    /// | 12 | definir liberador | `0x88458`, recebendo **ponteiro de função do módulo** |
+    /// | 5 | size | `0x7f170`, and the result becomes the loop's bound |
+    /// | 6 | get at | `0x7f190`, with `(index, &output)`; the game tests whether the text starts with `#` |
+    /// | 7 | replace at | `0x38ec4`, with `(index, item)`, in an insertion sort |
+    /// | 8 | insert at | `0x884f0`, with index `-1` — insert at the end |
+    /// | 9 | remove at | `0x7d788`, with index `0`, in the loop that empties the list item by item |
+    /// | 10 | clear | `0x80010`, once, right before `Release` |
+    /// | 12 | set freer | `0x88458`, receiving a **function pointer from the module** |
     ///
-    /// Os slots sem nome nunca foram chamados. Deixá-los sem nome é o que faz uma chamada
-    /// inesperada aparecer no relatório em vez de passar por implementada.
-    Vetor = 45,
-    /// `0x01028e3c`: um **`IValueModel`** — um valor e uma lista de ouvintes avisados quando
-    /// ele muda. É o modelo que liga a grade de jogos à ação de abrir o jogo.
+    /// The unnamed slots were never called. Leaving them unnamed is what makes an unexpected call
+    /// show up in the report instead of passing as implemented.
+    Vector = 45,
+    /// `0x01028e3c`: an **`IValueModel`** — a value and a list of listeners notified when it
+    /// changes. It is the model that links the game grid to the action of opening the game.
     ///
-    /// | slot | método | onde se lê |
+    /// | slot | method | where it is read |
     /// |---|---|---|
-    /// | 3 | `AddListener(pl)` | `0x8588c`: o jogo põe a função em `pl+8` e o contexto em `pl+0xc` **antes** de chamar — o `ModelListener` de 0x18 bytes do BREW |
-    /// | 5 | `SetValue(pv, nLen, pfnFree)` | `0x20e08` limpa com três zeros |
-    /// | 6 | `GetValue(&nLen)` | o ouvinte `0x37704` confere o evento `0x1000` e pega o item por aqui, com `NULL` |
+    /// | 3 | `AddListener(pl)` | `0x8588c`: the game puts the function at `pl+8` and the context at `pl+0xc` **before** calling — BREW's 0x18-byte `ModelListener` |
+    /// | 5 | `SetValue(pv, nLen, pfnFree)` | `0x20e08` clears it with three zeros |
+    /// | 6 | `GetValue(&nLen)` | the listener `0x37704` checks event `0x1000` and gets the item through here, with `NULL` |
     ///
-    /// Este slot 3 foi, por muito tempo, uma "consulta" que zerava 0x18 bytes, e a resposta
-    /// **apagava a função e o contexto de cada ouvinte** que a Z-Wheel registrava.
-    Classe28e3c = 46,
-    /// `0x01011810`, o que a Z-Wheel chama de **ICM** — o gerenciador de chamadas do BREW.
+    /// This slot 3 was, for a long time, a "query" that zeroed 0x18 bytes, and the answer
+    /// **erased the function and the context of every listener** the Z-Wheel registered.
+    Class28e3c = 46,
+    /// `0x01011810`, what the Z-Wheel calls **ICM** — BREW's call manager.
     ///
-    /// A `tectoymain.c:1037` desiste da inicialização se não conseguir criá-lo. O que ela quer
-    /// dele é uma coisa só, e o código diz qual: `0x87c40` zera um buffer de `0x340` bytes,
-    /// chama o **slot 28** com `(buffer, 0x340)` e devolve a palavra em `+0xc`. Em `0x77564` o
-    /// chamador compara essa palavra com **5**.
+    /// `tectoymain.c:1037` gives up initialization if it cannot create it. What it wants from it
+    /// is a single thing, and the code says what: `0x87c40` zeroes a buffer of `0x340` bytes,
+    /// calls **slot 28** with `(buffer, 0x340)` and returns the word at `+0xc`. At `0x77564` the
+    /// caller compares that word with **5**.
     ///
-    /// Cinco é o `SYS_OPRT_MODE_ONLINE` do modo de operação do rádio da Qualcomm, e o campo
-    /// bate com o `oprt_mode` do `AEECMPhInfo`. Ou seja: a pergunta é "o rádio está no ar?", e
-    /// aqui a resposta é sim. É hipótese, e está registrada como tal no relatório — mas é
-    /// hipótese com dois apoios independentes, o valor e a posição.
+    /// Five is `SYS_OPRT_MODE_ONLINE` of Qualcomm's radio operating mode, and the field matches
+    /// `oprt_mode` in `AEECMPhInfo`. That is: the question is "is the radio on the air?", and
+    /// here the answer is yes. It is a hypothesis, and it is recorded as such in the report — but
+    /// a hypothesis with two independent supports, the value and the position.
     Cm = 47,
-    /// `0x01006c02`, o **controle de sistema** do console — o `OEM_LCTSystemCtl.c` do firmware.
+    /// `0x01006c02`, the console's **system control** — the firmware's `OEM_LCTSystemCtl.c`.
     ///
-    /// A `tectoymain.c:1759` imprime `ERROR: Failed to create system control` sem ele. O que
-    /// ele controla está escrito nas strings ao lado da implementação: `Pipe OFF`,
-    /// `Pipe Half Bright`, `Pipe Slow Pulsing`, `Button ON` — as luzes do aparelho — e um
+    /// `tectoymain.c:1759` prints `ERROR: Failed to create system control` without it. What it
+    /// controls is written in the strings next to the implementation: `Pipe OFF`,
+    /// `Pipe Half Bright`, `Pipe Slow Pulsing`, `Button ON` — the device's lights — and an
     /// `LCT_SystemCtl_SystemControl nSystemMode=%d, nDownloadMode=%d`.
     ///
-    /// A vtable é a `0x10691ea8`, com sete métodos, e o construtor `0x10e9f93e` confere o
-    /// CLSID recebido contra `0x01006c02` — é dela mesma. Os três primeiros estão
-    /// implementados; os que mexem em luz ficam como marcador até alguém chamá-los.
+    /// The vtable is `0x10691ea8`, with seven methods, and the constructor `0x10e9f93e` checks the
+    /// received CLSID against `0x01006c02` — it is this class's own. The first three are
+    /// implemented; the ones that touch the lights stay as placeholders until someone calls them.
     ///
-    /// O slot 6 é a exceção, porque a Z-Wheel o chama num laço. No firmware ele é uma casca de
-    /// três instruções sobre uma chamada de hardware, sem argumento nenhum; do lado do jogo, em
-    /// `0x81768`, zero é "siga" e diferente de zero desvia. Respondemos zero — o aparelho que
-    /// não temos não tem o que reclamar.
+    /// Slot 6 is the exception, because the Z-Wheel calls it in a loop. In the firmware it is a
+    /// three-instruction shell over a hardware call, with no argument at all; on the game's side,
+    /// at `0x81768`, zero is "go on" and non-zero branches away. We answer zero — the device we do
+    /// not have has nothing to complain about.
     SystemCtl = 48,
-    /// `0x01035156`, a fonte TrueType do console.
+    /// `0x01035156`, the console's TrueType font.
     ///
-    /// O nome sai da mensagem que a `tectoymain.c:1269` imprime quando a criação falha:
-    /// `Unable to create instance of TrueType TYPEFACE`. Ela não está na tabela de classes
-    /// deste firmware.
+    /// The name comes from the message `tectoymain.c:1269` prints when creation fails:
+    /// `Unable to create instance of TrueType TYPEFACE`. It is not in this firmware's class
+    /// table.
     ///
-    /// Como a [`Interface::Classe28e3c`], a Z-Wheel cria e guarda — em `+0x34b8` — e até agora
-    /// não chama método nenhum. Aqui isso é menos surpreendente do que parece: o emulador já
-    /// desenha texto com a `tectoy.ttf` que o próprio pacote traz, então o caminho de
-    /// renderização não passa por este objeto.
+    /// Like [`Interface::Class28e3c`], the Z-Wheel creates and keeps it — at `+0x34b8` — and so
+    /// far calls no method at all. Here that is less surprising than it looks: the emulator
+    /// already draws text with the `tectoy.ttf` the package itself carries, so the rendering path
+    /// does not go through this object.
     Typeface = 49,
-    /// `IFont` — a fonte de bitmap do sistema, criada pelas classes `AEECLSID_FONT_*`.
+    /// `IFont` — the system bitmap font, created by the `AEECLSID_FONT_*` classes.
     ///
-    /// Ver [`crate::brew::aee_slots::FONT`] e [`crate::machine::font`].
+    /// See [`crate::brew::aee_slots::FONT`] and [`crate::machine::font`].
     Font = 54,
-    /// `0x01006c01`, o `LCT_SIMCardCtl` — o controle do cartão SIM do console.
+    /// `0x01006c01`, `LCT_SIMCardCtl` — the console's SIM card control.
     ///
-    /// **Está implementada e não é oferecida, e o motivo é o jogo.** A `0x78544` cria esta
-    /// classe para pedir a verificação do cartão; quando a criação **falha**, ela põe o estado
-    /// em `0x27` — e `0x27` é justamente o que a `0x82464` encaminha para a transição que abre
-    /// o menu principal. Recusar **é** o caminho, e por um motivo que levou três voltas para
-    /// ficar claro.
+    /// **It is implemented and not offered, and the reason is the game.** `0x78544` creates this
+    /// class to ask for the card check; when creation **fails**, it sets the state to `0x27` —
+    /// and `0x27` is precisely what `0x82464` forwards to the transition that opens the main
+    /// menu. Refusing **is** the path, for a reason that took three rounds to become clear.
     ///
-    /// O `0x78544` distingue três desfechos, e o `0x82464` faz coisas diferentes com cada um:
+    /// `0x78544` distinguishes three outcomes, and `0x82464` does different things with each:
     ///
-    /// - `CreateInstance` falha → estado `0x27`. O `0x82464` chama a `0x1f7b4`, que é a rotina
-    ///   que **avança a interface**: ela chega ao `0x7ed10`, o lançamento do formulário de
-    ///   instruções do z-pad. É o único dos três que leva o jogo adiante.
-    /// - Slot 3 devolve zero → estado `0x28`. O `0x82464` **não faz nada** com ele: compara,
-    ///   desvia para o fim e retorna. A tela fica onde está, calada.
-    /// - Slot 3 devolve não-zero → estado `1`, e o jogo mostra `Showing SIM Error dialog`.
+    /// - `CreateInstance` fails → state `0x27`. `0x82464` calls `0x1f7b4`, which is the routine
+    ///   that **advances the interface**: it reaches `0x7ed10`, the launch of the z-pad
+    ///   instructions form. It is the only one of the three that moves the game forward.
+    /// - Slot 3 returns zero → state `0x28`. `0x82464` **does nothing** with it: it compares,
+    ///   branches to the end and returns. The screen stays where it is, silent.
+    /// - Slot 3 returns non-zero → state `1`, and the game shows `Showing SIM Error dialog`.
     ///
-    /// O `Unable to create instance of AEECLSID_LCT_SIMCARDCTL` repetido é o jogo tomando o
-    /// caminho certo muitas vezes, não um erro a calar. Oferecer a classe silencia a mensagem
-    /// e, junto com ela, o avanço: foi assim que a tela de boas-vindas ficou parada.
+    /// The repeated `Unable to create instance of AEECLSID_LCT_SIMCARDCTL` is the game taking the
+    /// right path many times, not an error to silence. Offering the class silences the message
+    /// and, along with it, the progress: that is how the welcome screen got stuck.
     ///
-    /// Há ainda o vazamento, se um dia isto for oferecido: o `0x785a8` volta sem `Release` e o
-    /// ponteiro morre na pilha. No console quem solta o objeto é a resposta da verificação
-    /// assíncrona. Sem soltar, o jogo criava um controle por volta do laço e esgotava o pote em
-    /// 65 506 objetos, derrubando junto o formulário do z-pad.
+    /// There is also the leak, if this is ever offered: `0x785a8` returns without `Release` and
+    /// the pointer dies on the stack. On the console, what releases the object is the answer of
+    /// the asynchronous check. Without releasing, the game created one control per loop
+    /// iteration and exhausted the pool at 65,506 objects, taking the z-pad form down with it.
     ///
-    /// A vtable é a `0x113cf854`, com quatro métodos, e o construtor `0x11267d04` confere o
-    /// CLSID recebido contra `0x01006c01` — é dela mesma. Foi este construtor, aliás, que
-    /// denunciou a leitura deslocada da tabela de classes do firmware.
+    /// The vtable is `0x113cf854`, with four methods, and the constructor `0x11267d04` checks the
+    /// received CLSID against `0x01006c01` — it is this class's own. It was this constructor, by
+    /// the way, that gave away the shifted reading of the firmware's class table.
     ///
-    /// O slot 3 recebe `(this, texto, applet)` e, no firmware, guarda um par em `+0xc4` e
-    /// `+0xc8`: é registro de retorno de chamada, do tipo "verifique o cartão e me avise".
+    /// Slot 3 receives `(this, text, applet)` and, in the firmware, stores a pair at `+0xc4` and
+    /// `+0xc8`: it is a callback registration, of the "check the card and let me know" kind.
     SimCardCtl = 50,
-    /// Objeto de uma classe que ainda não conhecemos, criado a pedido do `--sonda`.
+    /// Object of a class we do not know yet, created at the request of `--probe`.
     ///
-    /// Não implementa interface nenhuma: existe para **descobrir qual é**. Toda chamada é
-    /// registrada com o slot e os argumentos, e responde `SUCCESS`, de modo que o jogo siga o
-    /// máximo que conseguir e mostre o que espera do objeto. Foi assim que o `IHID` do console
-    /// foi identificado, na mão; isto é a mesma ideia com ferramenta.
+    /// It implements no interface at all: it exists to **find out which one it is**. Every call is
+    /// logged with the slot and the arguments, and answers `SUCCESS`, so that the game goes as far
+    /// as it can and shows what it expects from the object. That is how the console's `IHID` was
+    /// identified, by hand; this is the same idea with a tool.
     Probe = 35,
-    /// Tabela de funções da stdlib do BREW (`MALLOC`, `STRLEN`, …), que os módulos dinâmicos
-    /// acessam por um ponteiro entregue pelo carregador — não por vtable de objeto.
+    /// Table of BREW stdlib functions (`MALLOC`, `STRLEN`, …), which dynamic modules access
+    /// through a pointer handed over by the loader — not through an object vtable.
     Helpers = 6,
 }
 
 impl Interface {
-    /// Todas as interfaces, na ordem exata dos valores do enum.
+    /// All interfaces, in the exact order of the enum values.
     ///
-    /// A tabela de vtables é montada a partir desta lista e endereçada pelo valor do enum, então
-    /// as duas coisas precisam concordar — daí a lista existir num lugar só, com teste que
-    /// confere a correspondência. Quando elas divergiram, um objeto recebeu a vtable de outra
-    /// interface e a chamada foi parar no método errado, com sintoma a quilômetros da causa.
+    /// The vtable table is built from this list and addressed by the enum value, so the two have
+    /// to agree — hence the list exists in one place only, with a test that checks the
+    /// correspondence. When they diverged, an object received another interface's vtable and the
+    /// call ended up in the wrong method, with the symptom miles away from the cause.
     pub const ALL: [Interface; 63] = [
         Self::Shell,
         Self::Module,
@@ -551,8 +551,8 @@ impl Interface {
         Self::Config,
         Self::Source,
         Self::Peek,
-        Self::Vetor,
-        Self::Classe28e3c,
+        Self::Vector,
+        Self::Class28e3c,
         Self::Cm,
         Self::SystemCtl,
         Self::Typeface,
@@ -571,7 +571,7 @@ impl Interface {
         Self::HashCtx,
     ];
 
-    /// Nome usado nos logs — casa com a nomenclatura do SDK.
+    /// Name used in the logs — it matches the SDK's naming.
     pub fn name(self) -> &'static str {
         match self {
             Self::Shell => "IShell",
@@ -628,8 +628,8 @@ impl Interface {
             Self::Config => "IConfig",
             Self::Source => "ISource",
             Self::Peek => "IPeek",
-            Self::Vetor => "IVetor",
-            Self::Classe28e3c => "I28e3c",
+            Self::Vector => "IVetor",
+            Self::Class28e3c => "I28e3c",
             Self::Cm => "ICM",
             Self::SystemCtl => "ILCTSystemCtl",
             Self::Typeface => "ITypeface",
@@ -640,7 +640,7 @@ impl Interface {
         }
     }
 
-    /// Nomes dos métodos desta interface, na ordem da vtable.
+    /// Names of this interface's methods, in vtable order.
     fn slot_names(self) -> &'static [&'static str] {
         match self {
             Self::Shell => aee_slots::SHELL,
@@ -697,30 +697,30 @@ impl Interface {
             Self::Config => aee_slots::CONFIG,
             Self::Source => aee_slots::SOURCE,
             Self::Peek => aee_slots::PEEK,
-            Self::Vetor => aee_slots::VETOR,
-            Self::Classe28e3c => aee_slots::CLASSE_28E3C,
+            Self::Vector => aee_slots::VECTOR,
+            Self::Class28e3c => aee_slots::CLASS_28E3C,
             Self::Cm => aee_slots::CM,
             Self::SystemCtl => aee_slots::SYSTEM_CTL,
             Self::Typeface => aee_slots::TYPEFACE,
             Self::Font => aee_slots::FONT,
             Self::SimCardCtl => aee_slots::SIM_CARD_CTL,
-            // A sonda não tem tabela: `method` responde por ela antes de chegar aqui.
+            // The probe has no table: `method` answers for it before getting here.
             Self::Probe => &[],
             Self::Helpers => aee_helpers::HELPERS,
         }
     }
 
-    /// Nome do método num slot, quando conhecido.
+    /// Name of the method in a slot, when known.
     pub fn method(self, slot: u32) -> Option<&'static str> {
-        // A sonda aceita qualquer slot: o que interessa dela é o número, não o nome, e recusar
-        // faria o jogo parar justamente no que queremos observar.
+        // The probe accepts any slot: what matters about it is the number, not the name, and
+        // refusing would make the game stop exactly at what we want to observe.
         if matches!(self, Self::Probe) {
             return Some("sonda");
         }
         self.slot_names().get(slot as usize).copied()
     }
 
-    /// O mesmo que `from_index`, para quem só tem o número guardado — o perfil de API.
+    /// The same as `from_index`, for whoever only has the stored number — the API profile.
     pub fn from_index_public(index: u32) -> Option<Self> {
         Self::from_index(index)
     }
@@ -779,8 +779,8 @@ impl Interface {
             42 => Self::Config,
             43 => Self::Source,
             44 => Self::Peek,
-            45 => Self::Vetor,
-            46 => Self::Classe28e3c,
+            45 => Self::Vector,
+            46 => Self::Class28e3c,
             47 => Self::Cm,
             48 => Self::SystemCtl,
             49 => Self::Typeface,
@@ -795,43 +795,43 @@ impl Interface {
     }
 }
 
-/// Se o nome de um slot é um marcador de posição — `slot7` e parecidos.
+/// Whether a slot name is a placeholder — `slot7` and the like.
 ///
-/// A tabela precisa desses marcadores quando um slot **de cima** é conhecido: sem eles, o slot
-/// 28 do `ICM` não teria como ficar no índice 28. Mas marcador não é implementação, e atendê-lo
-/// com sucesso seria justamente a mentira que estas tabelas existem para evitar. Quem despacha
-/// usa isto para recusar, e aí a chamada aparece no relatório com o número do slot.
-pub fn e_marcador(name: &str) -> bool {
+/// The table needs these placeholders when a slot **higher up** is known: without them, slot 28
+/// of `ICM` would have no way of sitting at index 28. But a placeholder is not an implementation,
+/// and answering it with success would be precisely the lie these tables exist to avoid. The
+/// dispatcher uses this to refuse, and then the call shows up in the report with the slot number.
+pub fn is_placeholder(name: &str) -> bool {
     name.strip_prefix("slot")
         .is_some_and(|n| n.parse::<u32>().is_ok())
 }
 
-/// Endereço-trampolim de um método.
+/// Trampoline address of a method.
 pub fn encode(iface: Interface, slot: u32) -> u32 {
     API_BASE + (iface as u32) * IFACE_STRIDE + slot * 4
 }
 
-/// Versão de [`encode`] que aceita o índice numérico da interface, para quem guardou só o
-/// número (o log de chamadas, por exemplo).
+/// Version of [`encode`] that accepts the interface's numeric index, for whoever stored only the
+/// number (the call log, for example).
 pub fn encode_raw(iface_index: u32, slot: u32) -> u32 {
     API_BASE + iface_index * IFACE_STRIDE + slot * 4
 }
 
-/// Inverte [`encode`]. Devolve `None` se o endereço não corresponder a uma interface conhecida.
+/// Inverts [`encode`]. Returns `None` if the address does not match a known interface.
 pub fn decode(addr: u32) -> Option<(Interface, u32)> {
     let offset = addr.checked_sub(API_BASE)?;
     let iface = Interface::from_index(offset / IFACE_STRIDE)?;
     Some((iface, (offset % IFACE_STRIDE) / 4))
 }
 
-/// Descrição legível de uma chamada ainda não implementada, para o log que vira nosso backlog.
+/// Readable description of a call not implemented yet, for the log that becomes our backlog.
 pub fn describe(addr: u32) -> String {
     match decode(addr) {
         Some((iface, slot)) => match iface.method(slot) {
             Some(name) => format!("{}::{name}", iface.name()),
             None => format!("{}::slot[{slot}]", iface.name()),
         },
-        None => format!("endereço de API desconhecido {addr:#010x}"),
+        None => format!("unknown API address {addr:#010x}"),
     }
 }
 
@@ -839,18 +839,18 @@ pub fn describe(addr: u32) -> String {
 mod tests {
     use super::*;
 
-    /// **Toda interface que o trampolim conhece tem vtable.** As oito que vieram depois do
-    /// `Canvas` entraram no `from_index` e não aqui: a vtable delas caía depois do fim da região,
-    /// numa página zerada, e o objeto entregue ao jogo tinha todos os métodos em zero. O Ridge
-    /// Racer, que antes recebia "classe não suportada" do `IGLES11Ext` e seguia sem ele, passou a
-    /// saltar para o endereço zero ao entrar no menu.
+    /// **Every interface the trampoline knows has a vtable.** The eight that came after `Canvas`
+    /// went into `from_index` and not here: their vtable fell past the end of the region, on a
+    /// zeroed page, and the object handed to the game had all its methods at zero. Ridge Racer,
+    /// which used to get "unsupported class" from `IGLES11Ext` and carry on without it, started
+    /// jumping to address zero when entering the menu.
     #[test]
-    fn toda_interface_do_trampolim_esta_na_lista_das_vtables() {
-        for indice in 0..=u8::MAX as u32 {
-            if let Some(iface) = Interface::from_index(indice) {
+    fn every_trampoline_interface_is_in_the_vtable_list() {
+        for index in 0..=u8::MAX as u32 {
+            if let Some(iface) = Interface::from_index(index) {
                 assert!(
                     Interface::ALL.contains(&iface),
-                    "{} (índice {indice}) não está em Interface::ALL e fica sem vtable",
+                    "{} (index {index}) is not in Interface::ALL and has no vtable",
                     iface.name()
                 );
             }
@@ -858,7 +858,7 @@ mod tests {
     }
 
     #[test]
-    fn codifica_e_decodifica_ida_e_volta() {
+    fn encodes_and_decodes_round_trip() {
         for (iface, slot) in [
             (Interface::Shell, 0),
             (Interface::FileMgr, 2),
@@ -869,18 +869,18 @@ mod tests {
     }
 
     #[test]
-    fn interfaces_diferentes_nao_colidem() {
+    fn different_interfaces_do_not_collide() {
         assert_ne!(encode(Interface::Shell, 1023), encode(Interface::Module, 0));
     }
 
     #[test]
-    fn endereco_fora_das_interfaces_conhecidas_nao_decodifica() {
+    fn an_address_outside_known_interfaces_does_not_decode() {
         assert_eq!(decode(API_BASE + 99 * IFACE_STRIDE), None);
         assert_eq!(decode(0x1000), None);
     }
 
     #[test]
-    fn descreve_chamada_com_nome_do_sdk() {
+    fn describes_a_call_with_the_sdk_name() {
         assert_eq!(
             describe(encode(Interface::FileMgr, 2)),
             "IFileMgr::OpenFile"
@@ -892,13 +892,13 @@ mod tests {
     }
 
     #[test]
-    fn slot_sem_nome_conhecido_aparece_pelo_numero() {
+    fn a_slot_without_a_known_name_shows_by_number() {
         assert_eq!(describe(encode(Interface::File, 99)), "IFile::slot[99]");
     }
 
     #[test]
-    fn a_ordem_dos_slots_bate_com_o_sdk() {
-        // Conferido contra as macros INHERIT_* do BREW SDK 4.0.2.
+    fn the_slot_order_matches_the_sdk() {
+        // Checked against the INHERIT_* macros of BREW SDK 4.0.2.
         assert_eq!(Interface::Module.method(2), Some("CreateInstance"));
         assert_eq!(Interface::Applet.method(2), Some("HandleEvent"));
         assert_eq!(Interface::Display.method(7), Some("Update"));
