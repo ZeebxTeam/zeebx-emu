@@ -98,8 +98,6 @@ Everyone who has ever contributed code to Zeebx. The full list is in GitHub's
     <td align="center" valign="top" width="16.67%"><a href="https://github.com/humbertodias"><img src="https://avatars.githubusercontent.com/u/9255997?v=4&s=100" width="100px;" alt="humbertodias"/><br /><sub><b>humbertodias</b></sub></a></td>
     <td align="center" valign="top" width="16.67%"><a href="https://github.com/J0aoSiqueira"><img src="https://avatars.githubusercontent.com/u/107425883?v=4&s=100" width="100px;" alt="J0aoSiqueira"/><br /><sub><b>J0aoSiqueira</b></sub></a></td>
     <td align="center" valign="top" width="16.67%"><a href="https://github.com/maskofsin"><img src="https://avatars.githubusercontent.com/u/171617836?v=4&s=100" width="100px;" alt="maskofsin"/><br /><sub><b>maskofsin</b></sub></a></td>
-  </tr>
-  <tr>
     <td align="center" valign="top" width="16.67%"><a href="https://github.com/lucmsilva651"><img src="https://avatars.githubusercontent.com/u/90426410?v=4&s=100" width="100px;" alt="lucmsilva651"/><br /><sub><b>lucmsilva651</b></sub></a></td>
   </tr>
 </table>
