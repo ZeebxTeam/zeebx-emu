@@ -1182,8 +1182,31 @@ const PROP_BACKGROUND_COLOR: u32 = 0x130;
 /// nothing.
 const WIDGET_HTML: u32 = 0x0102_dd32;
 
-const WIDGET_FAMILY: [u32; 10] = [
+/// The list widget, which `CreateListWidget` (`tectoy_listwidget.c`, `0x20fcc`) calls the "list
+/// decorator". Refused, Registration logs `Unable to create list decorator` and the form is left
+/// half-built, with a jump to zero in the cleanup.
+///
+/// Read from its only use: a **decorator** in the BREW 4.0 sense — slot 13 receives the model (a
+/// `0x01028e35` vector, `0x210dc`), slot 14 the widget that draws each item (`0x21324`), slot 7
+/// the extent and slot 4 the handler, like the rest of the family. That is why slot 13 is not
+/// `CreateCompatibleBitmap` on it; see the `Slot13` arm.
+const WIDGET_LIST: u32 = 0x0102_8e1b;
+
+/// An editable text field: the one Registration's "hidden menu form" builds at `0x4a414`
+/// (`SetUp_Form.c:1077`, `Couldn't create hidden menu form (20)` when refused).
+///
+/// Read from the use: `QueryInterface(0x1015946)` through slot 12, then slot 13 with a model the
+/// **game** allocates itself (`0x77af4`, 0x4c bytes through `check_malloc`, with its own vtable),
+/// checking the return; then color, font (`0x152`), alignment (`0x153`) and extent.
+const WIDGET_EDIT: u32 = 0x0102_8e2f;
+
+/// The classes on which slot 13 hangs a model instead of creating a bitmap.
+const MODEL_ON_SLOT13: [u32; 2] = [WIDGET_LIST, WIDGET_EDIT];
+
+const WIDGET_FAMILY: [u32; 12] = [
     WIDGET_HTML,
+    WIDGET_LIST,
+    WIDGET_EDIT,
     AEECLSID_WIDGET,
     // `0x01028e05` is the last one the stage asks for. After setting up the pbuffer —
     // `ChooseConfig`, `CreatePbufferSurface`, `CreateContext`, `MakeCurrent` — the Z-Wheel creates
@@ -2859,6 +2882,10 @@ pub struct Machine<C: CpuBackend> {
     /// Left out of the save state on purpose: the game that uses `IGraphics` redoes the clip every
     /// frame, and storing it would change the format for a one-frame difference.
     graphics_clip: Option<Rect>,
+    /// The destination each `IGraphics` set for itself, by object. See
+    /// [`Machine::graphics_call`]. Left out of the save state like the clip: the game sets it
+    /// again before drawing.
+    graphics_targets: HashMap<u32, u32>,
     /// The screen, for when there is no device bitmap yet.
     screen: Framebuffer,
     /// Active `IDisplay` colors, indexed by `AEEClrItem` (`CLR_USER_TEXT` = 1 onwards).
@@ -3347,6 +3374,7 @@ impl<C: CpuBackend> Machine<C> {
             display_target: 0,
             clip: None,
             graphics_clip: None,
+            graphics_targets: HashMap::new(),
             screen: Framebuffer::new(SCREEN_WIDTH as u32, SCREEN_HEIGHT as u32),
             colors: default_colors(),
             pending_text: Vec::new(),
@@ -3383,7 +3411,16 @@ impl<C: CpuBackend> Machine<C> {
         self.cpu.write_reg(Reg::R2, args[2]);
         self.cpu.write_reg(Reg::R3, args[3]);
         self.cpu.write_reg(Reg::Lr, RETURN_MAGIC);
-        self.execute(func, budget)
+        let outcome = self.execute(func, budget)?;
+        // Which of our deliveries entered the guest that faulted: after an indirect jump into
+        // freed memory, `lr` no longer says it.
+        if !matches!(outcome, Outcome::Returned { .. }) && self.serial.is_some() {
+            self.log_serial(format!(
+                "<callback {func:#010x} args {:#x} {:#x} {:#x} {:#x} did not return: {outcome:?}>",
+                args[0], args[1], args[2], args[3]
+            ));
+        }
+        Ok(outcome)
     }
 
     /// Calls the guest from **inside** the dispatch of an API call.
@@ -3573,6 +3610,16 @@ impl<C: CpuBackend> Machine<C> {
                     // from the report while it brought down the z-pad form with error 6.
                     self.swallowed_failures
                         .insert(format!("invalid access at {addr:#010x} at pc {pc:#010x}"));
+                    // The set above has no instant and no caller: a jump into freed memory (the
+                    // Z-Wheel's language restart, `pc 0xa7a7a7a4`) only says who called it here.
+                    if self.serial.is_some() {
+                        self.log_serial(format!(
+                            "<fault at {addr:#010x} pc {pc:#010x} lr {lr:#010x} sp {:#010x} \
+                             nesting {}>",
+                            self.cpu.read_reg(Reg::Sp),
+                            self.nesting
+                        ));
+                    }
                     return Ok(Outcome::Fault { addr, pc, lr });
                 }
                 StopReason::Exception { pc } => return Ok(Outcome::Exception { pc }),

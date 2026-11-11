@@ -125,7 +125,14 @@ impl<C: CpuBackend> Machine<C> {
         let screen = self.target()?;
         for (address, (callback, context)) in to_call {
             let (x, y) = self.screen_position(address);
-            self.call_guest(callback, [context, screen, x as u32, y as u32], QSORT_BUDGET)?;
+            let outcome =
+                self.call_guest(callback, [context, screen, x as u32, y as u32], QSORT_BUDGET)?;
+            // A drawing that does not return was cut short, and the frame shows only part of it.
+            if !matches!(outcome, Outcome::Returned { .. }) && self.serial.is_some() {
+                self.log_serial(format!(
+                    "<drawing {callback:#x} on {address:#x} did not return: {outcome:?}>"
+                ));
+            }
         }
         Ok(())
     }
@@ -991,6 +998,34 @@ impl<C: CpuBackend> Machine<C> {
             //
             // The third word of the triple is `0x52574`, the releaser: stored, and called when the
             // widget dies (see `Release`).
+            // On the list and the text field, slot 13 hangs the model: `slot13(list, vector)` at
+            // `0x210dc`, `slot13(edit, model)` at `0x4a47c`. Read as `CreateCompatibleBitmap`, the
+            // bitmap pointer would be written over the model's vtable. The field's model is the
+            // **game's** object, so the reference is counted through its own vtable.
+            "Slot13"
+                if self
+                    .widgets
+                    .get(&this)
+                    .is_some_and(|w| MODEL_ON_SLOT13.contains(&w.class_id)) =>
+            {
+                /// Where the model is kept, among the ids of [`Widget::models`].
+                const SLOT13_MODEL: u32 = 0;
+                let model = self.cpu.read_reg(Reg::R1);
+                if model == 0 {
+                    return Ok(Some(EBADPARM));
+                }
+                let previous = self
+                    .widgets
+                    .get_mut(&this)
+                    .and_then(|widget| widget.models.insert(SLOT13_MODEL, model));
+                if previous != Some(model) {
+                    self.retain_model(model)?;
+                    if let Some(previous) = previous {
+                        self.drop_model(previous)?;
+                    }
+                }
+                SUCCESS
+            }
             "Slot13" => {
                 // Read at 0x24100..0x24198 of tectoy.mod: (&bitmap, w, h),
                 // followed by QueryInterface on the returned bitmap. The widget was used
@@ -1392,6 +1427,28 @@ impl<C: CpuBackend> Machine<C> {
                             "<accessor class {class_id:#010x} selector {selector:#x} ({times}x)>"
                         ));
                     }
+                }
+                // **Focus goes to the serial.** Which widget gets the keys depends on these four
+                // selectors, and the Setup screen marks its first row through a path we do not
+                // yet know: without the line, "the focus was never set" and "it was set on a
+                // container we do not link to the rows" look the same.
+                if self.serial.is_some() && matches!(selector, FOCUS_SET | FOCUS_GET | MARK_FOCUS)
+                {
+                    let class_id = self.widgets.get(&this).map_or(0, |widget| widget.class_id);
+                    let parent = self.widgets.get(&this).map_or(0, |widget| widget.parent);
+                    let lr = self.cpu.read_reg(Reg::Lr);
+                    let target = self.widgets.get(&third).map(|w| {
+                        format!(
+                            " = class {:#x} handler {:#x} parent {:#x}",
+                            w.class_id, w.handler.0, w.parent
+                        )
+                    });
+                    self.log_serial(format!(
+                        "<focus {selector:#x} on {this:#x} (class {class_id:#x}, parent \
+                         {parent:#x}, handler {:#x}) id {id:#x} value {third:#x}{} from {lr:#010x}>",
+                        self.widgets.get(&this).map_or(0, |w| w.handler.0),
+                        target.unwrap_or_default()
+                    ));
                 }
                 match selector {
                     // Some classes use a child's own address as the selector to query/toggle the
@@ -1821,18 +1878,56 @@ impl<C: CpuBackend> Machine<C> {
                     let _ = self.call_guest_nested(free_fn, [context, 0, 0, 0], QSORT_BUDGET)?;
                 }
             }
-            for child in widget
-                .children
-                .into_values()
-                .chain(widget.attached)
-                .chain(widget.models.into_values())
-            {
+            for model in widget.models.into_values() {
+                if self.objects.kind_of(model).is_none() {
+                    self.drop_model(model)?;
+                } else if self.objects.release(model) == 0 {
+                    pending.push(model);
+                }
+            }
+            for child in widget.children.into_values().chain(widget.attached) {
                 if self.objects.release(child) == 0 {
                     pending.push(child);
                 }
             }
         }
         Ok(0)
+    }
+
+    /// A reference to a model hung on a widget: ours through the store, the game's through
+    /// `AddRef`, slot 0 of its own vtable.
+    fn retain_model(&mut self, model: u32) -> Result<(), CpuError> {
+        match self.objects.kind_of(model) {
+            Some(_) => {
+                self.objects.add_ref(model);
+            }
+            None => self.call_guest_slot(model, 0)?,
+        }
+        Ok(())
+    }
+
+    /// The opposite of [`Machine::retain_model`]; `Release` is slot 1.
+    fn drop_model(&mut self, model: u32) -> Result<(), CpuError> {
+        match self.objects.kind_of(model) {
+            Some(_) => {
+                self.objects.release(model);
+            }
+            None => self.call_guest_slot(model, 1)?,
+        }
+        Ok(())
+    }
+
+    /// Calls slot `slot` of a guest object, with the object in `r0`. A pointer whose vtable
+    /// cannot be read is ignored: the model is the game's, and a bad one is not ours to crash on.
+    fn call_guest_slot(&mut self, object: u32, slot: u32) -> Result<(), CpuError> {
+        let function = self
+            .cpu
+            .read_u32(object)
+            .and_then(|vtable| self.cpu.read_u32(vtable + slot * 4));
+        if let Ok(function @ 1..) = function {
+            let _ = self.call_guest_nested(function, [object, 0, 0, 0], QSORT_BUDGET)?;
+        }
+        Ok(())
     }
 }
 

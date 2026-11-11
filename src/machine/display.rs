@@ -389,7 +389,20 @@ impl<C: CpuBackend> Machine<C> {
         // the blit at 640, the game's engine sized the surface by it, and the copy to the
         // texture, which walks 726 pixels per row, scrambled the background into stripes.
         let display_clip = std::mem::replace(&mut self.clip, self.graphics_clip);
+        // **And each `IGraphics` has its own destination.** The Z-Wheel's keyboard draws the
+        // shift with a fresh `IGraphics`: `SetDestination(gfx, keyboard)`, draw,
+        // `SetDestination(gfx, NULL)`. With one destination for everyone, that `NULL` pointed the
+        // **display** back at the screen, and every key after the shift was drawn on the screen
+        // — erased on the next frame — instead of on the keyboard. Until an `IGraphics` sets its
+        // own, it keeps following the display's, which is what every other game was measured with.
+        let this = self.cpu.read_reg(Reg::R0);
+        let own_target = self.graphics_targets.get(&this).copied();
+        let display_target = self.display_target;
+        if let Some(target) = own_target {
+            self.display_target = target;
+        }
         let result = self.graphics_call_in_clip(slot);
+        self.display_target = display_target;
         self.graphics_clip = std::mem::replace(&mut self.clip, display_clip);
         result
     }
@@ -409,7 +422,13 @@ impl<C: CpuBackend> Machine<C> {
         );
         let result = match name {
             "AddRef" => self.objects.add_ref(this),
-            "Release" => self.objects.release(this),
+            "Release" => {
+                let remaining = self.objects.release(this);
+                if remaining == 0 {
+                    self.graphics_targets.remove(&this);
+                }
+                remaining
+            }
             // The colors arrive as three or four loose `uint8`s, not as an RGBVAL.
             "SetBackground" => {
                 let previous = self.graphics.background;
@@ -598,7 +617,7 @@ impl<C: CpuBackend> Machine<C> {
                 SUCCESS
             }
             "SetDestination" => {
-                self.display_target = a1;
+                self.graphics_targets.insert(this, a1);
                 SUCCESS
             }
             // With a count, for the same reason as `IDisplay` — see its `GetDestination`.
