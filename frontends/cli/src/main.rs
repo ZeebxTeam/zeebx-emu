@@ -507,7 +507,7 @@ fn main() -> ExitCode {
             );
             eprintln!(
                 "     zeebx session <file.zip> [--seconds=N] [--keys=ms:button,...] [--dump=FRAME.bmp] [--shots=ms,...] [--gpu] [--serial=PATH] [--factory] [--no-end-of-life] [--no-transitions] [--scale=N] [--msaa=N] [--aniso=N] [--profile[=MS]] [--boomerang] [--motion=ms:x:y:z,...] [--wiimote] [--aspect=16:9]
-                             [--ports=pad,pad] [--dpad-on-axes]  (the window's session, without a window)"
+                             [--ports=pad,pad] [--dpad-on-axes] [--dump-surfaces=DIR]  (the window's session, without a window)"
             );
             eprintln!(
                 "     zeebx bench <file.mod|zip> [--seconds=N] [--keys=ms:key,...] [--dump=FRAME.bmp] [--key-names=ms:name,...] [--installed=0xCLSID[:id],...] [--dump-surfaces=DIR] [--dpad-on-axes]  (Dynarmic, without a window)"
@@ -1539,6 +1539,18 @@ fn windowless_session(
     }
     if let Some(path) = dump {
         std::fs::write(path, session.screen().to_bmp())?;
+    }
+    // As in `bench`: what the game drew off screen, one BMP per live surface.
+    if let Some(dir) = cli_args()
+        .into_iter()
+        .find_map(|a| a.strip_prefix("--dump-surfaces=").map(str::to_owned))
+    {
+        std::fs::create_dir_all(&dir)?;
+        let surfaces = session.surfaces();
+        for (addr, width, height, bmp) in &surfaces {
+            std::fs::write(format!("{dir}/{addr:08x}-{width}x{height}.bmp"), bmp)?;
+        }
+        println!("surfaces: {} in {dir}/", surfaces.len());
     }
     println!("time:      {} virtual ms", session.clock_ms());
     let (heap, objects) = session.memory();

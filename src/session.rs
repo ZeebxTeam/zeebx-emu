@@ -1761,6 +1761,11 @@ impl Session {
     }
 
     /// The screen, as it is now.
+    /// Every live surface as `(address, width, height, BMP)`. See [`Machine::surfaces`].
+    pub fn surfaces(&self) -> Vec<(u32, u32, u32, Vec<u8>)> {
+        self.machine.surfaces()
+    }
+
     pub fn screen(&self) -> &Framebuffer {
         self.intermediate
             .as_ref()
