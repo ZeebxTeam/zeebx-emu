@@ -300,6 +300,30 @@ pub const SOUND: &[&str] = &[
     "GetResourceCtl",
 ];
 
+/// Methods of `ISoundPlayer` (19 slots), from `QINTERFACE(ISoundPlayer)` in
+/// `sdk/inc/AEESoundPlayer.h` (BREW 4.0.2). The last two are the BREW 1.1 additions.
+pub const SOUND_PLAYER: &[&str] = &[
+    "AddRef",
+    "Release",
+    "RegisterNotify",
+    "Set",
+    "Play",
+    "Stop",
+    "Rewind",
+    "FastForward",
+    "Pause",
+    "Resume",
+    "SetTempo",
+    "SetTune",
+    "SetVolume",
+    "GetVolume",
+    "GetTotalTime",
+    "SetSoundDevice",
+    "SetStream",
+    "SetInfo",
+    "GetInfo",
+];
+
 /// Methods of `ILicense` (6 slots), from `QINTERFACE(ILicense)` in `sdk/inc/AEELicense.h`.
 pub const LICENSE: &[&str] = &[
     "AddRef",

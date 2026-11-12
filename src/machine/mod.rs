@@ -36,6 +36,7 @@ mod egl;
 mod file;
 mod font;
 mod gl;
+mod guest_dib;
 mod helper;
 mod hid;
 mod image;
@@ -953,6 +954,17 @@ const AEE_SOUND_PLAY_DONE: u32 = 2;
 /// `AEE_SOUND_STATUS_CB` and `AEE_SOUND_VOLUME_CB`, from the `AEESoundCmd` enum.
 const AEE_SOUND_STATUS_CB: u32 = 0;
 const AEE_SOUND_VOLUME_CB: u32 = 1;
+/// `AEE_SOUNDPLAYER_VOLUME_CB` and `AEE_SOUNDPLAYER_SUCCESS`, from `inc/AEESoundPlayer.h`. Not the
+/// same numbers as `ISound`'s: the player's callback types start with a status and a play one.
+const AEE_SOUNDPLAYER_VOLUME_CB: u32 = 4;
+const AEE_SOUNDPLAYER_SUCCESS: u32 = 1;
+/// The `AEESoundPlayerInput` values, from `inc/AEESoundPlayer.h`. `SDT_NONE` (0) is reserved.
+const SDT_FILE: u8 = 1;
+const SDT_BUFFER: u8 = 2;
+const SDT_VOICEPROMPT: u8 = 3;
+/// Where an `ISoundPlayer` keeps its `AEESoundPlayerInfo`, inside its own object slot — see
+/// `SetInfo` in `sound.rs`.
+const SOUND_PLAYER_SOURCE: u32 = 16;
 /// `AEEIID_DIB_20`, from `inc/AEEIDIB.h`: the IID `IDIB` had in BREW 2.0.
 const AEEIID_DIB_20: u32 = 0x0100_102c;
 /// `AEEIID_TRANSFORM`, from `AEETransform.h`: scaling and rotating one bitmap onto another.
@@ -1277,6 +1289,9 @@ const AEECLSID_HID: u32 = 0x0106_c411;
 const AEECLSID_SIGNAL_CB_FACTORY: u32 = 0x0104_1207;
 /// `AEECLSID_GRAPHICS` = `AEECLSID_CORE + 0x1001`, resolved from `AEEClassIDs.h`.
 const AEECLSID_GRAPHICS: u32 = 0x0100_2001;
+/// `AEECLSID_SOUNDPLAYER` = `AEECLSID_ENH`, the one right before `AEECLSID_GRAPHICS`
+/// (`AEECLSID_ENH + 1`) in `inc/AEEClassIDs.h`.
+const AEECLSID_SOUNDPLAYER: u32 = 0x0100_2000;
 
 /// `EVT_APP_START`, from `inc/AEEEvent.h`. It is zero — the first event an applet receives.
 const EVT_APP_START: u32 = 0;
@@ -2824,6 +2839,11 @@ pub struct Machine<C: CpuBackend> {
     /// 32-bit RGBA), not in RGB565: the buffer and its capacity. They stay out of synchronization —
     /// our RGB565 copy serves the blits, and the buffer is read-only for the game.
     decoder_dib: HashMap<u32, (u32, u32)>,
+    /// DIBs from `IDISPLAY_CreateDIBitmap`, whose header and pixels belong to the game, and the
+    /// pixel buffer we allocated for each (zero when it was created without a size). They stay
+    /// out of the RGB565 synchronization: our copy is rebuilt from their header on every blit —
+    /// see [`guest_dib`].
+    guest_dibs: HashMap<u32, u32>,
     /// The [`Framebuffer::generation`] of each surface the last time the game's buffer and our copy
     /// were equal — from then on, only its dirty box needs to go to the game.
     ///
@@ -3335,6 +3355,7 @@ impl<C: CpuBackend> Machine<C> {
             dib_capacity: HashMap::new(),
             inherited_dibs: HashSet::new(),
             decoder_dib: HashMap::new(),
+            guest_dibs: HashMap::new(),
             published_dib: HashMap::new(),
             surfaces: Heap::new(loader::SURFACE_BASE, loader::SURFACE_SIZE),
             notifying_widgets: std::collections::HashSet::new(),
@@ -4021,6 +4042,10 @@ impl<C: CpuBackend> Machine<C> {
                 None => return Ok(None),
             },
             (Interface::Sound, _) => match self.sound_call(slot)? {
+                Some(result) => result,
+                None => return Ok(None),
+            },
+            (Interface::SoundPlayer, _) => match self.sound_player_call(slot)? {
                 Some(result) => result,
                 None => return Ok(None),
             },

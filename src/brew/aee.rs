@@ -92,6 +92,7 @@ pub fn from_code(value: u32) -> Option<Interface> {
         59 => Interface::EglGetColorBuffer,
         60 => Interface::Gles11ExtPak,
         61 => Interface::Joystick,
+        63 => Interface::SoundPlayer,
         _ => return None,
     })
 }
@@ -107,7 +108,7 @@ mod encoding_tests {
     /// unreadable.
     #[test]
     fn every_interface_has_a_number_and_round_trips() {
-        let all: [(u32, &str); 62] = [
+        let all: [(u32, &str); 63] = [
         (0, "Shell"),
         (1, "Module"),
         (2, "Applet"),
@@ -170,6 +171,7 @@ mod encoding_tests {
         (59, "EglGetColorBuffer"),
         (60, "Gles11ExtPak"),
         (61, "Joystick"),
+        (63, "SoundPlayer"),
         ];
         for (value, name) in all {
             let iface = from_code(value).unwrap_or_else(|| panic!("{name} ({value}) did not come back"));
@@ -270,6 +272,9 @@ pub enum Interface {
     Joystick = 61,
     /// The `0x01001039`: MD5 with the context in the game's memory. See [`aee_slots::HASH_CTX`].
     HashCtx = 62,
+    /// `AEECLSID_SOUNDPLAYER`: BREW 1.x's file player, deprecated by `IMedia`. See
+    /// [`aee_slots::SOUND_PLAYER`].
+    SoundPlayer = 63,
     /// The console's `AEECLSID_SQLMGR`: opens SQLite databases. See [`crate::brew::sql`].
     SqlMgr = 36,
     /// A database opened by [`Interface::SqlMgr`].
@@ -505,7 +510,7 @@ impl Interface {
     /// to agree — hence the list exists in one place only, with a test that checks the
     /// correspondence. When they diverged, an object received another interface's vtable and the
     /// call ended up in the wrong method, with the symptom miles away from the cause.
-    pub const ALL: [Interface; 63] = [
+    pub const ALL: [Interface; 64] = [
         Self::Shell,
         Self::Module,
         Self::Applet,
@@ -569,6 +574,7 @@ impl Interface {
         Self::Gles11ExtPak,
         Self::Joystick,
         Self::HashCtx,
+        Self::SoundPlayer,
     ];
 
     /// Name used in the logs — it matches the SDK's naming.
@@ -616,6 +622,7 @@ impl Interface {
             Self::Gles11ExtPak => "IGLES11ExtPak",
             Self::Joystick => "IJoystick",
             Self::HashCtx => "IHashCTX",
+            Self::SoundPlayer => "ISoundPlayer",
             Self::SqlMgr => "ISQLMgr",
             Self::SqlDatabase => "ISQLDatabase",
             Self::Collection => "IColecao",
@@ -685,6 +692,7 @@ impl Interface {
             Self::Gles11ExtPak => aee_slots::GLES11_EXT_PAK,
             Self::Joystick => aee_slots::JOYSTICK,
             Self::HashCtx => aee_slots::HASH_CTX,
+            Self::SoundPlayer => aee_slots::SOUND_PLAYER,
             Self::SqlMgr => aee_slots::SQL_MGR,
             Self::SqlDatabase => aee_slots::SQL_DATABASE,
             Self::Collection => aee_slots::COLLECTION,
@@ -769,6 +777,7 @@ impl Interface {
             60 => Self::Gles11ExtPak,
             61 => Self::Joystick,
             62 => Self::HashCtx,
+            63 => Self::SoundPlayer,
             35 => Self::Probe,
             36 => Self::SqlMgr,
             37 => Self::SqlDatabase,

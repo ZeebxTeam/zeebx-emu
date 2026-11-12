@@ -475,9 +475,10 @@ impl<C: CpuBackend> Machine<C> {
         // Zero up to `dwLang`, the last field before the part the caller fills in.
         self.cpu.write_mem(info, &[0u8; 44])?;
 
+        let (screen_width, screen_height) = self.reported_screen(self.applet_class);
         let fields: [u16; 8] = [
-            SCREEN_WIDTH,
-            SCREEN_HEIGHT,
+            screen_width,
+            screen_height,
             0, // cxAltScreen: the Zeebo has no second screen
             0, // cyAltScreen
             8, // cxScrollBar
@@ -576,7 +577,8 @@ impl<C: CpuBackend> Machine<C> {
             self.cpu.write_mem(start, &[0u8; 24])?;
             self.cpu.write_u32(start + 4, clsid)?;
             self.cpu.write_u32(start + 8, display)?;
-            for (i, value) in [0i16, 0, SCREEN_WIDTH as i16, SCREEN_HEIGHT as i16]
+            let (width, height) = self.reported_screen(clsid);
+            for (i, value) in [0i16, 0, width as i16, height as i16]
                 .iter()
                 .enumerate()
             {
@@ -641,6 +643,7 @@ impl<C: CpuBackend> Machine<C> {
             AEECLSID_SIGNAL_CB_FACTORY => Interface::SignalCbFactory,
             AEECLSID_GRAPHICS => Interface::Graphics,
             AEECLSID_SOUND => Interface::Sound,
+            AEECLSID_SOUNDPLAYER => Interface::SoundPlayer,
             AEECLSID_HEAP => Interface::Heap,
             AEECLSID_UNZIPSTREAM => Interface::UnzipStream,
             AEECLSID_LICENSE => Interface::License,
@@ -810,6 +813,12 @@ impl<C: CpuBackend> Machine<C> {
         // would answer zero because the list does not exist, not because it is empty.
         if iface == Interface::Vector {
             self.vectors.insert(obj, (Vec::new(), 0));
+        }
+        // An `ISoundPlayer` keeps its `GetVolume` data and its source in its own slot (see
+        // `sound_player_call`). The address may be a recycled one: it starts with no source, not
+        // with the previous object's bytes.
+        if iface == Interface::SoundPlayer {
+            self.cpu.write_mem(obj + 4, &[0u8; SOUND_PLAYER_SOURCE as usize + 12 - 4])?;
         }
         if iface == Interface::Widget {
             // A widget starts out visible: the game only calls slot 6 to **hide** it.
