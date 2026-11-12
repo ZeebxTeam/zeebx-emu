@@ -837,16 +837,22 @@ fn start_journal(path: &Path, opening: &Opening<'_>) -> Option<u64> {
     }
 }
 
-/// The height of the console screen, in pixels. The width comes from the aspect ratio: 640 at 4:3.
-const SCREEN_HEIGHT: f32 = 480.0;
-
 /// The size the frame is drawn at inside `area`, which is the window's free space.
 ///
-/// `aspect` is the image's width over height: 4:3 at native, wider at the experimental 16:9.
+/// `height` is the image's own height in pixels — 480 for the console screen, 400 for a 240×400
+/// phone game — and `aspect` its width over height: 4:3 at native, wider at the experimental
+/// 16:9, 3:5 on that phone. The integer scale counts **the image's** pixels: measured against a
+/// 480-pixel screen, a 400-pixel phone one came out at 2.4 phone pixels each.
 /// Kept apart from the windows because it is the only part with a real rule, and the only one that
 /// can be checked without opening one — and it is the same in egui and in Qt.
-pub fn fit_viewport(area: [f32; 2], scale: Scaling, keep_aspect_ratio: bool, aspect: f32) -> [f32; 2] {
-    let native = [SCREEN_HEIGHT * aspect, SCREEN_HEIGHT];
+pub fn fit_viewport(
+    area: [f32; 2],
+    scale: Scaling,
+    keep_aspect_ratio: bool,
+    height: f32,
+    aspect: f32,
+) -> [f32; 2] {
+    let native = [height * aspect, height];
     if area[0] <= 0.0 || area[1] <= 0.0 {
         return native;
     }
@@ -977,32 +983,40 @@ mod tests {
     #[test]
     fn integer_scaling_only_uses_exact_multiples() {
         // A 1500x1100 window fits the 640x480 screen twice, not two and a bit.
-        let size = fit_viewport([1500.0, 1100.0], Scaling::Integer, true, 4.0 / 3.0);
+        let size = fit_viewport([1500.0, 1100.0], Scaling::Integer, true, 480.0, 4.0 / 3.0);
         assert_eq!(size, [1280.0, 960.0]);
+    }
+
+    #[test]
+    fn integer_scaling_of_a_phone_screen_counts_its_own_pixels() {
+        // Devil May Cry's 240×400: a 1000×1080 area fits it twice — 480×800 —, not the
+        // 576×960 a 480-pixel-tall console screen would give, which is 2.4 phone pixels each.
+        let size = fit_viewport([1000.0, 1080.0], Scaling::Integer, true, 400.0, 240.0 / 400.0);
+        assert!((size[0] - 480.0).abs() < 0.01 && size[1] == 800.0, "{size:?}");
     }
 
     #[test]
     fn integer_scaling_shrinks_when_1x_does_not_fit() {
         // A window smaller than the screen must not hide the game, so there it shrinks.
-        let size = fit_viewport([320.0, 240.0], Scaling::Integer, true, 4.0 / 3.0);
+        let size = fit_viewport([320.0, 240.0], Scaling::Integer, true, 480.0, 4.0 / 3.0);
         assert_eq!(size, [320.0, 240.0]);
     }
 
     #[test]
     fn fit_to_window_keeps_the_aspect_ratio() {
         // Window too wide: border left on the sides, no stretching.
-        let size = fit_viewport([1920.0, 480.0], Scaling::Fit, true, 4.0 / 3.0);
+        let size = fit_viewport([1920.0, 480.0], Scaling::Fit, true, 480.0, 4.0 / 3.0);
         assert_eq!(size, [640.0, 480.0]);
     }
 
     #[test]
     fn stretch_only_distorts_when_the_aspect_ratio_is_waived() {
         let area = [1000.0, 500.0];
-        assert_eq!(fit_viewport(area, Scaling::Stretch, false, 4.0 / 3.0), area);
+        assert_eq!(fit_viewport(area, Scaling::Stretch, false, 480.0, 4.0 / 3.0), area);
         // With the aspect ratio kept, "fill" becomes "fit".
         assert_eq!(
-            fit_viewport(area, Scaling::Stretch, true, 4.0 / 3.0),
-            fit_viewport(area, Scaling::Fit, true, 4.0 / 3.0)
+            fit_viewport(area, Scaling::Stretch, true, 480.0, 4.0 / 3.0),
+            fit_viewport(area, Scaling::Fit, true, 480.0, 4.0 / 3.0)
         );
     }
 }

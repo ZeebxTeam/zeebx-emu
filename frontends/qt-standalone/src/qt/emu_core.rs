@@ -143,7 +143,7 @@ pub enum Frame<'a> {
     /// The GPU rasterizer's texture, at the internal resolution, without going back to the CPU.
     Gpu(GpuFrame),
     /// The console screen in RGB565 — the 2D, the software 3D, or the GPU with something drawn
-    /// over it in 2D.
+    /// over it in 2D. For a phone game, only the phone's area of it, at that size.
     Screen(&'a Framebuffer),
 }
 
@@ -707,7 +707,8 @@ impl Core {
         let gpu = self.gl.as_ref().and(session.gpu_frame());
         Some(match gpu {
             Some(frame) => Frame::Gpu(frame),
-            None => Frame::Screen(session.screen()),
+            // The area the game uses: all of it for a Zeebo game, the phone's for a phone game.
+            None => Frame::Screen(session.display_screen()),
         })
     }
 

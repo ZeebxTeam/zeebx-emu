@@ -24,7 +24,7 @@ use crate::loader::modfile::ModImage;
 use crate::machine::{AppletResult, Machine, Outcome};
 use crate::storage::StoragePaths;
 use crate::speed::{SkipCounter, Skip, Pace};
-use crate::video::display::Framebuffer;
+use crate::video::display::{Framebuffer, Rect};
 
 /// Largest slice of real time the frontends may ask for in one pass.
 ///
@@ -142,6 +142,8 @@ pub struct Session {
     /// The intermediate screen on display, when there is one.
     /// See [`Session::show_intermediate_frame`].
     intermediate: Option<Framebuffer>,
+    /// A phone game's area of the screen, cropped and centred. See [`Session::display_screen`].
+    phone_views: Option<PhoneViews>,
     /// Instant and virtual clock reading when execution started, which is the pair used to
     /// measure whether the game is ahead.
     started: Instant,
@@ -746,6 +748,7 @@ impl Session {
             content: content_id,
             class_id: clsid,
             intermediate: None,
+            phone_views: None,
             started: Instant::now(),
             clock_base,
             ratio: Some(1.0),
@@ -1159,6 +1162,12 @@ impl Session {
 
     /// One pass of the event loop. `Some` when there is an outcome, `None` to continue.
     fn advance_once(&mut self) -> Option<Step> {
+        let step = self.advance_once_and_draw();
+        self.refresh_phone_views();
+        step
+    }
+
+    fn advance_once_and_draw(&mut self) -> Option<Step> {
         self.pulse();
         // Intermediate screens from the previous pass not yet shown: the window shows them before
         // the game advances. See [`Session::show_intermediate_frame`].
@@ -1595,7 +1604,9 @@ impl Session {
 
     /// Delivers a widget event to the applet. See [`Machine::deliver_event_to_applet`].
     pub fn deliver_event_to_applet(&mut self, evt: u32, w: u16) -> Result<u32, crate::cpu::CpuError> {
-        self.machine.deliver_event_to_applet(evt, w)
+        let result = self.machine.deliver_event_to_applet(evt, w);
+        self.refresh_phone_views();
+        result
     }
 
     pub fn set_key(&mut self, avk: u32, pressed: bool) {
@@ -1641,6 +1652,7 @@ impl Session {
         // again on the next frame.
         self.intermediate = None;
         self.stopped = None;
+        self.refresh_phone_views();
         // The buffer swap counter came back along with the machine: the stored skip decision is
         // for a frame that, for it, has not happened yet.
         self.skip.decided_at = None;
@@ -1745,6 +1757,7 @@ impl Session {
     /// it gets the previous frame. See [`crate::machine::Machine::present_gl`].
     pub fn materialize_gl_frame(&mut self) {
         self.machine.materialize_gl_frame();
+        self.refresh_phone_views();
     }
 
     /// How many buffer swaps there were and how many of them had to bring the frame to the CPU.
@@ -1760,11 +1773,62 @@ impl Session {
         self.machine.state_sent_and_spared()
     }
 
-    /// The screen, as it is now.
+    /// The console screen, as it is now: 640×480.
+    ///
+    /// For a phone game it is the phone's area **centred** on a black console screen: the game
+    /// draws from the corner, and a frontend that does not crop would otherwise show it squeezed
+    /// into it. A frontend that crops calls [`Session::display_screen`] instead.
     pub fn screen(&self) -> &Framebuffer {
+        match &self.phone_views {
+            Some(views) => &views.centred,
+            None => self.raw_screen(),
+        }
+    }
+
+    /// What the game shows, at the size it uses: the whole 640×480 screen for a Zeebo game, only
+    /// the phone's area for a phone game (see [`crate::machine::Machine::visible_area`]). The
+    /// frontend scales it with the aspect ratio of its own size.
+    pub fn display_screen(&self) -> &Framebuffer {
+        match &self.phone_views {
+            Some(views) => &views.crop,
+            None => self.raw_screen(),
+        }
+    }
+
+    /// The size of [`Session::display_screen`], known from the start: the game's class comes
+    /// from its `.mif`, before the applet exists. It is what a frontend announces before the first
+    /// frame — `libretro`'s `retro_get_system_av_info` is asked right after loading.
+    pub fn display_size(&self) -> (u32, u32) {
+        match crate::input::phone::phone_screen(self.class_id) {
+            Some((width, height)) => (u32::from(width), u32::from(height)),
+            None => (640, 480),
+        }
+    }
+
+    /// The machine's screen, or the intermediate one on display, as the game drew it.
+    fn raw_screen(&self) -> &Framebuffer {
         self.intermediate
             .as_ref()
             .unwrap_or_else(|| self.machine.screen())
+    }
+
+    /// Rebuilds the phone game's views, when the screen changed since the last time.
+    ///
+    /// Called wherever the screen may have changed — after each pass of the loop, an intermediate
+    /// screen, a frame brought back from the GPU, a loaded state —, because [`Session::screen`]
+    /// only reads. Two copies of at most 640×480 per frame, and only for a phone game.
+    fn refresh_phone_views(&mut self) {
+        let Some(area) = self.machine.visible_area() else {
+            self.phone_views = None;
+            return;
+        };
+        let source = self.raw_screen();
+        let key = (source.generation(), source.writes(), self.intermediate.is_some());
+        if self.phone_views.as_ref().is_some_and(|views| views.key == key) {
+            return;
+        }
+        let (crop, centred) = phone_views(source, area);
+        self.phone_views = Some(PhoneViews { key, crop, centred });
     }
 
     /// Puts the next intermediate screen on display, if there is one, and says whether it did.
@@ -1774,6 +1838,7 @@ impl Session {
     /// appear. See [`crate::machine::Machine::take_update_frame`].
     pub fn show_intermediate_frame(&mut self) -> bool {
         self.intermediate = self.machine.take_update_frame();
+        self.refresh_phone_views();
         self.intermediate.is_some()
     }
 
@@ -1874,7 +1939,8 @@ impl Session {
             let rgb = rgba.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
             return (width as u32, height as u32, rgb);
         }
-        let screen = self.screen();
+        // A phone game's screenshot is its area, not the console screen around it.
+        let screen = self.display_screen();
         let rgb = screen
             .to_argb()
             .into_iter()
@@ -2015,12 +2081,36 @@ impl Session {
     /// that is what is seen until the game draws its first frame.
     pub fn inherit_screen(&mut self, rgb565: &[u8]) {
         self.machine.paint_screen_rgb565(rgb565);
+        self.refresh_phone_views();
     }
 
     /// Whether the applet exited on its own, and not through a failure.
     pub fn exited_on_its_own(&self) -> bool {
         matches!(self.stopped, Some(Outcome::Returned { .. }))
     }
+}
+
+/// A phone game's area, on its own and centred. See [`Session::display_screen`].
+struct PhoneViews {
+    /// The source screen's `(generation, writes, intermediate)` when these were made: the same key
+    /// means nothing changed and the copies are skipped.
+    key: (u64, u64, bool),
+    crop: Framebuffer,
+    centred: Framebuffer,
+}
+
+/// The phone's `area` of `source`: alone, and in the middle of a black screen of the same size as
+/// `source`. What the game left outside the area does not show in either.
+fn phone_views(source: &Framebuffer, area: Rect) -> (Framebuffer, Framebuffer) {
+    let (width, height) = (i32::from(area.width), i32::from(area.height));
+    let (x, y) = (i32::from(area.x), i32::from(area.y));
+    let mut crop = Framebuffer::new(width as u32, height as u32);
+    crop.blit(0, 0, width, height, source, x, y, None);
+    let mut centred = Framebuffer::new(source.width(), source.height());
+    let left = (source.width() as i32 - width) / 2;
+    let top = (source.height() as i32 - height) / 2;
+    centred.blit(left, top, width, height, source, x, y, None);
+    (crop, centred)
 }
 
 /// The ClassID of the Z-Wheel, the console's home screen.
@@ -2076,6 +2166,37 @@ impl Session {
 pub(crate) mod tests {
     use super::*;
 
+    /// **The phone's area comes out on its own, and centred for whoever does not crop.**
+    ///
+    /// A phone game draws at the corner of the 640×480 screen. A frontend that knows about the
+    /// area shows [`Session::display_screen`], just the area; one that does not keeps calling
+    /// [`Session::screen`] and gets the area in the middle of a black console screen — never the
+    /// game squeezed into a corner.
+    #[test]
+    fn the_phone_area_is_cropped_and_centred() {
+        let mut source = Framebuffer::new(640, 480);
+        source.set_pixel_native(0, 0, 0x1111);
+        source.set_pixel_native(239, 399, 0x2222);
+        source.set_pixel_native(240, 0, 0x3333); // outside the area
+        let area = Rect { x: 0, y: 0, width: 240, height: 400 };
+
+        let (crop, centred) = phone_views(&source, area);
+
+        assert_eq!((crop.width(), crop.height()), (240, 400));
+        assert_eq!(crop.get_pixel(0, 0), 0x1111);
+        assert_eq!(crop.get_pixel(239, 399), 0x2222);
+
+        assert_eq!((centred.width(), centred.height()), (640, 480));
+        // (640 - 240) / 2 = 200, (480 - 400) / 2 = 40.
+        assert_eq!(centred.get_pixel(200, 40), 0x1111);
+        assert_eq!(centred.get_pixel(439, 439), 0x2222);
+        assert_eq!(centred.get_pixel(0, 0), 0, "outside the area is black");
+        assert!(
+            (0..640).all(|x| centred.get_pixel(x, 0) != 0x3333),
+            "what the game left outside its area does not show"
+        );
+    }
+
     /// A session without a game, with minimal memory: enough to save and restore state.
     pub(crate) fn minimal_session_for_save_state() -> Session {
         let mut mem = crate::cpu::mem::GuestMemory::new();
@@ -2117,6 +2238,7 @@ pub(crate) mod tests {
             content: None,
             class_id: 0,
             intermediate: None,
+            phone_views: None,
             started: now,
             clock_base: clock_ms,
             ratio: Some(1.0),
