@@ -1081,6 +1081,9 @@ const AEECLSID_FILEMGR: u32 = 0x0100_1003;
 struct Widget {
     children: HashMap<u32, u32>,
     properties: HashMap<u32, u32>,
+    /// Listeners registered on the widget's view model (`ModelListener *`). See
+    /// [`Machine::notify_list_focus`].
+    listeners: Vec<u32>,
     /// Models attached through slot 17. The Z-Wheel's roller pins the font here under id
     /// `0x8000`; the caller drops its temporary reference right after, so the widget is the one
     /// that needs to keep it alive while the roller exists.
@@ -1199,6 +1202,23 @@ const WIDGET_LIST: u32 = 0x0102_8e1b;
 /// **game** allocates itself (`0x77af4`, 0x4c bytes through `check_malloc`, with its own vtable),
 /// checking the return; then color, font (`0x152`), alignment (`0x153`) and extent.
 const WIDGET_EDIT: u32 = 0x0102_8e2f;
+
+/// The interface the text field hands out for its text: what the Z-Wheel's keyboard types into.
+/// It is also the `class_id` of the object we hand out, which is how [`Machine::widget_call`]
+/// tells it apart from a widget. See [`Machine::text_model_call`].
+const TEXT_MODEL_IID: u32 = 0x0101_5946;
+
+/// The family's container: the bottom bar, the status bar and the box each form hangs on
+/// `0x5000`. See §6.1 of `docs/implementation/18-the-z-wheel-carousel.md`.
+const WIDGET_CONTAINER: u32 = 0x0102_8e3f;
+
+/// Marks, as `class_id`, the text field's controller (its item `0x224`). Not a console class:
+/// the object is ours, and the mark is what lets slot 4 hand out its default handler.
+const TEXT_CONTROLLER: u32 = 0xffff_0224;
+
+/// Marks, as `class_id`, a list's view model (its item `0x161`), where the game listens for
+/// focus changes. Ours, like [`TEXT_CONTROLLER`].
+const LIST_VIEW_MODEL: u32 = 0xffff_0161;
 
 /// The classes on which slot 13 hangs a model instead of creating a bitmap.
 const MODEL_ON_SLOT13: [u32; 2] = [WIDGET_LIST, WIDGET_EDIT];
@@ -2705,6 +2725,8 @@ pub struct Machine<C: CpuBackend> {
     resources_read: BTreeSet<u16>,
     /// Whether the widget tree has already been dumped to the serial.
     widgets_dumped: bool,
+    /// The form whose tree last went to the serial. Instrumentation only, out of the save state.
+    widgets_dumped_form: Option<u32>,
     /// Widget creation counter. See [`Machine::current_form`].
     next_serial: u64,
     /// The form that is painted on the surface right now. See [`Machine::paint_widgets`].
@@ -2886,6 +2908,12 @@ pub struct Machine<C: CpuBackend> {
     /// [`Machine::graphics_call`]. Left out of the save state like the clip: the game sets it
     /// again before drawing.
     graphics_targets: HashMap<u32, u32>,
+    /// The lists' focused items for this frame, `(x, y, color, text)`, and the item widgets they
+    /// came from, which are not painted where they stand. See [`Machine::prepare_lists`].
+    list_texts: Vec<(i32, i32, u32, String)>,
+    list_items: std::collections::HashSet<u32>,
+    /// The `ModelEvent` handed to listeners, allocated once in the internal region.
+    model_event: u32,
     /// The screen, for when there is no device bitmap yet.
     screen: Framebuffer,
     /// Active `IDisplay` colors, indexed by `AEEClrItem` (`CLR_USER_TEXT` = 1 onwards).
@@ -3315,6 +3343,7 @@ impl<C: CpuBackend> Machine<C> {
             media_notify_block: 0,
             resources_read: BTreeSet::new(),
             widgets_dumped: false,
+            widgets_dumped_form: None,
             next_serial: 0,
             painted_form: 0,
             last_draw_us: 0,
@@ -3375,6 +3404,9 @@ impl<C: CpuBackend> Machine<C> {
             clip: None,
             graphics_clip: None,
             graphics_targets: HashMap::new(),
+            list_texts: Vec::new(),
+            list_items: std::collections::HashSet::new(),
+            model_event: 0,
             screen: Framebuffer::new(SCREEN_WIDTH as u32, SCREEN_HEIGHT as u32),
             colors: default_colors(),
             pending_text: Vec::new(),

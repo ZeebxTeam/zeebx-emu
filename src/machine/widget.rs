@@ -2,6 +2,16 @@
 
 use super::*;
 
+/// The text model's selection, in [`Widget::properties`] of the model: ids out of the game's
+/// range. See [`Machine::text_model_call`].
+const TEXT_SEL_START: u32 = 0xffff_0001;
+const TEXT_SEL_END: u32 = 0xffff_0002;
+/// The list's focused index, which the game writes and reads through the accessor.
+const LIST_FOCUS: u32 = 0x165;
+/// The list's item callback, kept from the `0x163` write: ids out of the game's range.
+const LIST_FUNCTION: u32 = 0xffff_0010;
+const LIST_CONTEXT: u32 = 0xffff_0011;
+
 impl<C: CpuBackend> Machine<C> {
     /// Compatibility with the Z-Wheel intro shipped in package 274755.
     /// It uses the form's own shortcut, without changing instructions or data in the ROM.
@@ -98,6 +108,7 @@ impl<C: CpuBackend> Machine<C> {
     /// called — so it does not depend on us getting right which screen is current. When the
     /// missing link arrives through event `0x7b0a`, it is worth reconsidering.
     pub(super) fn draw_widgets(&mut self) -> Result<(), CpuError> {
+        self.ensure_first_focus()?;
         // Draw callbacks are themselves the sign that the widget belongs to the stage. The
         // Z-Wheel keeps the bottom bar in a root separate from the current form; filtering it by
         // the form's tree erases the bar even when it is visible.
@@ -133,6 +144,61 @@ impl<C: CpuBackend> Machine<C> {
                     "<drawing {callback:#x} on {address:#x} did not return: {outcome:?}>"
                 ));
             }
+        }
+        Ok(())
+    }
+
+    /// Gives the first focusable child the focus of a container that never set one.
+    ///
+    /// The Setup screen hangs its three rows (Z-Credits, language, more options — rollers with
+    /// handler `0x6089c`) on a container and never writes `0x711` on it until the first arrow:
+    /// on the console the container hands the focus to its first child that takes it. Without
+    /// that, the key went to all three rows at once and the first one showed no frame.
+    ///
+    /// Only the content of the top form, only a container with no focus at all, and only when
+    /// **two or more** children have a handler — the ambiguous case. Screens that set their own
+    /// focus (the main menu, the game grid, the keyboard) are untouched.
+    pub(super) fn ensure_first_focus(&mut self) -> Result<(), CpuError> {
+        const FOCUS_SET: u32 = 0x711;
+        const MARK_FOCUS: u32 = 0x700;
+        let Some(form) = self.current_form() else {
+            return Ok(());
+        };
+        if self.widgets.get(&form).map_or(0, |w| w.class_id) != WIDGET_FORM {
+            return Ok(());
+        }
+        let containers: Vec<u32> = self
+            .widgets
+            .get(&form)
+            .map(|w| w.children.values().chain(w.attached.iter()).copied().collect())
+            .unwrap_or_default();
+        for container in containers {
+            let Some(node) = self.widgets.get(&container) else {
+                continue;
+            };
+            if node.properties.contains_key(&FOCUS_SET) {
+                continue;
+            }
+            let focusable: Vec<u32> = node
+                .attached
+                .iter()
+                .copied()
+                // The status bar is a container (`0x01028e3f`) with a handler that answers
+                // "handled" to everything (`0x77300`); it takes no focus on the console.
+                .filter(|child| {
+                    self.widgets
+                        .get(child)
+                        .is_some_and(|w| w.handler.0 != 0 && w.class_id != WIDGET_CONTAINER)
+                })
+                .collect();
+            if focusable.len() < 2 {
+                continue;
+            }
+            let first = focusable[0];
+            if let Some(widget) = self.widgets.get_mut(&container) {
+                widget.properties.insert(FOCUS_SET, first);
+            }
+            self.notify_widget(first, MARK_FOCUS, 1)?;
         }
         Ok(())
     }
@@ -261,8 +327,17 @@ impl<C: CpuBackend> Machine<C> {
                     w.serial,
                     format!(
                         "<widget {address:#x} parent {:#x} class {:#x} children {children} \
-                         handler {:#x} visible {} size {:?} pos {:?} text {:?}>",
-                        w.parent, w.class_id, w.handler.0, w.visible, w.size, w.position, w.text
+                         handler {:#x} ctx {:#x} focus {:#x} visible {} size {:?} pos {:?} \
+                         text {:?}>",
+                        w.parent,
+                        w.class_id,
+                        w.handler.0,
+                        w.handler.1,
+                        w.properties.get(&0x711).copied().unwrap_or(0),
+                        w.visible,
+                        w.size,
+                        w.position,
+                        w.text
                     ),
                 )
             })
@@ -542,6 +617,7 @@ impl<C: CpuBackend> Machine<C> {
     /// not real depth; it is the only stable order we have, and a stable order at least makes the
     /// result the same on every run.
     pub(super) fn paint_widgets(&mut self) -> Result<(), CpuError> {
+        self.prepare_lists()?;
         let current = self.current_form();
         // **A new form erases the previous one.** The surface is persistent: what was painted in
         // one frame is still there in the next. Without clearing, the 640×480 welcome screen stayed
@@ -570,7 +646,7 @@ impl<C: CpuBackend> Machine<C> {
         let mut images: Vec<(u32, u32)> = self
             .widgets
             .iter()
-            .filter(|(owner, widget)| widget.visible && inside.contains(*owner))
+            .filter(|(owner, _)| inside.contains(*owner) && self.shown(**owner))
             .flat_map(|(owner, widget)| widget.attached.iter().map(|&child| (child, *owner)))
             .filter(|(object, _)| self.images.contains_key(object))
             .collect();
@@ -666,7 +742,10 @@ impl<C: CpuBackend> Machine<C> {
             .widgets
             .iter()
             .filter(|(owner, widget)| {
-                widget.visible && !widget.text.is_empty() && inside.contains(*owner)
+                !widget.text.is_empty()
+                    && inside.contains(*owner)
+                    && !self.list_items.contains(*owner)
+                    && self.shown(**owner)
             })
             .map(|(&owner, widget)| {
                 let (x, y) = self.screen_position(owner);
@@ -674,6 +753,12 @@ impl<C: CpuBackend> Machine<C> {
                 (self.depth(owner), x, y, color, widget.text.clone())
             })
             .collect();
+        // The lists' focused items go on top: see [`Machine::prepare_lists`].
+        writes.extend(
+            self.list_texts
+                .iter()
+                .map(|(x, y, color, text)| (usize::MAX, *x, *y, *color, text.clone())),
+        );
         // **The same text, in the same place, in the same color, is a single drawing.** The z-pad
         // form is rebuilt on every lap of the cycle and each rebuild leaves the previous tree
         // alive: there are thousands of copies of the same label stacked on the same coordinate.
@@ -921,6 +1006,12 @@ impl<C: CpuBackend> Machine<C> {
         const SET_PROP: u32 = 0x801;
         /// The HTML widget item that stores an object below the `0x5000` range.
         const PROP_HTML_OBJECT: u32 = 0x161;
+        /// The text field item that stores its controller. See the `LE` arm.
+        const PROP_EDIT_CONTROLLER: u32 = 0x224;
+        /// A container's per-child visibility. See the `SET_PROP` arm.
+        const CHILD_VISIBLE: u32 = 0x341;
+        /// The list's item callback, `{function, context}`. See the `SET_PROP` arm.
+        const LIST_ITEM_CALLBACK: u32 = 0x163;
         /// Success for this class. It is not BREW's `SUCCESS` — see above.
         const OK: u32 = 1;
         /// Sets the focused child of a container. See the accessor arm.
@@ -943,6 +1034,23 @@ impl<C: CpuBackend> Machine<C> {
             return Ok(None);
         }
         let this = self.cpu.read_reg(Reg::R0);
+        // The list's view model: slot 3 is `AddListener(ModelListener *)`, with the function at
+        // `+8` and its context at `+0xc` (`0x216f0`). The listener is kept on the list.
+        if slot == 3 && self.widgets.get(&this).is_some_and(|w| w.class_id == LIST_VIEW_MODEL) {
+            let listener = self.cpu.read_reg(Reg::R1);
+            let list = self.widgets[&this].parent;
+            if let Some(widget) = self.widgets.get_mut(&list) {
+                if listener != 0 && !widget.listeners.contains(&listener) {
+                    widget.listeners.push(listener);
+                }
+            }
+            return Ok(Some(SUCCESS));
+        }
+        if self.widgets.get(&this).is_some_and(|w| w.class_id == TEXT_MODEL_IID) {
+            if let Some(result) = self.text_model_call(this, slot)? {
+                return Ok(Some(result));
+            }
+        }
         // **Each tab's page reaches the HTML widget through here.** `0x3220c` opens the file,
         // makes an `ISource` of it and hands it over through slot 5 (`0x322e0`) of the object of
         // property `0x161`, which for us is the widget itself. Nobody has read the content yet, and
@@ -966,6 +1074,29 @@ impl<C: CpuBackend> Machine<C> {
             // will hang the intro GIF: `slot12(IID, &output)` and then `slot5(output, image)`.
             // Refusing it aborted the whole callback, and the animation never started — with no
             // error at all in the log, because whoever aborted was us.
+            "DefaultHandler" => {
+                let (event, key) = (self.cpu.read_reg(Reg::R1), self.cpu.read_reg(Reg::R2));
+                self.default_handle_event(this, event, key)?
+            }
+            // The text field's `QueryInterface(0x1015946)` is its text model, which the keyboard
+            // types into (`0x48d18`). Answered with the field itself, the keyboard's `ReplaceSel`,
+            // `GetTextInfo` and `SetSel` landed on the widget's slots 5, 7 and 8 — attach, extent
+            // and parent.
+            "QueryInterface" | "PegarInterface"
+                if self.cpu.read_reg(Reg::R1) == TEXT_MODEL_IID
+                    && self.widgets.get(&this).is_some_and(|w| w.class_id == WIDGET_EDIT) =>
+            {
+                let model = self.widget_child(this, TEXT_MODEL_IID)?;
+                if let Some(widget) = self.widgets.get_mut(&model) {
+                    widget.class_id = TEXT_MODEL_IID;
+                    widget.parent = this;
+                }
+                let output = self.cpu.read_reg(Reg::R2);
+                if output != 0 {
+                    self.cpu.write_u32(output, model)?;
+                }
+                SUCCESS
+            }
             "QueryInterface" | "PegarInterface" => {
                 let output = self.cpu.read_reg(Reg::R2);
                 if output != 0 {
@@ -1102,6 +1233,16 @@ impl<C: CpuBackend> Machine<C> {
                 // any rule about "the current form" picked the wrong half.
                 let child = self.cpu.read_reg(Reg::R1);
                 if self.widgets.contains_key(&child) {
+                    // **The list holds the item widget** (`IDECORATOR_SetWidget`, `0x21324`): the
+                    // game keeps the pointer in its own structure and calls the item callback on
+                    // it for every row. Without the reference the text widget died, and its
+                    // address went to the next list — the callback was writing on another list.
+                    let holds = self.widgets.get(&this).is_some_and(|w| {
+                        w.class_id == WIDGET_LIST && !w.attached.contains(&child)
+                    });
+                    if holds && child != this {
+                        self.objects.add_ref(child);
+                    }
                     if let Some(widget) = self.widgets.get_mut(&this) {
                         if !widget.attached.contains(&child) && child != this {
                             widget.attached.push(child);
@@ -1263,10 +1404,33 @@ impl<C: CpuBackend> Machine<C> {
                     _ => return Ok(Some(EBADPARM)),
                 };
                 let free_fn = self.cpu.read_u32(location + 8)?;
-                let (previous, previous_releaser) = self
+                let (mut previous, previous_releaser) = self
                     .widgets
                     .get(&this)
                     .map_or(((0, 0), 0), |w| (w.handler, w.releasers.0));
+                // **The previous handler of a widget that had none is its own `HandleEvent`.**
+                // The keyboard's backspace sends `AVK_CLR` to the controller's previous handler
+                // (`0x465a4`) and counts on it to delete; with `(0, 0)` nothing was deleted. Only
+                // the text controller gets it for now: it is the only default that was measured.
+                if previous.0 == 0
+                    && self.widgets.get(&this).is_some_and(|w| {
+                        w.class_id == TEXT_CONTROLLER || w.class_id == WIDGET_LIST
+                    })
+                {
+                    let slot = crate::brew::aee_slots::WIDGET
+                        .iter()
+                        .position(|name| *name == "DefaultHandler")
+                        .expect("default handler slot") as u32;
+                    previous = (aee::encode(Interface::Widget, slot), this);
+                }
+                if self.serial.is_some() {
+                    let class_id = self.widgets.get(&this).map_or(0, |w| w.class_id);
+                    self.log_serial(format!(
+                        "<handler {:#x} ctx {:#x} on {this:#x} (class {class_id:#x}), previous \
+                         {:#x} ctx {:#x}>",
+                        create.0, create.1, previous.0, previous.1
+                    ));
+                }
                 self.cpu.write_u32(location, previous.0)?;
                 self.cpu.write_u32(location + 4, previous.1)?;
                 self.cpu.write_u32(location + 8, previous_releaser)?;
@@ -1493,11 +1657,38 @@ impl<C: CpuBackend> Machine<C> {
                         // without checking for zero. With a number there the setup aborted
                         // silently, and what was already created was left loose on screen, with no
                         // form.
+                        // On the text field, `0x224` is its **controller**: the keyboard reads it
+                        // (`0x48d18`) and hangs its key handler (`0x461b8`) on it through slot 4.
+                        // With a number there, `0x48bfc` skipped the registration and the keyboard
+                        // drew but never received a key.
+                        let class_id = self.widgets.get(&this).map_or(0, |w| w.class_id);
+                        // On the list, `0x161` is its view model: `CreateListWidget` reads it
+                        // (`0x216d0`) and registers a listener on it (slot 3) that keeps the
+                        // focused index from `EVT_MDL_FOCUS_CHANGE`. With a number there, no
+                        // choice of the Registration lists reached the summary.
                         let object = id >= FIRST_OBJECT
                             || (id == PROP_HTML_OBJECT
-                                && self.widgets.get(&this).is_some_and(|w| w.class_id == WIDGET_HTML));
+                                && (class_id == WIDGET_HTML || class_id == WIDGET_LIST))
+                            || (id == PROP_EDIT_CONTROLLER && class_id == WIDGET_EDIT);
                         let value = match object {
-                            true => self.widget_child(this, id)?,
+                            true => {
+                                let child = self.widget_child(this, id)?;
+                                // The controller belongs to the field's tree, so that the field's
+                                // screen is the one that hands it the keys.
+                                if id == PROP_EDIT_CONTROLLER {
+                                    if let Some(widget) = self.widgets.get_mut(&child) {
+                                        widget.parent = this;
+                                        widget.class_id = TEXT_CONTROLLER;
+                                    }
+                                }
+                                if id == PROP_HTML_OBJECT && class_id == WIDGET_LIST {
+                                    if let Some(widget) = self.widgets.get_mut(&child) {
+                                        widget.parent = this;
+                                        widget.class_id = LIST_VIEW_MODEL;
+                                    }
+                                }
+                                child
+                            }
                             false => self
                                 .widgets
                                 .get(&this)
@@ -1531,6 +1722,49 @@ impl<C: CpuBackend> Machine<C> {
                             }
                             if let Some(child) = self.widgets.get_mut(&third) {
                                 child.parent = this;
+                            }
+                        }
+                        // **`0x341` shows or hides a child of the container**: `{IWidget *, byte
+                        // visible}`, written on the child's parent (`0x40d8c`, which gets the
+                        // parent through slot 8 first). Registration's OK goes from the name to
+                        // the date with six of these — keyboard out, date lists in. Kept as a
+                        // number, the keyboard stayed on screen and the date lists never showed.
+                        // The list's item callback arrives as a pointer to `{function,
+                        // context}` **on the stack** (`0x21614`): read it now or lose it.
+                        if id == LIST_ITEM_CALLBACK
+                            && third != 0
+                            && self.widgets.get(&this).is_some_and(|w| w.class_id == WIDGET_LIST)
+                        {
+                            if let (Ok(function), Ok(context)) =
+                                (self.cpu.read_u32(third), self.cpu.read_u32(third + 4))
+                            {
+                                if let Some(widget) = self.widgets.get_mut(&this) {
+                                    widget.properties.insert(LIST_FUNCTION, function);
+                                    widget.properties.insert(LIST_CONTEXT, context);
+                                }
+                            }
+                        }
+                        // The game setting the list's focus is a focus change too, as in BREW.
+                        if id == LIST_FOCUS
+                            && self.widgets.get(&this).is_some_and(|w| {
+                                w.class_id == WIDGET_LIST
+                                    && w.properties.get(&LIST_FOCUS) != Some(&third)
+                            })
+                        {
+                            if let Some(widget) = self.widgets.get_mut(&this) {
+                                widget.properties.insert(LIST_FOCUS, third);
+                            }
+                            self.notify_list_focus(this, third)?;
+                        }
+                        if id == CHILD_VISIBLE && third != 0 {
+                            let mut shown = [0u8];
+                            if let (Ok(child), Ok(())) = (
+                                self.cpu.read_u32(third),
+                                self.cpu.read_mem(third + 4, &mut shown),
+                            ) {
+                                if let Some(widget) = self.widgets.get_mut(&child) {
+                                    widget.visible = shown[0] != 0;
+                                }
                             }
                         }
                         if let Some(widget) = self.widgets.get_mut(&this) {
@@ -1892,6 +2126,329 @@ impl<C: CpuBackend> Machine<C> {
             }
         }
         Ok(0)
+    }
+
+    /// Whether the widget and every parent above it are visible: a container hidden through
+    /// `0x341` hides what it holds. Registration hangs each question's list in its own
+    /// container and hides the container, not the list — and the previous answer stayed painted
+    /// under the new one.
+    pub(super) fn shown(&self, widget: u32) -> bool {
+        /// The tree comes from the game; a cycle must not trap the painting.
+        const CAP: usize = 64;
+        let mut current = widget;
+        for _ in 0..CAP {
+            let Some(node) = self.widgets.get(&current) else {
+                return true;
+            };
+            if !node.visible {
+                return false;
+            }
+            if node.parent == 0 || node.parent == current {
+                return true;
+            }
+            current = node.parent;
+        }
+        true
+    }
+
+    /// How many items the list's model holds: the vector slot 13 hung on it.
+    fn list_count(&self, list: u32) -> u32 {
+        self.widgets
+            .get(&list)
+            .and_then(|w| w.models.get(&0))
+            .and_then(|model| self.vectors.get(model))
+            .map_or(0, |(items, _)| items.len() as u32)
+    }
+
+    /// The list's default arrows: they move the focused index, `0x165`, which the game itself
+    /// sets on open (`0x165 = 15` on the birth day) and reads on confirm. The list's own handler
+    /// (`0x4ce40`) only takes back and confirm, and forwards the arrows here (`0x4cf9c`).
+    ///
+    /// It wraps around: the date lists are drums. That is a reading of the drawing, not of code.
+    fn list_move_focus(&mut self, list: u32, key: u32) -> Result<u32, CpuError> {
+        let step: i64 = match key {
+            input::avk::UP | input::avk::LEFT => -1,
+            input::avk::DOWN | input::avk::RIGHT => 1,
+            _ => return Ok(FALSE),
+        };
+        let count = i64::from(self.list_count(list));
+        if count == 0 {
+            return Ok(FALSE);
+        }
+        let current = self.widgets[&list]
+            .properties
+            .get(&LIST_FOCUS)
+            .copied()
+            .unwrap_or(0);
+        let next = (i64::from(current) + step).rem_euclid(count) as u32;
+        if let Some(widget) = self.widgets.get_mut(&list) {
+            widget.properties.insert(LIST_FOCUS, next);
+        }
+        self.notify_list_focus(list, next)?;
+        self.assumptions
+            .insert("a list's arrows wrap around its items — read from the drawing, no header");
+        Ok(TRUE)
+    }
+
+    /// Tells the list's listeners that the focus moved: `EVT_MDL_FOCUS_CHANGE` (`0x1007`), with
+    /// the index in `dwParam`. The Registration listener (`0x4d3d4`) compares the code with
+    /// `0x1007` and keeps `[event+8]` — that is what the summary shows.
+    fn notify_list_focus(&mut self, list: u32, index: u32) -> Result<(), CpuError> {
+        const EVT_MDL_FOCUS_CHANGE: u32 = 0x1007;
+        let Some((listeners, model)) = self.widgets.get(&list).map(|w| {
+            (
+                w.listeners.clone(),
+                w.children.get(&0x161).copied().unwrap_or(0),
+            )
+        }) else {
+            return Ok(());
+        };
+        if listeners.is_empty() {
+            return Ok(());
+        }
+        if self.model_event == 0 {
+            self.model_event = self.alloc_internal(12)?;
+            if self.model_event == 0 {
+                return Ok(());
+            }
+        }
+        let event = self.model_event;
+        for listener in listeners {
+            let (Ok(function), Ok(context)) =
+                (self.cpu.read_u32(listener + 8), self.cpu.read_u32(listener + 12))
+            else {
+                continue;
+            };
+            if function == 0 {
+                continue;
+            }
+            self.cpu.write_u32(event, EVT_MDL_FOCUS_CHANGE)?;
+            self.cpu.write_u32(event + 4, model)?;
+            self.cpu.write_u32(event + 8, index)?;
+            self.call_guest_nested(function, [context, event, 0, 0], QSORT_BUDGET)?;
+        }
+        Ok(())
+    }
+
+    /// Asks each visible list for the text of its focused item, through the game's own item
+    /// callback (`0x4cfc8`: `GetAt(index)`, then the text on the item widget `[ctx+0x18]`), and keeps it
+    /// to be painted in the middle of the list's area.
+    ///
+    /// On the console the list draws its rows itself, and how many neighbors it shows was not
+    /// measured: what we paint is a declared substitute — the current value only.
+    pub(super) fn prepare_lists(&mut self) -> Result<(), CpuError> {
+        self.list_texts.clear();
+        let inside = self.form_tree();
+        let lists: Vec<(u32, u32, u32, u32)> = self
+            .widgets
+            .iter()
+            .filter(|(address, w)| {
+                w.class_id == WIDGET_LIST && inside.contains(*address) && self.shown(**address)
+            })
+            .filter_map(|(&address, w)| {
+                let function = *w.properties.get(&LIST_FUNCTION)?;
+                let context = *w.properties.get(&LIST_CONTEXT)?;
+                let focus = w.properties.get(&LIST_FOCUS).copied().unwrap_or(0);
+                Some((address, function, context, focus))
+            })
+            .collect();
+        for (list, function, context, focus) in lists {
+            let count = self.list_count(list);
+            if count == 0 || function == 0 {
+                continue;
+            }
+            let index = focus.min(count - 1);
+            // `(ctx, index, state, 0)`: `0x4cfd8` does `GetAt(vector, r1, …)` and writes `r2` as
+            // the item widget's `0x151` — for the focused row, one.
+            self.call_guest(function, [context, index, 1, 0], QSORT_BUDGET)?;
+            let Ok(item) = self.cpu.read_u32(context + 0x18) else {
+                continue;
+            };
+            let Some((text, color)) = self.widgets.get(&item).map(|w| {
+                (
+                    w.text.clone(),
+                    w.properties.get(&PROP_COLOR).copied().unwrap_or(0),
+                )
+            }) else {
+                continue;
+            };
+            self.list_items.insert(item);
+            // The list's own extent is not trustworthy yet (TODO); its container's is.
+            let area = self.widgets.get(&list).map_or(0, |w| w.parent);
+            let (x, y) = self.screen_position(area);
+            let (width, height) = self.widgets.get(&area).map_or((0, 0), |w| w.size);
+            let Some(font) = self.font.as_ref() else {
+                continue;
+            };
+            let text_width = font.width(&text, FONT_SIZE) as i32;
+            let text_height = (font.ascent(FONT_SIZE) + font.descent(FONT_SIZE)) as i32;
+            let x = x + (width as i32 - text_width) / 2;
+            let y = y + (height as i32 - text_height) / 2;
+            self.list_texts.push((x, y, color, text));
+        }
+        Ok(())
+    }
+
+    /// A widget's default `HandleEvent`, reached through the previous handler slot 4 hands out.
+    ///
+    /// Only the text controller has one so far: `AVK_CLR` deletes the character before the
+    /// caret, or the selection — what BREW's text control does, and what the keyboard's backspace
+    /// asks of it. Anything else comes back "not handled".
+    pub(super) fn default_handle_event(
+        &mut self,
+        this: u32,
+        event: u32,
+        key: u32,
+    ) -> Result<u32, CpuError> {
+        if event == input::EVT_KEY
+            && self.widgets.get(&this).is_some_and(|w| w.class_id == WIDGET_LIST)
+        {
+            return self.list_move_focus(this, key);
+        }
+        if event != input::EVT_KEY || key != input::avk::CLR {
+            return Ok(FALSE);
+        }
+        let Some(field) = self
+            .widgets
+            .get(&this)
+            .filter(|w| w.class_id == TEXT_CONTROLLER)
+            .map(|w| w.parent)
+        else {
+            return Ok(FALSE);
+        };
+        let Some(model) = self
+            .widgets
+            .get(&field)
+            .and_then(|w| w.children.get(&TEXT_MODEL_IID).copied())
+        else {
+            return Ok(FALSE);
+        };
+        let mut units: Vec<u16> = self.widgets[&field].text.encode_utf16().collect();
+        let length = units.len() as u32;
+        let selection = |id| {
+            self.widgets[&model]
+                .properties
+                .get(&id)
+                .copied()
+                .unwrap_or(length)
+                .min(length)
+        };
+        let (start, end) = (selection(TEXT_SEL_START), selection(TEXT_SEL_END));
+        let (low, high) = (start.min(end), start.max(end));
+        let low = if low == high { low.saturating_sub(1) } else { low };
+        if low == high {
+            return Ok(TRUE);
+        }
+        units.drain(low as usize..high as usize);
+        if let Some(widget) = self.widgets.get_mut(&field) {
+            widget.text = String::from_utf16_lossy(&units);
+        }
+        if let Some(widget) = self.widgets.get_mut(&model) {
+            widget.properties.insert(TEXT_SEL_START, low);
+            widget.properties.insert(TEXT_SEL_END, low);
+        }
+        Ok(TRUE)
+    }
+
+    /// The text field's text model, read from the Z-Wheel keyboard's use (`tectoy_keyboard.c`).
+    ///
+    /// Same family as BREW's `ITextModel`, with the slots in the order the keyboard calls them:
+    ///
+    /// | slot | what | where it was read |
+    /// |---|---|---|
+    /// | 3 | `AddListener` | accepted, nobody is notified yet |
+    /// | 5 | `ReplaceSel(text, n)` | the backspace selects the last character and passes `(NULL, 0)` (`0x460ec`) |
+    /// | 7 | `GetTextInfo(&{text, n, start, end})` | the word jumps walk `text` up to `n` (`0x522b4`) |
+    /// | 8 | `SetSel(start, end)` | `(0, 0)` is home and `(-1, -1)` is end (`0x46700`, `0x4672c`) |
+    ///
+    /// The text lives in the field's `text`, which is what [`Machine::paint_texts`] draws. Returns
+    /// `None` for the slots that are not the model's, which go on to the widget's arms.
+    pub(super) fn text_model_call(&mut self, this: u32, slot: u32) -> Result<Option<u32>, CpuError> {
+        const SEL_START: u32 = TEXT_SEL_START;
+        const SEL_END: u32 = TEXT_SEL_END;
+        /// The `AECHAR` buffer `GetTextInfo` points at, allocated once per model.
+        const BUFFER: u32 = 0xffff_0003;
+        /// The longest text the buffer holds, terminator excluded.
+        const MAX_CHARS: usize = 255;
+
+        let field = self.widgets.get(&this).map_or(0, |w| w.parent);
+        let mut units: Vec<u16> = self
+            .widgets
+            .get(&field)
+            .map(|w| w.text.encode_utf16().collect())
+            .unwrap_or_default();
+        let property = |m: &Self, id: u32| {
+            m.widgets
+                .get(&this)
+                .and_then(|w| w.properties.get(&id).copied())
+                .unwrap_or(0)
+        };
+        let length = units.len() as u32;
+        let (start, end) = (
+            property(self, SEL_START).min(length),
+            property(self, SEL_END).min(length),
+        );
+        let (a1, a2) = (self.cpu.read_reg(Reg::R1), self.cpu.read_reg(Reg::R2));
+        let (start, end, result) = match slot {
+            3 => (start, end, SUCCESS),
+            5 => {
+                let typed = match a2 as i32 {
+                    n if n < 0 => self.read_aechar_units(a1)?,
+                    n => {
+                        let mut bytes = vec![0u8; n as usize * 2];
+                        if a1 != 0 {
+                            self.cpu.read_mem(a1, &mut bytes)?;
+                        }
+                        bytes
+                            .chunks_exact(2)
+                            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+                            .collect()
+                    }
+                };
+                let (low, high) = (start.min(end) as usize, start.max(end) as usize);
+                let room = MAX_CHARS.saturating_sub(units.len() - (high - low));
+                let typed = &typed[..typed.len().min(room)];
+                units.splice(low..high, typed.iter().copied());
+                let caret = (low + typed.len()) as u32;
+                if let Some(widget) = self.widgets.get_mut(&field) {
+                    widget.text = String::from_utf16_lossy(&units);
+                }
+                (caret, caret, SUCCESS)
+            }
+            7 => {
+                let mut buffer = property(self, BUFFER);
+                if buffer == 0 {
+                    buffer = self.alloc_internal((MAX_CHARS as u32 + 1) * 2)?;
+                    if let Some(widget) = self.widgets.get_mut(&this) {
+                        widget.properties.insert(BUFFER, buffer);
+                    }
+                }
+                let mut bytes: Vec<u8> = units.iter().flat_map(|u| u.to_le_bytes()).collect();
+                bytes.extend([0, 0]);
+                if buffer != 0 {
+                    self.cpu.write_mem(buffer, &bytes)?;
+                }
+                if a1 != 0 {
+                    for (i, word) in [buffer, length, start, end].into_iter().enumerate() {
+                        self.cpu.write_u32(a1 + i as u32 * 4, word)?;
+                    }
+                }
+                (start, end, SUCCESS)
+            }
+            8 => {
+                let clamp = |v: u32| match v as i32 {
+                    n if n < 0 => length,
+                    n => (n as u32).min(length),
+                };
+                (clamp(a1), clamp(a2), SUCCESS)
+            }
+            _ => return Ok(None),
+        };
+        if let Some(widget) = self.widgets.get_mut(&this) {
+            widget.properties.insert(SEL_START, start);
+            widget.properties.insert(SEL_END, end);
+        }
+        Ok(Some(result))
     }
 
     /// A reference to a model hung on a widget: ours through the store, the game's through

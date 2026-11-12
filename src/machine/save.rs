@@ -2719,6 +2719,9 @@ impl<C: CpuBackend> Machine<C> {
                     drawing: (meta[11], meta[12]),
                     releasers: (meta[13], meta[14]),
                     start_notified: meta[15] != 0,
+                    // Not in the save state: the game registers them again when it rebuilds
+                    // the list, and a new field would change the section's format.
+                    listeners: Vec::new(),
                 },
             );
         }
@@ -4289,6 +4292,7 @@ mod tests {
                 drawing: (0x6b, 0x6c),
                 releasers: (0x6d, 0x6e),
                 start_notified: true,
+                listeners: Vec::new(),
             },
         );
 

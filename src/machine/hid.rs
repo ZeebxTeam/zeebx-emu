@@ -613,6 +613,16 @@ impl<C: CpuBackend> Machine<C> {
             self.widgets_dumped = true;
             self.dump_widgets();
         }
+        // **And again whenever the screen changes**: the question "who does this go to?" is
+        // asked on every screen, and the first one's tree says nothing about the keyboard's.
+        if !self.key_events.is_empty() && self.serial.is_some() {
+            let form = self.current_form();
+            if form != self.widgets_dumped_form {
+                self.widgets_dumped_form = form;
+                self.log_serial(format!("<tree for form {:#x}>", form.unwrap_or(0)));
+                self.dump_widgets();
+            }
+        }
         while let Some((avk, down)) = self.key_events.pop_front() {
             // **The exit from the queue, before any shortcut.** The delivery line, further down,
             // only shows up for keys that reach the handlers: an arrow consumed by HTML scrolling
@@ -687,11 +697,18 @@ impl<C: CpuBackend> Machine<C> {
                 .take(4)
                 .map(|(_, (callback, _))| format!("{callback:#x}"))
                 .collect();
+            let mut answers = Vec::new();
             for (_, (callback, context)) in on_screen {
                 let output = self.call_guest(callback, [context, event, avk, 0], QSORT_BUDGET)?;
                 if matches!(output, Outcome::Returned { code } if code != 0) {
                     handled = true;
                 }
+                if let Outcome::Returned { code } = output {
+                    answers.push(format!("{callback:#x}={code:#x}"));
+                }
+            }
+            if self.serial.is_some() && !answers.is_empty() {
+                self.log_serial(format!("<key {avk:#x} answers {}>", answers.join(" ")));
             }
             if !handled {
                 for (_, (callback, context)) in outside {
