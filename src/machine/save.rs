@@ -1273,6 +1273,10 @@ impl<C: CpuBackend> Machine<C> {
                 .map(|(id, (a, b))| vec![*id, *a, *b])
                 .collect::<Vec<_>>(),
         );
+        sections.put_map(
+            "esc.guest_dibs",
+            self.guest_dibs.iter().map(|(dib, buffer)| (*dib, *buffer)),
+        );
         sections.put_records(
             "esc.dib_publicado",
             self.published_dib
@@ -1429,6 +1433,11 @@ impl<C: CpuBackend> Machine<C> {
         for logging in reader.records("esc.dib_decodificador", 3)? {
             decoder_dib.insert(logging[0], (logging[1], logging[2]));
         }
+        // A state from before `IDISPLAY_CreateDIBitmap` existed has none of them.
+        let guest_dibs: std::collections::HashMap<u32, u32> = match reader.section("esc.guest_dibs") {
+            Some(_) => reader.pairs("esc.guest_dibs")?.into_iter().collect(),
+            None => std::collections::HashMap::new(),
+        };
         let mut published_dib = std::collections::HashMap::new();
         for logging in reader.records("esc.dib_publicado", 3)? {
             published_dib.insert(
@@ -1481,6 +1490,7 @@ impl<C: CpuBackend> Machine<C> {
         self.html_max_scroll = html_max_scroll;
         self.image_notify = image_notify;
         self.decoder_dib = decoder_dib;
+        self.guest_dibs = guest_dibs;
         self.published_dib = published_dib;
         self.vectors = vectors;
         self.collections = collections;
@@ -3740,6 +3750,7 @@ mod tests {
             },
         );
         before.decoder_dib.insert(0xe0, (0xf0, 0x11));
+        before.guest_dibs.insert(0xe4, 0x4000_0100);
         before.published_dib.insert(0x12, 0x13_0000_0014);
         before.vectors.insert(0x14, (vec![1, 2, 3], 9));
         before.collections.insert(0x15, (vec![4, 5], 6));
@@ -3772,6 +3783,7 @@ mod tests {
             Some(0x1000_6000)
         );
         assert_eq!(after.decoder_dib.get(&0xe0), Some(&(0xf0, 0x11)));
+        assert_eq!(after.guest_dibs.get(&0xe4), Some(&0x4000_0100));
         assert_eq!(after.published_dib.get(&0x12), Some(&0x13_0000_0014));
         assert_eq!(after.vectors.get(&0x14), Some(&(vec![1, 2, 3], 9)));
         assert_eq!(after.collections.get(&0x15), Some(&(vec![4, 5], 6)));

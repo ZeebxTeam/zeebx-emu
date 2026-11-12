@@ -364,6 +364,15 @@ impl<C: CpuBackend> Machine<C> {
                 self.store_update_frame()?;
                 SUCCESS
             }
+            // int IDISPLAY_CreateDIBitmap(IDisplay *p, IDIB **ppIDIB, uint8 colorDepth,
+            //                             uint16 w, uint16 h)
+            "CreateDIBitmap" => {
+                let out = self.cpu.read_reg(Reg::R1);
+                let depth = self.cpu.read_reg(Reg::R2) as u8;
+                let width = self.cpu.read_reg(Reg::R3) as u16;
+                let height = self.stack_arg(0)? as u16;
+                self.create_dib_bitmap(out, depth, width, height)?
+            }
             "SetFont" | "SetAnnunciators" | "Backlight" => SUCCESS,
             _ => return Ok(None),
         };
@@ -849,6 +858,26 @@ impl<C: CpuBackend> Machine<C> {
             }
         }
         Ok(true)
+    }
+
+    /// The screen size the applet of this class is told: the console's 640×480, or the phone's
+    /// for a phone game (see [`crate::input::phone::phone_screen`]).
+    pub(super) fn reported_screen(&self, class: u32) -> (u16, u16) {
+        crate::input::phone::phone_screen(class).unwrap_or((SCREEN_WIDTH, SCREEN_HEIGHT))
+    }
+
+    /// The part of the screen the running game uses, when it is not the whole screen.
+    ///
+    /// A phone game is told its phone's screen and draws from the corner of the 640×480 one; this
+    /// is that area, for the frontends to show on its own. `None` is the whole screen — every
+    /// Zeebo game.
+    pub fn visible_area(&self) -> Option<Rect> {
+        crate::input::phone::phone_screen(self.applet_class).map(|(width, height)| Rect {
+            x: 0,
+            y: 0,
+            width: width as i16,
+            height: height as i16,
+        })
     }
 
     /// The screen, as it is now.
