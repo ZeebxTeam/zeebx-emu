@@ -970,9 +970,11 @@ pub const GL_LEGACY: &[&str] = &[
 
 /// Methods of `IWeb`, read from the firmware's vtable at `0x1087fde0`.
 ///
-/// `AEEWeb.h` was dropped from SDK 4.0.2 — the interface was retired —, and for a long time this
-/// table had four entries deduced from usage. There are **thirteen**, and the deduction got the
-/// main thing wrong.
+/// For a long time this table had four entries deduced from usage. There are **thirteen**, and
+/// the deduction got the main thing wrong. `AEEWeb.h` is in SDK 4.0.2 after all (`sdk/inc`), but
+/// its `IWeb` has eight slots, with `GetResponse` at 6: the console's firmware is another version
+/// of the interface, and the firmware is what the game talks to. `tools/check_sdk_slots.py` lists
+/// the two side by side.
 ///
 /// What the firmware corrects:
 ///
@@ -1021,52 +1023,45 @@ pub const SQL_MGR: &[&str] = &["AddRef", "Release", "slot2", "OpenDatabase"];
 /// was. The first statement the Z-Wheel sends is `PRAGMA integrity_check`.
 pub const SQL_DATABASE: &[&str] = &["AddRef", "Release", "slot2", "Exec"];
 
-/// Methods of the root form (`0x01001011`), read from the firmware's vtable at `0x10a785e4`.
+/// Methods of `ISourceUtil` (`0x01001011`), from `AEEINTERFACE(ISourceUtil)` in
+/// `sdk/inc/AEESource.h`.
 ///
-/// The first three are the usual `IQI`: slot 0 increments the counter at `+4`, slot 1
-/// decrements it and slot 2 is `QueryInterface`. The other four were disassembled one by one:
-///
-/// - **slot 3** is a setter and nothing more: `str r1,[r0,#0x10]; str r2,[r0,#0x14]; bx lr`. It
-///   stores two values in the object and returns nothing. The Z-Wheel calls it with an object and
-///   the number `0xc34`, which looks like a (recipient, identifier) pair — hence the name.
-/// - **slots 5 and 6** delegate: they ask the inner object at `+0xc` for interface `0x01000000`
-///   and call slot 27 on it, passing the argument on. It is the gesture of putting a widget in a
-///   container.
-/// - **slot 4** does work of its own, with one argument.
-///
-/// The names 3 to 6 describe what the code does, not a header — we have no header for this
-/// Methods of `ISourceUtil` (`0x01001011`), in the order of `AEESource.h`.
-///
-/// The firmware's vtable at `0x10a785e4` has seven, and they are these seven. See
-/// [`crate::brew::aee::Interface::SourceUtil`] for how the identification was made.
+/// The header has ten; the firmware's vtable at `0x10a785e4` was read with seven, so the table
+/// stops there — see [`crate::brew::aee::Interface::SourceUtil`]. The names 3 to 6 used to be
+/// deduced from usage (`PeekSourceFromSource`, `SourceFromFile`); the slots were right, and the
+/// header's names say the same thing: 3 hands out an `IGetLine`, and 6 takes an `IAStream`,
+/// which is what the Z-Wheel's `IFile` is.
 pub const SOURCE_UTIL: &[&str] = &[
     "AddRef",
     "Release",
     "QueryInterface",
-    "PeekSourceFromSource",
-    "SourceFromAStream",
+    "GetLineFromSource",
+    "SourceFromSocket",
     "SourceFromMemory",
-    "SourceFromFile",
+    "SourceFromAStream",
 ];
 
 /// Methods of `ISource`. The first three belong to every interface; `Read` and `Readable` come
 /// from `AEESource.h`.
 pub const SOURCE: &[&str] = &["AddRef", "Release", "QueryInterface", "Read", "Readable"];
 
-/// Methods of `IPeek`, of which we know one.
+/// Methods of `IGetLine` (10 slots), from `INHERIT_IGetline` in `sdk/inc/AEESource.h`: `IQI`,
+/// the two of `ISource`, the three of `IPeek` and its own two.
 ///
-/// Slot 8 is what the Z-Wheel calls to read `tectoy.cfg`. The ones below stay unnamed on purpose:
-/// filling the table with plausible names would hide the next discovery.
-pub const PEEK: &[&str] = &[
+/// It is what `ISOURCEUTIL_GetLineFromSource` returns, and slot 8, `GetLine`, is what the Z-Wheel
+/// calls to read `tectoy.cfg`. The names are the header's, not guesses; only `GetLine` has a
+/// body, and `source_call` keeps reporting the others as missing.
+pub const GET_LINE: &[&str] = &[
     "AddRef",
     "Release",
     "QueryInterface",
-    "slot3",
-    "slot4",
-    "slot5",
-    "slot6",
-    "slot7",
-    "LerLinha",
+    "Read",
+    "Readable",
+    "Peek",
+    "Peekable",
+    "Advance",
+    "GetLine",
+    "UngetLine",
 ];
 
 /// Methods of the Z-Wheel's widget (`0x01028e51`).
@@ -1320,19 +1315,20 @@ pub const COLLECTION: &[&str] = &[
     "Definir",
 ];
 
-/// Methods of `IHash` (`AEECLSID_MD5` = `0x01001015`), worked out from usage.
+/// Methods of `IHash` (`AEECLSID_MD5` = `0x01001015`), worked out from usage and confirmed by
+/// `QINTERFACE(IHash)` in `sdk/inc/AEESecurity.h`, whose names these now are.
 ///
 /// This class is not in the firmware table of the APPS partition, so the vtable could not be read
 /// the way it was done with `IWeb`. What settled it was Zeeboids's code at `0x77b50`, where the
 /// whole sequence appears:
 ///
 /// ```text
-/// 0x77b70  ldr r1, [r1, #0x10]   ; slot 4, and no argument is built before it -> Reset()
+/// 0x77b70  ldr r1, [r1, #0x10]   ; slot 4, and no argument is built before it -> Restart()
 /// ...      builds a string and stores size-1 at [sp+0x38]
 /// 0x77ba4  ldr r3, [r1, #8]      ; slot 2, with (buffer, size)  -> Update()
 /// 0x77bb0  mov r0, #0x11         ; 17 = sixteen bytes and the terminator
 /// 0x77bc4  memset(sp+0x14, 0, 0x21)
-/// 0x77bdc  ldr r3, [r1, #0xc]    ; slot 3, with (buffer, &size) -> GetDigest()
+/// 0x77bdc  ldr r3, [r1, #0xc]    ; slot 3, with (buffer, &size) -> GetResult()
 /// ```
 ///
 /// The previous order — `QueryInterface`, `Reset`, `Update`, `GetDigest` — was `IQI` plus a
@@ -1342,12 +1338,14 @@ pub const COLLECTION: &[&str] = &[
 ///
 /// **There is no `QueryInterface`**: the first two slots are the `AddRef` and `Release` of
 /// `DECLARE_IBASE`, and its own methods start at 2.
-pub const HASH: &[&str] = &["AddRef", "Release", "Update", "GetDigest", "Reset"];
+pub const HASH: &[&str] = &["AddRef", "Release", "Update", "GetResult", "Restart", "SetKey"];
 
-/// Methods of `IHashCTX` (6 slots): the digest with the **context in the caller's memory**. Each
-/// method receives the context and its size; the object stores nothing. Order read from usage in
-/// Powerboat Challenge, which calls 3 with the context, 4 with the data and 5 with the output.
-pub const HASH_CTX: &[&str] = &["AddRef", "Release", "QueryInterface", "Init", "Update", "GetResult"];
+/// Methods of `IHashCtx` (7 slots), from `INHERIT_IHashCtx` in `inc/AEEIHashCtx.h`: the digest
+/// with the **context in the caller's memory**. Each method receives the context and its size;
+/// the object stores nothing. The order was first read from usage in Powerboat Challenge, which
+/// calls 3 with the context, 4 with the data and 5 with the output; the header agrees.
+pub const HASH_CTX: &[&str] =
+    &["AddRef", "Release", "QueryInterface", "Init", "Update", "Final", "SetKey"];
 
 /// Methods of `ICipherFactory` (6 slots), from `INHERIT_ICipherFactory` in
 /// `inc/AEEICipherFactory.h`.
