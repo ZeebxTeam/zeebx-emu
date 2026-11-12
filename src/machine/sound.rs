@@ -83,6 +83,98 @@ impl<C: CpuBackend> Machine<C> {
         Ok(Some(result))
     }
 
+    /// `ISoundPlayer`: only what a game has needed so far. The other slots keep their SDK names
+    /// and show up under "missing APIs" when called.
+    ///
+    /// Devil May Cry: Dante x Virgil creates one next to its `ISound`, registers a callback and
+    /// asks for the volume. It never plays through it — its music and effects go through
+    /// `IMedia` — but its sound manager only starts once the class exists: refused, the game
+    /// stayed mute. The state is an `ISound`'s (callback and volume), so it lives in the same map
+    /// and goes into the save state with it.
+    pub(super) fn sound_player_call(&mut self, slot: u32) -> Result<Option<u32>, CpuError> {
+        let Some(name) = Interface::SoundPlayer.method(slot) else {
+            return Ok(None);
+        };
+        let this = self.cpu.read_reg(Reg::R0);
+        let (a1, a2) = (self.cpu.read_reg(Reg::R1), self.cpu.read_reg(Reg::R2));
+        let result = match name {
+            "AddRef" => self.objects.add_ref(this),
+            "Release" => {
+                let remaining = self.objects.release(this);
+                if remaining == 0 {
+                    self.sounds.remove(&this);
+                }
+                remaining
+            }
+            // void RegisterNotify(ISoundPlayer *, PFNSOUNDPLAYERSTATUS pfn, void *pUser)
+            "RegisterNotify" => {
+                self.sounds.entry(this).or_default().notify = Callback {
+                    function: a1,
+                    context: a2,
+                };
+                SUCCESS
+            }
+            // void SetVolume(ISoundPlayer *, uint16 wVolume)
+            "SetVolume" => {
+                self.sounds.entry(this).or_default().volume = (a1 as u16).min(AEE_MAX_VOLUME);
+                SUCCESS
+            }
+            // void GetVolume(ISoundPlayer *) — the answer is the callback with
+            // `AEE_SOUNDPLAYER_VOLUME_CB` and `dwParam` pointing at an `AEESoundPlayerCmdData`,
+            // whose `wVolume` is its first field. Unlike `ISound`, the volume is **not** the
+            // parameter itself: the game reads it with a `ldrh` from `dwParam`.
+            //
+            // The struct lives inside the object's own slot: an object takes 64 bytes of the
+            // object region and uses only the first word, so `this + 8` is ours, needs no
+            // allocation and travels with the save state.
+            "GetVolume" => {
+                let volume = self.sounds.entry(this).or_default().volume;
+                let data = this + 8;
+                self.cpu.write_mem(data, &volume.to_le_bytes())?;
+                self.finish_sound_with(this, AEE_SOUNDPLAYER_VOLUME_CB, AEE_SOUNDPLAYER_SUCCESS, data);
+                SUCCESS
+            }
+            // int SetInfo(ISoundPlayer *, AEESoundPlayerInfo *pInfo) — `{int8 eInput, void *pData,
+            // uint32 dwSize}`, answered at once. Ultimate Chess 3D hands it a buffer at
+            // `EVT_APP_START` and asks for the volume only when this succeeds; nothing has played
+            // through the source yet, so it is only kept, for `GetInfo`.
+            //
+            // It is kept in the object's own slot, after the `GetVolume` data (see above): `this +
+            // 16`, twelve bytes, already in the save state. For `SDT_FILE` the SDK copies the name;
+            // the pointer is enough while nothing reads the file.
+            "SetInfo" => {
+                let source = this + SOUND_PLAYER_SOURCE;
+                if a1 == 0 {
+                    self.cpu.write_mem(source, &[0u8; 12])?;
+                    return Ok(Some(SUCCESS));
+                }
+                let mut info = [0u8; 12];
+                self.cpu.read_mem(a1, &mut info)?;
+                let size = u32::from_le_bytes(info[8..12].try_into().unwrap());
+                match info[0] {
+                    SDT_FILE | SDT_BUFFER | SDT_VOICEPROMPT if size != 0 => {
+                        self.cpu.write_mem(source, &info)?;
+                        SUCCESS
+                    }
+                    SDT_FILE | SDT_BUFFER | SDT_VOICEPROMPT => EBADPARM,
+                    _ => EUNSUPPORTED,
+                }
+            }
+            // int GetInfo(ISoundPlayer *, AEESoundPlayerInfo *pInfo) — the source `SetInfo` kept.
+            "GetInfo" => {
+                if a1 == 0 {
+                    return Ok(Some(EBADPARM));
+                }
+                let mut info = [0u8; 12];
+                self.cpu.read_mem(this + SOUND_PLAYER_SOURCE, &mut info)?;
+                self.cpu.write_mem(a1, &info)?;
+                SUCCESS
+            }
+            _ => return Ok(None),
+        };
+        Ok(Some(result))
+    }
+
     /// Queues the `ISound` callback with no extra parameter.
     pub(super) fn finish_sound(&mut self, sound: u32, kind: u32, status: u32) {
         self.finish_sound_with(sound, kind, status, 0);

@@ -409,6 +409,14 @@ impl<C: CpuBackend> Machine<C> {
         if !changes.is_empty() {
             self.raise_input_signal("RegisterForButtonEvent", port);
         }
+        // A phone has one keypad: the first controller is it. See [`input::phone::button_key`].
+        if port == 0 {
+            for &(index, down) in &changes {
+                if let Some(key) = input::phone::button_key(self.applet_class, index) {
+                    self.key_events.push_back((key, down));
+                }
+            }
+        }
         // **Returning to center is also a change of position.** Releasing the stick has to wake
         // the callback just like pushing it: whoever reads the axis only from inside the
         // callback — and that is how an event-driven menu is written — keeps the last direction
@@ -589,6 +597,11 @@ impl<C: CpuBackend> Machine<C> {
     }
 
     pub fn set_key(&mut self, avk: u32, down: bool) {
+        // In a phone game the controller's own keys come from the phone mapping, in
+        // [`Machine::set_port_pad`] — see [`input::phone::replaces_console_key`].
+        if input::phone::replaces_console_key(self.applet_class, avk) {
+            return;
+        }
         self.key_events.push_back((avk, down));
     }
 
@@ -726,7 +739,10 @@ impl<C: CpuBackend> Machine<C> {
                 ));
             }
             if !handled {
-                let _ = self.send_applet_event(self.applet_class, event, avk as u16, 0)?;
+                // A phone game also gets `EVT_KEY_PRESS` — see [`input::phone::key_events`].
+                for &applet_event in input::phone::key_events(self.applet_class, down) {
+                    let _ = self.send_applet_event(self.applet_class, applet_event, avk as u16, 0)?;
+                }
             }
         }
         Ok(())

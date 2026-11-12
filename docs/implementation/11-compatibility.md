@@ -110,7 +110,7 @@ Passed the six seconds, but the report pointed something out. The bucket is cons
 | Street Hoop | the six from the extensions group | file not found, pointer refused |
 | Super BurgerTime | the six from the extensions group | file not found, pointer refused |
 | Tekken 2 |  | API by assumption |
-| Ultimate Chess 3D | `0x01002000` `0x01005503` | file not found, pointer refused |
+| Ultimate Chess 3D | `0x01005503` | file not found, pointer refused |
 | Um Jogo de Ovos | the six from the extensions group | file not found |
 | Wizard Fire | the six from the extensions group | file not found, pointer refused |
 | Zeebo Clube | `0x0100110a` |  |
@@ -479,6 +479,69 @@ section appearing from the bottom up. It was not distance. The game draws the ne
 through a portal, with the viewport on its rectangle, and we counted the `glViewport` `y` from the
 top. The explanation and the fix are in [06](06-video-3d.md#the-surface). That is why there is
 no draw distance option: the game already drew everything, just in the wrong place.
+
+### Devil May Cry: Dante x Virgil: a phone game on the Zeebo — runs
+
+Capcom's 2008 game for BREW **phones**, not for the Zeebo. The package (`dmc_mas.mod`, applet
+`0x01070e36`) brings HI Corporation's IMICRO3D engine (`12875/imicro3d.mod`), the same one as
+Action Hero 3D, and its art for WQVGA phones (240×400). It loaded, and four things stood between
+it and a fight with sound. Each of them is a real difference between a phone and the console,
+not a bug in the game.
+
+1. **`IDISPLAY_CreateDIBitmap` did not exist**, and the game stopped at 10 virtual ms. Its own
+   BMP reader (`0x40000`) asks for a `4 × 0 × 0` DIB and then **writes the `IDIB` fields by
+   hand**: `pBmp` at the last row of the file's pixels, a negative `nPitch` because a BMP is
+   stored bottom-up, `pRGB` at a copy of the file's `RGBQUAD`s. Every other `IDIB` here is an
+   RGB565 surface of ours mirrored to the guest; this one belongs to the game, so its header is
+   read again on every blit and decoded on the spot (1/2/4/8 bits with a palette, 16 bits) —
+   `src/machine/guest_dib.rs`.
+2. **No key moved the first menu.** Its handler (`0xae8`) answers `EVT_KEY` with a bare
+   `return TRUE` and keeps its key bits only on `EVT_KEY_PRESS` and `EVT_KEY_RELEASE`. A phone
+   sends all three; the console never sends the press (Quake would open its menu mid-level, see
+   [09](09-input.md#real-keys)). The phone sequence goes only to the classes listed in
+   `src/input/phone.rs`, which also maps the controller to the game's own default keys, from its
+   HELP > KEY OPTION screen: D-pad → arrows, 1 → `OK` (evade, confirm), 2 → `8` (sword),
+   3 → `9` (gun), 4 → `#` (jump), ZR → `0` (style), HOME/Start → left soft key, ZL → right soft
+   key. The game lets the player remap every action to 0–9, `#`, `*` and `OK`.
+3. **The `IMedia` it plays first is silence on purpose.** `dummy.mid`, 64 bytes, volume 0, one
+   note held for six seconds. The MIDI synthesizer refused an all-silent score — a leftover from
+   when it normalized by the peak —, the object ended at once and the game called `Play` about
+   1,500 times in twenty seconds. A silent score now lasts its length (8.5 s).
+4. **No sound at all, with every effect and song decoded in memory.** The sound manager only
+   starts when its "ready" field is non-zero, and that field is a copy of a volume that the
+   **vibration** manager (`0x350ac`) writes — 100 — only after creating `AEECLSID_SOUNDPLAYER`
+   (`0x01002000`, `AEECLSID_ENH` in `AEEClassIDs.h`). We refused that class, so the game did
+   not crash and played nothing. `ISoundPlayer` now exists with its SDK slot table;
+   `RegisterNotify`, `SetVolume`, `GetVolume`, `SetInfo` and `GetInfo` are served (the volume
+   arrives through `AEE_SOUNDPLAYER_VOLUME_CB` with `dwParam` **pointing** at an
+   `AEESoundPlayerCmdData`, which is not how `ISound` does it). Nothing plays through it yet:
+   both games that create it only use it to read the volume. Ultimate Chess 3D, the other one,
+   hands it a buffer with `SetInfo` first — with the class served but `SetInfo` missing, it
+   stopped at `EVT_APP_START`; with both, its report over forty seconds is the same as when the
+   class was refused, minus the class itself (same heap to the byte, same sounds). With it, the
+   title, mission select and mission songs play (measured with `--dump-audio`: silence until
+   the title song at 11 s, then a peak of 0.17).
+
+And around it:
+
+- **The phone screen.** Told 640×480 by `GetDeviceInfo`, the game centres a 240-pixel column and
+  fills the rest with an almost-white rectangle of its own (`0x498`). Phone games now get their
+  phone's screen instead — 240×400 here, the size of its `wqvga` art — in `GetDeviceInfo` and in
+  `AEEAppStart`, and the game draws exactly that area from the corner (title, menus and a mission
+  measured; 240×320 also lays out). The console's framebuffer stays 640×480, so save states and
+  2D surfaces do not change. `Session::display_screen` is that area alone, and the Qt window and
+  the `libretro` core show it, scaled with its own 3:5 aspect (the integer scale counts its
+  pixels). Every other frontend still calls `Session::screen` and gets the area **centred** on a
+  black 640×480 screen — never the game squeezed into a corner — until it learns to crop:
+  Android, iOS, the Vita apps, Switch and the headless build.
+- **Music or effects, never both — by the game's design.** OPTION > SOUND OPTION offers OFF, BGM
+  and SE, and BGM is the default. The choice is the second byte of `database.sav` (read into the
+  applet at `+0xe9c`), and the game's `playSound` (`0x313a4`) drops every non-looping sound under
+  BGM and every looping one under SE; it has a single `IMedia` channel. Measured with the byte set
+  to SE: the menu confirm (`s_01_ok.wav`, 2,934 bytes) and the gunshot (`s_04_gun2.wav`, 4,224
+  bytes) load and play, IMA ADPCM decoded, peak 0.71. Nothing to fix here.
+- **Vibration does not reach the controller**: the game vibrates through `ISound`, whose
+  `Vibrate` only answers that it finished.
 
 ## The `printf` width was an invisible defect
 

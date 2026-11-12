@@ -446,6 +446,16 @@ The press is still only `EVT_KEY`. With `EVT_KEY_PRESS` alongside, button 2 woul
 menu in the middle of a level, and on the device it does not: in the longplay, the "Always run
 off" from button 2 shows up with no menu at all, and the menu comes later, on its own.
 
+**Phone games are the exception.** A BREW phone sends `EVT_KEY_PRESS`, `EVT_KEY` and
+`EVT_KEY_RELEASE`, and a game made for one may listen only to the press: Devil May Cry: Dante x
+Virgil answers `EVT_KEY` with a bare `return TRUE` (`0xae8` in `dmc_mas.mod`), and without the
+press its first menu never moved. Nothing in a package says "phone", so the games that get the
+phone sequence are a list of applet classes in `src/input/phone.rs`. The same list says which
+phone key each controller button presses, because the console's own keys (`CONFIRM`, `CLR`) do
+not exist on a phone: for a phone game the machine translates the controller itself, in
+`Machine::set_port_pad`, and drops the frontend's arrows, `CONFIRM` and `CLR` so they do not
+arrive twice. A digit typed on the desktop keyboard still goes through.
+
 **A key goes first to the widget handlers and only then to the applet.** That is BREW's order:
 the interface gets the first chance, and whatever it does not consume goes up. Delivering straight
 to the applet makes no menu respond.

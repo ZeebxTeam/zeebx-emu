@@ -561,6 +561,7 @@ impl<C: CpuBackend> Machine<C> {
                 let remaining = self.objects.release(this);
                 if remaining == 0 {
                     self.release_dib(this);
+                    self.release_guest_dib(this);
                 }
                 remaining
             }
@@ -1110,6 +1111,11 @@ impl<C: CpuBackend> Machine<C> {
     ) {
         if dst == src {
             return;
+        }
+        // A DIB the game describes may have changed under us since the last blit — see
+        // [`super::guest_dib`]. A header that cannot be read keeps the previous copy.
+        if self.guest_dibs.contains_key(&src) {
+            let _ = self.refresh_guest_dib(src);
         }
         let Some(mut target) = self.bitmaps.remove(&dst) else {
             return;
