@@ -1925,7 +1925,7 @@ const AES_BLOCK: usize = 16;
 
 /// State of an `IHash` object.
 ///
-/// Only the digest in progress. `GetDigest` writes into the buffer the game provides, so there is
+/// Only the digest in progress. `GetResult` writes into the buffer the game provides, so there is
 /// nothing to keep in its memory — the field that existed for that came from the wrong signature.
 #[derive(Debug, Default)]
 struct HashState {
@@ -4130,7 +4130,7 @@ impl<C: CpuBackend> Machine<C> {
                 Some(result) => result,
                 None => return Ok(None),
             },
-            (Interface::Source, _) | (Interface::Peek, _) => {
+            (Interface::Source, _) | (Interface::GetLine, _) => {
                 match self.source_call(iface, slot)? {
                     Some(result) => result,
                     None => return Ok(None),

@@ -74,7 +74,7 @@ pub fn from_code(value: u32) -> Option<Interface> {
         41 => Interface::ZeeboMcp,
         42 => Interface::Config,
         43 => Interface::Source,
-        44 => Interface::Peek,
+        44 => Interface::GetLine,
         45 => Interface::Vector,
         46 => Interface::Class28e3c,
         47 => Interface::Cm,
@@ -152,7 +152,7 @@ mod encoding_tests {
         (41, "ZeeboMcp"),
         (42, "Config"),
         (43, "Source"),
-        (44, "Peek"),
+        (44, "GetLine"),
         (45, "Vector"),
         (46, "Class28e3c"),
         (47, "Cm"),
@@ -285,16 +285,19 @@ pub enum Interface {
     ///
     /// | slot | method | who uses it |
     /// |---|---|---|
-    /// | 3 | `PeekSourceFromSource(po, ISource*, nMax, IPeek**)` | Z-Wheel, to read `tectoy.cfg` line by line |
+    /// | 3 | `GetLineFromSource(po, ISource*, nBufSize, IGetLine**)` | Z-Wheel, to read `tectoy.cfg` line by line |
     /// | 5 | `SourceFromMemory(po, pBuf, nSize, pfn, pUser, ISource**)` | Zeeboids, to wrap the POST body |
-    /// | 6 | `SourceFromFile(po, IFile*, ISource**)` | Z-Wheel, over the freshly opened file |
+    /// | 6 | `SourceFromAStream(po, IAStream*, ISource**)` | Z-Wheel, over the freshly opened `IFile` |
     ///
     /// `SourceFromMemory` is what settles it: it has **six** parameters, and the output pointer
     /// is the second on the stack — exactly where Zeeboids' code read it, in a stretch we had
     /// named "send". It sends nothing: it wraps the body to hand it to `IWeb`. That is where the
     /// Zeeboids bridge takes the body from, and that is why it works.
     ///
-    /// There are seven methods, and the firmware vtable at `0x10a785e4` also has seven.
+    /// The names come from `AEESource.h` in SDK 4.0.2, which has ten slots. The firmware vtable
+    /// at `0x10a785e4` was read with seven, so the last three — `AStreamFromSource`,
+    /// `PeekFromMemory` and `PeekFromSource` — are not in our table: whether they exist on the
+    /// console is not settled.
     SourceUtil = 39,
     /// `0x01028e51`, the Z-Wheel's interface widget — the root form included.
     ///
@@ -374,12 +377,15 @@ pub enum Interface {
     Config = 42,
     /// A BREW `ISource`: bytes with a cursor. Created by [`Interface::SourceUtil`].
     Source = 43,
-    /// A BREW `IPeek`: line-by-line reading over an [`Interface::Source`].
+    /// A BREW `IGetLine`: line-by-line reading over an [`Interface::Source`], what
+    /// `ISOURCEUTIL_GetLineFromSource` hands out. It is an `IPeek` with `GetLine` and
+    /// `UngetLine` on top (`INHERIT_IGetline` in `AEESource.h`).
     ///
-    /// Of `IPeek` we only know **slot 8**, because it is the only one the Z-Wheel calls: it passes
-    /// the address of a `{pointer, size}` pair and the number 3, and expects to receive the next
-    /// line. The others stay unnamed — a call to them needs to show up in the report.
-    Peek = 44,
+    /// Only **slot 8**, `GetLine`, has a body, because it is the only one the Z-Wheel calls: it
+    /// passes the address of a `{pointer, size}` pair and the number 3 (`IGETLINE_LF`), and
+    /// expects to receive the next line. The others are named from the header and have no body
+    /// — a call to them shows up in the report.
+    GetLine = 44,
     /// `0x01028e35`, the Z-Wheel's generic list — what the game calls a "vector model".
     ///
     /// It is not in the firmware's class table, so the slots came from the game's code, and each
@@ -550,7 +556,7 @@ impl Interface {
         Self::ZeeboMcp,
         Self::Config,
         Self::Source,
-        Self::Peek,
+        Self::GetLine,
         Self::Vector,
         Self::Class28e3c,
         Self::Cm,
@@ -627,7 +633,7 @@ impl Interface {
             Self::ZeeboMcp => "IZeeboMCP",
             Self::Config => "IConfig",
             Self::Source => "ISource",
-            Self::Peek => "IPeek",
+            Self::GetLine => "IGetLine",
             Self::Vector => "IVetor",
             Self::Class28e3c => "I28e3c",
             Self::Cm => "ICM",
@@ -696,7 +702,7 @@ impl Interface {
             Self::ZeeboMcp => aee_slots::ZEEBO_MCP,
             Self::Config => aee_slots::CONFIG,
             Self::Source => aee_slots::SOURCE,
-            Self::Peek => aee_slots::PEEK,
+            Self::GetLine => aee_slots::GET_LINE,
             Self::Vector => aee_slots::VECTOR,
             Self::Class28e3c => aee_slots::CLASS_28E3C,
             Self::Cm => aee_slots::CM,
@@ -778,7 +784,7 @@ impl Interface {
             41 => Self::ZeeboMcp,
             42 => Self::Config,
             43 => Self::Source,
-            44 => Self::Peek,
+            44 => Self::GetLine,
             45 => Self::Vector,
             46 => Self::Class28e3c,
             47 => Self::Cm,
