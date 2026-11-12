@@ -17,8 +17,9 @@
 //! "Memory is insufficient. Please delete some files." screen — their generic failure message when
 //! the font's `CreateInstance` comes back null.
 //!
-//! The order of the six methods and the metrics table come from the reference code that already
-//! implements this interface (`zeebo-emulator/research/sources/zeemu/brew/BrewFont.cpp`), and the
+//! The metrics table comes from the reference code that already implements this interface
+//! (`zeebo-emulator/research/sources/zeemu/brew/BrewFont.cpp`). The order of the six methods does
+//! not: it is `INHERIT_IFont` in `inc/AEEIFont.h`, see [`crate::brew::aee_slots::FONT`]. The
 //! method signatures come from the SDK's own examples:
 //!
 //! ```c
@@ -135,6 +136,24 @@ pub fn class_metrics(class_id: u32) -> Metrics {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The vtable order of `INHERIT_IFont` in `inc/AEEIFont.h`. The alphabetical `#define`s of
+    /// `AEEFont.h` put `GetInfo` first, and that is how 4 and 5 were swapped here once.
+    #[test]
+    fn the_font_slots_follow_inherit_ifont() {
+        let slots: Vec<_> = (0..6).map(|slot| Interface::Font.method(slot)).collect();
+        assert_eq!(
+            slots,
+            [
+                Some("AddRef"),
+                Some("Release"),
+                Some("QueryInterface"),
+                Some("DrawText"),
+                Some("MeasureText"),
+                Some("GetInfo"),
+            ]
+        );
+    }
 
     /// **The `FONT_STANDARD` metrics are transcribed from the `.bid`, not made up.**
     ///
