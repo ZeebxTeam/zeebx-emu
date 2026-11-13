@@ -52,6 +52,7 @@ Version considered in the analysis: v0.4.3
 | Resident Evil 4 - Zeebo Edition | ✅ | |
 | Ridge Racer | ✅ | Playable; menus, race dashboard and race. Stop after the second lap fixed in v0.4.2 |
 | Spin Master | ✅ | Built-in arcade emulator, with sound |
+| Street Fighter Alpha (Unreleased) | ✅ | This game was not released during the console's lifetime, however, dump of the prototype of this game survived |
 | Street Hoop | ✅ | Built-in arcade emulator, with sound |
 | Super BurgerTime | ✅ | Built-in arcade emulator, with sound |
 | Tekken 2 | ✅ | |
