@@ -164,6 +164,16 @@ impl<C: CpuBackend> Machine<C> {
             // The **live** memory is in the core, not in the loader's map: this is where you read
             // what the game has written since the `reset`.
             if self.cpu.read_mem(region.base, &mut bytes).is_ok() {
+                // Zeebo bgdi's `_sbrk` fills this region gradually. Saving all 64 MB would be
+                // almost entirely zeros; untouched bytes stay zero on load, and the `brk`
+                // pointer lives in the module image.
+                if region.name == "sbrk" {
+                    let end = bytes.iter().rposition(|&b| b != 0).map_or(0, |i| i + 1);
+                    bytes.truncate(end);
+                    if bytes.is_empty() {
+                        continue;
+                    }
+                }
                 sections.put(&region_section(region.name), bytes);
             }
         }
@@ -239,7 +249,8 @@ impl<C: CpuBackend> Machine<C> {
             // A state from before the internal region: our blocks are inside the heap, and
             // `free` returns them there by address. The region stays as it is, and the internal
             // allocator starts over empty further down.
-            if region.name == "internal" && reader.section(&section).is_none() {
+            if (region.name == "internal" || region.name == "sbrk") && reader.section(&section).is_none()
+            {
                 continue;
             }
             let bytes = reader.section(&section).ok_or_else(|| Error::Section {
@@ -247,7 +258,13 @@ impl<C: CpuBackend> Machine<C> {
                 reason: "the section is not in the file".to_string(),
             })?;
             // **The expected size comes from the state itself**, not from the current machine.
-            let amount = Self::used_len_in_state(&reader, region.name, region.base, region.bytes.len())?;
+            // `sbrk` is saved only up to the last non-zero byte, so the file is shorter than
+            // the region. The rest stays zero, which is the value of a page never touched.
+            let amount = if region.name == "sbrk" {
+                bytes.len()
+            } else {
+                Self::used_len_in_state(&reader, region.name, region.base, region.bytes.len())?
+            };
             if bytes.len() != amount {
                 return Err(Error::Section {
                     name: section,

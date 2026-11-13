@@ -34,6 +34,18 @@ pub const HEAP_SIZE: usize = if cfg!(target_os = "vita") {
     zeebx_core::layout::DEFAULT_HEAP_SIZE
 };
 
+/// Zeebo `bgdi` newlib grows through `_sbrk` from here, just after the BREW heap.
+///
+/// It stays out of the heap: the Z-Wheel measures free RAM with `GetRAMFree`, and a larger
+/// heap makes it ask for more than fits. `bgdi` uses `0x14000000..0x18000000`. Without this
+/// map the first `malloc` after the title screen writes to an unmapped address.
+pub const SBRK_BASE: u32 = 0x1400_0000;
+pub const SBRK_SIZE: usize = if cfg!(target_os = "vita") || cfg!(zeebx_switch) {
+    0
+} else {
+    64 * 1024 * 1024
+};
+
 /// An extension module to map together with the main one.
 pub struct ExtensionImage {
     pub image: ModImage,
@@ -142,6 +154,9 @@ pub fn load_with(
         false,
     )?;
     mem.map_zeroed("heap", HEAP_BASE, HEAP_SIZE)?;
+    if SBRK_SIZE > 0 {
+        mem.map_zeroed("sbrk", SBRK_BASE, SBRK_SIZE)?;
+    }
     mem.map_zeroed("stack", STACK_BASE, STACK_SIZE)?;
     mem.map_zeroed("objects", OBJECT_BASE, OBJECT_SIZE)?;
     // The helper table must be writable: `GetAppInstance` switches from trampoline to code as
@@ -242,7 +257,7 @@ mod tests {
         assert_eq!(
             names,
             [
-                "module", "nulo", "heap", "stack", "objects", "helpers", "stubs", "surfaces",
+                "module", "nulo", "heap", "sbrk", "stack", "objects", "helpers", "stubs", "surfaces",
                 "internal", "vtables"
             ]
         );
