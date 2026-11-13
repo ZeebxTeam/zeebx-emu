@@ -23,6 +23,17 @@ use crate::loader::modfile::ModImage;
 // `zeebx-core`. Aqui fica só quem mapeia de fato e chama `AEEMod_Load`.
 pub use zeebx_core::layout::*;
 
+/// The size of the guest heap. The core only fixes where it starts; the size is our choice.
+///
+/// Defined here, it takes precedence over the deprecated `HEAP_SIZE` the glob above brings in.
+// O Vita reserva de fato o `Vec` zerado (newlib não tem overcommit): com 64 MiB o vitaGL não
+// achava o bloco temporário do frame seguinte e o Zeetris morria em `sceClibMemcpy`.
+pub const HEAP_SIZE: usize = if cfg!(target_os = "vita") {
+    48 * 1024 * 1024
+} else {
+    zeebx_core::layout::DEFAULT_HEAP_SIZE
+};
+
 /// An extension module to map together with the main one.
 pub struct ExtensionImage {
     pub image: ModImage,

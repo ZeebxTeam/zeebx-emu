@@ -5620,9 +5620,9 @@ dependencies = [
 
 [[package]]
 name = "zeebx-core"
-version = "0.1.0"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7fc58e1da9c79ea8f2fdcaf317d61040b4e2d91f0c85c6e3232b1c476de33e75"
+checksum = "47a3b6b7cb96c6fc2711da15014a59c91a56670b4d6a60ddc29cf1e01f4f1035"
 dependencies = [
  "crc32fast",
  "rusqlite",

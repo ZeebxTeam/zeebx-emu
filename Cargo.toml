@@ -84,7 +84,7 @@ atualizador = ["desktop", "dep:cargo-packager-updater"]
 [dependencies]
 # The BREW platform without a host: .mod/.mif/.bar, vtables, memory map, heap, VFS and the save
 # state format. Lives in its own repository (ZeebxTeam/zeebx-core).
-zeebx-core = "0.1"
+zeebx-core = "0.1.1"
 # Interface types shared by the desktop and the Android frontend; doesn't open a window by itself.
 egui = { version = "0.33.3", default-features = false, features = ["default_fonts"] }
 # Host audio output. The decoding is ours: the games hand over PCM.
