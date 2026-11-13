@@ -20,7 +20,7 @@ function signature is not here.
 | [07-audio.md](07-audio.md) | RIFF/WAVE, IMA ADPCM, the mixer and `IMedia`/`ISound` |
 | [08-files-and-resources.md](08-files-and-resources.md) | `.mod`, `.mif`, `.bar`, the virtual file system and the `.zip`s |
 | [09-input.md](09-input.md) | The console's controller, `IHID` and the configurable mapping |
-| [10-interface.md](10-interface.md) | Library, settings, languages and the controller's visual map |
+| [10-interface.md](10-interface.md) | Shared UI state and desktop-only window modules, plus libraries, settings, languages and controller visualization |
 | [11-compatibility.md](11-compatibility.md) | What runs, what does not, and what is missing in each case |
 | [12-rasterizer-and-parallelism.md](12-rasterizer-and-parallelism.md) | Why splitting the work per draw call did not work, and what did |
 | [13-unknown-classes.md](13-unknown-classes.md) | How to find out which interface a class without a header is: the probe |

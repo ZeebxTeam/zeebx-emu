@@ -1,6 +1,13 @@
 # 10 — The interface
 
-Qt 6 / Qt Quick, with [cxx-qt](https://github.com/KDAB/cxx-qt) as the bridge to Rust:
+The shared UI state lives in `src/ui/` and is used by the core and multiple frontends. The
+library, settings, saves, localization, navigation, running-game state, screenshots and themes
+are not desktop-only. The GL painter is gated by the `gl` feature; the updater, Discord presence,
+host input adapter and raw window module are gated by the `desktop` feature. The `desktop` feature
+implies `gpu`, which in turn implies `gl`; the Android frontend uses the shared UI state without
+enabling the desktop feature.
+
+The desktop interface is Qt 6 / Qt Quick, with [cxx-qt](https://github.com/KDAB/cxx-qt) as the bridge to Rust:
 `frontends/qt-standalone`, binary `zeebx-qt`. Separate system windows, not tabs: the library is
 the main window, and the game, the settings, the saves and the log each open in their own. The
 rules of each screen live in the core (`src/ui/`), and the window only displays them; the

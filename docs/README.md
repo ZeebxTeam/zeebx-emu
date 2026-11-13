@@ -1,7 +1,7 @@
 # Zeebx — research documentation for a Zeebo emulator
 
 A survey of what exists today, publicly, about the Zeebo (TecToy, 2009) and about the Qualcomm
-BREW / MSM7201A platform it uses — with the relevant material mirrored locally in `docs/vendor/`.
+BREW / MSM7201A platform it uses — with the relevant material mirrored locally in `vendor/`.
 That directory is local only and is not versioned.
 
 The original Portuguese versions of these documents are archived in [`pt-BR/`](pt-BR/).
@@ -20,7 +20,7 @@ OEM API reference, complete NAND dumps (bootloaders + AMSS + APPS), RAM/register
 research on the vtables of the BREW interfaces in the real firmware.
 
 This `0x` series is **research**: what is known about the console and the platform. How the
-emulator is written is in [`implementation/`](implementation/).
+emulator is written is in [the implementation guide](implementation/README.md).
 
 ## Index
 
@@ -33,7 +33,7 @@ emulator is written is in [`implementation/`](implementation/).
 | [05-emulation-strategy.md](05-emulation-strategy.md) | Proposed architecture, phases, risks, technical decisions |
 | [06-sources.md](06-sources.md) | All the sources, with links |
 | [07-vendor-inventory.md](07-vendor-inventory.md) | What was downloaded and where it is |
-| [implementation/](implementation/) | **How the emulator is built inside** — module by module, with the decisions and the reason for each one |
+| [Implementation guide](implementation/README.md) | **How the emulator is built inside** — module by module, with the decisions and the reason for each one |
 
 ## Test material
 
