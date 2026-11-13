@@ -96,7 +96,7 @@ Execution:
 | `machine/mod.rs` | The loop, the dispatch and the machine state |
 | `machine/*.rs` | One submodule per BREW interface — see [`docs/implementation/01-architecture.md`](docs/implementation/01-architecture.md) |
 
-BREW API (`brew/`):
+BREW API (`brew/`), which comes from the [`zeebx-core`](https://github.com/ZeebxTeam/zeebx-core) crate together with the `.mod`/`.mif`/`.bar` parsers (`formats/`), the memory map (`layout`) and the save state format:
 
 | | |
 |---|---|

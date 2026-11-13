@@ -3,7 +3,6 @@
 //! The engine is shared by the desktop, Libretro, headless, Android, iOS and the Vita app.
 
 pub mod audio;
-pub mod brew;
 pub mod config;
 pub mod cpu;
 pub mod input;
@@ -13,12 +12,15 @@ pub mod machine;
 pub mod bridge;
 pub mod net;
 pub mod logging;
-pub mod save_state;
 pub mod session;
 pub mod storage;
 pub mod ui;
 pub mod speed;
 pub mod video;
+
+// A plataforma BREW independente de host (heap, VFS, vtables, formato do save state) vem do
+// crate `zeebx-core`. Reexportada para que `crate::brew` e `crate::save_state` sigam valendo.
+pub use zeebx_core::{brew, save_state};
 
 /// The `egui` the core uses, re-exported for the frontends.
 ///

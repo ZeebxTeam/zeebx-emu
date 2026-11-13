@@ -18,7 +18,7 @@ each subsystem has its own document in [`docs/implementation/`](docs/implementat
 
 ```
 Cargo.toml          the `zeebx` library — the whole emulator, with no interface
-src/                BREW, CPU, video, audio, loader, session, save state
+src/                CPU, the BREW interfaces (`machine/`), video, audio, loader, session
 src/ui/             screens and state shared between frontends (see the warning below)
 frontends/
   qt-standalone/          the interface: the `zeebx-qt` binary, in Qt Quick
@@ -34,6 +34,14 @@ tools/              Python scripts: catalog, scan, core installation
 docs/               documentation; `patch-notes/` keeps each version's notes
 assets/             icons, fonts and `lang/` — the built-in languages
 ```
+
+**The host-independent BREW lives in the [`zeebx-core`](https://crates.io/crates/zeebx-core)
+crate** ([ZeebxTeam/zeebx-core](https://github.com/ZeebxTeam/zeebx-core)): the `.mod`/`.mif`/`.bar`
+parsers, the vtables and trampolines (`brew::aee*`), the guest memory map (`layout`), heap,
+objects, VFS, crypto, `SQLMGR` and the save state format. `lib.rs` re-exports it as `crate::brew`
+and `crate::save_state`, and the loader as `loader::{modfile, miffile, resfile}` and its constants.
+A fix there means publishing a new version of the crate; while developing, point Cargo at a
+local clone with `[patch.crates-io] zeebx-core = { path = "../zeebx-core" }`.
 
 **`src/ui/` is not just interface.** `library`, `settings`, `saves`, `zwheel_metadata` and `i18n`
 live there but are read **by the core** — `machine`, `loader` and `session` talk to them. Only

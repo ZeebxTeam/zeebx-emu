@@ -54,7 +54,12 @@ impl<C: CpuBackend> Machine<C> {
                         &crate::library::catalog_path(),
                     );
                     let official = target.copy_from.unwrap_or(target.path);
-                    match crate::brew::sql::sync_z_wheel_library(&official, &profile, &catalog) {
+                    let roms = catalog
+                        .titles
+                        .iter()
+                        .filter(|entry| entry.source == crate::library::CatalogSource::Rom)
+                        .map(|entry| (entry.applet_class, entry.title.as_str()));
+                    match crate::brew::sql::sync_z_wheel_library(&official, &profile, roms) {
                         Ok(path) => path,
                         Err(error) => {
                             self.bad_pointers

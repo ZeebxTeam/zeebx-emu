@@ -1276,13 +1276,13 @@ For people working in this repository.
 | What | Where |
 |---|---|
 | Widget slots (13, 16, 17, accessor, root events) | [`machine/widget.rs`](../../src/machine/widget.rs), `widget_call` |
-| Slot names | [`brew/aee_slots.rs`](../../src/brew/aee_slots.rs), `WIDGET` |
+| Slot names | [`brew/aee_slots.rs`](https://github.com/ZeebxTeam/zeebx-core/blob/main/src/brew/aee_slots.rs), `WIDGET` |
 | Widget state (`drawing`, `models`, `handler`, `serial`) | [`machine/mod.rs`](../../src/machine/mod.rs), `struct Widget` |
 | Widget family, `0x0102f67c`, `0x01028e3c` | [`machine/mod.rs`](../../src/machine/mod.rs) |
 | Tree, current form, bar `0x01028e3f` | `form_tree`, `current_form` |
 | Intro start and z-pad shortcut | `start_animation`, `skip_wheel_instructions` |
 | Pbuffer and `GetColorBufferQUALCOMM` | [`machine/egl.rs`](../../src/machine/egl.rs) |
-| Profile databases and `tt_dlqueue.db` | [`machine/sql.rs`](../../src/machine/sql.rs), [`brew/sql.rs`](../../src/brew/sql.rs) |
+| Profile databases and `tt_dlqueue.db` | [`machine/sql.rs`](../../src/machine/sql.rs), [`brew/sql.rs`](https://github.com/ZeebxTeam/zeebx-core/blob/main/src/brew/sql.rs) |
 | `preloaded.cfg` | [`machine/file.rs`](../../src/machine/file.rs) |
 | Wheel keys | [`input/mod.rs`](../../src/input/mod.rs), `avk::LEFT`/`RIGHT` (the D-pad, in `ui/mod.rs`) |
 | Display bitmap | [`machine/bitmap.rs`](../../src/machine/bitmap.rs), `device_bitmap` |

@@ -54,7 +54,7 @@ class 0x0102c4e8, object 0x30000090:
 It reads from top to bottom: the manager opens a database by name and returns an object; the
 object receives an SQL statement, a pointer into the module's code range — a callback — and a
 context. That is the shape of `sqlite3_exec`, and it was enough to implement
-[`ISQLMgr`](../../src/brew/sql.rs) without any header.
+[`ISQLMgr`](https://github.com/ZeebxTeam/zeebx-core/blob/main/src/brew/sql.rs) without any header.
 
 ## The count is half the information
 

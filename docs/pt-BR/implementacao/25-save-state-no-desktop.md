@@ -7,7 +7,7 @@ atalhos de teclado, como o PCSX2. Até a 0.4.3 só o Android (cinco slots, desde
 Libretro (pelos slots do RetroArch, desde a 0.3.0) faziam isso. No Qt o estado só era usado pelo
 rewind.
 
-O formato do estado não muda: é o ZBXS de [`src/save_state.rs`](../../../src/save_state.rs), com
+O formato do estado não muda: é o ZBXS de [`src/save_state.rs`](https://github.com/ZeebxTeam/zeebx-core/blob/main/src/save_state.rs), com
 versão, seções nomeadas e `crc32`, o mesmo do Android, do core e do rewind. O que este trabalho
 acrescenta é o que fica em volta: onde o arquivo mora, quem grava, e as teclas.
 

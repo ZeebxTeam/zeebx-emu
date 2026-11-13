@@ -54,7 +54,7 @@ classe 0x0102c4e8, objeto 0x30000090:
 Lê-se de cima para baixo: o gerenciador abre um banco pelo nome e devolve um objeto; o objeto
 recebe uma instrução SQL, um ponteiro para dentro da faixa de código do módulo — um callback — e
 um contexto. É a forma do `sqlite3_exec`, e foi o suficiente para implementar
-[o `ISQLMgr`](../../../src/brew/sql.rs) sem nenhum header.
+[o `ISQLMgr`](https://github.com/ZeebxTeam/zeebx-core/blob/main/src/brew/sql.rs) sem nenhum header.
 
 ## A contagem é metade da informação
 

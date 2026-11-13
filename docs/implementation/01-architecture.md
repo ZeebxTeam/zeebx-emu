@@ -74,6 +74,9 @@ siblings and nowhere else.
 
 ### BREW API
 
+These files, and the `.mod`/`.mif`/`.bar` parsers, live in the
+[`zeebx-core`](https://github.com/ZeebxTeam/zeebx-core) crate (the parsers under `formats/`).
+
 | File | Role |
 |---|---|
 | `brew/aee.rs` | The trampoline: converts address ↔ (interface, slot) |
