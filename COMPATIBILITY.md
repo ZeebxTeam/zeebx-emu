@@ -31,6 +31,7 @@ Version considered in the analysis: v0.4.3
 | Crash Bandicoot Nitro Kart 3D | ✅ |  |
 | Dark Seal | ✅ | Built-in arcade emulator, with sound |
 | Disney All Star Cards | ✅ | Playable |
+| Doom (Homebrew) | ❌ | Doesn't start |
 | Double Dragon | ✅ | |
 | FIFA 09 | ✅ | |
 | Galaxy on Fire | ✅ | |
