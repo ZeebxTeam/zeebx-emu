@@ -1,0 +1,15 @@
+[package]
+name = "rcheevos-sys"
+version = "0.5.0"
+edition = "2024"
+# This crate's code is Zeebx's. The C it compiles is rcheevos, MIT, which lives in the
+# `rcheevos/` submodule — see `rcheevos/LICENSE`.
+license = "GPL-2.0-or-later"
+description = "Zeebx bindings to rcheevos, the RetroAchievements achievements library"
+publish = false
+# Two crates compiling rcheevos into the same binary would give duplicate symbols; with `links`,
+# cargo refuses the graph before linking.
+links = "rcheevos"
+
+[build-dependencies]
+cc = "1.0"

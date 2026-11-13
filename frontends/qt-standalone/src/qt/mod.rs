@@ -1,5 +1,6 @@
 //! The Qt Quick interface. See `docs/implementation/21-qt-migration.md`.
 
+mod achievements;
 mod dialogs;
 mod library;
 mod settings;
