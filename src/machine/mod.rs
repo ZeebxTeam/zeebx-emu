@@ -2721,6 +2721,10 @@ pub struct Machine<C: CpuBackend> {
     /// The guest just handed over a finished frame and the window should show it
     /// before the game starts the next one. See [`Machine::present_bennu_frame`].
     yield_frame: bool,
+    /// Format of the Bennu PCM stream, so a later slice does not reopen it and
+    /// drop what is still queued. See [`Machine::present_bennu_audio`].
+    bennu_audio_rate: u32,
+    bennu_audio_channels: u16,
     /// How many `glClear` calls cleared the color. See [`Machine::gl_swaps`].
     gl_clears: u32,
     /// The texture and buffer names in use in OpenGL ES. See [`gl::GlNames`].
@@ -3305,6 +3309,8 @@ impl<C: CpuBackend> Machine<C> {
             egl_next_handle: EGL_HANDLE_BASE,
             egl_swaps: 0,
             yield_frame: false,
+            bennu_audio_rate: 0,
+            bennu_audio_channels: 0,
             gl_clears: 0,
             texture_names: gl::GlNames::default(),
             buffer_names: gl::GlNames::default(),
