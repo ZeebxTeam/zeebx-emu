@@ -2,10 +2,53 @@
 
 use super::*;
 
+/// Voice id for the PCM Bennu mixes itself. Outside the object area, so it does
+/// not collide with an `IMedia` the game creates.
+const BENNU_AUDIO_ID: u32 = 0xBEE0_0001;
+
 impl<C: CpuBackend> Machine<C> {
     /// Turns on sound output. Without it the emulator runs the same, muted.
     pub fn set_audio(&mut self, mixer: Option<crate::audio::Mixer>) {
         self.audio = mixer;
+    }
+
+    /// One slice of Bennu's mixed PCM. S16, interleaved, little-endian.
+    ///
+    /// The guest has no playback device, so it mixes music and effects itself and
+    /// hands the result here. The host stream plays it at the device's rate.
+    pub(super) fn present_bennu_audio(
+        &mut self,
+        pcm: u32,
+        bytes: u32,
+        rate: u32,
+        channels: u32,
+    ) -> Result<u32, CpuError> {
+        let channels = channels as u16;
+        let frame = u32::from(channels).saturating_mul(2);
+        if pcm == 0 || rate == 0 || !matches!(channels, 1 | 2) || frame == 0 || bytes == 0
+            || bytes % frame != 0
+            || bytes > 256 * 1024
+        {
+            return Ok(1);
+        }
+        let raw = self.read_bytes(pcm, bytes)?;
+        let samples: Vec<f32> = raw
+            .chunks_exact(2)
+            .map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]]) as f32 / 32768.0)
+            .collect();
+        let Some(mixer) = self.audio.clone() else {
+            return Ok(0);
+        };
+        if !mixer.is_playing(BENNU_AUDIO_ID)
+            || self.bennu_audio_rate != rate
+            || self.bennu_audio_channels != channels
+        {
+            mixer.open_stream(BENNU_AUDIO_ID, rate, channels, 1.0);
+            self.bennu_audio_rate = rate;
+            self.bennu_audio_channels = channels;
+        }
+        mixer.feed_stream(BENNU_AUDIO_ID, &samples);
+        Ok(0)
     }
 
     pub(super) fn sound_call(&mut self, slot: u32) -> Result<Option<u32>, CpuError> {

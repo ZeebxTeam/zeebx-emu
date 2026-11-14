@@ -864,6 +864,36 @@ impl<C: CpuBackend> Machine<C> {
     /// cleared when one applet leaves and another enters, and what was on it stays until someone
     /// draws over it. Returns `false`, without touching anything, when the image is not the size
     /// of the screen.
+    /// Copies Bennu's finished frame onto the screen and asks the loop to yield.
+    ///
+    /// `pixels` is RGB565, `pitch` bytes per row. A size other than the screen is scaled
+    /// with nearest neighbor. Returns 0 when the frame was taken. The caller then stops
+    /// the guest so the window can show this picture before the next one starts.
+    pub(super) fn present_bennu_frame(
+        &mut self,
+        pixels: u32,
+        width: u32,
+        height: u32,
+        pitch: u32,
+    ) -> Result<u32, CpuError> {
+        let row = width.saturating_mul(2);
+        let bytes = (pitch as u64).saturating_mul(height as u64);
+        if pixels == 0 || width == 0 || height == 0 || pitch < row || bytes > READ_CAP as u64 {
+            return Ok(1);
+        }
+        let src = self.read_bytes(pixels, bytes as u32)?;
+        let bitmap = self.device_bitmap()?;
+        let Some(screen) = self.bitmaps.get_mut(&bitmap) else {
+            return Ok(1);
+        };
+        if !screen.paint_rgb565(&src, width, height, pitch) {
+            return Ok(1);
+        }
+        self.egl_swaps = self.egl_swaps.saturating_add(1);
+        self.yield_frame = true;
+        Ok(0)
+    }
+
     pub fn paint_screen_rgb565(&mut self, bytes: &[u8]) -> bool {
         let screen = match self.bitmaps.get_mut(&self.device_bitmap) {
             Some(screen) => screen,

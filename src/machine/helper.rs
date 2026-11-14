@@ -2,6 +2,11 @@
 
 use super::*;
 
+/// Slot appended after `AEEHelperFuncs`. Bennu calls it with the finished RGB565 frame.
+const BENNU_PRESENT_SLOT: u32 = 117;
+/// The next slot. Bennu calls it with one slice of interleaved S16 PCM.
+const BENNU_AUDIO_SLOT: u32 = 118;
+
 impl<C: CpuBackend> Machine<C> {
     /// `qsort` from BREW's stdlib, with the comparison done by the game.
     ///
@@ -179,6 +184,24 @@ impl<C: CpuBackend> Machine<C> {
     /// BREW stdlib helpers, dispatched by slot name — the table comes from
     /// `struct AEEHelperFuncs`, in the SDK's `AEEStdLib.h`.
     pub(super) fn helper_call(&mut self, slot: u32) -> Result<Option<u32>, CpuError> {
+        // Past the end of `AEEHelperFuncs`. Bennu's Zeebo build uses it, and only when
+        // `GET_HELPER_VER()` is at least 2, to hand the finished RGB565 frame over in one call.
+        if slot == BENNU_PRESENT_SLOT {
+            return Ok(Some(self.present_bennu_frame(
+                self.cpu.read_reg(Reg::R0),
+                self.cpu.read_reg(Reg::R1),
+                self.cpu.read_reg(Reg::R2),
+                self.cpu.read_reg(Reg::R3),
+            )?));
+        }
+        if slot == BENNU_AUDIO_SLOT {
+            return Ok(Some(self.present_bennu_audio(
+                self.cpu.read_reg(Reg::R0),
+                self.cpu.read_reg(Reg::R1),
+                self.cpu.read_reg(Reg::R2),
+                self.cpu.read_reg(Reg::R3),
+            )?));
+        }
         let Some(name) = Interface::Helpers.method(slot) else {
             return Ok(None);
         };
