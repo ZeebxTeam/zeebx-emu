@@ -2718,6 +2718,9 @@ pub struct Machine<C: CpuBackend> {
     egl_next_handle: u32,
     /// How many times the game presented a frame with `eglSwapBuffers`.
     egl_swaps: u32,
+    /// The guest just handed over a finished frame and the window should show it
+    /// before the game starts the next one. See [`Machine::present_bennu_frame`].
+    yield_frame: bool,
     /// How many `glClear` calls cleared the color. See [`Machine::gl_swaps`].
     gl_clears: u32,
     /// The texture and buffer names in use in OpenGL ES. See [`gl::GlNames`].
@@ -3301,6 +3304,7 @@ impl<C: CpuBackend> Machine<C> {
             egl_color_readback: Vec::new(),
             egl_next_handle: EGL_HANDLE_BASE,
             egl_swaps: 0,
+            yield_frame: false,
             gl_clears: 0,
             texture_names: gl::GlNames::default(),
             buffer_names: gl::GlNames::default(),
@@ -3523,6 +3527,18 @@ impl<C: CpuBackend> Machine<C> {
                         // `lr` holds the return address, with bit 0 indicating Thumb — the core
                         // understands that convention, so we pass it on as is.
                         pc = self.cpu.read_reg(Reg::Lr);
+                        // A finished frame. Continuing here would run the next one inside the
+                        // same slice, and the window would only see the last picture of the burst.
+                        if self.yield_frame {
+                            self.yield_frame = false;
+                            // Nested, the caller is still on our stack: dropping the stretch
+                            // would abandon them. The outermost game loop is the one that
+                            // has to come back on the next pass.
+                            if self.nesting == 0 {
+                                self.note_interrupted_segment(pc);
+                                return Ok(Outcome::Budget);
+                            }
+                        }
                         // This is the boundary between two API calls — the only point where we
                         // can enter the guest without interrupting anything halfway.
                         self.run_pending_callbacks(budget)?;

@@ -179,7 +179,10 @@ pub fn load_with(
     // The SDK's `AEEStdLib.h` defines exactly these two fields before the module base:
     //   GET_HELPER()     = *((AEEHelperFuncs **)AEEMod_Load - 1)   -> base - 4
     //   GET_HELPER_VER() = *(uint32 *)(AEEMod_Load - 4 - 4)        -> base - 8
-    mem.write_u32(MODULE_BASE - 8, HELPER_VERSION)?;
+    // Bennu copies the frame in one call when this word is at least 2. The core
+    // still publishes 1, and with that the game writes every pixel through a
+    // watched bitmap: each store leaves the recompiler, and a 640×480 frame stalls.
+    mem.write_u32(MODULE_BASE - 8, HELPER_VERSION.max(2))?;
     mem.write_u32(MODULE_BASE - 4, helpers)?;
 
     // Each extension gets its own region and two output words in the object area, right after
@@ -198,7 +201,7 @@ pub fn load_with(
         )?;
         // The same two words that `AEEStdLib.h` reads before the module base. Without them the
         // extension finds the helper table at zero and dies on the first `MALLOC` call.
-        mem.write_u32(base - 8, HELPER_VERSION)?;
+        mem.write_u32(base - 8, HELPER_VERSION.max(2))?;
         mem.write_u32(base - 4, helpers)?;
         // Two words per extension: its `IModule*` and the `CreateInstance` output. They start
         // after the two of the main module — `out_module` and the applet's.

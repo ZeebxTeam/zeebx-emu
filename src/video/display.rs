@@ -429,6 +429,38 @@ impl Framebuffer {
         self.pixels.iter().flat_map(|p| p.to_le_bytes()).collect()
     }
 
+    /// Paints an RGB565 image onto this surface.
+    ///
+    /// Same size and a packed pitch replace the pixels. Anything else is scaled with
+    /// nearest neighbor. Returns whether the buffer was large enough to read.
+    pub fn paint_rgb565(&mut self, src: &[u8], width: u32, height: u32, pitch: u32) -> bool {
+        if width == 0 || height == 0 || self.width == 0 || self.height == 0 {
+            return false;
+        }
+        let row = width as usize * 2;
+        if (pitch as usize) < row || src.len() < (pitch as usize) * (height as usize) {
+            return false;
+        }
+        let (dw, dh) = (self.width, self.height);
+        if width == dw && height == dh && pitch as usize == row {
+            self.load_rgb565_bytes(src);
+        } else {
+            for y in 0..dh {
+                let sy = (y as u64 * height as u64 / dh as u64) as usize;
+                let base = sy * pitch as usize;
+                for x in 0..dw {
+                    let sx = (x as u64 * width as u64 / dw as u64) as usize;
+                    let at = base + sx * 2;
+                    self.pixels[(y * dw + x) as usize] =
+                        u16::from_le_bytes([src[at], src[at + 1]]);
+                }
+            }
+            self.touched = self.touched.saturating_add(1);
+        }
+        self.mark_watches(0, 0, dw, dh);
+        true
+    }
+
     /// Reloads the pixels from the buffer the game wrote.
     pub fn load_rgb565_bytes(&mut self, bytes: &[u8]) {
         for (pixel, chunk) in self.pixels.iter_mut().zip(bytes.chunks_exact(2)) {
@@ -583,6 +615,22 @@ impl Framebuffer {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn paint_rgb565_replaces_a_packed_frame_and_scales_a_smaller_one() {
+        let mut fb = Framebuffer::new(2, 2);
+        let packed = [0x34u8, 0x12, 0x78, 0x56, 0xbc, 0x9a, 0xf0, 0xde];
+        assert!(fb.paint_rgb565(&packed, 2, 2, 4));
+        assert_eq!(fb.get_pixel(0, 0), 0x1234);
+        assert_eq!(fb.get_pixel(1, 1), 0xdef0);
+
+        let mut scaled = Framebuffer::new(2, 2);
+        let one = [0x00u8, 0xf8];
+        assert!(scaled.paint_rgb565(&one, 1, 1, 2));
+        assert_eq!(scaled.get_pixel(0, 0), 0xf800);
+        assert_eq!(scaled.get_pixel(1, 1), 0xf800);
+        assert!(!scaled.paint_rgb565(&one, 2, 2, 4));
+    }
 
     #[test]
     fn odd_width_gets_one_padding_pixel_per_row_in_the_dib() {
