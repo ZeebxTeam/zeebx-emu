@@ -103,8 +103,9 @@ const KEYMAP: [(Key, &str); 12] = [
     (Key::W, "zr"),
     (Key::F, "lthumb"),
     (Key::G, "rthumb"),
-    // The Zeebo controller has no Start: HOME plays that role.
-    (Key::Enter, "back"),
+    // Enter is Start. HOME is Backspace and H: the select screen of a BennuGD game
+    // treats the two as different buttons.
+    (Key::Enter, "start"),
     (Key::Backspace, "back"),
     (Key::H, "home"),
 ];

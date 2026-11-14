@@ -269,16 +269,15 @@ impl Default for Player {
                 )
             })
             .collect();
-        // The console's HOME is BREW's `Back`, and answers to both names. The Zeebo controller
-        // has no Start: HOME plays that role, so Enter lands on it.
+        // HOME is BREW's `Back`. Enter is Start on its own: BennuGD games such as KOF give the
+        // two different actions, and the select screen leaves for the title when Back is down.
+        // H and Backspace stay on HOME, which still asserts Start as well — see
+        // [`Pad::with_home_on_both`].
         buttons.insert(
             "back".to_string(),
-            vec![
-                Source::key("H"),
-                Source::key("Backspace"),
-                Source::key("Enter"),
-            ],
+            vec![Source::key("H"), Source::key("Backspace")],
         );
+        buttons.insert("start".to_string(), vec![Source::key("Enter")]);
         Self {
             // Port one starts enabled; the others do not. See [`Controls::default`].
             enabled: true,
@@ -348,8 +347,9 @@ impl Player {
         let pad: [(&str, &str); 5] = [
             ("zl", "LeftTrigger"),
             ("zr", "RightTrigger"),
-            // The Zeebo controller has no Start; HOME takes its place.
-            ("back", "Start"),
+            // Start is the Start button, not HOME. KOF's select screen treats HOME as cancel
+            // and leaves for the title; Select stays on HOME below.
+            ("start", "Start"),
             ("lthumb", "LeftThumb"),
             ("rthumb", "RightThumb"),
         ];
@@ -378,7 +378,9 @@ impl Player {
         // below; also binding it to the buttons would make the two act together and neither on
         // its own, which is exactly what you want to avoid on a controller with a cross D-pad.
         player.buttons.entry("back".to_string()).or_default().push(
-            // The host controller's HOME lands on the Zeebo's HOME, which is `Back`.
+            // The host controller's Select lands on the Zeebo's HOME, which is `Back`.
+            // HOME still asserts Start as well, so a game that only reads one of them
+            // keeps working. Start itself does not assert HOME.
             Source::button("Select"),
         );
         player.axes = Self::default_axes();
@@ -524,6 +526,37 @@ impl Player {
         }
     }
 
+    /// Host Start used to land on HOME, and HOME also asserts Start.
+    ///
+    /// A game that gives the two different actions then saw both. KOF's character select
+    /// treats HOME as cancel and returns to the title; running the same bytecode in BennuGD
+    /// does not, because there Start is only Start. A mapping that still has the host's
+    /// `Start` button, or Enter, on `back` and nowhere else is the old default: it moves.
+    /// Whoever bound something else keeps it.
+    fn migrate_start_off_home(&mut self) {
+        let start_button = Source::button("Start");
+        let select_button = Source::button("Select");
+        if self.button_sources("back") == [start_button.clone(), select_button] {
+            if let Some(back) = self.buttons.get_mut("back") {
+                back.retain(|source| source != &start_button);
+            }
+            self.bind("start", start_button);
+        }
+        let enter = Source::key("Enter");
+        let keys: Vec<Source> = self
+            .sources("back")
+            .iter()
+            .filter(|source| matches!(source, Source::Key { .. }))
+            .cloned()
+            .collect();
+        if keys == [Source::key("H"), Source::key("Backspace"), enter.clone()] {
+            if let Some(back) = self.buttons.get_mut("back") {
+                back.retain(|source| source != &enter);
+            }
+            self.bind("start", enter);
+        }
+    }
+
     fn migrate_axis_convention(&mut self) {
         let mut upright = Self::default_axes();
         upright.get_mut("y").unwrap().invert = false;
@@ -657,6 +690,7 @@ impl Controls {
             player.adopt_axes();
             player.migrate_axis_convention();
             player.migrate_action_buttons();
+            player.migrate_start_off_home();
             player.migrate_controller_device();
             player.migrate_wiimote_buttons();
         }
@@ -706,15 +740,15 @@ impl Player {
 /// The Zeebo's buttons in the order that makes sense on a settings screen — the D-pad first,
 /// then the actions, then the shoulders and the rest.
 ///
-/// There is no Start nor a pair of shoulders: the console's controller has four action buttons,
-/// one trigger on each side (ZL and ZR) and HOME, which plays the role of Start and shows up here
-/// as `back` because `AEEUID_HIDJoystick_Back` is where the console's `hid_devices.cfg` maps it.
-///
-/// The leftover UIDs — Start and the two "lower" shoulders — remain in the table of
-/// [`crate::input::BUTTON_UIDS`], which describes the device's HID descriptor and not its shell,
-/// but there is no way to bind them to any key.
-pub const CONFIGURABLE: [&str; 13] = [
-    "up", "down", "left", "right", "b1", "b2", "b3", "b4", "zl", "zr", "lthumb", "rthumb", "back",
+/// The console's shell has four action buttons, one trigger on each side (ZL and ZR) and HOME,
+/// which shows up here as `back` because `AEEUID_HIDJoystick_Back` is where the console's
+/// `hid_devices.cfg` maps it. `start` is on the list too: the shell has no second button, but
+/// BennuGD exposes the Start UID on its own, and KOF's select screen leaves for the title when
+/// HOME is down. The two "lower" shoulders stay out — they are in [`crate::input::BUTTON_UIDS`]
+/// and nothing on the shell presses them.
+pub const CONFIGURABLE: [&str; 14] = [
+    "up", "down", "left", "right", "b1", "b2", "b3", "b4", "zl", "zr", "lthumb", "rthumb",
+    "start", "back",
 ];
 
 #[cfg(test)]
@@ -790,6 +824,50 @@ mod tests {
                 "button {button} was left without a key"
             );
         }
+    }
+
+    /// Start is not HOME. KOF's select screen reads HOME as cancel and returns to the title
+    /// when both are down; BennuGD on its own only sees Start.
+    #[test]
+    fn start_does_not_press_home() {
+        let keyboard = Player::default();
+        let entered = keyboard.pad(|source| *source == Source::key("Enter"), |_| None);
+        assert!(entered.is_down(input::START), "Enter is Start");
+        assert!(!entered.is_down(input::HOME), "Enter does not press HOME");
+        assert!(
+            !entered.with_home_on_both().is_down(input::HOME),
+            "Start alone stays Start after the HOME alias"
+        );
+
+        let pad = Player::with_gamepad("Pad".into());
+        let start = pad.pad(|source| *source == Source::button("Start"), |_| None);
+        assert!(start.is_down(input::START));
+        assert!(!start.with_home_on_both().is_down(input::HOME));
+
+        let select = pad.pad(|source| *source == Source::button("Select"), |_| None);
+        assert!(select.is_down(input::HOME));
+        assert!(!select.is_down(input::START));
+        let both = select.with_home_on_both();
+        assert!(both.is_down(input::HOME) && both.is_down(input::START));
+    }
+
+    /// A settings file written when Start landed on HOME keeps that until it is loaded.
+    #[test]
+    fn a_saved_start_on_home_moves_to_start() {
+        let mut player = Player::default();
+        player.bind("back", Source::key("Enter"));
+        player.bind("back", Source::button("Start"));
+        player.bind("back", Source::button("Select"));
+        player.buttons.remove("start");
+        let mut controls = Controls { players: vec![player] };
+        controls.adopt();
+        let player = &controls.players[0];
+        assert!(player.sources("start").contains(&Source::key("Enter")));
+        assert!(player.sources("start").contains(&Source::button("Start")));
+        assert!(!player.sources("back").contains(&Source::key("Enter")));
+        assert!(!player.sources("back").contains(&Source::button("Start")));
+        assert!(player.sources("back").contains(&Source::button("Select")));
+        assert!(player.sources("back").contains(&Source::key("H")));
     }
 
     #[test]
