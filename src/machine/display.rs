@@ -831,10 +831,30 @@ impl<C: CpuBackend> Machine<C> {
         y: i32,
         color: Rgb,
     ) -> Result<bool, CpuError> {
+        self.write_sized(text, x, y, color, FONT_SIZE, false)
+    }
+
+    /// [`Machine::write`] at a given size, and optionally with the letters' edges blended into
+    /// what is under them.
+    ///
+    /// The widgets' text asks for both. Each of the Z-Wheel's fonts is created at a pixel size —
+    /// 15 to 24 on the screens measured —, and its text is TrueType over photos and gradients,
+    /// where a hard edge shows as a jagged outline. **That the console smoothed it is an
+    /// assumption**: there is no capture to compare against. What a game writes through
+    /// `IDISPLAY_DrawText` keeps the hard edge.
+    pub(super) fn write_sized(
+        &mut self,
+        text: &str,
+        x: i32,
+        y: i32,
+        color: Rgb,
+        size: f32,
+        smooth: bool,
+    ) -> Result<bool, CpuError> {
         let Some(font) = self.font.as_ref() else {
             return Ok(false);
         };
-        let glyphs = font.layout(text, FONT_SIZE);
+        let glyphs = font.layout(text, size);
         if glyphs.is_empty() {
             return Ok(true);
         }
@@ -850,7 +870,8 @@ impl<C: CpuBackend> Machine<C> {
                     // Half-tones do not exist on a surface without an alpha channel: either the
                     // letter covers the pixel or it does not. Half is the cutoff that makes the
                     // edge look like the console's, which does not blend either.
-                    if glyph.coverage[(line * glyph.width + column) as usize] < 128 {
+                    let coverage = glyph.coverage[(line * glyph.width + column) as usize];
+                    if coverage < if smooth { 8 } else { 128 } {
                         continue;
                     }
                     let (px, py) = (x + glyph.x + column as i32, y + glyph.y + line as i32);
@@ -863,7 +884,11 @@ impl<C: CpuBackend> Machine<C> {
                             continue;
                         }
                     }
-                    surface.set_pixel_native(px, py, native);
+                    let value = match smooth && coverage < 248 {
+                        true => blend_rgb565(surface.get_pixel(px, py), native, coverage),
+                        false => native,
+                    };
+                    surface.set_pixel_native(px, py, value);
                 }
             }
         }

@@ -11,6 +11,15 @@ const LIST_FOCUS: u32 = 0x165;
 /// The list's item callback, kept from the `0x163` write: ids out of the game's range.
 const LIST_FUNCTION: u32 = 0xffff_0010;
 const LIST_CONTEXT: u32 = 0xffff_0011;
+/// The pixel size a font object was created at, in [`Widget::properties`] of the font: an id out
+/// of the game's range. A text widget points at its font through [`PROP_FONT`].
+const FONT_PIXELS: u32 = 0xffff_0020;
+/// The sizes taken as a size. Outside it the request is something we did not read right, and the
+/// font draws at [`FONT_SIZE`].
+const FONT_PIXELS_RANGE: std::ops::RangeInclusive<u32> = 6..=96;
+/// The font object a text widget draws with: what `CriarFonte` handed out. The status bar's
+/// three texts carry three different ones.
+const PROP_FONT: u32 = 0x152;
 
 impl<C: CpuBackend> Machine<C> {
     /// Compatibility with the Z-Wheel intro shipped in package 274755.
@@ -806,11 +815,7 @@ impl<C: CpuBackend> Machine<C> {
     /// The order is the tree's, like the images': child on top of parent.
     pub(super) fn paint_texts(&mut self) -> Result<(), CpuError> {
         let inside = self.form_tree();
-        let line_height = self
-            .font
-            .as_ref()
-            .map_or(0, |font| (font.ascent(FONT_SIZE) + font.descent(FONT_SIZE)) as i32);
-        let mut writes: Vec<(usize, i32, i32, u32, String)> = self
+        let mut writes: Vec<(usize, i32, i32, u32, String, u32)> = self
             .widgets
             .iter()
             .filter(|(owner, widget)| {
@@ -824,6 +829,10 @@ impl<C: CpuBackend> Machine<C> {
                 let color = widget.properties.get(&PROP_COLOR).copied().unwrap_or(0);
                 let depth = self.depth(owner);
                 let lines = self.text_lines(owner, widget.size.0);
+                let size = self.text_size(owner);
+                let line_height = self.font.as_ref().map_or(0, |font| {
+                    (font.ascent(size) + font.descent(size)) as i32
+                });
                 // **The text sits where its flags say, inside the widget's height.** The console
                 // number has a 340×35 widget over its field and asks for the middle; painted at
                 // the top, it sat on the field's upper edge. A widget nobody sized has no height
@@ -836,12 +845,20 @@ impl<C: CpuBackend> Machine<C> {
                     f if f & FLAG_BOTTOM != 0 => y + spare,
                     _ => y,
                 };
+                // Inside a viewport only the lines that fit whole are drawn: the rest is what
+                // the console would scroll to, and painted it ran over the box's buttons.
+                let window = self.viewport_rows(owner);
                 lines
                     .into_iter()
                     .enumerate()
                     .filter(|(_, line)| !line.is_empty())
                     .map(move |(index, line)| {
-                        (depth, x, top + index as i32 * line_height, color, line)
+                        (depth, x, top + index as i32 * line_height, color, line, size as u32)
+                    })
+                    .filter(|write| {
+                        window.is_none_or(|(first, last)| {
+                            write.2 >= first && write.2 + line_height <= last
+                        })
                     })
                     .collect::<Vec<_>>()
             })
@@ -850,19 +867,22 @@ impl<C: CpuBackend> Machine<C> {
         writes.extend(
             self.list_texts
                 .iter()
-                .map(|(x, y, color, text)| (usize::MAX, *x, *y, *color, text.clone())),
+                .map(|(x, y, color, text)| {
+                    (usize::MAX, *x, *y, *color, text.clone(), FONT_SIZE as u32)
+                }),
         );
         // **The same text, in the same place, in the same color, is a single drawing.** The z-pad
         // form is rebuilt on every lap of the cycle and each rebuild leaves the previous tree
         // alive: there are thousands of copies of the same label stacked on the same coordinate.
         // Painting all of them gives exactly the same frame and made a frame take over a minute.
-        writes
-            .sort_unstable_by(|a, b| (a.1, a.2, &a.4, a.3, a.0).cmp(&(b.1, b.2, &b.4, b.3, b.0)));
-        writes.dedup_by(|a, b| (a.1, a.2, &a.4, a.3) == (b.1, b.2, &b.4, b.3));
+        writes.sort_unstable_by(|a, b| {
+            (a.1, a.2, &a.4, a.3, a.5, a.0).cmp(&(b.1, b.2, &b.4, b.3, b.5, b.0))
+        });
+        writes.dedup_by(|a, b| (a.1, a.2, &a.4, a.3, a.5) == (b.1, b.2, &b.4, b.3, b.5));
         // With repeats gone, the order that counts is the tree's: child on top of parent.
         writes.sort_unstable_by(|a, b| (a.0, a.2, a.1).cmp(&(b.0, b.2, b.1)));
         self.paint_html()?;
-        for (_, x, y, rgba, text) in writes {
+        for (_, x, y, rgba, text, size) in writes {
             // The color comes as `RRGGBBAA`. The alpha is discarded because the console surface
             // has no channel for it — same reason as the half-tone in `write`.
             let color = Rgb {
@@ -870,9 +890,46 @@ impl<C: CpuBackend> Machine<C> {
                 g: (rgba >> 16) as u8,
                 b: (rgba >> 8) as u8,
             };
-            self.write(&text, x, y, color)?;
+            self.write_sized(&text, x, y, color, size as f32, true)?;
         }
         Ok(())
+    }
+
+    /// The screen rows `(first, one past the last)` of the viewport a widget sits in, if any.
+    ///
+    /// The nearest sized ancestor among the viewport and its scroll bar counts: the message box
+    /// sizes the scroll bar (`490 × 202`) and leaves the viewport inside it unsized.
+    fn viewport_rows(&self, widget: u32) -> Option<(i32, i32)> {
+        /// How far to climb. The text is the viewport's child, and the scroll bar its parent.
+        const CAP: usize = 8;
+        let mut current = self.widgets.get(&widget)?.parent;
+        for _ in 0..CAP {
+            let node = self.widgets.get(&current)?;
+            if matches!(node.class_id, WIDGET_VIEWPORT | WIDGET_SCROLLBAR) && node.size.1 != 0 {
+                let top = self.screen_position(current).1;
+                return Some((top, top + node.size.1 as i32));
+            }
+            if node.parent == 0 || node.parent == current {
+                return None;
+            }
+            current = node.parent;
+        }
+        None
+    }
+
+    /// The size a text widget's text is drawn and measured at: the one its font was created
+    /// with, and [`FONT_SIZE`] for a widget with no font or a font of unknown size.
+    ///
+    /// Everything used to be drawn at 16 pixels. The Z-Wheel creates each font at a size and the
+    /// screen is laid out for them: the Setup screen's labels are 23 pixels, next to roller items
+    /// the game draws itself at about that size.
+    fn text_size(&self, widget: u32) -> f32 {
+        self.widgets
+            .get(&widget)
+            .and_then(|node| node.properties.get(&PROP_FONT))
+            .and_then(|font| self.widgets.get(font))
+            .and_then(|font| font.properties.get(&FONT_PIXELS))
+            .map_or(FONT_SIZE, |&pixels| pixels as f32)
     }
 
     /// The lines a text widget's text takes: one per `\n`, and, when it carries [`FLAG_WRAP`],
@@ -886,10 +943,11 @@ impl<C: CpuBackend> Machine<C> {
         };
         let wraps = node.properties.get(&PROP_FLAGS).is_some_and(|flags| flags & FLAG_WRAP != 0);
         let paragraphs = node.text.split('\n').map(|paragraph| paragraph.trim_end_matches('\r'));
+        let size = self.text_size(widget);
         match (&self.font, wraps && width != 0) {
             (Some(font), true) => paragraphs
                 .flat_map(|paragraph| {
-                    let lines = wrap_lines(paragraph, width, |t| font.width(t, FONT_SIZE));
+                    let lines = wrap_lines(paragraph, width, |t| font.width(t, size));
                     // An empty paragraph is still a line: it is the blank between two blocks.
                     match lines.is_empty() {
                         true => vec![String::new()],
@@ -1356,8 +1414,16 @@ impl<C: CpuBackend> Machine<C> {
                     // game keeps the pointer in its own structure and calls the item callback on
                     // it for every row. Without the reference the text widget died, and its
                     // address went to the next list — the callback was writing on another list.
+                    //
+                    // **So do the viewport and the scroll bar** (`0x22324`). A message box whose
+                    // text is taller than its frame wraps the text in a viewport and the viewport
+                    // in a scroll bar, releasing its own reference each time; the text died, its address went to the box's container, and the
+                    // box's form jumped to `0x0` adding a listener to what was left
+                    // (`0x51dc8`). It only showed up once the text was measured at its font's
+                    // size: at 16 pixels the language box's text still fit.
                     let holds = self.widgets.get(&this).is_some_and(|w| {
-                        w.class_id == WIDGET_LIST && !w.attached.contains(&child)
+                        matches!(w.class_id, WIDGET_LIST | WIDGET_VIEWPORT | WIDGET_SCROLLBAR)
+                            && !w.attached.contains(&child)
                     });
                     if holds && child != this {
                         self.objects.add_ref(child);
@@ -1614,15 +1680,16 @@ impl<C: CpuBackend> Machine<C> {
                     // lines as it takes, and the widest of them. See [`PROP_HINT_WIDTH`].
                     let hint = widget.properties.get(&PROP_HINT_WIDTH).copied().unwrap_or(0);
                     let lines = self.text_lines(this, hint);
+                    let size = self.text_size(this);
                     self.font
                         .as_ref()
                         .map(|font| {
                             let width = lines
                                 .iter()
-                                .map(|line| font.width(line, FONT_SIZE))
+                                .map(|line| font.width(line, size))
                                 .max()
                                 .unwrap_or(0);
-                            let line_height = font.ascent(FONT_SIZE) + font.descent(FONT_SIZE);
+                            let line_height = font.ascent(size) + font.descent(size);
                             (width, line_height * lines.len().max(1) as u32)
                         })
                         .unwrap_or((0, 0))
@@ -2070,15 +2137,30 @@ impl<C: CpuBackend> Machine<C> {
             "AddRef" => self.objects.add_ref(this),
             "Release" => self.objects.release(this),
             "CriarFonte" => {
+                // `slot4(this, data, length, pixels, &font)`, from `0x7bfec`: the TTF's bytes in
+                // memory (`0x2eb1c` of them, the package's `tectoy.ttf`) and the size to draw it
+                // at. Measured on the Setup path: 21, 24, 15 and 19 for the status bar at
+                // startup, 23 and 72 when the Setup screen opens, 22 for the message box.
                 let output = self.stack_arg(0)?;
+                let (length, pixels) = (self.cpu.read_reg(Reg::R2), self.cpu.read_reg(Reg::R3));
                 let font = self.new_object(Interface::Widget)?;
                 if font == 0 {
                     return Ok(Some(ENOMEMORY));
+                }
+                if self.serial.is_some() {
+                    self.log_serial(format!(
+                        "<font {font:#x}: {pixels} pixels, from {length:#x} bytes>"
+                    ));
+                }
+                let mut properties = HashMap::new();
+                if (FONT_PIXELS_RANGE).contains(&pixels) {
+                    properties.insert(FONT_PIXELS, pixels);
                 }
                 self.widgets.insert(
                     font,
                     Widget {
                         visible: true,
+                        properties,
                         ..Widget::default()
                     },
                 );

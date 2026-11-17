@@ -1229,6 +1229,13 @@ const TEXT_MODEL_IID: u32 = 0x0101_5946;
 /// The family's container: the bottom bar, the status bar and the box each form hangs on
 /// `0x5000`. See §6.1 of `docs/implementation/18-the-z-wheel-carousel.md`.
 const WIDGET_CONTAINER: u32 = 0x0102_8e3f;
+/// The viewport: a decorator that shows a window onto a widget larger than itself. The message
+/// box puts its text in one when the text is taller than the frame, next to a `0x01028e26`
+/// scroll bar. It holds what it decorates; nothing scrolls or clips yet.
+const WIDGET_VIEWPORT: u32 = 0x0102_8e36;
+/// The scroll bar: the decorator the message box wraps its [`WIDGET_VIEWPORT`] in. Nothing draws
+/// the bar itself yet.
+const WIDGET_SCROLLBAR: u32 = 0x0102_8e26;
 
 /// Marks, as `class_id`, the text field's controller (its item `0x224`). Not a console class:
 /// the object is ours, and the mark is what lets slot 4 hand out its default handler.

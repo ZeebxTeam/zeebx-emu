@@ -78,6 +78,19 @@ The survey behind each item is in
       `IDF_ALIGN_BOTTOM` (`0x40`): the console number sits in the middle of its 340×35 field
       instead of on its upper edge. Bits `0x200`, `0x400` and `0x8000` are still unread, and no
       horizontal alignment was seen.
+- [x] **9. Each text at its font's size.** `CriarFonte` is `slot4(this, ttf, length, pixels,
+      &font)`: 21, 24, 15 and 19 at startup, 23 and 72 when the Setup screen opens, 22 for the
+      message box. A text widget's `0x152` is its font; it is measured and drawn at that size
+      instead of a single 16. The widgets' text is also drawn with blended edges — **an
+      assumption**, there is no capture of the console to compare against.
+  - [x] at 21 pixels the language box's text no longer fits its frame and the box takes another
+        path: the text goes into a viewport (`0x01028e36`) inside a scroll bar (`0x01028e26`).
+        Neither held what it decorates, the text died and the form jumped to `0x0` at
+        `0x51dc8`. Both hold it now, and the text is cut to the lines that fit
+  - [ ] the viewport does not scroll (`0x156` = 16 is likely its step) and the scroll bar is not
+        drawn: the Spanish paragraph of the language box is out of reach
+  - [ ] the lists' items (game names on the grid, sizes on Delete games) still draw at 16
+  - [ ] the registration field's text ("HY") sits low in its box at the new size
 - [ ] **7. Navegar** ends in `Failure attempting to launch app, error(1)`: the browser is looked
       up in the Shop catalog (`browser_itemid=19354124`). Open the Opera Mini package if
       installed, or hide the item (`enable_browser=0` in the cfg copy).
