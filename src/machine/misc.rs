@@ -674,6 +674,24 @@ impl<C: CpuBackend> Machine<C> {
         };
         let this = self.cpu.read_reg(Reg::R0);
         let (a1, a2) = (self.cpu.read_reg(Reg::R1), self.cpu.read_reg(Reg::R2));
+        // **A listener in place of the model is its cancel.** `LISTENER_Cancel(pl)` is
+        // `pl->pfnCancel(pl)`, and the `pfnCancel` we hand out in `AddListener` is this
+        // interface's own `AddListener` entry: there is no slot of ours to point it at without
+        // adding one to the table, and a listener's address is never a model's.
+        if name == "AddListener"
+            && self.value_models.values().any(|m| m.listeners.iter().any(|l| l.0 == this))
+        {
+            for model in self.value_models.values_mut() {
+                model.listeners.retain(|&(location, _, _)| location != this);
+            }
+            // Cancelled once: a second cancel finds no function to call, as on the console.
+            self.cpu.write_u32(this + 16, 0)?;
+            self.cpu.write_u32(this + 20, 0)?;
+            if self.serial.is_some() {
+                self.log_serial(format!("<model listener {this:#x} cancelled>"));
+            }
+            return Ok(Some(SUCCESS));
+        }
         let result = match name {
             "AddRef" => self.objects.add_ref(this),
             "Release" => {
@@ -694,16 +712,24 @@ impl<C: CpuBackend> Machine<C> {
             //
             // `ModelListener` is `{ pNext, pPrev, pfnListener, pListenerData, pfnCancel,
             // pCancelData }`. The game fills in the function and the context; the rest belongs to
-            // the model. The cancel stays null: whoever cancels a listener calls `pfnCancel` if
-            // there is one, and without it the listener stays on our list — hence the check at
-            // notification time.
+            // the model.
+            //
+            // **The cancel is ours to fill in.** It used to stay null, and whoever cancels a
+            // listener calls `pfnCancel` only if there is one: the listener stayed on our list
+            // after its owner was gone. The check at notification time — is the function still
+            // there? — does not catch it, because freed memory keeps what it held. The Setup
+            // screen's status bar listens to the credits model; four seconds after leaving the
+            // screen, the model's next notification called `0x77308` on the freed bar and jumped
+            // to `0x0` from `0x40bcc`, and again every ten seconds.
             "AddListener" => {
                 if a1 != 0 {
                     let callback = self.cpu.read_u32(a1 + 8)?;
                     let context = self.cpu.read_u32(a1 + 12)?;
-                    for field in [0, 4, 16, 20] {
+                    for field in [0, 4] {
                         self.cpu.write_u32(a1 + field, 0)?;
                     }
+                    self.cpu.write_u32(a1 + 16, aee::encode(Interface::Class28e3c, slot))?;
+                    self.cpu.write_u32(a1 + 20, this)?;
                     let model = self.value_models.entry(this).or_default();
                     model.listeners.retain(|&(location, _, _)| location != a1);
                     model.listeners.push((a1, callback, context));

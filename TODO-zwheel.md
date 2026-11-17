@@ -94,11 +94,17 @@ The survey behind each item is in
         was not seen
   - [ ] the lists' items (game names on the grid, sizes on Delete games) still draw at 16
   - [ ] the registration field's text ("HY") sits low in its box at the new size
-- [ ] **10. Leaving the registration keyboard with Back faults 4 s later.** `AVK_CLR` on the
+- [x] **10. Leaving the registration keyboard with Back faulted 4 s later.** `AVK_CLR` on the
       keyboard returns to the main menu; with no key after it, the callback `0x77308`
-      (`args 0x10018b00 0x34000328`) jumps to `0x0` from `0x40bcc` at 38000 ms and again every
-      10 s. Measured before and after the font work, same addresses: a timer of the torn-down
-      screen still armed. Reopening Setup within 3 s hides it.
+      (`args 0x10018b00 0x34000328`) jumped to `0x0` from `0x40bcc` at 38000 ms and again every
+      10 s. Not a timer: the Setup screen's status bar listens to the credits model
+      (`0x01028e3c`), and its free function (`0x77274`) cancels the listeners through
+      `pfnCancel` — which `AddListener` left null, so they stayed on the model's list over freed
+      memory. `AddListener` now fills in a cancel. Measured: two listeners cancelled per status
+      bar that dies, no fault in 62 s; `<widget … dies: …>` and `<model listener … cancelled>`
+      in the serial log.
+  - [ ] the widgets' own `IModel_AddListener` (`widget.listeners`, item 6) has the same shape
+        and still hands out no cancel
 - [ ] **7. Navegar** ends in `Failure attempting to launch app, error(1)`: the browser is looked
       up in the Shop catalog (`browser_itemid=19354124`). Open the Opera Mini package if
       installed, or hide the item (`enable_browser=0` in the cfg copy).

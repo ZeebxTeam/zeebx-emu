@@ -2475,6 +2475,21 @@ impl<C: CpuBackend> Machine<C> {
             let Some(widget) = self.widgets.remove(&dead) else {
                 continue;
             };
+            // Only what the game hung something on: the answer to "was this screen's teardown
+            // ever called?" is here, and a line for each of the thousands of plain labels is not.
+            if self.serial.is_some() && (widget.handler.0 != 0 || widget.drawing.0 != 0) {
+                self.log_serial(format!(
+                    "<widget {dead:#x} (class {:#x}) dies: handler {:#x} ctx {:#x} free {:#x}, \
+                     drawing {:#x} ctx {:#x} free {:#x}>",
+                    widget.class_id,
+                    widget.handler.0,
+                    widget.handler.1,
+                    widget.releasers.0,
+                    widget.drawing.0,
+                    widget.drawing.1,
+                    widget.releasers.1
+                ));
+            }
             self.html_pages.remove(&dead);
             self.html_scroll.remove(&dead);
             self.html_max_scroll.remove(&dead);
