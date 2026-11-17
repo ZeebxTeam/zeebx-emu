@@ -1,4 +1,4 @@
 [submodule "rcheevos-sys/rcheevos"]
 	path = rcheevos-sys/rcheevos
-	url = https://github.com/Meowni2/rcheevos.git
-	branch = feat/zeebo-hash
+	url = https://github.com/RetroAchievements/rcheevos.git
+	branch = develop
