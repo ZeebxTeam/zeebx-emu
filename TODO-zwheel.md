@@ -56,8 +56,15 @@ The survey behind each item is in
       (`press_receivers`). The box's text was under its frame: static texts are now painted after
       the owner-draws. The language box ("Deseja alterar o idioma…? Sim / Não") showed up by the
       same fix — before, the release confirmed it on its own.
-  - [ ] the box paints over a white screen; on the console it is probably an overlay
-  - [ ] long text does not wrap, and the `\n` of the language box shows as `??`
+  - [x] the box painted over a white screen. Its form's 640×480 container has no background
+        color: a form that does not cover the screen now keeps the previous one under it
+        (`covers_screen`). The white came with a second defect — `record_position` read two
+        stack words past `{x, y, visible}` as a size, and the box's status bar got `465 × 17`
+        instead of its own strip
+  - [x] long text wraps: the box writes the width to wrap at in `0x173` (`490`) before asking
+        for the preferred extent, and flag `0x100000` of `0x153` marks the text that wraps. The
+        language box now measures 8 lines and the game grows the frame to fit; `\n` breaks the
+        line
 - [x] **4. The language restart's swallowed fault** (`0xa7a7a700`). "Sim" restarts the applet
       inside the release delivery; the next handler in the list was the freed box's `0x51a6c`.
       A release delivery now stops when the current form changes (only the release: on the press,
@@ -67,6 +74,10 @@ The survey behind each item is in
       (slot 4) on it. A canvas over the screen is now passed (names in `zeebx-core`'s `CANVAS`).
 - [x] **6. `IModel_AddListener` on the HTML models** (`0x31c34`, `0x31ca4`) answered as
       "missing": registered now; nothing notifies them yet.
+- [x] **8. Text alignment inside the widget.** `0x153` carries `IDF_ALIGN_MIDDLE` (`0x20`) and
+      `IDF_ALIGN_BOTTOM` (`0x40`): the console number sits in the middle of its 340×35 field
+      instead of on its upper edge. Bits `0x200`, `0x400` and `0x8000` are still unread, and no
+      horizontal alignment was seen.
 - [ ] **7. Navegar** ends in `Failure attempting to launch app, error(1)`: the browser is looked
       up in the Shop catalog (`browser_itemid=19354124`). Open the Opera Mini package if
       installed, or hide the item (`enable_browser=0` in the cfg copy).
@@ -75,5 +86,5 @@ Survey: `python3 tools/zwheel_survey.py --zip roms/Z-Wheel.zip` runs every scree
 profile and lists what is missing, scenario by scenario.
 
 Instruments added on the way: `<focus …>` lines for `0x700`/`0x711`/`0x713`, `<painting form …>`,
-the observed classes' calls in the session log,
+the observed classes' calls in the session log, every property in the widget dump (`props …`),
 `<drawing … did not return>`, and `zeebx session --dump-surfaces=DIR`.

@@ -282,14 +282,16 @@ impl<C: CpuBackend> Machine<C> {
 
     /// Reads the position that `AdicionarFilho` brings in `r3` and stores it in the child.
     ///
-    /// The third argument points to six words — `{x, y, flag, width, height, object}`. The game
-    /// hangs the intro image with `{0, 0, 1, 640, 480, …}`, the whole screen, and the pieces of
-    /// the z-pad form with real coordinates: `{100, 21}`, `{148, 20}`, `{365, 20}`. While this
-    /// was ignored, everything was painted at the origin and what was left on screen was a heap in
-    /// the corner.
+    /// The third argument points to `{x, y, visible}`. The game hangs the intro image at `{0, 0}`
+    /// and the pieces of the z-pad form with real coordinates: `{100, 21}`, `{148, 20}`,
+    /// `{365, 20}`. While this was ignored, everything was painted at the origin and what was left
+    /// on screen was a heap in the corner.
     ///
-    /// Width and height come zeroed when the widget measures itself, and then they are not stored:
-    /// a zero size would erase what slot 7 already said.
+    /// **The two words after them are not a size.** They used to be read as `{width, height}`,
+    /// and what came was whatever the caller's stack held: the Setup screen's labels got the
+    /// *position* of the row beside them as size (`(52, 179)`, `(52, 255)`), and the message
+    /// box's status bar got the box text's extent (`465 × 17`) in place of its own. The size comes
+    /// from slot 7 alone.
     ///
     /// The same slot serves five classes of the widget family, and not every call has this shape —
     /// some pass a function in `r2` and an object in `r3`. That is why the position is only read
@@ -299,8 +301,6 @@ impl<C: CpuBackend> Machine<C> {
         /// Offsets inside the structure, in words.
         const X: u32 = 0;
         const Y: u32 = 4;
-        const WIDTH: u32 = 12;
-        const HEIGHT: u32 = 16;
 
         if self.cpu.read_reg(Reg::R2) != 0 {
             return Ok(());
@@ -309,18 +309,8 @@ impl<C: CpuBackend> Machine<C> {
         let (Ok(x), Ok(y)) = (self.cpu.read_u32(location + X), self.cpu.read_u32(location + Y)) else {
             return Ok(());
         };
-        let size = match (
-            self.cpu.read_u32(location + WIDTH),
-            self.cpu.read_u32(location + HEIGHT),
-        ) {
-            (Ok(width), Ok(height)) if width != 0 && height != 0 => Some((width, height)),
-            _ => None,
-        };
         if let Some(widget) = self.widgets.get_mut(&child) {
             widget.position = (x as i32, y as i32);
-            if let Some(size) = size {
-                widget.size = size;
-            }
         }
         Ok(())
     }
@@ -343,7 +333,7 @@ impl<C: CpuBackend> Machine<C> {
                     format!(
                         "<widget {address:#x} parent {:#x} class {:#x} children {children} \
                          handler {:#x} ctx {:#x} focus {:#x} visible {} size {:?} pos {:?} \
-                         text {:?}>",
+                         text {:?} props {}>",
                         w.parent,
                         w.class_id,
                         w.handler.0,
@@ -352,7 +342,18 @@ impl<C: CpuBackend> Machine<C> {
                         w.visible,
                         w.size,
                         w.position,
-                        w.text
+                        w.text,
+                        {
+                            // Every property, sorted: which of them the drawing still ignores
+                            // (alignment, font, border) can only be told by seeing them all.
+                            let mut props: Vec<_> = w.properties.iter().collect();
+                            props.sort_unstable();
+                            props
+                                .iter()
+                                .map(|(id, value)| format!("{id:#x}={value:#x}"))
+                                .collect::<Vec<_>>()
+                                .join(" ")
+                        }
                     ),
                 )
             })
@@ -643,13 +644,31 @@ impl<C: CpuBackend> Machine<C> {
         // it. Without a widget, `current` is `None` and nothing here happens.
         if let Some(root) = current {
             if root != self.painted_form {
+                // **A form with no background of its own goes over the one before it.** The
+                // message box's form hangs a 640×480 container with no background color: only the
+                // status bar strip and the box itself are opaque, and the screen it was opened
+                // from stays visible around them. Clearing here left the box on a white page.
+                // The previous screen is what the persistent surface still holds — the form under
+                // the top one stops drawing, so nothing moves under the box.
+                let whole = {
+                    let target = self.target()?;
+                    self.bitmaps
+                        .get(&target)
+                        .map_or((0, 0), |surface| (surface.width() as u32, surface.height() as u32))
+                };
+                let over_previous = self.painted_form != 0 && !self.covers_screen(root, whole);
                 self.painted_form = root;
                 if self.serial.is_some() {
                     let target = self.target()?;
-                    self.log_serial(format!("<painting form {root:#x} on {target:#x}>"));
+                    self.log_serial(format!(
+                        "<painting form {root:#x} on {target:#x}{}>",
+                        if over_previous { ", over the previous one" } else { "" }
+                    ));
                 }
                 let target = self.target()?;
-                if let Some(surface) = self.bitmaps.get_mut(&target) {
+                if over_previous {
+                    // Nothing to clear.
+                } else if let Some(surface) = self.bitmaps.get_mut(&target) {
                     let screen = Rect {
                         x: 0,
                         y: 0,
@@ -683,6 +702,36 @@ impl<C: CpuBackend> Machine<C> {
             self.draw_image(image, x, y, None)?;
         }
         Ok(())
+    }
+
+    /// Whether the current form `root` paints the whole `screen` by itself: a background color or
+    /// an image the size of the screen somewhere in its tree.
+    ///
+    /// Only a form can come out as "does not cover". What is on display without a form — the main
+    /// menu's loose root — always counts as covering, which is how it was treated before this
+    /// question existed.
+    fn covers_screen(&self, root: u32, screen: (u32, u32)) -> bool {
+        if self.widgets.get(&root).is_none_or(|node| node.class_id != WIDGET_FORM) {
+            return true;
+        }
+        let fills = |size: (u32, u32)| {
+            // An unsized widget's background takes the whole surface: see `paint_backgrounds`.
+            size.0 == 0 || size.1 == 0 || (size.0 >= screen.0 && size.1 >= screen.1)
+        };
+        self.form_tree().iter().any(|address| {
+            let Some(node) = self.widgets.get(address) else {
+                return false;
+            };
+            let background = node.visible
+                && node.properties.get(&PROP_BACKGROUND_COLOR).is_some_and(|rgba| rgba & 0xff != 0)
+                && fills(node.size);
+            let image = node
+                .attached
+                .iter()
+                .filter_map(|object| self.images.get(object))
+                .any(|image| image.width >= screen.0 && image.height >= screen.1);
+            background || image
+        })
     }
 
     /// Fills, every frame, the rectangle of the current screen's widgets that have a background
@@ -757,6 +806,10 @@ impl<C: CpuBackend> Machine<C> {
     /// The order is the tree's, like the images': child on top of parent.
     pub(super) fn paint_texts(&mut self) -> Result<(), CpuError> {
         let inside = self.form_tree();
+        let line_height = self
+            .font
+            .as_ref()
+            .map_or(0, |font| (font.ascent(FONT_SIZE) + font.descent(FONT_SIZE)) as i32);
         let mut writes: Vec<(usize, i32, i32, u32, String)> = self
             .widgets
             .iter()
@@ -766,10 +819,31 @@ impl<C: CpuBackend> Machine<C> {
                     && !self.list_items.contains(*owner)
                     && self.shown(**owner)
             })
-            .map(|(&owner, widget)| {
+            .flat_map(|(&owner, widget)| {
                 let (x, y) = self.screen_position(owner);
                 let color = widget.properties.get(&PROP_COLOR).copied().unwrap_or(0);
-                (self.depth(owner), x, y, color, widget.text.clone())
+                let depth = self.depth(owner);
+                let lines = self.text_lines(owner, widget.size.0);
+                // **The text sits where its flags say, inside the widget's height.** The console
+                // number has a 340×35 widget over its field and asks for the middle; painted at
+                // the top, it sat on the field's upper edge. A widget nobody sized has no height
+                // to align in and stays at the top, as before.
+                let total = line_height * lines.len() as i32;
+                let spare = (widget.size.1 as i32 - total).max(0);
+                let flags = widget.properties.get(&PROP_FLAGS).copied().unwrap_or(0);
+                let top = match flags {
+                    f if f & FLAG_MIDDLE != 0 => y + spare / 2,
+                    f if f & FLAG_BOTTOM != 0 => y + spare,
+                    _ => y,
+                };
+                lines
+                    .into_iter()
+                    .enumerate()
+                    .filter(|(_, line)| !line.is_empty())
+                    .map(move |(index, line)| {
+                        (depth, x, top + index as i32 * line_height, color, line)
+                    })
+                    .collect::<Vec<_>>()
             })
             .collect();
         // The lists' focused items go on top: see [`Machine::prepare_lists`].
@@ -799,6 +873,32 @@ impl<C: CpuBackend> Machine<C> {
             self.write(&text, x, y, color)?;
         }
         Ok(())
+    }
+
+    /// The lines a text widget's text takes: one per `\n`, and, when it carries [`FLAG_WRAP`],
+    /// broken again at `width` pixels. A zero width does not wrap.
+    ///
+    /// The language box's text has four paragraphs separated by `\n`; drawn as one line, the
+    /// break showed up as the font's missing-glyph box.
+    fn text_lines(&self, widget: u32, width: u32) -> Vec<String> {
+        let Some(node) = self.widgets.get(&widget) else {
+            return Vec::new();
+        };
+        let wraps = node.properties.get(&PROP_FLAGS).is_some_and(|flags| flags & FLAG_WRAP != 0);
+        let paragraphs = node.text.split('\n').map(|paragraph| paragraph.trim_end_matches('\r'));
+        match (&self.font, wraps && width != 0) {
+            (Some(font), true) => paragraphs
+                .flat_map(|paragraph| {
+                    let lines = wrap_lines(paragraph, width, |t| font.width(t, FONT_SIZE));
+                    // An empty paragraph is still a line: it is the blank between two blocks.
+                    match lines.is_empty() {
+                        true => vec![String::new()],
+                        false => lines,
+                    }
+                })
+                .collect(),
+            _ => paragraphs.map(str::to_string).collect(),
+        }
     }
 
     /// Paints the current screen's HTML widgets with the placeholder text.
@@ -1510,13 +1610,20 @@ impl<C: CpuBackend> Machine<C> {
                 // put "10" on top of "Meus Z-Credits".
                 let widget = &self.widgets[&this];
                 let size = if widget.class_id == WIDGET_TEXT {
+                    // A wrapping text is measured against the width the game hinted: as many
+                    // lines as it takes, and the widest of them. See [`PROP_HINT_WIDTH`].
+                    let hint = widget.properties.get(&PROP_HINT_WIDTH).copied().unwrap_or(0);
+                    let lines = self.text_lines(this, hint);
                     self.font
                         .as_ref()
                         .map(|font| {
-                            (
-                                font.width(&widget.text, FONT_SIZE),
-                                font.ascent(FONT_SIZE) + font.descent(FONT_SIZE),
-                            )
+                            let width = lines
+                                .iter()
+                                .map(|line| font.width(line, FONT_SIZE))
+                                .max()
+                                .unwrap_or(0);
+                            let line_height = font.ascent(FONT_SIZE) + font.descent(FONT_SIZE);
+                            (width, line_height * lines.len().max(1) as u32)
                         })
                         .unwrap_or((0, 0))
                 } else {

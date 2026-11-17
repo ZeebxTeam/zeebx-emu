@@ -1176,6 +1176,24 @@ const WIDGET_TEXT: u32 = 0x0102_8e2a;
 const PROP_COLOR: u32 = 0x140;
 /// A widget's background color, `RRGGBBAA`, through the same accessor as [`PROP_COLOR`].
 const PROP_BACKGROUND_COLOR: u32 = 0x130;
+/// A text widget's flags. Read from what the Z-Wheel writes, with no header to confirm it:
+/// `0x220` on the console number inside its 340×35 field, `0x210` on the version label, `0x440` on
+/// the credits in the status bar, `0x108020` on a one-line message box text and `0x108010` on the
+/// language box's, which has several lines. Only the bits below are understood; `0x200`, `0x400`
+/// and `0x8000` are not, and no horizontal alignment was seen.
+const PROP_FLAGS: u32 = 0x153;
+/// `IDF_ALIGN_MIDDLE` in [`PROP_FLAGS`]: the text sits in the middle of the widget's height.
+const FLAG_MIDDLE: u32 = 0x20;
+/// `IDF_ALIGN_BOTTOM` in [`PROP_FLAGS`].
+const FLAG_BOTTOM: u32 = 0x40;
+/// The text breaks into lines. Only the message boxes' text carries it.
+const FLAG_WRAP: u32 = 0x10_0000;
+/// The width a wrapping text is measured against, in pixels.
+///
+/// The message box (`0x51a6c`'s form) writes `490` here — its 510-pixel frame minus the margins —,
+/// asks for the preferred extent and writes the answer's width back. Answering one long line gave
+/// `3022` for the language box, and the text ran off the frame.
+const PROP_HINT_WIDTH: u32 = 0x173;
 
 /// The class of the HTML widget, which the help screen (`FAQ_Form.c`) creates to show the pages.
 ///
