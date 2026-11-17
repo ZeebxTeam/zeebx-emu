@@ -48,10 +48,32 @@ The survey behind each item is in
       unchanged (grid frames byte-identical).
   - [ ] the full chain (slot 4 returning the widget's default `HandleEvent` instead of `(0, 0)`)
         is still not modeled; nothing measured needs it yet
-- [ ] **3. `IDOWNLOAD` failing like a console without network**, so Buy / Check balance /
-      Refill card / Shop show the connection error instead of hanging.
-- [ ] **4. The language restart's swallowed fault** (`pc 0xa7a7a7a4`). Instrumented: the serial now
-      logs `<fault …>` with `lr`, and `<callback … did not return>` with the callback delivered.
+- [x] **3. Shop / Buy / Check balance / Refill card "hanging".** Not the network: the press builds
+      the "Não foi possível conectar à rede" box (the game already detects the missing network),
+      and the **release** of the same key reached the box's OK button (`0x515ec`), which fires on
+      `EVT_KEY_RELEASE` without checking it saw the press — the box closed 240 ms later. A release
+      now goes only to the handlers that got the press and are still on screen
+      (`press_receivers`). The box's text was under its frame: static texts are now painted after
+      the owner-draws. The language box ("Deseja alterar o idioma…? Sim / Não") showed up by the
+      same fix — before, the release confirmed it on its own.
+  - [ ] the box paints over a white screen; on the console it is probably an overlay
+  - [ ] long text does not wrap, and the `\n` of the language box shows as `??`
+- [x] **4. The language restart's swallowed fault** (`0xa7a7a700`). "Sim" restarts the applet
+      inside the release delivery; the next handler in the list was the freed box's `0x51a6c`.
+      A release delivery now stops when the current form changes (only the release: on the press,
+      `0x49b38` after the keyboard's `0x461b8` is what tears down the setup screen's timer).
+- [x] **5. Help / News faulted at `pc 0` every frame.** Draw handlers get an `ICanvas`
+      (`PFNDRAWHANDLER`), not the bitmap; `0x30bdc` calls `GetBitmap` (slot 3) and `SetBitmap`
+      (slot 4) on it. A canvas over the screen is now passed (names in `zeebx-core`'s `CANVAS`).
+- [x] **6. `IModel_AddListener` on the HTML models** (`0x31c34`, `0x31ca4`) answered as
+      "missing": registered now; nothing notifies them yet.
+- [ ] **7. Navegar** ends in `Failure attempting to launch app, error(1)`: the browser is looked
+      up in the Shop catalog (`browser_itemid=19354124`). Open the Opera Mini package if
+      installed, or hide the item (`enable_browser=0` in the cfg copy).
 
-Instruments added on the way: `<focus …>` lines for `0x700`/`0x711`/`0x713`,
+Survey: `python3 tools/zwheel_survey.py --zip roms/Z-Wheel.zip` runs every screen in a throwaway
+profile and lists what is missing, scenario by scenario.
+
+Instruments added on the way: `<focus …>` lines for `0x700`/`0x711`/`0x713`, `<painting form …>`,
+the observed classes' calls in the session log,
 `<drawing … did not return>`, and `zeebx session --dump-surfaces=DIR`.

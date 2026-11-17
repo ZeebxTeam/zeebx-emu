@@ -6,6 +6,18 @@ balance options, the language, registration, the keyboard. It is a survey, measu
 [18-the-z-wheel-carousel.md](18-the-z-wheel-carousel.md); read §3 (the accessor), §5.5 (handlers)
 and §7 (key routing) there first.
 
+> **Status on 2026-11-13** — several readings below were overturned; the current state is in
+> [`TODO-zwheel.md`](../../TODO-zwheel.md):
+>
+> - **§2 was not the network.** After the confirm the game already builds the "Não foi possível
+>   conectar à rede" box; the **release** of the same key reached the box's OK button, which fires
+>   on `EVT_KEY_RELEASE`, and closed it. No `IDOWNLOAD` slot is called after the confirm (the
+>   session log now lists the observed classes' calls).
+> - **§1** came from the same release: it confirmed the language box on its own, and the restart
+>   inside the release delivery ran the freed box's handler.
+> - **The rows turning together** and **the initial focus** were fixed by `ensure_first_focus`.
+> - **§3 (Registration)** works up to the keyboard and the date lists.
+
 ## How to reproduce
 
 "Configurar" only exists in the wheel with end-of-life off (§7.3 of doc 18). Windowless, one run
