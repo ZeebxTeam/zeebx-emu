@@ -1639,11 +1639,36 @@ impl<C: CpuBackend> Machine<C> {
                     // address keeps the tree moving and avoids treating it as an unknown property
                     // code.
                     _ if self.widgets.contains_key(&selector) => OK,
+                    // **A `ModelListener` in place of the event: this is `IModel_AddListener`.**
+                    // Our widgets accept any interface, so the model the game asks for is the
+                    // widget itself, and the slot 3 it calls is ours. The HTML container
+                    // (`0x31c34` and `0x31ca4` of `tectoy.mod`) registers one on the document
+                    // model (`0x102d691`) and one on the scroll model. An event is a small code;
+                    // the listener is a heap struct with the function at `+8` and the context at
+                    // `+0xc`. Kept like the list's, ready for when something notifies them.
+                    _ if (loader::HEAP_BASE..loader::HEAP_BASE + loader::HEAP_SIZE as u32)
+                        .contains(&selector)
+                        && self
+                            .cpu
+                            .read_u32(selector + 8)
+                            .is_ok_and(|pfn| (loader::MODULE_BASE..loader::HEAP_BASE).contains(&pfn)) =>
+                    {
+                        if let Some(widget) = self.widgets.get_mut(&this) {
+                            if !widget.listeners.contains(&selector) {
+                                widget.listeners.push(selector);
+                            }
+                        }
+                        SUCCESS
+                    }
                     // Events offered first to the root by the applet (0x7b418).
                     // A true return interrupts the dispatch at 0x7b420, before the applet's own
                     // handlers that fill in the font/resource outputs.
                     // With no handler here, returning false lets the applet resolve them.
-                    0x101 | 0x7b0a | 0x7b0e | 0x7b0f => FALSE,
+                    // `EVT_KEY` (0x100) and `EVT_KEY_RELEASE` (0x102) come with the key, `0x7001`
+                    // at the end of a transition, `0x7b0b` with the new language in `dwParam`
+                    // (`0x20207470` = "pt  "). They already got zero as "missing"; listing them
+                    // only takes them out of the report.
+                    0x100..=0x102 | 0x7001 | 0x7b0a | 0x7b0b | 0x7b0e | 0x7b0f => FALSE,
                     LE => {
                         // **Not every `0x800` asks for a child.** The game reads and writes things
                         // of different types through the same selector, and the item number is what
