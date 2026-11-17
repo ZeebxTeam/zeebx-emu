@@ -224,6 +224,12 @@ fn describe(path: PathBuf) -> Option<Game> {
     })
 }
 
+/// The image that stands for the game at `path` — a `.mod` or a package: the cover next to it
+/// or, failing that, the largest icon of its `.mif`. It is what the library shows for the game.
+pub fn art_of(path: &Path) -> Option<Image> {
+    describe(path.to_path_buf())?.art
+}
+
 /// An image placed next to the game, with the same name as the game.
 ///
 /// This is the way out for anyone who wants a real cover: the `.mif` files only hold menu icons,

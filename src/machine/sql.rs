@@ -99,7 +99,7 @@ impl<C: CpuBackend> Machine<C> {
                         let games =
                             crate::loader::archive::device_dir().join("z-wheel/tt_game_info");
                         if games.exists() {
-                            let _ = keep_only_owned_slides(&target.path, &games);
+                            let _ = self.sync_stage(&target.path, &games);
                         }
                     }
                     target.path
@@ -375,11 +375,14 @@ fn keep_only_owned(
 /// **If no slide would be left, all of them stay.** A stage with nothing on it was never seen,
 /// and the Z-Wheel's own slides are a better default than finding out what it does with none.
 ///
-/// A game with no slide in the package does not get on the stage: that takes a slide built for
-/// it — model, animation and textures —, which this does not do.
+///
+/// `generic` are the slides made for the games the package has none for, as `(owner, dslid)`:
+/// see [`Machine::sync_stage`]. They go in as rows of the same shape as the package's, and are
+/// taken out and put back on every sync.
 fn keep_only_owned_slides(
     asset_cache: &std::path::Path,
     games: &std::path::Path,
+    generic: &[(i64, i64)],
 ) -> rusqlite::Result<()> {
     /// The slides of the stage, in the `type` column of `ASSETS`.
     const HIDE: &str = "type = 5 AND owner <> 0 AND (
@@ -401,9 +404,20 @@ fn keep_only_owned_slides(
     }
     tx.execute_batch(
         "CREATE TABLE IF NOT EXISTS ZEEBX_HIDDEN_ASSETS AS SELECT * FROM ASSETS WHERE 0;
+         CREATE TABLE IF NOT EXISTS ZEEBX_SLIDES(owner INTEGER PRIMARY KEY, dslid INTEGER);
          INSERT OR IGNORE INTO ASSETS SELECT * FROM ZEEBX_HIDDEN_ASSETS;
-         DELETE FROM ZEEBX_HIDDEN_ASSETS;",
+         DELETE FROM ZEEBX_HIDDEN_ASSETS;
+         -- The slides we made, out and in again: the list of who needs one is redone each time.
+         DELETE FROM ASSETS WHERE dslid IN (SELECT dslid FROM ZEEBX_SLIDES);
+         DELETE FROM ZEEBX_SLIDES;",
     )?;
+    for (owner, dslid) in generic {
+        tx.execute(
+            "INSERT OR REPLACE INTO ASSETS VALUES (?1, ?2, 5, 1, ?3, 0, '', 0, 0)",
+            rusqlite::params![owner, dslid, format!("./assets/stage_slides/{dslid}")],
+        )?;
+        tx.execute("INSERT OR REPLACE INTO ZEEBX_SLIDES VALUES (?1, ?2)", [owner, dslid])?;
+    }
     let left: u32 = tx.query_row(
         &format!("SELECT COUNT(*) FROM ASSETS WHERE type = 5 AND owner <> 0 AND NOT ({HIDE})"),
         [],
@@ -418,6 +432,101 @@ fn keep_only_owned_slides(
     tx.execute_batch("DROP TABLE zeebx_games")?;
     tx.commit()?;
     Ok(())
+}
+
+/// The first `dslid` handed to a slide of ours. The package's go from 50005 to 50095.
+const FIRST_GENERIC_SLIDE: i64 = 60000;
+/// How many slides of ours the stage gets at most. Each one is three 131 kB pictures the Z-Wheel
+/// loads into the game's heap.
+const MAX_GENERIC_SLIDES: usize = 64;
+
+impl<C: CpuBackend> Machine<C> {
+    /// Brings the stage in line with the game grid: one slide per game the user has — the
+    /// package's where it has one, one of ours where it does not.
+    ///
+    /// `games` is the profile's `tt_game_info`, already down to the user's games. See
+    /// [`keep_only_owned_slides`] for what happens to the package's slides and
+    /// [`stage_slides`](super::stage_slides) for how ours are made.
+    fn sync_stage(
+        &mut self,
+        asset_cache: &std::path::Path,
+        games: &std::path::Path,
+    ) -> rusqlite::Result<()> {
+        /// `"pt  "`, the language the names are taken in when the game has one in it.
+        const PORTUGUESE: i64 = 0x2020_7470;
+
+        let owned: Vec<(i64, i64, String, String)> = {
+            let library = rusqlite::Connection::open(games)?;
+            let mut query = library.prepare(
+                "SELECT g.game_id, g.class_id & 4294967295, COALESCE(g.boxart_path, ''),
+                        COALESCE(
+                            (SELECT titletext FROM TITLETEXT t
+                             WHERE t.game_id = g.game_id AND t.lang_id = ?1),
+                            (SELECT titletext FROM TITLETEXT t WHERE t.game_id = g.game_id),
+                            '')
+                 FROM GAMEINFO g ORDER BY 4 COLLATE NOCASE",
+            )?;
+            query
+                .query_map([PORTUGUESE], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                })?
+                .collect::<Result<_, _>>()?
+        };
+        // Who already has a slide in the package, and the numbers our slides had last time.
+        let (with_slide, mut numbers): (HashSet<i64>, HashMap<i64, i64>) = {
+            let cache = rusqlite::Connection::open(asset_cache)?;
+            cache.execute_batch(
+                "CREATE TABLE IF NOT EXISTS ZEEBX_HIDDEN_ASSETS AS SELECT * FROM ASSETS WHERE 0;
+                 CREATE TABLE IF NOT EXISTS ZEEBX_SLIDES(owner INTEGER PRIMARY KEY, dslid INTEGER);",
+            )?;
+            let mut slides = cache.prepare(
+                "SELECT owner FROM ASSETS
+                 WHERE type = 5 AND dslid NOT IN (SELECT dslid FROM ZEEBX_SLIDES)
+                 UNION SELECT owner FROM ZEEBX_HIDDEN_ASSETS
+                 WHERE type = 5 AND dslid NOT IN (SELECT dslid FROM ZEEBX_SLIDES)",
+            )?;
+            let with_slide = slides.query_map([], |row| row.get(0))?.collect::<Result<_, _>>()?;
+            let mut ours = cache.prepare("SELECT owner, dslid FROM ZEEBX_SLIDES")?;
+            let numbers = ours
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect::<Result<_, _>>()?;
+            (with_slide, numbers)
+        };
+        let catalog = crate::library::CatalogIndex::load_from(&crate::library::catalog_path());
+        let needing: Vec<_> = owned
+            .into_iter()
+            .filter(|(game_id, ..)| !with_slide.contains(game_id))
+            .take(MAX_GENERIC_SLIDES)
+            .collect();
+        // A game keeps its number while it stays; a new one takes the first that is free.
+        numbers.retain(|owner, _| needing.iter().any(|(game_id, ..)| game_id == owner));
+        let mut generic = Vec::new();
+        for (game_id, class_id, boxart_path, title) in needing {
+            let dslid = numbers.get(&game_id).copied().unwrap_or_else(|| {
+                (FIRST_GENERIC_SLIDE..)
+                    .find(|number| !numbers.values().any(|taken| taken == number))
+                    .unwrap_or(FIRST_GENERIC_SLIDE)
+            });
+            numbers.insert(game_id, dslid);
+            let game = stage_slides::SlideGame {
+                game_id,
+                title,
+                boxart_path,
+                rom_path: catalog
+                    .titles
+                    .iter()
+                    .find(|entry| i64::from(entry.applet_class) == class_id)
+                    .map(|entry| entry.rom_path.clone()),
+            };
+            if self.write_generic_slide(dslid, &game) {
+                generic.push((game_id, dslid));
+            }
+        }
+        if self.serial.is_some() {
+            self.log_serial(format!("<stage: {} slide(s) made for games with none>", generic.len()));
+        }
+        keep_only_owned_slides(asset_cache, games, &generic)
+    }
 }
 
 #[cfg(test)]
@@ -543,7 +652,7 @@ mod catalog_tests {
                  INSERT INTO ASSETS VALUES (100, 30001, 8, 1, './e', 0, '', 0, 0);",
             )
             .unwrap();
-        let owned = |ids: &[u32]| {
+        let owned = |ids: &[u32], generic: &[(i64, i64)]| {
             let _ = std::fs::remove_file(&games);
             let library = rusqlite::Connection::open(&games).unwrap();
             library.execute_batch("CREATE TABLE GAMEINFO(game_id INTEGER PRIMARY KEY)").unwrap();
@@ -551,7 +660,7 @@ mod catalog_tests {
                 library.execute("INSERT INTO GAMEINFO VALUES (?1)", [id]).unwrap();
             }
             drop(library);
-            keep_only_owned_slides(&cache, &games).unwrap();
+            keep_only_owned_slides(&cache, &games, generic).unwrap();
             let connection = rusqlite::Connection::open(&cache).unwrap();
             let mut query = connection
                 .prepare("SELECT dslid FROM ASSETS WHERE type = 5 ORDER BY dslid")
@@ -563,11 +672,15 @@ mod catalog_tests {
                 .unwrap()
         };
         // Game 100 has two slides and keeps the first; game 200 is not in the folder.
-        assert_eq!(owned(&[100]), [50081, 50088]);
+        assert_eq!(owned(&[100], &[]), [50081, 50088]);
         // It comes back with the game.
-        assert_eq!(owned(&[100, 200]), [50081, 50082, 50088]);
+        assert_eq!(owned(&[100, 200], &[]), [50081, 50082, 50088]);
         // No owned game has a slide: the package's stage stays whole.
-        assert_eq!(owned(&[300]), [50081, 50082, 50088, 50093]);
+        assert_eq!(owned(&[300], &[]), [50081, 50082, 50088, 50093]);
+        // A game with no slide in the package gets the one made for it, and loses it when it
+        // leaves the folder.
+        assert_eq!(owned(&[100, 300], &[(300, 60000)]), [50081, 50088, 60000]);
+        assert_eq!(owned(&[100], &[]), [50081, 50088]);
         // What is not a slide was never touched.
         let other: u32 = rusqlite::Connection::open(&cache)
             .unwrap()

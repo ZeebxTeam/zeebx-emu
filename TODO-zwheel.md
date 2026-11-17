@@ -127,9 +127,18 @@ The survey behind each item is in
       one slide per game of the profile's `tt_game_info`; the rest wait in `ZEEBX_HIDDEN_ASSETS`.
       Measured: 61 ROMs → 12 games on the stage, 3 ROMs → 3 (Double Dragon, Quake, Pac-Mania);
       with no slide left, the package's fifteen stay.
-  - [ ] a game with no slide in the package is not on the stage at all. Putting it there takes
-        a slide made for it — model, animation, easel and banner textures (`.qxm`, `.qxa`,
-        `.qxt`) — from its box art and title; nothing writes those formats yet
+  - [x] a game with no slide in the package gets one made for it (`machine/stage_slides.rs`): a
+        copy of the store's notice slide (`50088`, a framed panel and a tile for the top reel)
+        with the game's box art and name on the panel and the box art on the tile. The textures
+        are written as QXEngine format 1 (`RGB888`, 40-byte header, mip chain), read from the
+        package's own. **Ours, not the console's**: a Zeebo only showed what the store shipped.
+        Measured: 61 ROMs → 12 package slides and 48 of ours, no fault in 150 s on the stage
+  - [ ] the slides are remade on the first `asset_cache` open of a boot against the previous
+        run's game list, and again at 8 s against the current one: wasted writes only when the
+        folder changed
+  - [ ] 48 slides take 28 MB in the Z-Wheel's save folder; a slide of a game that left the
+        folder stays on disk
+  - [ ] the tile shows the box art small on white; the panel's name is in one size
 - [ ] **7. Navegar** ends in `Failure attempting to launch app, error(1)`: the browser is looked
       up in the Shop catalog (`browser_itemid=19354124`). Open the Opera Mini package if
       installed, or hide the item (`enable_browser=0` in the cfg copy).

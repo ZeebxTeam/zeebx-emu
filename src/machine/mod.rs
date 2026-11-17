@@ -50,6 +50,7 @@ mod shell;
 mod signal;
 mod sound;
 mod sql;
+mod stage_slides;
 mod thread;
 mod time;
 mod widget;
