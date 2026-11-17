@@ -644,6 +644,10 @@ impl<C: CpuBackend> Machine<C> {
         if let Some(root) = current {
             if root != self.painted_form {
                 self.painted_form = root;
+                if self.serial.is_some() {
+                    let target = self.target()?;
+                    self.log_serial(format!("<painting form {root:#x} on {target:#x}>"));
+                }
                 let target = self.target()?;
                 if let Some(surface) = self.bitmaps.get_mut(&target) {
                     let screen = Rect {
@@ -678,7 +682,7 @@ impl<C: CpuBackend> Machine<C> {
             let (x, y) = self.screen_position(owner);
             self.draw_image(image, x, y, None)?;
         }
-        self.paint_texts()
+        Ok(())
     }
 
     /// Fills, every frame, the rectangle of the current screen's widgets that have a background
