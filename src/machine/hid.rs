@@ -644,10 +644,11 @@ impl<C: CpuBackend> Machine<C> {
             };
             let mut handled = false;
             // With the HTML panel in focus, the vertical arrows belong to it while there is text
-            // left to scroll. See [`Machine::scroll_focused_html`].
+            // left to scroll. See [`Machine::scroll_focused_html`]. The same goes for a message
+            // box whose text is in a viewport: see [`Machine::scroll_viewport`].
             if matches!(avk, input::avk::UP | input::avk::DOWN) {
                 let downward = avk == input::avk::DOWN;
-                if down && self.scroll_focused_html(downward) {
+                if down && (self.scroll_focused_html(downward) || self.scroll_viewport(downward)) {
                     self.scroll_keys.insert(avk);
                     continue;
                 }

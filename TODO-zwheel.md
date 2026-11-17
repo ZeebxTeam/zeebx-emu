@@ -87,10 +87,18 @@ The survey behind each item is in
         path: the text goes into a viewport (`0x01028e36`) inside a scroll bar (`0x01028e26`).
         Neither held what it decorates, the text died and the form jumped to `0x0` at
         `0x51dc8`. Both hold it now, and the text is cut to the lines that fit
-  - [ ] the viewport does not scroll (`0x156` = 16 is likely its step) and the scroll bar is not
-        drawn: the Spanish paragraph of the language box is out of reach
+  - [x] the viewport scrolls: up and down move it by `0x156` (16 pixels) while there is text
+        left, and at either end the key goes on to the handlers. The text is cut at the
+        viewport's rows, and the scroll bar's handle is drawn with the width (`0x180`, 10) and
+        the color (`0x186`, `0xff0000ff` — red) the game writes. Where the console put the handle
+        was not seen
   - [ ] the lists' items (game names on the grid, sizes on Delete games) still draw at 16
   - [ ] the registration field's text ("HY") sits low in its box at the new size
+- [ ] **10. Leaving the registration keyboard with Back faults 4 s later.** `AVK_CLR` on the
+      keyboard returns to the main menu; with no key after it, the callback `0x77308`
+      (`args 0x10018b00 0x34000328`) jumps to `0x0` from `0x40bcc` at 38000 ms and again every
+      10 s. Measured before and after the font work, same addresses: a timer of the torn-down
+      screen still armed. Reopening Setup within 3 s hides it.
 - [ ] **7. Navegar** ends in `Failure attempting to launch app, error(1)`: the browser is looked
       up in the Shop catalog (`browser_itemid=19354124`). Open the Opera Mini package if
       installed, or hide the item (`enable_browser=0` in the cfg copy).

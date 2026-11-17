@@ -20,6 +20,15 @@ const FONT_PIXELS_RANGE: std::ops::RangeInclusive<u32> = 6..=96;
 /// The font object a text widget draws with: what `CriarFonte` handed out. The status bar's
 /// three texts carry three different ones.
 const PROP_FONT: u32 = 0x152;
+/// How far a viewport has scrolled, in pixels, in [`Widget::properties`] of the viewport: an id
+/// out of the game's range.
+const VIEW_SCROLL: u32 = 0xffff_0030;
+/// A viewport's scroll step in pixels. The message box writes 16.
+const PROP_INCREMENT: u32 = 0x156;
+/// The scroll bar's handle: its width in pixels (the message box writes 10) and its color, as
+/// `RRGGBBAA` (it writes `0xff0000ff`). Read from the values alone.
+const PROP_HANDLE_WIDTH: u32 = 0x180;
+const PROP_HANDLE_COLOR: u32 = 0x186;
 
 impl<C: CpuBackend> Machine<C> {
     /// Compatibility with the Z-Wheel intro shipped in package 274755.
@@ -815,7 +824,8 @@ impl<C: CpuBackend> Machine<C> {
     /// The order is the tree's, like the images': child on top of parent.
     pub(super) fn paint_texts(&mut self) -> Result<(), CpuError> {
         let inside = self.form_tree();
-        let mut writes: Vec<(usize, i32, i32, u32, String, u32)> = self
+        type Window = Option<(i32, i32)>;
+        let mut writes: Vec<(usize, i32, i32, u32, String, u32, Window)> = self
             .widgets
             .iter()
             .filter(|(owner, widget)| {
@@ -845,19 +855,31 @@ impl<C: CpuBackend> Machine<C> {
                     f if f & FLAG_BOTTOM != 0 => y + spare,
                     _ => y,
                 };
-                // Inside a viewport only the lines that fit whole are drawn: the rest is what
-                // the console would scroll to, and painted it ran over the box's buttons.
-                let window = self.viewport_rows(owner);
+                // Inside a viewport the text moves up by what was scrolled and is cut at the
+                // viewport's rows: painted whole, it ran over the box's buttons.
+                let (window, scrolled) = match self.viewport_of(owner) {
+                    Some((viewport, first, last)) => {
+                        let scrolled = self.widgets[&viewport]
+                            .properties
+                            .get(&VIEW_SCROLL)
+                            .copied()
+                            .unwrap_or(0);
+                        (Some((first, last)), scrolled as i32)
+                    }
+                    None => (None, 0),
+                };
+                let top = top - scrolled;
                 lines
                     .into_iter()
                     .enumerate()
                     .filter(|(_, line)| !line.is_empty())
                     .map(move |(index, line)| {
-                        (depth, x, top + index as i32 * line_height, color, line, size as u32)
+                        let y = top + index as i32 * line_height;
+                        (depth, x, y, color, line, size as u32, window)
                     })
                     .filter(|write| {
                         window.is_none_or(|(first, last)| {
-                            write.2 >= first && write.2 + line_height <= last
+                            write.2 + line_height > first && write.2 < last
                         })
                     })
                     .collect::<Vec<_>>()
@@ -868,7 +890,7 @@ impl<C: CpuBackend> Machine<C> {
             self.list_texts
                 .iter()
                 .map(|(x, y, color, text)| {
-                    (usize::MAX, *x, *y, *color, text.clone(), FONT_SIZE as u32)
+                    (usize::MAX, *x, *y, *color, text.clone(), FONT_SIZE as u32, None)
                 }),
         );
         // **The same text, in the same place, in the same color, is a single drawing.** The z-pad
@@ -882,7 +904,7 @@ impl<C: CpuBackend> Machine<C> {
         // With repeats gone, the order that counts is the tree's: child on top of parent.
         writes.sort_unstable_by(|a, b| (a.0, a.2, a.1).cmp(&(b.0, b.2, b.1)));
         self.paint_html()?;
-        for (_, x, y, rgba, text, size) in writes {
+        for (_, x, y, rgba, text, size, window) in writes {
             // The color comes as `RRGGBBAA`. The alpha is discarded because the console surface
             // has no channel for it — same reason as the half-tone in `write`.
             let color = Rgb {
@@ -890,24 +912,143 @@ impl<C: CpuBackend> Machine<C> {
                 g: (rgba >> 16) as u8,
                 b: (rgba >> 8) as u8,
             };
-            self.write_sized(&text, x, y, color, size as f32, true)?;
+            // A line half out of its viewport is cut at the row, not dropped.
+            let outer = self.clip;
+            if let Some((first, last)) = window {
+                self.clip = Some(Rect {
+                    x: 0,
+                    y: first as i16,
+                    width: i16::MAX,
+                    height: (last - first) as i16,
+                });
+            }
+            let written = self.write_sized(&text, x, y, color, size as f32, true);
+            self.clip = outer;
+            written?;
+        }
+        self.paint_scroll_bars()
+    }
+
+    /// How tall the content of `viewport` is and how tall its window, in pixels: the text it
+    /// decorates, at its font's size, against the viewport's rows.
+    fn viewport_extent(&self, viewport: u32) -> Option<(i32, i32)> {
+        let node = self.widgets.get(&viewport)?;
+        let text = *node.attached.iter().find(|child| {
+            self.widgets.get(child).is_some_and(|w| w.class_id == WIDGET_TEXT)
+        })?;
+        let (_, first, last) = self.viewport_of(text)?;
+        let size = self.text_size(text);
+        let font = self.font.as_ref()?;
+        let line_height = (font.ascent(size) + font.descent(size)) as i32;
+        let lines = self.text_lines(text, self.widgets.get(&text)?.size.0).len() as i32;
+        Some((lines * line_height, last - first))
+    }
+
+    /// The current screen's viewport, if it has one with content taller than itself, and how far
+    /// it can scroll.
+    fn scrollable_viewport(&self) -> Option<(u32, i32)> {
+        self.form_tree()
+            .into_iter()
+            .filter(|address| {
+                self.widgets.get(address).is_some_and(|w| w.class_id == WIDGET_VIEWPORT)
+                    && self.shown(*address)
+            })
+            .filter_map(|viewport| {
+                let (content, window) = self.viewport_extent(viewport)?;
+                (content > window).then_some((viewport, content - window))
+            })
+            .max_by_key(|(viewport, _)| self.widgets[viewport].serial)
+    }
+
+    /// Scrolls the current screen's viewport one step, if there is one and it has somewhere to
+    /// go. Returns whether it moved — at either end the key goes on to the handlers.
+    ///
+    /// On the console the viewport itself answers the arrows. The message box has no other use
+    /// for them: its buttons are side by side, and its handlers (`0x515ec`, `0x51a6c`) return
+    /// zero for up and down.
+    pub(super) fn scroll_viewport(&mut self, downward: bool) -> bool {
+        let Some((viewport, furthest)) = self.scrollable_viewport() else {
+            return false;
+        };
+        let node = &self.widgets[&viewport];
+        let step = match node.properties.get(&PROP_INCREMENT).copied().unwrap_or(0) {
+            0 => 16,
+            step => step.min(480) as i32,
+        };
+        let now = node.properties.get(&VIEW_SCROLL).copied().unwrap_or(0) as i32;
+        let next = match downward {
+            true => (now + step).min(furthest),
+            false => (now - step).max(0),
+        };
+        if next == now {
+            return false;
+        }
+        if let Some(node) = self.widgets.get_mut(&viewport) {
+            node.properties.insert(VIEW_SCROLL, next as u32);
+        }
+        true
+    }
+
+    /// Draws the handle of the current screen's scroll bar when its viewport has more content
+    /// than fits: a strip on the bar's right edge, as tall as the share of the content on view and
+    /// as far down as what was scrolled.
+    ///
+    /// **A stand-in**, like the rest of the painting here: the width and the color are the ones
+    /// the game writes on the bar; where the console put the handle, and whether it drew a track
+    /// behind it, was not seen.
+    fn paint_scroll_bars(&mut self) -> Result<(), CpuError> {
+        let Some((viewport, furthest)) = self.scrollable_viewport() else {
+            return Ok(());
+        };
+        let Some((content, window)) = self.viewport_extent(viewport) else {
+            return Ok(());
+        };
+        let bar = self.widgets[&viewport].parent;
+        let Some(node) = self.widgets.get(&bar).filter(|w| w.class_id == WIDGET_SCROLLBAR) else {
+            return Ok(());
+        };
+        let scrolled = self.widgets[&viewport].properties.get(&VIEW_SCROLL).copied().unwrap_or(0);
+        let width = match node.properties.get(&PROP_HANDLE_WIDTH).copied().unwrap_or(0) {
+            0 => 10,
+            width => width.min(64) as i32,
+        };
+        let rgba = node.properties.get(&PROP_HANDLE_COLOR).copied().unwrap_or(0x8080_80ff);
+        let (x, y) = self.screen_position(bar);
+        let (bar_width, bar_height) = (node.size.0 as i32, node.size.1 as i32);
+        if bar_width == 0 || bar_height == 0 || content <= 0 {
+            return Ok(());
+        }
+        let handle = (bar_height * window / content).clamp(width.min(bar_height), bar_height);
+        let travel = bar_height - handle;
+        let offset = travel * (scrolled as i32).min(furthest) / furthest.max(1);
+        let area = Rect {
+            x: (x + bar_width - width) as i16,
+            y: (y + offset) as i16,
+            width: width as i16,
+            height: handle as i16,
+        };
+        let color = Rgb {
+            r: (rgba >> 24) as u8,
+            g: (rgba >> 16) as u8,
+            b: (rgba >> 8) as u8,
+        };
+        let target = self.target()?;
+        if let Some(surface) = self.bitmaps.get_mut(&target) {
+            surface.fill_rect(area, color);
         }
         Ok(())
     }
 
-    /// The screen rows `(first, one past the last)` of the viewport a widget sits in, if any.
-    ///
-    /// The nearest sized ancestor among the viewport and its scroll bar counts: the message box
-    /// sizes the scroll bar (`490 × 202`) and leaves the viewport inside it unsized.
-    fn viewport_rows(&self, widget: u32) -> Option<(i32, i32)> {
-        /// How far to climb. The text is the viewport's child, and the scroll bar its parent.
+    /// The viewport a widget sits in, if any, and its screen rows `(first, one past the last)`.
+    fn viewport_of(&self, widget: u32) -> Option<(u32, i32, i32)> {
+        /// How far to climb. The text is the viewport's own child.
         const CAP: usize = 8;
         let mut current = self.widgets.get(&widget)?.parent;
         for _ in 0..CAP {
             let node = self.widgets.get(&current)?;
-            if matches!(node.class_id, WIDGET_VIEWPORT | WIDGET_SCROLLBAR) && node.size.1 != 0 {
+            if node.class_id == WIDGET_VIEWPORT && node.size.1 != 0 {
                 let top = self.screen_position(current).1;
-                return Some((top, top + node.size.1 as i32));
+                return Some((current, top, top + node.size.1 as i32));
             }
             if node.parent == 0 || node.parent == current {
                 return None;
