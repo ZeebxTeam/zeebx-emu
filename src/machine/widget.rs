@@ -134,10 +134,25 @@ impl<C: CpuBackend> Machine<C> {
         // stable, and unstable drawing is worse than drawing in the wrong order.
         to_call.sort_by_key(|(address, _)| self.widgets[address].serial);
         let screen = self.target()?;
+        // **A draw handler receives an `ICanvas`, not the bitmap** (`PFNDRAWHANDLER` in BREW's
+        // widgets). The Z-Wheel's own drawings asked the bitmap for the canvas and got along with
+        // either; the HTML container's (`0x30bdc`) calls `GetBitmap` on it directly, and on a
+        // bitmap that slot is `RGBToNative`, which writes nothing — it jumped to `0x0` on every
+        // frame of the Help and News screens.
+        if !self.canvases.contains_key(&self.draw_canvas) {
+            self.draw_canvas = self.new_object(Interface::Canvas)?;
+        }
+        let canvas = match self.draw_canvas {
+            0 => screen,
+            canvas => {
+                self.canvases.insert(canvas, screen);
+                canvas
+            }
+        };
         for (address, (callback, context)) in to_call {
             let (x, y) = self.screen_position(address);
             let outcome =
-                self.call_guest(callback, [context, screen, x as u32, y as u32], QSORT_BUDGET)?;
+                self.call_guest(callback, [context, canvas, x as u32, y as u32], QSORT_BUDGET)?;
             // A drawing that does not return was cut short, and the frame shows only part of it.
             if !matches!(outcome, Outcome::Returned { .. }) && self.serial.is_some() {
                 self.log_serial(format!(

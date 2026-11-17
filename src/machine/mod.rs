@@ -2654,6 +2654,9 @@ pub struct Machine<C: CpuBackend> {
     /// only to them: see `flush_keys`. Not in the save state — without the entry, the release goes
     /// to every handler, as it did before.
     press_receivers: HashMap<u32, std::collections::HashSet<(u32, u32)>>,
+    /// The `ICanvas` handed to the widgets' draw callbacks, pointed at the screen every frame.
+    /// One for the whole session: the callback borrows it and does not release it.
+    draw_canvas: u32,
     /// The state of each live `IPeek`.
     peeks: HashMap<u32, Peek>,
     /// The items of each live `IConfig`, by object: item number -> bytes.
@@ -3307,6 +3310,7 @@ impl<C: CpuBackend> Machine<C> {
             html_max_scroll: HashMap::new(),
             scroll_keys: Default::default(),
             press_receivers: Default::default(),
+            draw_canvas: 0,
             peeks: HashMap::new(),
             widgets: HashMap::new(),
             selectors_per_class: std::collections::BTreeMap::new(),
