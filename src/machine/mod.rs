@@ -2763,6 +2763,9 @@ pub struct Machine<C: CpuBackend> {
     next_serial: u64,
     /// The form that is painted on the surface right now. See [`Machine::paint_widgets`].
     painted_form: u32,
+    /// The surface [`Machine::painted_form`] was painted on. Not in the save state: after a
+    /// load it matches nothing, and the next form switch clears the screen as it always did.
+    painted_target: u32,
     /// When the widgets were last drawn, on the virtual clock.
     ///
     /// The one that draws an `OwnerDrawWidget` is the game, and in the Z-Wheel that callback is a
@@ -3380,6 +3383,7 @@ impl<C: CpuBackend> Machine<C> {
             widgets_dumped_form: None,
             next_serial: 0,
             painted_form: 0,
+            painted_target: 0,
             last_draw_us: 0,
             serial: None,
             egl_error: gles::EGL_SUCCESS,

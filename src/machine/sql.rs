@@ -59,7 +59,21 @@ impl<C: CpuBackend> Machine<C> {
                         .iter()
                         .filter(|entry| entry.source == crate::library::CatalogSource::Rom)
                         .map(|entry| (entry.applet_class, entry.title.as_str()));
-                    match crate::brew::sql::sync_z_wheel_library(&official, &profile, roms) {
+                    // What the user owns: the ROMs found, and what the catalog says came from the
+                    // console itself. The Z-Wheel is in the ROM folder too and is not a game.
+                    let owned: Vec<u32> = catalog
+                        .titles
+                        .iter()
+                        .map(|entry| entry.applet_class)
+                        .filter(|class| *class != crate::session::Z_WHEEL)
+                        .collect();
+                    let synced = crate::brew::sql::sync_z_wheel_library(&official, &profile, roms)
+                        .and_then(|path| {
+                            keep_only_owned(&official, &path, &owned)
+                                .map(|()| path)
+                                .map_err(|error| error.to_string())
+                        });
+                    match synced {
                         Ok(path) => path,
                         Err(error) => {
                             self.bad_pointers
@@ -251,5 +265,154 @@ impl<C: CpuBackend> Machine<C> {
             self.cpu.write_u32(block + i as u32 * 4, pointer)?;
         }
         Ok(Some(block))
+    }
+}
+
+/// Leaves in the Z-Wheel's profile catalog only the games the user has: one row per game in
+/// `owned`, and nothing else.
+///
+/// The package's `tt_game_info` lists the 59 titles the store sold, and the profile copy kept all
+/// of them: the grid showed the same games in the same order whatever was in the ROM folder, an
+/// empty folder included, and choosing one that was not there opened nothing. On top of them
+/// [`crate::brew::sql::sync_z_wheel_library`] adds a bare row per ROM — no box art, the file's
+/// name for a title —, so a game that was in both showed up twice in the database.
+///
+/// After this:
+///
+/// - a game in `owned` that the package knows keeps **the package's row**: its box art, its size
+///   and the title in each language. The bare row is dropped;
+/// - a game in `owned` the package does not know (a homebrew) keeps the bare row;
+/// - a package row for a game that is not in `owned` leaves the profile.
+///
+/// The package's rows are read from `official` on every sync, so a game that comes back to the
+/// folder comes back to the grid. A row that stayed keeps what the Z-Wheel wrote on it — play
+/// count, last played —, which is why the profile is edited and not copied again.
+fn keep_only_owned(
+    official: &std::path::Path,
+    profile: &std::path::Path,
+    owned: &[u32],
+) -> rusqlite::Result<()> {
+    let mut connection = rusqlite::Connection::open(profile)?;
+    connection.execute(
+        "ATTACH DATABASE ?1 AS package",
+        [official.to_string_lossy().as_ref()],
+    )?;
+    let tx = connection.transaction()?;
+    tx.execute_batch(
+        "CREATE TEMP TABLE zeebx_owned(class_id INTEGER PRIMARY KEY);
+         CREATE TEMP TABLE zeebx_known(class_id INTEGER PRIMARY KEY);
+         INSERT OR IGNORE INTO zeebx_known SELECT class_id FROM package.GAMEINFO;",
+    )?;
+    for class in owned {
+        tx.execute("INSERT OR IGNORE INTO zeebx_owned VALUES (?1)", [class])?;
+    }
+    tx.execute_batch(
+        // The package's rows of what is owned, back in if a previous sync took them out.
+        "INSERT OR IGNORE INTO GAMEINFO
+             SELECT * FROM package.GAMEINFO WHERE class_id IN (SELECT class_id FROM zeebx_owned);
+         INSERT OR IGNORE INTO TITLETEXT
+             SELECT * FROM package.TITLETEXT WHERE game_id IN
+                 (SELECT game_id FROM package.GAMEINFO
+                  WHERE class_id IN (SELECT class_id FROM zeebx_owned));
+         -- The package's rows of what is not owned, out.
+         DELETE FROM TITLETEXT WHERE game_id IN
+             (SELECT game_id FROM package.GAMEINFO
+              WHERE class_id NOT IN (SELECT class_id FROM zeebx_owned));
+         DELETE FROM GAMEINFO WHERE game_id IN
+             (SELECT game_id FROM package.GAMEINFO
+              WHERE class_id NOT IN (SELECT class_id FROM zeebx_owned));
+         -- The bare rows of what the package describes better, or of what is not a game.
+         DELETE FROM TITLETEXT WHERE game_id IN
+             (SELECT game_id FROM ZEEBX_LIBRARY
+              WHERE class_id IN (SELECT class_id FROM zeebx_known)
+                 OR class_id NOT IN (SELECT class_id FROM zeebx_owned));
+         DELETE FROM GAMEINFO WHERE game_id IN
+             (SELECT game_id FROM ZEEBX_LIBRARY
+              WHERE class_id IN (SELECT class_id FROM zeebx_known)
+                 OR class_id NOT IN (SELECT class_id FROM zeebx_owned));
+         DELETE FROM ZEEBX_LIBRARY
+              WHERE class_id IN (SELECT class_id FROM zeebx_known)
+                 OR class_id NOT IN (SELECT class_id FROM zeebx_owned);
+         DROP TABLE zeebx_owned;
+         DROP TABLE zeebx_known;",
+    )?;
+    tx.commit()?;
+    connection.execute("DETACH DATABASE package", [])?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod catalog_tests {
+    use super::keep_only_owned;
+
+    fn rows(path: &std::path::Path) -> Vec<(u32, u32, String)> {
+        let connection = rusqlite::Connection::open(path).unwrap();
+        let mut query = connection
+            .prepare(
+                "SELECT g.game_id, g.class_id, t.titletext FROM GAMEINFO g
+                 JOIN TITLETEXT t ON t.game_id = g.game_id ORDER BY g.game_id",
+            )
+            .unwrap();
+        query
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn the_grid_follows_the_rom_folder() {
+        let dir = std::env::temp_dir().join(format!("zeebx-catalog-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (official, profile) = (dir.join("package"), dir.join("profile"));
+        {
+            let package = rusqlite::Connection::open(&official).unwrap();
+            package
+                .execute_batch(
+                    "CREATE TABLE GAMEINFO(game_id INTEGER PRIMARY KEY, class_id INTEGER,
+                         playcount INTEGER, dt_download INTEGER, dt_lastplayed INTEGER,
+                         boxart_path TEXT, flags INTEGER, size INTEGER, unique(game_id, class_id));
+                     CREATE TABLE TITLETEXT(game_id INTEGER, lang_id INTEGER, titletext TEXT,
+                         unique(game_id, lang_id));
+                     INSERT INTO GAMEINFO VALUES (100, 1, 0, 0, 0, './a/', 0, 10);
+                     INSERT INTO GAMEINFO VALUES (200, 2, 0, 0, 0, './b/', 0, 20);
+                     INSERT INTO TITLETEXT VALUES (100, 7, 'Alice');
+                     INSERT INTO TITLETEXT VALUES (200, 7, 'Baja');",
+                )
+                .unwrap();
+        }
+        // Class 1 is in the package and in the folder, class 3 only in the folder.
+        let sync = |owned: &[(u32, &str)]| {
+            crate::brew::sql::sync_z_wheel_library(&official, &profile, owned.iter().copied())
+                .unwrap();
+            let classes: Vec<u32> = owned.iter().map(|(class, _)| *class).collect();
+            keep_only_owned(&official, &profile, &classes).unwrap();
+            let mut seen = rows(&profile);
+            seen.dedup_by_key(|row| row.0);
+            seen
+        };
+        assert_eq!(
+            sync(&[(1, "Alice no Pais"), (3, "Homebrew")]),
+            [(3, 3, "Homebrew".to_string()), (100, 1, "Alice".to_string())]
+        );
+        // The play count the Z-Wheel wrote survives the next sync.
+        rusqlite::Connection::open(&profile)
+            .unwrap()
+            .execute("UPDATE GAMEINFO SET playcount = 5 WHERE game_id = 100", [])
+            .unwrap();
+        // The folder changes: Alice stays, the homebrew goes, Baja arrives.
+        assert_eq!(
+            sync(&[(1, "Alice no Pais"), (2, "Baja 1000")]),
+            [(100, 1, "Alice".to_string()), (200, 2, "Baja".to_string())]
+        );
+        let plays: u32 = rusqlite::Connection::open(&profile)
+            .unwrap()
+            .query_row("SELECT playcount FROM GAMEINFO WHERE game_id = 100", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(plays, 5);
+        // An empty folder is an empty grid.
+        assert!(sync(&[]).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

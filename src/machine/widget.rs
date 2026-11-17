@@ -674,7 +674,11 @@ impl<C: CpuBackend> Machine<C> {
                         .get(&target)
                         .map_or((0, 0), |surface| (surface.width() as u32, surface.height() as u32))
                 };
-                let over_previous = self.painted_form != 0 && !self.covers_screen(root, whole);
+                // Only on the surface the previous one was last painted on: a transition draws
+                // the new form on a bitmap of its own, which holds nothing of the old screen.
+                let over_previous = self.painted_form != 0
+                    && self.painted_target == self.target()?
+                    && !self.covers_screen(root, whole);
                 self.painted_form = root;
                 if self.serial.is_some() {
                     let target = self.target()?;
@@ -696,6 +700,11 @@ impl<C: CpuBackend> Machine<C> {
                     surface.fill_rect(screen, Rgb::WHITE);
                 }
             }
+        }
+        if current.is_some() {
+            // Every frame, not only on the switch: a form that slid in was first painted on the
+            // transition's bitmap and lives on the screen from then on.
+            self.painted_target = self.target()?;
         }
         let inside = self.form_tree();
         self.paint_backgrounds(&inside)?;
@@ -2076,11 +2085,26 @@ impl<C: CpuBackend> Machine<C> {
                         // screen" could get it right, because the key and the drawing lived in
                         // different trees. We kept the number and lost the parentage.
                         if id >= FIRST_OBJECT && self.widgets.contains_key(&third) {
-                            if let Some(widget) = self.widgets.get_mut(&this) {
-                                widget.children.insert(id, third);
-                            }
+                            let previous = self
+                                .widgets
+                                .get_mut(&this)
+                                .and_then(|widget| widget.children.insert(id, third));
                             if let Some(child) = self.widgets.get_mut(&third) {
                                 child.parent = this;
+                            }
+                            // **Whoever stores, holds — and lets go of what it replaces.** With
+                            // no game to list, the game list's form gets its content twice: the
+                            // grid, and then a message box in its place, which the game releases
+                            // right after handing it over (`0x5000` written twice at 18011 ms).
+                            // Stored without a reference, the box died on the spot and the form
+                            // was left pointing at nothing: an empty screen with no status bar.
+                            // The reference is the one `release_widget` already gives back for
+                            // every child when the parent dies.
+                            if previous != Some(third) && third != this {
+                                self.objects.add_ref(third);
+                                if let Some(old) = previous.filter(|old| *old != this) {
+                                    self.release_widget(old)?;
+                                }
                             }
                         }
                         // **`0x341` shows or hides a child of the container**: `{IWidget *, byte

@@ -105,6 +105,19 @@ The survey behind each item is in
       in the serial log.
   - [ ] the widgets' own `IModel_AddListener` (`widget.listeners`, item 6) has the same shape
         and still hands out no cancel
+- [x] **11. The game grid follows the ROM folder.** The profile's `tt_game_info` kept the
+      package's 59 store titles whatever the folder held, and each ROM came in again as a bare
+      row (no box art, the file's name). `keep_only_owned` (`machine/sql.rs`) now leaves one row
+      per game the user has: the package's row when the package knows the game, the bare one for
+      a homebrew, and nothing for what is not in the folder. Measured: 61 ROMs → 60 rows (the
+      Z-Wheel is not a game), 3 ROMs → 3, none → 0.
+  - [x] with no game the list's form gets a message box as its content ("Não há nenhum
+        aplicativo em seu console. Gostaria de comprar um agora?"), written to `0x5000` over the
+        grid and released right after. A widget stored through the accessor is now held, and the
+        one it replaces released
+  - [ ] that box shows on a white page with no status bar; "Sim" goes to "Atualizando a Loja
+        Zeebo" and waits on the network forever
+  - [ ] a homebrew's bare row has no box art; what the grid draws for it was not looked at
 - [ ] **7. Navegar** ends in `Failure attempting to launch app, error(1)`: the browser is looked
       up in the Shop catalog (`browser_itemid=19354124`). Open the Opera Mini package if
       installed, or hide the item (`enable_browser=0` in the cfg copy).
