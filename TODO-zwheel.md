@@ -118,6 +118,18 @@ The survey behind each item is in
   - [ ] that box shows on a white page with no status bar; "Sim" goes to "Atualizando a Loja
         Zeebo" and waits on the network forever
   - [ ] a homebrew's bare row has no box art; what the grid draws for it was not looked at
+  - [x] a ClassID the package wrote signed did not match ours: Zenonia (`0xbf2e2021`,
+        `-1087496159` in the package) lost its package row to a bare one. Compared on the low 32
+        bits now
+- [x] **12. The 3D stage follows the ROM folder too.** Its slides are the `type = 5` rows of
+      `asset_cache`, fifteen of them whatever the folder held, with Crash Bandicoot and Rally
+      Master Pro twice (the package carries two slides for each). `keep_only_owned_slides` leaves
+      one slide per game of the profile's `tt_game_info`; the rest wait in `ZEEBX_HIDDEN_ASSETS`.
+      Measured: 61 ROMs → 12 games on the stage, 3 ROMs → 3 (Double Dragon, Quake, Pac-Mania);
+      with no slide left, the package's fifteen stay.
+  - [ ] a game with no slide in the package is not on the stage at all. Putting it there takes
+        a slide made for it — model, animation, easel and banner textures (`.qxm`, `.qxa`,
+        `.qxt`) — from its box art and title; nothing writes those formats yet
 - [ ] **7. Navegar** ends in `Failure attempting to launch app, error(1)`: the browser is looked
       up in the Shop catalog (`browser_itemid=19354124`). Open the Opera Mini package if
       installed, or hide the item (`enable_browser=0` in the cfg copy).
