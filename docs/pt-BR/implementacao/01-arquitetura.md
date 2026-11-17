@@ -76,6 +76,9 @@ nos irmãos e em nada além disso.
 
 ### API do BREW
 
+Estes arquivos, e os parsers do `.mod`/`.mif`/`.bar`, vivem no crate
+[`zeebx-core`](https://github.com/ZeebxTeam/zeebx-core) (os parsers em `formats/`).
+
 | Arquivo | Papel |
 |---|---|
 | `brew/aee.rs` | O trampolim: converte endereço ↔ (interface, slot) |

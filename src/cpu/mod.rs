@@ -291,21 +291,7 @@ pub type DefaultBackend = interpreter::Interpreter;
 
 // The constants of the BREW vtable range are part of the contract between the backend and the
 // dispatcher.
-pub use brew_ranges::{API_BASE, API_SIZE, RETURN_MAGIC};
-
-
-/// The three constants of the range reserved for the BREW vtables.
-///
-/// They live in a module of their own because they belong **to the contract**, not to a backend:
-/// this is how the Rust dispatcher finds out which API the game called.
-mod brew_ranges {
-    /// Base of the range reserved for the BREW vtables.
-    pub const API_BASE: u32 = 0xf000_0000;
-    /// Size of the range.
-    pub const API_SIZE: u32 = 0x0100_0000;
-    /// Sentinel address `lr` receives to mark "returned from the API".
-    pub const RETURN_MAGIC: u32 = 0xfff0_0000;
-}
+pub use zeebx_core::layout::{API_BASE, API_SIZE, RETURN_MAGIC};
 
 /// How much of the semihosting log is kept, in bytes.
 const MAX_SEMIHOSTING: usize = 256 * 1024;

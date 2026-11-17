@@ -35,7 +35,7 @@ The `Could not create root form(20)` that used to stop everything **is gone**. T
 inverted return.
 
 What was achieved along the way, and is in the emulator: `AEECLSID_SQLMGR` on top of real SQLite
-([`brew/sql.rs`](../../src/brew/sql.rs)), the generic collection `0x0100104f`, `ISHELL_SendEvent`,
+([`brew/sql.rs`](https://github.com/ZeebxTeam/zeebx-core/blob/main/src/brew/sql.rs)), the generic collection `0x0100104f`, `ISHELL_SendEvent`,
 `GETJULIANDATE`, `IDisplay::Clone`, and `DrawText` drawing with the `tectoy.ttf` that the app
 packages itself.
 

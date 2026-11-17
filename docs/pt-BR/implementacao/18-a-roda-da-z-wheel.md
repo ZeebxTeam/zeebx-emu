@@ -1239,13 +1239,13 @@ Para quem trabalha neste repositório.
 | O quê | Onde |
 |---|---|
 | Slots do widget (13, 16, 17, acessador, eventos do root) | [`machine/widget.rs`](../../../src/machine/widget.rs), `widget_call` |
-| Nomes dos slots | [`brew/aee_slots.rs`](../../../src/brew/aee_slots.rs), `WIDGET` |
+| Nomes dos slots | [`brew/aee_slots.rs`](https://github.com/ZeebxTeam/zeebx-core/blob/main/src/brew/aee_slots.rs), `WIDGET` |
 | Estado do widget (`desenho`, `modelos`, `tratador`, `serial`) | [`machine/mod.rs`](../../../src/machine/mod.rs), `struct Widget` |
 | Família de widgets, `0x0102f67c`, `0x01028e3c` | [`machine/mod.rs`](../../../src/machine/mod.rs) |
 | Árvore, formulário atual, barra `0x01028e3f` | `arvore_do_formulario`, `formulario_atual` |
 | Partida da abertura e atalho do z-pad | `parte_animacao`, `skip_wheel_instructions` |
 | Pbuffer e `GetColorBufferQUALCOMM` | [`machine/egl.rs`](../../../src/machine/egl.rs) |
-| Bancos de perfil e `tt_dlqueue.db` | [`machine/sql.rs`](../../../src/machine/sql.rs), [`brew/sql.rs`](../../../src/brew/sql.rs) |
+| Bancos de perfil e `tt_dlqueue.db` | [`machine/sql.rs`](../../../src/machine/sql.rs), [`brew/sql.rs`](https://github.com/ZeebxTeam/zeebx-core/blob/main/src/brew/sql.rs) |
 | `preloaded.cfg` | [`machine/file.rs`](../../../src/machine/file.rs) |
 | Teclas da roda | [`input/mod.rs`](../../../src/input/mod.rs), `avk::LEFT`/`RIGHT` (o direcional, em `ui/mod.rs`) |
 | Bitmap do display | [`machine/bitmap.rs`](../../../src/machine/bitmap.rs), `device_bitmap` |

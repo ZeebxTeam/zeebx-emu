@@ -5,7 +5,7 @@ keyboard shortcuts, like PCSX2. Up to 0.4.3 only Android (five slots, since 0.4.
 Libretro core (through RetroArch's slots, since 0.3.0) did this. In Qt the state was only used by
 the rewind.
 
-The state format does not change: it is the ZBXS of [`src/save_state.rs`](../../src/save_state.rs),
+The state format does not change: it is the ZBXS of [`src/save_state.rs`](https://github.com/ZeebxTeam/zeebx-core/blob/main/src/save_state.rs),
 with a version, named sections and `crc32`, the same as Android's, the core's and the rewind's.
 What this work adds is what surrounds it: where the file lives, who writes it, and the keys.
 

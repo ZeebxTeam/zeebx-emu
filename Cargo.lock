@@ -5597,6 +5597,7 @@ dependencies = [
  "sevenz-rust2",
  "symphonia",
  "ureq",
+ "zeebx-core",
  "zip",
  "zune-jpeg",
 ]
@@ -5623,6 +5624,16 @@ version = "0.5.1"
 dependencies = [
  "winresource",
  "zeebx",
+]
+
+[[package]]
+name = "zeebx-core"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47a3b6b7cb96c6fc2711da15014a59c91a56670b4d6a60ddc29cf1e01f4f1035"
+dependencies = [
+ "crc32fast",
+ "rusqlite",
 ]
 
 [[package]]
