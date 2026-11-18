@@ -1854,6 +1854,11 @@ struct MediaState {
     /// When the sound ends, on the virtual clock. Zero is "not playing", and `u64::MAX` is
     /// infinite `repeat`.
     ends_us: u64,
+    /// When the sound last reached its end by itself, on the virtual clock. Zero is "never".
+    done_us: u64,
+    /// The game loops this sound by playing it again at its end notification, and the mixer
+    /// holds the loop for it. See [`Machine::start_playback`].
+    replayed_at_end: bool,
 }
 
 impl Default for MediaState {
@@ -1872,6 +1877,8 @@ impl Default for MediaState {
                 context: 0,
             },
             ends_us: 0,
+            done_us: 0,
+            replayed_at_end: false,
         }
     }
 }

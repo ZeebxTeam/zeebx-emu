@@ -139,9 +139,23 @@ The survey behind each item is in
   - [ ] 48 slides take 28 MB in the Z-Wheel's save folder; a slide of a game that left the
         folder stays on disk
   - [ ] the tile shows the box art small on white; the panel's name is in one size
-- [ ] **7. Navegar** ends in `Failure attempting to launch app, error(1)`: the browser is looked
-      up in the Shop catalog (`browser_itemid=19354124`). Open the Opera Mini package if
-      installed, or hide the item (`enable_browser=0` in the cfg copy).
+- [x] **13. The menu music started over at every lap.** `sounds_bgdmusic1.mp3` is 18.26 s
+      (699 frames of 128 kbit/s, measured), played once; the game calls `Play` again 5 ms after
+      `MM_STATUS_DONE`. The notification follows the virtual clock and the voice the device's, so
+      each lap replaced the voice: cut short when the voice was behind, a silence when the game
+      was behind the wall clock (the menu is the slowest screen). A track of 3 s or more played
+      again within 250 ms of its end is now the mixer's loop (`keep_looping`), dropped if the
+      game does not play it again. `<media … plays …, looped by the game>` in the serial log.
+      **Not heard**: the headless session has no device; measured there only that the second
+      lap on is taken as a loop and that a `Stop` (entering a screen) still starts it over.
+- [ ] **7. Navegar** restarts the Z-Wheel. With Opera Mini in the ROM folder the launch finds
+      it (`0x0109400b`), and Opera Mini's `CreateInstance` returns 1: it asks for class
+      `0x0100102e`, which we do not have (`ECLASSNOTSUPPORT`). Served by the probe object, the
+      applet is created and `EVT_APP_START` then gives up after `IDisplay::Clone`, a font
+      (`0x0102f67b`) and `SetFont` — it frees everything and the game ends at 0 ms; why was not
+      looked at. Without the package the launch ends in `Failure attempting to launch app,
+      error(1)` (`browser_itemid=19354124`). Either make Opera Mini boot, or hide the item
+      (`enable_browser=0` in the cfg copy).
 
 Survey: `python3 tools/zwheel_survey.py --zip roms/Z-Wheel.zip` runs every screen in a throwaway
 profile and lists what is missing, scenario by scenario.

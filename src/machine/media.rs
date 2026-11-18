@@ -198,10 +198,12 @@ impl<C: CpuBackend> Machine<C> {
                     MM_PARM_MEDIA_DATA if self.read_pcm_stream(this, p1)? => {}
                     MM_PARM_MEDIA_DATA => match self.read_media_data(p1)? {
                         Delivery::Ready(payload) => {
-                            (state.payload, state.pending, state.buffer) = (payload, (0, 0), (0, 0))
+                            (state.payload, state.pending, state.buffer) = (payload, (0, 0), (0, 0));
+                            (state.done_us, state.replayed_at_end) = (0, false);
                         }
                         Delivery::Buffer(location, size) => {
-                            (state.pending, state.buffer) = ((location, size), (location, size))
+                            (state.pending, state.buffer) = ((location, size), (location, size));
+                            (state.done_us, state.replayed_at_end) = (0, false);
                         }
                         Delivery::Nothing => param_result = EFAILED,
                     },
@@ -305,6 +307,8 @@ impl<C: CpuBackend> Machine<C> {
                 if let Some(state) = self.media.get_mut(&this) {
                     state.state = MM_STATE_READY;
                     state.ends_us = 0;
+                    // Stopped, not ended: the next `Play` is not a lap.
+                    state.done_us = 0;
                     state.play_on_load = false;
                 }
                 if let Some(mixer) = &self.audio {
@@ -923,8 +927,34 @@ impl<C: CpuBackend> Machine<C> {
             0 => u64::MAX,
             times => now + length_us * u64::from(times),
         };
-        let (gain, repeat) = (state.gain(), state.repeat);
-        if let Some(mixer) = &self.audio {
+        // **A game that plays a track again at its end notification is looping it**, and the
+        // loop is then the mixer's. The Z-Wheel's menu music is an 18.26 s MP3 played once; the
+        // game calls `Play` again 5 ms after `MM_STATUS_DONE`. The notification follows the
+        // virtual clock and the voice the device's: each lap started the voice over, which cut
+        // the track's last milliseconds when the voice was behind the game and left a silence
+        // when the game was behind the wall clock — the menu's 3D stage is the slowest screen
+        // there is. Only a track is taken for one: an effect played again over itself has to
+        // start over (Zeebo F.C., see `media_play`).
+        if state.done_us != 0
+            && now.saturating_sub(state.done_us) <= REPLAY_AT_END_US
+            && length_us >= LOOPED_TRACK_MIN_US
+        {
+            state.replayed_at_end = true;
+        }
+        state.done_us = 0;
+        let (gain, repeat, looped) = (state.gain(), state.repeat, state.replayed_at_end);
+        if self.serial.is_some() {
+            self.log_serial(format!(
+                "<media {this:#x} plays {:.3} s, repeat {repeat}{}>",
+                length_us as f64 / 1e6,
+                if looped { ", looped by the game" } else { "" }
+            ));
+        }
+        if let Some(mixer) = self.audio.as_ref().filter(|_| looped) {
+            if !mixer.keep_looping(this, &sound, gain) {
+                mixer.play(this, sound, gain, 0);
+            }
+        } else if let Some(mixer) = &self.audio {
             // The Vita mixes by wall-clock time, which runs ahead of virtual time.
             // A play-once track would end in the mixer and stay silent until the
             // game asked again, on DONE. Looping in the mixer holds the music;
@@ -1244,6 +1274,26 @@ impl<C: CpuBackend> Machine<C> {
     /// Queues the end notification for the sounds that have already finished.
     pub(super) fn poll_media(&mut self) -> Result<(), CpuError> {
         let now = self.now_us();
+        // A track the mixer was looping for the game, and the game did not play again.
+        let dropped: Vec<u32> = self
+            .media
+            .iter()
+            .filter(|(_, state)| {
+                state.replayed_at_end
+                    && state.state != MM_STATE_PLAY
+                    && state.done_us != 0
+                    && now.saturating_sub(state.done_us) > REPLAY_AT_END_US
+            })
+            .map(|(this, _)| *this)
+            .collect();
+        for this in dropped {
+            if let Some(state) = self.media.get_mut(&this) {
+                (state.done_us, state.replayed_at_end) = (0, false);
+            }
+            if let Some(mixer) = &self.audio {
+                mixer.stop(this);
+            }
+        }
         let finished: Vec<u32> = self
             .media
             .iter()
@@ -1254,18 +1304,32 @@ impl<C: CpuBackend> Machine<C> {
             if let Some(state) = self.media.get_mut(&this) {
                 state.state = MM_STATE_READY;
                 state.ends_us = 0;
+                state.done_us = now.max(1);
             }
             // The loop `start_playback` put on the long track does not end on its own.
-            // Without this `stop`, the music would carry on after DONE.
+            // Without this `stop`, the music would carry on after DONE. A track the game loops
+            // by itself stays: the `Play` that comes next finds the voice where it is.
             #[cfg(target_os = "vita")]
-            if let Some(mixer) = &self.audio {
+            if let Some(mixer) = &self.audio
+                && !self.media.get(&this).is_some_and(|state| state.replayed_at_end)
+            {
                 mixer.stop(this);
+            }
+            if self.serial.is_some() {
+                self.log_serial(format!("<media {this:#x} reached its end>"));
             }
             self.notify_media(this, MM_CMD_PLAY, MM_STATUS_DONE)?;
         }
         Ok(())
     }
 }
+
+/// How long after a sound's end a `Play` on it still counts as the game looping it, in virtual
+/// microseconds. The Z-Wheel takes 5 ms; a quarter of a second is past any event loop turn and
+/// short of anybody choosing to hear the track again.
+const REPLAY_AT_END_US: u64 = 250_000;
+/// From what length a sound played again at its end is a track and not an effect.
+const LOOPED_TRACK_MIN_US: u64 = 3_000_000;
 
 /// 8- or 16-bit little-endian PCM samples, to `f32` in [-1, 1].
 pub(super) fn pcm_to_f32(bytes: &[u8], bits: u16, unsigned: bool) -> Vec<f32> {

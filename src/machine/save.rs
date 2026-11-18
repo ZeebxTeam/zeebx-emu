@@ -2132,6 +2132,9 @@ impl<C: CpuBackend> Machine<C> {
                         context: meta[12],
                     },
                     ends_us: u64::from(meta[13]) | (u64::from(meta[14]) << 32),
+                    // Learned again on the first lap: see `Machine::start_playback`.
+                    done_us: 0,
+                    replayed_at_end: false,
                 },
             );
         }
@@ -3998,6 +4001,8 @@ mod tests {
                     context: 0x14,
                 },
                 ends_us: 0x2_0000_000b,
+                done_us: 0,
+                replayed_at_end: false,
             },
         );
 
