@@ -739,7 +739,7 @@ impl<C: CpuBackend> Machine<C> {
                 if let Outcome::Returned { code } = output {
                     answers.push(format!("{callback:#x}={code:#x}"));
                 }
-                if !down && self.current_form() != form_before {
+                if self.current_form() != form_before {
                     handled = true;
                     break;
                 }

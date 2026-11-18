@@ -720,9 +720,15 @@ impl<C: CpuBackend> Machine<C> {
         // it, the 640×480 background of the welcome screen landed on top of the whole form, and
         // what was left in view was the piece of a widget that happened to have a higher address.
         //
-        // The height in the tree is the order the interface means. The address stays as a
-        // tie-breaker, so that two runs draw the same.
-        images.sort_unstable_by_key(|&(image, owner)| (self.depth(owner), image));
+        // The height in the tree is the order the interface means. **Among siblings, the one
+        // created first goes under**: the Setup screen's 576×313 panel and the console number's
+        // white field are both two levels below the form, and the game makes the panel first.
+        // The tie used to be broken by the image's address, which followed creation only until
+        // addresses were reused: on the second trip to Setup the panel was drawn over the
+        // field, and the number was left dark on dark. The address stays as the last key, so
+        // that two runs draw the same.
+        let made = |owner: u32| self.widgets.get(&owner).map_or(0, |widget| widget.serial);
+        images.sort_unstable_by_key(|&(image, owner)| (self.depth(owner), made(owner), image));
         images.dedup_by_key(|(image, _)| *image);
         for (image, owner) in images {
             let (x, y) = self.screen_position(owner);
@@ -1331,6 +1337,8 @@ impl<C: CpuBackend> Machine<C> {
         /// From here up, the item stores an object; below, a number.
         const FIRST_OBJECT: u32 = 0x5000;
         const SET_PROP: u32 = 0x801;
+        /// BREW's `EVT_USER`: from here up, events and items belong to the application.
+        const EVT_USER: u32 = 0x7000;
         /// The HTML widget item that stores an object below the `0x5000` range.
         const PROP_HTML_OBJECT: u32 = 0x161;
         /// The text field item that stores its controller. See the `LE` arm.
@@ -1617,6 +1625,13 @@ impl<C: CpuBackend> Machine<C> {
                 // release here put icons behind the roller; the cause was `ObjectStore`
                 // resurrecting free addresses, already fixed.) The `parent` stays.
                 let top = self.widgets.get_mut(&this).and_then(|widget| widget.attached.pop());
+                if self.serial.is_some() {
+                    let lr = self.cpu.read_reg(Reg::Lr);
+                    self.log_serial(format!(
+                        "<root {this:#x} pops form {:#x} from {lr:#010x}>",
+                        top.unwrap_or(0)
+                    ));
+                }
                 if let Some(form) = top {
                     self.release_widget(form)?;
                 }
@@ -1629,6 +1644,14 @@ impl<C: CpuBackend> Machine<C> {
                     .widgets
                     .get(&this)
                     .is_some_and(|widget| widget.attached.last() == Some(&child));
+                if self.serial.is_some()
+                    && self.widgets.get(&this).map_or(0, |w| w.class_id) == WIDGET_ROOT
+                {
+                    let lr = self.cpu.read_reg(Reg::Lr);
+                    self.log_serial(format!(
+                        "<root {this:#x} removes form {child:#x} from {lr:#010x}>"
+                    ));
+                }
                 if let Some(widget) = self.widgets.get_mut(&this) {
                     widget.attached.retain(|&w| w != child);
                 }
@@ -2030,6 +2053,44 @@ impl<C: CpuBackend> Machine<C> {
                         // With a number there, `0x48bfc` skipped the registration and the keyboard
                         // drew but never received a key.
                         let class_id = self.widgets.get(&this).map_or(0, |w| w.class_id);
+                        // **From `EVT_USER` (`0x7000`) up the item is the application's**, and
+                        // who answers is the handler it hung on the widget — in BREW the handler
+                        // comes before the widget's own. The Z-Wheel gives each form a number in
+                        // `0x7003`: going back, `0x80360` walks the stack from the top, removing
+                        // every form until it finds the one with the number it wants, and the
+                        // transition then pops that one (`0x74c94`). Read as an object, `0x7003`
+                        // was a child made on the spot, no form ever matched, the walk removed
+                        // Setup too and the pop took the main menu off the stack: the menu stayed
+                        // on screen outside the root, and the second trip to Registration jumped
+                        // to `0xe000b400`.
+                        let handler = self.widgets.get(&this).map_or((0, 0), |w| w.handler);
+                        if id >= EVT_USER {
+                            if handler.0 == 0 {
+                                if third != 0 {
+                                    self.cpu.write_u32(third, 0)?;
+                                }
+                                return Ok(Some(FALSE));
+                            }
+                            let answer = self.call_guest_nested(
+                                handler.0,
+                                [handler.1, LE, id, third],
+                                QSORT_BUDGET,
+                            )?;
+                            let value = match third {
+                                0 => 0,
+                                out => self.cpu.read_u32(out).unwrap_or(0),
+                            };
+                            if self.serial.is_some() {
+                                self.log_serial(format!(
+                                    "<prop {id:#x} of {this:#x} asked of its handler                                      {:#x}: {answer:?}, {value:#x}>",
+                                    handler.0
+                                ));
+                            }
+                            return Ok(Some(match answer {
+                                Outcome::Returned { code } => code,
+                                _ => FALSE,
+                            }));
+                        }
                         // On the list, `0x161` is its view model: `CreateListWidget` reads it
                         // (`0x216d0`) and registers a listener on it (slot 3) that keeps the
                         // focused index from `EVT_MDL_FOCUS_CHANGE`. With a number there, no
@@ -2497,6 +2558,9 @@ impl<C: CpuBackend> Machine<C> {
                 break;
             }
             let Some(widget) = self.widgets.remove(&dead) else {
+                // A picture that died with the widget showing it: the widget held the last
+                // reference, and nobody called the image's own `Release`.
+                self.forget_image(dead);
                 continue;
             };
             // Only what the game hung something on: the answer to "was this screen's teardown

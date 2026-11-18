@@ -3493,10 +3493,20 @@ impl<C: CpuBackend> Machine<C> {
         // Which of our deliveries entered the guest that faulted: after an indirect jump into
         // freed memory, `lr` no longer says it.
         if !matches!(outcome, Outcome::Returned { .. }) && self.serial.is_some() {
+            let regs: Vec<String> = [Reg::R0, Reg::R1, Reg::R2, Reg::R3, Reg::R4, Reg::Lr]
+                .into_iter()
+                .map(|reg| format!("{:#x}", self.cpu.read_reg(reg)))
+                .collect();
             self.log_serial(format!(
-                "<callback {func:#010x} args {:#x} {:#x} {:#x} {:#x} did not return: {outcome:?}>",
-                args[0], args[1], args[2], args[3]
+                "<callback {func:#010x} args {:#x} {:#x} {:#x} {:#x} did not return:                  {outcome:?}, r0-r4 lr {}>",
+                args[0], args[1], args[2], args[3],
+                regs.join(" ")
             ));
+            // With `--trace`, the API calls that led there.
+            let tail: Vec<String> = self.trace.iter().rev().take(40).rev().cloned().collect();
+            for line in tail {
+                self.log_serial(format!("<before the fault: {}>", line.trim()));
+            }
         }
         Ok(outcome)
     }
@@ -4036,6 +4046,12 @@ impl<C: CpuBackend> Machine<C> {
             // ClassID and `r3` the event. Since the five-argument form of `SendEvent` puts the
             // ClassID in `r1`, we read both: what decides is which of the two registers carries
             // the ClassID of the running applet.
+            // boolean ISHELL_Beep(IShell *, BeepType nBeepType, boolean bLoud)
+            //
+            // The Z-Wheel's wheel rows (`0x60930`) beep with type 4 when a press arrives and the
+            // row cannot take it yet. Unserved, the call stopped the row's key handler halfway.
+            // Silent here: the console's beep tones were not measured.
+            (Interface::Shell, slot) if Interface::Shell.method(slot) == Some("Beep") => TRUE,
             (Interface::Shell, slot) if Interface::Shell.method(slot) == Some("SendEvent") => {
                 let (a1, a2, a3) = (
                     self.cpu.read_reg(Reg::R1),

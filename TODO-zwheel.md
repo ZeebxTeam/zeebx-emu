@@ -148,6 +148,37 @@ The survey behind each item is in
       game does not play it again. `<media … plays …, looped by the game>` in the serial log.
       **Not heard**: the headless session has no device; measured there only that the second
       lap on is taken as a loop and that a `Stop` (entering a screen) still starts it over.
+- [x] **14. Setup, Registration, back, and again: pink blocks and a jump to `0xe000b400`.**
+      Five defects, measured over three round trips (`--keys` in the commit's test run):
+  - [x] **the crash** (`zeebx-core`, `ObjectStore::release`): the store counted a reference
+        for an address that was not an object of ours — `0x200fff2c`, on the game's stack —
+        and put it on the free list when the count ran out. The next vector (`0x01028e35`)
+        was born on the stack, its vtable pointer (`0xe000b400`) over a saved return address.
+        Only an object of ours gives its address back now. **Who counts that pointer was not
+        found** (63 call sites); with the guard the count is harmless. Needs the local
+        `zeebx-core`: the published 0.1.2 still has it
+  - [x] the pink blocks were the consequence: the wheel row's draw (`0x5250c`) died halfway,
+        between `SetDestination(bitmap)` and the one that puts the screen back
+  - [x] the form's number: `0x7003` is the application's item (`EVT_USER` up), answered by
+        the form's handler (`0xa000001` menu, `0xa000004` Setup, `0xa000005` Registration).
+        Going back, `0x80360` removes every form above the one it wants. Read as an object
+        it never matched
+  - [x] a press that switches the form ends its delivery, as the release already did:
+        `0x461b8` (keyboard) goes back to the menu, and `0x49b38` (the form), next in line,
+        then popped the menu itself with its transition (`0x74c94`, "Failed to pop root
+        form"). The setup screen's timer that once needed `0x49b38` is covered by item 10
+  - [x] a picture that dies with its widget leaves nothing behind (`forget_image`): the
+        status bar's text was born at the address of the console number's white field and
+        was drawn as it, at the top left corner
+  - [x] sibling pictures are drawn in the order their widgets were made, not by address:
+        on the second trip the 576×313 panel went over the white field — the number with no
+        box that was reported earlier
+  - [x] `ISHELL_Beep` (type 4, from the wheel rows at `0x60930`) is served, silent: unserved
+        it stopped the row's key handler halfway
+  - [ ] Registration's images (`0x21814`, `0x4a318`, `0x4a770`) stay at one reference after
+        the screen dies: seven objects per visit
+  - [ ] Back from Registration, Help and Delete games goes to the main menu, not to Setup:
+        it is what `0x80360` asks for (`r7 = 0xa000001`); not compared with a console
 - [ ] **7. Navegar** restarts the Z-Wheel. With Opera Mini in the ROM folder the launch finds
       it (`0x0109400b`), and Opera Mini's `CreateInstance` returns 1: it asks for class
       `0x0100102e`, which we do not have (`ECLASSNOTSUPPORT`). Served by the probe object, the
