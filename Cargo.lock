@@ -5646,6 +5646,7 @@ dependencies = [
 name = "zeebx-ios"
 version = "0.6.0"
 dependencies = [
+ "serde_json",
  "zeebx",
 ]
 

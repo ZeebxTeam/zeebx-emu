@@ -146,6 +146,18 @@ in rustup. The step-by-step is in [`frontends/ios/README.md`](frontends/ios/READ
 ./frontends/ios/build.sh --app
 ```
 
+**The Swift half only compiles there; the Rust half tests anywhere.** That is why the iOS
+frontend keeps its decisions on the Rust side — the settings screen as rows, what a finger
+presses, what a controller button is bound to — and leaves Swift to draw them:
+
+```bash
+cargo test -p zeebx-ios                               # any host, no Xcode
+ZEEBX_TEST_ROM=roms/Game.zip cargo test -p zeebx-ios  # and a real game through the whole path
+```
+
+A change to `include/zeebx_ios.h` is a change to both halves, and only `ios.yml` or a Mac sees
+the Swift one.
+
 ## CI
 
 **The tag is the only automatic trigger.** `release.yml` fires on `v0.0.0` and builds the release
