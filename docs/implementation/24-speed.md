@@ -10,14 +10,15 @@ frontends only wire up keys and menus.
 |---|---|---|
 | Frame limit (60 / 30 / off) | all frontends; in the core, the `zeebx_limite_fps` option | 60 |
 | Frameskip (off / automatic / fixed 1–6) | all; in the core, `zeebx_frameskip` | off |
-| Fast-forward (2x–10x, or unlimited) | Qt, egui, Android | 3x, F10 held |
-| Turbo (classic, toggle, hold) | Qt, egui, Android (player 1) | off |
-| Rewind (return points) | Qt, egui, Android | off, F8 |
+| Fast-forward (2x–10x, or unlimited) | Qt, egui, Android, iOS | 3x, F10 held |
+| Turbo (classic, toggle, hold) | Qt, egui, Android and iOS (player 1) | off |
+| Rewind (return points) | Qt, egui, Android, iOS | off, F8 |
 
 The Libretro core does not reimplement fast-forward, turbo or rewind: RetroArch has all three.
-See [What the core does not do](#what-the-core-does-not-do). iOS is left out of this work, and
-that is why `Session::step(budget, speed_limit: bool)` still exists: it is `advance` with the
-usual pace.
+See [What the core does not do](#what-the-core-does-not-do). On a phone there is no F10 nor F8:
+Android and iOS give the three an on-screen piece and a controller button chosen in the settings.
+`Session::step(budget, speed_limit: bool)` still exists for whoever only wants the usual pace: it
+is `advance` with it.
 
 ## The pace of a pass
 

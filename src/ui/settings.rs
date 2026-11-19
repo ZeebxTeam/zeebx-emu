@@ -676,7 +676,7 @@ impl OnScreenControlsMode {
     }
 }
 
-/// The controls drawn on a phone screen. Only Android draws them; the other frontends load them
+/// The controls drawn on a phone screen. Android and iOS draw them; the other frontends load them
 /// and write them back without touching. See [`crate::input::touch`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
