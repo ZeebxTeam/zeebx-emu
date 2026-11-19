@@ -530,10 +530,11 @@ ApplicationWindow {
                         keyId: "atualizacoes.ao_abrir"
                         label: "settings.updates.on_start"
                     }
-                    Option {
-                        keyId: "atualizacoes.pre_lancamentos"
-                        label: "settings.updates.prereleases"
+                    Choice {
+                        keyId: "atualizacoes.canal"
+                        label: "settings.updates.channel"
                     }
+                    Explanation { text: window.tr("settings.updates.channel.hint") }
                     RowLayout {
                         Button {
                             text: window.tr("settings.updates.check")

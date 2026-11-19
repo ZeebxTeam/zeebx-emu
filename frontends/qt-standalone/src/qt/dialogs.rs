@@ -247,7 +247,7 @@ impl qobject::Notices {
             };
             QString::from(&emu_core.catalog.format(
                 "update.available",
-                &[("new", &release.version), ("current", updater::CURRENT_VERSION)],
+                &[("new", &release.version), ("current", updater::build_version())],
             ))
         })
     }
@@ -310,7 +310,7 @@ impl qobject::Notices {
                 updater::Progress::Installing => catalog.get("update.installing").to_string(),
                 updater::Progress::Ready => catalog.format(
                     "update.ready",
-                    &[("new", version), ("current", updater::CURRENT_VERSION)],
+                    &[("new", version), ("current", updater::build_version())],
                 ),
                 updater::Progress::Failed(reason) => {
                     catalog.format("update.failed", &[("reason", &reason)])

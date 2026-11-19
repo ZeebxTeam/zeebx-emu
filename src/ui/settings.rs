@@ -572,22 +572,47 @@ impl KeyCombo {
     }
 }
 
+/// Which builds count as a new version.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateChannel {
+    /// Only the versions that were released: a tag, with its notes.
+    #[default]
+    Stable,
+    /// Those, and the build made every day from the development branch. It is what is coming,
+    /// before anyone has checked that it works.
+    Nightly,
+}
+
+impl UpdateChannel {
+    pub const ALL: [Self; 2] = [Self::Stable, Self::Nightly];
+
+    pub fn key_id(self) -> &'static str {
+        match self {
+            Self::Stable => "settings.updates.channel.stable",
+            Self::Nightly => "settings.updates.channel.nightly",
+        }
+    }
+}
+
 /// The search for new versions. See [`crate::ui::updater`].
+///
+/// **There is no "include pre-releases" any more.** Up to 0.6.0 every release went out marked as
+/// a pre-release on GitHub, and an option, on by default, made them count. A pre-release is now
+/// simply not a version: what is not ready for everyone goes out on the nightly channel, and a
+/// `pre_lancamentos` left in an old file is read and dropped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Updates {
     /// Ask GitHub at launch.
     #[serde(rename = "ao_abrir")]
     pub on_launch: bool,
-    /// Whether a release marked as pre-release counts as a new version. **On by default**: up to
-    /// 0.4.1 every release came out that way, and with it off nobody would be told anything.
-    #[serde(rename = "pre_lancamentos")]
-    pub prereleases: bool,
+    pub channel: UpdateChannel,
 }
 
 impl Default for Updates {
     fn default() -> Self {
-        Self { on_launch: true, prereleases: true }
+        Self { on_launch: true, channel: UpdateChannel::default() }
     }
 }
 
@@ -1141,13 +1166,30 @@ mod tests {
                 active: false,
                 covers_url: "https://exemplo/{chave}.png".into(),
             },
-            updates: Updates { on_launch: false, prereleases: false },
+            updates: Updates { on_launch: false, channel: UpdateChannel::Nightly },
             notice_dismissed_in_version: Some("0.1.0".into()),
         };
         settings.save_to(&path).unwrap();
 
         assert_eq!(Settings::load_from(&path), settings);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A file from before the channels has `pre_lancamentos`, on by default, and no channel. It
+    /// must not land anyone on the nightly: the old option is dropped, and the channel is stable.
+    #[test]
+    fn a_file_with_the_old_prerelease_option_lands_on_the_stable_channel() {
+        let old = r#"{ "atualizacoes": { "ao_abrir": false, "pre_lancamentos": true } }"#;
+        let settings: Settings = serde_json::from_str(old).unwrap();
+        assert!(!settings.updates.on_launch);
+        assert_eq!(settings.updates.channel, UpdateChannel::Stable);
+        let saved = serde_json::to_string(&settings).unwrap();
+        assert!(!saved.contains("pre_lancamentos"));
+        assert!(saved.contains(r#""channel":"stable""#));
+        // And what the selector writes comes back.
+        let nightly = r#"{ "atualizacoes": { "channel": "nightly" } }"#;
+        let settings: Settings = serde_json::from_str(nightly).unwrap();
+        assert_eq!(settings.updates.channel, UpdateChannel::Nightly);
     }
 
     /// Whoever has a `settings.json` from before the window size gets `None` in both new fields,
