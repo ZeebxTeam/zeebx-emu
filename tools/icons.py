@@ -61,6 +61,7 @@ ICONS = [
     "search",
     "settings",
     "square",  # close the game
+    "trophy",  # achievements
     "undo-2",  # undo load
     "volume-2",  # audio
     "x",

@@ -16,6 +16,10 @@ publish = false
 name = "zeebx-qt"
 path = "src/main.rs"
 
+[features]
+# RetroAchievements: see the feature of the same name at the root.
+achievements = ["zeebx/achievements"]
+
 [dependencies]
 # The core with the `desktop` feature: the audio, input and game session that Qt reuses.
 zeebx = { path = "../..", features = ["atualizador"] }

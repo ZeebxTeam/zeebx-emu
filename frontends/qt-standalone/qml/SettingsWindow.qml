@@ -319,6 +319,7 @@ ApplicationWindow {
                 { keyId: "settings.tab.graphics", iconName: "monitor", general: false },
                 { keyId: "settings.tab.speed", iconName: "gauge", general: false },
                 { keyId: "settings.tab.audio", iconName: "volume-2", general: false },
+                { keyId: "settings.tab.achievements", iconName: "trophy", general: true, achievements: true },
                 { keyId: "settings.tab.debug", iconName: "bug", general: true }
             ]
 
@@ -329,7 +330,8 @@ ApplicationWindow {
                 required property int index
 
                 width: ListView.view.width
-                visible: !modelData.general || !window.forGame
+                visible: (!modelData.general || !window.forGame)
+                         && (!modelData.achievements || Achievements.available())
                 height: visible ? implicitHeight : 0
                 // Like the buttons in the other windows: the click does not take keyboard focus,
                 // which the key capture on the controls and shortcuts pages needs.
@@ -1499,6 +1501,8 @@ ApplicationWindow {
                     }
                 }
             }
+
+            AchievementsPage {}
 
             // Debug
             ScrollView {

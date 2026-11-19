@@ -193,6 +193,10 @@ pub mod qobject {
         #[qsignal]
         fn closed(self: Pin<&mut Self>);
 
+        /// A RetroAchievements notice. `icon` is a URL, or empty.
+        #[qsignal]
+        fn achievement(self: Pin<&mut Self>, title: QString, text: QString, icon: QString);
+
         #[inherit]
         fn size(self: &Self) -> QSizeF;
 
@@ -424,6 +428,14 @@ impl qobject::GameScreen {
         let stopped = QString::from(&tick.stopped);
         if self.stopped() != &stopped {
             self.as_mut().set_stopped(stopped);
+        }
+        // The signals after `emu_core::with`, never inside: see the rule at the top of `emu_core.rs`.
+        for notice in tick.achievements {
+            self.as_mut().achievement(
+                QString::from(&notice.title),
+                QString::from(&notice.text),
+                QString::from(&notice.icon),
+            );
         }
         if tick.closed {
             self.as_mut().clear();
