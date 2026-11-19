@@ -87,7 +87,7 @@ const PHYSICAL_BUTTONS: [(Keycode, &str, usize); 13] = [
     (Keycode::ButtonR2, "RightTrigger2", 7),
     (Keycode::ButtonThumbl, "LeftThumb", 10),
     (Keycode::ButtonThumbr, "RightThumb", 8),
-    (Keycode::ButtonStart, "Start", 9),
+    (Keycode::ButtonStart, "Start", 11),
     (Keycode::ButtonSelect, "Select", 9),
     (Keycode::ButtonMode, "Mode", 11),
 ];
@@ -192,8 +192,11 @@ impl HostInput {
             Keycode::ButtonR2 => Some(7),
             Keycode::ButtonThumbl => Some(10),
             Keycode::ButtonThumbr => Some(8),
-            // The console has no Start: HOME, which here is `back`, takes its place.
-            Keycode::ButtonStart | Keycode::ButtonSelect => Some(9),
+            // Select is HOME (`back`). Start is the Start button on its own: a game that
+            // treats them as different actions, KOF's select screen among them, leaves for
+            // the title when HOME is down. HOME still asserts Start too, in `with_home_on_both`.
+            Keycode::ButtonSelect => Some(9),
+            Keycode::ButtonStart => Some(11),
             Keycode::ButtonMode => Some(11),
             other => {
                 if is_pressed {
