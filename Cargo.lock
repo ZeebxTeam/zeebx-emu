@@ -5563,7 +5563,7 @@ dependencies = [
 
 [[package]]
 name = "zeebx"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "ab_glyph",
  "blake3",
@@ -5596,7 +5596,7 @@ dependencies = [
 
 [[package]]
 name = "zeebx-android"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "android-activity",
  "android_logger",
@@ -5612,7 +5612,7 @@ dependencies = [
 
 [[package]]
 name = "zeebx-cli"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "winresource",
  "zeebx",
@@ -5630,7 +5630,7 @@ dependencies = [
 
 [[package]]
 name = "zeebx-headless"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "egui",
  "glow",
@@ -5644,14 +5644,14 @@ dependencies = [
 
 [[package]]
 name = "zeebx-ios"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "zeebx",
 ]
 
 [[package]]
 name = "zeebx-libretro"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "cc",
  "glow",
@@ -5660,7 +5660,7 @@ dependencies = [
 
 [[package]]
 name = "zeebx-standalone-qt"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "cxx",
  "cxx-qt",
@@ -5675,7 +5675,7 @@ dependencies = [
 
 [[package]]
 name = "zeebx-vita"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "cc",
  "glow",

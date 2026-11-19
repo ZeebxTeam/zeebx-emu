@@ -13,7 +13,7 @@ resolver = "3"
 
 [package]
 name = "zeebx"
-version = "0.5.1"
+version = "0.6.0"
 edition = "2024"
 # Zeebx's code is GPLv2 or later. The default CPU backend is Dynarmic, to keep the core
 # compatible with GPLv3 frontends such as Qt 6.

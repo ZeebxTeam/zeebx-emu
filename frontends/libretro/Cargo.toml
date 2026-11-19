@@ -1,6 +1,6 @@
 [package]
 name = "zeebx-libretro"
-version = "0.5.1"
+version = "0.6.0"
 edition = "2024"
 license = "GPL-2.0-or-later"
 description = "Libretro core of the Zeebx emulator"
