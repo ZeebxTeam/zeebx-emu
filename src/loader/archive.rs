@@ -1,10 +1,10 @@
-//! Jogos guardados em `.zip`.
+//! Games stored in `.zip` files.
 //!
-//! Um título do Zeebo é uma árvore de arquivos — o `.mod`, o `.mif` e os dados —, e é comum
-//! ela circular compactada. O emulador não lê de dentro do arquivo: ele extrai para uma pasta
-//! de cache e roda dali. Os jogos gravam (o Peteca tem um `.sav`), e escrever de volta num zip
-//! não é coisa que se queira fazer; extrair resolve isso de graça e deixa o resto do emulador
-//! sem saber que o zip existe.
+//! A Zeebo title is a tree of files — the `.mod`, the `.mif` and the data — and it commonly
+//! circulates compressed. The emulator does not read from inside the archive: it extracts to a
+//! cache folder and runs from there. Games write files (Peteca has a `.sav`), and writing back
+//! into a zip is not something anyone wants to do; extracting solves that for free and leaves the
+//! rest of the emulator unaware that the zip exists.
 
 use std::io::{Read, Seek};
 use std::path::{Path, PathBuf};
@@ -12,15 +12,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::config;
 use crate::loader::miffile::MifFile;
-use crate::loader::sete_z;
+use crate::loader::seven_z;
 use crate::storage::ContentId;
 
-/// Limites antes de descompactar conteúdo não confiável. São generosos para não rejeitar jogos
-/// legítimos, mas impedem que um ZIP com metadados maliciosos consuma espaço/memória sem teto.
+/// Limits applied before decompressing untrusted content. They are generous so as not to reject
+/// legitimate games, but they keep a ZIP with malicious metadata from consuming unbounded
+/// space/memory.
 pub(crate) const MAX_ENTRIES: usize = 20_000;
 pub(crate) const MAX_FILE_BYTES: u64 = 512 * 1024 * 1024;
 pub(crate) const MAX_TOTAL_BYTES: u64 = 2 * 1024 * 1024 * 1024;
-/// Um `.mif` é metadado pequeno; teto próprio evita alocar centenas de MiB só para escolher módulo.
+/// A `.mif` is small metadata; its own cap avoids allocating hundreds of MiB just to pick a module.
 pub(crate) const MAX_MANIFEST_BYTES: u64 = 16 * 1024 * 1024;
 
 #[derive(Clone, Copy)]
@@ -31,9 +32,9 @@ pub(crate) struct ArchiveLimits {
 }
 
 impl ArchiveLimits {
-    /// Os limites de sempre, para quem precisa extrair fora do caminho de `extract_in`.
+    /// The usual limits, for callers that need to extract outside the `extract_in` path.
     #[cfg(test)]
-    pub(crate) fn padrao() -> Self {
+    pub(crate) fn fallback() -> Self {
         ARCHIVE_LIMITS
     }
 }
@@ -44,7 +45,7 @@ const ARCHIVE_LIMITS: ArchiveLimits = ArchiveLimits {
     total_bytes: MAX_TOTAL_BYTES,
 };
 
-/// Impede que duas aberturas no mesmo processo apaguem o diretório parcial uma da outra.
+/// Keeps two openings in the same process from deleting each other's partial directory.
 static NEXT_PARTIAL: AtomicU64 = AtomicU64::new(0);
 
 fn partial_dir(target: &Path) -> PathBuf {
@@ -52,154 +53,157 @@ fn partial_dir(target: &Path) -> PathBuf {
     target.with_extension(format!("partial-{}-{serial}", std::process::id()))
 }
 
-/// Confere metadados antes de ler qualquer payload. `enclosed_name` é conferido outra vez no
-/// ponto de extração, porque é ele que decide o caminho de saída.
+/// Checks metadata before reading any payload. `enclosed_name` is checked again at the point of
+/// extraction, because it is what decides the output path.
 fn validate_archive<R: Read + Seek>(
     archive: &mut zip::ZipArchive<R>,
     limits: ArchiveLimits,
 ) -> std::io::Result<()> {
     if archive.len() > limits.entries {
-        return Err(std::io::Error::other("o zip tem entradas demais"));
+        return Err(std::io::Error::other("the zip has too many entries"));
     }
     let mut total = 0u64;
     for index in 0..archive.len() {
         let entry = archive.by_index(index).map_err(std::io::Error::other)?;
         if entry.enclosed_name().is_none() {
-            return Err(std::io::Error::other("o zip contém caminho inseguro"));
+            return Err(std::io::Error::other("the zip contains an unsafe path"));
         }
         if entry.is_symlink() {
-            return Err(std::io::Error::other("o zip contém link simbólico"));
+            return Err(std::io::Error::other("the zip contains a symbolic link"));
         }
         if entry.is_dir() {
             continue;
         }
         if entry.size() > limits.file_bytes {
-            return Err(std::io::Error::other("o zip contém arquivo grande demais"));
+            return Err(std::io::Error::other("the zip contains a file that is too large"));
         }
         total = total
             .checked_add(entry.size())
-            .ok_or_else(|| std::io::Error::other("o zip tem tamanho inválido"))?;
+            .ok_or_else(|| std::io::Error::other("the zip has an invalid size"))?;
         if total > limits.total_bytes {
-            return Err(std::io::Error::other("o zip descompacta bytes demais"));
+            return Err(std::io::Error::other("the zip decompresses to too many bytes"));
         }
     }
     Ok(())
 }
-/// Onde as extrações ficam.
+/// Where extractions are kept.
 pub fn cache_dir() -> PathBuf {
     config::config_dir().join("cache")
 }
 
-/// A raiz do sistema de arquivos do aparelho, comum a todos os jogos.
+/// The root of the device's file system, shared by all games.
 ///
-/// No console há **um** sistema de arquivos: o Zeeboids grava os bonecos em
-/// `fs:/zeeboiddata/zeeboid.db` e o Zeebo F.C. abre esse mesmo caminho para importá-los. Uma
-/// raiz por instalação faria cada jogo ver uma pasta só sua, e o F.C. concluiria — com razão,
-/// do ponto de vista dele — que o Zeeboids não está instalado.
+/// On the console there is **one** file system: Zeeboids saves its characters to
+/// `fs:/zeeboiddata/zeeboid.db` and Zeebo F.C. opens that same path to import them. One root per
+/// installation would make each game see a folder of its own, and F.C. would conclude — rightly,
+/// from its point of view — that Zeeboids is not installed.
 pub fn device_dir() -> PathBuf {
     config::config_dir().join("aparelho")
 }
 
-/// A fonte do sistema, no lugar em que o console a guarda: `fs:/shared/fonts/tectoy.ttf`.
+/// The system font, where the console keeps it: `fs:/shared/fonts/tectoy.ttf`.
 ///
-/// O caminho está no firmware. É a fonte com que o `IDisplay` escreve quando o jogo pede uma
-/// fonte do aparelho (`AEE_FONT_NORMAL` e as irmãs) — e a maioria dos jogos não traz fonte
-/// própria, porque no console não precisava.
+/// The path is in the firmware. It is the font `IDisplay` writes with when the game asks for a
+/// device font (`AEE_FONT_NORMAL` and its siblings) — and most games ship no font of their own,
+/// because on the console they did not need to.
 ///
-/// O arquivo **não** vem com o emulador: é da TecToy. Mas ele vem no pacote da Z-Wheel, que é o
-/// sistema do console, então quando o aparelho ainda não o tem e a Z-Wheel já foi aberta alguma
-/// vez, ele é instalado a partir dela — o mesmo que a Z-Wheel fazia no console.
-pub fn fonte_do_sistema() -> Option<PathBuf> {
-    fonte_do_sistema_em(&cache_dir(), &device_dir())
+/// The file does **not** ship with the emulator: it belongs to TecToy. But it comes in the
+/// Z-Wheel package, which is the console's system, so when the device does not have it yet and
+/// the Z-Wheel has been opened at some point, it is installed from there — the same thing the
+/// Z-Wheel did on the console.
+pub fn system_font() -> Option<PathBuf> {
+    system_font_in(&cache_dir(), &device_dir())
 }
 
-/// Como [`fonte_do_sistema`], mas com o cache e a raiz do aparelho que o frontend forneceu.
+/// Like [`system_font`], but with the cache and device root the frontend provided.
 ///
-/// A versão sem argumentos é o caminho do desktop, que lê a configuração do usuário. Um frontend
-/// como o Libretro extrai o pacote no **cache dele** e escreve o `fs:/` na raiz dele: procurar no
-/// lugar do desktop devolvia `None` mesmo com o `tectoy.ttf` dentro do pacote da Z-Wheel — e sem
-/// fonte o jogo não desenha texto nenhum, que foi o caso do Double Dragon.
-pub fn fonte_do_sistema_em(cache: &Path, device: &Path) -> Option<PathBuf> {
-    let destino = device.join("shared").join("fonts").join("tectoy.ttf");
-    if destino.is_file() {
-        return Some(destino);
+/// The version without arguments is the desktop path, which reads the user's configuration. A
+/// frontend like Libretro extracts the package into **its own cache** and writes `fs:/` into its
+/// own root: looking in the desktop's location returned `None` even with `tectoy.ttf` inside the
+/// Z-Wheel package — and without a font the game draws no text at all, which was the case with
+/// Double Dragon.
+pub fn system_font_in(cache: &Path, device: &Path) -> Option<PathBuf> {
+    let dest = device.join("shared").join("fonts").join("tectoy.ttf");
+    if dest.is_file() {
+        return Some(dest);
     }
-    let origem = std::fs::read_dir(cache)
+    let origin = std::fs::read_dir(cache)
         .ok()?
         .filter_map(Result::ok)
-        .flat_map(|pacote| {
-            std::fs::read_dir(pacote.path().join("mod"))
+        .flat_map(|package| {
+            std::fs::read_dir(package.path().join("mod"))
                 .into_iter()
                 .flatten()
                 .flatten()
         })
         .map(|modulo| modulo.path().join("tectoy.ttf"))
         .find(|ttf| ttf.is_file())?;
-    std::fs::create_dir_all(destino.parent()?).ok()?;
-    std::fs::copy(origem, &destino).ok()?;
-    Some(destino)
+    std::fs::create_dir_all(dest.parent()?).ok()?;
+    std::fs::copy(origin, &dest).ok()?;
+    Some(dest)
 }
 
-/// Instala o `tectoy.ttf` que vem **dentro do pacote da Z-Wheel** na raiz do aparelho.
+/// Installs the `tectoy.ttf` that comes **inside the Z-Wheel package** into the device root.
 ///
-/// É o caminho para quem abre um jogo sem nunca ter aberto a Z-Wheel: a fonte do sistema mora no
-/// pacote dela, e sem fonte o jogo não desenha texto do sistema — o relatório do Double Dragon
-/// listava "texto na tela (ainda sem fonte para desenhar)".
+/// This is the path for someone who opens a game without ever having opened the Z-Wheel: the
+/// system font lives in its package, and without a font the game draws no system text — the
+/// Double Dragon report listed "text on screen (no font to draw it yet)".
 ///
-/// **Não é a causa da tela branca dele.** Medido: com a fonte instalada, o quadro do Double Dragon
-/// continuava branco e uniforme. O que faltava ali era outra coisa no caminho de execução.
+/// **It is not the cause of its white screen.** Measured: with the font installed, the Double
+/// Dragon frame stayed white and uniform. What was missing there was something else in the
+/// execution path.
 ///
-/// Extrai **só** o arquivo da fonte: não vale materializar o pacote inteiro por causa de 190 KB.
-pub fn instala_fonte_do_pacote(pacote: &Path, device: &Path) -> Option<PathBuf> {
-    let destino = device.join("shared").join("fonts").join("tectoy.ttf");
-    if destino.is_file() {
-        return Some(destino);
+/// Extracts **only** the font file: materializing the whole package for 190 KB is not worth it.
+pub fn install_package_font(package: &Path, device: &Path) -> Option<PathBuf> {
+    let dest = device.join("shared").join("fonts").join("tectoy.ttf");
+    if dest.is_file() {
+        return Some(dest);
     }
-    // Duas formas de Z-Wheel aparecem no mesmo acervo: o `.zip` do pacote e uma cópia já extraída,
-    // em que a fonte fica **ao lado** do módulo (`mod/274755/tectoy.ttf`). Tratar só o zip deixava
-    // o acervo extraído sem fonte.
-    let bytes = if sete_z::eh_sete_z(pacote) {
-        // No `.7z` a fonte é procurada pelo nome, e o formato é decidido pela assinatura: o
-        // pacote do acervo pode ter sido renomeado.
-        let nome = sete_z::listar(pacote)?
+    // Two forms of the Z-Wheel show up in the same collection: the package's `.zip` and an
+    // already-extracted copy, where the font sits **next to** the module (`mod/274755/tectoy.ttf`).
+    // Handling only the zip left the extracted collection without a font.
+    let bytes = if seven_z::is_seven_z(package) {
+        // In a `.7z` the font is looked up by name, and the format is decided by the signature:
+        // the package in the collection may have been renamed.
+        let name = seven_z::list(package)?
             .into_iter()
-            .map(|(nome, _)| nome)
-            .find(|nome| nome.to_ascii_lowercase().ends_with(".ttf"))?;
-        sete_z::ler(pacote, &nome, MAX_MANIFEST_BYTES)?
+            .map(|(name, _)| name)
+            .find(|name| name.to_ascii_lowercase().ends_with(".ttf"))?;
+        seven_z::read(package, &name, MAX_MANIFEST_BYTES)?
     } else {
-        match pacote.extension().and_then(|e| e.to_str()) {
+        match package.extension().and_then(|e| e.to_str()) {
         Some("zip") => {
-            let file = std::fs::File::open(pacote).ok()?;
+            let file = std::fs::File::open(package).ok()?;
             let mut archive = zip::ZipArchive::new(file).ok()?;
-            let indice = (0..archive.len()).find(|&i| {
-                archive.by_index(i).is_ok_and(|entrada| {
-                    entrada
+            let index = (0..archive.len()).find(|&i| {
+                archive.by_index(i).is_ok_and(|entry| {
+                    entry
                         .name()
-                        .is_ok_and(|nome| nome.replace('\\', "/").ends_with("/tectoy.ttf"))
+                        .is_ok_and(|name| name.replace('\\', "/").ends_with("/tectoy.ttf"))
                 })
             })?;
-            let mut entrada = archive.by_index(indice).ok()?;
+            let mut entry = archive.by_index(index).ok()?;
             let mut bytes = Vec::new();
-            entrada.read_to_end(&mut bytes).ok()?;
+            entry.read_to_end(&mut bytes).ok()?;
             bytes
         }
-        _ => std::fs::read(pacote.parent()?.join("tectoy.ttf")).ok()?,
+        _ => std::fs::read(package.parent()?.join("tectoy.ttf")).ok()?,
         }
     };
-    std::fs::create_dir_all(destino.parent()?).ok()?;
-    std::fs::write(&destino, bytes).ok()?;
-    Some(destino)
+    std::fs::create_dir_all(dest.parent()?).ok()?;
+    std::fs::write(&dest, bytes).ok()?;
+    Some(dest)
 }
 
-/// O arquivo é um pacote: `.zip` ou `.7z`.
+/// The file is a package: `.zip` or `.7z`.
 ///
-/// **A extensão não decide o formato** — quem decide é a assinatura, no momento de abrir —, mas
-/// ela decide se vale tratar o arquivo como pacote, e é essa a pergunta que o resto do emulador
-/// faz. Um título circula das duas formas, e recusar o `.7z` aqui dava o pior sintoma possível:
-/// o jogo simplesmente "não carrega", sem dizer por quê.
-pub fn embalado(caminho: &Path) -> bool {
+/// **The extension does not decide the format** — the signature does, at open time — but it does
+/// decide whether the file is worth treating as a package, and that is the question the rest of
+/// the emulator asks. A title circulates in both forms, and refusing `.7z` here gave the worst
+/// possible symptom: the game simply "does not load", without saying why.
+pub fn is_packed(path: &Path) -> bool {
     matches!(
-        caminho
+        path
             .extension()
             .and_then(|e| e.to_str())
             .map(str::to_ascii_lowercase)
@@ -208,149 +212,153 @@ pub fn embalado(caminho: &Path) -> bool {
     )
 }
 
-/// O caminho interno do `.mod` dentro do pacote, se houver um.
+/// The internal path of the `.mod` inside the package, if there is one.
 ///
-/// Havendo mais de um, decide nesta ordem:
+/// When there is more than one, it decides in this order:
 ///
-/// 1. **Ter applet no `.mif`.** Um módulo cujo manifesto não declara applet não tem como ser
-///    iniciado. O pacote do Action Hero 3D traz dois jogos, e o outro — o IMICRO3D — declara só
-///    uma classe, sem applet: era ele que ganhava, e o pacote inteiro não abria.
-/// 2. **A disposição do console**, `<Título>/mod/<id>/<nome>.mod`, mesmo sendo o mais fundo: um
-///    pacote com o jogo e algum extra tem o módulo do jogo ali, e o extra é que costuma estar
-///    solto.
-/// 3. O caminho mais curto.
-pub fn find_module(pacote: &Path) -> Option<String> {
-    let nomes = nomes_do_pacote(pacote)?;
-    // O manifesto só é lido quando há mais de um candidato: com um só, a resposta é ele de
-    // qualquer jeito, e abrir o pacote de novo seria trabalho à toa em todo jogo do acervo.
-    escolhe_modulo(nomes, |nome| {
-        find_manifest(pacote, nome)
-            .and_then(|dados| MifFile::parse(&dados).ok())
+/// 1. **Having an applet in the `.mif`.** A module whose manifest declares no applet cannot be
+///    started. The Action Hero 3D package ships two games, and the other one — IMICRO3D —
+///    declares only a class, with no applet: it used to win, and the whole package would not
+///    open.
+/// 2. **The console layout**, `<Title>/mod/<id>/<name>.mod`, even though it is the deepest: a
+///    package with the game and some extra has the game's module there, and it is the extra that
+///    tends to be loose.
+/// 3. The shortest path.
+pub fn find_module(package: &Path) -> Option<String> {
+    let names = archive_entry_names(package)?;
+    // The manifest is only read when there is more than one candidate: with only one, it is the
+    // answer anyway, and opening the package again would be wasted work for every game in the
+    // collection.
+    pick_module(names, |name| {
+        find_manifest(package, name)
+            .and_then(|data| MifFile::parse(&data).ok())
             .and_then(|mif| mif.main_applet())
             .is_some()
     })
 }
 
-/// Os nomes de dentro do pacote, seja ele `.zip` ou `.7z`.
+/// The names inside the package, whether it is a `.zip` or a `.7z`.
 ///
-/// É a única pergunta que o resto do arquivo faz sobre o formato: daqui para baixo, zip e 7z são
-/// o mesmo pacote. O `.7z` é reconhecido pela assinatura, e não pela extensão — um `.7z`
-/// renomeado para `.zip` continua sendo um `.7z`.
-fn nomes_do_pacote(pacote: &Path) -> Option<Vec<String>> {
-    if sete_z::eh_sete_z(pacote) {
-        return sete_z::listar(pacote).map(|lista| lista.into_iter().map(|(nome, _)| nome).collect());
+/// This is the only question the rest of the file asks about the format: from here down, zip and
+/// 7z are the same package. A `.7z` is recognized by its signature, not by its extension — a
+/// `.7z` renamed to `.zip` is still a `.7z`.
+fn archive_entry_names(package: &Path) -> Option<Vec<String>> {
+    if seven_z::is_seven_z(package) {
+        return seven_z::list(package).map(|listing| listing.into_iter().map(|(name, _)| name).collect());
     }
-    let arquivo = std::fs::File::open(pacote).ok()?;
-    let mut zip = zip::ZipArchive::new(arquivo).ok()?;
+    let file = std::fs::File::open(package).ok()?;
+    let mut zip = zip::ZipArchive::new(file).ok()?;
     validate_archive(&mut zip, ARCHIVE_LIMITS).ok()?;
-    let mut nomes = Vec::with_capacity(zip.len());
-    for indice in 0..zip.len() {
-        let entrada = zip.by_index(indice).ok()?;
-        // `enclosed_name` recusa caminhos com `..` ou raiz absoluta, que é como um zip
-        // malicioso escreveria fora da pasta de destino.
-        entrada.enclosed_name()?;
-        nomes.push(entrada.name().ok()?.into_owned());
+    let mut names = Vec::with_capacity(zip.len());
+    for index in 0..zip.len() {
+        let entry = zip.by_index(index).ok()?;
+        // `enclosed_name` refuses paths with `..` or an absolute root, which is how a malicious
+        // zip would write outside the destination folder.
+        entry.enclosed_name()?;
+        names.push(entry.name().ok()?.into_owned());
     }
-    Some(nomes)
+    Some(names)
 }
 
-/// Escolhe o `.mod`, na ordem documentada em [`find_module`].
+/// Picks the `.mod`, in the order documented in [`find_module`].
 ///
-/// Está separado porque a escolha é a mesma para zip e para 7z — o que muda é quem lista os
-/// nomes. Duas cópias desta regra divergiriam no primeiro ajuste.
-fn escolhe_modulo(
-    nomes: Vec<String>,
-    com_applet: impl Fn(&str) -> bool,
+/// It is separate because the choice is the same for zip and for 7z — what changes is who lists
+/// the names. Two copies of this rule would diverge at the first tweak.
+fn pick_module(
+    names: Vec<String>,
+    has_applet: impl Fn(&str) -> bool,
 ) -> Option<String> {
-    let mut candidatos: Vec<(bool, usize, String)> = Vec::new();
-    for nome in nomes {
-        if Path::new(&nome).extension().and_then(|e| e.to_str()) != Some("mod") {
+    let mut candidates: Vec<(bool, usize, String)> = Vec::new();
+    for name in names {
+        if Path::new(&name).extension().and_then(|e| e.to_str()) != Some("mod") {
             continue;
         }
-        let partes: Vec<&str> = nome.split(['/', '\\']).collect();
-        let console = partes.len() >= 4 && partes[partes.len() - 3] == "mod";
-        candidatos.push((console, partes.len(), nome));
+        let parts: Vec<&str> = name.split(['/', '\\']).collect();
+        let console = parts.len() >= 4 && parts[parts.len() - 3] == "mod";
+        candidates.push((console, parts.len(), name));
     }
-    let sozinho = candidatos.len() <= 1;
-    candidatos
+    let alone = candidates.len() <= 1;
+    candidates
         .into_iter()
-        .max_by_key(|(console, profundidade, nome)| {
-            (sozinho || com_applet(nome), *console, std::cmp::Reverse(*profundidade))
+        .max_by_key(|(console, depth, name)| {
+            (alone || has_applet(name), *console, std::cmp::Reverse(*depth))
         })
-        .map(|(_, _, nome)| nome)
+        .map(|(_, _, name)| name)
 }
 
-/// O conteúdo do `.mif` que acompanha `module` dentro do zip.
+/// The contents of the `.mif` that goes with `module` inside the zip.
 ///
-/// O `.mif` do título fica em `<Título>/mif/<id>.mif`, irmão da pasta `mod/`. Havendo mais de
-/// um, vale o que combina com o identificador do módulo; sem isso, o primeiro serve.
-pub fn find_manifest(pacote: &Path, module: &str) -> Option<Vec<u8>> {
-    // `<Título>/mod/<id>/x.mod` -> o identificador é a pasta que contém o módulo.
-    let partes: Vec<&str> = module.split('/').collect();
-    let id = partes.get(partes.len().checked_sub(2)?).copied();
+/// The title's `.mif` sits in `<Title>/mif/<id>.mif`, a sibling of the `mod/` folder. When there
+/// is more than one, the one matching the module's identifier wins; failing that, the first one
+/// will do.
+pub fn find_manifest(package: &Path, module: &str) -> Option<Vec<u8>> {
+    // `<Title>/mod/<id>/x.mod` -> the identifier is the folder that contains the module.
+    let parts: Vec<&str> = module.split('/').collect();
+    let id = parts.get(parts.len().checked_sub(2)?).copied();
 
-    if sete_z::eh_sete_z(pacote) {
-        let lista = sete_z::listar(pacote)?;
-        let nome = escolhe_mif(lista.into_iter().filter(|(_, pasta)| !pasta).map(|(nome, _)| nome), id)?;
-        return sete_z::ler(pacote, &nome, MAX_MANIFEST_BYTES);
+    if seven_z::is_seven_z(package) {
+        let listing = seven_z::list(package)?;
+        let name = pick_mif(listing.into_iter().filter(|(_, dir)| !dir).map(|(name, _)| name), id)?;
+        return seven_z::read(package, &name, MAX_MANIFEST_BYTES);
     }
 
-    let arquivo = std::fs::File::open(pacote).ok()?;
-    let mut zip = zip::ZipArchive::new(arquivo).ok()?;
+    let file = std::fs::File::open(package).ok()?;
+    let mut zip = zip::ZipArchive::new(file).ok()?;
     validate_archive(&mut zip, ARCHIVE_LIMITS).ok()?;
-    let mut nomes = Vec::with_capacity(zip.len());
-    for indice in 0..zip.len() {
-        let entrada = zip.by_index(indice).ok()?;
-        entrada.enclosed_name()?;
-        nomes.push(entrada.name().ok()?.into_owned());
+    let mut names = Vec::with_capacity(zip.len());
+    for index in 0..zip.len() {
+        let entry = zip.by_index(index).ok()?;
+        entry.enclosed_name()?;
+        names.push(entry.name().ok()?.into_owned());
     }
-    let nome = escolhe_mif(nomes.into_iter(), id)?;
-    let mut entrada = zip.by_name(&nome).ok()?;
-    if entrada.size() > MAX_MANIFEST_BYTES {
+    let name = pick_mif(names.into_iter(), id)?;
+    let mut entry = zip.by_name(&name).ok()?;
+    if entry.size() > MAX_MANIFEST_BYTES {
         return None;
     }
-    let mut dados = Vec::with_capacity(entrada.size() as usize);
-    entrada
+    let mut data = Vec::with_capacity(entry.size() as usize);
+    entry
         .by_ref()
         .take(MAX_MANIFEST_BYTES + 1)
-        .read_to_end(&mut dados)
+        .read_to_end(&mut data)
         .ok()?;
-    (dados.len() as u64 <= MAX_MANIFEST_BYTES).then_some(dados)
+    (data.len() as u64 <= MAX_MANIFEST_BYTES).then_some(data)
 }
 
-/// Diz se um arquivo extraído ainda é byte a byte igual à entrada original do pacote.
+/// Says whether an extracted file is still byte-for-byte identical to the package's original
+/// entry.
 ///
-/// Serve à migração de frontends que antigamente deixavam o jogo escrever dentro do cache:
-/// alguns títulos trazem um save "semente" no próprio ZIP e depois o sobrescrevem. Nesse caso o
-/// manifesto sozinho não distingue conteúdo do pacote de progresso do jogador.
-pub fn entrada_igual_ao_arquivo(
-    pacote: &Path,
-    nome: &str,
-    arquivo: &Path,
+/// It serves the migration of frontends that used to let the game write inside the cache: some
+/// titles ship a "seed" save in the ZIP itself and later overwrite it. In that case the manifest
+/// alone cannot tell package content from the player's progress.
+pub fn entry_matches_file(
+    package: &Path,
+    name: &str,
+    file: &Path,
 ) -> std::io::Result<bool> {
-    let meta = std::fs::metadata(arquivo)?;
-    if sete_z::eh_sete_z(pacote) {
-        let dados = sete_z::ler(pacote, nome, MAX_FILE_BYTES)
-            .ok_or_else(|| std::io::Error::other("não leu a entrada do 7z"))?;
-        if dados.len() as u64 != meta.len() {
+    let meta = std::fs::metadata(file)?;
+    if seven_z::is_seven_z(package) {
+        let data = seven_z::read(package, name, MAX_FILE_BYTES)
+            .ok_or_else(|| std::io::Error::other("could not read the 7z entry"))?;
+        if data.len() as u64 != meta.len() {
             return Ok(false);
         }
-        return Ok(std::fs::read(arquivo)? == dados);
+        return Ok(std::fs::read(file)? == data);
     }
 
-    let origem = std::fs::File::open(pacote)?;
-    let mut zip = zip::ZipArchive::new(origem).map_err(std::io::Error::other)?;
+    let origin = std::fs::File::open(package)?;
+    let mut zip = zip::ZipArchive::new(origin).map_err(std::io::Error::other)?;
     validate_archive(&mut zip, ARCHIVE_LIMITS)?;
-    let mut entrada = zip.by_name(nome).map_err(std::io::Error::other)?;
-    if entrada.size() != meta.len() {
+    let mut entry = zip.by_name(name).map_err(std::io::Error::other)?;
+    if entry.size() != meta.len() {
         return Ok(false);
     }
-    let mut atual = std::fs::File::open(arquivo)?;
+    let mut current = std::fs::File::open(file)?;
     let mut a = [0u8; 64 * 1024];
     let mut b = [0u8; 64 * 1024];
     loop {
-        let la = entrada.read(&mut a)?;
-        let lb = atual.read(&mut b)?;
+        let la = entry.read(&mut a)?;
+        let lb = current.read(&mut b)?;
         if la != lb || a[..la] != b[..lb] {
             return Ok(false);
         }
@@ -360,28 +368,28 @@ pub fn entrada_igual_ao_arquivo(
     }
 }
 
-/// Escolhe o `.mif` do título entre os nomes do pacote.
+/// Picks the title's `.mif` among the package's names.
 ///
-/// Vale o que combina com o identificador do módulo; sem combinação, o primeiro serve — o mesmo
-/// critério para zip e para 7z.
-fn escolhe_mif(nomes: impl Iterator<Item = String>, id: Option<&str>) -> Option<String> {
-    let mut primeiro: Option<String> = None;
-    for nome in nomes {
-        if !nome.ends_with(".mif") {
+/// The one matching the module's identifier wins; with no match, the first one will do — the
+/// same criterion for zip and for 7z.
+fn pick_mif(names: impl Iterator<Item = String>, id: Option<&str>) -> Option<String> {
+    let mut first: Option<String> = None;
+    for name in names {
+        if !name.ends_with(".mif") {
             continue;
         }
-        if id.is_some_and(|id| nome.ends_with(&format!("/{id}.mif"))) {
-            return Some(nome);
+        if id.is_some_and(|id| name.ends_with(&format!("/{id}.mif"))) {
+            return Some(name);
         }
-        primeiro.get_or_insert(nome);
+        first.get_or_insert(name);
     }
-    primeiro
+    first
 }
 
-/// O título que o zip anuncia.
+/// The title the zip announces.
 ///
-/// Um pacote feito do diretório do console tem a pasta do título na raiz, e é dela que sai o
-/// nome. Sem essa pasta, o nome do próprio arquivo serve.
+/// A package made from the console's directory has the title folder at its root, and the name
+/// comes from it. Without that folder, the name of the file itself will do.
 pub fn title_of(zip: &Path, module: &str) -> String {
     let stem = zip
         .file_stem()
@@ -389,57 +397,59 @@ pub fn title_of(zip: &Path, module: &str) -> String {
         .unwrap_or_default()
         .to_string();
     let parts: Vec<&str> = module.split('/').collect();
-    // `<Título>/mod/<id>/<nome>.mod`
+    // `<Title>/mod/<id>/<name>.mod`
     match parts.len() >= 4 && parts[1] == "mod" {
         true => parts[0].to_string(),
         false => stem,
     }
 }
 
-/// Extrai o zip para o cache e devolve o caminho do `.mod`.
+/// Extracts the zip into the cache and returns the path of the `.mod`.
 ///
-/// A pasta de destino é nomeada pelo hash BLAKE3 dos bytes do arquivo: trocar o conteúdo gera
-/// outra pasta, e cópia idêntica reaproveita a extração anterior sem confiar em tamanho/data.
+/// The destination folder is named after the BLAKE3 hash of the file's bytes: changing the
+/// contents produces another folder, and an identical copy reuses the earlier extraction without
+/// relying on size/date.
 pub fn extract(zip: &Path) -> std::io::Result<PathBuf> {
     extract_in(zip, &cache_dir())
 }
 
-/// Como [`extract`], mas com cache explícito para o frontend que controla sua raiz persistente.
+/// Like [`extract`], but with an explicit cache for the frontend that controls its persistent root.
 pub fn extract_in(zip: &Path, cache: &Path) -> std::io::Result<PathBuf> {
-    // A seleção e a extração ainda precisam abrir o arquivo mais de uma vez. Conferir o digest
-    // entre essas fases recusa a troca da ROM no meio da operação, em vez de pôr bytes diferentes
-    // sob uma chave de conteúdo errada.
+    // Selection and extraction still need to open the file more than once. Checking the digest
+    // between those phases refuses a ROM swapped mid-operation, instead of putting different bytes
+    // under the wrong content key.
     let source_fingerprint = fingerprint(zip)?;
     let module = find_module(zip)
-        .ok_or_else(|| std::io::Error::other("o pacote não contém nenhum arquivo .mod"))?;
+        .ok_or_else(|| std::io::Error::other("the package contains no .mod file"))?;
     if fingerprint(zip)? != source_fingerprint {
-        return Err(std::io::Error::other("o zip mudou enquanto era analisado"));
+        return Err(std::io::Error::other("the zip changed while it was being analyzed"));
     }
     let target = cache.join(&source_fingerprint);
     let extracted = target.join(&module);
-    // Já extraído com identidade forte: nada a fazer.
+    // Already extracted under a strong identity: nothing to do.
     if extracted.is_file() {
         return Ok(extracted);
     }
-    // A versão anterior usava nome+tamanho+mtime. Mantemos o cache antigo como leitura
-    // transitória para não esconder saves que ainda vivem dentro dele; nunca escrevemos conteúdo
-    // novo ali, pois aquela chave podia colidir.
+    // The previous version used name+size+mtime. We keep the old cache as a transitional
+    // read-only path so as not to hide saves that still live inside it; we never write new
+    // content there, because that key could collide.
     let legacy = cache.join(legacy_fingerprint(zip)?).join(&module);
     if legacy.is_file() {
         return Ok(legacy);
     }
 
-    // Nunca deixamos um cache parcialmente extraído parecer utilizável. Uma queda no meio da
-    // cópia fica em `.partial`, que a próxima abertura remove antes de tentar de novo.
+    // We never let a partially extracted cache look usable. A crash in the middle of the copy
+    // stays in `.partial`, which the next opening removes before trying again.
     let partial = partial_dir(&target);
     let result = (|| -> std::io::Result<()> {
-        // O `.7z` descompacta por caminho próprio, e **daqui para baixo o caminho é o mesmo**:
-        // conferir o digest, escrever o manifesto, exigir a presença do `.mod` e publicar a
-        // extração com um renomeio. Sair cedo daqui deixava o conteúdo numa pasta `.partial` e
-        // devolvia um caminho que não existia — foi o que aconteceu na primeira versão.
-        if sete_z::eh_sete_z(zip) {
+        // A `.7z` decompresses through its own path, and **from here down the path is the
+        // same**: check the digest, write the manifest, require the `.mod` to be present and
+        // publish the extraction with a rename. Returning early from here left the contents in a
+        // `.partial` folder and returned a path that did not exist — which is what happened in
+        // the first version.
+        if seven_z::is_seven_z(zip) {
             std::fs::create_dir_all(&partial)?;
-            sete_z::extrair(zip, &partial, ARCHIVE_LIMITS)?;
+            seven_z::extract(zip, &partial, ARCHIVE_LIMITS)?;
         } else {
         let file = std::fs::File::open(zip)?;
         let mut archive = zip::ZipArchive::new(file).map_err(std::io::Error::other)?;
@@ -458,43 +468,43 @@ pub fn extract_in(zip: &Path, cache: &Path) -> std::io::Result<PathBuf> {
             if let Some(dir) = out.parent() {
                 std::fs::create_dir_all(dir)?;
             }
-            // Não aloca um Vec do tamanho declarado pelo ZIP. Além da pré-checagem de
-            // metadados, limita o fluxo real: um cabeçalho mentiroso não pode escrever além do
-            // teto durante a descompressão.
+            // Does not allocate a Vec of the size the ZIP declares. On top of the metadata
+            // pre-check, it limits the real stream: a lying header cannot write past the cap
+            // during decompression.
             let remaining = MAX_TOTAL_BYTES
                 .checked_sub(extracted_bytes)
-                .ok_or_else(|| std::io::Error::other("o zip descompacta bytes demais"))?;
+                .ok_or_else(|| std::io::Error::other("the zip decompresses to too many bytes"))?;
             let allowed = MAX_FILE_BYTES.min(remaining);
             let mut output = std::fs::File::create(&out)?;
             let written = std::io::copy(&mut entry.by_ref().take(allowed + 1), &mut output)?;
             if written > allowed {
                 return Err(std::io::Error::other(
-                    "o zip ultrapassou o limite ao descompactar",
+                    "the zip exceeded the limit while decompressing",
                 ));
             }
             extracted_bytes = extracted_bytes
                 .checked_add(written)
-                .ok_or_else(|| std::io::Error::other("o zip tem tamanho inválido"))?;
+                .ok_or_else(|| std::io::Error::other("the zip has an invalid size"))?;
         }
         }
         if fingerprint(zip)? != source_fingerprint {
-            return Err(std::io::Error::other("o pacote mudou durante a extração"));
+            return Err(std::io::Error::other("the package changed during extraction"));
         }
-        escrever_manifesto(zip, &partial)?;
+        write_manifest(zip, &partial)?;
         if fingerprint(zip)? != source_fingerprint {
-            return Err(std::io::Error::other("o pacote mudou durante a extração"));
+            return Err(std::io::Error::other("the package changed during extraction"));
         }
         if !partial.join(&module).is_file() {
             return Err(std::io::Error::other(
-                "o .mod não apareceu depois de extrair o pacote",
+                "the .mod did not appear after extracting the package",
             ));
         }
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent)?;
         }
         if let Err(error) = std::fs::rename(&partial, &target) {
-            // Outro processo pode ter publicado o mesmo hash primeiro. Se a publicação dele é
-            // completa, ela é equivalente à nossa; caso contrário, não escondemos o erro.
+            // Another process may have published the same hash first. If its publication is
+            // complete, it is equivalent to ours; otherwise, we do not hide the error.
             if target.join(&module).is_file() {
                 let _ = std::fs::remove_dir_all(&partial);
             } else {
@@ -507,171 +517,175 @@ pub fn extract_in(zip: &Path, cache: &Path) -> std::io::Result<PathBuf> {
         let _ = std::fs::remove_dir_all(&partial);
     }
     result?;
-    // **A poda acontece aqui, e antes não acontecia em lugar nenhum.** O teto existia desde que o
-    // cache existe (ver [`CACHE_LIMIT_BYTES`]), mas `prune_cache` só era chamado pelos testes: no
-    // uso real a pasta crescia sem fim, um jogo aberto de cada vez, e quem abriu um acervo inteiro
-    // ficou com a extração de todos eles para sempre. Medido numa instalação de uso normal, 143 MB
-    // parados.
+    // **Pruning happens here, and before it happened nowhere.** The cap has existed as long as
+    // the cache has (see [`CACHE_LIMIT_BYTES`]), but `prune_cache` was only called by the tests:
+    // in real use the folder grew without end, one opened game at a time, and anyone who opened a
+    // whole collection kept the extraction of every one of them forever. Measured on an
+    // installation in normal use: 143 MB sitting idle.
     //
-    // O momento é este e não a abertura: podar só depois de **acrescentar** algo é o que torna o
-    // custo proporcional ao crescimento. Reaproveitar uma extração que já existe (o caminho comum,
-    // logo acima) não aumenta o cache e não precisa varrer a pasta.
+    // This is the moment, and not the opening: pruning only after **adding** something is what
+    // makes the cost proportional to the growth. Reusing an extraction that already exists (the
+    // common path, just above) does not grow the cache and does not need to scan the folder.
     //
-    // O erro de poda não derruba a abertura do jogo: o conteúdo já está extraído e utilizável, e
-    // "não consegui apagar cache antigo" não é motivo para recusar quem só queria jogar.
+    // A pruning error does not bring down the game's opening: the contents are already extracted
+    // and usable, and "could not delete old cache" is no reason to turn away someone who just
+    // wanted to play.
     match prune_cache(cache, Some(&extracted), CACHE_LIMIT_BYTES) {
-        Ok(liberado) if liberado > 0 => crate::registro!(
-            crate::registro::Nivel::Informacao,
+        Ok(freed) if freed > 0 => crate::logging!(
+            crate::logging::Level::Info,
             "loader",
-            "poda do cache de extração em {} liberou {} MiB",
+            "pruning the extraction cache at {} freed {} MiB",
             cache.display(),
-            liberado / (1024 * 1024)
+            freed / (1024 * 1024)
         ),
-        Ok(_) => crate::registro!(
-            crate::registro::Nivel::Depuracao,
+        Ok(_) => crate::logging!(
+            crate::logging::Level::Debug,
             "loader",
-            "cache de extração em {} já estava dentro do teto",
+            "extraction cache at {} was already within the cap",
             cache.display()
         ),
-        Err(erro) => crate::registro!(
-            crate::registro::Nivel::Aviso,
+        Err(prune_error) => crate::logging!(
+            crate::logging::Level::Warning,
             "loader",
-            "não deu para podar o cache de extração em {}: {erro}",
+            "could not prune the extraction cache at {}: {prune_error}",
             cache.display()
         ),
     }
     Ok(extracted)
 }
 
-/// Teto do cache de conteúdo extraído, em bytes.
+/// Cap on the cache of extracted content, in bytes.
 ///
-/// Sem ele, cada jogo aberto deixa a própria extração para sempre: um acervo de teste de 62
-/// títulos passa de 1,5 GB e enche o disco de quem só queria jogar. O valor é generoso para o
-/// jogo em uso e apertado para o acervo inteiro.
+/// Without it, every opened game leaves its extraction behind forever: a test collection of 62
+/// titles goes past 1.5 GB and fills the disk of someone who just wanted to play. The value is
+/// generous for the game in use and tight for the whole collection.
 pub const CACHE_LIMIT_BYTES: u64 = 512 * 1024 * 1024;
 
-/// O nome do arquivo que lista o que veio do pacote.
-pub const MANIFESTO: &str = ".zeebx-pacote";
+/// The name of the file that lists what came from the package.
+pub const MANIFEST: &str = ".zeebx-pacote";
 
-/// Apaga extrações antigas até o cache caber em `limite`, preservando a que contém `manter`.
+/// Deletes old extractions until the cache fits in `limit`, preserving the one that contains
+/// `keep`.
 ///
-/// `manter` é um caminho **dentro** da extração em uso — o `.mod`, por exemplo. A entrada que o
-/// contém nunca é removida, nem que sozinha estoure o teto: apagar o jogo em execução seria pior
-/// que o disco cheio. As outras saem da mais antiga para a mais nova, pela data de modificação,
-/// menos as que guardam save (ver [`crate::ui::saves::pode_ter_save`]).
+/// `keep` is a path **inside** the extraction in use — the `.mod`, for example. The entry that
+/// contains it is never removed, even if it alone blows the cap: deleting the running game would
+/// be worse than a full disk. The others go from oldest to newest, by modification date, except
+/// those that hold a save (see [`crate::ui::saves::may_have_save`]).
 ///
-/// Devolve quantos bytes foram liberados.
-pub fn prune_cache(cache: &Path, manter: Option<&Path>, limite: u64) -> std::io::Result<u64> {
-    let Ok(entradas) = std::fs::read_dir(cache) else {
-        // Sem cache não há o que podar.
+/// Returns how many bytes were freed.
+pub fn prune_cache(cache: &Path, keep: Option<&Path>, limit: u64) -> std::io::Result<u64> {
+    let Ok(entries) = std::fs::read_dir(cache) else {
+        // Without a cache there is nothing to prune.
         return Ok(0);
     };
-    let mut itens: Vec<(std::time::SystemTime, PathBuf, u64)> = Vec::new();
-    for entrada in entradas.flatten() {
-        let caminho = entrada.path();
-        if !caminho.is_dir() {
+    let mut items: Vec<(std::time::SystemTime, PathBuf, u64)> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
             continue;
         }
-        if manter.is_some_and(|manter| manter.starts_with(&caminho)) {
+        if keep.is_some_and(|keep| keep.starts_with(&path)) {
             continue;
         }
-        // **O save mora aqui dentro.** No desktop (`StoragePaths::from_root`, sem overlay) o jogo
-        // grava no meio da própria extração, e apagar a pasta levava o progresso junto — foi o
-        // que a poda fez assim que passou a rodar de verdade. Uma extração que o jogo tocou fica,
-        // mesmo estourando o teto; a que sobrou de uma extração interrompida pode sair.
-        let parcial = caminho
+        // **The save lives in here.** On the desktop (`StoragePaths::from_root`, no overlay) the
+        // game writes in the middle of its own extraction, and deleting the folder took the
+        // progress with it — which is what pruning did as soon as it started running for real.
+        // An extraction the game touched stays, even if it blows the cap; one left over from an
+        // interrupted extraction may go.
+        let partial = path
             .extension()
             .is_some_and(|e| e.to_string_lossy().starts_with("partial-"));
-        if !parcial && crate::ui::saves::pode_ter_save(&caminho) {
+        if !partial && crate::ui::saves::may_have_save(&path) {
             continue;
         }
-        let idade = entrada
+        let age = entry
             .metadata()
             .and_then(|meta| meta.modified())
             .unwrap_or(std::time::UNIX_EPOCH);
-        itens.push((idade, caminho, tamanho_em_disco(&entrada.path())));
+        items.push((age, path, size_on_disk(&entry.path())));
     }
-    let mut total: u64 = itens.iter().map(|(_, _, bytes)| bytes).sum();
-    // A entrada em uso já está fora da soma; o teto vale para o que pode sair.
-    itens.sort_by_key(|(idade, _, _)| *idade);
-    let mut liberado = 0u64;
-    for (_, caminho, bytes) in itens {
-        if total <= limite {
+    let mut total: u64 = items.iter().map(|(_, _, bytes)| bytes).sum();
+    // The entry in use is already out of the sum; the cap applies to what may go.
+    items.sort_by_key(|(age, _, _)| *age);
+    let mut freed = 0u64;
+    for (_, path, bytes) in items {
+        if total <= limit {
             break;
         }
-        if std::fs::remove_dir_all(&caminho).is_ok() {
+        if std::fs::remove_dir_all(&path).is_ok() {
             total = total.saturating_sub(bytes);
-            liberado += bytes;
+            freed += bytes;
         }
     }
-    Ok(liberado)
+    Ok(freed)
 }
 
-/// Tamanho de uma árvore de diretórios, em bytes de arquivo.
-fn tamanho_em_disco(caminho: &Path) -> u64 {
-    let Ok(entradas) = std::fs::read_dir(caminho) else {
+/// Size of a directory tree, in file bytes.
+fn size_on_disk(path: &Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(path) else {
         return 0;
     };
-    entradas
+    entries
         .flatten()
-        .map(|entrada| match entrada.file_type() {
-            Ok(tipo) if tipo.is_dir() => tamanho_em_disco(&entrada.path()),
-            Ok(_) => entrada.metadata().map(|meta| meta.len()).unwrap_or(0),
+        .map(|entry| match entry.file_type() {
+            Ok(kind) if kind.is_dir() => size_on_disk(&entry.path()),
+            Ok(_) => entry.metadata().map(|meta| meta.len()).unwrap_or(0),
             Err(_) => 0,
         })
         .sum()
 }
 
-/// Grava, dentro do cache, a lista do que o zip trouxe.
+/// Writes, inside the cache, the list of what the zip brought.
 ///
-/// Existe para o gerenciador de saves poder dizer, **sem adivinhar**, o que é save e o que é
-/// conteúdo do jogo. A primeira tentativa comparava datas — o que é mais novo que o `.mod` seria
-/// save — e ela cai: os arquivos de uma mesma extração diferem por milissegundos, e o
-/// `resources.pakz` de 15 MB do Alice terminava de ser escrito depois do `.mod`. Numa lista com
-/// botão de excluir, errar assim apaga o jogo.
+/// It exists so the save manager can tell, **without guessing**, what is a save and what is game
+/// content. The first attempt compared dates — anything newer than the `.mod` would be a save —
+/// and it falls apart: the files of a single extraction differ by milliseconds, and Alice's 15 MB
+/// `resources.pakz` finished being written after the `.mod`. In a list with a delete button,
+/// getting it wrong like that deletes the game.
 ///
-/// A lista vem do zip, que é a fonte: o que está nele é do pacote, o resto o jogo escreveu.
-pub fn escrever_manifesto(pacote: &Path, destino: &Path) -> std::io::Result<()> {
-    // Os nomes saem do mesmo lugar que a escolha do módulo, então o manifesto cobre zip e 7z sem
-    // caminho separado. Ele é o que diz ao motor quais arquivos vieram do pacote — sem ele, um
-    // `.7z` extraído trataria o conteúdo como se fosse do aparelho.
-    let mut nomes: Vec<String> = nomes_do_pacote(pacote).unwrap_or_default();
-    nomes.sort();
-    nomes.dedup();
-    std::fs::write(destino.join(MANIFESTO), nomes.join("\n"))
+/// The list comes from the zip, which is the source: what is in it belongs to the package, the
+/// rest the game wrote.
+pub fn write_manifest(package: &Path, dest: &Path) -> std::io::Result<()> {
+    // The names come from the same place as the module choice, so the manifest covers zip and 7z
+    // without a separate path. It is what tells the engine which files came from the package —
+    // without it, an extracted `.7z` would treat the contents as if they belonged to the device.
+    let mut names: Vec<String> = archive_entry_names(package).unwrap_or_default();
+    names.sort();
+    names.dedup();
+    std::fs::write(dest.join(MANIFEST), names.join("\n"))
 }
 
-/// Onde o zip foi extraído, exista ou não.
-pub fn cache_de(zip: &Path) -> std::io::Result<PathBuf> {
+/// Where the zip was extracted, whether or not it exists.
+pub fn cache_for(zip: &Path) -> std::io::Result<PathBuf> {
     Ok(cache_dir().join(fingerprint(zip)?))
 }
 
-/// Escreve o manifesto de um pacote já extraído que ainda não tem um.
+/// Writes the manifest of an already-extracted package that does not have one yet.
 ///
-/// Os caches feitos antes de o manifesto existir não têm como saber o que era do pacote. Em vez
-/// de deixá-los de fora do gerenciador de saves — ou pior, de adivinhar por data —, o manifesto é
-/// reconstruído do zip, que continua ali.
-pub fn completar_manifesto(zip: &Path) -> std::io::Result<()> {
-    let destino = cache_de(zip)?;
-    if destino.is_dir() {
-        if !destino.join(MANIFESTO).is_file() {
-            escrever_manifesto(zip, &destino)?;
+/// Caches made before the manifest existed have no way to know what belonged to the package.
+/// Instead of leaving them out of the save manager — or worse, guessing by date — the manifest is
+/// rebuilt from the zip, which is still there.
+pub fn complete_manifest(zip: &Path) -> std::io::Result<()> {
+    let dest = cache_for(zip)?;
+    if dest.is_dir() {
+        if !dest.join(MANIFEST).is_file() {
+            write_manifest(zip, &dest)?;
         }
         return Ok(());
     }
-    // Ver `extract`: caches antigos podiam conter saves relativos. Ainda que a chave velha não
-    // seja usada para conteúdo novo, reconstituir seu manifesto mantém esses saves visíveis na UI.
-    let legado = cache_dir().join(legacy_fingerprint(zip)?);
-    if legado.is_dir() && !legado.join(MANIFESTO).is_file() {
-        escrever_manifesto(zip, &legado)?;
+    // See `extract`: old caches could contain relative saves. Even though the old key is not used
+    // for new content, rebuilding its manifest keeps those saves visible in the UI.
+    let legacy = cache_dir().join(legacy_fingerprint(zip)?);
+    if legacy.is_dir() && !legacy.join(MANIFEST).is_file() {
+        write_manifest(zip, &legacy)?;
     }
     Ok(())
 }
 
-/// Um nome de pasta que identifica o conteúdo, não onde/quando ele foi copiado.
+/// A folder name that identifies the contents, not where/when they were copied.
 ///
-/// O título é só rótulo humano para o gerenciador de saves; a chave que impede colisão é o digest
-/// BLAKE3 completo no fim. Duas cópias com o mesmo nome e bytes vão para o mesmo cache.
+/// The title is only a human label for the save manager; the key that prevents collisions is the
+/// full BLAKE3 digest at the end. Two copies with the same name and bytes go to the same cache.
 fn fingerprint(zip: &Path) -> std::io::Result<String> {
     let content = ContentId::from_reader(std::fs::File::open(zip)?)?;
     Ok(format!("{}-{}", cache_label(zip), content.as_str()))
@@ -692,7 +706,7 @@ fn cache_label(zip: &Path) -> String {
         .collect()
 }
 
-/// A chave de cache anterior, só para manter leitura de saves/cache já criados pela versão velha.
+/// The previous cache key, only to keep reading saves/caches already created by the old version.
 fn legacy_fingerprint(zip: &Path) -> std::io::Result<String> {
     let meta = std::fs::metadata(zip)?;
     let stamp = meta
@@ -704,7 +718,7 @@ fn legacy_fingerprint(zip: &Path) -> std::io::Result<String> {
     Ok(format!("{}-{}-{stamp}", cache_label(zip), meta.len()))
 }
 
-/// Caminho exato do cache anterior ao hash de conteúdo, para migrações de frontends.
+/// Exact path of the cache from before the content hash, for frontend migrations.
 pub(crate) fn legacy_cache_in(zip: &Path, cache: &Path) -> std::io::Result<PathBuf> {
     Ok(cache.join(legacy_fingerprint(zip)?))
 }
@@ -714,7 +728,7 @@ mod tests {
     use super::*;
     use std::io::Write;
 
-    /// Escreve um zip com os caminhos dados, todos com conteúdo de brincadeira.
+    /// Writes a zip with the given paths, all with dummy contents.
     fn make_zip(name: &str, entries: &[&str]) -> PathBuf {
         let path = std::env::temp_dir().join(format!("zeebx-teste-{name}.zip"));
         let file = std::fs::File::create(&path).unwrap();
@@ -730,7 +744,7 @@ mod tests {
     }
 
     #[test]
-    fn acha_o_modulo_mais_perto_da_raiz() {
+    fn finds_the_module_closest_to_the_root() {
         let zip = make_zip(
             "achar",
             &[
@@ -747,14 +761,14 @@ mod tests {
     }
 
     #[test]
-    fn um_zip_sem_modulo_nao_e_um_jogo() {
+    fn a_zip_without_a_module_is_not_a_game() {
         let zip = make_zip("vazio", &["leiame.txt", "capa.png"]);
         assert_eq!(find_module(&zip), None);
         let _ = std::fs::remove_file(&zip);
     }
 
     #[test]
-    fn o_titulo_vem_da_pasta_de_dentro_quando_ela_existe() {
+    fn the_title_comes_from_the_inner_dir_when_it_exists() {
         assert_eq!(
             title_of(
                 Path::new("/baixados/279159.zip"),
@@ -762,7 +776,7 @@ mod tests {
             ),
             "Zeebo Sports Peteca"
         );
-        // Sem a pasta do título, o nome do arquivo é o que há.
+        // Without the title folder, the file name is all there is.
         assert_eq!(
             title_of(Path::new("/baixados/peteca.zip"), "zeebopeteca.mod"),
             "peteca"
@@ -770,7 +784,7 @@ mod tests {
     }
 
     #[test]
-    fn fingerprint_e_dos_bytes_nao_de_data() {
+    fn fingerprint_comes_from_bytes_not_dates() {
         let first = make_zip("hash-origem", &["mod/1/jogo.mod"]);
         let dir = std::env::temp_dir().join("zeebx-teste-hash-copia");
         std::fs::create_dir_all(&dir).unwrap();
@@ -782,7 +796,7 @@ mod tests {
     }
 
     #[test]
-    fn limite_de_entradas_e_recusado_antes_da_extracao() {
+    fn entry_limit_is_refused_before_extraction() {
         let zip = make_zip("limite", &["a", "b", "c"]);
         let file = std::fs::File::open(&zip).unwrap();
         let mut archive = zip::ZipArchive::new(file).unwrap();
@@ -795,47 +809,47 @@ mod tests {
             },
         )
         .unwrap_err();
-        assert!(err.to_string().contains("entradas"));
+        assert!(err.to_string().contains("entries"));
         let _ = std::fs::remove_file(zip);
     }
 
     #[test]
-    fn a_poda_larga_o_cache_antigo_e_preserva_o_jogo_em_uso() {
-        let raiz = std::env::temp_dir().join("zeebx-teste-poda");
-        let _ = std::fs::remove_dir_all(&raiz);
-        let cache = raiz.join("cache");
-        let antigo = cache.join("jogo-antigo");
-        let em_uso = cache.join("jogo-em-uso");
-        let com_save = cache.join("jogo-com-save");
-        let sem_manifesto = cache.join("jogo-sem-manifesto");
-        for pasta in [&antigo, &em_uso, &com_save, &sem_manifesto] {
-            std::fs::create_dir_all(pasta).unwrap();
-            std::fs::write(pasta.join("dados.bin"), vec![0u8; 4096]).unwrap();
+    fn pruning_drops_old_cache_and_keeps_the_game_in_use() {
+        let root = std::env::temp_dir().join("zeebx-teste-poda");
+        let _ = std::fs::remove_dir_all(&root);
+        let cache = root.join("cache");
+        let old = cache.join("jogo-antigo");
+        let in_use = cache.join("jogo-em-uso");
+        let with_save = cache.join("jogo-com-save");
+        let without_manifest = cache.join("jogo-sem-manifesto");
+        for dir in [&old, &in_use, &with_save, &without_manifest] {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(dir.join("dados.bin"), vec![0u8; 4096]).unwrap();
         }
-        for pasta in [&antigo, &com_save] {
-            std::fs::write(pasta.join(MANIFESTO), "dados.bin\n").unwrap();
+        for dir in [&old, &with_save] {
+            std::fs::write(dir.join(MANIFEST), "dados.bin\n").unwrap();
         }
-        std::fs::write(com_save.join("progresso.db"), b"fase 7").unwrap();
-        let modulo = em_uso.join("mod/1/jogo.mod");
+        std::fs::write(with_save.join("progresso.db"), b"fase 7").unwrap();
+        let modulo = in_use.join("mod/1/jogo.mod");
         std::fs::create_dir_all(modulo.parent().unwrap()).unwrap();
         std::fs::write(&modulo, b"mod").unwrap();
 
-        // Teto zero: sai só o que é pacote puro; o jogo em uso e os saves ficam.
-        let liberado = prune_cache(&cache, Some(&modulo), 0).unwrap();
-        assert!(liberado > 0, "deveria ter liberado espaço");
-        assert!(!antigo.exists(), "a extração antiga sai");
-        assert!(modulo.is_file(), "a extração em uso fica");
-        assert!(com_save.join("progresso.db").is_file(), "a extração com save fica");
-        assert!(sem_manifesto.exists(), "sem manifesto não dá para saber, então fica");
+        // Zero cap: only pure package content goes; the game in use and the saves stay.
+        let freed = prune_cache(&cache, Some(&modulo), 0).unwrap();
+        assert!(freed > 0, "should have freed space");
+        assert!(!old.exists(), "the old extraction goes");
+        assert!(modulo.is_file(), "the extraction in use stays");
+        assert!(with_save.join("progresso.db").is_file(), "the extraction with a save stays");
+        assert!(without_manifest.exists(), "without a manifest there is no way to know, so it stays");
 
-        // Sem nada acima do teto, ninguém é tocado.
+        // With nothing above the cap, nothing is touched.
         assert_eq!(prune_cache(&cache, Some(&modulo), u64::MAX).unwrap(), 0);
 
-        let _ = std::fs::remove_dir_all(&raiz);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
-    fn extrair_devolve_o_modulo_e_reaproveita_a_segunda_vez() {
+    fn extract_returns_the_module_and_reuses_it_the_second_time() {
         let zip = make_zip(
             "extrair",
             &["Jogo/mif/1.mif", "Jogo/mod/1/jogo.mod", "Jogo/dados.pak"],
@@ -843,10 +857,10 @@ mod tests {
         let module = extract(&zip).unwrap();
         assert!(module.is_file());
         assert!(module.ends_with("Jogo/mod/1/jogo.mod"));
-        // Os arquivos vizinhos vêm junto: são eles que o jogo abre em tempo de execução.
+        // The neighboring files come along: they are what the game opens at run time.
         assert!(module.parent().unwrap().join("../../dados.pak").exists());
 
-        // A segunda extração aponta para o mesmo lugar, sem refazer o trabalho.
+        // The second extraction points to the same place, without redoing the work.
         assert_eq!(extract(&zip).unwrap(), module);
 
         let _ = std::fs::remove_dir_all(cache_dir().join(fingerprint(&zip).unwrap()));

@@ -1,42 +1,42 @@
-//! O quadro do console pintado pelo GL do host, dentro da janela do egui.
+//! The console frame painted by the host's GL, inside the egui window.
 //!
-//! O caminho normal sobe o quadro como textura do egui: para isso ele é convertido de RGB565
-//! para ARGB e depois para RGBA, dois vetores por quadro. Aqui o mesmo quadro vai para a placa
-//! **no formato em que ele já está** — `GL_UNSIGNED_SHORT_5_6_5` é um formato que o OpenGL
-//! aceita direto —, e quem amplia para o tamanho da janela é a placa.
+//! The normal path uploads the frame as an egui texture: for that it is converted from RGB565 to
+//! ARGB and then to RGBA, two vectors per frame. Here the same frame goes to the GPU **in the
+//! format it is already in** — `GL_UNSIGNED_SHORT_5_6_5` is a format OpenGL accepts
+//! directly —, and scaling it up to the window size is the GPU's job.
 //!
-//! **Isto não é o rasterizador na GPU.** O 3D continua sendo rasterizado em software; o que
-//! muda é só a última etapa, a de pôr o quadro pronto na tela. Existe para provar que sabemos
-//! desenhar com GL dentro do egui sem mexer no emulador — e é sobre este pedaço que um backend
-//! de GPU seria construído depois.
+//! **This is not the rasterizer on the GPU.** 3D is still rasterized in software; all that
+//! changes is the last step, putting the finished frame on screen. It exists to prove we know how
+//! to draw with GL inside egui without touching the emulator — and it is on top of this piece that
+//! a GPU backend would be built later.
 //!
-//! O contexto de desktop é **core 3.3** (o Qt o pede assim, e o glutin do headless resolve "sem
-//! perfil, sem versão" do mesmo jeito), então não há pipeline fixo: mesmo para um quadrado com
-//! textura é preciso shader.
+//! The desktop context is **core 3.3** (Qt asks for it that way, and the headless glutin resolves
+//! "no profile, no version" the same way), so there is no fixed pipeline: even a textured quad
+//! needs a shader.
 
-// O `egui` vem direto, e **não** pelo `eframe`: o reexport amarrava este módulo ao desktop, e
-// quem desenha aqui é o motor, que não tem janela nenhuma.
+// `egui` comes directly, and **not** through `eframe`: the re-export tied this module to the
+// desktop, and what draws here is the engine, which has no window at all.
 use glow::{self, HasContext};
 
-/// O triângulo que cobre a tela inteira, gerado sem vetor de vértices.
+/// The triangle that covers the whole screen, generated without a vertex array.
 ///
-/// Três vértices cobrem o retângulo [-1, 1] com sobra, e o recorte da placa descarta o resto.
-/// Sai mais barato que um quadrado com dois triângulos, e — o que importa mais aqui — dispensa
-/// buffer de vértices: o `gl_VertexID` é o único dado de entrada.
-const VERTICE: &str = r#"
+/// Three vertices cover the [-1, 1] rectangle with room to spare, and the GPU's clipping discards
+/// the rest. It is cheaper than a quad made of two triangles, and — what matters more here — needs
+/// no vertex buffer: `gl_VertexID` is the only input.
+const VERTEX: &str = r#"
 uniform vec2 recorte;
 out vec2 uv;
 void main() {
     vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
-    // A origem da textura é em cima; a do OpenGL, embaixo. Inverter aqui evita inverter o
-    // quadro inteiro na CPU. O `recorte` é a fração da textura que é imagem: o quadro 3D da
-    // placa pode ter a superfície do jogo menor que o anexo.
+    // The texture's origin is at the top; OpenGL's, at the bottom. Flipping here avoids flipping the
+    // whole frame on the CPU. `recorte` (the crop) is the fraction of the texture that is image: the
+    // GPU's 3D frame can have the game surface smaller than the attachment.
     uv = vec2(p.x, 1.0 - p.y) * recorte;
     gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
 }
 "#;
 
-const FRAGMENTO: &str = r#"
+const FRAGMENT: &str = r#"
 in vec2 uv;
 uniform sampler2D quadro;
 out vec4 cor;
@@ -45,250 +45,251 @@ void main() {
 }
 "#;
 
-/// O retângulo da janela onde o quadro vai, em pixels físicos, contado **de baixo** — que é como o
-/// `glViewport` o quer.
+/// The rectangle of the window where the frame goes, in physical pixels, counted **from the
+/// bottom** — which is how `glViewport` wants it.
 ///
-/// É do pintor, e não do egui, porque quem pinta nem sempre tem egui na tela: o headless monta a
-/// área à mão, e a interface Qt a recebe do Qt Quick. O egui continua entrando pelo `From`.
+/// It belongs to the painter, and not to egui, because whoever paints does not always have egui on
+/// screen: the headless one builds the area by hand, and the Qt interface gets it from Qt Quick.
+/// egui still comes in through `From`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Viewport {
     pub x: i32,
-    pub y_de_baixo: i32,
-    pub largura: i32,
-    pub altura: i32,
+    pub bottom_y: i32,
+    pub width: i32,
+    pub height: i32,
 }
 
 impl From<egui::epaint::ViewportInPixels> for Viewport {
     fn from(vp: egui::epaint::ViewportInPixels) -> Self {
         Self {
             x: vp.left_px,
-            y_de_baixo: vp.from_bottom_px,
-            largura: vp.width_px,
-            altura: vp.height_px,
+            bottom_y: vp.from_bottom_px,
+            width: vp.width_px,
+            height: vp.height_px,
         }
     }
 }
 
-/// O programa e a textura que pintam o quadro.
-pub struct Pintor {
+/// The program and the texture that paint the frame.
+pub struct GlPainter {
     program: glow::Program,
     vao: glow::VertexArray,
-    textura: glow::Texture,
-    /// Tamanho da textura que já está na placa, para reaproveitá-la enquanto não muda.
-    medida: (i32, i32),
-    suave: bool,
-    /// Identidade/conteúdo do último framebuffer subido pelo caminho cacheado.
-    ultimo_quadro: Option<(u64, u64)>,
+    texture: glow::Texture,
+    /// Size of the texture already on the GPU, to reuse it while it does not change.
+    measured: (i32, i32),
+    smooth: bool,
+    /// Identity/contents of the last framebuffer uploaded through the cached path.
+    last_frame: Option<(u64, u64)>,
 }
 
-impl Pintor {
-    /// Monta o programa. Tenta GLSL 3.30 e cai para ES 3.00 — o desktop entrega OpenGL e o
-    /// Android entrega GLES, então os dois casos existem.
-    pub fn novo(gl: &glow::Context) -> Result<Self, String> {
+impl GlPainter {
+    /// Builds the program. Tries GLSL 3.30 and falls back to ES 3.00 — the desktop provides OpenGL
+    /// and Android provides GLES, so both cases exist.
+    pub fn create(gl: &glow::Context) -> Result<Self, String> {
         let program = ["#version 330 core\n", "#version 300 es\nprecision mediump float;\n"]
             .into_iter()
-            .find_map(|cabecalho| unsafe { compila(gl, cabecalho) }.ok())
-            .ok_or("nenhuma versão de GLSL aceita")?;
+            .find_map(|header| unsafe { compile(gl, header) }.ok())
+            .ok_or("no GLSL version accepted")?;
         unsafe {
             let vao = gl.create_vertex_array()?;
-            let textura = gl.create_texture()?;
+            let texture = gl.create_texture()?;
             Ok(Self {
                 program,
                 vao,
-                textura,
-                medida: (0, 0),
-                suave: false,
-                ultimo_quadro: None,
+                texture,
+                measured: (0, 0),
+                smooth: false,
+                last_frame: None,
             })
         }
     }
 
-    /// Sobe o quadro e o desenha no retângulo pedido.
+    /// Uploads the frame and draws it in the requested rectangle.
     ///
-    /// `bytes` é o quadro em RGB565, do jeito que a superfície do console o guarda.
-    pub fn desenha(
+    /// `bytes` is the frame in RGB565, the way the console surface stores it.
+    pub fn draw(
         &mut self,
         gl: &glow::Context,
         bytes: &[u8],
-        largura: i32,
-        altura: i32,
+        width: i32,
+        height: i32,
         vp: Viewport,
-        suave: bool,
+        smooth: bool,
     ) {
-        self.desenha_impl(gl, bytes, largura, altura, None, vp, suave);
+        self.draw_impl(gl, bytes, width, height, None, vp, smooth);
     }
 
-    /// Como desenha, mas não reenvia os pixels se o framebuffer não mudou.
+    /// Like draw, but does not resend the pixels if the framebuffer has not changed.
     ///
-    /// A chave é (série, escritas) do framebuffer: a série separa superfícies diferentes e
-    /// escritas cresce toda vez que o jogo toca naquela superfície.
-    pub fn desenha_quadro(
+    /// The key is the framebuffer's (serial, writes): the serial tells different surfaces apart and
+    /// writes grows every time the game touches that surface.
+    pub fn draw_frame(
         &mut self,
         gl: &glow::Context,
         bytes: &[u8],
-        largura: i32,
-        altura: i32,
-        chave: (u64, u64),
+        width: i32,
+        height: i32,
+        key_id: (u64, u64),
         vp: Viewport,
-        suave: bool,
+        smooth: bool,
     ) {
-        self.desenha_impl(gl, bytes, largura, altura, Some(chave), vp, suave);
+        self.draw_impl(gl, bytes, width, height, Some(key_id), vp, smooth);
     }
 
-    fn desenha_impl(
+    fn draw_impl(
         &mut self,
         gl: &glow::Context,
         bytes: &[u8],
-        largura: i32,
-        altura: i32,
-        chave: Option<(u64, u64)>,
+        width: i32,
+        height: i32,
+        key_id: Option<(u64, u64)>,
         vp: Viewport,
-        suave: bool,
+        smooth: bool,
     ) {
-        if largura <= 0 || altura <= 0 || bytes.len() < (largura * altura * 2) as usize {
+        if width <= 0 || height <= 0 || bytes.len() < (width * height * 2) as usize {
             return;
         }
         unsafe {
             gl.use_program(Some(self.program));
             gl.active_texture(glow::TEXTURE0);
-            gl.bind_texture(glow::TEXTURE_2D, Some(self.textura));
-            // Cada linha tem `largura * 2` bytes: o alinhamento padrão de quatro só valeria com
-            // largura par, e um quadro de largura ímpar sairia enviesado.
+            gl.bind_texture(glow::TEXTURE_2D, Some(self.texture));
+            // Each row has `width * 2` bytes: the default alignment of four would only hold for an
+            // even width, and a frame of odd width would come out skewed.
             gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 2);
-            // **A storage é alocada uma vez, e cada quadro só troca o conteúdo.** Chamar
-            // `tex_image_2d` a cada quadro realoca a textura inteira na placa — é o tropeço que
-            // o zeebulator documenta, e era o que estava aqui.
-            if self.medida != (largura, altura) {
+            // **The storage is allocated once, and each frame only swaps the contents.** Calling
+            // `tex_image_2d` every frame reallocates the whole texture on the GPU — it is the
+            // stumble zeebulator documents, and it was what was here.
+            if self.measured != (width, height) {
                 gl.tex_image_2d(
                     glow::TEXTURE_2D,
                     0,
                     glow::RGB as i32,
-                    largura,
-                    altura,
+                    width,
+                    height,
                     0,
                     glow::RGB,
                     glow::UNSIGNED_SHORT_5_6_5,
                     glow::PixelUnpackData::Slice(None),
                 );
             }
-            let precisa_subir =
-                self.medida != (largura, altura) || chave.is_none() || self.ultimo_quadro != chave;
-            if precisa_subir {
+            let needs_upload =
+                self.measured != (width, height) || key_id.is_none() || self.last_frame != key_id;
+            if needs_upload {
                 gl.tex_sub_image_2d(
                     glow::TEXTURE_2D,
                     0,
                     0,
                     0,
-                    largura,
-                    altura,
+                    width,
+                    height,
                     glow::RGB,
                     glow::UNSIGNED_SHORT_5_6_5,
                     glow::PixelUnpackData::Slice(Some(bytes)),
                 );
-                self.ultimo_quadro = chave;
+                self.last_frame = key_id;
             }
-            if self.medida != (largura, altura) || self.suave != suave {
-                self.medida = (largura, altura);
-                self.suave = suave;
-                // O pixel do console é grande e quadrado: ampliar sem interpolar é o padrão, e
-                // suavizar é escolha de quem olha — a mesma regra do caminho do egui.
-                let filtro = match suave {
+            if self.measured != (width, height) || self.smooth != smooth {
+                self.measured = (width, height);
+                self.smooth = smooth;
+                // The console pixel is big and square: scaling up without interpolation is the
+                // default, and smoothing is the viewer's choice — the same rule as the egui path.
+                let filter = match smooth {
                     true => glow::LINEAR,
                     false => glow::NEAREST,
                 } as i32;
-                for (nome, valor) in [
-                    (glow::TEXTURE_MIN_FILTER, filtro),
-                    (glow::TEXTURE_MAG_FILTER, filtro),
+                for (name, value) in [
+                    (glow::TEXTURE_MIN_FILTER, filter),
+                    (glow::TEXTURE_MAG_FILTER, filter),
                     (glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE as i32),
                     (glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE as i32),
                 ] {
-                    gl.tex_parameter_i32(glow::TEXTURE_2D, nome, valor);
+                    gl.tex_parameter_i32(glow::TEXTURE_2D, name, value);
                 }
             }
-            self.pinta(gl, [1.0, 1.0], vp);
+            self.paint(gl, [1.0, 1.0], vp);
         }
     }
 
-    /// Desenha uma textura que já está na placa: o quadro 3D na resolução interna.
+    /// Draws a texture that is already on the GPU: the 3D frame at the internal resolution.
     ///
-    /// A textura é do rasterizador, no mesmo contexto que o egui usa. Ampliar ou reduzir para o
-    /// retângulo da janela é da placa, com o mesmo filtro escolhido para o caminho normal.
-    pub fn desenha_textura(
+    /// The texture belongs to the rasterizer, in the same context egui uses. Scaling up or down to
+    /// the window rectangle is the GPU's job, with the same filter chosen for the normal path.
+    pub fn draw_texture(
         &mut self,
         gl: &glow::Context,
-        quadro: crate::video::rasterizer::QuadroNaPlaca,
+        frame: crate::video::rasterizer::GpuFrame,
         vp: Viewport,
-        suave: bool,
+        smooth: bool,
     ) {
         unsafe {
             gl.use_program(Some(self.program));
             gl.active_texture(glow::TEXTURE0);
-            gl.bind_texture(glow::TEXTURE_2D, Some(quadro.textura));
-            let filtro = match suave {
+            gl.bind_texture(glow::TEXTURE_2D, Some(frame.texture));
+            let filter = match smooth {
                 true => glow::LINEAR,
                 false => glow::NEAREST,
             } as i32;
-            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, filtro);
-            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, filtro);
-            self.pinta(gl, quadro.recorte, vp);
+            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, filter);
+            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, filter);
+            self.paint(gl, frame.clip, vp);
             gl.bind_texture(glow::TEXTURE_2D, None);
         }
     }
 
-    /// O triângulo com a textura ligada na unidade zero, e o estado devolvido ao egui.
-    unsafe fn pinta(&self, gl: &glow::Context, recorte: [f32; 2], vp: Viewport) {
+    /// The triangle with the texture bound to unit zero, and the state handed back to egui.
+    unsafe fn paint(&self, gl: &glow::Context, clip: [f32; 2], vp: Viewport) {
         unsafe {
             if let Some(local) = gl.get_uniform_location(self.program, "quadro") {
                 gl.uniform_1_i32(Some(&local), 0);
             }
             if let Some(local) = gl.get_uniform_location(self.program, "recorte") {
-                gl.uniform_2_f32(Some(&local), recorte[0], recorte[1]);
+                gl.uniform_2_f32(Some(&local), clip[0], clip[1]);
             }
-            gl.viewport(vp.x, vp.y_de_baixo, vp.largura, vp.altura);
+            gl.viewport(vp.x, vp.bottom_y, vp.width, vp.height);
             gl.bind_vertex_array(Some(self.vao));
             gl.draw_arrays(glow::TRIANGLES, 0, 3);
-            // Devolver o estado que mexemos: o egui desenha o resto da interface depois de nós,
-            // e um programa ou VAO deixado ligado aparece como interface sem textura.
+            // Hand back the state we touched: egui draws the rest of the interface after us, and
+            // a program or VAO left bound shows up as an untextured interface.
             //
-            // **Isto é o que quebra o cache do rasterizador quando ele desenha no mesmo contexto.**
-            // Ele liga programa, VAO e VBO uma vez e não a cada lote, e é ele quem tem de saber que
-            // outra pessoa pode mexer neles — ver `GpuState::devolve_o_contexto`: o cache é
-            // invalidado ali, a cada devolução, quando quem apresenta o quadro é o anfitrião.
+            // **This is what breaks the rasterizer's cache when it draws in the same context.** It
+            // binds program, VAO and VBO once and not on every batch, and it is the one that has to
+            // know someone else may touch them — see `GpuState::hand_back_context`: the cache is
+            // invalidated there, on every hand-back, when the one presenting the frame is the host.
             gl.bind_vertex_array(None);
             gl.use_program(None);
         }
     }
 
-    /// Devolve à placa o que foi criado. Quem montou o pintor chama isto ao fechar a janela.
-    pub fn solta(&self, gl: &glow::Context) {
+    /// Returns to the GPU what was created. Whoever built the painter calls this when closing the window.
+    pub fn release(&self, gl: &glow::Context) {
         unsafe {
             gl.delete_program(self.program);
             gl.delete_vertex_array(self.vao);
-            gl.delete_texture(self.textura);
+            gl.delete_texture(self.texture);
         }
     }
 }
 
-/// Compila e liga o par de shaders com o cabeçalho de versão dado.
-unsafe fn compila(gl: &glow::Context, cabecalho: &str) -> Result<glow::Program, String> {
+/// Compiles and links the shader pair with the given version header.
+unsafe fn compile(gl: &glow::Context, header: &str) -> Result<glow::Program, String> {
     unsafe {
         let program = gl.create_program()?;
         let mut shaders = Vec::new();
-        for (tipo, fonte) in [
-            (glow::VERTEX_SHADER, VERTICE),
-            (glow::FRAGMENT_SHADER, FRAGMENTO),
+        for (kind, source) in [
+            (glow::VERTEX_SHADER, VERTEX),
+            (glow::FRAGMENT_SHADER, FRAGMENT),
         ] {
-            let shader = gl.create_shader(tipo)?;
-            gl.shader_source(shader, &format!("{cabecalho}{fonte}"));
+            let shader = gl.create_shader(kind)?;
+            gl.shader_source(shader, &format!("{header}{source}"));
             gl.compile_shader(shader);
             if !gl.get_shader_compile_status(shader) {
-                let erro = gl.get_shader_info_log(shader);
+                let error = gl.get_shader_info_log(shader);
                 gl.delete_shader(shader);
                 for shader in shaders {
                     gl.delete_shader(shader);
                 }
                 gl.delete_program(program);
-                return Err(erro);
+                return Err(error);
             }
             gl.attach_shader(program, shader);
             shaders.push(shader);
@@ -299,9 +300,9 @@ unsafe fn compila(gl: &glow::Context, cabecalho: &str) -> Result<glow::Program, 
             gl.delete_shader(shader);
         }
         if !gl.get_program_link_status(program) {
-            let erro = gl.get_program_info_log(program);
+            let error = gl.get_program_info_log(program);
             gl.delete_program(program);
-            return Err(erro);
+            return Err(error);
         }
         Ok(program)
     }

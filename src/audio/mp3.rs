@@ -1,40 +1,41 @@
-//! MP3: a música dos jogos, decodificada — e cronometrada quando não dá para decodificar.
+//! MP3: the games' music, decoded — and timed when it can't be decoded.
 //!
-//! **A música do Zeebo é MP3.** Nove jogos a entregam assim: Quake, Quake 2, Galaxy on Fire,
-//! Rally Master Pro, Powerboat Challenge, Action Hero 3D, Need For Speed, zeetris e a Z-Wheel.
-//! Efeito sonoro é RIFF/WAVE e sempre tocou; música não tocava em jogo nenhum, e a razão era
-//! esta — o formato inteiro faltava.
+//! **Zeebo music is MP3.** Nine games ship it that way: Quake, Quake 2, Galaxy on Fire,
+//! Rally Master Pro, Powerboat Challenge, Action Hero 3D, Need For Speed, zeetris and the
+//! Z-Wheel. Sound effects are RIFF/WAVE and always played; music played in no game at all, and
+//! this was the reason — the whole format was missing.
 //!
-//! Duas coisas vivem aqui, e é útil saber por quê:
+//! Two things live here, and it helps to know why:
 //!
-//! - [`decode`] devolve o som. O Layer III é Huffman, requantização, estéreo conjunto, IMDCT e
-//!   banco de síntese; escrever isso sem uma referência para comparar dá som que toca e sai no
-//!   tom errado. A decodificação é do `symphonia`, Rust puro — a mesma decisão do SQLite para o
-//!   `ISQLMgr` e do `ab_glyph` para o `DrawText`.
-//! - [`probe`] lê só o cabeçalho e a etiqueta do codificador, e diz **quanto dura**. Continua
-//!   valendo: um MP3 que o decodificador recuse ainda pode ser cronometrado, e cronometrar é o
-//!   que impede o jogo de travar.
+//! - [`decode`] returns the sound. Layer III is Huffman, requantization, joint stereo, IMDCT and
+//!   a synthesis filterbank; writing that without a reference to compare against gives sound
+//!   that plays and comes out at the wrong pitch. Decoding is done by `symphonia`, pure Rust —
+//!   the same decision as SQLite for `ISQLMgr` and `ab_glyph` for `DrawText`.
+//! - [`probe`] reads only the header and the encoder tag, and says **how long it lasts**. It
+//!   still matters: an MP3 the decoder rejects can still be timed, and timing is what keeps the
+//!   game from hanging.
 //!
-//! O segundo caminho nasceu do Tekken 2. A música dele chega por `IMEDIA_SetMediaParm` e nós só
-//! sabíamos ler RIFF/WAVE. Sem som legível o `Play` respondia "esse som já acabou", o jogo
-//! consultava o estado, via "pronto" e mandava tocar de novo — **766 mil vezes em quatro
-//! segundos virtuais**. Não era um jogo pesado: era um jogo insistindo contra uma resposta
-//! nossa. Com a duração, o som "toca" em silêncio pelo tempo certo do relógio virtual e o jogo
-//! segue. Hoje o Tekken toca de verdade, e o caminho da duração ficou como rede de segurança.
+//! The second path was born from Tekken 2. Its music arrives through `IMEDIA_SetMediaParm` and
+//! we could only read RIFF/WAVE. With no readable sound, `Play` answered "this sound has already
+//! ended", the game polled the state, saw "ready" and asked to play again — **766 thousand times
+//! in four virtual seconds**. It wasn't a heavy game: it was a game pushing back against an
+//! answer of ours. With the duration, the sound "plays" in silence for the right amount of
+//! virtual clock time and the game moves on. Today Tekken really plays, and the duration path
+//! stayed as a safety net.
 
-/// Um MP3 do qual sabemos o suficiente para cronometrá-lo.
+/// An MP3 we know enough about to time it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Mp3 {
-    /// Amostras por segundo.
+    /// Samples per second.
     pub rate: u32,
-    /// Quantos quadros de áudio o arquivo tem.
+    /// How many audio frames the file has.
     pub frames: u64,
-    /// Amostras por quadro: 1152 no MPEG-1 e 576 no MPEG-2 e no MPEG-2.5.
+    /// Samples per frame: 1152 in MPEG-1 and 576 in MPEG-2 and MPEG-2.5.
     pub samples_per_frame: u32,
 }
 
 impl Mp3 {
-    /// A duração em microssegundos.
+    /// The duration in microseconds.
     pub fn duration_us(&self) -> u64 {
         match self.rate {
             0 => 0,
@@ -43,10 +44,10 @@ impl Mp3 {
     }
 }
 
-/// Tabela de taxa de bits do Layer III, em kbps, indexada pelo campo do cabeçalho.
+/// Layer III bitrate table, in kbps, indexed by the header field.
 ///
-/// A linha do MPEG-1 e a do MPEG-2 são diferentes. O índice 0 (livre) e o 15 (inválido) não têm
-/// taxa, e entram como zero: quem lê trata o zero como "não dá para estimar pelo tamanho".
+/// The MPEG-1 row and the MPEG-2 row differ. Index 0 (free) and 15 (invalid) have no rate, and
+/// go in as zero: the reader treats zero as "can't estimate from the size".
 const BITRATE_V1: [u32; 16] = [
     0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0,
 ];
@@ -54,15 +55,15 @@ const BITRATE_V2: [u32; 16] = [
     0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0,
 ];
 
-/// Taxas de amostragem por versão, na ordem do campo do cabeçalho.
+/// Sample rates per version, in header field order.
 const RATES_V1: [u32; 3] = [44100, 48000, 32000];
 const RATES_V2: [u32; 3] = [22050, 24000, 16000];
 const RATES_V25: [u32; 3] = [11025, 12000, 8000];
 
-/// Quantos bytes de dados o `ID3v2` na frente do arquivo ocupa, se houver.
+/// How many bytes of data the `ID3v2` at the front of the file takes up, if there is one.
 ///
-/// O tamanho vem em quatro bytes de sete bits cada — o formato guarda assim para nunca formar
-/// um `0xFF` que pareça a sincronia de um quadro.
+/// The size comes in four bytes of seven bits each — the format stores it that way so it never
+/// forms a `0xFF` that looks like a frame sync.
 fn id3_len(data: &[u8]) -> usize {
     if data.len() < 10 || &data[..3] != b"ID3" {
         return 0;
@@ -73,15 +74,15 @@ fn id3_len(data: &[u8]) -> usize {
     10 + size
 }
 
-/// Lê o que dá para saber de um MP3 sem decodificá-lo. `None` quando não é um.
+/// Reads what can be known about an MP3 without decoding it. `None` when it isn't one.
 pub fn probe(data: &[u8]) -> Option<Mp3> {
     let start = id3_len(data);
     let head = data.get(start..start + 4)?;
-    // Sincronia: onze bits ligados.
+    // Sync: eleven bits set.
     if head[0] != 0xff || head[1] & 0xe0 != 0xe0 {
         return None;
     }
-    // Só o Layer III interessa: é o que "MP3" quer dizer, e é o que os jogos entregam.
+    // Only Layer III matters: it's what "MP3" means, and it's what the games ship.
     if (head[1] >> 1) & 0b11 != 0b01 {
         return None;
     }
@@ -89,16 +90,16 @@ pub fn probe(data: &[u8]) -> Option<Mp3> {
         0b11 => (RATES_V1, BITRATE_V1, 1152),
         0b10 => (RATES_V2, BITRATE_V2, 576),
         0b00 => (RATES_V25, BITRATE_V2, 576),
-        // 0b01 é reservado.
+        // 0b01 is reserved.
         _ => return None,
     };
     let rate = *rates.get(((head[2] >> 2) & 0b11) as usize)?;
     let bitrate = bitrates[((head[2] >> 4) & 0b1111) as usize] * 1000;
     let mono = (head[3] >> 6) & 0b11 == 0b11;
 
-    // A etiqueta do codificador vive no primeiro quadro, num deslocamento que depende da versão
-    // e do número de canais — é onde ficariam os dados laterais, que o quadro de etiqueta não
-    // usa. Quando ela traz a contagem de quadros, a duração é exata mesmo com taxa variável.
+    // The encoder tag lives in the first frame, at an offset that depends on the version and
+    // the channel count — it's where the side info would be, which the tag frame doesn't use.
+    // When it carries the frame count, the duration is exact even with a variable bitrate.
     let tag_at = start
         + 4
         + match (samples_per_frame, mono) {
@@ -119,8 +120,9 @@ pub fn probe(data: &[u8]) -> Option<Mp3> {
         });
     }
 
-    // Sem etiqueta, a conta é a da taxa constante: o tamanho dividido pela taxa de bits. Erra
-    // em arquivo de taxa variável, e é a única estimativa possível sem varrer todos os quadros.
+    // Without a tag, the math is the constant-bitrate one: the size divided by the bitrate. It
+    // is wrong for variable-bitrate files, and it's the only estimate possible without scanning
+    // every frame.
     if bitrate == 0 {
         return None;
     }
@@ -133,33 +135,36 @@ pub fn probe(data: &[u8]) -> Option<Mp3> {
     })
 }
 
-/// Decodifica o MP3 inteiro para amostras. `None` quando não é um MP3 que se possa ler.
+/// Decodes the whole MP3 into samples. `None` when it isn't an MP3 that can be read.
 ///
-/// Devolve o mesmo [`Sound`](crate::audio::wav::Sound) que o RIFF/WAVE produz, e por isso o misturador
-/// não precisa saber de onde o som veio: reamostragem, volume e repetição já funcionam iguais.
+/// Returns the same [`Sound`](crate::audio::wav::Sound) that RIFF/WAVE produces, so the mixer
+/// doesn't need to know where the sound came from: resampling, volume and looping already work
+/// the same.
 ///
-/// A decodificação é feita **de uma vez**, e não em fluxo. Uma trilha de trinta e seis segundos
-/// a 22 kHz mono são três milhões de amostras, seis megabytes de `f32` — cabe, e o resultado
-/// fica no cache de sons do `machine.rs`, decodificado uma vez por trilha e não por `Play`.
-/// Fluxo seria o certo para um jogo que troque de música o tempo todo; nenhum dos nossos faz
-/// isso, e streaming acrescentaria estado e uma linha de execução a mais para nada.
+/// Decoding is done **all at once**, not streamed. A thirty-six-second track at 22 kHz mono is
+/// three million samples, six megabytes of `f32` — it fits, and the result stays in the sound
+/// cache in `machine.rs`, decoded once per track and not per `Play`. Streaming would be right
+/// for a game that changes music all the time; none of ours does that, and streaming would add
+/// state and one more thread for nothing.
 pub fn decode(data: &[u8]) -> Option<crate::audio::wav::Sound> {
-    decode_detalhado(data).ok()
+    decode_detailed(data).ok()
 }
 
-/// Como [`decode`], mas **dizendo por quê** quando recusa.
+/// Like [`decode`], but **saying why** when it refuses.
 ///
-/// O motivo importa: sem ele o relatório mostrava só o erro do WAV ("não é um RIFF/WAVE"), que é
-/// verdade e não ajuda em nada — a pergunta é o que a sondagem do `symphonia` não aceitou. Foi
-/// assim que se descobriu que o Turma da Mônica entrega Ogg e o Peggle MP3 com etiqueta ID3v2.
-/// Onde começa o primeiro quadro MPEG.
+/// The reason matters: without it the report showed only the WAV error ("not a RIFF/WAVE"),
+/// which is true and doesn't help at all — the question is what `symphonia`'s probe didn't
+/// accept. That's how we found out that Turma da Mônica ships Ogg and Peggle ships MP3 with an
+/// ID3v2 tag.
+/// Where the first MPEG frame starts.
 ///
-/// A etiqueta ID3v2 declara o **próprio tamanho** no cabeçalho, e é por ele que um decodificador
-/// pula até o áudio. O Peggle entrega MP3 cuja etiqueta diz zero byte e tem trinta mil de
-/// conteúdo: quem confia no campo procura o quadro no lugar errado, não acha, e recusa o som
-/// inteiro — era o que acontecia com sete trilhas do jogo. Aqui a busca é pelo próprio quadro,
-/// `0xFF` seguido de três bits altos, que é o que o formato garante de verdade.
-fn inicio_do_audio(bytes: &[u8]) -> usize {
+/// The ID3v2 tag declares **its own size** in the header, and that's what a decoder uses to skip
+/// to the audio. Peggle ships MP3s whose tag says zero bytes and has thirty thousand of content:
+/// whoever trusts the field looks for the frame in the wrong place, doesn't find it, and rejects
+/// the whole sound — which is what happened to seven of the game's tracks. Here the search is for
+/// the frame itself, `0xFF` followed by three high bits, which is what the format really
+/// guarantees.
+fn audio_start(bytes: &[u8]) -> usize {
     if bytes.len() < 3 || &bytes[0..3] != b"ID3" {
         return 0;
     }
@@ -171,7 +176,7 @@ fn inicio_do_audio(bytes: &[u8]) -> usize {
     0
 }
 
-pub fn decode_detalhado(data: &[u8]) -> Result<crate::audio::wav::Sound, String> {
+pub fn decode_detailed(data: &[u8]) -> Result<crate::audio::wav::Sound, String> {
     use symphonia::core::audio::SampleBuffer;
     use symphonia::core::codecs::DecoderOptions;
     use symphonia::core::errors::Error;
@@ -180,195 +185,197 @@ pub fn decode_detalhado(data: &[u8]) -> Result<crate::audio::wav::Sound, String>
     use symphonia::core::meta::MetadataOptions;
     use symphonia::core::probe::Hint;
 
-    // O `MediaSourceStream` quer posse do que lê, e o buffer é do guest: copiar é o preço de
-    // não deixar o decodificador olhando para a memória do jogo enquanto ele a reescreve.
-    // **Duas caixas, o mesmo decodificador.** A música da maioria dos jogos chega em MP3; a do
-    // Turma da Mônica chega em Ogg/Vorbis — 86 sons que eram recusados um a um e deixavam o jogo
-    // em **silêncio absoluto** (medido: pico 0,000 no relatório, com oito mil amostras de Ogg na
-    // lista de recusados). A dica de extensão ajuda a sondagem e não atrapalha: com a errada ela
-    // falha, e aí vale tentar a outra. Antes desta linha, o `recusado (formato desconhecido, 4f 67
-    // 67 53 ...)` do relatório era a única pista, e ela ficou visível por uma tarde.
-    // **A busca pelo quadro vem antes da sondagem.** Uma etiqueta ID3 que mente no tamanho faz a
-    // sondagem falhar no arquivo inteiro; começando no primeiro quadro, ela vê o que o formato
-    // promete. Para um arquivo sem etiqueta, ou com etiqueta honesta, o deslocamento é zero e
-    // nada muda.
-    let inicio = inicio_do_audio(data);
-    let audio = &data[inicio..];
-    let mut sondado = None;
-    for extensao in ["mp3", "ogg"] {
-        let fonte = std::io::Cursor::new(audio.to_vec());
-        let fluxo = MediaSourceStream::new(Box::new(fonte), Default::default());
+    // `MediaSourceStream` wants ownership of what it reads, and the buffer belongs to the guest:
+    // copying is the price of not leaving the decoder looking at the game's memory while the
+    // game rewrites it.
+    // **Two containers, the same decoder.** Most games' music arrives as MP3; Turma da Mônica's
+    // arrives as Ogg/Vorbis — 86 sounds that were rejected one by one and left the game in
+    // **absolute silence** (measured: peak 0.000 in the report, with eight thousand Ogg samples
+    // in the rejected list). The extension hint helps the probe and doesn't get in the way: with
+    // the wrong one it fails, and then it's worth trying the other. Before this line, the
+    // report's `rejected (unknown format, 4f 67 67 53 ...)` was the only clue, and it stayed in
+    // plain sight for an afternoon.
+    // **The frame search comes before the probe.** An ID3 tag that lies about its size makes the
+    // probe fail on the whole file; starting at the first frame, it sees what the format
+    // promises. For a file with no tag, or with an honest tag, the offset is zero and nothing
+    // changes.
+    let start = audio_start(data);
+    let audio = &data[start..];
+    let mut probed = None;
+    for extension in ["mp3", "ogg"] {
+        let source = std::io::Cursor::new(audio.to_vec());
+        let stream = MediaSourceStream::new(Box::new(source), Default::default());
         let mut hint = Hint::new();
-        hint.with_extension(extensao);
-        if let Ok(encontrado) = symphonia::default::get_probe().format(
+        hint.with_extension(extension);
+        if let Ok(found) = symphonia::default::get_probe().format(
             &hint,
-            fluxo,
+            stream,
             &FormatOptions::default(),
             &MetadataOptions::default(),
         ) {
-            sondado = Some(encontrado);
+            probed = Some(found);
             break;
         }
     }
-    let sondado = sondado.ok_or_else(|| "a sondagem não reconheceu o contêiner".to_string())?;
-    let mut formato = sondado.format;
-    let trilha = formato
+    let probed = probed.ok_or_else(|| "the probe did not recognize the container".to_string())?;
+    let mut format = probed.format;
+    let track = format
         .default_track()
-        .ok_or_else(|| "o contêiner não declara trilha de áudio".to_string())?;
-    let id = trilha.id;
-    let mut decodificador = symphonia::default::get_codecs()
-        .make(&trilha.codec_params, &DecoderOptions::default())
-        .map_err(|erro| format!("sem decodificador para {:#?}: {erro}", trilha.codec_params.codec))?;
+        .ok_or_else(|| "the container declares no audio track".to_string())?;
+    let id = track.id;
+    let mut decoder = symphonia::default::get_codecs()
+        .make(&track.codec_params, &DecoderOptions::default())
+        .map_err(|error| format!("no decoder for {:#?}: {error}", track.codec_params.codec))?;
 
     let mut samples: Vec<f32> = Vec::new();
     let mut rate = 0;
     let mut channels = 0;
     let mut buffer: Option<SampleBuffer<f32>> = None;
     loop {
-        let pacote = match formato.next_packet() {
-            Ok(pacote) => pacote,
-            // Fim do arquivo chega como erro de leitura, e é o desfecho normal.
+        let package = match format.next_packet() {
+            Ok(package) => package,
+            // End of file arrives as a read error, and it's the normal outcome.
             Err(_) => break,
         };
-        if pacote.track_id() != id {
+        if package.track_id() != id {
             continue;
         }
-        let quadro = match decodificador.decode(&pacote) {
-            Ok(quadro) => quadro,
-            // Quadro estragado no meio não invalida a música: o codificador de época deixa
-            // lixo no começo de alguns arquivos, e parar aí devolveria silêncio.
+        let frame = match decoder.decode(&package) {
+            Ok(frame) => frame,
+            // A broken frame in the middle doesn't invalidate the music: the period encoder
+            // leaves garbage at the start of some files, and stopping there would return silence.
             Err(Error::DecodeError(_)) => continue,
             Err(_) => break,
         };
-        let spec = *quadro.spec();
+        let spec = *frame.spec();
         rate = spec.rate;
         channels = spec.channels.count() as u16;
         let buffer =
-            buffer.get_or_insert_with(|| SampleBuffer::new(quadro.capacity() as u64, spec));
-        buffer.copy_interleaved_ref(quadro);
+            buffer.get_or_insert_with(|| SampleBuffer::new(frame.capacity() as u64, spec));
+        buffer.copy_interleaved_ref(frame);
         samples.extend_from_slice(buffer.samples());
     }
     if samples.is_empty() || rate == 0 || channels == 0 {
         return Err(format!(
-            "decodificou {} amostra(s), taxa {rate}, {channels} canal(is)",
+            "decoded {} sample(s), rate {rate}, {channels} channel(s)",
             samples.len()
         ));
     }
-    Ok(crate::audio::wav::Sound::novo(rate, channels, samples))
+    Ok(crate::audio::wav::Sound::create(rate, channels, samples))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// **A etiqueta que mente no tamanho.**
+    /// **The tag that lies about its size.**
     ///
-    /// `ID3` + versão + flags + quatro bytes de tamanho. O Peggle entrega etiqueta dizendo zero
-    /// byte; procurar o quadro pelo campo declarado levava a decodificador nenhum. A busca pelo
-    /// padrão do quadro acha o áudio de qualquer jeito.
+    /// `ID3` + version + flags + four size bytes. Peggle ships a tag saying zero bytes; looking
+    /// for the frame by the declared field led to no decoder at all. Searching for the frame
+    /// pattern finds the audio either way.
     #[test]
-    fn acha_o_quadro_depois_de_uma_etiqueta_que_mente() {
-        let mut dados = b"ID3\x03\x00\x00\x00\x00\x00\x00".to_vec();
-        dados.extend_from_slice(&[0u8; 32]); // conteúdo da etiqueta, sem quadro nenhum
-        let onde = dados.len();
-        dados.extend_from_slice(&[0xFF, 0xFB, 0x90, 0x00]); // sincronia de quadro MPEG-1 Layer III
-        assert_eq!(inicio_do_audio(&dados), onde);
+    fn finds_the_frame_after_a_lying_tag() {
+        let mut data = b"ID3\x03\x00\x00\x00\x00\x00\x00".to_vec();
+        data.extend_from_slice(&[0u8; 32]); // tag content, with no frame at all
+        let location = data.len();
+        data.extend_from_slice(&[0xFF, 0xFB, 0x90, 0x00]); // MPEG-1 Layer III frame sync
+        assert_eq!(audio_start(&data), location);
     }
 
-    /// Sem etiqueta, o áudio começa no começo — e um `0xFF` solto não vira falso positivo no
-    /// primeiro byte, que é o caso de todo WAV e de todo Ogg.
+    /// Without a tag, the audio starts at the start — and a stray `0xFF` doesn't become a false
+    /// positive on the first byte, which is the case for every WAV and every Ogg.
     #[test]
-    fn sem_etiqueta_o_audio_comeca_no_zero() {
-        assert_eq!(inicio_do_audio(&[0xFF, 0xFB, 0x90, 0x00]), 0);
-        assert_eq!(inicio_do_audio(b"OggS\x00\x02\x00\x00"), 0);
-        assert_eq!(inicio_do_audio(b"RIFF\x24\x00\x00\x00WAVE"), 0);
-        assert_eq!(inicio_do_audio(b""), 0);
+    fn without_a_tag_the_audio_starts_at_zero() {
+        assert_eq!(audio_start(&[0xFF, 0xFB, 0x90, 0x00]), 0);
+        assert_eq!(audio_start(b"OggS\x00\x02\x00\x00"), 0);
+        assert_eq!(audio_start(b"RIFF\x24\x00\x00\x00WAVE"), 0);
+        assert_eq!(audio_start(b""), 0);
     }
 
-    /// Um quarto de segundo de 440 Hz, mono, 22.050 Hz, gerado com o `lame`.
+    /// A quarter second of 440 Hz, mono, 22,050 Hz, generated with `lame`.
     ///
-    /// Fixture de verdade em vez de bytes montados à mão: o que se quer provar é que um MP3 real
-    /// entra e sai com a altura certa, e cabeçalho sintético nenhum prova isso. Entra só no
-    /// binário de teste.
-    const TOM: &[u8] = include_bytes!("../../assets/teste/tom-440hz.mp3");
+    /// A real fixture instead of hand-assembled bytes: what we want to prove is that a real MP3
+    /// goes in and comes out at the right pitch, and no synthetic header proves that. It only
+    /// goes into the test binary.
+    const TONE: &[u8] = include_bytes!("../../assets/teste/tom-440hz.mp3");
 
-    /// A música sai com a taxa, os canais e **a altura** certos.
+    /// The music comes out with the right rate, channels and **pitch**.
     ///
-    /// A altura é o que se confere contando cruzamentos por zero: um som que toca, parece bem e
-    /// está no tom errado passaria por qualquer outra verificação — é o mesmo cuidado que o
-    /// misturador já tem com a reamostragem.
+    /// The pitch is checked by counting zero crossings: a sound that plays, looks fine and is at
+    /// the wrong pitch would pass any other check — it's the same care the mixer already takes
+    /// with resampling.
     #[test]
-    fn um_mp3_de_verdade_decodifica_com_a_altura_certa() {
-        let som = decode(TOM).expect("o tom de 440 Hz é um MP3 legível");
-        assert_eq!((som.rate, som.channels), (22050, 1));
-        // O codificador acrescenta silêncio no começo e no fim, então a duração não é exata.
-        let segundos = som.frames() as f32 / som.rate as f32;
-        assert!((0.2..0.4).contains(&segundos), "{segundos} s");
-        let pico = som.samples.iter().fold(0.0f32, |a, s| a.max(s.abs()));
-        assert!(pico > 0.3, "som quase mudo: pico {pico}");
-        // Só o miolo: as bordas têm o silêncio do codificador, e zero não cruza zero.
-        let miolo = &som.samples[som.samples.len() / 4..som.samples.len() * 3 / 4];
-        let cruzamentos = miolo
+    fn a_real_mp3_decodes_at_the_right_pitch() {
+        let sound = decode(TONE).expect("the 440 Hz tone is a readable MP3");
+        assert_eq!((sound.rate, sound.channels), (22050, 1));
+        // The encoder adds silence at the start and at the end, so the duration isn't exact.
+        let seconds = sound.frames() as f32 / sound.rate as f32;
+        assert!((0.2..0.4).contains(&seconds), "{seconds} s");
+        let peak = sound.samples.iter().fold(0.0f32, |a, s| a.max(s.abs()));
+        assert!(peak > 0.3, "sound almost mute: peak {peak}");
+        // Only the middle: the edges have the encoder's silence, and zero doesn't cross zero.
+        let middle = &sound.samples[sound.samples.len() / 4..sound.samples.len() * 3 / 4];
+        let crossings = middle
             .windows(2)
-            .filter(|par| (par[0] < 0.0) != (par[1] < 0.0))
+            .filter(|pair| (pair[0] < 0.0) != (pair[1] < 0.0))
             .count();
-        let hz = cruzamentos as f32 / 2.0 / (miolo.len() as f32 / som.rate as f32);
-        assert!((430.0..450.0).contains(&hz), "altura medida: {hz} Hz");
+        let hz = crossings as f32 / 2.0 / (middle.len() as f32 / sound.rate as f32);
+        assert!((430.0..450.0).contains(&hz), "measured pitch: {hz} Hz");
     }
 
-    /// O que não é MP3 não vira som — e não entra em pânico.
+    /// What isn't MP3 doesn't become sound — and doesn't panic.
     #[test]
-    fn o_que_nao_e_mp3_nao_decodifica() {
+    fn what_is_not_mp3_does_not_decode() {
         assert!(decode(b"RIFF\x00\x00\x00\x00WAVEfmt ").is_none());
         assert!(decode(&[]).is_none());
         assert!(decode(&[0xff; 512]).is_none());
     }
 
-    /// O cabeçalho real do primeiro quadro da música do Tekken 2, com a etiqueta `Info` que o
-    /// codificador dele deixou: MPEG-2, Layer III, 64 kbps, 22.050 Hz, mono.
+    /// The real header of the first frame of Tekken 2's music, with the `Info` tag its encoder
+    /// left: MPEG-2, Layer III, 64 kbps, 22,050 Hz, mono.
     fn tekken_header(frames: u32) -> Vec<u8> {
         let mut out = vec![0xff, 0xf3, 0x80, 0xc4];
         out.extend(std::iter::repeat_n(0u8, 9));
         out.extend(b"Info");
-        out.extend([0, 0, 0, 1]); // sinalizadores: só a contagem de quadros
+        out.extend([0, 0, 0, 1]); // flags: only the frame count
         out.extend(frames.to_be_bytes());
         out.resize(140642, 0);
         out
     }
 
     #[test]
-    fn a_etiqueta_do_codificador_da_a_duracao_exata() {
-        let mp3 = probe(&tekken_header(1350)).expect("é um MP3");
+    fn the_encoder_tag_gives_the_exact_duration() {
+        let mp3 = probe(&tekken_header(1350)).expect("it is an MP3");
         assert_eq!((mp3.rate, mp3.samples_per_frame), (22050, 576));
         assert_eq!(mp3.frames, 1350);
-        // 1350 quadros de 576 amostras a 22.050 Hz são pouco menos de 36 segundos.
+        // 1350 frames of 576 samples at 22,050 Hz are a little under 36 seconds.
         assert_eq!(mp3.duration_us() / 1000, 35265);
     }
 
     #[test]
-    fn sem_etiqueta_a_duracao_sai_da_taxa_de_bits() {
+    fn without_a_tag_the_duration_comes_from_the_bitrate() {
         let mut data = tekken_header(1350);
-        // Estraga a etiqueta: sobra a conta do tamanho pela taxa de bits.
+        // Break the tag: what's left is the size-by-bitrate math.
         data[13..17].copy_from_slice(b"xxxx");
-        let mp3 = probe(&data).expect("é um MP3");
-        // 140.642 bytes a 64 kbps são 17,5 segundos.
+        let mp3 = probe(&data).expect("it is an MP3");
+        // 140,642 bytes at 64 kbps are 17.5 seconds.
         assert_eq!(mp3.duration_us() / 1_000_000, 17);
     }
 
     #[test]
-    fn um_id3_na_frente_nao_atrapalha() {
+    fn a_leading_id3_does_not_get_in_the_way() {
         let mut data = b"ID3\x04\x00\x00\x00\x00\x02\x01".to_vec();
         data.resize(10 + 257, 0);
         data.extend(tekken_header(100));
-        let mp3 = probe(&data).expect("é um MP3");
+        let mp3 = probe(&data).expect("it is an MP3");
         assert_eq!(mp3.frames, 100);
     }
 
     #[test]
-    fn um_riff_nao_e_mp3() {
+    fn a_riff_is_not_mp3() {
         assert_eq!(probe(b"RIFF\x00\x00\x00\x00WAVEfmt "), None);
         assert_eq!(probe(&[]), None);
-        // Sincronia certa, camada errada: Layer II não é MP3.
+        // Right sync, wrong layer: Layer II is not MP3.
         assert_eq!(probe(&[0xff, 0xf5, 0x80, 0xc4, 0, 0, 0, 0]), None);
     }
 }

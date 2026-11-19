@@ -1,0 +1,65 @@
+> **Registro em português.** Esta é a versão original deste documento, preservada como estava na v0.5.1 e não é mais atualizada. A versão mantida está em inglês: [README.md](../../implementation/README.md).
+
+# Implementação
+
+Como o Zeebx é feito por dentro. A série `0x` na raiz de [`docs/`](../../) é **pesquisa** — o que se
+sabe do console e da plataforma; esta série é **implementação** — o que está escrito no código e
+por quê.
+
+A regra que vale em todos estes documentos: eles explicam **decisões**, não repetem o código.
+Onde um número parece arbitrário, o texto diz de onde ele veio; onde uma escolha tinha
+alternativa, o texto diz qual foi descartada e por quê. O que é óbvio lendo a assinatura da
+função não está aqui.
+
+| Doc | Conteúdo |
+|---|---|
+| [01-arquitetura.md](01-arquitetura.md) | Os módulos, o laço principal e como uma chamada do jogo vira trabalho no host |
+| [02-cpu-e-memoria.md](02-cpu-e-memoria.md) | O núcleo ARM, o mapa de memória do guest, o heap e os objetos |
+| [03-despacho-de-api.md](03-despacho-de-api.md) | Vtables, o trampolim, as interfaces e como um método novo entra |
+| [04-tempo.md](04-tempo.md) | Relógio virtual, temporizadores, callbacks, threads e a espera ocupada |
+| [05-video-2d.md](05-video-2d.md) | `IDisplay`, `IBitmap`, o DIB, o recorte e o custo da superfície |
+| [06-video-3d.md](06-video-3d.md) | EGL, OpenGL ES, o rasterizador de software e os formatos de textura |
+| [07-audio.md](07-audio.md) | RIFF/WAVE, IMA ADPCM, o misturador e `IMedia`/`ISound` |
+| [08-arquivos-e-recursos.md](08-arquivos-e-recursos.md) | `.mod`, `.mif`, `.bar`, o sistema de arquivos virtual e os `.zip` |
+| [09-entrada.md](09-entrada.md) | O controle do console, o `IHID` e o mapeamento configurável |
+| [10-interface.md](10-interface.md) | Biblioteca, configurações, idiomas e o mapa visual do controle |
+| [11-compatibilidade.md](11-compatibilidade.md) | O que roda, o que não roda e o que falta para cada caso |
+| [12-rasterizador-e-paralelismo.md](12-rasterizador-e-paralelismo.md) | Por que dividir o trabalho por draw call não servia, e o que serviu |
+| [13-classes-desconhecidas.md](13-classes-desconhecidas.md) | Como descobrir que interface é uma classe sem header: a sonda |
+| [14-z-wheel-e-o-efs2.md](14-z-wheel-e-o-efs2.md) | Onde a loja do console parou, e o elo que falta no leitor da NAND |
+| [15-o-que-falta-da-nand.md](15-o-que-falta-da-nand.md) | Classe a classe, o que ainda precisa sair do dump |
+| [16-rede-e-a-ponte.md](16-rede-e-a-ponte.md) | HTTP, AES, e a ponte por módulo que o Zeeboids exigiu |
+| [17-testes.md](17-testes.md) | Como conferir o que dizemos que funciona, e a varredura de ROMs por teste |
+| [18-a-roda-da-z-wheel.md](18-a-roda-da-z-wheel.md) | Da tela preta ao desenho na Z-Wheel: os degraus do lado do guest, para qualquer emulador |
+| [19-jit-arm-e-renderizadores.md](19-jit-arm-e-renderizadores.md) | Dynarmic, o gargalo dos renderizadores ARM e como validar sem alterar o tempo BREW |
+| [20-boomerang-e-wii-remote.md](20-boomerang-e-wii-remote.md) | O controle de movimento: o relatório do receptor lido no código dos jogos, e o Wii Remote no lugar dele |
+| [21-migracao-para-qt.md](21-migracao-para-qt.md) | Plano da troca do egui por Qt Quick com cxx-qt, e o que o núcleo empresta da janela |
+| [22-screenshots.md](22-screenshots.md) | O F9 da janela do jogo: que quadro sai, em que tamanho, onde grava, e a régua do RetroAchievements |
+| [24-velocidade.md](24-velocidade.md) | Limite de quadros, frameskip, fast-forward, turbo e rewind: o ritmo do jogo contra o relógio do mundo |
+| [25-save-state-no-desktop.md](25-save-state-no-desktop.md) | Os dez slots por jogo, o salvar e o carregar com a placa, o desfazer, e os atalhos com o ⌘ do Mac |
+| [26-temas.md](26-temas.md) | As paletas sobre o Fusion, o arquivo de cada tema, como a cor chega às janelas e a conta do contraste |
+| [27-moldura-da-janela.md](27-moldura-da-janela.md) | A barra de menus, a de ferramentas com os ícones da Lucide e a de status em volta da biblioteca |
+| [28-jogo-na-janela-principal.md](28-jogo-na-janela-principal.md) | O jogo no lugar da biblioteca, a janela separada como opção, e um palco para cada uma |
+| [29-configuracoes-com-barra-lateral.md](29-configuracoes-com-barra-lateral.md) | As categorias numa coluna com ícones, e a explicação de cada opção no rodapé |
+| [30-ajustes-da-repaginada.md](30-ajustes-da-repaginada.md) | A casa da Z-Wheel, o jogo até o pé da janela com as métricas no canto, o Z-Pad e o Dragon num botão, e a pergunta antes de fechar o jogo |
+
+## Como medir
+
+Estas medições ficam no repositório justamente para não precisar adivinhar:
+
+```bash
+# vazão do núcleo ARM recompilado
+cargo run --release -p zeebx-cli -- bench <jogo.mod>
+
+# um jogo sem janela, com o resumo de chamadas de API no fim
+cargo run --release -p zeebx-cli -- run caminho/para/jogo.mod --seconds=6 --trace
+
+# a biblioteca inteira, só até o applet existir
+ZEEBX_ROM=roms cargo test --release varredura::tests::a_rom_indicada_abre -- --nocapture
+```
+
+Os comandos de teste estão todos em [17-testes.md](17-testes.md).
+
+O `--trace` aceita filtro (`--trace=Bitmap`), e o resumo do fim conta **quantas vezes cada método
+foi chamado** — foi ele que apontou os dois gargalos do Pac-Mania e as APIs que faltavam em nove
+jogos.

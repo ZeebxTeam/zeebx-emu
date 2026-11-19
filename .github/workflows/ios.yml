@@ -1,7 +1,7 @@
-# Compila o núcleo para iOS e monta o .app, sem esperar a tag.
+# Builds the core for iOS and assembles the .app, without waiting for the tag.
 #
-# O `release.yml` monta o mesmo aplicativo, mas só no dia da tag. Aqui ele sai sozinho, à mão.
-# Nenhum push dispara isto.
+# `release.yml` assembles the same app, but only on tag day. Here it comes out on its own, by hand.
+# No push triggers this.
 
 name: ios
 
@@ -28,24 +28,24 @@ jobs:
         with:
           key: ios-ci
 
-      - name: Simulador
-        run: frontends/ios/compilar.sh --app
+      - name: Simulator
+        run: frontends/ios/build.sh --app
 
-      - name: Aparelho
-        run: frontends/ios/compilar.sh --app-aparelho
+      - name: Device
+        run: frontends/ios/build.sh --app-device
 
-      - name: Abre no simulador
+      - name: Open in the simulator
         run: |
           set -euo pipefail
-          dispositivo="$(xcrun simctl list devices available | sed -n 's/^[[:space:]]*iPhone[^(]*(\([A-F0-9-]\{36\}\)).*/\1/p' | head -1)"
-          test -n "$dispositivo"
-          xcrun simctl boot "$dispositivo" || true
-          xcrun simctl bootstatus "$dispositivo" -b
-          xcrun simctl install "$dispositivo" frontends/ios/build/iphonesimulator/Zeebx.app
-          xcrun simctl launch "$dispositivo" io.github.zeebxteam.zeebx
+          device="$(xcrun simctl list devices available | sed -n 's/^[[:space:]]*iPhone[^(]*(\([A-F0-9-]\{36\}\)).*/\1/p' | head -1)"
+          test -n "$device"
+          xcrun simctl boot "$device" || true
+          xcrun simctl bootstatus "$device" -b
+          xcrun simctl install "$device" frontends/ios/build/iphonesimulator/Zeebx.app
+          xcrun simctl launch "$device" io.github.zeebxteam.zeebx
 
-      - name: Empacota
-        run: frontends/ios/compilar.sh --pacote
+      - name: Package
+        run: frontends/ios/build.sh --package
 
       - uses: actions/upload-artifact@v4
         with:

@@ -1,22 +1,22 @@
-//! Texturas paletizadas do `OES_compressed_paletted_texture`.
+//! Paletted textures from `OES_compressed_paletted_texture`.
 //!
-//! São parte do núcleo do OpenGL ES 1.1 e entram pelo mesmo `glCompressedTexImage2D` das
-//! texturas do Adreno. O bloco começa com a paleta — 16 cores nos formatos `PALETTE4` e 256 nos
-//! `PALETTE8` — e segue com os índices, um por texel, empacotados de dois em dois byte nos
-//! `PALETTE4`.
+//! They are part of the OpenGL ES 1.1 core and come in through the same `glCompressedTexImage2D`
+//! as the Adreno textures. The block starts with the palette — 16 colors in the `PALETTE4`
+//! formats and 256 in the `PALETTE8` ones — followed by the indices, one per texel, packed two per
+//! byte in the `PALETTE4` formats.
 //!
-//! O `level` desses formatos é **não positivo**: zero quer dizer só o nível base, e um valor
-//! negativo diz quantos níveis de mipmap vêm depois dele. Como só usamos o nível base, o que
-//! interessa é sempre o primeiro trecho de índices depois da paleta.
+//! The `level` of these formats is **non-positive**: zero means only the base level, and a
+//! negative value says how many mipmap levels follow it. Since we only use the base level, what
+//! matters is always the first run of indices after the palette.
 
 use crate::video::gles;
 
-/// Como cada entrada da paleta é codificada, e quantas entradas ela tem.
+/// How each palette entry is encoded, and how many entries it has.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Format {
-    /// Bits por índice: 4 ou 8.
+    /// Bits per index: 4 or 8.
     index_bits: u32,
-    /// Bytes por entrada da paleta.
+    /// Bytes per palette entry.
     entry_bytes: usize,
     kind: Entry,
 }
@@ -31,7 +31,7 @@ enum Entry {
 }
 
 impl Format {
-    /// O formato de um `internalformat` do OpenGL, ou `None` se não for paletizado.
+    /// The format for an OpenGL `internalformat`, or `None` if it is not paletted.
     pub fn from_gl(format: u32) -> Option<Self> {
         let (index_bits, kind) = match format {
             gles::GL_PALETTE4_RGB8_OES => (4, Entry::Rgb8),
@@ -63,7 +63,7 @@ impl Format {
     }
 }
 
-/// Expande um valor de `bits` bits para a faixa completa de um byte.
+/// Expands a `bits`-bit value to the full range of a byte.
 fn expand(value: u16, bits: u32) -> u8 {
     let max = (1u16 << bits) - 1;
     ((value as u32 * 255 + max as u32 / 2) / max as u32) as u8
@@ -73,9 +73,9 @@ fn decode_entry(kind: Entry, bytes: &[u8]) -> [u8; 4] {
     match kind {
         Entry::Rgb8 => [bytes[0], bytes[1], bytes[2], 255],
         Entry::Rgba8 => [bytes[0], bytes[1], bytes[2], bytes[3]],
-        // Os formatos de 16 bits são `GLushort`, e valem na ordem de bytes do aparelho —
-        // little-endian no ARM. Lidos ao contrário, o logo do Double Dragon sai com um
-        // serrilhado de arco-íris no lugar do dourado; foi assim que a ordem se decidiu.
+        // The 16-bit formats are `GLushort`, and they are in the device's byte order —
+        // little-endian on ARM. Read the other way round, the Double Dragon logo comes out with
+        // rainbow jaggies instead of gold; that is how the order was settled.
         Entry::Rgb565 => {
             let v = u16::from_le_bytes([bytes[0], bytes[1]]);
             [
@@ -109,11 +109,11 @@ fn decode_entry(kind: Entry, bytes: &[u8]) -> [u8; 4] {
     }
 }
 
-/// Decodifica o nível base de uma textura paletizada para RGBA de 8 bits.
+/// Decodes the base level of a paletted texture to 8-bit RGBA.
 ///
-/// Devolve `None` quando os dados não chegam nem para a paleta. Índices que passem do fim do
-/// bloco viram transparente, porque uma textura truncada tem que sair incompleta, não derrubar
-/// o emulador.
+/// Returns `None` when the data does not even cover the palette. Indices past the end of the
+/// block become transparent, because a truncated texture has to come out incomplete, not bring
+/// down the emulator.
 pub fn decode(data: &[u8], width: usize, height: usize, format: Format) -> Option<Vec<[u8; 4]>> {
     let palette_bytes = format.entries() * format.entry_bytes;
     if data.len() < palette_bytes {
@@ -129,7 +129,7 @@ pub fn decode(data: &[u8], width: usize, height: usize, format: Format) -> Optio
     for (texel, slot) in out.iter_mut().enumerate() {
         let index = match format.index_bits {
             4 => {
-                // Dois texels por byte, o de índice par no nibble alto.
+                // Two texels per byte, the even-indexed one in the high nibble.
                 let Some(&byte) = indices.get(texel / 2) else {
                     continue;
                 };
@@ -155,13 +155,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn o_palette8_rgb5_a1_le_a_paleta_e_os_indices() {
+    fn palette8_rgb5_a1_reads_the_palette_and_indices() {
         let format = Format::from_gl(gles::GL_PALETTE8_RGB5_A1_OES).unwrap();
-        // Paleta de 256 entradas de dois bytes: a 0 é preta e opaca, a 1 é vermelha e opaca.
+        // A palette of 256 two-byte entries: entry 0 is opaque black, entry 1 is opaque red.
         let mut data = vec![0u8; 256 * 2];
         data[0..2].copy_from_slice(&0x0001u16.to_le_bytes());
         data[2..4].copy_from_slice(&0xf801u16.to_le_bytes());
-        // Quatro texels: 0, 1, 1, 0.
+        // Four texels: 0, 1, 1, 0.
         data.extend_from_slice(&[0, 1, 1, 0]);
 
         let pixels = decode(&data, 2, 2, format).unwrap();
@@ -171,12 +171,12 @@ mod tests {
     }
 
     #[test]
-    fn o_palette4_empacota_dois_texels_por_byte() {
+    fn palette4_packs_two_texels_per_byte() {
         let format = Format::from_gl(gles::GL_PALETTE4_RGB5_A1_OES).unwrap();
         let mut data = vec![0u8; 16 * 2];
-        data[0..2].copy_from_slice(&0x0001u16.to_le_bytes()); // preto
-        data[2..4].copy_from_slice(&0xf801u16.to_le_bytes()); // vermelho
-        // Um byte, dois texels: o alto é 0, o baixo é 1.
+        data[0..2].copy_from_slice(&0x0001u16.to_le_bytes()); // black
+        data[2..4].copy_from_slice(&0xf801u16.to_le_bytes()); // red
+        // One byte, two texels: the high one is 0, the low one is 1.
         data.push(0x01);
 
         let pixels = decode(&data, 2, 1, format).unwrap();
@@ -185,10 +185,10 @@ mod tests {
     }
 
     #[test]
-    fn o_bit_de_alfa_do_rgb5_a1_e_tudo_ou_nada() {
+    fn the_rgb5_a1_alpha_bit_is_all_or_nothing() {
         let format = Format::from_gl(gles::GL_PALETTE8_RGB5_A1_OES).unwrap();
         let mut data = vec![0u8; 256 * 2];
-        // Mesma cor, uma com o bit de alfa ligado e outra sem.
+        // Same color, one with the alpha bit set and one without.
         data[0..2].copy_from_slice(&0xf800u16.to_le_bytes());
         data[2..4].copy_from_slice(&0xf801u16.to_le_bytes());
         data.extend_from_slice(&[0, 1]);
@@ -198,15 +198,15 @@ mod tests {
     }
 
     #[test]
-    fn dados_que_nao_cobrem_a_paleta_sao_recusados() {
+    fn data_not_covering_the_palette_is_rejected() {
         let format = Format::from_gl(gles::GL_PALETTE8_RGB8_OES).unwrap();
         assert_eq!(decode(&[0u8; 10], 4, 4, format), None);
     }
 
     #[test]
-    fn indices_que_faltam_saem_transparentes() {
-        // A paleta está inteira, mas os índices acabam antes: o resto fica transparente em vez
-        // de derrubar o emulador.
+    fn missing_indices_come_out_transparent() {
+        // The palette is complete, but the indices end early: the rest stays transparent instead
+        // of bringing down the emulator.
         let format = Format::from_gl(gles::GL_PALETTE8_RGB8_OES).unwrap();
         let mut data = vec![0u8; 256 * 3];
         data[0..3].copy_from_slice(&[10, 20, 30]);
@@ -217,7 +217,7 @@ mod tests {
     }
 
     #[test]
-    fn formato_que_nao_e_paletizado_nao_e_reconhecido() {
+    fn a_non_paletted_format_is_not_recognized() {
         assert_eq!(Format::from_gl(gles::GL_ATC_RGB_AMD), None);
     }
 }

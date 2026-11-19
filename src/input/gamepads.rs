@@ -1,18 +1,18 @@
-//! Os controles de verdade ligados no computador.
+//! The real controllers connected to the computer.
 //!
-//! Este módulo é a ponte entre os nomes que o [`crate::input::bindings`] guarda e o que a biblioteca
-//! de controles entende. Os nomes são guardados como texto justamente para o arquivo de
-//! configuração não depender da numeração interna de biblioteca nenhuma.
+//! This module is the bridge between the names [`crate::input::bindings`] stores and what the
+//! controller library understands. The names are stored as text precisely so the settings file
+//! does not depend on any library's internal numbering.
 
 use gilrs::{Axis, Button, Gilrs};
 
 use crate::input::bindings::Source;
 
-/// A partir de quanto um eixo analógico conta como acionado. Meio curso é o que separa "o
-/// jogador empurrou" de "o manche não voltou exatamente ao centro".
+/// From how far an analog axis counts as triggered. Half travel is what separates "the player
+/// pushed it" from "the stick did not return exactly to the center".
 const AXIS_THRESHOLD: f32 = 0.5;
 
-/// Os botões que sabemos nomear, com o nome que vai para o arquivo de configuração.
+/// The buttons we know how to name, with the name that goes into the settings file.
 const BUTTONS: [(&str, Button); 19] = [
     ("South", Button::South),
     ("East", Button::East),
@@ -42,7 +42,7 @@ const AXES: [(&str, Axis); 4] = [
     ("RightStickY", Axis::RightStickY),
 ];
 
-/// Os nomes de eixo que a tela de configuração oferece.
+/// The axis names the settings screen offers.
 pub fn axis_names() -> impl Iterator<Item = &'static str> {
     AXES.iter().map(|(name, _)| *name)
 }
@@ -60,47 +60,47 @@ pub fn axis_by_name(name: &str) -> Option<Axis> {
         .map(|(_, axis)| *axis)
 }
 
-/// De quanto em quanto tempo o Linux confere se os aparelhos de entrada mudaram. Ver
-/// [`Gamepads::confere_os_aparelhos`].
+/// How often, on Linux, we check whether the input devices changed. See
+/// [`Gamepads::check_devices`].
 #[cfg(target_os = "linux")]
-const CONFERENCIA_DOS_APARELHOS: std::time::Duration = std::time::Duration::from_secs(1);
+const DEVICE_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
-/// Os controles ligados, e o estado deles.
+/// The connected controllers, and their state.
 ///
-/// Um computador sem nenhum controle — ou sem permissão para lê-los — não pode impedir o
-/// emulador de abrir, então a falha vira "nenhum controle" e o teclado segue funcionando.
+/// A computer without any controller — or without permission to read them — cannot keep the
+/// emulator from opening, so the failure becomes "no controllers" and the keyboard keeps working.
 pub struct Gamepads {
     gilrs: Option<Gilrs>,
-    /// Os controles cujo primeiro evento já foi para o registro. Ver [`Gamepads::anota`].
-    vistos: std::collections::HashSet<gilrs::GamepadId>,
-    /// Quando chegou o último evento de qualquer controle: a aba de controles usa para dizer que
-    /// nada está chegando.
-    ultimo_evento: Option<std::time::Instant>,
-    /// Quando o `gilrs` disse que um controle conectou pela última vez.
-    ultima_conexao: Option<std::time::Instant>,
-    /// O que a última conferência de `/dev/input` viu. Ver [`Gamepads::confere_os_aparelhos`].
+    /// The controllers whose first event already went to the log. See [`Gamepads::note`].
+    seen: std::collections::HashSet<gilrs::GamepadId>,
+    /// When the last event from any controller arrived: the controls tab uses it to say that
+    /// nothing is arriving.
+    last_event: Option<std::time::Instant>,
+    /// When `gilrs` last said that a controller connected.
+    last_connection: Option<std::time::Instant>,
+    /// What the last check of `/dev/input` saw. See [`Gamepads::check_devices`].
     #[cfg(target_os = "linux")]
-    aparelhos: Option<ConferenciaDosAparelhos>,
+    devices: Option<DeviceCheck>,
 }
 
-/// Uma conferência dos nós de entrada do Linux.
+/// A check of the Linux input nodes.
 #[cfg(target_os = "linux")]
-struct ConferenciaDosAparelhos {
-    quando: std::time::Instant,
-    /// A conferência anterior: os `novos` passaram a abrir entre ela e esta, e uma conexão do
-    /// `gilrs` desde ela é a deles.
-    desde: std::time::Instant,
-    /// Os nós que dava para abrir.
-    abriveis: std::collections::BTreeSet<NoDeEntrada>,
-    /// Os que passaram a dar nesta conferência: se o `gilrs` não conectar nenhum controle até a
-    /// próxima, ele não os viu.
-    novos: std::collections::BTreeSet<NoDeEntrada>,
+struct DeviceCheck {
+    when: std::time::Instant,
+    /// The previous check: the `fresh` ones became openable between it and this one, and a
+    /// `gilrs` connection since then is theirs.
+    since: std::time::Instant,
+    /// The nodes that could be opened.
+    openable: std::collections::BTreeSet<InputNode>,
+    /// The ones that became openable in this check: if `gilrs` connects no controller by the
+    /// next one, it did not see them.
+    fresh: std::collections::BTreeSet<InputNode>,
 }
 
-/// Um nó `event*` de `/dev/input`: o nome e o inode, para um nó recriado com o mesmo nome contar
-/// como outro.
+/// An `event*` node of `/dev/input`: the name and the inode, so a node recreated with the same
+/// name counts as a different one.
 #[cfg(target_os = "linux")]
-type NoDeEntrada = (String, u64);
+type InputNode = (String, u64);
 
 impl Default for Gamepads {
     fn default() -> Self {
@@ -111,86 +111,87 @@ impl Default for Gamepads {
 impl Gamepads {
     pub fn new() -> Self {
         Self {
-            gilrs: abre_o_gilrs(),
-            vistos: std::collections::HashSet::new(),
-            ultimo_evento: None,
-            ultima_conexao: None,
+            gilrs: open_gilrs(),
+            seen: std::collections::HashSet::new(),
+            last_event: None,
+            last_connection: None,
             #[cfg(target_os = "linux")]
-            aparelhos: None,
+            devices: None,
         }
     }
 
-    /// Consome os eventos pendentes. Precisa ser chamado a cada quadro: é isso que mantém o
-    /// estado dos botões em dia e detecta um controle ligado no meio do caminho.
+    /// Consumes the pending events. It must be called every frame: that is what keeps the button
+    /// state up to date and detects a controller connected midway.
     pub fn poll(&mut self) {
         if let Some(gilrs) = &mut self.gilrs {
-            let mut eventos = Vec::new();
-            while let Some(evento) = gilrs.next_event() {
-                eventos.push(evento);
+            let mut events = Vec::new();
+            while let Some(event) = gilrs.next_event() {
+                events.push(event);
             }
-            for evento in eventos {
-                self.anota(&evento);
+            for event in events {
+                self.note(&event);
             }
         }
-        // Depois dos eventos: um controle que o `gilrs` acabou de conectar já está anotado.
+        // After the events: a controller `gilrs` has just connected is already noted.
         #[cfg(target_os = "linux")]
-        self.confere_os_aparelhos();
+        self.check_devices();
     }
 
-    /// Quando chegou o último evento de algum controle — um botão, um eixo, uma conexão.
-    pub fn ultimo_evento(&self) -> Option<std::time::Instant> {
-        self.ultimo_evento
+    /// When the last event from some controller arrived — a button, an axis, a connection.
+    pub fn last_event(&self) -> Option<std::time::Instant> {
+        self.last_event
     }
 
-    /// Leva ao registro o que se precisa para entender um controle que não responde.
+    /// Writes to the log what is needed to understand a controller that does not respond.
     ///
-    /// **É o diagnóstico do controle de PS4 no Mac (issue #59)**: a captura esperava para sempre
-    /// e não havia como saber se o controle nem chegava ao emulador ou chegava sem nomes. Cada
-    /// conexão diz o nome do sistema, o VID/PID e se há mapeamento; o primeiro evento de cada
-    /// controle diz o código cru — inclusive de um botão que o mapeamento não nomeia.
-    fn anota(&mut self, evento: &gilrs::Event) {
+    /// **It is the diagnostic for the PS4 controller on the Mac (issue #59)**: the capture waited
+    /// forever and there was no way to know whether the controller did not even reach the
+    /// emulator or reached it without names. Each connection gives the system name, the VID/PID
+    /// and whether there is a mapping; the first event of each controller gives the raw code —
+    /// including for a button the mapping does not name.
+    fn note(&mut self, event: &gilrs::Event) {
         use gilrs::EventType;
-        self.ultimo_evento = Some(std::time::Instant::now());
+        self.last_event = Some(std::time::Instant::now());
         let Some(gilrs) = &self.gilrs else {
             return;
         };
-        let pad = gilrs.gamepad(evento.id);
-        match evento.event {
+        let pad = gilrs.gamepad(event.id);
+        match event.event {
             EventType::Connected => {
-                self.vistos.remove(&evento.id);
-                self.ultima_conexao = Some(std::time::Instant::now());
-                crate::registro!(
-                    crate::registro::Nivel::Informacao,
+                self.seen.remove(&event.id);
+                self.last_connection = Some(std::time::Instant::now());
+                crate::logging!(
+                    crate::logging::Level::Info,
                     "controles",
-                    "conectou: {}",
-                    descreve(&pad)
+                    "connected: {}",
+                    describe(&pad)
                 );
             }
             EventType::Disconnected => {
-                crate::registro!(
-                    crate::registro::Nivel::Informacao,
+                crate::logging!(
+                    crate::logging::Level::Info,
                     "controles",
-                    "desconectou: {}",
+                    "disconnected: {}",
                     pad.name()
                 );
             }
-            EventType::ButtonPressed(botao, codigo) | EventType::ButtonChanged(botao, _, codigo)
-                if self.vistos.insert(evento.id) =>
+            EventType::ButtonPressed(button, code) | EventType::ButtonChanged(button, _, code)
+                if self.seen.insert(event.id) =>
             {
-                crate::registro!(
-                    crate::registro::Nivel::Informacao,
+                crate::logging!(
+                    crate::logging::Level::Info,
                     "controles",
-                    "primeiro botão de {}: {botao:?} (código {codigo})",
+                    "first button of {}: {button:?} (code {code})",
                     pad.name()
                 );
             }
-            EventType::AxisChanged(eixo, valor, codigo)
-                if valor.abs() >= AXIS_THRESHOLD && self.vistos.insert(evento.id) =>
+            EventType::AxisChanged(axis, value, code)
+                if value.abs() >= AXIS_THRESHOLD && self.seen.insert(event.id) =>
             {
-                crate::registro!(
-                    crate::registro::Nivel::Informacao,
+                crate::logging!(
+                    crate::logging::Level::Info,
                     "controles",
-                    "primeiro eixo de {}: {eixo:?} em {valor:.2} (código {codigo})",
+                    "first axis of {}: {axis:?} at {value:.2} (code {code})",
                     pad.name()
                 );
             }
@@ -198,147 +199,150 @@ impl Gamepads {
         }
     }
 
-    /// Recria o `gilrs` quando um controle foi liberado depois de conectar, e ele não viu.
+    /// Recreates `gilrs` when a controller was granted access after connecting, and it did not
+    /// see it.
     ///
-    /// **Um controle religado com o emulador aberto não voltava.** O `gilrs` só tenta abrir um
-    /// aparelho no `add` do udev. Com o `joycond` — comum no Arch e derivados —, o nó de um
-    /// controle da Nintendo nasce `crw-------`, e só pouco mais de um segundo depois, num
-    /// `change`, ganha a permissão de leitura. O `gilrs` leva `EACCES` no `add`, ignora o
-    /// `change`, e o controle só voltava reiniciando o emulador. Medido com um Pro Controller
-    /// em 2026-10-11 — ver `docs/implementacao/09-entrada.md`.
+    /// **A controller reconnected with the emulator open did not come back.** `gilrs` only tries
+    /// to open a device on udev's `add`. With `joycond` — common on Arch and derivatives —, the
+    /// node of a Nintendo controller is born `crw-------`, and only a little over a second later,
+    /// in a `change`, does it get read permission. `gilrs` gets `EACCES` on the `add`, ignores
+    /// the `change`, and the controller only came back by restarting the emulator. Measured with
+    /// a Pro Controller on 2026-10-11 — see `docs/implementation/09-input.md`.
     ///
-    /// Uma vez por segundo, a conferência vê quais nós `event*` o processo consegue abrir — pelo
-    /// `access`, que respeita as ACLs que o udev dá a quem está sentado na máquina. Um nó que passa
-    /// a abrir é anotado; se até a conferência seguinte o `gilrs` não conectou controle nenhum, ele
-    /// não viu aquele nó, e é criado de novo: a busca inicial dele, a que sempre funcionou, encontra
-    /// o controle liberado.
+    /// Once per second, the check sees which `event*` nodes the process can open — through
+    /// `access`, which respects the ACLs udev gives to whoever is sitting at the machine. A node
+    /// that becomes openable is noted; if by the next check `gilrs` has connected no controller at
+    /// all, it did not see that node, and it is created again: its initial scan, the one that
+    /// always worked, finds the controller that was granted access.
     ///
-    /// **Só nesse caso, e não a cada mudança.** Recriar reordena a lista: uma porta sem controle
-    /// escolhido pega o da posição dela, e dois jogadores trocariam de controle. Um controle comum
-    /// o `gilrs` conecta sozinho no `add`, e aí a lista fica como está.
+    /// **Only in that case, and not on every change.** Recreating reorders the list: a port with
+    /// no controller selected takes the one at its position, and two players would swap
+    /// controllers. An ordinary controller `gilrs` connects on its own on the `add`, and then the
+    /// list stays as it is.
     #[cfg(target_os = "linux")]
-    fn confere_os_aparelhos(&mut self) {
-        let agora = std::time::Instant::now();
+    fn check_devices(&mut self) {
+        let check_time = std::time::Instant::now();
         if self
-            .aparelhos
+            .devices
             .as_ref()
-            .is_some_and(|antes| agora - antes.quando < CONFERENCIA_DOS_APARELHOS)
+            .is_some_and(|before| check_time - before.when < DEVICE_CHECK_INTERVAL)
         {
             return;
         }
-        let abriveis = nos_abriveis(std::path::Path::new("/dev/input"));
-        let Some(antes) = self.aparelhos.take() else {
-            self.aparelhos = Some(ConferenciaDosAparelhos {
-                quando: agora,
-                desde: agora,
-                abriveis,
-                novos: Default::default(),
+        let openable = openable_nodes(std::path::Path::new("/dev/input"));
+        let Some(before) = self.devices.take() else {
+            self.devices = Some(DeviceCheck {
+                when: check_time,
+                since: check_time,
+                openable,
+                fresh: Default::default(),
             });
             return;
         };
-        let conectou_desde = self.ultima_conexao.is_some_and(|quando| quando >= antes.desde);
-        let perdidos: Vec<&NoDeEntrada> =
-            antes.novos.iter().filter(|no| abriveis.contains(*no)).collect();
-        if !perdidos.is_empty() && !conectou_desde {
-            crate::registro!(
-                crate::registro::Nivel::Informacao,
+        let connected_since = self.last_connection.is_some_and(|when| when >= before.since);
+        let lost: Vec<&InputNode> =
+            before.fresh.iter().filter(|node| openable.contains(*node)).collect();
+        if !lost.is_empty() && !connected_since {
+            crate::logging!(
+                crate::logging::Level::Info,
                 "controles",
-                "{} passou a abrir depois de conectar, e a leitura de controles não viu: ela é \
-                 refeita",
-                perdidos.iter().map(|(nome, _)| nome.as_str()).collect::<Vec<_>>().join(", ")
+                "{} became openable after connecting, and the controller reader did not see \
+                 it: it is recreated",
+                lost.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>().join(", ")
             );
-            self.gilrs = abre_o_gilrs();
-            self.vistos.clear();
+            self.gilrs = open_gilrs();
+            self.seen.clear();
         }
-        let novos = abriveis.difference(&antes.abriveis).cloned().collect();
-        self.aparelhos = Some(ConferenciaDosAparelhos {
-            quando: agora,
-            desde: antes.quando,
-            abriveis,
-            novos,
+        let fresh = openable.difference(&before.openable).cloned().collect();
+        self.devices = Some(DeviceCheck {
+            when: check_time,
+            since: before.when,
+            openable,
+            fresh,
         });
     }
 
-    /// O nome de cada controle ligado, na ordem em que o sistema os lista.
+    /// The name of each connected controller, in the order the system lists them.
     ///
-    /// **Dois controles do mesmo modelo têm o mesmo nome**, e quem escolhe "o segundo" na lista
-    /// precisa de algo que o distinga do primeiro. A partir da segunda aparição o nome ganha um
-    /// ` #2`, ` #3` e por aí. Enquanto o nome era só o do modelo, marcar o segundo controle na
-    /// porta 2 guardava a mesma string da porta 1 — e a prévia, que procura o controle por
-    /// nome, encontrava sempre o primeiro: a porta 2 respondia ao controle 1.
+    /// **Two controllers of the same model have the same name**, and whoever picks "the second
+    /// one" in the list needs something to tell it from the first. From the second appearance on,
+    /// the name gets a ` #2`, ` #3` and so on. While the name was only the model's, selecting the
+    /// second controller on port 2 stored the same string as port 1 — and the preview, which looks
+    /// up the controller by name, always found the first one: port 2 responded to controller 1.
     ///
-    /// Continua sendo nome, e não índice: o índice do sistema muda quando alguém desliga um
-    /// controle, e a configuração salva ontem tem de valer hoje.
+    /// It is still a name, not an index: the system's index changes when someone disconnects a
+    /// controller, and the settings saved yesterday have to hold today.
     pub fn names(&self) -> Vec<String> {
         let Some(gilrs) = &self.gilrs else {
             return Vec::new();
         };
-        numera(gilrs.gamepads().map(|(_, pad)| pad.name().to_string()))
+        number_duplicates(gilrs.gamepads().map(|(_, pad)| pad.name().to_string()))
     }
 
-    /// O controle de nome `device`; sem nome, o que está na vez da porta.
+    /// The controller named `device`; with no name, the one whose turn it is for the port.
     ///
-    /// O nome procurado é o da lista do [`Self::names`], com a numeração das repetições.
+    /// The name looked up is the one in the [`Self::names`] list, with the numbering of repeats.
     ///
-    /// **Sem nome escolhido, a porta pega o controle da posição dela**: o primeiro para a porta
-    /// um, o segundo para a porta dois. Enquanto toda porta sem escolha pegava o primeiro
-    /// controle, ligar a porta dois só para jogar com dois duplicava o controle um nas duas — e
-    /// o jogo que pede "jogador 2, aperte um botão" nunca via um segundo jogador de verdade.
-    fn find(&self, device: Option<&str>, porta: usize) -> Option<gilrs::Gamepad<'_>> {
+    /// **With no name selected, the port takes the controller at its position**: the first for
+    /// port one, the second for port two. While every port with no selection took the first
+    /// controller, enabling port two just to play with two duplicated controller one on both — and
+    /// the game that asks "player 2, press a button" never saw a real second player.
+    fn find(&self, device: Option<&str>, port: usize) -> Option<gilrs::Gamepad<'_>> {
         let gilrs = self.gilrs.as_ref()?;
         match device {
             Some(name) => {
-                let qual = self.names().iter().position(|n| n == name)?;
-                gilrs.gamepads().nth(qual)
+                let which = self.names().iter().position(|n| n == name)?;
+                gilrs.gamepads().nth(which)
             }
-            None => gilrs.gamepads().nth(porta),
+            None => gilrs.gamepads().nth(port),
         }
         .map(|(_, pad)| pad)
     }
 
-    /// Quem é o controle da porta, para achar o sensor de movimento dele: o nome que o sistema
-    /// dá, o par VID/PID e a posição entre os controles iguais ligados antes dele.
+    /// Who the port's controller is, to find its motion sensor: the name the system gives it,
+    /// the VID/PID pair and its position among the identical controllers connected before it.
     ///
-    /// É o nome **do sistema**, e não o do mapeamento do gilrs: o sensor ganha o nome do
-    /// dispositivo com um sufixo ("Pro Controller" e "Pro Controller (IMU)"), e o gilrs chama o
-    /// mesmo controle de "Nintendo Switch Pro Controller".
-    pub fn identidade(&self, device: Option<&str>, porta: usize) -> Option<(String, u16, u16, usize)> {
+    /// It is the **system's** name, not the one from gilrs's mapping: the sensor gets the
+    /// device's name with a suffix ("Pro Controller" and "Pro Controller (IMU)"), and gilrs calls
+    /// the same controller "Nintendo Switch Pro Controller".
+    pub fn identity(&self, device: Option<&str>, port: usize) -> Option<(String, u16, u16, usize)> {
         let gilrs = self.gilrs.as_ref()?;
-        let pad = self.find(device, porta)?;
-        let chave = |p: &gilrs::Gamepad<'_>| (p.os_name().to_string(), p.vendor_id(), p.product_id());
-        let (nome, vendor, product) = chave(&pad);
-        let ordem = gilrs
+        let pad = self.find(device, port)?;
+        let key_id = |p: &gilrs::Gamepad<'_>| (p.os_name().to_string(), p.vendor_id(), p.product_id());
+        let (name, vendor, product) = key_id(&pad);
+        let order = gilrs
             .gamepads()
             .take_while(|(id, _)| *id != pad.id())
-            .filter(|(_, outro)| chave(outro) == (nome.clone(), vendor, product))
+            .filter(|(_, other)| key_id(other) == (name.clone(), vendor, product))
             .count();
-        Some((nome, vendor?, product?, ordem))
+        Some((name, vendor?, product?, order))
     }
 
-    /// Se a origem está acionada no controle do jogador.
+    /// Whether the source is triggered on the player's controller.
     ///
-    /// Origens de teclado não pertencem aqui: quem sabe do teclado é a janela.
-    pub fn is_active(&self, device: Option<&str>, porta: usize, source: &Source) -> bool {
-        let Some(pad) = self.find(device, porta) else {
+    /// Keyboard sources do not belong here: the window is what knows about the keyboard.
+    pub fn is_active(&self, device: Option<&str>, port: usize, source: &Source) -> bool {
+        let Some(pad) = self.find(device, port) else {
             return false;
         };
-        acionada(&pad, source)
+        is_triggered(&pad, source)
     }
 
-    /// Se `source` está acionada em **algum** controle ligado.
+    /// Whether `source` is triggered on **any** connected controller.
     ///
-    /// É a pergunta dos atalhos da janela, como o fast-forward: eles são da sessão, e não de uma
-    /// porta, e quem joga no controle dois avança com o botão do controle dois.
-    pub fn algum_ativo(&self, source: &Source) -> bool {
+    /// It is the question the window's shortcuts ask, like fast-forward: they belong to the
+    /// session, not to a port, and whoever plays on controller two fast-forwards with controller
+    /// two's button.
+    pub fn any_active(&self, source: &Source) -> bool {
         let Some(gilrs) = &self.gilrs else {
             return false;
         };
-        gilrs.gamepads().any(|(_, pad)| acionada(&pad, source))
+        gilrs.gamepads().any(|(_, pad)| is_triggered(&pad, source))
     }
 
-    /// O primeiro botão apertado em qualquer controle ligado, para capturar um atalho. Só
-    /// botões: um atalho num eixo dispararia com o manche fora do centro.
-    pub fn primeiro_botao_de_algum(&self) -> Option<Source> {
+    /// The first button pressed on any connected controller, to capture a shortcut. Only
+    /// buttons: a shortcut on an axis would fire with the stick off center.
+    pub fn first_button_from_any(&self) -> Option<Source> {
         let gilrs = self.gilrs.as_ref()?;
         gilrs.gamepads().find_map(|(_, pad)| {
             BUTTONS
@@ -348,19 +352,19 @@ impl Gamepads {
         })
     }
 
-    /// O curso de um eixo do controle, de -1 a 1. `None` se não há controle ou o eixo é
-    /// desconhecido — e aí o mapeamento daquele eixo simplesmente não vale.
-    pub fn value(&self, device: Option<&str>, porta: usize, axis: &str) -> Option<f32> {
-        let pad = self.find(device, porta)?;
+    /// The travel of a controller axis, from -1 to 1. `None` if there is no controller or the
+    /// axis is unknown — and then the mapping of that axis simply does not apply.
+    pub fn value(&self, device: Option<&str>, port: usize, axis: &str) -> Option<f32> {
+        let pad = self.find(device, port)?;
         Some(pad.value(axis_by_name(axis)?))
     }
 
-    /// A primeira origem acionada agora, para a tela de configuração capturar.
+    /// The first source triggered right now, for the settings screen to capture.
     ///
-    /// Os botões vêm antes dos eixos: quem aperta o direcional de cruz de um controle que
-    /// também o reporta como eixo quer o botão, que é o mais específico.
-    pub fn first_active(&self, device: Option<&str>, porta: usize) -> Option<Source> {
-        let pad = self.find(device, porta)?;
+    /// Buttons come before axes: whoever presses the D-pad of a controller that also reports it
+    /// as an axis wants the button, which is the more specific one.
+    pub fn first_active(&self, device: Option<&str>, port: usize) -> Option<Source> {
+        let pad = self.find(device, port)?;
         for (name, button) in BUTTONS {
             if pad.is_pressed(button) {
                 return Some(Source::button(name));
@@ -379,74 +383,76 @@ impl Gamepads {
     }
 }
 
-/// Abre o `gilrs`, e diz no registro o que ele achou — ou por que não abriu.
-fn abre_o_gilrs() -> Option<Gilrs> {
+/// Opens `gilrs`, and says in the log what it found — or why it did not open.
+fn open_gilrs() -> Option<Gilrs> {
     match Gilrs::new() {
         Ok(gilrs) => {
-            let lista: Vec<String> = gilrs.gamepads().map(|(_, pad)| descreve(&pad)).collect();
-            crate::registro!(
-                crate::registro::Nivel::Informacao,
+            let list: Vec<String> = gilrs.gamepads().map(|(_, pad)| describe(&pad)).collect();
+            crate::logging!(
+                crate::logging::Level::Info,
                 "controles",
-                "{} controle(s): {}",
-                lista.len(),
-                match lista.is_empty() {
-                    true => "nenhum".to_string(),
-                    false => lista.join("; "),
+                "{} controller(s): {}",
+                list.len(),
+                match list.is_empty() {
+                    true => "none".to_string(),
+                    false => list.join("; "),
                 }
             );
             Some(gilrs)
         }
-        Err(erro) => {
-            crate::registro!(
-                crate::registro::Nivel::Aviso,
+        Err(error) => {
+            crate::logging!(
+                crate::logging::Level::Warning,
                 "controles",
-                "a leitura de controles não abriu: {erro}"
+                "the controller reader did not open: {error}"
             );
             None
         }
     }
 }
 
-/// Um controle como o registro o descreve: o nome do mapeamento, o do sistema, o VID/PID e se há
-/// mapeamento SDL para ele. Sem mapeamento, o `gilrs` nomeia os botões pela posição crua.
-fn descreve(pad: &gilrs::Gamepad<'_>) -> String {
-    let hexa = |id: Option<u16>| id.map_or("?".to_string(), |id| format!("{id:04x}"));
+/// A controller as the log describes it: the mapping's name, the system's, the VID/PID and
+/// whether there is an SDL mapping for it. Without a mapping, `gilrs` names the buttons by their
+/// raw position.
+fn describe(pad: &gilrs::Gamepad<'_>) -> String {
+    let hex = |id: Option<u16>| id.map_or("?".to_string(), |id| format!("{id:04x}"));
     format!(
-        "\"{}\" (sistema: \"{}\", {}:{}, mapeamento {:?})",
+        "\"{}\" (system: \"{}\", {}:{}, mapping {:?})",
         pad.name(),
         pad.os_name(),
-        hexa(pad.vendor_id()),
-        hexa(pad.product_id()),
+        hex(pad.vendor_id()),
+        hex(pad.product_id()),
         pad.mapping_source()
     )
 }
 
-/// Os nós `event*` de `pasta` que este processo consegue abrir para leitura e escrita, como o
-/// `gilrs` abre. Ver [`Gamepads::confere_os_aparelhos`].
+/// The `event*` nodes of `dir` this process can open for reading and writing, the way `gilrs`
+/// opens them. See [`Gamepads::check_devices`].
 #[cfg(target_os = "linux")]
-fn nos_abriveis(pasta: &std::path::Path) -> std::collections::BTreeSet<NoDeEntrada> {
+fn openable_nodes(dir: &std::path::Path) -> std::collections::BTreeSet<InputNode> {
     use std::os::unix::ffi::OsStrExt;
     use std::os::unix::fs::MetadataExt;
-    std::fs::read_dir(pasta)
+    std::fs::read_dir(dir)
         .into_iter()
         .flatten()
         .flatten()
-        .filter_map(|entrada| {
-            let nome = entrada.file_name().to_string_lossy().into_owned();
-            if !nome.starts_with("event") {
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.starts_with("event") {
                 return None;
             }
-            let caminho = std::ffi::CString::new(entrada.path().as_os_str().as_bytes()).ok()?;
-            // SAFETY: `caminho` é uma string C válida, viva durante a chamada.
-            let abre = unsafe { libc::access(caminho.as_ptr(), libc::R_OK | libc::W_OK) } == 0;
-            let inode = entrada.metadata().ok()?.ino();
-            abre.then_some((nome, inode))
+            let node_path = std::ffi::CString::new(entry.path().as_os_str().as_bytes()).ok()?;
+            // SAFETY: `node_path` is a valid C string, alive during the call.
+            let open = unsafe { libc::access(node_path.as_ptr(), libc::R_OK | libc::W_OK) } == 0;
+            let inode = entry.metadata().ok()?.ino();
+            open.then_some((name, inode))
         })
         .collect()
 }
 
-/// Se a origem está acionada num controle. O teclado não é daqui: responde que não.
-fn acionada(pad: &gilrs::Gamepad<'_>, source: &Source) -> bool {
+/// Whether the source is triggered on a controller. The keyboard does not belong here: it
+/// answers no.
+fn is_triggered(pad: &gilrs::Gamepad<'_>, source: &Source) -> bool {
     match source {
         Source::Key { .. } => false,
         Source::Button { name } => {
@@ -462,16 +468,16 @@ fn acionada(pad: &gilrs::Gamepad<'_>, source: &Source) -> bool {
     }
 }
 
-/// Distingue nomes repetidos acrescentando ` #2`, ` #3` e por aí, na ordem de chegada.
-fn numera(nomes: impl Iterator<Item = String>) -> Vec<String> {
-    let mut vistos: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    nomes
-        .map(|nome| {
-            let quantos = vistos.entry(nome.clone()).or_insert(0);
-            *quantos += 1;
-            match *quantos {
-                1 => nome,
-                n => format!("{nome} #{n}"),
+/// Tells repeated names apart by appending ` #2`, ` #3` and so on, in order of arrival.
+fn number_duplicates(names: impl Iterator<Item = String>) -> Vec<String> {
+    let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    names
+        .map(|name| {
+            let count = seen.entry(name.clone()).or_insert(0);
+            *count += 1;
+            match *count {
+                1 => name,
+                n => format!("{name} #{n}"),
             }
         })
         .collect()
@@ -482,89 +488,89 @@ mod tests {
     use super::*;
 
     #[test]
-    fn dois_controles_do_mesmo_modelo_ganham_nomes_diferentes() {
-        // Sem isto, escolher "o segundo" na lista guarda a mesma string do primeiro e a porta 2
-        // acaba respondendo ao controle da porta 1.
-        let nomes = ["Z-Pad", "Z-Pad", "Wii Remote", "Z-Pad"];
+    fn two_controllers_of_the_same_model_get_different_names() {
+        // Without this, picking "the second one" in the list stores the same string as the first
+        // and port 2 ends up responding to port 1's controller.
+        let names = ["Z-Pad", "Z-Pad", "Wii Remote", "Z-Pad"];
         assert_eq!(
-            numera(nomes.iter().map(|n| n.to_string())),
+            number_duplicates(names.iter().map(|n| n.to_string())),
             ["Z-Pad", "Z-Pad #2", "Wii Remote", "Z-Pad #3"]
         );
     }
 
     #[test]
-    fn os_nomes_de_botao_vao_e_voltam() {
-        // O arquivo de configuração guarda o nome, não o número da biblioteca: uma troca de
-        // versão não pode remapear o controle de quem já configurou.
+    fn button_names_round_trip() {
+        // The settings file stores the name, not the library's number: a version change must not
+        // remap the controller of whoever already configured it.
         for (name, button) in BUTTONS {
-            assert_eq!(button_by_name(name), Some(button), "botão {name}");
+            assert_eq!(button_by_name(name), Some(button), "button {name}");
         }
         assert_eq!(button_by_name("NaoExiste"), None);
     }
 
     #[test]
-    fn os_nomes_de_eixo_vao_e_voltam() {
+    fn axis_names_round_trip() {
         for (name, axis) in AXES {
-            assert_eq!(axis_by_name(name), Some(axis), "eixo {name}");
+            assert_eq!(axis_by_name(name), Some(axis), "axis {name}");
         }
         assert_eq!(axis_by_name("NaoExiste"), None);
     }
 
     #[test]
-    fn o_mapeamento_padrao_de_controle_so_usa_nomes_conhecidos() {
-        // Um nome no mapeamento padrão que a biblioteca não conheça vira um botão que nunca
-        // funciona, e ninguém descobre até ligar um controle.
+    fn the_default_controller_mapping_only_uses_known_names() {
+        // A name in the default mapping that the library does not know becomes a button that
+        // never works, and nobody finds out until they connect a controller.
         let player = crate::input::bindings::Player::with_gamepad("qualquer".into());
         for sources in player.buttons.values() {
             for source in sources {
                 match source {
                     Source::Key { .. } => {}
                     Source::Button { name } => {
-                        assert!(button_by_name(name).is_some(), "botão {name}")
+                        assert!(button_by_name(name).is_some(), "button {name}")
                     }
                     Source::Axis { name, .. } => {
-                        assert!(axis_by_name(name).is_some(), "eixo {name}")
+                        assert!(axis_by_name(name).is_some(), "axis {name}")
                     }
                 }
             }
         }
     }
 
-    /// Um nó conta quando passa a abrir — o que o `joycond` faz um segundo depois de o controle
-    /// conectar —, e só os `event*` contam.
+    /// A node counts when it becomes openable — which `joycond` does a second after the
+    /// controller connects —, and only the `event*` ones count.
     #[cfg(target_os = "linux")]
     #[test]
-    fn os_nos_abriveis_veem_a_permissao_liberada() {
+    fn openable_nodes_see_the_granted_permission() {
         use std::os::unix::fs::PermissionsExt;
-        // Como root, `access` diz que tudo abre, e não há o que medir.
+        // As root, `access` says everything opens, and there is nothing to measure.
         if unsafe { libc::geteuid() } == 0 {
             return;
         }
-        let pasta = std::env::temp_dir().join(format!("zeebx-aparelhos-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&pasta);
-        std::fs::create_dir_all(&pasta).unwrap();
-        let no = pasta.join("event18");
-        std::fs::write(&no, b"").unwrap();
-        std::fs::set_permissions(&no, std::fs::Permissions::from_mode(0o000)).unwrap();
-        std::fs::write(pasta.join("js0"), b"").unwrap();
-        assert!(nos_abriveis(&pasta).is_empty(), "o nó fechado contou, ou o js0 entrou");
+        let dir = std::env::temp_dir().join(format!("zeebx-aparelhos-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let node = dir.join("event18");
+        std::fs::write(&node, b"").unwrap();
+        std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o000)).unwrap();
+        std::fs::write(dir.join("js0"), b"").unwrap();
+        assert!(openable_nodes(&dir).is_empty(), "the closed node counted, or js0 got in");
 
-        std::fs::set_permissions(&no, std::fs::Permissions::from_mode(0o666)).unwrap();
-        let abertos: Vec<String> = nos_abriveis(&pasta).into_iter().map(|(nome, _)| nome).collect();
-        assert_eq!(abertos, ["event18"]);
-        let _ = std::fs::remove_dir_all(&pasta);
+        std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o666)).unwrap();
+        let opened: Vec<String> = openable_nodes(&dir).into_iter().map(|(name, _)| name).collect();
+        assert_eq!(opened, ["event18"]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn sem_controle_nada_esta_acionado() {
-        // Um computador sem controle não pode impedir o emulador de abrir.
+    fn without_a_controller_nothing_is_active() {
+        // A computer without a controller cannot keep the emulator from opening.
         let pads = Gamepads {
             gilrs: None,
-            vistos: Default::default(),
-            ultimo_evento: None,
-            ultima_conexao: None,
+            seen: Default::default(),
+            last_event: None,
+            last_connection: None,
             #[cfg(target_os = "linux")]
-            aparelhos: None,
+            devices: None,
         };
         assert!(pads.names().is_empty());
         assert!(!pads.is_active(None, 0, &Source::button("South")));

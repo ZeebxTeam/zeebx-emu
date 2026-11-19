@@ -1,19 +1,24 @@
 [package]
 name = "zeebx-ios"
-version = "0.5.1"
+version = "0.6.0"
 edition = "2024"
 license = "GPL-2.0-or-later"
-description = "O frontend de iOS do Zeebx"
+description = "The iOS frontend of Zeebx"
 publish = false
 
-# O Xcode liga um `.a`. O `rlib` existe para o `cargo test` deste pacote: um crate-type só de
-# `staticlib` não produz binário de teste.
+# Xcode links a `.a`. The `rlib` exists for this package's `cargo test`: a `staticlib`-only
+# crate-type produces no test binary.
 [lib]
 name = "zeebx_ios"
 crate-type = ["staticlib", "rlib"]
 
 [dependencies]
-# `audio` e nada mais: é o `cpal`, que no iOS fala com o Core Audio. Sem a feature `desktop`:
-# eframe, glutin e gilrs não têm o que fazer numa UIKit, e o OpenGL do glutin no iOS é o EAGL,
-# que a Apple já aposentou. O quadro sai do rasterizador de software e a tela o pinta.
-zeebx = { path = "../..", default-features = false, features = ["audio"] }
+# `audio` is `cpal`, which on iOS talks to Core Audio. `soundfont` is MIDI played with an `.sf2`
+# chosen in the settings: `rustysynth` is pure Rust, and the bank only takes memory when there is
+# one. Without the `desktop` feature: eframe, glutin and gilrs have nothing to do in UIKit, and
+# glutin's OpenGL on iOS is EAGL, which Apple has already retired. The frame comes out of the
+# software rasterizer and the screen paints it.
+zeebx = { path = "../..", default-features = false, features = ["audio", "soundfont"] }
+# The settings screen, the library and the save state slots cross to Swift as JSON: it is what
+# `Codable` reads without a line of glue per field. Already in the tree through the core.
+serde_json = "1.0.151"

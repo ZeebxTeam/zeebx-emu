@@ -1,296 +1,301 @@
-# Otimização do Zeebx — linha de partida da 0.3.0
+# Optimizing Zeebx — the 0.3.0 starting line
 
-Este documento existe por um motivo simples: **os números de desempenho que o projeto publica
-não descrevem mais o emulador que está na árvore.** Eles foram medidos com o Unicorn, e o
-Unicorn saiu. Antes de otimizar qualquer coisa é preciso voltar a medir, e antes de medir é
-preciso dizer em voz alta o que se sabe, o que se supõe e o que se vai conferir.
+This document exists for a simple reason: **the performance numbers the project publishes no
+longer describe the emulator in the tree.** They were measured with Unicorn, and Unicorn is gone.
+Before optimizing anything we have to measure again, and before measuring we have to say out loud
+what we know, what we assume and what we are going to check.
 
-O alvo desta rodada não é o desktop. É o portátil: **R36S** (Cortex-A35, ArkOS) e **RG40XX-H**
-(Cortex-A53, muOS), pelo core Libretro. O desktop entra como bancada de medida, porque nele dá
-para instrumentar sem cartão SD no meio.
+The target of this round is not the desktop. It is the handheld: **R36S** (Cortex-A35, ArkOS) and
+**RG40XX-H** (Cortex-A53, muOS), through the Libretro core. The desktop comes in as the measuring
+bench, because there it can be instrumented without an SD card in the way.
 
-## 1. O que está desatualizado
+## 1. What is out of date
 
-O `ARCHITECTURE.md` traz, na seção "Limites conhecidos", uma tabela de custos que vinha do
-backend antigo:
+`ARCHITECTURE.md`, in the "Known limits" section, carries a cost table that came from the old
+backend:
 
-| número publicado | onde | estado |
+| published number | where | status |
 |---|---|---|
-| 52% da velocidade do console no Quake | `ARCHITECTURE.md:243` | medido com Unicorn |
-| ~68% ARM + despacho, ~28% pixels, ~4% geometria | `ARCHITECTURE.md:243` | medido com Unicorn |
-| 1,4 µs por chamada de API | `ARCHITECTURE.md:264` | medido com Unicorn |
-| 57 ns por `read_u32` contra 0,3 ns em bloco | `ARCHITECTURE.md:252` | texto diz "FFI do unicorn" |
-| 218 M instr/s no laço, ~86 M no jogo | `ARCHITECTURE.md:257` | medido com Unicorn |
-| `cargo test --release instrucoes_por_segundo` | `ARCHITECTURE.md:258` | **o teste não existe mais** |
+| 52% of console speed in Quake | `ARCHITECTURE.md:243` | measured with Unicorn |
+| ~68% ARM + dispatch, ~28% pixels, ~4% geometry | `ARCHITECTURE.md:243` | measured with Unicorn |
+| 1.4 µs per API call | `ARCHITECTURE.md:264` | measured with Unicorn |
+| 57 ns per `read_u32` against 0.3 ns in bulk | `ARCHITECTURE.md:252` | text says "unicorn FFI" |
+| 218 M instr/s in the loop, ~86 M in game | `ARCHITECTURE.md:257` | measured with Unicorn |
+| `cargo test --release instrucoes_por_segundo` | `ARCHITECTURE.md:258` | **the test no longer exists** |
 
-As datas fecham o caso:
+The dates settle it:
 
 ```
-8af069f  2026-09-11  Atualiza os números de performance medidos
-a359183  2026-09-23  Remove o Unicorn e deixa o Dynarmic como backend padrão
+8af069f  2026-09-11  Update the measured performance numbers
+a359183  2026-09-23  Remove Unicorn and make Dynarmic the default backend
 ```
 
-A medida é doze dias mais velha que a remoção do backend que ela mediu. O documento também
-descreve a árvore com `cpu/unicorn.rs` e um `CpuBackend` "sobre o unicorn"
-(`ARCHITECTURE.md:59`, `:83`), arquivo que não está mais lá.
+The measurement is twelve days older than the removal of the backend it measured. The document
+also describes the tree with `cpu/unicorn.rs` and a `CpuBackend` "on top of unicorn"
+(`ARCHITECTURE.md:59`, `:83`), a file that is no longer there.
 
-**Nada disso quer dizer que as conclusões estavam erradas.** Quer dizer que elas precisam ser
-refeitas antes de servirem de base para decisão de otimização.
+**None of this means the conclusions were wrong.** It means they have to be redone before they
+can serve as the basis for an optimization decision.
 
-## 2. O que continua verdadeiro na árvore de hoje
+## 2. What is still true in today's tree
 
-Estes pontos foram conferidos no código, não no documento:
+These points were checked in the code, not in the document:
 
-- **O despacho de API ainda para o JIT.** A callback chama `halt(HaltReason::UserDefined1)`
-  (`src/cpu/dynarmic.rs:126`), o método é atendido no host, e o laço limpa a razão e volta a
-  entrar com `jit.run()` (`src/cpu/dynarmic.rs:587`). A ida e volta por chamada continua
-  existindo com o Dynarmic; o que mudou foi o custo dela, que ninguém mediu ainda.
-- **A tabela de páginas já é um fastmem parcial.** `config.page_table(...)` com
-  `page_table_mask(0)` (`src/cpu/dynarmic.rs:450`), e as entradas nulas caem nas callbacks:
-  regiões só de leitura, páginas já executadas, páginas com vigia de escrita e a última página
-  de uma região que não a completa (`src/cpu/dynarmic.rs:314`).
-- **Há um número recente e útil no próprio código:** sem a tabela de páginas, o Need for Speed
-  ficava em 176 milhões de instruções por segundo, 69% da velocidade do console
-  (`src/cpu/dynarmic.rs:317`). Esse é um número da era da tabela, não do Unicorn.
-- **O rasterizador já é paralelo.** Ele divide o quadro em faixas e usa `std::thread::scope`
-  (`src/video/rasterizer.rs:2341`). Quem propuser "paralelizar o rasterizador" está propondo o
-  que já existe.
-- **O perfil de custo por API existe e é opt-in.** `Machine::enable_api_profile()`
-  (`src/machine/diagnostico.rs:87`) e `Machine::api_profile()` (`:92`), ligados pela varredura
-  com `ZEEBX_ROM_PERFIL`.
-- **A varredura já mede desempenho.** `Desempenho` (`src/varredura.rs:427`) traz `instrucoes`,
-  `chamadas`, `quadros`, `pixels`, `voltas`, `virtual_ms`, `laco` e `velocidade()` em por cento
-  da velocidade do console.
-- **O perfil de release já está apertado.** `lto = "thin"` e `codegen-units = 1`
-  (`Cargo.toml:171`). Quem sugerir "ativar LTO" está sugerindo o que já está ligado; o que
-  sobra é comparar `thin` com `fat`.
+- **API dispatch still stops the JIT.** The callback calls `halt(HaltReason::UserDefined1)`
+  (`src/cpu/dynarmic.rs:126`), the method is served on the host, and the loop clears the reason
+  and re-enters with `jit.run()` (`src/cpu/dynarmic.rs:587`). The round trip per call still
+  exists with Dynarmic; what changed is its cost, which nobody has measured yet.
+- **The page table is already a partial fastmem.** `config.page_table(...)` with
+  `page_table_mask(0)` (`src/cpu/dynarmic.rs:450`), and the null entries fall into the callbacks:
+  read-only regions, pages already executed, pages with a write watch and the last page of a
+  region that does not fill it (`src/cpu/dynarmic.rs:314`).
+- **There is a recent, useful number in the code itself:** without the page table, Need for Speed
+  stayed at 176 million instructions per second, 69% of console speed
+  (`src/cpu/dynarmic.rs:317`). That is a number from the page-table era, not from Unicorn.
+- **The rasterizer is already parallel.** It splits the frame into bands and uses
+  `std::thread::scope` (`src/video/rasterizer.rs:2341`). Whoever proposes "parallelizing the
+  rasterizer" is proposing what already exists.
+- **The per-API cost profile exists and is opt-in.** `Machine::enable_api_profile()`
+  (`src/machine/diagnostics.rs:87`) and `Machine::api_profile()` (`:92`), turned on by the scan
+  with `ZEEBX_ROM_PROFILE`.
+- **The scan already measures performance.** `Performance` (`src/scan.rs:427`) carries
+  `instructions`, `calls`, `frames`, `pixels`, `laps`, `virtual_ms`, `run_loop` and `speed()` as
+  a percentage of console speed.
+- **The release profile is already tight.** `lto = "thin"` and `codegen-units = 1`
+  (`Cargo.toml:171`). Whoever suggests "turning on LTO" is suggesting what is already on; what is
+  left is comparing `thin` with `fat`.
 
-## 3. O que o core Libretro já oferece ao portátil
+## 3. What the Libretro core already offers the handheld
 
-Treze opções, das quais estas mexem diretamente em custo:
+Thirteen options, of which these directly affect cost:
 
-| opção | efeito | vale quando |
+| option | effect | worth it when |
 |---|---|---|
-| `zeebx_frameskip` | pula desenho, sem mexer no relógio | a rasterização domina |
-| `zeebx_limite_fps` | freia apresentação em 60/30 | o aparelho corre solto e esquenta |
-| `zeebx_resolucao_interna` | supersampling **para cima**, 1..4 | sobra GPU |
-| `zeebx_antialias` | amostras por pixel na placa | sobra GPU |
-| `zeebx_rasterizador` | força software quando o driver mente | a placa desenha errado |
-| `zeebx_perfil` | Portátil: taxa, vozes e cache menores | o aparelho é fraco |
-| `zeebx_soundfont_taxa`, `zeebx_midi_vozes`, `zeebx_cache_de_som_mb` | custo do MIDI | a música é pesada |
+| `zeebx_frameskip` | skips drawing, without touching the clock | rasterization dominates |
+| `zeebx_limite_fps` | caps presentation at 60/30 | the device runs unthrottled and heats up |
+| `zeebx_resolucao_interna` | supersampling **upward**, 1..4 | there is GPU to spare |
+| `zeebx_antialias` | samples per pixel on the GPU | there is GPU to spare |
+| `zeebx_rasterizador` | forces software when the driver lies | the GPU draws wrong |
+| `zeebx_perfil` | Handheld: lower rate, voices and cache | the device is weak |
+| `zeebx_soundfont_taxa`, `zeebx_midi_vozes`, `zeebx_cache_de_som_mb` | MIDI cost | the music is heavy |
 
-Repare no que **não** existe: uma resolução interna **abaixo** de 1. Hoje `escala` é um
-multiplicador inteiro (`src/video/gpu.rs:207`, `:727`, `:2270`) e só vale no rasterizador de
-placa. Para `0,5x` e `0,25x` seria preciso fração, e o ganho maior provavelmente está do lado
-do rasterizador de software, onde cada pixel é CPU.
+Notice what does **not** exist: an internal resolution **below** 1. Today `scale` is an integer
+multiplier (`src/video/gpu.rs:207`, `:727`, `:2270`) and only applies to the GPU rasterizer. For
+`0.5x` and `0.25x` a fraction would be needed, and the bigger gain is probably on the side of the
+software rasterizer, where every pixel is CPU.
 
-## 4. As hipóteses que vão ser testadas
+## 4. The hypotheses to be tested
 
-Nenhuma delas está decidida. São hipóteses, e a medida decide.
+None of them is decided. They are hypotheses, and the measurement decides.
 
-1. **O gargalo do portátil é o ARM + HLE, não o preenchimento.** Se for verdade, `0,5x`,
-   GLES 2 e frameskip não resolvem; o que resolve é trampolim e leitura em bloco.
-2. **O custo por chamada de API caiu com o Dynarmic.** O `1,4 µs` é do Unicorn. Pode ter caído
-   muito, pode ter caído pouco. Enquanto não se medir, a prioridade 1 é uma aposta.
-3. **A leitura de página só-de-leitura ainda passa por callback.** Se ela pesar, estender o
-   fastmem para leitura é barato e rende.
-4. **A síntese do SoundFont trava a primeira música.** O custo é de carga, não de quadro, mas
-   um engasgo de centenas de ms é sentido no portátil.
-5. **`0,5x` no rasterizador de software vale mais que `0,5x` na placa.** O preenchimento por
-   CPU escala com área; o Mali-G31 a 640x480 provavelmente não está saturado.
-6. **NEON rende no host, não no guest.** O código ARM do jogo é do guest e passa pelo JIT; o
-   que dá para vetorizar é o que o host faz: preencher, converter, copiar e limpar.
+1. **The handheld's bottleneck is ARM + HLE, not fill.** If true, `0.5x`, GLES 2 and frameskip do
+   not solve it; what solves it is the trampoline and bulk reads.
+2. **The cost per API call dropped with Dynarmic.** The `1.4 µs` is from Unicorn. It may have
+   dropped a lot, it may have dropped a little. Until it is measured, priority 1 is a bet.
+3. **Reads from read-only pages still go through a callback.** If that weighs, extending fastmem
+   to reads is cheap and pays off.
+4. **SoundFont synthesis stalls the first song.** The cost is a load cost, not a frame cost, but a
+   hitch of hundreds of ms is felt on the handheld.
+5. **`0.5x` on the software rasterizer is worth more than `0.5x` on the GPU.** CPU fill scales
+   with area; the Mali-G31 at 640x480 is probably not saturated.
+6. **NEON pays off on the host, not in the guest.** The game's ARM code belongs to the guest and
+   goes through the JIT; what can be vectorized is what the host does: fill, convert, copy and
+   clear.
 
-## 5. O que **não** vai ser feito nesta rodada
+## 5. What will **not** be done in this round
 
-Dito agora para não virar discussão depois:
+Said now so it does not turn into an argument later:
 
-- **Não** se vai copiar o SH4ZAM. Ele é assembly SH-4 do Dreamcast, e o host aqui é ARM64 ou
-  x86-64. A ideia aproveitável dele é "rotina especializada por arquitetura do host", e isso
-  se escreve com NEON, não com FSCA e XMTRX.
-- **Não** se vai baixar o requisito para GLES 2 por desempenho. GLES 2 é assunto de
-  **compatibilidade** — Android antigo, driver limitado —, e mudaria VAO, `blit_framebuffer`,
-  multisample e versão de shader (`src/video/gpu.rs:284`, `:533`, `:419`, `:1493`).
-- **Não** se vai fazer backend GLES 1. Seria um segundo rasterizador de pipeline fixo.
-- **Não** se vai criar thread de saída de áudio no core. Em Libretro quem puxa o áudio é o
-  frontend; o core que cria thread de saída está brigando com o contrato.
-- **Não** se vai ajustar mais timbre nem ganho do MIDI. Isso já foi calibrado por medição.
+- We will **not** copy SH4ZAM. It is Dreamcast SH-4 assembly, and the host here is ARM64 or
+  x86-64. The usable idea in it is "a specialized routine per host architecture", and that is
+  written with NEON, not with FSCA and XMTRX.
+- We will **not** lower the requirement to GLES 2 for performance. GLES 2 is a **compatibility**
+  matter — old Android, limited drivers —, and it would change VAO, `blit_framebuffer`,
+  multisample and shader version (`src/video/gpu.rs:284`, `:533`, `:419`, `:1493`).
+- We will **not** write a GLES 1 backend. It would be a second fixed-pipeline rasterizer.
+- We will **not** create an audio output thread in the core. In Libretro the frontend pulls the
+  audio; a core that creates an output thread is fighting the contract.
+- We will **not** tune MIDI timbre or gain any further. That was already calibrated by
+  measurement.
 
-## 6. Como medir
+## 6. How to measure
 
-### 6.1 Na bancada (desktop)
+### 6.1 On the bench (desktop)
 
-A varredura já faz o trabalho e não precisa de janela:
+The scan already does the job and needs no window:
 
 ```sh
-ZEEBX_ROM="<jogo>.zip" \
-ZEEBX_ROM_PERFIL=1 \
+ZEEBX_ROM="<game>.zip" \
+ZEEBX_ROM_PROFILE=1 \
 ZEEBX_ROM_MS=15000 \
-ZEEBX_ROM_SAIDA=/tmp/perf \
-cargo test --release varredura -- --nocapture
+ZEEBX_ROM_OUT=/tmp/perf \
+cargo test --release scan -- --nocapture
 ```
 
-O que sai dali: velocidade em por cento do console, instruções, chamadas, quadros, pixels e a
-lista de métodos de API mais caros, com total.
+What comes out of it: speed as a percentage of the console, instructions, calls, frames, pixels
+and the list of the most expensive API methods, with a total.
 
-Regras de medida, herdadas do erro documentado em `8af069f`:
+Measurement rules, inherited from the mistake documented in `8af069f`:
 
-- **medir tempo sem o perfil ligado.** O perfil de blocos custou 24% na medida antiga, e o
-  preço cai quase todo na fatia do ARM;
-- usar o mesmo `ZEEBX_ROM_MS` em todas as comparações;
-- rodar sempre em `--release`;
-- comparar proporção com perfil ligado, relógio com ele desligado.
+- **measure time with the profile off.** The block profile cost 24% in the old measurement, and
+  the price falls almost entirely on the ARM slice;
+- use the same `ZEEBX_ROM_MS` in every comparison;
+- always run in `--release`;
+- compare proportions with the profile on, wall clock with it off.
 
-**Cuidado com o que o perfil de API mede.** O `api_time` só soma o tempo de
-`dispatch_inner` (`src/machine/mod.rs:3370`), isto é, **o corpo do método**. Ele não inclui o
-`halt` do JIT nem a reentrada por `jit.run()`. O custo do trampolim, que é justamente o número
-de `1,4 µs` que se quer refazer, **não sai daqui**: precisa de um micro-teste próprio — um laço
-do guest chamando um método barato, comparado com o mesmo laço sem a chamada. Confundir os dois
-é o erro fácil desta rodada.
+**Be careful with what the API profile measures.** `api_time` only adds up the time of
+`dispatch_inner` (`src/machine/mod.rs:3370`), that is, **the method body**. It does not include
+the JIT `halt` nor the re-entry through `jit.run()`. The cost of the trampoline, which is exactly
+the `1.4 µs` number we want to redo, **does not come out of here**: it needs a micro-test of its
+own — a guest loop calling a cheap method, compared with the same loop without the call.
+Confusing the two is the easy mistake of this round.
 
-### 6.2 Jogos da rodada
+### 6.2 Games for the round
 
-| jogo | por que ele |
+| game | why this one |
 |---|---|
-| Quake | pior caso histórico, meio milhão de draw calls |
-| Crash Bandicoot Nitro Kart 3D | usa `glReadPixels`, desliga frameskip |
-| Need For Speed Carbon | 3D com muita geometria; deu o número do fastmem |
-| Zeebo Extreme Rolimã | já mostrou `memset` como custo |
-| Double Dragon | 2D, e é o que se joga nos testes de aparelho |
+| Quake | historical worst case, half a million draw calls |
+| Crash Bandicoot Nitro Kart 3D | uses `glReadPixels`, turns frameskip off |
+| Need For Speed Carbon | 3D with a lot of geometry; gave the fastmem number |
+| Zeebo Extreme Rolimã | has already shown `memset` as a cost |
+| Double Dragon | 2D, and it is what gets played in the device tests |
 
-### 6.3 No aparelho
+### 6.3 On the device
 
-O que falta é telemetria por quadro no core. O que se quer contar, por segundo:
+What is missing is per-frame telemetry in the core. What we want to count, per second:
 
 ```
-tempo do guest (ARM)
-tempo em gles_draw
-número de draws e de vértices
-número de glReadPixels
-tempo em memset/cópia
-tempo de conversão do quadro
-tempo de áudio
-quadros pulados
+guest time (ARM)
+time in gles_draw
+number of draws and of vertices
+number of glReadPixels
+time in memset/copy
+frame conversion time
+audio time
+skipped frames
 ```
 
-Enquanto isso não existe, o aparelho só responde "quantos FPS", e isso não diz onde o tempo
-foi.
+Until that exists, the device only answers "how many FPS", and that does not say where the time
+went.
 
-## 7. A ordem de ataque
+## 7. The order of attack
 
-A ordem vale **depois** da medida, e muda se a medida contrariar.
+The order holds **after** the measurement, and changes if the measurement disagrees.
 
-| # | frente | por que agora | risco |
+| # | front | why now | risk |
 |---|---|---|---|
-| 1 | Re-medir e corrigir `ARCHITECTURE.md` | o documento está guiando decisão com número velho | nenhum |
-| 2 | Trampolim de API | é o custo fixo por chamada, e o doc já o aponta | alto: mexe no núcleo |
-| 3 | Leitura em bloco e fastmem de leitura | a lição "pedir o bloco, nunca o elemento" já é do projeto | médio |
-| 4 | NEON no host: preencher, converter, copiar, limpar | escala com pixel e com byte | médio |
-| 5 | `0,5x`/`0,25x`, primeiro no software | corta área, e área é o custo do preenchimento por CPU | médio: viewport, tesoura, leitura |
-| 6 | Síntese de SoundFont sem travar a carga | tira engasgo sentido no portátil | baixo |
-| 7 | `lto = "fat"` medido contra `thin` | é barato de testar | baixo |
+| 1 | Re-measure and fix `ARCHITECTURE.md` | the document is guiding decisions with old numbers | none |
+| 2 | API trampoline | it is the fixed cost per call, and the doc already points to it | high: touches the core |
+| 3 | Bulk reads and read fastmem | the lesson "ask for the block, never the element" is already the project's | medium |
+| 4 | NEON on the host: fill, convert, copy, clear | scales with pixels and with bytes | medium |
+| 5 | `0.5x`/`0.25x`, software first | cuts area, and area is the cost of CPU fill | medium: viewport, scissor, readback |
+| 6 | SoundFont synthesis without stalling the load | removes a hitch felt on the handheld | low |
+| 7 | `lto = "fat"` measured against `thin` | it is cheap to test | low |
 
-## 8. Critério de aceitação
+## 8. Acceptance criterion
 
-Uma otimização entra quando:
+An optimization goes in when:
 
-1. há medida **antes e depois**, no mesmo jogo, com o mesmo `ZEEBX_ROM_MS`;
-2. a varredura dos 62 jogos não regride comportamento — desempenho fica fora da comparação de
-   linha de base de propósito, e é por isso que o número vive aqui e não lá;
-3. o ganho aparece também no portátil, ou fica dito que é ganho só de desktop;
-4. `cargo test`, `cargo clippy` e o core Libretro continuam verdes;
-5. o documento de arquitetura é atualizado junto, com o número novo e a data.
+1. there is a measurement **before and after**, on the same game, with the same `ZEEBX_ROM_MS`;
+2. the scan of the 62 games does not regress behavior — performance is left out of the baseline
+   comparison on purpose, and that is why the number lives here and not there;
+3. the gain also shows up on the handheld, or it is stated to be a desktop-only gain;
+4. `cargo test`, `cargo clippy` and the Libretro core stay green;
+5. the architecture document is updated along with it, with the new number and the date.
 
 
-## 10. Referência externa
+## 10. External reference
 
-Uma sessão de consulta com o DeepSeek sobre otimização de emuladores levantou pontos que valem
-como leitura, e também mostra onde uma análise de fora erra:
+A consultation session with DeepSeek about emulator optimization raised points worth reading,
+and it also shows where an outside analysis goes wrong:
 
 https://chat.deepseek.com/share/yjigu5xc76ahsri24s
 
-O que ela acertou: o trampolim de API é o gargalo estrutural; o rasterizador não é o gargalo; a
-lição de pedir bloco em vez de elemento; estender o fastmem para leitura.
+What it got right: the API trampoline is the structural bottleneck; the rasterizer is not the
+bottleneck; the lesson of asking for the block instead of the element; extending fastmem to
+reads.
 
-O que ela errou: propôs ativar `lto` e `codegen-units = 1`, que já estão ligados
-(`Cargo.toml:171`), inferindo o arquivo pelo tamanho em bytes sem abri-lo; propôs paralelizar o
-rasterizador, que já é paralelo (`src/video/rasterizer.rs:2341`); propôs thread dedicada de
-áudio, que é contra o contrato do Libretro; e tratou os números do `ARCHITECTURE.md` como
-atuais, quando são da era do Unicorn — que é exatamente o motivo deste documento existir.
+What it got wrong: it proposed turning on `lto` and `codegen-units = 1`, which are already on
+(`Cargo.toml:171`), inferring the file from its size in bytes without opening it; it proposed
+parallelizing the rasterizer, which is already parallel (`src/video/rasterizer.rs:2341`); it
+proposed a dedicated audio thread, which goes against the Libretro contract; and it treated the
+numbers in `ARCHITECTURE.md` as current, when they are from the Unicorn era — which is exactly the
+reason this document exists.
 
-## 11. Registro das medidas
+## 11. Measurement log
 
-| data | jogo | backend | velocidade | instr/s | chamadas de API | observação |
+| date | game | backend | speed | instr/s | API calls | note |
 |---|---|---|---|---|---|---|
-| 2026-09-11 | Quake | Unicorn | 52% | 86 M | — | `ARCHITECTURE.md:243`, cena de jogo |
-| 2026-09-24 | Quake | Dynarmic | **170%** | **195 M** | 1.323.900 | 15.016 ms virtuais em 8,8 s reais, 583 quadros, rasterizador de software |
+| 2026-09-11 | Quake | Unicorn | 52% | 86 M | — | `ARCHITECTURE.md:243`, gameplay scene |
+| 2026-09-24 | Quake | Dynarmic | **170%** | **195 M** | 1,323,900 | 15,016 virtual ms in 8.8 real s, 583 frames, software rasterizer |
 
-### A bancada
+### The bench
 
-Número de desempenho sem a máquina que o produziu não vale nada. Todas as medidas de bancada
-deste documento saem daqui, até que se diga o contrário:
+A performance number without the machine that produced it is worth nothing. Every bench
+measurement in this document comes from here, until said otherwise:
 
-| item | valor |
+| item | value |
 |---|---|
-| aparelho | Lenovo IdeaPad 3 |
-| processador | AMD Ryzen 7 5700U (Zen 2, 8 núcleos / 16 linhas, até 4,37 GHz) |
-| gráficos | Radeon integrado (Vega), Mesa |
-| memória | 9 GiB |
-| sistema | Debian GNU/Linux 13 (trixie), núcleo 6.19.5-x64v3-xanmod1 |
-| compilador | rustc 1.98.1 |
-| perfil | `--release`, `lto = "thin"`, `codegen-units = 1` |
+| device | Lenovo IdeaPad 3 |
+| processor | AMD Ryzen 7 5700U (Zen 2, 8 cores / 16 threads, up to 4.37 GHz) |
+| graphics | integrated Radeon (Vega), Mesa |
+| memory | 9 GiB |
+| system | Debian GNU/Linux 13 (trixie), kernel 6.19.5-x64v3-xanmod1 |
+| compiler | rustc 1.98.1 |
+| profile | `--release`, `lto = "thin"`, `codegen-units = 1` |
 
-Isto é um portátil de escritório, não uma bancada de medição: o relógio varia com temperatura e
-com o governador, e a medida do mesmo trabalho oscila entre execuções. Vale para comparar
-**antes e depois no mesmo aparelho**, na mesma sessão, e não para publicar número absoluto.
+This is an office laptop, not a measurement bench: the clock varies with temperature and with the
+governor, and the measurement of the same work fluctuates between runs. It is good for comparing
+**before and after on the same device**, in the same session, and not for publishing an absolute
+number.
 
-E a diferença para o alvo é enorme, o que é justamente o ponto: o Ryzen 5700U tem 16 linhas de
-execução e mais de 4 GHz, enquanto o R36S tem um Cortex-A35 e o RG40XX-H um Cortex-A53. Os 170%
-do Quake **não** se transportam para o portátil, e qualquer conclusão sobre gargalo de aparelho
-precisa ser medida no aparelho.
+And the difference from the target is huge, which is exactly the point: the Ryzen 5700U has 16
+threads of execution and more than 4 GHz, while the R36S has a Cortex-A35 and the RG40XX-H a
+Cortex-A53. Quake's 170% does **not** carry over to the handheld, and any conclusion about a
+device bottleneck has to be measured on the device.
 
-**A primeira medida com o Dynarmic desmente a leitura pessimista.** O Quake saiu de 52% para
-170% da velocidade do console, e o núcleo de 86 M para 195 M de instruções por segundo — 2,3
-vezes. O emulador que o `ARCHITECTURE.md` descreve não é o que está na árvore.
+**The first measurement with Dynarmic refutes the pessimistic reading.** Quake went from 52% to
+170% of console speed, and the core from 86 M to 195 M instructions per second — 2.3 times. The
+emulator `ARCHITECTURE.md` describes is not the one in the tree.
 
-Ressalva honesta, para a medida não virar propaganda: **a cena não é a mesma.** A medida antiga
-descrevia a cena de jogo com meio milhão de draw calls; esta rodou 15 segundos a partir da
-abertura, com 278.297 `DrawArrays`. O que é diretamente comparável é o ritmo do núcleo
-(instruções por segundo), não o relógio de parede de cenas diferentes. Para comparar relógio
-será preciso um roteiro de teclas (`ZEEBX_ROM_TECLAS`) que chegue ao mesmo ponto do jogo.
+An honest caveat, so the measurement does not turn into advertising: **the scene is not the
+same.** The old measurement described the gameplay scene with half a million draw calls; this one
+ran 15 seconds from the opening, with 278,297 `DrawArrays`. What is directly comparable is the
+pace of the core (instructions per second), not the wall clock of different scenes. To compare
+wall clock we will need a key script (`ZEEBX_ROM_KEYS`) that reaches the same point in the game.
 
-O perfil de chamadas do mesmo relatório mostra onde a conversa com o guest se concentra:
+The call profile of the same report shows where the conversation with the guest concentrates:
 
-| chamadas | método |
+| calls | method |
 |---:|---|
-| 283.982 | `IGLES11::VertexPointer` |
-| 282.717 | `IGLES11::TexCoordPointer` |
-| 278.297 | `IGLES11::DrawArrays` |
-| 137.720 | `AEEHelpers::strcmp` |
-| 61.143 | `AEEHelpers::aee_GetRand` |
+| 283,982 | `IGLES11::VertexPointer` |
+| 282,717 | `IGLES11::TexCoordPointer` |
+| 278,297 | `IGLES11::DrawArrays` |
+| 137,720 | `AEEHelpers::strcmp` |
+| 61,143 | `AEEHelpers::aee_GetRand` |
 
-As três primeiras somam 844.996 das 1.323.900 chamadas — **64% de todas as chamadas de API são
-os três pontos de entrada de geometria**, e elas andam juntas: um `VertexPointer`, um
-`TexCoordPointer` e um `DrawArrays` por lote. Se o custo do trampolim ainda pesar, é aqui que
-ele pesa, e é aqui que agrupar paga.
+The first three add up to 844,996 of the 1,323,900 calls — **64% of all API calls are the three
+geometry entry points**, and they travel together: one `VertexPointer`, one `TexCoordPointer` and
+one `DrawArrays` per batch. If the trampoline cost still weighs, this is where it weighs, and this
+is where batching pays.
 
-## 12. Onde o tempo foi, nos cinco jogos (2026-09-24)
+## 12. Where the time went, in the five games (2026-09-24)
 
-Rodada com `ZEEBX_ROM_PERFIL=1`, 15 s virtuais, rasterizador de software, na bancada descrita
-acima. **O perfil custa caro**: o Quake sai de 8,8 s (170%) sem perfil para 12,6 s (119%) com
-ele, cerca de 43%. Por isso a tabela abaixo serve para **proporção**, e o relógio absoluto vem
-da rodada sem perfil.
+Run with `ZEEBX_ROM_PROFILE=1`, 15 virtual s, software rasterizer, on the bench described above.
+**The profile is expensive**: Quake goes from 8.8 s (170%) without the profile to 12.6 s (119%)
+with it, about 43%. That is why the table below is for **proportion**, and the absolute clock
+comes from the run without the profile.
 
-| jogo | real | velocidade | instr/s | chamadas de API | tempo em API | apresentação |
+| game | real | speed | instr/s | API calls | time in API | presentation |
 |---|---:|---:|---:|---:|---:|---:|
-| Crash Nitro Kart 3D | 1,5 s | 1009% | 207 M | 44.559 | 1.145 ms | 975 ms (85%) |
-| Double Dragon | 2,6 s | 569% | 22 M | 37.808 | 2.010 ms | 1.643 ms (82%) |
-| NFS Carbon | 6,3 s | 238% | 51 M | 252.324 | 4.809 ms | 4.062 ms (84%) |
-| Quake | 12,6 s | 119% | 136 M | 1.323.900 | 8.109 ms | 5.139 ms (63%) |
-| Zeebo Extreme Rolimã | 3,8 s | 396% | 240 M | 176.080 | 2.316 ms | 1.242 ms (54%) |
+| Crash Nitro Kart 3D | 1.5 s | 1009% | 207 M | 44,559 | 1,145 ms | 975 ms (85%) |
+| Double Dragon | 2.6 s | 569% | 22 M | 37,808 | 2,010 ms | 1,643 ms (82%) |
+| NFS Carbon | 6.3 s | 238% | 51 M | 252,324 | 4,809 ms | 4,062 ms (84%) |
+| Quake | 12.6 s | 119% | 136 M | 1,323,900 | 8,109 ms | 5,139 ms (63%) |
+| Zeebo Extreme Rolimã | 3.8 s | 396% | 240 M | 176,080 | 2,316 ms | 1,242 ms (54%) |
 
-"Apresentação" é o `eglSwapBuffers`/`SwapBuffers`, e é preciso dizer o que ele **é** por dentro,
-senão o número engana:
+"Presentation" is `eglSwapBuffers`/`SwapBuffers`, and we have to say what it **is** on the inside,
+or the number misleads:
 
 ```rust
 "SwapBuffers" => {
@@ -303,198 +308,197 @@ senão o número engana:
 ```
 `src/machine/egl.rs:311`
 
-O `present_gl` chama `frame_rgb565` (`src/machine/gl.rs:1051`), e o `frame_rgb565` do software
-começa com `self.flush()` (`src/video/rasterizer.rs:2451`) — **é ali que a fila de triângulos
-vira pixel**. Ou seja: o tempo do `SwapBuffers` é rasterização, conversão RGBA→RGB565 e cópia,
-não "troca de buffer". O `wait_for_vsync` só mexe no relógio virtual e não dorme
-(`src/machine/time.rs:115`).
+`present_gl` calls `frame_rgb565` (`src/machine/gl.rs:1051`), and the software `frame_rgb565`
+starts with `self.flush()` (`src/video/rasterizer.rs:2451`) — **that is where the triangle queue
+becomes pixels**. In other words: the time of `SwapBuffers` is rasterization, RGBA→RGB565
+conversion and copying, not "swapping buffers". `wait_for_vsync` only touches the virtual clock
+and does not sleep (`src/machine/time.rs:115`).
 
-### O que isso muda
+### What this changes
 
-**A frase "o rasterizador não é gargalo" do `ARCHITECTURE.md:271` não vale mais nesta
-configuração.** Ela foi escrita quando o ARM custava o dobro; com o Dynarmic, a fatia do ARM
-encolheu e o preenchimento passou a dominar: 54% a 85% do tempo de API em todos os cinco jogos,
-e algo entre 41% e 65% do relógio de parede.
+**The sentence "the rasterizer is not a bottleneck" in `ARCHITECTURE.md:271` no longer holds in
+this configuration.** It was written when ARM cost twice as much; with Dynarmic, the ARM slice
+shrank and fill came to dominate: 54% to 85% of API time in all five games, and somewhere between
+41% and 65% of wall-clock time.
 
-Outros alvos que o perfil mostra:
+Other targets the profile shows:
 
-- **Geometria, no Quake:** `DrawArrays` 876 ms (10,8%), `TexCoordPointer` 431 ms (5,3%),
-  `VertexPointer` 427 ms (5,3%) — 1,73 s, 21% do tempo de API. O trio não é caro só por parar o
-  JIT; ele custa por dentro também.
-- **`memset`, no Rolimã:** 728 ms, 31,4% do tempo de API. Confirma a suspeita antiga.
-- **`strcmp`, no Quake:** 203 ms, 2,5%. Menor do que o número de chamadas sugeria — 137 mil
-  chamadas, mas o `read_cbytes` já lê em blocos de 64 bytes.
-- **Crash Nitro Kart:** 44 mil chamadas em 15 s e 1009% de velocidade. O jogo que motivou a
-  proteção do `glReadPixels` é, na bancada, o mais folgado dos cinco.
+- **Geometry, in Quake:** `DrawArrays` 876 ms (10.8%), `TexCoordPointer` 431 ms (5.3%),
+  `VertexPointer` 427 ms (5.3%) — 1.73 s, 21% of API time. The trio is not expensive only because
+  it stops the JIT; it costs on the inside too.
+- **`memset`, in Rolimã:** 728 ms, 31.4% of API time. It confirms the old suspicion.
+- **`strcmp`, in Quake:** 203 ms, 2.5%. Smaller than the number of calls suggested — 137 thousand
+  calls, but `read_cbytes` already reads in 64-byte blocks.
+- **Crash Nitro Kart:** 44 thousand calls in 15 s and 1009% speed. The game that motivated the
+  `glReadPixels` protection is, on the bench, the one with the most headroom of the five.
 
-### Consequência para o plano
+### Consequence for the plan
 
-A escala interna fracionária (`0,5x`, `0,25x`) **sobe** de prioridade, mas com um alvo
-diferente do que se pensava: o caminho de **software**, onde o custo por pixel é CPU e o
-`define_escala` hoje é ignorado de propósito (`src/video/rasterizer.rs:756`).
+Fractional internal scale (`0.5x`, `0.25x`) **goes up** in priority, but with a different target
+than we thought: the **software** path, where the per-pixel cost is CPU and `set_scale` is today
+ignored on purpose (`src/video/rasterizer.rs:756`).
 
-O trampolim **não** sobe nem desce: continua não medido, porque o `api_time` só conta o corpo
-do método.
+The trampoline goes neither up nor down: it is still unmeasured, because `api_time` only counts
+the method body.
 
-## 13. PDCA 1 — reutilização de índices temporários (rejeitado)
+## 13. PDCA 1 — reusing temporary indices (rejected)
 
 ### Plan
 
-`DrawArrays` criava um `Vec<u32>` novo por lote:
+`DrawArrays` created a new `Vec<u32>` per batch:
 
 ```rust
 let indices: Vec<u32> = (0..count).map(|i| first + i).collect();
 ```
 
-O Quake mediu 278.297 chamadas em 15 s. A hipótese era que reaproveitar a capacidade do vetor
-reduziria alocações e melhoraria o tempo.
+Quake measured 278,297 calls in 15 s. The hypothesis was that reusing the vector's capacity
+would reduce allocations and improve the time.
 
 ### Do
 
-Foi implementado localmente um `gl_indices_scratch` em `Machine`, reutilizado em
-`DrawArrays` e `DrawElements`. O patch não alterava índices, ABI, rasterização nem semântica.
+A `gl_indices_scratch` in `Machine` was implemented locally, reused in `DrawArrays` and
+`DrawElements`. The patch did not change indices, ABI, rasterization or semantics.
 
 ### Check
 
-A comparação foi controlada, sem `ZEEBX_ROM_PERFIL`, mesmo Ryzen 7 5700U, mesmo Quake, mesmo
-`ZEEBX_ROM_MS=15000`, e com o perfil release:
+The comparison was controlled, without `ZEEBX_ROM_PROFILE`, same Ryzen 7 5700U, same Quake, same
+`ZEEBX_ROM_MS=15000`, and with the release profile:
 
-| versão | tempo real | velocidade |
+| version | real time | speed |
 |---|---:|---:|
-| baseline | 8,8 s | 171% |
-| scratch | 8,8 s | 169% |
+| baseline | 8.8 s | 171% |
+| scratch | 8.8 s | 169% |
 
-A variação é ruído de bancada. O patch não produziu ganho mensurável.
+The variation is bench noise. The patch produced no measurable gain.
 
 ### Act
 
-Patch **rejeitado e removido**. Não será commitado como otimização. A conclusão é útil: a
-alocação do vetor de índices não é o custo dominante neste caso; a rasterização, conversão e
-cópia no `SwapBuffers` são maiores. O próximo patch deve atacar esse caminho ou eliminar o
-materializador de índices por completo com um `DrawArrays` contínuo, não apenas reutilizar a
-capacidade.
+Patch **rejected and removed**. It will not be committed as an optimization. The conclusion is
+useful: allocating the index vector is not the dominant cost in this case; rasterization,
+conversion and copying in `SwapBuffers` are bigger. The next patch should attack that path or
+eliminate the index materializer entirely with a contiguous `DrawArrays`, not just reuse the
+capacity.
 
-A varredura de 66 jogos foi interrompida para não contaminar o A/B. Ela chegou a Pac-Mania, que
-atingiu 52.830 ms virtuais em 240 s reais (22%); não é uma linha de base completa e não deve ser
-tratada como resultado final.
+The scan of 66 games was interrupted so as not to contaminate the A/B. It got as far as
+Pac-Mania, which reached 52,830 virtual ms in 240 real s (22%); it is not a complete baseline and
+must not be treated as a final result.
 
-## 14. PDCA 2 — exportação direta em palavras RGB565 (aceito com ganho pequeno)
+## 14. PDCA 2 — direct export in RGB565 words (accepted with a small gain)
 
 ### Plan
 
-`present_gl` fazia o rasterizador gerar bytes RGB565 e depois a superfície convertia cada par de
-bytes de volta para `u16`. No caminho de software, isto era trabalho e tráfego duplicados.
+`present_gl` made the rasterizer generate RGB565 bytes and then the surface converted each pair of
+bytes back to `u16`. On the software path, this was duplicated work and traffic.
 
 ### Do
 
-Foi adicionado `frame_rgb565_words()` ao contrato do rasterizador, implementado nos caminhos
-software e placa. `present_gl` agora atualiza a superfície com `load_rgb565_words()`. O vetor
-`gl_last_frame` também passou a guardar palavras RGB565; a conversão para bytes fica apenas nos
-caminhos que pedem bytes, como `eglGetColorBuffer`.
+`frame_rgb565_words()` was added to the rasterizer contract, implemented in the software and GPU
+paths. `present_gl` now updates the surface with `load_rgb565_words()`. The last-frame vector
+(`gl_last_frame_words`) also started storing RGB565 words; conversion to bytes stays only in the
+paths that ask for bytes, such as `eglGetColorBuffer`.
 
 ### Check
 
-A/B sequencial, sem perfil, mesma bancada, Quake, 15.016 ms virtuais por rodada:
+Sequential A/B, no profile, same bench, Quake, 15,016 virtual ms per run:
 
-| rodada | baseline | palavras RGB565 |
+| run | baseline | RGB565 words |
 |---:|---:|---:|
-| 1 | 9,1 s / 165% | 9,0 s / 167% |
-| 2 | 9,0 s / 167% | 8,8 s / 170% |
-| 3 | 8,8 s / 171% | 8,8 s / 170% |
-| média | **8,97 s / 168%** | **8,87 s / 169%** |
+| 1 | 9.1 s / 165% | 9.0 s / 167% |
+| 2 | 9.0 s / 167% | 8.8 s / 170% |
+| 3 | 8.8 s / 171% | 8.8 s / 170% |
+| average | **8.97 s / 168%** | **8.87 s / 169%** |
 
-Ganho médio: aproximadamente **1,1% no relógio** e **0,6% na velocidade**. É pequeno e fica
-próximo do ruído da bancada; não é apresentado como grande salto. Os testes release do núcleo
-passaram.
+Average gain: roughly **1.1% on the clock** and **0.6% in speed**. It is small and close to the
+bench noise; it is not presented as a big leap. The core's release tests passed.
 
 ### Act
 
-Patch mantido porque remove uma conversão estruturalmente desnecessária, não porque o Quake
-prometeu grande ganho. A próxima confirmação deve ser no rasterizador de placa dos handhelds e
-em jogos diferentes. O gargalo dominante continua sendo `flush`/preenchimento, não este loop
-isolado.
+Patch kept because it removes a structurally unnecessary conversion, not because Quake promised a
+big gain. The next confirmation should be on the handhelds' GPU rasterizer and in different
+games. The dominant bottleneck is still `flush`/fill, not this isolated loop.
 
-## 15. PDCA 3 — `memset` direto na memória guest (aceito)
+## 15. PDCA 3 — `memset` straight into guest memory (accepted)
 
 ### Plan
 
-O Rolimã já tinha mostrado `memset` como 31% do tempo perfilado. O caminho anterior preenchia
-um buffer de pilha de 4 KiB e chamava `write_mem` para cada bloco. Isso repetia borrow, validação
-e invalidação de código.
+Rolimã had already shown `memset` as 31% of the profiled time. The previous path filled a 4 KiB
+stack buffer and called `write_mem` for each block. That repeated borrow, validation and code
+invalidation.
 
 ### Do
 
-`GuestMemory::fill` agora preenche diretamente as fatias das regiões, e `DynarmicCpu::fill_mem`
-usa esse caminho. A invalidação de código ainda acontece uma vez no intervalo inteiro. Regiões
-somente-leitura e endereços não mapeados continuam falhando; testes foram adicionados.
+`GuestMemory::fill` now fills the region slices directly, and `DynarmicCpu::fill_mem` uses that
+path. Code invalidation still happens once over the whole range. Read-only regions and unmapped
+addresses still fail; tests were added.
 
 ### Check
 
-A/B sequencial no Ryzen 7 5700U, Rolimã, sem perfil, 15.048 ms virtuais:
+Sequential A/B on the Ryzen 7 5700U, Rolimã, no profile, 15,048 virtual ms:
 
-| rodada | baseline | `GuestMemory::fill` |
+| run | baseline | `GuestMemory::fill` |
 |---:|---:|---:|
-| 1 | 3,7 s / 408% | 2,8 s / 534% |
-| 2 | 3,2 s / 469% | 3,0 s / 495% |
-| média | **3,45 s / 439%** | **2,9 s / 515%** |
+| 1 | 3.7 s / 408% | 2.8 s / 534% |
+| 2 | 3.2 s / 469% | 3.0 s / 495% |
+| average | **3.45 s / 439%** | **2.9 s / 515%** |
 
-Ganho médio de aproximadamente **16% no relógio**. A variação da bancada é grande, mas as duas
-rodadas apontam na mesma direção e o primeiro ganho foi de 24%.
+Average gain of roughly **16% on the clock**. The bench variation is large, but both runs point
+in the same direction and the first gain was 24%.
 
 ### Act
 
-Patch mantido. O caminho foi coberto pelos testes de memória e pela suíte release do núcleo.
-Ainda falta medir NFS, Quake e os 66 jogos para saber quanto o ganho aparece fora do Rolimã.
+Patch kept. The path is covered by the memory tests and by the core's release suite. NFS, Quake
+and the 66 games still need measuring to know how much the gain shows up outside Rolimã.
 
-## 16. Caminho de GPU nos handhelds: Mali não é AMD
+## 16. The GPU path on the handhelds: Mali is not AMD
 
-### Hardware correto
+### Correct hardware
 
-- **R36S:** Rockchip **RK3326** (não RK3356), Cortex-A35, Mali-G31 MP2.
+- **R36S:** Rockchip **RK3326** (not RK3356), Cortex-A35, Mali-G31 MP2.
 - **RG40XX-H:** Allwinner H700/A133, Cortex-A53, Mali-G31.
 
-Ambos anunciam GLES 3.2 no hardware/libMali. Isso não garante que toda imagem com Mesa/Panfrost
-exponha 3.2: há drivers G31 que expõem apenas GLES 3.1. O core pede GLES 3.2 e recua para o
-software se o frontend recusar.
+Both advertise GLES 3.2 in the hardware/libMali. That does not guarantee every image with
+Mesa/Panfrost exposes 3.2: there are G31 drivers that expose only GLES 3.1. The core asks for
+GLES 3.2 and falls back to software if the frontend refuses.
 
-### Caminho real atual
+### Actual current path
 
-No core Libretro, o fluxo de hardware é:
+In the Libretro core, the hardware flow is:
 
 ```text
 retro_run
   -> context_reset / glow::Context
   -> GpuState
-  -> gles_draw (lotes no host)
+  -> gles_draw (batches on the host)
   -> eglSwapBuffers
        -> flush()
-       -> glReadPixels (GLES lê RGBA8)
-       -> conversão para RGB565
-       -> tela CPU
+       -> glReadPixels (GLES reads RGBA8)
+       -> conversion to RGB565
+       -> CPU screen
   -> retro_video_refresh(HW_FRAME_BUFFER_VALID)
 ```
 
-O último passo entrega o framebuffer do frontend ao RetroArch, mas o caminho anterior ainda faz
-readback para a superfície CPU. No Mali, esse readback pode forçar a GPU tiled a terminar o quadro
-e bloquear a CPU. A AMD do laptop pode esconder esse custo com cache/banda muito maiores; portanto
-o benchmark software no Ryzen não estima o custo do Mali.
+The last step hands the frontend's framebuffer to RetroArch, but the path before it still does a
+readback to the CPU surface. On Mali, that readback can force the tiled GPU to finish the frame
+and block the CPU. The laptop's AMD can hide that cost with much larger cache/bandwidth;
+therefore the software benchmark on the Ryzen does not estimate the Mali cost.
 
-O patch `64ceaa5` removeu a conversão intermediária bytes→`u16`, mas **não** removeu `glReadPixels`.
-O próximo grande patch de GPU deve ser lazy readback/zero-copy:
+Patch `64ceaa5` removed the intermediate bytes→`u16` conversion, but did **not** remove
+`glReadPixels`. The next big GPU patch should be lazy readback/zero-copy:
 
-1. em cena 3D pura, apresentar o FBO do frontend sem ler a GPU para a CPU;
-2. só fazer readback quando houver composição 2D, `GetColorBuffer`, `glReadPixels`, dump ou fallback;
-3. preservar a tela 640×480 quando o jogo misturar `IDisplay` com GL;
-4. manter Crash Nitro Kart no caminho seguro, porque ele lê pixels de volta;
-5. medir antes/depois em libMali R36S e no driver do H700.
+1. in a pure 3D scene, present the frontend's FBO without reading the GPU back to the CPU;
+2. only do a readback when there is 2D composition, `GetColorBuffer`, `glReadPixels`, a dump or a
+   fallback;
+3. preserve the 640×480 screen when the game mixes `IDisplay` with GL;
+4. keep Crash Nitro Kart on the safe path, because it reads pixels back;
+5. measure before/after on the R36S's libMali and on the H700 driver.
 
-Não é seguro simplesmente apagar `present_gl`: jogos que desenham 2D depois do GL precisam da
-base atualizada. A implementação deve ter um estado `gl_readback_pendente` e um ponto único que
-materialize a tela antes de qualquer desenho 2D/leitura.
+It is not safe to simply delete `present_gl`: games that draw 2D after GL need the base to be up
+to date. The implementation should have a `gl_readback_pending` state and a single point that
+materializes the screen before any 2D drawing/read.
 
-### Verificação que falta no RG40XX-H
+### Verification still missing on the RG40XX-H
 
-O core agora registra no log, no `context_reset`:
+The core now logs, in `context_reset`:
 
 ```text
 GL_VENDOR
@@ -503,471 +507,486 @@ GL_VERSION
 GLSL_VERSION
 ```
 
-O R36S já teve `Mali-G31`/GLES 3.2 observado no teste físico. No RG40XX-H, o `video_driver="gl"`
-do muOS prova o tipo de caminho, mas não substitui o log do driver efetivamente carregado. A
-próxima instalação deve capturar essa linha e comparar vendor/renderer/version antes de qualquer
-conclusão sobre Panfrost ou libMali.
+The R36S already had `Mali-G31`/GLES 3.2 observed in the physical test. On the RG40XX-H, muOS's
+`video_driver="gl"` proves the kind of path, but it does not replace the log of the driver
+actually loaded. The next install should capture that line and compare vendor/renderer/version
+before any conclusion about Panfrost or libMali.
 
-### Primeiro passo seguro do caminho Mali
+### First safe step on the Mali path
 
-Antes do zero-copy completo, o core já evita um custo inútil no modo de placa: `retro_run` não
-chama `write_rgb565_into()` nem calcula a assinatura CPU quando há FBO de hardware ativo. O
-RetroArch recebe `HW_FRAME_BUFFER_VALID` e ignora o ponteiro de pixels nesse modo. Isso remove a
-cópia/varredura CPU por quadro sem alterar a composição 2D nem o fallback.
+Before full zero-copy, the core already avoids a useless cost in GPU mode: `retro_run` does not
+call `write_rgb565_into()` nor compute the CPU signature when there is an active hardware FBO.
+RetroArch receives `HW_FRAME_BUFFER_VALID` and ignores the pixel pointer in that mode. This
+removes the per-frame CPU copy/scan without changing 2D composition or the fallback.
 
-Isso **não** remove ainda o `glReadPixels` que ocorre em `present_gl`; esse é o próximo patch e
-precisa de readback preguiçoso para não quebrar jogos que misturam GL, `IDisplay` e leitura de
-pixels.
+This does **not** yet remove the `glReadPixels` that happens in `present_gl`; that is the next
+patch, and it needs lazy readback so as not to break games that mix GL, `IDisplay` and pixel
+reads.
 
-## 17. Referência: ParaLLEl-N64 e Mupen64Plus-Next
+## 17. Reference: ParaLLEl-N64 and Mupen64Plus-Next
 
-Fontes revisados sem copiar código:
+Sources reviewed without copying code:
 
-- `libretro/parallel-n64` em `6e4c44c`;
-- `libretro/mupen64plus-libretro-nx` em `6752836`.
+- `libretro/parallel-n64` at `6e4c44c`;
+- `libretro/mupen64plus-libretro-nx` at `6752836`.
 
-A CPU guest do N64 é MIPS e o Zeebo é ARM, então o lowering dos dynarecs não serve. A arquitetura
-serve: fastmem por páginas, block linking, invalidação granular e corpus diferencial. O Zeebx já
-delega isso ao Dynarmic; trocar por um JIT MIPS adaptado seria regressão de projeto.
+The N64 guest CPU is MIPS and the Zeebo is ARM, so the dynarecs' lowering is of no use. The
+architecture is: fastmem by pages, block linking, granular invalidation and a differential corpus.
+Zeebx already delegates that to Dynarmic; swapping it for an adapted MIPS JIT would be a project
+regression.
 
-As lições gráficas úteis são mais diretas:
+The useful graphics lessons are more direct:
 
-1. **Quadro normal fica na GPU.** Os cores entregam `RETRO_HW_FRAME_BUFFER_VALID`; readback existe
-   para a memória guest, screenshot ou compatibilidade, não para apresentar todo quadro.
-2. **Readback sob demanda.** GLideN64 marca framebuffer sujo, lê apenas quando a CPU guest observa,
-   pode recortar página/faixa e reduz para resolução nativa antes de copiar.
-3. **PBO em anel.** Quando readback é inevitável, usa PBO duplo/triplo e consome o anterior; o
-   fallback GLES2 é `glReadPixels` síncrono. O Zeebx deve marcar slots válidos e usar fence — o
-   código de referência não é seguro para copiar literalmente.
-4. **Shadow state.** Cacheia enable, FBO, buffer, textura, viewport, scissor, blend, depth, programa,
-   atributos e uniforms. **Feito o programa/VAO/VBO**: os três são criados uma vez e nunca trocam, e
-   o `submete_com` os religava a cada lote e os **desligava** no fim de cada um — cinco chamadas de
-   driver por lote para reafirmar o que já valia, e desligar programa e VAO é o que faz um driver
-   fino de ARM revalidar mais coisa. O Quake chega a 370 lotes por quadro. Agora entram uma vez
-   (`GpuState::ligados`), e só o contexto refeito os invalida. O que **falta** do shadow state é o
-   resto: o `aplica` ainda reemite enable/blend/depth/textura por lote.
-5. **Batch por chave.** Acumula triângulos até mudar FBO/programa/texturas/blend/depth/scissor ou
-   aparecer barreira. O Zeebx já agrupa leques/faixas de mesmo `Estado`, então deve melhorar o
-   cache de estado antes de construir outro batcher.
-6. **Streaming de VBO.** Usa ring persistente quando há `bufferStorage`; senão map unsynchronized.
-   No Zeebx, só vale com segmentos e fences para não sobrescrever dados em uso no Mali.
-7. **SIMD com oráculo escalar.** Angrylion mantém SSE2/NEON e escalar bit a bit. É o padrão certo
-   para RGB565, textura e rasterização; não justifica importar o código específico do RDP/RSP.
-8. **Thread GL é opcional.** Mupen avisa que melhora alguns drivers e adiciona latência. Contexto
-   Libretro e lifetime dos argumentos tornam isso projeto de alto risco, não quick win.
+1. **The normal frame stays on the GPU.** The cores hand over `RETRO_HW_FRAME_BUFFER_VALID`;
+   readback exists for guest memory, screenshots or compatibility, not for presenting every frame.
+2. **On-demand readback.** GLideN64 marks the framebuffer dirty, reads only when the guest CPU
+   looks, can crop to a page/band and downscales to native resolution before copying.
+3. **PBO ring.** When readback is unavoidable, it uses a double/triple PBO and consumes the
+   previous one; the GLES2 fallback is synchronous `glReadPixels`. Zeebx should mark valid slots
+   and use a fence — the reference code is not safe to copy literally.
+4. **Shadow state.** It caches enable, FBO, buffer, texture, viewport, scissor, blend, depth,
+   program, attributes and uniforms. **Program/VAO/VBO done**: the three are created once and never
+   change, and `submit_with` rebound them on every batch and **unbound** them at the end of each
+   one — five driver calls per batch to reassert what was already in effect, and unbinding program
+   and VAO is what makes a thin ARM driver revalidate more. Quake reaches 370 batches per frame.
+   Now they go in once (`GpuState::enabled`), and only a recreated context invalidates them. What
+   is **missing** from shadow state is the rest: `apply` still re-emits
+   enable/blend/depth/texture per batch.
+5. **Batch by key.** It accumulates triangles until FBO/program/textures/blend/depth/scissor
+   changes or a barrier shows up. Zeebx already groups fans/strips of the same `State`, so it
+   should improve the state cache before building another batcher.
+6. **VBO streaming.** It uses a persistent ring when there is `bufferStorage`; otherwise an
+   unsynchronized map. In Zeebx, it is only worth it with segments and fences, so as not to
+   overwrite data in use on Mali.
+7. **SIMD with a scalar oracle.** Angrylion keeps SSE2/NEON and scalar bit-exact. It is the right
+   pattern for RGB565, textures and rasterization; it does not justify importing the RDP/RSP
+   specific code.
+8. **The GL thread is optional.** Mupen warns that it improves some drivers and adds latency. The
+   Libretro context and the lifetime of the arguments make this a high-risk project, not a quick
+   win.
 
-Não há receita Mali pronta nesses cores. Eles usam capability probing e quirks medidos. Isso levou
-a duas correções locais imediatas:
+There is no ready-made Mali recipe in these cores. They use capability probing and measured
+quirks. That led to two immediate local fixes:
 
-- handheld AArch64 agora pede **GLES 3.0**, suficiente para VAO/FBO blit/MSAA/GLSL 300, em vez de
-  recusar Panfrost 3.1 por exigir 3.2;
-- `GL_DEPTH_CLAMP` não é mais emitido no GLES, evitando `GL_INVALID_ENUM` e validação inútil por
-  lote no driver Mali.
+- the AArch64 handheld now asks for **GLES 3.0**, enough for VAO/FBO blit/MSAA/GLSL 300, instead
+  of refusing Panfrost 3.1 for requiring 3.2;
+- `GL_DEPTH_CLAMP` is no longer emitted on GLES, avoiding `GL_INVALID_ENUM` and useless per-batch
+  validation in the Mali driver.
 
-Prioridade resultante: lazy readback/zero-copy, shadow-state/uniform cache, PBO somente para
-readback inevitável, e depois NEON nos kernels medidos. Vulkan/ParaLLEl-RDP e o dynarec MIPS ficam
-fora do escopo.
+Resulting priority: lazy readback/zero-copy, shadow-state/uniform cache, PBO only for unavoidable
+readback, and then NEON in the measured kernels. Vulkan/ParaLLEl-RDP and the MIPS dynarec stay
+out of scope.
 
-## 18. Auditoria posterior: correções e rodada de 63 ROMs
+## 18. Later audit: fixes and a 63-ROM run
 
-A revisão dos patches encontrou três limites que a primeira implementação não registrou:
+The review of the patches found three limits that the first implementation did not record:
 
-1. `GuestMemory::fill` podia alterar a primeira região e falhar na segunda antes da invalidação
-   JIT. Agora o intervalo inteiro é validado antes de qualquer escrita, com teste de atomicidade.
-2. `GL_DEPTH_CLAMP` deixou de ser ligado no GLES em `aplica`, mas ainda era desligado em
-   `devolve_o_contexto`, produzindo o mesmo `GL_INVALID_ENUM`. Os dois lados estão guardados.
-3. No FBO Libretro externo, o desenho ia para o framebuffer do frontend, mas `liga_para_leitura`
-   ligava o FBO interno. `glReadPixels` e composição CPU podiam ler quadro velho. Em 1x sem MSAA,
-   a leitura agora usa o mesmo FBO externo que recebeu o desenho.
+1. `GuestMemory::fill` could change the first region and fail on the second before the JIT
+   invalidation. Now the whole range is validated before any write, with an atomicity test.
+2. `GL_DEPTH_CLAMP` stopped being enabled on GLES in `apply`, but was still being disabled in
+   `hand_back_context`, producing the same `GL_INVALID_ENUM`. Both sides are guarded.
+3. With the external Libretro FBO, drawing went to the frontend's framebuffer, but
+   `bind_for_read` bound the internal FBO. `glReadPixels` and CPU composition could read a stale
+   frame. At 1x without MSAA, the read now uses the same external FBO that received the drawing.
 
-Supersampling, MSAA e proporção larga junto do FBO externo ainda precisam de composição explícita
-no FBO do frontend; não estão declarados resolvidos por esta correção.
+Supersampling, MSAA and wide aspect ratio together with the external FBO still need explicit
+composition into the frontend's FBO; they are not declared solved by this fix.
 
-A rodada longa terminou: 63 ROMs reconhecidas, 60 s virtuais, perfil ligado, 1.504 s reais. Casos
-mais lentos entre os que avançaram: Action Hero 91%, Quake 93%, Ultimate Chess 114%, NFS Carbon
-123%; o perfil encarece fortemente o relógio, portanto esses percentuais não são FPS de uso normal.
-Seis casos pedem triagem: Bejeweled, Kingdom Hearts homebrew, Pac-Mania (22% e teto de 240 s),
-Prey Evil, Ridge Racer e Opera Mini. Eles não devem ser chamados de regressão sem comparação com
-a linha de base e roteiro equivalentes.
+The long run finished: 63 recognized ROMs, 60 virtual s, profile on, 1,504 real s. Slowest cases
+among those that progressed: Action Hero 91%, Quake 93%, Ultimate Chess 114%, NFS Carbon 123%; the
+profile makes the clock much more expensive, so these percentages are not normal-use FPS. Six
+cases need triage: Bejeweled, Kingdom Hearts homebrew, Pac-Mania (22% and the 240 s cap), Prey
+Evil, Ridge Racer and Opera Mini. They must not be called regressions without comparison against
+the baseline and equivalent scripts.
 
-## 19. Referência: PCSX-ReARMed, DuckStation e Flycast
+## 19. Reference: PCSX-ReARMed, DuckStation and Flycast
 
-Fontes revisados sem copiar código:
+Sources reviewed without copying code:
 
-- `libretro/pcsx_rearmed` em `ff81ed1`;
-- `stenzek/duckstation` em `7326f90`;
-- `flyinghead/flycast` em `869038f`.
+- `libretro/pcsx_rearmed` at `ff81ed1`;
+- `stenzek/duckstation` at `7326f90`;
+- `flyinghead/flycast` at `869038f`.
 
-### O consenso útil
+### The useful consensus
 
-1. **Framebuffer fica na GPU.** Flycast mantém RTT como textura; DuckStation baixa só o retângulo
-   solicitado; PCSX-ReARMed escreve direto no software framebuffer oferecido pelo Libretro. O
-   Zeebx não deve fazer readback de todo quadro normal.
-2. **Readback é uma operação guest, não apresentação.** Quando inevitável: bounding rect/tiles,
-   staging/PBO em anel, fence e espera apenas quando a CPU guest realmente consome. DuckStation
-   chega a manter rasterizador software paralelo para evitar round-trip em jogos de muita leitura.
-3. **Shadow-state antes de mais batching.** DuckStation e Flycast evitam programa, textura,
-   blend, depth, stencil, scissor e parâmetros repetidos. O `GpuState::aplica` do Zeebx ainda
-   reemite quase tudo a cada flush.
-4. **Batch/arena por estado compatível.** DuckStation acumula até mudar textura/blend/máscara ou
-   hazard; Flycast envia vértices/índices/uniforms em arena por frame. O Zeebx já agrupa primitivas
-   de mesmo `Estado`; deve acrescentar dirty bits e streaming seguro, não reescrever do zero.
-5. **Thread de vídeo tem fila limitada.** DuckStation usa FIFO SPSC e no máximo dois frames;
-   Flycast aplica back-pressure/deduplica e descarta apresentação velha. Fila ilimitada troca FPS
-   por latência e RAM. Em Libretro/GL, ownership do contexto torna isto alto risco.
-6. **Raster software em blocos especializados.** PCSX-ReARMed separa setup/textura/shade/blend e
-   processa blocos de pixels com NEON; DuckStation compila o mesmo oráculo em escalar e SIMD. É o
-   modelo para o `fill_band` do Zeebx: scalar correto, kernels por estado comum, teste diferencial.
-7. **Fastmem/JIT não é para copiar.** DuckStation/Flycast usam arena virtual, fault-and-patch,
-   block linking e invalidação adaptativa. O Zeebx já recebe JIT ARM e page table do Dynarmic; só
-   valem como checklist e telemetria, não como substituto.
-8. **Pacing no core Libretro não dorme.** PCSX-ReARMed executa até a fronteira emulada e devolve;
-   o frontend controla wall clock. Flycast e DuckStation usam deadline/filas nos frontends próprios.
-   O `sleep` atual do Zeebx dentro de `retro_run` merece PDCA separado por risco de double-throttle.
+1. **The framebuffer stays on the GPU.** Flycast keeps RTT as a texture; DuckStation downloads
+   only the requested rectangle; PCSX-ReARMed writes straight into the software framebuffer
+   offered by Libretro. Zeebx should not read back every normal frame.
+2. **Readback is a guest operation, not presentation.** When unavoidable: bounding rect/tiles,
+   staging/PBO ring, fence, and waiting only when the guest CPU actually consumes. DuckStation even
+   keeps a parallel software rasterizer to avoid round trips in read-heavy games.
+3. **Shadow state before more batching.** DuckStation and Flycast avoid repeated program,
+   texture, blend, depth, stencil, scissor and parameters. Zeebx's `GpuState::apply` still
+   re-emits almost everything on every flush.
+4. **Batch/arena by compatible state.** DuckStation accumulates until texture/blend/mask changes
+   or a hazard; Flycast sends vertices/indices/uniforms in a per-frame arena. Zeebx already groups
+   primitives of the same `State`; it should add dirty bits and safe streaming, not rewrite from
+   scratch.
+5. **The video thread has a bounded queue.** DuckStation uses an SPSC FIFO and at most two
+   frames; Flycast applies back-pressure/deduplicates and drops stale presentation. An unbounded
+   queue trades FPS for latency and RAM. In Libretro/GL, context ownership makes this high risk.
+6. **Software raster in specialized blocks.** PCSX-ReARMed separates setup/texture/shade/blend
+   and processes blocks of pixels with NEON; DuckStation compiles the same oracle as scalar and
+   SIMD. It is the model for Zeebx's `fill_band`: correct scalar, kernels per common state, a
+   differential test.
+7. **Fastmem/JIT is not for copying.** DuckStation/Flycast use a virtual arena, fault-and-patch,
+   block linking and adaptive invalidation. Zeebx already gets the ARM JIT and page table from
+   Dynarmic; they are only worth it as a checklist and telemetry, not as a replacement.
+8. **Pacing in the Libretro core does not sleep.** PCSX-ReARMed runs up to the emulated boundary
+   and returns; the frontend controls the wall clock. Flycast and DuckStation use deadlines/queues
+   in their own frontends. Zeebx's current `sleep` inside `retro_run` deserves a separate PDCA
+   because of the risk of double throttling.
 
-### Achados específicos
+### Specific findings
 
-- **PCSX-ReARMed:** `GET_CURRENT_SOFTWARE_FRAMEBUFFER` pode remover uma cópia no fallback software;
-  exige respeitar pitch/formato/lifetime. Seu GPU GLES é legado e não serve de backend moderno.
-- **DuckStation:** dirty rectangles, download textures/PBO com fence, pipeline/shader cache e
-  thread de vídeo robusta. Seu caminho AVX2 de rasterização está desativado por defeitos: aviso
-  contra assumir que SIMD é automaticamente correto.
-- **Flycast:** realmente tem quirks Mali. Testa `glBlitFramebuffer` e cai para quad se o driver
-  anuncia mas falha; usa `DEPTH24_STENCIL8` no Mali; no Vulkan acrescenta barreiras ARM específicas.
-  O Zeebx já usa `DEPTH24_STENCIL8`, mas deve testar blit no contexto real antes de confiar em MSAA
-  e resolução interna.
-- **Frameskip Flycast:** reage separadamente a CPU lenta e fila GPU ocupada. O Zeebx hoje reage ao
-  aviso de áudio do Libretro; telemetria de backlog/tempo de GPU permitiria decisão melhor.
+- **PCSX-ReARMed:** `GET_CURRENT_SOFTWARE_FRAMEBUFFER` can remove a copy in the software
+  fallback; it requires respecting pitch/format/lifetime. Its GLES GPU is legacy and is no use as
+  a modern backend.
+- **DuckStation:** dirty rectangles, download textures/PBO with a fence, pipeline/shader cache and
+  a robust video thread. Its AVX2 rasterization path is disabled because of defects: a warning
+  against assuming SIMD is automatically correct.
+- **Flycast:** it really does have Mali quirks. It tests `glBlitFramebuffer` and falls back to a
+  quad if the driver advertises it but fails; it uses `DEPTH24_STENCIL8` on Mali; on Vulkan it
+  adds ARM-specific barriers. Zeebx already uses `DEPTH24_STENCIL8`, but it should test blit in
+  the real context before trusting MSAA and internal resolution.
+- **Flycast frameskip:** it reacts separately to a slow CPU and a busy GPU queue. Zeebx today
+  reacts to Libretro's audio warning; backlog/GPU time telemetry would allow a better decision.
 
-### Ordem que resulta desta comparação
+### The order that results from this comparison
 
 1. lazy readback/zero-copy;
-2. shadow-state + uniform cache;
-3. teste real de FBO blit no driver;
-4. PBO com fence para leitura inevitável;
-5. `GET_CURRENT_SOFTWARE_FRAMEBUFFER` no fallback;
-6. NEON/SSE no rasterizador software em blocos;
-7. fila de vídeo limitada, somente depois;
-8. PDCA do `sleep` dentro de `retro_run`.
+2. shadow state + uniform cache;
+3. a real FBO blit test on the driver;
+4. PBO with a fence for unavoidable reads;
+5. `GET_CURRENT_SOFTWARE_FRAMEBUFFER` in the fallback;
+6. NEON/SSE in the software rasterizer, in blocks;
+7. a bounded video queue, only later;
+8. a PDCA for the `sleep` inside `retro_run`.
 
-### Licenças
+### Licenses
 
-PCSX-ReARMed e Flycast são GPL-2.0 ou posterior/compatíveis por arquivo, mas dependências variam.
-O DuckStation atual usa **CC-BY-NC-ND-4.0**: não se copia nem porta código para o Zeebx distribuído.
-Dele entram somente fatos e ideias, com implementação independente. Nenhum código destes três foi
-copiado nesta rodada.
+PCSX-ReARMed and Flycast are GPL-2.0 or later/compatible per file, but dependencies vary. Current
+DuckStation uses **CC-BY-NC-ND-4.0**: no code is copied or ported from it into the distributed
+Zeebx. Only facts and ideas come from it, with an independent implementation. No code from these
+three was copied in this round.
 
-## 20. Instrumentação: o registro do núcleo em cinco níveis
+## 20. Instrumentation: the core's log in five levels
 
-O plano desta rodada começava por "medir antes de otimizar", e o primeiro obstáculo era que o
-núcleo **não tinha canal de diagnóstico**: o desktop escrevia por `eprintln!` espalhado, o jogo
-tinha um log próprio à parte, o core Libretro tinha um `log()` com o nível fixo, e a varredura
-imprimia no relatório dela. Não havia como pedir "o nível de depuração do subsistema de CPU".
+The plan for this round started with "measure before optimizing", and the first obstacle was that
+the core **had no diagnostics channel**: the desktop wrote through scattered `eprintln!`, the game
+had a separate log of its own, the Libretro core had a `log()` with a fixed level, and the scan
+printed into its report. There was no way to ask for "the debug level of the CPU subsystem".
 
-Agora há. `src/registro.rs` dá cinco níveis — `Depuracao` (o "verbose/debug"), `Informacao`,
-`Aviso`, `Erro`, `Fatal` — com alvo (o subsistema) e um anel de 300 linhas que o frontend drena.
+Now there is. `src/logging.rs` provides five levels — `Debug` (the "verbose/debug"), `Info`,
+`Warning`, `Error`, `Fatal` — with a target (the subsystem) and a 300-line ring that the frontend
+drains.
 
-### Decisões que valem registrar
+### Decisions worth recording
 
-- **O padrão é `Aviso`, e o filtro custa uma leitura atômica.** Quem não mexe em nada continua
-  com o silêncio de antes. A macro testa o nível **antes** de montar o texto: uma mensagem de
-  depuração filtrada não paga nem o `format!`.
-- **O núcleo guarda, o frontend entrega.** O log do frontend é callback variádico do C; chamá-lo
-  do fundo de um desenho seria atravessar código do frontend no meio de um estado nosso. O anel
-  é o que separa as duas coisas — o despejo acontece no `retro_run`.
-- **"Desligado" não é "não entendi".** O primeiro desenho devolvia o mesmo `None` para os dois, e
-  um `ZEEBX_LOG=banana` desligaria o registro em silêncio. Hoje há um `Ajuste` que distingue, e o
-  token inválido **avisa**.
-- **Um vocabulário só** para a opção do core, o `config.ini`, o `settings.json` e a variável de
-  ambiente. Quatro tabelas divergiriam; uma função de conversão não.
-- **Precedência:** a variável de ambiente vale como ponto de partida e a opção explícita ganha
-  dela, nos três frontends.
+- **The default is `Warning`, and the filter costs one atomic read.** Whoever touches nothing
+  keeps the silence they had before. The macro checks the level **before** building the text: a
+  filtered debug message does not even pay for the `format!`.
+- **The core stores, the frontend delivers.** The frontend's log is a variadic C callback;
+  calling it from deep inside a draw would mean running frontend code in the middle of our own
+  state. The ring is what separates the two — the dump happens in `retro_run`.
+- **"Off" is not "I did not understand".** The first design returned the same `None` for both,
+  and a `ZEEBX_LOG=banana` would silently turn logging off. Today there is a `Threshold` that
+  tells them apart, and the invalid token **warns**.
+- **A single vocabulary** for the core option, `config.ini`, `settings.json` and the environment
+  variable. Four tables would diverge; one conversion function does not.
+- **Precedence:** the environment variable is the starting point and the explicit option wins
+  over it, in all three frontends.
 
-### Onde liga
+### Where to turn it on
 
-| Frontend | Onde |
+| Frontend | Where |
 |---|---|
-| Core Libretro | opção `zeebx_log` (categoria Sistema), vale na hora |
-| Headless | `[system] log = warn` no `config.ini` |
-| Desktop | `debug.nivel_de_log` no `settings.json` |
-| Qualquer um | variável `ZEEBX_LOG` |
+| Libretro core | option `zeebx_log` (System category), applies right away |
+| Headless | `[system] log = warn` in `config.ini` |
+| Desktop | `debug.nivel_de_log` in `settings.json` |
+| Any of them | variable `ZEEBX_LOG` |
 
-### O que já se vê
+### What can already be seen
 
-Prova real, Double Dragon, 60 quadros, `ZEEBX_LOG=debug`:
+Real proof, Double Dragon, 60 frames, `ZEEBX_LOG=debug`:
 
 ```text
-DEBUG session: conteúdo ...Double Dragon (Brazil) (Es,Pt).zip resolvido para .../ddragonz.mod
-DEBUG session: 462748 bytes lidos; analisando o módulo
-DEBUG cpu: tabela de páginas: 20082 de 1048576 com acesso direto (9 region(oes))
-INFO session: abriu Double Dragon (Brazil) (Es,Pt).zip (classe 0x0102f789) com o rasterizador de processador e 0 applet(s) instalado(s)
-INFO midi: tabela de timbres: 15051 bytes de SMF -> 47.6s de áudio sintetizados em 187.6ms
+DEBUG session: content ...Double Dragon (Brazil) (Es,Pt).zip resolved to .../ddragonz.mod
+DEBUG session: 462748 bytes read; parsing the module
+DEBUG cpu: page table: 20082 of 1048576 with direct access (9 region(s))
+INFO session: opened Double Dragon (Brazil) (Es,Pt).zip (class 0x0102f789) with the CPU rasterizer and 0 applet(s) installed
+INFO midi: timbre table: 15051 bytes of SMF -> 47.6s of audio synthesized in 187.6ms
 ```
 
-Os dois números que interessam ao plano:
+The two numbers that matter to the plan:
 
-- **20 082 páginas de 1 048 576 com acesso direto.** A tabela do Dynarmic cobre 1,9% do espaço de
-  endereços, que é o esperado — só as regiões mapeadas —, mas é o primeiro número que diz quanto
-  do acesso do guest passa direto e quanto passa pelo Rust. Serve de linha de base para discutir
-  SMC e páginas quentes.
-- **187 ms para sintetizar 47,6 s de música.** Confirma, no caminho de uso, o que a medição de
-  bancada dizia: o custo do MIDI é de carga, e é ele que explica a primeira música lenta no
-  portátil, não o mixer.
+- **20,082 pages of 1,048,576 with direct access.** Dynarmic's table covers 1.9% of the address
+  space, which is what is expected — only the mapped regions —, but it is the first number that
+  says how much of the guest's access goes direct and how much goes through Rust. It serves as a
+  baseline for discussing SMC and hot pages.
+- **187 ms to synthesize 47.6 s of music.** It confirms, on the real-use path, what the bench
+  measurement said: the MIDI cost is a load cost, and it is what explains the slow first song on
+  the handheld, not the mixer.
 
-### Achado colateral
+### Side finding
 
-O `log()` do core Libretro manda tudo com o nível `3` (`RETRO_LOG_ERROR`), inclusive as mensagens
-informativas como "desenhando na placa". É anterior a esta rodada e **não foi mudado**: mexer
-nisso altera o que aparece no log de quem filtra por gravidade, e é decisão à parte. O caminho
-novo não depende dele — as linhas do núcleo saem com o nível certo.
+The Libretro core's `log()` sends everything at level `3` (`RETRO_LOG_ERROR`), including
+informational messages such as "drawing on the GPU". It predates this round and **was not
+changed**: touching it changes what shows up in the log for whoever filters by severity, and it
+is a separate decision. The new path does not depend on it — the core's lines go out with the
+right level.
 
-### Pendências
+### Pending
 
-- o Android ainda usa o `log` do Rust por conta própria e não drena o registro;
-- a varredura não drena (o relatório dela já carrega o log do jogo);
-- os subsistemas instrumentados nesta primeira passada são sessão, loader, CPU, áudio e MIDI. O
-  rasterizador, a rede e o armazenamento ainda não têm linha própria.
+- Android still uses Rust's `log` on its own and does not drain the log;
+- the scan does not drain it (its report already carries the game's log);
+- the subsystems instrumented in this first pass are session, loader, CPU, audio and MIDI. The
+  rasterizer, the network and storage do not have their own lines yet.
 
-## 21. Fechamento da revisão dos emuladores: os adendos
+## 21. Closing the emulator review: the addenda
 
-As seções 17 e 19 trazem os **cinco relatórios principais**. Esta seção fecha o que ficou de fora:
-**doze adendos e correções** que chegaram depois, e que em vários casos **mudam a conclusão** do
-relatório principal. Sem eles a revisão fica pela metade — foi assim que ela ficou até agora.
+Sections 17 and 19 carry the **five main reports**. This section closes what was left out:
+**twelve addenda and corrections** that arrived later, and that in several cases **change the
+conclusion** of the main report. Without them the review is only half done — which is how it
+stayed until now.
 
-### Correções que mudam a conclusão
+### Corrections that change the conclusion
 
-1. **Não construir fastmem novo, e nem priorizá-lo.** O `src/cpu/dynarmic.rs` já entrega ao
-   Dynarmic uma tabela direta de 2²⁰ ponteiros de página, bitmap de páginas executadas e
-   invalidação por faixa. O segundo adendo é explícito: a tabela atual **já captura o ganho
-   principal**, e o que resta é **SMC adaptativo** — página que mistura código e dados sai da
-   tabela e passa a ir por callback em toda leitura e escrita. Se algum dia for para valer, a
-   rota é a API do próprio Dynarmic (`Config::fastmem`), nunca um manipulador de sinal nosso:
-   o handler não pode alocar, travar nem entrar em `RefCell`.
-2. **Não criar thread só de apresentação.** O DuckStation **removeu** a apresentação dedicada em
-   `1c1b82ed` com a justificativa "Worse frame pacing" e unificou render e present na mesma
-   thread. Se o Zeebx paralelizar, é **uma** thread dona de contexto, desenho e apresentação, com
-   backpressure de 0 ou 1 quadro no começo.
-3. **O batching de baixo risco que falta é o de faixas adjacentes.** O Flycast une *strips*
-   vizinhas de estado equivalente (`PolyParam::equivalentIgnoreCullDirection`,
-   `makePrimRestartIndex` com índice de reinício `~0` e correção de winding) e ainda emite um
-   draw por grupo — não há multidraw. Ordenar globalmente por estado quebra blending,
-   translucência e multipasse. O nosso lote hoje fecha por mudança de `Estado`, que é a mesma
-   família de chave; o que não temos é o *restart de primitiva* para juntar o que é adjacente.
-4. **SIMD do Flycast tem pouca transferibilidade.** O ramo NEON do parser de TA cai em quatro
-   `u64` no build ARM64, e `FIPR`/`FTRV` em NEON está **comentado no próprio código por
-   precisão**. O único uso real é `shop_frswap`, com `Ld4/St4`. Confirmado: SIMD dos cores
-   externos **não** justifica prioridade; continua valendo só como padrão de trabalho
-   (escalar-oráculo, kernel por hotspot medido).
-5. **O nosso `sleep` no `retro_run` é o desvio.** O `pl_frame_limit` do PCSX-ReARMed, no caminho
-   Libretro, **só marca a fronteira**: entrega exatamente um quadro e não dorme, porque o relógio
-   de parede é do frontend. O Zeebx dorme (`src/session.rs`), o que soma o nosso freio ao do
-   frontend. Não é bug de correção, é risco de double-throttle e de judder — e virou item próprio
-   na lista de pendências.
-6. **`GL_ARM_shader_framebuffer_fetch` está detectado e inativo** nos cores (o próprio código
-   força `ext_fetch = false`). Não contar como ganho que já existe.
-7. **O cache binário de shader está desligado justamente no GLES** (`EnableShadersStorage` vive
-   sob `#if !defined(HAVE_OPENGLES)`), então o engasgo de compilação continua lá nos cores. Para
-   nós isto é **inócuo**: o motor tem **um** shader e o compila uma vez.
+1. **Do not build a new fastmem, nor prioritize it.** `src/cpu/dynarmic.rs` already hands
+   Dynarmic a direct table of 2²⁰ page pointers, a bitmap of executed pages and per-range
+   invalidation. The second addendum is explicit: the current table **already captures the main
+   gain**, and what is left is **adaptive SMC** — a page that mixes code and data leaves the table
+   and goes through the callback on every read and write. If it is ever done for real, the route
+   is Dynarmic's own API (`Config::fastmem`), never a signal handler of ours: the handler cannot
+   allocate, lock or enter a `RefCell`.
+2. **Do not create a presentation-only thread.** DuckStation **removed** dedicated presentation
+   in `1c1b82ed` with the justification "Worse frame pacing" and unified render and present on the
+   same thread. If Zeebx parallelizes, it is **one** thread that owns context, drawing and
+   presentation, with a backpressure of 0 or 1 frame to begin with.
+3. **The low-risk batching we are missing is joining adjacent strips.** Flycast merges neighboring
+   *strips* of equivalent state (`PolyParam::equivalentIgnoreCullDirection`,
+   `makePrimRestartIndex` with restart index `~0` and winding correction) and still emits one draw
+   per group — there is no multidraw. Sorting globally by state breaks blending, translucency and
+   multipass. Our batch today closes on a change of `State`, which is the same family of key; what
+   we do not have is *primitive restart* to join what is adjacent.
+4. **Flycast's SIMD transfers poorly.** The NEON branch of the TA parser falls back to four `u64`
+   in the ARM64 build, and `FIPR`/`FTRV` in NEON is **commented out in the code itself for
+   precision**. The only real use is `shop_frswap`, with `Ld4/St4`. Confirmed: the external cores'
+   SIMD does **not** justify priority; it is still only worth it as a working pattern
+   (scalar oracle, a kernel per measured hotspot).
+5. **Our `sleep` in `retro_run` is the deviation.** PCSX-ReARMed's `pl_frame_limit`, on the
+   Libretro path, **only marks the boundary**: it delivers exactly one frame and does not sleep,
+   because the wall clock belongs to the frontend. Zeebx sleeps (`src/session.rs`), which adds our
+   brake to the frontend's. It is not a correctness bug, it is a risk of double throttling and
+   judder — and it became its own item in the pending list.
+6. **`GL_ARM_shader_framebuffer_fetch` is detected and inactive** in the cores (the code itself
+   forces `ext_fetch = false`). Do not count it as a gain that already exists.
+7. **The binary shader cache is disabled precisely on GLES** (`EnableShadersStorage` lives under
+   `#if !defined(HAVE_OPENGLES)`), so the compilation hitch is still there in the cores. For us
+   this is **harmless**: the engine has **one** shader and compiles it once.
 
-### Confirmações no nosso código
+### Confirmations in our code
 
-- **A guarda do lote existe.** O adendo avisou que o Mupen junta 256 vértices e 1024 índices sem
-  guarda aparente. Conferido: o nosso fecha o lote por teto (`VERTICES_NO_LOTE`, 16 384 vértices)
-  antes de inserir. Não há o defeito.
-- **O consumo parcial do áudio é tratado.** O PCSX ignora o retorno parcial do
-  `audio_batch_cb`; o nosso guarda o que sobrou em `audio_pendente` e entrega na chamada seguinte.
-- **A latência de áudio é constante, não derivada.** O PCSX recalcula a latência mínima só quando
-  muda o tipo de frameskip, e ela pode ficar obsoleta ao mudar intervalo ou NTSC/PAL. O nosso
-  pede 96 ms uma vez, e a constante não depende da política de quadro — sem o defeito de valor
-  velho, mas com a mesma fragilidade se um dia ela virar função da política.
+- **The batch guard exists.** The addendum warned that Mupen joins 256 vertices and 1024 indices
+  with no apparent guard. Checked: ours closes the batch at a cap (`BATCH_VERTICES`, 16,384
+  vertices) before inserting. The defect is not there.
+- **Partial audio consumption is handled.** PCSX ignores the partial return of
+  `audio_batch_cb`; ours keeps what was left in `pending_audio` and delivers it on the next call.
+- **Audio latency is constant, not derived.** PCSX recomputes the minimum latency only when the
+  frameskip type changes, and it can go stale when the interval or NTSC/PAL changes. Ours asks for
+  96 ms once, and the constant does not depend on the frame policy — without the stale-value
+  defect, but with the same fragility if it ever becomes a function of the policy.
 
-### Riscos que só valem se mexermos nessas frentes
+### Risks that only matter if we touch these fronts
 
-- **GLSM do `libretro-common`**: ~64 MiB de BSS com índice direto por (programa, location) e
-  estouro acima de 1024. Não copiar; cache de uniforme, se houver, com mapa esparso e bit de
-  validade.
-- **`AHardwareBuffer` do Mupen**: cria com `CPU_READ_OFTEN|GPU_SAMPLED_IMAGE`, usa como alvo de
-  desenho **sem** `GPU_COLOR_OUTPUT` e ignora o retorno de `allocate()`. Se um dia formos por
-  `EGLImage`, pedir `GPU_COLOR_OUTPUT`, validar a alocação e cair para PBO em qualquer falha.
-- **Threaded wrapper do GLideN64**: cresce de 10 MiB até 200 MiB. Ganho opcional de driver com
-  custo de RAM e latência; não é o padrão para portátil.
-- **`N64DepthCompare` "compatível"**: `glMemoryBarrier` mais um desenho por triângulo. É correção
-  com custo extremo em GPU de tiles — serve de aviso contra soluções "por triângulo" no Mali.
-- **W^X e flush de I-cache em lotes** (`start_tcache_write`/`do_clear_cache`) só importam quando o
-  JIT for nosso; hoje é do Dynarmic.
+- **`libretro-common`'s GLSM**: ~64 MiB of BSS with a direct index by (program, location) and
+  overflow above 1024. Do not copy; a uniform cache, if there is one, with a sparse map and a
+  validity bit.
+- **Mupen's `AHardwareBuffer`**: it creates with `CPU_READ_OFTEN|GPU_SAMPLED_IMAGE`, uses it as a
+  render target **without** `GPU_COLOR_OUTPUT` and ignores the return of `allocate()`. If we ever
+  go through `EGLImage`, ask for `GPU_COLOR_OUTPUT`, validate the allocation and fall back to PBO
+  on any failure.
+- **GLideN64's threaded wrapper**: grows from 10 MiB up to 200 MiB. An optional driver gain at a
+  cost in RAM and latency; it is not the default for a handheld.
+- **"Compatible" `N64DepthCompare`**: `glMemoryBarrier` plus one draw per triangle. It is
+  correctness at an extreme cost on a tiled GPU — it serves as a warning against "per triangle"
+  solutions on Mali.
+- **W^X and batched I-cache flush** (`start_tcache_write`/`do_clear_cache`) only matter when the
+  JIT is ours; today it is Dynarmic's.
 
-### Achados Mali que ainda não usamos
+### Mali findings we do not use yet
 
-- **Testar `glBlitFramebuffer` em execução.** O Flycast não confia no anúncio do driver: faz um
-  teste de verdade e, quando ele mente, desenha um quadrilátero. O Zeebx assume que o blit
-  funciona — e o usa no `resolve` de MSAA e na leitura do quadro grande.
-- **Descartar profundidade e estêncil depois do último passe.** O GLES do Flycast **não** chama
-  `glInvalidateFramebuffer` nem `glDiscardFramebufferEXT`: isso seria experimento **novo** nosso,
-  não receita copiada. Em GPU de tiles é onde pode render.
-- **`DEPTH24_STENCIL8` no Mali** — o Flycast troca o formato por causa de quirk; nós já usamos
-  esse formato, então é confirmação, não pendência.
-- **Modelo de memória de tile no Vulkan**: `eTransientAttachment`, `LAZILY_ALLOCATED`, storeOp
-  `eDontCare` e dependências `eByRegion`. É referência para quando houver Vulkan, não para hoje.
-- **Não portar o "tile renderer" do Dreamcast**: o Flycast não reexecuta tile a tile — converte o
-  recorte em `scissor` e teste de shader. Seria reescrita enorme.
-- **`SwapIntervalDetector`**: mede o intervalo de vblank com média móvel e força intervalo 1
-  quando a taxa é instável, para não cair em 30 FPS acidental. É ideia aproveitável no nosso
-  limitador e na decisão de frameskip.
-- **O frameskip do Flycast separa "CPU lenta" de "fila de GPU cheia".** O nosso só reage ao aviso
-  de áudio do frontend; telemetria de GPU permitiria a segunda decisão.
+- **Test `glBlitFramebuffer` at runtime.** Flycast does not trust the driver's advertisement: it
+  runs a real test and, when the driver lies, draws a quad. Zeebx assumes blit works — and uses it
+  in the MSAA `resolve` and in reading the big frame.
+- **Discard depth and stencil after the last pass.** Flycast's GLES does **not** call
+  `glInvalidateFramebuffer` or `glDiscardFramebufferEXT`: this would be a **new** experiment of
+  ours, not a copied recipe. On a tiled GPU this is where it can pay off.
+- **`DEPTH24_STENCIL8` on Mali** — Flycast switches format because of a quirk; we already use that
+  format, so it is a confirmation, not a pending item.
+- **Vulkan's tile memory model**: `eTransientAttachment`, `LAZILY_ALLOCATED`, storeOp
+  `eDontCare` and `eByRegion` dependencies. It is a reference for when there is Vulkan, not for
+  today.
+- **Do not port the Dreamcast "tile renderer"**: Flycast does not re-execute tile by tile — it
+  turns the clipping into `scissor` and a shader test. It would be an enormous rewrite.
+- **`SwapIntervalDetector`**: measures the vblank interval with a moving average and forces
+  interval 1 when the rate is unstable, so as not to fall into an accidental 30 FPS. It is an idea
+  usable in our limiter and in the frameskip decision.
+- **Flycast's frameskip separates "slow CPU" from "full GPU queue".** Ours only reacts to the
+  frontend's audio warning; GPU telemetry would allow the second decision.
 
-### O que não se aplica
+### What does not apply
 
-- O caminho `ARMv5_ONLY` dos dynarecs (immediates, pools, sem `IDIV`, VFP condicional) é modelo de
-  restrição de ARM11/v6. O nosso **guest** é ARM e o **host** é ARM64; o JIT não é nosso.
-- Lightrec é LGPL-2.1+ e o GNU Lightning do `rsp_jit` é LGPL-3.0+: importar elevaria o conjunto de
-  licenças do projeto, que é `GPL-2.0-or-later`.
+- The dynarecs' `ARMv5_ONLY` path (immediates, pools, no `IDIV`, conditional VFP) is a model of
+  ARM11/v6 constraints. Our **guest** is ARM and the **host** is ARM64; the JIT is not ours.
+- Lightrec is LGPL-2.1+ and `rsp_jit`'s GNU Lightning is LGPL-3.0+: importing them would raise the
+  project's license set, which is `GPL-2.0-or-later`.
 
-### Licenças, fechadas
+### Licenses, settled
 
-| fonte | licença | uso |
+| source | license | use |
 |---|---|---|
-| PCSX-ReARMed, Flycast | GPL-2.0-or-later nos arquivos citados | compatível com o nosso; com avisos preservados |
-| Mupen64Plus-Next, parallel-n64 | agregado: GPL-2.0 (núcleo), LGPLv3 (gles2n64), MIT/LGPLv3 (rsp) | conferir por arquivo antes de qualquer cópia |
-| DuckStation | **CC-BY-NC-ND-4.0** | **nenhum código**; só fatos e ideias, com implementação independente |
-| dependências vendorizadas (VIXL, Swappy, GNU Lightning) | próprias | algumas elevam o conjunto |
+| PCSX-ReARMed, Flycast | GPL-2.0-or-later in the cited files | compatible with ours; with notices preserved |
+| Mupen64Plus-Next, parallel-n64 | aggregate: GPL-2.0 (core), LGPLv3 (gles2n64), MIT/LGPLv3 (rsp) | check per file before any copying |
+| DuckStation | **CC-BY-NC-ND-4.0** | **no code**; only facts and ideas, with an independent implementation |
+| vendored dependencies (VIXL, Swappy, GNU Lightning) | their own | some raise the set |
 
-**Nenhuma linha de código destes emuladores foi copiada.** O que entrou no projeto foram fatos,
-nomes de função para conferência e as decisões de engenharia listadas acima.
+**Not one line of code from these emulators was copied.** What entered the project were facts,
+function names for cross-checking and the engineering decisions listed above.
 
-### A ordem revisada
+### The revised order
 
-| muda | frente | por quê |
+| change | front | why |
 |---|---|---|
-| sobe | cache de estado GL | ganho de baixo risco, apontado por duas revisões |
-| sobe | juntar lotes adjacentes com restart | batching que ainda não temos, e de baixo risco |
-| sobe | testar blit e descarte no driver real | sem isso, MSAA e leitura podem estar mentindo |
-| sobe | SMC medido | é o que resta de real na frente de memória |
-| entra | PDCA do `sleep` no `retro_run` | desvio do contrato Libretro, medido contra o PCSX |
-| desce | fastmem novo | o Dynarmic já entrega |
-| desce | SIMD dos cores | pouca transferibilidade confirmada |
-| desce | thread de apresentação | o DuckStation removeu por piorar o pacing |
+| up | GL state cache | low-risk gain, pointed out by two reviews |
+| up | join adjacent batches with restart | batching we do not have yet, and low risk |
+| up | test blit and discard on the real driver | without it, MSAA and reads may be lying |
+| up | measured SMC | it is what is left that is real on the memory front |
+| new | PDCA for the `sleep` in `retro_run` | a deviation from the Libretro contract, measured against PCSX |
+| down | new fastmem | Dynarmic already delivers it |
+| down | the cores' SIMD | poor transferability confirmed |
+| down | presentation thread | DuckStation removed it for making pacing worse |
 
-## 22. A partilha do relógio: quanto fica fora do JIT
+## 22. Splitting the clock: how much stays outside the JIT
 
-**O número que faltava desde o começo desta rodada.** O `ARCHITECTURE.md` publicava 1,4 µs por
-chamada de API, medidos com o Unicorn; o instrumento de então (`ZEEBX_ROM_PERFIL`) mede só o corpo
-do método. Agora o relatório da varredura separa o relógio em duas metades.
+**The number that had been missing since the start of this round.** `ARCHITECTURE.md` published
+1.4 µs per API call, measured with Unicorn; the instrument of the time (`ZEEBX_ROM_PROFILE`)
+measures only the method body. Now the scan report splits the clock in two halves.
 
-### Como é medido
+### How it is measured
 
-O `run` do Dynarmic já era o lugar por onde tudo passa: cada chamada de API é uma saída e uma
-reentrada. O relógio em volta dele dá o tempo **dentro** do JIT — execução do guest mais as
-callbacks de memória que o próprio JIT chama. Tudo o que sobra do laço é despacho: o trampolim, o
-corpo do método, os callbacks entregues na fronteira e a contabilidade da sessão.
+Dynarmic's `run` was already the place everything goes through: each API call is an exit and a
+re-entry. The clock around it gives the time **inside** the JIT — guest execution plus the memory
+callbacks the JIT itself calls. Everything left over in the loop is dispatch: the trampoline, the
+method body, the callbacks delivered at the boundary and the session's bookkeeping.
 
-### O erro que a primeira versão cometeu, e o que ele ensinou
+### The mistake the first version made, and what it taught
 
-Com o relógio em **toda** entrada, o Quake saiu de 8,8 s para 12,3 s: **40% mais lento**. O
-`Instant::now` desta máquina é chamada de sistema, e não o caminho rápido do `vDSO` — 1,3 µs por
-leitura, 2,6 µs por entrada, num jogo com 1,3 milhão de entradas.
+With the clock on **every** entry, Quake went from 8.8 s to 12.3 s: **40% slower**. `Instant::now`
+on this machine is a system call, not the fast `vDSO` path — 1.3 µs per read, 2.6 µs per entry,
+in a game with 1.3 million entries.
 
-A correção é ler o relógio **uma entrada em cada 64** e multiplicar a média amostrada pelo
-contador. E como o custo caiu para cerca de 0,6%, a medida ficou **sempre ligada**: todo relatório
-de varredura passa a trazer a partilha, sem depender de alguém lembrar de ligá-la.
+The fix is to read the clock on **one entry in every 64** and multiply the sampled average by the
+counter. And since the cost dropped to about 0.6%, the measurement stays **always on**: every scan
+report now carries the split, without depending on someone remembering to turn it on.
 
-### A prova de que não custa
+### The proof that it costs nothing
 
-Cinco rodadas do mesmo Quake, 15.016 ms virtuais, intercalando as duas construções:
+Five runs of the same Quake, 15,016 virtual ms, alternating the two builds:
 
-| construção | rodada | tempo real | velocidade |
+| build | run | real time | speed |
 |---|---:|---:|---:|
-| com a partilha | 1 | 8,9 s | 168% |
-| com a partilha | 2 | 8,8 s | 170% |
-| sem a partilha | 1 | 8,9 s | 169% |
-| sem a partilha | 2 | 8,8 s | 171% |
-| com a partilha | 3 | 8,9 s | 169% |
+| with the split | 1 | 8.9 s | 168% |
+| with the split | 2 | 8.8 s | 170% |
+| without the split | 1 | 8.9 s | 169% |
+| without the split | 2 | 8.8 s | 171% |
+| with the split | 3 | 8.9 s | 169% |
 
-As duas construções são indistinguíveis. O instrumento entra.
+The two builds are indistinguishable. The instrument goes in.
 
-### O que ele diz
+### What it says
 
 ```text
-desempenho:
-  abriu em 0.1 s, rodou 8.9 s reais para 15016 ms virtuais (169% da velocidade do console)
-  1091 volta(s), 583 quadro(s) (38 fps virtuais)
-  1712755541 instruções (193 milhões/s), 1323900 chamada(s) de API
-  5434 ms dentro do JIT e 3458 ms fora (38% do laço no despacho); 1324767 entrada(s)
-  em 20700 amostra(s), 2612 ns fora do JIT por chamada de API
+performance:
+  opened in 0.1 s, ran 8.9 real s for 15016 virtual ms (169% of console speed)
+  1091 lap(s), 583 frame(s) (38 virtual fps)
+  1712755541 instructions (193 million/s), 1323900 API call(s)
+  5434 ms inside the JIT and 3458 ms outside (38% of the loop in dispatch); 1324767 entry(ies)
+  in 20700 sample(s), 2612 ns outside the JIT per API call
 ```
 
-Três leituras, e as três importam:
+Three readings, and all three matter:
 
-1. **38% do relógio está fora do JIT.** O despacho não é detalhe: é mais de um terço do trabalho
-   do Quake, e é o maior alvo isolado que a árvore tem hoje.
-2. **2,6 µs por chamada, fora do JIT.** É o dobro do 1,4 µs que o documento publicava — e o dobro
-   de um número que era de outro backend.
-3. **Dentro do JIT são 317 milhões de instruções por segundo**, contra 193 milhões no total. O
-   recompilador é rápido; o que custa é atravessar a fronteira.
+1. **38% of the clock is outside the JIT.** Dispatch is not a detail: it is more than a third of
+   Quake's work, and it is the biggest single target the tree has today.
+2. **2.6 µs per call, outside the JIT.** It is twice the 1.4 µs the document published — and
+   twice a number that belonged to another backend.
+3. **Inside the JIT it is 317 million instructions per second**, against 193 million overall. The
+   recompiler is fast; what costs is crossing the boundary.
 
-**A ressalva, dita por inteiro:** 2,6 µs é **limite superior** do trampolim. Dentro desses 3458 ms
-também estão o corpo de cada método, os callbacks entregues na fronteira e o trabalho do próprio
-arranjo de medição. O que separa corpo de trampolim é o perfil de API — e ele confirma o número
-por outro caminho: com o perfil ligado, "fora do JIT" subiu para 7272 ms, e o custo do próprio
-perfil (1,32 milhão de chamadas × cerca de 2,6 µs) responde por uns 3,4 s disso, o que devolve os
-mesmos ~3,9 s. Os dois instrumentos concordam.
+**The caveat, stated in full:** 2.6 µs is an **upper bound** on the trampoline. Inside those
+3458 ms are also the body of each method, the callbacks delivered at the boundary and the work of
+the measuring setup itself. What separates body from trampoline is the API profile — and it
+confirms the number by another route: with the profile on, "outside the JIT" rose to 7272 ms, and
+the cost of the profile itself (1.32 million calls × about 2.6 µs) accounts for some 3.4 s of
+that, which gives back the same ~3.9 s. The two instruments agree.
 
-### O que isso muda na ordem
+### What this changes in the order
 
-**O trampolim sobe ao primeiro lugar**, à frente do cache de estado GL. Ele custa 38% do relógio no
-pior caso da árvore; o cache de estado GL ataca um punhado de chamadas por lote de desenho. E há um
-caminho de ganho que não exige o redesenho do trampolim: **reduzir o número de fronteiras**. O Quake
-atravessa 1,32 milhão de vezes em quinze segundos, e 845 mil delas são os três métodos de geometria
-— `VertexPointer`, `TexCoordPointer` e `DrawArrays`, um trio por lote. Enquanto o trio continuar
-sendo três chamadas, o custo fixo é pago três vezes por lote.
+**The trampoline rises to first place**, ahead of the GL state cache. It costs 38% of the clock in
+the worst case in the tree; the GL state cache attacks a handful of calls per draw batch. And there
+is a route to a gain that does not require redesigning the trampoline: **reducing the number of
+boundaries**. Quake crosses 1.32 million times in fifteen seconds, and 845 thousand of those are
+the three geometry methods — `VertexPointer`, `TexCoordPointer` and `DrawArrays`, a trio per
+batch. As long as the trio remains three calls, the fixed cost is paid three times per batch.
 
-### Pendências desta frente
+### Pending on this front
 
-- medir a partilha **no portátil**: o desktop diz 38%, e o aparelho tem outro equilíbrio entre
-  núcleo e memória. O instrumento agora viaja no relatório de lá.
-- o mesmo relatório no Pac-Mania, que é o caso de 48 milhões de chamadas: se a partilha dele for
-  ainda maior, ele deixa de ser "o jogo lento" e passa a ser a medida do custo fixo.
+- measure the split **on the handheld**: the desktop says 38%, and the device has another balance
+  between core and memory. The instrument now travels in the report from there.
+- the same report on Pac-Mania, which is the 48-million-call case: if its split is even larger,
+  it stops being "the slow game" and becomes the measure of the fixed cost.
 
-## 23. O perfil de API media o próprio relógio
+## 23. The API profile was measuring its own clock
 
-**Esta é a correção mais importante da rodada, e ela invalida leituras anteriores deste próprio
-documento.**
+**This is the most important correction of the round, and it invalidates earlier readings in this
+very document.**
 
-### O que estava errado
+### What was wrong
 
-O perfil de API cronometra cada chamada com um par `Instant::now()`/`elapsed()`. Em Linux isso
-costuma ser o caminho rápido do `vDSO` — dezenas de nanossegundos —, e foi por isso que a medida
-pareceu aceitável por tanto tempo.
+The API profile times each call with an `Instant::now()`/`elapsed()` pair. On Linux this is
+usually the fast `vDSO` path — tens of nanoseconds —, and that is why the measurement looked
+acceptable for so long.
 
-**Nesta máquina não é.** Medido, com prova no teste `quanto_custa_o_relogio`:
+**On this machine it is not.** Measured, with proof in the `how_much_the_clock_costs` test:
 
 ```text
-relógio: 1318 ns por leitura, 2634 ns por par (now+elapsed); mapa por (interface, slot): 15 ns
+clock: 1318 ns per read, 2634 ns per pair (now+elapsed); map by (interface, slot): 15 ns per accumulation
 ```
 
-**1 318 nanossegundos por leitura de relógio** — é chamada de sistema, não `vDSO`. E o perfil lê o
-relógio **duas vezes por chamada**. Logo todo método que aparecia custando em torno de 1,4 µs
-custava, de fato, **zero**: o número era o instrumento.
+**1,318 nanoseconds per clock read** — it is a system call, not `vDSO`. And the profile reads the
+clock **twice per call**. So every method that showed up costing around 1.4 µs in fact cost
+**zero**: the number was the instrument.
 
-Foi assim que o `GetClipRect` do Pac-Mania apareceu com 45 s para 32 milhões de chamadas (1,39 µs
-cada) e virou "o hotspot mais claro da árvore". Não era. O `VertexPointer`, o `TexCoordPointer` e o
-`strcmp` do Quake estavam na mesma lista, todos com ~1,5 µs de "corpo".
+That is how Pac-Mania's `GetClipRect` showed up with 45 s for 32 million calls (1.39 µs each) and
+became "the clearest hotspot in the tree". It was not. Quake's `VertexPointer`, `TexCoordPointer`
+and `strcmp` were on the same list, all with ~1.5 µs of "body".
 
-### As duas correções
+### The two fixes
 
-1. **Amostragem:** o relógio é lido em uma chamada a cada 64, e a média é multiplicada pela
-   contagem. A contagem de chamadas continua exata; só o tempo é estimado.
-2. **Desconto do instrumento:** na abertura do perfil, o custo de uma leitura de relógio é medido
-   nesta máquina (4 096 leituras) e subtraído da média antes de estimar. Um método mais barato que
-   o instrumento fica em zero, que é a resposta certa.
+1. **Sampling:** the clock is read on one call in every 64, and the average is multiplied by the
+   count. The call count stays exact; only the time is estimated.
+2. **Subtracting the instrument:** when the profile opens, the cost of one clock read is measured
+   on this machine (4,096 reads) and subtracted from the average before estimating. A method
+   cheaper than the instrument comes out at zero, which is the right answer.
 
-Com as duas, o perfil deixou de encarecer a execução: **8,9 s contra 8,7 s** do mesmo Quake, dentro
-do ruído — antes, custava 42%.
+With both, the profile stopped making the run more expensive: **8.9 s against 8.7 s** for the
+same Quake, within the noise — before, it cost 42%.
 
-### O quadro verdadeiro (Quake, 15 s virtuais, software)
+### The true picture (Quake, 15 virtual s, software)
 
 ```text
-onde o tempo foi (5463 ms em chamadas de API):
+where the time went (5463 ms in API calls):
      4951.8 ms   90.6%  IEGL11::SwapBuffers
       183.6 ms    3.4%  IGLES11::Clear
       125.1 ms    2.3%  IGLES11::DrawElements
@@ -975,782 +994,800 @@ onde o tempo foi (5463 ms em chamadas de API):
        47.0 ms    0.9%  AEEHelpers::malloc
 ```
 
-E os três que dominavam a lista antiga **sumiram**: `TexCoordPointer`, `VertexPointer` e `strcmp`
-não têm corpo medível.
+And the three that dominated the old list **disappeared**: `TexCoordPointer`, `VertexPointer`
+and `strcmp` have no measurable body.
 
-### O que isso diz, e o que não diz
+### What this says, and what it does not
 
-**Diz:** o custo real está em **um método**, o `SwapBuffers`, e ele é o caminho de apresentação —
-`flush` da fila de triângulos, leitura do quadro pela CPU e conversão para RGB565. Isto confirma,
-com o instrumento consertado, o que a primeira leitura já suspeitava por outro caminho: no
-caminho de software, quem domina é a rasterização, não o despacho de método.
+**It says:** the real cost is in **one method**, `SwapBuffers`, and it is the presentation path —
+`flush` of the triangle queue, the CPU reading the frame and conversion to RGB565. This confirms,
+with the instrument fixed, what the first reading already suspected by another route: on the
+software path, what dominates is rasterization, not method dispatch.
 
-**Diz também:** o custo dos três métodos de geometria **não é o corpo, é a fronteira**. Eles somam
-845 mil das 1,32 milhão de entradas no JIT do Quake, a ~2,6 µs cada. Ou seja, o trio custa o preço
-do trampolim, não o preço do que faz — o que reafirma a partilha da seção 22 e explica por que os
-dois instrumentos discordavam.
+**It also says:** the cost of the three geometry methods **is not the body, it is the boundary**.
+They add up to 845 thousand of Quake's 1.32 million JIT entries, at ~2.6 µs each. In other words,
+the trio costs the price of the trampoline, not the price of what it does — which reaffirms the
+split from section 22 and explains why the two instruments disagreed.
 
-**Não diz:** que estes valores absolutos se somem. Os baldes se sobrepõem — há método de API que
-reentra no JIT por dentro —, então a soma (5,46 s) chega a passar do tempo fora do JIT (3,4 s).
-**Vale a ordem, não o valor absoluto.** Para valor absoluto, o que se usa é a partilha da seção 22,
-que é medida sem nada dentro do laço.
+**It does not say:** that these absolute values add up. The buckets overlap — there are API
+methods that re-enter the JIT from the inside —, so the sum (5.46 s) even exceeds the time outside
+the JIT (3.4 s). **The order holds, not the absolute value.** For absolute values, what to use is
+the split from section 22, which is measured with nothing inside the loop.
 
-### Consequências para o plano
+### Consequences for the plan
 
-- o `SwapBuffers` (apresentação: `flush` + leitura + conversão) passa a ser **o** alvo do caminho
-  de software, e é onde o readback preguiçoso e a escala interna atacam;
-- o trio de geometria **não** pede otimização de corpo: pede fronteira mais barata;
-- o Pac-Mania sai da lista de hotspots de método e volta a ser o que é: um jogo com 48 milhões de
-  chamadas, ou seja, **48 milhões de fronteiras**;
-- e a regra "meça sempre sem o perfil" pode ser revista: com a amostragem, o perfil é barato. O que
-  continua valendo é não misturar os dois instrumentos no mesmo número.
+- `SwapBuffers` (presentation: `flush` + read + conversion) becomes **the** target of the software
+  path, and it is where lazy readback and internal scale attack;
+- the geometry trio does **not** call for body optimization: it calls for a cheaper boundary;
+- Pac-Mania leaves the list of method hotspots and goes back to being what it is: a game with 48
+  million calls, that is, **48 million boundaries**;
+- and the rule "always measure without the profile" can be revisited: with sampling, the profile is
+  cheap. What still holds is not mixing the two instruments in the same number.
 
-## 24. Readback preguiçoso: o quadro da placa só vai para a CPU quando alguém precisa
+## 24. Lazy readback: the GPU frame only goes to the CPU when someone needs it
 
-Frente 1 das treze, e a primeira de todas as revisões externas. Feita no commit `a5acf46`.
+Front 1 of the thirteen, and the first of all the external reviews. Done in commit `a5acf46`.
 
-### O que era
+### What it was
 
-`eglSwapBuffers` fazia duas coisas de uma vez, e elas não são a mesma coisa:
+`eglSwapBuffers` did two things at once, and they are not the same thing:
 
-1. **pintar a fila de triângulos** — a rasterização do quadro, trabalho que o jogo pediu;
-2. **ler o quadro de volta para a memória da CPU** — `glReadPixels`, conversão para RGB565 e cópia
-   para a tela do console.
+1. **paint the triangle queue** — rasterizing the frame, work the game asked for;
+2. **read the frame back into CPU memory** — `glReadPixels`, conversion to RGB565 and a copy to
+   the console screen.
 
-A segunda existe para dois consumidores: o **desenho 2D por cima** (HUD pelo `IDisplay`, caixa de
-mensagem, a Z-Wheel compondo) e quem **pede os pixels** (o `glReadPixels` do jogo, a gravação de
-quadro). Um jogo de 3D puro não faz nenhuma das duas — e pagava a leitura em toda troca de buffer.
-Num GPU de tiles, como o Mali dos dois portáteis, isso obriga a GPU a terminar e devolver o quadro.
+The second exists for two consumers: **2D drawing on top** (HUD through `IDisplay`, a message box,
+the Z-Wheel compositing) and whoever **asks for the pixels** (the game's `glReadPixels`, frame
+recording). A pure 3D game does neither — and paid for the read on every buffer swap. On a tiled
+GPU, like the Mali of both handhelds, that forces the GPU to finish and hand back the frame.
 
-### O que ficou
+### What it is now
 
-`present_gl` agora pinta a fila e marca o quadro como **pendente**; quem precisa dos pixels chama
-`materializa_quadro_gl`, que faz a leitura uma vez só:
+`present_gl` now paints the queue and marks the frame as **pending**; whoever needs the pixels
+calls `materialize_gl_frame`, which does the read only once:
 
-| quem | materializa? |
+| who | materializes? |
 |---|---|
-| `IDisplay`, `IGraphics`, `IBitmap` (qualquer 2D) | **sim**, antes de escrever — senão o 2D apagaria a cena |
-| `glReadPixels` do jogo | não: ele lê o lado do OpenGL, que já está correto |
-| janela/core apresentando a **textura da placa** | **não** — é o ganho |
-| janela apresentando a **tela da CPU** | sim, antes de converter para bytes |
-| despejo de quadro, `gl_frame`, frontend de fora | sim |
-| `eglGetColorBufferQUALCOMM` | não: lê o lado do OpenGL |
+| `IDisplay`, `IGraphics`, `IBitmap` (any 2D) | **yes**, before writing — otherwise the 2D would erase the scene |
+| the game's `glReadPixels` | no: it reads the OpenGL side, which is already correct |
+| window/core presenting the **GPU texture** | **no** — that is the gain |
+| window presenting the **CPU screen** | yes, before converting to bytes |
+| frame dump, `gl_frame`, outside frontend | yes |
+| `eglGetColorBufferQUALCOMM` | no: it reads the OpenGL side |
 
-**E só a placa adia.** No rasterizador de processador a "leitura" é uma conversão em memória: não há
-espera a economizar, e o frontend lê a tela todo quadro — adiar ali só criaria a chance de ele
-apresentar um quadro velho. O trait ganhou `quadro_espera_pela_placa` para isso.
+**And only the GPU defers.** In the CPU rasterizer the "read" is an in-memory conversion: there is
+no wait to save, and the frontend reads the screen every frame — deferring there would only
+create the chance of it presenting a stale frame. The trait gained `frame_waits_for_gpu` for this.
 
-### A medida
+### The measurement
 
-O teste `os_dois_rasterizadores_desenham_o_mesmo_quadro` roda o mesmo jogo nos dois caminhos e
-compara os 307 200 pixels. Acrescentei a ele a contagem de trocas de buffer contra leituras:
+The `both_rasterizers_draw_the_same_frame` test runs the same game on both paths and compares the
+307,200 pixels. I added to it the count of buffer swaps against reads:
 
-| jogo | trocas de buffer | leituras (processador) | leituras (placa) |
+| game | buffer swaps | reads (CPU) | reads (GPU) |
 |---|---:|---:|---:|
 | Crash Bandicoot Nitro Kart 3D | 78 | 78 | **1** |
 | Need for Speed Carbon | 184 | 184 | **1** |
 
-Uma leitura no caminho de placa, e é a do próprio teste ao pedir os pixels no fim. **De 78 e 184
-leituras de quadro para uma.** Os dois jogos desenham tudo pelo OpenGL — inclusive o HUD —, que é o
-caso em que o adiamento rende inteiro.
+One read on the GPU path, and it is the test's own, asking for the pixels at the end. **From 78
+and 184 frame reads down to one.** Both games draw everything through OpenGL — the HUD included
+—, which is the case where deferring pays in full.
 
-### O erro que eu cometi no caminho, e como ele apareceu
+### The mistake I made along the way, and how it showed up
 
-A primeira versão adiava **nos dois** rasterizadores e não corrigia todos os consumidores. O teste
-de comparação passou com "0 de 307 200 pixels diferentes" — e esse passe era **vazio**: o caminho de
-software nunca mais atualizava a tela, então ele comparava duas telas velhas.
+The first version deferred **in both** rasterizers and did not fix all the consumers. The
+comparison test passed with "0 of 307,200 pixels different" — and that pass was **empty**: the
+software path no longer updated the screen, so it was comparing two stale screens.
 
-O conserto foi duplo:
+The fix was twofold:
 
-- adiar só onde a leitura custa espera de placa (o que também devolve o comportamento antigo ao
-  software, sem tocar nele);
-- **guarda contra passe vazio** no teste: ele agora exige que a tela tenha conteúdo
-  (mais de 1% de pixels acesos) antes de comparar. Um teste que compara duas telas apagadas não
-  guarda coisa alguma, e foi preciso um jogo de 3D de verdade para o defeito aparecer.
+- defer only where the read costs a GPU wait (which also gives software back its old behavior,
+  without touching it);
+- **a guard against an empty pass** in the test: it now requires the screen to have content
+  (more than 1% of pixels lit) before comparing. A test that compares two blank screens guards
+  nothing, and it took a real 3D game for the defect to show up.
 
-### Achado colateral: o teste já falhava no Need for Speed, e ninguém sabia
+### Side finding: the test was already failing on Need for Speed, and nobody knew
 
-Com NFS, os dois rasterizadores divergem de verdade — 11,54% dos pixels acima de dois passos de
-canal, pior caso 88 passos —, e o teste **falha**. Verifiquei com A/B: os números são **idênticos**
-com e sem esta mudança, então a divergência é anterior e não tem relação com o readback.
+With NFS, the two rasterizers really diverge — 11.54% of pixels beyond two channel steps, worst
+case 88 steps —, and the test **fails**. I checked with an A/B: the numbers are **identical** with
+and without this change, so the divergence predates it and has nothing to do with readback.
 
-Ela não aparecia porque a suíte roda sem ROM: sem `ZEEBX_TESTE_ROM` o teste se declara dispensado.
-No Crash, o mesmo teste dá 0,00% acima de dois passos — a mesma imagem, com o arredondamento
-conhecido dos dois conversores. **O NFS é o único dos três com divergência real**, e isso casa com
-o que a issue #36 relata sobre ele. Fica registrado como frente própria: ou o rasterizador de placa
-está desenhando diferente, ou o de software está.
+It did not show up because the suite runs without a ROM: without `ZEEBX_TEST_ROM` the test
+declares itself skipped. On Crash, the same test gives 0.00% beyond two steps — the same image,
+with the known rounding of the two converters. **NFS is the only one of the three with a real
+divergence**, and that matches what issue #36 reports about it. It is recorded as a front of its
+own: either the GPU rasterizer is drawing differently, or the software one is.
 
-## 25. PDCA rejeitado: tirar a devolução do contexto do caminho por lote
+## 25. Rejected PDCA: taking the context hand-back out of the per-batch path
 
-Frente 2 das treze (cache de estado GL). **Rejeitado**, e o registro vale mais que o código.
+Front 2 of the thirteen (GL state cache). **Rejected**, and the record is worth more than the
+code.
 
-### A hipótese, e por que ela parecia boa
+### The hypothesis, and why it looked good
 
-O `GpuState::submete_com` — que roda uma vez por lote de desenho — terminava chamando
-`devolve_o_contexto`, que faz **doze chamadas de GL** para desfazer o que o lote seguinte refaz:
-framebuffer padrão, textura nula, cinco capacidades desligadas, máscara e faixa de profundidade,
-máscara de estêncil e máscara de cor. A própria documentação do trait já dizia que ela deveria
-acontecer **uma vez por quadro**, e não a cada desenho.
+`GpuState::submit_with` — which runs once per draw batch — ended by calling `hand_back_context`,
+which makes **twelve GL calls** to undo what the next batch redoes: default framebuffer, null
+texture, five capabilities turned off, depth mask and range, stencil mask and color mask. The
+trait's own documentation already said it should happen **once per frame**, and not on every
+draw.
 
-A conta parecia grande: com ~370 lotes por quadro no Quake, tirar doze chamadas por lote são mais
-de **quatro mil chamadas de GL por quadro**.
+The arithmetic looked big: with ~370 batches per frame in Quake, removing twelve calls per batch
+is more than **four thousand GL calls per frame**.
 
-### O que foi tentado, e o que cada tentativa mediu
+### What was tried, and what each attempt measured
 
-| tentativa | onde a devolução passou a acontecer | medido |
+| attempt | where the hand-back started happening | measured |
 |---|---|---|
-| 1 | fim da volta do guest (`Machine::fecha_volta`) | **2 923** devoluções para **78** quadros (Crash) |
-| 2 | só quando houve desenho, mais o quadro apresentado | **0** devoluções |
+| 1 | end of the guest pass (`Machine::end_pass`) | **2,923** hand-backs for **78** frames (Crash) |
+| 2 | only when there was drawing, plus the presented frame | **0** hand-backs |
 
-A primeira tentativa **piorou**: o fim da volta é mais frequente que o lote — 2 923 voltas do guest
-para 78 quadros, ou seja 37 por quadro. Trocar "doze chamadas por lote" por "doze chamadas por
-volta" com 37 voltas por quadro é pagar mais.
+The first attempt **made it worse**: the end of the pass is more frequent than the batch — 2,923
+guest passes for 78 frames, that is 37 per frame. Swapping "twelve calls per batch" for "twelve
+calls per pass" with 37 passes per frame is paying more.
 
-A segunda tentativa não conseguiu nem acender o contador, apesar de o caminho estar inteiro no
-papel: a marca é posta no fim do `submete_com`, a devolução é chamada no `present_gl` depois de
-pintar a fila, e o `emprestado` é verdadeiro no teste. Não achei a causa dentro do orçamento desta
-rodada, e **sem entender por que o contador fica em zero eu não mantenho a mudança**.
+The second attempt could not even get the counter to light up, even though the path was complete
+on paper: the mark is set at the end of `submit_with`, the hand-back is called in `present_gl`
+after painting the queue, and `borrowed` is true in the test. I did not find the cause within
+this round's budget, and **without understanding why the counter stays at zero I do not keep the
+change**.
 
-### A decisão
+### The decision
 
-**Revertido.** O código voltou ao que estava antes deste PDCA, mantendo todo o resto. O que fica é
-a medida dos dois extremos — uma devolução por lote é desperdício, e uma por volta é pior — e o
-caminho do meio (por quadro apresentado) segue **não demonstrado**.
+**Reverted.** The code went back to what it was before this PDCA, keeping everything else. What
+remains is the measurement of the two extremes — one hand-back per batch is waste, and one per
+pass is worse — and the middle path (per presented frame) remains **not demonstrated**.
 
-### O que este PDCA ensinou
+### What this PDCA taught
 
-1. **"Uma vez por quadro" precisa de um lugar que aconteça uma vez por quadro**, e o candidato
-   óbvio (o fim da volta do guest) não é esse lugar: a volta do guest não tem relação com o quadro
-   apresentado. Medido, e não suposto.
-2. **Um contador que não acende é informação, não silêncio.** A tentativa 2 parecia certa e não
-   moveu o número; manter assim seria trocar comportamento por nada, com risco para o desktop, onde
-   é essa devolução que impede a interface do `egui` de sumir.
-3. **Falhar num instrumento não invalida o alvo.** O cache de estado GL continua sendo o melhor
-   risco/ganho apontado pelas revisões — o que falhou aqui foi o *lugar* da devolução, não a ideia
-   de não repetir o que já está na placa. A próxima tentativa deve atacar as dezoito chamadas do
-   `aplica` com um espelho do estado, que é um trabalho diferente e mais direto.
+1. **"Once per frame" needs a place that happens once per frame**, and the obvious candidate (the
+   end of the guest pass) is not that place: the guest pass has no relation to the presented
+   frame. Measured, not assumed.
+2. **A counter that does not light up is information, not silence.** Attempt 2 looked right and
+   did not move the number; keeping it that way would be trading behavior for nothing, with risk
+   for the desktop, where it is this hand-back that keeps the `egui` interface from disappearing.
+3. **Failing with one instrument does not invalidate the target.** The GL state cache is still the
+   best risk/gain pointed out by the reviews — what failed here was the *place* of the hand-back,
+   not the idea of not repeating what is already on the GPU. The next attempt should attack the
+   eighteen calls in `apply` with a mirror of the state, which is a different and more direct job.
 
-## Onde ficou a rodada
+## Where the round stands
 
-| # | frente | estado |
+| # | front | status |
 |---|---|---|
-| 1 | readback preguiçoso | **feito** — 78 e 184 leituras viraram 1 |
-| 2 | cache de estado GL | tentado e **revertido**; o alvo segue aberto |
-| 3 | `GET_CURRENT_SOFTWARE_FRAMEBUFFER` | pendente |
-| 4 | fastmem do Dynarmic | não priorizar (adendos) |
-| 5 | prova do blit do driver | **feito** |
-| 6 | PBO + fence | sem razão depois da frente 1 |
-| 7 | `0,5x`/`0,25x` | pendente |
-| 8 | NEON/SSE | despriorizado |
-| 9 | partilha JIT × despacho | **feito** — 38% fora do JIT, 2,6 µs por chamada |
-| 10 | PDCA do `sleep` no `retro_run` | pendente |
-| 11 | `lto = "fat"` | pendente (precisa de disco) |
-| 12 | `glInvalidateFramebuffer` | pendente |
-| 13 | Android drenar o registro | pendente, mecânico |
+| 1 | lazy readback | **done** — 78 and 184 reads became 1 |
+| 2 | GL state cache | tried and **reverted**; the target remains open |
+| 3 | `GET_CURRENT_SOFTWARE_FRAMEBUFFER` | pending |
+| 4 | Dynarmic fastmem | do not prioritize (addenda) |
+| 5 | proof of the driver's blit | **done** |
+| 6 | PBO + fence | no reason after front 1 |
+| 7 | `0.5x`/`0.25x` | pending |
+| 8 | NEON/SSE | deprioritized |
+| 9 | JIT × dispatch split | **done** — 38% outside the JIT, 2.6 µs per call |
+| 10 | PDCA for the `sleep` in `retro_run` | pending |
+| 11 | `lto = "fat"` | pending (needs disk space) |
+| 12 | `glInvalidateFramebuffer` | pending |
+| 13 | Android draining the log | pending, mechanical |
 
-Além das treze: o **perfil de API** foi consertado (media o próprio relógio), o
-`ARCHITECTURE.md` saiu da era do Unicorn, e o registro em cinco níveis entrou nos três frontends.
+Beyond the thirteen: the **API profile** was fixed (it was measuring its own clock),
+`ARCHITECTURE.md` left the Unicorn era, and the five-level log went into all three frontends.
 
-## 26. Espelho de estado: 80% das chamadas de estado saíram
+## 26. State mirror: 80% of the state calls are gone
 
-Frente 2 das treze, depois do PDCA rejeitado da seção 25. Commit `f323467`.
+Front 2 of the thirteen, after the rejected PDCA of section 25. Commit `f323467`.
 
-### O que é
+### What it is
 
-Um espelho, dentro do `GpuState`, do que já está na placa. **Todo campo começa em `None`, e `None`
-quer dizer "não se sabe"** — é o que torna a invalidação trivial: esquecer é voltar ao padrão, e
-daí tudo é reenviado uma vez.
+A mirror, inside `GpuState`, of what is already on the GPU. **Every field starts at `None`, and
+`None` means "unknown"** — that is what makes invalidation trivial: forgetting is going back to
+the default, and from there everything is sent again once.
 
-Ele cobre as dezoito chamadas de [`GpuState::aplica`]: viewport, tesoura e o liga/desliga dela,
-abraço de profundidade, teste, função, máscara e faixa de profundidade, mistura e sua função,
-máscara de cor, descarte e seu modo, face frontal, teste, função, máscara e operações de estêncil.
+It covers the eighteen calls of [`GpuState::apply`]: viewport, scissor and its on/off, depth
+clamp, depth test, function, mask and range, blending and its function, color mask, culling and
+its mode, front face, stencil test, function, mask and operations.
 
-### O erro que a primeira versão cometeu
+### The mistake the first version made
 
-A primeira versão esquecia o espelho **por inteiro** dentro do `devolve_o_contexto` — que roda a
-cada lote. Um espelho zerado a cada lote responde "mudou" dezoito vezes sempre. Medido:
+The first version forgot the mirror **entirely** inside `hand_back_context` — which runs on every
+batch. A mirror zeroed on every batch answers "changed" eighteen times, always. Measured:
 
 ```text
-placa: 1602 estado(s) enviado(s) e 0 poupado(s) pelo espelho
+GPU: 1602 state(s) sent and 0 spared by the mirror
 ```
 
-**Zero.** O espelho existia e não poupava nada.
+**Zero.** The mirror existed and spared nothing.
 
-O conserto é a diferença entre esquecer e **aprender**: em vez de zerar, a devolução registra o
-estado **que ela mesma deixa** — tesoura desligada, teste de profundidade, mistura, descarte e
-estêncil desligados, máscara de profundidade ligada, faixa (0,1), máscara de estêncil cheia,
-máscara de cor toda ligada. As chaves que ela não toca continuam **desconhecidas**, porque o outro
-usuário do contexto pode ter mexido nelas — e é por isso que esquecer tudo seria seguro, só que
-inútil.
+The fix is the difference between forgetting and **learning**: instead of zeroing, the hand-back
+records the state **that it itself leaves** — scissor off, depth test, blending, culling and
+stencil off, depth mask on, range (0,1), full stencil mask, color mask fully on. The keys it does
+not touch stay **unknown**, because the other user of the context may have changed them — and
+that is why forgetting everything would be safe, just useless.
 
-O contador foi o que pegou isso: sem ele, a mudança pareceria certa e não valeria nada.
+The counter is what caught this: without it, the change would have looked right and been worth
+nothing.
 
-### A medida
+### The measurement
 
-| jogo | envios antes | envios agora | poupados |
+| game | sends before | sends now | spared |
 |---|---:|---:|---:|
-| Crash Bandicoot Nitro Kart 3D | 1 602 | **315** | 1 287 (**80,3%**) |
-| Need for Speed Carbon | 5 593 | **1 339** | 4 254 (**76,1%**) |
+| Crash Bandicoot Nitro Kart 3D | 1,602 | **315** | 1,287 (**80.3%**) |
+| Need for Speed Carbon | 5,593 | **1,339** | 4,254 (**76.1%**) |
 
-O número é de **chamadas**, não de tempo: `Session::estado_enviado_e_poupado()` devolve o par, e o
-teste de comparação dos dois rasterizadores o imprime. É o que dá para provar no desktop, onde o
-driver já cacheia estado e o relógio não separaria nada.
+The number is of **calls**, not time: `Session::state_sent_and_spared()` returns the pair, and the
+comparison test of the two rasterizers prints it. It is what can be proven on the desktop, where
+the driver already caches state and the clock would not separate anything.
 
-### Onde a invalidação fica
+### Where invalidation lives
 
-Quatro pontos mexem neste estado **fora** do `aplica`, e cada um avisa o espelho:
+Four points touch this state **outside** `apply`, and each one tells the mirror:
 
-| ponto | o que faz | como avisa |
+| point | what it does | how it tells |
 |---|---|---|
-| `devolve_o_contexto` | desliga capacidades e mexe em máscaras | **aprende** o estado que deixa |
-| `destino` (destino novo) | viewport, máscaras, tesoura desligada | esquece tudo |
-| `resolve` | desliga a tesoura para o blit de MSAA | esquece a tesoura |
-| `liga_para_leitura` | idem, para a redução do quadro grande | esquece a tesoura |
-| `clear` | desliga a tesoura antes do `glClear` | esquece a tesoura |
+| `hand_back_context` | turns capabilities off and touches masks | **learns** the state it leaves |
+| `dest` (new destination) | viewport, masks, scissor off | forgets everything |
+| `resolve` | turns the scissor off for the MSAA blit | forgets the scissor |
+| `bind_for_read` | same, for downscaling the big frame | forgets the scissor |
+| `clear` | turns the scissor off before `glClear` | forgets the scissor |
 
-### O que ficou de fora, e por quê
+### What was left out, and why
 
-- **Programa, VAO, buffers e texturas**: o `submete_com` já os liga uma vez por lote e o custo é
-  menor que o do estado acima. Um espelho deles exigiria rastrear a unidade de textura ativa, que
-  muda dentro do próprio lote.
-- **A devolução do contexto**: continua por lote, como estava. Movê-la exigiria um lugar que
-  aconteça uma vez por quadro, e a seção 25 mostra por que o candidato óbvio não serve.
+- **Program, VAO, buffers and textures**: `submit_with` already binds them once per batch and the
+  cost is lower than that of the state above. A mirror of them would require tracking the active
+  texture unit, which changes within the batch itself.
+- **The context hand-back**: still per batch, as it was. Moving it would require a place that
+  happens once per frame, and section 25 shows why the obvious candidate does not work.
 
-### O que fica para o portátil
+### What is left for the handheld
 
-A contagem é do desktop. **No Mali a mesma chamada custa validação de driver**, e é lá que os 80%
-devem aparecer no relógio. O contador viaja no relatório: `Session::estado_enviado_e_poupado()`.
+The count is from the desktop. **On Mali the same call costs driver validation**, and that is
+where the 80% should show up on the clock. The counter travels in the report:
+`Session::state_sent_and_spared()`.
 
-## 27. Frente 7 (`0,5x`/`0,25x`): o desenho, medido antes de escrever
+## 27. Front 7 (`0.5x`/`0.25x`): the design, measured before writing
 
-Não implementado nesta rodada. O desenho abaixo sai de leitura do código, e existe para a próxima
-retomada começar sabendo onde está a dificuldade — que **não** é onde eu supunha.
+Not implemented in this round. The design below comes from reading the code, and it exists so the
+next pickup starts knowing where the difficulty is — which is **not** where I assumed.
 
-### O que eu supunha, e o que é
+### What I assumed, and what it is
 
-Supunha ser preciso mexer em viewport, tesoura, anexo, leitura e apresentação. É menos: **o
-rasterizador de software já sabe desenhar numa superfície menor e ampliar na apresentação** — é o
-caminho que existe para o `EGL_QUALCOMM_surface_scale`, em que o jogo declara uma superfície
-pequena e o aparelho estica.
+I assumed it would be necessary to touch viewport, scissor, attachment, readback and
+presentation. It is less: **the software rasterizer already knows how to draw on a smaller surface
+and scale up at presentation** — it is the path that exists for `EGL_QUALCOMM_surface_scale`, in
+which the game declares a small surface and the device stretches it.
 
-O que faz isso funcionar:
+What makes this work:
 
-- `GlState::surface()` devolve a superfície declarada, limitada ao quadro, e `frame_rgb565`
-  **reamostra** dela para o tamanho de saída. Com 320×240 de superfície e 640×480 de saída o
-  reamostrador é vizinho mais próximo com passo 2 — exato, e já escrito;
-- `GlState::set_viewport` **deduz a superfície da maior viewport**: `surface = max(x + width)`. Ou
-  seja, reduzir a viewport reduz a superfície deduzida sozinho, sem nenhuma outra mudança.
+- `GlState::surface()` returns the declared surface, clamped to the frame, and `frame_rgb565`
+  **resamples** from it to the output size. With a 320×240 surface and 640×480 output the
+  resampler is nearest-neighbor with step 2 — exact, and already written;
+- `GlState::set_viewport` **infers the surface from the largest viewport**:
+  `surface = max(x + width)`. In other words, shrinking the viewport shrinks the inferred surface
+  on its own, with no other change.
 
-### O que falta, então
+### What is missing, then
 
-1. `GlState`: um campo `reducao: usize` (1, 2, 4) e um `define_reducao`;
-2. `set_viewport` e `set_scissor`: dividir a coordenada por `reducao` antes de guardar — e a
-   superfície deduzida sai reduzida junto;
-3. `read_rect` (`glReadPixels`): o pedido do jogo vem em pixels do console e a superfície está
-   reduzida; é preciso mapear o retângulo e **replicar** cada pixel reduzido, porque o chamador
-   escreve `width * height` pixels na memória do guest;
-4. a opção do core: hoje `zeebx_resolucao_interna` é `1|2|3|4` e vale só na placa. Ela precisa
-   aceitar `0.5` e `0.25`, e mandar para o caminho de **software** — na placa quem reduz é outro
-   mecanismo, e a placa ignora;
-5. `clear`: conferir se limpa o quadro inteiro ou só a superfície. Aparentemente o quadro inteiro,
-   o que é inofensivo — a apresentação só lê a região da superfície.
+1. `GlState`: a `downscale: usize` field (1, 2, 4) and a `set_downscale`;
+2. `set_viewport` and `set_scissor`: divide the coordinate by `downscale` before storing — and the
+   inferred surface comes out reduced along with it;
+3. `read_rect` (`glReadPixels`): the game's request comes in console pixels and the surface is
+   reduced; the rectangle has to be mapped and each reduced pixel **replicated**, because the
+   caller writes `width * height` pixels into guest memory;
+4. the core option: today `zeebx_resolucao_interna` is `1|2|3|4` and only applies on the GPU. It
+   needs to accept `0.5` and `0.25`, and send them to the **software** path — on the GPU another
+   mechanism does the reducing, and the GPU ignores it;
+5. `clear`: check whether it clears the whole frame or only the surface. Apparently the whole
+   frame, which is harmless — presentation only reads the surface region.
 
-### Onde medir
+### Where to measure
 
-**No desktop, e sem depender do portátil**: a varredura e o perfil de API rodam no rasterizador de
-**software**. Com o perfil de API consertado (seção 23), o custo de `SwapBuffers` — que em software
-é o `flush` da fila, ou seja a rasterização — sai direto. Reduzir a área para um quarto deve
-aparecer ali, no mesmo instrumento que já mostrou `SwapBuffers` com 90,6% do tempo de método.
+**On the desktop, without depending on the handheld**: the scan and the API profile run on the
+**software** rasterizer. With the API profile fixed (section 23), the cost of `SwapBuffers` — which
+in software is the queue `flush`, that is, rasterization — comes out directly. Reducing the area to
+a quarter should show up there, in the same instrument that already showed `SwapBuffers` with
+90.6% of method time.
 
-### O risco
+### The risk
 
-HUD e alinhamento: qualquer desenho que o jogo faça **fora** da viewport declarada (um HUD em
-coordenadas de tela sem `glViewport` próprio) cairia fora da superfície deduzida. É o mesmo risco
-que já existe hoje para o `surface_scale`, e a mitigação é a mesma: a redução é opt-in, e o padrão
-continua 1×.
+HUD and alignment: any drawing the game does **outside** the declared viewport (a HUD in screen
+coordinates without its own `glViewport`) would fall outside the inferred surface. It is the same
+risk that already exists today for `surface_scale`, and the mitigation is the same: the reduction
+is opt-in, and the default stays 1×.
 
-### A ordem entre as frentes que sobraram
+### The order among the remaining fronts
 
-| frente | por que nesta ordem |
+| front | why in this order |
 |---|---|
-| 7 `0,5x`/`0,25x` | mede-se no desktop, ataca o `SwapBuffers`, que é 90% do tempo de método |
-| 10 PDCA do `sleep` | mede-se no desktop, contrato do Libretro |
-| 12 `glInvalidateFramebuffer` | só rende no Mali, e não se mede aqui |
-| 3 `GET_CURRENT_SOFTWARE_FRAMEBUFFER` | só rende em frontend de framebuffer de software |
-| 13 Android drenar o registro | mecânico, e o build Android não se verifica nesta máquina |
-| 11 `lto = "fat"` | precisa de disco: 3,4 GB livres e o LTO gordo recompila as dependências |
+| 7 `0.5x`/`0.25x` | measured on the desktop, attacks `SwapBuffers`, which is 90% of method time |
+| 10 PDCA for the `sleep` | measured on the desktop, Libretro contract |
+| 12 `glInvalidateFramebuffer` | only pays off on Mali, and is not measured here |
+| 3 `GET_CURRENT_SOFTWARE_FRAMEBUFFER` | only pays off in a software-framebuffer frontend |
+| 13 Android draining the log | mechanical, and the Android build is not verified on this machine |
+| 11 `lto = "fat"` | needs disk space: 3.4 GB free and fat LTO recompiles the dependencies |
 
-## 28. Escala interna fracionária: `0,5x` e `0,25x` no rasterizador de software
+## 28. Fractional internal scale: `0.5x` and `0.25x` in the software rasterizer
 
-Frente 7, feita no commit seguinte desta seção. O desenho da seção 27 acertou o diagnóstico: o
-caminho já existia, e faltava pouco.
+Front 7, done in the commit following this section. The design in section 27 got the diagnosis
+right: the path already existed, and little was missing.
 
-### O que foi feito
+### What was done
 
-1. `GlState` ganhou `reducao` (1, 2 ou 4) e `define_reducao`, que **esquece a superfície** e
-   reinicia viewport e tesoura — as coordenadas guardadas eram do tamanho antigo.
-2. `set_viewport` e `set_scissor` dividem a coordenada por `reducao` antes de guardar. Como a
-   superfície é **deduzida da maior viewport**, ela sai reduzida sozinha: não houve uma segunda
-   mudança para manter em dia.
-3. `read_rect` (o `glReadPixels` do jogo) mapeia o retângulo do console para a superfície reduzida.
-   O chamador escreve `width × height` pixels na memória do guest, e a amostragem por divisão já
-   entrega exatamente isso — cada pixel lido vale `reducao` pixels do console.
-4. A opção `zeebx_resolucao_interna` passou a aceitar `0.5` e `0.25`, além de `1..4`. **Um número
-   só, dois mecanismos:** abaixo de 1 quem reduz é o processador, acima de 1 quem amplia é a placa,
-   e cada um usa o que lhe cabe.
+1. `GlState` gained `downscale` (1, 2 or 4) and `set_downscale`, which **forgets the surface** and
+   resets viewport and scissor — the stored coordinates were for the old size.
+2. `set_viewport` and `set_scissor` divide the coordinate by `downscale` before storing. Since the
+   surface is **inferred from the largest viewport**, it comes out reduced on its own: there was no
+   second change to keep up to date.
+3. `read_rect` (the game's `glReadPixels`) maps the console rectangle onto the reduced surface. The
+   caller writes `width × height` pixels into guest memory, and sampling by division already
+   delivers exactly that — each pixel read stands for `downscale` console pixels.
+4. The `zeebx_resolucao_interna` option now accepts `0.5` and `0.25`, besides `1..4`. **One number,
+   two mechanisms:** below 1 the processor does the reducing, above 1 the GPU does the enlarging,
+   and each uses what suits it.
 
-### A medida
+### The measurement
 
-Quake, 15.016 ms virtuais, rasterizador de software, com o perfil de API ligado (que agora é
-barato e honesto — ver a seção 23):
+Quake, 15,016 virtual ms, software rasterizer, with the API profile on (which is now cheap and
+honest — see section 23):
 
-| redução | tempo real | velocidade | `SwapBuffers` |
+| reduction | real time | speed | `SwapBuffers` |
 |---|---:|---:|---:|
-| 1× (nativo) | 8,9 s | 168% | 4 867 ms |
-| **1/2** (320×240) | **6,9 s** | **216%** | 3 176 ms |
-| **1/4** (160×120) | **6,0 s** | **249%** | 2 447 ms |
+| 1× (native) | 8.9 s | 168% | 4,867 ms |
+| **1/2** (320×240) | **6.9 s** | **216%** | 3,176 ms |
+| **1/4** (160×120) | **6.0 s** | **249%** | 2,447 ms |
 
-- `1/2`: **22% menos tempo real**, 29% mais velocidade;
-- `1/4`: **33% menos tempo real**, 48% mais velocidade.
+- `1/2`: **22% less real time**, 29% more speed;
+- `1/4`: **33% less real time**, 48% more speed.
 
-O `SwapBuffers` não cai na proporção da área (1/4 da área, 50% do custo) porque ele também carrega
-a leitura do quadro e a conversão para RGB565, que continuam em 640×480. Ou seja: o que sobra depois
-da redução é, em boa parte, o caminho de apresentação — o mesmo que a frente 1 atacou no lado da
-placa.
+`SwapBuffers` does not fall in proportion to the area (1/4 of the area, 50% of the cost) because
+it also carries reading the frame and converting to RGB565, which stay at 640×480. In other
+words: what is left after the reduction is, in good part, the presentation path — the same one
+front 1 attacked on the GPU side.
 
-### A conferência da imagem
+### Checking the image
 
-O desenho continua o mesmo, só menor. Comparando o relatório de 4 s nas duas pontas:
-
-```text
-nativo:  tela: 177 cor(es), dominante 0x220a
-1/4:     tela: 177 cor(es), dominante 0x220a
-```
-
-Mesma contagem de cores e mesma cor dominante. Uma redução que quebrasse o desenho — HUD fora do
-lugar, superfície não descoberta, leitura torta — apareceria aqui como queda de cores ou tela de uma
-cor só.
-
-### O que fica dito
-
-- **Só o processador reduz.** Na placa, 640×480 não satura o Mali, e reduzir estragaria a imagem sem
-  ganhar nada. A opção diz isso nos rótulos, e o código recusa em silêncio do lado da placa.
-- **A redução é a alavanca de portátil mais direta que a rodada achou**: num aparelho fraco, 33% de
-  tempo real é a diferença entre 30 e 45 quadros por segundo. É a primeira coisa a ligar lá — e o
-  perfil `Portátil` deve passar a oferecê-la.
-- O padrão continua 1×: quem não pede nada não perde nitidez.
-
-## 29. Frente 10 fechada sem mudar código: o freio de velocidade entrega 1×
-
-A frente pedia um PDCA do `sleep` dentro do `retro_run`, porque a revisão do PCSX-ReARMed mostrou
-que, no caminho Libretro, **o relógio de parede é do frontend** — o `pl_frame_limit` de lá só marca a
-fronteira emulada e não dorme. A suspeita era de dupla frenagem: o nosso `sleep` somado ao do
-frontend.
-
-### Como foi medido
-
-O teste `a_abi_do_core_roda_uma_rom` roda `retro_run` em laço apertado, com um frontend de mentira
-que **não espera retraço nem áudio**. Ali o nosso `sleep` é o único freio que existe — que é
-exatamente o que se quer isolar. Acrescentei ao teste a medição do ritmo:
+The drawing stays the same, only smaller. Comparing the 4 s report at both ends:
 
 ```text
-ritmo: 120 quadro(s) — virtual 1983 ms em real 1985 ms (100% da velocidade),
-       por quadro: mediana 16.59 ms, p95 17.62 ms, pior 18.60 ms
+native:  screen: 177 color(s), dominant 0x220a
+1/4:     screen: 177 color(s), dominant 0x220a
 ```
 
-### O que o número diz
+Same color count and same dominant color. A reduction that broke the drawing — HUD out of place,
+surface not discovered, a skewed read — would show up here as a drop in colors or a single-color
+screen.
 
-1. **100% da velocidade.** 1 983 ms de tempo virtual em 1 985 ms de tempo real, sem o frontend
-   ajudar em nada. O freio acerta o alvo.
-2. **Mediana 16,59 ms** por quadro, contra os 16,67 ms de um quadro a 60 Hz — um décimo de
-   milissegundo de erro sistemático.
-3. **p95 17,62 ms e pior 18,60 ms.** A irregularidade fica abaixo de dois milissegundos, ou 12% de
-   um quadro. Não é fonte de judder por si só.
+### What is on record
 
-### Por que a dupla frenagem não acontece
+- **Only the processor reduces.** On the GPU, 640×480 does not saturate the Mali, and reducing
+  would spoil the image without gaining anything. The option says so in its labels, and the code
+  silently refuses on the GPU side.
+- **The reduction is the most direct handheld lever the round found**: on a weak device, 33% of
+  real time is the difference between 30 and 45 frames per second. It is the first thing to turn
+  on there — and the `Handheld` profile should start offering it.
+- The default stays 1×: whoever asks for nothing loses no sharpness.
 
-O `sleep` é um **piso, não um freio a mais**. Ele só dorme o que o relógio virtual está adiantado em
-relação ao real (`ahead_ms`), e esse adiantamento é *líquido*: se o frontend já segurou a chamada
-por 16 ms, o tempo virtual avançou junto e o adiantamento é negativo — o `sleep` não acontece. Um
-frontend que espera retraço não é punido duas vezes; um que não espera é segurado por nós.
+## 29. Front 10 closed without changing code: the speed brake delivers 1×
 
-### Conclusão
+The front asked for a PDCA of the `sleep` inside `retro_run`, because the PCSX-ReARMed review
+showed that, on the Libretro path, **the wall clock belongs to the frontend** — its
+`pl_frame_limit` only marks the emulated boundary and does not sleep. The suspicion was double
+braking: our `sleep` added to the frontend's.
 
-**Nada foi mudado.** A frente fecha com a medida que a própria frente pedia, e o teste fica com uma
-prova de ritmo que antes não existia: qualquer mudança futura no laço do core que estrague a
-cadência aparece ali como desvio de velocidade ou como p95 acima de dois milissegundos.
+### How it was measured
 
-## 30. Frente 3: o quadro vai direto ao buffer que o frontend empresta
-
-Frente que parecia depender de aparelho e não depende: `RETRO_ENVIRONMENT_GET_CURRENT_SOFTWARE_FRAMEBUFFER`
-é verificável no desktop, porque o teste do core tem um frontend de mentira, e é ele que empresta
-o buffer.
-
-### O que mudou
-
-Antes, o core montava o quadro num vetor próprio e o frontend copiava — 600 KB por quadro. Agora o
-core **pede o buffer** e escreve onde o quadro vai ficar, entregando o ponteiro emprestado ao
-`retro_video_refresh`, como a `libretro.h` exige (sem deslocamento).
-
-Três cuidados, todos conferidos:
-
-1. **O passo de linha é respeitado.** `Framebuffer::write_rgb565_with_pitch` escreve linha a linha
-   no passo que o frontend deu, e o que sobra no fim de cada linha fica como estava.
-2. **Formato e tamanho são conferidos antes de escrever.** A `libretro.h` diz que o frontend pode
-   devolver outro formato; escrever RGB565 num buffer XRGB8888 daria imagem plausível e falsa.
-   Qualquer recusa cai no caminho de sempre.
-3. **O ponteiro vale só dentro da chamada**, e por isso o pedido e o uso ficam no mesmo lugar, sem
-   guardar nada entre quadros.
-
-### A prova
-
-O frontend falso da suíte passou a emprestar um buffer com **folga de passo** (64 bytes) — de
-propósito: com passo igual à largura, quem ignorasse o `pitch` acertaria por sorte, e a folga é o
-que faz a imagem sair torta se ele for ignorado. O teste confere que o buffer **não ficou apagado**,
-isto é, que o core desenhou nele. E a medição de ritmo continua no mesmo teste:
+The `the_core_abi_runs_a_rom` test runs `retro_run` in a tight loop, with a fake frontend that
+**waits for neither vsync nor audio**. There our `sleep` is the only brake there is — which is
+exactly what we want to isolate. I added a pace measurement to the test:
 
 ```text
-ritmo: 120 quadro(s) — virtual 1983 ms em real 1984 ms (100% da velocidade),
-       por quadro: mediana 16.86 ms, p95 17.87 ms, pior 17.97 ms
+pace: 120 frame(s) — virtual 1983 ms in real 1985 ms (100% of speed),
+       per frame: median 16.59 ms, p95 17.62 ms, worst 18.60 ms
 ```
 
-### O que isso rende
+### What the number says
 
-Uma cópia de quadro a menos por quadro, no caminho de software. Não é o caminho dos dois portáteis
-(lá é placa), mas é o de todo frontend que usa framebuffer de software — RetroArch com driver de
-vídeo em software, outros frontends, e a própria suíte.
+1. **100% of speed.** 1,983 ms of virtual time in 1,985 ms of real time, without the frontend
+   helping at all. The brake hits the target.
+2. **Median 16.59 ms** per frame, against the 16.67 ms of a frame at 60 Hz — a tenth of a
+   millisecond of systematic error.
+3. **p95 17.62 ms and worst 18.60 ms.** The irregularity stays below two milliseconds, or 12% of
+   a frame. It is not a source of judder by itself.
 
-### Um defeito meu que a suíte pegou
+### Why double braking does not happen
 
-A prova do contador de descartes do registro (`o_contador_de_descartes_aparece_e_zera`) falhou ao
-rodar a suíte inteira: ela escrevia no nível `Informacao` sem fixar o nível ativo, e dependia do
-que a prova anterior tivesse deixado. Passava até a ordem das provas mudar — que foi o que
-aconteceu quando esta rodada acrescentou provas. Corrigida fixando o nível.
+The `sleep` is a **floor, not an extra brake**. It only sleeps for as much as the virtual clock is
+ahead of the real one (`ahead_ms`), and that lead is *net*: if the frontend already held the call
+for 16 ms, virtual time advanced along with it and the lead is negative — the `sleep` does not
+happen. A frontend that waits for vsync is not punished twice; one that does not wait is held back
+by us.
 
-## 31. Fim da rodada: as treze frentes, cada uma com o seu desfecho
+### Conclusion
 
-### Frente 13 — Android drena o registro (feita e verificada)
+**Nothing was changed.** The front closes with the measurement the front itself asked for, and the
+test keeps a pace proof that did not exist before: any future change in the core's loop that
+spoils the cadence shows up there as a speed deviation or as a p95 above two milliseconds.
 
-Faltava o destino: o desktop imprime no `stderr`, o core manda pelo `retro_log`, o headless imprime,
-e o Android não tinha para onde. Agora drena no `log`, que o `android_logger` já instala, com a
-gravidade preservada — um aviso do núcleo sai como `WARN` no `logcat`, o que faz `adb logcat *:W`
-mostrar o que interessa.
+## 30. Front 3: the frame goes straight into the buffer the frontend lends
 
-**A verificação foi a CI do Android do fork**, disparada à mão (`gh workflow run android.yml`). Ela
-não roda sozinha em push: o único gatilho automático do repositório é a tag. Foi ela que verificou
-esta frente — e, antes disso, **pegou uma regressão minha que este host não tem como ver**.
+A front that seemed to depend on a device and does not:
+`RETRO_ENVIRONMENT_GET_CURRENT_SOFTWARE_FRAMEBUFFER` can be verified on the desktop, because the
+core's test has a fake frontend, and it is the one that lends the buffer.
 
-### A regressão que a CI do Android pegou
+### What changed
 
-`DebugView` deixou de ser `Copy` quando ganhou o campo de texto do nível de registro, e o frontend
-Android faz `let debug = self.settings.debug;` — move de um tipo que já não é `Copy`. O pacote
-`zeebx-android` **não compila fora de um alvo Android** (`ndk-sys` recusa: *"only supports compiling
-for Android"*), então `cargo check`, `cargo test` e `cargo build` no desktop não veem esse erro. Ele
-ficou no repositório desde a instrumentação e só apareceu quando alguém compilou para Android.
+Before, the core assembled the frame in a vector of its own and the frontend copied it — 600 KB
+per frame. Now the core **asks for the buffer** and writes where the frame is going to live,
+handing the lent pointer to `retro_video_refresh`, as `libretro.h` requires (with no offset).
 
-Conserto: `clone()` no ponto do movimento — o mesmo que já havia sido feito no desktop, e na mesma
-classe de struct (meia dúzia de campos, uma vez por desenho do painel de depuração).
+Three precautions, all checked:
 
-**A lição vale para a rodada inteira:** o único frontend que a suíte local não alcança é o que mais
-precisa de CI, e essa CI é manual (`workflow_dispatch`). Quem mexer em `ui::settings` tem de
-disparar `android.yml` à mão — nada avisa.
+1. **The row pitch is respected.** `Framebuffer::write_rgb565_with_pitch` writes row by row at the
+   pitch the frontend gave, and whatever is left at the end of each row stays as it was.
+2. **Format and size are checked before writing.** `libretro.h` says the frontend may return
+   another format; writing RGB565 into an XRGB8888 buffer would give a plausible and false image.
+   Any refusal falls back to the usual path.
+3. **The pointer is only valid inside the call**, and that is why the request and the use stay in
+   the same place, without keeping anything between frames.
 
-### Frente 12 — descarte de tiles (entregue como experimento, **não medido**)
+### The proof
 
-Opção nova, `zeebx_descarte_de_tiles`, **desligada por padrão**. Ligada, o rasterizador de placa diz
-ao driver que profundidade e estêncil podem ser jogados fora depois do quadro — o que num GPU de
-tiles evita escrever os dois anexos de volta na memória.
+The suite's fake frontend now lends a buffer with **pitch slack** (64 bytes) — on purpose: with a
+pitch equal to the width, code that ignored `pitch` would get it right by luck, and the slack is
+what makes the image come out skewed if it is ignored. The test checks that the buffer **did not
+stay blank**, that is, that the core drew into it. And the pace measurement stays in the same
+test:
 
-**Não é ganho medido, e não está contado como tal.** Duas razões para vir desligada:
+```text
+pace: 120 frame(s) — virtual 1983 ms in real 1984 ms (100% of speed),
+       per frame: median 16.86 ms, p95 17.87 ms, worst 17.97 ms
+```
 
-1. um jogo que **não** limpe a profundidade de um quadro para o outro conta com ela — o console é um
-   framebuffer de verdade, e lá a profundidade persiste;
-2. o ganho é do Mali, onde eu não posso medir.
+### What this pays
 
-O que a entrega faz é **tornar o teste possível**: a opção existe, está rotulada como experimental,
-e a primeira coisa a fazer no aparelho é ligá-la e olhar a imagem e o relógio.
+One frame copy fewer per frame, on the software path. It is not the path of the two handhelds
+(there it is the GPU), but it is the path of every frontend that uses a software framebuffer —
+RetroArch with a software video driver, other frontends, and the suite itself.
 
-### Frente 11 — `lto = "fat"` (fechada por decisão, com o motivo)
+### A defect of mine that the suite caught
 
-Não vale o preço, e o motivo é medível sem rodar:
+The test of the log's drop counter (`the_drop_counter_shows_up_and_resets`) failed when running
+the whole suite: it wrote at level `Info` without pinning the active level, and depended on what
+the previous test had left. It passed until the order of the tests changed — which is what
+happened when this round added tests. Fixed by pinning the level.
 
-- o código quente **não é Rust de outro crate**. O JIT é C++ (Dynarmic, fora do alcance do LTO do
-  Rust) e o rasterizador de software está no próprio `zeebx`;
-- `codegen-units = 1` já está ligado, então a inlining dentro do crate já é máxima;
-- o `thin` já faz inlining entre crates do que é pequeno;
-- o custo é um rebuild do LTO gordo, que recompila **todas** as dependências, com 3,4 GB livres.
+## 31. End of the round: the thirteen fronts, each with its outcome
 
-Fica registrado como a coisa a testar quando houver disco — e não como pendência esquecida.
+### Front 13 — Android drains the log (done and verified)
 
-### Frente 6 — PBO com fence (sem razão depois da frente 1)
+The destination was missing: the desktop prints to `stderr`, the core sends through `retro_log`,
+headless prints, and Android had nowhere to go. Now it drains into `log`, which `android_logger`
+already installs, with the severity preserved — a warning from the core goes out as `WARN` in
+`logcat`, which makes `adb logcat *:W` show what matters.
 
-O PBO existe para esconder a latência do `glReadPixels`. Depois da frente 1, o caminho de placa faz
-**uma** leitura por sessão, e não uma por quadro: não há latência a esconder. Fechada.
+**The verification was the fork's Android CI**, triggered by hand (`gh workflow run android.yml`).
+It does not run on its own on push: the repository's only automatic trigger is the tag. It is what
+verified this front — and, before that, **it caught a regression of mine that this host has no way
+of seeing**.
 
-### Extras vindos dos estudos, implementados nesta rodada
+### The regression the Android CI caught
 
-- **`GET_CURRENT_SOFTWARE_FRAMEBUFFER`** (do PCSX-ReARMed) — frente 3, feita e provada.
-- **Perfil Portátil ligando `0,5x`** — o item de desempenho que faltava no perfil. É a recomendação
-  da seção 28, agora de fábrica: quem escolhe Portátil ganha a redução que mediu 22% menos tempo
-  real, e quem não gostar da imagem mais quadrada escolhe a opção à mão.
-- **Teste do blit do driver** (do Flycast) — frente 5.
-- **Espelho de estado** (do DuckStation e do Flycast) — frente 2.
-- **Readback preguiçoso** (do Flycast e do DuckStation) — frente 1.
+`DebugView` stopped being `Copy` when it gained the text field for the log level, and the Android
+frontend does `let debug = self.settings.debug;` — a move out of a type that is no longer `Copy`.
+The `zeebx-android` package **does not compile outside an Android target** (`ndk-sys` refuses:
+*"only supports compiling for Android"*), so `cargo check`, `cargo test` and `cargo build` on the
+desktop do not see that error. It stayed in the repository since the instrumentation and only
+showed up when someone compiled for Android.
 
-### O placar das treze
+Fix: `clone()` at the point of the move — the same thing that had already been done on the
+desktop, and on the same kind of struct (half a dozen fields, once per draw of the debug panel).
 
-| desfecho | frentes |
+**The lesson holds for the whole round:** the one frontend the local suite does not reach is the
+one that most needs CI, and that CI is manual (`workflow_dispatch`). Whoever touches
+`ui::settings` has to trigger `android.yml` by hand — nothing warns.
+
+### Front 12 — tile discard (delivered as an experiment, **not measured**)
+
+New option, `zeebx_descarte_de_tiles`, **off by default**. When on, the GPU rasterizer tells the
+driver that depth and stencil can be thrown away after the frame — which on a tiled GPU avoids
+writing both attachments back to memory.
+
+**It is not a measured gain, and it is not counted as one.** Two reasons for shipping it off:
+
+1. a game that does **not** clear depth from one frame to the next counts on it — the console is a
+   real framebuffer, and there depth persists;
+2. the gain is Mali's, where I cannot measure.
+
+What the delivery does is **make the test possible**: the option exists, it is labeled as
+experimental, and the first thing to do on the device is turn it on and look at the image and the
+clock.
+
+### Front 11 — `lto = "fat"` (closed by decision, with the reason)
+
+It is not worth the price, and the reason can be measured without running anything:
+
+- the hot code **is not Rust from another crate**. The JIT is C++ (Dynarmic, beyond the reach of
+  Rust's LTO) and the software rasterizer lives in `zeebx` itself;
+- `codegen-units = 1` is already on, so inlining within the crate is already at its maximum;
+- `thin` already inlines what is small across crates;
+- the cost is a fat-LTO rebuild, which recompiles **all** dependencies, with 3.4 GB free.
+
+It is recorded as the thing to test when there is disk space — and not as a forgotten pending item.
+
+### Front 6 — PBO with a fence (no reason after front 1)
+
+The PBO exists to hide the latency of `glReadPixels`. After front 1, the GPU path does **one** read
+per session, not one per frame: there is no latency to hide. Closed.
+
+### Extras from the studies, implemented in this round
+
+- **`GET_CURRENT_SOFTWARE_FRAMEBUFFER`** (from PCSX-ReARMed) — front 3, done and proven.
+- **Handheld profile turning on `0.5x`** — the performance item the profile was missing. It is the
+  recommendation from section 28, now as a factory default: whoever picks Handheld gets the
+  reduction that measured 22% less real time, and whoever does not like the blockier image picks
+  the option by hand.
+- **Driver blit test** (from Flycast) — front 5.
+- **State mirror** (from DuckStation and Flycast) — front 2.
+- **Lazy readback** (from Flycast and DuckStation) — front 1.
+
+### The scoreboard of the thirteen
+
+| outcome | fronts |
 |---|---|
-| feitas e verificadas | 1, 2, 3, 5, 7, 9, 10, 13 |
-| entregue como experimento, não medida | 12 |
-| fechada por decisão, com motivo | 11 |
-| sem razão depois de outra frente | 6 |
-| despriorizadas por decisão registrada | 4, 8 |
+| done and verified | 1, 2, 3, 5, 7, 9, 10, 13 |
+| delivered as an experiment, not measured | 12 |
+| closed by decision, with a reason | 11 |
+| no reason after another front | 6 |
+| deprioritized by a recorded decision | 4, 8 |
 
-**Oito das treze com medida.** As cinco restantes têm desfecho escrito, e não ficaram em aberto por
-esquecimento: três dependem de aparelho ou de disco, e duas foram despriorizadas pelos próprios
-adendos das revisões.
+**Eight of the thirteen with a measurement.** The remaining five have a written outcome, and were
+not left open by forgetfulness: three depend on a device or on disk space, and two were
+deprioritized by the reviews' own addenda.
 
-### O que ficou pendente de verdade
+### What is really still pending
 
-1. **Medir no aparelho** — `0,5x` no perfil, o descarte de tiles, a partilha JIT × despacho e a
-   contagem de leituras de quadro. O instrumento viaja em todas elas (`Session::leituras_do_quadro_gl`,
-   `Session::estado_enviado_e_poupado`, e o relatório de varredura).
-2. **Triagem dos seis casos da varredura** — segue sem ser feita.
-3. **PR de `perf-v0.3.0` para `development`** — a branch está no fork e não há PR aberto.
-4. **`lto = "fat"`** quando houver disco.
+1. **Measure on the device** — `0.5x` in the profile, tile discard, the JIT × dispatch split and
+   the frame-read count. The instrument travels in all of them (`Session::gl_frame_readbacks`,
+   `Session::state_sent_and_spared`, and the scan report).
+2. **Triage of the six cases from the scan** — still not done.
+3. **PR from `perf-v0.3.0` to `development`** — the branch is on the fork and there is no open PR.
+4. **`lto = "fat"`** when there is disk space.
 
-## 32. A varredura não é determinística — e o critério de aceitação repousa nela
+## 32. The scan is not deterministic — and the acceptance criterion rests on it
 
-O critério 2 de aceitação desta rodada diz: *"a varredura dos 62 jogos não regride comportamento"*.
-Ao rodar esse critério pela primeira vez com os patches aplicados, o resultado foi **32 de 63 ROMs
-com diferença** — e antes de atribuir isso aos patches, fui verificar se a varredura é
-reprodutível.
+Acceptance criterion 2 of this round says: *"the scan of the 62 games does not regress
+behavior"*. When running that criterion for the first time with the patches applied, the result
+was **32 of 63 ROMs with a difference** — and before attributing that to the patches, I went to
+check whether the scan is reproducible.
 
-**Não é.**
+**It is not.**
 
-### A medida
+### The measurement
 
-O mesmo binário, a mesma ROM (Action Hero 3D), dois relatórios seguidos:
+The same binary, the same ROM (Action Hero 3D), two reports in a row:
 
-| | voltas | instruções | chamadas de API | tempo virtual |
+| | laps | instructions | API calls | virtual time |
 |---|---:|---:|---:|---:|
-| rodada A | 216 | 1 052 233 | 46 145 | 6 002 ms |
-| rodada B | 216 | **1 052 127** | **46 137** | 6 002 ms |
+| run A | 216 | 1,052,233 | 46,145 | 6,002 ms |
+| run B | 216 | **1,052,127** | **46,137** | 6,002 ms |
 
-**Mesmo número de voltas, mesmo tempo virtual, e 106 instruções e 8 chamadas de diferença.** O
-relatório completo difere em **48 linhas**, e o padrão das diferenças é inconfundível: os mesmos
-eventos com endereços de heap deslocados 64 bytes —
+**Same number of laps, same virtual time, and 106 instructions and 8 calls of difference.** The
+full report differs in **48 lines**, and the pattern of the differences is unmistakable: the same
+events with heap addresses shifted by 64 bytes —
 
 ```text
 -   OpenFile "a3d_sound_effect_04spf.wav"  (0x8c0d8 0x1 0xf0003008) -> 805311000
 +   OpenFile "a3d_sound_effect_04spf.wav"  (0x8c0d8 0x1 0xf0003008) -> 805310936
 ```
 
-Uma alocação a menos no começo desloca tudo o que vem depois. Contra a linha de base, isso vira 814
-linhas removidas e 740 adicionadas — que o teste lê como regressão de comportamento.
+One allocation fewer at the start shifts everything that comes after. Against the baseline, this
+becomes 814 lines removed and 740 added — which the test reads as a behavior regression.
 
-### O que isso significa
+### What this means
 
-1. **O critério 2 não pode ser cobrado hoje.** Ele acusa ruído como regressão, e um teste que fica
-   vermelho sozinho não guarda nada — a mesma lição do `os_dois_rasterizadores_desenham_o_mesmo_quadro`,
-   que já falhava no Need for Speed e ninguém sabia porque a CI não tem ROMs.
-2. **O quadro "reproduzível bit a bit" tem uma exceção não documentada.** O `ARCHITECTURE.md`
-   afirma que duas execuções iguais desenham os mesmos pixels — e elas desenham, porque o desenho
-   é função do estado; mas o **estado do guest** já não é o mesmo em duas execuções, e é isso que
-   as instruções a mais mostram.
+1. **Criterion 2 cannot be enforced today.** It flags noise as a regression, and a test that goes
+   red on its own guards nothing — the same lesson as `both_rasterizers_draw_the_same_frame`, which
+   was already failing on Need for Speed and nobody knew because CI has no ROMs.
+2. **The "bit-for-bit reproducible" frame has an undocumented exception.** `ARCHITECTURE.md`
+   states that two identical runs draw the same pixels — and they do, because the drawing is a
+   function of the state; but the **guest state** is no longer the same across two runs, and that
+   is what the extra instructions show.
 
-### O que já foi descartado como causa
+### What has already been ruled out as a cause
 
-- **`aee_GetRand`**: é um LCG com semente fixa (`0x1234_5678`) e entra no save state. Determinístico.
-- **`aee_GetTimeMS` / `aee_GetUpTimeMS` / `aee_GetSeconds`**: leem o relógio **virtual**, que sai das
-  instruções. Determinístico.
-- **Ordem de `HashMap` do host chegando ao guest**: `timers` e `pending_calls` são `Vec` (ordem de
-  inserção); `threads` e `resume_callbacks` só são acessados por chave. O `call_log` itera um
-  `HashMap`, mas é ordenado antes de sair no relatório.
+- **`aee_GetRand`**: it is an LCG with a fixed seed (`0x1234_5678`) and goes into the save state.
+  Deterministic.
+- **`aee_GetTimeMS` / `aee_GetUpTimeMS` / `aee_GetSeconds`**: they read the **virtual** clock,
+  which comes from the instructions. Deterministic.
+- **Host `HashMap` order reaching the guest**: `timers` and `pending_calls` are `Vec` (insertion
+  order); `threads` and `resume_callbacks` are only accessed by key. `call_log` iterates a
+  `HashMap`, but it is sorted before going into the report.
 
-### A próxima etapa, concreta
+### The next step, concretely
 
-A divergência é de **106 instruções em 1,05 milhão** com as mesmas 216 voltas. O caminho é
-binário: comparar, entre duas execuções, o *número de instruções por volta* e achar a primeira volta
-em que os dois números se separam; dali para trás, o evento que decidiu diferente. O instrumento
-existe — `Machine::advance` já conta voltas, e `instructions()` já conta instruções.
+The divergence is **106 instructions in 1.05 million** with the same 216 laps. The path is a
+binary search: compare, between two runs, the *number of instructions per lap* and find the first
+lap where the two numbers part; from there back, the event that decided differently. The
+instrument exists — `Machine::advance` already counts laps, and `instructions()` already counts
+instructions.
 
-Suspeito natural, e não conferido: o **adiantamento de relógio por espera** (`note_spin`, em
-`machine/time.rs`), que decide *quando* uma volta de laço é espera e adianta o relógio. É a única
-peça do emulador que olha para um laço de chamadas em vez de para uma chamada, e um limiar que
-dependa de algo fora do estado do guest explicaria exatamente um desvio pequeno e raro.
+A natural suspect, and not checked: **clock advance on waiting** (`note_spin`, in
+`machine/time.rs`), which decides *when* a loop lap is a wait and advances the clock. It is the
+only piece of the emulator that looks at a loop of calls instead of at a single call, and a
+threshold that depended on something outside the guest state would explain exactly a small, rare
+deviation.
 
-### O que ficou decidido
+### What was decided
 
-O critério 2 fica **suspenso**, e não cumprido: não por os patches terem regredido — nada indica
-isso, e as diferenças são de endereço — mas por a régua não medir o que promete. Antes de cobrar
-"não regrediu" de uma varredura, ela precisa ser reprodutível, ou a comparação precisa ignorar os
-campos que carregam endereços.
+Criterion 2 is **suspended**, not met: not because the patches regressed — nothing indicates
+that, and the differences are in addresses — but because the ruler does not measure what it
+promises. Before demanding "did not regress" of a scan, it has to be reproducible, or the
+comparison has to ignore the fields that carry addresses.
 
-O que **pode** ser cobrado hoje, e foi conferido nesta rodada: o **estado** de cada ROM bate com a
-linha de base — 63 ROMs, e as categorias são as mesmas (56 rodam, 3 não criam o applet, 2 quebram no
-laço, 2 terminam sozinhas). A diferença está no log de eventos, não no desfecho.
+What **can** be enforced today, and was checked in this round: the **status** of each ROM matches
+the baseline — 63 ROMs, and the categories are the same (56 run, 3 do not create the applet, 2
+crash in the loop, 2 finish on their own). The difference is in the event log, not in the outcome.
 
-## 33. A varredura é determinística — o que não é é o cache de extração
+## 33. The scan is deterministic — what is not is the extraction cache
 
-Continuação da seção 32, e o resultado é melhor do que ela dizia. **O emulador é determinístico.**
-O que muda a execução do guest é o **estado do cache de extração**: frio (extraindo agora) contra
-quente (reaproveitando a extração que já está lá).
+A continuation of section 32, and the result is better than it said. **The emulator is
+deterministic.** What changes the guest's execution is the **state of the extraction cache**:
+cold (extracting now) versus warm (reusing the extraction that is already there).
 
-### As medidas
+### The measurements
 
-| rodada | cache | instruções | chamadas de API |
+| run | cache | instructions | API calls |
 |---|---|---:|---:|
-| quente 1 | reaproveitado | 760 815 | 46 137 |
-| quente 2 | reaproveitado | **760 815** | 46 137 |
-| quente 3 | reaproveitado | **760 815** | 46 137 |
-| frio | recém-extraído | **760 921** | 46 145 |
+| warm 1 | reused | 760,815 | 46,137 |
+| warm 2 | reused | **760,815** | 46,137 |
+| warm 3 | reused | **760,815** | 46,137 |
+| cold | freshly extracted | **760,921** | 46,145 |
 
-Três rodadas em cache quente dão **o mesmo número de instruções, dígito por dígito** — 760 815 nas
-três. O cache frio dá 106 instruções a mais, uma chamada `CreateInstance` a mais e os endereços de
-heap deslocados 64 bytes.
+Three runs with a warm cache give **the same number of instructions, digit for digit** — 760,815
+in all three. The cold cache gives 106 more instructions, one more `CreateInstance` call and the
+heap addresses shifted by 64 bytes.
 
-**Determinismo, então, está de pé:** o mesmo estado de cache dá o mesmo resultado. O que não estava
-era o controle da variável.
+**Determinism, then, stands:** the same cache state gives the same result. What was not in place
+was control of the variable.
 
-### As duas linhas de tempo
+### The two time lines
 
-Entre duas rodadas quentes, o relatório difere em **seis linhas** — e todas as seis são do bloco de
-desempenho:
+Between two warm runs, the report differs in **six lines** — and all six are from the
+performance block:
 
 ```text
--  rodou 0.8 s reais para 6002 ms virtuais (754% da velocidade do console)
-+  rodou 0.8 s reais para 6002 ms virtuais (757% da velocidade do console)
--  1052127 instruções (1323430/s), 46137 chamada(s) de API
-+  1052127 instruções (1328443/s), 46137 chamada(s) de API
+-  ran 0.8 real s for 6002 virtual ms (754% of console speed)
++  ran 0.8 real s for 6002 virtual ms (757% of console speed)
+-  1052127 instructions (1323430/s), 46137 API call(s)
++  1052127 instructions (1328443/s), 46137 API call(s)
 ```
 
-São relógio de parede, e não têm o que fazer num arquivo que existe para guardar comportamento. O
-resumo comparado (`Relatorio::resumo`) já os exclui — o que os guarda é o relatório completo, que
-vai para `ZEEBX_ROM_SAIDA` e **não** é o comparado. Está certo como está; o que faltava era o
-controle do cache.
+They are wall clock, and have no business in a file that exists to record behavior. The compared
+summary (`Report::summary`) already excludes them — what keeps them is the full report, which goes
+to `ZEEBX_ROM_OUT` and is **not** the one compared. It is right as it is; what was missing was
+control of the cache.
 
-### Por que a linha de base acusou 32 de 63
+### Why the baseline flagged 32 of 63
 
-A rodada do corpus foi feita com um cache **misturado**: 37 entradas já existiam (quentes, de runs
-anteriores) e o resto foi extraído na hora (frio). Cada ROM foi medida num dos dois estados, e a
-linha de base foi gravada num deles. O resultado é 814 linhas removidas e 740 adicionadas — que o
-teste lê como regressão, e não é: é a mesma execução com o heap deslocado.
+The corpus run was done with a **mixed** cache: 37 entries already existed (warm, from earlier
+runs) and the rest was extracted on the spot (cold). Each ROM was measured in one of the two
+states, and the baseline was recorded in one of them. The result is 814 lines removed and 740
+added — which the test reads as a regression, and it is not: it is the same execution with the
+heap shifted.
 
-### O que fazer antes de confiar na comparação
+### What to do before trusting the comparison
 
-1. **Aquecer o cache antes de comparar.** Rodar o corpus uma vez sem `ZEEBX_ROM_BASE` (o que também
-   grava o que falta), e só então rodar contra a linha de base. A primeira passada é o aquecimento;
-   a segunda é a medida.
-2. **Gravar a linha de base sempre na mesma condição**, e dizer qual é. A de `docs/varredura/` foi
-   gravada quente ou fria — não está dito, e é isso que hoje não se sabe.
+1. **Warm the cache before comparing.** Run the corpus once without `ZEEBX_ROM_BASE` (which also
+   records what is missing), and only then run against the baseline. The first pass is the
+   warm-up; the second is the measurement.
+2. **Always record the baseline under the same condition**, and say which one. The one in
+   `docs/scan/` was recorded warm or cold — it is not stated, and that is what is unknown today.
 
-Fica registrado no procedimento da varredura, que é onde quem for repetir vai olhar.
+It is recorded in the scan procedure, which is where whoever repeats it will look.
 
-### O defeito de fidelidade que sobra, e que é real
+### The fidelity defect that remains, and that is real
 
-**O primeiro jogo aberto se comporta diferente dos seguintes.** Isso não é ruído de medição: é o
-guest executando 106 instruções a mais por causa de algo que só existe no host. Os suspeitos, em
-ordem:
+**The first game opened behaves differently from the following ones.** This is not measurement
+noise: it is the guest executing 106 more instructions because of something that only exists on
+the host. The suspects, in order:
 
-1. **`.zeebx-pacote`, o manifesto, dentro da raiz do jogo.** É um arquivo *nosso*, escrito na pasta
-   que o guest enxerga como raiz, e a enumeração de diretório **não o esconde** (`machine/file.rs`
-   lista, ordena e deduplica, sem filtro). Um jogo que enumere a própria pasta vê um arquivo que não
-   existe no console. Se ele estiver presente numa condição e ausente na outra, a diferença de 106
-   instruções e uma `CreateInstance` está explicada.
-2. **Ordem de escrita da extração**: mudaria a ordem de `read_dir`, mas a enumeração ordena antes de
-   entregar — então não pode ser esta.
+1. **`.zeebx-pacote`, the manifest, inside the game's root.** It is a file of *ours*, written in
+   the folder the guest sees as its root, and directory enumeration **does not hide it**
+   (`machine/file.rs` lists, sorts and deduplicates, with no filter). A game that enumerates its
+   own folder sees a file that does not exist on the console. If it is present in one condition and
+   absent in the other, the difference of 106 instructions and one `CreateInstance` is explained.
+2. **Extraction write order**: it would change the order of `read_dir`, but the enumeration sorts
+   before handing over — so it cannot be this.
 
-O caminho para fechar: abrir o mesmo jogo duas vezes com o cache forçado a cada estado e comparar o
-rastreio das primeiras chamadas (`ZEEBX_ROM_TRACO`), que mostra onde as duas execuções se separam.
-E, independente disso, **esconder o manifesto do guest é uma correção devida**: é um arquivo do host
-numa pasta que o jogo considera dele.
+The way to close it: open the same game twice with the cache forced into each state and compare
+the trace of the first calls (`ZEEBX_ROM_TRACE`), which shows where the two runs part. And,
+independently of that, **hiding the manifest from the guest is an overdue fix**: it is a host file
+in a folder the game considers its own.
 
-### O critério de aceitação, com o veredito corrigido
+### The acceptance criterion, with the corrected verdict
 
-Não está suspenso por o emulador ser não-determinístico — ele não é. Está **pendente de controle de
-variável**: rodar o corpus com o cache num estado só. Com isso, a comparação volta a poder ser
-cobrada, e as diferenças que sobrarem serão regressões de verdade.
+It is not suspended because the emulator is non-deterministic — it is not. It is **pending
+control of the variable**: running the corpus with the cache in a single state. With that, the
+comparison can be enforced again, and the differences that remain will be real regressions.
 
-### A hipótese do manifesto foi testada — e rejeitada
+### The manifest hypothesis was tested — and rejected
 
-O `.zeebx-pacote` era o suspeito número um: um arquivo nosso na pasta que o guest enxerga como raiz,
-sem filtro na enumeração de diretório. Foi escondido do guest (`machine/file.rs` passa a filtrá-lo) e
-o experimento do cache foi repetido:
+`.zeebx-pacote` was suspect number one: a file of ours in the folder the guest sees as its root,
+with no filter in directory enumeration. It was hidden from the guest (`machine/file.rs` now
+filters it out) and the cache experiment was repeated:
 
-| rodada | cache | instruções |
+| run | cache | instructions |
 |---|---|---:|
-| frio | recém-extraído | **760 921** |
-| quente 1 | reaproveitado | 760 815 |
-| quente 2 | reaproveitado | 760 815 |
+| cold | freshly extracted | **760,921** |
+| warm 1 | reused | 760,815 |
+| warm 2 | reused | 760,815 |
 
-**A diferença continua a mesma — 106 instruções, 54 linhas.** O manifesto não é a causa.
+**The difference is still the same — 106 instructions, 54 lines.** The manifest is not the cause.
 
-O filtro **fica**, porque é correção devida por outro motivo: o jogo não pode ver na própria pasta um
-arquivo que o console não tem. Mas ele não explica o que esta seção investiga.
+The filter **stays**, because it is an overdue fix for another reason: the game must not see in its
+own folder a file the console does not have. But it does not explain what this section is
+investigating.
 
-### O novo suspeito, e o que o sustenta
+### The new suspect, and what supports it
 
-**Leitura preguiçosa a partir do pacote.** Há dois caminhos possíveis para o guest ler um arquivo: da
-árvore extraída (cache quente) ou direto do `.zip`, pela rota do `IUnzipAStream` — o próprio acervo
-tem essa rota, e há código que extrai **só o arquivo pedido** em vez do pacote inteiro. Se o guest
-recebe um fluxo de tipo diferente conforme o cache esteja frio ou quente, o caminho que o jogo toma
-muda — e é exatamente isso que 106 instruções e uma `CreateInstance` a mais parecem ser.
+**Lazy reading from the package.** There are two possible paths for the guest to read a file: from
+the extracted tree (warm cache) or straight from the `.zip`, through the `IUnzipAStream` route —
+the collection itself has that route, and there is code that extracts **only the requested file**
+instead of the whole package. If the guest receives a stream of a different type depending on
+whether the cache is cold or warm, the path the game takes changes — and that is exactly what 106
+instructions and one extra `CreateInstance` look like.
 
-O caminho para fechar: abrir o mesmo jogo com `ZEEBX_ROM_TRACO=1` nos dois estados de cache e
-comparar o rastreio das primeiras chamadas — o ponto em que os dois se separam nomeia o mecanismo.
+The way to close it: open the same game with `ZEEBX_ROM_TRACE=1` in both cache states and compare
+the trace of the first calls — the point where the two part names the mechanism.
 
-### O critério, revisado de novo
+### The criterion, revised again
 
-A parte que **depende de conserto no procedimento** continua valendo e já está no
-`docs/implementacao/11-compatibilidade.md`: aquecer o cache antes de comparar. A parte que depende de
-conserto no **código** continua aberta, e agora com um suspeito de outra natureza — não um arquivo
-visível, mas um **caminho de leitura diferente**.
+The part that **depends on a fix to the procedure** still holds and is already in
+`docs/implementation/11-compatibility.md`: warm the cache before comparing. The part that depends
+on a fix to the **code** remains open, and now with a suspect of a different nature — not a visible
+file, but a **different read path**.
 
-## 34. Os extras dos estudos: um a um, com o desfecho
+## 34. The extras from the studies: one by one, with the outcome
 
-Para não deixar nenhum extra em ambiguidade, o desfecho de cada um.
+So as to leave no extra in ambiguity, the outcome of each one.
 
-| extra | vindo de | desfecho |
+| extra | coming from | outcome |
 |---|---|---|
-| readback preguiçoso | Flycast, DuckStation | **feito** — 78 e 184 leituras viraram 1 |
-| espelho de estado | DuckStation, Flycast | **feito** — 80% e 76% das chamadas de estado |
-| buffer emprestado do frontend | PCSX-ReARMed | **feito** — frente 3 |
-| prova do blit do driver | Flycast | **feito** — frente 5 |
-| escala `0,5x` no perfil Portátil | Flycast/DuckStation (resolução) | **feito** — e medido em 22% |
-| coalescer strips adjacentes (restart de primitiva) | Flycast | **sem ganho para nós**: o nosso lote já junta desenhos **consecutivos de mesmo estado** numa chamada só. O truque do Flycast junta strips **dentro** de um desenho, e o guest do Zeebo emite um `DrawArrays` por strip — que já cai no mesmo lote. Não há o que juntar |
-| frameskip reagindo a "fila de GPU cheia" | Flycast | **precisa de telemetria de GPU**, que não temos. Fica como pista |
-| apresentação numa thread separada | DuckStation (e o adiamento dela) | **não fazer** — o core Libretro entrega um quadro por `retro_run`, e o desktop pinta depois da nossa volta; a thread custaria sincronização sem tirar trabalho do caminho |
-| PBO com fence | DuckStation | **fechado** — sem razão depois da frente 1 |
-| cache binário de shader | Mupen64Plus-Next | **não se aplica** — o motor tem um shader |
-| caminho GLES 2 separado | PCSX-ReARMed | **compatibilidade, não desempenho**; fica para quando houver aparelho que precise |
-| `AHardwareBuffer`/`EGLImage` | Mupen64Plus-Next | **Android e coerência de memória**; hoje não temos caminho zero-copy que o justifique |
-| NEON nos laços largos | PCSX-ReARMed, Flycast | **despriorizado pelos adendos** — pouca transferibilidade confirmada |
-| fastmem próprio / dynarec | Flycast, DuckStation, PCSX | **despriorizado pelos adendos** — o Dynarmic já entrega tabela de páginas, e o que resta é SMC medido |
+| lazy readback | Flycast, DuckStation | **done** — 78 and 184 reads became 1 |
+| state mirror | DuckStation, Flycast | **done** — 80% and 76% of the state calls |
+| buffer lent by the frontend | PCSX-ReARMed | **done** — front 3 |
+| proof of the driver's blit | Flycast | **done** — front 5 |
+| `0.5x` scale in the Handheld profile | Flycast/DuckStation (resolution) | **done** — and measured at 22% |
+| coalescing adjacent strips (primitive restart) | Flycast | **no gain for us**: our batch already joins **consecutive draws of the same state** into a single call. Flycast's trick joins strips **within** a draw, and the Zeebo guest emits one `DrawArrays` per strip — which already lands in the same batch. There is nothing to join |
+| frameskip reacting to a "full GPU queue" | Flycast | **needs GPU telemetry**, which we do not have. It stays as a lead |
+| presentation on a separate thread | DuckStation (and its rollback) | **do not do it** — the Libretro core delivers one frame per `retro_run`, and the desktop paints after our pass; the thread would cost synchronization without taking work off the path |
+| PBO with a fence | DuckStation | **closed** — no reason after front 1 |
+| binary shader cache | Mupen64Plus-Next | **does not apply** — the engine has one shader |
+| separate GLES 2 path | PCSX-ReARMed | **compatibility, not performance**; left for when there is a device that needs it |
+| `AHardwareBuffer`/`EGLImage` | Mupen64Plus-Next | **Android and memory coherence**; today we have no zero-copy path that justifies it |
+| NEON in the wide loops | PCSX-ReARMed, Flycast | **deprioritized by the addenda** — poor transferability confirmed |
+| our own fastmem / dynarec | Flycast, DuckStation, PCSX | **deprioritized by the addenda** — Dynarmic already provides the page table, and what is left is measured SMC |
 
-### O que os logs do RG40XX-H (muOS) já provaram
+### What the RG40XX-H (muOS) logs have already proven
 
-Medido no aparelho, em 2026-09-24, com o log do núcleo em `depuracao`:
+Measured on the device, on 2026-09-24, with the core log at `depuracao`:
 
 ```text
 Zeebx: GL real vendor=ARM; renderer=Mali-G31; version=OpenGL ES 3.2 v1.r20p0-01rel0.…
        GLSL=OpenGL ES GLSL ES 3.20
-Zeebx: o frontend aceitou render em hardware (OpenGL 3.0); o desenho passa a ser na placa
+Zeebx: the frontend accepted hardware rendering (OpenGL 3.0); drawing now happens on the GPU
 Geometry: 640x480, Aspect: 1.333
 Set video size to: 640x480
 ```
 
-1. **O driver é o libMali r20p0, não Panfrost** — é a verificação que esta seção pedia e que não
-   existia. Com ela, as conclusões abaixo deixam de ser suposição.
-2. **A prova do blit passou.** Não há nenhum aviso de `glBlitFramebuffer` no log: neste driver o
-   antialias e a resolução interna **não** foram desligados pela frente 5.
-3. **O contexto que chega ao núcleo é GL 3.0**, embora o driver anuncie ES 3.2. Fica anotado como
-   suspeito do custo: contexto mais baixo costuma fechar caminhos rápidos do driver.
-4. **A tela do aparelho é 640×480**, e o RetroArch apresenta nesse tamanho: não há escala
-   envolvida, então o que se mede ali é rasterização pura.
+1. **The driver is libMali r20p0, not Panfrost** — that is the verification this section asked
+   for and that did not exist. With it, the conclusions below stop being assumptions.
+2. **The blit proof passed.** There is no `glBlitFramebuffer` warning in the log: on this driver,
+   antialiasing and internal resolution were **not** turned off by front 5.
+3. **The context that reaches the core is GL 3.0**, even though the driver advertises ES 3.2. It
+   is noted as a cost suspect: a lower context tends to close off the driver's fast paths.
+4. **The device's screen is 640×480**, and RetroArch presents at that size: there is no scaling
+   involved, so what is measured there is pure rasterization.
 
-E o que o usuário mediu à mão: **reduzir a resolução pela metade e desenhar no processador foi
-mais rápido do que no caminho de placa** com as mesmas opções. É essa a diferença que o cache de
-programa/VAO/VBO acima veio atacar, e a comparação no aparelho está montada (dois `.so` na pasta
-`ports`, e o `testa_zeebx.sh` aceita qual usar).
+And what the user measured by hand: **halving the resolution and drawing on the processor was
+faster than the GPU path** with the same options. That is the difference the program/VAO/VBO cache
+above came to attack, and the comparison on the device is set up (two `.so` files in the `ports`
+folder, and `test_zeebx.sh` accepts which one to use).

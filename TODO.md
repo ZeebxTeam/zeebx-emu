@@ -1,32 +1,25 @@
-# Zeebx - próximos passos
+# Zeebx - next steps
 
-## Diagnósticos de CPU no Dynarmic
+## CPU diagnostics on Dynarmic
 
-As opções abaixo dependiam dos hooks de instrução e memória do Unicorn. Elas foram removidas da
-linha de comando junto com o backend antigo, em vez de permanecerem aceitas sem produzir dados.
-Precisam ser redesenhadas sobre as APIs de instrumentação e invalidação de blocos do Dynarmic:
+The options below depended on Unicorn's instruction and memory hooks. They were removed from the
+command line together with the old backend, instead of staying accepted without producing data.
+They need to be redesigned on top of Dynarmic's instrumentation and block invalidation APIs:
 
-- **`--code=0xINI:0xFIM`** registrava cada instrução executada dentro de uma faixa, acompanhada
-  de `r0` e `lr`. Servia para transformar a desmontagem, que mostra todos os caminhos possíveis,
-  no caminho que o jogo realmente percorreu.
-- **`--watch=0xADDR`** observava leituras e escritas ao redor de um endereço e registrava o PC,
-  o `lr`, o tamanho e o valor de cada acesso. Servia para descobrir quem inicializou, alterou ou
-  apenas leu um campo corrompido ou inesperadamente nulo. Não se confunde com `watch_dirty`, que
-  continua no backend para invalidação interna das superfícies do renderizador.
-- **`--profile`** contava os blocos ARM mais executados e media o tempo gasto nos métodos da API
-  BREW. Servia para separar laços quentes do jogo de gargalos no despachante do emulador e orientar
-  otimizações com medidas.
-- **`--wall=SEGUNDOS`** interrompia a execução depois de um limite de tempo real. Servia como
-  proteção em diagnósticos e automações quando o relógio virtual ou o limite de instruções não
-  encerravam rapidamente um jogo preso.
+- **`--code=0xSTART:0xEND`** logged every instruction executed inside a range, along with `r0`
+  and `lr`. It served to turn the disassembly, which shows every possible path, into the path the
+  game actually took.
+- **`--watch=0xADDR`** watched reads and writes around an address and logged the PC, the `lr`,
+  the size and the value of each access. It served to find out who initialized, changed or just
+  read a corrupted or unexpectedly null field. Not to be confused with `watch_dirty`, which stays
+  in the backend for the internal invalidation of the renderer's surfaces.
+- **`--profile`** counted the most executed ARM blocks and measured the time spent in the BREW
+  API methods. It served to separate the game's hot loops from bottlenecks in the emulator's
+  dispatcher and to guide optimizations with measurements.
+- **`--wall=SECONDS`** stopped execution after a real-time limit. It served as a safeguard in
+  diagnostics and automation when the virtual clock or the instruction limit did not quickly end
+  a stuck game.
 
-O **`--trace[=filtro]` não faz parte desta pendência**: ele rastreia chamadas BREW na `Machine`,
-não instruções do backend, e continua funcionando com Dynarmic.
+**`--trace[=filter]` is not part of this pending item**: it traces BREW calls in the `Machine`,
+not backend instructions, and keeps working with Dynarmic.
 
-## Recursos
-
-- Save State
-- Fast-Forward
-- Modo Turbo
-- Rewind
-- Cheats

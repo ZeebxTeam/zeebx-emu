@@ -1,664 +1,672 @@
-//! O `config.ini` virando o [`Settings`] que o núcleo já entende.
+//! `config.ini` turned into the [`Settings`] the core already understands.
 //!
-//! **Não há um segundo modelo de configuração aqui.** Gráficos, áudio e mapeamento de controle
-//! são os mesmos campos que a interface do desktop grava no `settings.json`; o que muda é o
-//! formato do arquivo, porque quem usa este frontend edita à mão e INI é o que se edita à mão.
-//! O que sobra — como a janela abre, o que fazer com o quadro quando não há janela — é do
-//! frontend e mora no [`Headless`].
+//! **There is no second configuration model here.** Graphics, audio and controller mapping are
+//! the same fields the desktop interface writes to `settings.json`; what changes is the file
+//! format, because whoever uses this frontend edits by hand and INI is what gets edited by hand.
+//! What is left — how the window opens, what to do with the frame when there is no window —
+//! belongs to the frontend and lives in [`Headless`].
 //!
-//! Toda chave é opcional e cai num padrão. Um arquivo ausente vale como um arquivo vazio: o
-//! emulador precisa abrir com as opções de fábrica, não recusar.
+//! Every key is optional and falls back to a default. A missing file counts as an empty file: the
+//! emulator has to open with the factory options, not refuse.
 
 use std::path::PathBuf;
 
-use zeebx::input::bindings::{Aparelho, AxisSource, Controls, Player, Source};
-use zeebx::registro::Ajuste;
-use zeebx::ui::settings::{Audio, Graphics, ModoDaJanela, Proporcao, Scaling, Settings};
-use zeebx::velocidade::{Frameskip, LimiteFps};
+use zeebx::input::bindings::{Device, AxisSource, Controls, Player, Source};
+use zeebx::logging::Threshold;
+use zeebx::ui::settings::{Audio, Graphics, WindowMode, AspectRatio, Scaling, Settings};
+use zeebx::speed::{Frameskip, FpsLimit};
 
-use crate::ini::{Ini, Valor, sem_aspas};
+use crate::ini::{Ini, Value, unquoted};
 
-/// O que só existe neste frontend.
+/// What exists only in this frontend.
 #[derive(Debug, Clone)]
 pub struct Headless {
-    /// Se abre janela, e como.
+    /// Whether a window opens, and how.
     pub video: Video,
-    /// O que fazer com o quadro sem janela. Ver [`Despejo`].
-    pub despejo: Despejo,
-    /// Título da janela. Um frontend que gerencia janelas costuma casar pelo título.
-    pub titulo: String,
-    /// O tamanho com que a janela abre, quando ela não é cheia.
-///
-/// É só de abertura, e de propósito: o `config.ini` é editado à mão, e escrever o tamanho
-/// de volta a cada resize seria brigar com quem o escreveu (ver `cria`, que nunca troca um
-/// arquivo que já existe). Quem quer a janela lembrando o tamanho usa um frontend desktop,
-/// que guarda em `graphics.tamanho_da_janela` no `settings.json` — ver a issue #74.
-    pub tamanho: (u32, u32),
-    /// Esperar o retraço da tela para trocar o quadro. Desligado, a janela corre solta.
+    /// What to do with the frame without a window. See [`Dump`].
+    pub dump: Dump,
+    /// Window title. A frontend that manages windows usually matches by title.
+    pub title: String,
+    /// The size the window opens with, when it is not fullscreen.
+    ///
+    /// It only applies at startup, on purpose: `config.ini` is edited by hand, and writing the
+    /// size back on every resize would be fighting whoever wrote it (see `create`, which never
+    /// replaces a file that already exists). Whoever wants the window to remember its size uses
+    /// a desktop frontend, which stores it in `graphics.window_size` in `settings.json` — see
+    /// issue #74.
+    pub size: (u32, u32),
+    /// Wait for the screen's vertical retrace to swap the frame. Off, the window runs free.
     pub vsync: bool,
-    /// Onde estão os jogos. É o que permite a Z-Wheel abrir um título pelo ClassID.
+    /// Where the games are. It is what lets the Z-Wheel open a title by ClassID.
     pub roms: Option<PathBuf>,
-    /// O pacote da Z-Wheel, para onde o console volta quando um jogo sai.
+    /// The Z-Wheel package, where the console goes back to when a game exits.
     pub z_wheel: Option<PathBuf>,
-    /// Segundos de tempo do jogo antes de sair sozinho. `None` roda até fecharem.
-    pub segundos: Option<u32>,
-    /// Sair quando o jogo sair, em vez de voltar à Z-Wheel.
-    pub sair_com_o_jogo: bool,
+    /// Seconds of game time before exiting on its own. `None` runs until it is closed.
+    pub seconds: Option<u32>,
+    /// Exit when the game exits, instead of going back to the Z-Wheel.
+    pub exit_with_game: bool,
 }
 
-/// Como o quadro chega a quem está olhando.
+/// How the frame reaches whoever is watching.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Video {
-    /// Uma janela com o jogo e nada mais.
-    Janela,
-    /// A mesma janela, ocupando a tela.
-    TelaCheia,
-    /// Nenhuma janela. O quadro sai pelo [`Despejo`], e quem pinta é o frontend de fora.
-    Nenhum,
+    /// A window with the game and nothing else.
+    Window,
+    /// The same window, filling the screen.
+    Fullscreen,
+    /// No window. The frame goes out through [`Dump`], and the outside frontend does the painting.
+    Off,
 }
 
-/// Para onde os quadros vão quando não há janela.
+/// Where the frames go when there is no window.
 #[derive(Debug, Clone)]
-pub struct Despejo {
-    pub formato: Formato,
-    /// `None` é a saída padrão; com caminho, o arquivo — que pode ser um FIFO, e é assim que um
-    /// frontend de fora lê sem passar por disco.
-    pub destino: Option<PathBuf>,
-    /// Parar depois de tantos quadros. `0` é sem limite.
-    pub limite: u64,
+pub struct Dump {
+    pub format: Format,
+    /// `None` is standard output; with a path, the file — which can be a FIFO, and that is how an
+    /// outside frontend reads without going through disk.
+    pub dest: Option<PathBuf>,
+    /// Stop after this many frames. `0` means no limit.
+    pub limit: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Formato {
-    /// Dois bytes por pixel, do jeito que o console guarda. É o mais barato: nada é convertido.
+pub enum Format {
+    /// Two bytes per pixel, the way the console stores it. It is the cheapest: nothing is
+    /// converted.
     Rgb565,
-    /// Quatro bytes por pixel, na ordem R, G, B, A. Custa uma conversão por quadro e é o que a
-    /// maioria das bibliotecas de imagem aceita sem cerimônia.
+    /// Four bytes per pixel, in R, G, B, A order. It costs one conversion per frame and is what
+    /// most image libraries accept without fuss.
     Rgba,
-    /// Um `.png` por quadro, numerado, numa pasta. Para conferir, não para tocar.
+    /// One numbered `.png` per frame, in a folder. For checking, not for playing.
     Png,
 }
 
 impl Default for Headless {
     fn default() -> Self {
         Self {
-            video: Video::Janela,
-            despejo: Despejo {
-                formato: Formato::Rgb565,
-                destino: None,
-                limite: 0,
+            video: Video::Window,
+            dump: Dump {
+                format: Format::Rgb565,
+                dest: None,
+                limit: 0,
             },
-            titulo: "Zeebx".to_string(),
-            tamanho: (1280, 960),
+            title: "Zeebx".to_string(),
+            size: (1280, 960),
             vsync: true,
             roms: None,
             z_wheel: None,
-            segundos: None,
-            sair_com_o_jogo: false,
+            seconds: None,
+            exit_with_game: false,
         }
     }
 }
 
-/// O que saiu da leitura: a configuração e o que se tem a dizer sobre o arquivo.
-pub struct Lido {
+/// What came out of reading: the configuration and what there is to say about the file.
+pub struct LoadedConfig {
     pub settings: Settings,
     pub headless: Headless,
-    /// De onde a configuração veio, ou onde ela deveria estar.
-    pub origem: Origem,
-    /// Linha errada, chave desconhecida, valor que não é do tipo esperado. Nada aqui impede o
-    /// emulador de rodar; tudo aqui é coisa que quem editou o arquivo quer saber.
-    pub avisos: Vec<String>,
+    /// Where the configuration came from, or where it should be.
+    pub origin: ConfigOrigin,
+    /// Bad line, unknown key, value not of the expected type. Nothing here stops the emulator
+    /// from running; everything here is something whoever edited the file wants to know.
+    pub warnings: Vec<String>,
 }
 
-/// Se havia arquivo, e qual.
-pub enum Origem {
-    /// Havia um arquivo, e ele foi lido. Qual é já foi dito no primeiro aviso.
-    Lida,
-    /// Não havia nenhum. O caminho é onde um deve ser criado.
-    Faltando(PathBuf),
+/// Whether there was a file, and which one.
+pub enum ConfigOrigin {
+    /// There was a file, and it was read. Which one was already said in the first warning.
+    Read,
+    /// There was none. The path is where one should be created.
+    Missing(PathBuf),
 }
 
-/// Onde o arquivo é procurado quando ninguém aponta um: ao lado do executável primeiro, e
-/// depois na pasta de configuração do sistema.
+/// Where the file is looked for when nobody points to one: next to the executable first, and
+/// then in the system configuration folder.
 ///
-/// A ordem é essa de propósito. Uma cópia portátil — a pasta que o frontend de fora distribui,
-/// com o binário e o `config.ini` dentro — precisa ganhar do que está instalado na máquina,
-/// senão dois frontends no mesmo computador brigam pelo mesmo arquivo.
-pub fn caminhos_padrao() -> Vec<PathBuf> {
-    let mut caminhos = Vec::new();
+/// The order is this on purpose. A portable copy — the folder the outside frontend ships, with
+/// the binary and `config.ini` inside — has to win over what is installed on the machine,
+/// otherwise two frontends on the same computer fight over the same file.
+pub fn default_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            caminhos.push(dir.join("config.ini"));
+            paths.push(dir.join("config.ini"));
         }
     }
-    caminhos.push(zeebx::ui::settings::config_dir().join("config.ini"));
-    caminhos
+    paths.push(zeebx::ui::settings::config_dir().join("config.ini"));
+    paths
 }
 
-/// Onde criar um arquivo que não existe: a pasta de configuração do sistema.
+/// Where to create a file that does not exist: the system configuration folder.
 ///
-/// **Não é ao lado do executável**, que é o primeiro lugar da procura. Ali a cópia instalada
-/// costuma não ter permissão de escrita, e uma que tenha seria um arquivo criado dentro da
-/// instalação — que some na próxima atualização e não é de ninguém. A pasta de configuração é
-/// de quem rodou, e é onde ele vai procurar depois.
-pub fn onde_criar() -> PathBuf {
+/// **Not next to the executable**, which is the first place searched. There the installed copy
+/// usually has no write permission, and one that did would be a file created inside the
+/// installation — which disappears on the next update and belongs to nobody. The configuration
+/// folder belongs to whoever ran it, and it is where they will look later.
+pub fn where_to_create() -> PathBuf {
     zeebx::ui::settings::config_dir().join("config.ini")
 }
 
-/// Lê o arquivo. Um caminho que não existe devolve o padrão, dizendo onde um deveria estar.
-pub fn carrega(caminho: Option<&std::path::Path>) -> Lido {
-    // Um `--config=` apontando para o que não existe **não** cai no padrão: a pessoa nomeou o
-    // arquivo que quer, e é nele que um novo será criado.
-    let escolhido = match caminho {
-        Some(caminho) => Some(caminho.to_path_buf()),
-        None => caminhos_padrao().into_iter().find(|c| c.is_file()),
+/// Reads the file. A path that does not exist returns the default, saying where one should be.
+pub fn load(config_path: Option<&std::path::Path>) -> LoadedConfig {
+    // A `--config=` pointing at something that does not exist does **not** fall back to the
+    // default: the person named the file they want, and that is where a new one will be
+    // created.
+    let chosen = match config_path {
+        Some(config_path) => Some(config_path.to_path_buf()),
+        None => default_paths().into_iter().find(|c| c.is_file()),
     };
-    let faltando = |onde: PathBuf, avisos: Vec<String>| Lido {
+    let missing = |location: PathBuf, warnings: Vec<String>| LoadedConfig {
         settings: Settings::default(),
         headless: Headless::default(),
-        origem: Origem::Faltando(onde),
-        avisos,
+        origin: ConfigOrigin::Missing(location),
+        warnings,
     };
-    let Some(escolhido) = escolhido else {
-        return faltando(onde_criar(), Vec::new());
+    let Some(chosen) = chosen else {
+        return missing(where_to_create(), Vec::new());
     };
-    match std::fs::read_to_string(&escolhido) {
-        Ok(texto) => {
-            let mut lido = de_texto(&texto);
-            lido.avisos.insert(0, format!("reading {}", escolhido.display()));
-            lido.origem = Origem::Lida;
-            lido
+    match std::fs::read_to_string(&chosen) {
+        Ok(text) => {
+            let mut loaded = from_text(&text);
+            loaded.warnings.insert(0, format!("reading {}", chosen.display()));
+            loaded.origin = ConfigOrigin::Read;
+            loaded
         }
-        // Existe e não abre: permissão, um diretório com esse nome. Criar por cima seria pior.
-        Err(erro) if escolhido.exists() => {
-            let recado = format!("could not read {}: {erro}", escolhido.display());
-            faltando(escolhido, vec![recado])
+        // It exists and does not open: permissions, a directory with that name. Creating over it
+        // would be worse.
+        Err(error) if chosen.exists() => {
+            let message = format!("could not read {}: {error}", chosen.display());
+            missing(chosen, vec![message])
         }
-        Err(_) => faltando(escolhido, Vec::new()),
+        Err(_) => missing(chosen, Vec::new()),
     }
 }
 
-/// Escreve um `config.ini` de fábrica, comentado, em `caminho`.
+/// Writes a factory `config.ini`, with comments, at `path`.
 ///
-/// **Nunca por cima de um que exista**, nem quando o arquivo está lá e só não abriu: um
-/// `config.ini` cheio de ajustes é trabalho de quem o escreveu, e trocá-lo pelo exemplo por
-/// causa de um erro de permissão seria apagar o que não é nosso.
-pub fn cria(caminho: &std::path::Path) -> Result<(), String> {
-    if caminho.exists() {
-        return Err(format!("{} already exists", caminho.display()));
+/// **Never over one that exists**, not even when the file is there and just did not open: a
+/// `config.ini` full of settings is the work of whoever wrote it, and replacing it with the
+/// example because of a permission error would be erasing what is not ours.
+pub fn create(config_path: &std::path::Path) -> Result<(), String> {
+    if config_path.exists() {
+        return Err(format!("{} already exists", config_path.display()));
     }
-    let texto = modelo();
-    if let Some(pasta) = caminho.parent() {
-        std::fs::create_dir_all(pasta)
-            .map_err(|erro| format!("could not create {}: {erro}", pasta.display()))?;
+    let text = model();
+    if let Some(dir) = config_path.parent() {
+        std::fs::create_dir_all(dir)
+            .map_err(|error| format!("could not create {}: {error}", dir.display()))?;
     }
-    std::fs::write(caminho, texto)
-        .map_err(|erro| format!("could not write {}: {erro}", caminho.display()))
+    std::fs::write(config_path, text)
+        .map_err(|error| format!("could not write {}: {error}", config_path.display()))
 }
 
-/// O exemplo distribuído, **antes** de as portas serem preenchidas. Ver [`modelo`].
-const EXEMPLO: &str = include_str!("../config.ini");
+/// The shipped example, **before** the ports are filled in. See [`model`].
+const EXAMPLE: &str = include_str!("../config.ini");
 
-/// A linha do exemplo que dá lugar às seções de porta.
+/// The example's line that gives way to the port sections.
 ///
-/// É um comentário de propósito: se a substituição algum dia não acontecer, o que sobra ainda é
-/// um `config.ini` válido, com uma linha estranha, em vez de um arquivo quebrado.
-const MARCA: &str = "#<<portas>>";
+/// It is a comment on purpose: if the substitution ever fails to happen, what is left is still a
+/// valid `config.ini`, with one odd line, instead of a broken file.
+const MARKER: &str = "#<<portas>>";
 
-/// O `config.ini` completo: o que `--exemplo` imprime e o que a primeira execução escreve.
+/// The complete `config.ini`: what `--example` prints and what the first run writes.
 ///
-/// **As portas são geradas, não escritas à mão.** Elas são a parte que mais se quer editar — os
-/// botões — e também a que mais tem linha: treze por porta, e duas portas. Escrevê-las no
-/// exemplo significaria mantê-las de acordo com [`Controls::default`] para sempre, e um exemplo
-/// que diz `botao:East` onde o padrão é `tecla:X` é pior que um exemplo sem a linha: quem o lê
-/// passa a acreditar no que está ali.
-pub fn modelo() -> String {
-    EXEMPLO.replace(MARCA, &secoes_das_portas())
+/// **The ports are generated, not written by hand.** They are the part people most want to edit
+/// — the buttons — and also the one with the most lines: thirteen per port, and two ports.
+/// Writing them in the example would mean keeping them in line with [`Controls::default`]
+/// forever, and an example that says `button:East` where the default is `key:X` is worse than
+/// an example without the line: whoever reads it comes to believe what is there.
+pub fn model() -> String {
+    EXAMPLE.replace(MARKER, &port_sections())
 }
 
-/// As seções `[porta1]` e `[porta2]` como o arquivo as escreve, a partir dos padrões.
-fn secoes_das_portas() -> String {
+/// The `[port1]` and `[port2]` sections as the file writes them, from the defaults.
+fn port_sections() -> String {
     let controls = Controls::default();
-    (0..zeebx::input::PORTAS)
-        .map(|indice| {
-            let padrao = Player::default();
-            let player = controls.player(indice).unwrap_or(&padrao);
-            secao_da_porta(indice, player)
+    (0..zeebx::input::PORTS)
+        .map(|index| {
+            let fallback = Player::default();
+            let player = controls.player(index).unwrap_or(&fallback);
+            port_section(index, player)
         })
         .collect::<Vec<_>>()
         .join("\n")
 }
 
-fn secao_da_porta(indice: usize, player: &Player) -> String {
-    let mut linhas = vec![
-        format!("[port{}]", indice + 1),
-        format!("enabled = {}", sim_ou_nao(player.ligada)),
-        "# O que o console enxerga ligado: gamepad (o Dragon), zpad, keyboard ou boomerang.".to_string(),
-        format!("device = {}", nome_do_aparelho(player.aparelho)),
-        "# Qual controle do host alimenta esta porta. `--controllers` lista os nomes que o".to_string(),
-        "# sistema dá a eles. Sem esta linha, a porta fica só no teclado; com ela, os botões".to_string(),
-        "# abaixo ganham também os do controle, e a linha que você mudar vale como escrita.".to_string(),
+fn port_section(index: usize, player: &Player) -> String {
+    let mut lines = vec![
+        format!("[port{}]", index + 1),
+        format!("enabled = {}", yes_or_no(player.enabled)),
+        "# What the console sees plugged in: gamepad (the Dragon), zpad, keyboard or boomerang.".to_string(),
+        format!("device = {}", device_name(player.device_kind)),
+        "# Which host controller feeds this port. `--controllers` lists the names the system".to_string(),
+        "# gives them. Without this line, the port stays on the keyboard only; with it, the".to_string(),
+        "# buttons below also get the controller's, and any line you change counts as written.".to_string(),
     ];
     match &player.device {
-        Some(nome) => linhas.push(format!("controller = \"{nome}\"")),
-        None => linhas.push("# controller = \"Xbox Wireless Controller\"".to_string()),
+        Some(name) => lines.push(format!("controller = \"{name}\"")),
+        None => lines.push("# controller = \"Xbox Wireless Controller\"".to_string()),
     }
-    linhas.push(
-        "# O direcional também empurra o manche esquerdo, para jogo que só escuta o eixo.".to_string(),
+    lines.push(
+        "# The D-pad also pushes the left stick, for games that only listen to the axis.".to_string(),
     );
-    linhas.push(
-        "# **Desligado por padrão**: quem lê os dois canais anda duas casas por toque.".to_string(),
+    lines.push(
+        "# **Off by default**: games that read both channels move two squares per press.".to_string(),
     );
-    linhas.push(format!(
+    lines.push(format!(
         "dpad_to_analog = {}",
-        sim_ou_nao(player.direcional_nos_eixos)
+        yes_or_no(player.dpad_to_axes)
     ));
-    linhas.push(String::new());
+    lines.push(String::new());
 
-    // Na ordem em que a interface os mostra, e não na alfabética do mapa: `up, down, left,
-    // right` lidos em sequência são um direcional, e `b1, b2, b3, b4` são os quatro botões.
-    for botao in zeebx::input::bindings::CONFIGURABLE {
-        let origens: Vec<String> = player.sources(botao).iter().map(escreve_origem).collect();
-        linhas.push(format!("{botao} = {}", origens.join(", ")));
+    // In the order the interface shows them, not the map's alphabetical order: `up, down, left,
+    // right` in sequence are one D-pad, and `b1, b2, b3, b4` are the four buttons.
+    for button in zeebx::input::bindings::CONFIGURABLE {
+        let origins: Vec<String> = player.sources(button).iter().map(write_source).collect();
+        lines.push(format!("{button} = {}", origins.join(", ")));
     }
-    linhas.push(String::new());
+    lines.push(String::new());
 
-    // Os eixos ficam comentados porque **é isso que o padrão é**: sem um controle escolhido, o
-    // console não tem eixo analógico nenhum, e escrevê-los aqui mudaria o comportamento em vez
-    // de descrevê-lo. Assim que a linha `controller` existir, eles entram sozinhos.
-    linhas.push(
-        "# Os quatro eixos analógicos do console, cada um vindo de um eixo do controle do host."
+    // The axes stay commented out because **that is what the default is**: without a chosen
+    // controller, the console has no analog axis at all, and writing them here would change the
+    // behavior instead of describing it. As soon as the `controller` line exists, they come in on
+    // their own.
+    lines.push(
+        "# The console's four analog axes, each one coming from an axis of the host controller."
             .to_string(),
     );
-    linhas.push(
-        "# Eles só existem com um `controller` escolhido, e aí entram sozinhos nestes valores —".to_string(),
+    lines.push(
+        "# They only exist with a `controller` chosen, and then they take these values on their".to_string(),
     );
-    linhas.push("# as linhas abaixo servem para mudá-los. `:inverted` vira o sentido, e uma".to_string());
-    linhas.push("# linha vazia desliga o eixo.".to_string());
-    // Na ordem do console — x, y, z, rz —, e não na alfabética do mapa: `x` e `y` são um
-    // manche, `z` e `rz` são o outro, e lê-los fora de par não quer dizer nada.
-    let padroes = Player::default_axes();
-    for eixo in zeebx::input::AXIS_NAMES {
-        let Some(origem) = padroes.get(eixo) else {
+    lines.push("# own — the lines below are for changing them. `:inverted` flips the direction, and".to_string());
+    lines.push("# an empty line turns the axis off.".to_string());
+    // In the console's order — x, y, z, rz — not the map's alphabetical order: `x` and `y` are
+    // one stick, `z` and `rz` are the other, and reading them out of pairs means nothing.
+    let defaults = Player::default_axes();
+    for axis in zeebx::input::AXIS_NAMES {
+        let Some(origin) = defaults.get(axis) else {
             continue;
         };
-        let sufixo = match origem.invert {
+        let suffix = match origin.invert {
             true => ":inverted",
             false => "",
         };
-        linhas.push(format!("# axis_{eixo} = {}{sufixo}", origem.name));
+        lines.push(format!("# axis_{axis} = {}{suffix}", origin.name));
     }
-    linhas.push(String::new());
-    linhas.join("\n")
+    lines.push(String::new());
+    lines.join("\n")
 }
 
-fn escreve_origem(source: &Source) -> String {
+fn write_source(source: &Source) -> String {
     match source {
         Source::Key { name } => format!("key:{name}"),
         Source::Button { name } => format!("button:{name}"),
         Source::Axis { name, positive } => {
-            let sinal = match positive {
+            let sign = match positive {
                 true => '+',
                 false => '-',
             };
-            format!("axis:{name}{sinal}")
+            format!("axis:{name}{sign}")
         }
     }
 }
 
-fn nome_do_aparelho(aparelho: Aparelho) -> &'static str {
-    match aparelho {
-        Aparelho::Controle => "gamepad",
-        Aparelho::ZPad => "zpad",
-        Aparelho::Teclado => "keyboard",
-        Aparelho::Boomerang => "boomerang",
+fn device_name(device_kind: Device) -> &'static str {
+    match device_kind {
+        Device::Controller => "gamepad",
+        Device::ZPad => "zpad",
+        Device::Keyboard => "keyboard",
+        Device::Boomerang => "boomerang",
     }
 }
 
-fn sim_ou_nao(valor: bool) -> &'static str {
-    match valor {
+fn yes_or_no(value: bool) -> &'static str {
+    match value {
         true => "true",
         false => "false",
     }
 }
 
-/// O miolo, separado do disco para poder ser testado.
-pub fn de_texto(texto: &str) -> Lido {
-    let (mut ini, mut avisos) = Ini::ler(texto);
+/// The core logic, separated from the disk so it can be tested.
+pub fn from_text(text: &str) -> LoadedConfig {
+    let (mut ini, mut warnings) = Ini::read(text);
     let mut settings = Settings::default();
     let mut headless = Headless::default();
 
     // ---- [video] -----------------------------------------------------------------------
-    if let Some(v) = ini.pega("video", "mode") {
-        match v.texto.to_lowercase().as_str() {
-            "window" => headless.video = Video::Janela,
-            "fullscreen" => headless.video = Video::TelaCheia,
-            "none" => headless.video = Video::Nenhum,
-            outro => avisa(&mut avisos, &v, &format!(
-                "`{outro}` is not a video mode; use window, fullscreen or none"
+    if let Some(v) = ini.get("video", "mode") {
+        match v.text.to_lowercase().as_str() {
+            "window" => headless.video = Video::Window,
+            "fullscreen" => headless.video = Video::Fullscreen,
+            "none" => headless.video = Video::Off,
+            other => warn(&mut warnings, &v, &format!(
+                "`{other}` is not a video mode; use window, fullscreen or none"
             )),
         }
     }
-    // O `Settings` tem o seu próprio jeito de dizer isso, e a sessão o consulta: mantê-los de
-    // acordo evita que a janela abra cheia e o núcleo pense que não.
-    settings.graphics.janela_do_jogo = match headless.video {
-        Video::TelaCheia => ModoDaJanela::TelaCheia,
-        _ => ModoDaJanela::Janela,
+    // `Settings` has its own way of saying this, and the session consults it: keeping them in
+    // agreement prevents the window from opening fullscreen while the core thinks it did not.
+    settings.graphics.game_window = match headless.video {
+        Video::Fullscreen => WindowMode::Fullscreen,
+        _ => WindowMode::Window,
     };
-    settings.graphics.janela = settings.graphics.janela_do_jogo;
+    settings.graphics.window = settings.graphics.game_window;
 
-    if let Some(v) = ini.pega("video", "scaling") {
-        match v.texto.to_lowercase().as_str() {
+    if let Some(v) = ini.get("video", "scaling") {
+        match v.text.to_lowercase().as_str() {
             "integer" => settings.graphics.scaling = Scaling::Integer,
             "fit" => settings.graphics.scaling = Scaling::Fit,
             "stretch" => settings.graphics.scaling = Scaling::Stretch,
-            outro => avisa(&mut avisos, &v, &format!(
-                "`{outro}` is not a scaling mode; use integer, fit or stretch"
+            other => warn(&mut warnings, &v, &format!(
+                "`{other}` is not a scaling mode; use integer, fit or stretch"
             )),
         }
     }
-    booleano(&mut ini, "video", "smooth", &mut settings.graphics.smooth, &mut avisos);
-    booleano(&mut ini, "video", "keep_aspect", &mut settings.graphics.keep_aspect, &mut avisos);
-    // `speed_limit` é o nome de antes do `fps_limit`, e continua aceito: um `config.ini` antigo
-    // com ele desligado segue sem freio. Quando os dois aparecem, vale o novo.
-    let mut limitado = settings.velocidade.limite_fps.limita_velocidade();
-    booleano(&mut ini, "video", "speed_limit", &mut limitado, &mut avisos);
-    if !limitado {
-        settings.velocidade.limite_fps = LimiteFps::Desligado;
+    boolean(&mut ini, "video", "smooth", &mut settings.graphics.smooth, &mut warnings);
+    boolean(&mut ini, "video", "keep_aspect", &mut settings.graphics.keep_aspect, &mut warnings);
+    // `speed_limit` is the name from before `fps_limit`, and is still accepted: an old
+    // `config.ini` with it off keeps running unthrottled. When both appear, the new one wins.
+    let mut limited = settings.speed.fps_limit.limit_speed();
+    boolean(&mut ini, "video", "speed_limit", &mut limited, &mut warnings);
+    if !limited {
+        settings.speed.fps_limit = FpsLimit::Off;
     }
-    if let Some(v) = ini.pega("video", "fps_limit") {
-        match LimiteFps::de_texto(&v.texto) {
-            Some(limite) => settings.velocidade.limite_fps = limite,
-            None => avisa(&mut avisos, &v, "fps_limit expects 60, 30 or off"),
+    if let Some(v) = ini.get("video", "fps_limit") {
+        match FpsLimit::from_text(&v.text) {
+            Some(limit) => settings.speed.fps_limit = limit,
+            None => warn(&mut warnings, &v, "fps_limit expects 60, 30 or off"),
         }
     }
-    if let Some(v) = ini.pega("video", "frameskip") {
-        match Frameskip::de_texto(&v.texto) {
-            Some(pulo) => settings.velocidade.frameskip = pulo,
-            None => avisa(&mut avisos, &v, "frameskip expects off, auto or a number from 1 to 6"),
+    if let Some(v) = ini.get("video", "frameskip") {
+        match Frameskip::from_text(&v.text) {
+            Some(skip) => settings.speed.frameskip = skip,
+            None => warn(&mut warnings, &v, "frameskip expects off, auto or a number from 1 to 6"),
         }
     }
-    booleano(&mut ini, "video", "vsync", &mut headless.vsync, &mut avisos);
-    if let Some(v) = ini.pega("video", "title") {
-        headless.titulo = sem_aspas(&v.texto).to_string();
+    boolean(&mut ini, "video", "vsync", &mut headless.vsync, &mut warnings);
+    if let Some(v) = ini.get("video", "title") {
+        headless.title = unquoted(&v.text).to_string();
     }
-    let (mut largura, mut altura) = headless.tamanho;
-    inteiro(&mut ini, "video", "width", &mut largura, &mut avisos);
-    inteiro(&mut ini, "video", "height", &mut altura, &mut avisos);
-    headless.tamanho = (largura.max(160), altura.max(120));
+    let (mut width, mut height) = headless.size;
+    integer(&mut ini, "video", "width", &mut width, &mut warnings);
+    integer(&mut ini, "video", "height", &mut height, &mut warnings);
+    headless.size = (width.max(160), height.max(120));
 
     // ---- [graphics] ---------------------------------------------------------------------
-    // O `gpu_present` do núcleo não aparece aqui: ele escolhe entre pôr o quadro pela placa ou
-    // mandá-lo como textura do egui, e aqui não há egui. A janela crua sempre apresenta pela
-    // placa, que é o caminho barato — o quadro já está em RGB565 e quem amplia é ela.
+    // The core's `gpu_present` does not appear here: it chooses between putting the frame out
+    // through the GPU or sending it as an egui texture, and there is no egui here. The raw window
+    // always presents through the GPU, which is the cheap path — the frame is already in RGB565
+    // and the GPU does the scaling.
     let g: &mut Graphics = &mut settings.graphics;
-    booleano(&mut ini, "graphics", "gpu_rasterizer", &mut g.gpu_rasterizer, &mut avisos);
-    booleano(&mut ini, "graphics", "fog", &mut g.neblina, &mut avisos);
-    oito(&mut ini, "graphics", "internal_resolution", &mut g.resolucao_interna, 1, 8, &mut avisos);
-    oito(&mut ini, "graphics", "antialias", &mut g.antialias, 1, 16, &mut avisos);
-    oito(&mut ini, "graphics", "anisotropic", &mut g.anisotropico, 1, 16, &mut avisos);
-    if let Some(v) = ini.pega("graphics", "aspect") {
-        match v.texto.to_lowercase().as_str() {
-            "native" => g.proporcao = Proporcao::Nativa,
-            "16x9" => g.proporcao = Proporcao::Larga16x9,
-            "16x10" => g.proporcao = Proporcao::Larga16x10,
-            "window" => g.proporcao = Proporcao::Janela,
-            outro => avisa(&mut avisos, &v, &format!(
-                "`{outro}` is not an aspect; use native, 16x9, 16x10 or window"
+    boolean(&mut ini, "graphics", "gpu_rasterizer", &mut g.gpu_rasterizer, &mut warnings);
+    boolean(&mut ini, "graphics", "fog", &mut g.fog, &mut warnings);
+    read_u8(&mut ini, "graphics", "internal_resolution", &mut g.internal_resolution, 1, 8, &mut warnings);
+    read_u8(&mut ini, "graphics", "antialias", &mut g.antialias, 1, 16, &mut warnings);
+    read_u8(&mut ini, "graphics", "anisotropic", &mut g.anisotropic, 1, 16, &mut warnings);
+    if let Some(v) = ini.get("graphics", "aspect") {
+        match v.text.to_lowercase().as_str() {
+            "native" => g.ratio = AspectRatio::Native,
+            "16x9" => g.ratio = AspectRatio::Wide16x9,
+            "16x10" => g.ratio = AspectRatio::Wide16x10,
+            "window" => g.ratio = AspectRatio::Window,
+            other => warn(&mut warnings, &v, &format!(
+                "`{other}` is not an aspect; use native, 16x9, 16x10 or window"
             )),
         }
     }
 
     // ---- [audio] -----------------------------------------------------------------------
     let a: &mut Audio = &mut settings.audio;
-    booleano(&mut ini, "audio", "enabled", &mut a.enabled, &mut avisos);
-    oito(&mut ini, "audio", "volume", &mut a.volume, 0, 100, &mut avisos);
-    booleano(&mut ini, "audio", "midi_effects", &mut a.midi_effects, &mut avisos);
-    if let Some(v) = ini.pega("audio", "soundfont") {
-        let texto = sem_aspas(&v.texto);
-        a.soundfont = match texto.is_empty() || texto == "-" {
+    boolean(&mut ini, "audio", "enabled", &mut a.enabled, &mut warnings);
+    read_u8(&mut ini, "audio", "volume", &mut a.volume, 0, 100, &mut warnings);
+    boolean(&mut ini, "audio", "midi_effects", &mut a.midi_effects, &mut warnings);
+    if let Some(v) = ini.get("audio", "soundfont") {
+        let text = unquoted(&v.text);
+        a.soundfont = match text.is_empty() || text == "-" {
             true => None,
-            false => Some(PathBuf::from(texto)),
+            false => Some(PathBuf::from(text)),
         };
     }
 
     // ---- [dump] ---------------------------------------------------------------------
-    if let Some(v) = ini.pega("dump", "format") {
-        match v.texto.to_lowercase().as_str() {
-            "rgb565" => headless.despejo.formato = Formato::Rgb565,
-            "rgba" => headless.despejo.formato = Formato::Rgba,
-            "png" => headless.despejo.formato = Formato::Png,
-            outro => avisa(&mut avisos, &v, &format!(
-                "`{outro}` is not a dump format; use rgb565, rgba or png"
+    if let Some(v) = ini.get("dump", "format") {
+        match v.text.to_lowercase().as_str() {
+            "rgb565" => headless.dump.format = Format::Rgb565,
+            "rgba" => headless.dump.format = Format::Rgba,
+            "png" => headless.dump.format = Format::Png,
+            other => warn(&mut warnings, &v, &format!(
+                "`{other}` is not a dump format; use rgb565, rgba or png"
             )),
         }
     }
-    if let Some(v) = ini.pega("dump", "destination") {
-        let texto = sem_aspas(&v.texto);
-        headless.despejo.destino = match texto.is_empty() || texto == "-" {
+    if let Some(v) = ini.get("dump", "destination") {
+        let text = unquoted(&v.text);
+        headless.dump.dest = match text.is_empty() || text == "-" {
             true => None,
-            false => Some(PathBuf::from(texto)),
+            false => Some(PathBuf::from(text)),
         };
     }
-    if let Some(v) = ini.pega("dump", "frame_limit") {
-        match v.texto.parse::<u64>() {
-            Ok(n) => headless.despejo.limite = n,
-            Err(_) => avisa(&mut avisos, &v, "frame_limit expects a number"),
+    if let Some(v) = ini.get("dump", "frame_limit") {
+        match v.text.parse::<u64>() {
+            Ok(n) => headless.dump.limit = n,
+            Err(_) => warn(&mut warnings, &v, "frame_limit expects a number"),
         }
     }
 
     // ---- [system] ---------------------------------------------------------------------
-    if let Some(v) = ini.pega("system", "roms") {
-        let caminho = PathBuf::from(sem_aspas(&v.texto));
-        settings.roms_dir = Some(caminho.clone());
-        headless.roms = Some(caminho);
+    if let Some(v) = ini.get("system", "roms") {
+        let path = PathBuf::from(unquoted(&v.text));
+        settings.roms_dir = Some(path.clone());
+        headless.roms = Some(path);
     }
-    if let Some(v) = ini.pega("system", "z_wheel") {
-        let caminho = PathBuf::from(sem_aspas(&v.texto));
-        settings.z_wheel_path = Some(caminho.clone());
-        headless.z_wheel = Some(caminho);
+    if let Some(v) = ini.get("system", "z_wheel") {
+        let path = PathBuf::from(unquoted(&v.text));
+        settings.z_wheel_path = Some(path.clone());
+        headless.z_wheel = Some(path);
     }
-    if let Some(v) = ini.pega("system", "language") {
-        settings.language = Some(sem_aspas(&v.texto).to_string());
+    if let Some(v) = ini.get("system", "language") {
+        settings.language = Some(unquoted(&v.text).to_string());
     }
-    if let Some(v) = ini.pega("system", "seconds") {
-        match v.texto.parse::<u32>() {
-            Ok(0) => headless.segundos = None,
-            Ok(n) => headless.segundos = Some(n),
-            Err(_) => avisa(&mut avisos, &v, "seconds expects a number"),
+    if let Some(v) = ini.get("system", "seconds") {
+        match v.text.parse::<u32>() {
+            Ok(0) => headless.seconds = None,
+            Ok(n) => headless.seconds = Some(n),
+            Err(_) => warn(&mut warnings, &v, "seconds expects a number"),
         }
     }
-    if let Some(v) = ini.pega("system", "log") {
-        let texto = sem_aspas(&v.texto);
-        match Ajuste::de_texto(texto) {
-            Some(ajuste) => {
-                ajuste.aplica();
-                // **O nome canônico, e não o texto que veio.** O `config.ini` fala inglês
-                // (`log = warn`) e o ajuste guardado é em português (`aviso`): guardar o texto cru
-                // deixava o mesmo nível com duas formas, e o `config.ini` de fábrica passava a
-                // descrever um padrão que não era o do emulador. Ver [`Nivel::nome`].
-                settings.debug.nivel_de_log = match ajuste {
-                    Ajuste::Desligado => "desligado".to_string(),
-                    Ajuste::Ate(nivel) => nivel.nome().to_string(),
+    if let Some(v) = ini.get("system", "log") {
+        let text = unquoted(&v.text);
+        match Threshold::from_text(text) {
+            Some(threshold) => {
+                threshold.apply();
+                // **The canonical name, not the text that came in.** `config.ini` speaks English
+                // (`log = warn`) and the stored setting is in Portuguese (`aviso`): storing the
+                // raw text left the same level with two forms, and the factory `config.ini` came
+                // to describe a default that was not the emulator's. See [`Level::name`].
+                settings.debug.log_level = match threshold {
+                    Threshold::Off => "desligado".to_string(),
+                    Threshold::UpTo(level) => level.name().to_string(),
                 };
             }
-            // Um nível escrito errado não pode ser aceito em silêncio: quem depura precisa saber
-            // que a linha não fez nada, em vez de concluir que o log é que está quebrado.
-            None => avisa(
-                &mut avisos,
+            // A misspelled level cannot be accepted silently: whoever is debugging needs to know
+            // the line did nothing, instead of concluding that the log is what is broken.
+            None => warn(
+                &mut warnings,
                 &v,
                 "`log` expects off, fatal, error, warn, info or debug",
             ),
         }
     }
-    booleano(&mut ini, "system", "exit_with_game", &mut headless.sair_com_o_jogo, &mut avisos);
-    booleano(&mut ini, "system", "z_wheel_end_of_life", &mut settings.z_wheel.fim_de_vida, &mut avisos);
+    boolean(&mut ini, "system", "exit_with_game", &mut headless.exit_with_game, &mut warnings);
+    boolean(&mut ini, "system", "z_wheel_end_of_life", &mut settings.z_wheel.end_of_life, &mut warnings);
 
     // ---- [port1], [port2] ------------------------------------------------------------
     //
-    // Uma porta que o arquivo não cita fica como está no padrão: a primeira com um controle e
-    // as outras livres. Citar a seção, mesmo vazia, já liga a porta — é o que alguém quer dizer
-    // ao escrever `[porta2]`.
+    // A port the file does not mention stays as the default has it: the first with a controller
+    // and the others free. Mentioning the section, even empty, turns the port on — that is what
+    // someone means by writing `[port2]`.
     let mut controls = Controls::default();
-    for (indice, nome) in nomes_de_porta().into_iter().enumerate() {
-        if !ini.tem_secao(&nome) {
+    for (index, name) in port_names().into_iter().enumerate() {
+        if !ini.has_section(&name) {
             continue;
         }
-        let player = controls.player_mut(indice);
-        player.ligada = true;
-        le_porta(&mut ini, &nome, player, &mut avisos);
+        let player = controls.player_mut(index);
+        player.enabled = true;
+        read_port(&mut ini, &name, player, &mut warnings);
     }
-    for sobrando in ini.secoes_com("port") {
-        if !nomes_de_porta().contains(&sobrando) {
-            avisos.push(format!(
-                "[{sobrando}]: the console has {} ports, from port1 to port{}",
-                zeebx::input::PORTAS,
-                zeebx::input::PORTAS
+    for leftover in ini.sections_with("port") {
+        if !port_names().contains(&leftover) {
+            warnings.push(format!(
+                "[{leftover}]: the console has {} ports, from port1 to port{}",
+                zeebx::input::PORTS,
+                zeebx::input::PORTS
             ));
         }
     }
     settings.controls = controls;
 
-    avisos.extend(ini.sobras());
-    Lido {
+    warnings.extend(ini.leftovers());
+    LoadedConfig {
         settings,
         headless,
-        // Quem chamou é que sabe de onde o texto veio; o `carrega` corrige isto em seguida.
-        origem: Origem::Faltando(onde_criar()),
-        avisos,
+        // The caller is the one who knows where the text came from; `load` fixes this right after.
+        origin: ConfigOrigin::Missing(where_to_create()),
+        warnings,
     }
 }
 
-fn nomes_de_porta() -> Vec<String> {
-    (1..=zeebx::input::PORTAS).map(|n| format!("port{n}")).collect()
+fn port_names() -> Vec<String> {
+    (1..=zeebx::input::PORTS).map(|n| format!("port{n}")).collect()
 }
 
-/// Uma porta: que aparelho o console vê, qual controle do host a alimenta, e o mapeamento.
-fn le_porta(ini: &mut Ini, secao: &str, player: &mut Player, avisos: &mut Vec<String>) {
-    // O controle vem **antes** de tudo, porque escolhê-lo troca o mapeamento inteiro pelo típico
-    // dele — o mesmo que a tela de controles do desktop faz. Enquanto ele só trazia os eixos, os
-    // botões ficavam no teclado de fábrica, e sem janela não há teclado: o manche andava e
-    // nenhum botão respondia, que os usuários contavam como "o controle não é reconhecido".
-    // Lido primeiro, o resto da seção ajusta por cima dele.
-    if let Some(v) = ini.pega(secao, "controller") {
-        let nome = sem_aspas(&v.texto);
-        player.troca_controle(match nome.is_empty() {
+/// A port: which device the console sees, which host controller feeds it, and the mapping.
+fn read_port(ini: &mut Ini, section: &str, player: &mut Player, warnings: &mut Vec<String>) {
+    // The controller comes **before** everything, because choosing it swaps the whole mapping
+    // for its typical one — the same thing the desktop controls screen does. While it only
+    // brought the axes, the buttons stayed on the factory keyboard, and without a window there is
+    // no keyboard: the stick moved and no button responded, which users reported as "the
+    // controller is not recognized". Read first, the rest of the section adjusts on top of it.
+    if let Some(v) = ini.get(section, "controller") {
+        let source_name = unquoted(&v.text);
+        player.switch_controller(match source_name.is_empty() {
             true => None,
-            false => Some(nome.to_string()),
+            false => Some(source_name.to_string()),
         });
     }
 
-    let mut ligada = player.ligada;
-    booleano(ini, secao, "enabled", &mut ligada, avisos);
-    player.ligada = ligada;
+    let mut enabled = player.enabled;
+    boolean(ini, section, "enabled", &mut enabled, warnings);
+    player.enabled = enabled;
 
-    // O direcional espelhado nos eixos: o mesmo ajuste da caixa na tela de controles do desktop
-    // e do `zeebx_dpad_to_analog_pN` do núcleo. Sem esta linha o frontend sem janela não teria
-    // como ligá-lo — o `Controls` chegaria com o padrão e ninguém saberia por quê.
-    let mut espelha = player.direcional_nos_eixos;
-    booleano(ini, secao, "dpad_to_analog", &mut espelha, avisos);
-    player.direcional_nos_eixos = espelha;
+    // The D-pad mirrored onto the axes: the same setting as the checkbox on the desktop controls
+    // screen and the core's `zeebx_dpad_to_analog_pN`. Without this line the windowless frontend
+    // would have no way to turn it on — `Controls` would arrive with the default and nobody
+    // would know why.
+    let mut mirror = player.dpad_to_axes;
+    boolean(ini, section, "dpad_to_analog", &mut mirror, warnings);
+    player.dpad_to_axes = mirror;
 
-    if let Some(v) = ini.pega(secao, "device") {
-        match v.texto.to_lowercase().as_str() {
-            "gamepad" | "dragon" => player.aparelho = Aparelho::Controle,
-            "zpad" | "z-pad" => player.aparelho = Aparelho::ZPad,
-            "keyboard" => player.aparelho = Aparelho::Teclado,
-            "boomerang" => player.aparelho = Aparelho::Boomerang,
-            outro => avisa(avisos, &v, &format!(
-                "`{outro}` is not a device; use gamepad, zpad, keyboard or boomerang"
+    if let Some(v) = ini.get(section, "device") {
+        match v.text.to_lowercase().as_str() {
+            "gamepad" | "dragon" => player.device_kind = Device::Controller,
+            "zpad" | "z-pad" => player.device_kind = Device::ZPad,
+            "keyboard" => player.device_kind = Device::Keyboard,
+            "boomerang" => player.device_kind = Device::Boomerang,
+            other => warn(warnings, &v, &format!(
+                "`{other}` is not a device; use gamepad, zpad, keyboard or boomerang"
             )),
         }
     }
-    // Os botões. Uma chave por botão do console, com as origens separadas por vírgula. Escrever
-    // a chave **substitui** o padrão daquele botão: quem redefine `b1` quer o que escreveu, não
-    // o que escreveu mais o `Z` de fábrica.
-    let fabrica = Player::default();
-    for botao in zeebx::input::bindings::CONFIGURABLE {
-        let Some(v) = ini.pega(secao, botao) else {
+    // The buttons. One key per console button, with the sources separated by commas. Writing
+    // the key **replaces** that button's default: whoever redefines `b1` wants what they wrote,
+    // not what they wrote plus the factory `Z`.
+    let factory = Player::default();
+    for button in zeebx::input::bindings::CONFIGURABLE {
+        let Some(v) = ini.get(section, button) else {
             continue;
         };
-        let mut origens = Vec::new();
-        if !sem_aspas(&v.texto).trim().is_empty() {
-            for pedaco in v.texto.split(',') {
-                match origem(pedaco.trim()) {
-                    Some(source) => origens.push(source),
-                    None => avisa(avisos, &v, &format!(
+        let mut origins = Vec::new();
+        if !unquoted(&v.text).trim().is_empty() {
+            for chunk in v.text.split(',') {
+                match origin(chunk.trim()) {
+                    Some(source) => origins.push(source),
+                    None => warn(warnings, &v, &format!(
                         "`{}` is not a source; use key:NAME, button:NAME or axis:NAME+",
-                        pedaco.trim()
+                        chunk.trim()
                     )),
                 }
             }
         }
-        // A exceção: com um controle escolhido, uma linha igual ao teclado de fábrica **não**
-        // substitui nada. É a linha que o arquivo gerado escreve para todo botão, e todo
-        // `config.ini` já distribuído a tem; valendo como substituição, ela apagaria o botão do
-        // controle que o `controller` acabou de trazer. Quem quer mesmo só o teclado num botão
-        // com controle escolhido escreve as teclas noutra ordem ou noutro conjunto.
-        if player.device.is_some() && origens == fabrica.sources(botao) {
+        // The exception: with a controller chosen, a line equal to the factory keyboard does
+        // **not** replace anything. It is the line the generated file writes for every button,
+        // and every `config.ini` already shipped has it; counting as a replacement, it would
+        // erase the controller button that `controller` just brought in. Whoever really wants
+        // only the keyboard on a button with a controller chosen writes the keys in another order
+        // or another set.
+        if player.device.is_some() && origins == factory.sources(button) {
             continue;
         }
-        player.clear(botao);
-        for source in origens {
-            player.bind(botao, source);
+        player.clear(button);
+        for source in origins {
+            player.bind(button, source);
         }
     }
 
-    // Os eixos analógicos do console. `axis_x = LeftStickX` ou `axis_y = LeftStickY:inverted`.
-    for eixo in zeebx::input::AXIS_NAMES {
-        let chave = format!("axis_{eixo}");
-        let Some(v) = ini.pega(secao, &chave) else {
+    // The console's analog axes. `axis_x = LeftStickX` or `axis_y = LeftStickY:inverted`.
+    for axis in zeebx::input::AXIS_NAMES {
+        let key_id = format!("axis_{axis}");
+        let Some(v) = ini.get(section, &key_id) else {
             continue;
         };
-        let texto = sem_aspas(&v.texto).trim().to_string();
-        if texto.is_empty() {
-            player.axes.remove(eixo);
+        let text = unquoted(&v.text).trim().to_string();
+        if text.is_empty() {
+            player.axes.remove(axis);
             continue;
         }
-        let (nome, invert) = match texto.split_once(':') {
-            Some((nome, marca)) => {
-                let invert = matches!(marca.trim().to_lowercase().as_str(), "inverted");
+        let (source_name, invert) = match text.split_once(':') {
+            Some((source_name, mark)) => {
+                let invert = matches!(mark.trim().to_lowercase().as_str(), "inverted");
                 if !invert {
-                    avisa(avisos, &v, &format!("`{marca}` is not `inverted`"));
+                    warn(warnings, &v, &format!("`{mark}` is not `inverted`"));
                 }
-                (nome.trim(), invert)
+                (source_name.trim(), invert)
             }
-            None => (texto.as_str(), false),
+            None => (text.as_str(), false),
         };
         player.axes.insert(
-            eixo.to_string(),
+            axis.to_string(),
             AxisSource {
-                name: nome.to_string(),
+                name: source_name.to_string(),
                 invert,
             },
         );
     }
 }
 
-/// `tecla:Z`, `botao:South`, `eixo:LeftStickY-`.
+/// `key:Z`, `button:South`, `axis:LeftStickY-`.
 ///
-/// Os nomes são **os mesmos do `settings.json`** de propósito: quem copiou um mapeamento da
-/// interface para cá não precisa traduzir nada, e a tela de controles do desktop continua
-/// sendo a maneira mais fácil de descobrir como um botão se chama.
-fn origem(texto: &str) -> Option<Source> {
-    let (tipo, nome) = texto.split_once(':')?;
-    let nome = nome.trim();
-    if nome.is_empty() {
+/// The names are **the same as in `settings.json`** on purpose: whoever copied a mapping from
+/// the interface to here does not need to translate anything, and the desktop controls screen
+/// remains the easiest way to find out what a button is called.
+fn origin(text: &str) -> Option<Source> {
+    let (kind, input_name) = text.split_once(':')?;
+    let input_name = input_name.trim();
+    if input_name.is_empty() {
         return None;
     }
-    match tipo.trim().to_lowercase().as_str() {
-        "key" => Some(Source::key(nome)),
-        "button" => Some(Source::button(nome)),
+    match kind.trim().to_lowercase().as_str() {
+        "key" => Some(Source::key(input_name)),
+        "button" => Some(Source::button(input_name)),
         "axis" => {
-            // O sinal vem colado no fim, que é como a interface mostra: `LeftStickY-`.
-            let (nome, positive) = match nome.strip_suffix('+') {
-                Some(nome) => (nome, true),
-                None => (nome.strip_suffix('-')?, false),
+            // The sign comes stuck at the end, which is how the interface shows it: `LeftStickY-`.
+            let (input_name, positive) = match input_name.strip_suffix('+') {
+                Some(input_name) => (input_name, true),
+                None => (input_name.strip_suffix('-')?, false),
             };
-            match nome.trim().is_empty() {
+            match input_name.trim().is_empty() {
                 true => None,
                 false => Some(Source::Axis {
-                    name: nome.trim().to_string(),
+                    name: input_name.trim().to_string(),
                     positive,
                 }),
             }
@@ -667,81 +675,81 @@ fn origem(texto: &str) -> Option<Source> {
     }
 }
 
-fn avisa(avisos: &mut Vec<String>, valor: &Valor, texto: &str) {
-    avisos.push(format!("line {}: {texto}", valor.linha));
+fn warn(warnings: &mut Vec<String>, value: &Value, text: &str) {
+    warnings.push(format!("line {}: {text}", value.line));
 }
 
-/// `true`, `sim`, `1`, `ligado` — e os contrários.
-fn booleano(ini: &mut Ini, secao: &str, chave: &str, destino: &mut bool, avisos: &mut Vec<String>) {
-    let Some(v) = ini.pega(secao, chave) else {
+/// `true`, `yes`, `1`, `on` — and their opposites.
+fn boolean(ini: &mut Ini, section: &str, key_id: &str, dest: &mut bool, warnings: &mut Vec<String>) {
+    let Some(v) = ini.get(section, key_id) else {
         return;
     };
-    match v.texto.to_lowercase().as_str() {
-        "true" | "yes" | "1" | "on" => *destino = true,
-        "false" | "no" | "0" | "off" => *destino = false,
-        outro => avisa(avisos, &v, &format!("`{chave}` expects true or false, not `{outro}`")),
+    match v.text.to_lowercase().as_str() {
+        "true" | "yes" | "1" | "on" => *dest = true,
+        "false" | "no" | "0" | "off" => *dest = false,
+        other => warn(warnings, &v, &format!("`{key_id}` expects true or false, not `{other}`")),
     }
 }
 
-fn inteiro(ini: &mut Ini, secao: &str, chave: &str, destino: &mut u32, avisos: &mut Vec<String>) {
-    let Some(v) = ini.pega(secao, chave) else {
+fn integer(ini: &mut Ini, section: &str, key_id: &str, dest: &mut u32, warnings: &mut Vec<String>) {
+    let Some(v) = ini.get(section, key_id) else {
         return;
     };
-    match v.texto.parse::<u32>() {
-        Ok(n) => *destino = n,
-        Err(_) => avisa(avisos, &v, &format!("`{chave}` expects a number")),
+    match v.text.parse::<u32>() {
+        Ok(n) => *dest = n,
+        Err(_) => warn(warnings, &v, &format!("`{key_id}` expects a number")),
     }
 }
 
-/// Um número pequeno, preso a uma faixa. Fora dela é erro de quem escreveu, e dizer o limite
-/// vale mais que aceitar em silêncio um `resolucao_interna = 40` que não caberia na placa.
-fn oito(
+/// A small number, held to a range. Outside it is the writer's mistake, and stating the limit is
+/// worth more than silently accepting an `internal_resolution = 40` that would not fit the GPU.
+fn read_u8(
     ini: &mut Ini,
-    secao: &str,
-    chave: &str,
-    destino: &mut u8,
-    minimo: u8,
-    maximo: u8,
-    avisos: &mut Vec<String>,
+    section: &str,
+    key_id: &str,
+    dest: &mut u8,
+    minimum: u8,
+    maximum: u8,
+    warnings: &mut Vec<String>,
 ) {
-    let Some(v) = ini.pega(secao, chave) else {
+    let Some(v) = ini.get(section, key_id) else {
         return;
     };
-    match v.texto.parse::<u8>() {
-        Ok(n) if (minimo..=maximo).contains(&n) => *destino = n,
-        Ok(n) => avisa(avisos, &v, &format!("`{chave}` = {n} is outside {minimo}..{maximo}")),
-        Err(_) => avisa(avisos, &v, &format!("`{chave}` expects a number")),
+    match v.text.parse::<u8>() {
+        Ok(n) if (minimum..=maximum).contains(&n) => *dest = n,
+        Ok(n) => warn(warnings, &v, &format!("`{key_id}` = {n} is outside {minimum}..{maximum}")),
+        Err(_) => warn(warnings, &v, &format!("`{key_id}` expects a number")),
     }
 }
 
 #[cfg(test)]
-mod testes {
+mod tests {
     use super::*;
-    use zeebx::ui::settings::ModoDaJanela;
+    use zeebx::ui::settings::WindowMode;
 
-    /// Um arquivo vazio precisa dar exatamente as opções de fábrica: é o que faz um
-    /// `config.ini` ausente ser a mesma coisa que um `config.ini` sem nada dentro.
+    /// An empty file has to give exactly the factory options: it is what makes a missing
+    /// `config.ini` the same thing as a `config.ini` with nothing inside.
     #[test]
-    fn arquivo_vazio_e_o_padrao() {
-        let lido = de_texto("");
-        // O padrão da interface é abrir maximizado, e o daqui é abrir no tamanho que o arquivo
-        // pede — uma janela maximizada faria `largura` e `altura` não quererem dizer nada.
-        let esperado = Settings {
+    fn an_empty_file_is_the_default() {
+        let loaded = from_text("");
+        // The interface's default is to open maximized, and the one here is to open at the size
+        // the file asks for — a maximized window would make `width` and `height` mean nothing.
+        let expected = Settings {
             graphics: Graphics {
-                janela: ModoDaJanela::Janela,
-                janela_do_jogo: ModoDaJanela::Janela,
+                window: WindowMode::Window,
+                game_window: WindowMode::Window,
                 ..Graphics::default()
             },
             ..Settings::default()
         };
-        assert_eq!(lido.settings, esperado);
-        assert_eq!(lido.headless.video, Video::Janela);
-        assert!(lido.avisos.is_empty(), "{:?}", lido.avisos);
+        assert_eq!(loaded.settings, expected);
+        assert_eq!(loaded.headless.video, Video::Window);
+        assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
     }
 
     #[test]
-    fn as_chaves_chegam_no_settings_do_nucleo() {
-        let lido = de_texto(
+    fn the_keys_reach_the_core_settings() {
+        let loaded = from_text(
             "[video]\n\
              mode = fullscreen\n\
              scaling = integer\n\
@@ -757,114 +765,114 @@ mod testes {
              soundfont = \"/bancos/firmware.sf2\"\n\
              midi_effects = false\n",
         );
-        assert!(lido.avisos.is_empty(), "{:?}", lido.avisos);
-        let g = &lido.settings.graphics;
-        assert_eq!(lido.headless.video, Video::TelaCheia);
-        assert_eq!(g.janela_do_jogo, ModoDaJanela::TelaCheia);
+        assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
+        let g = &loaded.settings.graphics;
+        assert_eq!(loaded.headless.video, Video::Fullscreen);
+        assert_eq!(g.game_window, WindowMode::Fullscreen);
         assert_eq!(g.scaling, Scaling::Integer);
         assert!(g.smooth);
-        assert_eq!(lido.settings.velocidade.limite_fps, LimiteFps::Desligado);
-        assert_eq!(lido.settings.velocidade.frameskip, Frameskip::Automatico);
+        assert_eq!(loaded.settings.speed.fps_limit, FpsLimit::Off);
+        assert_eq!(loaded.settings.speed.frameskip, Frameskip::Auto);
         assert!(g.gpu_rasterizer);
-        assert_eq!(g.resolucao_interna, 2);
-        assert_eq!(g.proporcao, Proporcao::Larga16x9);
-        assert_eq!(lido.settings.audio.volume, 42);
+        assert_eq!(g.internal_resolution, 2);
+        assert_eq!(g.ratio, AspectRatio::Wide16x9);
+        assert_eq!(loaded.settings.audio.volume, 42);
         assert_eq!(
-            lido.settings.audio.soundfont.as_deref(),
+            loaded.settings.audio.soundfont.as_deref(),
             Some(std::path::Path::new("/bancos/firmware.sf2"))
         );
-        assert_eq!(de_texto("[audio]\nsoundfont = -\n").settings.audio.soundfont, None);
-        assert!(!lido.settings.audio.midi_effects);
+        assert_eq!(from_text("[audio]\nsoundfont = -\n").settings.audio.soundfont, None);
+        assert!(!loaded.settings.audio.midi_effects);
     }
 
-    /// O `fps_limit` vence o `speed_limit` antigo, e valor estranho avisa sem mudar nada.
+    /// `fps_limit` beats the old `speed_limit`, and an odd value warns without changing anything.
     #[test]
-    fn o_limite_de_quadros_e_o_frameskip() {
-        let lido = de_texto("[video]\nspeed_limit = false\nfps_limit = 30\nframeskip = 3\n");
-        assert!(lido.avisos.is_empty(), "{:?}", lido.avisos);
-        assert_eq!(lido.settings.velocidade.limite_fps, LimiteFps::Trinta);
-        assert_eq!(lido.settings.velocidade.frameskip, Frameskip::Fixo(3));
+    fn the_frame_limit_and_the_frameskip() {
+        let loaded = from_text("[video]\nspeed_limit = false\nfps_limit = 30\nframeskip = 3\n");
+        assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
+        assert_eq!(loaded.settings.speed.fps_limit, FpsLimit::Thirty);
+        assert_eq!(loaded.settings.speed.frameskip, Frameskip::Fixed(3));
 
-        let lido = de_texto("[video]\nfps_limit = 120\nframeskip = 9\n");
-        assert_eq!(lido.avisos.len(), 2, "{:?}", lido.avisos);
-        assert_eq!(lido.settings.velocidade.limite_fps, LimiteFps::Sessenta);
-        assert_eq!(lido.settings.velocidade.frameskip, Frameskip::Desligado);
+        let loaded = from_text("[video]\nfps_limit = 120\nframeskip = 9\n");
+        assert_eq!(loaded.warnings.len(), 2, "{:?}", loaded.warnings);
+        assert_eq!(loaded.settings.speed.fps_limit, FpsLimit::Sixty);
+        assert_eq!(loaded.settings.speed.frameskip, Frameskip::Off);
     }
 
-    /// Citar a seção já liga a porta, e uma porta não citada fica como vem de fábrica.
+    /// Mentioning the section turns the port on, and a port not mentioned stays as it ships.
     #[test]
-    fn a_secao_da_porta_liga_a_porta() {
-        let lido = de_texto("[port2]\ndevice = keyboard\n");
-        let portas = &lido.settings.controls;
-        assert!(portas.player(0).unwrap().ligada, "a primeira porta é de fábrica");
-        let segunda = portas.player(1).unwrap();
-        assert!(segunda.ligada);
-        assert_eq!(segunda.aparelho, Aparelho::Teclado);
+    fn the_port_section_enables_the_port() {
+        let loaded = from_text("[port2]\ndevice = keyboard\n");
+        let ports = &loaded.settings.controls;
+        assert!(ports.player(0).unwrap().enabled, "the first port is the factory one");
+        let second = ports.player(1).unwrap();
+        assert!(second.enabled);
+        assert_eq!(second.device_kind, Device::Keyboard);
     }
 
-    /// O direcional nos eixos sai do `config.ini` como qualquer outra chave da porta — e a
-    /// porta que não escreve fica com o padrão, que é desligado.
+    /// The D-pad on the axes comes from `config.ini` like any other port key — and a port that
+    /// does not write it keeps the default, which is off.
     #[test]
-    fn o_direcional_nos_eixos_vem_do_ini_e_o_padrao_e_desligado() {
-        let lido = de_texto("[port1]\ndpad_to_analog = yes\n");
-        assert!(lido.avisos.is_empty(), "{:?}", lido.avisos);
-        assert!(lido.settings.controls.player(0).unwrap().direcional_nos_eixos);
+    fn dpad_to_axes_comes_from_the_ini_and_defaults_to_off() {
+        let loaded = from_text("[port1]\ndpad_to_analog = yes\n");
+        assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
+        assert!(loaded.settings.controls.player(0).unwrap().dpad_to_axes);
         assert!(
-            !lido.settings.controls.player(1).unwrap().direcional_nos_eixos,
-            "a segunda porta não escreveu, e o padrão é desligado"
+            !loaded.settings.controls.player(1).unwrap().dpad_to_axes,
+            "the second port did not write it, and the default is off"
         );
 
-        // E o valor de fábrica que o gerador escreve volta como o padrão do emulador: é o que
-        // cobra o teste que compara o arquivo completo com `de_texto("")`.
-        let padrao = de_texto("[port1]\ndpad_to_analog = false\n");
-        assert!(!padrao.settings.controls.player(0).unwrap().direcional_nos_eixos);
+        // And the factory value the generator writes comes back as the emulator's default: it is
+        // what the test comparing the full file with `from_text("")` enforces.
+        let fallback = from_text("[port1]\ndpad_to_analog = false\n");
+        assert!(!fallback.settings.controls.player(0).unwrap().dpad_to_axes);
     }
 
-    /// Escrever um botão substitui o padrão dele, e só dele.
+    /// Writing a button replaces its default, and only its default.
     #[test]
-    fn o_botao_escrito_substitui_o_padrao() {
-        let lido = de_texto("[port1]\nb1 = key:Q, button:North\n");
-        assert!(lido.avisos.is_empty(), "{:?}", lido.avisos);
-        let porta = lido.settings.controls.player(0).unwrap();
+    fn the_written_button_replaces_the_default() {
+        let loaded = from_text("[port1]\nb1 = key:Q, button:North\n");
+        assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
+        let port = loaded.settings.controls.player(0).unwrap();
         assert_eq!(
-            porta.sources("b1"),
+            port.sources("b1"),
             [Source::key("Q"), Source::button("North")]
         );
-        // O `b2` não foi citado: continua com o que vem de fábrica.
-        assert!(!porta.sources("b2").is_empty());
+        // `b2` was not mentioned: it keeps what it ships with.
+        assert!(!port.sources("b2").is_empty());
     }
 
-    /// Um botão com a linha vazia fica sem origem nenhuma — é assim que se desliga um botão.
+    /// A button with an empty line has no source at all — that is how a button is turned off.
     #[test]
-    fn o_botao_vazio_fica_sem_origem() {
-        let lido = de_texto("[port1]\nb2 =\n");
-        assert!(lido.settings.controls.player(0).unwrap().sources("b2").is_empty());
+    fn an_empty_button_has_no_source() {
+        let loaded = from_text("[port1]\nb2 =\n");
+        assert!(loaded.settings.controls.player(0).unwrap().sources("b2").is_empty());
     }
 
     #[test]
-    fn os_eixos_saem_com_o_sentido_pedido() {
-        let lido = de_texto("[port1]\naxis_y = LeftStickY:inverted\naxis_x = RightStickX\n");
-        assert!(lido.avisos.is_empty(), "{:?}", lido.avisos);
-        let porta = lido.settings.controls.player(0).unwrap();
-        assert_eq!(porta.axes["y"], AxisSource { name: "LeftStickY".into(), invert: true });
-        assert_eq!(porta.axes["x"], AxisSource { name: "RightStickX".into(), invert: false });
+    fn the_axes_come_out_with_the_requested_direction() {
+        let loaded = from_text("[port1]\naxis_y = LeftStickY:inverted\naxis_x = RightStickX\n");
+        assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
+        let port = loaded.settings.controls.player(0).unwrap();
+        assert_eq!(port.axes["y"], AxisSource { name: "LeftStickY".into(), invert: true });
+        assert_eq!(port.axes["x"], AxisSource { name: "RightStickX".into(), invert: false });
     }
 
-    /// O sinal do eixo como origem de botão: é o que faz um manche acionar o direcional.
+    /// The axis sign as a button source: it is what lets a stick drive the D-pad.
     #[test]
-    fn o_eixo_como_origem_traz_o_sentido() {
-        let lido = de_texto("[port1]\nup = axis:LeftStickY-\n");
+    fn an_axis_source_carries_its_direction() {
+        let loaded = from_text("[port1]\nup = axis:LeftStickY-\n");
         assert_eq!(
-            lido.settings.controls.player(0).unwrap().sources("up"),
+            loaded.settings.controls.player(0).unwrap().sources("up"),
             [Source::Axis { name: "LeftStickY".into(), positive: false }]
         );
     }
 
-    /// Valor fora da faixa, origem sem sentido e chave desconhecida precisam **aparecer**: no
-    /// silêncio, quem editou o arquivo acha que configurou e não configurou.
+    /// An out-of-range value, a meaningless source and an unknown key have to **show up**: in
+    /// silence, whoever edited the file thinks they configured something and did not.
     #[test]
-    fn o_que_esta_errado_e_dito() {
-        let lido = de_texto(
+    fn what_is_wrong_is_reported() {
+        let loaded = from_text(
             "[graphics]\n\
              internal_resolution = 40\n\
              [video]\n\
@@ -874,150 +882,150 @@ mod testes {
              [audio]\n\
              volumee = 10\n",
         );
-        let tudo = lido.avisos.join("\n");
-        assert!(tudo.contains("internal_resolution"), "{tudo}");
-        assert!(tudo.contains("square"), "{tudo}");
-        assert!(tudo.contains("is not a source"), "{tudo}");
-        assert!(tudo.contains("volumee"), "{tudo}");
-        // E nada disso impede o resto de valer.
-        assert_eq!(lido.settings.graphics.resolucao_interna, 1);
+        let all = loaded.warnings.join("\n");
+        assert!(all.contains("internal_resolution"), "{all}");
+        assert!(all.contains("square"), "{all}");
+        assert!(all.contains("is not a source"), "{all}");
+        assert!(all.contains("volumee"), "{all}");
+        // And none of this keeps the rest from applying.
+        assert_eq!(loaded.settings.graphics.internal_resolution, 1);
     }
 
-    /// Um controle escolhido pelo nome ganha os eixos padrão junto, senão o manche fica mudo e
-    /// quem escreveu só o nome não teria como adivinhar que faltava mais.
+    /// A controller chosen by name gets the default axes along with it, otherwise the stick stays
+    /// silent and whoever wrote only the name would have no way to guess more was missing.
     #[test]
-    fn o_controle_escolhido_ganha_os_eixos() {
-        let lido = de_texto("[port1]\ncontroller = \"Pad #2\"\n");
-        let porta = lido.settings.controls.player(0).unwrap();
-        assert_eq!(porta.device.as_deref(), Some("Pad #2"));
-        assert_eq!(porta.axes, Player::default_axes());
+    fn the_chosen_controller_gets_the_axes() {
+        let loaded = from_text("[port1]\ncontroller = \"Pad #2\"\n");
+        let port = loaded.settings.controls.player(0).unwrap();
+        assert_eq!(port.device.as_deref(), Some("Pad #2"));
+        assert_eq!(port.axes, Player::default_axes());
     }
 
-    /// O caminho de quem joga: pega o arquivo gerado, descomenta o `controller` e mais nada.
-    /// Os botões do controle têm de responder — sem janela não há teclado, e um `b1` só com
-    /// `key:Z` deixa o controle mudo fora do manche.
+    /// The player's path: take the generated file, uncomment `controller` and nothing else. The
+    /// controller buttons have to respond — without a window there is no keyboard, and a `b1`
+    /// with only `key:Z` leaves the controller silent except for the stick.
     #[test]
-    fn o_controle_escolhido_no_arquivo_gerado_aciona_os_botoes() {
-        let texto = modelo().replacen(
+    fn the_controller_chosen_in_the_generated_file_drives_the_buttons() {
+        let text = model().replacen(
             "# controller = \"Xbox Wireless Controller\"",
             "controller = \"Xbox Wireless Controller\"",
             1,
         );
-        let lido = de_texto(&texto);
-        let porta = lido.settings.controls.player(0).unwrap();
-        assert_eq!(porta.device.as_deref(), Some("Xbox Wireless Controller"));
-        for botao in zeebx::input::bindings::CONFIGURABLE {
+        let loaded = from_text(&text);
+        let port = loaded.settings.controls.player(0).unwrap();
+        assert_eq!(port.device.as_deref(), Some("Xbox Wireless Controller"));
+        for button in zeebx::input::bindings::CONFIGURABLE {
             assert!(
-                porta.sources(botao).iter().any(|s| matches!(s, Source::Button { .. } | Source::Axis { .. })),
-                "`{botao}` não tem origem no controle: {:?}",
-                porta.sources(botao)
+                port.sources(button).iter().any(|s| matches!(s, Source::Button { .. } | Source::Axis { .. })),
+                "`{button}` has no source on the controller: {:?}",
+                port.sources(button)
             );
         }
     }
 
-    /// Com controle escolhido, uma linha que não é a de fábrica continua valendo como escrita:
-    /// a exceção do arquivo gerado não pode engolir um mapeamento de verdade.
+    /// With a controller chosen, a line that is not the factory one still counts as written: the
+    /// generated file's exception must not swallow a real mapping.
     #[test]
-    fn com_controle_a_linha_mudada_substitui_o_padrao() {
-        let lido = de_texto("[port1]\ncontroller = \"Pad\"\nb1 = button:East\nb2 = key:X, key:Space\n");
-        let porta = lido.settings.controls.player(0).unwrap();
-        assert_eq!(porta.sources("b1"), [Source::button("East")]);
-        assert_eq!(porta.sources("b2"), [Source::key("X"), Source::key("Space")]);
-        assert!(porta.sources("up").contains(&Source::button("DPadUp")));
+    fn with_a_controller_the_changed_line_replaces_the_default() {
+        let loaded = from_text("[port1]\ncontroller = \"Pad\"\nb1 = button:East\nb2 = key:X, key:Space\n");
+        let port = loaded.settings.controls.player(0).unwrap();
+        assert_eq!(port.sources("b1"), [Source::button("East")]);
+        assert_eq!(port.sources("b2"), [Source::key("X"), Source::key("Space")]);
+        assert!(port.sources("up").contains(&Source::button("DPadUp")));
     }
 
-    /// O exemplo que o `--exemplo` imprime tem de ser um arquivo que o leitor aceita sem
-    /// reclamar. Um exemplo que dá aviso ensina errado.
+    /// The example `--example` prints has to be a file the reader accepts without complaint. An
+    /// example that warns teaches the wrong thing.
     #[test]
-    fn o_exemplo_distribuido_e_valido() {
-        let lido = de_texto(&modelo());
-        assert!(lido.avisos.is_empty(), "{:?}", lido.avisos);
+    fn the_shipped_example_is_valid() {
+        let loaded = from_text(&model());
+        assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
     }
 
-    /// **Cada linha do arquivo gerado diz o que já valeria sem ela.** É o que permite entregá-lo
-    /// com tudo escrito: quem edita vê o padrão e o troca, em vez de adivinhar o que escrever.
-    /// Um padrão que mude no código sem mudar aqui cai neste teste.
+    /// **Every line of the generated file says what would already apply without it.** That is
+    /// what lets it ship with everything written: whoever edits sees the default and changes it,
+    /// instead of guessing what to write. A default that changes in the code without changing
+    /// here fails this test.
     #[test]
-    fn o_arquivo_completo_descreve_os_proprios_padroes() {
-        assert_eq!(de_texto(&modelo()).settings, de_texto("").settings);
+    fn the_full_file_describes_its_own_defaults() {
+        assert_eq!(from_text(&model()).settings, from_text("").settings);
     }
 
-    /// E as portas saem completas: as duas seções, com os treze botões cada uma.
+    /// And the ports come out complete: both sections, with thirteen buttons each.
     #[test]
-    fn as_portas_saem_com_todos_os_botoes() {
-        let texto = modelo();
-        for porta in 1..=zeebx::input::PORTAS {
-            assert!(texto.contains(&format!("[port{porta}]")), "falta a porta {porta}");
+    fn the_ports_come_out_with_every_button() {
+        let text = model();
+        for port in 1..=zeebx::input::PORTS {
+            assert!(text.contains(&format!("[port{port}]")), "port {port} is missing");
         }
-        let lido = de_texto(&texto);
-        for indice in 0..zeebx::input::PORTAS {
-            let player = lido.settings.controls.player(indice).unwrap();
-            for botao in zeebx::input::bindings::CONFIGURABLE {
+        let loaded = from_text(&text);
+        for index in 0..zeebx::input::PORTS {
+            let player = loaded.settings.controls.player(index).unwrap();
+            for button in zeebx::input::bindings::CONFIGURABLE {
                 assert!(
-                    !player.sources(botao).is_empty(),
-                    "porta {indice}: o botão {botao} saiu sem origem"
+                    !player.sources(button).is_empty(),
+                    "port {index}: button {button} came out with no source"
                 );
             }
         }
-        // A segunda continua desligada: ela aparece para ser editada, não para ser ligada.
-        assert!(!lido.settings.controls.player(1).unwrap().ligada);
+        // The second stays off: it shows up to be edited, not to be turned on.
+        assert!(!loaded.settings.controls.player(1).unwrap().enabled);
     }
 }
 
 #[cfg(test)]
-mod testes_de_criacao {
+mod creation_tests {
     use super::*;
 
-    fn pasta(nome: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("zeebx-headless-{nome}"));
+    fn dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("zeebx-headless-{name}"));
         let _ = std::fs::remove_dir_all(&dir);
         dir
     }
 
-    /// O que a primeira execução escreve tem de voltar a ser lido sem nenhum aviso, e dar
-    /// exatamente as opções de fábrica. Um arquivo criado que já nasce reclamando seria pior
-    /// que nenhum.
+    /// What the first run writes has to read back without any warning, and give exactly the
+    /// factory options. A created file that is born complaining would be worse than none.
     #[test]
-    fn o_arquivo_criado_e_lido_de_volta_sem_avisos() {
-        let caminho = pasta("cria").join("config.ini");
-        cria(&caminho).unwrap();
+    fn the_created_file_reads_back_without_warnings() {
+        let path = dir("cria").join("config.ini");
+        create(&path).unwrap();
 
-        let lido = carrega(Some(&caminho));
-        assert!(matches!(lido.origem, Origem::Lida));
-        // O primeiro aviso é o "lendo ..."; nenhum outro.
-        assert_eq!(lido.avisos.len(), 1, "{:?}", lido.avisos);
-        assert_eq!(lido.settings, de_texto("").settings);
-        // E sai reto: um arquivo que nasce torto ensina torto a quem for editá-lo.
-        let texto = std::fs::read_to_string(&caminho).unwrap();
-        for linha in texto.lines() {
+        let loaded = load(Some(&path));
+        assert!(matches!(loaded.origin, ConfigOrigin::Read));
+        // The first warning is the "reading ..."; no other.
+        assert_eq!(loaded.warnings.len(), 1, "{:?}", loaded.warnings);
+        assert_eq!(loaded.settings, from_text("").settings);
+        // And it comes out straight: a file born crooked teaches crookedness to whoever edits it.
+        let text = std::fs::read_to_string(&path).unwrap();
+        for line in text.lines() {
             assert!(
-                !linha.starts_with(' ') && !linha.starts_with('\t'),
-                "linha indentada no arquivo gerado: {linha:?}"
+                !line.starts_with(' ') && !line.starts_with('\t'),
+                "indented line in the generated file: {line:?}"
             );
         }
-        let _ = std::fs::remove_dir_all(caminho.parent().unwrap());
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
-    /// **Nunca por cima.** Um `config.ini` cheio de ajustes é trabalho de quem o escreveu.
+    /// **Never over it.** A `config.ini` full of settings is the work of whoever wrote it.
     #[test]
-    fn nao_escreve_por_cima_do_que_existe() {
-        let caminho = pasta("existente").join("config.ini");
-        std::fs::create_dir_all(caminho.parent().unwrap()).unwrap();
-        std::fs::write(&caminho, "[audio]\nvolume = 7\n").unwrap();
+    fn does_not_overwrite_what_exists() {
+        let path = dir("existente").join("config.ini");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "[audio]\nvolume = 7\n").unwrap();
 
-        assert!(cria(&caminho).is_err());
-        assert_eq!(carrega(Some(&caminho)).settings.audio.volume, 7);
-        let _ = std::fs::remove_dir_all(caminho.parent().unwrap());
+        assert!(create(&path).is_err());
+        assert_eq!(load(Some(&path)).settings.audio.volume, 7);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
-    /// Um `--config=` apontando para o que não existe diz que falta **naquele** caminho: é ali
-    /// que o arquivo deve nascer, e não na pasta de configuração do sistema.
+    /// A `--config=` pointing at something that does not exist says it is missing at **that**
+    /// path: that is where the file should be born, not in the system configuration folder.
     #[test]
-    fn o_config_pedido_e_onde_o_arquivo_vai_nascer() {
-        let caminho = pasta("pedido").join("meu.ini");
-        match carrega(Some(&caminho)).origem {
-            Origem::Faltando(onde) => assert_eq!(onde, caminho),
-            Origem::Lida => panic!("não deveria haver arquivo"),
+    fn the_requested_config_is_where_the_file_is_created() {
+        let path = dir("pedido").join("meu.ini");
+        match load(Some(&path)).origin {
+            ConfigOrigin::Missing(location) => assert_eq!(location, path),
+            ConfigOrigin::Read => panic!("there should be no file"),
         }
     }
 }

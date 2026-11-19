@@ -1,22 +1,22 @@
-//! Leitura de RIFF/WAVE.
+//! RIFF/WAVE reading.
 //!
-//! É o formato em que os jogos entregam som ao BREW: eles passam um `AEEMediaData` de
-//! `MMD_BUFFER` apontando para um RIFF em memória. Quake, Zeebo Sports Peteca e Double Dragon
-//! usam PCM sem compressão, mono, de 8 ou 16 bits, em taxas de 11025 a 44100 Hz; o Pac-Mania
-//! usa IMA ADPCM, que comprime cada amostra em quatro bits.
+//! It's the format in which games hand sound to BREW: they pass an `AEEMediaData` of
+//! `MMD_BUFFER` pointing to a RIFF in memory. Quake, Zeebo Sports Peteca and Double Dragon use
+//! uncompressed PCM, mono, 8 or 16 bits, at rates from 11025 to 44100 Hz; Pac-Mania uses IMA
+//! ADPCM, which compresses each sample into four bits.
 //!
-//! Escrito à mão em vez de vir de uma dependência porque é um cabeçalho de doze bytes e uma
-//! lista de blocos. Um formato que ainda não sabemos ler é **recusado com nome**, e não
-//! decodificado por acaso: é o nome que diz o que implementar depois.
+//! Written by hand instead of coming from a dependency because it's a twelve-byte header and a
+//! list of chunks. A format we can't read yet is **rejected by name**, not decoded by chance:
+//! the name is what tells us what to implement next.
 
-/// `WAVE_FORMAT_PCM` e `WAVE_FORMAT_IMA_ADPCM`, do cabeçalho de formato do RIFF.
+/// `WAVE_FORMAT_PCM` and `WAVE_FORMAT_IMA_ADPCM`, from the RIFF format header.
 const FORMAT_PCM: u16 = 1;
 const FORMAT_IMA_ADPCM: u16 = 17;
 
-/// Quanto o índice da tabela de passos anda, por nibble. É a tabela do IMA ADPCM.
+/// How far the step table index moves, per nibble. It's the IMA ADPCM table.
 const INDEX_TABLE: [i8; 16] = [-1, -1, -1, -1, 2, 4, 6, 8, -1, -1, -1, -1, 2, 4, 6, 8];
 
-/// Os 89 passos de quantização do IMA ADPCM.
+/// The 89 IMA ADPCM quantization steps.
 const STEP_TABLE: [i32; 89] = [
     7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28, 31, 34, 37, 41, 45, 50, 55, 60, 66,
     73, 80, 88, 97, 107, 118, 130, 143, 157, 173, 190, 209, 230, 253, 279, 307, 337, 371, 408, 449,
@@ -25,7 +25,7 @@ const STEP_TABLE: [i32; 89] = [
     10442, 11487, 12635, 13899, 15289, 16818, 18500, 20350, 22385, 24623, 27086, 29794, 32767,
 ];
 
-/// O estado de um canal do IMA ADPCM: a amostra anterior e onde estamos na tabela de passos.
+/// The state of one IMA ADPCM channel: the previous sample and where we are in the step table.
 #[derive(Debug, Clone, Copy)]
 struct AdpcmChannel {
     predictor: i32,
@@ -33,11 +33,11 @@ struct AdpcmChannel {
 }
 
 impl AdpcmChannel {
-    /// Decodifica um nibble e avança o estado.
+    /// Decodes one nibble and advances the state.
     fn decode(&mut self, nibble: u8) -> i16 {
         let step = STEP_TABLE[self.index.clamp(0, 88) as usize];
-        // O nibble traz três bits de magnitude e um de sinal, e a soma é uma fração do passo:
-        // `step/8` é o termo constante que existe mesmo quando os três bits são zero.
+        // The nibble carries three magnitude bits and one sign bit, and the sum is a fraction of
+        // the step: `step/8` is the constant term that exists even when the three bits are zero.
         let magnitude = i32::from(nibble & 7);
         let mut delta = step >> 3;
         if magnitude & 4 != 0 {
@@ -62,11 +62,11 @@ impl AdpcmChannel {
     }
 }
 
-/// Decodifica o IMA ADPCM de um WAVE.
+/// Decodes the IMA ADPCM of a WAVE.
 ///
-/// Os dados vêm em blocos de `block_align` bytes. Cada bloco começa com quatro bytes por canal
-/// — a primeira amostra e o índice da tabela — e segue com os nibbles. Em estéreo eles vêm
-/// alternando de quatro em quatro bytes por canal; em mono, direto.
+/// The data comes in blocks of `block_align` bytes. Each block starts with four bytes per channel
+/// — the first sample and the table index — and continues with the nibbles. In stereo they
+/// alternate four bytes at a time per channel; in mono, straight through.
 fn decode_ima_adpcm(payload: &[u8], channels: usize, block_align: usize) -> Vec<f32> {
     if channels == 0 || block_align < 4 * channels {
         return Vec::new();
@@ -85,13 +85,13 @@ fn decode_ima_adpcm(payload: &[u8], channels: usize, block_align: usize) -> Vec<
                 }
             })
             .collect();
-        // A amostra do cabeçalho é a primeira de cada canal.
+        // The header sample is the first one of each channel.
         for channel in &state {
             out.push(channel.predictor as f32 / 32768.0);
         }
 
         let body = &block[4 * channels..];
-        // Cada grupo traz quatro bytes — oito amostras — de cada canal, em ordem.
+        // Each group carries four bytes — eight samples — of each channel, in order.
         for group in body.chunks(4 * channels) {
             let mut decoded = vec![Vec::with_capacity(8); channels];
             for (channel, lane) in group.chunks(4).enumerate().take(channels) {
@@ -111,21 +111,21 @@ fn decode_ima_adpcm(payload: &[u8], channels: usize, block_align: usize) -> Vec<
     out
 }
 
-/// Um som pronto para tocar: amostras normalizadas em `-1.0..=1.0`, intercaladas por canal.
+/// A sound ready to play: samples normalized to `-1.0..=1.0`, interleaved by channel.
 #[derive(Debug, Clone)]
 pub struct Sound {
     pub rate: u32,
     pub channels: u16,
     pub samples: Vec<f32>,
-    /// A mesma onda em 16 bits, quando o buffer em `f32` não coube.
+    /// The same waveform in 16 bits, when the `f32` buffer didn't fit.
     ///
-    /// Vazio no caminho normal. A trilha de 86,67 s do Double Dragon pede 7.688.424
-    /// bytes em `f32` (`(duração + 0,5) × 22050 + 1`, vezes 4). Na Vita esse
-    /// `malloc` falha — o heap de 232 MB já está partido pelo heap do jogo — e o
-    /// processo aborta. Em 16 bits a mesma trilha ocupa a metade.
-    pub compacto: Vec<i16>,
-    /// Preenchido por outra thread. `None` quando o som já chegou pronto.
-    ao_vivo: Option<std::sync::Arc<AoVivo>>,
+    /// Empty on the normal path. Double Dragon's 86.67 s track asks for 7,688,424
+    /// bytes in `f32` (`(duration + 0.5) × 22050 + 1`, times 4). On the Vita that
+    /// `malloc` fails — the 232 MB heap is already fragmented by the game's heap — and
+    /// the process aborts. In 16 bits the same track takes half.
+    pub compact: Vec<i16>,
+    /// Filled by another thread. `None` when the sound arrived ready.
+    live: Option<std::sync::Arc<LiveBuffer>>,
 }
 
 impl PartialEq for Sound {
@@ -133,147 +133,147 @@ impl PartialEq for Sound {
         self.rate == other.rate
             && self.channels == other.channels
             && self.samples == other.samples
-            && self.compacto == other.compacto
-            && self.ao_vivo.is_none()
-            && other.ao_vivo.is_none()
+            && self.compact == other.compact
+            && self.live.is_none()
+            && other.live.is_none()
     }
 }
 
 impl Sound {
-    pub fn novo(rate: u32, channels: u16, samples: Vec<f32>) -> Self {
+    pub fn create(rate: u32, channels: u16, samples: Vec<f32>) -> Self {
         Self {
             rate,
             channels,
             samples,
-            compacto: Vec::new(),
-            ao_vivo: None,
+            compact: Vec::new(),
+            live: None,
         }
     }
 
-    pub fn de_i16(rate: u32, channels: u16, compacto: Vec<i16>) -> Self {
+    pub fn from_i16(rate: u32, channels: u16, compact: Vec<i16>) -> Self {
         Self {
             rate,
             channels,
             samples: Vec::new(),
-            compacto,
-            ao_vivo: None,
+            compact,
+            live: None,
         }
     }
 
-    pub(crate) fn em_sintese(rate: u32, channels: u16, ao_vivo: std::sync::Arc<AoVivo>) -> Self {
+    pub(crate) fn synthesizing(rate: u32, channels: u16, live: std::sync::Arc<LiveBuffer>) -> Self {
         Self {
             rate,
             channels,
             samples: Vec::new(),
-            compacto: Vec::new(),
-            ao_vivo: Some(ao_vivo),
+            compact: Vec::new(),
+            live: Some(live),
         }
     }
 
-    /// Quantas amostras há, seja no buffer largo ou no compacto.
-    pub fn n_amostras(&self) -> usize {
-        if let Some(vivo) = &self.ao_vivo {
-            return vivo.total;
+    /// How many samples there are, whether in the wide buffer or the compact one.
+    pub fn n_samples(&self) -> usize {
+        if let Some(live) = &self.live {
+            return live.total;
         }
         if self.samples.is_empty() {
-            self.compacto.len()
+            self.compact.len()
         } else {
             self.samples.len()
         }
     }
 
-    /// Bytes que este som ocupa no cache.
+    /// Bytes this sound takes up in the cache.
     pub fn bytes_pcm(&self) -> usize {
-        if let Some(vivo) = &self.ao_vivo {
-            return vivo.bytes;
+        if let Some(live) = &self.live {
+            return live.bytes;
         }
         self.samples.len() * std::mem::size_of::<f32>()
-            + self.compacto.len() * std::mem::size_of::<i16>()
+            + self.compact.len() * std::mem::size_of::<i16>()
     }
 
-    /// A amostra `indice` já foi escrita. Som pronto responde sempre que sim.
-    pub fn alcanca(&self, indice: usize) -> bool {
-        let Some(vivo) = &self.ao_vivo else {
+    /// Sample `index` has already been written. A ready sound always answers yes.
+    pub fn reaches(&self, index: usize) -> bool {
+        let Some(live) = &self.live else {
             return true;
         };
-        let prontas = vivo.prontas.load(std::sync::atomic::Ordering::Acquire);
-        prontas >= vivo.total || indice < prontas
+        let ready = live.ready.load(std::sync::atomic::Ordering::Acquire);
+        ready >= live.total || index < ready
     }
 
-    /// A amostra `i`, em `-1.0..=1.0`.
-    pub fn ler(&self, i: usize) -> f32 {
-        if let Some(vivo) = &self.ao_vivo {
-            return vivo.ler(i);
+    /// Sample `i`, in `-1.0..=1.0`.
+    pub fn read(&self, i: usize) -> f32 {
+        if let Some(live) = &self.live {
+            return live.read(i);
         }
         if let Some(s) = self.samples.get(i) {
             return *s;
         }
-        self.compacto
+        self.compact
             .get(i)
             .map(|s| f32::from(*s) / 32767.0)
             .unwrap_or(0.0)
     }
 
-    /// Quantos quadros de áudio o som tem — uma amostra por canal conta como um.
+    /// How many audio frames the sound has — one sample per channel counts as one.
     pub fn frames(&self) -> usize {
         match self.channels {
             0 => 0,
-            channels => self.n_amostras() / channels as usize,
+            channels => self.n_samples() / channels as usize,
         }
     }
 }
 
-/// Buffer que uma thread enche enquanto o jogo já segue.
+/// A buffer that a thread fills while the game carries on.
 ///
-/// A síntese de uma trilha longa leva segundos na Vita. Feita no fio do quadro,
-/// a imagem para e só volta quando a conta acaba. Aqui o fio do jogo recebe o
-/// som na hora, com o tamanho certo, e a voz espera a amostra que ainda não
-/// existe em vez de pular para o meio da música.
-pub(crate) struct AoVivo {
+/// Synthesizing a long track takes seconds on the Vita. Done on the frame thread,
+/// the picture stops and only comes back when the work is over. Here the game thread
+/// gets the sound right away, with the right size, and the voice waits for the sample
+/// that doesn't exist yet instead of jumping to the middle of the music.
+pub(crate) struct LiveBuffer {
     samples: std::cell::UnsafeCell<Vec<f32>>,
-    compacto: std::cell::UnsafeCell<Vec<i16>>,
-    prontas: std::sync::atomic::AtomicUsize,
+    compact: std::cell::UnsafeCell<Vec<i16>>,
+    ready: std::sync::atomic::AtomicUsize,
     total: usize,
     bytes: usize,
 }
 
-impl std::fmt::Debug for AoVivo {
+impl std::fmt::Debug for LiveBuffer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AoVivo")
+        f.debug_struct("LiveBuffer")
             .field("total", &self.total)
             .field(
-                "prontas",
-                &self.prontas.load(std::sync::atomic::Ordering::Relaxed),
+                "ready",
+                &self.ready.load(std::sync::atomic::Ordering::Relaxed),
             )
             .finish()
     }
 }
 
-// Quem lê só enxerga índices já publicados. Quem escreve publica o fim da
-// janela depois de gravá-la, com `Release`. Não há amostra lida e escrita
-// ao mesmo tempo.
-unsafe impl Send for AoVivo {}
-unsafe impl Sync for AoVivo {}
+// The reader only sees indices already published. The writer publishes the end of
+// the window after writing it, with `Release`. No sample is read and written
+// at the same time.
+unsafe impl Send for LiveBuffer {}
+unsafe impl Sync for LiveBuffer {}
 
-impl AoVivo {
-    pub(crate) fn de_f32(samples: Vec<f32>) -> Self {
+impl LiveBuffer {
+    pub(crate) fn from_f32(samples: Vec<f32>) -> Self {
         let total = samples.len();
         Self {
             bytes: total * std::mem::size_of::<f32>(),
             samples: std::cell::UnsafeCell::new(samples),
-            compacto: std::cell::UnsafeCell::new(Vec::new()),
-            prontas: std::sync::atomic::AtomicUsize::new(0),
+            compact: std::cell::UnsafeCell::new(Vec::new()),
+            ready: std::sync::atomic::AtomicUsize::new(0),
             total,
         }
     }
 
-    pub(crate) fn de_i16(compacto: Vec<i16>) -> Self {
-        let total = compacto.len();
+    pub(crate) fn from_i16(compact: Vec<i16>) -> Self {
+        let total = compact.len();
         Self {
             bytes: total * std::mem::size_of::<i16>(),
             samples: std::cell::UnsafeCell::new(Vec::new()),
-            compacto: std::cell::UnsafeCell::new(compacto),
-            prontas: std::sync::atomic::AtomicUsize::new(0),
+            compact: std::cell::UnsafeCell::new(compact),
+            ready: std::sync::atomic::AtomicUsize::new(0),
             total,
         }
     }
@@ -282,27 +282,27 @@ impl AoVivo {
         self.total
     }
 
-    pub(crate) fn e_largo(&self) -> bool {
+    pub(crate) fn is_wide(&self) -> bool {
         !unsafe { &*self.samples.get() }.is_empty()
     }
 
-    pub(crate) fn escreve_f32(&self, pos: usize, dados: &[f32]) {
+    pub(crate) fn write_f32(&self, pos: usize, data: &[f32]) {
         let buf = unsafe { &mut *self.samples.get() };
-        buf[pos..pos + dados.len()].copy_from_slice(dados);
+        buf[pos..pos + data.len()].copy_from_slice(data);
     }
 
-    pub(crate) fn escreve_i16(&self, pos: usize, dados: &[i16]) {
-        let buf = unsafe { &mut *self.compacto.get() };
-        buf[pos..pos + dados.len()].copy_from_slice(dados);
+    pub(crate) fn write_i16(&self, pos: usize, data: &[i16]) {
+        let buf = unsafe { &mut *self.compact.get() };
+        buf[pos..pos + data.len()].copy_from_slice(data);
     }
 
-    pub(crate) fn publica(&self, ate: usize) {
-        self.prontas
-            .store(ate, std::sync::atomic::Ordering::Release);
+    pub(crate) fn publish(&self, end: usize) {
+        self.ready
+            .store(end, std::sync::atomic::Ordering::Release);
     }
 
-    fn ler(&self, i: usize) -> f32 {
-        if i >= self.prontas.load(std::sync::atomic::Ordering::Acquire) {
+    fn read(&self, i: usize) -> f32 {
+        if i >= self.ready.load(std::sync::atomic::Ordering::Acquire) {
             return 0.0;
         }
         unsafe {
@@ -310,8 +310,8 @@ impl AoVivo {
             if !samples.is_empty() {
                 return samples.get(i).copied().unwrap_or(0.0);
             }
-            let compacto = &*self.compacto.get();
-            compacto
+            let compact = &*self.compact.get();
+            compact
                 .get(i)
                 .map(|s| f32::from(*s) / 32767.0)
                 .unwrap_or(0.0)
@@ -321,92 +321,93 @@ impl AoVivo {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WavError {
-    /// Não é um RIFF/WAVE.
+    /// Not a RIFF/WAVE.
     NotWave,
-    /// Falta o bloco de formato ou o de dados.
+    /// The format chunk or the data chunk is missing.
     Incomplete,
-    /// O formato existe, mas não é PCM. O número é o `wFormatTag`, que diz qual é.
+    /// The format exists, but it isn't PCM. The number is the `wFormatTag`, which says which it is.
     NotPcm(u16),
-    /// Profundidade de bits que não sabemos ler.
+    /// A bit depth we can't read.
     BadDepth(u16),
 }
 
 impl std::fmt::Display for WavError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NotWave => write!(f, "não é um RIFF/WAVE"),
-            Self::Incomplete => write!(f, "faltam blocos obrigatórios no WAVE"),
-            Self::NotPcm(tag) => write!(f, "o WAVE não é PCM (formato {tag})"),
-            Self::BadDepth(bits) => write!(f, "o WAVE tem {bits} bits por amostra"),
+            Self::NotWave => write!(f, "not a RIFF/WAVE"),
+            Self::Incomplete => write!(f, "the WAVE is missing required chunks"),
+            Self::NotPcm(tag) => write!(f, "the WAVE is not PCM (format {tag})"),
+            Self::BadDepth(bits) => write!(f, "the WAVE has {bits} bits per sample"),
         }
     }
 }
 
-/// Lê um RIFF/WAVE de PCM.
+/// Reads a PCM RIFF/WAVE.
 ///
-/// Quanto o bloco `data` pode passar do fim que o `RIFF` declara antes de valer o `RIFF`.
-const FOLGA_DO_RIFF: usize = 4096;
+/// How far the `data` chunk may go past the end the `RIFF` declares before the `RIFF` wins.
+const RIFF_SLACK: usize = 4096;
 
-/// Um WAVE de PCM em que o bloco `data` passa muito do fim que o `RIFF` declara, com as posições
-/// em bytes contadas do começo do buffer.
+/// A PCM WAVE in which the `data` chunk goes well past the end the `RIFF` declares, with the
+/// positions in bytes counted from the start of the buffer.
 ///
-/// É o caso em que o cabeçalho não decide sozinho onde o som acaba. No Zeebo F.C. Super League o
-/// `RIFF` está certo e o que vem depois é lixo; na Turma da Mônica o `RIFF` é de um molde e a fala
-/// continua depois dele, **escrita enquanto toca**. Quem separa os dois é o que o jogo faz com o
-/// buffer depois do `Play` — ver `Machine::bombeia_buffers_vivos`.
+/// It's the case where the header alone doesn't decide where the sound ends. In Zeebo F.C. Super
+/// League the `RIFF` is right and what comes after is garbage; in Turma da Mônica the `RIFF`
+/// belongs to a template and the speech continues past it, **written while it plays**. What tells
+/// the two apart is what the game does with the buffer after `Play` — see
+/// `Machine::pump_live_buffers`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PcmAberto {
+pub struct OpenPcm {
     pub channels: u16,
     pub rate: u32,
     pub bits: u16,
-    /// Onde começa o PCM.
-    pub inicio: usize,
-    /// Onde o `RIFF` diz que o som acaba.
-    pub fim_riff: usize,
-    /// Onde o bloco `data` acaba, limitado ao buffer.
-    pub fim_data: usize,
+    /// Where the PCM starts.
+    pub start: usize,
+    /// Where the `RIFF` says the sound ends.
+    pub riff_end: usize,
+    /// Where the `data` chunk ends, clamped to the buffer.
+    pub data_end: usize,
 }
 
-/// O [`PcmAberto`] de um buffer, ou `None` quando o cabeçalho basta — outro formato, ou um `data`
-/// que não passa do `RIFF` mais que a folga.
-pub fn pcm_aberto(data: &[u8]) -> Option<PcmAberto> {
-    let estrutura = estrutura(data).ok()?;
-    let (tag, channels, rate, _, bits) = estrutura.format?;
-    let (inicio, fim_data) = estrutura.data?;
-    let passa_do_riff =
-        estrutura.fim_do_riff >= 44 && fim_data > estrutura.fim_do_riff + FOLGA_DO_RIFF;
-    (tag == FORMAT_PCM && matches!(bits, 8 | 16) && channels > 0 && rate > 0 && passa_do_riff)
-        .then_some(PcmAberto {
+/// The [`OpenPcm`] of a buffer, or `None` when the header is enough — another format, or a `data`
+/// that doesn't go past the `RIFF` by more than the slack.
+pub fn open_pcm(data: &[u8]) -> Option<OpenPcm> {
+    let layout = layout(data).ok()?;
+    let (tag, channels, rate, _, bits) = layout.format?;
+    let (start, data_end) = layout.data?;
+    let past_riff =
+        layout.riff_end >= 44 && data_end > layout.riff_end + RIFF_SLACK;
+    (tag == FORMAT_PCM && matches!(bits, 8 | 16) && channels > 0 && rate > 0 && past_riff)
+        .then_some(OpenPcm {
             channels,
             rate,
             bits,
-            inicio,
-            fim_riff: estrutura.fim_do_riff.max(inicio),
-            fim_data,
+            start,
+            riff_end: layout.riff_end.max(start),
+            data_end,
         })
 }
 
-/// Os blocos de um RIFF/WAVE, sem interpretar o PCM.
-struct Estrutura {
-    /// `(formato, canais, taxa, alinhamento de bloco, bits)`.
+/// The chunks of a RIFF/WAVE, without interpreting the PCM.
+struct WavLayout {
+    /// `(format, channels, rate, alignment from block, bits)`.
     format: Option<(u16, u16, u32, u16, u16)>,
-    /// Onde o bloco `data` começa e acaba, limitado ao buffer.
+    /// Where the `data` chunk starts and ends, clamped to the buffer.
     data: Option<(usize, usize)>,
-    fim_do_riff: usize,
+    riff_end: usize,
 }
 
-fn estrutura(data: &[u8]) -> Result<Estrutura, WavError> {
+fn layout(data: &[u8]) -> Result<WavLayout, WavError> {
     if data.len() < 12 || &data[0..4] != b"RIFF" || &data[8..12] != b"WAVE" {
         return Err(WavError::NotWave);
     }
-    let fim_do_riff = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize + 8;
-    let mut estrutura = Estrutura {
+    let riff_end = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize + 8;
+    let mut layout = WavLayout {
         format: None,
         data: None,
-        fim_do_riff,
+        riff_end,
     };
-    // Os blocos vêm em sequência, cada um com identificador e tamanho. Um bloco de tamanho
-    // ímpar é seguido de um byte de alinhamento que não conta no tamanho.
+    // The chunks come in sequence, each with an identifier and a size. An odd-sized chunk is
+    // followed by a padding byte that doesn't count in the size.
     let mut at = 12usize;
     while at + 8 <= data.len() {
         let id = &data[at..at + 4];
@@ -422,43 +423,44 @@ fn estrutura(data: &[u8]) -> Result<Estrutura, WavError> {
                     data[body + 6],
                     data[body + 7],
                 ]);
-                estrutura.format = Some((read16(0), read16(2), rate, read16(12), read16(14)));
+                layout.format = Some((read16(0), read16(2), rate, read16(12), read16(14)));
             }
-            b"data" => estrutura.data = Some((body, end)),
+            b"data" => layout.data = Some((body, end)),
             _ => {}
         }
         at = body + len as usize + (len as usize & 1);
     }
-    Ok(estrutura)
+    Ok(layout)
 }
 
 pub fn parse(data: &[u8]) -> Result<Sound, WavError> {
-    // **O arquivo acaba onde o RIFF diz, e não onde o buffer acaba.** O Zeebo F.C. Super League
-    // monta cada som num buffer de rascunho de 500 KB e escreve no bloco `data` o tamanho do
-    // buffer inteiro, mas o `RIFF` com o tamanho de verdade (14 KB). Seguir o `data` tocava onze
-    // segundos: o efeito e depois lixo de memória, alto, por cima da música. Um `RIFF` que não cabe
-    // num cabeçalho — zero, ou maior que o buffer, como o de quem grava em fluxo — não limita nada.
+    // **The file ends where the RIFF says, not where the buffer ends.** Zeebo F.C. Super League
+    // builds each sound in a 500 KB scratch buffer and writes the size of the whole buffer into
+    // the `data` chunk, but the real size (14 KB) into the `RIFF`. Following `data` played eleven
+    // seconds: the effect and then memory garbage, loud, over the music. A `RIFF` that doesn't fit
+    // a header — zero, or larger than the buffer, as from a streaming writer — limits nothing.
     //
-    // Só vale quando o `data` passa **muito** do fim declarado: um arquivo editado com um bloco a
-    // mais e o `RIFF` desatualizado erra por poucos bytes, e cortá-lo perderia o fim do som.
+    // It only applies when `data` goes **well** past the declared end: a file edited with one
+    // more chunk and a stale `RIFF` is off by a few bytes, and cutting it would lose the end of
+    // the sound.
     //
-    // Esta é a leitura de um instante. Quando o jogo continua escrevendo depois do `RIFF` enquanto
-    // o som toca — a fala da Turma da Mônica —, quem estende o som é a reprodução, e não o
-    // parser: ver [`pcm_aberto`].
-    let estrutura = estrutura(data)?;
+    // This is a snapshot read. When the game keeps writing past the `RIFF` while the sound plays
+    // — Turma da Mônica's speech —, what extends the sound is playback, not the parser: see
+    // [`open_pcm`].
+    let layout = layout(data)?;
     let (Some((tag, channels, rate, align, bits)), Some((body, end))) =
-        (estrutura.format, estrutura.data)
+        (layout.format, layout.data)
     else {
         return Err(WavError::Incomplete);
     };
-    let fim_do_riff = estrutura.fim_do_riff;
-    let end = match fim_do_riff >= 44 && end > fim_do_riff + FOLGA_DO_RIFF {
-        true => fim_do_riff.max(body),
+    let riff_end = layout.riff_end;
+    let end = match riff_end >= 44 && end > riff_end + RIFF_SLACK {
+        true => riff_end.max(body),
         false => end,
     };
     let payload = &data[body..end];
     if tag == FORMAT_IMA_ADPCM {
-        return Ok(Sound::novo(
+        return Ok(Sound::create(
             rate.max(1),
             channels.max(1),
             decode_ima_adpcm(payload, channels.max(1) as usize, align as usize),
@@ -468,7 +470,7 @@ pub fn parse(data: &[u8]) -> Result<Sound, WavError> {
         return Err(WavError::NotPcm(tag));
     }
     let samples = match bits {
-        // PCM de 8 bits é **sem sinal**, com o silêncio em 128; o de 16 é com sinal.
+        // 8-bit PCM is **unsigned**, with silence at 128; 16-bit is signed.
         8 => payload
             .iter()
             .map(|&b| (b as f32 - 128.0) / 128.0)
@@ -479,21 +481,21 @@ pub fn parse(data: &[u8]) -> Result<Sound, WavError> {
             .collect(),
         other => return Err(WavError::BadDepth(other)),
     };
-    Ok(Sound::novo(rate.max(1), channels.max(1), samples))
+    Ok(Sound::create(rate.max(1), channels.max(1), samples))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Monta um WAVE com o formato e os bytes de dados dados. O alinhamento de bloco sai da
-    /// profundidade, como num PCM.
+    /// Builds a WAVE with the given format and data bytes. The block alignment comes from the
+    /// depth, as in a PCM.
     fn build(tag: u16, channels: u16, rate: u32, bits: u16, data: &[u8]) -> Vec<u8> {
         build_aligned(tag, channels, rate, bits, channels * bits / 8, data)
     }
 
-    /// A mesma coisa, com o alinhamento de bloco dito à parte — que é o que o ADPCM precisa,
-    /// porque nele o bloco não tem relação com a profundidade.
+    /// The same thing, with the block alignment given separately — which is what ADPCM needs,
+    /// because there the block has no relation to the depth.
     fn build_aligned(
         tag: u16,
         channels: u16,
@@ -524,55 +526,55 @@ mod tests {
         out
     }
 
-    /// O som ocupa o começo de um buffer maior, o `data` diz o tamanho do buffer e o `RIFF` diz o
-    /// do som: vale o `RIFF`, e o lixo depois dele não toca. É o buffer de rascunho do Zeebo F.C.
-    /// Super League.
+    /// The sound takes up the start of a larger buffer, `data` gives the buffer's size and `RIFF`
+    /// gives the sound's: the `RIFF` wins, and the garbage after it doesn't play. It's the scratch
+    /// buffer of Zeebo F.C. Super League.
     ///
-    /// **O `sfx_bal_all.wav` da Turma da Mônica não confirma esta regra**, embora já tenha sido
-    /// citado como prova. O buffer de 882.000 bytes dela é um molde com o cabeçalho desse efeito
-    /// (`RIFF` de 56.352), e por ele passam as falas, de até cinco segundos, decodificadas enquanto
-    /// tocam. O `RIFF` do molde nunca muda — medido em trinta segundos de jogo. Quem estende o som
-    /// além dele é a reprodução: ver [`pcm_aberto`].
+    /// **Turma da Mônica's `sfx_bal_all.wav` does not confirm this rule**, although it has been
+    /// cited as proof. Its 882,000-byte buffer is a template with that effect's header (`RIFF` of
+    /// 56,352), and the speech lines pass through it, up to five seconds long, decoded while they
+    /// play. The template's `RIFF` never changes — measured over thirty seconds of play. What
+    /// extends the sound past it is playback: see [`open_pcm`].
     #[test]
-    fn o_riff_limita_um_data_maior_que_o_som() {
-        assert_eq!(parse(&buffer_de_rascunho()).unwrap().frames(), 2);
+    fn the_riff_caps_a_data_chunk_larger_than_the_sound() {
+        assert_eq!(parse(&scratch_buffer()).unwrap().frames(), 2);
     }
 
-    /// Dois quadros de som, o `RIFF` dizendo isso e o `data` dizendo 10.000 bytes de buffer.
-    fn buffer_de_rascunho() -> Vec<u8> {
-        let som = build(FORMAT_PCM, 1, 22050, 16, &[0x10, 0x00, 0x20, 0x00]);
-        let mut buffer = som.clone();
+    /// Two frames of sound, the `RIFF` saying so and `data` saying 10,000 bytes of buffer.
+    fn scratch_buffer() -> Vec<u8> {
+        let sound = build(FORMAT_PCM, 1, 22050, 16, &[0x10, 0x00, 0x20, 0x00]);
+        let mut buffer = sound.clone();
         buffer.extend(std::iter::repeat(0x7f).take(9996));
-        let data_em = som.len() - 4 - 4;
-        buffer[data_em..data_em + 4].copy_from_slice(&10_000u32.to_le_bytes());
+        let data_at = sound.len() - 4 - 4;
+        buffer[data_at..data_at + 4].copy_from_slice(&10_000u32.to_le_bytes());
         buffer
     }
 
-    /// O buffer em que o cabeçalho não decide sozinho é reconhecido, com as três posições.
+    /// The buffer where the header alone doesn't decide is recognized, with the three positions.
     #[test]
-    fn o_pcm_aberto_diz_onde_cada_cabecalho_acaba() {
-        let buffer = buffer_de_rascunho();
-        let aberto = pcm_aberto(&buffer).expect("o data passa do RIFF");
-        assert_eq!((aberto.rate, aberto.channels, aberto.bits), (22050, 1, 16));
-        assert_eq!(aberto.inicio, 44);
-        assert_eq!(aberto.fim_riff, 48);
-        assert_eq!(aberto.fim_data, buffer.len());
+    fn open_pcm_says_where_each_header_ends() {
+        let buffer = scratch_buffer();
+        let opened = open_pcm(&buffer).expect("the data goes past the RIFF");
+        assert_eq!((opened.rate, opened.channels, opened.bits), (22050, 1, 16));
+        assert_eq!(opened.start, 44);
+        assert_eq!(opened.riff_end, 48);
+        assert_eq!(opened.data_end, buffer.len());
     }
 
-    /// Um WAVE comum, e um com o `RIFF` só um pouco atrás do `data`, não são abertos: o
-    /// cabeçalho basta.
+    /// A plain WAVE, and one with the `RIFF` only a little behind `data`, are not opened: the
+    /// header is enough.
     #[test]
-    fn um_wave_comum_nao_e_aberto() {
-        let som = build(FORMAT_PCM, 1, 22050, 16, &[0; 4000]);
-        assert_eq!(pcm_aberto(&som), None);
-        let mut editado = som.clone();
-        editado[4..8].copy_from_slice(&((som.len() - 8 - 100) as u32).to_le_bytes());
-        assert_eq!(pcm_aberto(&editado), None);
-        assert_eq!(pcm_aberto(b"RIFF\0\0\0\0WAVE"), None);
+    fn a_plain_wave_is_not_opened() {
+        let sound = build(FORMAT_PCM, 1, 22050, 16, &[0; 4000]);
+        assert_eq!(open_pcm(&sound), None);
+        let mut edited = sound.clone();
+        edited[4..8].copy_from_slice(&((sound.len() - 8 - 100) as u32).to_le_bytes());
+        assert_eq!(open_pcm(&edited), None);
+        assert_eq!(open_pcm(b"RIFF\0\0\0\0WAVE"), None);
     }
 
     #[test]
-    fn le_pcm_de_16_bits() {
+    fn reads_16_bit_pcm() {
         let mut data = Vec::new();
         for value in [0i16, 16384, -16384, i16::MIN] {
             data.extend_from_slice(&value.to_le_bytes());
@@ -587,9 +589,9 @@ mod tests {
     }
 
     #[test]
-    fn o_pcm_de_8_bits_e_sem_sinal_com_o_silencio_em_128() {
-        // Ler 8 bits como se fosse com sinal transforma silêncio em estouro; é o erro clássico
-        // deste formato.
+    fn eight_bit_pcm_is_unsigned_with_silence_at_128() {
+        // Reading 8 bits as if signed turns silence into clipping; it's the classic mistake with
+        // this format.
         let sound = parse(&build(FORMAT_PCM, 1, 11025, 8, &[128, 255, 0, 192])).unwrap();
         assert_eq!(sound.samples[0], 0.0);
         assert_eq!(sound.samples[1], (255.0 - 128.0) / 128.0);
@@ -598,48 +600,48 @@ mod tests {
     }
 
     #[test]
-    fn blocos_desconhecidos_no_meio_sao_pulados() {
-        // O Double Dragon manda um `bext` antes do `fmt `; parar no primeiro bloco estranho
-        // perderia o som inteiro.
+    fn unknown_chunks_in_the_middle_are_skipped() {
+        // Double Dragon sends a `bext` before the `fmt `; stopping at the first unfamiliar chunk
+        // would lose the whole sound.
         let mut wave = build(FORMAT_PCM, 1, 8000, 8, &[128, 128]);
-        let mut com_extra = wave[..12].to_vec();
-        com_extra.extend_from_slice(b"bext");
-        com_extra.extend_from_slice(&3u32.to_le_bytes());
-        com_extra.extend_from_slice(&[1, 2, 3, 0]); // três bytes mais o alinhamento
-        com_extra.extend_from_slice(&wave[12..]);
-        wave = com_extra;
+        let mut with_extra = wave[..12].to_vec();
+        with_extra.extend_from_slice(b"bext");
+        with_extra.extend_from_slice(&3u32.to_le_bytes());
+        with_extra.extend_from_slice(&[1, 2, 3, 0]); // three bytes plus the padding
+        with_extra.extend_from_slice(&wave[12..]);
+        wave = with_extra;
         let sound = parse(&wave).unwrap();
         assert_eq!(sound.frames(), 2);
     }
 
     #[test]
-    fn um_formato_desconhecido_e_recusado_com_nome() {
-        // Recusar dizendo qual é o formato é o que permite saber o que implementar depois: foi
-        // assim que o ADPCM do Pac-Mania apareceu.
+    fn an_unknown_format_is_rejected_by_name() {
+        // Rejecting while saying which format it is is what lets us know what to implement next:
+        // that's how Pac-Mania's ADPCM showed up.
         let err = parse(&build(85, 1, 8000, 4, &[0, 1, 2, 3]));
         assert_eq!(err, Err(WavError::NotPcm(85)));
     }
 
     #[test]
-    fn o_ima_adpcm_segue_a_tabela_de_passos() {
-        // Valores conferidos à mão pela especificação do IMA. Bloco com a primeira amostra em
-        // zero e o índice em zero, seguido dos nibbles 4 e 4:
-        //   nibble 4: passo 7, delta = 7>>3 + 7 = 7  -> amostra 7,  índice vai a 2
-        //   nibble 4: passo 9, delta = 9>>3 + 9 = 10 -> amostra 17, índice vai a 4
-        // Os nibbles vêm com o de baixo primeiro, então os dois cabem no byte 0x44.
-        let mut data = vec![0u8, 0, 0, 0]; // predictor = 0, índice = 0, reservado
+    fn ima_adpcm_follows_the_step_table() {
+        // Values checked by hand against the IMA specification. A block with the first sample at
+        // zero and the index at zero, followed by nibbles 4 and 4:
+        //   nibble 4: step 7, delta = 7>>3 + 7 = 7  -> sample 7,  index goes to 2
+        //   nibble 4: step 9, delta = 9>>3 + 9 = 10 -> sample 17, index goes to 4
+        // The nibbles come low one first, so both fit in byte 0x44.
+        let mut data = vec![0u8, 0, 0, 0]; // predictor = 0, index = 0, reserved
         data.extend_from_slice(&[0x44, 0, 0, 0]);
         let sound = parse(&build_aligned(FORMAT_IMA_ADPCM, 1, 8000, 4, 8, &data)).unwrap();
 
-        assert_eq!(sound.samples[0], 0.0, "a amostra do cabeçalho vem primeiro");
+        assert_eq!(sound.samples[0], 0.0, "the header sample comes first");
         assert_eq!(sound.samples[1], 7.0 / 32768.0);
         assert_eq!(sound.samples[2], 17.0 / 32768.0);
     }
 
     #[test]
-    fn o_adpcm_com_bloco_maior_que_os_dados_nao_estoura() {
-        // Um bloco anunciado com 1024 bytes e um punhado de dados de verdade tem que sair
-        // curto, não derrubar o emulador.
+    fn adpcm_with_a_block_larger_than_the_data_does_not_overflow() {
+        // A block announced as 1024 bytes with a handful of real data has to come out short,
+        // not bring down the emulator.
         let sound = parse(&build_aligned(
             FORMAT_IMA_ADPCM,
             1,
@@ -653,15 +655,15 @@ mod tests {
     }
 
     #[test]
-    fn o_que_nao_e_wave_e_recusado() {
+    fn what_is_not_wave_is_rejected() {
         assert_eq!(parse(b"nao sou um wave"), Err(WavError::NotWave));
         assert_eq!(parse(&[]), Err(WavError::NotWave));
     }
 
     #[test]
-    fn um_wave_sem_dados_nao_vira_som() {
+    fn a_wave_without_data_does_not_become_sound() {
         let mut wave = build(FORMAT_PCM, 1, 8000, 16, &[]);
-        // Corta o bloco `data` fora.
+        // Cut the `data` chunk off.
         wave.truncate(wave.len() - 8);
         assert_eq!(parse(&wave), Err(WavError::Incomplete));
     }

@@ -1,6 +1,6 @@
-//! Reexports da biblioteca de ROMs para a interface desktop.
+//! Re-exports of the ROM library for the desktop interface.
 //!
-//! O catálogo, leitura de `.mif` e extensões pertencem ao motor porque `Session` e SQL também os
-//! usam. A UI mantém este caminho público durante a migração para não quebrar seus chamadores.
+//! The catalog, `.mif` reading and extensions belong to the engine because `Session` and SQL use
+//! them too. The UI keeps this public path during the migration so as not to break its callers.
 
 pub use crate::library::*;

@@ -1,7 +1,7 @@
-# ROMs / conteúdo de jogos — nunca versionar
+# ROMs / game content — never commit
 roms/
 
-# Material de terceiros espelhado (docs Qualcomm/Zeebo, SDKs, dumps de firmware, clones)
+# Mirrored third-party material (Qualcomm/Zeebo docs, SDKs, firmware dumps, clones)
 docs/vendor/
 
 # Build
@@ -14,46 +14,53 @@ cmake-build-*/
 *.dll
 *.exe
 
-# macOS / editores
+# macOS / editors
 .DS_Store
 .idea/
 .vscode/
 *.swp
 
+# Python: bytecode cache written when the tools/ scripts run.
+__pycache__/
+*.pyc
+
 # Rust
 /target/
-# O cxx-qt-build escreve a configuração do servidor de linguagem QML com o caminho desta máquina.
+
+# Python tools drop bytecode next to the scripts.
+__pycache__/
+# cxx-qt-build writes the QML language server configuration with this machine's path.
 .qmlls.ini
 
-# Saídas de depuração do `run` (--dump-heap) e o framebuffer exportado
+# Debug output from `run` (--dump-heap) and the exported framebuffer
 heap.bin
 module.bin
 *.bmp
 
-# Servidores privados vivem em repositórios próprios, ao lado deste.
+# Private servers live in their own repositories, next to this one.
 zeeboids-server/
 OperaMini-Server/
 
-# Material do console (firmware, configs, pacotes do sistema) fica fora do repositório.
+# Console material (firmware, configs, system packages) stays out of the repository.
 vendor/
 
-# Relatórios que o emulador escreve ao lado do executável, um por execução.
+# Reports the emulator writes next to the executable, one per run.
 *.log
 *.bmp
 .nodeterm/project.json
 ref z-wheel2.png
 
-# Android: o Gradle e o `.so` copiado pelo `cargo-ndk` são saída de build, não fonte.
+# Android: Gradle and the `.so` copied by `cargo-ndk` are build output, not source.
 frontends/android/apk/.gradle/
 frontends/android/apk/local.properties
 frontends/android/apk/app/src/main/jniLibs/
 frontends/android/apk/app/src/main/assets/licenses/
-frontends/switch/saida/
-frontends/vita-standalone/saida/
+frontends/switch/out/
+frontends/vita-standalone/out/
 
-# Xcode: estado local. O projeto em si (`project.pbxproj`) fica versionado.
+# Xcode: local state. The project itself (`project.pbxproj`) stays versioned.
 xcuserdata/
 *.xcuserstate
 
-# Wiki do GitHub: repositório próprio (zeebx-emu.wiki.git), clonado aqui só para edição.
+# GitHub wiki: its own repository (zeebx-emu.wiki.git), cloned here only for editing.
 /wiki/

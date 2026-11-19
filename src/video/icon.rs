@@ -1,24 +1,24 @@
-//! As imagens que vêm dentro dos jogos.
+//! The images that come inside the games.
 //!
-//! Um `.mif` guarda o ícone do título já pronto para exibição, e cada console gravou o dele no
-//! formato que quis: os jogos mais novos usam PNG, os da primeira leva usam BMP paletado, e o
-//! Z-Wheel usa JPEG. Como os três aparecem nas ROMs reais, os três são lidos aqui.
+//! A `.mif` holds the title's icon ready for display, and each console stored its own in
+//! whatever format it wanted: the newer games use PNG, the first batch uses paletted BMP, and the
+//! Z-Wheel uses JPEG. Since all three show up in real ROMs, all three are read here.
 //!
-//! O BMP é decodificado à mão porque o que os `.mif` trazem é o subconjunto mais simples do
-//! formato — sem compressão, paleta de 16 ou 256 cores — e uma dependência inteira para isso
-//! custaria mais que as poucas dezenas de linhas abaixo.
+//! BMP is decoded by hand because what the `.mif` files carry is the simplest subset of the
+//! format — no compression, a 16- or 256-color palette — and a whole dependency for that would
+//! cost more than the few dozen lines below.
 
 use std::fmt;
 
-/// Teto de área para uma imagem vinda de um jogo. Os ícones reais não passam de 65×42; o
-/// limite existe para um arquivo corrompido não pedir gigabytes ao anunciar um tamanho absurdo.
+/// Area ceiling for an image coming from a game. Real icons are no larger than 65×42; the limit
+/// exists so a corrupt file does not ask for gigabytes by announcing an absurd size.
 const MAX_PIXELS: usize = 4096 * 4096;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Image {
     pub width: usize,
     pub height: usize,
-    /// RGBA não-premultiplicado, uma linha por vez, de cima para baixo.
+    /// Non-premultiplied RGBA, one row at a time, top to bottom.
     pub rgba: Vec<u8>,
 }
 
@@ -27,14 +27,14 @@ impl Image {
         self.width * self.height
     }
 
-    /// Reduz a imagem até nenhum lado passar de `max_side`, por média de blocos.
+    /// Shrinks the image until no side exceeds `max_side`, by averaging blocks.
     ///
-    /// A média é feita com a cor **premultiplicada** pelo alfa e desfeita no fim. Sem isso, um
-    /// pixel transparente entra na conta com a cor que ele guarda — que costuma ser preta — e a
-    /// borda de um logo com fundo transparente fica com um halo escuro.
+    /// The average is taken with the color **premultiplied** by alpha and undone at the end.
+    /// Without that, a transparent pixel enters the sum with the color it stores — usually
+    /// black — and the edge of a logo on a transparent background gets a dark halo.
     ///
-    /// O fator é inteiro: reduzir por 5 é somar blocos de 5×5, sem interpolação nem reamostragem
-    /// fracionária. Para um ícone é o suficiente, e evita um redimensionador inteiro.
+    /// The factor is an integer: shrinking by 5 means summing 5×5 blocks, with no interpolation
+    /// and no fractional resampling. For an icon that is enough, and it avoids a whole resizer.
     pub fn downscaled(&self, max_side: usize) -> Image {
         let longest = self.width.max(self.height);
         if longest <= max_side || max_side == 0 {
@@ -77,9 +77,9 @@ impl Image {
 
 #[derive(Debug)]
 pub enum ImageError {
-    /// O formato não é nenhum dos que sabemos ler.
+    /// The format is none of the ones we know how to read.
     Unknown,
-    /// O arquivo diz uma coisa e entrega outra.
+    /// The file says one thing and delivers another.
     Malformed(&'static str),
     Png(png::DecodingError),
     Jpeg(String),
@@ -88,20 +88,20 @@ pub enum ImageError {
 impl fmt::Display for ImageError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Unknown => write!(f, "formato de imagem desconhecido"),
-            Self::Malformed(what) => write!(f, "imagem inconsistente: {what}"),
-            Self::Png(err) => write!(f, "png ilegível: {err}"),
-            Self::Jpeg(err) => write!(f, "jpeg ilegível: {err}"),
+            Self::Unknown => write!(f, "unknown image format"),
+            Self::Malformed(what) => write!(f, "inconsistent image: {what}"),
+            Self::Png(err) => write!(f, "unreadable png: {err}"),
+            Self::Jpeg(err) => write!(f, "unreadable jpeg: {err}"),
         }
     }
 }
 
 impl std::error::Error for ImageError {}
 
-/// Decodifica pelo que o arquivo é, não pelo que ele diz ser.
+/// Decodes by what the file is, not by what it claims to be.
 ///
-/// A assinatura é mais confiável que o tipo anunciado no `.mif`: um deles chama o JPEG de
-/// `image/jpg`, e seguir o rótulo à risca deixaria o ícone de fora por causa de uma letra.
+/// The signature is more reliable than the type announced in the `.mif`: one of them calls JPEG
+/// `image/jpg`, and following the label to the letter would leave the icon out over one letter.
 pub fn decode(data: &[u8]) -> Result<Image, ImageError> {
     match data {
         [0x89, b'P', b'N', b'G', ..] => decode_png(data),
@@ -113,13 +113,13 @@ pub fn decode(data: &[u8]) -> Result<Image, ImageError> {
 
 pub fn decode_png(data: &[u8]) -> Result<Image, ImageError> {
     let mut decoder = png::Decoder::new(std::io::Cursor::new(data));
-    // Os ícones dos jogos são quase todos paletados; sem esta expansão viria o índice da cor,
-    // e não a cor.
+    // The games' icons are almost all paletted; without this expansion we would get the color
+    // index, not the color.
     decoder.set_transformations(png::Transformations::normalize_to_color8());
     let mut reader = decoder.read_info().map_err(ImageError::Png)?;
     let size = reader
         .output_buffer_size()
-        .ok_or(ImageError::Malformed("tamanho impossível"))?;
+        .ok_or(ImageError::Malformed("impossible size"))?;
     let mut buffer = vec![0; size];
     let info = reader.next_frame(&mut buffer).map_err(ImageError::Png)?;
     let channels = info.color_type.samples();
@@ -148,13 +148,13 @@ fn decode_jpeg(data: &[u8]) -> Result<Image, ImageError> {
         .map_err(|err| ImageError::Jpeg(err.to_string()))?;
     let info = decoder
         .info()
-        .ok_or_else(|| ImageError::Jpeg("sem cabeçalho".into()))?;
+        .ok_or_else(|| ImageError::Jpeg("no header".into()))?;
     let pixels = decoder
         .decode()
         .map_err(|err| ImageError::Jpeg(err.to_string()))?;
     let (width, height) = (info.width as usize, info.height as usize);
     let channels = match width * height {
-        0 => return Err(ImageError::Malformed("jpeg vazio")),
+        0 => return Err(ImageError::Malformed("empty jpeg")),
         area => pixels.len() / area,
     };
     let mut rgba = Vec::with_capacity(width * height * 4);
@@ -171,64 +171,64 @@ fn decode_jpeg(data: &[u8]) -> Result<Image, ImageError> {
     })
 }
 
-/// Um canal de pixel empacotado, esticado para oito bits.
-fn canal(pixel: u32, mask: u32) -> u8 {
+/// One channel of a packed pixel, stretched to eight bits.
+fn channel(pixel: u32, mask: u32) -> u8 {
     if mask == 0 {
         return 0;
     }
-    let valor = (pixel & mask) >> mask.trailing_zeros();
-    let maximo = mask >> mask.trailing_zeros();
-    (valor * 255 / maximo) as u8
+    let value = (pixel & mask) >> mask.trailing_zeros();
+    let maximum = mask >> mask.trailing_zeros();
+    (value * 255 / maximum) as u8
 }
 
-/// Desempacota as linhas de um BMP `BI_RLE8` ou `BI_RLE4`, devolvendo um índice de paleta por
-/// pixel, na ordem em que o arquivo guarda as linhas.
+/// Unpacks the rows of a `BI_RLE8` or `BI_RLE4` BMP, returning one palette index per pixel, in
+/// the order the file stores the rows.
 ///
-/// O esquema é o do Windows: um par `(contagem, valor)` repete o valor; contagem zero abre uma
-/// fuga — `0` fim de linha, `1` fim da imagem, `2` um salto `(dx, dy)`, e de `3` para cima uma
-/// sequência literal, sempre terminada em fronteira de palavra. No `RLE4` cada valor traz dois
-/// pixels, o alto e o baixo, alternando.
+/// The scheme is Windows': a `(count, value)` pair repeats the value; a zero count opens an
+/// escape — `0` end of line, `1` end of image, `2` a `(dx, dy)` jump, and from `3` up a literal
+/// run, always ending on a word boundary. In `RLE4` each value carries two pixels, the high and
+/// the low one, alternating.
 ///
-/// O que a imagem não cobrir fica no índice zero, como o Windows faz.
-fn desempacota_rle(
+/// Whatever the image does not cover stays at index zero, as Windows does.
+fn unpack_rle(
     data: &[u8],
-    inicio: usize,
+    start: usize,
     width: usize,
     height: usize,
     depth: usize,
 ) -> Result<Vec<u8>, ImageError> {
     let mut indices = vec![0u8; width * height];
     let (mut x, mut y) = (0usize, 0usize);
-    let mut at = inicio;
-    let escreve = |x: usize, y: usize, valor: u8, indices: &mut Vec<u8>| {
+    let mut at = start;
+    let write = |x: usize, y: usize, value: u8, indices: &mut Vec<u8>| {
         if x < width && y < height {
-            indices[y * width + x] = valor;
+            indices[y * width + x] = value;
         }
     };
     while at + 1 < data.len() {
-        let (contagem, valor) = (data[at] as usize, data[at + 1]);
+        let (count, value) = (data[at] as usize, data[at + 1]);
         at += 2;
-        if contagem > 0 {
-            for i in 0..contagem {
+        if count > 0 {
+            for i in 0..count {
                 let pixel = match depth {
-                    4 if i % 2 == 1 => valor & 0x0f,
-                    4 => valor >> 4,
-                    _ => valor,
+                    4 if i % 2 == 1 => value & 0x0f,
+                    4 => value >> 4,
+                    _ => value,
                 };
-                escreve(x + i, y, pixel, &mut indices);
+                write(x + i, y, pixel, &mut indices);
             }
-            x += contagem;
+            x += count;
             continue;
         }
-        match valor {
-            // Fim de linha.
+        match value {
+            // End of line.
             0 => {
                 x = 0;
                 y += 1;
             }
-            // Fim da imagem.
+            // End of image.
             1 => break,
-            // Salto relativo, em pixels.
+            // Relative jump, in pixels.
             2 => {
                 if at + 1 >= data.len() {
                     break;
@@ -237,7 +237,7 @@ fn desempacota_rle(
                 y += data[at + 1] as usize;
                 at += 2;
             }
-            // Sequência literal de `valor` pixels.
+            // Literal run of `value` pixels.
             n => {
                 let n = n as usize;
                 let bytes = match depth {
@@ -248,19 +248,19 @@ fn desempacota_rle(
                     break;
                 }
                 for i in 0..n {
-                    let bruto = match depth {
+                    let raw = match depth {
                         4 => data[at + i / 2],
                         _ => data[at + i],
                     };
                     let pixel = match depth {
-                        4 if i % 2 == 1 => bruto & 0x0f,
-                        4 => bruto >> 4,
-                        _ => bruto,
+                        4 if i % 2 == 1 => raw & 0x0f,
+                        4 => raw >> 4,
+                        _ => raw,
                     };
-                    escreve(x + i, y, pixel, &mut indices);
+                    write(x + i, y, pixel, &mut indices);
                 }
                 x += n;
-                // A sequência é preenchida até uma fronteira de dois bytes.
+                // The run is padded to a two-byte boundary.
                 at += bytes + bytes % 2;
             }
         }
@@ -271,18 +271,18 @@ fn desempacota_rle(
     Ok(indices)
 }
 
-/// Decodifica o BMP que os `.mif` e os jogos guardam.
+/// Decodes the BMP that the `.mif` files and the games store.
 ///
-/// Cobre 1, 4, 8, 16, 24 e 32 bits por pixel, e as duas compressões RLE de paleta — o Disney All
-/// Star Cards guarda a maioria das imagens dele em `BI_RLE8` e `BI_RLE4`. As máscaras do
-/// `BI_BITFIELDS` não são compressão, e entram: é como um BMP de 16 bits diz que é 5-6-5.
+/// Covers 1, 4, 8, 16, 24 and 32 bits per pixel, and the two paletted RLE compressions — Disney
+/// All Star Cards stores most of its images in `BI_RLE8` and `BI_RLE4`. The `BI_BITFIELDS` masks
+/// are not compression, and they are supported: that is how a 16-bit BMP says it is 5-6-5.
 fn decode_bmp(data: &[u8]) -> Result<Image, ImageError> {
     let u16_at = |at: usize| -> u16 { u16::from_le_bytes([data[at], data[at + 1]]) };
     let u32_at = |at: usize| -> u32 {
         u32::from_le_bytes([data[at], data[at + 1], data[at + 2], data[at + 3]])
     };
     if data.len() < 54 {
-        return Err(ImageError::Malformed("cabeçalho truncado"));
+        return Err(ImageError::Malformed("truncated header"));
     }
     let data_offset = u32_at(10) as usize;
     let header_size = u32_at(14) as usize;
@@ -290,30 +290,30 @@ fn decode_bmp(data: &[u8]) -> Result<Image, ImageError> {
     let raw_height = u32_at(22) as i32 as isize;
     let depth = u16_at(28) as usize;
     let compression = u32_at(30);
-    // Altura negativa significa que as linhas vêm de cima para baixo, ao contrário do usual.
+    // A negative height means the rows come top to bottom, the opposite of the usual.
     let (height, top_down) = (raw_height.unsigned_abs(), raw_height < 0);
     let width = match width > 0 {
         true => width as usize,
-        false => return Err(ImageError::Malformed("largura inválida")),
+        false => return Err(ImageError::Malformed("invalid width")),
     };
-    // Sem máscaras declaradas, 16 bits é 5-5-5: as capas da Z-Wheel vêm assim, e os cinzas delas
-    // só saem neutros lidos desse jeito.
+    // With no declared masks, 16 bits is 5-5-5: the Z-Wheel covers come that way, and their grays
+    // only come out neutral when read like that.
     let masks = match (compression, depth) {
         (0, _) => [0x7c00, 0x03e0, 0x001f],
         (1, 8) | (2, 4) => [0, 0, 0],
         (3, 16 | 32) if data.len() >= 66 => [u32_at(54), u32_at(58), u32_at(62)],
-        _ => return Err(ImageError::Malformed("bmp comprimido")),
+        _ => return Err(ImageError::Malformed("compressed bmp")),
     };
     let rle = matches!((compression, depth), (1, 8) | (2, 4));
     if compression == 3 && depth == 32 {
-        return Err(ImageError::Malformed("bmp comprimido"));
+        return Err(ImageError::Malformed("compressed bmp"));
     }
     if width * height > MAX_PIXELS {
-        return Err(ImageError::Malformed("imagem grande demais"));
+        return Err(ImageError::Malformed("image too large"));
     }
 
-    // A paleta fica entre o cabeçalho e os pixels. Quando a contagem de cores vem zerada, ela
-    // ocupa tudo o que couber ali — que é como os `.mif` a gravam.
+    // The palette sits between the header and the pixels. When the color count is zero, it
+    // takes up everything that fits there — which is how the `.mif` files store it.
     let palette_start = 14 + header_size;
     let mut palette = Vec::new();
     if depth <= 8 {
@@ -328,22 +328,22 @@ fn decode_bmp(data: &[u8]) -> Result<Image, ImageError> {
             if at + 3 >= data.len() {
                 break;
             }
-            // O BMP guarda azul, verde e vermelho nesta ordem.
+            // BMP stores blue, green and red in this order.
             palette.push([data[at + 2], data[at + 1], data[at]]);
         }
     }
 
-    // Cada linha é preenchida até um múltiplo de quatro bytes.
+    // Each row is padded to a multiple of four bytes.
     let stride = (width * depth).div_ceil(8).div_ceil(4) * 4;
-    let comprimidos = match rle {
-        true => Some(desempacota_rle(data, data_offset, width, height, depth)?),
+    let decompressed = match rle {
+        true => Some(unpack_rle(data, data_offset, width, height, depth)?),
         false => None,
     };
-    if comprimidos.is_none() && data_offset + stride * height > data.len() {
-        return Err(ImageError::Malformed("pixels truncados"));
+    if decompressed.is_none() && data_offset + stride * height > data.len() {
+        return Err(ImageError::Malformed("truncated pixels"));
     }
     let color = |index: usize| -> [u8; 3] {
-        palette.get(index).copied().unwrap_or([255, 0, 255]) // Índice fora da paleta salta à vista em vez de sumir.
+        palette.get(index).copied().unwrap_or([255, 0, 255]) // An index outside the palette stands out instead of vanishing.
     };
 
     let mut rgba = Vec::with_capacity(width * height * 4);
@@ -352,7 +352,7 @@ fn decode_bmp(data: &[u8]) -> Result<Image, ImageError> {
             true => y,
             false => height - 1 - y,
         };
-        if let Some(indices) = &comprimidos {
+        if let Some(indices) = &decompressed {
             for x in 0..width {
                 let rgb = color(indices[row * width + x] as usize);
                 rgba.extend_from_slice(&rgb);
@@ -375,21 +375,21 @@ fn decode_bmp(data: &[u8]) -> Result<Image, ImageError> {
                 8 => (color(line[x] as usize), 255),
                 16 => {
                     let pixel = u32::from(u16::from_le_bytes([line[x * 2], line[x * 2 + 1]]));
-                    (masks.map(|mask| canal(pixel, mask)), 255)
+                    (masks.map(|mask| channel(pixel, mask)), 255)
                 }
                 24 => ([line[x * 3 + 2], line[x * 3 + 1], line[x * 3]], 255),
                 32 => (
                     [line[x * 4 + 2], line[x * 4 + 1], line[x * 4]],
-                    // Um BMP de 32 bits com o canal sempre zerado é opaco, não invisível.
+                    // A 32-bit BMP whose channel is always zero is opaque, not invisible.
                     line[x * 4 + 3],
                 ),
-                _ => return Err(ImageError::Malformed("profundidade não suportada")),
+                _ => return Err(ImageError::Malformed("unsupported depth")),
             };
             rgba.extend_from_slice(&rgb);
             rgba.push(alpha);
         }
     }
-    // A regra do canal zerado só pode ser aplicada depois de ver a imagem inteira.
+    // The zeroed-channel rule can only be applied after seeing the whole image.
     if depth == 32 && rgba.iter().skip(3).step_by(4).all(|&a| a == 0) {
         rgba.iter_mut().skip(3).step_by(4).for_each(|a| *a = 255);
     }
@@ -404,9 +404,9 @@ fn decode_bmp(data: &[u8]) -> Result<Image, ImageError> {
 mod tests {
     use super::*;
 
-    /// Monta um BMP paletado de 4 bits, 2x2, com o cabeçalho que os `.mif` usam.
+    /// Builds a 2x2, 4-bit paletted BMP with the header the `.mif` files use.
     fn bmp4() -> Vec<u8> {
-        let palette: [[u8; 4]; 2] = [[0, 0, 255, 0], [0, 255, 0, 0]]; // BGRA: vermelho, verde.
+        let palette: [[u8; 4]; 2] = [[0, 0, 255, 0], [0, 255, 0, 0]]; // BGRA: red, green.
         let data_offset = 54 + palette.len() * 4;
         let mut bmp = vec![0u8; data_offset];
         bmp[0..2].copy_from_slice(b"BM");
@@ -420,15 +420,15 @@ mod tests {
         for (i, entry) in palette.iter().enumerate() {
             bmp[54 + i * 4..54 + i * 4 + 4].copy_from_slice(entry);
         }
-        // De baixo para cima: primeiro a linha de baixo (verde, vermelho).
+        // Bottom to top: the bottom row first (green, red).
         bmp.extend_from_slice(&[0x10, 0, 0, 0]);
         bmp.extend_from_slice(&[0x01, 0, 0, 0]);
         bmp
     }
 
-    /// Monta um BMP `BI_RLE8` de 4x2 com a paleta e os dados dados.
-    fn bmp_rle8(dados: &[u8]) -> Vec<u8> {
-        let palette: [[u8; 4]; 3] = [[0, 0, 0, 0], [0, 0, 255, 0], [0, 255, 0, 0]]; // preto, vermelho, verde.
+    /// Builds a 4x2 `BI_RLE8` BMP with the palette and the given data.
+    fn bmp_rle8(data: &[u8]) -> Vec<u8> {
+        let palette: [[u8; 4]; 3] = [[0, 0, 0, 0], [0, 0, 255, 0], [0, 255, 0, 0]]; // black, red, green.
         let data_offset = 54 + palette.len() * 4;
         let mut bmp = vec![0u8; data_offset];
         bmp[0..2].copy_from_slice(b"BM");
@@ -443,67 +443,67 @@ mod tests {
         for (i, entry) in palette.iter().enumerate() {
             bmp[54 + i * 4..54 + i * 4 + 4].copy_from_slice(entry);
         }
-        bmp.extend_from_slice(dados);
+        bmp.extend_from_slice(data);
         bmp
     }
 
     #[test]
-    fn o_bmp_comprimido_em_rle8_repete_e_copia() {
-        // Linha de baixo: quatro vermelhos. Linha de cima: dois verdes literais e o resto vazio,
-        // que fica no índice zero — é o que o Windows faz com o que a imagem não cobre.
+    fn rle8_compressed_bmp_repeats_and_copies() {
+        // Bottom row: four reds. Top row: two literal greens and the rest empty, which stays at
+        // index zero — that is what Windows does with whatever the image does not cover.
         let image = decode(&bmp_rle8(&[
-            4, 1, // quatro vezes o índice 1
-            0, 0, // fim de linha
-            0, 3, 2, 2, 2, 0, // três literais do índice 2, com o enchimento até a palavra
-            0, 1, // fim da imagem
+            4, 1, // index 1 four times
+            0, 0, // end of line
+            0, 3, 2, 2, 2, 0, // three literals of index 2, padded to the word
+            0, 1, // end of image
         ]))
         .unwrap();
         assert_eq!((image.width, image.height), (4, 2));
-        // O topo é a última linha guardada: verde, verde, verde, vazio.
+        // The top is the last stored row: green, green, green, empty.
         assert_eq!(&image.rgba[0..4], &[0, 255, 0, 255]);
         assert_eq!(&image.rgba[8..12], &[0, 255, 0, 255]);
-        assert_eq!(&image.rgba[12..16], &[0, 0, 0, 255], "o que não foi coberto fica no índice 0");
-        // A base é a primeira linha guardada: quatro vermelhos.
+        assert_eq!(&image.rgba[12..16], &[0, 0, 0, 255], "what was not covered stays at index 0");
+        // The bottom is the first stored row: four reds.
         assert_eq!(&image.rgba[16..20], &[255, 0, 0, 255]);
         assert_eq!(&image.rgba[28..32], &[255, 0, 0, 255]);
     }
 
     #[test]
-    fn o_bmp_paletado_vira_cores_na_ordem_certa() {
-        // O BMP guarda as linhas de baixo para cima e as cores em BGR: errar qualquer um dos
-        // dois dá uma imagem plausível e errada, que ninguém percebe olhando.
+    fn paletted_bmp_becomes_colors_in_the_right_order() {
+        // BMP stores the rows bottom to top and the colors as BGR: getting either one wrong gives
+        // a plausible, wrong image that nobody notices by looking.
         let image = decode(&bmp4()).unwrap();
         assert_eq!((image.width, image.height), (2, 2));
-        assert_eq!(&image.rgba[0..4], &[255, 0, 0, 255], "topo à esquerda");
-        assert_eq!(&image.rgba[4..8], &[0, 255, 0, 255], "topo à direita");
-        assert_eq!(&image.rgba[8..12], &[0, 255, 0, 255], "base à esquerda");
-        assert_eq!(&image.rgba[12..16], &[255, 0, 0, 255], "base à direita");
+        assert_eq!(&image.rgba[0..4], &[255, 0, 0, 255], "top left");
+        assert_eq!(&image.rgba[4..8], &[0, 255, 0, 255], "top right");
+        assert_eq!(&image.rgba[8..12], &[0, 255, 0, 255], "bottom left");
+        assert_eq!(&image.rgba[12..16], &[255, 0, 0, 255], "bottom right");
     }
 
     #[test]
-    fn a_reducao_respeita_o_lado_maior_e_nao_mexe_no_que_ja_cabe() {
-        let grande = Image {
+    fn downscaling_respects_the_longer_side_and_leaves_what_fits() {
+        let large = Image {
             width: 100,
             height: 50,
             rgba: vec![255; 100 * 50 * 4],
         };
-        // Fator 10: 100 -> 10, e a altura acompanha.
-        let pequena = grande.downscaled(10);
-        assert_eq!((pequena.width, pequena.height), (10, 5));
-        // O que já cabe volta igual.
-        assert_eq!(pequena.downscaled(64), pequena);
+        // Factor 10: 100 -> 10, and the height follows.
+        let small = large.downscaled(10);
+        assert_eq!((small.width, small.height), (10, 5));
+        // What already fits comes back unchanged.
+        assert_eq!(small.downscaled(64), small);
     }
 
     #[test]
-    fn o_transparente_nao_escurece_a_borda_ao_reduzir() {
-        // Um bloco 2x2 com um pixel branco opaco e três transparentes pretos. Media ingênua
-        // daria cinza escuro; com a cor premultiplicada, a cor que sobra é a do único pixel que
-        // existe de verdade — e só o alfa cai.
+    fn transparency_does_not_darken_the_edge_when_downscaling() {
+        // A 2x2 block with one opaque white pixel and three transparent black ones. A naive
+        // average would give dark gray; with premultiplied color, the color left is that of the
+        // only pixel that really exists — and only the alpha drops.
         let image = Image {
             width: 2,
             height: 2,
             rgba: vec![
-                255, 255, 255, 255, // branco opaco
+                255, 255, 255, 255, // opaque white
                 0, 0, 0, 0, //
                 0, 0, 0, 0, //
                 0, 0, 0, 0,
@@ -514,20 +514,20 @@ mod tests {
         assert_eq!(
             &one.rgba[0..3],
             &[255, 255, 255],
-            "a cor é a do pixel visível"
+            "the color is the visible pixel's"
         );
-        assert_eq!(one.rgba[3], 63, "e o alfa é a média dos quatro");
+        assert_eq!(one.rgba[3], 63, "and the alpha is the average of the four");
     }
 
     #[test]
-    fn o_formato_sai_da_assinatura_e_nao_do_rotulo() {
+    fn the_format_comes_from_the_signature_not_the_label() {
         assert!(matches!(decode(b"nada disso"), Err(ImageError::Unknown)));
         assert!(matches!(decode(&[]), Err(ImageError::Unknown)));
     }
 
-    /// As capas da Z-Wheel são BMP de 16 bits sem máscara: 5-5-5.
+    /// The Z-Wheel covers are 16-bit BMPs with no mask: 5-5-5.
     #[test]
-    fn bmp_de_dezesseis_bits_e_cinco_cinco_cinco() {
+    fn sixteen_bit_bmp_is_five_five_five() {
         let mut bmp = vec![0u8; 54];
         bmp[..2].copy_from_slice(b"BM");
         bmp[10] = 54;
@@ -536,7 +536,7 @@ mod tests {
         bmp[22] = 1;
         bmp[26] = 1;
         bmp[28] = 16;
-        // Branco puro e vermelho puro, com o preenchimento da linha até quatro bytes.
+        // Pure white and pure red, with the row padded to four bytes.
         bmp.extend_from_slice(&[0xff, 0x7f, 0x00, 0x7c]);
         let image = decode_bmp(&bmp).unwrap();
         assert_eq!(&image.rgba[..4], &[255, 255, 255, 255]);
@@ -544,25 +544,25 @@ mod tests {
     }
 
     #[test]
-    fn bmp_comprimido_e_recusado_por_nome() {
-        // Recusar dizendo o motivo evita a caçada a um ícone que some sem explicação.
+    fn compressed_bmp_is_rejected_by_name() {
+        // Refusing with the reason avoids a hunt for an icon that vanishes without explanation.
         let mut bmp = bmp4();
         bmp[30..34].copy_from_slice(&1u32.to_le_bytes());
         let err = decode(&bmp).unwrap_err();
-        assert_eq!(err.to_string(), "imagem inconsistente: bmp comprimido");
+        assert_eq!(err.to_string(), "inconsistent image: compressed bmp");
     }
 
     #[test]
-    fn bmp_truncado_nao_derruba_nada() {
+    fn truncated_bmp_crashes_nothing() {
         let bmp = bmp4();
         assert!(decode(&bmp[..bmp.len() - 4]).is_err());
         assert!(decode(&bmp[..20]).is_err());
     }
 
     #[test]
-    fn o_png_paletado_e_expandido_para_cores() {
-        // O `png` entrega o índice da paleta se não pedirmos a expansão, e os ícones dos jogos
-        // são quase todos paletados.
+    fn paletted_png_is_expanded_to_colors() {
+        // `png` hands over the palette index if we do not ask for the expansion, and the games'
+        // icons are almost all paletted.
         let mut out = Vec::new();
         {
             let mut encoder = png::Encoder::new(std::io::Cursor::new(&mut out), 2, 1);

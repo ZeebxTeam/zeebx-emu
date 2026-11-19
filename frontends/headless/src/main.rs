@@ -1,28 +1,28 @@
-//! Zeebx sem interface: o emulador por linha de comando, configurado por um `config.ini`.
+//! Zeebx without an interface: the emulator on the command line, configured by a `config.ini`.
 //!
-//! Existe para quem já tem um frontend. Um programa que simula a carcaça do console, uma
-//! estante de jogos, um arcade de fliperama — nenhum deles quer a biblioteca do Zeebx por cima
-//! da tela que ele mesmo desenhou. Este binário abre o jogo que lhe derem, obedece ao arquivo
-//! de configuração e não mostra mais nada.
+//! It exists for whoever already has a frontend. A program that simulates the console's shell, a
+//! game shelf, an arcade cabinet — none of them wants the Zeebx library on top of the screen it
+//! drew itself. This binary opens the game it is given, obeys the configuration file and shows
+//! nothing else.
 //!
-//! **O núcleo é o mesmo.** Gráficos, áudio e mapeamento de controle são os campos que a
-//! interface do desktop grava no `settings.json`; aqui eles chegam por INI, que é o que se
-//! edita à mão. Ver [`config`].
+//! **The core is the same.** Graphics, audio and controller mapping are the fields the desktop
+//! interface writes to `settings.json`; here they arrive through INI, which is what gets edited
+//! by hand. See [`config`].
 
 mod config;
 mod console;
-mod despejo;
-mod entrada;
+mod dump;
+mod host_input;
 mod ini;
-mod janela;
+mod window;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use crate::config::Video;
-use crate::console::{Console, Fim};
+use crate::console::{Console, LoopEnd};
 
-const AJUDA: &str = "\
+const HELP: &str = "\
 Zeebx headless — the Zeebo emulator on the command line.
 
   zeebx-headless [OPTIONS] GAME
@@ -47,14 +47,14 @@ Everything else — video, audio, controls — lives in the `config.ini`.
 ";
 
 fn main() -> ExitCode {
-    // **O `ZEEBX_LOG` vale como ponto de partida, e o arquivo ganha dele.** O `config.ini` é
-    // escolha explícita de quem o editou; a variável é o que serve a quem depura uma execução
-    // sem mexer em arquivo nenhum. Lido antes do arquivo para a ordem ser essa.
-    zeebx::registro::le_do_ambiente();
+    // **`ZEEBX_LOG` counts as the starting point, and the file wins over it.** The `config.ini` is
+    // the explicit choice of whoever edited it; the variable is what serves someone debugging a
+    // run without touching any file. Read before the file so the order is that one.
+    zeebx::logging::from_env();
     let args: Vec<String> = std::env::args().skip(1).collect();
 
     if args.iter().any(|a| a == "--help" || a == "-h") {
-        print!("{AJUDA}");
+        print!("{HELP}");
         return ExitCode::SUCCESS;
     }
     if args.iter().any(|a| a == "--version") {
@@ -62,55 +62,55 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     if args.iter().any(|a| a == "--example") {
-        print!("{}", config::modelo());
+        print!("{}", config::model());
         return ExitCode::SUCCESS;
     }
     if args.iter().any(|a| a == "--controllers") {
-        return lista_controles();
+        return list_controllers();
     }
 
-    let arquivo = args
+    let file = args
         .iter()
         .find_map(|a| a.strip_prefix("--config="))
         .map(PathBuf::from);
-    let banco = args
+    let soundfont = args
         .iter()
         .find_map(|a| a.strip_prefix("--soundfont="))
         .map(PathBuf::from);
-    // O que não começa com `--` é o jogo. Um só: abrir dois não quer dizer nada.
-    let jogo = args.iter().find(|a| !a.starts_with("--")).map(PathBuf::from);
-    if let Some(desconhecida) = args.iter().find(|a| {
+    // Whatever does not start with `--` is the game. Only one: opening two means nothing.
+    let game = args.iter().find(|a| !a.starts_with("--")).map(PathBuf::from);
+    if let Some(unknown) = args.iter().find(|a| {
         a.starts_with("--") && !a.starts_with("--config=") && !a.starts_with("--soundfont=")
     }) {
-        eprintln!("error: unknown option `{desconhecida}`. `--help` lists what exists.");
+        eprintln!("error: unknown option `{unknown}`. `--help` lists what exists.");
         return ExitCode::FAILURE;
     }
 
-    let mut lido = config::carrega(arquivo.as_deref());
-    for aviso in &lido.avisos {
-        eprintln!("config: {aviso}");
+    let mut loaded = config::load(file.as_deref());
+    for warning in &loaded.warnings {
+        eprintln!("config: {warning}");
     }
-    // A linha de comando ganha do arquivo: é a escolha de quem chamou, agora.
-    if banco.is_some() {
-        lido.settings.audio.soundfont = banco;
+    // The command line wins over the file: it is the caller's choice, right now.
+    if soundfont.is_some() {
+        loaded.settings.audio.soundfont = soundfont;
     }
-    let origem = lido.origem;
-    let modo = lido.headless.video;
-    let console = Console::novo(lido.settings, lido.headless);
+    let origin = loaded.origin;
+    let mode = loaded.headless.video;
+    let console = Console::create(loaded.settings, loaded.headless);
 
-    // Primeira execução: deixa um `config.ini` de fábrica escrito, comentado linha a linha, em
-    // vez de só rodar com os padrões e não dizer onde se muda nada.
-    if let config::Origem::Faltando(onde) = &origem {
-        match config::cria(onde) {
-            Ok(()) => eprintln!("config: none found; wrote one at {}", onde.display()),
-            Err(erro) => eprintln!("config: no file, using factory settings ({erro})"),
+    // First run: leave a factory `config.ini` written, commented line by line, instead of just
+    // running with the defaults and not saying where anything is changed.
+    if let config::ConfigOrigin::Missing(location) = &origin {
+        match config::create(location) {
+            Ok(()) => eprintln!("config: none found; wrote one at {}", location.display()),
+            Err(error) => eprintln!("config: no file, using factory settings ({error})"),
         }
     }
 
-    // **O jogo é obrigatório, e não tem padrão.** Este binário é chamado por outro programa,
-    // que sabe o que quer abrir; adivinhar alguma coisa quando ele não diz nada seria abrir o
-    // que ninguém pediu. Quem quiser a Z-Wheel a passa como qualquer outro jogo.
-    let Some(caminho) = jogo else {
+    // **The game is required, and has no default.** This binary is called by another program,
+    // which knows what it wants to open; guessing something when it says nothing would be opening
+    // what nobody asked for. Whoever wants the Z-Wheel passes it like any other game.
+    let Some(path) = game else {
         eprintln!(
             "error: nothing to run.\n\
              \n\
@@ -120,113 +120,114 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     };
 
-    match modo {
-        Video::Nenhum => sem_janela(console, &caminho),
-        _ => janela::roda(console, caminho),
+    match mode {
+        Video::Off => windowless(console, &path),
+        _ => window::run(console, path),
     }
 }
 
-/// O modo sem vídeo: nada na tela, e o quadro sai pelo `[despejo]`.
-fn sem_janela(mut console: Console, caminho: &std::path::Path) -> ExitCode {
-    // Sem janela não há contexto de GL vindo de uma, mas o 3D na placa continua possível: o
-    // núcleo sabe abrir um contexto fora de tela, que é o que o `zeebx run` já usa para medir.
-    let contexto = match console.settings.graphics.gpu_rasterizer {
-        true => match zeebx::video::contexto::Contexto::novo() {
-            Ok(contexto) => Some(contexto),
-            Err(erro) => {
-                eprintln!("warning: no reachable GPU, 3D stays in software: {erro}");
+/// The no-video mode: nothing on screen, and the frame goes out through `[dump]`.
+fn windowless(mut console: Console, game_path: &std::path::Path) -> ExitCode {
+    // Without a window there is no GL context coming from one, but 3D on the GPU is still
+    // possible: the core can open an offscreen context, which is what `zeebx run` already uses to
+    // measure.
+    let context = match console.settings.graphics.gpu_rasterizer {
+        true => match zeebx::video::context::GlContext::create() {
+            Ok(context) => Some(context),
+            Err(error) => {
+                eprintln!("warning: no reachable GPU, 3D stays in software: {error}");
                 None
             }
         },
         false => None,
     };
-    console.usa_contexto(contexto.as_ref().map(|c| c.gl.clone()));
+    console.use_context(context.as_ref().map(|c| c.gl.clone()));
 
-    let mut saida = match despejo::Saida::abre(&console.opcoes.despejo.clone()) {
-        Ok(saida) => saida,
-        Err(erro) => {
-            eprintln!("error: {erro}");
+    let mut output = match dump::Output::open(&console.options.dump.clone()) {
+        Ok(output) => output,
+        Err(error) => {
+            eprintln!("error: {error}");
             return ExitCode::FAILURE;
         }
     };
-    if let Err(erro) = console.abre(caminho) {
-        eprintln!("error: {}: {erro}", caminho.display());
+    if let Err(error) = console.open(game_path) {
+        eprintln!("error: {}: {error}", game_path.display());
         return ExitCode::FAILURE;
     }
 
-    // O quadro só é escrito quando muda: o laço do emulador gira muito mais vezes que o jogo
-    // desenha, e repetir o mesmo quadro encheria o cano de cópias idênticas.
-    let mut visto = None;
+    // The frame is only written when it changes: the emulator loop spins many more times than the
+    // game draws, and repeating the same frame would fill the pipe with identical copies.
+    let mut seen = None;
     loop {
-        // O log do núcleo sai por aqui, uma vez por volta. Com o anel vazio — o caso comum, no
-        // nível padrão — isto é um cadeado e uma leitura.
-        zeebx::registro::despeja_no_stderr();
-        match console.passo() {
-            Fim::Segue => {}
-            Fim::Acabou(motivo) => {
-                eprintln!("stopped: {motivo}");
+        // The core's log goes out here, once per turn. With the ring empty — the common case, at
+        // the default level — this is a lock and a read.
+        zeebx::logging::dump_to_stderr();
+        match console.step() {
+            LoopEnd::Continue => {}
+            LoopEnd::Finished(reason) => {
+                eprintln!("stopped: {reason}");
                 return ExitCode::SUCCESS;
             }
-            Fim::Erro(erro) => {
-                eprintln!("error: {erro}");
+            LoopEnd::Error(error) => {
+                eprintln!("error: {error}");
                 return ExitCode::FAILURE;
             }
         }
-        if console.adiantado() {
+        if console.ahead() {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
-        let grande = console.opcoes.despejo.formato;
-        let Some(sessao) = console.sessao_mut() else {
+        let large = console.options.dump.format;
+        let Some(session) = console.session_mut() else {
             return ExitCode::SUCCESS;
         };
-        // **O quadro da placa precisa ser trazido antes de sair daqui.** Com o readback adiado
-        // (`Session::materializa_quadro_gl`), a tela da CPU só recebe o quadro quando alguém o
-        // pede — e este laço é justamente quem pede: ele compara a tela consigo mesma para não
-        // repetir quadro e escreve os bytes no cano.
-        sessao.materializa_quadro_gl();
-        let agora = {
-            let tela = sessao.screen();
-            (tela.serie(), tela.escritas())
+        // **The GPU frame has to be brought back before leaving here.** With deferred readback
+        // (`Session::materialize_gl_frame`), the CPU screen only receives the frame when someone
+        // asks for it — and this loop is exactly who asks: it compares the screen with itself so
+        // as not to repeat a frame, and writes the bytes to the pipe.
+        session.materialize_gl_frame();
+        let now = {
+            let screen = session.screen();
+            (screen.generation(), screen.writes())
         };
-        if visto == Some(agora) {
+        if seen == Some(now) {
             continue;
         }
-        visto = Some(agora);
-        // **Os formatos crus saem sempre no quadro do console, e só o `.png` acompanha a
-        // resolução interna.** Um fluxo de bytes sem cabeçalho tem de ter o quadro do mesmo
-        // tamanho do começo ao fim: o 3D na placa sai grande e o menu 2D sai pequeno, e quem
-        // conta bytes do outro lado perderia o passo na primeira troca. O `.png` diz o próprio
-        // tamanho em cada arquivo, então ali a imagem maior não atrapalha ninguém.
-        let quadro = match grande == config::Formato::Png {
-            true => sessao.quadro_grande(),
+        seen = Some(now);
+        // **The raw formats always go out at the console's frame size, and only `.png` follows
+        // the internal resolution.** A headerless byte stream has to keep the frame the same size
+        // from start to end: 3D on the GPU comes out large and the 2D menu comes out small, and
+        // whoever counts bytes on the other side would lose step at the first switch. `.png`
+        // states its own size in every file, so there the larger image gets in no one's way.
+        let frame = match large == config::Format::Png {
+            true => session.large_frame(),
             false => None,
         };
-        let quadro = quadro.as_ref().unwrap_or_else(|| sessao.screen());
-        if let Err(erro) = saida.escreve(quadro) {
-            // A outra ponta fechou o cano. Não é falha de quem rodou: é o fim normal de
-            // `zeebx-headless ... | frontend` quando o frontend sai.
-            eprintln!("stopped: {erro} ({} frames)", saida.contados());
+        let frame = frame.as_ref().unwrap_or_else(|| session.screen());
+        if let Err(error) = output.write(frame) {
+            // The other end closed the pipe. It is not the caller's failure: it is the normal end
+            // of `zeebx-headless ... | frontend` when the frontend exits.
+            eprintln!("stopped: {error} ({} frames)", output.counted());
             return ExitCode::SUCCESS;
         }
-        if saida.cheia() {
-            eprintln!("stopped: wrote the {} frames requested", saida.contados());
+        if output.full() {
+            eprintln!("stopped: wrote the {} frames requested", output.counted());
             return ExitCode::SUCCESS;
         }
     }
 }
 
-/// Os controles que o sistema enxerga, pelos nomes que o `config.ini` espera.
-fn lista_controles() -> ExitCode {
+/// The controllers the system sees, by the names `config.ini` expects.
+fn list_controllers() -> ExitCode {
     let pads = zeebx::input::gamepads::Gamepads::new();
-    let nomes = pads.names();
-    if nomes.is_empty() {
+    let names = pads.names();
+    if names.is_empty() {
         println!("no controllers visible to the system");
         return ExitCode::SUCCESS;
     }
     println!("controllers seen, in system order:");
-    for (i, nome) in nomes.iter().enumerate() {
-        println!("  {i}: {nome}");
+    for (i, name) in names.iter().enumerate() {
+        println!("  {i}: {name}");
     }
-    println!("\nin [port1] of config.ini, for example:\n  controller = \"{}\"", nomes[0]);
+    println!("\nin [port1] of config.ini, for example:\n  controller = \"{}\"", names[0]);
     ExitCode::SUCCESS
 }

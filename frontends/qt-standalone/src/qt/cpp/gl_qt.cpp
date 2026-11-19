@@ -16,106 +16,107 @@
 namespace zeebx {
 
 namespace {
-// Vivem até o `gl_destroi`, no fim do `launch`: o contexto não pode morrer com a janela do jogo,
-// porque a Z-Wheel reabre jogos e as texturas do rasterizador moram nele.
-std::unique_ptr<QOpenGLContext> contexto;
-std::unique_ptr<QOffscreenSurface> superficie;
+// They live until `gl_destroy`, at the end of `launch`: the context cannot die with the game window,
+// because the Z-Wheel reopens games and the rasterizer's textures live in it.
+std::unique_ptr<QOpenGLContext> context;
+std::unique_ptr<QOffscreenSurface> surface;
 } // namespace
 
-void prepara_gl()
+void prepare_gl()
 {
-    // O `threaded`, padrão no Linux com Mesa, desenharia o scene graph noutra thread enquanto a
-    // principal escreve o quadro seguinte. Quem define a variável à mão continua mandando.
+    // `threaded`, the default on Linux with Mesa, would draw the scene graph on another thread
+    // while the main one writes the next frame. Whoever sets the variable by hand still wins.
     if (!qEnvironmentVariableIsSet("QSG_RENDER_LOOP")) {
         qputenv("QSG_RENDER_LOOP", "basic");
     }
-    // O estilo dos controles do Qt Quick: o Fusion segue a paleta do sistema em todos eles. O
-    // Basic, que é o padrão, pinta os campos e os textos com a paleta dele, e num tema escuro o
-    // texto solto saía escuro sobre o fundo escuro da janela.
+    // The style of the Qt Quick controls: Fusion follows the system palette in all of them. Basic,
+    // which is the default, paints the fields and texts with its own palette, and in a dark theme
+    // the loose text came out dark on the window's dark background.
     if (!qEnvironmentVariableIsSet("QT_QUICK_CONTROLS_STYLE")) {
         qputenv("QT_QUICK_CONTROLS_STYLE", "Fusion");
     }
     QCoreApplication::setAttribute(Qt::AA_ShareOpenGLContexts);
-    // No macOS o padrão é Metal e no Windows é D3D; o rasterizador é GL.
+    // On macOS the default is Metal and on Windows it is D3D; the rasterizer is GL.
     QQuickWindow::setGraphicsApi(QSGRendererInterface::OpenGL);
-    // O contrato que o eframe entregava, e que os shaders do `Pintor` e do `GpuState` esperam.
-    QSurfaceFormat formato;
-    // GL de desktop, dito explicitamente. Sem isto, no Wayland com o driver da NVIDIA, o pedido
-    // de 3.3 core volta EGL_BAD_MATCH e o Qt Quick aborta ao abrir a janela; no X11 passava.
-    formato.setRenderableType(QSurfaceFormat::OpenGL);
-    formato.setVersion(3, 3);
-    formato.setProfile(QSurfaceFormat::CoreProfile);
-    formato.setDepthBufferSize(24);
-    formato.setStencilBufferSize(8);
-    // A janela é opaca. É o que o Qt no Wayland consulta para dizer ao compositor que ela não se
-    // mistura com o que está atrás. **Não basta sozinho**: a NVIDIA não tem configuração sem alfa
-    // e entrega 8 bits mesmo assim — medido pelo `QSG_INFO`. O que garante o quadro opaco é o
-    // `le_alfa_como_um`, em `quadro.cpp`.
-    formato.setAlphaBufferSize(0);
-    QSurfaceFormat::setDefaultFormat(formato);
+    // The contract eframe used to deliver, and that the shaders of `GlPainter` and `GpuState` expect.
+    QSurfaceFormat format;
+    // Desktop GL, stated explicitly. Without this, on Wayland with the NVIDIA driver, the request
+    // for 3.3 core comes back EGL_BAD_MATCH and Qt Quick aborts when opening the window; on X11 it
+    // went through.
+    format.setRenderableType(QSurfaceFormat::OpenGL);
+    format.setVersion(3, 3);
+    format.setProfile(QSurfaceFormat::CoreProfile);
+    format.setDepthBufferSize(24);
+    format.setStencilBufferSize(8);
+    // The window is opaque. This is what Qt on Wayland checks to tell the compositor that it does
+    // not blend with what is behind it. **It is not enough on its own**: NVIDIA has no config
+    // without alpha and delivers 8 bits anyway — measured with `QSG_INFO`. What guarantees the
+    // opaque frame is `read_alpha_as_one`, in `frame.cpp`.
+    format.setAlphaBufferSize(0);
+    QSurfaceFormat::setDefaultFormat(format);
 }
 
-void aplica_icone()
+void apply_icon()
 {
-    // A logo tem mais de mil pixels de lado. O egui a reduzia a 256 pelo mesmo motivo: guardar a
-    // imagem inteira para desenhar algo que nunca passa de alguns pixels na barra.
+    // The logo is more than a thousand pixels on a side. egui scaled it down to 256 for the same
+    // reason: keeping the whole image to draw something that never exceeds a few pixels in the bar.
     const QImage logo(QStringLiteral(":/zeebx/zeebx.png"));
     if (logo.isNull()) {
         return;
     }
-    const QImage icone = logo.scaled(256, 256, Qt::KeepAspectRatio, Qt::SmoothTransformation);
-    QGuiApplication::setWindowIcon(QIcon(QPixmap::fromImage(icone)));
+    const QImage iconName = logo.scaled(256, 256, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    QGuiApplication::setWindowIcon(QIcon(QPixmap::fromImage(iconName)));
 }
 
-bool gl_cria()
+bool gl_create()
 {
-    if (contexto) {
+    if (context) {
         return true;
     }
-    auto novo = std::make_unique<QOpenGLContext>();
-    novo->setFormat(QSurfaceFormat::defaultFormat());
-    novo->setShareContext(QOpenGLContext::globalShareContext());
-    if (!novo->create()) {
+    auto create = std::make_unique<QOpenGLContext>();
+    create->setFormat(QSurfaceFormat::defaultFormat());
+    create->setShareContext(QOpenGLContext::globalShareContext());
+    if (!create->create()) {
         return false;
     }
-    auto fora_de_tela = std::make_unique<QOffscreenSurface>();
-    fora_de_tela->setFormat(novo->format());
-    fora_de_tela->create();
-    if (!fora_de_tela->isValid()) {
+    auto offscreen = std::make_unique<QOffscreenSurface>();
+    offscreen->setFormat(create->format());
+    offscreen->create();
+    if (!offscreen->isValid()) {
         return false;
     }
-    contexto = std::move(novo);
-    superficie = std::move(fora_de_tela);
+    context = std::move(create);
+    surface = std::move(offscreen);
     return true;
 }
 
-bool gl_torna_corrente()
+bool gl_make_current()
 {
-    return contexto && contexto->makeCurrent(superficie.get());
+    return context && context->makeCurrent(surface.get());
 }
 
-void gl_solta()
+void gl_done_current()
 {
-    if (contexto) {
-        contexto->doneCurrent();
+    if (context) {
+        context->doneCurrent();
     }
 }
 
-void gl_destroi()
+void gl_destroy()
 {
-    if (contexto) {
-        contexto->doneCurrent();
+    if (context) {
+        context->doneCurrent();
     }
-    contexto.reset();
-    superficie.reset();
+    context.reset();
+    surface.reset();
 }
 
-std::size_t gl_funcao(rust::Str nome)
+std::size_t gl_function(rust::Str name)
 {
-    if (!contexto) {
+    if (!context) {
         return 0;
     }
-    return reinterpret_cast<std::size_t>(contexto->getProcAddress(QByteArray(nome.data(), qsizetype(nome.size()))));
+    return reinterpret_cast<std::size_t>(context->getProcAddress(QByteArray(name.data(), qsizetype(name.size()))));
 }
 
 } // namespace zeebx

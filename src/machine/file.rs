@@ -1,32 +1,33 @@
-//! IFileMgr e IFile: o VFS visto pelo jogo.
+//! IFileMgr and IFile: the VFS as the game sees it.
 
 use super::*;
 
 impl<C: CpuBackend> Machine<C> {
-    /// Raiz do sistema de arquivos que o jogo enxerga.
+    /// Root of the file system the game sees.
     pub fn file_root(&self) -> &std::path::Path {
         self.vfs.root()
     }
 
-    /// Arquivos que o jogo pediu e não foram encontrados.
+    /// Files the game asked for that were not found.
     ///
-    /// Um recurso que outro arquivo acabou fornecendo não conta como falta. A Z-Wheel guarda o
-    /// que independe de idioma no `tectoyli.brf` e o resto no `tectoy_<idioma>.brf`, e pede
-    /// primeiro ao do idioma: a imagem 5035 não está lá, o jogo recua para o `li` e a encontra.
-    /// Anotar a primeira tentativa como arquivo faltando faz um recuo normal parecer defeito —
-    /// e fez: fui atrás dessa linha achando que era uma imagem que não tínhamos.
+    /// A resource that another file ended up providing does not count as missing. The Z-Wheel
+    /// keeps what is language-independent in `tectoyli.brf` and the rest in
+    /// `tectoy_<language>.brf`, and asks the language one first: image 5035 is not there, the game
+    /// falls back to `li` and finds it. Recording the first attempt as a missing file makes a
+    /// normal fallback look like a defect — and it did: I went after that line thinking it was an
+    /// image we didn't have.
     pub fn missing_files(&self) -> Vec<String> {
         self.missing_files
             .iter()
-            .filter(|falta| match id_do_recurso(falta) {
-                Some(id) => !self.recursos_lidos.contains(&id),
+            .filter(|remaining| match resource_id(remaining) {
+                Some(id) => !self.resources_read.contains(&id),
                 None => true,
             })
             .cloned()
             .collect()
     }
 
-    /// `IFileMgr` e `IFile`, sobre o diretório do módulo.
+    /// `IFileMgr` and `IFile`, over the module directory.
     pub(super) fn file_call(
         &mut self,
         iface: Interface,
@@ -41,15 +42,15 @@ impl<C: CpuBackend> Machine<C> {
             self.cpu.read_reg(Reg::R2),
             self.cpu.read_reg(Reg::R3),
         );
-        // O que o jogo perguntou ao sistema de arquivos, com o retorno: é o instrumento para a
-        // classe de problema em que a tela de erro do jogo não diz qual chamada falhou — o
-        // Double Dragon mostra "Memory is insufficient" quando qualquer verificação de espaço ou
-        // de arquivo não responde o que ele espera.
-        let anotar = |maquina: &mut Self, linha: String| {
-            if maquina.fs_log.len() >= MAX_FS_LOG {
-                maquina.fs_log.pop_front();
+        // What the game asked the file system, with the return value: this is the instrument for
+        // the class of problem where the game's error screen does not say which call failed —
+        // Double Dragon shows "Memory is insufficient" whenever any space or file check does not
+        // answer what it expects.
+        let log_fs = |machine: &mut Self, line: String| {
+            if machine.fs_log.len() >= MAX_FS_LOG {
+                machine.fs_log.pop_front();
             }
-            maquina.fs_log.push_back(linha);
+            machine.fs_log.push_back(line);
         };
         let result = match name {
             "AddRef" => self.objects.add_ref(this),
@@ -62,7 +63,7 @@ impl<C: CpuBackend> Machine<C> {
                 remaining
             }
             // IFile *OpenFile(IFileMgr *, const char *pszName, OpenFileMode mode).
-            // Devolve o ponteiro do arquivo, não um código de erro.
+            // Returns the file pointer, not an error code.
             "OpenFile" => {
                 let guest_path = self.cpu.read_cstring(a1, MAX_STRING);
                 self.open_file(&guest_path, a2)?
@@ -70,9 +71,9 @@ impl<C: CpuBackend> Machine<C> {
             // int GetInfo(IFileMgr *, const char *pszName, FileInfo *pInfo)
             "GetInfo" if iface == Interface::FileMgr => {
                 let guest_path = self.cpu.read_cstring(a1, MAX_STRING);
-                // A Z-Wheel pergunta pelo metadado do preload antes de decidir se o abre.
-                // Ele é estado do aparelho, não um arquivo distribuído dentro do pacote.
-                let path = if let Some(cfg) = self.cfg_da_z_wheel(&guest_path) {
+                // The Z-Wheel asks for the preload's metadata before deciding whether to open it.
+                // It is console state, not a file shipped inside the package.
+                let path = if let Some(cfg) = self.zwheel_cfg(&guest_path) {
                     Some(cfg)
                 } else if guest_path.eq_ignore_ascii_case("preloaded.cfg") {
                     let path = self.vfs.profile_file("z-wheel", "preloaded.cfg");
@@ -96,37 +97,36 @@ impl<C: CpuBackend> Machine<C> {
             }
             // int GetInfoEx(IFile *, AEEFileInfoEx *pInfo)
             //
-            // **O tamanho fica em `+0xc`**, e isto foi lido, não suposto: em `0x89068` a Z-Wheel
-            // chama este método e, na instrução seguinte, lê `sp[0xc]` como o tamanho e o passa
-            // ao `malloc` — **sem conferir o retorno**. Recusar não é resposta neutra aqui: o
-            // que ela lia era pilha por inicializar, e o que sobrava lá era um ponteiro. Daí o
-            // `check_malloc: Malloc failed` que aparecia no log.
+            // **The size lives at `+0xc`**, and this was read, not assumed: at `0x89068` the
+            // Z-Wheel calls this method and, on the next instruction, reads `sp[0xc]` as the size
+            // and passes it to `malloc` — **without checking the return value**. Refusing is not
+            // a neutral answer here: what it read was uninitialized stack, and what was left there
+            // was a pointer. Hence the `check_malloc: Malloc failed` that showed up in the log.
             //
-            // Escrevemos dezesseis bytes e nada mais, e o limite tem motivo. O quadro daquela
-            // função é de `0x2c` e ela guarda um local em `sp[0x28]`; a tentativa anterior
-            // preenchia com o formato do `FileInfo`, **nome de arquivo incluído**, e o nome
-            // passava por cima do vizinho. O app lia `0x6f6369d5` — texto — como tamanho e
-            // pedia 1,8 GB.
+            // We write sixteen bytes and nothing more, and the limit has a reason. That function's
+            // frame is `0x2c` and it keeps a local at `sp[0x28]`; the previous attempt filled in
+            // the `FileInfo` layout, **file name included**, and the name ran over the neighbor.
+            // The app read `0x6f6369d5` — text — as the size and asked for 1.8 GB.
             //
-            // Os três primeiros campos vão zerados porque não sabemos o que são. Zero é uma
-            // resposta que o jogo sabe tratar; lixo não.
+            // The first three fields are zeroed because we don't know what they are. Zero is an
+            // answer the game knows how to handle; garbage is not.
             "GetInfoEx" if iface == Interface::File => {
-                /// Onde o tamanho mora na `AEEFileInfoEx`, lido em `0x89078`.
-                const TAMANHO: u32 = 0xc;
-                /// Quanto da struct preenchemos. Ver acima o porquê de não ser mais.
-                const QUANTO: usize = 0x10;
+                /// Where the size lives in `AEEFileInfoEx`, read at `0x89078`.
+                const SIZE_OFFSET: u32 = 0xc;
+                /// How much of the struct we fill. See above for why it isn't more.
+                const CLEAR_LEN: usize = 0x10;
 
-                let tamanho = self
+                let size = self
                     .open_files
                     .get(&this)
-                    .and_then(|aberto| aberto.file.metadata().ok())
+                    .and_then(|opened| opened.file.metadata().ok())
                     .map(|meta| meta.len() as u32);
-                let Some(tamanho) = tamanho else {
+                let Some(size) = size else {
                     return Ok(Some(EBADPARM));
                 };
                 if a1 != 0 {
-                    self.cpu.write_mem(a1, &[0u8; QUANTO])?;
-                    self.cpu.write_u32(a1 + TAMANHO, tamanho)?;
+                    self.cpu.write_mem(a1, &[0u8; CLEAR_LEN])?;
+                    self.cpu.write_u32(a1 + SIZE_OFFSET, size)?;
                 }
                 SUCCESS
             }
@@ -146,9 +146,9 @@ impl<C: CpuBackend> Machine<C> {
             },
             "Test" => {
                 let guest_path = self.cpu.read_cstring(a1, MAX_STRING);
-                // O preload é estado virtual do aparelho: o pacote oficial não o traz, mas a
-                // Z-Wheel testa sua existência antes de abri-lo. O `OpenFile` o materializa no
-                // perfil logo em seguida.
+                // The preload is virtual console state: the official package does not ship it,
+                // but the Z-Wheel tests for its existence before opening it. `OpenFile` creates it
+                // in the profile right after.
                 if guest_path.eq_ignore_ascii_case("preloaded.cfg") {
                     return Ok(Some(SUCCESS));
                 }
@@ -159,38 +159,40 @@ impl<C: CpuBackend> Machine<C> {
             }
             "Remove" => {
                 let guest_path = self.cpu.read_cstring(a1, MAX_STRING);
-                // Só o que o jogo gravou pode ser apagado: o recurso do pacote é imutável, e
-                // apagá-lo alteraria o conteúdo original.
-                let Some(alvo) = self.vfs.writable(&guest_path) else {
+                // Only what the game wrote can be deleted: the package resource is immutable, and
+                // deleting it would alter the original content.
+                let Some(target) = self.vfs.writable(&guest_path) else {
                     return Ok(Some(EFAILED));
                 };
-                match std::fs::remove_file(&alvo) {
+                match std::fs::remove_file(&target) {
                     Ok(()) => SUCCESS,
                     Err(_) => EFAILED,
                 }
             }
             // int IFILEMGR_Rename(IFileMgr *, const char *pszSrc, const char *pszDest)
             //
-            // O destino é resolvido pelo caminho exato, sem a busca sem caixa: renomear é criar
-            // um nome novo, e casar com um arquivo existente de caixa diferente sobrescreveria
-            // o arquivo errado.
+            // The destination is resolved by the exact path, without the case-insensitive
+            // lookup: renaming creates a new name, and matching an existing file with different
+            // case would overwrite the wrong file.
             "Rename" => {
-                let origem = self.cpu.read_cstring(a1, MAX_STRING);
-                let destino = self.cpu.read_cstring(a2, MAX_STRING);
-                // O destino nasce sempre na camada gravável; a origem pode estar no pacote.
-                let para = self.vfs.resolve_new(&destino);
-                match (self.vfs.resolve(&origem), para) {
-                    (Some(de), Some(para)) => {
-                        if let Some(pai) = para.parent() {
-                            let _ = std::fs::create_dir_all(pai);
+                let origin = self.cpu.read_cstring(a1, MAX_STRING);
+                let dest = self.cpu.read_cstring(a2, MAX_STRING);
+                // The destination is always created in the writable layer; the source may be in
+                // the package.
+                let to = self.vfs.resolve_new(&dest);
+                match (self.vfs.resolve(&origin), to) {
+                    (Some(src_path), Some(to)) => {
+                        if let Some(dest_dir) = to.parent() {
+                            let _ = std::fs::create_dir_all(dest_dir);
                         }
-                        // Origem no pacote: ela é imutável, então o destino nasce na camada
-                        // gravável e a origem permanece. Origem gravada: é movida de verdade.
-                        let resultado = match self.vfs.is_writable_path(&de) {
-                            true => std::fs::rename(&de, &para),
-                            false => std::fs::copy(&de, &para).map(|_| ()),
+                        // Source in the package: it is immutable, so the destination is created in
+                        // the writable layer and the source stays. Written source: it is actually
+                        // moved.
+                        let rename_result = match self.vfs.is_writable_path(&src_path) {
+                            true => std::fs::rename(&src_path, &to),
+                            false => std::fs::copy(&src_path, &to).map(|_| ()),
                         };
-                        match resultado {
+                        match rename_result {
                             Ok(()) => SUCCESS,
                             Err(_) => EFAILED,
                         }
@@ -214,7 +216,7 @@ impl<C: CpuBackend> Machine<C> {
             }
             // uint32 GetFreeSpace(IFileMgr *, uint32 *pdwTotal)
             //
-            // Devolve o **livre** e escreve o **total** no ponteiro, se houver.
+            // Returns the **free** space and writes the **total** to the pointer, if any.
             "GetFreeSpace" => {
                 if a1 != 0 {
                     self.cpu.write_u32(a1, FS_TOTAL_BYTES)?;
@@ -224,34 +226,34 @@ impl<C: CpuBackend> Machine<C> {
             // int GetFreeSpaceEx(IFileMgr *, const char *cpszPath, uint32 *pdwTotal,
             //                    uint32 *pdwFree)
             //
-            // **Não é o mesmo método.** Tem quatro argumentos, e o primeiro deles **não é um
-            // ponteiro de saída**: é o caminho do sistema de arquivos perguntado. Tratando os dois
-            // igual, o total era escrito por cima da string do jogo e os dois ponteiros de saída
-            // ficavam sem resposta — e o Double Dragon, que pergunta o espaço antes de abrir os
-            // dados, concluía que não havia memória e mostrava "Memory is insufficient. Please
-            // delete some files." em vez do jogo.
+            // **It is not the same method.** It has four arguments, and the first one **is not an
+            // output pointer**: it is the path of the file system being asked about. Treating the
+            // two the same, the total was written over the game's string and the two output
+            // pointers went unanswered — and Double Dragon, which asks for the space before
+            // opening its data, concluded there was no memory and showed "Memory is insufficient.
+            // Please delete some files." instead of the game.
             "GetFreeSpaceEx" => {
-                let caminho = self.cpu.read_cstring(a1, MAX_STRING);
+                let path_text = self.cpu.read_cstring(a1, MAX_STRING);
                 let out_total = a2;
-                let out_livre = self.cpu.read_reg(Reg::R3);
-                // Cartão periférico não existe neste aparelho: o Zeebo guarda tudo na NAND, e
-                // `fs:/card0/` é a forma de o jogo perguntar por um. `EUNSUPPORTED` é a resposta
-                // documentada, e é o que faz o jogo usar o sistema principal.
-                if !caminho.is_empty() && !caminho.starts_with("fs:/") {
+                let out_free = self.cpu.read_reg(Reg::R3);
+                // There is no peripheral card on this console: the Zeebo keeps everything in NAND,
+                // and `fs:/card0/` is how the game asks for one. `EUNSUPPORTED` is the documented
+                // answer, and it is what makes the game use the main file system.
+                if !path_text.is_empty() && !path_text.starts_with("fs:/") {
                     return Ok(Some(EUNSUPPORTED));
                 }
                 if out_total != 0 {
                     self.cpu.write_u32(out_total, FS_TOTAL_BYTES)?;
                 }
-                if out_livre != 0 {
-                    self.cpu.write_u32(out_livre, FS_FREE_BYTES)?;
+                if out_free != 0 {
+                    self.cpu.write_u32(out_free, FS_FREE_BYTES)?;
                 }
                 SUCCESS
             }
             // int EnumInit(IFileMgr *, const char *pszDir, boolean bDirs)
             //
-            // A listagem inteira sai daqui, de uma vez. O BREW deixa o estado dentro do
-            // `IFileMgr`, e é o que fazemos: a fila é do gerenciador, não global.
+            // The whole listing comes out of here, at once. BREW keeps the state inside the
+            // `IFileMgr`, and so do we: the queue belongs to the manager, not a global.
             "EnumInit" => {
                 let guest_dir = self.cpu.read_cstring(a1, MAX_STRING);
                 let entries = self.list_dir(&guest_dir, a2 != 0);
@@ -260,19 +262,19 @@ impl<C: CpuBackend> Machine<C> {
             }
             // boolean EnumNext(IFileMgr *, FileInfo *pInfo)
             //
-            // Falso encerra a enumeração, e o `GetLastError` de depois devolve `EFAILED` mesmo
-            // quando tudo correu bem — a documentação chama isso de compatibilidade com o
-            // cliente 1.0, e há jogo que confere.
+            // False ends the enumeration, and the `GetLastError` that follows returns `EFAILED`
+            // even when everything went fine — the documentation calls this compatibility with
+            // the 1.0 client, and some games check it.
             //
-            // **Cada entrada é procurada como o `OpenFile` a procuraria**: no overlay antes do
-            // pacote. A listagem soma as duas pastas, e uma entrada que só existe no overlay — o
-            // save que o jogo gravou — não tem metadados no pacote. E uma entrada que não se
-            // resolve é pulada, e não o fim da lista. As duas coisas juntas faziam o Ultimate
-            // Chess 3D, com uma partida salva (`gamestd.sv2`), ver a lista acabar no save: os
-            // arquivos das peças, que vêm depois dele na ordem, sumiam, e o jogo lia o campo 0x14
-            // de um ponteiro nulo ao abrir.
+            // **Each entry is looked up the way `OpenFile` would look it up**: in the overlay
+            // before the package. The listing merges the two folders, and an entry that only
+            // exists in the overlay — the save the game wrote — has no metadata in the package.
+            // And an entry that does not resolve is skipped, not the end of the list. Those two
+            // things together made Ultimate Chess 3D, with a saved match (`gamestd.sv2`), see the
+            // list end at the save: the piece files, which come after it in the order, vanished,
+            // and the game read field 0x14 of a null pointer when opening.
             "EnumNext" => {
-                let mut proxima = None;
+                let mut next = None;
                 while let Some(guest) = self
                     .enumerations
                     .get_mut(&this)
@@ -285,11 +287,11 @@ impl<C: CpuBackend> Machine<C> {
                         .or_else(|| self.vfs.resolve_dir(&guest))
                         .and_then(|p| p.metadata().ok());
                     if let Some(meta) = meta {
-                        proxima = Some((guest, meta));
+                        next = Some((guest, meta));
                         break;
                     }
                 }
-                match proxima {
+                match next {
                     Some((guest, meta)) => {
                         self.write_file_info(a1, &guest, &meta)?;
                         TRUE
@@ -318,25 +320,25 @@ impl<C: CpuBackend> Machine<C> {
             // int32 Read(IFile *, void *pBuffer, uint32 dwCount)
             // uint32 Read(IFile *, void *pBuffer, uint32 dwCount)
             //
-            // **Uma leitura curta não é o fim do arquivo.** O `read` do Rust pode devolver menos
-            // do que se pediu sem que nada tenha acabado, e o `IFILE_Read` do BREW entrega o que
-            // foi pedido enquanto houver arquivo. Insistindo só até o fim de verdade, o pacote do
-            // Iron Sight — 16 MB lidos em pedaços grandes — para de chegar cortado.
+            // **A short read is not the end of the file.** Rust's `read` may return less than was
+            // asked without anything having ended, and BREW's `IFILE_Read` delivers what was asked
+            // for as long as there is file left. By retrying until the real end only, the Iron
+            // Sight package — 16 MB read in large chunks — stops arriving truncated.
             "Read" => {
-                // O tamanho vem do jogo: conferido antes de alocar, ou um pedido absurdo derruba o
-                // processo em vez de virar erro de API.
-                let count = tamanho_do_guest(a2 as usize)?;
+                // The size comes from the game: checked before allocating, or an absurd request
+                // brings down the process instead of becoming an API error.
+                let count = guest_size(a2 as usize)?;
                 let mut buffer = vec![0u8; count];
                 let read = match self.open_files.get_mut(&this) {
                     Some(open) => {
-                        let mut lidos = 0;
-                        while lidos < count {
-                            match std::io::Read::read(&mut open.file, &mut buffer[lidos..]) {
+                        let mut got = 0;
+                        while got < count {
+                            match std::io::Read::read(&mut open.file, &mut buffer[got..]) {
                                 Ok(0) | Err(_) => break,
-                                Ok(n) => lidos += n,
+                                Ok(n) => got += n,
                             }
                         }
-                        lidos
+                        got
                     }
                     None => 0,
                 };
@@ -363,9 +365,9 @@ impl<C: CpuBackend> Machine<C> {
                 };
                 match self.open_files.get_mut(&this) {
                     Some(open) => match std::io::Seek::seek(&mut open.file, from) {
-                        // Documentado em `IFILE_Seek.htm`: o retorno é `SUCCESS`, exceto no caso
-                        // especial de `_SEEK_CURRENT` com deslocamento zero, que devolve a
-                        // posição atual.
+                        // Documented in `IFILE_Seek.htm`: the return is `SUCCESS`, except in the
+                        // special case of `_SEEK_CURRENT` with a zero offset, which returns the
+                        // current position.
                         Ok(offset) if a1 == SEEK_CURRENT && a2 == 0 => offset as u32,
                         Ok(_) => SUCCESS,
                         Err(_) => EFAILED,
@@ -377,53 +379,53 @@ impl<C: CpuBackend> Machine<C> {
                 Some(open) if open.file.set_len(a1 as u64).is_ok() => SUCCESS,
                 _ => EFAILED,
             },
-            // Sem cache próprio e sem mapeamento de arquivo em memória.
+            // No cache of our own and no memory-mapped files.
             "SetCacheSize" => 0,
             "Map" => 0,
             "Cancel" => SUCCESS,
             _ => return Ok(None),
         };
-        // O caminho entra na linha quando a chamada tem um: `Test`, `OpenFile`, `MkDir`, `Remove`,
-        // `Rename` e `EnumInit` são as que decidem onde o jogo escreve.
-        let tem_caminho = matches!(
+        // The path goes into the line when the call has one: `Test`, `OpenFile`, `MkDir`,
+        // `Remove`, `Rename` and `EnumInit` are the ones that decide where the game writes.
+        let has_path = matches!(
             name,
             "Test" | "OpenFile" | "MkDir" | "Remove" | "Rename" | "EnumInit" | "GetFreeSpaceEx"
         );
-        let caminho = match tem_caminho && a1 != 0 {
+        let path_text = match has_path && a1 != 0 {
             true => format!(" \"{}\"", self.cpu.read_cstring(a1, MAX_STRING)),
             false => String::new(),
         };
-        anotar(
+        log_fs(
             self,
-            format!("{name}{caminho}  ({a1:#x} {a2:#x} {a3:#x}) -> {result}"),
+            format!("{name}{path_text}  ({a1:#x} {a2:#x} {a3:#x}) -> {result}"),
         );
         Ok(Some(result))
     }
 
-    /// A cópia ajustada da `tectoy.cfg`, quando é ela que a Z-Wheel deve ler.
+    /// The adjusted copy of `tectoy.cfg`, when that is what the Z-Wheel should read.
     ///
-    /// `None` para qualquer outro arquivo, outro applet, ou com as opções de fábrica — aí vale
-    /// o arquivo do pacote. Ver [`Machine::configura_z_wheel`].
-    fn cfg_da_z_wheel(&self, guest_path: &str) -> Option<std::path::PathBuf> {
-        let de_fabrica = self.z_wheel.fim_de_vida && !self.z_wheel.transicoes_sempre;
-        if de_fabrica || self.applet_class != crate::session::Z_WHEEL {
+    /// `None` for any other file, another applet, or with the factory options — then the package
+    /// file applies. See [`Machine::configure_z_wheel`].
+    fn zwheel_cfg(&self, guest_path: &str) -> Option<std::path::PathBuf> {
+        let factory_default = self.z_wheel.end_of_life && !self.z_wheel.always_transitions;
+        if factory_default || self.applet_class != crate::session::Z_WHEEL {
             return None;
         }
-        let nome = guest_path.rsplit(['/', '\\']).next().unwrap_or(guest_path);
-        if !nome.eq_ignore_ascii_case("tectoy.cfg") {
+        let name = guest_path.rsplit(['/', '\\']).next().unwrap_or(guest_path);
+        if !name.eq_ignore_ascii_case("tectoy.cfg") {
             return None;
         }
         let original = std::fs::read_to_string(self.vfs.resolve(guest_path)?).ok()?;
-        let copia = self.vfs.profile_file("z-wheel", "tectoy.cfg");
-        std::fs::create_dir_all(copia.parent()?).ok()?;
-        std::fs::write(&copia, ajusta_cfg(&original, self.z_wheel)).ok()?;
-        Some(copia)
+        let copy = self.vfs.profile_file("z-wheel", "tectoy.cfg");
+        std::fs::create_dir_all(copy.parent()?).ok()?;
+        std::fs::write(&copy, adjust_cfg(&original, self.z_wheel)).ok()?;
+        Some(copy)
     }
 
-    /// Abre um arquivo do jogo, devolvendo o `IFile*` ou zero se não deu.
+    /// Opens a game file, returning the `IFile*` or zero if it failed.
     pub(super) fn open_file(&mut self, guest_path: &str, mode: u32) -> Result<u32, CpuError> {
         let preloaded = guest_path.eq_ignore_ascii_case("preloaded.cfg");
-        let path = if let Some(cfg) = self.cfg_da_z_wheel(guest_path) {
+        let path = if let Some(cfg) = self.zwheel_cfg(guest_path) {
             Some(cfg)
         } else if preloaded {
             let path = self.vfs.profile_file("z-wheel", "preloaded.cfg");
@@ -431,8 +433,8 @@ impl<C: CpuBackend> Machine<C> {
                 if let Some(parent) = path.parent() {
                     let _ = std::fs::create_dir_all(parent);
                 }
-                // Sem NAND, a resposta fiel é uma lista vazia de jogos pré-instalados. O
-                // catálogo de ROMs locais entra pelo banco de perfil, não por este arquivo.
+                // Without a NAND, the faithful answer is an empty list of preinstalled games. The
+                // local ROM catalog comes in through the profile database, not through this file.
                 let _ = std::fs::File::create(&path);
             }
             Some(path)
@@ -440,51 +442,52 @@ impl<C: CpuBackend> Machine<C> {
             None
         };
         if let Some(cfg) = path {
-            // Arquivo de perfil do emulador: mesma semântica de modo do caminho comum.
+            // Emulator profile file: same mode semantics as the regular path.
             return self.open_resolved(guest_path, cfg, mode);
         }
-        // A partir daqui vale a resolução do VFS, que decide entre conteúdo e overlay e diz se
-        // o arquivo do pacote precisa ser copiado antes de receber escrita.
+        // From here on the VFS resolution applies, which picks between content and overlay and
+        // says whether the package file has to be copied before it is written to.
         let intent = match (mode & OFM_CREATE != 0, mode & (OFM_READWRITE | OFM_APPEND) != 0) {
             (true, _) => crate::brew::vfs::OpenIntent::Create,
             (false, true) if mode & OFM_APPEND != 0 => crate::brew::vfs::OpenIntent::Append,
             (false, true) => crate::brew::vfs::OpenIntent::ReadWrite,
             (false, false) => crate::brew::vfs::OpenIntent::Read,
         };
-        let Some(alvo) = self.vfs.open_target(guest_path, intent) else {
+        let Some(target) = self.vfs.open_target(guest_path, intent) else {
             self.file_error = EFAILED;
             return Ok(0);
         };
-        let path = alvo.path;
-        // Só a escrita entra no registro: é o que diz em que momento o jogo grava o save, e
-        // leitura há às centenas por corrida. Pela issue #70, em que o progresso do Ridge Racer
-        // some e não se sabia nem se o jogo chegava a gravar.
+        let path = target.path;
+        // Only writes go into the log: they say when the game writes its save, and there are
+        // hundreds of reads per run. Because of issue #70, where Ridge Racer's progress
+        // disappears and we didn't even know whether the game got as far as writing.
         if !matches!(intent, crate::brew::vfs::OpenIntent::Read) {
-            crate::registro!(
-                crate::registro::Nivel::Informacao,
+            crate::logging!(
+                crate::logging::Level::Info,
                 "arquivo",
-                "{guest_path} aberto para escrita em {}{}",
+                "{guest_path} opened for writing at {}{}",
                 path.display(),
-                match alvo.copy_from.is_some() {
-                    true => ", copiado do pacote",
+                match target.copy_from.is_some() {
+                    true => ", copied from the package",
                     false => "",
                 }
             );
         }
-        // O pacote nunca é alterado: a primeira escrita copia o recurso para o overlay.
-        if let Some(origem) = alvo.copy_from {
+        // The package is never altered: the first write copies the resource to the overlay.
+        if let Some(origin) = target.copy_from {
             if let Some(parent) = path.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
-            if std::fs::copy(&origem, &path).is_err() {
+            if std::fs::copy(&origin, &path).is_err() {
                 self.file_error = EFAILED;
                 return Ok(0);
             }
         }
-        // **O diretório do módulo já vem pronto no console; aqui não.** Vários jogos abrem
-        // `udata/algo` com `OFM_CREATE` sem chamar `MkDir` antes — o Double Dragon é um deles, e
-        // quando a criação do diretório se perdeu num refactor, ele falhava ao abrir o save e
-        // mostrava a tela "Memory is insufficient. Please delete some files." em vez do jogo.
+        // **On the console the module directory already exists; here it doesn't.** Several games
+        // open `udata/something` with `OFM_CREATE` without calling `MkDir` first — Double Dragon
+        // is one of them, and when the directory creation was lost in a refactor, it failed to
+        // open the save and showed the "Memory is insufficient. Please delete some files." screen
+        // instead of the game.
         if mode & OFM_CREATE != 0
             && let Some(parent) = path.parent()
         {
@@ -493,17 +496,17 @@ impl<C: CpuBackend> Machine<C> {
         self.open_resolved(guest_path, path, mode)
     }
 
-    /// Se o jogo tem algum arquivo aberto para escrita agora.
+    /// Whether the game has any file open for writing right now.
     ///
-    /// **Um ponto do rewind não nasce no meio de uma gravação.** O estado guarda o arquivo aberto
-    /// pelo caminho e pelo deslocamento, e não pelo conteúdo (ver `save.rs`); voltar para o meio de
-    /// uma gravação faria o jogo continuar escrevendo de um deslocamento antigo por cima de um
-    /// arquivo que já mudou — o save do jogador. Ver `docs/implementacao/24-velocidade.md`.
-    pub fn tem_arquivo_para_escrita(&self) -> bool {
-        self.open_files.values().any(|aberto| aberto.escrita)
+    /// **A rewind point is never taken in the middle of a write.** The state stores the open file
+    /// by path and offset, not by content (see `save.rs`); going back to the middle of a write
+    /// would make the game keep writing from an old offset over a file that has already changed —
+    /// the player's save. See `docs/implementation/24-speed.md`.
+    pub fn has_writable_file(&self) -> bool {
+        self.open_files.values().any(|opened| opened.for_writing)
     }
 
-    /// As opções de abertura equivalentes ao modo do BREW.
+    /// The open options equivalent to the BREW mode.
     fn open_options(mode: u32) -> std::fs::OpenOptions {
         let mut options = std::fs::OpenOptions::new();
         if mode & OFM_CREATE != 0 {
@@ -519,7 +522,7 @@ impl<C: CpuBackend> Machine<C> {
         options
     }
 
-    /// Abre `path` já resolvido, no modo do BREW, e registra o `IFile`.
+    /// Opens the already resolved `path`, in the BREW mode, and registers the `IFile`.
     fn open_resolved(
         &mut self,
         guest_path: &str,
@@ -528,16 +531,17 @@ impl<C: CpuBackend> Machine<C> {
     ) -> Result<u32, CpuError> {
         let options = Self::open_options(mode);
         let Ok(file) = options.open(&path) else {
-            // O caminho do host e o erro do sistema entram no registro: "o jogo não conseguiu
-            // abrir o save" não diz se o problema é o caminho resolvido, a permissão ou o modo.
-            let erro = options.open(&path).err().map(|e| e.to_string());
+            // The host path and the system error go into the log: "the game couldn't open the
+            // save" does not say whether the problem is the resolved path, the permission or the
+            // mode.
+            let error = options.open(&path).err().map(|e| e.to_string());
             if self.fs_log.len() >= MAX_FS_LOG {
                 self.fs_log.pop_front();
             }
             self.fs_log.push_back(format!(
-                "open falhou: {} ({})",
+                "open failed: {} ({})",
                 path.display(),
-                erro.unwrap_or_else(|| "sem motivo".into())
+                error.unwrap_or_else(|| "no reason".into())
             ));
             self.file_error = EFAILED;
             self.missing_files.insert(guest_path.to_string());
@@ -552,21 +556,21 @@ impl<C: CpuBackend> Machine<C> {
             OpenFile {
                 file,
                 guest_path: guest_path.to_string(),
-                caminho: path,
-                escrita: mode & (OFM_CREATE | OFM_READWRITE | OFM_APPEND) != 0,
+                path,
+                for_writing: mode & (OFM_CREATE | OFM_READWRITE | OFM_APPEND) != 0,
             },
         );
         self.file_error = SUCCESS;
         Ok(handle)
     }
 
-    /// Preenche um `FileInfo`: `char attrib` (com três bytes de alinhamento), `uint32
-    /// dwCreationDate`, `uint32 dwSize` e `char szName[64]`.
-    /// Os arquivos (ou os diretórios) de um diretório do guest, já com o caminho que o jogo
-    /// entende.
+    /// Fills a `FileInfo`: `char attrib` (with three bytes of padding), `uint32
+    /// dwCreationDate`, `uint32 dwSize` and `char szName[64]`.
+    /// The files (or the directories) of a guest directory, already with the path the game
+    /// understands.
     ///
-    /// O nome devolvido é o caminho completo, com o mesmo prefixo que o jogo passou: é ele que
-    /// volta para o `OpenFile` logo em seguida, e um nome solto não abriria nada.
+    /// The returned name is the full path, with the same prefix the game passed: it is what goes
+    /// back to `OpenFile` right after, and a bare name would open nothing.
     pub(super) fn list_dir(
         &self,
         guest_dir: &str,
@@ -575,14 +579,14 @@ impl<C: CpuBackend> Machine<C> {
         let Some(dir) = self.vfs.resolve_dir(guest_dir) else {
             return Default::default();
         };
-        // Pacote e camada gravável somam: o jogo precisa ver o que veio no pacote **e** o que
-        // ele mesmo gravou. `read_dir` não promete ordem, e um jogo que monta menu com ela
-        // mudaria de ordem entre duas aberturas; por isso a lista sai ordenada.
+        // Package and writable layer add up: the game needs to see what came in the package
+        // **and** what it wrote itself. `read_dir` promises no order, and a game that builds a
+        // menu from it would change order between two openings; that's why the list is sorted.
         let mut dirs = vec![dir];
-        if let Some(gravavel) = self.vfs.writable_dir(guest_dir)
-            && !dirs.contains(&gravavel)
+        if let Some(writable_path) = self.vfs.writable_dir(guest_dir)
+            && !dirs.contains(&writable_path)
         {
-            dirs.push(gravavel);
+            dirs.push(writable_path);
         }
         let mut names: Vec<String> = Vec::new();
         for dir in dirs {
@@ -593,11 +597,11 @@ impl<C: CpuBackend> Machine<C> {
                 entries
                     .flatten()
                     .filter(|entry| entry.path().is_dir() == want_dirs)
-                    // **O manifesto do pacote não é do jogo.** Ele é um arquivo *nosso*, escrito na
-                    // pasta que o guest enxerga como raiz, e um jogo que enumere a própria pasta
-                    // não pode ver nele um arquivo que o console não tem. Ver
-                    // [`crate::loader::archive::MANIFESTO`].
-                    .filter(|entry| entry.file_name() != crate::loader::archive::MANIFESTO)
+                    // **The package manifest does not belong to the game.** It is *our* file,
+                    // written in the folder the guest sees as its root, and a game that enumerates
+                    // its own folder must not see in it a file the console doesn't have. See
+                    // [`crate::loader::archive::MANIFEST`].
+                    .filter(|entry| entry.file_name() != crate::loader::archive::MANIFEST)
                     .filter_map(|entry| entry.file_name().into_string().ok()),
             );
         }
@@ -633,47 +637,47 @@ impl<C: CpuBackend> Machine<C> {
     }
 }
 
-/// A `tectoy.cfg` com as trocas de [`Machine::configura_z_wheel`], o resto como veio.
-fn ajusta_cfg(original: &str, opcoes: crate::config::ZWheel) -> String {
+/// `tectoy.cfg` with the changes from [`Machine::configure_z_wheel`], the rest as it came.
+fn adjust_cfg(original: &str, options: crate::config::ZWheel) -> String {
     original
         .split_inclusive('\n')
-        .map(|linha| {
-            let chave = linha.split('=').next().unwrap_or("").trim();
-            let fim = &linha[linha.trim_end_matches(['\r', '\n']).len()..];
-            let zera = match chave {
-                "EOL" | "zeebomenu_hide" => !opcoes.fim_de_vida,
-                "SlideOnceToForm" => opcoes.transicoes_sempre,
+        .map(|line| {
+            let key_id = line.split('=').next().unwrap_or("").trim();
+            let end = &line[line.trim_end_matches(['\r', '\n']).len()..];
+            let zeroed = match key_id {
+                "EOL" | "zeebomenu_hide" => !options.end_of_life,
+                "SlideOnceToForm" => options.always_transitions,
                 _ => false,
             };
-            match zera && linha.contains('=') {
-                true => format!("{chave}=0{fim}"),
-                false => linha.to_string(),
+            match zeroed && line.contains('=') {
+                true => format!("{key_id}=0{end}"),
+                false => line.to_string(),
             }
         })
         .collect()
 }
 
 #[cfg(test)]
-mod testes_da_cfg {
-    use super::ajusta_cfg;
+mod cfg_tests {
+    use super::adjust_cfg;
     use crate::config::ZWheel;
 
     const ORIGINAL: &str = "; EOL\r\nEOL=1\r\n#zeebomenu_hide - x\r\nzeebomenu_hide=1\r\nEOLX=1\r\nSlideOnceToForm=31\n";
 
     #[test]
-    fn sem_fim_de_vida_so_as_duas_chaves_mudam() {
-        let opcoes = ZWheel { fim_de_vida: false, transicoes_sempre: false };
+    fn without_end_of_life_only_the_two_keys_change() {
+        let options = ZWheel { end_of_life: false, always_transitions: false };
         assert_eq!(
-            ajusta_cfg(ORIGINAL, opcoes),
+            adjust_cfg(ORIGINAL, options),
             "; EOL\r\nEOL=0\r\n#zeebomenu_hide - x\r\nzeebomenu_hide=0\r\nEOLX=1\r\nSlideOnceToForm=31\n"
         );
     }
 
     #[test]
-    fn transicoes_sempre_zeram_o_slide_uma_vez() {
-        let opcoes = ZWheel { fim_de_vida: true, transicoes_sempre: true };
+    fn always_transitions_zero_the_slide_once() {
+        let options = ZWheel { end_of_life: true, always_transitions: true };
         assert_eq!(
-            ajusta_cfg(ORIGINAL, opcoes),
+            adjust_cfg(ORIGINAL, options),
             "; EOL\r\nEOL=1\r\n#zeebomenu_hide - x\r\nzeebomenu_hide=1\r\nEOLX=1\r\nSlideOnceToForm=0\n"
         );
     }

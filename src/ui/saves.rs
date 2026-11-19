@@ -1,84 +1,84 @@
-//! O que os jogos escreveram, e como apagar.
+//! What the games wrote, and how to delete it.
 //!
-//! Um jogo do Zeebo grava no meio dos próprios arquivos: o Z-Wheel põe o `tt_prefs.db` ao lado
-//! do `tectoy.mod`, e o Zeeboids grava fora, em `fs:/zeeboiddata`, que é do **aparelho** e não
-//! dele — o Zeebo F.C. lê os bonecos de lá. Por isso a lista tem dois lados, e apagar um não
-//! toca no outro.
+//! A Zeebo game writes in the middle of its own files: Z-Wheel puts `tt_prefs.db` next to
+//! `tectoy.mod`, and Zeeboids writes outside, in `fs:/zeeboiddata`, which belongs to the
+//! **device** and not to it — Zeebo F.C. reads the characters from there. That is why the list
+//! has two sides, and deleting one does not touch the other.
 //!
-//! # Como se distingue save de conteúdo do pacote
+//! # How a save is told apart from package content
 //!
-//! Pela data. O pacote é extraído de uma vez, então todos os arquivos dele nascem com o mesmo
-//! instante; o que o jogo escreve depois é mais novo que o `.mod`. Não é adivinhação: no cache
-//! do Zeeboids o `.mod`, o `.sig` e o `resources.pakz` são todos de `09-07 16:59`, e a pasta
-//! `zeeboiddata` que o jogo criou é de dois dias depois.
+//! By date. The package is extracted all at once, so all its files are born at the same instant;
+//! what the game writes later is newer than the `.mod`. It is not guesswork: in the Zeeboids
+//! cache the `.mod`, the `.sig` and `resources.pakz` are all from `09-07 16:59`, and the
+//! `zeeboiddata` folder the game created is from two days later.
 //!
-//! O `.mod` é a referência, e não a pasta: a data da pasta muda a cada arquivo que se cria
-//! dentro dela, então ela seria sempre "mais nova que ela mesma".
+//! The `.mod` is the reference, not the folder: the folder's date changes with every file created
+//! inside it, so it would always be "newer than itself".
 
 use std::path::{Path, PathBuf};
 
-/// Um save: de um jogo, ou do aparelho.
+/// A save: from a game, or from the device.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Save {
-    /// O que mostrar — o nome do jogo, ou o da pasta do aparelho.
-    pub titulo: String,
-    /// O que apagar. Mais de um quando o jogo espalhou.
-    pub itens: Vec<PathBuf>,
-    /// Quantos arquivos ao todo, contando o que está dentro das pastas.
-    pub arquivos: usize,
-    /// O tamanho somado.
+    /// What to show — the game's name, or the name of the device folder.
+    pub title: String,
+    /// What to delete. More than one when the game scattered its files.
+    pub items: Vec<PathBuf>,
+    /// How many files in all, counting what is inside the folders.
+    pub files: usize,
+    /// The total size.
     pub bytes: u64,
 }
 
 impl Save {
-    fn de(titulo: String, itens: Vec<PathBuf>) -> Option<Self> {
-        if itens.is_empty() {
+    fn from(title: String, items: Vec<PathBuf>) -> Option<Self> {
+        if items.is_empty() {
             return None;
         }
-        let (arquivos, bytes) = itens
+        let (files, bytes) = items
             .iter()
-            .map(pesar)
+            .map(weigh)
             .fold((0, 0), |(a, b), (c, d)| (a + c, b + d));
         Some(Self {
-            titulo,
-            itens,
-            arquivos,
+            title,
+            items,
+            files,
             bytes,
         })
     }
 }
 
-/// Quantos arquivos e quantos bytes há em `caminho`, entrando nas pastas.
-fn pesar(caminho: &PathBuf) -> (usize, u64) {
-    let Ok(meta) = std::fs::symlink_metadata(caminho) else {
+/// How many files and how many bytes there are in `path`, going into the folders.
+fn weigh(path: &PathBuf) -> (usize, u64) {
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
         return (0, 0);
     };
     if !meta.is_dir() {
         return (1, meta.len());
     }
-    let Ok(entradas) = std::fs::read_dir(caminho) else {
+    let Ok(entries) = std::fs::read_dir(path) else {
         return (0, 0);
     };
-    entradas
+    entries
         .flatten()
-        .map(|e| pesar(&e.path()))
+        .map(|e| weigh(&e.path()))
         .fold((0, 0), |(a, b), (c, d)| (a + c, b + d))
 }
 
-/// O que o pacote trouxe, lido do manifesto que a extração grava.
+/// What the package brought, read from the manifest the extraction writes.
 ///
-/// **Sem manifesto não há lista**: um cache antigo é ignorado, e não chutado. A primeira versão
-/// disto comparava datas — o que fosse mais novo que o `.mod` seria save — e ela cai: os
-/// arquivos de uma mesma extração diferem por milissegundos, e o `resources.pakz` de 15 MB do
-/// Alice terminava de ser escrito depois do `.mod`. Numa lista com botão de excluir, errar assim
-/// apaga o jogo.
+/// **No manifest, no list**: an old cache is ignored, not guessed at. The first version of this
+/// compared dates — whatever was newer than the `.mod` would be a save — and that falls apart:
+/// the files of one extraction differ by milliseconds, and Alice's 15 MB `resources.pakz`
+/// finished being written after the `.mod`. In a list with a delete button, a mistake like that
+/// deletes the game.
 ///
-/// Ver [`crate::loader::archive::completar_manifesto`], que reconstrói o manifesto de um cache antigo a
-/// partir do zip — que é a fonte de verdade sobre o que veio no pacote.
-fn do_pacote(dir: &Path) -> Option<std::collections::HashSet<String>> {
-    let texto = std::fs::read_to_string(dir.join(crate::loader::archive::MANIFESTO)).ok()?;
+/// See [`crate::loader::archive::complete_manifest`], which rebuilds an old cache's manifest from
+/// the zip — the source of truth about what came in the package.
+fn from_package(dir: &Path) -> Option<std::collections::HashSet<String>> {
+    let text = std::fs::read_to_string(dir.join(crate::loader::archive::MANIFEST)).ok()?;
     Some(
-        texto
+        text
             .lines()
             .filter(|l| !l.is_empty())
             .map(str::to_string)
@@ -86,130 +86,131 @@ fn do_pacote(dir: &Path) -> Option<std::collections::HashSet<String>> {
     )
 }
 
-/// Desce pela árvore juntando o que não está no manifesto.
+/// Walks down the tree collecting what is not in the manifest.
 ///
-/// Uma pasta que **está** no manifesto ainda pode ter save dentro: o Zeeboids grava em
-/// `mod/<id>/zeeboiddata`, e `mod` veio do pacote. Por isso a descida continua nas conhecidas e
-/// para nas desconhecidas, que já entram inteiras.
-fn junta(
+/// A folder that **is** in the manifest can still have a save inside: Zeeboids writes to
+/// `mod/<id>/zeeboiddata`, and `mod` came from the package. That is why the descent continues
+/// into the known ones and stops at the unknown ones, which go in whole.
+fn join_components(
     dir: &Path,
-    pacote: &std::collections::HashSet<String>,
-    prefixo: &str,
-    achados: &mut Vec<PathBuf>,
+    package: &std::collections::HashSet<String>,
+    prefix: &str,
+    found: &mut Vec<PathBuf>,
 ) {
-    /// Até onde descer. A árvore do cache é rasa; o teto é contra ligação circular.
-    const FUNDO: usize = 8;
+    /// How deep to go. The cache tree is shallow; the cap is against circular links.
+    const BACKGROUND: usize = 8;
 
-    if prefixo.matches('/').count() >= FUNDO {
+    if prefix.matches('/').count() >= BACKGROUND {
         return;
     }
-    let Ok(entradas) = std::fs::read_dir(dir) else {
+    let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
-    for entrada in entradas.flatten() {
-        let nome = entrada.file_name().to_string_lossy().into_owned();
-        if nome == crate::loader::archive::MANIFESTO {
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name == crate::loader::archive::MANIFEST {
             continue;
         }
-        let caminho = format!("{prefixo}{nome}");
-        let pasta = entrada.path().is_dir();
-        // O zip lista pastas com barra no fim; arquivos, sem. E nem todo zip lista as pastas: o
-        // do Crash só traz `mod/274214/cnk2.mod`, e sem olhar o prefixo a pasta `mod` inteira
-        // passava por save — apagá-lo levava o jogo junto.
-        let prefixo_da_pasta = format!("{caminho}/");
-        let conhecido = pacote.contains(&caminho)
-            || (pasta && pacote.iter().any(|entrada| entrada.starts_with(&prefixo_da_pasta)));
-        match (conhecido, pasta) {
-            (true, true) => junta(&entrada.path(), pacote, &format!("{caminho}/"), achados),
+        let path = format!("{prefix}{name}");
+        let is_dir = entry.path().is_dir();
+        // The zip lists folders with a trailing slash; files, without. And not every zip lists
+        // the folders: Crash's only has `mod/274214/cnk2.mod`, and without looking at the prefix
+        // the whole `mod` folder passed for a save — deleting it took the game along.
+        let dir_prefix = format!("{path}/");
+        let known = package.contains(&path)
+            || (is_dir && package.iter().any(|entry| entry.starts_with(&dir_prefix)));
+        match (known, is_dir) {
+            (true, true) => join_components(&entry.path(), package, &format!("{path}/"), found),
             (true, false) => {}
-            (false, _) => achados.push(entrada.path()),
+            (false, _) => found.push(entry.path()),
         }
     }
 }
 
-/// O que um jogo escreveu na pasta da extração: o que não veio no pacote.
-fn escritos(raiz: &Path) -> Option<Vec<PathBuf>> {
-    let pacote = do_pacote(raiz)?;
-    let mut itens: Vec<PathBuf> = Vec::new();
-    junta(raiz, &pacote, "", &mut itens);
-    Some(itens)
+/// What a game wrote in the extraction folder: what did not come in the package.
+fn written_files(root: &Path) -> Option<Vec<PathBuf>> {
+    let package = from_package(root)?;
+    let mut items: Vec<PathBuf> = Vec::new();
+    join_components(root, &package, "", &mut items);
+    Some(items)
 }
 
-fn do_jogo(raiz: &Path, titulo: &str) -> Option<Save> {
-    let mut itens = escritos(raiz)?;
-    itens.sort();
-    Save::de(titulo.to_string(), itens)
+fn for_game(root: &Path, title: &str) -> Option<Save> {
+    let mut items = written_files(root)?;
+    items.sort();
+    Save::from(title.to_string(), items)
 }
 
-/// Se a extração em `raiz` guarda algo que o jogo escreveu — ou se não dá para saber.
+/// Whether the extraction in `root` holds something the game wrote — or whether there is no way
+/// to know.
 ///
-/// Sem manifesto a resposta é `true`: um cache antigo pode ter save, e quem pergunta é a poda,
-/// que apagaria a pasta inteira.
-pub fn pode_ter_save(raiz: &Path) -> bool {
-    let Some(pacote) = do_pacote(raiz) else {
+/// Without a manifest the answer is `true`: an old cache may have a save, and the one asking is
+/// the pruning, which would delete the whole folder.
+pub fn may_have_save(root: &Path) -> bool {
+    let Some(package) = from_package(root) else {
         return true;
     };
-    let mut itens = Vec::new();
-    junta(raiz, &pacote, "", &mut itens);
-    !itens.is_empty()
+    let mut items = Vec::new();
+    join_components(root, &package, "", &mut items);
+    !items.is_empty()
 }
 
-/// Todos os saves, os dos jogos antes dos do aparelho, com `true` nos do aparelho.
+/// All saves, the games' before the device's, with `true` on the device's.
 ///
-/// Os caches feitos antes de o manifesto existir não sabem o que veio do pacote. Antes de listar,
-/// reconstrói o manifesto de cada um a partir do zip — que continua na pasta de ROMs. Sem isso o
-/// jogo antigo simplesmente não apareceria na lista.
+/// Caches made before the manifest existed do not know what came from the package. Before
+/// listing, it rebuilds each one's manifest from the zip — which is still in the ROMs folder.
+/// Without that the old game would simply not appear in the list.
 ///
-/// Toca o disco: é para chamar ao abrir a lista e depois de cada exclusão, e não a cada quadro.
-pub fn todos(roms: Option<&Path>) -> Vec<(bool, Save)> {
+/// Touches the disk: call it when opening the list and after each deletion, not every frame.
+pub fn all(roms: Option<&Path>) -> Vec<(bool, Save)> {
     if let Some(roms) = roms {
-        for entrada in std::fs::read_dir(roms).into_iter().flatten().flatten() {
-            let caminho = entrada.path();
-            if caminho.extension().is_some_and(|e| e.eq_ignore_ascii_case("zip")) {
-                let _ = crate::loader::archive::completar_manifesto(&caminho);
+        for entry in std::fs::read_dir(roms).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("zip")) {
+                let _ = crate::loader::archive::complete_manifest(&path);
             }
         }
     }
-    let perfil = crate::storage::StoragePaths::from_root(crate::config::config_dir());
-    let jogos = dos_jogos_no_perfil(&perfil);
-    let aparelho = do_aparelho(&crate::loader::archive::device_dir());
-    jogos
+    let profile = crate::storage::StoragePaths::from_root(crate::config::config_dir());
+    let games = game_saves_in_profile(&profile);
+    let device = from_device(&crate::loader::archive::device_dir());
+    games
         .into_iter()
         .map(|save| (false, save))
-        .chain(aparelho.into_iter().map(|save| (true, save)))
+        .chain(device.into_iter().map(|save| (true, save)))
         .collect()
 }
 
-/// Os saves de todos os jogos do cache.
+/// The saves of all the games in the cache.
 ///
-/// O nome que aparece é o da pasta do cache — `Zeeboids-6518125-1788761080` —, com a numeração
-/// tirada: é o título que o jogador reconhece.
-pub fn dos_jogos(cache: &Path) -> Vec<Save> {
-    let mut achados = do_cache(cache, &std::collections::HashSet::new());
-    achados.sort_by(|a, b| a.titulo.cmp(&b.titulo));
-    achados
+/// The name shown is the cache folder's — `Zeeboids-6518125-1788761080` —, with the numbering
+/// removed: it is the title the player recognizes.
+pub fn game_saves(cache: &Path) -> Vec<Save> {
+    let mut found = from_cache(cache, &std::collections::HashSet::new());
+    found.sort_by(|a, b| a.title.cmp(&b.title));
+    found
 }
 
-/// As extrações do cache, menos as dos conteúdos em `pular`.
-fn do_cache(cache: &Path, pular: &std::collections::HashSet<String>) -> Vec<Save> {
-    let Ok(entradas) = std::fs::read_dir(cache) else {
+/// The cache's extractions, minus those of the contents in `skip`.
+fn from_cache(cache: &Path, skip: &std::collections::HashSet<String>) -> Vec<Save> {
+    let Ok(entries) = std::fs::read_dir(cache) else {
         return Vec::new();
     };
-    entradas
+    entries
         .flatten()
         .filter(|e| e.path().is_dir())
         .filter_map(|e| {
-            let nome = e.file_name().to_string_lossy().into_owned();
-            if pular.iter().any(|id| nome.ends_with(id.as_str())) {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if skip.iter().any(|id| name.ends_with(id.as_str())) {
                 return None;
             }
-            do_jogo(&e.path(), &titulo_de(&nome))
+            for_game(&e.path(), &title_of(&name))
         })
         .collect()
 }
 
-/// As extrações de um conteúdo no cache: a pasta se chama `<rótulo>-<id>`.
-fn extracoes_de(cache: &Path, id: &str) -> Vec<PathBuf> {
+/// A content's extractions in the cache: the folder is named `<label>-<id>`.
+fn extractions_of(cache: &Path, id: &str) -> Vec<PathBuf> {
     std::fs::read_dir(cache)
         .into_iter()
         .flatten()
@@ -219,157 +220,159 @@ fn extracoes_de(cache: &Path, id: &str) -> Vec<PathBuf> {
         .collect()
 }
 
-/// O nome a mostrar para o overlay de um conteúdo.
+/// The name to show for a content's overlay.
 ///
-/// O que a sessão gravou em `metadata/<id>.titulo`; sem ele, o rótulo da extração; sem nenhum
-/// dos dois, o começo do hash, que ao menos separa uma entrada da outra.
-fn titulo_do_conteudo(perfil: &crate::storage::StoragePaths, id: &str) -> String {
-    let gravado = std::fs::read_to_string(perfil.metadata.join(format!("{id}.titulo")))
+/// What the session wrote in `metadata/<id>.titulo`; without it, the extraction's label; without
+/// either, the start of the hash, which at least tells one entry from another.
+fn content_title(profile: &crate::storage::StoragePaths, id: &str) -> String {
+    let recorded = std::fs::read_to_string(profile.metadata.join(format!("{id}.titulo")))
         .ok()
         .map(|t| t.trim().to_string())
         .filter(|t| !t.is_empty());
-    gravado
+    recorded
         .or_else(|| {
-            extracoes_de(&perfil.cache, id)
+            extractions_of(&profile.cache, id)
                 .first()
                 .and_then(|p| p.file_name())
-                .map(|n| titulo_de(&n.to_string_lossy()))
+                .map(|n| title_of(&n.to_string_lossy()))
         })
         .unwrap_or_else(|| id.chars().take(12).collect())
 }
 
-/// Os saves dos jogos de um perfil.
+/// The game saves of a profile.
 ///
-/// Cada pasta de `saves/mod/` é a pasta de um módulo no store compartilhado, e tudo nela é save.
+/// Each folder in `saves/mod/` is a module's folder in the shared store, and everything in it is
+/// a save.
 ///
-/// As outras pastas de `saves/` são overlays por conteúdo, de antes do store. Enquanto o jogo
-/// não abre de novo, o overlay não foi migrado e aparece como antes, junto com o que uma versão
-/// mais antiga gravou dentro da extração. Depois de migrado ele fica no disco como cópia, mas
-/// sai da lista: o VFS já não o lê, e apagá-lo não apagaria o save que o jogo usa.
-pub fn dos_jogos_no_perfil(perfil: &crate::storage::StoragePaths) -> Vec<Save> {
-    let mut com_overlay = std::collections::HashSet::new();
-    let mut achados: Vec<Save> = Vec::new();
-    let store = perfil.mod_saves();
-    for entrada in std::fs::read_dir(&store).into_iter().flatten().flatten() {
-        if !entrada.path().is_dir() {
+/// The other folders in `saves/` are per-content overlays, from before the store. Until the game
+/// opens again, the overlay has not been migrated and shows up as before, together with what an
+/// older version wrote inside the extraction. Once migrated it stays on disk as a copy, but it
+/// leaves the list: the VFS no longer reads it, and deleting it would not delete the save the
+/// game uses.
+pub fn game_saves_in_profile(profile: &crate::storage::StoragePaths) -> Vec<Save> {
+    let mut with_overlay = std::collections::HashSet::new();
+    let mut found: Vec<Save> = Vec::new();
+    let store = profile.mod_saves();
+    for entry in std::fs::read_dir(&store).into_iter().flatten().flatten() {
+        if !entry.path().is_dir() {
             continue;
         }
-        let pasta = entrada.file_name().to_string_lossy().into_owned();
-        let itens: Vec<PathBuf> = std::fs::read_dir(entrada.path())
+        let dir = entry.file_name().to_string_lossy().into_owned();
+        let items: Vec<PathBuf> = std::fs::read_dir(entry.path())
             .into_iter()
             .flatten()
             .flatten()
             .map(|e| e.path())
             .collect();
-        achados.extend(Save::de(titulo_da_pasta(perfil, &pasta), itens));
+        found.extend(Save::from(dir_title(profile, &dir), items));
     }
-    for entrada in std::fs::read_dir(&perfil.saves).into_iter().flatten().flatten() {
-        if !entrada.path().is_dir() || entrada.path() == store {
+    for entry in std::fs::read_dir(&profile.saves).into_iter().flatten().flatten() {
+        if !entry.path().is_dir() || entry.path() == store {
             continue;
         }
-        let id = entrada.file_name().to_string_lossy().into_owned();
-        if entrada.path().join(crate::storage::MIGRATED_MARKER).exists() {
-            com_overlay.insert(id);
+        let id = entry.file_name().to_string_lossy().into_owned();
+        if entry.path().join(crate::storage::MIGRATED_MARKER).exists() {
+            with_overlay.insert(id);
             continue;
         }
-        let mut itens: Vec<PathBuf> = std::fs::read_dir(entrada.path())
+        let mut items: Vec<PathBuf> = std::fs::read_dir(entry.path())
             .into_iter()
             .flatten()
             .flatten()
             .map(|e| e.path())
             .collect();
-        for extracao in extracoes_de(&perfil.cache, &id) {
-            itens.extend(escritos(&extracao).unwrap_or_default());
+        for extraction in extractions_of(&profile.cache, &id) {
+            items.extend(written_files(&extraction).unwrap_or_default());
         }
-        itens.sort();
-        achados.extend(Save::de(titulo_do_conteudo(perfil, &id), itens));
-        com_overlay.insert(id);
+        items.sort();
+        found.extend(Save::from(content_title(profile, &id), items));
+        with_overlay.insert(id);
     }
-    achados.extend(do_cache(&perfil.cache, &com_overlay));
-    achados.sort_by(|a, b| a.titulo.cmp(&b.titulo));
-    achados
+    found.extend(from_cache(&profile.cache, &with_overlay));
+    found.sort_by(|a, b| a.title.cmp(&b.title));
+    found
 }
 
-/// O nome a mostrar para uma pasta do store: o do conteúdo que a abriu primeiro, ou a pasta.
-fn titulo_da_pasta(perfil: &crate::storage::StoragePaths, pasta: &str) -> String {
-    std::fs::read_to_string(perfil.metadata.join(crate::storage::module_title_file(pasta)))
+/// The name to show for a store folder: that of the content that opened it first, or the folder.
+fn dir_title(profile: &crate::storage::StoragePaths, dir: &str) -> String {
+    std::fs::read_to_string(profile.metadata.join(crate::storage::module_title_file(dir)))
         .ok()
         .map(|t| t.trim().to_string())
         .filter(|t| !t.is_empty())
-        .unwrap_or_else(|| pasta.to_string())
+        .unwrap_or_else(|| dir.to_string())
 }
 
-/// O título sem a numeração que o cache acrescenta.
+/// The title without the numbering the cache adds.
 ///
-/// `Zeeboids-6518125-1788761080` vira `Zeeboids`, e `Zeeboids-<hash>` também. Os números do fim
-/// são o identificador do pacote e o carimbo de tempo, ou o hash do conteúdo; nada disso diz algo
-/// a quem está olhando a lista.
-fn titulo_de(pasta: &str) -> String {
-    let mut partes: Vec<&str> = pasta.split('-').collect();
-    while partes.len() > 1
-        && partes
+/// `Zeeboids-6518125-1788761080` becomes `Zeeboids`, and so does `Zeeboids-<hash>`. The trailing
+/// numbers are the package identifier and the timestamp, or the content hash; none of that means
+/// anything to whoever is looking at the list.
+fn title_of(dir: &str) -> String {
+    let mut parts: Vec<&str> = dir.split('-').collect();
+    while parts.len() > 1
+        && parts
             .last()
             .is_some_and(|p| {
-                // Numeração do cache antigo, ou o hash BLAKE3 do atual.
+                // The old cache's numbering, or the current one's BLAKE3 hash.
                 p.chars().all(|c| c.is_ascii_digit())
                     || (p.len() == 64 && p.chars().all(|c| c.is_ascii_hexdigit()))
             })
     {
-        partes.pop();
+        parts.pop();
     }
-    partes.join("-").replace('-', " ")
+    parts.join("-").replace('-', " ")
 }
 
-/// O que está guardado no sistema de arquivos do aparelho, uma linha por pasta.
+/// What is stored in the device's file system, one line per folder.
 ///
-/// Aqui **não** se compara data: nada disso veio de pacote nenhum. O aparelho só tem o que os
-/// jogos escreveram — o `zeeboiddata` do Zeeboids, o `shared` do sistema.
-pub fn do_aparelho(device: &Path) -> Vec<Save> {
-    let Ok(entradas) = std::fs::read_dir(device) else {
+/// Here dates are **not** compared: none of this came from any package. The device only has what
+/// the games wrote — Zeeboids' `zeeboiddata`, the system's `shared`.
+pub fn from_device(device: &Path) -> Vec<Save> {
+    let Ok(entries) = std::fs::read_dir(device) else {
         return Vec::new();
     };
-    let mut achados: Vec<Save> = entradas
+    let mut found: Vec<Save> = entries
         .flatten()
-        // O `mod/` antigo do aparelho, depois de copiado para o store de saves, é só cópia.
+        // The device's old `mod/`, once copied to the saves store, is just a copy.
         .filter(|e| !e.path().join(crate::storage::MIGRATED_MARKER).exists())
         .filter_map(|e| {
-            let nome = e.file_name().to_string_lossy().into_owned();
-            Save::de(nome, vec![e.path()])
+            let name = e.file_name().to_string_lossy().into_owned();
+            Save::from(name, vec![e.path()])
         })
         .collect();
-    achados.sort_by(|a, b| a.titulo.cmp(&b.titulo));
-    achados
+    found.sort_by(|a, b| a.title.cmp(&b.title));
+    found
 }
 
-/// Apaga um save. Devolve o primeiro erro, se houver.
-pub fn apagar(save: &Save) -> std::io::Result<()> {
-    for item in &save.itens {
-        let resultado = match item.is_dir() {
+/// Deletes a save. Returns the first error, if any.
+pub fn remove(save: &Save) -> std::io::Result<()> {
+    for item in &save.items {
+        let result = match item.is_dir() {
             true => std::fs::remove_dir_all(item),
             false => std::fs::remove_file(item),
         };
-        // Já não existir não é erro: o que se queria é que não exista.
-        if let Err(erro) = resultado {
-            if erro.kind() != std::io::ErrorKind::NotFound {
-                return Err(erro);
+        // Already not existing is not an error: the goal is for it not to exist.
+        if let Err(error) = result {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                return Err(error);
             }
         }
     }
     Ok(())
 }
 
-/// O tamanho em algo que se lê.
-pub fn tamanho(bytes: u64) -> String {
-    const UNIDADES: [&str; 4] = ["B", "KB", "MB", "GB"];
-    let mut valor = bytes as f64;
-    let mut unidade = 0;
-    while valor >= 1024.0 && unidade + 1 < UNIDADES.len() {
-        valor /= 1024.0;
-        unidade += 1;
+/// The size as something readable.
+pub fn size(bytes: u64) -> String {
+    const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
     }
-    match unidade {
-        0 => format!("{bytes} {}", UNIDADES[0]),
-        _ => format!("{valor:.1} {}", UNIDADES[unidade]),
+    match unit {
+        0 => format!("{bytes} {}", UNITS[0]),
+        _ => format!("{value:.1} {}", UNITS[unit]),
     }
 }
 
@@ -378,198 +381,199 @@ mod tests {
     use super::*;
     use std::io::Write;
 
-    /// Monta um cache com um jogo: o manifesto lista o pacote, e o save fica de fora dele.
-    fn cache_com_jogo(raiz: &Path) -> PathBuf {
-        let jogo = raiz.join("Zeeboids-6518125-1788761080");
-        let dir = jogo.join("mod/274");
+    /// Builds a cache with one game: the manifest lists the package, and the save stays outside it.
+    fn cache_with_game(root: &Path) -> PathBuf {
+        let game = root.join("Zeeboids-6518125-1788761080");
+        let dir = game.join("mod/274");
         std::fs::create_dir_all(&dir).unwrap();
-        let pacote = ["zeeboids.mod", "zeeboids.sig", "resources.pakz"];
-        for nome in pacote {
-            std::fs::File::create(dir.join(nome))
+        let package = ["zeeboids.mod", "zeeboids.sig", "resources.pakz"];
+        for name in package {
+            std::fs::File::create(dir.join(name))
                 .unwrap()
                 .write_all(b"pacote")
                 .unwrap();
         }
-        let mut linhas = vec!["mod/".to_string(), "mod/274/".to_string()];
-        linhas.extend(pacote.iter().map(|n| format!("mod/274/{n}")));
+        let mut lines = vec!["mod/".to_string(), "mod/274/".to_string()];
+        lines.extend(package.iter().map(|n| format!("mod/274/{n}")));
         std::fs::write(
-            jogo.join(crate::loader::archive::MANIFESTO),
-            linhas.join("\n"),
+            game.join(crate::loader::archive::MANIFEST),
+            lines.join("\n"),
         )
         .unwrap();
-        // O save não está no manifesto — é o que o jogo escreveu depois.
+        // The save is not in the manifest — it is what the game wrote later.
         std::fs::create_dir_all(dir.join("zeeboiddata")).unwrap();
         std::fs::File::create(dir.join("zeeboiddata/zeeboid.db"))
             .unwrap()
             .write_all(b"save")
             .unwrap();
-        raiz.to_path_buf()
+        root.to_path_buf()
     }
 
-    /// Um cache sem manifesto não entra na lista: melhor ficar de fora do que ser chutado.
+    /// A cache without a manifest does not enter the list: better left out than guessed at.
     #[test]
-    fn cache_sem_manifesto_e_ignorado() {
-        let raiz = temporario("sem-manifesto");
-        cache_com_jogo(&raiz);
+    fn a_cache_without_a_manifest_is_ignored() {
+        let root = scratch_dir("sem-manifesto");
+        cache_with_game(&root);
         std::fs::remove_file(
-            raiz.join("Zeeboids-6518125-1788761080")
-                .join(crate::loader::archive::MANIFESTO),
+            root.join("Zeeboids-6518125-1788761080")
+                .join(crate::loader::archive::MANIFEST),
         )
         .unwrap();
-        assert!(dos_jogos(&raiz).is_empty());
+        assert!(game_saves(&root).is_empty());
     }
 
-    fn temporario(nome: &str) -> crate::scratch::TempDir {
-        crate::scratch::TempDir::new(&format!("zeebx-saves-{nome}"))
+    fn scratch_dir(name: &str) -> crate::scratch::TempDir {
+        crate::scratch::TempDir::new(&format!("zeebx-saves-{name}"))
     }
 
     #[test]
-    fn o_que_o_jogo_escreveu_depois_e_save_e_o_pacote_nao() {
-        let raiz = temporario("jogo");
-        cache_com_jogo(&raiz);
-        let saves = dos_jogos(&raiz);
+    fn what_the_game_wrote_later_is_a_save_and_the_package_is_not() {
+        let root = scratch_dir("jogo");
+        cache_with_game(&root);
+        let saves = game_saves(&root);
         assert_eq!(saves.len(), 1);
-        assert_eq!(saves[0].titulo, "Zeeboids");
-        // Só o `zeeboiddata`. O `.mod`, o `.sig` e o `.pakz` são do pacote.
-        assert_eq!(saves[0].itens.len(), 1);
-        assert!(saves[0].itens[0].ends_with("zeeboiddata"));
-        assert_eq!(saves[0].arquivos, 1);
+        assert_eq!(saves[0].title, "Zeeboids");
+        // Only `zeeboiddata`. The `.mod`, the `.sig` and the `.pakz` belong to the package.
+        assert_eq!(saves[0].items.len(), 1);
+        assert!(saves[0].items[0].ends_with("zeeboiddata"));
+        assert_eq!(saves[0].files, 1);
     }
 
-    /// Zip sem entrada de pasta: a pasta `mod` é do pacote porque há arquivo dele lá dentro.
+    /// A zip without folder entries: the `mod` folder belongs to the package because one of its
+    /// files is in there.
     #[test]
-    fn manifesto_sem_pastas_nao_faz_do_pacote_um_save() {
-        let raiz = temporario("sem-pastas");
-        cache_com_jogo(&raiz);
-        let jogo = raiz.join("Zeeboids-6518125-1788761080");
-        let linhas: Vec<String> = ["zeeboids.mod", "zeeboids.sig", "resources.pakz"]
+    fn a_manifest_without_dirs_does_not_make_the_package_a_save() {
+        let root = scratch_dir("sem-pastas");
+        cache_with_game(&root);
+        let game = root.join("Zeeboids-6518125-1788761080");
+        let lines: Vec<String> = ["zeeboids.mod", "zeeboids.sig", "resources.pakz"]
             .iter()
             .map(|n| format!("mod/274/{n}"))
             .collect();
-        std::fs::write(jogo.join(crate::loader::archive::MANIFESTO), linhas.join("\n")).unwrap();
-        let saves = dos_jogos(&raiz);
+        std::fs::write(game.join(crate::loader::archive::MANIFEST), lines.join("\n")).unwrap();
+        let saves = game_saves(&root);
         assert_eq!(saves.len(), 1);
-        assert_eq!(saves[0].itens.len(), 1, "{:?}", saves[0].itens);
-        assert!(saves[0].itens[0].ends_with("zeeboiddata"));
+        assert_eq!(saves[0].items.len(), 1, "{:?}", saves[0].items);
+        assert!(saves[0].items[0].ends_with("zeeboiddata"));
     }
 
     #[test]
-    fn apagar_tira_o_save_e_deixa_o_pacote() {
-        let raiz = temporario("apagar");
-        cache_com_jogo(&raiz);
-        let saves = dos_jogos(&raiz);
-        apagar(&saves[0]).unwrap();
-        assert!(dos_jogos(&raiz).is_empty());
-        let dir = raiz.join("Zeeboids-6518125-1788761080/mod/274");
+    fn deleting_removes_the_save_and_keeps_the_package() {
+        let root = scratch_dir("apagar");
+        cache_with_game(&root);
+        let saves = game_saves(&root);
+        remove(&saves[0]).unwrap();
+        assert!(game_saves(&root).is_empty());
+        let dir = root.join("Zeeboids-6518125-1788761080/mod/274");
         assert!(dir.join("zeeboids.mod").exists());
         assert!(dir.join("resources.pakz").exists());
     }
 
     #[test]
-    fn apagar_o_que_ja_sumiu_nao_e_erro() {
-        let raiz = temporario("sumiu");
-        cache_com_jogo(&raiz);
-        let saves = dos_jogos(&raiz);
-        apagar(&saves[0]).unwrap();
-        apagar(&saves[0]).unwrap();
+    fn deleting_what_is_already_gone_is_not_an_error() {
+        let root = scratch_dir("sumiu");
+        cache_with_game(&root);
+        let saves = game_saves(&root);
+        remove(&saves[0]).unwrap();
+        remove(&saves[0]).unwrap();
     }
 
-    /// O overlay e a cópia antiga na extração do mesmo conteúdo são **um** save: apagar só um
-    /// deixaria o VFS ler o outro.
+    /// The overlay and the old copy in the extraction of the same content are **one** save:
+    /// deleting only one would leave the VFS reading the other.
     #[test]
-    fn o_overlay_e_a_copia_antiga_sao_um_save_so() {
-        let raiz = temporario("perfil");
-        let perfil = crate::storage::StoragePaths::from_root(raiz.to_path_buf());
+    fn the_overlay_and_the_old_copy_are_a_single_save() {
+        let root = scratch_dir("perfil");
+        let profile = crate::storage::StoragePaths::from_root(root.to_path_buf());
         let id = "ab".repeat(32);
-        cache_com_jogo(&perfil.cache);
+        cache_with_game(&profile.cache);
         std::fs::rename(
-            perfil.cache.join("Zeeboids-6518125-1788761080"),
-            perfil.cache.join(format!("Zeeboids-{id}")),
+            profile.cache.join("Zeeboids-6518125-1788761080"),
+            profile.cache.join(format!("Zeeboids-{id}")),
         )
         .unwrap();
-        let overlay = perfil.saves.join(&id);
+        let overlay = profile.saves.join(&id);
         std::fs::create_dir_all(&overlay).unwrap();
         std::fs::write(overlay.join("progresso.db"), b"fase 7").unwrap();
 
-        let saves = dos_jogos_no_perfil(&perfil);
+        let saves = game_saves_in_profile(&profile);
         assert_eq!(saves.len(), 1, "{saves:?}");
-        assert_eq!(saves[0].titulo, "Zeeboids");
-        assert_eq!(saves[0].itens.len(), 2, "o overlay e o zeeboiddata antigo");
+        assert_eq!(saves[0].title, "Zeeboids");
+        assert_eq!(saves[0].items.len(), 2, "the overlay and the old zeeboiddata");
 
-        std::fs::create_dir_all(&perfil.metadata).unwrap();
-        std::fs::write(perfil.metadata.join(format!("{id}.titulo")), "Zeeboids (BR)").unwrap();
-        assert_eq!(dos_jogos_no_perfil(&perfil)[0].titulo, "Zeeboids (BR)");
+        std::fs::create_dir_all(&profile.metadata).unwrap();
+        std::fs::write(profile.metadata.join(format!("{id}.titulo")), "Zeeboids (BR)").unwrap();
+        assert_eq!(game_saves_in_profile(&profile)[0].title, "Zeeboids (BR)");
 
-        apagar(&saves[0]).unwrap();
-        assert!(dos_jogos_no_perfil(&perfil).is_empty());
-        let pacote = perfil.cache.join(format!("Zeeboids-{id}/mod/274/zeeboids.mod"));
-        assert!(pacote.is_file(), "o pacote fica");
+        remove(&saves[0]).unwrap();
+        assert!(game_saves_in_profile(&profile).is_empty());
+        let package = profile.cache.join(format!("Zeeboids-{id}/mod/274/zeeboids.mod"));
+        assert!(package.is_file(), "the package stays");
         assert!(
-            !pode_ter_save(&perfil.cache.join(format!("Zeeboids-{id}"))),
-            "sem a cópia antiga, a poda pode levar a extração"
+            !may_have_save(&profile.cache.join(format!("Zeeboids-{id}"))),
+            "without the old copy, the pruning may take the extraction"
         );
     }
 
     #[test]
-    fn o_aparelho_lista_cada_pasta() {
-        let raiz = temporario("aparelho");
-        std::fs::create_dir_all(raiz.join("zeeboiddata")).unwrap();
-        std::fs::create_dir_all(raiz.join("shared")).unwrap();
-        std::fs::File::create(raiz.join("zeeboiddata/zeeboid.db"))
+    fn the_device_lists_each_dir() {
+        let root = scratch_dir("aparelho");
+        std::fs::create_dir_all(root.join("zeeboiddata")).unwrap();
+        std::fs::create_dir_all(root.join("shared")).unwrap();
+        std::fs::File::create(root.join("zeeboiddata/zeeboid.db"))
             .unwrap()
             .write_all(b"12345")
             .unwrap();
-        let saves = do_aparelho(&raiz);
+        let saves = from_device(&root);
         assert_eq!(saves.len(), 2);
-        assert_eq!(saves[0].titulo, "shared");
-        assert_eq!(saves[1].titulo, "zeeboiddata");
+        assert_eq!(saves[0].title, "shared");
+        assert_eq!(saves[1].title, "zeeboiddata");
         assert_eq!(saves[1].bytes, 5);
     }
 
     #[test]
-    fn o_titulo_perde_a_numeracao_do_cache() {
-        assert_eq!(titulo_de("Zeeboids-6518125-1788761080"), "Zeeboids");
+    fn the_title_loses_the_cache_numbering() {
+        assert_eq!(title_of("Zeeboids-6518125-1788761080"), "Zeeboids");
         assert_eq!(
-            titulo_de("Zeebo-F-C--Foot-Camp-17313250-1788761080"),
+            title_of("Zeebo-F-C--Foot-Camp-17313250-1788761080"),
             "Zeebo F C  Foot Camp"
         );
-        // Sem numeração, fica como está.
-        assert_eq!(titulo_de("Quake"), "Quake");
-        assert_eq!(titulo_de(&format!("Zeeboids-{}", "0f".repeat(32))), "Zeeboids");
+        // Without numbering, it stays as it is.
+        assert_eq!(title_of("Quake"), "Quake");
+        assert_eq!(title_of(&format!("Zeeboids-{}", "0f".repeat(32))), "Zeeboids");
     }
 
-    /// Só para olhar: lista o cache de verdade desta máquina.
+    /// Just for looking: lists this machine's real cache.
     #[test]
     #[ignore]
-    fn olhar_o_cache_de_verdade() {
-        let base = dirs_config();
-        for s in dos_jogos(&base.join("cache")) {
+    fn inspect_the_real_cache() {
+        let base = config_dirs();
+        for s in game_saves(&base.join("cache")) {
             println!(
-                "jogo     {:<28} {} arq  {}",
-                s.titulo,
-                s.arquivos,
-                tamanho(s.bytes)
+                "game     {:<28} {} files  {}",
+                s.title,
+                s.files,
+                size(s.bytes)
             );
         }
-        for s in do_aparelho(&base.join("aparelho")) {
+        for s in from_device(&base.join("aparelho")) {
             println!(
-                "aparelho {:<28} {} arq  {}",
-                s.titulo,
-                s.arquivos,
-                tamanho(s.bytes)
+                "device   {:<28} {} files  {}",
+                s.title,
+                s.files,
+                size(s.bytes)
             );
         }
     }
 
-    fn dirs_config() -> PathBuf {
+    fn config_dirs() -> PathBuf {
         PathBuf::from(std::env::var("HOME").unwrap()).join(".config/zeebx")
     }
 
     #[test]
-    fn o_tamanho_sai_legivel() {
-        assert_eq!(tamanho(0), "0 B");
-        assert_eq!(tamanho(999), "999 B");
-        assert_eq!(tamanho(1536), "1.5 KB");
-        assert_eq!(tamanho(5 * 1024 * 1024), "5.0 MB");
+    fn the_size_comes_out_readable() {
+        assert_eq!(size(0), "0 B");
+        assert_eq!(size(999), "999 B");
+        assert_eq!(size(1536), "1.5 KB");
+        assert_eq!(size(5 * 1024 * 1024), "5.0 MB");
     }
 }

@@ -1,45 +1,45 @@
-//! O Wii Remote, lido direto dos dispositivos de entrada do Linux.
+//! The Wii Remote, read directly from Linux input devices.
 //!
-//! O driver `hid-wiimote` do kernel divide cada controle em vários dispositivos: os botões em
-//! "Nintendo Wii Remote" e o acelerômetro em "Nintendo Wii Remote Accelerometer", que só
-//! começa a mandar dados depois de aberto. O gilrs enxerga, no máximo, os botões; o
-//! acelerômetro é eixo de outro dispositivo, então a leitura é nossa.
+//! The kernel's `hid-wiimote` driver splits each controller into several devices: the buttons in
+//! "Nintendo Wii Remote" and the accelerometer in "Nintendo Wii Remote Accelerometer", which only
+//! starts sending data once it is opened. gilrs sees, at most, the buttons; the accelerometer is
+//! an axis of another device, so reading it is up to us.
 //!
-//! Cada dispositivo tem uma thread que lê os eventos brutos (`struct input_event`) e atualiza um
-//! estado compartilhado. Uma thread de busca procura controles novos a cada segundo, e a leitura
-//! de um controle que desconectou simplesmente termina com erro.
+//! Each device has a thread that reads the raw events (`struct input_event`) and updates a shared
+//! state. A search thread looks for new controllers every second, and the reader of a controller
+//! that disconnected simply ends with an error.
 //!
-//! Fora do Linux não há leitura: [`Wiimotes::estado`] devolve `None`.
+//! Outside Linux there is no reading: [`Wiimotes::state`] returns `None`.
 
 use std::sync::{Arc, Mutex};
 
 use crate::input::bindings::Source;
 
-/// O que um Wii Remote está fazendo agora.
+/// What a Wii Remote is doing right now.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct EstadoWiimote {
-    /// Um bit por botão, na ordem de [`BOTOES`].
-    pub botoes: u16,
-    /// A aceleração em g, no referencial do controle: `x` para a direita, `y` para a frente (a
-    /// ponta do infravermelho) e `z` para cima, saindo da face dos botões. Parado com a face para
-    /// cima, `z` é `+1`.
-    pub aceleracao: [f32; 3],
-    /// Se o acelerômetro já mandou alguma leitura.
-    pub com_acelerometro: bool,
+pub struct WiimoteState {
+    /// One bit per button, in the order of [`BUTTONS`].
+    pub buttons: u16,
+    /// The acceleration in g, in the controller's frame of reference: `x` to the right, `y`
+    /// forward (the infrared end) and `z` up, out of the button face. At rest with the face up,
+    /// `z` is `+1`.
+    pub acceleration: [f32; 3],
+    /// Whether the accelerometer has sent any reading yet.
+    pub with_accelerometer: bool,
 }
 
-impl Default for EstadoWiimote {
+impl Default for WiimoteState {
     fn default() -> Self {
         Self {
-            botoes: 0,
-            aceleracao: [0.0, 0.0, 1.0],
-            com_acelerometro: false,
+            buttons: 0,
+            acceleration: [0.0, 0.0, 1.0],
+            with_accelerometer: false,
         }
     }
 }
 
-/// Os botões do Wii Remote, com o código de tecla que o `hid-wiimote` usa para cada um.
-pub const BOTOES: [(&str, u16); 11] = [
+/// The Wii Remote's buttons, with the key code `hid-wiimote` uses for each one.
+pub const BUTTONS: [(&str, u16); 11] = [
     ("up", 103),     // KEY_UP
     ("down", 108),   // KEY_DOWN
     ("left", 105),   // KEY_LEFT
@@ -53,92 +53,94 @@ pub const BOTOES: [(&str, u16); 11] = [
     ("home", 0x13c), // BTN_MODE
 ];
 
-/// Quanto o `hid-wiimote` reporta para 1 g. O acelerômetro tem 10 bits e o driver só tira o
-/// centro (`0x200`); a gravidade fica perto de 100 unidades em todos os eixos.
+/// How much `hid-wiimote` reports for 1 g. The accelerometer has 10 bits and the driver only
+/// subtracts the center (`0x200`); gravity comes to about 100 units on every axis.
 ///
-/// Só o caminho do Linux lê direto do `hid-wiimote`; nos outros sistemas o acelerômetro vem do
-/// gilrs, e a constante ficaria sem uso — o que já rendeu aviso de código morto no macOS.
+/// Only the Linux path reads directly from `hid-wiimote`; on other systems the accelerometer comes
+/// from gilrs, and the constant would go unused — which already earned a dead-code warning on
+/// macOS.
 #[cfg(target_os = "linux")]
-const UNIDADES_POR_G: f32 = 100.0;
+const UNITS_PER_G: f32 = 100.0;
 
-/// O nome de cada botão de [`BOTOES`] no mapeamento, na mesma ordem.
+/// The name of each button of [`BUTTONS`] in the mapping, in the same order.
 ///
-/// Os botões do Wii Remote são origens como as do gilrs, e é assim que ele serve de Z-Pad com o
-/// mapeamento que o jogador quiser. O prefixo os separa dos botões do gilrs, que têm nomes como
-/// `South` e `DPadUp`: uma porta com o Wii Remote escolhido lê estes, e só estes.
-pub const FONTES: [&str; 11] = [
+/// The Wii Remote's buttons are sources just like gilrs's, and that is how it serves as a Z-Pad
+/// with whatever mapping the player wants. The prefix separates them from gilrs's buttons, which
+/// have names like `South` and `DPadUp`: a port with the Wii Remote selected reads these, and only
+/// these.
+pub const SOURCES: [&str; 11] = [
     "WiiUp", "WiiDown", "WiiLeft", "WiiRight", "WiiA", "WiiB", "Wii1", "Wii2", "WiiPlus",
     "WiiMinus", "WiiHome",
 ];
 
-impl EstadoWiimote {
-    pub fn apertado(&self, nome: &str) -> bool {
-        BOTOES
+impl WiimoteState {
+    pub fn pressed(&self, name: &str) -> bool {
+        BUTTONS
             .iter()
-            .position(|(n, _)| *n == nome)
-            .is_some_and(|i| self.botoes & (1 << i) != 0)
+            .position(|(n, _)| *n == name)
+            .is_some_and(|i| self.buttons & (1 << i) != 0)
     }
 
-    /// Se a origem é um botão deste controle e está apertada.
-    pub fn fonte_acionada(&self, fonte: &Source) -> bool {
-        match fonte {
-            Source::Button { name } => FONTES
+    /// Whether the source is a button of this controller and is pressed.
+    pub fn source_active(&self, source: &Source) -> bool {
+        match source {
+            Source::Button { name } => SOURCES
                 .iter()
                 .position(|n| n == name)
-                .is_some_and(|i| self.botoes & (1 << i) != 0),
+                .is_some_and(|i| self.buttons & (1 << i) != 0),
             _ => false,
         }
     }
 
-    /// O primeiro botão apertado, para a tela de configuração capturar.
-    pub fn primeira_fonte(&self) -> Option<Source> {
-        (0..FONTES.len())
-            .find(|&i| self.botoes & (1 << i) != 0)
-            .map(|i| Source::button(FONTES[i]))
+    /// The first pressed button, for the settings screen to capture.
+    pub fn first_source(&self) -> Option<Source> {
+        (0..SOURCES.len())
+            .find(|&i| self.buttons & (1 << i) != 0)
+            .map(|i| Source::button(SOURCES[i]))
     }
 }
 
-/// O começo do nome de um Wii Remote na lista de controles: "Wii Remote 1", "Wii Remote 2".
-const PREFIXO: &str = "Wii Remote ";
+/// The start of a Wii Remote's name in the controller list: "Wii Remote 1", "Wii Remote 2".
+const PREFIX: &str = "Wii Remote ";
 
-/// Os controles encontrados, pela ordem em que apareceram.
+/// The controllers found, in the order they appeared.
 #[derive(Clone, Default)]
 pub struct Wiimotes {
-    estados: Arc<Mutex<Vec<(String, EstadoWiimote)>>>,
+    states: Arc<Mutex<Vec<(String, WiimoteState)>>>,
 }
 
 impl Wiimotes {
-    /// Começa a procurar controles em segundo plano.
-    pub fn inicia() -> Self {
+    /// Starts looking for controllers in the background.
+    pub fn start() -> Self {
         let wiimotes = Self::default();
         #[cfg(target_os = "linux")]
         {
-            let estados = wiimotes.estados.clone();
+            let states = wiimotes.states.clone();
             let _ = std::thread::Builder::new()
-                .name("wiimote-busca".into())
-                .spawn(move || linux::busca(estados));
+                .name("wiimote-search".into())
+                .spawn(move || linux::search(states));
         }
         wiimotes
     }
 
-    /// Quantos controles estão conectados.
-    pub fn quantos(&self) -> usize {
-        self.estados.lock().map(|e| e.len()).unwrap_or(0)
+    /// How many controllers are connected.
+    pub fn count(&self) -> usize {
+        self.states.lock().map(|e| e.len()).unwrap_or(0)
     }
 
-    /// O nome com que o `indice`-ésimo controle aparece na lista de controles.
-    pub fn nome(indice: usize) -> String {
-        format!("{PREFIXO}{}", indice + 1)
+    /// The name the `index`-th controller appears under in the controller list.
+    pub fn name(index: usize) -> String {
+        format!("{PREFIX}{}", index + 1)
     }
 
-    /// O índice de um nome dado por [`Wiimotes::nome`].
-    pub fn indice_do_nome(nome: &str) -> Option<usize> {
-        nome.strip_prefix(PREFIXO)?.parse::<usize>().ok()?.checked_sub(1)
+    /// The index of a name given by [`Wiimotes::name`].
+    pub fn index_of_name(name: &str) -> Option<usize> {
+        name.strip_prefix(PREFIX)?.parse::<usize>().ok()?.checked_sub(1)
     }
 
-    /// O estado do `indice`-ésimo controle conectado.
-    pub fn estado(&self, indice: usize) -> Option<EstadoWiimote> {
-        self.estados.lock().ok()?.get(indice).map(|(_, estado)| *estado)
+    /// The state of the `index`-th connected controller.
+    pub fn state(&self, index: usize) -> Option<WiimoteState> {
+        self.states.lock().ok()?.get(index).map(|(_, state)| *state)
     }
 }
 
@@ -154,38 +156,38 @@ mod linux {
     const ABS_RX: u16 = 3;
     const ABS_RY: u16 = 4;
     const ABS_RZ: u16 = 5;
-    /// `struct input_event` em 64 bits: `timeval` (16), `type` (2), `code` (2), `value` (4).
-    const TAMANHO_DO_EVENTO: usize = 24;
+    /// `struct input_event` on 64 bits: `timeval` (16), `type` (2), `code` (2), `value` (4).
+    const EVENT_SIZE: usize = 24;
 
     #[derive(Clone, Copy, PartialEq, Eq)]
-    enum Parte {
-        Botoes,
-        Acelerometro,
+    enum Part {
+        Buttons,
+        Accelerometer,
     }
 
-    /// Procura controles para sempre, abrindo uma leitura para cada dispositivo novo.
-    pub(super) fn busca(estados: Arc<Mutex<Vec<(String, EstadoWiimote)>>>) {
-        let abertos: Arc<Mutex<HashSet<PathBuf>>> = Default::default();
+    /// Looks for controllers forever, opening a reader for each new device.
+    pub(super) fn search(states: Arc<Mutex<Vec<(String, WiimoteState)>>>) {
+        let opened: Arc<Mutex<HashSet<PathBuf>>> = Default::default();
         loop {
-            for (evento, controle, parte) in dispositivos() {
-                let novo = abertos.lock().is_ok_and(|mut a| a.insert(evento.clone()));
-                if !novo {
+            for (event, controller, part) in devices() {
+                let create = opened.lock().is_ok_and(|mut a| a.insert(event.clone()));
+                if !create {
                     continue;
                 }
-                let (estados, abertos) = (estados.clone(), abertos.clone());
+                let (states, opened) = (states.clone(), opened.clone());
                 let _ = std::thread::Builder::new()
                     .name("wiimote".into())
                     .spawn(move || {
-                        le(&evento, &controle, parte, &estados);
-                        if let Ok(mut a) = abertos.lock() {
-                            a.remove(&evento);
+                        read(&event, &controller, part, &states);
+                        if let Ok(mut a) = opened.lock() {
+                            a.remove(&event);
                         }
-                        // O controle some da lista quando os botões param: é o dispositivo que
-                        // existe enquanto ele está pareado.
-                        if parte == Parte::Botoes
-                            && let Ok(mut e) = estados.lock()
+                        // The controller leaves the list when the buttons stop: that is the
+                        // device that exists while it is paired.
+                        if part == Part::Buttons
+                            && let Ok(mut e) = states.lock()
                         {
-                            e.retain(|(nome, _)| *nome != controle);
+                            e.retain(|(name, _)| *name != controller);
                         }
                     });
             }
@@ -193,92 +195,93 @@ mod linux {
         }
     }
 
-    /// `(nó em /dev/input, identificador do controle, parte)` de cada dispositivo de Wii Remote.
+    /// `(node in /dev/input, controller identifier, part)` of each Wii Remote device.
     ///
-    /// O identificador é o dispositivo HID pai: botões e acelerômetro do mesmo controle
-    /// compartilham o mesmo, e é assim que os dois se juntam.
-    fn dispositivos() -> Vec<(PathBuf, String, Parte)> {
-        let Ok(entradas) = std::fs::read_dir("/sys/class/input") else {
+    /// The identifier is the parent HID device: the buttons and the accelerometer of the same
+    /// controller share it, and that is how the two are joined.
+    fn devices() -> Vec<(PathBuf, String, Part)> {
+        let Ok(entries) = std::fs::read_dir("/sys/class/input") else {
             return Vec::new();
         };
-        let mut achados: Vec<_> = entradas
+        let mut found: Vec<_> = entries
             .flatten()
-            .filter_map(|entrada| {
-                let nome = entrada.file_name().into_string().ok()?;
-                if !nome.starts_with("event") {
+            .filter_map(|entry| {
+                let name = entry.file_name().into_string().ok()?;
+                if !name.starts_with("event") {
                     return None;
                 }
-                let base = entrada.path().join("device");
-                let rotulo = std::fs::read_to_string(base.join("name")).ok()?;
-                let parte = match rotulo.trim() {
-                    "Nintendo Wii Remote" => Parte::Botoes,
-                    "Nintendo Wii Remote Accelerometer" => Parte::Acelerometro,
+                let base = entry.path().join("device");
+                let label = std::fs::read_to_string(base.join("name")).ok()?;
+                let part = match label.trim() {
+                    "Nintendo Wii Remote" => Part::Buttons,
+                    "Nintendo Wii Remote Accelerometer" => Part::Accelerometer,
                     _ => return None,
                 };
-                let controle = controle_de(&base)?;
-                Some((Path::new("/dev/input").join(nome), controle, parte))
+                let controller = controller_of(&base)?;
+                Some((Path::new("/dev/input").join(name), controller, part))
             })
             .collect();
-        achados.sort_by(|a, b| a.0.cmp(&b.0));
-        achados
+        found.sort_by(|a, b| a.0.cmp(&b.0));
+        found
     }
 
-    fn controle_de(dispositivo: &Path) -> Option<String> {
-        let real = std::fs::canonicalize(dispositivo).ok()?;
+    fn controller_of(device: &Path) -> Option<String> {
+        let real = std::fs::canonicalize(device).ok()?;
         // `.../uhid/0005:057E:0306.0018/input/input46` -> `0005:057E:0306.0018`
         Some(real.parent()?.parent()?.file_name()?.to_str()?.to_string())
     }
 
-    fn le(
-        evento: &Path,
-        controle: &str,
-        parte: Parte,
-        estados: &Mutex<Vec<(String, EstadoWiimote)>>,
+    fn read(
+        event: &Path,
+        controller: &str,
+        part: Part,
+        states: &Mutex<Vec<(String, WiimoteState)>>,
     ) {
-        let Ok(mut arquivo) = std::fs::File::open(evento) else {
+        let Ok(mut file) = std::fs::File::open(event) else {
             return;
         };
-        // O controle entra na lista ao abrir os botões, e não no primeiro aperto: parado, ele
-        // não manda evento nenhum, e o acelerômetro não teria onde escrever.
-        if parte == Parte::Botoes
-            && let Ok(mut lista) = estados.lock()
-            && !lista.iter().any(|(nome, _)| nome == controle)
+        // The controller joins the list when the buttons are opened, not on the first press: at
+        // rest it sends no events at all, and the accelerometer would have nowhere to write.
+        if part == Part::Buttons
+            && let Ok(mut list) = states.lock()
+            && !list.iter().any(|(name, _)| name == controller)
         {
-            lista.push((controle.to_string(), EstadoWiimote::default()));
+            list.push((controller.to_string(), WiimoteState::default()));
         }
-        let mut bruto = [0u8; TAMANHO_DO_EVENTO];
-        let mut aceleracao = [0f32; 3];
-        while arquivo.read_exact(&mut bruto).is_ok() {
-            let tipo = u16::from_ne_bytes([bruto[16], bruto[17]]);
-            let codigo = u16::from_ne_bytes([bruto[18], bruto[19]]);
-            let valor = i32::from_ne_bytes([bruto[20], bruto[21], bruto[22], bruto[23]]);
-            let Ok(mut lista) = estados.lock() else {
+        let mut raw = [0u8; EVENT_SIZE];
+        let mut acceleration = [0f32; 3];
+        while file.read_exact(&mut raw).is_ok() {
+            let kind = u16::from_ne_bytes([raw[16], raw[17]]);
+            let code = u16::from_ne_bytes([raw[18], raw[19]]);
+            let value = i32::from_ne_bytes([raw[20], raw[21], raw[22], raw[23]]);
+            let Ok(mut list) = states.lock() else {
                 return;
             };
-            // Um acelerômetro sem o dispositivo dos botões é resto de um controle que está saindo.
-            let Some(posicao) = lista.iter().position(|(nome, _)| nome == controle) else {
+            // An accelerometer without the buttons device is what remains of a controller that is
+            // leaving.
+            let Some(position) = list.iter().position(|(name, _)| name == controller) else {
                 continue;
             };
-            let estado = &mut lista[posicao].1;
-            match (tipo, parte) {
-                (EV_KEY, Parte::Botoes) => {
-                    if let Some(i) = BOTOES.iter().position(|(_, c)| *c == codigo) {
-                        match valor {
-                            0 => estado.botoes &= !(1 << i),
-                            _ => estado.botoes |= 1 << i,
+            let state = &mut list[position].1;
+            match (kind, part) {
+                (EV_KEY, Part::Buttons) => {
+                    if let Some(i) = BUTTONS.iter().position(|(_, c)| *c == code) {
+                        match value {
+                            0 => state.buttons &= !(1 << i),
+                            _ => state.buttons |= 1 << i,
                         }
                     }
                 }
-                (EV_ABS, Parte::Acelerometro) => {
-                    let eixo = match codigo {
+                (EV_ABS, Part::Accelerometer) => {
+                    let axis = match code {
                         ABS_RX => 0,
                         ABS_RY => 1,
                         ABS_RZ => 2,
                         _ => continue,
                     };
-                    aceleracao[eixo] = valor as f32 / UNIDADES_POR_G;
-                    estado.aceleracao = aceleracao;
-                    estado.com_acelerometro = true;
+                    acceleration[axis] = value as f32 / UNITS_PER_G;
+                    state.acceleration = acceleration;
+                    state.with_accelerometer = true;
                 }
                 _ => {}
             }

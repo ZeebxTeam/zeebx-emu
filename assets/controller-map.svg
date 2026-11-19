@@ -1,14 +1,14 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  O mapa das regiões do controle. Ele não aparece: é só o recorte de cada botão sobre a arte
-  de `controller.png`, e por isso o `viewBox` precisa ser exatamente o tamanho daquela imagem.
+  The map of the controller's regions. It is never shown: it is only the outline of each button
+  over the art in `controller.png`, which is why the `viewBox` must be exactly that image's size.
 
-  Separar o mapa da arte é o que permite trocar o desenho sem mexer em código: quem redesenhar
-  o controle acerta as formas aqui e pronto. O `id` de cada uma é o nome do botão como o
-  emulador o conhece.
+  Keeping the map apart from the art is what lets the drawing change without touching code:
+  whoever redraws the controller adjusts the shapes here and that's it. Each shape's `id` is the
+  button's name as the emulator knows it.
 
-  Botão que a arte não desenha simplesmente não tem forma aqui, e não acende — continua
-  configurável pela lista.
+  A button the art does not draw simply has no shape here, and does not light up — it stays
+  configurable from the list.
 -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1616 973" width="1616" height="973">
   <g fill="#fff">

@@ -1,21 +1,21 @@
-//! Diretório temporário que se apaga sozinho, para os testes.
+//! A temporary directory that deletes itself, for the tests.
 //!
-//! Existia um vazamento pequeno e constante na suíte: os testes criavam `/tmp/zeebx-sql-*` e
-//! `/tmp/zeebx-saves-*` e limpavam **no começo** — para o caso de a rodada anterior ter falhado —
-//! e nunca no fim. Uma sessão com várias rodadas deixa dezenas de diretórios para trás. Com este
-//! guarda, o diretório sai quando o teste termina, passe ele ou não.
+//! There was a small, constant leak in the suite: the tests created `/tmp/zeebx-sql-*` and
+//! `/tmp/zeebx-saves-*` and cleaned up **at the start** — in case the previous run had failed —
+//! and never at the end. A session with several runs leaves dozens of directories behind. With this
+//! guard, the directory goes away when the test ends, whether it passes or not.
 
 use std::path::{Path, PathBuf};
 
-/// Uma pasta em `temp_dir()` que se remove ao sair de escopo.
+/// A folder in `temp_dir()` that removes itself when it goes out of scope.
 pub struct TempDir(PathBuf);
 
 impl TempDir {
-    /// Cria a pasta, apagando o que houver com o mesmo nome.
-    pub fn new(nome: &str) -> Self {
-        let dir = std::env::temp_dir().join(nome);
+    /// Creates the folder, deleting whatever exists with the same name.
+    pub fn new(name: &str) -> Self {
+        let dir = std::env::temp_dir().join(name);
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("criar diretório temporário");
+        std::fs::create_dir_all(&dir).expect("create temporary directory");
         Self(dir)
     }
 
@@ -23,12 +23,12 @@ impl TempDir {
         &self.0
     }
 
-    /// Um caminho dentro da pasta.
-    pub fn join(&self, resto: &str) -> PathBuf {
-        self.0.join(resto)
+    /// A path inside the folder.
+    pub fn join(&self, rest: &str) -> PathBuf {
+        self.0.join(rest)
     }
 
-    /// O caminho como `PathBuf`, para quem precisa de dono.
+    /// The path as a `PathBuf`, for callers that need an owned value.
     pub fn to_path_buf(&self) -> PathBuf {
         self.0.clone()
     }
@@ -42,35 +42,36 @@ impl std::ops::Deref for TempDir {
     }
 }
 
-/// Confere que ainda cabe escrever no volume de `dir`.
+/// Checks that there is still room to write on the volume of `dir`.
 ///
-/// **Por que tentar em vez de perguntar.** Não existe pergunta portátil de "quanto espaço há" sem
-/// puxar dependência, e o que a varredura precisa saber não é o número: é se ainda cabe. A prova
-/// escreve e apaga um arquivo, e devolve o erro do sistema quando ele diz que não.
+/// **Why try instead of asking.** There is no portable way to ask "how much space is there"
+/// without pulling in a dependency, and what the scan needs to know is not the number: it is
+/// whether things still fit. The probe writes and deletes a file, and returns the system error
+/// when the system says no.
 ///
-/// Isto existe porque a falta de espaço **mente**: rodando a varredura das 62 ROMs com o disco
-/// cheio, dois jogos apareceram como "não carrega" com `No space left on device`, e o relatório
-/// acusou defeito onde havia ambiente. A extração de cada ROM para o cache é o que consome, e a
-/// varredura inteira gasta perto de 1 GB.
-pub fn cabe_escrever(dir: &Path, bytes: usize) -> Result<(), String> {
-    const PASSO: usize = 1024 * 1024;
-    let prova = dir.join("zeebx-prova-de-espaco");
-    let escrita = std::fs::create_dir_all(dir).and_then(|()| {
-        let mut arquivo = std::fs::File::create(&prova)?;
-        let bloco = vec![0u8; PASSO];
-        let mut restante = bytes;
-        while restante > 0 {
-            let passo = restante.min(PASSO);
-            std::io::Write::write_all(&mut arquivo, &bloco[..passo])?;
-            restante -= passo;
+/// This exists because running out of space **lies**: running the scan of the 62 ROMs with the disk
+/// full, two games showed up as "does not load" with `No space left on device`, and the report
+/// blamed a defect where there was an environment problem. Extracting each ROM to the cache is what
+/// uses the space, and the whole scan takes close to 1 GB.
+pub fn ensure_room(dir: &Path, bytes: usize) -> Result<(), String> {
+    const STEP: usize = 1024 * 1024;
+    let probe_file = dir.join("zeebx-prova-de-espaco");
+    let for_writing = std::fs::create_dir_all(dir).and_then(|()| {
+        let mut file = std::fs::File::create(&probe_file)?;
+        let block = vec![0u8; STEP];
+        let mut remaining = bytes;
+        while remaining > 0 {
+            let step = remaining.min(STEP);
+            std::io::Write::write_all(&mut file, &block[..step])?;
+            remaining -= step;
         }
-        std::io::Write::flush(&mut arquivo)
+        std::io::Write::flush(&mut file)
     });
-    let _ = std::fs::remove_file(&prova);
-    escrita.map_err(|erro| {
+    let _ = std::fs::remove_file(&probe_file);
+    for_writing.map_err(|error| {
         format!(
-            "{erro} (prova de {} MB em {})",
-            bytes / PASSO,
+            "{error} ({} MB probe in {})",
+            bytes / STEP,
             dir.display()
         )
     })

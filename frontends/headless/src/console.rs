@@ -1,9 +1,9 @@
-//! O console rodando, sem nada em volta.
+//! The console running, with nothing around it.
 //!
-//! É o que os dois modos — com janela e sem — têm em comum: a sessão, a entrada, o relógio e a
-//! cadeia da Z-Wheel. O que muda entre eles é só para onde o quadro vai, e isso fica de fora
-//! daqui de propósito: quem tem janela chama [`Console::passo`] e pinta; quem não tem chama o
-//! mesmo [`Console::passo`] e escreve.
+//! It is what the two modes — with a window and without — have in common: the session, input, the
+//! clock and the Z-Wheel chain. The only thing that differs between them is where the frame goes,
+//! and that is left out of here on purpose: the one with a window calls [`Console::step`] and
+//! paints; the one without calls the same [`Console::step`] and writes.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -12,317 +12,325 @@ use std::time::Instant;
 
 use zeebx::input::gamepads::Gamepads;
 use zeebx::input::{self, Pad};
-use zeebx::session::{FATIA_MAXIMA, Session, Step};
+use zeebx::session::{MAX_SLICE, Session, Step};
 use zeebx::ui::library::{self, Game};
 use zeebx::ui::settings::Settings;
 
 use crate::config::Headless;
-use crate::entrada::{self, Teclado};
+use crate::host_input::{self, Keyboard};
 
-/// Por que o laço acabou.
-pub enum Fim {
-    /// Continua.
-    Segue,
-    /// O jogo parou — terminou, saiu sozinho ou quebrou —, e não há para onde voltar.
-    Acabou(String),
-    /// Quebrou de um jeito que precisa ser dito.
-    Erro(String),
+/// Why the loop ended.
+pub enum LoopEnd {
+    /// Keep going.
+    Continue,
+    /// The game stopped — finished, exited on its own or broke —, and there is nowhere to go
+    /// back to.
+
+    Finished(String),
+    /// It broke in a way that needs to be reported.
+    Error(String),
 }
 
 pub struct Console {
     pub settings: Settings,
-    pub opcoes: Headless,
-    sessao: Option<Session>,
-    /// O que a pasta de ROMs tem. É o que permite a Z-Wheel abrir um título pelo ClassID.
-    jogos: Vec<Game>,
-    /// Para onde o console volta quando um jogo sai. `None` faz o emulador sair junto.
+    pub options: Headless,
+    session: Option<Session>,
+    /// What the ROMs folder holds. It is what lets the Z-Wheel open a title by ClassID.
+    games: Vec<Game>,
+    /// Where the console goes back to when a game exits. `None` makes the emulator exit too.
     z_wheel: Option<PathBuf>,
-    /// Se o que está rodando foi aberto pela Z-Wheel. Ver [`Console::passo`].
-    pela_z_wheel: bool,
-    /// O contexto de GL que a sessão usa para rasterizar o 3D. Com janela é o dela; sem janela,
-    /// o de fora de tela do núcleo.
+    /// Whether what is running was opened by the Z-Wheel. See [`Console::step`].
+    via_z_wheel: bool,
+    /// The GL context the session uses to rasterize 3D. With a window it is the window's; without
+    /// a window, the core's offscreen one.
     gl: Option<Arc<glow::Context>>,
-    pub teclado: Teclado,
+    pub keyboard: Keyboard,
     pads: Gamepads,
-    /// O estado de cada porta no quadro anterior, para saber o que mudou.
-    anteriores: [Pad; input::PORTAS],
-    /// As teclas do BREW já entregues, para mandar só as transições.
-    entregues: HashSet<u32>,
-    ultimo: Instant,
-    /// Se a última volta encontrou o jogo adiantado. Quem gira o laço usa isto para dormir um
-    /// instante em vez de voltar já: sem janela, ou com o vsync desligado, nada mais segura a
-    /// volta e o laço queimaria um núcleo inteiro esperando o relógio.
-    adiantado: bool,
-    /// Quando parar, em milissegundos do relógio do jogo. `None` roda até fecharem.
-    limite_de_relogio: Option<u32>,
+    /// The state of each port in the previous frame, to know what changed.
+    prior: [Pad; input::PORTS],
+    /// The BREW keys already delivered, to send only the transitions.
+    delivered: HashSet<u32>,
+    last: Instant,
+    /// Whether the last turn found the game ahead. Whoever spins the loop uses this to sleep an
+    /// instant instead of coming right back: without a window, or with vsync off, nothing else
+    /// holds the turn back and the loop would burn a whole core waiting for the clock.
+    ahead: bool,
+    /// When to stop, in milliseconds of the game clock. `None` runs until closed.
+    clock_limit: Option<u32>,
 }
 
 impl Console {
-    /// Monta o console. A sessão ainda não começa: com janela, ela precisa do contexto de GL
-    /// que só existe depois que a janela abre.
-    pub fn novo(settings: Settings, opcoes: Headless) -> Self {
-        let jogos = match &opcoes.roms {
-            Some(pasta) => library::scan(pasta),
+    /// Builds the console. The session does not start yet: with a window, it needs the GL context
+    /// that only exists after the window opens.
+    pub fn create(settings: Settings, options: Headless) -> Self {
+        let games = match &options.roms {
+            Some(dir) => library::scan(dir),
             None => Vec::new(),
         };
-        // **Só a Z-Wheel que o arquivo apontar.** O núcleo sabe procurar uma sozinho — pela
-        // pasta de ROMs e, na falta dela, por nome dentro da pasta pessoal —, e isso faz sentido
-        // na interface, onde é um chute simpático para quem ainda não configurou nada. Num
-        // binário sem interface não faz: ele seria chamado por outro programa e abriria algo que
-        // ninguém pediu, achado vasculhando a casa de quem rodou. O `z_wheel_em` que fica aqui
-        // não é procura, é resolução — ele transforma o `.zip`, o `.mod` ou a pasta que a pessoa
-        // apontou no caminho que se abre.
-        let z_wheel = opcoes.z_wheel.as_deref().and_then(library::z_wheel_em);
+        // **Only the Z-Wheel the file points to.** The core knows how to look for one on its own
+        // — in the ROMs folder and, failing that, by name inside the home folder —, and that makes
+        // sense in the interface, where it is a friendly guess for someone who has not configured
+        // anything yet. In a binary without an interface it does not: it would be called by another
+        // program and would open something nobody asked for, found by rummaging through the home
+        // of whoever ran it. The `z_wheel_in` that remains here is not a search, it is resolution —
+        // it turns the `.zip`, the `.mod` or the folder the person pointed to into the path that
+        // gets opened.
+        let z_wheel = options.z_wheel.as_deref().and_then(library::z_wheel_in);
         Self {
-            limite_de_relogio: opcoes.segundos.map(|s| s.saturating_mul(1000)),
+            clock_limit: options.seconds.map(|s| s.saturating_mul(1000)),
             settings,
-            opcoes,
-            sessao: None,
-            jogos,
+            options,
+            session: None,
+            games,
             z_wheel,
-            pela_z_wheel: false,
+            via_z_wheel: false,
             gl: None,
-            teclado: Teclado::default(),
+            keyboard: Keyboard::default(),
             pads: Gamepads::new(),
-            anteriores: Default::default(),
-            entregues: HashSet::new(),
-            ultimo: Instant::now(),
-            adiantado: false,
+            prior: Default::default(),
+            delivered: HashSet::new(),
+            last: Instant::now(),
+            ahead: false,
         }
     }
 
-    /// Se o jogo está adiantado em relação ao relógio do mundo.
-    pub fn adiantado(&self) -> bool {
-        self.adiantado
+    /// Whether the game is ahead of the wall clock.
+    pub fn ahead(&self) -> bool {
+        self.ahead
     }
 
-    /// O contexto em que o 3D vai ser rasterizado. Dito antes de abrir o jogo.
-    pub fn usa_contexto(&mut self, gl: Option<Arc<glow::Context>>) {
+    /// The context in which 3D will be rasterized. Set before opening the game.
+    pub fn use_context(&mut self, gl: Option<Arc<glow::Context>>) {
         self.gl = gl;
     }
 
-    pub fn sessao_mut(&mut self) -> Option<&mut Session> {
-        self.sessao.as_mut()
+    pub fn session_mut(&mut self) -> Option<&mut Session> {
+        self.session.as_mut()
     }
 
-    /// Abre um jogo. Um que já estava rodando é largado — é o que o console faz.
-    pub fn abre(&mut self, caminho: &Path) -> Result<(), String> {
-        // A tela que a Z-Wheel deixou continua valendo enquanto o jogo não desenha a primeira
-        // dele: no console a troca não passa por um quadro preto.
-        // O quadro pendente da sessão anterior entra antes de ela ser largada: sem isto, um jogo
-        // aberto logo depois de a Z-Wheel desenhar herdaria a tela de dois quadros atrás.
-        if let Some(anterior) = self.sessao.as_mut() {
-            anterior.materializa_quadro_gl();
+    /// Opens a game. One that was already running is dropped — it is what the console does.
+    pub fn open(&mut self, path: &Path) -> Result<(), String> {
+        // The screen the Z-Wheel left keeps counting until the game draws its first one: on the
+        // console the switch does not go through a black frame.
+        // The pending frame of the previous session goes in before it is dropped: without this, a
+        // game opened right after the Z-Wheel draws would inherit the screen from two frames back.
+        if let Some(previous) = self.session.as_mut() {
+            previous.materialize_gl_frame();
         }
-        let tela_anterior = self
-            .sessao
+        let previous_screen = self
+            .session
             .as_ref()
-            .filter(|anterior| anterior.classe() == zeebx::session::Z_WHEEL)
-            .map(|anterior| anterior.screen().to_rgb565_bytes());
+            .filter(|previous| previous.class_id() == zeebx::session::Z_WHEEL)
+            .map(|previous| previous.screen().to_rgb565_bytes());
 
-        let portas = std::array::from_fn(|porta| {
+        let ports = std::array::from_fn(|port| {
             self.settings
                 .controls
-                .player(porta)
-                .filter(|jogador| jogador.ligada)
-                .map(|jogador| jogador.aparelho)
+                .player(port)
+                .filter(|player| player.enabled)
+                .map(|player| player.device_kind)
         });
-        zeebx::audio::soundfont::define_banco(self.settings.audio.soundfont.clone());
-        zeebx::audio::soundfont::define_efeitos(self.settings.audio.midi_effects);
+        zeebx::audio::soundfont::set_soundfont(self.settings.audio.soundfont.clone());
+        zeebx::audio::soundfont::set_effects(self.settings.audio.midi_effects);
         let g = &self.settings.graphics;
-        let mut sessao = Session::start_with(
-            caminho,
-            portas,
+        let mut session = Session::start_with(
+            path,
+            ports,
             None,
             g.gpu_rasterizer,
             self.gl.clone(),
             self.settings.z_wheel,
         )
-        .map_err(|erro| erro.to_string())?;
+        .map_err(|error| error.to_string())?;
 
-        sessao.define_resolucao_interna(g.resolucao_interna as usize);
-        sessao.define_proporcao(g.proporcao.aspecto(16.0 / 9.0));
-        sessao.define_melhorias(g.antialias as usize, g.anisotropico as usize);
-        sessao.define_neblina(g.neblina);
-        if let Some(tela) = tela_anterior.filter(|_| sessao.classe() != zeebx::session::Z_WHEEL) {
-            sessao.herda_tela(&tela);
+        session.set_internal_resolution(g.internal_resolution as usize);
+        session.set_aspect_ratio(g.ratio.aspect(16.0 / 9.0));
+        session.set_enhancements(g.antialias as usize, g.anisotropic as usize);
+        session.set_fog_allowed(g.fog);
+        if let Some(screen) = previous_screen.filter(|_| session.class_id() != zeebx::session::Z_WHEEL) {
+            session.inherit_screen(&screen);
         }
-        // O que a Z-Wheel enxerga instalado. Sem isto a lista dela vem vazia e não há o que abrir.
-        sessao.set_installed_applets(
-            self.jogos
+        // What the Z-Wheel sees as installed. Without this its list comes up empty and there is
+        // nothing to open.
+        session.set_installed_applets(
+            self.games
                 .iter()
-                .filter_map(|jogo| Some((jogo.clsid?, library::id_do_modulo(&jogo.path)?))),
+                .filter_map(|game| Some((game.clsid?, library::module_id(&game.path)?))),
         );
-        // Ligar o som aqui é seguro **porque o jogo ainda não começou**: o `start` só prepara, e
-        // o `EVT_APP_START` sai na primeira volta do laço.
+        // Turning sound on here is safe **because the game has not started yet**: `start` only
+        // prepares, and `EVT_APP_START` goes out on the first turn of the loop.
         let audio = &self.settings.audio;
-        if let Some(erro) = sessao.set_audio(audio.enabled, audio.volume) {
-            eprintln!("warning: no sound: {erro}");
+        if let Some(error) = session.set_audio(audio.enabled, audio.volume) {
+            eprintln!("warning: no sound: {error}");
         }
 
-        eprintln!("running: {}", sessao.title());
-        self.sessao = Some(sessao);
-        self.anteriores = Default::default();
-        self.entregues.clear();
-        self.teclado.solta_tudo();
-        self.ultimo = Instant::now();
+        eprintln!("running: {}", session.title());
+        self.session = Some(session);
+        self.prior = Default::default();
+        self.delivered.clear();
+        self.keyboard.release_all();
+        self.last = Instant::now();
         Ok(())
     }
 
-    /// Larga a sessão.
+    /// Drops the session.
     ///
-    /// Precisa acontecer **antes** de o contexto de GL morrer: o rasterizador guarda texturas e
-    /// buffers criados nele, e soltá-los depois seria falar de objetos que já não existem.
-    pub fn fecha(&mut self) {
-        self.sessao = None;
+    /// It has to happen **before** the GL context dies: the rasterizer keeps textures and buffers
+    /// created in it, and releasing them afterwards would be talking about objects that no longer
+    /// exist.
+    pub fn close(&mut self) {
+        self.session = None;
     }
 
-    /// Uma volta: lê a entrada, anda com o jogo, e trata o que ele pediu ao sair.
-    pub fn passo(&mut self) -> Fim {
-        if self.sessao.is_none() {
-            return Fim::Acabou("no game".to_string());
+    /// One turn: reads input, moves the game forward, and handles what it asked for on exit.
+    pub fn step(&mut self) -> LoopEnd {
+        if self.session.is_none() {
+            return LoopEnd::Finished("no game".to_string());
         }
 
         self.pads.poll();
-        // O estado de cada porta ligada, do mapeamento dela. Montado antes de pegar a sessão
-        // emprestada: ele precisa das configurações, que moram no mesmo `self`.
-        let portas: Vec<(usize, Pad)> = self
+        // The state of each enabled port, from its mapping. Built before borrowing the session:
+        // it needs the settings, which live in the same `self`.
+        let ports: Vec<(usize, Pad)> = self
             .settings
             .controls
-            .ligadas()
-            .map(|(indice, jogador)| {
+            .enabled_players()
+            .map(|(index, player)| {
                 (
-                    indice,
-                    entrada::pad_da_porta(jogador, &self.teclado, &self.pads, indice),
+                    index,
+                    host_input::port_pad(player, &self.keyboard, &self.pads, index),
                 )
             })
             .collect();
 
-        // O console manda teclas do BREW além do estado do controle: é com elas que a Z-Wheel
-        // navega. Só as transições vão, senão cada volta do laço repetiria o aperto.
-        let mut atuais: HashSet<u32> = self
-            .teclado
-            .apertadas()
+        // The console sends BREW keys besides the controller state: it is with them that the
+        // Z-Wheel navigates. Only transitions go, otherwise every loop turn would repeat the press.
+        let mut current: HashSet<u32> = self
+            .keyboard
+            .pressed()
             .iter()
-            .filter_map(|key| input::avk_de(*key))
+            .filter_map(|key| input::avk_for(*key))
             .collect();
-        for (_, pad) in &portas {
-            atuais.extend(
-                input::teclas_do_controle(&Pad::default(), pad)
+        for (_, pad) in &ports {
+            current.extend(
+                input::controller_key_events(&Pad::default(), pad)
                     .into_iter()
-                    .filter_map(|(avk, apertada)| apertada.then_some(avk)),
+                    .filter_map(|(avk, pressed)| pressed.then_some(avk)),
             );
         }
-        let teclas = transicoes(&mut self.entregues, atuais);
-        for (indice, pad) in &portas {
-            self.anteriores[*indice] = *pad;
+        let key_events = transitions(&mut self.delivered, current);
+        for (index, pad) in &ports {
+            self.prior[*index] = *pad;
         }
 
-        let ritmo = self.settings.velocidade.ritmo();
-        let sessao = self.sessao.as_mut().expect("conferido acima");
-        for (indice, pad) in portas {
-            sessao.set_port_pad(indice, pad);
+        let pace = self.settings.speed.pace();
+        let session = self.session.as_mut().expect("checked above");
+        for (index, pad) in ports {
+            session.set_port_pad(index, pad);
         }
-        for (avk, apertada) in teclas {
-            sessao.set_key(avk, apertada);
+        for (avk, pressed) in key_events {
+            session.set_key(avk, pressed);
         }
 
-        // O orçamento é o tempo real que passou desde a volta anterior, preso ao teto: é quanto
-        // o jogo precisa emular para acompanhar o relógio do mundo.
-        let agora = Instant::now();
-        let fatia = (agora - self.ultimo).min(FATIA_MAXIMA);
-        self.ultimo = agora;
-        // Uma tela intermediária à espera vai à tela primeiro, e o jogo não anda nesta volta.
-        self.adiantado = false;
-        if !sessao.mostra_quadro_intermediario() {
-            // Com janela, ela pintou no mesmo contexto desde a volta anterior, e o espelho de
-            // estado da placa não sabe: sem avisar, o jogo desenharia com o viewport, a tesoura
-            // e a mistura que ela deixou. Sem janela o contexto é próprio e isto não faz nada.
-            // Ver `Session::retoma_o_contexto`.
-            sessao.retoma_o_contexto();
-            match sessao.anda(fatia, &ritmo) {
-                Step::Stopped => return Fim::Acabou(sessao.stopped_reason().unwrap_or_default()),
-                Step::Ahead => self.adiantado = true,
+        // The budget is the real time that has passed since the previous turn, clamped to the
+        // ceiling: it is how much the game needs to emulate to keep up with the wall clock.
+        let now_instant = Instant::now();
+        let slice = (now_instant - self.last).min(MAX_SLICE);
+        self.last = now_instant;
+        // An intermediate screen that is waiting goes to the display first, and the game does not
+        // move on this turn.
+        self.ahead = false;
+        if !session.show_intermediate_frame() {
+            // With a window, it painted in the same context since the previous turn, and the GPU
+            // state mirror does not know: without telling it, the game would draw with the
+            // viewport, scissor and blending it left. Without a window the context is our own and
+            // this does nothing. See `Session::resume_context`.
+            session.resume_context();
+            match session.advance(slice, &pace) {
+                Step::Stopped => return LoopEnd::Finished(session.stopped_reason().unwrap_or_default()),
+                Step::Ahead => self.ahead = true,
                 Step::Presented | Step::Running => {}
             }
         }
 
-        if let Some(teto) = self.limite_de_relogio {
-            if sessao.clock_ms() >= teto {
-                return Fim::Acabou("the requested time is up".to_string());
+        if let Some(cap) = self.clock_limit {
+            if session.clock_ms() >= cap {
+                return LoopEnd::Finished("the requested time is up".to_string());
             }
         }
 
-        // A Z-Wheel abre um jogo saindo e pedindo a classe dele. É o console que faz a troca.
-        if let Some(classe) = sessao.take_launch_request() {
-            let caminho = self
-                .jogos
+        // The Z-Wheel opens a game by exiting and asking for its class. It is the console that
+        // makes the switch.
+        if let Some(class_id) = session.take_launch_request() {
+            let path = self
+                .games
                 .iter()
-                .find(|jogo| jogo.clsid == Some(classe))
-                .map(|jogo| jogo.path.clone());
-            return match caminho {
-                Some(caminho) => match self.abre(&caminho) {
+                .find(|game| game.clsid == Some(class_id))
+                .map(|game| game.path.clone());
+            return match path {
+                Some(path) => match self.open(&path) {
                     Ok(()) => {
-                        self.pela_z_wheel = true;
-                        Fim::Segue
+                        self.via_z_wheel = true;
+                        LoopEnd::Continue
                     }
-                    Err(erro) => Fim::Erro(format!("{}: {erro}", caminho.display())),
+                    Err(error) => LoopEnd::Error(format!("{}: {error}", path.display())),
                 },
-                None => Fim::Erro(format!(
-                    "the Z-Wheel asked for class {classe:#010x}, which is not in the ROMs folder"
+                None => LoopEnd::Error(format!(
+                    "the Z-Wheel asked for class {class_id:#010x}, which is not in the ROMs folder"
                 )),
             };
         }
 
-        if sessao.saiu_sozinho() {
-            // Um jogo que sai — pelo menu dele, pelo `ISHELL_CloseApplet` — devolve o console à
-            // tela inicial, e a tela inicial do Zeebo é a Z-Wheel. Sem ela, ou com
-            // `sair_com_o_jogo`, o emulador sai junto: é o que um frontend de fora espera, já
-            // que a tela dele é que volta a aparecer.
-            let volta = sessao.classe() == zeebx::session::Z_WHEEL || self.pela_z_wheel;
+        if session.exited_on_its_own() {
+            // A game that exits — through its menu, through `ISHELL_CloseApplet` — returns the
+            // console to the home screen, and the Zeebo's home screen is the Z-Wheel. Without it,
+            // or with `exit_with_game`, the emulator exits too: it is what an outside frontend
+            // expects, since its own screen is what shows up again.
+            let tick = session.class_id() == zeebx::session::Z_WHEEL || self.via_z_wheel;
             let z_wheel = self.z_wheel.clone();
-            if let (false, true, Some(caminho)) = (self.opcoes.sair_com_o_jogo, volta, z_wheel) {
-                self.pela_z_wheel = false;
-                return match self.abre(&caminho) {
-                    Ok(()) => Fim::Segue,
-                    Err(erro) => Fim::Erro(format!("{}: {erro}", caminho.display())),
+            if let (false, true, Some(path)) = (self.options.exit_with_game, tick, z_wheel) {
+                self.via_z_wheel = false;
+                return match self.open(&path) {
+                    Ok(()) => LoopEnd::Continue,
+                    Err(error) => LoopEnd::Error(format!("{}: {error}", path.display())),
                 };
             }
-            return Fim::Acabou("the game exited".to_string());
+            return LoopEnd::Finished("the game exited".to_string());
         }
 
-        Fim::Segue
+        LoopEnd::Continue
     }
 }
 
-/// O que mudou entre dois conjuntos de teclas: as que soltaram e as que apertaram.
-fn transicoes(anteriores: &mut HashSet<u32>, atuais: HashSet<u32>) -> Vec<(u32, bool)> {
-    let mut eventos: Vec<_> = anteriores
-        .difference(&atuais)
+/// What changed between two sets of keys: the ones released and the ones pressed.
+fn transitions(prior: &mut HashSet<u32>, current: HashSet<u32>) -> Vec<(u32, bool)> {
+    let mut events: Vec<_> = prior
+        .difference(&current)
         .map(|&avk| (avk, false))
         .collect();
-    eventos.extend(atuais.difference(anteriores).map(|&avk| (avk, true)));
-    eventos.sort_unstable();
-    *anteriores = atuais;
-    eventos
+    events.extend(current.difference(prior).map(|&avk| (avk, true)));
+    events.sort_unstable();
+    *prior = current;
+    events
 }
 
 #[cfg(test)]
-mod testes {
+mod tests {
     use super::*;
 
-    /// Só as bordas vão: uma tecla que continua apertada não é repetida, e uma que soltou sai
-    /// com `false`. Sem isso a Z-Wheel andaria uma casa por volta do laço.
+    /// Only the edges go: a key that stays pressed is not repeated, and one that was released goes
+    /// out with `false`. Without this the Z-Wheel would move one step per loop turn.
+
     #[test]
-    fn so_as_transicoes_sao_entregues() {
-        let mut entregues = HashSet::new();
+    fn only_transitions_are_delivered() {
+        let mut delivered = HashSet::new();
         assert_eq!(
-            transicoes(&mut entregues, HashSet::from([input::avk::UP])),
+            transitions(&mut delivered, HashSet::from([input::avk::UP])),
             vec![(input::avk::UP, true)]
         );
-        assert!(transicoes(&mut entregues, HashSet::from([input::avk::UP])).is_empty());
+        assert!(transitions(&mut delivered, HashSet::from([input::avk::UP])).is_empty());
         assert_eq!(
-            transicoes(&mut entregues, HashSet::new()),
+            transitions(&mut delivered, HashSet::new()),
             vec![(input::avk::UP, false)]
         );
     }

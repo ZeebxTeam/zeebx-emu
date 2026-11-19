@@ -1,6 +1,6 @@
-/* A newlib da Vita não tem sys/ioctl.h. O VFS Unix do SQLite inclui o
- * cabeçalho sempre; a chamada em si só entra com locking estilo Linux, que
- * este alvo não liga. A declaração basta para o include resolver. */
+/* The Vita newlib has no sys/ioctl.h. SQLite's Unix VFS always includes the
+ * header; the call itself only comes in with Linux-style locking, which this
+ * target does not turn on. The declaration is enough for the include to resolve. */
 #ifndef _SYS_IOCTL_H
 #define _SYS_IOCTL_H
 

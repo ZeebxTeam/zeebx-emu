@@ -1,23 +1,25 @@
-# A `master` recebeu uma versão nova: cria a tag e monta a release, sem ninguém digitar nada.
+# `master` received a new version: create the tag and build the release, without anyone typing
+# anything.
 #
-# O gatilho é o push na `master`, que é o que um PR mesclado produz -- vale para merge, squash e
-# rebase, que o `pull_request: closed` trataria de três jeitos diferentes.
+# The trigger is the push to `master`, which is what a merged PR produces -- it works for merge,
+# squash and rebase, which `pull_request: closed` would handle in three different ways.
 #
-# **A versão é a do `Cargo.toml` da raiz.** Ela é a fonte: os quatro frontends e o `.info` já a
-# acompanham. Se a tag correspondente existir, não há versão nova e o trabalho termina sem fazer
-# nada -- é o caso de todo push na `master` que não sobe versão, que é a maioria deles.
+# **The version is the one in the root `Cargo.toml`.** It is the source: the four frontends and
+# the `.info` already follow it. If the matching tag exists, there is no new version and the job
+# ends without doing anything -- that is the case for every push to `master` that doesn't bump
+# the version, which is most of them.
 #
-# **Por que isto chama o `release.yml` em vez de só empurrar a tag:** uma tag criada com o
-# `GITHUB_TOKEN` não dispara workflow nenhum. O GitHub bloqueia para não haver recursão, e o
-# sintoma seria a tag nascer sozinha, sem pacote nenhum. Chamando, tudo roda na mesma execução e
-# nenhum token de pessoa precisa virar segredo.
+# **Why this calls `release.yml` instead of just pushing the tag:** a tag created with
+# `GITHUB_TOKEN` triggers no workflow at all. GitHub blocks it to avoid recursion, and the
+# symptom would be the tag being born alone, with no package at all. By calling it, everything
+# runs in the same execution and no personal token needs to become a secret.
 
 name: tag
 
 on:
   push:
     branches: [master]
-  # Para refazer a tag de uma versão à mão, se o run tiver falhado no meio.
+  # To redo a version's tag by hand, if the run failed halfway.
   workflow_dispatch:
 
 permissions:
@@ -25,39 +27,39 @@ permissions:
 
 jobs:
   versao:
-    name: a versão é nova?
+    name: is the version new?
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.versao.outputs.tag }}
       nova: ${{ steps.versao.outputs.nova }}
     steps:
-      # As tags vêm junto: sem elas toda versão pareceria nova, e o passo abaixo tentaria criar
-      # uma tag que já existe em todo push.
+      # The tags come along: without them every version would look new, and the step below would
+      # try to create a tag that already exists on every push.
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
-      - name: Lê a versão e decide
+      - name: Read the version and decide
         id: versao
         shell: bash
         run: |
-          versao=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
-          if [ -z "$versao" ]; then
-            echo "não achei a versão no Cargo.toml da raiz"
+          version=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          if [ -z "$version" ]; then
+            echo "could not find the version in the root Cargo.toml"
             exit 1
           fi
-          tag="v$versao"
+          tag="v$version"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           if git rev-parse -q --verify "refs/tags/$tag" > /dev/null; then
             echo "nova=false" >> "$GITHUB_OUTPUT"
-            echo "A $tag já existe: nada a fazer."
+            echo "$tag already exists: nothing to do."
           else
             echo "nova=true" >> "$GITHUB_OUTPUT"
-            echo "Versão nova: $tag"
+            echo "New version: $tag"
           fi
 
-      # A tag aponta para o commit que a `master` acabou de receber, que é o que será empacotado.
-      - name: Cria a tag
+      # The tag points to the commit `master` just received, which is what will be packaged.
+      - name: Create the tag
         if: steps.versao.outputs.nova == 'true'
         run: |
           git tag "${{ steps.versao.outputs.tag }}"

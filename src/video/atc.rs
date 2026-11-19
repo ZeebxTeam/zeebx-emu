@@ -1,17 +1,17 @@
-//! Decodificação das texturas comprimidas ATITC, do `GL_AMD_compressed_ATC_texture`.
+//! Decoding of ATITC compressed textures, from `GL_AMD_compressed_ATC_texture`.
 //!
-//! É o formato que o Adreno 130 do Zeebo aceita — o núcleo gráfico veio do ATI Imageon, e a
-//! compressão veio junto. O Boomerang Sports Dodgeball carrega **todas** as texturas dele
-//! assim, sem uma única chamada a `glTexImage2D`.
+//! It is the format the Zeebo's Adreno 130 accepts — the graphics core came from the ATI Imageon,
+//! and the compression came along. Boomerang Sports Dodgeball loads **all** its textures this way,
+//! without a single call to `glTexImage2D`.
 //!
-//! Como o DXT1, os blocos são de 4×4 texels: duas cores e dois bits de índice por texel. A
-//! diferença está no bit mais alto da primeira cor, que escolhe entre interpolar as quatro
-//! cores da paleta ou reservar a primeira para o preto.
+//! Like DXT1, the blocks are 4×4 texels: two colors and two index bits per texel. The difference
+//! is in the highest bit of the first color, which chooses between interpolating the four palette
+//! colors or reserving the first one for black.
 
-/// Lado do bloco, em texels.
+/// Block side, in texels.
 const BLOCK: usize = 4;
 
-/// Expande um valor de `bits` bits para a faixa completa de um byte.
+/// Expands a `bits`-bit value to the full range of a byte.
 fn expand(value: u16, bits: u32) -> u8 {
     let max = (1u16 << bits) - 1;
     ((value as u32 * 255 + max as u32 / 2) / max as u32) as u8
@@ -33,11 +33,11 @@ fn rgb565(value: u16) -> [u8; 3] {
     ]
 }
 
-/// A paleta de quatro cores de um bloco ATC.
+/// The four-color palette of an ATC block.
 fn palette(c0: u16, c1: u16) -> [[u8; 3]; 4] {
     let (a, b) = (rgb555(c0), rgb565(c1));
-    // O bit 15 da primeira cor escolhe o modo. Com ele ligado a entrada 0 é preto, e é assim
-    // que o formato representa recortes duros sem gastar um canal de alfa.
+    // Bit 15 of the first color chooses the mode. With it set, entry 0 is black, and that is how
+    // the format represents hard cutouts without spending an alpha channel.
     if c0 & 0x8000 == 0 {
         let mix = |x: u8, y: u8, wx: u32, wy: u32| ((x as u32 * wx + y as u32 * wy) / 8) as u8;
         [
@@ -56,8 +56,8 @@ fn palette(c0: u16, c1: u16) -> [[u8; 3]; 4] {
     }
 }
 
-/// Lê o bloco de cor de 8 bytes na posição `at` e escreve os 16 texels em `out`, que é a
-/// imagem inteira em RGBA de 8 bits.
+/// Reads the 8-byte color block at position `at` and writes the 16 texels to `out`, which is the
+/// whole image in 8-bit RGBA.
 fn decode_color_block(
     data: &[u8],
     at: usize,
@@ -74,8 +74,8 @@ fn decode_color_block(
     for row in 0..BLOCK {
         for column in 0..BLOCK {
             let (x, y) = (bx * BLOCK + column, by * BLOCK + row);
-            // A textura pode não ser múltipla de quatro; o bloco continua completo no arquivo,
-            // e o que passa da borda é descartado.
+            // The texture may not be a multiple of four; the block is still complete in the file,
+            // and whatever goes past the edge is discarded.
             if x >= width || y >= height {
                 continue;
             }
@@ -86,11 +86,11 @@ fn decode_color_block(
     }
 }
 
-/// Decodifica uma imagem ATC para RGBA de 8 bits.
+/// Decodes an ATC image to 8-bit RGBA.
 ///
-/// `explicit_alpha` distingue os dois formatos que o console usa: sem ele o bloco tem 8 bytes e
-/// é só cor; com ele o bloco tem 16, e os oito primeiros trazem um alfa de quatro bits por
-/// texel, sem compressão nenhuma.
+/// `explicit_alpha` tells apart the two formats the console uses: without it the block is 8 bytes
+/// and color only; with it the block is 16, and the first eight carry a four-bit alpha per texel,
+/// with no compression at all.
 pub fn decode(data: &[u8], width: usize, height: usize, explicit_alpha: bool) -> Vec<[u8; 4]> {
     let mut out = vec![[0u8, 0, 0, 255]; width * height];
     let stride = if explicit_alpha { 16 } else { 8 };
@@ -125,7 +125,7 @@ pub fn decode(data: &[u8], width: usize, height: usize, explicit_alpha: bool) ->
 mod tests {
     use super::*;
 
-    /// Monta um bloco ATC de cor com as duas cores e os índices dados.
+    /// Builds an ATC color block with the given two colors and indices.
     fn block(c0: u16, c1: u16, indices: u32) -> Vec<u8> {
         let mut bytes = c0.to_le_bytes().to_vec();
         bytes.extend_from_slice(&c1.to_le_bytes());
@@ -134,21 +134,21 @@ mod tests {
     }
 
     #[test]
-    fn o_modo_interpolado_usa_as_quatro_cores_da_paleta() {
-        // Branco e preto nas pontas, com um texel de cada índice na primeira linha.
+    fn the_interpolated_mode_uses_all_four_palette_colors() {
+        // White and black at the ends, with one texel of each index in the first row.
         let data = block(0x7fff, 0x0000, 0b11_10_01_00);
         let pixels = decode(&data, 4, 4, false);
         assert_eq!(pixels[0], [255, 255, 255, 255]);
         assert_eq!(pixels[3], [0, 0, 0, 255]);
-        // As do meio ficam entre as duas, e a de índice 1 é a mais clara das duas.
+        // The middle ones fall between the two, and index 1 is the lighter of the two.
         assert!(pixels[1][0] > pixels[2][0]);
         assert!(pixels[2][0] > pixels[3][0]);
     }
 
     #[test]
-    fn o_bit_de_modo_reserva_o_indice_zero_para_o_preto() {
-        // Mesmo par de cores, agora com o bit 15 ligado: o índice 0 vira preto e o 2 passa a
-        // ser a cor cheia. Confundir os dois modos deixa a textura escura ou lavada.
+    fn the_mode_bit_reserves_index_zero_for_black() {
+        // Same pair of colors, now with bit 15 set: index 0 becomes black and 2 becomes the full
+        // color. Confusing the two modes leaves the texture dark or washed out.
         let data = block(0xffff, 0x0000, 0b00_00_10_00);
         let pixels = decode(&data, 4, 4, false);
         assert_eq!(pixels[0], [0, 0, 0, 255]);
@@ -156,9 +156,9 @@ mod tests {
     }
 
     #[test]
-    fn o_alfa_explicito_vem_em_quatro_bits_por_texel() {
+    fn explicit_alpha_comes_in_four_bits_per_texel() {
         let mut data: Vec<u8> = Vec::new();
-        // Primeira linha: alfa 0, 5, 10, 15.
+        // First row: alpha 0, 5, 10, 15.
         data.extend_from_slice(&0xfa50u16.to_le_bytes());
         data.extend_from_slice(&[0u8; 6]);
         data.extend_from_slice(&block(0x7fff, 0x7fff, 0));
@@ -169,8 +169,9 @@ mod tests {
     }
 
     #[test]
-    fn texturas_fora_do_multiplo_de_quatro_nao_estouram() {
-        // 6×3 ocupa dois blocos de largura e um de altura; o que passa da borda é descartado.
+    fn textures_not_a_multiple_of_four_do_not_overflow() {
+        // 6×3 takes two blocks in width and one in height; whatever goes past the edge is
+        // discarded.
         let mut data = block(0x7fff, 0x7fff, 0);
         data.extend_from_slice(&block(0x7fff, 0x7fff, 0));
         let pixels = decode(&data, 6, 3, false);
@@ -179,7 +180,7 @@ mod tests {
     }
 
     #[test]
-    fn dados_truncados_devolvem_o_que_deu_para_ler() {
+    fn truncated_data_returns_what_could_be_read() {
         let pixels = decode(&[0u8; 4], 4, 4, false);
         assert_eq!(pixels.len(), 16);
     }

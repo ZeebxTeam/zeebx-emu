@@ -1,8 +1,8 @@
-//! Backend ARM sobre Dynarmic.
+//! ARM backend on top of Dynarmic.
 //!
-//! Dynarmic recompila os blocos A32 para o código nativo do host. Este arquivo mantém a mesma
-//! fronteira do [`CpuBackend`]: os endereços não mapeados das vtables BREW continuam sendo a
-//! parada que devolve o controle ao despachante Rust.
+//! Dynarmic recompiles A32 blocks into the host's native code. This file keeps the same
+//! [`CpuBackend`] boundary: the unmapped addresses of the BREW vtables are still the stop that
+//! hands control back to the Rust dispatcher.
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
@@ -16,145 +16,147 @@ use super::mem::GuestMemory;
 use super::{API_BASE, API_SIZE, RETURN_MAGIC};
 use super::{CpuBackend, CpuError, Reg, StopReason};
 
-/// `CPSR` de modo usuário do ARM. A extensão da Superscape confere este campo antes de tocar
-/// nas tabelas da MMU; o applet BREW nunca é código privilegiado.
-const MODO_USUARIO: u32 = 0x10;
+/// ARM user-mode `CPSR`. The Superscape extension checks this field before touching the MMU
+/// tables; the BREW applet is never privileged code.
+const USER_MODE: u32 = 0x10;
 
-/// O bit `T` do `CPSR`: ligado, o núcleo busca instruções Thumb.
+/// The `T` bit of the `CPSR`: when set, the core fetches Thumb instructions.
 const CPSR_THUMB: u32 = 1 << 5;
 
-/// Limite defensivo da string recebida por `SYS_WRITE0`: uma string sem terminador não pode
-/// prender o host em uma leitura sem fim.
+/// Defensive limit on the string received by `SYS_WRITE0`: a string with no terminator must not
+/// trap the host in an endless read.
 const MAX_SEMIHOSTING_STRING: u32 = 4096;
 
-/// Granularidade que o Dynarmic usa para indexar código recompilado.
+/// Granularity Dynarmic uses to index recompiled code.
 const PAGE: u32 = 4096;
 
-/// Quantas páginas de 4 KB cabem nos 32 bits do guest: o tamanho da tabela de páginas.
-const PAGINAS: usize = 1 << 20;
+/// How many 4 KB pages fit in the guest's 32 bits: the size of the page table.
+const PAGES: usize = 1 << 20;
 
-/// Bytes reservados além do fim de cada região gravável. Uma leitura de quatro bytes nos últimos
-/// bytes de uma página que termina a região cruza a borda na memória do host; com a folga, ela
-/// lê memória alocada em vez de sair do vetor.
-const FOLGA_DA_REGIAO: usize = 16;
+/// Bytes reserved past the end of each writable region. A four-byte read in the last bytes of a
+/// page that ends the region crosses the edge in host memory; with the slack, it reads allocated
+/// memory instead of running off the vector.
+const REGION_SLACK: usize = 16;
 
-/// O que uma callback pediu que `run` devolva. O Dynarmic recebe os acessos de memória dentro
-/// do bloco recompilado; guardar o motivo aqui preserva a distinção entre API, retorno e falha.
+/// What a callback asked `run` to return. Dynarmic receives the memory accesses inside the
+/// recompiled block; keeping the reason here preserves the distinction between API, return and
+/// fault.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Parada {
-    Nenhuma,
+enum Stop {
+    Nothing,
     Fetch(u32),
-    Memoria(u32),
-    Excecao(u32),
+    Memory(u32),
+    Exception(u32),
 }
 
-/// As páginas do guest que já foram buscadas como código, um bit por página.
+/// The guest pages that have already been fetched as code, one bit per page.
 ///
-/// Toda escrita do guest pergunta por aqui, e o renderizador ARM do Kingdom Hearts escreve
-/// milhões de pixels por quadro. Com um `BTreeSet` atrás de um `RefCell`, cada pixel pagava um
-/// empréstimo e uma busca em árvore — e era isso que fazia o 3D, já acelerado pelo JIT, voltar a
-/// perder quadros. Um bit por página, em `Cell`, responde com um deslocamento e uma máscara: são
-/// 2^20 páginas de 4 KB, 16.384 palavras, 131 KB.
-struct PaginasExecutadas {
+/// Every guest write asks here, and Kingdom Hearts's ARM renderer writes millions of pixels per
+/// frame. With a `BTreeSet` behind a `RefCell`, each pixel paid for a borrow and a tree lookup —
+/// and that is what made the 3D, already sped up by the JIT, start dropping frames again. One bit
+/// per page, in a `Cell`, answers with a shift and a mask: 2^20 pages of 4 KB, 16,384 words,
+/// 131 KB.
+struct ExecutedPages {
     bits: Box<[Cell<u64>]>,
 }
 
-impl PaginasExecutadas {
+impl ExecutedPages {
     fn new() -> Self {
         Self {
             bits: (0..(1usize << 20).div_ceil(64)).map(|_| Cell::new(0)).collect(),
         }
     }
 
-    fn marca(&self, pagina: u32) {
-        let (palavra, bit) = ((pagina / 64) as usize, pagina % 64);
-        if let Some(celula) = self.bits.get(palavra) {
-            celula.set(celula.get() | (1 << bit));
+    fn mark(&self, page: u32) {
+        let (word, bit) = ((page / 64) as usize, page % 64);
+        if let Some(cell) = self.bits.get(word) {
+            cell.set(cell.get() | (1 << bit));
         }
     }
 
-    fn contem(&self, pagina: u32) -> bool {
-        let (palavra, bit) = ((pagina / 64) as usize, pagina % 64);
+    fn contains(&self, page: u32) -> bool {
+        let (word, bit) = ((page / 64) as usize, page % 64);
         self.bits
-            .get(palavra)
-            .is_some_and(|celula| celula.get() & (1 << bit) != 0)
+            .get(word)
+            .is_some_and(|cell| cell.get() & (1 << bit) != 0)
     }
 }
 
-/// Estado compartilhado entre as callbacks C++ e o invólucro Rust.
+/// State shared between the C++ callbacks and the Rust wrapper.
 ///
-/// O JIT é guardado em `Box` no backend, então seu endereço não muda quando o `DynarmicCpu`
-/// se move. Isso permite à callback interromper a execução no instante em que o PC entra numa
-/// vtable BREW, em vez de executar uma instrução falsa naquele endereço.
-struct Estado {
-    memoria: Rc<RefCell<GuestMemory>>,
+/// The JIT is kept in a `Box` in the backend, so its address does not change when the
+/// `DynarmicCpu` moves. That lets the callback stop execution the instant the PC enters a BREW
+/// vtable, instead of executing a bogus instruction at that address.
+struct State {
+    memory: Rc<RefCell<GuestMemory>>,
     semihosting: Rc<RefCell<String>>,
-    /// Só uma escrita em memória que já foi buscada como código pode invalidar um bloco JIT.
-    /// Isto exclui os milhões de escritas nos buffers RGB565.
-    paginas_executadas: PaginasExecutadas,
-    /// Invalidações pedidas pelo ARM durante o bloco em execução; são aplicadas após `run`.
-    codigo_sujo: RefCell<BTreeSet<u32>>,
-    /// As faixas de [`CpuBackend::watch_dirty`]: `(id, início, fim, sujo)`.
-    vigias: RefCell<Vec<(u32, u32, u32, bool)>>,
-    /// O menor intervalo que contém todas as vigias. Quase toda escrita do guest cai fora dele,
-    /// e aí ela custa duas comparações em vez de uma volta pela lista.
-    envoltorio: Cell<(u32, u32)>,
-    /// Uma faixa que já está suja. Escrita dentro dela não precisa de mais nada.
+    /// Only a write to memory that has already been fetched as code can invalidate a JIT block.
+    /// This excludes the millions of writes to the RGB565 buffers.
+    executed_pages: ExecutedPages,
+    /// Invalidations requested by the ARM during the running block; they are applied after `run`.
+    dirty_code: RefCell<BTreeSet<u32>>,
+    /// The ranges of [`CpuBackend::watch_dirty`]: `(id, start, end, dirty)`.
+    watches: RefCell<Vec<(u32, u32, u32, bool)>>,
+    /// The smallest interval that contains every watch. Almost every guest write falls outside
+    /// it, and then it costs two comparisons instead of a walk through the list.
+    bounds: Cell<(u32, u32)>,
+    /// A range that is already dirty. A write inside it needs nothing more.
     ///
-    /// É o caso quase sempre: um renderizador ARM escreve milhões de pixels seguidos no mesmo
-    /// buffer, e depois do primeiro todos caem numa faixa que já está marcada. Sem o atalho,
-    /// cada um desses pegava a lista emprestada e a percorria para marcar o que já estava
-    /// marcado. Zera sempre que alguma faixa pode ter voltado a limpa.
-    atalho: Cell<(u32, u32)>,
-    instrucoes: Cell<u64>,
-    limite: Cell<u64>,
-    parada: Cell<Parada>,
-    /// Quantas vezes o host entrou no JIT, e quanto tempo ficou lá dentro.
+    /// That is almost always the case: an ARM renderer writes millions of consecutive pixels to
+    /// the same buffer, and after the first one they all fall in a range that is already marked.
+    /// Without the shortcut, each of them borrowed the list and walked it to mark what was
+    /// already marked. Reset whenever some range may have gone back to clean.
+    shortcut: Cell<(u32, u32)>,
+    instructions: Cell<u64>,
+    limit: Cell<u64>,
+    stop: Cell<Stop>,
+    /// How many times the host entered the JIT, and how long it stayed inside.
     ///
-    /// **É o número que separa o guest do despacho.** Cada chamada de API é uma saída e uma
-    /// reentrada, então o que sobra do relógio depois de descontar o tempo passado dentro do
-    /// `jit.run` é, quase todo, trampolim mais corpo do método. Sem esta conta o custo por
-    /// chamada de API é desconhecido — e foi tratando um número da era do Unicorn como atual que
-    /// a revisão externa errou. Ver [`CpuBackend::relato_do_jit`].
+    /// **It is the number that separates the guest from dispatch.** Each API call is an exit and
+    /// a re-entry, so what is left of the clock after subtracting the time spent inside `jit.run`
+    /// is, almost entirely, trampoline plus method body. Without this count the cost per API call
+    /// is unknown — and treating a number from the Unicorn era as current is how the external
+    /// review got it wrong. See [`CpuBackend::jit_report`].
     ///
-    /// Ficam aqui, e não no `DynarmicCpu`, porque o empréstimo do `Jit` está vivo durante toda a
-    /// `run`: um `Cell` no estado atravessa o empréstimo imutável sem brigar com ele.
+    /// They live here, and not in `DynarmicCpu`, because the `Jit` borrow is alive throughout
+    /// `run`: a `Cell` in the state gets through the immutable borrow without fighting it.
     ///
-    /// **Contar é de graça; cronometrar não é.** Medido: um par de `Instant::now()` por entrada
-    /// custava **40% do relógio** nesta máquina (o `Instant::now` daqui é chamada de sistema, não
-    /// o caminho rápido do vDSO), e são 1,3 milhão de entradas num Quake de quinze segundos. Por
-    /// isso a contagem é sempre ligada — uma soma num `Cell` — e o relógio é **amostrado** e só
-    /// quando alguém pede o perfil de custo. Ver [`liga_medicao_do_jit`].
-    entradas_no_jit: Cell<u64>,
-    nanos_no_jit: Cell<u64>,
-    amostras_no_jit: Cell<u64>,
-    jit: Cell<*mut Jit<Estado>>,
-    /// A tabela de páginas do Dynarmic: `PAGINAS` ponteiros, o início de cada página no host, ou
-    /// nulo para a página que precisa passar pelas callbacks. Ver [`DynarmicCpu::tabela`].
-    tabela: *mut *mut u8,
+    /// **Counting is free; timing is not.** Measured: a pair of `Instant::now()` per entry cost
+    /// **40% of the clock** on this machine (`Instant::now` here is a system call, not the vDSO
+    /// fast path), and there are 1.3 million entries in fifteen seconds of Quake. That is why
+    /// counting is always on — an addition in a `Cell` — and the clock is **sampled**, and only
+    /// when someone asks for the cost profile. See [`JIT_SAMPLE`].
+    jit_entries: Cell<u64>,
+    jit_nanos: Cell<u64>,
+    jit_samples: Cell<u64>,
+    jit: Cell<*mut Jit<State>>,
+    /// Dynarmic's page table: `PAGES` pointers, the start of each page on the host, or null for a
+    /// page that has to go through the callbacks. See [`DynarmicCpu::table`].
+    table: *mut *mut u8,
 }
 
-impl Estado {
-    /// Tira a página da tabela: dali em diante leitura e escrita nela passam pelas callbacks.
-    fn anula_pagina(&self, pagina: u32) {
-        if (pagina as usize) < PAGINAS {
-            unsafe { *self.tabela.add(pagina as usize) = std::ptr::null_mut() };
+impl State {
+    /// Removes the page from the table: from then on reads and writes to it go through the
+    /// callbacks.
+    fn clear_page(&self, page: u32) {
+        if (page as usize) < PAGES {
+            unsafe { *self.table.add(page as usize) = std::ptr::null_mut() };
         }
     }
 
-    fn para(cb: &CallbackImpl<Self>, parada: Parada) {
-        cb.parada.set(parada);
+    fn halt(cb: &CallbackImpl<Self>, stop: Stop) {
+        cb.stop.set(stop);
         let jit = cb.jit.get();
         if !jit.is_null() {
-            // `HaltExecution` é a via documentada pelo Dynarmic para uma callback devolver o
-            // controle ao host. A razão concreta é mantida em `parada`, pois o enum público só
-            // oferece os bits genéricos de usuário.
+            // `HaltExecution` is the path Dynarmic documents for a callback to hand control back
+            // to the host. The concrete reason is kept in `stop`, since the public enum only
+            // offers the generic user bits.
             unsafe { (*jit).halt(HaltReason::UserDefined1) };
         }
     }
 
-    fn le(&self, addr: u32, out: &mut [u8]) -> bool {
-        self.memoria
+    fn read(&self, addr: u32, out: &mut [u8]) -> bool {
+        self.memory
             .borrow()
             .read(addr, out.len() as u32)
             .map_or_else(
@@ -166,75 +168,75 @@ impl Estado {
             )
     }
 
-    fn escreve(&self, addr: u32, bytes: &[u8]) -> bool {
-        if self.memoria.borrow_mut().write(addr, bytes).is_err() {
+    fn write(&self, addr: u32, bytes: &[u8]) -> bool {
+        if self.memory.borrow_mut().write(addr, bytes).is_err() {
             return false;
         }
-        self.marca_codigo_sujo(addr, bytes.len() as u32);
-        self.marca_vigias(addr, addr.saturating_add(bytes.len() as u32));
+        self.mark_code_dirty(addr, bytes.len() as u32);
+        self.mark_watches(addr, addr.saturating_add(bytes.len() as u32));
         true
     }
 
-    fn marca_vigias(&self, inicio: u32, fim: u32) {
-        let (menor, maior) = self.envoltorio.get();
-        if fim <= menor || inicio >= maior {
+    fn mark_watches(&self, start: u32, end: u32) {
+        let (smallest, largest) = self.bounds.get();
+        if end <= smallest || start >= largest {
             return;
         }
-        let (a, b) = self.atalho.get();
-        if inicio >= a && fim <= b {
+        let (a, b) = self.shortcut.get();
+        if start >= a && end <= b {
             return;
         }
-        let mut vigias = self.vigias.borrow_mut();
-        let mut tocadas = 0;
-        let mut faixa = (0, 0);
-        for vigia in vigias.iter_mut() {
-            if inicio < vigia.2 && fim > vigia.1 {
-                vigia.3 = true;
-                tocadas += 1;
-                faixa = (vigia.1, vigia.2);
+        let mut watches = self.watches.borrow_mut();
+        let mut touched = 0;
+        let mut strip = (0, 0);
+        for watch in watches.iter_mut() {
+            if start < watch.2 && end > watch.1 {
+                watch.3 = true;
+                touched += 1;
+                strip = (watch.1, watch.2);
             }
         }
-        // O atalho só vale para uma faixa que contém a escrita inteira e é a única tocada:
-        // com duas sobrepostas, pular a segunda deixaria de marcá-la.
-        if tocadas == 1 && inicio >= faixa.0 && fim <= faixa.1 {
-            self.atalho.set(faixa);
+        // The shortcut only applies to a range that contains the whole write and is the only one
+        // touched: with two overlapping, skipping the second would leave it unmarked.
+        if touched == 1 && start >= strip.0 && end <= strip.1 {
+            self.shortcut.set(strip);
         }
     }
 
-    fn recalcula_envoltorio(&self) {
-        self.atalho.set((0, 0));
-        let vigias = self.vigias.borrow();
-        let menor = vigias.iter().map(|v| v.1).min().unwrap_or(0);
-        let maior = vigias.iter().map(|v| v.2).max().unwrap_or(0);
-        self.envoltorio.set((menor, maior));
+    fn recompute_bounds(&self) {
+        self.shortcut.set((0, 0));
+        let watches = self.watches.borrow();
+        let smallest = watches.iter().map(|v| v.1).min().unwrap_or(0);
+        let largest = watches.iter().map(|v| v.2).max().unwrap_or(0);
+        self.bounds.set((smallest, largest));
     }
 
-    fn marca_codigo_sujo(&self, addr: u32, len: u32) {
-        let fim = addr.saturating_add(len.saturating_sub(1));
-        for pagina in (addr / PAGE)..=(fim / PAGE) {
-            // O teste de um bit vem antes de qualquer empréstimo: quase toda escrita cai em
-            // página de dados, e só a que cai em código paga a lista de sujas.
-            if self.paginas_executadas.contem(pagina) {
-                self.codigo_sujo.borrow_mut().insert(pagina);
+    fn mark_code_dirty(&self, addr: u32, len: u32) {
+        let end = addr.saturating_add(len.saturating_sub(1));
+        for page in (addr / PAGE)..=(end / PAGE) {
+            // The one-bit test comes before any borrow: almost every write lands on a data page,
+            // and only one that lands on code pays for the dirty list.
+            if self.executed_pages.contains(page) {
+                self.dirty_code.borrow_mut().insert(page);
             }
         }
     }
 }
 
-impl Callbacks for Estado {
+impl Callbacks for State {
     fn memory_read_code(cb: &CallbackImpl<Self>, addr: VAddr) -> Option<u32> {
         let mut bytes = [0; 4];
-        if cb.memoria.borrow().executavel(addr) && cb.le(addr, &mut bytes) {
-            // Página que vira código sai da tabela, para que toda escrita nela chegue à callback
-            // que invalida o bloco recompilado.
-            let pagina = addr / PAGE;
-            if !cb.paginas_executadas.contem(pagina) {
-                cb.paginas_executadas.marca(pagina);
-                cb.anula_pagina(pagina);
+        if cb.memory.borrow().executable(addr) && cb.read(addr, &mut bytes) {
+            // A page that becomes code leaves the table, so every write to it reaches the
+            // callback that invalidates the recompiled block.
+            let page = addr / PAGE;
+            if !cb.executed_pages.contains(page) {
+                cb.executed_pages.mark(page);
+                cb.clear_page(page);
             }
             Some(u32::from_le_bytes(bytes))
         } else {
-            Self::para(cb, Parada::Fetch(addr));
+            Self::halt(cb, Stop::Fetch(addr));
             None
         }
     }
@@ -242,69 +244,69 @@ impl Callbacks for Estado {
     extern "C" fn memory_read<T: GuestInt>(cb: &CallbackImpl<Self>, addr: VAddr) -> T {
         let mut bytes = [0u8; 8];
         let len = size_of::<T>();
-        if !cb.le(addr, &mut bytes[..len]) {
-            Self::para(cb, Parada::Memoria(addr));
+        if !cb.read(addr, &mut bytes[..len]) {
+            Self::halt(cb, Stop::Memory(addr));
         }
-        // Os hosts aceitos pelo Dynarmic são x86-64 e AArch64, ambos little-endian. `T` só é
-        // instanciado pelo JIT para u8/u16/u32/u64.
+        // The hosts Dynarmic supports are x86-64 and AArch64, both little-endian. `T` is only
+        // instantiated by the JIT for u8/u16/u32/u64.
         unsafe { std::ptr::read_unaligned(bytes.as_ptr().cast::<T>()) }
     }
 
     extern "C" fn memory_write<T: GuestInt>(cb: &mut CallbackImpl<Self>, addr: VAddr, value: T) {
         let len = size_of::<T>();
         let bytes = unsafe { std::slice::from_raw_parts((&value as *const T).cast::<u8>(), len) };
-        if !cb.escreve(addr, bytes) {
-            Self::para(cb, Parada::Memoria(addr));
+        if !cb.write(addr, bytes) {
+            Self::halt(cb, Stop::Memory(addr));
         }
     }
 
     extern "C" fn call_svc(cb: &mut CallbackImpl<Self>, swi: u32) {
-        // `SVC #0xAB` é o semihosting ARM que Peggle e Zuma usam para log. Não é uma
-        // interrupção BREW: depois de atendê-la a execução continua na instrução seguinte.
-        // Reconhecemos as duas operações de saída que os jogos observados usam e devolvemos zero
-        // nas outras, como o monitor ARM faz para a maioria das consultas inofensivas.
+        // `SVC #0xAB` is the ARM semihosting Peggle and Zuma use for logging. It is not a BREW
+        // interrupt: after serving it, execution continues at the next instruction. We recognize
+        // the two output operations the observed games use and return zero for the others, as
+        // the ARM monitor does for most harmless queries.
         //
-        // **O número muda com o estado do núcleo**: `0xAB` é o do Thumb, e `0x123456` o do ARM.
-        // O Ultimate Chess 3D escreve o log dele em ARM, e com só o `0xAB` reconhecido o
-        // primeiro `SYS_WRITEC` — ao comer uma peça do adversário — parava o jogo com "exceção
-        // do núcleo ARM". O interpretador já atendia os dois: ele olha só o `r0`.
+        // **The number changes with the core's state**: `0xAB` is Thumb's, and `0x123456` ARM's.
+        // Ultimate Chess 3D writes its log in ARM, and with only `0xAB` recognized the first
+        // `SYS_WRITEC` — when capturing an opponent's piece — stopped the game with an "ARM core
+        // exception". The interpreter already served both: it only looks at `r0`.
         if SEMIHOSTING.contains(&swi) {
             let jit = unsafe { &mut *cb.jit.get() };
             let op = jit.get_reg(0);
             let arg = jit.get_reg(1);
-            let mut saida = cb.semihosting.borrow_mut();
+            let mut output = cb.semihosting.borrow_mut();
             match op {
                 0x03 => {
                     let mut byte = [0u8; 1];
-                    if cb.le(arg, &mut byte) {
-                        saida.push(byte[0] as char);
+                    if cb.read(arg, &mut byte) {
+                        output.push(byte[0] as char);
                     }
                 }
                 0x04 => {
                     for offset in 0..MAX_SEMIHOSTING_STRING {
                         let mut byte = [0u8; 1];
-                        if !cb.le(arg.saturating_add(offset), &mut byte) || byte[0] == 0 {
+                        if !cb.read(arg.saturating_add(offset), &mut byte) || byte[0] == 0 {
                             break;
                         }
-                        saida.push(byte[0] as char);
+                        output.push(byte[0] as char);
                     }
                 }
                 _ => {}
             }
-            super::apara_semihosting(&mut saida);
+            super::trim_semihosting(&mut output);
             jit.set_reg(0, 0);
-        } else if cb.parada.get() == Parada::Nenhuma {
+        } else if cb.stop.get() == Stop::Nothing {
             let pc = unsafe { (*cb.jit.get()).get_pc() };
-            Self::para(cb, Parada::Excecao(pc));
+            Self::halt(cb, Stop::Exception(pc));
         }
     }
 
     extern "C" fn add_ticks(cb: &mut CallbackImpl<Self>, ticks: u64) {
-        cb.instrucoes.set(cb.instrucoes.get().saturating_add(ticks));
+        cb.instructions.set(cb.instructions.get().saturating_add(ticks));
     }
 
     extern "C" fn get_ticks_remaining(cb: &CallbackImpl<Self>) -> u64 {
-        cb.limite.get().saturating_sub(cb.instrucoes.get())
+        cb.limit.get().saturating_sub(cb.instructions.get())
     }
 
     extern "C" fn raised_exception(
@@ -312,88 +314,90 @@ impl Callbacks for Estado {
         pc: VAddr,
         _exception: ::dynarmic::a32::Exception,
     ) {
-        // `MemoryReadCode(None)` termina como `NoExecuteFault`, que chega aqui depois de a
-        // callback já ter registrado o fetch. Não sobrescrevê-lo é o que mantém a fronteira
-        // das vtables BREW distinguível de uma instrução realmente inválida.
-        if cb.parada.get() == Parada::Nenhuma {
-            // A binding atual transforma `optional<u32>::none()` do fetch em
-            // `NoExecuteFault` antes de devolver o controle. A faixa das APIs e o sentinela
-            // nunca contêm código por definição, então ainda dá para classificá-los aqui sem
-            // ambiguidade.
+        // `MemoryReadCode(None)` ends up as `NoExecuteFault`, which arrives here after the
+        // callback has already recorded the fetch. Not overwriting it is what keeps the BREW
+        // vtable boundary distinguishable from a truly invalid instruction.
+        if cb.stop.get() == Stop::Nothing {
+            // The current binding turns the fetch's `optional<u32>::none()` into
+            // `NoExecuteFault` before handing control back. The API range and the sentinel never
+            // contain code by definition, so they can still be classified here without
+            // ambiguity.
             if pc == RETURN_MAGIC || (API_BASE..API_BASE.saturating_add(API_SIZE)).contains(&pc) {
-                Self::para(cb, Parada::Fetch(pc));
+                Self::halt(cb, Stop::Fetch(pc));
             } else {
-                Self::para(cb, Parada::Excecao(pc));
+                Self::halt(cb, Stop::Exception(pc));
             }
         }
     }
 }
 
-/// Os números de `SVC` do semihosting ARM: o do Thumb e o do ARM.
+/// The `SVC` numbers of ARM semihosting: Thumb's and ARM's.
 const SEMIHOSTING: [u32; 2] = [0xab, 0x12_3456];
 
-/// De quantas em quantas entradas no JIT o relógio é lido, quando a medição está ligada.
-const AMOSTRA_DO_JIT: u64 = 64;
+/// Every how many JIT entries the clock is read, when measurement is on.
+const JIT_SAMPLE: u64 = 64;
 
-/// Recompilador A32. Fica separado do backend padrão até a equivalência ser estabelecida jogo
-/// a jogo; criar a CPU não aloca o JIT, porque o mapa do guest só existe em `reset`.
+/// A32 recompiler. It stays separate from the default backend until equivalence is established
+/// game by game; creating the CPU does not allocate the JIT, because the guest map only exists in
+/// `reset`.
 pub struct DynarmicCpu {
-    memoria: Rc<RefCell<GuestMemory>>,
+    memory: Rc<RefCell<GuestMemory>>,
     semihosting: Rc<RefCell<String>>,
-    jit: Option<Box<Jit<Estado>>>,
-    /// **A tabela de páginas: o acesso à memória sem callback.** Sem ela, cada leitura e escrita
-    /// do código recompilado saía do JIT para uma callback Rust, pegava o mapa por `RefCell` e
-    /// procurava a região. No Need for Speed, na corrida, isso deixava o emulador em 176 milhões
-    /// de instruções por segundo — 69% da velocidade do console.
+    jit: Option<Box<Jit<State>>>,
+    /// **The page table: memory access without a callback.** Without it, every read and write
+    /// of the recompiled code left the JIT for a Rust callback, took the map through `RefCell` and
+    /// looked up the region. In Need for Speed, during a race, that left the emulator at 176
+    /// million instructions per second — 69% of the console's speed.
     ///
-    /// Cada entrada aponta para o início da página na memória das regiões graváveis, que não
-    /// muda de lugar depois do `reset`. Ficam nulas, e continuam nas callbacks: as regiões só de
-    /// leitura, as páginas que já foram executadas (escrita nelas invalida código), as páginas
-    /// com vigia de escrita (superfícies e buffers que o emulador precisa ver sujos) e a última
-    /// página de uma região que não a completa.
-    tabela: Box<[*mut u8]>,
+    /// Each entry points to the start of the page in the memory of the writable regions, which
+    /// does not move after `reset`. These stay null, and keep going through the callbacks: the
+    /// read-only regions, the pages that have already been executed (a write to them invalidates
+    /// code), the pages with a write watch (surfaces and buffers the emulator needs to see dirty)
+    /// and the last page of a region that does not fill it.
+    table: Box<[*mut u8]>,
 }
 
 impl DynarmicCpu {
     pub fn new() -> Result<Self, CpuError> {
         Ok(Self {
-            memoria: Default::default(),
+            memory: Default::default(),
             semihosting: Default::default(),
             jit: None,
-            tabela: vec![std::ptr::null_mut(); PAGINAS].into_boxed_slice(),
+            table: vec![std::ptr::null_mut(); PAGES].into_boxed_slice(),
         })
     }
 
-    /// Recoloca na tabela as páginas de `[inicio, fim)` que nada mais precisa interceptar.
-    fn restaura_paginas(&mut self, inicio: u32, fim: u32) {
+    /// Puts back into the table the pages of `[start, end)` that nothing needs to intercept any
+    /// more.
+    fn restore_pages(&mut self, start: u32, end: u32) {
         let Some(jit) = self.jit.as_deref() else {
             return;
         };
-        let vigias = jit.vigias.borrow();
-        let memoria = self.memoria.borrow();
-        for pagina in (inicio / PAGE)..=(fim.saturating_sub(1) / PAGE) {
-            let (de, ate) = (pagina * PAGE, (pagina * PAGE).saturating_add(PAGE));
-            let vigiada = vigias.iter().any(|v| de < v.2 && ate > v.1);
-            if vigiada || jit.paginas_executadas.contem(pagina) {
+        let watches = jit.watches.borrow();
+        let memory = self.memory.borrow();
+        for page in (start / PAGE)..=(end.saturating_sub(1) / PAGE) {
+            let (page_start, page_end) = (page * PAGE, (page * PAGE).saturating_add(PAGE));
+            let watched = watches.iter().any(|v| page_start < v.2 && page_end > v.1);
+            if watched || jit.executed_pages.contains(page) {
                 continue;
             }
-            self.tabela[pagina as usize] = ponteiro_da_pagina(&memoria, pagina);
+            self.table[page as usize] = page_pointer(&memory, page);
         }
     }
 
-    fn jit(&self) -> Result<&Jit<Estado>, CpuError> {
+    fn jit(&self) -> Result<&Jit<State>, CpuError> {
         self.jit
             .as_deref()
-            .ok_or_else(|| CpuError("Dynarmic não recebeu mapa de memória".into()))
+            .ok_or_else(|| CpuError("Dynarmic received no memory map".into()))
     }
 
-    fn jit_mut(&mut self) -> Result<&mut Jit<Estado>, CpuError> {
+    fn jit_mut(&mut self) -> Result<&mut Jit<State>, CpuError> {
         self.jit
             .as_deref_mut()
-            .ok_or_else(|| CpuError("Dynarmic não recebeu mapa de memória".into()))
+            .ok_or_else(|| CpuError("Dynarmic received no memory map".into()))
     }
 
-    fn indice(reg: Reg) -> usize {
+    fn index(reg: Reg) -> usize {
         match reg {
             Reg::R0 => 0,
             Reg::R1 => 1,
@@ -414,146 +418,146 @@ impl DynarmicCpu {
         }
     }
 
-    /// A interface de diagnóstico chama este método nos dois núcleos.
+    /// The diagnostics interface calls this method on both cores.
     pub fn semihosting(&self) -> String {
         self.semihosting.borrow().clone()
     }
 
-    /// A API host também escreve memória do guest, sempre entre duas entradas no JIT. Caso ela
-    /// altere uma página que já foi executada, o próximo bloco deve ser recompilado.
-    fn invalida_codigo_escrito(&mut self, addr: u32, len: u32) {
+    /// The host API also writes guest memory, always between two JIT entries. If it changes a
+    /// page that has already been executed, the next block must be recompiled.
+    fn invalidate_written_code(&mut self, addr: u32, len: u32) {
         let Ok(jit) = self.jit_mut() else {
             return;
         };
-        jit.marca_codigo_sujo(addr, len);
-        let paginas = std::mem::take(&mut *jit.codigo_sujo.borrow_mut());
-        // **Quantas páginas de código caíram por escrita do host.** É o número que responde se
-        // leitura/escrita em página já executada é evento raro (nada a fazer) ou caminho quente
-        // (candidato a leitura direta com armadilha de escrita). Sem ele, o custo do SMC é
-        // invisível no perfil: aparece diluído no despacho, como "alguma chamada de API".
-        if !paginas.is_empty() {
-            crate::registro!(
-                crate::registro::Nivel::Depuracao,
+        jit.mark_code_dirty(addr, len);
+        let pages = std::mem::take(&mut *jit.dirty_code.borrow_mut());
+        // **How many code pages fell because of a host write.** It is the number that tells
+        // whether a read/write to an already executed page is a rare event (nothing to do) or a
+        // hot path (a candidate for direct reads with a write trap). Without it, the cost of SMC
+        // is invisible in the profile: it shows up diluted in dispatch, as "some API call".
+        if !pages.is_empty() {
+            crate::logging!(
+                crate::logging::Level::Debug,
                 "cpu",
-                "escrita em {addr:#010x}+{len} invalidou {} página(s) de código",
-                paginas.len()
+                "write to {addr:#010x}+{len} invalidated {} code page(s)",
+                pages.len()
             );
         }
-        for pagina in paginas {
-            jit.invalidate_cache_range(pagina * PAGE, PAGE as usize);
+        for page in pages {
+            jit.invalidate_cache_range(page * PAGE, PAGE as usize);
         }
     }
 }
 
 impl CpuBackend for DynarmicCpu {
     fn reset(&mut self, mem: &GuestMemory) -> Result<(), CpuError> {
-        // `GuestMemory` é deliberadamente construído uma vez antes da execução. Copiar o mapa
-        // para a memória que as callbacks possuem mantém o contrato do backend: a API Rust e o
-        // ARM enxergam os mesmos bytes a partir daqui.
-        let mut copia = GuestMemory::new();
-        for regiao in mem.regions() {
-            copia
-                .map_com_execucao(
-                    regiao.name,
-                    regiao.base,
-                    regiao.bytes.clone(),
-                    regiao.writable,
-                    regiao.executavel,
+        // `GuestMemory` is deliberately built once before execution. Copying the map into the
+        // memory the callbacks own keeps the backend's contract: the Rust API and the ARM see the
+        // same bytes from here on.
+        let mut copy = GuestMemory::new();
+        for region in mem.regions() {
+            copy
+                .map_executable(
+                    region.name,
+                    region.base,
+                    region.bytes.clone(),
+                    region.writable,
+                    region.executable,
                 )
                 .map_err(|e| CpuError(e.to_string()))?;
         }
-        for regiao in copia.regions_mut() {
-            regiao.bytes.reserve_exact(FOLGA_DA_REGIAO);
+        for region in copy.regions_mut() {
+            region.bytes.reserve_exact(REGION_SLACK);
         }
-        self.tabela.fill(std::ptr::null_mut());
-        for pagina in 0..PAGINAS as u32 {
-            self.tabela[pagina as usize] = ponteiro_da_pagina(&copia, pagina);
+        self.table.fill(std::ptr::null_mut());
+        for page in 0..PAGES as u32 {
+            self.table[page as usize] = page_pointer(&copy, page);
         }
-        // Quantas páginas dos 32 bits do guest têm acesso direto e quantas ficaram na callback.
-        // É o primeiro número a olhar quando se discute custo de memória do JIT: a diferença
-        // entre as duas colunas é o que passa pelo Rust a cada leitura e escrita.
-        let diretas = self
-            .tabela
+        // How many pages of the guest's 32 bits have direct access and how many stayed on the
+        // callback. It is the first number to look at when discussing the JIT's memory cost: the
+        // difference between the two columns is what goes through Rust on every read and write.
+        let direct = self
+            .table
             .iter()
-            .filter(|ponteiro| !ponteiro.is_null())
+            .filter(|pointer| !pointer.is_null())
             .count();
-        crate::registro!(
-            crate::registro::Nivel::Depuracao,
+        crate::logging!(
+            crate::logging::Level::Debug,
             "cpu",
-            "tabela de páginas: {diretas} de {} com acesso direto ({} region(oes))",
-            PAGINAS,
-            copia.regions().len()
+            "page table: {direct} of {} with direct access ({} region(s))",
+            PAGES,
+            copy.regions().len()
         );
-        self.memoria = Rc::new(RefCell::new(copia));
+        self.memory = Rc::new(RefCell::new(copy));
         self.semihosting.borrow_mut().clear();
-        let estado = Estado {
-            memoria: self.memoria.clone(),
+        let state = State {
+            memory: self.memory.clone(),
             semihosting: self.semihosting.clone(),
-            paginas_executadas: PaginasExecutadas::new(),
-            codigo_sujo: Default::default(),
-            vigias: Default::default(),
-            envoltorio: Cell::new((0, 0)),
-            atalho: Cell::new((0, 0)),
-            instrucoes: Cell::new(0),
-            limite: Cell::new(0),
-            parada: Cell::new(Parada::Nenhuma),
-            entradas_no_jit: Cell::new(0),
-            nanos_no_jit: Cell::new(0),
-            amostras_no_jit: Cell::new(0),
+            executed_pages: ExecutedPages::new(),
+            dirty_code: Default::default(),
+            watches: Default::default(),
+            bounds: Cell::new((0, 0)),
+            shortcut: Cell::new((0, 0)),
+            instructions: Cell::new(0),
+            limit: Cell::new(0),
+            stop: Cell::new(Stop::Nothing),
+            jit_entries: Cell::new(0),
+            jit_nanos: Cell::new(0),
+            jit_samples: Cell::new(0),
             jit: Cell::new(std::ptr::null_mut()),
-            tabela: self.tabela.as_mut_ptr(),
+            table: self.table.as_mut_ptr(),
         };
-        let mut config = Jit::<Estado>::new_config();
+        let mut config = Jit::<State>::new_config();
         config.arch_ver(ArchVersion::V6K);
-        // 64 MiB cabe no desktop. No Switch esse bloco disputa o heap com o jogo
-        // e com a Mesa; 32 MiB ainda cobre o código traduzido do Double Dragon
-        // quando o título é aberto segurando R.
+        // 64 MiB fits on the desktop. On the Switch this block competes for the heap with the
+        // game and with Mesa; 32 MiB still covers Double Dragon's translated code when the title
+        // is opened holding R.
         config.code_cache_size(if cfg!(zeebx_switch) {
             32 * 1024 * 1024
         } else {
             64 * 1024 * 1024
         });
-        // Entrada = início da página no host, sem deslocamento absoluto nem bits de atributo.
+        // Entry = start of the page on the host, with no absolute offset and no attribute bits.
         config.page_table_mask(0);
-        unsafe { config.page_table(self.tabela.as_mut_ptr().cast()) };
-        let mut jit = Box::new(config.init(estado));
-        let ptr = &mut *jit as *mut Jit<Estado>;
+        unsafe { config.page_table(self.table.as_mut_ptr().cast()) };
+        let mut jit = Box::new(config.init(state));
+        let ptr = &mut *jit as *mut Jit<State>;
         jit.jit.set(ptr);
-        jit.set_cpsr(MODO_USUARIO);
+        jit.set_cpsr(USER_MODE);
         self.jit = Some(jit);
         Ok(())
     }
 
     fn read_reg(&self, reg: Reg) -> u32 {
-        self.jit().map_or(0, |jit| jit.get_reg(Self::indice(reg)))
+        self.jit().map_or(0, |jit| jit.get_reg(Self::index(reg)))
     }
 
     fn write_reg(&mut self, reg: Reg, value: u32) {
         if let Ok(jit) = self.jit_mut() {
-            jit.set_reg(Self::indice(reg), value);
+            jit.set_reg(Self::index(reg), value);
         }
     }
 
     fn instructions(&self) -> u64 {
-        self.jit().map_or(0, |jit| jit.instrucoes.get())
+        self.jit().map_or(0, |jit| jit.instructions.get())
     }
 
-    fn relato_do_jit(&self) -> Option<(u64, u64, u64)> {
+    fn jit_report(&self) -> Option<(u64, u64, u64)> {
         self.jit().ok().map(|jit| {
-            let entradas = jit.entradas_no_jit.get();
-            let amostras = jit.amostras_no_jit.get();
-            // A média amostrada vale para todas as entradas: nenhuma delas é especial.
-            let nanos = match amostras {
+            let entries = jit.jit_entries.get();
+            let samples = jit.jit_samples.get();
+            // The sampled average applies to every entry: none of them is special.
+            let nanos = match samples {
                 0 => 0,
-                n => jit.nanos_no_jit.get() / n * entradas,
+                n => jit.jit_nanos.get() / n * entries,
             };
-            (entradas, nanos, amostras)
+            (entries, nanos, samples)
         })
     }
 
-    fn set_instructions(&mut self, valor: u64) {
+    fn set_instructions(&mut self, value: u64) {
         if let Ok(jit) = self.jit_mut() {
-            jit.instrucoes.set(valor);
+            jit.instructions.set(value);
         }
     }
 
@@ -561,33 +565,33 @@ impl CpuBackend for DynarmicCpu {
         self.jit().map_or(0, |jit| jit.get_cpsr())
     }
 
-    fn set_cpsr(&mut self, valor: u32) {
+    fn set_cpsr(&mut self, value: u32) {
         if let Ok(jit) = self.jit_mut() {
-            jit.set_cpsr(valor);
+            jit.set_cpsr(value);
         }
     }
 
-    fn em_thumb(&self) -> bool {
+    fn in_thumb(&self) -> bool {
         self.jit().is_ok_and(|jit| jit.get_cpsr() & CPSR_THUMB != 0)
     }
 
-    /// A vigia de escrita: só escrita **do guest** liga o sinalizador.
+    /// The write watch: only a write **by the guest** sets the flag.
     ///
-    /// Sem ela o contrato padrão responde "sempre sujo", e cada chamada que desenha importava
-    /// todas as superfícies inteiras. No Pac-Mania, 100 mil `IIMAGE_Draw` somavam 22 segundos
-    /// só de leitura de buffers que o jogo não tinha tocado.
+    /// Without it the default contract answers "always dirty", and every drawing call imported
+    /// all the surfaces in full. In Pac-Mania, 100 thousand `IIMAGE_Draw` added up to 22 seconds
+    /// just reading buffers the game had not touched.
     fn watch_dirty(&mut self, id: u32, base: u32, len: u32) -> Result<(), CpuError> {
         self.unwatch_dirty(id);
         let jit = self.jit_mut()?;
-        // Começa sujo: desta faixa ainda não vimos nada.
-        jit.vigias
+        // Starts dirty: we have not seen anything of this range yet.
+        jit.watches
             .borrow_mut()
             .push((id, base, base.saturating_add(len), true));
-        jit.recalcula_envoltorio();
-        // Escrita em faixa vigiada tem de passar pela callback que a marca suja.
-        let fim = base.saturating_add(len);
-        for pagina in (base / PAGE)..=(fim.saturating_sub(1) / PAGE) {
-            jit.anula_pagina(pagina);
+        jit.recompute_bounds();
+        // A write to a watched range has to go through the callback that marks it dirty.
+        let end = base.saturating_add(len);
+        for page in (base / PAGE)..=(end.saturating_sub(1) / PAGE) {
+            jit.clear_page(page);
         }
         Ok(())
     }
@@ -596,16 +600,16 @@ impl CpuBackend for DynarmicCpu {
         let Ok(jit) = self.jit_mut() else {
             return;
         };
-        let faixa = jit
-            .vigias
+        let strip = jit
+            .watches
             .borrow()
             .iter()
-            .find(|vigia| vigia.0 == id)
-            .map(|vigia| (vigia.1, vigia.2));
-        jit.vigias.borrow_mut().retain(|vigia| vigia.0 != id);
-        jit.recalcula_envoltorio();
-        if let Some((inicio, fim)) = faixa {
-            self.restaura_paginas(inicio, fim);
+            .find(|watch| watch.0 == id)
+            .map(|watch| (watch.1, watch.2));
+        jit.watches.borrow_mut().retain(|watch| watch.0 != id);
+        jit.recompute_bounds();
+        if let Some((start, end)) = strip {
+            self.restore_pages(start, end);
         }
     }
 
@@ -613,29 +617,29 @@ impl CpuBackend for DynarmicCpu {
         let Ok(jit) = self.jit_mut() else {
             return true;
         };
-        // Uma faixa pode voltar a limpa aqui, então o atalho deixa de valer.
-        jit.atalho.set((0, 0));
-        let mut vigias = jit.vigias.borrow_mut();
-        match vigias.iter_mut().find(|vigia| vigia.0 == id) {
-            Some(vigia) => std::mem::replace(&mut vigia.3, false),
+        // A range may go back to clean here, so the shortcut no longer applies.
+        jit.shortcut.set((0, 0));
+        let mut watches = jit.watches.borrow_mut();
+        match watches.iter_mut().find(|watch| watch.0 == id) {
+            Some(watch) => std::mem::replace(&mut watch.3, false),
             None => true,
         }
     }
 
-    fn marca_sujo(&mut self, addr: u32, len: u32) {
+    fn mark_dirty(&mut self, addr: u32, len: u32) {
         let Ok(jit) = self.jit_mut() else {
             return;
         };
-        let fim = addr.saturating_add(len);
-        for vigia in jit.vigias.borrow_mut().iter_mut() {
-            if addr < vigia.2 && fim > vigia.1 {
-                vigia.3 = true;
+        let end = addr.saturating_add(len);
+        for watch in jit.watches.borrow_mut().iter_mut() {
+            if addr < watch.2 && end > watch.1 {
+                watch.3 = true;
             }
         }
     }
 
     fn read_mem(&self, addr: u32, buf: &mut [u8]) -> Result<(), CpuError> {
-        self.memoria
+        self.memory
             .borrow()
             .read(addr, buf.len() as u32)
             .map(|bytes| buf.copy_from_slice(bytes))
@@ -643,36 +647,36 @@ impl CpuBackend for DynarmicCpu {
     }
 
     fn write_mem(&mut self, addr: u32, data: &[u8]) -> Result<(), CpuError> {
-        self.memoria
+        self.memory
             .borrow_mut()
             .write(addr, data)
             .map_err(|e| CpuError(e.to_string()))?;
-        self.invalida_codigo_escrito(addr, data.len() as u32);
+        self.invalidate_written_code(addr, data.len() as u32);
         Ok(())
     }
 
-    fn fill_mem(&mut self, addr: u32, valor: u8, len: u32) -> Result<(), CpuError> {
-        self.memoria
+    fn fill_mem(&mut self, addr: u32, value: u8, len: u32) -> Result<(), CpuError> {
+        self.memory
             .borrow_mut()
-            .fill(addr, valor, len)
+            .fill(addr, value, len)
             .map_err(|e| CpuError(e.to_string()))?;
-        self.invalida_codigo_escrito(addr, len);
+        self.invalidate_written_code(addr, len);
         Ok(())
     }
 
-    fn suja_pilha(&mut self, addr: u32, len: u32) -> Result<(), CpuError> {
-        // Sem a invalidação de propósito: pilha nunca virou código (ver o traço). A marcação
-        // paga `jit_mut` e dois empréstimos por chamada de API para sair sempre vazia, e era
-        // isso que levava os 30% — medido no `bench` do Crash Nitro Kart, que volta de 296%
-        // para 368% só sem ela.
+    fn mark_stack_dirty(&mut self, addr: u32, len: u32) -> Result<(), CpuError> {
+        // No invalidation, on purpose: the stack never became code (see the trace). The marking
+        // pays for `jit_mut` and two borrows per API call only to always come out empty, and that
+        // is what took the 30% — measured in Crash Nitro Kart's `bench`, which goes back from
+        // 296% to 368% just by dropping it.
         debug_assert!(
             self.jit_mut().is_ok_and(|jit| {
-                let fim = addr.saturating_add(len.saturating_sub(1));
-                ((addr / PAGE)..=(fim / PAGE)).all(|p| !jit.paginas_executadas.contem(p))
+                let end = addr.saturating_add(len.saturating_sub(1));
+                ((addr / PAGE)..=(end / PAGE)).all(|p| !jit.executed_pages.contains(p))
             }),
-            "sujeira de pilha em {addr:#010x}+{len} caiu em página executada"
+            "stack dirtying at {addr:#010x}+{len} landed on an executed page"
         );
-        self.memoria
+        self.memory
             .borrow_mut()
             .fill(addr, 0, len)
             .map_err(|e| CpuError(e.to_string()))
@@ -680,85 +684,86 @@ impl CpuBackend for DynarmicCpu {
 
     fn run(&mut self, pc: u32, max_instructions: u64) -> Result<StopReason, CpuError> {
         let jit = self.jit_mut()?;
-        // **O bit 0 do endereço é o modo, não parte do endereço.** O despachante retoma no `lr`
-        // do jeito que ele veio, e o `lr` de uma chamada feita de código Thumb traz o bit 0
-        // ligado — é a convenção de interworking do ARM. Aqui ela precisa ser explícita:
-        // escrevendo o endereço cru, o Zenonia, que é todo Thumb, voltava de cada API um byte
-        // adiante e o núcleo parava numa "instrução" montada com metade de duas.
+        // **Bit 0 of the address is the mode, not part of the address.** The dispatcher resumes
+        // at `lr` the way it came, and the `lr` of a call made from Thumb code has bit 0 set —
+        // that is ARM's interworking convention. Here it has to be explicit: writing the raw
+        // address, Zenonia, which is all Thumb, came back from every API one byte ahead and the
+        // core stopped at an "instruction" made of halves of two.
         let cpsr = jit.get_cpsr();
         match pc & 1 {
             1 => jit.set_cpsr(cpsr | CPSR_THUMB),
             _ => jit.set_cpsr(cpsr & !CPSR_THUMB),
         }
         jit.set_pc(pc & !1);
-        // `HaltExecution` deixa a razão armada para a volta que acabou de sair. O próximo
-        // trecho começa depois de o despachante BREW ter escrito r0/pc, portanto precisa limpar
-        // o bit genérico antes de entrar novamente no JIT.
+        // `HaltExecution` leaves the reason armed for the run that just exited. The next stretch
+        // starts after the BREW dispatcher has written r0/pc, so it has to clear the generic bit
+        // before entering the JIT again.
         jit.clear_halt(HaltReason::UserDefined1);
-        jit.parada.set(Parada::Nenhuma);
-        jit.limite
-            .set(jit.instrucoes.get().saturating_add(max_instructions));
-        // O relógio em volta do `jit.run`, e só dele: tudo o que se passa aqui dentro é execução
-        // do guest (mais as callbacks de memória, que o próprio JIT chama). O que fica de fora é
-        // o despacho — e é aí que o trampolim vive.
+        jit.stop.set(Stop::Nothing);
+        jit.limit
+            .set(jit.instructions.get().saturating_add(max_instructions));
+        // The clock around `jit.run`, and only it: everything that happens in here is guest
+        // execution (plus the memory callbacks, which the JIT itself calls). What is left out is
+        // dispatch — and that is where the trampoline lives.
         //
-        // **Amostrado de propósito, e ligado sempre.** O `Instant::now` desta máquina é chamada de
-        // sistema, e um par por entrada custou 40% do relógio. Uma entrada em cada `AMOSTRA` mede
-        // o mesmo por 1/64 do preço — cerca de 0,6% do relógio, medido —, e por isso a partilha
-        // sai em todo relatório em vez de depender de alguém lembrar de ligá-la. A média
-        // amostrada é multiplicada pelo contador depois.
-        let entrada = jit.entradas_no_jit.get();
-        let cronometrar = entrada % AMOSTRA_DO_JIT == 0;
-        let comeco = cronometrar.then(std::time::Instant::now);
+        // **Sampled on purpose, and always on.** `Instant::now` on this machine is a system call,
+        // and a pair per entry cost 40% of the clock. One entry in every `JIT_SAMPLE` measures the
+        // same for 1/64 of the price — about 0.6% of the clock, measured —, and that is why the
+        // split comes out in every report instead of depending on someone remembering to turn it
+        // on. The sampled average is multiplied by the counter afterwards.
+        let entry = jit.jit_entries.get();
+        let timed = entry % JIT_SAMPLE == 0;
+        let begin = timed.then(std::time::Instant::now);
         let _ = unsafe { jit.run() };
-        if let Some(comeco) = comeco {
-            jit.nanos_no_jit.set(
-                jit.nanos_no_jit
+        if let Some(begin) = begin {
+            jit.jit_nanos.set(
+                jit.jit_nanos
                     .get()
-                    .saturating_add(comeco.elapsed().as_nanos() as u64),
+                    .saturating_add(begin.elapsed().as_nanos() as u64),
             );
-            jit.amostras_no_jit.set(jit.amostras_no_jit.get().saturating_add(1));
+            jit.jit_samples.set(jit.jit_samples.get().saturating_add(1));
         }
-        jit.entradas_no_jit.set(entrada.saturating_add(1));
-        // Não há invalidação para páginas de dados: só código previamente executado chega aqui.
-        // É seguro mexer no cache depois de o JIT devolver o controle, nunca da callback.
-        let paginas = std::mem::take(&mut *jit.codigo_sujo.borrow_mut());
-        for pagina in paginas {
-            jit.invalidate_cache_range(pagina * PAGE, PAGE as usize);
+        jit.jit_entries.set(entry.saturating_add(1));
+        // There is no invalidation for data pages: only previously executed code gets here.
+        // It is safe to touch the cache after the JIT hands control back, never from the callback.
+        let pages = std::mem::take(&mut *jit.dirty_code.borrow_mut());
+        for page in pages {
+            jit.invalidate_cache_range(page * PAGE, PAGE as usize);
         }
-        match jit.parada.get() {
-            Parada::Nenhuma => Ok(StopReason::Budget),
-            Parada::Fetch(addr) if addr == RETURN_MAGIC => Ok(StopReason::Returned),
-            Parada::Fetch(addr)
+        match jit.stop.get() {
+            Stop::Nothing => Ok(StopReason::Budget),
+            Stop::Fetch(addr) if addr == RETURN_MAGIC => Ok(StopReason::Returned),
+            Stop::Fetch(addr)
                 if (API_BASE..API_BASE.saturating_add(API_SIZE)).contains(&addr) =>
             {
                 Ok(StopReason::ApiCall { addr })
             }
-            Parada::Fetch(addr) => Ok(StopReason::MemoryFault { addr, pc: addr }),
-            Parada::Memoria(addr) => Ok(StopReason::MemoryFault {
+            Stop::Fetch(addr) => Ok(StopReason::MemoryFault { addr, pc: addr }),
+            Stop::Memory(addr) => Ok(StopReason::MemoryFault {
                 addr,
                 pc: jit.get_pc(),
             }),
-            Parada::Excecao(pc) => Ok(StopReason::Exception { pc }),
+            Stop::Exception(pc) => Ok(StopReason::Exception { pc }),
         }
     }
 }
 
-/// O início da `pagina` na memória do host, quando ela é gravável e cabe inteira numa região.
-fn ponteiro_da_pagina(memoria: &GuestMemory, pagina: u32) -> *mut u8 {
-    let inicio = u64::from(pagina) * u64::from(PAGE);
-    let fim = inicio + u64::from(PAGE);
-    memoria
+/// The start of `page` in host memory, when it is writable and fits entirely in one region.
+fn page_pointer(memory: &GuestMemory, page: u32) -> *mut u8 {
+    let start = u64::from(page) * u64::from(PAGE);
+    let end = start + u64::from(PAGE);
+    memory
         .regions()
         .iter()
         .find(|r| {
             r.writable
-                && inicio >= u64::from(r.base)
-                && fim <= u64::from(r.base) + r.bytes.len() as u64
+                && start >= u64::from(r.base)
+                && end <= u64::from(r.base) + r.bytes.len() as u64
         })
         .map_or(std::ptr::null_mut(), |r| {
-            // A região não é realocada depois do `reset`: o vetor só é escrito, nunca cresce.
-            unsafe { r.bytes.as_ptr().add((inicio - u64::from(r.base)) as usize) as *mut u8 }
+            // The region is not reallocated after `reset`: the vector is only written, it never
+            // grows.
+            unsafe { r.bytes.as_ptr().add((start - u64::from(r.base)) as usize) as *mut u8 }
         })
 }
 
@@ -770,8 +775,8 @@ mod tests {
         let mut mem = GuestMemory::new();
         let mut bytes = code.to_vec();
         bytes.resize(0x1000, 0);
-        // A imagem dos módulos do Zeebo é gravável: extensões podem montar pequenas rotinas ou
-        // tabelas em RAM. Deixar o código do teste gravável permite conferir a invalidação JIT.
+        // The Zeebo's module image is writable: extensions can build small routines or tables in
+        // RAM. Keeping the test code writable lets us check JIT invalidation.
         mem.map("code", 0, bytes, true).unwrap();
         mem.map_zeroed("data", 0x1000, 0x1000).unwrap();
         mem.map_zeroed("stack", 0x2000_0000, 0x1000).unwrap();
@@ -782,44 +787,45 @@ mod tests {
     }
 
     #[test]
-    fn executa_instrucao_e_le_registrador() {
+    fn executes_an_instruction_and_reads_a_register() {
         let code = [0xe3a0_0037u32.to_le_bytes(), 0xeaff_fffeu32.to_le_bytes()].concat();
         let mut cpu = cpu_with(&code); // mov r0, #0x37 ; b .
         assert_eq!(cpu.run(0, 1).unwrap(), StopReason::Budget);
         assert_eq!(cpu.read_reg(Reg::R0), 0x37);
     }
 
-    /// **Uma instrução exclusiva não pode derrubar o processo.**
+    /// **An exclusive instruction must not bring down the process.**
     ///
-    /// O emissor x64 do Dynarmic exige um `global_monitor` **no momento da tradução** de
-    /// LDREX/STREX: `EmitExclusiveReadMemory` faz `ASSERT(conf.global_monitor != nullptr)` e depois
-    /// o desreferencia (`emit_x64_memory.cpp.inc`). O invólucro nunca preencheu esse campo, e o
-    /// crate 0.1.3 não tem setter (`a32.rs` faz `unsafe { std::mem::zeroed() }` com um `todo`), ou
-    /// seja: o campo nasce nulo. Nada rebaixa essas instruções quando o monitor falta.
+    /// Dynarmic's x64 emitter requires a `global_monitor` **at translation time** for
+    /// LDREX/STREX: `EmitExclusiveReadMemory` does `ASSERT(conf.global_monitor != nullptr)` and
+    /// then dereferences it (`emit_x64_memory.cpp.inc`). The wrapper never filled in that field,
+    /// and crate 0.1.3 has no setter (`a32.rs` does `unsafe { std::mem::zeroed() }` with a `todo`),
+    /// that is: the field starts out null. Nothing downgrades these instructions when the monitor
+    /// is missing.
     ///
-    /// 40 dos 62 `.mod` do acervo contêm esse padrão em algum lugar. O teste monta
-    /// `ldrex r0, [r1]` seguido de `b .` e executa o bloco: sem monitor, a tradução aborta e o
-    /// processo morre antes de a asserção ser lida.
+    /// 40 of the 62 `.mod` files in the collection contain this pattern somewhere. The test builds
+    /// `ldrex r0, [r1]` followed by `b .` and runs the block: without a monitor, translation aborts
+    /// and the process dies before the assertion is read.
     ///
-    /// **Medido, e por isso ele fica ignorado em vez de verde**: em 24/09/2026 este teste matou o
-    /// processo com `assertion failed: conf.global_monitor != nullptr` e `signal: 6, SIGABRT`. O
-    /// conserto não é nosso — precisa de um patch no `dynarmic` 0.1.3 (dôr o campo
-    /// `global_monitor` ao `Config` público), e o crate não tem setter. Com o patch, tirar o
-    /// `#[ignore]` e este teste passa a ser a guarda.
-    #[ignore = "prova um defeito conhecido da dependência; ver o comentário acima"]
+    /// **Measured, and that is why it stays ignored instead of green**: on 2026-09-24 this test
+    /// killed the process with `assertion failed: conf.global_monitor != nullptr` and
+    /// `signal: 6, SIGABRT`. The fix is not ours — it needs a patch to `dynarmic` 0.1.3 (adding
+    /// the `global_monitor` field to the public `Config`), and the crate has no setter. With the
+    /// patch, remove the `#[ignore]` and this test becomes the guard.
+    #[ignore = "proves a known defect in the dependency; see the comment above"]
     #[test]
-    fn a_instrucao_exclusiva_nao_derruba_o_processo() {
-        // `ldrex r0, [r1]` (0xE1910F9F) e `b .` (0xEAFFFFFE).
+    fn an_exclusive_instruction_does_not_crash_the_process() {
+        // `ldrex r0, [r1]` (0xE1910F9F) and `b .` (0xEAFFFFFE).
         let code = [0xe191_0f9fu32.to_le_bytes(), 0xeaff_fffeu32.to_le_bytes()].concat();
         let mut cpu = cpu_with(&code);
-        // r1 aponta para a memória de dados, para a leitura ter um endereço mapeado.
+        // r1 points to the data memory, so the read has a mapped address.
         cpu.write_reg(Reg::R1, 0x1000);
         assert_eq!(cpu.run(0, 2).unwrap(), StopReason::Budget);
-        assert_eq!(cpu.read_reg(Reg::R0), 0, "a memória começa zerada");
+        assert_eq!(cpu.read_reg(Reg::R0), 0, "memory starts zeroed");
     }
 
     #[test]
-    fn salto_para_a_faixa_de_api_vira_chamada() {
+    fn a_jump_into_the_api_range_becomes_a_call() {
         let code = [0xe3a0_020fu32.to_le_bytes(), 0xe12f_ff10u32.to_le_bytes()].concat();
         let mut cpu = cpu_with(&code);
         assert_eq!(
@@ -829,9 +835,9 @@ mod tests {
     }
 
     #[test]
-    fn endereco_com_bit_zero_entra_em_thumb() {
-        // Em Thumb, `movs r0, #0x37` e depois `b .` — alinhado em 0x100. Chamado com 0x101,
-        // que é como o despachante retoma um chamador Thumb.
+    fn an_address_with_bit_zero_enters_thumb() {
+        // In Thumb, `movs r0, #0x37` and then `b .` — aligned at 0x100. Called with 0x101, which
+        // is how the dispatcher resumes a Thumb caller.
         let mut code = vec![0u8; 0x100];
         code.extend_from_slice(&[0x37, 0x20, 0xfe, 0xe7]);
         let mut cpu = cpu_with(&code);
@@ -840,8 +846,8 @@ mod tests {
     }
 
     #[test]
-    fn endereco_par_volta_para_arm_depois_de_thumb() {
-        // `mov r0, #0x37` em ARM no zero; em 0x100, código Thumb qualquer.
+    fn an_even_address_returns_to_arm_after_thumb() {
+        // `mov r0, #0x37` in ARM at zero; at 0x100, arbitrary Thumb code.
         let mut code = [0xe3a0_0037u32.to_le_bytes(), 0xeaff_fffeu32.to_le_bytes()].concat();
         code.resize(0x100, 0);
         code.extend_from_slice(&[0x00, 0x20, 0xfe, 0xe7]);
@@ -852,7 +858,7 @@ mod tests {
     }
 
     #[test]
-    fn a_vigia_liga_com_escrita_do_guest_e_nao_com_a_do_host() {
+    fn the_watch_trips_on_guest_writes_not_host_writes() {
         // `mov r1, #0x1000 ; str r0, [r1] ; b .`
         let code = [
             0xe3a0_1a01u32.to_le_bytes(),
@@ -862,26 +868,26 @@ mod tests {
         .concat();
         let mut cpu = cpu_with(&code);
         cpu.watch_dirty(7, 0x1000, 4).unwrap();
-        assert!(cpu.take_dirty(7), "nasce sujo");
-        assert!(!cpu.take_dirty(7), "e ler limpa");
+        assert!(cpu.take_dirty(7), "starts dirty");
+        assert!(!cpu.take_dirty(7), "and reading clears it");
         cpu.write_mem(0x1000, &[1, 2, 3, 4]).unwrap();
-        assert!(!cpu.take_dirty(7), "escrita do host não conta");
+        assert!(!cpu.take_dirty(7), "a host write does not count");
         cpu.run(0, 2).unwrap();
-        assert!(cpu.take_dirty(7), "escrita do guest conta");
-        // Uma faixa desarmada volta ao contrato padrão: na dúvida, sujo.
+        assert!(cpu.take_dirty(7), "a guest write counts");
+        // A disarmed range goes back to the default contract: when in doubt, dirty.
         cpu.unwatch_dirty(7);
         assert!(cpu.take_dirty(7));
     }
 
     #[test]
-    fn retorno_para_o_sentinela_e_reconhecido() {
+    fn a_return_to_the_sentinel_is_recognized() {
         let mut cpu = cpu_with(&0xe12f_ff1eu32.to_le_bytes()); // bx lr
         cpu.write_reg(Reg::Lr, RETURN_MAGIC);
         assert_eq!(cpu.run(0, 10).unwrap(), StopReason::Returned);
     }
 
     #[test]
-    fn semihosting_escreve_sem_interromper_o_guest() {
+    fn semihosting_writes_without_interrupting_the_guest() {
         // mov r0,#SYS_WRITEC ; mov r1,#0x1000 ; svc #0xab ; bx lr
         let code = [0xe3a0_0003u32, 0xe3a0_1a01, 0xef00_00ab, 0xe12f_ff1e]
             .into_iter()
@@ -895,9 +901,9 @@ mod tests {
         assert_eq!(cpu.read_reg(Reg::R0), 0);
     }
 
-    /// O semihosting no estado ARM usa `SVC #0x123456`, e não pode parar o jogo.
+    /// Semihosting in ARM state uses `SVC #0x123456`, and must not stop the game.
     #[test]
-    fn semihosting_do_estado_arm_tambem_escreve() {
+    fn semihosting_from_arm_state_also_writes() {
         // mov r0,#SYS_WRITEC ; mov r1,#0x1000 ; svc #0x123456 ; bx lr
         let code = [0xe3a0_0003u32, 0xe3a0_1a01, 0xef12_3456, 0xe12f_ff1e]
             .into_iter()
@@ -911,7 +917,7 @@ mod tests {
     }
 
     #[test]
-    fn codigo_alterado_pelo_host_e_recompilado() {
+    fn code_changed_by_the_host_is_recompiled() {
         let mut cpu = cpu_with(
             &[0xe3a0_0001u32.to_le_bytes(), 0xe12f_ff1eu32.to_le_bytes()].concat(),
         );
@@ -919,8 +925,8 @@ mod tests {
         assert_eq!(cpu.run(0, 10).unwrap(), StopReason::Returned);
         assert_eq!(cpu.read_reg(Reg::R0), 1);
 
-        // É o equivalente a uma API BREW atualizar uma tabela/rotina do módulo entre duas
-        // chamadas. Sem `invalidate_cache_range`, o Dynarmic reutilizaria o `mov r0,#1`.
+        // It is the equivalent of a BREW API updating a table/routine of the module between two
+        // calls. Without `invalidate_cache_range`, Dynarmic would reuse the `mov r0,#1`.
         cpu.write_mem(0, &0xe3a0_0002u32.to_le_bytes()).unwrap();
         cpu.write_reg(Reg::Lr, RETURN_MAGIC);
         assert_eq!(cpu.run(0, 10).unwrap(), StopReason::Returned);

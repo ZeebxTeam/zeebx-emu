@@ -1,17 +1,17 @@
-//! Textos da interface, em vários idiomas.
+//! Interface texts, in several languages.
 //!
-//! Cada idioma é um JSON de chave para texto. Os que acompanham o emulador vêm embutidos
-//! no binário, para que ele funcione sozinho; qualquer outro entra como arquivo numa pasta
-//! `lang/`, sem recompilar nada. É por isso que a busca é por diretório e não por uma lista
-//! fixa: acrescentar um idioma é copiar um arquivo.
+//! Each language is a JSON from key to text. The ones that ship with the emulator are embedded
+//! in the binary, so that it works on its own; any other comes in as a file in a `lang/`
+//! directory, without recompiling anything. That is why the lookup is by directory and not by a
+//! fixed list: adding a language is copying a file.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-/// Idioma usado quando o escolhido não tem a chave — ou quando não há escolha nenhuma.
+/// Language used when the chosen one lacks the key — or when there is no choice at all.
 pub const FALLBACK: &str = "en";
 
-/// Os idiomas que vêm no binário, como `(código, conteúdo do JSON)`.
+/// The languages that come in the binary, as `(code, JSON contents)`.
 const BUILT_IN: [(&str, &str); 4] = [
     ("en", include_str!("../../assets/lang/en.json")),
     ("es", include_str!("../../assets/lang/es.json")),
@@ -19,12 +19,12 @@ const BUILT_IN: [(&str, &str); 4] = [
     ("pt-BR", include_str!("../../assets/lang/pt-BR.json")),
 ];
 
-/// Um idioma carregado: o código, o nome como ele se chama, e os textos.
+/// A loaded language: the code, the name it calls itself, and the texts.
 #[derive(Debug, Clone)]
 pub struct Language {
     pub code: String,
-    /// O nome do idioma **no próprio idioma** — quem procura português procura "Português",
-    /// não "Portuguese".
+    /// The language's name **in the language itself** — someone looking for Portuguese looks for
+    /// "Português", not "Portuguese".
     pub name: String,
     strings: BTreeMap<String, String>,
 }
@@ -44,7 +44,7 @@ impl Language {
     }
 }
 
-/// Todos os idiomas disponíveis e qual está em uso.
+/// All available languages and which one is in use.
 #[derive(Debug, Clone)]
 pub struct Catalog {
     languages: Vec<Language>,
@@ -59,10 +59,10 @@ impl Default for Catalog {
 }
 
 impl Catalog {
-    /// Monta o catálogo com os idiomas embutidos mais os arquivos `*.json` das pastas dadas.
+    /// Builds the catalog with the embedded languages plus the `*.json` files of the given dirs.
     ///
-    /// Um arquivo com o mesmo código de um embutido **substitui** o embutido: é assim que dá
-    /// para corrigir uma tradução sem esperar uma versão nova do emulador.
+    /// A file with the same code as an embedded one **replaces** the embedded one: that is how a
+    /// translation can be fixed without waiting for a new version of the emulator.
     pub fn new(extra_dirs: &[PathBuf]) -> Self {
         let mut languages: Vec<Language> = BUILT_IN
             .iter()
@@ -91,12 +91,12 @@ impl Catalog {
         }
     }
 
-    /// Os idiomas disponíveis, em ordem de nome.
+    /// The available languages, in name order.
     pub fn languages(&self) -> &[Language] {
         &self.languages
     }
 
-    /// O código do idioma em uso.
+    /// The code of the language in use.
     pub fn current(&self) -> &str {
         self.languages
             .get(self.current)
@@ -104,7 +104,7 @@ impl Catalog {
             .unwrap_or(FALLBACK)
     }
 
-    /// Passa a usar `code`, se ele existir. Devolve se a troca aconteceu.
+    /// Switches to `code`, if it exists. Returns whether the switch happened.
     pub fn select(&mut self, code: &str) -> bool {
         match self.languages.iter().position(|l| l.code == code) {
             Some(at) => {
@@ -115,9 +115,9 @@ impl Catalog {
         }
     }
 
-    /// Escolhe o idioma que melhor atende `preferred` — o `pt-BR` exato na frente, e o
-    /// primeiro `pt-*` como segunda opção, que é o que faz um `pt_PT` do sistema cair no
-    /// português em vez do inglês.
+    /// Chooses the language that best matches `preferred` — the exact `pt-BR` first, and the
+    /// first `pt-*` as a second option, which is what makes a system `pt_PT` fall back to
+    /// Portuguese instead of English.
     pub fn select_best(&mut self, preferred: &str) -> bool {
         if self.select(preferred) {
             return true;
@@ -136,10 +136,10 @@ impl Catalog {
         }
     }
 
-    /// O texto de `key`, no idioma em uso.
+    /// The text of `key`, in the language in use.
     ///
-    /// Uma chave que falta cai no idioma de reserva e, faltando lá também, aparece como ela
-    /// mesma: uma tradução incompleta deixa a interface feia, nunca vazia.
+    /// A missing key falls back to the fallback language and, if it is missing there too, shows up
+    /// as itself: an incomplete translation leaves the interface ugly, never empty.
     pub fn get<'a>(&'a self, key: &'a str) -> &'a str {
         [self.current, self.fallback]
             .iter()
@@ -148,7 +148,7 @@ impl Catalog {
             .unwrap_or(key)
     }
 
-    /// O texto de `key` com os `{nome}` trocados pelos valores dados.
+    /// The text of `key` with the `{name}`s replaced by the given values.
     pub fn format(&self, key: &str, args: &[(&str, &str)]) -> String {
         let mut text = self.get(key).to_string();
         for (name, value) in args {
@@ -158,8 +158,8 @@ impl Catalog {
     }
 }
 
-/// Lê os `*.json` de uma pasta como `(código, conteúdo)`. Pasta que não existe devolve nada —
-/// não ter idiomas extras é o caso comum, não um erro.
+/// Reads the `*.json` files of a directory as `(code, contents)`. A directory that does not exist
+/// returns nothing — having no extra languages is the common case, not an error.
 fn read_dir(dir: &Path) -> Vec<(String, String)> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
@@ -180,10 +180,10 @@ fn read_dir(dir: &Path) -> Vec<(String, String)> {
     found
 }
 
-/// O idioma que o sistema pede, no formato `pt-BR`.
+/// The language the system asks for, in the `pt-BR` format.
 ///
-/// Vem das variáveis de ambiente do POSIX, que o macOS também respeita quando o usuário as
-/// define. Sem nenhuma delas, o inglês.
+/// It comes from the POSIX environment variables, which macOS also honors when the user sets
+/// them. Without any of them, English.
 pub fn system_language() -> String {
     for name in ["LC_ALL", "LC_MESSAGES", "LANG"] {
         let Ok(value) = std::env::var(name) else {
@@ -203,7 +203,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn os_idiomas_embutidos_carregam_e_se_nomeiam() {
+    fn the_built_in_languages_load_and_name_themselves() {
         let catalog = Catalog::default();
         let codes: Vec<&str> = catalog
             .languages()
@@ -235,9 +235,9 @@ mod tests {
     }
 
     #[test]
-    fn as_traducoes_embutidas_tem_exatamente_as_mesmas_chaves() {
-        // Uma chave que existe só num idioma é um texto que vai aparecer em inglês no meio do
-        // português — o tipo de falha que ninguém percebe até estar na tela.
+    fn the_built_in_translations_have_exactly_the_same_keys() {
+        // A key that exists in only one language is a text that will show up in English in the
+        // middle of Portuguese — the kind of failure nobody notices until it is on screen.
         let catalog = Catalog::default();
         let keys = |code: &str| -> Vec<String> {
             catalog
@@ -253,7 +253,7 @@ mod tests {
     }
 
     #[test]
-    fn uma_chave_que_falta_cai_no_reserva_e_depois_em_si_mesma() {
+    fn a_missing_key_falls_back_to_the_fallback_then_to_itself() {
         let mut catalog = Catalog::default();
         catalog.select("pt-BR");
         assert_eq!(catalog.get("nav.library"), "Jogos");
@@ -261,23 +261,23 @@ mod tests {
     }
 
     #[test]
-    fn o_idioma_do_sistema_cai_no_mesmo_tronco() {
-        // Um `pt_PT` do sistema tem que achar o português, não o inglês.
+    fn the_system_language_falls_back_to_the_same_base() {
+        // A system `pt_PT` has to find Portuguese, not English.
         let mut catalog = Catalog::default();
         assert!(catalog.select_best("pt-PT"));
         assert_eq!(catalog.current(), "pt-BR");
-        // Um `es_MX` do sistema cai no mexicano; um `es_AR` no espanhol genérico.
+        // A system `es_MX` lands on Mexican Spanish; an `es_AR` on generic Spanish.
         assert!(catalog.select_best("es-MX"));
         assert_eq!(catalog.current(), "es-MX");
         assert!(catalog.select_best("es-AR"));
         assert_eq!(catalog.current(), "es");
-        // E um idioma que não temos deixa o que estava.
+        // And a language we do not have leaves what was there.
         assert!(!catalog.select_best("ja-JP"));
         assert_eq!(catalog.current(), "es");
     }
 
     #[test]
-    fn os_argumentos_entram_no_lugar_das_chaves() {
+    fn the_arguments_replace_the_placeholders() {
         let mut catalog = Catalog::default();
         catalog.select("pt-BR");
         assert_eq!(
