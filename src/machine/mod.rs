@@ -36,6 +36,7 @@ mod egl;
 mod file;
 mod font;
 mod gl;
+mod guest_dib;
 mod helper;
 mod hid;
 mod image;
@@ -2912,6 +2913,11 @@ pub struct Machine<C: CpuBackend> {
     /// 32-bit RGBA), not in RGB565: the buffer and its capacity. They stay out of synchronization —
     /// our RGB565 copy serves the blits, and the buffer is read-only for the game.
     decoder_dib: HashMap<u32, (u32, u32)>,
+    /// DIBs from `IDISPLAY_CreateDIBitmap`, whose header and pixels belong to the game, and the
+    /// pixel buffer we allocated for each (zero when it was created without a size). They stay
+    /// out of the RGB565 synchronization: our copy is rebuilt from their header on every blit —
+    /// see [`guest_dib`].
+    guest_dibs: HashMap<u32, u32>,
     /// The [`Framebuffer::generation`] of each surface the last time the game's buffer and our copy
     /// were equal — from then on, only its dirty box needs to go to the game.
     ///
@@ -3437,6 +3443,7 @@ impl<C: CpuBackend> Machine<C> {
             dib_capacity: HashMap::new(),
             inherited_dibs: HashSet::new(),
             decoder_dib: HashMap::new(),
+            guest_dibs: HashMap::new(),
             published_dib: HashMap::new(),
             surfaces: Heap::new(loader::SURFACE_BASE, loader::SURFACE_SIZE),
             notifying_widgets: std::collections::HashSet::new(),
