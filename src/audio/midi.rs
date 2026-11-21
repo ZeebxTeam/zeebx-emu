@@ -905,9 +905,12 @@ fn synthesize_blocking(part: Part) -> Option<crate::audio::wav::Sound> {
             for voice in &released {
                 render_voice(voice, &mut samples, &tables);
             }
-            if samples.iter().all(|s| *s == 0.0) {
-                return None;
-            }
+            // **A silent score is not refused.** The refusal dates from when the samples were
+            // normalized by their peak, and a zero peak had nothing to divide by; the gain is fixed
+            // now. What arrives here already passed [`prepare`], so it is a score — and Devil May
+            // Cry plays one at volume 0 on every `IMedia` it has. Refused, the object ended at
+            // once and the game replayed it every frame. See
+            // `tests::a_silent_score_still_lasts_its_length`.
             apply_fixed_gain(&mut samples);
             Some(crate::audio::wav::Sound::create(RATE, 1, samples))
         }
@@ -922,9 +925,7 @@ fn synthesize_blocking(part: Part) -> Option<crate::audio::wav::Sound> {
                 );
             }
             fill_compact(&released, &tables, &mut pcm);
-            if pcm.iter().all(|s| *s == 0) {
-                return None;
-            }
+            // Silence is a sound here too — see the wide branch above.
             Some(crate::audio::wav::Sound::from_i16(RATE, 1, pcm))
         }
     }
@@ -1351,6 +1352,27 @@ pub(crate) fn apply_fixed_gain(samples: &mut [f32]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **A score that only plays silence still lasts its length.** Devil May Cry: Dante x Virgil
+    /// hands every one of its `IMedia` objects this 64-byte score: volume 0 (`b0 07 00`), a rest
+    /// of 3,840 ticks and one note held for 11,520, at 960 per quarter — the note ends at eight
+    /// seconds at the default tempo, and the release adds half a second. Taken as "not a MIDI", it
+    /// was refused, the object ended at once, and the game called `Play` again on every frame.
+    /// Silence is a sound like any other: it plays, and it ends when the score ends.
+    #[test]
+    fn a_silent_score_still_lasts_its_length() {
+        const DMC_SILENCE: [u8; 64] = [
+            0x4d, 0x54, 0x68, 0x64, 0x00, 0x00, 0x00, 0x06, 0x00, 0x01, 0x00, 0x01, 0x03, 0xc0,
+            0x4d, 0x54, 0x72, 0x6b, 0x00, 0x00, 0x00, 0x2a, 0x00, 0xb0, 0x07, 0x00, 0x00, 0xff,
+            0x03, 0x00, 0x00, 0xb0, 0x79, 0x00, 0x00, 0xd0, 0x00, 0x00, 0xe0, 0x00, 0x40, 0x00,
+            0xb0, 0x07, 0x00, 0x00, 0xb0, 0x0a, 0x00, 0x9e, 0x00, 0x90, 0x30, 0x64, 0xda, 0x00,
+            0x80, 0x30, 0x64, 0xf8, 0x00, 0xff, 0x2f, 0x00,
+        ];
+        let sound = decode(&DMC_SILENCE).expect("a silent score is still a score");
+        let seconds = sound.frames() as f32 / RATE as f32;
+        assert!((8.0..9.0).contains(&seconds), "{seconds} s");
+        assert!(sound.samples.iter().all(|s| *s == 0.0), "and it is silent");
+    }
 
     /// Builds a format 0 SMF with a single track, so the tests do not depend on a file.
     fn smf(division: i16, track: &[u8]) -> Vec<u8> {

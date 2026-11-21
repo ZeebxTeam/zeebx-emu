@@ -314,14 +314,15 @@ impl qobject::GameScreen {
                 let graphics = &emu_core.effective().graphics;
                 (graphics.scaling, graphics.keep_aspect, graphics.smooth)
             };
-            // The experimental wide frame has its own aspect ratio; everything else is the
-            // console's 4:3.
-            let (show, aspect) = match emu_core.frame() {
+            // The experimental wide frame has its own aspect ratio, and so does a phone game's
+            // screen (240×400 is 3:5); everything else is the console's 4:3.
+            let (show, height, aspect) = match emu_core.frame() {
                 Some(Frame::Gpu(frame)) => (
                     Show::Texture {
                         texture: frame.texture.0.get(),
                         clip: frame.clip,
                     },
+                    480.0,
                     frame.ratio,
                 ),
                 Some(Frame::Screen(screen)) => {
@@ -337,11 +338,12 @@ impl qobject::GameScreen {
                             ),
                         },
                     };
-                    (show, 4.0 / 3.0)
+                    let height = screen.height().max(1) as f32;
+                    (show, height, screen.width() as f32 / height)
                 }
-                None => (Show::Nothing, 4.0 / 3.0),
+                None => (Show::Nothing, 480.0, 4.0 / 3.0),
             };
-            let fitted = fit_viewport(area, scaling, keep_aspect, aspect);
+            let fitted = fit_viewport(area, scaling, keep_aspect, height, aspect);
             (tick, show, centered(area, fitted), smooth, debug_panel)
         });
         match show {
