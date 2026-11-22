@@ -174,11 +174,30 @@ a new version shows the notice again.
 ## Updates
 
 `ui/updater.rs`. At startup (an option in the settings, on by default), a thread asks GitHub for
-the `releases/latest` of `ZeebxTeam/zeebx-emu`. The tag counts with or without `v`; drafts and
-pre-releases are left out. If there is a version greater than the binary's, a modal offers to open
-the release page — after the startup notice, so the two do not stack. "Check now" repeats the
-question from the settings. A 404 means "up to date": it is what comes back while there is no
-release.
+the releases of `ZeebxTeam/zeebx-emu`. The tag counts with or without `v`; drafts and pre-releases
+are left out. If there is a version greater than the binary's, a modal offers to install it, or
+to open the release page where the package cannot replace itself — after the startup notice, so
+the two do not stack. "Check now" repeats the question from the settings.
+
+**There are two channels**, chosen in the settings (`updates.channel` in `settings.json`):
+
+- **stable**, the default, is the releases;
+- **nightly** is those plus the build `nightly.yml` makes every day from `development`. It lives
+  in a single release, tagged with the word `nightly`, marked as a pre-release and replaced on
+  every run.
+
+The "include pre-releases" option that existed up to 0.6.0 is gone: every release went out
+marked that way, and from here on a release is published as a release.
+
+**A nightly is not compared by version.** The version in `Cargo.toml` only moves when someone
+moves it, so every nightly between two releases carries the same one. CI stamps each build with
+when it was made (`ZEEBX_BUILD_STAMP`, UTC, `YYYYMMDDHHMM`), the nightly shows it in its name
+(`0.7.0-nightly.202611200300`), and a nightly is newer when it was made later. The rule, with
+its corners — the release a nightly was counting towards, the nightly a release left behind — is
+`pick`, and each corner has a test.
+
+**The tag is a word on purpose.** Copies installed before the channels existed compare tags by
+their numbers, and a tag with none is worth 0.0.0: they do not see the nightly.
 
 ## Discord Rich Presence
 

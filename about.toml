@@ -49,8 +49,8 @@ ignore-build-dependencies = true
 # workaround knows how to split them.
 workarounds = ["ring"]
 
-# Crate sections have to come last. `zeebx-core` is this project's own published crate, under
-# the same GPL-2.0-or-later as the root LICENSE. It stays out of the global `accepted` list: a
-# third-party crate under the GPL should still fail here, so someone looks at it first.
+# `zeebx-core` is Zeebx's own code, under the same license as the rest (the root LICENSE). It
+# comes from crates.io, so `private` above does not cover it, and GPL-2.0-or-later is accepted
+# for this crate alone: a third-party GPL crate still stops the build, to be looked at.
 [zeebx-core]
 accepted = ["GPL-2.0-or-later"]

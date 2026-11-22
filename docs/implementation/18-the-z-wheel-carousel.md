@@ -87,6 +87,33 @@ Work on a profile copy. If you are going to inject the local ROMs as carousel it
 yours (we use a table of our own, `ZEEBX_LIBRARY`, with `class_id`/`game_id`) so that a new scan
 deletes only your records, without touching what came from the package.
 
+**The profile copy lists what the user has, not what the store sold.** The package's catalog
+carries 59 titles, and with all of them in the profile the grid showed the same games in the same
+order whatever the ROM folder held — choosing one that was not there opened nothing. After the
+sync, the profile keeps the package's row (box art, size, the title in each language) for each
+game found in the folder, our bare row for a game the package does not know, and no row for the
+rest. The package's rows are read from the package again on every sync, so a game that comes back
+to the folder comes back to the grid, and a row that stayed keeps the play count the Z-Wheel
+wrote on it. With no game at all the Z-Wheel shows its own notice, "Não há nenhum aplicativo em
+seu console".
+
+**The stage follows the same list.** The 3D wheel's slides are the `type = 5` rows of
+`asset_cache`, each owned by a `game_id`, and the Z-Wheel shows all fifteen whatever the catalog
+says — two of them for Crash Bandicoot and two for Rally Master Pro. The cache is edited in place
+when it is opened: one slide per game of the profile's catalog, the rest parked in a table of
+ours. `asset_cache` and `tt_game_info` do not use the same text encoding, so one cannot be
+attached to the other; the game list is read on a connection of its own.
+
+A game the package has no slide for gets one of ours, and this part is **not** the console's: a
+copy of slide `50088` — the store's notice, a framed panel that shows `banner1.qxt` to
+`banner3.qxt` in turn, with `slidebanner.qxt` as its tile on the top reel — with the game's box
+art and name drawn on the panel. The textures are QXEngine format 1: the signature
+`QX\0\0QXT\0`, the word `0x01240028`, width, height, format `1`, two zero words, flags
+(`0x10000` with a mip chain) and a zero word, then `RGB888` rows top to bottom and each mip level
+down to 1×1 (`res_easel64.qxt`: 64×64, 16423 bytes). Format `0x0c` is ATITC colour-only, `0x0d`
+ATITC with alpha, `2` is `RGBA8888`. The slides go into the Z-Wheel's writable layer
+(`assets/stage_slides/60000…`), which the file system serves over the package.
+
 ### 2.4 `tt_dlqueue.db` arrives empty and needs a schema
 
 The file exists with 0 bytes. `DLQueueDB.c` queries `DBINFO` and fails with

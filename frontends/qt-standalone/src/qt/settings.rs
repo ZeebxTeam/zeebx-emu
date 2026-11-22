@@ -460,7 +460,7 @@ use zeebx::ui::running_game;
 use zeebx::ui::screenshot;
 use zeebx::ui::settings::{
     self, Shortcuts, KeyCombo, Modifiers, LibraryMode, WindowMode, AspectRatio, Scaling,
-    Settings, resolution_label, level_label,
+    Settings, UpdateChannel, resolution_label, level_label,
 };
 
 use zeebx::speed::rewind::RewindSettings;
@@ -697,7 +697,6 @@ fn boolean<'a>(settings: &'a mut Settings, key_id: &str) -> Option<&'a mut bool>
         "z_wheel.transicoes_sempre" => &mut settings.z_wheel.always_transitions,
         "discord.ativo" => &mut settings.discord.active,
         "atualizacoes.ao_abrir" => &mut settings.updates.on_launch,
-        "atualizacoes.pre_lancamentos" => &mut settings.updates.prereleases,
         "graphics.smooth" => &mut settings.graphics.smooth,
         "graphics.jogo_separado" => &mut settings.graphics.separate_game_window,
         "graphics.confirmar_ao_fechar" => &mut settings.graphics.confirm_on_close,
@@ -777,6 +776,9 @@ impl qobject::SettingsModel {
                 "graphics.antialias" => index(&ANTIALIAS, &graphics.antialias),
                 "graphics.anisotropico" => index(&ANISOTROPIC, &graphics.anisotropic),
                 "audio.volume" => i32::from(emu_core.settings.audio.volume),
+                "atualizacoes.canal" => {
+                    index(&UpdateChannel::ALL, &emu_core.settings.updates.channel)
+                }
                 "speed.fps_limit" => index(&FpsLimit::ALL, &emu_core.settings.speed.fps_limit),
                 "speed.frameskip" => index(&Frameskip::all(), &emu_core.settings.speed.frameskip),
                 "speed.ff.ratio" => index(&FastForward::choices(), &emu_core.settings.speed.fast_forward.ratio),
@@ -895,6 +897,13 @@ impl qobject::SettingsModel {
                     emu_core.settings.speed.fps_limit =
                         choice(&FpsLimit::ALL, number).unwrap_or_default();
                 }
+                // The answer on screen belonged to the other channel: asked again right away,
+                // so "you have the latest version" is never about the channel just left.
+                "atualizacoes.canal" => {
+                    emu_core.settings.updates.channel =
+                        choice(&UpdateChannel::ALL, number).unwrap_or_default();
+                    emu_core.check_for_updates();
+                }
                 "speed.frameskip" => {
                     emu_core.settings.speed.frameskip =
                         choice(&Frameskip::all(), number).unwrap_or_default();
@@ -975,6 +984,9 @@ impl qobject::SettingsModel {
                 "graphics.resolucao_interna" => (1..=6u8).map(resolution_label).collect(),
                 "speed.fps_limit" => {
                     FpsLimit::ALL.iter().map(|l| catalog.get(l.key_id()).to_string()).collect()
+                }
+                "atualizacoes.canal" => {
+                    UpdateChannel::ALL.iter().map(|c| catalog.get(c.key_id()).to_string()).collect()
                 }
                 "speed.frameskip" => Frameskip::all()
                     .into_iter()
@@ -1213,7 +1225,7 @@ impl qobject::SettingsModel {
     }
 
     pub fn emulator_version(&self) -> QString {
-        QString::from(updater::CURRENT_VERSION)
+        QString::from(updater::build_version())
     }
 
     pub fn address(&self, which: &QString) -> QString {

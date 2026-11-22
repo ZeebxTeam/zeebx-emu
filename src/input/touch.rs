@@ -2,8 +2,8 @@
 //!
 //! It lives in the core, and not in the Android frontend, for two reasons. The Android package
 //! only compiles for Android, and the computation of which button the finger hit is the part worth
-//! testing; and iOS will need the same computation. Drawing and reading the touch event stay with
-//! each frontend.
+//! testing; and iOS uses the same computation. Drawing and reading the touch event stay with each
+//! frontend.
 //!
 //! Everything here is in interface **points**, with the origin at the top-left corner and `y`
 //! growing downward — the same space as egui's.

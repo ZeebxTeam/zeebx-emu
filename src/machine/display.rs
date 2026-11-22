@@ -389,7 +389,20 @@ impl<C: CpuBackend> Machine<C> {
         // the blit at 640, the game's engine sized the surface by it, and the copy to the
         // texture, which walks 726 pixels per row, scrambled the background into stripes.
         let display_clip = std::mem::replace(&mut self.clip, self.graphics_clip);
+        // **And each `IGraphics` has its own destination.** The Z-Wheel's keyboard draws the
+        // shift with a fresh `IGraphics`: `SetDestination(gfx, keyboard)`, draw,
+        // `SetDestination(gfx, NULL)`. With one destination for everyone, that `NULL` pointed the
+        // **display** back at the screen, and every key after the shift was drawn on the screen
+        // — erased on the next frame — instead of on the keyboard. Until an `IGraphics` sets its
+        // own, it keeps following the display's, which is what every other game was measured with.
+        let this = self.cpu.read_reg(Reg::R0);
+        let own_target = self.graphics_targets.get(&this).copied();
+        let display_target = self.display_target;
+        if let Some(target) = own_target {
+            self.display_target = target;
+        }
         let result = self.graphics_call_in_clip(slot);
+        self.display_target = display_target;
         self.graphics_clip = std::mem::replace(&mut self.clip, display_clip);
         result
     }
@@ -409,7 +422,13 @@ impl<C: CpuBackend> Machine<C> {
         );
         let result = match name {
             "AddRef" => self.objects.add_ref(this),
-            "Release" => self.objects.release(this),
+            "Release" => {
+                let remaining = self.objects.release(this);
+                if remaining == 0 {
+                    self.graphics_targets.remove(&this);
+                }
+                remaining
+            }
             // The colors arrive as three or four loose `uint8`s, not as an RGBVAL.
             "SetBackground" => {
                 let previous = self.graphics.background;
@@ -598,7 +617,7 @@ impl<C: CpuBackend> Machine<C> {
                 SUCCESS
             }
             "SetDestination" => {
-                self.display_target = a1;
+                self.graphics_targets.insert(this, a1);
                 SUCCESS
             }
             // With a count, for the same reason as `IDisplay` — see its `GetDestination`.
@@ -812,10 +831,30 @@ impl<C: CpuBackend> Machine<C> {
         y: i32,
         color: Rgb,
     ) -> Result<bool, CpuError> {
+        self.write_sized(text, x, y, color, FONT_SIZE, false)
+    }
+
+    /// [`Machine::write`] at a given size, and optionally with the letters' edges blended into
+    /// what is under them.
+    ///
+    /// The widgets' text asks for both. Each of the Z-Wheel's fonts is created at a pixel size —
+    /// 15 to 24 on the screens measured —, and its text is TrueType over photos and gradients,
+    /// where a hard edge shows as a jagged outline. **That the console smoothed it is an
+    /// assumption**: there is no capture to compare against. What a game writes through
+    /// `IDISPLAY_DrawText` keeps the hard edge.
+    pub(super) fn write_sized(
+        &mut self,
+        text: &str,
+        x: i32,
+        y: i32,
+        color: Rgb,
+        size: f32,
+        smooth: bool,
+    ) -> Result<bool, CpuError> {
         let Some(font) = self.font.as_ref() else {
             return Ok(false);
         };
-        let glyphs = font.layout(text, FONT_SIZE);
+        let glyphs = font.layout(text, size);
         if glyphs.is_empty() {
             return Ok(true);
         }
@@ -831,7 +870,8 @@ impl<C: CpuBackend> Machine<C> {
                     // Half-tones do not exist on a surface without an alpha channel: either the
                     // letter covers the pixel or it does not. Half is the cutoff that makes the
                     // edge look like the console's, which does not blend either.
-                    if glyph.coverage[(line * glyph.width + column) as usize] < 128 {
+                    let coverage = glyph.coverage[(line * glyph.width + column) as usize];
+                    if coverage < if smooth { 8 } else { 128 } {
                         continue;
                     }
                     let (px, py) = (x + glyph.x + column as i32, y + glyph.y + line as i32);
@@ -844,7 +884,11 @@ impl<C: CpuBackend> Machine<C> {
                             continue;
                         }
                     }
-                    surface.set_pixel_native(px, py, native);
+                    let value = match smooth && coverage < 248 {
+                        true => blend_rgb565(surface.get_pixel(px, py), native, coverage),
+                        false => native,
+                    };
+                    surface.set_pixel_native(px, py, value);
                 }
             }
         }

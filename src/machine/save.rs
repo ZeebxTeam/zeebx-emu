@@ -2149,6 +2149,9 @@ impl<C: CpuBackend> Machine<C> {
                         context: meta[12],
                     },
                     ends_us: u64::from(meta[13]) | (u64::from(meta[14]) << 32),
+                    // Learned again on the first lap: see `Machine::start_playback`.
+                    done_us: 0,
+                    replayed_at_end: false,
                 },
             );
         }
@@ -2736,6 +2739,9 @@ impl<C: CpuBackend> Machine<C> {
                     drawing: (meta[11], meta[12]),
                     releasers: (meta[13], meta[14]),
                     start_notified: meta[15] != 0,
+                    // Not in the save state: the game registers them again when it rebuilds
+                    // the list, and a new field would change the section's format.
+                    listeners: Vec::new(),
                 },
             );
         }
@@ -4012,6 +4018,8 @@ mod tests {
                     context: 0x14,
                 },
                 ends_us: 0x2_0000_000b,
+                done_us: 0,
+                replayed_at_end: false,
             },
         );
 
@@ -4306,6 +4314,7 @@ mod tests {
                 drawing: (0x6b, 0x6c),
                 releasers: (0x6d, 0x6e),
                 start_notified: true,
+                listeners: Vec::new(),
             },
         );
 

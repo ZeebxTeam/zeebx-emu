@@ -40,6 +40,7 @@ function signature is not here.
 | [28-game-in-the-main-window.md](28-game-in-the-main-window.md) | The game in place of the library, the separate window as an option, and one stage for each |
 | [29-settings-with-sidebar.md](29-settings-with-sidebar.md) | The categories in a column with icons, and each option's explanation at the bottom |
 | [30-redesign-tweaks.md](30-redesign-tweaks.md) | The Z-Wheel as home, the game down to the bottom of the window with the metrics in the corner, the Z-Pad and the Dragon on one button, and the question before closing the game |
+| [31-z-wheel-settings-screen.md](31-z-wheel-settings-screen.md) | The Z-Wheel's Setup screen option by option: what breaks, the cause measured and the order to fix it |
 
 ## How to measure
 

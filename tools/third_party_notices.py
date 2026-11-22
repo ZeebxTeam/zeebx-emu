@@ -75,7 +75,12 @@ The LGPLv3 builds on the GPLv3, whose text is in LICENSE-GPL3.
 
 
 def run(*command: str) -> str:
-    return subprocess.run(command, cwd=ROOT, check=True, capture_output=True, text=True).stdout
+    # The encoding is spelled out because Windows would decode with the system code page, and the
+    # license texts are UTF-8. stderr is left alone: it is where `cargo about` says which crate
+    # it refused, and capturing it hid that from the CI log.
+    return subprocess.run(
+        command, cwd=ROOT, check=True, stdout=subprocess.PIPE, encoding="utf-8"
+    ).stdout
 
 
 def check_version() -> None:
@@ -132,7 +137,7 @@ def main() -> None:
             )
         print("THIRD-PARTY-NOTICES.txt up to date")
         return
-    OUT.write_text(text, encoding="utf-8")
+    OUT.write_text(text, encoding="utf-8", newline="\n")
     print(f"{OUT.name}: {len(text) // 1024} KiB")
 
 

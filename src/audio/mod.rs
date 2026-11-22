@@ -433,6 +433,30 @@ impl Mixer {
         );
     }
 
+    /// Turns the voice `id` into an endless loop without moving it, when it is still playing
+    /// `sound`. Answers whether it did.
+    ///
+    /// It is for a game that loops a track by playing it again at its end notification — see
+    /// [`crate::machine::Machine::media_play`]. The notification follows the virtual clock and
+    /// the voice the device's: started over on every lap, the track lost its last milliseconds
+    /// when the game was ahead and left a silence when it was behind.
+    pub fn keep_looping(&self, id: u32, sound: &Arc<Sound>, volume: f32) -> bool {
+        let Ok(mut state) = self.state.lock() else {
+            return false;
+        };
+        match state.voices.get_mut(&id) {
+            // A voice already fading has let go of the sound's last value: it starts over.
+            Some(voice)
+                if !voice.done && voice.fade_out == 0 && Arc::ptr_eq(&voice.sound, sound) =>
+            {
+                voice.remaining = None;
+                voice.volume = volume.clamp(0.0, 1.0);
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Silences every voice and closes every stream, at once.
     ///
     /// It is what a restored save state asks for: what the mixer was playing belonged to the
@@ -1041,6 +1065,23 @@ mod tests {
             last.first().copied().unwrap_or(0.0) > 0.0,
             "the fade starts where the sound stopped"
         );
+    }
+
+    #[test]
+    fn a_voice_kept_looping_goes_on_from_where_it_is() {
+        let mixer = mixer(8000);
+        let sound = tone(8000, 2);
+        mixer.play(3, sound.clone(), 1.0, 1);
+        let mut out = [0.0f32; 2];
+        mixer.fill(&mut out, 2);
+        assert!(mixer.keep_looping(3, &sound, 1.0));
+        // Past the end of a sound that was to play once, and still there.
+        let mut out = [0.0f32; 64];
+        mixer.fill(&mut out, 2);
+        assert!(mixer.is_playing(3));
+        // Another sound, or no voice, is not a lap of the same track.
+        assert!(!mixer.keep_looping(3, &tone(8000, 2), 1.0));
+        assert!(!mixer.keep_looping(4, &sound, 1.0));
     }
 
     #[test]

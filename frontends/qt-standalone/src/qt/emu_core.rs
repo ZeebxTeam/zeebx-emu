@@ -347,7 +347,7 @@ impl Core {
                             updater::Response::NewVersion(_) => None,
                             updater::Response::UpToDate => Some(self.catalog.format(
                                 "update.up_to_date",
-                                &[("current", updater::CURRENT_VERSION)],
+                                &[("current", updater::build_version())],
                             )),
                             updater::Response::Failed(reason) => Some(
                                 self.catalog
@@ -427,8 +427,7 @@ impl Core {
     /// Asks GitHub whether there is a new version. The answer arrives through [`Core::each_frame`].
     pub fn check_for_updates(&mut self) {
         self.updater = None;
-        let pre = self.settings.updates.prereleases;
-        self.update_check = Some(updater::search(pre));
+        self.update_check = Some(updater::search(self.settings.updates.channel));
     }
 
     /// The check requested from the Help menu. The new-version notice is the usual one; "up to

@@ -1385,6 +1385,26 @@ impl Session {
             lines.push("— classes the game requested that we do not have —".to_string());
             lines.extend(classes.iter().map(|id| format!("  {id:#010x}")));
         }
+        // What the game called on the classes served by observation (the download among them).
+        // Without it, the session — the only path that reaches the Shop — cannot say which slots
+        // a class still waiting for an implementation is actually asked for.
+        let probe_calls = self.machine.probe_log();
+        if !probe_calls.is_empty() {
+            lines.push("— what the game called on the observed classes —".to_string());
+            lines.extend(probe_calls.iter().map(|(clsid, object, slot, args, texts, times)| {
+                let show = |i: usize| match &texts[i] {
+                    Some(text) => format!("{text:?}"),
+                    None => format!("{:#x}", args[i]),
+                };
+                let repeated = if *times > 1 { format!(" ({times}x)") } else { String::new() };
+                format!(
+                    "  {clsid:#010x} {object:#x} slot {slot:>2} ({}, {}, {}){repeated}",
+                    show(1),
+                    show(2),
+                    show(3)
+                )
+            }));
+        }
         let faults = self.machine.swallowed_faults();
         if !faults.is_empty() {
             lines.push("— invalid accesses the game carried on past —".to_string());
@@ -1761,6 +1781,11 @@ impl Session {
     }
 
     /// The screen, as it is now.
+    /// Every live surface as `(address, width, height, BMP)`. See [`Machine::surfaces`].
+    pub fn surfaces(&self) -> Vec<(u32, u32, u32, Vec<u8>)> {
+        self.machine.surfaces()
+    }
+
     pub fn screen(&self) -> &Framebuffer {
         self.intermediate
             .as_ref()

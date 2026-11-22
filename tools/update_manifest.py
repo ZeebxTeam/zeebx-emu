@@ -11,7 +11,11 @@ Only the formats that replace themselves go in: the AppImage, the NSIS installer
 `.tar.gz`. The `.deb` and the `.dmg` do not — the first belongs to dpkg, the second is just the
 `.app`'s packaging.
 
-    python3 tools/update_manifest.py <packages-folder> <tag>
+    python3 tools/update_manifest.py <packages-folder> <tag> [version]
+
+The version is the tag's, without the `v`. The nightly is the exception, and the reason for the
+third argument: its tag is the word `nightly`, the same on every run, and what tells one build
+from the next is its name (`0.7.0-nightly.202611200300`). The files are still under the tag.
 
 The `.sig` files are deleted from the folder after being read: the signature is already in the
 manifest, and the release does not need twelve more files.
@@ -34,7 +38,7 @@ PACKAGES = [
 ]
 
 
-def manifest(folder: pathlib.Path, frontend: str, tag: str) -> dict | None:
+def manifest(folder: pathlib.Path, frontend: str, tag: str, version: str) -> dict | None:
     platforms = {}
     for suffix, key, fmt in PACKAGES:
         name = f"zeebx-standalone-{frontend}-{suffix}"
@@ -50,18 +54,19 @@ def manifest(folder: pathlib.Path, frontend: str, tag: str) -> dict | None:
     if not platforms:
         return None
     return {
-        "version": tag.removeprefix("v").removeprefix("V"),
+        "version": version,
         "pub_date": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "platforms": platforms,
     }
 
 
 def main() -> None:
-    if len(sys.argv) != 3:
+    if len(sys.argv) not in (3, 4):
         sys.exit(__doc__)
     folder, tag = pathlib.Path(sys.argv[1]), sys.argv[2]
+    version = sys.argv[3] if len(sys.argv) == 4 else tag.removeprefix("v").removeprefix("V")
     for frontend in ("qt",):
-        data = manifest(folder, frontend, tag)
+        data = manifest(folder, frontend, tag, version)
         if data is None:
             print(f"{frontend}: no signed package, no latest-{frontend}.json")
             continue

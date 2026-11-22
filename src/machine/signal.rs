@@ -88,6 +88,11 @@ impl<C: CpuBackend> Machine<C> {
             self.last_draw_us = now;
             self.paint_widgets()?;
             self.draw_widgets()?;
+            // **The texts last.** The game's own drawing (an `OwnerDrawWidget`) is the backdrop of
+            // what it decorates: the message box frame (`0x5250c`, 510×125) is a sibling of the
+            // "Não foi possível conectar à rede" text and covered it whole. The static texts are
+            // always foreground on the Z-Wheel — status bar, labels, captions.
+            self.paint_texts()?;
         }
         self.deliver_activation()?;
         self.start_animation()?;

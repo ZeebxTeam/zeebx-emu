@@ -82,7 +82,7 @@ build_local() {
 	# `-s` compresses the self. The ELF with relocations is large; the eboot the device reads is not.
 	"${bin}/vita-make-fself" -s "$tmp/zeebx.velf" "$tmp/eboot.bin"
 	# ATTRIBUTE2 is an integer. 12 asks for extended memory: that is what fits the 192 MiB heap.
-	"${bin}/vita-mksfoex" -s TITLE_ID=ZEEB00001 -s APP_VER=00.51 -d ATTRIBUTE2=12 \
+	"${bin}/vita-mksfoex" -s TITLE_ID=ZEEB00001 -s APP_VER=00.60 -d ATTRIBUTE2=12 \
 		"Zeebx" "$tmp/param.sfo"
 	# A real Vita rejects the VPK with 0x8010113D if the icon or the LiveArea are not
 	# 256-color PNGs (type 3, 8 bits). Vita3K installs the same files in RGBA.

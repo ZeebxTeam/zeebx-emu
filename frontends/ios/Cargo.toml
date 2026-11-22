@@ -1,6 +1,6 @@
 [package]
 name = "zeebx-ios"
-version = "0.5.1"
+version = "0.6.0"
 edition = "2024"
 license = "GPL-2.0-or-later"
 description = "The iOS frontend of Zeebx"
@@ -13,8 +13,12 @@ name = "zeebx_ios"
 crate-type = ["staticlib", "rlib"]
 
 [dependencies]
-# `audio` and nothing else: it is `cpal`, which on iOS talks to Core Audio. Without the `desktop`
-# feature: eframe, glutin and gilrs have nothing to do in UIKit, and glutin's OpenGL on iOS is
-# EAGL, which Apple has already retired. The frame comes out of the software rasterizer and the
-# screen paints it.
-zeebx = { path = "../..", default-features = false, features = ["audio"] }
+# `audio` is `cpal`, which on iOS talks to Core Audio. `soundfont` is MIDI played with an `.sf2`
+# chosen in the settings: `rustysynth` is pure Rust, and the bank only takes memory when there is
+# one. Without the `desktop` feature: eframe, glutin and gilrs have nothing to do in UIKit, and
+# glutin's OpenGL on iOS is EAGL, which Apple has already retired. The frame comes out of the
+# software rasterizer and the screen paints it.
+zeebx = { path = "../..", default-features = false, features = ["audio", "soundfont"] }
+# The settings screen, the library and the save state slots cross to Swift as JSON: it is what
+# `Codable` reads without a line of glue per field. Already in the tree through the core.
+serde_json = "1.0.151"

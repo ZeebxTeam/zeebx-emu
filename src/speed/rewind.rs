@@ -39,10 +39,11 @@ impl RewindSettings {
     pub const INTERVALS_MS: [u32; 4] = [500, 1000, 2000, 5000];
     pub const MEMORY_SIZES_MB: [u32; 5] = [64, 128, 256, 512, 1024];
 
-    /// Half on Android: a 3 GB device does not have the desktop's 256 MB to spare.
-    #[cfg(target_os = "android")]
+    /// Half on a phone: a 3 GB device does not have the desktop's 256 MB to spare, and iOS ends
+    /// an app that takes too much without asking.
+    #[cfg(any(target_os = "android", target_os = "ios"))]
     pub const DEFAULT_MEMORY_MB: u32 = 128;
-    #[cfg(not(target_os = "android"))]
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     pub const DEFAULT_MEMORY_MB: u32 = 256;
 
     fn cap_in_bytes(&self) -> usize {

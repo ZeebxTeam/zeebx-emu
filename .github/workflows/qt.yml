@@ -46,10 +46,31 @@ name: qt
 on:
   workflow_dispatch:
   workflow_call:
+    inputs:
+      # When this build was made, in UTC, as `YYYYMMDDHHMM`. It comes from the caller, and not
+      # from each job, so the four systems carry the same one: it is what the updater compares
+      # two builds by (`BUILD_STAMP` in `src/ui/updater.rs`). Empty, the build has no date, like
+      # one made by hand.
+      carimbo:
+        description: "The build stamp, UTC, as YYYYMMDDHHMM"
+        required: false
+        type: string
+        default: ""
+      # `nightly` for the daily build; empty for everything else.
+      canal:
+        description: "The update channel this build belongs to"
+        required: false
+        type: string
+        default: ""
 
 concurrency:
   group: qt-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
+
+# Read at compile time by `option_env!`: they end up inside the binary.
+env:
+  ZEEBX_BUILD_STAMP: ${{ inputs.carimbo }}
+  ZEEBX_BUILD_CHANNEL: ${{ inputs.canal }}
 
 jobs:
   compila:
