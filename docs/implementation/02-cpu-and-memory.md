@@ -166,7 +166,7 @@ the way took from the game the data it still had. Size zero is `FREE`: the block
 pointer becomes null, and `ERR_REALLOC(0, &p)` leaves `p` null as the game expects.
 
 **The heap is the game's alone.** What the emulator needs in the guest's space — the stack of each
-`IThread`, the `IPeek` line buffer, the `AEEImageInfo`, the `AEEAppStart`, the `eglQueryString`
+`IThread`, the `IGetLine` line buffer, the `AEEImageInfo`, the `AEEAppStart`, the `eglQueryString`
 strings, the output pointers passed to the game's callbacks — comes from the internal region,
 through `alloc_internal`. Interleaved with what the game asks for, these blocks made the address
 of each of the game's structures depend on the Zeebx version, and RetroAchievements reads the heap
@@ -175,7 +175,7 @@ What the game asks for through an API (`STRDUP`, `LoadResData`, `IHeap_Malloc`) 
 heap, because the size and the timing come from the game. Every `free` goes through
 `Machine::free`, which picks the allocator by address.
 
-What **we** allocate in the guest's space also has an owner. The `IPeek` line buffer, the size of
+What **we** allocate in the guest's space also has an owner. The `IGetLine` line buffer, the size of
 the whole file, goes away with the reader; the `AEEImageInfo` of the image notification is one
 block per image, reused and returned on `Release`, not a new block for each notification.
 
