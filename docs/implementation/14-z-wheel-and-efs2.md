@@ -158,9 +158,9 @@ Two games used it in ways that looked incompatible. With the names from `AEESour
 uses fit on the first try:
 
 ```
-slot 3  PeekSourceFromSource(po, ISource*, nMax, IPeek**)          Z-Wheel, reads tectoy.cfg
+slot 3  GetLineFromSource(po, ISource*, nBufSize, IGetLine**)      Z-Wheel, reads tectoy.cfg
 slot 5  SourceFromMemory(po, pBuf, nSize, pfn, pUser, ISource**)   Zeeboids, wraps the POST
-slot 6  SourceFromFile(po, IFile*, ISource**)                      Z-Wheel
+slot 6  SourceFromAStream(po, IAStream*, ISource**)                Z-Wheel, over the IFile
 ```
 
 `SourceFromMemory` is what closes the case: **six** parameters, with the output pointer in the
