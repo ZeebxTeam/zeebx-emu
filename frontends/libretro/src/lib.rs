@@ -2430,15 +2430,23 @@ pub unsafe extern "C" fn retro_get_system_av_info(info: *mut RetroSystemAvInfo) 
     if info.is_null() {
         return;
     }
+    // **A phone game is its phone's screen**, not the console's: Devil May Cry is 240×400, 3:5.
+    // The frontend asks for this after `retro_load_game`, so the session already knows the game.
+    // See `Session::display_screen`.
+    let (width, height) = core()
+        .lock()
+        .ok()
+        .and_then(|guard| guard.as_ref().map(|CoreState(state)| state.session.display_size()))
+        .unwrap_or((640, 480));
     // SAFETY: the frontend passed a valid pointer to fill in.
     unsafe {
         *info = RetroSystemAvInfo {
             geometry: RetroGameGeometry {
-                base_width: 640,
-                base_height: 480,
+                base_width: width,
+                base_height: height,
                 max_width: 640,
                 max_height: 480,
-                aspect_ratio: 4.0 / 3.0,
+                aspect_ratio: width as f32 / height as f32,
             },
             timing: RetroSystemTiming {
                 fps: 60.0,
@@ -3042,8 +3050,9 @@ pub extern "C" fn retro_run() {
         if gpu().is_some() {
             state.session.hand_back_to_frontend();
         }
-        // Video: the console's framebuffer, in the negotiated format.
-        let screen = state.session.screen();
+        // Video: the console's framebuffer, in the negotiated format — only the phone's area of it
+        // for a phone game.
+        let screen = state.session.display_screen();
         let (width, height) = (screen.width(), screen.height());
         // **Did the GPU draw on this frame?** A game that only draws 2D (Turma da Mônica and
         // Zenonia draw through `IDisplay`/`IBitmap` and never swap a GPU buffer) has nothing in the
@@ -3059,9 +3068,10 @@ pub extern "C" fn retro_run() {
         // pixel pointer. Do not copy 600 KiB or compute a CPU signature in that case: besides being
         // useless, it competed with the Mali for the same weak CPU we want to leave to the guest.
         let on_gpu = gpu().is_some() && drew_on_gpu;
-        // The console is 640×480, and that is the frame the shader expects to receive. A different
-        // size is warned about once, instead of showing up as a skewed image with no explanation.
-        if !state.warned_size && (width != 640 || height != 480) {
+        // The console is 640×480 (a phone game, its phone's size), and that is the frame the
+        // shader expects to receive. A different size is warned about once, instead of showing up
+        // as a skewed image with no explanation.
+        if !state.warned_size && (width, height) != state.session.display_size() {
             state.warned_size = true;
             log(&format!(
                 "Zeebx: frame {width}x{height}, outside the console's 640x480"
