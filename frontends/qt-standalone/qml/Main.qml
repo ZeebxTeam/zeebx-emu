@@ -5,9 +5,9 @@ import QtQuick.Window
 
 import zeebx
 
-// The main window: the library, as a grid or in the slider. The game, the settings, the saves and
-// the log each open in their own window, as in egui; the startup and new-version notices are
-// dialogs on top of the library. See `docs/implementation/21-qt-migration.md`.
+// The main window: the library, as a grid, in the slider or as a list. The game, the settings, the
+// saves and the log each open in their own window, as in egui; the startup and new-version notices
+// are dialogs on top of the library. See `docs/implementation/21-qt-migration.md`.
 // It is an `ApplicationWindow`, not a `Window`, so the background and loose texts use the same
 // palette as the buttons and fields: with the window color taken from the system and the controls'
 // from the style, the text came out dark on a dark background in a dark theme.
@@ -187,9 +187,13 @@ ApplicationWindow {
         main.view.forceActiveFocus()
     }
 
-    // The game chosen now, by its list row.
+    // The game chosen now: the card, the box or the row the view in front has current.
     function chosen() {
-        return inSlider ? slider.line(slider.cursor) : grid.currentIndex
+        if (main.libraryMode === 1)
+            return slider.line(slider.cursor)
+        if (main.libraryMode === 2)
+            return list.currentIndex
+        return grid.currentIndex
     }
 
     // The row's game's own settings: the same settings window, only with the tabs that apply per
@@ -213,12 +217,14 @@ ApplicationWindow {
     // slider animation crossing the list.
     function reset() {
         grid.currentIndex = 0
+        list.currentIndex = 0
+        list.positionViewAtBeginning()
         slider.restart()
     }
 
-    // The library mode comes from the settings: 0 grid, 1 slider. Reread when they change.
-    readonly property bool inSlider: main.dependsOn([settings.cfg.version], library.libraryMode() === 1)
-    readonly property Item view: inSlider ? slider : grid
+    // The library mode comes from the settings: 0 grid, 1 slider, 2 list. Reread when they change.
+    readonly property int libraryMode: main.dependsOn([settings.cfg.version], library.libraryMode())
+    readonly property Item view: libraryMode === 1 ? slider : libraryMode === 2 ? list : grid
     // When the mode is changed in the settings, the arrows move to the new view.
     onViewChanged: view.forceActiveFocus()
 
@@ -661,8 +667,9 @@ ApplicationWindow {
 
             title: tr("menu.view")
             onAboutToShow: {
-                gridItem.checked = !main.inSlider
-                sliderItem.checked = main.inSlider
+                gridItem.checked = main.libraryMode === 0
+                sliderItem.checked = main.libraryMode === 1
+                listItem.checked = main.libraryMode === 2
                 toolbarItem.checked = main.withToolbar
                 statusItem.checked = main.withStatusBar
             }
@@ -682,6 +689,14 @@ ApplicationWindow {
                 iconName: "gallery-horizontal"
                 text: tr("settings.library_view.slider")
                 onTriggered: settings.cfg.define("biblioteca", 1)
+            }
+            AppMenuItem {
+                id: listItem
+
+                checkable: true
+                iconName: "list"
+                text: tr("settings.library_view.list")
+                onTriggered: settings.cfg.define("biblioteca", 2)
             }
             MenuSeparator {}
             AppMenuItem {
@@ -845,7 +860,7 @@ ApplicationWindow {
             ToolButton {
                 focusPolicy: Qt.NoFocus
                 visible: !main.playingInMain
-                checked: !main.inSlider
+                checked: main.libraryMode === 0
                 contentItem: Icon { name: "layout-grid"; size: 18; color: palette.buttonText }
                 onClicked: settings.cfg.define("biblioteca", 0)
                 ToolTip.visible: hovered
@@ -855,12 +870,22 @@ ApplicationWindow {
             ToolButton {
                 focusPolicy: Qt.NoFocus
                 visible: !main.playingInMain
-                checked: main.inSlider
+                checked: main.libraryMode === 1
                 contentItem: Icon { name: "gallery-horizontal"; size: 18; color: palette.buttonText }
                 onClicked: settings.cfg.define("biblioteca", 1)
                 ToolTip.visible: hovered
                 ToolTip.delay: 500
                 ToolTip.text: tr("settings.library_view.slider")
+            }
+            ToolButton {
+                focusPolicy: Qt.NoFocus
+                visible: !main.playingInMain
+                checked: main.libraryMode === 2
+                contentItem: Icon { name: "list"; size: 18; color: palette.buttonText }
+                onClicked: settings.cfg.define("biblioteca", 2)
+                ToolTip.visible: hovered
+                ToolTip.delay: 500
+                ToolTip.text: tr("settings.library_view.list")
             }
 
             // The search: filters the list by name, ignoring accents. Esc clears; Enter plays the
@@ -1015,12 +1040,12 @@ ApplicationWindow {
 
             Layout.fillWidth: true
             Layout.fillHeight: true
-            visible: !main.inSlider && library.empty === ""
-            // **Focus belongs to whichever is in view.** Both declared `focus: true`, and Qt gives
-            // focus to only one, the first: in slider mode, the arrows moved the hidden grid and
-            // the slider stood still, measured by the grid's `currentIndex` going up with `cursor`
-            // at zero.
-            focus: !main.inSlider
+            visible: main.libraryMode === 0 && library.empty === ""
+            // **Focus belongs to whichever is in view.** With every view declared `focus: true`,
+            // Qt gives focus to only one, the first: in slider mode, the arrows moved the hidden
+            // grid and the slider stood still, measured by the grid's `currentIndex` going up with
+            // `cursor` at zero.
+            focus: main.libraryMode === 0
             listening: !main.overlaid
             library: library
             onOpen: (line) => main.present(library.open(line))
@@ -1033,8 +1058,22 @@ ApplicationWindow {
 
             Layout.fillWidth: true
             Layout.fillHeight: true
-            visible: main.inSlider && library.empty === ""
-            focus: main.inSlider
+            visible: main.libraryMode === 1 && library.empty === ""
+            focus: main.libraryMode === 1
+            listening: !main.overlaid
+            library: library
+            onOpen: (line) => main.present(library.open(line))
+            onConfigure: (line) => main.configureGame(line)
+            onInspect: (line) => main.inspectGame(line)
+        }
+
+        LibraryList {
+            id: list
+
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            visible: main.libraryMode === 2 && library.empty === ""
+            focus: main.libraryMode === 2
             listening: !main.overlaid
             library: library
             onOpen: (line) => main.present(library.open(line))

@@ -14,7 +14,7 @@ resolver = "3"
 
 [package]
 name = "zeebx"
-version = "0.5.1"
+version = "0.6.0"
 edition = "2024"
 # Zeebx's code is GPLv2 or later. The default CPU backend is Dynarmic, to keep the core
 # compatible with GPLv3 frontends such as Qt 6.
@@ -89,7 +89,7 @@ achievements = ["dep:rcheevos-sys", "dep:ureq"]
 [dependencies]
 # The BREW platform without a host: .mod/.mif/.bar, vtables, memory map, heap, VFS and the save
 # state format. Lives in its own repository (ZeebxTeam/zeebx-core).
-zeebx-core = "0.1.1"
+zeebx-core = "0.1.4"
 # Interface types shared by the desktop and the Android frontend; doesn't open a window by itself.
 egui = { version = "0.33.3", default-features = false, features = ["default_fonts"] }
 # Host audio output. The decoding is ours: the games hand over PCM.

@@ -32,7 +32,7 @@ at all: each one lives in its window, and the idle one does not draw.
 ## In the main window
 
 - **The library leaves and the stage comes in**, taking the whole area, without the library's
-  margins. The search and the grid and slider buttons disappear from the toolbar, and Ctrl+F does
+  margins. The search and the grid, slider and list buttons disappear from the toolbar, and Ctrl+F does
   not go to the search: during the game, the letters belong to the game.
 - **The window stays in the mode configured for the game** (`graphics.janela_do_jogo`: windowed,
   maximized or fullscreen) while it runs, and goes back to what it was when it closes. The main

@@ -46,10 +46,23 @@ permissions:
   contents: write
 
 jobs:
+  # When this release was built. The updater compares a nightly with a release by when each was
+  # made, and a release without a date would look older than every nightly.
+  carimbo:
+    runs-on: ubuntu-latest
+    outputs:
+      carimbo: ${{ steps.agora.outputs.carimbo }}
+    steps:
+      - id: agora
+        run: echo "carimbo=$(date -u +%Y%m%d%H%M)" >> "$GITHUB_OUTPUT"
+
   # The Qt frontend (`frontends/qt-standalone`, binary `zeebx-qt`), the main interface:
   # `zeebx-standalone-qt-*`. The steps live in `qt.yml`, which builds and opens each installer.
   standalone-qt:
+    needs: carimbo
     uses: ./.github/workflows/qt.yml
+    with:
+      carimbo: ${{ needs.carimbo.outputs.carimbo }}
     # For `ZEEBX_ATUALIZADOR_CHAVE`, which signs the packages for the updater.
     secrets: inherit
 
@@ -619,6 +632,11 @@ jobs:
           name: ${{ inputs.versao || github.ref_name }}
           tag_name: ${{ inputs.versao || github.ref_name }}
           draft: true
+          # **A release is published as a release.** Up to 0.6.0 they went out marked as
+          # pre-releases; the updater no longer counts those as versions, and the mark now
+          # belongs to the nightly alone. When publishing the draft by hand, leave the
+          # "pre-release" box unchecked, or nobody is told about the version.
+          prerelease: false
           # Both always: the note becomes the start of the body, and GitHub adds the rest.
           body_path: ${{ steps.notas.outputs.caminho }}
           generate_release_notes: true

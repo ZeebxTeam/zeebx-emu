@@ -507,7 +507,7 @@ fn main() -> ExitCode {
             );
             eprintln!(
                 "     zeebx session <file.zip> [--seconds=N] [--keys=ms:button,...] [--dump=FRAME.bmp] [--shots=ms,...] [--gpu] [--serial=PATH] [--factory] [--no-end-of-life] [--no-transitions] [--scale=N] [--msaa=N] [--aniso=N] [--profile[=MS]] [--boomerang] [--motion=ms:x:y:z,...] [--wiimote] [--aspect=16:9]
-                             [--ports=pad,pad] [--dpad-on-axes]  (the window's session, without a window)"
+                             [--ports=pad,pad] [--dpad-on-axes] [--dump-surfaces=DIR]  (the window's session, without a window)"
             );
             eprintln!(
                 "     zeebx bench <file.mod|zip> [--seconds=N] [--keys=ms:key,...] [--dump=FRAME.bmp] [--key-names=ms:name,...] [--installed=0xCLSID[:id],...] [--dump-surfaces=DIR] [--dpad-on-axes]  (Dynarmic, without a window)"
@@ -1540,6 +1540,18 @@ fn windowless_session(
     if let Some(path) = dump {
         std::fs::write(path, session.screen().to_bmp())?;
     }
+    // As in `bench`: what the game drew off screen, one BMP per live surface.
+    if let Some(dir) = cli_args()
+        .into_iter()
+        .find_map(|a| a.strip_prefix("--dump-surfaces=").map(str::to_owned))
+    {
+        std::fs::create_dir_all(&dir)?;
+        let surfaces = session.surfaces();
+        for (addr, width, height, bmp) in &surfaces {
+            std::fs::write(format!("{dir}/{addr:08x}-{width}x{height}.bmp"), bmp)?;
+        }
+        println!("surfaces: {} in {dir}/", surfaces.len());
+    }
     println!("time:      {} virtual ms", session.clock_ms());
     let (heap, objects) = session.memory();
     println!("heap:      {heap} bytes in use, {objects} live objects");
@@ -1777,6 +1789,7 @@ fn run_frames(
     let mut turns = 0;
     let mut stopped = None;
     let mut pad = input::Pad::default();
+    let mut pad_before = input::Pad::default();
     let deadline = seconds.map(|s| s.saturating_mul(1000));
     if let Some(dir) = dump_gl {
         std::fs::create_dir_all(dir)?;
@@ -1846,6 +1859,13 @@ fn run_frames(
         // window and, with one, you can see what the script does.
         keys.apply(machine.clock_ms(), &mut pad);
         machine.set_pad(pad);
+        // The window's session translates the controller into BREW keys (the D-pad as the
+        // arrows, button 1 as CONFIRM, button 2 as CLR); `run --window` only set the pad, so a
+        // game that reads EVT_KEY saw nothing. Same translation here.
+        for (avk, down) in input::controller_key_events(&pad_before, &pad) {
+            machine.set_key(avk, down);
+        }
+        pad_before = pad;
         turns += 1;
         let outcomes = machine.advance(INSTRUCTION_BUDGET)?;
         machine.deliver_signals(INSTRUCTION_BUDGET)?;

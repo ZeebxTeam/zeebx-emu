@@ -58,17 +58,27 @@ ClassID in folders with "wheel" or "tectoy" in the name), leaves the list and op
 **▶ Z-Wheel** button on the top bar; a game opened from the library that exits on its own closes
 its window.
 
-### Grid and slider
+**The names can come from the files instead.** `game_names_from_file`, also in the General tab,
+makes `ui::zwheel_metadata::title_of` ignore `TITLETEXT` and name every game after its folder or
+file. It exists because the package's catalog has mistakes ("Prey 2 Evil" for "Prey Evil") and
+drops the collection's prefix: "Zeebo Extreme Baja" shows as "Baja" and moves to the top of the
+list. A game the Z-Wheel does not know shows its own name either way, so the option only changes
+the games it covers. Off by default, which is what the console showed.
 
-`LibraryGrid.qml` and `LibrarySlider.qml`. In the grid, upright cards in the proportions of the
-boxes; in the slider, one game at a time in the Z-Wheel style: the logo reel spinning like a
-cylinder, the name, the boxes sliding (the position chases the selection with a damped spring,
-and the list wraps around) and the rating with the description below.
+### Grid, slider and list
 
-Both modes are driven by the controller: D-pad, stick and arrow keys select, repeating when held;
-button 1, Start, Enter or space open; HOME opens the Z-Wheel. Keyboard, D-pad and stick become a
-single state before the press is detected, so an arrow also mapped on the controller does not
-move twice. The library does not listen while any window is on top of it — the game, the
+`LibraryGrid.qml`, `LibrarySlider.qml` and `LibraryList.qml`. In the grid, upright cards in the
+proportions of the boxes; in the slider, one game at a time in the Z-Wheel style: the logo reel
+spinning like a cylinder, the name, the boxes sliding (the position chases the selection with a
+damped spring, and the list wraps around) and the rating with the description below; in the list,
+one game per row, the small box on the left and the name, the ClassID and the description beside
+it. The three are chosen in the settings or in the toolbar, and the choice is saved as
+`biblioteca` in `settings.json` (`grade`, `slider` or `list`).
+
+The three views are driven by the controller: D-pad, stick and arrow keys select, repeating when
+held; button 1, Start, Enter or space open; HOME opens the Z-Wheel. Keyboard, D-pad and stick
+become a single state before the press is detected, so an arrow also mapped on the controller does
+not move twice. The library does not listen while any window is on top of it — the game, the
 settings, the saves, a dialog —, and since the controller generates no Qt event, a 33 ms timer
 reads it (`ui::navigation`).
 
@@ -174,11 +184,30 @@ a new version shows the notice again.
 ## Updates
 
 `ui/updater.rs`. At startup (an option in the settings, on by default), a thread asks GitHub for
-the `releases/latest` of `ZeebxTeam/zeebx-emu`. The tag counts with or without `v`; drafts and
-pre-releases are left out. If there is a version greater than the binary's, a modal offers to open
-the release page — after the startup notice, so the two do not stack. "Check now" repeats the
-question from the settings. A 404 means "up to date": it is what comes back while there is no
-release.
+the releases of `ZeebxTeam/zeebx-emu`. The tag counts with or without `v`; drafts and pre-releases
+are left out. If there is a version greater than the binary's, a modal offers to install it, or
+to open the release page where the package cannot replace itself — after the startup notice, so
+the two do not stack. "Check now" repeats the question from the settings.
+
+**There are two channels**, chosen in the settings (`updates.channel` in `settings.json`):
+
+- **stable**, the default, is the releases;
+- **nightly** is those plus the build `nightly.yml` makes every day from `development`. It lives
+  in a single release, tagged with the word `nightly`, marked as a pre-release and replaced on
+  every run.
+
+The "include pre-releases" option that existed up to 0.6.0 is gone: every release went out
+marked that way, and from here on a release is published as a release.
+
+**A nightly is not compared by version.** The version in `Cargo.toml` only moves when someone
+moves it, so every nightly between two releases carries the same one. CI stamps each build with
+when it was made (`ZEEBX_BUILD_STAMP`, UTC, `YYYYMMDDHHMM`), the nightly shows it in its name
+(`0.7.0-nightly.202611200300`), and a nightly is newer when it was made later. The rule, with
+its corners — the release a nightly was counting towards, the nightly a release left behind — is
+`pick`, and each corner has a test.
+
+**The tag is a word on purpose.** Copies installed before the channels existed compare tags by
+their numbers, and a tag with none is worth 0.0.0: they do not see the nightly.
 
 ## Discord Rich Presence
 

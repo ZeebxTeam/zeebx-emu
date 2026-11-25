@@ -147,10 +147,24 @@ in rustup. The step-by-step is in [`frontends/ios/README.md`](frontends/ios/READ
 ./frontends/ios/build.sh --app
 ```
 
+**The Swift half only compiles there; the Rust half tests anywhere.** That is why the iOS
+frontend keeps its decisions on the Rust side — the settings screen as rows, what a finger
+presses, what a controller button is bound to — and leaves Swift to draw them:
+
+```bash
+cargo test -p zeebx-ios                               # any host, no Xcode
+ZEEBX_TEST_ROM=roms/Game.zip cargo test -p zeebx-ios  # and a real game through the whole path
+```
+
+A change to `include/zeebx_ios.h` is a change to both halves, and only `ios.yml` or a Mac sees
+the Swift one.
+
 ## CI
 
-**The tag is the only automatic trigger.** `release.yml` fires on `v0.0.0` and builds the release
-as a draft. `ci.yml`, `libretro.yml`, `headless.yml`, `android.yml`, `ios.yml`, `vita.yml` and
+**The tag and the clock are the only automatic triggers.** `release.yml` fires on `v0.0.0` and
+builds the release as a draft. `nightly.yml` fires once a day, on `development`, and only builds
+when the branch moved since the last one: it runs `qt.yml` and replaces the `nightly` release,
+which is what the updater's nightly channel reads. `ci.yml`, `libretro.yml`, `headless.yml`, `android.yml`, `ios.yml`, `vita.yml` and
 `qt.yml` are `workflow_dispatch`: the default CI builds the command line — and with it the core
 and the tests — on the six platforms and calls `qt.yml`, which builds the interface and the
 installers. The release calls the same `qt.yml`: the Qt steps live in one place. Eleven jobs per
@@ -162,6 +176,13 @@ If you changed something only one of them covers — the APK, the core on an ARM
 human it is worth dispatching that workflow before the tag. You can't dispatch it.
 
 ## What must not break
+
+- **The nightly release is tagged `nightly`, and its name says when it was built**
+  (`0.7.0-nightly.202611200300`). The updater finds it by that tag and decides whether it is
+  newer by that name; copies installed before the channels existed ignore it *because* the tag
+  has no numbers. A tag like `v0.7.0-nightly` would be offered to all of them as 0.7.0. And a
+  release is published **without** the pre-release mark: the updater no longer counts a
+  pre-release as a version.
 
 - **The binary names don't change.** The interface is `zeebx-qt` — it is what the shortcut, the
   `.desktop` file and the updater of anyone who already has it installed point to —, and the

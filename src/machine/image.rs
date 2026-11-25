@@ -307,6 +307,28 @@ impl<C: CpuBackend> Machine<C> {
     /// `GetInfo` and draws with `Draw`. The decoding itself is standard PNG — there is nothing
     /// proprietary here, contrary to what the high-entropy bytes of `resources.dat` suggested at
     /// first sight.
+    /// Drops what is kept about an image whose object died.
+    ///
+    /// **The address goes back to the free list, and whatever is born there must not be an
+    /// image.** A picture shown by a widget dies with it, in [`Machine::release_widget`], and
+    /// its pixels stayed here: on the Z-Wheel's second trip to Setup the status bar's "Meus
+    /// Z-Credits" text was born at the address of the console number's white field, and the
+    /// field was drawn again at the status bar's corner.
+    pub(super) fn forget_image(&mut self, image: u32) {
+        self.images.remove(&image);
+        self.image_bitmaps.remove(&image);
+        self.image_clips.remove(&image);
+        // Nor may the next object inherit the callback.
+        self.image_notify.remove(&image);
+        self.image_notify_queue.retain(|&queued| queued != image);
+        for widget in self.widgets.values_mut() {
+            widget.attached.retain(|&shown| shown != image);
+        }
+        if let Some(info) = self.image_info.remove(&image) {
+            self.free(info);
+        }
+    }
+
     pub(super) fn image_call(&mut self, slot: u32) -> Result<Option<u32>, CpuError> {
         let Some(name) = Interface::Image.method(slot) else {
             return Ok(None);
@@ -322,16 +344,7 @@ impl<C: CpuBackend> Machine<C> {
             "Release" => {
                 let remaining = self.objects.release(this);
                 if remaining == 0 {
-                    self.images.remove(&this);
-                    self.image_bitmaps.remove(&this);
-                    self.image_clips.remove(&this);
-                    // The address goes back to belonging to another object, which must not
-                    // inherit the callback.
-                    self.image_notify.remove(&this);
-                    self.image_notify_queue.retain(|&queued_image| queued_image != this);
-                    if let Some(info) = self.image_info.remove(&this) {
-                        self.free(info);
-                    }
+                    self.forget_image(this);
                 }
                 remaining
             }

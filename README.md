@@ -38,7 +38,8 @@ On macOS it goes to Applications (it needs macOS 13 or newer); on Linux, the App
 
 The emulator updates itself in the AppImage, the Windows installer and the macOS `.app`: when a
 new version comes out, it tells you and offers "Update now". In the settings, under Updates, you
-can turn off the check on startup and choose whether pre-release versions count.
+can turn off the check on startup and choose the channel: stable, which is the released versions,
+or nightly, which also brings the build made every day from the development branch.
 
 # Notes for Contributors
 

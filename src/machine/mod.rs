@@ -36,6 +36,7 @@ mod egl;
 mod file;
 mod font;
 mod gl;
+mod guest_dib;
 mod helper;
 mod hid;
 mod image;
@@ -50,6 +51,7 @@ mod shell;
 mod signal;
 mod sound;
 mod sql;
+mod stage_slides;
 mod thread;
 mod time;
 mod widget;
@@ -953,6 +955,17 @@ const AEE_SOUND_PLAY_DONE: u32 = 2;
 /// `AEE_SOUND_STATUS_CB` and `AEE_SOUND_VOLUME_CB`, from the `AEESoundCmd` enum.
 const AEE_SOUND_STATUS_CB: u32 = 0;
 const AEE_SOUND_VOLUME_CB: u32 = 1;
+/// `AEE_SOUNDPLAYER_VOLUME_CB` and `AEE_SOUNDPLAYER_SUCCESS`, from `inc/AEESoundPlayer.h`. Not the
+/// same numbers as `ISound`'s: the player's callback types start with a status and a play one.
+const AEE_SOUNDPLAYER_VOLUME_CB: u32 = 4;
+const AEE_SOUNDPLAYER_SUCCESS: u32 = 1;
+/// The `AEESoundPlayerInput` values, from `inc/AEESoundPlayer.h`. `SDT_NONE` (0) is reserved.
+const SDT_FILE: u8 = 1;
+const SDT_BUFFER: u8 = 2;
+const SDT_VOICEPROMPT: u8 = 3;
+/// Where an `ISoundPlayer` keeps its `AEESoundPlayerInfo`, inside its own object slot — see
+/// `SetInfo` in `sound.rs`.
+const SOUND_PLAYER_SOURCE: u32 = 16;
 /// `AEEIID_DIB_20`, from `inc/AEEIDIB.h`: the IID `IDIB` had in BREW 2.0.
 const AEEIID_DIB_20: u32 = 0x0100_102c;
 /// `AEEIID_TRANSFORM`, from `AEETransform.h`: scaling and rotating one bitmap onto another.
@@ -1081,6 +1094,9 @@ const AEECLSID_FILEMGR: u32 = 0x0100_1003;
 struct Widget {
     children: HashMap<u32, u32>,
     properties: HashMap<u32, u32>,
+    /// Listeners registered on the widget's view model (`ModelListener *`). See
+    /// [`Machine::notify_list_focus`].
+    listeners: Vec<u32>,
     /// Models attached through slot 17. The Z-Wheel's roller pins the font here under id
     /// `0x8000`; the caller drops its temporary reference right after, so the widget is the one
     /// that needs to keep it alive while the roller exists.
@@ -1173,6 +1189,24 @@ const WIDGET_TEXT: u32 = 0x0102_8e2a;
 const PROP_COLOR: u32 = 0x140;
 /// A widget's background color, `RRGGBBAA`, through the same accessor as [`PROP_COLOR`].
 const PROP_BACKGROUND_COLOR: u32 = 0x130;
+/// A text widget's flags. Read from what the Z-Wheel writes, with no header to confirm it:
+/// `0x220` on the console number inside its 340×35 field, `0x210` on the version label, `0x440` on
+/// the credits in the status bar, `0x108020` on a one-line message box text and `0x108010` on the
+/// language box's, which has several lines. Only the bits below are understood; `0x200`, `0x400`
+/// and `0x8000` are not, and no horizontal alignment was seen.
+const PROP_FLAGS: u32 = 0x153;
+/// `IDF_ALIGN_MIDDLE` in [`PROP_FLAGS`]: the text sits in the middle of the widget's height.
+const FLAG_MIDDLE: u32 = 0x20;
+/// `IDF_ALIGN_BOTTOM` in [`PROP_FLAGS`].
+const FLAG_BOTTOM: u32 = 0x40;
+/// The text breaks into lines. Only the message boxes' text carries it.
+const FLAG_WRAP: u32 = 0x10_0000;
+/// The width a wrapping text is measured against, in pixels.
+///
+/// The message box (`0x51a6c`'s form) writes `490` here — its 510-pixel frame minus the margins —,
+/// asks for the preferred extent and writes the answer's width back. Answering one long line gave
+/// `3022` for the language box, and the text ran off the frame.
+const PROP_HINT_WIDTH: u32 = 0x173;
 
 /// The class of the HTML widget, which the help screen (`FAQ_Form.c`) creates to show the pages.
 ///
@@ -1182,8 +1216,55 @@ const PROP_BACKGROUND_COLOR: u32 = 0x130;
 /// nothing.
 const WIDGET_HTML: u32 = 0x0102_dd32;
 
-const WIDGET_FAMILY: [u32; 10] = [
+/// The list widget, which `CreateListWidget` (`tectoy_listwidget.c`, `0x20fcc`) calls the "list
+/// decorator". Refused, Registration logs `Unable to create list decorator` and the form is left
+/// half-built, with a jump to zero in the cleanup.
+///
+/// Read from its only use: a **decorator** in the BREW 4.0 sense — slot 13 receives the model (a
+/// `0x01028e35` vector, `0x210dc`), slot 14 the widget that draws each item (`0x21324`), slot 7
+/// the extent and slot 4 the handler, like the rest of the family. That is why slot 13 is not
+/// `CreateCompatibleBitmap` on it; see the `Slot13` arm.
+const WIDGET_LIST: u32 = 0x0102_8e1b;
+
+/// An editable text field: the one Registration's "hidden menu form" builds at `0x4a414`
+/// (`SetUp_Form.c:1077`, `Couldn't create hidden menu form (20)` when refused).
+///
+/// Read from the use: `QueryInterface(0x1015946)` through slot 12, then slot 13 with a model the
+/// **game** allocates itself (`0x77af4`, 0x4c bytes through `check_malloc`, with its own vtable),
+/// checking the return; then color, font (`0x152`), alignment (`0x153`) and extent.
+const WIDGET_EDIT: u32 = 0x0102_8e2f;
+
+/// The interface the text field hands out for its text: what the Z-Wheel's keyboard types into.
+/// It is also the `class_id` of the object we hand out, which is how [`Machine::widget_call`]
+/// tells it apart from a widget. See [`Machine::text_model_call`].
+const TEXT_MODEL_IID: u32 = 0x0101_5946;
+
+/// The family's container: the bottom bar, the status bar and the box each form hangs on
+/// `0x5000`. See §6.1 of `docs/implementation/18-the-z-wheel-carousel.md`.
+const WIDGET_CONTAINER: u32 = 0x0102_8e3f;
+/// The viewport: a decorator that shows a window onto a widget larger than itself. The message
+/// box puts its text in one when the text is taller than the frame, next to a `0x01028e26`
+/// scroll bar. It holds what it decorates; nothing scrolls or clips yet.
+const WIDGET_VIEWPORT: u32 = 0x0102_8e36;
+/// The scroll bar: the decorator the message box wraps its [`WIDGET_VIEWPORT`] in. Nothing draws
+/// the bar itself yet.
+const WIDGET_SCROLLBAR: u32 = 0x0102_8e26;
+
+/// Marks, as `class_id`, the text field's controller (its item `0x224`). Not a console class:
+/// the object is ours, and the mark is what lets slot 4 hand out its default handler.
+const TEXT_CONTROLLER: u32 = 0xffff_0224;
+
+/// Marks, as `class_id`, a list's view model (its item `0x161`), where the game listens for
+/// focus changes. Ours, like [`TEXT_CONTROLLER`].
+const LIST_VIEW_MODEL: u32 = 0xffff_0161;
+
+/// The classes on which slot 13 hangs a model instead of creating a bitmap.
+const MODEL_ON_SLOT13: [u32; 2] = [WIDGET_LIST, WIDGET_EDIT];
+
+const WIDGET_FAMILY: [u32; 12] = [
     WIDGET_HTML,
+    WIDGET_LIST,
+    WIDGET_EDIT,
     AEECLSID_WIDGET,
     // `0x01028e05` is the last one the stage asks for. After setting up the pbuffer —
     // `ChooseConfig`, `CreatePbufferSurface`, `CreateContext`, `MakeCurrent` — the Z-Wheel creates
@@ -1277,6 +1358,9 @@ const AEECLSID_HID: u32 = 0x0106_c411;
 const AEECLSID_SIGNAL_CB_FACTORY: u32 = 0x0104_1207;
 /// `AEECLSID_GRAPHICS` = `AEECLSID_CORE + 0x1001`, resolved from `AEEClassIDs.h`.
 const AEECLSID_GRAPHICS: u32 = 0x0100_2001;
+/// `AEECLSID_SOUNDPLAYER` = `AEECLSID_ENH`, the one right before `AEECLSID_GRAPHICS`
+/// (`AEECLSID_ENH + 1`) in `inc/AEEClassIDs.h`.
+const AEECLSID_SOUNDPLAYER: u32 = 0x0100_2000;
 
 /// `EVT_APP_START`, from `inc/AEEEvent.h`. It is zero — the first event an applet receives.
 const EVT_APP_START: u32 = 0;
@@ -1785,6 +1869,11 @@ struct MediaState {
     /// When the sound ends, on the virtual clock. Zero is "not playing", and `u64::MAX` is
     /// infinite `repeat`.
     ends_us: u64,
+    /// When the sound last reached its end by itself, on the virtual clock. Zero is "never".
+    done_us: u64,
+    /// The game loops this sound by playing it again at its end notification, and the mixer
+    /// holds the loop for it. See [`Machine::start_playback`].
+    replayed_at_end: bool,
 }
 
 impl Default for MediaState {
@@ -1803,6 +1892,8 @@ impl Default for MediaState {
                 context: 0,
             },
             ends_us: 0,
+            done_us: 0,
+            replayed_at_end: false,
         }
     }
 }
@@ -1925,7 +2016,7 @@ const AES_BLOCK: usize = 16;
 
 /// State of an `IHash` object.
 ///
-/// Only the digest in progress. `GetDigest` writes into the buffer the game provides, so there is
+/// Only the digest in progress. `GetResult` writes into the buffer the game provides, so there is
 /// nothing to keep in its memory — the field that existed for that came from the wrong signature.
 #[derive(Debug, Default)]
 struct HashState {
@@ -2607,6 +2698,13 @@ pub struct Machine<C: CpuBackend> {
     html_max_scroll: HashMap<u32, usize>,
     /// Arrows whose press scrolled an HTML panel: their release doesn't go to the game either.
     scroll_keys: std::collections::HashSet<u32>,
+    /// The widget handlers `(callback, context)` that received each key's press. The release goes
+    /// only to them: see `flush_keys`. Not in the save state — without the entry, the release goes
+    /// to every handler, as it did before.
+    press_receivers: HashMap<u32, std::collections::HashSet<(u32, u32)>>,
+    /// The `ICanvas` handed to the widgets' draw callbacks, pointed at the screen every frame.
+    /// One for the whole session: the callback borrows it and does not release it.
+    draw_canvas: u32,
     /// The state of each live `IPeek`.
     peeks: HashMap<u32, Peek>,
     /// The items of each live `IConfig`, by object: item number -> bytes.
@@ -2682,10 +2780,15 @@ pub struct Machine<C: CpuBackend> {
     resources_read: BTreeSet<u16>,
     /// Whether the widget tree has already been dumped to the serial.
     widgets_dumped: bool,
+    /// The form whose tree last went to the serial. Instrumentation only, out of the save state.
+    widgets_dumped_form: Option<u32>,
     /// Widget creation counter. See [`Machine::current_form`].
     next_serial: u64,
     /// The form that is painted on the surface right now. See [`Machine::paint_widgets`].
     painted_form: u32,
+    /// The surface [`Machine::painted_form`] was painted on. Not in the save state: after a
+    /// load it matches nothing, and the next form switch clears the screen as it always did.
+    painted_target: u32,
     /// When the widgets were last drawn, on the virtual clock.
     ///
     /// The one that draws an `OwnerDrawWidget` is the game, and in the Z-Wheel that callback is a
@@ -2824,6 +2927,11 @@ pub struct Machine<C: CpuBackend> {
     /// 32-bit RGBA), not in RGB565: the buffer and its capacity. They stay out of synchronization —
     /// our RGB565 copy serves the blits, and the buffer is read-only for the game.
     decoder_dib: HashMap<u32, (u32, u32)>,
+    /// DIBs from `IDISPLAY_CreateDIBitmap`, whose header and pixels belong to the game, and the
+    /// pixel buffer we allocated for each (zero when it was created without a size). They stay
+    /// out of the RGB565 synchronization: our copy is rebuilt from their header on every blit —
+    /// see [`guest_dib`].
+    guest_dibs: HashMap<u32, u32>,
     /// The [`Framebuffer::generation`] of each surface the last time the game's buffer and our copy
     /// were equal — from then on, only its dirty box needs to go to the game.
     ///
@@ -2859,6 +2967,16 @@ pub struct Machine<C: CpuBackend> {
     /// Left out of the save state on purpose: the game that uses `IGraphics` redoes the clip every
     /// frame, and storing it would change the format for a one-frame difference.
     graphics_clip: Option<Rect>,
+    /// The destination each `IGraphics` set for itself, by object. See
+    /// [`Machine::graphics_call`]. Left out of the save state like the clip: the game sets it
+    /// again before drawing.
+    graphics_targets: HashMap<u32, u32>,
+    /// The lists' focused items for this frame, `(x, y, color, text)`, and the item widgets they
+    /// came from, which are not painted where they stand. See [`Machine::prepare_lists`].
+    list_texts: Vec<(i32, i32, u32, String)>,
+    list_items: std::collections::HashSet<u32>,
+    /// The `ModelEvent` handed to listeners, allocated once in the internal region.
+    model_event: u32,
     /// The screen, for when there is no device bitmap yet.
     screen: Framebuffer,
     /// Active `IDisplay` colors, indexed by `AEEClrItem` (`CLR_USER_TEXT` = 1 onwards).
@@ -3247,6 +3365,8 @@ impl<C: CpuBackend> Machine<C> {
             html_scroll: HashMap::new(),
             html_max_scroll: HashMap::new(),
             scroll_keys: Default::default(),
+            press_receivers: Default::default(),
+            draw_canvas: 0,
             peeks: HashMap::new(),
             widgets: HashMap::new(),
             selectors_per_class: std::collections::BTreeMap::new(),
@@ -3288,8 +3408,10 @@ impl<C: CpuBackend> Machine<C> {
             media_notify_block: 0,
             resources_read: BTreeSet::new(),
             widgets_dumped: false,
+            widgets_dumped_form: None,
             next_serial: 0,
             painted_form: 0,
+            painted_target: 0,
             last_draw_us: 0,
             serial: None,
             egl_error: gles::EGL_SUCCESS,
@@ -3335,6 +3457,7 @@ impl<C: CpuBackend> Machine<C> {
             dib_capacity: HashMap::new(),
             inherited_dibs: HashSet::new(),
             decoder_dib: HashMap::new(),
+            guest_dibs: HashMap::new(),
             published_dib: HashMap::new(),
             surfaces: Heap::new(loader::SURFACE_BASE, loader::SURFACE_SIZE),
             notifying_widgets: std::collections::HashSet::new(),
@@ -3347,6 +3470,10 @@ impl<C: CpuBackend> Machine<C> {
             display_target: 0,
             clip: None,
             graphics_clip: None,
+            graphics_targets: HashMap::new(),
+            list_texts: Vec::new(),
+            list_items: std::collections::HashSet::new(),
+            model_event: 0,
             screen: Framebuffer::new(SCREEN_WIDTH as u32, SCREEN_HEIGHT as u32),
             colors: default_colors(),
             pending_text: Vec::new(),
@@ -3383,7 +3510,26 @@ impl<C: CpuBackend> Machine<C> {
         self.cpu.write_reg(Reg::R2, args[2]);
         self.cpu.write_reg(Reg::R3, args[3]);
         self.cpu.write_reg(Reg::Lr, RETURN_MAGIC);
-        self.execute(func, budget)
+        let outcome = self.execute(func, budget)?;
+        // Which of our deliveries entered the guest that faulted: after an indirect jump into
+        // freed memory, `lr` no longer says it.
+        if !matches!(outcome, Outcome::Returned { .. }) && self.serial.is_some() {
+            let regs: Vec<String> = [Reg::R0, Reg::R1, Reg::R2, Reg::R3, Reg::R4, Reg::Lr]
+                .into_iter()
+                .map(|reg| format!("{:#x}", self.cpu.read_reg(reg)))
+                .collect();
+            self.log_serial(format!(
+                "<callback {func:#010x} args {:#x} {:#x} {:#x} {:#x} did not return:                  {outcome:?}, r0-r4 lr {}>",
+                args[0], args[1], args[2], args[3],
+                regs.join(" ")
+            ));
+            // With `--trace`, the API calls that led there.
+            let tail: Vec<String> = self.trace.iter().rev().take(40).rev().cloned().collect();
+            for line in tail {
+                self.log_serial(format!("<before the fault: {}>", line.trim()));
+            }
+        }
+        Ok(outcome)
     }
 
     /// Calls the guest from **inside** the dispatch of an API call.
@@ -3573,6 +3719,16 @@ impl<C: CpuBackend> Machine<C> {
                     // from the report while it brought down the z-pad form with error 6.
                     self.swallowed_failures
                         .insert(format!("invalid access at {addr:#010x} at pc {pc:#010x}"));
+                    // The set above has no instant and no caller: a jump into freed memory (the
+                    // Z-Wheel's language restart, `pc 0xa7a7a7a4`) only says who called it here.
+                    if self.serial.is_some() {
+                        self.log_serial(format!(
+                            "<fault at {addr:#010x} pc {pc:#010x} lr {lr:#010x} sp {:#010x} \
+                             nesting {}>",
+                            self.cpu.read_reg(Reg::Sp),
+                            self.nesting
+                        ));
+                    }
                     return Ok(Outcome::Fault { addr, pc, lr });
                 }
                 StopReason::Exception { pc } => return Ok(Outcome::Exception { pc }),
@@ -3911,6 +4067,12 @@ impl<C: CpuBackend> Machine<C> {
             // ClassID and `r3` the event. Since the five-argument form of `SendEvent` puts the
             // ClassID in `r1`, we read both: what decides is which of the two registers carries
             // the ClassID of the running applet.
+            // boolean ISHELL_Beep(IShell *, BeepType nBeepType, boolean bLoud)
+            //
+            // The Z-Wheel's wheel rows (`0x60930`) beep with type 4 when a press arrives and the
+            // row cannot take it yet. Unserved, the call stopped the row's key handler halfway.
+            // Silent here: the console's beep tones were not measured.
+            (Interface::Shell, slot) if Interface::Shell.method(slot) == Some("Beep") => TRUE,
             (Interface::Shell, slot) if Interface::Shell.method(slot) == Some("SendEvent") => {
                 let (a1, a2, a3) = (
                     self.cpu.read_reg(Reg::R1),
@@ -4024,6 +4186,10 @@ impl<C: CpuBackend> Machine<C> {
                 Some(result) => result,
                 None => return Ok(None),
             },
+            (Interface::SoundPlayer, _) => match self.sound_player_call(slot)? {
+                Some(result) => result,
+                None => return Ok(None),
+            },
             (Interface::Heap, _) => match self.heap_call(slot)? {
                 Some(result) => result,
                 None => return Ok(None),
@@ -4130,7 +4296,7 @@ impl<C: CpuBackend> Machine<C> {
                 Some(result) => result,
                 None => return Ok(None),
             },
-            (Interface::Source, _) | (Interface::Peek, _) => {
+            (Interface::Source, _) | (Interface::GetLine, _) => {
                 match self.source_call(iface, slot)? {
                     Some(result) => result,
                     None => return Ok(None),

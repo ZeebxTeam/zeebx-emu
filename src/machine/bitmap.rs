@@ -332,6 +332,48 @@ impl<C: CpuBackend> Machine<C> {
                 }
                 remaining
             }
+            "QueryInterface" => {
+                let (iid, out) = (self.cpu.read_reg(Reg::R1), self.cpu.read_reg(Reg::R2));
+                let answer = match iid {
+                    AEEIID_CANVAS => Some(this),
+                    AEEIID_IBITMAP => self.canvases.get(&this).copied(),
+                    _ => None,
+                };
+                match answer {
+                    Some(pointer) => {
+                        self.objects.add_ref(pointer);
+                        if out != 0 {
+                            self.cpu.write_u32(out, pointer)?;
+                        }
+                        SUCCESS
+                    }
+                    None => {
+                        if out != 0 {
+                            self.cpu.write_u32(out, 0)?;
+                        }
+                        ECLASSNOTSUPPORT
+                    }
+                }
+            }
+            "GetBitmap" => {
+                let Some(&bitmap) = self.canvases.get(&this) else {
+                    return Ok(Some(EBADPARM));
+                };
+                let out = self.cpu.read_reg(Reg::R1);
+                self.objects.add_ref(bitmap);
+                if out != 0 {
+                    self.cpu.write_u32(out, bitmap)?;
+                }
+                SUCCESS
+            }
+            "SetBitmap" => {
+                let bitmap = self.cpu.read_reg(Reg::R1);
+                if !self.bitmaps.contains_key(&bitmap) {
+                    return Ok(Some(EBADPARM));
+                }
+                self.canvases.insert(this, bitmap);
+                SUCCESS
+            }
             "GetDisplay" => {
                 let Some(&bitmap) = self.canvases.get(&this) else {
                     return Ok(Some(EBADPARM));
@@ -561,6 +603,7 @@ impl<C: CpuBackend> Machine<C> {
                 let remaining = self.objects.release(this);
                 if remaining == 0 {
                     self.release_dib(this);
+                    self.release_guest_dib(this);
                 }
                 remaining
             }
@@ -1110,6 +1153,11 @@ impl<C: CpuBackend> Machine<C> {
     ) {
         if dst == src {
             return;
+        }
+        // A DIB the game describes may have changed under us since the last blit — see
+        // [`super::guest_dib`]. A header that cannot be read keeps the previous copy.
+        if self.guest_dibs.contains_key(&src) {
+            let _ = self.refresh_guest_dib(src);
         }
         let Some(mut target) = self.bitmaps.remove(&dst) else {
             return;

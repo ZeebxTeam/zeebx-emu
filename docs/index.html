@@ -14,9 +14,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Zeebx — emulador do Zeebo</title>
-<meta name="description" content="Zeebx, emulador livre do Zeebo para Windows, macOS, Linux, Android e RetroArch. Baixe a versão mais recente.">
+<meta name="description" content="Zeebx, emulador livre do Zeebo para Windows, macOS, Linux, Android, iPhone, iPad e RetroArch. Baixe a versão mais recente.">
 <meta property="og:title" content="Zeebx — emulador do Zeebo">
-<meta property="og:description" content="Emulador livre do Zeebo para Windows, macOS, Linux, Android e RetroArch.">
+<meta property="og:description" content="Emulador livre do Zeebo para Windows, macOS, Linux, Android, iPhone, iPad e RetroArch.">
 <meta property="og:image" content="logo.png">
 <meta name="color-scheme" content="dark">
 <meta name="theme-color" content="#000000">
@@ -88,8 +88,13 @@
       </label>
     </div>
 
+    <!-- A chamada para o build diário, e o aviso do que ele é: o `site.js` preenche os dois, e só
+         quando existe um nightly publicado. -->
+    <p class="secao-sub" id="canal" hidden></p>
+    <div class="dica" id="aviso-nightly" hidden></div>
+
     <div class="filtros">
-      <input type="search" id="busca" autocomplete="off" data-t-placeholder="lista.busca" placeholder="Buscar: windows, apk, retroarch, arm64…">
+      <input type="search" id="busca" autocomplete="off" data-t-placeholder="lista.busca" placeholder="Buscar: windows, apk, iphone, retroarch, arm64…">
       <div class="chips" id="filtro-so" role="group" data-t-aria="filtro.sistema" aria-label="Sistema"></div>
       <div class="chips" id="filtro-tipo" role="group" data-t-aria="filtro.tipo" aria-label="Tipo"></div>
     </div>

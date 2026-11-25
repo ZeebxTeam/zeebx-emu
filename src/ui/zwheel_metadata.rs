@@ -65,8 +65,21 @@ fn pick<'a>(map: &'a HashMap<String, String>, language: &str) -> Option<&'a str>
 }
 
 /// The name a game shows up with: the Z-Wheel's official one in the interface language, when it
-/// knows the game, and the folder's or package's otherwise.
-pub fn title_of(zwheel_metadata: Option<&ZWheelMetadata>, game: &crate::library::Game, language: &str) -> String {
+/// knows the game and the user wants it, and the folder's or package's otherwise.
+///
+/// `from_file` is [`crate::ui::settings::Settings::game_names_from_file`]. On, the Z-Wheel's
+/// `TITLETEXT` is not consulted at all and every game is named after its folder or file — which is
+/// what a game the Z-Wheel does not know shows either way. That keeps the names equal to the ROMs,
+/// and the "Zeebo Extreme" games together instead of under "Baja" and "Rolimã".
+pub fn title_of(
+    zwheel_metadata: Option<&ZWheelMetadata>,
+    game: &crate::library::Game,
+    language: &str,
+    from_file: bool,
+) -> String {
+    if from_file {
+        return game.title.clone();
+    }
     game.clsid
         .and_then(|class_id| zwheel_metadata?.info(class_id))
         .and_then(|info| info.title(language))
@@ -378,6 +391,37 @@ mod tests {
     fn without_the_requested_language_english_applies() {
         let map = HashMap::from([("en".to_string(), "Alien Breaker".to_string())]);
         assert_eq!(pick(&map, "pt-BR"), Some("Alien Breaker"));
+    }
+
+    /// The choice of names: the Z-Wheel's official one, or the game's own.
+    ///
+    /// `Baja` is what the Z-Wheel calls "Zeebo Extreme Baja", and it is the whole point of the
+    /// option: on, the list follows the folder and the collection stays together.
+    #[test]
+    fn the_name_comes_from_the_z_wheel_or_from_the_file() {
+        let game = crate::library::Game {
+            title: "Zeebo Extreme Baja".into(),
+            path: PathBuf::from("/jogos/Zeebo Extreme Baja/mod/279160/baja.mod"),
+            clsid: Some(0x0100_201e),
+            packed: false,
+            art: None,
+        };
+        let zwheel_metadata = ZWheelMetadata {
+            records: HashMap::from([(
+                game.clsid.unwrap(),
+                GameEntry {
+                    titles: HashMap::from([("en".to_string(), "Baja".to_string())]),
+                    ..GameEntry::default()
+                },
+            )]),
+        };
+
+        let official = title_of(Some(&zwheel_metadata), &game, "en", false);
+        assert_eq!(official, "Baja");
+        assert_eq!(title_of(Some(&zwheel_metadata), &game, "en", true), "Zeebo Extreme Baja");
+        // A game the Z-Wheel does not know shows the same either way.
+        assert_eq!(title_of(None, &game, "en", false), "Zeebo Extreme Baja");
+        assert_eq!(title_of(Some(&zwheel_metadata), &game, "en", true), game.title);
     }
 }
 

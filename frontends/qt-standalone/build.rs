@@ -26,7 +26,7 @@ fn qt_ui() {
 
     CxxQtBuilder::new_qml_module(
         QmlModule::new("zeebx")
-            .qml_files(["qml/Main.qml", "qml/Game.qml", "qml/LibraryGrid.qml", "qml/LibrarySlider.qml", "qml/SettingsWindow.qml", "qml/SavesWindow.qml", "qml/LogWindow.qml", "qml/Icon.qml", "qml/GameStage.qml", "qml/AchievementToast.qml", "qml/AchievementsPage.qml"])
+            .qml_files(["qml/Main.qml", "qml/Game.qml", "qml/LibraryGrid.qml", "qml/LibrarySlider.qml", "qml/LibraryList.qml", "qml/SettingsWindow.qml", "qml/SavesWindow.qml", "qml/LogWindow.qml", "qml/Icon.qml", "qml/GameStage.qml", "qml/AchievementToast.qml", "qml/AchievementsPage.qml"])
             .depend("QtQuick"),
     )
     .files(["src/qt/bridge.rs", "src/qt/library.rs", "src/qt/settings.rs", "src/qt/dialogs.rs", "src/qt/theme.rs", "src/qt/achievements.rs"])

@@ -1,0 +1,133 @@
+# The daily build of the development branch, for whoever chose the nightly channel in the
+# emulator's settings.
+#
+# It is the same Qt build as a release — `qt.yml`, with the same steps and the same signature —
+# made from whatever is on the branch when the clock strikes, and published without anyone looking
+# at it first. That is the whole difference, and it is what the channel's hint tells the user.
+#
+# **One release, replaced every time.** It is tagged `nightly`, marked as a pre-release, and its
+# name says which build it is: `0.7.0-nightly.202611200300`. A release per day would bury the real
+# ones on the releases page, and push them out of the 20 the updater's list holds.
+#
+# **The tag is a word on purpose.** The copies already installed compare tags by their numbers,
+# and a tag with none is worth 0.0.0: they do not see it. See `NIGHTLY_TAG` in
+# `src/ui/updater.rs`, which is also where the rule for "is this build newer" lives.
+#
+# **Only the Qt packages.** They are the only ones with an updater, and so the only ones a channel
+# means anything to. The APK, the IPA, the cores and the Vita app still come out on the tag.
+#
+# A scheduled workflow runs on the default branch, which here is `development`: that is the branch
+# a nightly is of. GitHub turns schedules off after 60 days without a commit to the repository,
+# and turns them back on at the next one.
+
+name: nightly
+
+on:
+  schedule:
+    # 06:00 UTC, which is 03:00 in Brasília: after the day's last commit, before the first coffee.
+    - cron: "0 6 * * *"
+  # By hand, from the Actions tab: builds even when the branch has not moved.
+  workflow_dispatch:
+
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  decide:
+    name: is there anything new?
+    # A fork inherits the schedule and has neither the key nor the audience.
+    if: github.repository == 'ZeebxTeam/zeebx-emu'
+    runs-on: ubuntu-latest
+    outputs:
+      construir: ${{ steps.decide.outputs.construir }}
+      carimbo: ${{ steps.decide.outputs.carimbo }}
+      nome: ${{ steps.decide.outputs.nome }}
+    steps:
+      # The tags come along: the `nightly` one says which commit the last build was of.
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Compare with the last nightly
+        id: decide
+        shell: bash
+        run: |
+          version=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          if [ -z "$version" ]; then
+            echo "could not find the version in the root Cargo.toml"
+            exit 1
+          fi
+          carimbo=$(date -u +%Y%m%d%H%M)
+          echo "carimbo=$carimbo" >> "$GITHUB_OUTPUT"
+          echo "nome=$version-nightly.$carimbo" >> "$GITHUB_OUTPUT"
+
+          anterior=$(git rev-parse -q --verify 'refs/tags/nightly^{commit}' || true)
+          if [ "$anterior" = "$GITHUB_SHA" ] && [ "$GITHUB_EVENT_NAME" = "schedule" ]; then
+            echo "construir=false" >> "$GITHUB_OUTPUT"
+            echo "the last nightly is already of $GITHUB_SHA: nothing to do."
+          else
+            echo "construir=true" >> "$GITHUB_OUTPUT"
+            echo "building $version-nightly.$carimbo from $GITHUB_SHA"
+          fi
+
+  qt:
+    needs: decide
+    if: needs.decide.outputs.construir == 'true'
+    uses: ./.github/workflows/qt.yml
+    with:
+      carimbo: ${{ needs.decide.outputs.carimbo }}
+      canal: nightly
+    # For `ZEEBX_ATUALIZADOR_CHAVE`: an unsigned package is one the updater refuses.
+    secrets: inherit
+
+  publish:
+    # **All four systems, or none.** A release goes out with what worked, because someone reads
+    # the draft before publishing it. Nobody reads this one: a nightly missing Windows would be
+    # announced to every Windows user and then fail to install. Yesterday's stays up instead.
+    needs: [decide, qt]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: pacotes
+          merge-multiple: true
+
+      # The files are under the tag, and the version is the build's name: see the script.
+      - name: The updater manifest
+        run: |
+          python3 tools/update_manifest.py pacotes nightly "${{ needs.decide.outputs.nome }}"
+          test -f pacotes/latest-qt.json || {
+            echo "no signed package: a nightly nobody can install is not published"
+            exit 1
+          }
+
+      # The old release goes, with its tag, and the new one is created on this commit. Between
+      # the two there is no nightly, and the updater reads that as "nothing new" — which is true
+      # for the few seconds it lasts.
+      - name: Replace the nightly release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NOME: ${{ needs.decide.outputs.nome }}
+        run: |
+          cat > notas.md <<EOF
+          The automatic build of \`${GITHUB_REF_NAME}\` at ${GITHUB_SHA}.
+
+          **This is not a release.** It has what is coming, before anyone has checked that it
+          works: expect it to break, and keep a copy of your saves. To receive it from inside the
+          emulator, choose the nightly channel under Settings, Updates; to stop, choose stable.
+
+          The released versions are on the [releases page](https://github.com/${GITHUB_REPOSITORY}/releases/latest).
+          EOF
+          gh release delete nightly --yes --cleanup-tag || true
+          gh release create nightly pacotes/* \
+            --target "$GITHUB_SHA" \
+            --title "$NOME" \
+            --notes-file notas.md \
+            --prerelease \
+            --latest=false

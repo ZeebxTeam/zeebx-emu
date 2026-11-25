@@ -9,8 +9,10 @@
 //! ternary —, so every literal that looks like a key counts, except the settings ones (`keyId:`,
 //! `v()`, `define()`, `options()`), which also have dots. In Rust, the first argument of calls to
 //! the catalog counts, only where there is interface code: `src/qt/`, `src/ui/` and the Android
-//! frontend. Outside of those, a `.get("a.b")` is something else, and `i18n.rs` asks for a key that
-//! doesn't exist on purpose.
+//! and iOS frontends. Outside of those, a `.get("a.b")` is something else, and `i18n.rs` asks for a
+//! key that doesn't exist on purpose. The Swift half of the iOS frontend is read the same way as
+//! the Rust: there a literal with dots is as often the name of a system icon as a key, and only
+//! what goes into `tr()` is ours.
 //!
 //! It lives in the root package, not in the standalone's, which is where the QML is: with the Qt
 //! interface enabled, cxx-qt links the QML module into every target of that package, and an
@@ -73,11 +75,12 @@ fn qml_keys(dir: &Path) -> Vec<(String, String)> {
     key_ids
 }
 
-/// The keys the Rust code requests from the catalog, with the file and line.
-fn rust_keys(dir: &Path) -> Vec<(String, String)> {
+/// The keys the code requests from the catalog, with the file and line. `extension` is `rs`, or
+/// `swift` for the half of the iOS frontend that calls `tr()` from the other side of the border.
+fn code_keys(dir: &Path, extension: &str) -> Vec<(String, String)> {
     const CALLS: [&str; 4] = [".get(\"", ".format(\"", ".tr(\"", "texto(\""];
     let mut rust = Vec::new();
-    files(dir, "rs", &mut rust);
+    files(dir, extension, &mut rust);
     let mut key_ids = Vec::new();
     for file in rust {
         if file.ends_with("i18n.rs") {
@@ -106,9 +109,16 @@ fn rust_keys(dir: &Path) -> Vec<(String, String)> {
 fn every_key_the_ui_uses_exists_in_the_catalog() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut key_ids = qml_keys(&root.join("frontends/qt-standalone/qml"));
-    key_ids.extend(rust_keys(&root.join("frontends/qt-standalone/src")));
-    key_ids.extend(rust_keys(&root.join("src/ui")));
-    key_ids.extend(rust_keys(&root.join("frontends/android/src")));
+    key_ids.extend(code_keys(&root.join("frontends/qt-standalone/src"), "rs"));
+    key_ids.extend(code_keys(&root.join("src/ui"), "rs"));
+    key_ids.extend(code_keys(&root.join("frontends/android/src"), "rs"));
+    let ios = code_keys(&root.join("frontends/ios/src"), "rs");
+    let swift = code_keys(&root.join("frontends/ios/app"), "swift");
+    // The same guard as below, for each half: the Swift one is the easiest to stop seeing.
+    assert!(ios.len() > 50, "only {} keys found in the iOS library", ios.len());
+    assert!(swift.len() > 20, "only {} keys found in the iOS app", swift.len());
+    key_ids.extend(ios);
+    key_ids.extend(swift);
     // With nothing found, the test would pass by not looking: the folder moved, or the extraction
     // broke.
     assert!(key_ids.len() > 100, "only {} keys found", key_ids.len());

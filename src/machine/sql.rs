@@ -59,7 +59,21 @@ impl<C: CpuBackend> Machine<C> {
                         .iter()
                         .filter(|entry| entry.source == crate::library::CatalogSource::Rom)
                         .map(|entry| (entry.applet_class, entry.title.as_str()));
-                    match crate::brew::sql::sync_z_wheel_library(&official, &profile, roms) {
+                    // What the user owns: the ROMs found, and what the catalog says came from the
+                    // console itself. The Z-Wheel is in the ROM folder too and is not a game.
+                    let owned: Vec<u32> = catalog
+                        .titles
+                        .iter()
+                        .map(|entry| entry.applet_class)
+                        .filter(|class| *class != crate::session::Z_WHEEL)
+                        .collect();
+                    let synced = crate::brew::sql::sync_z_wheel_library(&official, &profile, roms)
+                        .and_then(|path| {
+                            keep_only_owned(&official, &path, &owned)
+                                .map(|()| path)
+                                .map_err(|error| error.to_string())
+                        });
+                    match synced {
                         Ok(path) => path,
                         Err(error) => {
                             self.bad_pointers
@@ -76,6 +90,17 @@ impl<C: CpuBackend> Machine<C> {
                     {
                         self.missing_files.insert(db_name);
                         return Ok(Some(EFAILED));
+                    }
+                    // **The stage follows the game grid.** The slides of the 3D wheel come
+                    // from this database, and the profile's `tt_game_info` — already synced by
+                    // the time the stage asks, eight seconds into the boot — says which games
+                    // the user has. A failure here leaves the package's slides as they came.
+                    if db_name == "asset_cache" {
+                        let games =
+                            crate::loader::archive::device_dir().join("z-wheel/tt_game_info");
+                        if games.exists() {
+                            let _ = self.sync_stage(&target.path, &games);
+                        }
                     }
                     target.path
                 };
@@ -251,5 +276,417 @@ impl<C: CpuBackend> Machine<C> {
             self.cpu.write_u32(block + i as u32 * 4, pointer)?;
         }
         Ok(Some(block))
+    }
+}
+
+/// Leaves in the Z-Wheel's profile catalog only the games the user has: one row per game in
+/// `owned`, and nothing else.
+///
+/// The package's `tt_game_info` lists the 59 titles the store sold, and the profile copy kept all
+/// of them: the grid showed the same games in the same order whatever was in the ROM folder, an
+/// empty folder included, and choosing one that was not there opened nothing. On top of them
+/// [`crate::brew::sql::sync_z_wheel_library`] adds a bare row per ROM — no box art, the file's
+/// name for a title —, so a game that was in both showed up twice in the database.
+///
+/// After this:
+///
+/// - a game in `owned` that the package knows keeps **the package's row**: its box art, its size
+///   and the title in each language. The bare row is dropped;
+/// - a game in `owned` the package does not know (a homebrew) keeps the bare row;
+/// - a package row for a game that is not in `owned` leaves the profile.
+///
+/// The package's rows are read from `official` on every sync, so a game that comes back to the
+/// folder comes back to the grid. A row that stayed keeps what the Z-Wheel wrote on it — play
+/// count, last played —, which is why the profile is edited and not copied again.
+fn keep_only_owned(
+    official: &std::path::Path,
+    profile: &std::path::Path,
+    owned: &[u32],
+) -> rusqlite::Result<()> {
+    let mut connection = rusqlite::Connection::open(profile)?;
+    connection.execute(
+        "ATTACH DATABASE ?1 AS package",
+        [official.to_string_lossy().as_ref()],
+    )?;
+    let tx = connection.transaction()?;
+    tx.execute_batch(
+        "CREATE TEMP TABLE zeebx_owned(class_id INTEGER PRIMARY KEY);
+         CREATE TEMP TABLE zeebx_known(class_id INTEGER PRIMARY KEY);
+         INSERT OR IGNORE INTO zeebx_known
+             SELECT class_id & 4294967295 FROM package.GAMEINFO;",
+    )?;
+    // **A ClassID is 32 bits, and the package writes some of them signed.** Zenonia's is
+    // `0xbf2e2021`: `-1087496159` in the package's row, `3207471137` in ours. Compared as they
+    // are stored, the two never matched, and Zenonia lost its package row — box art and all —
+    // to a bare one. Every comparison below is on the low 32 bits.
+    for class in owned {
+        tx.execute("INSERT OR IGNORE INTO zeebx_owned VALUES (?1)", [class])?;
+    }
+    tx.execute_batch(
+        // The package's rows of what is owned, back in if a previous sync took them out.
+        "INSERT OR IGNORE INTO GAMEINFO
+             SELECT * FROM package.GAMEINFO
+             WHERE class_id & 4294967295 IN (SELECT class_id FROM zeebx_owned);
+         INSERT OR IGNORE INTO TITLETEXT
+             SELECT * FROM package.TITLETEXT WHERE game_id IN
+                 (SELECT game_id FROM package.GAMEINFO
+                  WHERE class_id & 4294967295 IN (SELECT class_id FROM zeebx_owned));
+         -- The package's rows of what is not owned, out.
+         DELETE FROM TITLETEXT WHERE game_id IN
+             (SELECT game_id FROM package.GAMEINFO
+              WHERE class_id & 4294967295 NOT IN (SELECT class_id FROM zeebx_owned));
+         DELETE FROM GAMEINFO WHERE game_id IN
+             (SELECT game_id FROM package.GAMEINFO
+              WHERE class_id & 4294967295 NOT IN (SELECT class_id FROM zeebx_owned));
+         -- The bare rows of what the package describes better, or of what is not a game.
+         DELETE FROM TITLETEXT WHERE game_id IN
+             (SELECT game_id FROM ZEEBX_LIBRARY
+              WHERE class_id & 4294967295 IN (SELECT class_id FROM zeebx_known)
+                 OR class_id & 4294967295 NOT IN (SELECT class_id FROM zeebx_owned));
+         DELETE FROM GAMEINFO WHERE game_id IN
+             (SELECT game_id FROM ZEEBX_LIBRARY
+              WHERE class_id & 4294967295 IN (SELECT class_id FROM zeebx_known)
+                 OR class_id & 4294967295 NOT IN (SELECT class_id FROM zeebx_owned));
+         DELETE FROM ZEEBX_LIBRARY
+              WHERE class_id & 4294967295 IN (SELECT class_id FROM zeebx_known)
+                 OR class_id & 4294967295 NOT IN (SELECT class_id FROM zeebx_owned);
+         DROP TABLE zeebx_owned;
+         DROP TABLE zeebx_known;",
+    )?;
+    tx.commit()?;
+    connection.execute("DETACH DATABASE package", [])?;
+    Ok(())
+}
+
+/// Leaves on the Z-Wheel's stage — the 3D wheel of the main menu — one slide per game the user
+/// has.
+///
+/// The slides are the `type = 5` rows of the package's `asset_cache`, each owned by a game of the
+/// catalog (`owner` is a `game_id`). The stage shows every one of them: fifteen, the same for
+/// every user, with Crash Bandicoot and Rally Master Pro twice — the package carries two slides
+/// for each — and games that are not in the ROM folder among them.
+///
+/// `games` is the profile's `tt_game_info`, already down to the games the user has. A slide
+/// stays when its game is there and it is that game's first; a slide with no owner (the store's
+/// banner) is left alone. What leaves is parked in a table of ours, `ZEEBX_HIDDEN_ASSETS`, and
+/// comes back before every sync: the cache is edited in place, and the package's copy is not at
+/// hand to read the rows from again.
+///
+/// **If no slide would be left, all of them stay.** A stage with nothing on it was never seen,
+/// and the Z-Wheel's own slides are a better default than finding out what it does with none.
+///
+///
+/// `generic` are the slides made for the games the package has none for, as `(owner, dslid)`:
+/// see [`Machine::sync_stage`]. They go in as rows of the same shape as the package's, and are
+/// taken out and put back on every sync.
+fn keep_only_owned_slides(
+    asset_cache: &std::path::Path,
+    games: &std::path::Path,
+    generic: &[(i64, i64)],
+) -> rusqlite::Result<()> {
+    /// The slides of the stage, in the `type` column of `ASSETS`.
+    const HIDE: &str = "type = 5 AND owner <> 0 AND (
+             owner NOT IN (SELECT game_id FROM zeebx_games)
+             OR dslid NOT IN (SELECT MIN(dslid) FROM ASSETS WHERE type = 5 GROUP BY owner))";
+
+    // Read on a connection of its own, and not attached: the two databases do not use the same
+    // text encoding, and SQLite refuses to attach one to the other.
+    let owned: Vec<i64> = {
+        let library = rusqlite::Connection::open(games)?;
+        let mut query = library.prepare("SELECT game_id FROM GAMEINFO")?;
+        query.query_map([], |row| row.get(0))?.collect::<Result<_, _>>()?
+    };
+    let mut connection = rusqlite::Connection::open(asset_cache)?;
+    let tx = connection.transaction()?;
+    tx.execute_batch("CREATE TEMP TABLE zeebx_games(game_id INTEGER PRIMARY KEY)")?;
+    for game in owned {
+        tx.execute("INSERT OR IGNORE INTO zeebx_games VALUES (?1)", [game])?;
+    }
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS ZEEBX_HIDDEN_ASSETS AS SELECT * FROM ASSETS WHERE 0;
+         CREATE TABLE IF NOT EXISTS ZEEBX_SLIDES(owner INTEGER PRIMARY KEY, dslid INTEGER);
+         INSERT OR IGNORE INTO ASSETS SELECT * FROM ZEEBX_HIDDEN_ASSETS;
+         DELETE FROM ZEEBX_HIDDEN_ASSETS;
+         -- The slides we made, out and in again: the list of who needs one is redone each time.
+         DELETE FROM ASSETS WHERE dslid IN (SELECT dslid FROM ZEEBX_SLIDES);
+         DELETE FROM ZEEBX_SLIDES;",
+    )?;
+    for (owner, dslid) in generic {
+        tx.execute(
+            "INSERT OR REPLACE INTO ASSETS VALUES (?1, ?2, 5, 1, ?3, 0, '', 0, 0)",
+            rusqlite::params![owner, dslid, format!("./assets/stage_slides/{dslid}")],
+        )?;
+        tx.execute("INSERT OR REPLACE INTO ZEEBX_SLIDES VALUES (?1, ?2)", [owner, dslid])?;
+    }
+    let left: u32 = tx.query_row(
+        &format!("SELECT COUNT(*) FROM ASSETS WHERE type = 5 AND owner <> 0 AND NOT ({HIDE})"),
+        [],
+        |row| row.get(0),
+    )?;
+    if left != 0 {
+        tx.execute_batch(&format!(
+            "INSERT INTO ZEEBX_HIDDEN_ASSETS SELECT * FROM ASSETS WHERE {HIDE};
+             DELETE FROM ASSETS WHERE dslid IN (SELECT dslid FROM ZEEBX_HIDDEN_ASSETS);"
+        ))?;
+    }
+    tx.execute_batch("DROP TABLE zeebx_games")?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// The first `dslid` handed to a slide of ours. The package's go from 50005 to 50095.
+const FIRST_GENERIC_SLIDE: i64 = 60000;
+/// How many slides of ours the stage gets at most. Each one is three 131 kB pictures the Z-Wheel
+/// loads into the game's heap.
+const MAX_GENERIC_SLIDES: usize = 64;
+
+impl<C: CpuBackend> Machine<C> {
+    /// Brings the stage in line with the game grid: one slide per game the user has — the
+    /// package's where it has one, one of ours where it does not.
+    ///
+    /// `games` is the profile's `tt_game_info`, already down to the user's games. See
+    /// [`keep_only_owned_slides`] for what happens to the package's slides and
+    /// [`stage_slides`](super::stage_slides) for how ours are made.
+    fn sync_stage(
+        &mut self,
+        asset_cache: &std::path::Path,
+        games: &std::path::Path,
+    ) -> rusqlite::Result<()> {
+        /// `"pt  "`, the language the names are taken in when the game has one in it.
+        const PORTUGUESE: i64 = 0x2020_7470;
+
+        let owned: Vec<(i64, i64, String, String)> = {
+            let library = rusqlite::Connection::open(games)?;
+            let mut query = library.prepare(
+                "SELECT g.game_id, g.class_id & 4294967295, COALESCE(g.boxart_path, ''),
+                        COALESCE(
+                            (SELECT titletext FROM TITLETEXT t
+                             WHERE t.game_id = g.game_id AND t.lang_id = ?1),
+                            (SELECT titletext FROM TITLETEXT t WHERE t.game_id = g.game_id),
+                            '')
+                 FROM GAMEINFO g ORDER BY 4 COLLATE NOCASE",
+            )?;
+            query
+                .query_map([PORTUGUESE], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                })?
+                .collect::<Result<_, _>>()?
+        };
+        // Who already has a slide in the package, and the numbers our slides had last time.
+        let (with_slide, mut numbers): (HashSet<i64>, HashMap<i64, i64>) = {
+            let cache = rusqlite::Connection::open(asset_cache)?;
+            cache.execute_batch(
+                "CREATE TABLE IF NOT EXISTS ZEEBX_HIDDEN_ASSETS AS SELECT * FROM ASSETS WHERE 0;
+                 CREATE TABLE IF NOT EXISTS ZEEBX_SLIDES(owner INTEGER PRIMARY KEY, dslid INTEGER);",
+            )?;
+            let mut slides = cache.prepare(
+                "SELECT owner FROM ASSETS
+                 WHERE type = 5 AND dslid NOT IN (SELECT dslid FROM ZEEBX_SLIDES)
+                 UNION SELECT owner FROM ZEEBX_HIDDEN_ASSETS
+                 WHERE type = 5 AND dslid NOT IN (SELECT dslid FROM ZEEBX_SLIDES)",
+            )?;
+            let with_slide = slides.query_map([], |row| row.get(0))?.collect::<Result<_, _>>()?;
+            let mut ours = cache.prepare("SELECT owner, dslid FROM ZEEBX_SLIDES")?;
+            let numbers = ours
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect::<Result<_, _>>()?;
+            (with_slide, numbers)
+        };
+        let catalog = crate::library::CatalogIndex::load_from(&crate::library::catalog_path());
+        let needing: Vec<_> = owned
+            .into_iter()
+            .filter(|(game_id, ..)| !with_slide.contains(game_id))
+            .take(MAX_GENERIC_SLIDES)
+            .collect();
+        // A game keeps its number while it stays; a new one takes the first that is free.
+        numbers.retain(|owner, _| needing.iter().any(|(game_id, ..)| game_id == owner));
+        let mut generic = Vec::new();
+        for (game_id, class_id, boxart_path, title) in needing {
+            let dslid = numbers.get(&game_id).copied().unwrap_or_else(|| {
+                (FIRST_GENERIC_SLIDE..)
+                    .find(|number| !numbers.values().any(|taken| taken == number))
+                    .unwrap_or(FIRST_GENERIC_SLIDE)
+            });
+            numbers.insert(game_id, dslid);
+            let game = stage_slides::SlideGame {
+                game_id,
+                title,
+                boxart_path,
+                rom_path: catalog
+                    .titles
+                    .iter()
+                    .find(|entry| i64::from(entry.applet_class) == class_id)
+                    .map(|entry| entry.rom_path.clone()),
+            };
+            if self.write_generic_slide(dslid, &game) {
+                generic.push((game_id, dslid));
+            }
+        }
+        if self.serial.is_some() {
+            self.log_serial(format!("<stage: {} slide(s) made for games with none>", generic.len()));
+        }
+        keep_only_owned_slides(asset_cache, games, &generic)
+    }
+}
+
+#[cfg(test)]
+mod catalog_tests {
+    use super::{keep_only_owned, keep_only_owned_slides};
+
+    fn rows(path: &std::path::Path) -> Vec<(u32, u32, String)> {
+        let connection = rusqlite::Connection::open(path).unwrap();
+        let mut query = connection
+            .prepare(
+                "SELECT g.game_id, g.class_id, t.titletext FROM GAMEINFO g
+                 JOIN TITLETEXT t ON t.game_id = g.game_id ORDER BY g.game_id",
+            )
+            .unwrap();
+        query
+            .query_map([], |row| Ok((row.get(0)?, row.get::<_, i64>(1)? as u32, row.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn the_grid_follows_the_rom_folder() {
+        let dir = std::env::temp_dir().join(format!("zeebx-catalog-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (official, profile) = (dir.join("package"), dir.join("profile"));
+        {
+            let package = rusqlite::Connection::open(&official).unwrap();
+            package
+                .execute_batch(
+                    "CREATE TABLE GAMEINFO(game_id INTEGER PRIMARY KEY, class_id INTEGER,
+                         playcount INTEGER, dt_download INTEGER, dt_lastplayed INTEGER,
+                         boxart_path TEXT, flags INTEGER, size INTEGER, unique(game_id, class_id));
+                     CREATE TABLE TITLETEXT(game_id INTEGER, lang_id INTEGER, titletext TEXT,
+                         unique(game_id, lang_id));
+                     INSERT INTO GAMEINFO VALUES (100, 1, 0, 0, 0, './a/', 0, 10);
+                     INSERT INTO GAMEINFO VALUES (200, 2, 0, 0, 0, './b/', 0, 20);
+                     INSERT INTO TITLETEXT VALUES (100, 7, 'Alice');
+                     INSERT INTO TITLETEXT VALUES (200, 7, 'Baja');",
+                )
+                .unwrap();
+        }
+        // Class 1 is in the package and in the folder, class 3 only in the folder.
+        let sync = |owned: &[(u32, &str)]| {
+            crate::brew::sql::sync_z_wheel_library(&official, &profile, owned.iter().copied())
+                .unwrap();
+            let classes: Vec<u32> = owned.iter().map(|(class, _)| *class).collect();
+            keep_only_owned(&official, &profile, &classes).unwrap();
+            let mut seen = rows(&profile);
+            seen.dedup_by_key(|row| row.0);
+            seen
+        };
+        assert_eq!(
+            sync(&[(1, "Alice no Pais"), (3, "Homebrew")]),
+            [(3, 3, "Homebrew".to_string()), (100, 1, "Alice".to_string())]
+        );
+        // The play count the Z-Wheel wrote survives the next sync.
+        rusqlite::Connection::open(&profile)
+            .unwrap()
+            .execute("UPDATE GAMEINFO SET playcount = 5 WHERE game_id = 100", [])
+            .unwrap();
+        // The folder changes: Alice stays, the homebrew goes, Baja arrives.
+        assert_eq!(
+            sync(&[(1, "Alice no Pais"), (2, "Baja 1000")]),
+            [(100, 1, "Alice".to_string()), (200, 2, "Baja".to_string())]
+        );
+        let plays: u32 = rusqlite::Connection::open(&profile)
+            .unwrap()
+            .query_row("SELECT playcount FROM GAMEINFO WHERE game_id = 100", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(plays, 5);
+        // An empty folder is an empty grid.
+        assert!(sync(&[]).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_class_id_the_package_wrote_signed_is_the_same_game() {
+        let dir = std::env::temp_dir().join(format!("zeebx-catalog-sign-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (official, profile) = (dir.join("package"), dir.join("profile"));
+        rusqlite::Connection::open(&official)
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE GAMEINFO(game_id INTEGER PRIMARY KEY, class_id INTEGER,
+                     playcount INTEGER, dt_download INTEGER, dt_lastplayed INTEGER,
+                     boxart_path TEXT, flags INTEGER, size INTEGER, unique(game_id, class_id));
+                 CREATE TABLE TITLETEXT(game_id INTEGER, lang_id INTEGER, titletext TEXT,
+                     unique(game_id, lang_id));
+                 INSERT INTO GAMEINFO VALUES (19334658, -1087496159, 0, 0, 0, './z/', 0, 10);
+                 INSERT INTO TITLETEXT VALUES (19334658, 7, 'Zenonia');",
+            )
+            .unwrap();
+        let class = -1_087_496_159i32 as u32;
+        crate::brew::sql::sync_z_wheel_library(&official, &profile, [(class, "Zenonia.zip")])
+            .unwrap();
+        keep_only_owned(&official, &profile, &[class]).unwrap();
+        let mut seen = rows(&profile);
+        seen.dedup_by_key(|row| row.0);
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].2, "Zenonia");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_stage_shows_one_slide_per_game_in_the_folder() {
+        let dir = std::env::temp_dir().join(format!("zeebx-stage-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (cache, games) = (dir.join("asset_cache"), dir.join("tt_game_info"));
+        rusqlite::Connection::open(&cache)
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE ASSETS(owner INTEGER, dslid INTEGER PRIMARY KEY, type INTEGER,
+                     version INTEGER, path TEXT, language INTEGER, title TEXT,
+                     startdate INTEGER, enddate INTEGER);
+                 INSERT INTO ASSETS VALUES (100, 50081, 5, 1, './a', 0, '', 0, 0);
+                 INSERT INTO ASSETS VALUES (200, 50082, 5, 1, './b', 0, '', 0, 0);
+                 INSERT INTO ASSETS VALUES (0,   50088, 5, 1, './c', 0, '', 0, 0);
+                 INSERT INTO ASSETS VALUES (100, 50093, 5, 1, './d', 0, '', 0, 0);
+                 INSERT INTO ASSETS VALUES (100, 30001, 8, 1, './e', 0, '', 0, 0);",
+            )
+            .unwrap();
+        let owned = |ids: &[u32], generic: &[(i64, i64)]| {
+            let _ = std::fs::remove_file(&games);
+            let library = rusqlite::Connection::open(&games).unwrap();
+            library.execute_batch("CREATE TABLE GAMEINFO(game_id INTEGER PRIMARY KEY)").unwrap();
+            for id in ids {
+                library.execute("INSERT INTO GAMEINFO VALUES (?1)", [id]).unwrap();
+            }
+            drop(library);
+            keep_only_owned_slides(&cache, &games, generic).unwrap();
+            let connection = rusqlite::Connection::open(&cache).unwrap();
+            let mut query = connection
+                .prepare("SELECT dslid FROM ASSETS WHERE type = 5 ORDER BY dslid")
+                .unwrap();
+            query
+                .query_map([], |row| row.get(0))
+                .unwrap()
+                .collect::<Result<Vec<u32>, _>>()
+                .unwrap()
+        };
+        // Game 100 has two slides and keeps the first; game 200 is not in the folder.
+        assert_eq!(owned(&[100], &[]), [50081, 50088]);
+        // It comes back with the game.
+        assert_eq!(owned(&[100, 200], &[]), [50081, 50082, 50088]);
+        // No owned game has a slide: the package's stage stays whole.
+        assert_eq!(owned(&[300], &[]), [50081, 50082, 50088, 50093]);
+        // A game with no slide in the package gets the one made for it, and loses it when it
+        // leaves the folder.
+        assert_eq!(owned(&[100, 300], &[(300, 60000)]), [50081, 50088, 60000]);
+        assert_eq!(owned(&[100], &[]), [50081, 50088]);
+        // What is not a slide was never touched.
+        let other: u32 = rusqlite::Connection::open(&cache)
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM ASSETS WHERE type = 8", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(other, 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

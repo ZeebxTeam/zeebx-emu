@@ -10,6 +10,7 @@ pub mod bindings;
 pub mod gamepads;
 #[cfg(feature = "desktop")]
 pub mod padview;
+pub mod phone;
 pub mod sensors;
 pub mod touch;
 pub mod wiimote;
@@ -63,6 +64,10 @@ pub mod avk {
     pub const LEFT: u32 = 0xe033;
     pub const RIGHT: u32 = 0xe034;
     pub const SELECT: u32 = 0xe035;
+    /// The phone's two soft keys, under the screen. Devil May Cry's key table (`0xc78` in
+    /// `dmc_mas.mod`) puts them right after `SELECT`, at `AVK_0 + 21` and `+ 22`.
+    pub const SOFT1: u32 = 0xe036;
+    pub const SOFT2: u32 = 0xe037;
     /// The controller's confirm button. The Z-Wheel accepts it wherever it accepts `SELECT`; the
     /// z-pad instructions screen only advances with it.
     pub const CONFIRM: u32 = 0xe064;
@@ -84,6 +89,8 @@ pub mod avk {
             "star" => STAR,
             "pound" => POUND,
             "clr" => CLR,
+            "soft1" => SOFT1,
+            "soft2" => SOFT2,
             // A raw code, in hexadecimal, for when you are finding out which key it is:
             // `0xe063` says what `right` cannot say yet.
             other if other.starts_with("0x") => {

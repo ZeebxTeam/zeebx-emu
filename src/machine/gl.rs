@@ -103,7 +103,12 @@ impl<C: CpuBackend> Machine<C> {
         };
         let legacy = iface == Interface::GlLegacy;
         let name = full.strip_prefix("gl").unwrap_or(full);
-        if name.starts_with("Draw") || matches!(name, "Clear" | "ReadPixels") {
+        if name.starts_with("Draw")
+            || matches!(
+                name,
+                "Clear" | "ReadPixels" | "CopyTexImage2D" | "CopyTexSubImage2D"
+            )
+        {
             self.sync_egl_color_from_guest()?;
         }
         let base = usize::from(!legacy);
@@ -459,6 +464,13 @@ impl<C: CpuBackend> Machine<C> {
             }
             "TexImage2D" => self.gles_tex_image(&a)?,
             "TexSubImage2D" => self.gles_tex_sub_image(&a)?,
+            // glCopyTexImage2D(target, level, internalformat, x, y, width, height, border) and
+            // glCopyTexSubImage2D(target, level, xoffset, yoffset, x, y, width, height): the
+            // frame becomes a texture. It is how a game renders a scene small and stretches it
+            // back (OpenGL ES 1.1 has no framebuffer object): the copy was served silently, the
+            // texture kept its old content, and the stretched quad came out blank.
+            "CopyTexImage2D" => self.gles_copy_tex_image(&a),
+            "CopyTexSubImage2D" => self.gles_copy_tex_sub_image(&a),
             "CompressedTexImage2D" => self.gles_compressed_tex_image(&a)?,
 
             // --- Fixed-function lighting ------------------------------------------------
@@ -797,6 +809,51 @@ impl<C: CpuBackend> Machine<C> {
         };
         self.cpu.write_mem(dest, &bytes)?;
         Ok(())
+    }
+
+    /// `glCopyTexSubImage2D`: replaces a rectangle of the bound texture with a rectangle of the
+    /// frame.
+    pub(super) fn gles_copy_tex_sub_image(&mut self, a: &[u32; 10]) {
+        let (level, xoffset, yoffset) = (a[1], a[2], a[3]);
+        let (x, y) = (a[4] as i32, a[5] as i32);
+        let (width, height) = (a[6] as usize, a[7] as usize);
+        if level != 0 || width == 0 || height == 0 {
+            return;
+        }
+        self.gl_pixels_read = true;
+        let name = self.gl.bound_texture();
+        let result = copy_frame_to_texture(
+            &mut *self.gl,
+            name,
+            CopyDestination::Rectangle(xoffset, yoffset),
+            (x, y),
+            (width, height),
+        );
+        if let Err(Some((tw, th))) = result {
+            self.note_bad_pointer(format!(
+                "CopyTexSubImage2D of {width}x{height} at ({xoffset},{yoffset}) does not fit in a \
+                 {tw}x{th} texture"
+            ));
+        }
+    }
+
+    /// `glCopyTexImage2D`: defines a level of the bound texture from a rectangle of the frame.
+    pub(super) fn gles_copy_tex_image(&mut self, a: &[u32; 10]) {
+        let level = a[1];
+        let (x, y) = (a[3] as i32, a[4] as i32);
+        let (width, height) = (a[5] as usize, a[6] as usize);
+        if width == 0 || height == 0 {
+            return;
+        }
+        self.gl_pixels_read = true;
+        let name = self.gl.bound_texture();
+        let _ = copy_frame_to_texture(
+            &mut *self.gl,
+            name,
+            CopyDestination::Level(level),
+            (x, y),
+            (width, height),
+        );
     }
 
     /// `glTexSubImage2D`: replaces a rectangle inside a texture that already exists.
@@ -1435,5 +1492,153 @@ mod buffer_tests {
         // bounds check. `saturating_add` is what prevents that — and the case exists: a corrupted
         // array pointer arrives here as a huge offset.
         assert_eq!(buffer_slice(&[1, 2, 3], u32::MAX, 8), vec![0u8; 8]);
+    }
+}
+
+/// Where `glCopyTexImage2D` and `glCopyTexSubImage2D` differ: the first defines a whole level,
+/// the second overwrites a rectangle of a level that exists.
+pub(crate) enum CopyDestination {
+    Level(u32),
+    Rectangle(u32, u32),
+}
+
+/// What both `glCopyTex*Image2D` calls share: read a rectangle of the frame and put it in the
+/// bound texture.
+///
+/// **The frame is read in OpenGL's order, lower left first, and so is a texture.** `read_rect`
+/// already returns the rows that way, so no flip happens here: flipping twice is the mistake that
+/// makes a stretched quad come out upside down.
+///
+/// It is the read followed by an upload on purpose. Both rasterizers already have the two halves,
+/// and the copy only matters to a game that renders small and stretches back, where the frame is
+/// read once per rendered frame.
+pub(crate) fn copy_frame_to_texture(
+    gl: &mut dyn crate::video::rasterizer::Rasterizer,
+    name: u32,
+    destination: CopyDestination,
+    source: (i32, i32),
+    size: (usize, usize),
+) -> Result<(), Option<(u32, u32)>> {
+    let (width, height) = size;
+    let pixels = gl.read_rect(source.0, source.1, width, height);
+    match destination {
+        CopyDestination::Level(level) => {
+            gl.upload_level(name, level, width, height, pixels);
+            Ok(())
+        }
+        CopyDestination::Rectangle(xoffset, yoffset) => {
+            gl.sub_image(name, xoffset, yoffset, width as u32, height as u32, &pixels)
+        }
+    }
+}
+
+#[cfg(test)]
+mod copy_texture_tests {
+    use super::{copy_frame_to_texture, CopyDestination};
+    use crate::video::rasterizer::{GlState, Rasterizer};
+
+    /// A frame with a red lower half and a blue upper half, 8x8. The lower half is a quad: the
+    /// software clear fills the whole surface whatever the scissor says, so it can't paint half.
+    fn frame() -> GlState {
+        use crate::video::gles::{GL_COLOR_BUFFER_BIT, GL_NEAREST, GL_TEXTURE_2D, GL_TRIANGLES};
+        use crate::video::rasterizer::{Texture, Vertex};
+
+        let mut state = GlState::new(8, 8);
+        state.set_viewport(0, 0, 8, 8);
+        state.set_clear_color([0.0, 0.0, 1.0, 1.0]);
+        state.clear(GL_COLOR_BUFFER_BIT);
+        state.textures.insert(
+            9,
+            Texture {
+                width: 1,
+                height: 1,
+                pixels: vec![[255, 0, 0, 255]],
+                filter: GL_NEAREST,
+                min_filter: GL_NEAREST,
+                ..Texture::default()
+            },
+        );
+        state.bind_texture(9);
+        state.set_capability(GL_TEXTURE_2D, true);
+        let v = |x: f32, y: f32| Vertex {
+            position: [x, y, 0.0, 1.0],
+            uv: [0.0, 0.0, 0.0, 1.0],
+            ..Default::default()
+        };
+        state.draw(
+            GL_TRIANGLES,
+            &[v(-1.0, -1.0), v(1.0, -1.0), v(1.0, 0.0), v(-1.0, -1.0), v(1.0, 0.0), v(-1.0, 0.0)],
+        );
+        state.flush();
+        state
+    }
+
+    /// `glCopyTexSubImage2D` brings the frame in OpenGL's order: row 0 of the texture is the
+    /// bottom row of the frame, so a stretched quad shows the picture the right way up.
+    #[test]
+    fn the_copy_keeps_the_bottom_row_first() {
+        let mut state = frame();
+        state.upload_level(1, 0, 8, 8, vec![[0, 255, 0, 255]; 64]);
+        state.bind_texture(1);
+        let result = copy_frame_to_texture(
+            &mut state,
+            1,
+            CopyDestination::Rectangle(0, 0),
+            (0, 0),
+            (8, 8),
+        );
+        assert_eq!(result, Ok(()));
+        let texture = &state.textures[&1];
+        assert_eq!(texture.pixels[0], [255, 0, 0, 255], "row 0 is the bottom, red");
+        assert_eq!(texture.pixels[7 * 8], [0, 0, 255, 255], "the last row is the top, blue");
+    }
+
+    /// A rectangle copied at an offset leaves the rest of the texture as it was.
+    #[test]
+    fn the_copy_at_an_offset_leaves_the_rest_alone() {
+        let mut state = frame();
+        state.upload_level(1, 0, 16, 16, vec![[0, 255, 0, 255]; 256]);
+        state.bind_texture(1);
+        let result = copy_frame_to_texture(
+            &mut state,
+            1,
+            CopyDestination::Rectangle(8, 8),
+            (0, 0),
+            (8, 8),
+        );
+        assert_eq!(result, Ok(()));
+        let texture = &state.textures[&1];
+        assert_eq!(texture.pixels[0], [0, 255, 0, 255], "outside the copy: unchanged");
+        assert_eq!(texture.pixels[8 * 16 + 8], [255, 0, 0, 255], "inside: the frame's bottom");
+    }
+
+    /// A rectangle that does not fit writes nothing and says the size, as `glTexSubImage2D` does.
+    #[test]
+    fn a_rectangle_that_does_not_fit_is_refused() {
+        let mut state = frame();
+        state.upload_level(1, 0, 4, 4, vec![[0, 255, 0, 255]; 16]);
+        state.bind_texture(1);
+        let result = copy_frame_to_texture(
+            &mut state,
+            1,
+            CopyDestination::Rectangle(0, 0),
+            (0, 0),
+            (8, 8),
+        );
+        assert_eq!(result, Err(Some((4, 4))));
+        assert_eq!(state.textures[&1].pixels[0], [0, 255, 0, 255]);
+    }
+
+    /// `glCopyTexImage2D` defines the level from the frame, with the size of the copy.
+    #[test]
+    fn copy_tex_image_defines_the_level() {
+        let mut state = frame();
+        state.bind_texture(2);
+        let result =
+            copy_frame_to_texture(&mut state, 2, CopyDestination::Level(0), (0, 0), (4, 2));
+        assert_eq!(result, Ok(()));
+        let texture = &state.textures[&2];
+        assert_eq!((texture.width, texture.height), (4, 2));
+        assert_eq!(texture.pixels[0], [255, 0, 0, 255]);
     }
 }

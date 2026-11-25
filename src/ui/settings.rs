@@ -333,6 +333,13 @@ pub struct Settings {
     /// How the library shows the games.
     #[serde(rename = "biblioteca")]
     pub library: LibraryMode,
+    /// The list names each game after its folder or file, instead of the Z-Wheel's official name.
+    ///
+    /// It exists because the Z-Wheel's catalog has mistakes ("Prey 2 Evil" for "Prey Evil") and
+    /// leaves the collection's prefix out of the title ("Baja" for "Zeebo Extreme Baja", which
+    /// scatters those games through the list). Off, the list shows what the Z-Wheel says, which is
+    /// what it always did. See [`crate::ui::zwheel_metadata::title_of`].
+    pub game_names_from_file: bool,
     #[serde(rename = "movimento")]
     pub motion: Motion,
     /// The main window's bars that are hidden via the View menu.
@@ -585,22 +592,47 @@ pub struct AchievementsAccount {
     pub token: Option<String>,
 }
 
+/// Which builds count as a new version.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateChannel {
+    /// Only the versions that were released: a tag, with its notes.
+    #[default]
+    Stable,
+    /// Those, and the build made every day from the development branch. It is what is coming,
+    /// before anyone has checked that it works.
+    Nightly,
+}
+
+impl UpdateChannel {
+    pub const ALL: [Self; 2] = [Self::Stable, Self::Nightly];
+
+    pub fn key_id(self) -> &'static str {
+        match self {
+            Self::Stable => "settings.updates.channel.stable",
+            Self::Nightly => "settings.updates.channel.nightly",
+        }
+    }
+}
+
 /// The search for new versions. See [`crate::ui::updater`].
+///
+/// **There is no "include pre-releases" any more.** Up to 0.6.0 every release went out marked as
+/// a pre-release on GitHub, and an option, on by default, made them count. A pre-release is now
+/// simply not a version: what is not ready for everyone goes out on the nightly channel, and a
+/// `pre_lancamentos` left in an old file is read and dropped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Updates {
     /// Ask GitHub at launch.
     #[serde(rename = "ao_abrir")]
     pub on_launch: bool,
-    /// Whether a release marked as pre-release counts as a new version. **On by default**: up to
-    /// 0.4.1 every release came out that way, and with it off nobody would be told anything.
-    #[serde(rename = "pre_lancamentos")]
-    pub prereleases: bool,
+    pub channel: UpdateChannel,
 }
 
 impl Default for Updates {
     fn default() -> Self {
-        Self { on_launch: true, prereleases: true }
+        Self { on_launch: true, channel: UpdateChannel::default() }
     }
 }
 
@@ -689,7 +721,7 @@ impl OnScreenControlsMode {
     }
 }
 
-/// The controls drawn on a phone screen. Only Android draws them; the other frontends load them
+/// The controls drawn on a phone screen. Android and iOS draw them; the other frontends load them
 /// and write them back without touching. See [`crate::input::touch`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -770,6 +802,22 @@ pub enum LibraryMode {
     Grid,
     /// One game at a time, Z-Wheel style: the logo reel on top and the boxes passing by.
     Slider,
+    /// One game per row: the small box on the left, the name and the description beside it.
+    List,
+}
+
+impl LibraryMode {
+    /// The layouts in the order the settings offer them, which is also the order QML numbers them
+    /// in `Library.libraryMode`.
+    pub const ALL: [Self; 3] = [Self::Grid, Self::Slider, Self::List];
+
+    pub fn key_id(self) -> &'static str {
+        match self {
+            Self::Grid => "settings.library_view.grid",
+            Self::Slider => "settings.library_view.slider",
+            Self::List => "settings.library_view.list",
+        }
+    }
 }
 
 /// The game's pace: the frame limit and the draw skip. See [`crate::speed`].
@@ -1100,6 +1148,7 @@ mod tests {
                 undo_load: "Cmd+Z".into(),
             },
             library: LibraryMode::Slider,
+            game_names_from_file: true,
             motion: Motion {
                 calibration_notice: false,
             },
@@ -1154,7 +1203,7 @@ mod tests {
                 active: false,
                 covers_url: "https://exemplo/{chave}.png".into(),
             },
-            updates: Updates { on_launch: false, prereleases: false },
+            updates: Updates { on_launch: false, channel: UpdateChannel::Nightly },
             achievements: AchievementsAccount { username: Some("player".into()), token: Some("token".into()) },
             notice_dismissed_in_version: Some("0.1.0".into()),
         };
@@ -1162,6 +1211,23 @@ mod tests {
 
         assert_eq!(Settings::load_from(&path), settings);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A file from before the channels has `pre_lancamentos`, on by default, and no channel. It
+    /// must not land anyone on the nightly: the old option is dropped, and the channel is stable.
+    #[test]
+    fn a_file_with_the_old_prerelease_option_lands_on_the_stable_channel() {
+        let old = r#"{ "atualizacoes": { "ao_abrir": false, "pre_lancamentos": true } }"#;
+        let settings: Settings = serde_json::from_str(old).unwrap();
+        assert!(!settings.updates.on_launch);
+        assert_eq!(settings.updates.channel, UpdateChannel::Stable);
+        let saved = serde_json::to_string(&settings).unwrap();
+        assert!(!saved.contains("pre_lancamentos"));
+        assert!(saved.contains(r#""channel":"stable""#));
+        // And what the selector writes comes back.
+        let nightly = r#"{ "atualizacoes": { "channel": "nightly" } }"#;
+        let settings: Settings = serde_json::from_str(nightly).unwrap();
+        assert_eq!(settings.updates.channel, UpdateChannel::Nightly);
     }
 
     /// Whoever has a `settings.json` from before the window size gets `None` in both new fields,
@@ -1184,6 +1250,33 @@ mod tests {
         create.save_to(&path).unwrap();
         assert_eq!(Settings::load_from(&path), create);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The list is the newest library layout, and the two older ones keep the names they were
+    /// stored with: `grade` and `slider`. The new one is written in English, like the other
+    /// values added after the codebase moved.
+    #[test]
+    fn the_list_layout_is_new_and_the_old_ones_keep_their_names() {
+        let library = |text: &str| serde_json::from_str::<Settings>(text).unwrap().library;
+        assert_eq!(library(r#"{ "biblioteca": "grade" }"#), LibraryMode::Grid);
+        assert_eq!(library(r#"{ "biblioteca": "slider" }"#), LibraryMode::Slider);
+        assert_eq!(library(r#"{ "biblioteca": "list" }"#), LibraryMode::List);
+
+        let saved = Settings { library: LibraryMode::List, ..Settings::default() };
+        let value = serde_json::to_value(saved).unwrap();
+        assert_eq!(value["biblioteca"], "list");
+    }
+
+    /// The names come from the Z-Wheel unless asked otherwise, which is what every file from
+    /// before the option means; and the choice is stored in English, like the other fields added
+    /// after the codebase moved.
+    #[test]
+    fn the_names_are_the_z_wheels_unless_the_file_asks_otherwise() {
+        let loaded: Settings = serde_json::from_str(r#"{ "biblioteca": "list" }"#).unwrap();
+        assert!(!loaded.game_names_from_file);
+
+        let saved = Settings { game_names_from_file: true, ..Settings::default() };
+        assert_eq!(serde_json::to_value(saved).unwrap()["game_names_from_file"], true);
     }
 
     /// Whoever has a `settings.json` from before the screenshot gets F9 and the default folder,

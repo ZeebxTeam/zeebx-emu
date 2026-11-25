@@ -6,6 +6,42 @@ The emulation — BREW, the CPU, the rasterizer, the loader — is the `zeebx` l
 directory is the frontend: a static library in Rust and an Xcode project in Swift. The Swift side
 emulates nothing. It asks for a turn, receives a frame in BGRA and hands back the touch.
 
+## The frontend
+
+**The content is the same as desktop and Android; the form is iOS's.** The grid uses
+`library::scan`; the settings write the same `Settings`, in the same format; the labels come from
+the same `ui::i18n`; the controls drawn on screen are placed and hit-tested by the same
+`input::touch` as Android's; the save states are `ui::save_slots`, in the same layout.
+
+**Swift draws, and decides nothing.** Which options the settings have, what a finger presses,
+what a controller button is bound to, when the game is paused: all of that is on the Rust side of
+the border, and crosses it as plain data. The reason is practical before it is tidy. The Swift
+half only compiles on a Mac with Xcode; the Rust half is an ordinary crate, and `cargo test -p
+zeebx-ios` runs on any host. What can be wrong in a way worth catching is kept where a test
+reaches it.
+
+| File | What it is |
+|---|---|
+| `src/lib.rs` | the border: the app state and every `zeebx_ios_*` function |
+| `src/game.rs` | one turn of the loop — shortcuts, rewind, controller, turbo, step — and the pause menu |
+| `src/overlay.rs` | the fingers on the on-screen controls, and what they press |
+| `src/editor.rs` | the screen that moves and resizes those controls |
+| `src/controller.rs` | the physical controller: the factory map and what the player rebound |
+| `src/settings_page.rs` | the settings screen, described as rows for Swift to draw |
+| `include/zeebx_ios.h` | the contract. A test checks its numbers against the Rust side |
+| `app/Zeebx/Bridge.swift` | the shared state, the texts, the controller reading |
+| `app/Zeebx/LibraryView.swift` | the game grid, with covers and search |
+| `app/Zeebx/GameView.swift` | the frame on screen and the display link that asks for turns |
+| `app/Zeebx/TouchOverlayView.swift` | the drawing of the on-screen controls |
+| `app/Zeebx/SettingsView.swift` | one view per **kind** of row; it knows no option by name |
+| `app/Zeebx/TouchEditorView.swift` | the layout editor's canvas and its size bar |
+| `app/Zeebx/PauseMenuView.swift` | back, pause, restart, stop and the save state slots |
+
+The settings screen is the clearest case of the split. `settings_page.rs` answers with a list —
+a switch, a choice, a slider, a row that does something — and `SettingsView.swift` paints each
+kind the way iOS paints settings. A new option is one more row in Rust, with a test, and not a
+line of Swift.
+
 ## Why it isn't Dynarmic
 
 On desktop the core recompiles the ARM blocks to machine code. On iOS that doesn't fit. The
@@ -23,6 +59,7 @@ slowly here; what doesn't change is the conversation with BREW.
 | Stays | Doesn't go into this frontend |
 |---|---|
 | `audio` (`cpal`, which on iOS is Core Audio) | `desktop`: eframe, glutin, gilrs, rfd |
+| `soundfont` (`rustysynth`, pure Rust) | |
 | software rasterizer | rasterizer on the graphics card — the core's offscreen context needs EGL, and there is none here |
 
 The frame the session publishes is already the device's, in RGB565. The library converts it to
@@ -36,7 +73,13 @@ in the Files app and, with the device connected to Finder, in Zeebx's tab. A loo
 desktop.
 
 Cache, saves and the virtual device live in `Library/Application Support`, in the
-`StoragePaths` layout — the bundle is not where the game writes.
+`StoragePaths` layout — the bundle is not where the game writes. The settings are `zeebx.json` in
+that same folder, and the save states are under `states/`.
+
+A `.sf2` bank for MIDI music goes in the app's folder too — at its root, or in `soundfonts` — and
+shows up in the audio settings. **The app's folder moves**: iOS gives the container a new path
+when the app is updated, and the bank's path is saved whole. A bank that is no longer where it
+was is looked for again by its file name.
 
 ## Building
 
@@ -73,18 +116,42 @@ simulator (`x86_64-apple-ios`) was left out: current Xcode no longer offers it a
 
 ## What the screen does
 
-The list is what the scan found. Opening a game hands the controller to the first port — the same
-`DEFAULT_PORTS` as desktop — and turns on sound. The speed limit stays on: this frontend doesn't
-have the settings screen yet, and a phone that runs ahead only burns battery.
+**The library** is a grid of covers with a search field. With a controller connected the grid
+has a cursor: the D-pad or the stick moves it and A opens the game.
 
-Touch covers the D-pad, the four face buttons and the L and R triggers. A real controller comes in
-through `GCController`, with the same map as Android: south on `b1`, east on `b2`, west on `b3`,
-north on `b4`. In the simulator, the keyboard is the desktop window's: arrows, Z/X/C/V, Q/W, and
+**The game** fills the screen at the scaling chosen in the settings — whole pixels, fit or fill —
+and "whole pixels" counts the device's pixels, not its points. A small button at the top, beside
+ZL, opens the menu; so does Esc on a keyboard, and so does the app leaving the screen. The menu
+has back, pause, restart, stop and the ten save state slots, with their thumbnails.
+
+**The controls drawn on screen** are Android's: the D-pad, the two sticks, the four buttons, ZL,
+ZR and HOME, plus a piece each for turbo, fast-forward and rewind while those are in use. They
+are laid out inside the safe area, so no piece ends up under the notch. Automatic mode hides them
+at the first press of a physical controller and brings them back at the first touch. The editor
+moves each piece and resizes it, and the settings have the overall size and the opacity.
+
+**A real controller** comes in through `GCController`. Out of the box it is the map this frontend
+always had, and the same as Android's: south on `b1`, east on `b2`, west on `b3`, north on `b4`,
+the upper triggers on `zl`/`zr`, Menu on HOME. In the settings each Zeebo button can be given to
+another controller button, and fast-forward, rewind and the turbo key each take one. The bindings
+are stored under the names desktop uses (`South`, `LeftTrigger`), in the same `settings.json`.
+
+**The settings** are the same sections as desktop: general, graphics, speed, audio, controls,
+debug and about. Graphics has only what the software rasterizer does — the internal resolution,
+the antialiasing and the wide aspect ratio are empty functions without the graphics card.
+
+In the simulator, the keyboard is the desktop window's: arrows, Z/X/C/V, Q/W, and
 H/Backspace/Enter for HOME.
 
 ## What isn't here yet
 
-- **The settings screen.** Resolution, speed and the button map are the defaults.
 - **3D on the graphics card.** There is no GL context of ours. The game draws in the software
   rasterizer.
 - **JIT.** It depends on a permission Apple doesn't give third-party apps.
+- **Choosing the ROM folder.** It is `Documents/roms`. Another folder would be a security-scoped
+  bookmark from the system's picker, and the core's loader opens a file path.
+- **A controller in the settings and in the pause menu.** The grid and the game obey it; those
+  two screens are touched.
+- **The debug panel's graph.** The three lines of numbers are there; the graph of the last
+  minute is not drawn.
+- **A second player.** One controller, on port one.

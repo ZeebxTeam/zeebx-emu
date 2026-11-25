@@ -17,8 +17,9 @@
 //! "Memory is insufficient. Please delete some files." screen — their generic failure message when
 //! the font's `CreateInstance` comes back null.
 //!
-//! The order of the six methods and the metrics table come from the reference code that already
-//! implements this interface (`zeebo-emulator/research/sources/zeemu/brew/BrewFont.cpp`), and the
+//! The metrics table comes from the reference code that already implements this interface
+//! (`zeebo-emulator/research/sources/zeemu/brew/BrewFont.cpp`). The order of the six methods does
+//! not: it is `INHERIT_IFont` in `inc/AEEIFont.h`, see [`crate::brew::aee_slots::FONT`]. The
 //! method signatures come from the SDK's own examples:
 //!
 //! ```c

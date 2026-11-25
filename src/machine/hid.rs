@@ -409,6 +409,14 @@ impl<C: CpuBackend> Machine<C> {
         if !changes.is_empty() {
             self.raise_input_signal("RegisterForButtonEvent", port);
         }
+        // A phone has one keypad: the first controller is it. See [`input::phone::button_key`].
+        if port == 0 {
+            for &(index, down) in &changes {
+                if let Some(key) = input::phone::button_key(self.applet_class, index) {
+                    self.key_events.push_back((key, down));
+                }
+            }
+        }
         // **Returning to center is also a change of position.** Releasing the stick has to wake
         // the callback just like pushing it: whoever reads the axis only from inside the
         // callback — and that is how an event-driven menu is written — keeps the last direction
@@ -589,6 +597,11 @@ impl<C: CpuBackend> Machine<C> {
     }
 
     pub fn set_key(&mut self, avk: u32, down: bool) {
+        // In a phone game the controller's own keys come from the phone mapping, in
+        // [`Machine::set_port_pad`] — see [`input::phone::replaces_console_key`].
+        if input::phone::replaces_console_key(self.applet_class, avk) {
+            return;
+        }
         self.key_events.push_back((avk, down));
     }
 
@@ -613,6 +626,16 @@ impl<C: CpuBackend> Machine<C> {
             self.widgets_dumped = true;
             self.dump_widgets();
         }
+        // **And again whenever the screen changes**: the question "who does this go to?" is
+        // asked on every screen, and the first one's tree says nothing about the keyboard's.
+        if !self.key_events.is_empty() && self.serial.is_some() {
+            let form = self.current_form();
+            if form != self.widgets_dumped_form {
+                self.widgets_dumped_form = form;
+                self.log_serial(format!("<tree for form {:#x}>", form.unwrap_or(0)));
+                self.dump_widgets();
+            }
+        }
         while let Some((avk, down)) = self.key_events.pop_front() {
             // **The exit from the queue, before any shortcut.** The delivery line, further down,
             // only shows up for keys that reach the handlers: an arrow consumed by HTML scrolling
@@ -634,10 +657,11 @@ impl<C: CpuBackend> Machine<C> {
             };
             let mut handled = false;
             // With the HTML panel in focus, the vertical arrows belong to it while there is text
-            // left to scroll. See [`Machine::scroll_focused_html`].
+            // left to scroll. See [`Machine::scroll_focused_html`]. The same goes for a message
+            // box whose text is in a viewport: see [`Machine::scroll_viewport`].
             if matches!(avk, input::avk::UP | input::avk::DOWN) {
                 let downward = avk == input::avk::DOWN;
-                if down && self.scroll_focused_html(downward) {
+                if down && (self.scroll_focused_html(downward) || self.scroll_viewport(downward)) {
                     self.scroll_keys.insert(avk);
                     continue;
                 }
@@ -673,9 +697,29 @@ impl<C: CpuBackend> Machine<C> {
             // count only when nobody inside answered, which is what keeps the opening form from
             // answering on top of the menu.
             let inside = self.form_tree();
+            // **The release belongs to whoever got the press.** A press can build a new screen —
+            // confirming "Comprar" with no network builds the "Não foi possível conectar à rede"
+            // box during the press —, and that box's OK button (`0x515ec`) fires on
+            // `EVT_KEY_RELEASE` without checking it saw the press. Delivered to the whole current
+            // screen, the release of the key that opened the box closed it 240 ms later, and the
+            // Shop, Buy and Check balance looked like they hung.
+            //
+            // **And only if it is still on screen.** A press can also tear its screen down:
+            // "Sim" on the language box restarts the applet in place and frees the box, whose
+            // handler (`0x51a6c`) stays in our table — old trees are never destroyed here. The
+            // release delivered to it ran on freed memory and jumped to `0xa7a7a700`, the fill of
+            // the game's `memcheck.c`.
+            let receivers = match down {
+                true => None,
+                false => self.press_receivers.remove(&avk),
+            };
             let (on_screen, outside): (Vec<_>, Vec<_>) = self
                 .handlers_in_order(&inside)
                 .into_iter()
+                .filter(|(is_inside, handler)| match &receivers {
+                    None => true,
+                    Some(got) => *is_inside && got.contains(handler),
+                })
                 .partition(|(is_inside, _)| *is_inside);
             // The counts and the addresses are taken before the loops: after them the lists have
             // been consumed. **The addresses are what answers "did the key reach the list's
@@ -687,14 +731,38 @@ impl<C: CpuBackend> Machine<C> {
                 .take(4)
                 .map(|(_, (callback, _))| format!("{callback:#x}"))
                 .collect();
+            let mut answers = Vec::new();
+            let mut reached = std::collections::HashSet::new();
+            // **A handler that switches the screen ends the delivery.** The list was taken before
+            // the loop; "Sim" on the language box (`0x515ec`) restarts the applet inside its call
+            // and frees the box, and the next one in the list — the box's own `0x51a6c` — ran on
+            // the freed context. Whoever switched the screen consumed the event.
+            //
+            // Only on the release: on the press, the rest of the list still matters — `AVK_CLR` on
+            // the registration keyboard switches the screen in `0x461b8`, and `0x49b38`, next in
+            // line, is what tears the setup screen down with its status bar timer. Cut there, the
+            // timer kept firing on a freed widget.
+            let form_before = self.current_form();
             for (_, (callback, context)) in on_screen {
+                reached.insert((callback, context));
                 let output = self.call_guest(callback, [context, event, avk, 0], QSORT_BUDGET)?;
                 if matches!(output, Outcome::Returned { code } if code != 0) {
                     handled = true;
                 }
+                if let Outcome::Returned { code } = output {
+                    answers.push(format!("{callback:#x}={code:#x}"));
+                }
+                if self.current_form() != form_before {
+                    handled = true;
+                    break;
+                }
+            }
+            if self.serial.is_some() && !answers.is_empty() {
+                self.log_serial(format!("<key {avk:#x} answers {}>", answers.join(" ")));
             }
             if !handled {
                 for (_, (callback, context)) in outside {
+                    reached.insert((callback, context));
                     let output =
                         self.call_guest(callback, [context, event, avk, 0], QSORT_BUDGET)?;
                     if matches!(output, Outcome::Returned { code } if code != 0) {
@@ -725,8 +793,14 @@ impl<C: CpuBackend> Machine<C> {
                     }
                 ));
             }
+            if down {
+                self.press_receivers.insert(avk, reached);
+            }
             if !handled {
-                let _ = self.send_applet_event(self.applet_class, event, avk as u16, 0)?;
+                // A phone game also gets `EVT_KEY_PRESS` — see [`input::phone::key_events`].
+                for &applet_event in input::phone::key_events(self.applet_class, down) {
+                    let _ = self.send_applet_event(self.applet_class, applet_event, avk as u16, 0)?;
+                }
             }
         }
         Ok(())
