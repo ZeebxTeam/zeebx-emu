@@ -632,7 +632,7 @@ What is still missing on this screen:
   Configurar (Setup, `0x13a2`) without it. The cfg read at `0x7fe80` confirms it: `EOL` sets
   `0x2000`, `zeebomenu_hide` sets `0x4000`. The "End-of-life Z-Wheel" option (General tab) hands the
   Z-Wheel a copy of `tectoy.cfg` in the device profile with both at zero.
-- **`SourceFromFile` reread the file by name.** The cfg is read line by line through an `ISource`
+- **`SourceFromAStream` reread the file by name.** The cfg is read line by line through an `ISource`
   made from the `IFile`, and the `ISource` was created by resolving the guest name again — which
   pointed to the package's cfg, not to the opened copy. `OpenFile` now keeps the real path.
 - **Translucent selection frame.** The selection image (`214×47`) has a blue middle with alpha 51.
