@@ -66,7 +66,7 @@ impl<C: CpuBackend> Machine<C> {
                         self.gl.set_stretched_surface(width as usize, height as usize);
                     }
                 }
-                self.write_egl_true(4)?
+                self.write_egl_true(5)?
             }
             // int GetSurfaceScale(pMe, dpy, surf, EGLBoolean *enabled, *src, *dst, *ret)
             "GetSurfaceScale" => {
