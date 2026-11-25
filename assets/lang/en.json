@@ -336,6 +336,8 @@
   "settings.discord.exported": "{count} images written to {path}.",
   "settings.discord.on": "Show what I'm playing on Discord (Rich Presence)",
   "settings.discord.waiting": "Waiting for Discord to open…",
+  "settings.game_names_from_file": "Game names from the ROM files",
+  "settings.game_names_from_file.hint": "The list uses each game's folder or file name instead of the Z-Wheel's official name. Useful when that name is wrong or drops the collection's prefix: with it, \"Zeebo Extreme Baja\" stays with the other Zeebo Extreme games, instead of \"Baja\" at the top of the list.",
   "settings.language": "Interface language",
   "settings.language.hint": "Extra languages can be added as JSON files in the lang folder, without rebuilding.",
   "settings.theme": "Theme",

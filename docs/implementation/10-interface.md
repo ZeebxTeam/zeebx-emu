@@ -58,6 +58,13 @@ ClassID in folders with "wheel" or "tectoy" in the name), leaves the list and op
 **▶ Z-Wheel** button on the top bar; a game opened from the library that exits on its own closes
 its window.
 
+**The names can come from the files instead.** `game_names_from_file`, also in the General tab,
+makes `ui::zwheel_metadata::title_of` ignore `TITLETEXT` and name every game after its folder or
+file. It exists because the package's catalog has mistakes ("Prey 2 Evil" for "Prey Evil") and
+drops the collection's prefix: "Zeebo Extreme Baja" shows as "Baja" and moves to the top of the
+list. A game the Z-Wheel does not know shows its own name either way, so the option only changes
+the games it covers. Off by default, which is what the console showed.
+
 ### Grid, slider and list
 
 `LibraryGrid.qml`, `LibrarySlider.qml` and `LibraryList.qml`. In the grid, upright cards in the

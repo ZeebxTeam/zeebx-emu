@@ -336,6 +336,8 @@
   "settings.discord.exported": "{count} imágenes escritas en {path}.",
   "settings.discord.on": "Mostrar lo que estoy jugando en Discord (Rich Presence)",
   "settings.discord.waiting": "Esperando a que Discord se abra…",
+  "settings.game_names_from_file": "Nombres de los juegos según el archivo",
+  "settings.game_names_from_file.hint": "La lista usa el nombre de la carpeta o del archivo de cada juego en vez del nombre oficial de la Z-Wheel. Útil cuando ese nombre está mal o deja fuera el prefijo de la colección: así, \"Zeebo Extreme Baja\" queda junto a los demás Zeebo Extreme, en vez de \"Baja\" al principio de la lista.",
   "settings.language": "Idioma de la interfaz",
   "settings.language.hint": "Se pueden agregar otros idiomas como archivos JSON en la carpeta lang, sin recompilar.",
   "settings.theme": "Tema",

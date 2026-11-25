@@ -695,6 +695,7 @@ fn boolean<'a>(settings: &'a mut Settings, key_id: &str) -> Option<&'a mut bool>
     Some(match key_id {
         "z_wheel.fim_de_vida" => &mut settings.z_wheel.end_of_life,
         "z_wheel.transicoes_sempre" => &mut settings.z_wheel.always_transitions,
+        "game_names_from_file" => &mut settings.game_names_from_file,
         "discord.ativo" => &mut settings.discord.active,
         "atualizacoes.ao_abrir" => &mut settings.updates.on_launch,
         "graphics.smooth" => &mut settings.graphics.smooth,
@@ -845,6 +846,9 @@ impl qobject::SettingsModel {
                 "biblioteca" => {
                     emu_core.settings.library = choice(&LibraryMode::ALL, number).unwrap_or_default();
                 }
+                // The names no longer come from the Z-Wheel, or come back to it: the list is
+                // rebuilt, and the folder is not scanned again.
+                "game_names_from_file" => effect.library = Some(false),
                 "tema" => {
                     emu_core.settings.theme = usize::try_from(number - 1)
                         .ok()

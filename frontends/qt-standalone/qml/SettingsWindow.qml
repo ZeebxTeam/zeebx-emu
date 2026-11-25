@@ -466,6 +466,11 @@ ApplicationWindow {
                         currentIndex: window.v("biblioteca")
                         onActivated: (index) => window.define("biblioteca", index)
                     }
+                    Option {
+                        keyId: "game_names_from_file"
+                        label: "settings.game_names_from_file"
+                        hint: "settings.game_names_from_file.hint"
+                    }
 
                     SectionTitle {
                         text: window.tr("settings.z_wheel")
