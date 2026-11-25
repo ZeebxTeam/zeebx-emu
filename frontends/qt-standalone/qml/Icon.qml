@@ -24,7 +24,7 @@ Text {
         source: "qrc:/zeebx/lucide.ttf"
     }
 
-    // --- a tabela de nomes, escrita por tools/icons.py ---
+    // --- the name table, written by tools/icons.py ---
     readonly property var codes: ({
         "bug": 0xe20c,
         "calendar-clock": 0xe304,
@@ -42,6 +42,7 @@ Text {
         "info": 0xe0f9,
         "keyboard": 0xe284,
         "layout-grid": 0xe0ff,
+        "list": 0xe106,
         "log-out": 0xe10e,
         "maximize": 0xe112,
         "message-circle": 0xe116,
@@ -60,5 +61,5 @@ Text {
         "volume-2": 0xe1ab,
         "x": 0xe1b2,
     })
-    // --- fim da tabela ---
+    // --- end of the table ---
 }

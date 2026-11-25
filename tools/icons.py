@@ -47,6 +47,7 @@ ICONS = [
     "info",  # about
     "keyboard",  # shortcuts
     "layout-grid",  # the library as a grid
+    "list",  # the library as a list
     "log-out",  # quit
     "maximize",  # full screen
     "message-circle",  # Discord

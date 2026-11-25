@@ -782,6 +782,22 @@ pub enum LibraryMode {
     Grid,
     /// One game at a time, Z-Wheel style: the logo reel on top and the boxes passing by.
     Slider,
+    /// One game per row: the small box on the left, the name and the description beside it.
+    List,
+}
+
+impl LibraryMode {
+    /// The layouts in the order the settings offer them, which is also the order QML numbers them
+    /// in `Library.libraryMode`.
+    pub const ALL: [Self; 3] = [Self::Grid, Self::Slider, Self::List];
+
+    pub fn key_id(self) -> &'static str {
+        match self {
+            Self::Grid => "settings.library_view.grid",
+            Self::Slider => "settings.library_view.slider",
+            Self::List => "settings.library_view.list",
+        }
+    }
 }
 
 /// The game's pace: the frame limit and the draw skip. See [`crate::speed`].
@@ -1212,6 +1228,21 @@ mod tests {
         create.save_to(&path).unwrap();
         assert_eq!(Settings::load_from(&path), create);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The list is the newest library layout, and the two older ones keep the names they were
+    /// stored with: `grade` and `slider`. The new one is written in English, like the other
+    /// values added after the codebase moved.
+    #[test]
+    fn the_list_layout_is_new_and_the_old_ones_keep_their_names() {
+        let library = |text: &str| serde_json::from_str::<Settings>(text).unwrap().library;
+        assert_eq!(library(r#"{ "biblioteca": "grade" }"#), LibraryMode::Grid);
+        assert_eq!(library(r#"{ "biblioteca": "slider" }"#), LibraryMode::Slider);
+        assert_eq!(library(r#"{ "biblioteca": "list" }"#), LibraryMode::List);
+
+        let saved = Settings { library: LibraryMode::List, ..Settings::default() };
+        let value = serde_json::to_value(saved).unwrap();
+        assert_eq!(value["biblioteca"], "list");
     }
 
     /// Whoever has a `settings.json` from before the screenshot gets F9 and the default folder,

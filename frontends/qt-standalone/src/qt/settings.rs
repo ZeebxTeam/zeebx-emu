@@ -759,10 +759,7 @@ impl qobject::SettingsModel {
                         .position(|language| language.code == current)
                         .unwrap_or(0) as i32
                 }
-                "biblioteca" => index(
-                    &[LibraryMode::Grid, LibraryMode::Slider],
-                    &emu_core.settings.library,
-                ),
+                "biblioteca" => index(&LibraryMode::ALL, &emu_core.settings.library),
                 // Zero is the system palette; the themes come after, in the selector's order.
                 "tema" => emu_core
                     .theme()
@@ -846,8 +843,7 @@ impl qobject::SettingsModel {
                     }
                 }
                 "biblioteca" => {
-                    let modes = [LibraryMode::Grid, LibraryMode::Slider];
-                    emu_core.settings.library = choice(&modes, number).unwrap_or_default();
+                    emu_core.settings.library = choice(&LibraryMode::ALL, number).unwrap_or_default();
                 }
                 "tema" => {
                     emu_core.settings.theme = usize::try_from(number - 1)
@@ -959,13 +955,13 @@ impl qobject::SettingsModel {
         let key_id = String::from(key_id);
         let labels: Vec<String> = self.with(|emu_core| {
             let catalog = &emu_core.catalog;
-            let translate = |key_ids: &[&str]| key_ids.iter().map(|c| catalog.get(c).to_string()).collect();
             let off = catalog.get("common.off");
             match key_id.as_str() {
                 "language" => catalog.languages().iter().map(|l| l.name.clone()).collect(),
-                "biblioteca" => {
-                    translate(&["settings.library_view.grid", "settings.library_view.slider"])
-                }
+                "biblioteca" => LibraryMode::ALL
+                    .iter()
+                    .map(|mode| catalog.get(mode.key_id()).to_string())
+                    .collect(),
                 "tema" => {
                     let language = catalog.current();
                     std::iter::once(catalog.get("settings.theme.system").to_string())

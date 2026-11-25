@@ -58,17 +58,20 @@ ClassID in folders with "wheel" or "tectoy" in the name), leaves the list and op
 **▶ Z-Wheel** button on the top bar; a game opened from the library that exits on its own closes
 its window.
 
-### Grid and slider
+### Grid, slider and list
 
-`LibraryGrid.qml` and `LibrarySlider.qml`. In the grid, upright cards in the proportions of the
-boxes; in the slider, one game at a time in the Z-Wheel style: the logo reel spinning like a
-cylinder, the name, the boxes sliding (the position chases the selection with a damped spring,
-and the list wraps around) and the rating with the description below.
+`LibraryGrid.qml`, `LibrarySlider.qml` and `LibraryList.qml`. In the grid, upright cards in the
+proportions of the boxes; in the slider, one game at a time in the Z-Wheel style: the logo reel
+spinning like a cylinder, the name, the boxes sliding (the position chases the selection with a
+damped spring, and the list wraps around) and the rating with the description below; in the list,
+one game per row, the small box on the left and the name, the ClassID and the description beside
+it. The three are chosen in the settings or in the toolbar, and the choice is saved as
+`biblioteca` in `settings.json` (`grade`, `slider` or `list`).
 
-Both modes are driven by the controller: D-pad, stick and arrow keys select, repeating when held;
-button 1, Start, Enter or space open; HOME opens the Z-Wheel. Keyboard, D-pad and stick become a
-single state before the press is detected, so an arrow also mapped on the controller does not
-move twice. The library does not listen while any window is on top of it — the game, the
+The three views are driven by the controller: D-pad, stick and arrow keys select, repeating when
+held; button 1, Start, Enter or space open; HOME opens the Z-Wheel. Keyboard, D-pad and stick
+become a single state before the press is detected, so an arrow also mapped on the controller does
+not move twice. The library does not listen while any window is on top of it — the game, the
 settings, the saves, a dialog —, and since the controller generates no Qt event, a 33 ms timer
 reads it (`ui::navigation`).
 

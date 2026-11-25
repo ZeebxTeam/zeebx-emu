@@ -13,7 +13,7 @@ particular) and marked here as done.
 | 1 — decouple | done: the painter's `Viewport`, key translation, `ui::running_game::RunningGame` and `ui::host_input::DesktopInput` |
 | 2 — structure | done: Qt interface core, `Library` as a model, main window and game window |
 | 3 — game window | done: GPU texture without a copy, framing, stop and debug bars, calibration notice, title and window mode |
-| 4 — library | done: grid and slider, Z-Wheel metadata covers and names, search, controller navigation |
+| 4 — library | done: grid, slider and list, Z-Wheel metadata covers and names, search, controller navigation |
 | 5 — settings | done: the six tabs, the controller drawing with clicks by silhouette, capture, axes, Boomerang, Discord and updates |
 | 6 — auxiliary windows | done: saves, run log, startup notice and new-version notice |
 | 7 — review | done: the text keys of the two interfaces compared, a test that every key used exists, and what was missing in Qt (icon, `app_id`, minimum sizes, fullscreen in the library) |
@@ -344,10 +344,13 @@ them without changing behavior.
   and no game open — as in egui, where the controller generates no event. Passing the keyboard
   through Rust too would make an arrow mapped on the controller move two steps, which egui avoids by
   merging the two first.
-- **The grid** (`LibraryGrid.qml`) and **the slider** (`LibrarySlider.qml`) follow egui's
-  measurements and curves: the 136 card with the 112×145 frame, the cylinder roll with the panels at
-  0.42 radians, the boxes shrinking with distance, the `1 − e^(−12·dt)` spring. The names are not
-  `Grid`/`Slider` because `Slider` is already a Qt Quick Controls type.
+- **The grid** (`LibraryGrid.qml`), **the slider** (`LibrarySlider.qml`) and **the list**
+  (`LibraryList.qml`) follow egui's measurements and curves: the 136 card with the 112×145 frame,
+  the cylinder roll with the panels at 0.42 radians, the boxes shrinking with distance, the
+  `1 − e^(−12·dt)` spring. The list keeps the frame's proportion in a 46×60 box and gives the row
+  to the name, the ClassID and the description: it is the view for whoever recognizes a game by
+  its details. The names are not `Grid`/`Slider` because `Slider` is already a Qt Quick Controls
+  type.
 - **The style is Fusion.** Basic, the Qt Quick Controls default, paints the fields and the text with
   its own palette, and the window's background followed the system's: in a dark theme, dark text
   on a dark background. Fusion follows the system palette in everything.
@@ -361,8 +364,9 @@ them without changing behavior.
   Zeeboids' "unlock sync". The settings and saves come in with their windows.
 
 Checked on screen, through `grabToImage` on a copy of the configuration: the grid and the slider,
-with the Z-Wheel covers and logos, the official names and the rating. **Not checked:** navigation
-with a real controller.
+with the Z-Wheel covers and logos, the official names and the rating. The list was checked on
+screen at 1920×1080, with the 60 games of the ROM folder and their Z-Wheel art. **Not checked:**
+navigation with a real controller.
 
 **The arrows, found after the phases.** Two defects left the arrows without moving the list, and
 simulated keyboard input on a virtual screen measured both, through the grid's `currentIndex` and
