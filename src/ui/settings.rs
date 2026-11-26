@@ -357,6 +357,8 @@ pub struct Settings {
     pub discord: Discord,
     #[serde(rename = "atualizacoes")]
     pub updates: Updates,
+    /// The RetroAchievements account.
+    pub achievements: AchievementsAccount,
     /// The version in which the startup notice was dismissed for good. Another version shows it again.
     #[serde(rename = "aviso_dispensado_na_versao")]
     pub notice_dismissed_in_version: Option<String>,
@@ -577,6 +579,17 @@ impl KeyCombo {
         label.push_str(key);
         label
     }
+}
+
+/// The RetroAchievements account.
+///
+/// **The password doesn't live here.** The login returns a token, and that is what stays, as in
+/// RetroArch: the password goes to the server once and is forgotten.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AchievementsAccount {
+    pub username: Option<String>,
+    pub token: Option<String>,
 }
 
 /// Which builds count as a new version.
@@ -1191,6 +1204,7 @@ mod tests {
                 covers_url: "https://exemplo/{chave}.png".into(),
             },
             updates: Updates { on_launch: false, channel: UpdateChannel::Nightly },
+            achievements: AchievementsAccount { username: Some("player".into()), token: Some("token".into()) },
             notice_dismissed_in_version: Some("0.1.0".into()),
         };
         settings.save_to(&path).unwrap();

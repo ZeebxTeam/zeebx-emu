@@ -91,6 +91,17 @@ impl<C: CpuBackend> Machine<C> {
         self.now_ms()
     }
 
+    /// The same clock in microseconds. The achievements count 60 Hz frames by it.
+    pub fn clock_us(&self) -> u64 {
+        self.now_us()
+    }
+
+    /// Advances the clock without executing anything, to test whoever counts time.
+    #[cfg(all(test, feature = "achievements"))]
+    pub(crate) fn advance_clock_us(&mut self, us: u64) {
+        self.clock_us += us;
+    }
+
     /// The clock the guest sees: the time advanced by the frame loop plus the time the guest
     /// itself spent executing instructions.
     ///

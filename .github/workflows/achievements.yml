@@ -1,0 +1,71 @@
+# Builds the core with the `achievements` feature (RetroAchievements, through the
+# `rcheevos-sys/rcheevos` submodule) and runs its tests on the three desktop systems.
+#
+# No other workflow builds the feature: it is off in releases until RA accepts the console, and
+# every other workflow passes `-p` without it, so none of them fetches the submodule either. What
+# this job answers is "do `rcheevos-sys` and its layout check compile with MSVC and Apple clang,
+# not only with the GCC of a Linux desktop?" — the C file in `rcheevos-sys/src/layout_check.c`
+# refuses to compile when a copied struct offset disagrees with the headers, and each compiler
+# lays out structs by its own ABI.
+#
+# The core only, without Qt: the Qt half of the feature is Rust and QML that the C compiler never
+# sees, and installing Qt would triple the cost of the run.
+
+name: achievements
+
+# **Only by hand**, like the other workflows: the tag in `release.yml` is the only automatic trigger.
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: achievements-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            runner: ubuntu-24.04
+          - name: windows-x86_64
+            runner: windows-latest
+          - name: macos-arm64
+            runner: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: achievements-${{ matrix.name }}
+
+      # The same lists as `ci.yml`: the core builds `dynarmic` and `unicorn` whatever the feature.
+      - name: Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build pkg-config python3 libclang-dev \
+            libglib2.0-dev libasound2-dev libudev-dev libxkbcommon-dev libwayland-dev \
+            libgl1-mesa-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev
+
+      - name: macOS dependencies
+        if: runner.os == 'macOS'
+        run: brew install cmake ninja pkg-config || true
+
+      # Building the test binary compiles the whole library with the feature, `rcheevos-sys` and
+      # its layout check included. Only the `achievements::` tests run: the rest of the core's
+      # suite has a known failure of its own (the overlay save test), and `ci.yml` is where it is
+      # answered for.
+      - name: Tests
+        shell: bash
+        env:
+          CARGO_PROFILE_TEST_DEBUG: "0"
+        run: cargo test --release --locked -p zeebx --features achievements --lib 'achievements::'
