@@ -2194,7 +2194,12 @@ impl GlState {
             self.dirty = true;
         }
         if mask & gles::GL_DEPTH_BUFFER_BIT != 0 {
-            self.depth.fill(self.clear_depth);
+            let clear = if gles::console_gl() {
+                gles::depth16(self.clear_depth)
+            } else {
+                self.clear_depth
+            };
+            self.depth.fill(clear);
         }
         if mask & gles::GL_STENCIL_BUFFER_BIT != 0 {
             self.stencil.fill(self.clear_stencil);
@@ -3525,6 +3530,8 @@ fn fill_affine<const SMOOTH: bool>(
 ) {
     #[cfg(test)]
     AFFINE_PATH.with(|c| c.set(c.get() + 1));
+    // ZEEBX_CONSOLE_GL: depth in 16 bits, like the console's buffer. See `gles::console_gl`.
+    let depth16 = gles::console_gl();
     let persp = 1.0 / w;
     let derivative = |channel: usize| {
         (tri.step[0] * tri.over_w[0][channel]
@@ -3580,6 +3587,7 @@ fn fill_affine<const SMOOTH: bool>(
                 v = (weight[0] * ov[0] + weight[1] * ov[1] + weight[2] * ov[2]) * persp;
             }
             let z = z0 + weight[1] * dz1 + weight[2] * dz2;
+            let z = if depth16 { gles::depth16(z) } else { z };
             let index = row + x as usize;
             let z_passes = !depth_test
                 || match depth_func {
@@ -3705,6 +3713,7 @@ fn opaque_fits(uniforms: &Uniforms) -> bool {
 
 #[cfg(target_os = "vita")]
 fn fill_opaque(tri: &Prepared, uniforms: &Uniforms, band: &mut Band) {
+    let depth16 = gles::console_gl();
     let Some(texture) = uniforms.texture else {
         return;
     };
@@ -3743,6 +3752,7 @@ fn fill_opaque(tri: &Prepared, uniforms: &Uniforms, band: &mut Band) {
             let z = tri.screen[0][2]
                 + bary[1] * (tri.screen[1][2] - tri.screen[0][2])
                 + bary[2] * (tri.screen[2][2] - tri.screen[0][2]);
+            let z = if depth16 { gles::depth16(z) } else { z };
             let index = row + x as usize;
             if depth_test {
                 let passes = match depth_func {
@@ -3788,6 +3798,7 @@ fn fill_opaque(tri: &Prepared, uniforms: &Uniforms, band: &mut Band) {
 
 /// Fills the part of a triangle that falls inside the band.
 fn fill_band(tri: &Prepared, uniforms: &Uniforms, band: &mut Band) {
+    let depth16 = gles::console_gl();
     // The affine shortcut samples in integers and advances `u`/`v` by addition. In the test the
     // worst channel ended up two levels from bilinear. That changes pixels, so it stays on the
     // Vita, where filling is the game's path. Elsewhere the general loop remains.
@@ -3842,6 +3853,7 @@ fn fill_band(tri: &Prepared, uniforms: &Uniforms, band: &mut Band) {
             let z = tri.screen[0][2]
                 + bary[1] * (tri.screen[1][2] - tri.screen[0][2])
                 + bary[2] * (tri.screen[2][2] - tri.screen[0][2]);
+            let z = if depth16 { gles::depth16(z) } else { z };
             let index = row + x as usize;
 
             let inv_w = bary[0] * tri.screen[0][3]

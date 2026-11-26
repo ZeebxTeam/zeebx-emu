@@ -455,3 +455,87 @@ pub const GL_ARRAY_BUFFER: u32 = 0x8892;
 pub const GL_ELEMENT_ARRAY_BUFFER: u32 = 0x8893;
 pub const GL_BUFFER_SIZE: u32 = 0x8764;
 pub const GL_BUFFER_USAGE: u32 = 0x8765;
+
+// --- "Console" mode ----------------------------------------------------------------------
+//
+// `ZEEBX_CONSOLE_GL=1` makes the emulator behave like a real Zeebo where the games can tell
+// the difference, to catch before the device the bugs the permissive emulator hides. It is
+// **off by default** and changes nothing unless set. What it does (measured on a console by
+// Pedro/Hardwarelandia on 25/11/2026, `GL_VERSION` = `OpenGL ES 1.0-CM`):
+//
+// - `QueryInterface(AEEIID_GLES11)` fails (`ECLASSNOTSUPPORT`) while `AEEIID_GLES10` answers, so
+//   the SDK wrapper (`GLES_1x.c`) leaves `GPIGLES11` NULL and its `GL11_FUNC_*` calls
+//   (`glTexParameteri`, `glTexEnvi`...) do nothing, as on the console.
+// - `glGetString` answers with the console's strings and `GL_EXTENSIONS` list.
+// - The software rasterizer stores and compares depth in **16 bits** (`GL_DEPTH_BITS` 16 in the
+//   EGL config the games ask for) instead of `f32`. Rounded to nearest: the hardware may
+//   truncate, so this reproduces the precision, not the exact bits. The GPU path (`gpu.rs`)
+//   uses the host's depth buffer and is **not** quantized.
+
+/// Whether `ZEEBX_CONSOLE_GL` asked for the console mode. Read once.
+pub fn console_gl() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| console_gl_from(std::env::var("ZEEBX_CONSOLE_GL").ok().as_deref()))
+}
+
+/// The parsing of [`console_gl`], apart so it can be tested without touching the environment.
+pub fn console_gl_from(value: Option<&str>) -> bool {
+    matches!(value, Some("1") | Some("true") | Some("on"))
+}
+
+/// A depth in `[0, 1]` as a 16-bit buffer holds it.
+#[inline]
+pub fn depth16(z: f32) -> f32 {
+    (z.clamp(0.0, 1.0) * 65535.0).round() / 65535.0
+}
+
+/// `GL_VENDOR`, `GL_RENDERER`, `GL_VERSION` and `GL_EXTENSIONS` of the real console (dump of
+/// 25/11/2026). The trailing space of the list is the console's own.
+pub const CONSOLE_VENDOR: &str = "QUALCOMM, Inc.";
+pub const CONSOLE_RENDERER: &str = "Q3Dimension MSM7500 01.02.37 0 4.0.0";
+pub const CONSOLE_VERSION: &str = "OpenGL ES 1.0-CM";
+pub const CONSOLE_EXTENSIONS: &str = "GL_ARB_texture_env_combine GL_ARB_texture_env_crossbar \
+GL_ARB_texture_env_dot3 GL_ARB_texture_mirrored_repeat GL_ARB_vertex_buffer_object \
+GL_ATI_extended_texture_coordinate_data_formats GL_ATI_imageon_misc \
+GL_ATI_texture_compression_atitc GL_EXT_blend_equation_separate GL_EXT_blend_func_separate \
+GL_EXT_blend_minmax GL_EXT_blend_subtract GL_EXT_stencil_wrap GL_OES_byte_coordinates \
+GL_OES_compressed_paletted_texture GL_OES_draw_texture GL_OES_fixed_point GL_OES_matrix_palette \
+GL_OES_point_size_array GL_OES_point_sprite GL_OES_read_format GL_OES_single_precision \
+GL_OES_vertex_buffer_object GL_QUALCOMM_vertex_buffer_object ";
+
+#[cfg(test)]
+mod console_gl_tests {
+    use super::*;
+
+    #[test]
+    fn the_console_mode_is_off_unless_asked() {
+        assert!(!console_gl_from(None));
+        assert!(!console_gl_from(Some("0")));
+        assert!(!console_gl_from(Some("")));
+        assert!(console_gl_from(Some("1")));
+        assert!(console_gl_from(Some("on")));
+    }
+
+    #[test]
+    fn depth16_has_65536_levels_and_keeps_the_ends() {
+        assert_eq!(depth16(0.0), 0.0);
+        assert_eq!(depth16(1.0), 1.0);
+        assert_eq!(depth16(-0.5), 0.0);
+        assert_eq!(depth16(1.5), 1.0);
+        // two depths closer than half a step land in the same level
+        let a = 0.25_f32;
+        assert_eq!(depth16(a), depth16(a + 0.2 / 65535.0));
+        // and a whole step apart they do not
+        assert_ne!(depth16(a), depth16(a + 1.5 / 65535.0));
+    }
+
+    #[test]
+    fn the_console_extension_list_is_the_dump() {
+        let names: Vec<&str> = CONSOLE_EXTENSIONS.split_whitespace().collect();
+        assert_eq!(names.len(), 24);
+        assert!(names.contains(&"GL_ARB_texture_mirrored_repeat"));
+        assert!(!names.contains(&"GL_OES_query_matrix"));
+        assert!(!names.contains(&"GL_OES_framebuffer_object"));
+        assert!(CONSOLE_EXTENSIONS.ends_with(' '));
+    }
+}
