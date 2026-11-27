@@ -54,6 +54,12 @@ In the three on the last row the library stores each button in a bit (`0x200` fo
 `0x100` for `Back`), and I found no read of the `Start` bit in any of them. No game in the survey
 gives the two different actions. Only in that direction: a hand-mapped `start` stays just `Start`.
 
+The host's Start button is that mapping. BennuGD's `bgdi` exposes the two UIDs as different joy
+buttons, and KOF's character select treats HOME as cancel: with both down it leaves for the
+title. In BennuGD itself Start is only Start, and the screen stays. Select, H and Backspace
+remain HOME, and HOME still asserts Start, so a game that only reads one of them still sees
+the press.
+
 ### Axes
 
 `X`, `Y`, `Z` and `RZ`, in words 1, 2, 3 and 6 of `AEEHIDPositionInfo`. The range is **an unsigned
@@ -265,7 +271,8 @@ images). The mapping to the RetroPad preserves the **position of the hand**, not
 | Button 2 | left | `Y` |
 | Button 3 | top | `X` |
 | Button 4 | right | `A` |
-| HOME | in the middle | `Select`; in the standalone, the host's `Start` also lands on it |
+| HOME | in the middle | `Select` |
+| Start | the Start button | `Start` |
 | ZL / ZR | shoulders | `L` / `R` |
 | D-pad | cross | `D-Pad` |
 | two sticks | — | left and right analogs |
