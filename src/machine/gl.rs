@@ -137,7 +137,12 @@ impl<C: CpuBackend> Machine<C> {
             }
             "GetError" => answer = Some((0, gles::GL_NO_ERROR)),
             "GetString" => {
+                let console = gles::console_gl();
                 let text = match a[0] {
+                    gles::GL_VENDOR if console => gles::CONSOLE_VENDOR,
+                    gles::GL_RENDERER if console => gles::CONSOLE_RENDERER,
+                    gles::GL_VERSION if console => gles::CONSOLE_VERSION,
+                    gles::GL_EXTENSIONS if console => gles::CONSOLE_EXTENSIONS,
                     gles::GL_VENDOR => "Zeebx",
                     gles::GL_RENDERER => "Zeebx Software Rasterizer",
                     gles::GL_VERSION => "OpenGL ES-CM 1.1",

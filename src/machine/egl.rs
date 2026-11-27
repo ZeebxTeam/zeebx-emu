@@ -473,6 +473,16 @@ impl<C: CpuBackend> Machine<C> {
     /// to whoever asked for the GL one — and the first call landed in a slot that does not exist.
     pub(super) fn egl_query_interface(&mut self, iface: Interface) -> Result<u32, CpuError> {
         let (iid, out) = (self.arg(1), self.arg(2));
+        // `ZEEBX_CONSOLE_GL`: the real console answers `AEEIID_GLES10` and not `AEEIID_GLES11`
+        // (dump of 25/11/2026), which leaves the SDK wrapper's `GPIGLES11` NULL. `IGLES11`
+        // extends `IGLES10` with the same vtable prefix, so the same object keeps serving the
+        // 1.0 calls.
+        if iid == AEEIID_GLES11 && crate::video::gles::console_gl() {
+            if out != 0 {
+                self.cpu.write_u32(out, 0)?;
+            }
+            return Ok(ECLASSNOTSUPPORT);
+        }
         // A `QueryInterface` in the old form returns the old form of OpenGL: the two
         // conventions do not mix within the same object.
         let gl = match iface {
