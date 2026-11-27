@@ -1,0 +1,27 @@
+[package]
+name = "zeebx-qt-core"
+version = "0.7.0"
+edition = "2024"
+license = "GPL-2.0-or-later"
+description = "Shared Qt Quick bridge and OpenGL glue for Zeebx Qt frontends"
+authors = ["ZeebxTeam"]
+repository = "https://github.com/ZeebxTeam/zeebx-emu"
+publish = false
+links = "zeebx-qt-core"
+
+[lib]
+name = "zeebx_qt_core"
+path = "src/lib.rs"
+
+[dependencies]
+# The core with the `desktop` and `atualizador` features: audio, input, game session and updater.
+zeebx = { path = "../..", features = ["atualizador"] }
+cxx = "1"
+cxx-qt = "0.10"
+cxx-qt-lib = { version = "0.10", features = ["qt_gui", "qt_qml"] }
+glow = "0.16"
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "async-std"] }
+
+[build-dependencies]
+cxx-qt-build = "0.10"
+qt-build-utils = "0.10"

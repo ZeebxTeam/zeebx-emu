@@ -2,7 +2,9 @@
 members = [
     ".",
     "frontends/cli",
+    "frontends/qt-core",
     "frontends/qt-standalone",
+    "frontends/htpc",
     "frontends/libretro",
     "frontends/android",
     "frontends/headless",

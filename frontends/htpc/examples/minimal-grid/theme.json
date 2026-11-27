@@ -1,0 +1,35 @@
+{
+  "format": 1,
+  "name": {
+    "en": "Minimal Grid (Example)",
+    "pt-BR": "Grade Minimalista (Exemplo)",
+    "es": "Cuadrícula Minimalista (Ejemplo)",
+    "es-MX": "Cuadrícula Minimalista (Ejemplo)"
+  },
+  "description": {
+    "en": "A clean 4-column TV grid example showing how to build a community HTPC theme for Zeebx.",
+    "pt-BR": "Exemplo limpo de grade de 4 colunas para TV mostrando como criar um tema HTPC da comunidade para o Zeebx."
+  },
+  "author": "ZeebxTeam",
+  "version": "1.0.0",
+  "entry": "Main.qml",
+  "default_palette": "midnight_teal",
+  "palettes": {
+    "midnight_teal": {
+      "name": {
+        "en": "Midnight Teal",
+        "pt-BR": "Azul Petróleo Noturno",
+        "es": "Verde Azulado Nocturno",
+        "es-MX": "Verde Azulado Nocturno"
+      },
+      "dark": true,
+      "background": "#0b1116",
+      "background_alt": "#131e28",
+      "surface": "#182633",
+      "border": "#365066",
+      "text": "#ebf4fa",
+      "muted": "#8da4b8",
+      "accent": "#14b8a6"
+    }
+  }
+}

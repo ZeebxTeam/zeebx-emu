@@ -1,0 +1,83 @@
+[package]
+name = "zeebx-htpc"
+version = "0.7.0"
+edition = "2024"
+license = "GPL-2.0-or-later"
+description = "Zeebx HTPC — 10-foot gamepad-driven frontend for living room TVs and Steam Big Picture"
+authors = ["ZeebxTeam"]
+repository = "https://github.com/ZeebxTeam/zeebx-emu"
+publish = false
+
+[[bin]]
+name = "zeebx-htpc"
+path = "src/main.rs"
+
+[dependencies]
+zeebx-qt-core = { path = "../qt-core" }
+zeebx = { path = "../..", features = ["atualizador"] }
+cxx = "1"
+cxx-qt = "0.10"
+cxx-qt-lib = { version = "0.10", features = ["qt_gui", "qt_qml"] }
+
+[package.metadata.packager]
+product-name = "Zeebx HTPC"
+identifier = "io.github.zeebxteam.zeebx.htpc"
+publisher = "ZeebxTeam"
+homepage = "https://github.com/ZeebxTeam/zeebx-emu"
+category = "Game"
+description = "Zeebx HTPC — 10-foot gamepad-driven Zeebo emulator"
+out-dir = "../../target/pacotes"
+before-packaging-command = "cargo build --release --locked -p zeebx-htpc"
+icons = ["../../assets/icons/zeebx-512.png", "../../assets/icons/zeebx.ico", "../../assets/icons/zeebx.icns"]
+resources = [
+    { src = "../../target/qt-implantado", target = "." },
+    { src = "../../LICENSE", target = "licenses/LICENSE" },
+    { src = "../../LICENSE-GPL3", target = "licenses/LICENSE-GPL3" },
+    { src = "../../THIRD-PARTY-NOTICES.txt", target = "licenses/THIRD-PARTY-NOTICES.txt" },
+]
+
+[[package.metadata.packager.binaries]]
+path = "zeebx-htpc"
+main = true
+
+[package.metadata.packager.deb]
+depends = [
+    "libasound2t64 | libasound2",
+    "libudev1",
+    "libgl1",
+    "libxkbcommon0",
+    "libatomic1",
+    "libx11-6",
+    "libqt6core6t64",
+    "libqt6gui6t64 | libqt6gui6",
+    "libqt6network6t64 | libqt6network6",
+    "libqt6opengl6t64 | libqt6opengl6",
+    "libqt6qml6",
+    "libqt6qmlmodels6",
+    "libqt6quick6",
+    "qt6-qpa-plugins",
+    "qt6-wayland",
+    "qml6-module-qtquick",
+    "qml6-module-qtquick-controls",
+    "qml6-module-qtquick-layouts",
+    "qml6-module-qtquick-shapes",
+    "qml6-module-qtquick-templates",
+    "qml6-module-qtquick-window",
+    "qml6-module-qtqml-workerscript",
+]
+section = "games"
+
+[package.metadata.packager.appimage]
+linuxdeploy-plugins = { qt = "https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage" }
+
+[package.metadata.packager.nsis]
+installer-icon = "../../assets/icons/zeebx.ico"
+installer-mode = "currentUser"
+languages = ["PortugueseBR", "English", "Spanish"]
+
+[package.metadata.packager.macos]
+minimum-system-version = "11.0"
+
+[build-dependencies]
+winresource = "0.1"
+cxx-qt-build = "0.10"

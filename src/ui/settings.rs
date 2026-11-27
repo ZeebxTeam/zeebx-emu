@@ -360,6 +360,105 @@ pub struct Settings {
     /// The version in which the startup notice was dismissed for good. Another version shows it again.
     #[serde(rename = "aviso_dispensado_na_versao")]
     pub notice_dismissed_in_version: Option<String>,
+    /// Preferences for the dedicated HTPC / 10-foot interface (`zeebx-htpc`).
+    ///
+    /// Stored in the same `settings.json` so both `zeebx-qt` and `zeebx-htpc` share the library,
+    /// emulation, audio, input and save settings while keeping TV-only choices separate from the
+    /// desktop window geometry.
+    pub htpc: HtpcSettings,
+}
+
+/// Preferences specific to the HTPC frontend (`zeebx-htpc`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HtpcSettings {
+    /// Active HTPC theme key (`"zwheel-hd"` by default, or the folder name of an external theme in
+    /// `htpc-themes/`).
+    pub theme: String,
+    /// Per-theme color overrides, keyed by HTPC theme id.
+    ///
+    /// Keeps each HTPC theme's palette and optional accent color independent so switching between
+    /// community themes preserves the user's color choice for each one.
+    pub theme_colors: std::collections::BTreeMap<String, HtpcThemeColors>,
+    /// Controller button prompt style shown in the footer and dialogs.
+    pub prompts: PromptStyle,
+    /// Gamepad shortcut that toggles the in-game Quick Menu without colliding with the Zeebo's
+    /// `HOME` button.
+    pub quick_menu: QuickMenuCombo,
+    /// Safe-area margin for TVs with overscan, as a percentage of the screen (0..=8).
+    pub overscan_percent: u8,
+    /// Play subtle navigation feedback sounds in the HTPC interface.
+    pub ui_sounds: bool,
+}
+
+impl Default for HtpcSettings {
+    fn default() -> Self {
+        Self {
+            theme: "zwheel-hd".to_string(),
+            theme_colors: std::collections::BTreeMap::new(),
+            prompts: PromptStyle::Xbox,
+            quick_menu: QuickMenuCombo::L3R3,
+            overscan_percent: 0,
+            ui_sounds: true,
+        }
+    }
+}
+
+/// Color configuration stored per HTPC theme.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HtpcThemeColors {
+    /// Palette key: `None` uses the theme's default palette, `"global"` follows `Settings::theme`,
+    /// or any key from the HTPC theme's own `palettes` or `temas/*.json`.
+    pub palette: Option<String>,
+    /// Optional `#rrggbb` accent override for focus rings, highlights and primary buttons.
+    pub accent: Option<String>,
+}
+
+/// Button prompt icons/labels shown across the HTPC interface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptStyle {
+    #[default]
+    Xbox,
+    PlayStation,
+    Nintendo,
+    ZPad,
+}
+
+impl PromptStyle {
+    pub const ALL: [Self; 4] = [Self::Xbox, Self::PlayStation, Self::Nintendo, Self::ZPad];
+
+    pub fn key_id(self) -> &'static str {
+        match self {
+            Self::Xbox => "htpc.prompts.xbox",
+            Self::PlayStation => "htpc.prompts.playstation",
+            Self::Nintendo => "htpc.prompts.nintendo",
+            Self::ZPad => "htpc.prompts.zpad",
+        }
+    }
+}
+
+/// Controller combination that opens the in-game Quick Menu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QuickMenuCombo {
+    #[default]
+    L3R3,
+    StartSelect,
+    Guide,
+}
+
+impl QuickMenuCombo {
+    pub const ALL: [Self; 3] = [Self::L3R3, Self::StartSelect, Self::Guide];
+
+    pub fn key_id(self) -> &'static str {
+        match self {
+            Self::L3R3 => "htpc.quick_combo.l3_r3",
+            Self::StartSelect => "htpc.quick_combo.start_select",
+            Self::Guide => "htpc.quick_combo.guide",
+        }
+    }
 }
 
 /// The game window's keys that can be changed, by the mapping's key name (`F9`).
@@ -1192,6 +1291,21 @@ mod tests {
             },
             updates: Updates { on_launch: false, channel: UpdateChannel::Nightly },
             notice_dismissed_in_version: Some("0.1.0".into()),
+            htpc: HtpcSettings {
+                theme: "zwheel-hd".into(),
+                theme_colors: [(
+                    "zwheel-hd".to_string(),
+                    HtpcThemeColors {
+                        palette: Some("azul".into()),
+                        accent: Some("#e8531e".into()),
+                    },
+                )]
+                .into(),
+                prompts: PromptStyle::PlayStation,
+                quick_menu: QuickMenuCombo::StartSelect,
+                overscan_percent: 2,
+                ui_sounds: false,
+            },
         };
         settings.save_to(&path).unwrap();
 

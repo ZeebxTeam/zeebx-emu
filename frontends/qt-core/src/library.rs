@@ -242,13 +242,15 @@ fn image(address: &str) -> QImage {
     emu_core::with(|emu_core| {
         // The controller art is made on the spot, in the requested color; the rest is already in
         // memory.
-        let tinted;
-        let image = match address.starts_with("controle/") {
-            true => {
-                tinted = emu_core.controller_image(address);
-                tinted.as_ref()
-            }
-            false => emu_core.image(address),
+        let owned;
+        let image = if address.starts_with("controle/") {
+            owned = emu_core.controller_image(address);
+            owned.as_ref()
+        } else if address.starts_with("slot/") {
+            owned = emu_core.slot_image(address);
+            owned.as_ref()
+        } else {
+            emu_core.image(address)
         };
         let Some(image) = image else {
             return QImage::default();

@@ -109,7 +109,9 @@ fn code_keys(dir: &Path, extension: &str) -> Vec<(String, String)> {
 fn every_key_the_ui_uses_exists_in_the_catalog() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut key_ids = qml_keys(&root.join("frontends/qt-standalone/qml"));
+    key_ids.extend(code_keys(&root.join("frontends/qt-core/src"), "rs"));
     key_ids.extend(code_keys(&root.join("frontends/qt-standalone/src"), "rs"));
+    key_ids.extend(code_keys(&root.join("frontends/htpc/src"), "rs"));
     key_ids.extend(code_keys(&root.join("src/ui"), "rs"));
     key_ids.extend(code_keys(&root.join("frontends/android/src"), "rs"));
     let ios = code_keys(&root.join("frontends/ios/src"), "rs");

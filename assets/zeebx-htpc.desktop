@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Zeebx HTPC
+GenericName=Zeebo Emulator (HTPC / TV)
+GenericName[pt_BR]=Emulador de Zeebo (HTPC / TV)
+Comment=10-foot gamepad-driven Zeebo emulator for TVs and Steam Big Picture
+Comment[pt_BR]=Emulador de Zeebo para TVs e Steam Big Picture controlado por gamepad
+Exec=zeebx-htpc
+Icon=zeebx
+Terminal=false
+Categories=Game;Emulator;
+# Matches `APP_ID` in `frontends/htpc/src/main.rs` so Wayland ties the window to this entry.
+StartupWMClass=zeebx-htpc

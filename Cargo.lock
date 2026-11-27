@@ -5643,6 +5643,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "zeebx-htpc"
+version = "0.7.0"
+dependencies = [
+ "cxx",
+ "cxx-qt",
+ "cxx-qt-build",
+ "cxx-qt-lib",
+ "winresource",
+ "zeebx",
+ "zeebx-qt-core",
+]
+
+[[package]]
 name = "zeebx-ios"
 version = "0.7.0"
 dependencies = [
@@ -5660,7 +5673,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "zeebx-standalone-qt"
+name = "zeebx-qt-core"
 version = "0.7.0"
 dependencies = [
  "cxx",
@@ -5670,8 +5683,17 @@ dependencies = [
  "glow",
  "qt-build-utils",
  "rfd",
+ "zeebx",
+]
+
+[[package]]
+name = "zeebx-standalone-qt"
+version = "0.7.0"
+dependencies = [
+ "cxx-qt-build",
  "winresource",
  "zeebx",
+ "zeebx-qt-core",
 ]
 
 [[package]]

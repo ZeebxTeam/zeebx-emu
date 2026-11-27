@@ -45,6 +45,8 @@ pub mod screenshot;
 pub mod settings;
 // No gate: a theme is a JSON of colors, and applying them is up to each frontend's window.
 pub mod themes;
+// No gate: HTPC QML theme discovery and per-theme color resolution are pure Rust.
+pub mod htpc_themes;
 
 #[cfg(feature = "desktop")]
 pub mod updater;

@@ -40,6 +40,24 @@ pub struct Thumbnail {
     pub rgb565: Vec<u8>,
 }
 
+impl Thumbnail {
+    /// Expands the stored little-endian RGB565 pixels to tightly packed RGBA8888.
+    pub fn to_rgba(&self) -> Vec<u8> {
+        let mut rgba = Vec::with_capacity(self.width * self.height * 4);
+        for pixel in self.rgb565.chunks_exact(2) {
+            let v = u16::from_le_bytes([pixel[0], pixel[1]]);
+            let r = ((v >> 11) & 0x1f) as u8;
+            let g = ((v >> 5) & 0x3f) as u8;
+            let b = (v & 0x1f) as u8;
+            rgba.push((r << 3) | (r >> 2));
+            rgba.push((g << 2) | (g >> 4));
+            rgba.push((b << 3) | (b >> 2));
+            rgba.push(255);
+        }
+        rgba
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Slot {
     pub bytes: u64,

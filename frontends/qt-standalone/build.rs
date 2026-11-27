@@ -14,45 +14,33 @@ fn main() {
             println!("cargo:warning=no icon in the .exe: {error}");
         }
     }
-    qt_ui();
+    qt_desktop_qml();
     println!("cargo:rerun-if-changed=../../assets/icons/zeebx.ico");
     println!("cargo:rerun-if-changed=build.rs");
 }
 
-/// The bridge to Qt: the `QObject`s written in Rust, the C++ glue and the QML module. See
-/// `docs/implementation/21-qt-migration.md`.
-fn qt_ui() {
+/// Compiles the desktop QML views into the `zeebx.desktop` QML module. The Rust `QObject`s and
+/// OpenGL/frame glue live in `zeebx-qt-core` (`import zeebx`).
+fn qt_desktop_qml() {
     use cxx_qt_build::{CxxQtBuilder, QmlModule};
 
     CxxQtBuilder::new_qml_module(
-        QmlModule::new("zeebx")
-            .qml_files(["qml/Main.qml", "qml/Game.qml", "qml/LibraryGrid.qml", "qml/LibrarySlider.qml", "qml/LibraryList.qml", "qml/SettingsWindow.qml", "qml/SavesWindow.qml", "qml/LogWindow.qml", "qml/Icon.qml", "qml/GameStage.qml"])
+        QmlModule::new("zeebx.desktop")
+            .qml_files([
+                "qml/Main.qml",
+                "qml/Game.qml",
+                "qml/LibraryGrid.qml",
+                "qml/LibrarySlider.qml",
+                "qml/LibraryList.qml",
+                "qml/SettingsWindow.qml",
+                "qml/SavesWindow.qml",
+                "qml/LogWindow.qml",
+                "qml/Icon.qml",
+                "qml/GameStage.qml",
+            ])
             .depend("QtQuick"),
     )
-    .files(["src/qt/bridge.rs", "src/qt/library.rs", "src/qt/settings.rs", "src/qt/dialogs.rs", "src/qt/theme.rs"])
-    .include_dir("src/qt/cpp")
-    .cpp_files([
-        "src/qt/cpp/gl_qt.cpp",
-        // The header goes in for moc: `FrameItem` has `Q_OBJECT`.
-        "src/qt/cpp/frame.h",
-        "src/qt/cpp/frame.cpp",
-        "src/qt/cpp/images.cpp",
-        "src/qt/cpp/palette.cpp",
-    ])
-    // The calibration notice image, the icon logo and the UI icon font, under `qrc:/zeebx/`.
-    // `assets/` belongs to the project, not to this package.
-    .qrc_resources(cxx_qt_build::QResources::new().resource(
-        cxx_qt_build::QResource::new()
-            .prefix("/zeebx")
-            .file(qt_build_utils::QResourceFile::new("../../assets/boomerang.png").alias("boomerang.png"))
-            .file(qt_build_utils::QResourceFile::new("../../assets/zeebx.png").alias("zeebx.png"))
-            .file(qt_build_utils::QResourceFile::new("../../assets/icons/lucide.ttf").alias("lucide.ttf")),
-    ))
     .qt_module("Quick")
-    // Qt Qml requires Network on macOS.
     .qt_module("Network")
     .build();
-    println!("cargo:rerun-if-changed=src/qt/cpp/gl_qt.h");
-    println!("cargo:rerun-if-changed=src/qt/cpp/images.h");
-    println!("cargo:rerun-if-changed=src/qt/cpp/palette.h");
 }

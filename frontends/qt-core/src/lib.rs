@@ -1,19 +1,32 @@
-//! The Qt Quick interface. See `docs/implementation/21-qt-migration.md`.
+//! Shared Qt Quick bridge for Zeebx desktop (`zeebx-qt`) and HTPC (`zeebx-htpc`).
+//!
+//! Exposes the `zeebx` QML module (`GameScreen`, `Library`, `Language`, `SettingsModel`,
+//! `Saves`, `Notices`, `Theme`), the shared OpenGL context glue, the `image://zeebx/…` provider
+//! and [`launch`] to bootstrap any Qt Quick frontend cleanly with the right destruction order.
 
-mod dialogs;
-mod library;
-mod settings;
-mod emu_core;
-mod bridge;
-mod theme;
+pub mod bridge;
+pub mod dialogs;
+pub mod emu_core;
+pub mod library;
+pub mod settings;
+pub mod theme;
 
 use std::process::ExitCode;
 
 use cxx_qt::casting::Upcast;
-
 use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QString, QUrl, QVariant};
 
-pub fn launch(game: Option<&str>) -> ExitCode {
+/// Launches a Qt Quick frontend using the shared `zeebx` QML module and OpenGL context.
+///
+/// `app_id` sets the Wayland desktop file name; `qml_url` is the root `qrc:/...` QML file;
+/// `game` is an optional ROM path passed on the command line; `apply_palette` applies the desktop
+/// Fusion `QPalette` after loading the QML engine.
+pub fn launch(
+    app_id: &str,
+    qml_url: &str,
+    game: Option<&str>,
+    apply_palette: bool,
+) -> ExitCode {
     // Before the `QGuiApplication`: after it, the graphics API and the format are already chosen.
     bridge::qobject::prepare_gl();
     let mut owned_app = QGuiApplication::new();
@@ -23,23 +36,24 @@ pub fn launch(game: Option<&str>) -> ExitCode {
         return ExitCode::FAILURE;
     };
     // Before the first window. On Wayland there is no icon in pixels: the compositor matches this
-    // name with the installed `zeebx.desktop` and takes the icon from there, like egui's `app_id`.
+    // name with the installed `.desktop` and takes the icon from there, like egui's `app_id`.
     app.as_mut().set_application_name(&QString::from("Zeebx"));
-    QGuiApplication::set_desktop_file_name(&QString::from(crate::APP_ID));
+    QGuiApplication::set_desktop_file_name(&QString::from(app_id));
     bridge::qobject::apply_icon();
     let mut properties = cxx_qt_lib::QMap::<cxx_qt_lib::QMapPair_QString_QVariant>::default();
     let game = QString::from(game.unwrap_or_default());
     properties.insert(QString::from("initialGame"), QVariant::from(&game));
     engine.as_mut().set_initial_properties(&properties);
-    // The library's covers, logos and ratings: `image://zeebx/…`.
+    // The library's covers, logos, ratings and save-state thumbnails: `image://zeebx/…`.
     library::register_images(engine.as_mut().upcast_pin());
-    engine.load(&QUrl::from("qrc:/qt/qml/zeebx/qml/Main.qml"));
-    // **The theme after `load`, and before the first window appears.** Applied earlier, only the
-    // loose items (the grid cards) followed it: the windows and the Fusion controls are born with
-    // the style's palette, taken from the system, and only switch to the program's when it changes
-    // with them already created. Measured on Qt 6.4 and 6.12. Here the windows exist and have not
-    // been shown yet.
-    theme::apply();
+    engine.load(&QUrl::from(qml_url));
+    if apply_palette {
+        // **The theme after `load`, and before the first window appears.** Applied earlier, only
+        // the loose items (the grid cards) followed it: the windows and the Fusion controls are
+        // born with the style's palette, taken from the system, and only switch to the program's
+        // when it changes with them already created. Measured on Qt 6.4 and 6.12.
+        theme::apply();
+    }
     let output = app.exec();
     // **The order is the fix.** First the engine; then the game, released with the GL context
     // still alive, because its textures live there; then the context; and only then the

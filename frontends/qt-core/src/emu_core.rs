@@ -42,7 +42,7 @@ use zeebx::video::display::Framebuffer;
 use super::bridge::qobject as gl;
 
 /// The image for games that have none: the emulator's logo, as in egui.
-const FALLBACK_IMAGE: &[u8] = include_bytes!("../../../../assets/zeebx.png");
+const FALLBACK_IMAGE: &[u8] = include_bytes!("../../../assets/zeebx.png");
 
 thread_local! {
     static CORE: RefCell<Option<Core>> = const { RefCell::new(None) };
@@ -611,6 +611,92 @@ impl Core {
             "rating" => self.zwheel_metadata.as_ref()?.info(key_id as u32)?.rating.as_ref(),
             _ => None,
         }
+    }
+
+    /// The thumbnail of save-state slot `slot/<serial>/<slot_index>` for the currently open game,
+    /// decoded from RGB565 into RGBA8888 for QML's `image://zeebx/…` provider.
+    pub fn slot_image(&self, address: &str) -> Option<Image> {
+        let mut parts = address.split('/');
+        let ("slot", _serial, slot_str) = (parts.next()?, parts.next()?, parts.next()?) else {
+            return None;
+        };
+        let slot: usize = slot_str.parse().ok()?;
+        let id = self.running_game.as_ref()?.session().content()?;
+        let slots = save_slots::list(&zeebx::config::config_dir(), id.as_str());
+        let thumb = slots.get(slot)?.as_ref()?.thumbnail.as_ref()?;
+        Some(Image {
+            width: thumb.width,
+            height: thumb.height,
+            rgba: thumb.to_rgba(),
+        })
+    }
+
+    /// Whether a game session is currently open.
+    pub fn is_game_open(&self) -> bool {
+        self.running_game.is_some()
+    }
+
+    /// Cover URL (`image://zeebx/cover/...`) for the currently open game, or empty if not in library.
+    pub fn running_game_cover(&self) -> String {
+        let Some(session) = self.running_game.as_ref().map(|r| r.session()) else {
+            return String::new();
+        };
+        let class_id = session.class_id();
+        if let Some(index) = self.games.iter().position(|g| g.clsid == Some(class_id)) {
+            return format!("image://zeebx/cover/{}/{index}", self.generation);
+        }
+        if let Some(open_path) = &self.open_path
+            && let Some(index) = self.games.iter().position(|g| &g.path == open_path)
+        {
+            return format!("image://zeebx/cover/{}/{index}", self.generation);
+        }
+        String::new()
+    }
+
+    /// Explicitly sets the open game's paused state (idempotent, unlike [`Core::toggle_pause`]).
+    pub fn set_paused(&mut self, paused: bool) {
+        if self.paused() != paused {
+            self.toggle_pause();
+        }
+    }
+
+    /// The device kind currently configured on port 0 (Player 1).
+    pub fn port0_device(&self) -> Device {
+        self.settings
+            .controls
+            .player(0)
+            .map(|p| p.device_kind)
+            .unwrap_or(Device::ZPad)
+    }
+
+    /// Switches port 0 between Z-Pad and Boomerang, saves settings, and notifies the active session.
+    pub fn set_port0_device(&mut self, device: Device) {
+        let player = self.settings.controls.player_mut(0);
+        player.enabled = true;
+        player.device_kind = device;
+        self.save_settings_file();
+        self.ports_changed();
+    }
+
+    /// Updates `settings.roms_dir`, saves `settings.json`, and rescans the library.
+    pub fn set_roms_dir(&mut self, dir: PathBuf) {
+        self.settings.roms_dir = Some(dir);
+        self.save_settings_file();
+        self.search_again();
+    }
+
+    /// Persists `settings.json` to disk, logging on failure.
+    pub fn save_settings_file(&self) {
+        if let Err(error) = self.settings.save() {
+            eprintln!("could not save the settings: {error}");
+        }
+    }
+
+    /// Human-readable label for the first connected controller, or empty if none is connected.
+    pub fn connected_gamepad_label(&mut self) -> String {
+        self.host_input.gamepads.poll();
+        let list = self.host_input.gamepads.names();
+        list.into_iter().next().unwrap_or_default()
     }
 
     /// The controller art for QML: `controle/base`, or `controle/parte/<index>/<rrggbbaa>` — a
