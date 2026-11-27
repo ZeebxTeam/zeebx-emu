@@ -58,17 +58,27 @@ ClassID in folders with "wheel" or "tectoy" in the name), leaves the list and op
 **▶ Z-Wheel** button on the top bar; a game opened from the library that exits on its own closes
 its window.
 
-### Grid and slider
+**The names can come from the files instead.** `game_names_from_file`, also in the General tab,
+makes `ui::zwheel_metadata::title_of` ignore `TITLETEXT` and name every game after its folder or
+file. It exists because the package's catalog has mistakes ("Prey 2 Evil" for "Prey Evil") and
+drops the collection's prefix: "Zeebo Extreme Baja" shows as "Baja" and moves to the top of the
+list. A game the Z-Wheel does not know shows its own name either way, so the option only changes
+the games it covers. Off by default, which is what the console showed.
 
-`LibraryGrid.qml` and `LibrarySlider.qml`. In the grid, upright cards in the proportions of the
-boxes; in the slider, one game at a time in the Z-Wheel style: the logo reel spinning like a
-cylinder, the name, the boxes sliding (the position chases the selection with a damped spring,
-and the list wraps around) and the rating with the description below.
+### Grid, slider and list
 
-Both modes are driven by the controller: D-pad, stick and arrow keys select, repeating when held;
-button 1, Start, Enter or space open; HOME opens the Z-Wheel. Keyboard, D-pad and stick become a
-single state before the press is detected, so an arrow also mapped on the controller does not
-move twice. The library does not listen while any window is on top of it — the game, the
+`LibraryGrid.qml`, `LibrarySlider.qml` and `LibraryList.qml`. In the grid, upright cards in the
+proportions of the boxes; in the slider, one game at a time in the Z-Wheel style: the logo reel
+spinning like a cylinder, the name, the boxes sliding (the position chases the selection with a
+damped spring, and the list wraps around) and the rating with the description below; in the list,
+one game per row, the small box on the left and the name, the ClassID and the description beside
+it. The three are chosen in the settings or in the toolbar, and the choice is saved as
+`biblioteca` in `settings.json` (`grade`, `slider` or `list`).
+
+The three views are driven by the controller: D-pad, stick and arrow keys select, repeating when
+held; button 1, Start, Enter or space open; HOME opens the Z-Wheel. Keyboard, D-pad and stick
+become a single state before the press is detected, so an arrow also mapped on the controller does
+not move twice. The library does not listen while any window is on top of it — the game, the
 settings, the saves, a dialog —, and since the controller generates no Qt event, a 33 ms timer
 reads it (`ui::navigation`).
 

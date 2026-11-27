@@ -65,7 +65,7 @@ impl<C: CpuBackend> Machine<C> {
                 }
                 SUCCESS
             }
-            // int Init(IHashCTX *, void *pCtx, int nCtxSize)
+            // int Init(IHashCtx *, void *pCtx, int nCtxSize)
             "Init" if iface == Interface::HashCtx => {
                 let (ctx, size) = (self.arg(1), self.arg(2));
                 if ctx == 0 || size < MD5_CTX_SIZE {
@@ -74,7 +74,7 @@ impl<C: CpuBackend> Machine<C> {
                 self.write_md5_ctx(ctx, &crate::brew::crypto::Md5::new())?;
                 SUCCESS
             }
-            // int Update(IHashCTX *, void *pCtx, int nCtxSize, const byte *pData, int nLen)
+            // int Update(IHashCtx *, void *pCtx, int nCtxSize, const byte *pData, int nLen)
             "Update" if iface == Interface::HashCtx => {
                 let (ctx, size, data, count) =
                     (self.arg(1), self.arg(2), self.arg(3), self.arg(4));
@@ -88,11 +88,11 @@ impl<C: CpuBackend> Machine<C> {
                 self.write_md5_ctx(ctx, &md5)?;
                 SUCCESS
             }
-            // int GetResult(IHashCTX *, void *pCtx, int nCtxSize, byte *pResult, int *pnLen)
+            // int Final(IHashCtx *, void *pCtx, int nCtxSize, byte *pResult, int *pnLen)
             //
             // Writes up to `*pnLen` bytes of the digest and returns sixteen in the size, like
-            // `IHash`'s `GetDigest`.
-            "GetResult" if iface == Interface::HashCtx => {
+            // `IHash`'s `GetResult`.
+            "Final" if iface == Interface::HashCtx => {
                 let (ctx, size, dest, pn) =
                     (self.arg(1), self.arg(2), self.arg(3), self.arg(4));
                 if ctx == 0 || size < MD5_CTX_SIZE {
@@ -111,8 +111,8 @@ impl<C: CpuBackend> Machine<C> {
                 }
                 SUCCESS
             }
-            // void IHASH_Reset(IHash *) — restarts the digest from scratch.
-            "Reset" => {
+            // void IHASH_Restart(IHash *) — restarts the digest from scratch.
+            "Restart" => {
                 self.hashes.insert(this, HashState::default());
                 SUCCESS
             }
@@ -126,12 +126,12 @@ impl<C: CpuBackend> Machine<C> {
                 self.hashes.entry(this).or_default().md5.update(&bytes);
                 SUCCESS
             }
-            // void GetDigest(IHash *, byte *pBuf, int *pnLen)
+            // void GetResult(IHash *, byte *pBuf, int *pnLen)
             //
             // The caller zeroes a 33-byte buffer and puts 17 in the size — sixteen bytes of digest
             // and the terminator. We write the sixteen and return sixteen in the size, honoring the
             // cap it asked for.
-            "GetDigest" => {
+            "GetResult" => {
                 let (dest, size) = (self.cpu.read_reg(Reg::R1), self.cpu.read_reg(Reg::R2));
                 let summary = self.hashes.entry(this).or_default().md5.clone().finish();
                 let fits = match size {

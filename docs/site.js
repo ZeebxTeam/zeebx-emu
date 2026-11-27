@@ -4,8 +4,12 @@
 // navegador. Assim uma versão nova aparece sem ninguém mexer no site.
 //
 // **Por que a lista, e não `/releases/latest`:** o `latest` do GitHub ignora pré-lançamentos, e
-// até a v0.3.0 todas as versões saíram marcadas assim. Com o `latest`, a página diria que não há
+// até a v0.6.0 todas as versões saíram marcadas assim. Com o `latest`, a página diria que não há
 // versão nenhuma. "Mais recente" aqui é a publicada por último, prévia ou não.
+//
+// **O nightly não é uma versão.** É o build diário do ramo de desenvolvimento, que o `nightly.yml`
+// publica numa release só, de tag `nightly`, trocada a cada execução. Ele vem na mesma lista, é
+// separado dela aqui e aparece à parte: nunca como "mais recente", nunca no arquivo de versões.
 //
 // A API sem autenticação aceita 60 consultas por hora por IP. O resultado fica guardado dez
 // minutos no navegador, e se a API recusar, vale o que estiver guardado, mesmo velho.
@@ -13,7 +17,9 @@
 const REPO = 'ZeebxTeam/zeebx-emu';
 const API = `https://api.github.com/repos/${REPO}/releases?per_page=100`;
 const PAGINA_RELEASES = `https://github.com/${REPO}/releases`;
-const CACHE = 'zeebx:releases:v1';
+// O `v2` é do formato guardado: entrou o nome da release, que é onde o nightly diz de quando é.
+const CACHE = 'zeebx:releases:v2';
+const NIGHTLY = 'nightly';
 const VALIDADE_CACHE = 10 * 60 * 1000;
 const CACHE_CONTRIBUIDORES = 'zeebx:contribuidores:v1';
 
@@ -35,12 +41,13 @@ const TEXTOS = {
     'rec.outras': 'Outras opções para {so}',
     'rec.todos': 'Não é o seu aparelho? Ver todos os arquivos',
     'rec.desconhecido': 'Não reconhecemos o seu sistema. Escolha o arquivo na lista abaixo.',
-    'rec.ios': 'Ainda não há versão para iPhone e iPad. Os arquivos para os outros sistemas estão abaixo.',
+    'rec.nightly': 'Ou o build diário (nightly), de {data}:',
     'rec.sem': 'Ainda não há arquivo para {aparelho}. Veja a lista completa abaixo.',
     'rec.macQual': 'Não deu para saber o processador do seu Mac. Escolha:',
     'rec.anterior': 'A versão {nova} saiu sem este arquivo; este é da {versao}.',
     'dica.macos': 'O macOS pode dizer que o Zeebx "está danificado". Não está: a build só não é assinada pela Apple. Arraste para Aplicativos e rode no Terminal:',
     'dica.android': 'Quando o Android pedir, permita que o navegador instale apps de fontes desconhecidas.',
+    'dica.ios': 'O .zip traz o zeebx-ios.ipa e um leia-me. Ele é instalado pelo AltStore clássico, que assina o app com o seu Apple ID.',
     'dica.windows': 'Como o instalador ainda não é assinado, o SmartScreen pode avisar na primeira vez. Clique em "Mais informações" e depois em "Executar assim mesmo".',
     'dica.linux': 'Dê permissão de execução ao AppImage e abra com dois cliques:',
     'qual.titulo': 'Qual arquivo eu baixo?',
@@ -49,7 +56,7 @@ const TEXTOS = {
     'qual.headless': 'Sem interface, configurado por config.ini. Para quem monta o próprio frontend.',
     'lista.titulo': 'Todos os arquivos',
     'lista.versao': 'Versão',
-    'lista.busca': 'Buscar: windows, apk, retroarch, arm64…',
+    'lista.busca': 'Buscar: windows, apk, iphone, retroarch, arm64…',
     'lista.contagem': '{n} de {total} arquivos da {versao}',
     'lista.vazio': 'Nenhum arquivo bate com a busca.',
     'lista.limpar': 'Limpar filtros',
@@ -71,6 +78,8 @@ const TEXTOS = {
     'desc.appimage': 'Portátil: roda sem instalar',
     'desc.deb': 'Pacote para Debian, Ubuntu e derivados',
     'desc.apk': 'Aplicativo, instalação manual',
+    'desc.ipa': 'IPA para instalar pelo AltStore, com o leia-me',
+    'desc.simulador': 'Para o Simulador do Xcode, em Mac com Apple Silicon',
     'desc.libretro': 'Core e .info, para a pasta de cores do RetroArch',
     'desc.wasm': 'Core em WebAssembly, para o ROMBundler',
     'desc.headless': 'Sem interface, configurado por config.ini',
@@ -86,6 +95,11 @@ const TEXTOS = {
     'contrib.commits': '{n} commits',
     'selo.recente': 'mais recente',
     'selo.previa': 'prévia',
+    'nightly.rotulo': 'Nightly · {data}',
+    'nightly.chamada': 'Quer testar o que vem a seguir?',
+    'nightly.ver': 'Ver o build diário (nightly)',
+    'nightly.voltar': 'Voltar para a versão {versao}',
+    'nightly.aviso': 'O nightly é o build automático do que está em desenvolvimento, feito todo dia. Tem primeiro o que está por vir, e ninguém o conferiu ainda: pode quebrar. Guarde uma cópia dos seus saves. Só existe para Windows, macOS e Linux.',
     'erro.titulo': 'Não deu para falar com o GitHub agora.',
     'erro.texto': 'A API do GitHub limita as consultas por hora. Os arquivos continuam na página de releases.',
     'erro.link': 'Abrir as releases no GitHub',
@@ -105,12 +119,13 @@ const TEXTOS = {
     'rec.outras': 'Other options for {so}',
     'rec.todos': 'Not your device? See all files',
     'rec.desconhecido': "We couldn't recognize your system. Pick a file from the list below.",
-    'rec.ios': 'There is no iPhone or iPad version yet. Files for the other systems are below.',
+    'rec.nightly': 'Or the daily build (nightly), from {data}:',
     'rec.sem': 'There is no file for {aparelho} yet. See the full list below.',
     'rec.macQual': "We couldn't tell which processor your Mac has. Choose:",
     'rec.anterior': 'Version {nova} shipped without this file; this one is from {versao}.',
     'dica.macos': 'macOS may say Zeebx "is damaged". It isn\'t: the build just isn\'t signed by Apple. Drag it to Applications and run in Terminal:',
     'dica.android': 'When Android asks, allow your browser to install apps from unknown sources.',
+    'dica.ios': 'The .zip carries zeebx-ios.ipa and a readme. It is installed through classic AltStore, which signs the app with your Apple ID.',
     'dica.windows': 'The installer isn\'t signed yet, so SmartScreen may warn you the first time. Click "More info" and then "Run anyway".',
     'dica.linux': 'Make the AppImage executable and double-click it:',
     'qual.titulo': 'Which file do I need?',
@@ -119,7 +134,7 @@ const TEXTOS = {
     'qual.headless': 'No interface, configured through config.ini. For people building their own frontend.',
     'lista.titulo': 'All files',
     'lista.versao': 'Version',
-    'lista.busca': 'Search: windows, apk, retroarch, arm64…',
+    'lista.busca': 'Search: windows, apk, iphone, retroarch, arm64…',
     'lista.contagem': '{n} of {total} files in {versao}',
     'lista.vazio': 'No file matches your search.',
     'lista.limpar': 'Clear filters',
@@ -141,6 +156,8 @@ const TEXTOS = {
     'desc.appimage': 'Portable: runs without installing',
     'desc.deb': 'Package for Debian, Ubuntu and derivatives',
     'desc.apk': 'App, manual install',
+    'desc.ipa': 'IPA to install through AltStore, with the readme',
+    'desc.simulador': 'For the Xcode Simulator, on a Mac with Apple Silicon',
     'desc.libretro': 'Core and .info, for the RetroArch cores folder',
     'desc.wasm': 'WebAssembly core, for ROMBundler',
     'desc.headless': 'No interface, configured through config.ini',
@@ -156,6 +173,11 @@ const TEXTOS = {
     'contrib.commits': '{n} commits',
     'selo.recente': 'latest',
     'selo.previa': 'preview',
+    'nightly.rotulo': 'Nightly · {data}',
+    'nightly.chamada': 'Want to try what is coming next?',
+    'nightly.ver': 'See the daily build (nightly)',
+    'nightly.voltar': 'Back to version {versao}',
+    'nightly.aviso': 'The nightly is the automatic build of what is being worked on, made every day. It has what is coming first, and nobody has checked it yet: it can break. Keep a copy of your saves. It only exists for Windows, macOS and Linux.',
     'erro.titulo': "Couldn't reach GitHub right now.",
     'erro.texto': 'The GitHub API limits requests per hour. The files are still on the releases page.',
     'erro.link': 'Open releases on GitHub',
@@ -175,12 +197,13 @@ const TEXTOS = {
     'rec.outras': 'Otras opciones para {so}',
     'rec.todos': '¿No es tu dispositivo? Ver todos los archivos',
     'rec.desconhecido': 'No reconocimos tu sistema. Elige el archivo en la lista de abajo.',
-    'rec.ios': 'Todavía no hay versión para iPhone ni iPad. Los archivos para los demás sistemas están abajo.',
+    'rec.nightly': 'O la compilación diaria (nightly), del {data}:',
     'rec.sem': 'Todavía no hay archivo para {aparelho}. Mira la lista completa abajo.',
     'rec.macQual': 'No pudimos saber qué procesador tiene tu Mac. Elige:',
     'rec.anterior': 'La versión {nova} salió sin este archivo; este es de la {versao}.',
     'dica.macos': 'macOS puede decir que Zeebx "está dañado". No lo está: la build no está firmada por Apple. Arrástralo a Aplicaciones y ejecuta en la Terminal:',
     'dica.android': 'Cuando Android lo pida, permite que el navegador instale apps de fuentes desconocidas.',
+    'dica.ios': 'El .zip trae zeebx-ios.ipa y un léeme. Se instala con AltStore clásico, que firma la app con tu Apple ID.',
     'dica.windows': 'El instalador todavía no está firmado, así que SmartScreen puede avisar la primera vez. Haz clic en "Más información" y luego en "Ejecutar de todas formas".',
     'dica.linux': 'Da permiso de ejecución al AppImage y ábrelo con doble clic:',
     'qual.titulo': '¿Qué archivo descargo?',
@@ -189,7 +212,7 @@ const TEXTOS = {
     'qual.headless': 'Sin interfaz, configurado por config.ini. Para quien arma su propio frontend.',
     'lista.titulo': 'Todos los archivos',
     'lista.versao': 'Versión',
-    'lista.busca': 'Buscar: windows, apk, retroarch, arm64…',
+    'lista.busca': 'Buscar: windows, apk, iphone, retroarch, arm64…',
     'lista.contagem': '{n} de {total} archivos de la {versao}',
     'lista.vazio': 'Ningún archivo coincide con la búsqueda.',
     'lista.limpar': 'Limpiar filtros',
@@ -211,6 +234,8 @@ const TEXTOS = {
     'desc.appimage': 'Portátil: funciona sin instalar',
     'desc.deb': 'Paquete para Debian, Ubuntu y derivados',
     'desc.apk': 'Aplicación, instalación manual',
+    'desc.ipa': 'IPA para instalar con AltStore, con el léeme',
+    'desc.simulador': 'Para el Simulador de Xcode, en Mac con Apple Silicon',
     'desc.libretro': 'Core y .info, para la carpeta de cores de RetroArch',
     'desc.wasm': 'Core en WebAssembly, para ROMBundler',
     'desc.headless': 'Sin interfaz, configurado por config.ini',
@@ -226,6 +251,11 @@ const TEXTOS = {
     'contrib.commits': '{n} commits',
     'selo.recente': 'más reciente',
     'selo.previa': 'vista previa',
+    'nightly.rotulo': 'Nightly · {data}',
+    'nightly.chamada': '¿Quieres probar lo que viene?',
+    'nightly.ver': 'Ver la compilación diaria (nightly)',
+    'nightly.voltar': 'Volver a la versión {versao}',
+    'nightly.aviso': 'El nightly es la compilación automática de lo que está en desarrollo, hecha cada día. Tiene primero lo que viene, y nadie la ha comprobado todavía: puede fallar. Guarda una copia de tus partidas. Solo existe para Windows, macOS y Linux.',
     'erro.titulo': 'No pudimos conectar con GitHub ahora.',
     'erro.texto': 'La API de GitHub limita las consultas por hora. Los archivos siguen en la página de releases.',
     'erro.link': 'Abrir las releases en GitHub',
@@ -277,6 +307,10 @@ function guardar(chave, valor) {
 // `cargo-packager` (`Zeebx_0.2.1_aarch64.dmg`), que só diziam a arquitetura: o sistema sai da
 // extensão, e eram todos do emulador com interface. Um nome que não bata com nenhum dos dois ainda
 // aparece na lista, em "Outros", em vez de sumir.
+//
+// O iOS sai em dois `.zip`, e o que há dentro é o que interessa a quem baixa: o `zeebx-ios.zip`
+// traz a IPA para o AltStore, e o `zeebx-ios-simulator.zip`, o `.app` do Simulador. O "formato"
+// deles aqui é esse conteúdo (`ipa`, `simulador`), e não a extensão.
 
 const ARQUITETURAS = {
   x86_64: 'x86_64', amd64: 'x86_64', x64: 'x86_64',
@@ -304,11 +338,20 @@ function classificar(nome) {
     [so, arch] = sistemaEArquitetura(m[3]);
   } else if ((m = n.match(/^zeebx-android-(.+)\.apk$/))) {
     tipo = 'app'; so = 'android'; arch = ARQUITETURAS[m[1]] || m[1];
+  } else if ((m = n.match(/^zeebx-ios(-simulator)?\.zip$/))) {
+    tipo = 'app'; so = 'ios'; arch = 'arm64';
+    return { tipo, so, arch, formato: m[1] ? 'simulador' : 'ipa', interface: null };
   } else if ((m = n.match(/^zeebx_[\d.]+_(.+?)(?:-setup)?\.(exe|dmg|deb|appimage)$/))) {
     tipo = 'app'; arch = ARQUITETURAS[m[1]] || m[1];
   }
 
   return { tipo, so, arch, formato, interface: interface_ };
+}
+
+// O que a release carrega só para o atualizador do emulador: o manifesto e o `.app` empacotado
+// que ele sabe trocar. Ninguém baixa isso à mão, e na lista só confundiria — o `.dmg` é o do Mac.
+function soDoAtualizador(nome) {
+  return /^latest-.*\.json$|\.app\.tar\.gz$|\.sig$/i.test(nome);
 }
 
 function sistemaEArquitetura(s) {
@@ -321,10 +364,10 @@ function sistemaEArquitetura(s) {
 // ---------------------------------------------------------------------------------------------
 // Rótulos e busca.
 
-const ORDEM_SO = ['windows', 'macos', 'linux', 'android', 'web', 'outro'];
+const ORDEM_SO = ['windows', 'macos', 'linux', 'android', 'ios', 'web', 'outro'];
 const ORDEM_TIPO = ['app', 'libretro', 'headless', 'outro'];
-const ORDEM_FORMATO = ['exe', 'dmg', 'appimage', 'deb', 'apk', 'zip'];
-const NOME_SO = { windows: 'Windows', macos: 'macOS', linux: 'Linux', android: 'Android', web: 'Web' };
+const ORDEM_FORMATO = ['exe', 'dmg', 'appimage', 'deb', 'apk', 'ipa', 'simulador', 'zip'];
+const NOME_SO = { windows: 'Windows', macos: 'macOS', linux: 'Linux', android: 'Android', ios: 'iOS / iPadOS', web: 'Web' };
 
 function rotuloSo(so) { return NOME_SO[so] || t('so.outro'); }
 
@@ -332,13 +375,21 @@ function rotuloArch(so, arch) {
   if (!arch) return '';
   if (so === 'macos') return arch === 'arm64' ? t('arch.apple') : t('arch.intel');
   if (arch === 'x86_64') return `${t('arch.x64')} (x86_64)`;
+  if (so === 'ios') return '';
   if (arch === 'arm64') return so === 'android' ? 'ARM64 (arm64-v8a)' : 'ARM64';
   if (arch === 'wasm') return 'WebAssembly';
   return arch;
 }
 
+const NOME_FORMATO = { appimage: 'AppImage', ipa: 'IPA', simulador: 'Simulador' };
+
 function rotuloFormato(formato) {
-  return formato === 'appimage' ? 'AppImage' : `.${formato}`;
+  return NOME_FORMATO[formato] || `.${formato}`;
+}
+
+// Como a versão se apresenta: a tag, ou, no nightly, de quando ele é.
+function rotuloVersao(release) {
+  return release.tag === NIGHTLY ? t('nightly.rotulo', { data: data(release.data) }) : release.tag;
 }
 
 function descricao(a) {
@@ -357,6 +408,7 @@ const SINONIMOS = {
   macos: 'mac macos osx apple',
   linux: 'linux ubuntu debian fedora arch steamdeck steam deck',
   android: 'android celular telefone phone tablet movil smartphone',
+  ios: 'ios ipados iphone ipad apple celular telefone phone tablet movil altstore',
   web: 'web navegador browser rombundler',
   x86_64: 'x64 amd64 x86_64 intel amd 64',
   arm64: 'arm arm64 aarch64 m1 m2 m3 m4 snapdragon',
@@ -369,6 +421,8 @@ const SINONIMOS = {
   appimage: 'appimage portatil portable',
   deb: 'deb',
   apk: 'apk',
+  ipa: 'ipa altstore sideload',
+  simulador: 'simulador simulator xcode',
 };
 
 function semAcento(s) {
@@ -428,11 +482,12 @@ async function buscarReleases() {
       .sort((a, b) => b.published_at.localeCompare(a.published_at))
       .map((r) => ({
         tag: r.tag_name,
+        nome: r.name || r.tag_name,
         previa: r.prerelease,
         data: r.published_at,
         url: r.html_url,
         notas: r.body_html || '',
-        arquivos: r.assets.map((a) => ({
+        arquivos: r.assets.filter((a) => !soDoAtualizador(a.name)).map((a) => ({
           nome: a.name, bytes: a.size, url: a.browser_download_url, ...classificar(a.name),
         })),
       }));
@@ -536,6 +591,7 @@ const PREFERENCIA = {
     { tipo: 'libretro', formato: 'zip', mesmaArch: true },
   ],
   android: [{ tipo: 'app', formato: 'apk', mesmaArch: false }],
+  ios: [{ tipo: 'app', formato: 'ipa', mesmaArch: false }],
 };
 
 function casa(a, regra, aparelho) {
@@ -561,6 +617,8 @@ function recomendar(releases, aparelho) {
         : [principais.find((a) => a.arch === aparelho.arch) || principais[0]];
       const outras = release.arquivos
         .filter((a) => a.so === aparelho.so && !escolhidos.includes(a))
+        // O build do Simulador é para quem desenvolve num Mac: num iPhone não há o que fazer com ele.
+        .filter((a) => a.formato !== 'simulador')
         .filter((a) => !aparelho.arch || !a.arch || a.arch === aparelho.arch || a.tipo === 'app')
         .sort(ordenar);
       return { release, escolhidos, outras };
@@ -595,7 +653,7 @@ function botaoBaixar(arquivo, texto, classe = 'botao') {
 }
 
 function nomeDoAparelho(aparelho) {
-  const arch = aparelho.arch && aparelho.so !== 'android' ? rotuloArch(aparelho.so, aparelho.arch) : '';
+  const arch = aparelho.arch && aparelho.so !== 'android' && aparelho.so !== 'ios' ? rotuloArch(aparelho.so, aparelho.arch) : '';
   return arch ? `${rotuloSo(aparelho.so)} · ${arch}` : rotuloSo(aparelho.so);
 }
 
@@ -605,9 +663,9 @@ function desenharRecomendado(estado) {
   const { releases, aparelho } = estado;
   const linkTodos = el('a', { class: 'rec-todos', href: '#baixar' }, t('rec.todos'));
 
-  if (aparelho.so === 'ios' || !aparelho.so) {
+  if (!aparelho.so) {
     caixa.replaceChildren(
-      el('p', { class: 'rec-rotulo' }, t(aparelho.so === 'ios' ? 'rec.ios' : 'rec.desconhecido')),
+      el('p', { class: 'rec-rotulo' }, t('rec.desconhecido')),
       el('a', { class: 'botao grande', href: '#baixar' }, t('rec.verTodos')),
     );
     return;
@@ -645,6 +703,19 @@ function desenharRecomendado(estado) {
 
   partes.push(dica(aparelho.so, principal));
 
+  // O nightly para este aparelho, quando há um e ele é mais novo que a versão acima: um nightly
+  // que ficou para trás de uma release não é novidade para ninguém.
+  const noturno = estado.nightly && estado.nightly.data > release.data
+    ? recomendar([estado.nightly], aparelho) : null;
+  if (noturno) {
+    partes.push(el('div', { class: 'rec-outras' },
+      t('rec.nightly', { data: data(estado.nightly.data) }),
+      el('ul', {}, noturno.escolhidos.map((a) => el('li', {},
+        botaoBaixar(a, `Nightly ${rotuloFormato(a.formato)}${noturno.escolhidos.length > 1 ? ` · ${rotuloArch(a.so, a.arch)}` : ''}`,
+          'botao secundario pequeno')))),
+    ));
+  }
+
   if (outras.length) {
     partes.push(el('div', { class: 'rec-outras' },
       t('rec.outras', { so: rotuloSo(aparelho.so) }),
@@ -665,6 +736,7 @@ function dica(so, arquivo) {
     el('code', {}, `chmod +x ${arquivo.nome}`));
   if (so === 'windows') return el('div', { class: 'dica' }, t('dica.windows'));
   if (so === 'android') return el('div', { class: 'dica' }, t('dica.android'));
+  if (so === 'ios') return el('div', { class: 'dica' }, t('dica.ios'));
   return null;
 }
 
@@ -673,6 +745,7 @@ function escaparHtml(s) {
 }
 
 function releaseSelecionada(estado) {
+  if (estado.versao === NIGHTLY && estado.nightly) return estado.nightly;
   return estado.releases.find((r) => r.tag === estado.versao) || estado.releases[0];
 }
 
@@ -705,7 +778,7 @@ function desenharLista(estado) {
     .sort(ordenar);
 
   document.getElementById('contagem').textContent =
-    t('lista.contagem', { n: visiveis.length, total: release.arquivos.length, versao: release.tag });
+    t('lista.contagem', { n: visiveis.length, total: release.arquivos.length, versao: rotuloVersao(release) });
 
   const lista = document.getElementById('lista');
   if (!visiveis.length) {
@@ -738,16 +811,20 @@ function desenharNotas(estado) {
   const release = releaseSelecionada(estado);
   const notas = document.getElementById('notas');
   notas.hidden = !release.notas;
-  notas.querySelector('summary').textContent = t('notas.titulo', { versao: release.tag });
+  notas.querySelector('summary').textContent = t('notas.titulo', { versao: rotuloVersao(release) });
   notas.querySelector('.notas-corpo').innerHTML = release.notas;
 }
 
 function desenharVersoes(estado) {
   const select = document.getElementById('versao');
   select.disabled = false;
-  select.replaceChildren(...estado.releases.map((r, i) => el('option', { value: r.tag },
-    [r.tag, i === 0 && `(${t('selo.recente')})`, r.previa && `· ${t('selo.previa')}`].filter(Boolean).join(' '))));
+  // O nightly entra na escolha logo depois da versão mais recente, com o nome que diz o que é.
+  const opcoes = estado.releases.map((r, i) => el('option', { value: r.tag },
+    [r.tag, i === 0 && `(${t('selo.recente')})`, r.previa && `· ${t('selo.previa')}`].filter(Boolean).join(' ')));
+  if (estado.nightly) opcoes.splice(1, 0, el('option', { value: NIGHTLY }, rotuloVersao(estado.nightly)));
+  select.replaceChildren(...opcoes);
   select.value = releaseSelecionada(estado).tag;
+  desenharCanal(estado);
 
   const atual = releaseSelecionada(estado).tag;
   document.getElementById('historico').replaceChildren(...estado.releases.map((r, i) => el('li', { class: r.tag === atual ? 'atual' : null },
@@ -763,6 +840,23 @@ function desenharVersoes(estado) {
         document.getElementById('baixar').scrollIntoView();
       } }, t('versoes.ver'))),
   )));
+}
+
+// A chamada para o nightly, acima da lista, e o aviso do que ele é quando é ele que está na lista.
+function desenharCanal(estado) {
+  const canal = document.getElementById('canal');
+  const aviso = document.getElementById('aviso-nightly');
+  const noNightly = releaseSelecionada(estado).tag === NIGHTLY;
+  canal.hidden = !estado.nightly;
+  aviso.hidden = !noNightly;
+  aviso.textContent = noNightly ? t('nightly.aviso') : '';
+  if (!estado.nightly) return;
+  const ir = (versao) => () => { estado.versao = versao; atualizar(estado); };
+  canal.replaceChildren(...(noNightly
+    ? [el('button', { type: 'button', class: 'botao secundario pequeno', onclick: ir(null) },
+        t('nightly.voltar', { versao: estado.releases[0].tag }))]
+    : [el('span', {}, `${t('nightly.chamada')} `),
+       el('button', { type: 'button', class: 'botao secundario pequeno', onclick: ir(NIGHTLY) }, t('nightly.ver'))]));
 }
 
 function desenharErro() {
@@ -799,7 +893,7 @@ function lerUrl() {
 function gravarUrl(estado) {
   const p = new URLSearchParams(location.search);
   const campos = {
-    v: estado.versao && estado.versao !== estado.releases[0]?.tag ? estado.versao : null,
+    v: estado.versao && estado.versao !== estado.releases[0]?.tag ? releaseSelecionada(estado).tag : null,
     os: estado.so, tipo: estado.tipo, q: estado.busca || null,
   };
   for (const [k, v] of Object.entries(campos)) v ? p.set(k, v) : p.delete(k);
@@ -840,7 +934,7 @@ function desenharPessoas(estado) {
 }
 
 async function iniciar() {
-  const estado = { ...lerUrl(), releases: null, aparelho: { so: null, arch: null }, erro: null };
+  const estado = { ...lerUrl(), releases: null, nightly: null, aparelho: { so: null, arch: null }, erro: null };
   traduzirPagina();
   document.getElementById('busca').value = estado.busca;
 
@@ -866,7 +960,10 @@ async function iniciar() {
     buscarReleases().catch((erro) => { estado.erro = erro; return null; }),
   ]);
   estado.aparelho = aparelho;
-  estado.releases = releases && releases.length ? releases : null;
+  // O nightly sai da lista de versões e fica à parte: ver o comentário no alto do arquivo.
+  const versoes = (releases || []).filter((r) => r.tag !== NIGHTLY);
+  estado.nightly = (releases || []).find((r) => r.tag === NIGHTLY) || null;
+  estado.releases = versoes.length ? versoes : null;
   if (!estado.releases && !estado.erro) estado.erro = new Error('nenhuma release publicada');
   desenharTudo(estado);
 }

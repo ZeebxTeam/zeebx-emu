@@ -176,7 +176,10 @@ fn query(channel: UpdateChannel) -> Result<Option<Release>, String> {
 ///
 /// **A nightly** is newer when it was made later, and it is only looked at on the nightly
 /// channel. Its version must not be lower than this build's: the nightly that was left behind by
-/// a release is not an update to that release.
+/// a release is not an update to that release. The same goes for a nightly of the *same* version
+/// made before that version was published — without this the two pointed at each other: the
+/// nightly was offered the release published after it, and the release, stamped when its build
+/// started, was offered that nightly back, on every launch.
 ///
 /// With both on the table, the stable one wins when its version is higher — the release has
 /// what that nightly had, and was looked at — and the nightly wins otherwise.
@@ -196,12 +199,27 @@ fn pick(list: &serde_json::Value, nightly: Option<&serde_json::Value>, this: Bui
             numbers(tag) > this.numbers
                 || (this.nightly && numbers(tag) == this.numbers && published > this.stamp)
         });
+    // When the version a nightly is named after went out, or zero if it has not yet.
+    let released = |version: [u64; 3]| {
+        list.as_array()
+            .into_iter()
+            .flatten()
+            .filter(|release| release["draft"].as_bool() != Some(true))
+            .filter(|release| release["prerelease"].as_bool() != Some(true))
+            .filter(|release| release["tag_name"].as_str().is_some_and(|tag| numbers(tag) == version))
+            .map(|release| release["published_at"].as_str().map_or(0, stamp))
+            .max()
+            .unwrap_or(0)
+    };
     let nightly = nightly
         .filter(|release| release["draft"].as_bool() != Some(true))
         .and_then(|release| Some((release["name"].as_str()?.trim(), release)))
         .filter(|(name, _)| {
             let made = nightly_stamp(name);
-            made > 0 && made > this.stamp && numbers(name) >= this.numbers
+            made > 0
+                && made > this.stamp
+                && numbers(name) >= this.numbers
+                && made > released(numbers(name))
         });
 
     let page = |tag: &str, release: &serde_json::Value| {
@@ -655,6 +673,26 @@ mod tests {
         let released = Build { numbers: [0, 7, 0], nightly: false, stamp: 0 };
         let stale = nightly("0.6.0-nightly.202611210300");
         assert_eq!(pick(&serde_json::json!([]), Some(&stale), released), None);
+    }
+
+    #[test]
+    fn a_release_and_the_nightly_before_it_do_not_offer_each_other() {
+        // What 0.6.0 did: the nightly was made at 14:15, the release was published at 15:42, and
+        // its own build had started at 14:13.
+        let list = serde_json::json!([published("v0.6.0", false, "2026-11-19T15:42:15Z")]);
+        let before = nightly("0.6.0-nightly.202611191415");
+        let on_nightly = Build { numbers: [0, 6, 0], nightly: true, stamp: 202611191415 };
+        let on_release = Build { numbers: [0, 6, 0], nightly: false, stamp: 202611191413 };
+        assert_eq!(version(pick(&list, Some(&before), on_nightly)), Some("0.6.0".into()));
+        assert_eq!(pick(&list, Some(&before), on_release), None, "it would go back, and loop");
+        // The one made the morning after is an update to the release, and stays where it is.
+        let after = nightly("0.6.0-nightly.202611200600");
+        assert_eq!(
+            version(pick(&list, Some(&after), on_release)),
+            Some("0.6.0-nightly.202611200600".into())
+        );
+        let on_after = Build { numbers: [0, 6, 0], nightly: true, stamp: 202611200600 };
+        assert_eq!(pick(&list, Some(&after), on_after), None);
     }
 
     #[test]

@@ -5563,7 +5563,7 @@ dependencies = [
 
 [[package]]
 name = "zeebx"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "ab_glyph",
  "blake3",
@@ -5596,7 +5596,7 @@ dependencies = [
 
 [[package]]
 name = "zeebx-android"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "android-activity",
  "android_logger",
@@ -5612,7 +5612,7 @@ dependencies = [
 
 [[package]]
 name = "zeebx-cli"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "winresource",
  "zeebx",
@@ -5620,9 +5620,9 @@ dependencies = [
 
 [[package]]
 name = "zeebx-core"
-version = "0.1.3"
+version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2ad09d3e379e1ff4b08fc7813c5b4868ac9da43594b3238d6650068fd8a28cf9"
+checksum = "9d688ba154a4571c213aee2f3ccb76048406b3fe153db81a669f097dfe7445ed"
 dependencies = [
  "crc32fast",
  "rusqlite",
@@ -5630,7 +5630,7 @@ dependencies = [
 
 [[package]]
 name = "zeebx-headless"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "egui",
  "glow",
@@ -5644,7 +5644,7 @@ dependencies = [
 
 [[package]]
 name = "zeebx-ios"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "serde_json",
  "zeebx",
@@ -5652,7 +5652,7 @@ dependencies = [
 
 [[package]]
 name = "zeebx-libretro"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "cc",
  "glow",
@@ -5661,7 +5661,7 @@ dependencies = [
 
 [[package]]
 name = "zeebx-standalone-qt"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "cxx",
  "cxx-qt",
@@ -5676,7 +5676,7 @@ dependencies = [
 
 [[package]]
 name = "zeebx-vita"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "cc",
  "glow",

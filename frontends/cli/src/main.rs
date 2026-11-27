@@ -1789,6 +1789,7 @@ fn run_frames(
     let mut turns = 0;
     let mut stopped = None;
     let mut pad = input::Pad::default();
+    let mut pad_before = input::Pad::default();
     let deadline = seconds.map(|s| s.saturating_mul(1000));
     if let Some(dir) = dump_gl {
         std::fs::create_dir_all(dir)?;
@@ -1858,6 +1859,13 @@ fn run_frames(
         // window and, with one, you can see what the script does.
         keys.apply(machine.clock_ms(), &mut pad);
         machine.set_pad(pad);
+        // The window's session translates the controller into BREW keys (the D-pad as the
+        // arrows, button 1 as CONFIRM, button 2 as CLR); `run --window` only set the pad, so a
+        // game that reads EVT_KEY saw nothing. Same translation here.
+        for (avk, down) in input::controller_key_events(&pad_before, &pad) {
+            machine.set_key(avk, down);
+        }
+        pad_before = pad;
         turns += 1;
         let outcomes = machine.advance(INSTRUCTION_BUDGET)?;
         machine.deliver_signals(INSTRUCTION_BUDGET)?;

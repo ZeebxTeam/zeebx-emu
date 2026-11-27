@@ -125,8 +125,8 @@ pub mod qobject {
         #[cxx_name = "saveWindowSize"]
         fn save_window_size(self: &Library, width: f64, height: f64);
 
-        /// How the library is shown: 0 as a grid, 1 as the slider. See `library` in the
-        /// settings.
+        /// How the library is shown: 0 as a grid, 1 as the slider, 2 as a list. See `library` in
+        /// the settings.
         #[qinvokable]
         #[cxx_name = "libraryMode"]
         fn library_mode(self: &Library) -> i32;
@@ -452,6 +452,7 @@ impl qobject::Library {
         emu_core::with(|emu_core| match emu_core.settings.library {
             LibraryMode::Grid => 0,
             LibraryMode::Slider => 1,
+            LibraryMode::List => 2,
         })
     }
 

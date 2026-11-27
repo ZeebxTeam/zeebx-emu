@@ -48,3 +48,9 @@ ignore-build-dependencies = true
 # `ring` declares "Apache-2.0 AND ISC" without saying which file is which; `cargo about`'s own
 # workaround knows how to split them.
 workarounds = ["ring"]
+
+# `zeebx-core` is Zeebx's own code, under the same license as the rest (the root LICENSE). It
+# comes from crates.io, so `private` above does not cover it, and GPL-2.0-or-later is accepted
+# for this crate alone: a third-party GPL crate still stops the build, to be looked at.
+[zeebx-core]
+accepted = ["GPL-2.0-or-later"]

@@ -14,7 +14,7 @@ four reasons:
 
 - the style is fixed when the program opens, and changing it requires a restart;
 - Material and Universal take their colors from their own properties (`Material.theme`,
-  `Material.accent`), not from the palette. The library grid and slider are hand-drawn with
+  `Material.accent`), not from the palette. The library grid, slider and list are hand-drawn with
   `palette.*`, and would end up with colors that do not match the rest;
 - FluentWinUI3 only exists from Qt 6.8 on, and the `.deb` uses Ubuntu 24.04's Qt 6.4;
 - every new style would have to ship in the AppImage, the `.exe` and the `.app`, and be checked

@@ -3,10 +3,11 @@
 use super::*;
 
 impl<C: CpuBackend> Machine<C> {
-    /// Serves `ISource` and `IPeek`. See [`Interface::Peek`].
+    /// Serves `ISource` and `IGetLine`. See [`Interface::GetLine`].
     ///
-    /// Of `IPeek`, only slot 8 has a body, and it is the reason all of this exists: the Z-Wheel
-    /// reads `tectoy.cfg` line by line through it. The call is `slot8(this, &pair, 3)`, with
+    /// Of `IGetLine`, only slot 8 (`GetLine`) has a body, and it is the reason all of this exists:
+    /// the Z-Wheel reads `tectoy.cfg` line by line through it. The call is
+    /// `GetLine(this, &pair, 3)`, with
     /// `pair` being `{pointer, size}` — the game reads both and **copies** the text before asking
     /// for the next line, which is what lets a single buffer be reused.
     ///
@@ -28,6 +29,14 @@ impl<C: CpuBackend> Machine<C> {
             return Ok(None);
         };
         if aee::is_placeholder(name) {
+            return Ok(None);
+        }
+        // The `IGetLine` slots now carry their header names, and a named slot falls into the
+        // `_ => SUCCESS` below. Of them only these four have a body; the rest must keep showing
+        // up in the report as missing, the way they did when they were `slot3`..`slot7`.
+        if iface == Interface::GetLine
+            && !matches!(name, "AddRef" | "Release" | "QueryInterface" | "GetLine")
+        {
             return Ok(None);
         }
         let this = self.cpu.read_reg(Reg::R0);
@@ -66,7 +75,7 @@ impl<C: CpuBackend> Machine<C> {
                 self.sources.insert(this, bytes[chunk.len()..].to_vec());
                 chunk.len() as u32
             }
-            "LerLinha" => {
+            "GetLine" => {
                 let pair = self.cpu.read_reg(Reg::R1);
                 let Some(reader) = self.peeks.get_mut(&this) else {
                     return Ok(Some(EBADPARM));
@@ -105,17 +114,17 @@ impl<C: CpuBackend> Machine<C> {
                 self.objects.add_ref(this);
                 SUCCESS
             }
-            // `int PeekSourceFromSource(ISourceUtil *po, ISource *ps, int nMax, IPeek **ppo)`.
+            // `int32 GetLineFromSource(ISourceUtil *po, ISource *pis, int32 nBufSize, IGetLine **ppigl)`.
             //
             // `nMax` is the cap on what the reader may keep in memory; the Z-Wheel passes the
             // file size plus one, that is, the whole file. Since we already have all the bytes,
             // it changes nothing here — but it is what tells us the game expects to read it all.
-            "PeekSourceFromSource" => {
+            "GetLineFromSource" => {
                 let (source, output) = (self.cpu.read_reg(Reg::R1), self.cpu.read_reg(Reg::R3));
                 let Some(bytes) = self.sources.get(&source).cloned() else {
                     return Ok(Some(EBADPARM));
                 };
-                let reader = self.new_object(Interface::Peek)?;
+                let reader = self.new_object(Interface::GetLine)?;
                 if reader == 0 {
                     return Ok(Some(ENOMEMORY));
                 }
@@ -140,7 +149,8 @@ impl<C: CpuBackend> Machine<C> {
                 }
                 SUCCESS
             }
-            // `int SourceFromFile(ISourceUtil *po, IFile *pf, ISource **ppo)`.
+            // `int32 SourceFromAStream(ISourceUtil *po, IAStream *pias, ISource **ppis)` — the Z-Wheel
+            // passes an `IFile`, which is an `IAStream`.
             //
             // We read the whole file by its path, not through the open descriptor, so as not to
             // move the position of the game's `IFile` — it still belongs to the game. It is the
@@ -154,7 +164,7 @@ impl<C: CpuBackend> Machine<C> {
             // `Read` of `IAStream` and that of `ISource` sit in the same slot, with the same
             // arguments and the same return, so the stream itself serves as the source: the
             // player calls the game's code, as it already does with a game `ISource`.
-            "SourceFromFile" => {
+            "SourceFromAStream" => {
                 let (file, output) = (self.cpu.read_reg(Reg::R1), self.cpu.read_reg(Reg::R2));
                 let Some(path) = self
                     .open_files

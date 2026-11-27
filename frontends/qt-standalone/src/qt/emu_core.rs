@@ -143,7 +143,7 @@ pub enum Frame<'a> {
     /// The GPU rasterizer's texture, at the internal resolution, without going back to the CPU.
     Gpu(GpuFrame),
     /// The console screen in RGB565 — the 2D, the software 3D, or the GPU with something drawn
-    /// over it in 2D.
+    /// over it in 2D. For a phone game, only the phone's area of it, at that size.
     Screen(&'a Framebuffer),
 }
 
@@ -553,14 +553,15 @@ impl Core {
         self.rebuild_list();
     }
 
-    /// Rebuilds the list without scanning the folder: the search, the language or the Z-Wheel
-    /// changed.
+    /// Rebuilds the list without scanning the folder: the search, the language, the Z-Wheel or the
+    /// choice of names changed.
     pub fn rebuild_list(&mut self) {
         let language = self.catalog.current().to_string();
         let zwheel_metadata = self.zwheel_metadata.as_ref();
+        let from_file = self.settings.game_names_from_file;
         let mut list: Vec<(String, usize)> = (0..self.games.len())
             .filter(|&i| self.games[i].clsid != Some(Z_WHEEL))
-            .map(|i| (zwheel_metadata::title_of(zwheel_metadata, &self.games[i], &language), i))
+            .map(|i| (zwheel_metadata::title_of(zwheel_metadata, &self.games[i], &language, from_file), i))
             .filter(|(title, _)| library::matches_search(title, &self.search))
             .collect();
         list.sort_by_key(|(title, _)| title.to_lowercase());
@@ -706,7 +707,8 @@ impl Core {
         let gpu = self.gl.as_ref().and(session.gpu_frame());
         Some(match gpu {
             Some(frame) => Frame::Gpu(frame),
-            None => Frame::Screen(session.screen()),
+            // The area the game uses: all of it for a Zeebo game, the phone's for a phone game.
+            None => Frame::Screen(session.display_screen()),
         })
     }
 
@@ -727,13 +729,19 @@ impl Core {
     ///
     /// The session only knows the extraction folder, which carries the package's fingerprint
     /// (`Zeebo-Extreme-Boia-Cross-21503726-1788761080`). The name comes from the library by
-    /// ClassID — the Z-Wheel's official one when it describes the game —, and only without it the
-    /// folder, without the two numbers at the end. The egui rule.
+    /// ClassID — the Z-Wheel's official one when it describes the game and the list is not
+    /// following the files —, and only without it the folder, without the two numbers at the end.
+    /// The egui rule.
     pub fn title(&self) -> Option<String> {
         let session = self.running_game.as_ref()?.session();
         let class_id = session.class_id();
         if let Some(game) = self.games.iter().find(|game| game.clsid == Some(class_id)) {
-            return Some(zwheel_metadata::title_of(self.zwheel_metadata.as_ref(), game, self.catalog.current()));
+            return Some(zwheel_metadata::title_of(
+                self.zwheel_metadata.as_ref(),
+                game,
+                self.catalog.current(),
+                self.settings.game_names_from_file,
+            ));
         }
         let title = library::strip_fingerprint(session.title());
         (!title.is_empty()).then_some(title)

@@ -1,6 +1,6 @@
 [package]
 name = "zeebx-vita"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2024"
 license = "GPL-2.0-or-later"
 description = "Zeebx on the PlayStation Vita, without Libretro"
